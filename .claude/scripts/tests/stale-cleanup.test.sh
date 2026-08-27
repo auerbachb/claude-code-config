@@ -473,6 +473,131 @@ else
     '.orphaned_registrations | any(.id == "wtF-live" and .method == "prune")'
 fi
 
+# ---- T13: read_bounded_line returns without a subshell ----------------------
+# run_bounded's orphan handover is a mutation of the CALLER's shell: on a child
+# that outlived SIGKILL it appends that call's capture pair to
+# ORPHANED_CAPTURES and points CAPTURE/CAPTURE_ERR at fresh files, so the
+# parent stops truncating and re-reading files the orphan still holds open.
+# read_bounded_line used to hand its answer back on stdout, which forced every
+# call site into `$(...)` — and a command substitution runs run_bounded in a
+# subshell, where the handover dies with it.
+#
+# A real wedged child needs uninterruptible I/O (a hung network mount), which a
+# test cannot manufacture: a FIFO read like T11's is interruptible, so SIGKILL
+# ends it and the handover branch never runs. The harness therefore stubs
+# run_bounded with exactly that branch and drives the extracted function three
+# ways — the value path, the wedged path as a statement, and the wedged path
+# through the substitution the old shape required. Scenario 3 is the control:
+# without it, scenario 2 would also pass against a harness that could not
+# detect a lost handover at all.
+HARNESS="$TMP/handover-harness.sh"
+cat > "$HARNESS" <<'HEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+SUT="$1"
+READ_BOUND_SECS=2
+BOUNDED_LINE=""
+STUB_MODE="ok"
+ORPHANED_CAPTURES=()
+
+new_capture_pair() {
+  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/harness-cap.XXXXXX")"
+  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/harness-caperr.XXXXXX")"
+}
+
+# Stands in for run_bounded. "ok" leaves an answer in $CAPTURE and succeeds;
+# "wedged" performs the real handover and returns 124, as run_bounded does for
+# a child that survived SIGKILL.
+run_bounded() { # bound, command...
+  if [[ "$STUB_MODE" == "wedged" ]]; then
+    ORPHANED_CAPTURES+=("$CAPTURE" "$CAPTURE_ERR")
+    new_capture_pair
+    return 124
+  fi
+  printf '/some/worktree/.git\nsecond line\n' > "$CAPTURE"
+  return 0
+}
+
+eval "$(awk '/^read_bounded_line\(\) \{/,/^\}/' "$SUT")"
+
+rotated() { [[ "$CAPTURE" != "$1" ]] && echo yes || echo no; }
+
+# 1. Value transport, no command substitution anywhere in the call.
+ORPHANED_CAPTURES=(); new_capture_pair; STUB_MODE="ok"
+RC=0
+read_bounded_line "/path/is/irrelevant/to/the/stub" || RC=$?
+echo "scenario1 rc=$RC line=[$BOUNDED_LINE]"
+
+# 2. Wedged path called as a statement — the handover must land right here.
+ORPHANED_CAPTURES=(); new_capture_pair; BEFORE="$CAPTURE"; STUB_MODE="wedged"
+RC=0
+read_bounded_line "/path/is/irrelevant/to/the/stub" || RC=$?
+echo "scenario2 rc=$RC orphans=${#ORPHANED_CAPTURES[@]} rotated=$(rotated "$BEFORE")"
+
+# 3. Control: same stub, same wedged path, reached through the substitution the
+#    stdout-returning shape forced on every caller. The handover is lost.
+ORPHANED_CAPTURES=(); new_capture_pair; BEFORE="$CAPTURE"; STUB_MODE="wedged"
+_discard="$(read_bounded_line "/path/is/irrelevant/to/the/stub" || true)"
+echo "scenario3 orphans=${#ORPHANED_CAPTURES[@]} rotated=$(rotated "$BEFORE")"
+HEOF
+
+OUT="$(bash "$HARNESS" "$SUT" 2>&1)"
+check_contains "T13: the read result comes back without a command substitution" \
+  "scenario1 rc=0 line=[/some/worktree/.git]" "$OUT"
+check_contains "T13: a wedged call hands the orphaned pair to the caller's shell" \
+  "scenario2 rc=1 orphans=2 rotated=yes" "$OUT"
+check_contains "T13: control — through \$(...) the same handover is lost" \
+  "scenario3 orphans=0 rotated=no" "$OUT"
+
+# The harness proves the function's shape; this pins the call sites, which is
+# where the defect actually lived. Any `$(read_bounded_line ...)` reintroduces
+# it no matter how the function returns.
+check_eq "T13: no call site wraps read_bounded_line in a command substitution" 0 \
+  "$(grep -cF "\$(read_bounded_line" "$SUT" || true)"
+
+# ---- T14: the worktree classification loop survives an empty array -----------
+# `enumerate_worktrees` failing is a supported degraded run: WORKTREES stays
+# empty and the sweep continues to the registration pass, which is the pass
+# that clears the cause. On bash 3.2 (macOS system bash) `set -u` makes
+# "${WORKTREES[@]}" an `unbound variable` abort on an empty array, so the
+# degraded run died before emitting anything at all.
+check_eq "T14: the classification loop carries an empty-array guard" 1 \
+  "$(grep -cF "if (( \${#WORKTREES[@]} > 0 )); then" "$SUT" || true)"
+
+# The abort only reproduces on bash < 4.4, so the runtime half runs only where
+# such a bash exists (macOS) and is skipped elsewhere, e.g. CI on bash 5.
+BASH32=""
+if [[ -x /bin/bash ]] && /bin/bash --version 2>/dev/null | head -1 | grep -q 'version 3\.'; then
+  BASH32=/bin/bash
+fi
+if [[ -z "$BASH32" ]]; then
+  echo "skip — T14: bash 3.2 runtime repro (no bash < 4.4 on this host; the guard is asserted statically above)"
+else
+  REPO_G="$TMP/repoG"
+  mkdir -p "$REPO_G"
+  git -C "$REPO_G" init -q
+  echo "g" > "$REPO_G/README.md"
+  git -C "$REPO_G" add README.md
+  commit_old "$REPO_G" "repoG base"
+  git -C "$REPO_G" worktree add "$TMP/wtG-stuck" -b issue-600-g-stuck >/dev/null 2>&1
+  REG_G="$REPO_G/.git/worktrees"
+  # Same debris shape as T11: a FIFO gitdir stalls `git worktree list`, so
+  # enumeration times out and WORKTREES is left empty.
+  rm -f "$REG_G/wtG-stuck/gitdir"
+  mkfifo "$REG_G/wtG-stuck/gitdir"
+
+  ERR_G="$TMP/repoG.err"
+  OUT="$(cd "$REPO_G" && "$BASH32" "$SUT" --check 2>"$ERR_G")"
+  # Exit status cannot tell these apart — an aborted run and a correctly
+  # reported incomplete sweep both exit 1 — so assert on what was produced.
+  check_eq "T14: bash 3.2 degraded run does not abort on the empty array" "" \
+    "$(grep -o 'unbound variable' "$ERR_G" | head -1)"
+  check_contains "T14: bash 3.2 degraded run still emits its report" \
+    "Stale threshold:" "$OUT"
+  check_contains "T14: bash 3.2 degraded run still reaches the registration pass" \
+    "wtG-stuck" "$OUT"
+fi
+
 unset STALE_CLEANUP_TIMEOUT_SECS STALE_CLEANUP_READ_TIMEOUT_SECS
 
 echo ""

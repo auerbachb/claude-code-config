@@ -144,8 +144,15 @@
 #   --json     Emit a JSON object instead of human-readable text. Includes a
 #              top-level "root" (the resolved main-worktree root being swept)
 #              plus the stale_*/skipped_* arrays (issue #707), the
-#              orphaned_registrations/skipped_registrations arrays, and
-#              "worktree_enumeration" ("ok", "timed_out", or "failed").
+#              orphaned_registrations/skipped_registrations arrays,
+#              "worktree_enumeration" ("ok", "timed_out", or "failed"), and
+#              "registration_scan" ("ok", "none" when the repo has never had a
+#              linked worktree, or "unavailable" when the git common dir did
+#              not resolve inside the bound). Anything other than
+#              worktree_enumeration "ok", and a registration_scan of
+#              "unavailable", each make --check exit 1 on their own: the sweep
+#              could not classify, which is a finding, not a clean bill of
+#              health. "none" is a clean state and does not.
 #   --include-locked
 #              Also clear orphaned registrations carrying a `locked` marker.
 #              Only ever applies when the worktree directory is gone or its
@@ -313,6 +320,9 @@ trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$GH_TMPERR" ${ORPHANED_CA
 
 BOUNDED_TIMED_OUT=0
 BOUNDED_CLOCK_UNREADABLE=0
+# read_bounded_line's out-parameter. See that function for why the answer comes
+# back through a global instead of stdout.
+BOUNDED_LINE=""
 
 # Seconds since the epoch, or a non-zero return when the answer is unusable.
 # A blank result must never be accepted: inside `(( ))` an empty variable is 0,
@@ -421,14 +431,30 @@ run_bounded() { # bound_secs, command...
   return "$rc"
 }
 
-# Read the first line of a small metadata file under the read bound. Echoes the
-# line on success; returns non-zero when the read failed or tripped the bound.
+# Read the first line of a small metadata file under the read bound. On success
+# the line lands in BOUNDED_LINE and the return is 0; a non-zero return means
+# the read failed or tripped the bound, and BOUNDED_LINE is left empty.
 # `cat` is forked deliberately — a builtin `$(<file)` read cannot be killed.
+#
+# The answer comes back through a global rather than stdout ON PURPOSE, and the
+# callers must never wrap this in `$(...)`. Command substitution runs the whole
+# function — run_bounded included — in a subshell, and run_bounded's orphan
+# handover is a mutation of the PARENT's state: it appends the wedged call's
+# capture paths to ORPHANED_CAPTURES and points CAPTURE/CAPTURE_ERR at fresh
+# ones. Lose that to a subshell and the parent keeps reading and truncating
+# files an unkillable orphan still holds open — precisely the contamination the
+# handover exists to prevent. `read_bounded_line` is the only run_bounded
+# wrapper that ever returned data, so it was the only one exposed to this.
 read_bounded_line() { # path
   local rc=0
+  BOUNDED_LINE=""
   run_bounded "$READ_BOUND_SECS" cat "$1" || rc=$?
   if (( rc != 0 )); then return 1; fi
-  head -n 1 "$CAPTURE"
+  # This substitution is safe where the one around run_bounded was not: the
+  # handover has already happened in the parent, and $CAPTURE is our own temp
+  # file, never the possibly-wedged path being probed.
+  BOUNDED_LINE="$(head -n 1 "$CAPTURE")" || { BOUNDED_LINE=""; return 1; }
+  return 0
 }
 
 # Is the path's absence actually established, or merely not observed? `test -e`
@@ -737,6 +763,13 @@ is_branch_checked_out() {
 # tracked changes, branch has no open PR, HEAD older than threshold.
 STALE_WORKTREES=()
 SKIPPED_WORKTREES=()
+# Empty-array guard, same pattern as the --apply loops and emit_json: under
+# `set -u`, expanding "${ARR[@]}" on an empty array is an `unbound variable`
+# error on bash 3.2 (macOS system bash). WORKTREES is empty exactly when
+# enumerate_worktrees failed — the degraded run whose whole point is to reach
+# the registration sweep that clears the cause — so an abort here would defeat
+# the fallback rather than merely skipping a loop with nothing in it.
+if (( ${#WORKTREES[@]} > 0 )); then
 for record in "${WORKTREES[@]}"; do
   IFS="$US" read -r is_main wt branch ts <<<"$record"
   if (( is_main == 1 )); then
@@ -772,6 +805,7 @@ for record in "${WORKTREES[@]}"; do
   fi
   STALE_WORKTREES+=("${wt}${US}${branch}${US}${ts}")
 done
+fi
 
 # Local branches: any refs/heads entry whose tip is older than threshold.
 #
@@ -923,12 +957,16 @@ scan_registrations() {
     lock_reason=""
     if [[ -f "$reg/locked" ]]; then
       locked_marker=1
-      lock_reason="$(read_bounded_line "$reg/locked" 2>/dev/null || true)"
+      # Called as a statement, never inside `$(...)` — see read_bounded_line.
+      read_bounded_line "$reg/locked" 2>/dev/null || true
+      lock_reason="$BOUNDED_LINE"
     fi
 
     reason=""
     method=""
-    if ! gitdir_line="$(read_bounded_line "$reg/gitdir")" || [[ -z "$gitdir_line" ]]; then
+    gitdir_line=""
+    if read_bounded_line "$reg/gitdir"; then gitdir_line="$BOUNDED_LINE"; fi
+    if [[ -z "$gitdir_line" ]]; then
       # We cannot prove the worktree is gone — only that git cannot read this
       # entry either, which is precisely what stalls `git worktree list`.
       reason="unreadable — prunable with warning (metadata did not read within ${READ_BOUND_SECS}s)"
@@ -1151,7 +1189,9 @@ echo
 # exactly the states that made the entry an orphan in the first place.
 registration_is_live() { # registration path
   local gitdir_line="" wt="" probe_rc=0
-  gitdir_line="$(read_bounded_line "$1/gitdir")" || return 1
+  # Statement form, not `$(...)` — see read_bounded_line.
+  read_bounded_line "$1/gitdir" || return 1
+  gitdir_line="$BOUNDED_LINE"
   [[ -n "$gitdir_line" ]] || return 1
   wt="${gitdir_line%/.git}"
   path_exists_bounded "$wt" || probe_rc=$?

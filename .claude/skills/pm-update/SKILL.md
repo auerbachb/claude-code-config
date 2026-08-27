@@ -188,9 +188,11 @@ If nothing changed in the auto-generated sections, say so: "Infrastructure and A
 Always run `--check` first. The script never deletes in this mode.
 
 ```bash
-"$STALE_CLEANUP_SH" --check
-RC=$?
+RC=0
+"$STALE_CLEANUP_SH" --check || RC=$?
 ```
+
+The `|| RC=$?` guard is required: `--check` exits **1** whenever it has something to report — stale items, an incomplete sweep, or both — which under `set -e` would abort this step before `RC` was ever assigned.
 
 `stale-cleanup.sh` reports four categories — stale worktrees, stale local branches, stale remote branches, and orphaned worktree registrations (`.git/worktrees/<id>` entries with no live worktree behind them; issue #1402) — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree, locked or caller-owned registration). See `stale-cleanup.sh --help` for the full safety-check contract.
 
@@ -205,7 +207,9 @@ Threshold defaults to 7 days; override with `STALE_DAYS=N` if the user requests 
 Show the user the stdout from Step 8.1 verbatim. Then:
 
 - **If `RC == 0`:** No stale items — say "No stale worktrees or branches detected." Done.
-- **If `RC == 1`:** Stale items exist. Ask the user: "Apply the stale cleanup above? (worktrees removed, local + remote branches deleted)" Wait for confirmation. Never run `--apply` autonomously — every deletion is destructive and the dry-run is the user's only chance to spot a false positive.
+- **If `RC == 1`:** Two different things produce this status and a single run can carry both, so read the report rather than branching on the code alone.
+  - **Items are listed** (any of the four categories). Ask the user: "Apply the stale cleanup above? (worktrees removed, local + remote branches deleted)" Wait for confirmation. Never run `--apply` autonomously — every deletion is destructive and the dry-run is the user's only chance to spot a false positive.
+  - **A trailing `WARNING:` block is present.** The sweep was incomplete (Step 8.1) — report it as incomplete even if items were listed and applied, never as clean. `worktree enumeration timed_out`/`failed` is remedied by clearing the registrations it lists, so the ask above still applies. `worktree registrations were not scanned` (`registration_scan == unavailable` in `--json`) is the one shape with nothing to clear: **do not offer `--apply` for it.** Surface the warning, say the repo did not respond inside the bound, and stop.
 - **If `RC == 3`:** Usage error (invalid flag, bad `STALE_DAYS`). Print the script's `--help` output and stop — this indicates a bug in this skill's invocation, not a real-state problem.
 - **If `RC == 4`:** Environment error (no `gh`, no `jq`, can't resolve repo). Surface stderr to the user and stop.
 - **Other non-zero exits:** Surface stderr and stop.
