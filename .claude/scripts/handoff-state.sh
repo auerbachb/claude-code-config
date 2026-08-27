@@ -218,6 +218,15 @@ while [[ $# -gt 0 ]]; do
       # Lowercase-normalize immediately so ~/.claude/handoffs/{owner}/{repo}/ paths
       # are always lowercase (issue #704 — mirrors session-state.sh's key contract).
       OWNER_REPO_EXPLICIT="$(normalize_repo_key "$OWNER_REPO_EXPLICIT")"
+      # Validate the SHAPE, not just the presence of a slash. This value becomes
+      # a {owner}/{repo} directory pair, so `org/a/b`, `org/`, `/repo` and
+      # `org/repo name` have no valid target, and `./.` resolves back to the
+      # legacy flat path — reaching the target --legacy-flat exists to gate
+      # (CodeAnt, PR #1423). Refuse at the flag rather than deeper in.
+      if ! is_strict_owner_repo "$OWNER_REPO_EXPLICIT"; then
+        echo "handoff-state.sh: --owner-repo '${2:-}' is not a usable <owner>/<repo> value: it must be exactly two non-empty components drawn from [A-Za-z0-9._-] (no nested paths, no spaces, no . or .. components). Nothing was read or written. Pass --legacy-flat if you meant ${HANDOFF_DIR}/pr-<N>-handoff.json (issue #1366)." >&2
+        exit 2
+      fi
       shift 2
       ;;
     --legacy-flat)
@@ -408,8 +417,12 @@ else
     # A set-but-unusable override is its own failure. Falling through to cwd
     # derivation would answer a different question than the one the caller
     # configured, so name the variable rather than quietly routing around it.
-    if ! is_owner_repo_identity "$OWNER_REPO"; then
-      echo "handoff-state.sh: \$CLAUDE_SESSION_REPO='${CLAUDE_SESSION_REPO}' is not a usable <owner>/<repo> value — refusing to guess a different scope for --${MODE} on PR #${PR_NUMBER}. Nothing was read or written. Fix the variable, or pass --owner-repo <owner/repo> (issue #1366)." >&2
+    # Strict shape, same as --owner-repo above: a value that merely contains a
+    # slash can still name no valid {owner}/{repo} pair, or name one session
+    # state routes to `_unknown` — splitting the two halves of one session's
+    # records instead of joining them (CodeAnt, PR #1423).
+    if ! is_strict_owner_repo "$OWNER_REPO"; then
+      echo "handoff-state.sh: \$CLAUDE_SESSION_REPO='${CLAUDE_SESSION_REPO}' is not a usable <owner>/<repo> value (exactly two non-empty components from [A-Za-z0-9._-]) — refusing to guess a different scope for --${MODE} on PR #${PR_NUMBER}. Nothing was read or written. Fix the variable, or pass --owner-repo <owner/repo> (issue #1366)." >&2
       exit 2
     fi
   else

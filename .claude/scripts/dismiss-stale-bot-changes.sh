@@ -19,6 +19,12 @@
 #   2 — usage error
 #   3 — could not resolve PR / HEAD
 #   4 — gh / network error, real dismissal failure, invalid handoff JSON, or handoff merge failure
+#   5 — dismissals APPLIED, but handoff bookkeeping is incomplete: the handoff
+#       was deleted or migrated partway through recording the dismissed IDs, so
+#       some are recorded and some are not. Retryable — re-run once the handoff
+#       exists to record the remainder. Distinct from 4 so a caller can tell a
+#       partial-bookkeeping race from a failed dismissal, and distinct from 0 so
+#       one cannot be read as full success (CodeAnt, PR #1423).
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME}/.claude/script-usage.log" 2>/dev/null || true
@@ -214,19 +220,18 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     # recreating a partial handoff in exactly the case the `else` branch below
     # decided to skip (CodeAnt, PR #1423).
     #
-    # Exit 3 is that race, not a failure: the target is gone, so the skip the
-    # caller already chose is the right outcome. Stop appending on it — every
-    # remaining ID would hit the same absent file. Any other non-zero is a
-    # genuine write failure and still exits 4.
+    # Exit 3 from the helper is that race, not a write failure: the target is
+    # gone. Stop appending on it — every remaining ID would hit the same absent
+    # file. Any other non-zero IS a genuine write failure and still exits 4.
     #
-    # The exit status stays 0 on that race: the dismissal API calls are this
-    # script's actual work and they already succeeded, and the outer `else`
-    # branch treats an absent handoff as a skip rather than a failure too —
-    # returning non-zero here would report a completed dismissal as a failed one.
-    # But a race partway through the loop is NOT the same state as the outer
-    # skip: some IDs were recorded and the rest were not, so say so explicitly
-    # with counts instead of a bare "skipping" that reads like nothing happened
-    # (CodeAnt, PR #1423).
+    # But a race partway through the loop is NOT the outer skip: some IDs were
+    # recorded and the rest were not, and a caller reading only the exit status
+    # would take that partial state for full success and never retry. So it is
+    # reported twice over — an explicit WARN carrying recorded/unrecorded counts,
+    # and a dedicated exit 5 (CodeAnt, PR #1423). Exit 5 rather than 4 because
+    # the dismissals themselves succeeded: this is retryable bookkeeping, not a
+    # failed dismissal, and conflating the two would send callers off to
+    # re-dismiss reviews that are already dismissed.
     _ds_append_rc=0
     _ds_recorded=0
     _ds_total="${#DISMISSED_IDS[@]}"
@@ -251,6 +256,13 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
   else
     echo "[DISMISS-STALE] WARN: handoff file missing; skipping append (create full handoff first): $HANDOFF_FILE" >&2
   fi
+fi
+
+# Exit 5 only for the partial-bookkeeping race above (helper exit 3 AFTER at
+# least one ID was recorded). A handoff that was already absent when the loop
+# started recorded nothing and is the documented optional skip — still 0.
+if [[ "${_ds_append_rc:-0}" -eq 3 && "${_ds_recorded:-0}" -gt 0 ]]; then
+  exit 5
 fi
 
 exit 0

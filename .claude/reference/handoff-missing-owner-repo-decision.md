@@ -57,9 +57,16 @@ derivation removes only the *default*:
   write a file no reader ever opens. Trading a silent no-op for a loud refusal
   is the whole point.
 
-Deriving over an un-migrated flat file, when no scoped file exists yet, warns
-and names `handoff-migrate.sh` rather than orphaning it. Explicit `--owner-repo`
-callers stay quiet: they already chose the scoped path knowingly.
+Deriving over an un-migrated flat file, when no scoped file exists yet, splits by
+mode. **Reads** warn and name `handoff-migrate.sh` rather than orphaning it.
+**Writes refuse**: `--create`, `--init`, `--set`, `--append` and `--delete` exit 2
+without writing anything. A warning was not enough — `--set`/`--append` seed from
+`{}` when the scoped file is absent, so the write would land a partial record at
+the derived path while the complete flat record is orphaned, losing every field
+and array element the flat file held. Refusing keeps the record whole and names
+both ways forward (`--legacy-flat` to act on the existing record, `--owner-repo`
+to start a scoped one). Explicit `--owner-repo` and `--legacy-flat` callers are
+unaffected either way: they already chose their path knowingly.
 
 **Which resolver, and its one known divergence.** Derivation reuses
 `repo_identity()` (`lib/pr-scope-resolver.sh`) rather than asking `gh`: no

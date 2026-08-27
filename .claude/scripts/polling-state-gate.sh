@@ -477,17 +477,19 @@ ensure_session() {
     # handoff-state.sh itself applies (--owner-repo -> $CLAUDE_SESSION_REPO ->
     # cwd origin) when the flag is omitted (issue #1366).
     # is_owner_repo_identity() only rejects the empty/_unknown/gitdir:/path:
-    # sentinels and then tests for a slash. session-state.sh is stricter: it keys
-    # on `^[A-Za-z0-9._/-]+$` (is_valid_repo_key) and routes anything else to the
-    # `_unknown` bucket. A value like `org/repo name` or `org//repo` therefore
-    # passes the check above and scopes the handoff to a path session-state never
-    # writes — splitting the two halves of one poll's state apart in exactly the
-    # case this fallback exists to join them (CodeAnt, PR #1423). Validate with
-    # session-state's own class before trusting it; the flat path is the correct
-    # fallback for a key neither side can agree on.
+    # sentinels and then tests for a slash — too loose to turn into a path. It
+    # admits `org/repo name` (session-state.sh keys on ^[A-Za-z0-9._/-]+$ and
+    # routes anything else to `_unknown`, so the handoff lands where session
+    # state never looks) and equally `org/a/b`, `org/`, `/repo`, which name no
+    # {owner}/{repo} pair at all — this value is passed straight to
+    # handoff-state.sh as --owner-repo, which now refuses them, so accepting one
+    # here would update session state and then fail to resolve the checkpoint
+    # (CodeAnt, PR #1423). One strict validator, shared with handoff-state.sh,
+    # keeps both ends agreeing on what a scope is; the flat path is the right
+    # fallback for anything they cannot.
     local _sess_key
     _sess_key="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
-    if [[ "$_sess_key" =~ ^[A-Za-z0-9._/-]+$ && "$_sess_key" != *//* ]]; then
+    if is_strict_owner_repo "$_sess_key"; then
       owner_repo="$_sess_key"
       echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
     else

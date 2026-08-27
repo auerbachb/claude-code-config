@@ -226,29 +226,70 @@ for src in "${FLAT_FILES[@]}"; do
       verbose "  SKIP $basename_file (removed concurrently)"
       continue
     fi
-    if [[ -f "$dest" ]]; then
+    # The destination needs the lock too, not just the source (CodeAnt, PR
+    # #1423). handoff-state.sh writers lock the path they write, so an explicit
+    # `--owner-repo … --set/--append` locks $dest — nothing the source lock
+    # excludes. Holding only $src, the -f test below could pass, that writer
+    # could then create $dest, and this cp would overwrite its brand-new scoped
+    # record with the stale flat one.
+    #
+    # state-lock.sh tracks a single lock per process (one STATE_LOCK_HELD_DIR),
+    # so the second acquisition goes in a SUBSHELL: it gets its own copies of
+    # those globals, leaving the parent's $src bookkeeping untouched. Ordering is
+    # always source-then-destination; every other actor takes exactly one lock,
+    # so no cycle exists and the nesting cannot deadlock. The copy result comes
+    # back as the subshell's exit status.
+    #
+    # The release is EXPLICIT rather than trap-driven. state_lock_acquire's EXIT
+    # trap does not stand in for it here: the subshell inherits the parent's
+    # trap-registration bookkeeping but not the parent's actual trap (bash resets
+    # traps in a subshell), so the acquire skips re-registering and nothing fires
+    # on the way out — the destination lock leaks and blocks writers until the
+    # stale-age expiry. Verified by the leak this replaces. One release point,
+    # reached on every path that took the lock.
+    copy_rc=0
+    (
+      state_lock_acquire "$dest" || exit 21
+      rc=0
+      # Re-test inside the destination's own lock — the check above raced.
+      if [[ -f "$dest" ]]; then
+        rc=22
+      elif ! cp "$src" "$dest" || [[ ! -f "$dest" ]]; then
+        rc=23
+      elif ! cmp -s "$src" "$dest"; then
+        # Verify content is identical; drop a bad copy rather than keep it.
+        rm -f "$dest" 2>/dev/null || true
+        rc=24
+      fi
       state_lock_release
-      log "  SKIP $basename_file — destination already exists: $dest"
-      continue
-    fi
-    # Copy first, verify, then remove source — safer than mv across potential
-    # filesystem boundaries (e.g., ~/.claude on a different mount point).
-    if cp "$src" "$dest" && [[ -f "$dest" ]]; then
-      # Verify content is identical.
-      if cmp -s "$src" "$dest"; then
+      exit "$rc"
+    ) || copy_rc=$?
+
+    case "$copy_rc" in
+      0)
+        # Still holding $src's lock, so the removal is serialized against any
+        # writer that would otherwise see the record vanish mid-write.
         rm -f "$src" 2>/dev/null || {
           log "  WARNING: copied to $dest but could not remove $src" >&2
         }
         log "  MOVED $basename_file -> $dest"
-      else
-        rm -f "$dest" 2>/dev/null || true
+        ;;
+      21)
+        log "  ERROR: could not acquire the destination lock for $dest within the timeout (a scoped writer holds it); source preserved" >&2
+        ERRORS=$((ERRORS + 1))
+        ;;
+      22)
+        log "  SKIP $basename_file — destination created concurrently: $dest" >&2
+        ;;
+      24)
         log "  ERROR: copy verification failed for $basename_file (source preserved)" >&2
         ERRORS=$((ERRORS + 1))
-      fi
-    else
-      log "  ERROR: cp failed for $basename_file" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
+        ;;
+      *)
+        log "  ERROR: cp failed for $basename_file" >&2
+        ERRORS=$((ERRORS + 1))
+        ;;
+    esac
     state_lock_release
   else
     # Dry-run: just report what would happen.
