@@ -168,8 +168,10 @@ in the audit's §Dashboard reconciliation. Three things it changed here:
 1. **BugBot's cost rationale is rewritten.** "Per-seat but spend-metered" understated it — it is the
    largest line in the stack, and it is configured for maximum spend (Every Push, Effort High, drafts
    on, incremental off, autofix on with **299 runs and 0 merged**). Scope tuning precedes any cap
-   raise, and the attribution dispute between the `github_bugbot` billing line and the operator's
-   IDE-usage account must be settled first.
+   raise. The attribution dispute between the `github_bugbot` billing line and the operator's
+   IDE-usage account was recorded here as the thing to settle first; **[#1228](https://github.com/auerbachb/claude-code-config/issues/1228) settled it in the billing line's favour**
+   (763 runs, 324 PRs, per-PR rows — §BugBot cap + chain-position reconciliation below), so scope
+   tuning is now the whole of the answer rather than a holding action.
 2. **CodeRabbit's cap model is corrected.** Not a rolling 7-day allowance: **5 reviews/hour per
    developer** on Pro. Monthly volume was never the constraint. The figure that matters most is not
    a cost one — **36% of blocked PRs merged unreviewed**, meaning something satisfied the gate in
@@ -440,7 +442,7 @@ Nothing in the measurement is new *behaviour* — it is the same primary finder 
 - **`spend_limit` — the on-demand Monthly Limit.** Cursor **Ultra $200/mo**; the binding control is the on-demand **Monthly Limit of $1,000.00, type Fixed**, read at **$999.87 / $1,000.00 consumed**, with the plan's included ~$400 Other-Models bucket also 100% consumed (`github_bugbot` = 96.1% of it). Dashboard readings 2026-08-21/22 ([#1204](https://github.com/auerbachb/claude-code-config/issues/1204), [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md)). **Ultra is the top individual plan** — the only lever is that Monthly Limit field.
 - **Reset cadence: monthly, on the account renewal date.** The measured cycle ran **Jul 28 → Aug 28**, renewing **2026-08-28**. Vendor mechanics: at the limit, *"AI features stop working for that specific user"* until the next billing cycle. So a refusal is terminal for the cycle, not for the PR — and a nudge can never clear it.
 - **Incidence: 176 of 268 PRs (66%)**, spanning PR [#982](https://github.com/auerbachb/claude-code-config/pull/982) through PR [#1332](https://github.com/auerbachb/claude-code-config/pull/1332) — continuous across the window rather than a burst, on the single phrase `hit a usage or spend limit`. PR [#1265](https://github.com/auerbachb/claude-code-config/pull/1265) alone carries **8** refusal comments; the two named in the #1304 issue body came from the truncated run and were a floor.
-- **Cost: $1.58/review** (516 reviews, $815.58) — the largest single cost line in the stack. **The attribution dispute is settled:** the #1228 dashboard event log (763 runs, 324 PRs, per-PR rows) confirms the spend really is BugBot, not IDE usage mislabelled as `github_bugbot`. `pricing-matrix.md` §Cursor BugBot still carries the older *"Unresolved attribution — settle before touching the cap"* wording; that is superseded, and reconciling it is listed under Follow-ups.
+- **Cost: $1.58/review** (516 reviews, $815.58) — the largest single cost line in the stack. **The attribution dispute is settled:** the #1228 dashboard event log (763 runs, 324 PRs, per-PR rows) confirms the spend really is BugBot, not IDE usage mislabelled as `github_bugbot`. [`pricing-matrix.md`](./pricing-matrix.md) §Cursor BugBot carried the older *"Unresolved attribution — settle before touching the cap"* wording; it was reconciled under [#1355](https://github.com/auerbachb/claude-code-config/issues/1355), which supersedes that paragraph in place and strikes the support-ticket owner action it generated.
 - **Approvals: 0 across all 268 PRs, and no merge gate satisfied that was checked.** On PR #1265 the gate was carried by a **CodeAnt `APPROVED` on HEAD**, which short-circuits `merge-gate.sh` before the BugBot path is evaluated at all.
 - **Participation is real despite the cap:** 248 PRs touched, 153 review objects, 150 inline findings, 553 issue comments, 0 `CHANGES_REQUESTED`, and **sole source of findings on 29 PRs**.
 
