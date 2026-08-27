@@ -274,6 +274,34 @@ cr_limit_banner_included() {
   [[ -n "$window" ]] && tail="\\n>\\n> **Next included review available in ${window}.**"
   printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\\n\\n> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
 }
+# The FUTURE-TENSE window sentence (CodeAnt review of PR #1393). CodeRabbit ships
+# `will be` between "review" and "available" — captured verbatim on PR #554 as
+# `Your next review will be available in 22 minutes.` and tolerated by
+# `lib/pr-state-classify.jq` since #557, while this parser's inserted-word
+# allowance sat on the far side of "review" and could never reach it. The wording
+# is carried here on a `Review limit reached` banner because that is the family
+# the grace admits: the #554 body itself is an adaptive-limits notice wrapped in
+# `Full review finished.`, which reports a landed review and earns no wait (see
+# cr-rate-limits.md). $1 = created_at, $2 = window text, or "" for none.
+cr_limit_banner_will_be() {
+  local ts="$1" window="${2-}" tail=""
+  [[ -n "$window" ]] && tail="\\n>\\n> **Your next review will be available in ${window}.**"
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n> You have reached a temporary PR review limit under our Fair Usage Limits Policy.%s"}' "$ts" "$tail"
+}
+# The same banner with an UNRECOGNISED copula. Bounds the widening: the slot is a
+# literal `will be`, not a free bridge, so this yields no window and the PR
+# escalates. Pins the failure DIRECTION of the next unlogged drift — degraded to
+# escalation, never a stalled PR.
+#
+# The copula here is exactly TWO words on purpose. A longer one ("is once again")
+# would also be rejected by a generic `(?:\s+\w+){0,2}` bridge, so the scenario
+# would pass whether the slot were literal or widened — proving nothing. `is now`
+# is the shortest phrasing that a bridge WOULD swallow and the literal does not,
+# which is what makes this case fail if someone widens the slot in either file.
+# $1 = created_at, $2 = window text.
+cr_limit_banner_unknown_copula() {
+  printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n>\\n> **Your next review is now available in %s.**"}' "$1" "$2"
+}
 # MARKER ONLY: the auto-generated marker present, the `Review limit reached`
 # heading prose absent. Pins the wording-independent half of banner detection —
 # if CodeRabbit drops or rewrites the heading entirely, this shape is all that is

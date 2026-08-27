@@ -632,8 +632,25 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
     # separators are `\\s+` rather than literal spaces because THIS FUNCTION
     # creates the variation it has to survive: stripping the markdown emphasis
     # off `**review**  **available in**` leaves a double space behind.
+    #
+    # THE COPULA SLOT, and why it is a literal rather than a second `{0,2}`
+    # (CodeAnt review of this PR). CodeRabbit also ships the sentence in the
+    # future tense — `Your next review will be available in 22 minutes.`,
+    # captured verbatim on PR #554 (2026-07-16) and tolerated by
+    # `lib/pr-state-classify.jq` since #557. That insertion sits between `review`
+    # and `available`, so the 0-2 allowance above — which is on the other side of
+    # `review` — could never reach it, and this parser read a zero window from a
+    # phrasing its sibling had already been reading for six weeks. Both are now
+    # keyed on ONE anchor shape; keep them identical (`cr-rate-limits.md`).
+    # Literal `will be`, not a generic bridge, because the same shape is used by
+    # the classifier, which has NO author gate: `available in <number>` is
+    # ordinary prose, and a generic slot there would let a real finding saying
+    # "the next review is available in the dashboard" classify as a rate-limit
+    # ack. Slot one guards an adjective position ahead of a noun, where the next
+    # insertion is unguessable; this one guards a copula with two observed forms.
+    # An unrecognised third form degrades to escalation, not to a stalled PR.
     ([ ascii_downcase | gsub("\\*"; "")
-       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
+       | capture("\\bnext(?:\\s+\\w+){0,2}\\s+review\\s+(?:will\\s+be\\s+)?available\\s+in:?\\s*(?<n>[0-9]+)\\s*(?<unit>second|minute|hour)") ]
      | first) as $m
     | if $m == null then 0
       else ($m.n | tonumber)
@@ -663,6 +680,18 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
     # buy a grace period. `<!--[^>]*` is the machine-marker anchor; the words
     # inside stay tolerant so this does not re-acquire the sentence-brittleness
     # the rest of this fix removes.
+    #
+    # DELIBERATELY still excludes the ADAPTIVE-LIMITS notice — the `You are
+    # currently rate limited … Your next review will be available in 22 minutes.`
+    # family (PR #554), which carries neither signal. (No raw apostrophe in this
+    # comment on purpose: it lives inside a single-quoted jq program, where one
+    # would close the quote and break the script.) That exclusion is correct, not
+    # an oversight: CR wraps that notice inside a `Full review finished.` auto-
+    # reply, so it reports a review that ALREADY LANDED and times the NEXT one.
+    # There is nothing to wait out on this HEAD, and granting grace on it would
+    # park a reviewed PR. The classifier tolerates that wording regardless,
+    # because its only question is whether the comment is a finding; this block
+    # asks whether CodeRabbit still owes us a review, which that body answers no.
     | select((.body // "") | test("review limit reached|<!--[^>]*rate[- ]?limited by coderabbit\\.ai"; "i"))
     | { ts: (.created_at // ""), w: ((.body // "") | window_seconds) }
     | select(.ts != "") ]

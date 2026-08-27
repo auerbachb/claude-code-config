@@ -358,6 +358,47 @@ class="${result%%|*}"
   || fail "Bug4d: anchors separated by >2 words — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
+# Bug4e: LOCKSTEP with escalate-review.sh's window parser (CodeAnt review of PR #1393).
+# Drift arrives on both sides of "review": the 0-2 allowance above covers the adjective
+# slot ("Next INCLUDED review"), and the future-tense copula ("next review WILL BE
+# available in") is the other. This branch has read the copula form since #557 — it is
+# the PR #554 body pinned in the Edge block below — but it read it via a hardcoded
+# `(will be )?`, which the window parser had no equivalent of. Both files now carry one
+# anchor shape; these cases pin this half of it, and only the phrase can carry them
+# (the marker and heading signals are stripped from every body here).
+# ---------------------------------------------------------------------------
+result=$(classify_body 'Next included review will be available in 27 minutes.')
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4e: BOTH slots at once ('next included review will be available in') → acknowledgment"
+else
+  fail "Bug4e: both slots at once — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# The separators are \s+, not literal spaces, so the shape survives the whitespace its
+# sibling parser manufactures for itself (stripping per-word emphasis off
+# `**review**  **available in**` leaves a double space). A literal-space pattern would
+# read nothing here while escalate-review.sh read the window fine — the two files out
+# of lockstep again, in miniature.
+result=$(classify_body 'Next  review  will  be  available  in 27 minutes.')
+class="${result%%|*}"; reason="${result##*|}"
+if [[ "$class" == "acknowledgment" && "$reason" == "rate limit notice" ]]; then
+  pass "Bug4e: irregular whitespace between anchors → acknowledgment"
+else
+  fail "Bug4e: irregular whitespace between anchors — expected acknowledgment/rate limit notice, got $class/$reason"
+fi
+
+# The copula slot is a LITERAL `will be`, not a second {0,2} bridge, and this is the
+# case that holds it there. This file has no author gate, so a generic slot would let
+# an ordinary finding whose prose happens to read "the next review is available in the
+# dashboard" classify as a rate-limit ack — a false clean on the review gate, the Bug4c
+# failure by another route. An unrecognised copula must reach the default instead.
+result=$(classify_body 'The next review is available in the dashboard, but the link 404s.')
+class="${result%%|*}"
+[[ "$class" == "finding" ]] && pass "Bug4e: unrecognised copula → finding (copula slot stays literal)" \
+  || fail "Bug4e: unrecognised copula — expected finding, got $class"
+
+# ---------------------------------------------------------------------------
 # Bug4c: a real finding that merely QUOTES the Fair Usage policy stays a finding
 # (issue #557, raised by codeant-ai on PR #565).
 #
