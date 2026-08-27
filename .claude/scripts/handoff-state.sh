@@ -487,13 +487,16 @@ if [[ "$MODE" == "set" ]]; then
     #      this check keeps it on the string path. The probe wraps the value in
     #      a `def` that is never invoked and leaves `empty` as the only
     #      top-level expression, so nothing in the value is evaluated and no
-    #      input is read.
+    #      input is read — a property the `#` and `;` bail-outs below are what
+    #      actually guarantee, since either character lets the value reach the
+    #      terminator and promote its own tail to top level.
     # Anything short of all three keeps the pre-existing store-as-string
     # behavior, so an unrecognized expression degrades to today's semantics
     # rather than to a new failure.
     #
-    # A jq comment runs to end of line, and both defences below exist because
-    # of that (CodeAnt, PR #1378 / issue #1357):
+    # The probe must never EVALUATE the value, only compile it. Two different
+    # constructs can carry the value across the terminator and defeat that, so
+    # there are three defences (PR #1378 / issue #1357):
     #
     #   * The probe is assembled across FOUR LINES — the value gets a line of
     #     its own; the `;` terminator and `empty` get theirs. On one line, a
@@ -501,9 +504,10 @@ if [[ "$MODE" == "set" ]]; then
     #     tail to top-level expression, which jq then EXECUTES during what is
     #     supposed to be a compile: `.a + 1; def g: 1; last(repeat(1)) #` hung
     #     a single-line probe indefinitely while this script held the state
-    #     lock, blocking every sibling pipeline. Confined to its own line, a
-    #     comment can no longer reach the terminator, so the top-level
-    #     expression is always the standalone `empty` and nothing evaluates.
+    #     lock, blocking every sibling pipeline (CodeAnt). Confined to its own
+    #     line, a comment can no longer reach the terminator. That closes the
+    #     COMMENT route only — on its own it does not make `empty` the
+    #     top-level expression, which is what the `;` bail-out below is for.
     #
     #   * A value containing `#` at all skips the probe. Line discipline stops
     #     the comment at the value, but INSIDE the value it still hides
@@ -515,13 +519,32 @@ if [[ "$MODE" == "set" ]]; then
     #     exactly as it does today. It also costs a false NEGATIVE on real jq
     #     carrying a `#` in a string literal (`.notes + "issue #1357"`), which
     #     is the direction this guard is allowed to be wrong in.
+    #
+    #   * A value containing `;` at all skips the probe. Line discipline stops
+    #     a COMMENT from reaching the terminator, but a trailing unterminated
+    #     `def` absorbs it outright: jq's grammar admits `Exp := FuncDef Exp`,
+    #     so `.a ; last(repeat(1)) as $x | def h: 1` ends the probe's own `def`
+    #     early at its first `;`, hands the terminator to `def h` as ITS
+    #     terminator, and leaves `last(repeat(1))` a TOP-LEVEL expression that
+    #     jq executes — the same indefinite hang under the state lock, with no
+    #     `#` anywhere (CodeRabbit). Escaping the wrapper at all requires
+    #     ending the probe's `def` early, and that requires a `;`, so refusing
+    #     to judge any value containing one closes the class rather than one
+    #     shape: with no `;` in the value the terminator is either still ours
+    #     (`empty` is the only top-level expression, nothing evaluates) or is
+    #     absorbed by a trailing `def` that then leaves NO top-level expression
+    #     at all, which jq rejects at compile time — verified both ways. Same
+    #     conservative trade as `#`: a `;` value stores as a string exactly as
+    #     it does today, costing a false NEGATIVE on genuine jq that uses `;`
+    #     (`reduce .[] as $x (0; . + $x)`), the direction this guard is allowed
+    #     to be wrong in.
     _JQ_EXPR_START='^[[:space:]]*\(?[[:space:]]*\.[A-Za-z_]'
     _JQ_EXPR_OPS='(\||//|\+|map\(|select\()'
     _JQ_PROBE="def _handoff_set_probe:
 ${JQ_VAL}
 ;
 empty"
-    if [[ "$JQ_VAL" != *'#'* ]] \
+    if [[ "$JQ_VAL" != *'#'* ]] && [[ "$JQ_VAL" != *';'* ]] \
        && [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
        && jq -n "$_JQ_PROBE" </dev/null >/dev/null 2>&1; then
       echo "handoff-state.sh: refusing to write — the value for '$JQ_PATH' is an unevaluated jq expression, not data: '$JQ_VAL' (see issue #1357); evaluate it first and pass the resulting scalar; $HANDOFF_FILE left unmodified" >&2

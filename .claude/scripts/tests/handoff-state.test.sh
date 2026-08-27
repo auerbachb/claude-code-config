@@ -479,9 +479,14 @@ echo "== the four-line probe assembly is independently load-bearing (PR #1378) =
 # short-circuits BEFORE jq is ever invoked — so they prove the guard end to end
 # but do NOT isolate the line discipline, and a revert of the multiline assembly
 # alone would still pass them (CodeAnt, round 4). These exercise the two
-# assemblies directly on one value, no bail-out in the way. There is no
-# comment-free value that executes — a bare `;` cannot absorb the terminator —
-# so a `#` value is the only probe of this defence.
+# assemblies directly on one value, no bail-out in the way.
+#
+# A `#` value is NOT the only probe of this defence, and line discipline is not
+# sufficient on its own: a comment-free value CAN execute. jq admits
+# `Exp := FuncDef Exp`, so a value ending in an unterminated `def` absorbs the
+# probe's `;` terminator and promotes its own tail to top level even across four
+# lines (CodeRabbit, PR #1378). That shape is covered by the `;` bail-out and
+# pinned below.
 bounded_jq() {                     # bounded_jq <program> [secs] -> rc (124 = hung)
   local prog="$1" limit="${2:-10}" pid rc waited=0 drain=0
   set -m
@@ -520,6 +525,44 @@ check_eq "four-line assembly refuses the loop shape outright" "3" \
 ${LOOP_V}
 ;
 empty" 4)"
+
+echo
+echo "== the \`;\` bail-out closes the def-absorbing route (PR #1378) =="
+# jq's `Exp := FuncDef Exp` lets a value ending in an unterminated `def` take
+# the probe's terminator as its OWN, leaving the value's tail as the top-level
+# expression. Four-line assembly does not stop it — only refusing to probe a
+# value containing `;` does. No `#` anywhere in this shape.
+ABSORB_V='.a ; last(repeat(1)) | def h: 1'
+
+check_eq "def-absorbing shape defeats the four-line assembly (hangs jq)" "124" \
+  "$(bounded_jq "def _p:
+${ABSORB_V}
+;
+empty" 4)"
+
+# End to end the script must never reach that jq call: the `;` bail-out fires
+# first, so the write completes and the value is stored verbatim.
+check_eq "def-absorbing shape does not hang the real script" "0" \
+  "$(set_bounded "$ABSORB_V")"
+check_eq "def-absorbing shape round-trips verbatim as a string" "$ABSORB_V" \
+  "$(jq -r '.notes' "$HANDOFF_FILE")"
+check_eq "file still valid JSON after the def-absorbing shape" "0" \
+  "$(jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; echo $?)"
+
+# Why bailing on `;` closes the CLASS and not just this shape: escaping the
+# wrapper needs the probe's own `def` terminated early, which needs a `;`.
+# Without one, a trailing `def` still absorbs the terminator but then leaves no
+# top-level expression at all, so jq refuses at compile time — it cannot run.
+check_eq "no-semicolon trailing def is refused at compile, never executed" "3" \
+  "$(bounded_jq "def _p:
+.a | def h: 1
+;
+empty" 4)"
+
+# No structural grep for the bail-out is needed here, unlike the line-discipline
+# check below: the `set_bounded` assertion above runs the REAL script on a value
+# that reaches jq only if the bail-out is gone, so deleting it turns that 0 into
+# a 124 and fails outright.
 
 # Structural: the shipped probe must actually keep the value on its own line.
 # If someone re-inlines it, the two assertions above still describe jq
