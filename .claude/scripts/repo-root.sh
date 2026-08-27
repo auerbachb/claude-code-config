@@ -73,9 +73,15 @@
 #      (issue #1403).
 #
 # REQUIREMENTS
-#   Besides git, this script calls mktemp, awk, head, date, sleep, dirname and
-#   basename. All are checked up front; a missing one exits 4 rather than
+#   Besides git, this script REQUIRES mktemp, awk, head, date, sleep, dirname,
+#   basename and rm. All are checked up front; a missing one exits 4 rather than
 #   letting the shell's own 127 escape as an undocumented status.
+#
+#   `ps` and `tr` are used too (by kill_child) but are deliberately NOT
+#   required: without them the process-group kill is skipped and the builtin
+#   single-pid `kill` still stops the child, so a timeout still exits 3 with the
+#   right message. Requiring them would refuse to resolve in an environment
+#   where this script demonstrably works. `sed` is help-only. Pinned by T16g/T16h.
 #
 # EXAMPLES
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh)            # from anywhere in repo
@@ -134,15 +140,28 @@ done
 # the `git rev-parse` / $PWD substitution this script exists to prevent. So a
 # missing helper exits 4 as well (issue #1403).
 #
-# `git` is deliberately NOT in this list. A git that cannot run is diagnosed by
-# the 126/127 machinery below, which relays what the shell actually said about
-# it; checking it here would preempt that with a blunter, less useful message.
+# `rm` earns its place for a non-obvious reason: it is only used by the EXIT
+# trap, but a failing trap overwrites the script's status. Without it the run
+# prints the CORRECT root on stdout and still exits 127 — the worst shape of
+# all, because admin-merge.sh then discards a right answer and falls back to
+# $PWD. Measured, not assumed.
+#
+# `ps` and `tr` are used by kill_child and are deliberately EXCLUDED. Their
+# absence is absorbed by design: the pgid lookup yields empty, the group kill is
+# skipped, and the builtin single-pid `kill` still stops the child — a wedged
+# git still exits 3 in the same time, with the same message. Requiring them
+# would refuse to resolve in an environment where this script works correctly.
+# T16g/T16h pin that, so a later reader does not "complete" the list by reflex.
+#
+# `git` is deliberately NOT in this list either. A git that cannot run is
+# diagnosed by the 126/127 machinery below, which relays what the shell actually
+# said about it; checking it here would preempt that with a blunter message.
 #
 # Placed after argument parsing so `--help` and usage errors keep answering
 # first, and written with `command -v` — a bash builtin, so the check needs
 # nothing from the PATH it is testing.
 MISSING_HELPERS=""
-for helper in mktemp awk head date sleep dirname basename; do
+for helper in mktemp awk head date sleep dirname basename rm; do
   command -v "$helper" >/dev/null 2>&1 \
     || MISSING_HELPERS="${MISSING_HELPERS:+$MISSING_HELPERS }$helper"
 done

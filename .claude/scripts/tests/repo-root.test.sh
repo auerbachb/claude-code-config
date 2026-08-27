@@ -471,11 +471,18 @@ check_not_contains "T15k non-repo is never reported as a broken git" \
 # `#!/usr/bin/env bash`, so without it the failure lands at interpreter
 # resolution and the script never starts, which is a different case and not one
 # this script can answer from the inside.
+# The fixture carries every command the script touches — ps, tr, sed and rm
+# included — so that removing one really is the only absence, and a failure
+# cannot be blamed on a helper the fixture merely forgot.
 NOHELP="$TMP/nohelp"
 mkdir -p "$NOHELP"
-for h in bash git mktemp awk head date sleep dirname basename; do
-  hp="$(command -v "$h" 2>/dev/null)" && ln -sf "$hp" "$NOHELP/$h"
-done
+populate_helpers() { # dir
+  local d="$1" h hp
+  for h in bash git mktemp awk head date sleep dirname basename ps tr rm sed; do
+    hp="$(command -v "$h" 2>/dev/null)" && ln -sf "$hp" "$d/$h"
+  done
+}
+populate_helpers "$NOHELP"
 
 # Drop exactly ONE helper — CodeAnt's reported case — so this proves the guard
 # fires on a single absence rather than only on a wholesale wipe. git is still
@@ -501,6 +508,39 @@ RC=0
 ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$BAREBIN" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
 check_eq "T16d a wholesale PATH wipe also exits 4" "4" "$RC"
 check_contains "T16e the diagnostic lists the missing helpers" "awk" "$ERR"
+
+# `rm` is required for a non-obvious reason and needs its own case: it runs only
+# in the EXIT trap, but a failing trap overwrites the status. Unguarded, this
+# run printed the CORRECT root on stdout and still exited 127 — the worst shape,
+# because admin-merge.sh discards a right answer on a non-{0,3,4} status.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+rm -f "$NOHELP/rm"
+RC=0
+OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16f a missing rm exits 4, not 127-with-a-correct-answer" "4" "$RC"
+check_eq "T16f2 and prints nothing, rather than an answer the caller must discard" "" "$OUT"
+
+# ---- T16g/T16h: the guard must NOT over-reach ------------------------------
+# `ps` and `tr` are used by kill_child, and a reviewer proposed requiring them.
+# They are deliberately excluded: their absence is absorbed by design — the pgid
+# lookup yields empty, the group kill is skipped, and the builtin single-pid
+# `kill` still stops the child. Requiring them would refuse to resolve in an
+# environment where the script works. These pin the decline so it is not
+# "completed" by reflex later; if the exclusion is ever revisited, these are the
+# assertions that must be argued with.
+for drop in ps tr; do
+  rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+  rm -f "$NOHELP/$drop"
+  RC=0
+  OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+  if [[ "$drop" == "ps" ]]; then
+    check_eq "T16g a missing ps still resolves (exit 0), guard does not fire" "0" "$RC"
+    check_eq "T16g2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+  else
+    check_eq "T16h a missing tr still resolves (exit 0), guard does not fire" "0" "$RC"
+    check_eq "T16h2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+  fi
+done
 
 echo
 echo "passed: $PASS  failed: $FAIL"
