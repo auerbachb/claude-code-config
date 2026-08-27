@@ -218,19 +218,32 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     # caller already chose is the right outcome. Stop appending on it — every
     # remaining ID would hit the same absent file. Any other non-zero is a
     # genuine write failure and still exits 4.
+    #
+    # The exit status stays 0 on that race: the dismissal API calls are this
+    # script's actual work and they already succeeded, and the outer `else`
+    # branch treats an absent handoff as a skip rather than a failure too —
+    # returning non-zero here would report a completed dismissal as a failed one.
+    # But a race partway through the loop is NOT the same state as the outer
+    # skip: some IDs were recorded and the rest were not, so say so explicitly
+    # with counts instead of a bare "skipping" that reads like nothing happened
+    # (CodeAnt, PR #1423).
     _ds_append_rc=0
+    _ds_recorded=0
+    _ds_total="${#DISMISSED_IDS[@]}"
     for id in "${DISMISSED_IDS[@]}"; do
       id_json="$(jq -n --arg x "$id" '$x')"
       _ds_append_rc=0
       "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --require-existing \
         --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json" || _ds_append_rc=$?
       if [[ "$_ds_append_rc" -eq 3 ]]; then
-        echo "[DISMISS-STALE] WARN: handoff file disappeared before the append (deleted or migrated concurrently); skipping: $_ds_target" >&2
+        echo "[DISMISS-STALE] WARN: handoff file disappeared before the append (deleted or migrated concurrently): $_ds_target" >&2
+        echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); $((_ds_total - _ds_recorded)) not recorded. The reviews were dismissed on GitHub regardless; re-run once the handoff exists to record the remainder." >&2
         break
       elif [[ "$_ds_append_rc" -ne 0 ]]; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
         exit 4
       fi
+      _ds_recorded=$((_ds_recorded + 1))
     done
     if [[ "$_ds_append_rc" -eq 0 ]]; then
       echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"

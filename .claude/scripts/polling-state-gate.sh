@@ -476,8 +476,23 @@ ensure_session() {
     # honouring a scope the session has already declared — the same precedence
     # handoff-state.sh itself applies (--owner-repo -> $CLAUDE_SESSION_REPO ->
     # cwd origin) when the flag is omitted (issue #1366).
-    owner_repo="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
-    echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
+    # is_owner_repo_identity() only rejects the empty/_unknown/gitdir:/path:
+    # sentinels and then tests for a slash. session-state.sh is stricter: it keys
+    # on `^[A-Za-z0-9._/-]+$` (is_valid_repo_key) and routes anything else to the
+    # `_unknown` bucket. A value like `org/repo name` or `org//repo` therefore
+    # passes the check above and scopes the handoff to a path session-state never
+    # writes — splitting the two halves of one poll's state apart in exactly the
+    # case this fallback exists to join them (CodeAnt, PR #1423). Validate with
+    # session-state's own class before trusting it; the flat path is the correct
+    # fallback for a key neither side can agree on.
+    local _sess_key
+    _sess_key="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
+    if [[ "$_sess_key" =~ ^[A-Za-z0-9._/-]+$ && "$_sess_key" != *//* ]]; then
+      owner_repo="$_sess_key"
+      echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
+    else
+      echo "polling-state-gate.sh: notice: \$CLAUDE_SESSION_REPO '$CLAUDE_SESSION_REPO' is not a usable repo key (session-state.sh would route it to '_unknown'); leaving PR #$PR_NUMBER's handoff on the flat path rather than scoping it somewhere session state will never look" >&2
+    fi
   fi
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then

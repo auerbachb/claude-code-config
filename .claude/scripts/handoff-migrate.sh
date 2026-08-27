@@ -53,6 +53,25 @@ else
 fi
 unset _NORMALIZER_LIB
 
+# Serialize against handoff-state.sh (issue #1366; CodeAnt, PR #1423). That
+# helper takes this same per-file advisory lock, and under --require-existing it
+# re-tests the target's presence INSIDE the lock precisely because a caller-side
+# `-e` test can only ever be a TOCTOU. That guarantee only holds if everything
+# that removes a handoff participates in the lock: migrating a flat record
+# without it can land the removal between the helper's in-lock check and its
+# read-modify-write, so the helper seeds a fresh `{}` record holding only the
+# field being appended — the partial handoff --require-existing exists to
+# prevent. Fatal when missing rather than degrading to an unlocked move: a
+# silent unlocked migration is the exact failure mode this closes.
+_LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
+if [[ ! -f "$_LOCK_LIB" ]]; then
+  echo "handoff-migrate.sh: missing sibling library: $_LOCK_LIB" >&2
+  exit 5
+fi
+# shellcheck source=./state-lock.sh
+source "$_LOCK_LIB"
+unset _LOCK_LIB
+
 HANDOFF_DIR="${HOME}/.claude/handoffs"
 STATE_FILE="${HOME}/.claude/session-state.json"
 APPLY=0
@@ -189,6 +208,29 @@ for src in "${FLAT_FILES[@]}"; do
       ERRORS=$((ERRORS + 1))
       continue
     fi
+    # Hold the SOURCE record's lock across the whole copy-verify-remove. This is
+    # the lock handoff-state.sh takes for any write to that same flat path, so a
+    # concurrent --require-existing append either completes before the move or
+    # waits for it — it can never observe the file vanish mid-operation.
+    if ! state_lock_acquire "$src"; then
+      log "  ERROR: could not acquire the handoff lock for $basename_file within the timeout (another writer holds it); source preserved" >&2
+      ERRORS=$((ERRORS + 1))
+      continue
+    fi
+    # Re-test both ends under the lock. The checks above ran outside it, so a
+    # writer holding the lock may have removed the source or created the
+    # destination in the meantime; acting on those stale reads is the race this
+    # lock was taken to close.
+    if [[ ! -f "$src" ]]; then
+      state_lock_release
+      verbose "  SKIP $basename_file (removed concurrently)"
+      continue
+    fi
+    if [[ -f "$dest" ]]; then
+      state_lock_release
+      log "  SKIP $basename_file — destination already exists: $dest"
+      continue
+    fi
     # Copy first, verify, then remove source — safer than mv across potential
     # filesystem boundaries (e.g., ~/.claude on a different mount point).
     if cp "$src" "$dest" && [[ -f "$dest" ]]; then
@@ -207,6 +249,7 @@ for src in "${FLAT_FILES[@]}"; do
       log "  ERROR: cp failed for $basename_file" >&2
       ERRORS=$((ERRORS + 1))
     fi
+    state_lock_release
   else
     # Dry-run: just report what would happen.
     log "  WOULD MOVE $basename_file -> $dest"

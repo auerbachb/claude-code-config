@@ -46,7 +46,12 @@ check_eq() {
 # owner/repo from the cwd (this checkout) or exits 2. Path scoping is
 # handoff-scoping.test.sh's subject; locking, RMW, and dedup semantics are this
 # one's, and they are identical on either path. Declaring the flat path also
-# keeps a standing assertion that --legacy-flat reaches it for every mode.
+# keeps a standing assertion that --legacy-flat reaches it for the modes this
+# suite exercises — --create, --init, --get, --set, --append, --delete, and the
+# unknown-mode rejection. It does NOT cover --path: that mode returns before any
+# lock or write, and its --legacy-flat assertion lives in handoff-scoping.test.sh
+# (test 1), so claiming "every mode" here would let a --legacy-flat --path
+# regression pass this suite unnoticed (CodeAnt, PR #1423).
 run() { bash "$SCRIPT" --legacy-flat "$@"; }
 reset_handoff() { rm -rf "$HANDOFF_FILE" "$LOCK_DIR"; }
 
