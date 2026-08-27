@@ -208,4 +208,299 @@ OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
 
+############################################################################
+# Issue #1364 — CodeRabbit reworded the retry-window line. Everything above this
+# point passed throughout the outage: every scenario used `cr_limit_banner`, the
+# ONE phrasing the parser was written against, so the suite could not tell "reads
+# the window" apart from "reads THIS SENTENCE". These scenarios re-run the same
+# assertions against the wording CodeRabbit actually ships.
+############################################################################
+echo "== (p1): CURRENT wording, window still open -> polling_cr =="
+# The regression proper. On main this returns trigger_greptile: `included`
+# between "Next" and "review" zeroes the window, and a zero window grants no
+# grace — which is how live PRs burned a sticky Greptile assignment while
+# CodeRabbit's paid allowance was still coming back.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P1="$(cr_limit_banner_included "$(ts_seconds_ago 60)" "27 minutes")"
+FAIL_P1="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P1, $BANNER_P1]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (p2): CURRENT wording, window ELAPSED -> escalates =="
+# Together with (p1) this pins the extracted MAGNITUDE, not merely that some
+# window was read: 27 minutes is 1620s, so a banner 1500s old is inside its
+# window and one 1700s old is not. Any other magnitude — 0, or the 12 minutes
+# the old fixture carries — flips (p1), and a window read as unbounded flips
+# this one. The pair straddles the boundary that only 1620 produces.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P2="$(cr_limit_banner_included "$(ts_seconds_ago 1700)" "27 minutes")"
+FAIL_P2="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P2, $BANNER_P2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p3): control — the SAME banner 1500s old is still INSIDE 27 minutes -> polling_cr =="
+# Byte-for-byte (p2) but for the banner's age, 200s to the other side of the
+# 1620s boundary. Without it, (p2) would also pass if the new wording read as no
+# window at all — proving escalation by proving nothing was parsed.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P3="$(cr_limit_banner_included "$(ts_seconds_ago 1500)" "27 minutes")"
+FAIL_P3="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P3, $BANNER_P3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (p4): CURRENT wording, absurd window -> still CAPPED at 1h =="
+# The cap is a property of the block, not of one phrasing. (e)/(e2) proved it for
+# the old sentence only; a new-wording parser that skipped the cap could park a
+# PR for four days.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P4="$(cr_limit_banner_included "$(ts_seconds_ago 4000)" "99 hours")"
+FAIL_P4="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P4, $BANNER_P4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p5): CURRENT wording with NO window -> no grace =="
+# The fail-toward-escalation direction survives the rewording: tolerating a new
+# sentence must not make an unreadable one grant anything.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P5="$(cr_limit_banner_included "$(ts_seconds_ago 60)" "")"
+FAIL_P5="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P5, $BANNER_P5]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p6): MARKER-ONLY banner (no heading prose) -> polling_cr =="
+# The wording-independent half. Heading prose is what drifted twice; the auto-
+# generated `rate limited by coderabbit.ai` marker is stamped on every one of
+# these comments by construction. If CodeRabbit rewrites the heading away
+# entirely, this shape is the only thing left to key on.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P6="$(cr_limit_banner_marker_only "$(ts_seconds_ago 60)" "27 minutes")"
+FAIL_P6="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P6, $BANNER_P6]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (p7): CodeRabbit comment with NEITHER signal -> no grace (no over-match) =="
+# The other direction of the widening. This body carries no heading and no
+# marker, but it does say "12 minutes" and it does mention coderabbit.ai — so a
+# banner test loosened into a bare `coderabbit\\.ai` or a bare number scan would
+# hand an ordinary review comment a grace period. Detection must stay two
+# specific signals, not "looks CodeRabbit-ish".
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+NONBANNER_P7="$(cr_non_banner_comment "$(ts_seconds_ago 60)")"
+FAIL_P7="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P7, $NONBANNER_P7]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p8): CURRENT wording from a NON-CodeRabbit author -> no grace =="
+# (g) proved the author gate for the old sentence. The banner select was edited
+# for #1364; this re-proves the author term was not loosened along with it.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P8="$(cr_limit_banner_included "$(ts_seconds_ago 60)" "27 minutes" | jq -c '.user.login = "test-user"')"
+FAIL_P8="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P8, $BANNER_P8]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p9): CURRENT wording is still subject to the stale-banner guard =="
+# A leftover new-wording banner from an earlier SHA must not buy the current push
+# a wait — (c)'s guard, re-proved on the phrasing the parser now accepts.
+#
+# The banner is 300s old with a 1620s window, so it is WELL INSIDE its own window
+# and the stale guard is the only thing that can deny grace here. That is
+# deliberate: a fixture whose window has already elapsed would return
+# trigger_greptile with the guard deleted, and prove nothing. (p9b) is the
+# control.
+reset_state
+write_commits "$(ts_seconds_ago 60)"
+BANNER_P9="$(cr_limit_banner_included "$(ts_seconds_ago 300)" "27 minutes")"
+FAIL_P9="$(failure_comment "$(ts_seconds_ago 30)")"
+write_state "[]" "[]" "[]" "[$BANNER_P9, $FAIL_P9]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p9b): control — the SAME banner grants grace once the push predates it =="
+# Identical to (p9) but for the commit date, which moves the banner from
+# "predates this push" to "describes it". Only the stale guard separates the two
+# verdicts, so (p9) cannot pass by accident.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P9B="$(cr_limit_banner_included "$(ts_seconds_ago 300)" "27 minutes")"
+FAIL_P9B="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$BANNER_P9B, $FAIL_P9B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (p10): MIXED wordings — newest still wins regardless of phrasing =="
+# The newest-first ordering (h/h2) must not become phrasing-sensitive. Here the
+# newest banner is the OLD wording with an ELAPSED window (400s old, 300s window)
+# and the older one is the CURRENT wording with a window GENUINELY STILL OPEN
+# (600s old, 1620s window, comfortably under the 3600s cap). Selecting by recency
+# must escalate; a parser that preferred the dialect it could read best, or that
+# took any-banner-still-inside-its-window, would revive the stale wait and return
+# polling_cr. Both ages are chosen to sit inside the cap — an older banner whose
+# capped window had also elapsed would make this scenario unfalsifiable.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P10_OLD="$(cr_limit_banner_included "$(ts_seconds_ago 600)" "27 minutes")"
+BANNER_P10_NEW="$(cr_limit_banner "$(ts_seconds_ago 400)" "5 minutes")"
+FAIL_P10="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P10, $BANNER_P10_OLD, $BANNER_P10_NEW]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (p11): per-word emphasis leaves double spaces -> window still read =="
+# The parser strips markdown emphasis before matching, so IT creates the spacing
+# variation it then has to survive: `**review**  **available in**` becomes
+# `review  available in`. A literal single space between the anchor words would
+# read no window from a banner CodeRabbit had merely emphasised differently —
+# the same silent-zero failure as #1364, from a different direction. Window is
+# 27 minutes at 60s old, so grace requires the magnitude to survive too.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_P11="$(printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> ## Review limit reached\\n> **Next** **review**  **available in** **27 minutes**"}' "$(ts_seconds_ago 60)")"
+FAIL_P11="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P11, $BANNER_P11]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (p12): marker PHRASE in CodeRabbit prose (not the marker) -> no grace =="
+# The precision bound on the marker alternative (CodeRabbit CLI review of this
+# PR). This body is authored by coderabbitai[bot], says "rate limited by
+# coderabbit.ai", and carries a parseable window sentence — everything a bare
+# phrase match needs. It is still not a banner: the words are prose, not the
+# `<!-- ... -->` machine comment. The author gate cannot tell these apart, so the
+# HTML-comment anchor is the only thing standing between CodeRabbit's own
+# walkthroughs and a grace period they never earned.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+PROSE_P12="$(cr_marker_phrase_in_prose "$(ts_seconds_ago 60)")"
+FAIL_P12="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_P12, $PROSE_P12]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+# CodeAnt review of PR #1393 — the FUTURE-TENSE window sentence. Everything above
+# varies the words BEFORE "review"; CodeRabbit also varies the ones after it
+# (`Your next review will be available in 22 minutes.`, PR #554), and the
+# classifier had been tolerating exactly that since #557 while this parser could
+# not reach it. Same assertions, third dialect.
+############################################################################
+echo "== (q1): FUTURE-TENSE wording, window still open -> polling_cr =="
+# 27 minutes is 1620s and this banner is 1500s old, so it is inside its window by
+# 120s. Before the fix `will be` sits between the anchors, no window is read, and
+# a zero window escalates — the #1364 failure arriving through the other slot.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_Q1="$(cr_limit_banner_will_be "$(ts_seconds_ago 1500)" "27 minutes")"
+FAIL_Q1="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_Q1, $BANNER_Q1]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (q2): FUTURE-TENSE wording, window ELAPSED -> escalates =="
+# Paired with (q1) across the 1620s boundary, 200s to the other side. The pair
+# pins the extracted MAGNITUDE rather than mere match/no-match: 0 flips (q1), and
+# an unbounded read flips this one. Only 1620 satisfies both.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_Q2="$(cr_limit_banner_will_be "$(ts_seconds_ago 1700)" "27 minutes")"
+FAIL_Q2="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_Q2, $BANNER_Q2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (q3): BOTH slots at once — inserted word AND future tense -> polling_cr =="
+# The slots are independent, so the combination is its own case: a future drift
+# reading `Next included review will be available in 27 minutes.` must not need a
+# third patch. Same 1500s-inside-1620s geometry as (q1).
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_Q3="$(printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "> [!WARNING]\\n> ## Review limit reached\\n>\\n> **Next included review will be available in 27 minutes.**"}' "$(ts_seconds_ago 1500)")"
+FAIL_Q3="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_Q3, $BANNER_Q3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (q4): UNRECOGNISED copula -> no grace (the widening stays bounded) =="
+# The other direction. `is now` is not the literal `will be`, so no window is read
+# and the PR escalates on the normal schedule. This is the deliberate failure
+# direction for an unlogged drift — degraded to escalation, never a stalled PR —
+# and it is what stops the copula slot being widened into a free bridge that
+# `available in <number>` prose could satisfy. The two-word copula is what makes
+# this discriminating: a generic `(?:\s+\w+){0,2}` slot would match it and grant
+# grace, so widening either file's pattern fails HERE. (q1) is the control: same
+# banner, same age, same window, recognised wording -> polling_cr.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_Q4="$(cr_limit_banner_unknown_copula "$(ts_seconds_ago 1500)" "27 minutes")"
+FAIL_Q4="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_Q4, $BANNER_Q4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (q5): ADAPTIVE-LIMITS notice is still not a banner -> no grace =="
+# The #554 body verbatim: the wording the parser now reads, on the family the
+# grace deliberately excludes. CR wraps it in `Full review finished.`, so it
+# reports a review that ALREADY LANDED and times the next one — there is nothing
+# to wait out on this HEAD. Widening the window regex must not smuggle this
+# family in through the select, which is keyed on heading prose or the marker and
+# was left untouched. (cr-rate-limits.md: the two families are not
+# interchangeable.)
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+ADAPTIVE_Q5="$(printf '{"user": {"login": "coderabbitai[bot]"}, "created_at": "%s", "body": "<!-- This is an auto-generated reply by CodeRabbit -->\\n\\nFull review finished.\\n\\n---\\n\\nYou are currently rate limited under our Fair Usage Limits Policy. Your next review will be available in 27 minutes."}' "$(ts_seconds_ago 1500)")"
+FAIL_Q5="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_Q5, $ADAPTIVE_Q5]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
 finish_escalate_review_tests "CodeRabbit retry-window"
