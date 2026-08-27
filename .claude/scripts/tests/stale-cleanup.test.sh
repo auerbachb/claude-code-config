@@ -370,6 +370,48 @@ OUT="$(cd "$REPO_D" && "$SUT" --check --json 2>/dev/null)"
 check_json "T10: enumeration recovers once the debris is cleared" "$OUT" \
   '.worktree_enumeration == "ok" and (.orphaned_registrations | length) == 0'
 
+# ---- T11: --apply reports an incomplete sweep instead of exiting 0 -----------
+# --check already exits 1 when enumeration or the registration scan did not
+# finish; --apply used to print a note and exit 0, so a caller branching on the
+# status recorded a sweep that skipped whole categories as done and never
+# re-ran it. Both modes now agree.
+#
+# The negative control comes first and matters: repoD is clean and fully
+# enumerable after T10, so its --apply must still exit 0. Without it, the
+# exit-1 assertion below would also pass if --apply had simply started
+# returning 1 unconditionally.
+OUT="$(cd "$REPO_D" && "$SUT" --apply 2>&1)"
+RC=$?
+check_eq "T11: complete --apply with nothing to do still exits 0 (control)" 0 "$RC"
+
+REPO_E="$TMP/repoE"
+mkdir -p "$REPO_E"
+git -C "$REPO_E" init -q
+echo "e" > "$REPO_E/README.md"
+git -C "$REPO_E" add README.md
+commit_old "$REPO_E" "repoE base"
+git -C "$REPO_E" worktree add "$TMP/wtE-stuck" -b issue-400-e-stuck >/dev/null 2>&1
+REG_E="$REPO_E/.git/worktrees"
+rm -f "$REG_E/wtE-stuck/gitdir"
+mkfifo "$REG_E/wtE-stuck/gitdir"
+
+OUT="$(cd "$REPO_E" && "$SUT" --apply 2>&1)"
+RC=$?
+check_eq "T11: --apply exits 1 when enumeration did not complete" 1 "$RC"
+check_contains "T11: the incomplete sweep is explained, not just signalled" \
+  "so worktrees and local branches were not swept" "$OUT"
+# Exit 1 must mean "incomplete", never "did nothing" — the registration sweep
+# is the pass that clears the cause, and it still has to run.
+check_contains "T11: exit 1 still performed the registration removal" \
+  "removed: worktree registration wtE-stuck (targeted" "$OUT"
+check_eq "T11: registration is gone despite the nonzero status" "gone" \
+  "$([[ -e "$REG_E/wtE-stuck" ]] && echo present || echo gone)"
+# End-to-end: once the debris is cleared the same repo enumerates cleanly, so
+# the exit 1 above really was "incomplete", not a permanent property of repoE.
+check_json "T11: the same repo enumerates cleanly once cleared" \
+  "$(cd "$REPO_E" && "$SUT" --check --json 2>/dev/null)" \
+  '.worktree_enumeration == "ok"'
+
 unset STALE_CLEANUP_TIMEOUT_SECS STALE_CLEANUP_READ_TIMEOUT_SECS
 
 echo ""

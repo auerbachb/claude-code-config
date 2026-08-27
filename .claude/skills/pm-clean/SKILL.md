@@ -233,8 +233,11 @@ STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --apply || APPLY_RC=$?
 
 The script re-runs the same detection (state may have changed since the dry-run), re-applies every safety check, then attempts each deletion. Report the `removed:` / `failed:` lines verbatim:
 
-- **`APPLY_RC == 0`** — all deletions succeeded.
-- **`APPLY_RC == 2`** — one or more deletions failed; surface the `failed:` lines. Do not retry automatically — some failures (e.g. network errors on remote-branch deletion) need user intervention.
+- **`APPLY_RC == 0`** — all deletions succeeded and every category was swept.
+- **`APPLY_RC == 1`** — **incomplete sweep, not a failure.** Worktree enumeration or the registration scan did not finish inside its bound, so whole categories were skipped; anything the script *did* reach was still applied (the registration sweep in particular, which is what clears the cause). Report it as incomplete and re-run — never record it as done. Same meaning as `--check`'s exit 1.
+- **`APPLY_RC == 2`** — one or more deletions failed; surface the `failed:` lines. Do not retry automatically — some failures (e.g. network errors on remote-branch deletion) need user intervention. Outranks 1.
+
+A `skipped: worktree registration <id> — its worktree reappeared after the scan` line is the removal-time re-check declining to delete an entry that came back to life between the dry-run and the apply. That is the guard working: it is not a failure, does not affect the exit code, and needs no user action.
 
 If the user declines, report: "Workspace cleanup: dry-run only — nothing deleted."
 

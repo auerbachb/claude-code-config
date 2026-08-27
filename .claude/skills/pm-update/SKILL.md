@@ -215,14 +215,19 @@ Show the user the stdout from Step 8.1 verbatim. Then:
 If the user approves, run `--apply`:
 
 ```bash
-"$STALE_CLEANUP_SH" --apply
-APPLY_RC=$?
+APPLY_RC=0
+"$STALE_CLEANUP_SH" --apply || APPLY_RC=$?
 ```
+
+The `|| APPLY_RC=$?` guard is required for the same reason Step 8.1 needs it: `--apply` exits non-zero on an incomplete sweep as well as on failure, which would otherwise abort this step under `set -e`.
 
 The script re-runs the same detection (in case the repo state changed between Steps 8.1 and 8.3), re-emits the report, and then attempts each deletion. Each successful deletion logs `removed: <thing>`; each failure logs `failed: <thing> — <reason>` and continues.
 
-- **`APPLY_RC == 0`:** All deletions succeeded.
-- **`APPLY_RC == 2`:** One or more deletions failed — surface the `failed:` lines from stdout. Do not retry automatically; some failures (e.g., network errors on remote-branch deletion) need user intervention.
+- **`APPLY_RC == 0`:** All deletions succeeded and every category was swept.
+- **`APPLY_RC == 1`:** **Incomplete sweep, not a failure.** Worktree enumeration or the registration scan did not finish inside its bound, so whole categories were skipped; whatever the script reached was still applied. Report it as incomplete and re-run — never record it as done. Same meaning as `--check`'s exit 1.
+- **`APPLY_RC == 2`:** One or more deletions failed — surface the `failed:` lines from stdout. Do not retry automatically; some failures (e.g., network errors on remote-branch deletion) need user intervention. Outranks 1.
+
+A `skipped: worktree registration <id> — its worktree reappeared after the scan` line is the removal-time re-check declining an entry that came back between Steps 8.1 and 8.3. That is the guard working — not a failure, and no user action needed.
 
 ### Step 8.4: Final report
 

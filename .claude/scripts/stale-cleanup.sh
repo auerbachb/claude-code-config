@@ -137,8 +137,10 @@
 #   stale-cleanup.sh --help | -h
 #
 #   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
-#   --apply    Delete stale items that pass safety checks. Exit 0 on success
-#              (or no stale items), 2 on partial failure.
+#   --apply    Delete stale items that pass safety checks. Exit 0 when every
+#              category was swept with no failures, 1 when the sweep was
+#              incomplete (a bound expired, so a category was skipped — what
+#              it did reach was still applied), 2 on partial failure.
 #   --json     Emit a JSON object instead of human-readable text. Includes a
 #              top-level "root" (the resolved main-worktree root being swept)
 #              plus the stale_*/skipped_* arrays (issue #707), the
@@ -173,12 +175,17 @@
 #   each failure as "failed: <thing> — <reason>".
 #
 # EXIT STATUS
-#   0  No stale items, or --apply succeeded for all stale items.
-#   1  --check found one or more stale items — including orphaned worktree
-#      registrations, or a worktree enumeration that did not finish inside its
-#      bound (that is a finding, not a clean sweep).
+#   0  No stale items, or --apply swept every category with no failures.
+#   1  Incomplete sweep — the same meaning in both modes. --check found one or
+#      more stale items, including orphaned worktree registrations; or, in
+#      either mode, a worktree enumeration or registration scan that did not
+#      finish inside its bound. An --apply that skipped a whole category is
+#      reported here rather than as success: a caller that reads 0 as "done"
+#      would otherwise never re-run it.
 #   2  --apply hit one or more deletion failures (other items may have
-#      succeeded — see output).
+#      succeeded — see output). Takes precedence over 1. A registration the
+#      re-check declined to remove because its worktree reappeared is NOT a
+#      failure and does not reach this code.
 #   3  Usage error.
 #   4  Environment error (cannot resolve repo, gh missing, etc.).
 
@@ -1074,6 +1081,21 @@ echo
 # Registrations go first. Targeted removals clear the entries `git worktree
 # prune` would stall on, so the prune that follows — and every `git worktree
 # remove` in the worktree loop below — reads a registry it can actually parse.
+# Does a live worktree stand behind this registration *right now*? Answers the
+# question scan_registrations asked, but at removal time. Only the affirmative
+# is trusted: a gitdir that reads AND names a path that exists. An unreadable
+# gitdir and a still-missing worktree both answer "not live", because those are
+# exactly the states that made the entry an orphan in the first place.
+registration_is_live() { # registration path
+  local gitdir_line="" wt=""
+  gitdir_line="$(read_bounded_line "$1/gitdir")" || return 1
+  [[ -n "$gitdir_line" ]] || return 1
+  wt="${gitdir_line%/.git}"
+  path_exists_bounded "$wt" || return 1
+  return 0
+}
+
+# Returns 0 removed, 1 failed, 2 skipped by the re-check (not a failure).
 remove_registration() { # id, registration path
   local id="$1" target="$2" rc=0
   # Path guards: only a single-segment id directly beneath the resolved
@@ -1093,6 +1115,18 @@ remove_registration() { # id, registration path
     echo "failed: worktree registration $id — refusing to remove: not a plain directory"
     return 1
   fi
+  # TOCTOU re-check, the same shape the remote-branch deletion below uses. The
+  # scan that classified this entry ran before --apply, and callers dry-run
+  # --check first and only then decide, so the gap is human-scale, not
+  # instantaneous: an operator can re-materialize a quarantined checkout in
+  # between — the documented recovery path in
+  # .claude/reference/worktree-registration-quarantine-20260826.md. `git
+  # worktree prune` re-reads the registry itself and so needs no equivalent;
+  # this is the path that bypasses git, so it re-validates for itself.
+  if registration_is_live "$target"; then
+    echo "skipped: worktree registration $id — its worktree reappeared after the scan; not removing"
+    return 2
+  fi
   run_bounded "$READ_BOUND_SECS" rm -rf -- "$target" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     echo "failed: worktree registration $id — removal exceeded ${READ_BOUND_SECS}s and was killed"
@@ -1110,9 +1144,13 @@ if (( ${#ORPHANED_REGISTRATIONS[@]} > 0 )); then
   for entry in "${ORPHANED_REGISTRATIONS[@]}"; do
     IFS="$US" read -r rid rpath _ _ rmethod <<<"$entry"
     if [[ "$rmethod" == "targeted" ]]; then
-      if remove_registration "$rid" "$rpath"; then
+      RM_RC=0
+      remove_registration "$rid" "$rpath" || RM_RC=$?
+      if (( RM_RC == 0 )); then
         echo "removed: worktree registration $rid (targeted — git could not read or would refuse it)"
-      else
+      elif (( RM_RC != 2 )); then
+        # 2 is the re-check declining to remove a resurrected entry, which is
+        # the guard working — it already said so, and it is not a failure.
         FAILURES=$(( FAILURES + 1 ))
       fi
     else
@@ -1135,6 +1173,13 @@ if (( ${#ORPHANED_REGISTRATIONS[@]} > 0 )); then
       IFS="$US" read -r rid rpath _ _ rmethod <<<"$entry"
       [[ "$rmethod" == "prune" ]] || continue
       if [[ -e "$rpath" ]]; then
+        if registration_is_live "$rpath"; then
+          # prune did its job: the worktree came back between the scan and
+          # here, so git correctly refused. Same non-failure as the targeted
+          # re-check above — reporting it as a deletion failure would be wrong.
+          echo "skipped: worktree registration $rid — its worktree reappeared after the scan; git worktree prune left it in place"
+          continue
+        fi
         echo "failed: worktree registration $rid — still present after git worktree prune"
         FAILURES=$(( FAILURES + 1 ))
       else
@@ -1228,11 +1273,23 @@ for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
 done
 fi
 
+INCOMPLETE_SWEEP=0
 if [[ "$WORKTREE_ENUM_STATE" != "ok" ]]; then
+  INCOMPLETE_SWEEP=1
   echo
   echo "note: worktree enumeration $WORKTREE_ENUM_STATE, so worktrees and local branches were not swept."
   echo "      Re-run --apply now that the registrations above are cleared."
 fi
+if [[ "$REG_SCAN_STATE" == "unavailable" ]]; then
+  INCOMPLETE_SWEEP=1
+  echo
+  echo "note: registration scan unavailable (git common dir unresolved), so orphaned registrations were not swept."
+  echo "      Re-run --apply once the repo responds inside the bound."
+fi
 
 if (( FAILURES > 0 )); then exit 2; fi
+# An apply that skipped whole categories is not a clean sweep. Saying so with
+# exit 1 matches --check, which already reports both of these states that way;
+# exiting 0 here let a caller record a partial sweep as done and never re-run.
+if (( INCOMPLETE_SWEEP == 1 )); then exit 1; fi
 exit 0
