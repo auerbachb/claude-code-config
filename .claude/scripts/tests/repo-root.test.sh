@@ -550,6 +550,75 @@ for drop in ps tr; do
   fi
 done
 
+# ---- T16i: a helper that RESOLVES but cannot exec ---------------------------
+# `command -v` proves a NAME resolves, not that the file will run. A bad
+# interpreter, a dangling symlink or the wrong architecture all pass the
+# preflight and then return 126/127 at the first call — and no preflight can
+# close the window between the check and the call anyway. So the guarantee is
+# enforced at the exit boundary, and this is the case that proves it: the
+# preflight is deliberately SATISFIED here, and the normalization still holds.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+# `populate_helpers` leaves SYMLINKS, and `cat >` follows one to its target —
+# writing this stub straight over the entry would edit the system binary (or,
+# where the OS forbids that, fail and leave the real mktemp in place, making the
+# case pass vacuously). Unlink first so the stub is a genuinely new file.
+rm -f "$NOHELP/mktemp"
+cat > "$NOHELP/mktemp" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOHELP/mktemp"
+[[ -L "$NOHELP/mktemp" ]] && fail "T16i fixture is still a symlink — stub did not take"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16i a helper that resolves but cannot exec still exits 4" "4" "$RC"
+check_contains "T16i2 and says a command could not be launched" \
+  "could not be launched" "$ERR"
+# The control that gives T16i its meaning: 126 is what the shell returned, and
+# letting it through is precisely what admin-merge.sh reads as determinate.
+check_not_contains "T16i3 the raw shell status never reaches the caller as text" \
+  "not inside a git repo" "$ERR"
+
+# ---- T16k: teardown must not CREATE a failure -------------------------------
+# An `rm` that resolves but will not launch fails only in the EXIT trap, after
+# the answer is computed and printed. A reviewer proposed escalating that to
+# exit 4 for consistency with the required-helper contract. Declined: the
+# resolution succeeded, and discarding a correct answer over an undeleted temp
+# file is the same over-reach declined for ps/tr. The trap swallows the status
+# of its own `rm`s while preserving the script's — this pins both halves.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+rm -f "$NOHELP/rm"
+cat > "$NOHELP/rm" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOHELP/rm"
+RC=0
+OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16k an rm that cannot launch at teardown does not fail the run" "0" "$RC"
+check_eq "T16k2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+
+# ---- T16j: telemetry must never change the contract -------------------------
+# The usage-log append runs before argument parsing. Under `set -e` an unset
+# HOME, a missing ~/.claude or a read-only log would kill the script there and
+# return a shell error in place of the documented status. Sibling scripts
+# (dirty-main-guard.sh, escalate-review.sh, merge-gate.sh) already make this
+# best-effort; this pins that repo-root.sh does too.
+RC=0
+OUT="$(cd "$MAIN" && HOME="$TMP/no-such-home" "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16j an unwritable usage log does not change the exit status" "0" "$RC"
+check_eq "T16j2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+RC=0
+OUT="$(cd "$MAIN" && env -u HOME "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16j3 an unset HOME does not abort under set -u" "0" "$RC"
+check_eq "T16j4 and still answers correctly" "$(historic_root "$MAIN")" "$OUT"
+# --help must survive the same broken environment, which is the whole reason
+# the preflight sits after argument parsing rather than before the usage log.
+RC=0
+HELP="$(cd "$MAIN" && env -u HOME "$SUT" --help 2>/dev/null)" || RC=$?
+check_eq "T16j5 --help still works with no HOME at all" "0" "$RC"
+check_contains "T16j6 and still documents exit 4" "Nothing could be determined" "$HELP"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
