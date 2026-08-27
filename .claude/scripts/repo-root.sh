@@ -75,6 +75,12 @@
 #      a caller must not fall back to another git call or to $PWD on this
 #      code (issue #1403).
 #
+#      ONE exception, and it is deliberate: the teardown `rm` in the EXIT trap
+#      runs AFTER the answer has been resolved and printed, so a failure there
+#      cannot mean "nothing was determined" — something already was. It leaves
+#      a capture file in $TMPDIR and preserves the status the run had earned.
+#      Every command whose failure could affect the ANSWER is covered above.
+#
 # REQUIREMENTS
 #   Besides git, this script REQUIRES mktemp, awk, head, date, sleep, dirname,
 #   basename and rm. All are checked up front; a missing one exits 4 rather than

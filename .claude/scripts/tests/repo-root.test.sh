@@ -181,6 +181,11 @@ check_contains "T8g --help still names git as an exit-4 cause" \
   "git could not run" "$HELP"
 check_contains "T8h --help names the helpers the script itself needs" \
   "REQUIREMENTS" "$HELP"
+# The exit-4 contract has one deliberate exception (the teardown `rm`, T16k). A
+# contract that documents a rule and not its exception is worse than one that
+# documents neither, because a caller acts on the rule as written.
+check_contains "T8i --help documents the teardown exception, not just the rule" \
+  "teardown" "$HELP"
 
 # ---- T9: the happy path must not enumerate worktrees -----------------------
 # This is the regression itself: the incident was one `git worktree list` over
