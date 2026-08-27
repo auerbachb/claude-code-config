@@ -72,7 +72,9 @@
 #   0  Success.
 #   2  Usage error (missing args, unknown flag, malformed path=value).
 #   3  Handoff file not found (--get only; other modes create/seed from {}).
-#   4  jq parse or evaluation failure.
+#   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
+#      unevaluated jq expression rather than data (issue #1357) — the file is
+#      left unmodified. Evaluate the expression first and pass the result.
 #   5  Write failure (mktemp / mv).
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #
@@ -463,6 +465,91 @@ if [[ "$MODE" == "set" ]]; then
       state_lock_release; exit 4
     }
   else
+    # The value is not a JSON literal, so it is headed for the --arg string
+    # branch. Before storing it verbatim, refuse the one shape that is never
+    # data: an unevaluated jq PROGRAM the caller meant to have evaluated
+    # (issue #1357). `--set N .notes=.notes + " x"` used to exit 0 and store the
+    # expression SOURCE, clobbering the previous notes with no error — the loss
+    # only surfaced on read-back. A hard refusal leaves the old value intact.
+    #
+    # Three independent signals must ALL fire, because the string branch is the
+    # normal home of prose notes, SHAs, paths and URLs, and a false reject is a
+    # broken write for a legitimate value:
+    #   1. It STARTS like a jq path expression — optional whitespace, an
+    #      optional `(`, then `.` followed by an identifier character. The
+    #      identifier requirement is what keeps relative paths out: `./x`,
+    #      `../x` and `.github/workflows/ci.yml` are common values, and only the
+    #      last of those even reaches signal 2.
+    #   2. It CONTAINS a jq operator, so a bare path-shaped token
+    #      (`.claude/scripts/handoff-state.sh`) is still stored as a string.
+    #   3. It COMPILES as a jq program. Signals 1+2 alone would reject prose
+    #      like `.env + .env.local are ignored`; that text is not valid jq, so
+    #      this check keeps it on the string path. The probe wraps the value in
+    #      a `def` that is never invoked and leaves `empty` as the only
+    #      top-level expression, so nothing in the value is evaluated and no
+    #      input is read — a property the `#` and `;` bail-outs below are what
+    #      actually guarantee, since either character lets the value reach the
+    #      terminator and promote its own tail to top level.
+    # Anything short of all three keeps the pre-existing store-as-string
+    # behavior, so an unrecognized expression degrades to today's semantics
+    # rather than to a new failure.
+    #
+    # The probe must never EVALUATE the value, only compile it. Two different
+    # constructs can carry the value across the terminator and defeat that, so
+    # there are three defences (PR #1378 / issue #1357):
+    #
+    #   * The probe is assembled across FOUR LINES — the value gets a line of
+    #     its own; the `;` terminator and `empty` get theirs. On one line, a
+    #     value ending in `#` swallows the terminator and promotes its OWN
+    #     tail to top-level expression, which jq then EXECUTES during what is
+    #     supposed to be a compile: `.a + 1; def g: 1; last(repeat(1)) #` hung
+    #     a single-line probe indefinitely while this script held the state
+    #     lock, blocking every sibling pipeline (CodeAnt). Confined to its own
+    #     line, a comment can no longer reach the terminator. That closes the
+    #     COMMENT route only — on its own it does not make `empty` the
+    #     top-level expression, which is what the `;` bail-out below is for.
+    #
+    #   * A value containing `#` at all skips the probe. Line discipline stops
+    #     the comment at the value, but INSIDE the value it still hides
+    #     everything after it, so jq would be judging a PREFIX and reporting
+    #     "compiles" for text that is not an expression: `.claude/rules +
+    #     .claude/reference # see PR #1378` compiles down to `.claude/rules +
+    #     .claude/reference` and would be refused as an expression. Declining
+    #     to judge is the conservative branch — a `#` value stores as a string
+    #     exactly as it does today. It also costs a false NEGATIVE on real jq
+    #     carrying a `#` in a string literal (`.notes + "issue #1357"`), which
+    #     is the direction this guard is allowed to be wrong in.
+    #
+    #   * A value containing `;` at all skips the probe. Line discipline stops
+    #     a COMMENT from reaching the terminator, but a trailing unterminated
+    #     `def` absorbs it outright: jq's grammar admits `Exp := FuncDef Exp`,
+    #     so `.a ; last(repeat(1)) as $x | def h: 1` ends the probe's own `def`
+    #     early at its first `;`, hands the terminator to `def h` as ITS
+    #     terminator, and leaves `last(repeat(1))` a TOP-LEVEL expression that
+    #     jq executes — the same indefinite hang under the state lock, with no
+    #     `#` anywhere (CodeRabbit). Escaping the wrapper at all requires
+    #     ending the probe's `def` early, and that requires a `;`, so refusing
+    #     to judge any value containing one closes the class rather than one
+    #     shape: with no `;` in the value the terminator is either still ours
+    #     (`empty` is the only top-level expression, nothing evaluates) or is
+    #     absorbed by a trailing `def` that then leaves NO top-level expression
+    #     at all, which jq rejects at compile time — verified both ways. Same
+    #     conservative trade as `#`: a `;` value stores as a string exactly as
+    #     it does today, costing a false NEGATIVE on genuine jq that uses `;`
+    #     (`reduce .[] as $x (0; . + $x)`), the direction this guard is allowed
+    #     to be wrong in.
+    _JQ_EXPR_START='^[[:space:]]*\(?[[:space:]]*\.[A-Za-z_]'
+    _JQ_EXPR_OPS='(\||//|\+|map\(|select\()'
+    _JQ_PROBE="def _handoff_set_probe:
+${JQ_VAL}
+;
+empty"
+    if [[ "$JQ_VAL" != *'#'* ]] && [[ "$JQ_VAL" != *';'* ]] \
+       && [[ "$JQ_VAL" =~ $_JQ_EXPR_START ]] && [[ "$JQ_VAL" =~ $_JQ_EXPR_OPS ]] \
+       && jq -n "$_JQ_PROBE" </dev/null >/dev/null 2>&1; then
+      echo "handoff-state.sh: refusing to write — the value for '$JQ_PATH' is an unevaluated jq expression, not data: '$JQ_VAL' (see issue #1357); evaluate it first and pass the resulting scalar; $HANDOFF_FILE left unmodified" >&2
+      state_lock_release; exit 4
+    fi
     UPDATED="$(printf '%s\n' "$CURRENT" | jq --arg v "$JQ_VAL" "${JQ_PATH} = \$v")" || {
       echo "handoff-state.sh: jq --set (string) failed on path $JQ_PATH" >&2
       state_lock_release; exit 4
@@ -473,6 +560,12 @@ if [[ "$MODE" == "set" ]]; then
 fi
 
 if [[ "$MODE" == "append" ]]; then
+  # NOTE: the jq-expression refusal above is deliberately --set-only (issue
+  # #1357). --append does not share that value branch, its values are array
+  # ELEMENTS rather than whole-field replacements, and it cannot clobber a
+  # prior value — appending a bad element leaves everything already in the
+  # array intact. Widening the guard here is a separate decision, not an
+  # oversight.
   # findings_dismissed deduplicates by .id; all other arrays dedup by exact value.
   if [[ "$ARRAY_FIELD" == "findings_dismissed" ]]; then
     if ! printf '%s' "$ARRAY_VALUE" | jq -e 'type == "object" and has("id")' >/dev/null 2>&1; then
