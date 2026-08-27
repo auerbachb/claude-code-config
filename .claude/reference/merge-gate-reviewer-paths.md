@@ -18,6 +18,21 @@ GitHub keeps a record for **every** run of a check on a commit, and each re-trig
 
 **Consequence for polling:** a check that failed and was re-run stops blocking the moment the newer run lands — no rebase or new push required. If tooling still reports a failure GitHub's merge box shows as green, suspect the fetch bypassed the helper, not the dedup rule.
 
+## Required status checks — all paths (issue #1361)
+
+**Authoritative source:** `.claude/scripts/merge-gate.sh` (required-context block) — this section is prose explanation.
+
+The gate used to aggregate whatever check-runs existed on HEAD and read the absence of failures as a pass. Nothing asked which checks were *supposed* to report. On 2026-08-26 two required workflows ended in `startup_failure` with zero jobs, so they created no check-runs at all; the four surviving non-required checks were green and every layer said merge (`ci_status: 4/4 passed`, `met: true`, `missing: []`). The failure mode inverts the gate — **the less CI reports, the cleaner the PR looks**, and a total CI outage produces the most confident green.
+
+`merge-gate.sh` now reads branch protection's required contexts for the PR's base branch and asserts each **by name** against HEAD:
+
+- **Present** — a deduped check-run *or* a legacy commit status of that exact name. Absent is `unsatisfied`, never vacuously passing.
+- **Complete and non-blocking** — a run that has not finished is not a pass; blocking conclusions are the same set `ci-status.sh` uses (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`), so `skipped`/`neutral`/`cancelled` do not veto.
+- **Consumes the deduped list (#675)**, so a superseded failure never marks a context failed. Two same-named runs in one suite are matched together — still-point publishes a `build` from TestFlight and a `build` from Web Build, both GitHub Actions, both in one suite — and the skipped leg does not veto its successful sibling.
+- Reported as `required_contexts` on every result: `source`, `base`, `contexts`, `unsatisfied[{context, state}]`, `error`.
+
+**Resolution order and degraded mode.** The protection endpoint (`branches/{base}/protection/required_status_checks`) needs admin access, so a collaborator token gets 403 there — but the branch object's own `.protection.required_status_checks` carries the same list and is readable by anyone with repo read, so it is the fallback (`source: branch_object`). `.protected` on that object is what separates "unprotected" from "unreadable", a distinction no HTTP status makes reliably. An unprotected base, or protection with no required checks, yields `source: none` and **exactly the pre-#1361 behaviour**. Only when *both* reads fail does the gate report `source: unavailable` — and that **blocks**, because a required check that never reported is indistinguishable from no requirement. Degraded means say so, not score clean. `--allow-unverified-required-checks` is the explicit per-PR user override covering **only** the unreadable-list case; a list that *was* read and contains an absent context stays blocking with or without it.
+
 ## Stale-approval guard — all review paths (issue #836)
 
 **Authoritative source:** `.claude/scripts/merge-gate.sh` (`LAST_COMMIT_TS` comparison logic) — this section is prose explanation of the mechanism and its scope.
@@ -47,6 +62,7 @@ Applies when neither BugBot nor Greptile was triggered (`merge-gate.sh` reviewer
 - **Applies** when CodeAnt has review/comment on current HEAD **or** a CodeAnt check-run on that commit.
 - **Clean:** `APPROVED` on HEAD **or** completed CodeAnt check with `conclusion: success` — read from the deduped list, so a superseded CodeAnt success no longer counts as clean when a newer CodeAnt run failed (#675).
 - **Retraction:** `CHANGES_REQUESTED` blocks only if newer than latest clean signal on that SHA. Threads: Step 1c in `cr-merge-gate.md`.
+- **Pre-analysis approval stubs (issue #1365):** CodeAnt posts an `APPROVED` *before* its analysis of that commit runs — every approval on still-point PR #676 predated its own run start, by 27s to 6m54s — and delivers its real verdict afterwards as a separate `COMMENTED` review. It also publishes the evidence to catch this: a `<!-- codeant-review-status:[…] -->` payload inside its in-place-edited Review Status comment, recording `started`/`finished`/`done` per commit. `review-substance.sh` parses it and exposes `run_started_at` / `run_finished_at` / `run_done`. An approval counts only when HEAD's run is `done` **and** `submitted_at >= run_started_at`; otherwise `pre_run_approval` lands in `disqualified_by`. The bound is the run **start**, not its finish — CodeAnt stamps `finished` when it rewrites the table, *after* posting its verdict, so a finish-based bound would reject genuine approvals. An **in-flight** status row no longer satisfies `status_comment_names_head`: it is a run marker, and a run marker saying work began is not evidence any diff was read — that circularity is what let the stub manufacture its own evidence. `pre_run_approval` is deliberately **not** suppressed by `external_evidence_on_head` (unlike temporal inversion and capability failure), and `--allow-hollow-approval` does not launder it. Scoped to *structured* markers, so the prose-marker heuristic and every #875/#876 shape are untouched; a malformed or HEAD-less payload degrades to the pre-#1365 verdict rather than blocking.
 
 ## BugBot path
 

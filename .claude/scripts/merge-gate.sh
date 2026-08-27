@@ -54,14 +54,33 @@
 #   reviewer's own "is running the review" marker; a capability-failure notice
 #   ("no PR Review subscription", rate limit, "couldn't run") with no later work;
 #   self-report mismatch — the reviewer's own status comment naming a different
-#   SHA; and finally substance across the reviewer's whole footprint. Body length
-#   alone is deliberately NOT the test: a genuine CodeRabbit APPROVED with
-#   bodylen=0 whose walkthrough named the exact reviewed range must keep passing.
+#   SHA; a pre-run approval (issue #1365) — the reviewer's own machine-readable
+#   run record for HEAD shows the approval landed before that analysis started,
+#   or while it was still in flight; and finally substance across the reviewer's
+#   whole footprint. Body length alone is deliberately NOT the test: a genuine
+#   CodeRabbit APPROVED with bodylen=0 whose walkthrough named the exact reviewed
+#   range must keep passing.
 #   Applied to the CR path only; the full evidence is emitted as `review_evidence`.
+#
+# Required-context gate (issue #1361): branch protection's required status checks
+#   are asserted BY NAME against the current HEAD. Before this, the gate evaluated
+#   only the check-runs that happened to exist — so when a required context never
+#   reported at all there was nothing to fail and the PR scored clean. Observed
+#   during the 2026-08-26 Actions outage: five required contexts absent, four
+#   unrelated non-required checks green, `met:true, missing:[]`. The failure mode
+#   inverts the gate's purpose — the less CI reports, the cleaner the PR looks.
+#   Each required context must now be PRESENT on HEAD (a deduped check-run or a
+#   commit status of that exact name) and not incomplete/blocking; absent counts
+#   as unsatisfied, never as vacuously passing. No protection, or protection with
+#   no required checks, keeps the pre-#1361 behaviour exactly. When the required
+#   list cannot be read at all, the gate says so and BLOCKS rather than scoring
+#   clean — degraded means degraded (`--allow-unverified-required-checks` is the
+#   explicit per-PR user override). Emitted as `required_contexts`.
 #
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
+#                             [--allow-unverified-required-checks]
 #   merge-gate.sh --help
 #
 # Authorship guard (issue #733): a merge is a write, so the gate BLOCKS a
@@ -100,8 +119,32 @@
 #     "unresolved_thread_count": N,
 #     "primary_review_met": true|false,
 #     "authorship": "mine"|"not_mine"|"unknown",
-#     "review_evidence": { … }   # review-substance.sh output; {} off the cr path
+#     "review_evidence": { … },  # review-substance.sh output; {} off the cr path
+#     "required_contexts": {     # issue #1361
+#       "source": "branch_protection"|"branch_object"|"none"|"unavailable"|"unknown",
+#       "base": "main",
+#       "contexts": ["typecheck", "build", …],
+#       "unsatisfied": [{"context": "build", "state": "absent"}, …],
+#       "error": ""              # populated only when source == "unavailable"
+#     }
 #   }
+#
+# `required_contexts.source` (issue #1361):
+#   branch_protection — read from branches/{base}/protection/required_status_checks
+#   branch_object     — that endpoint was unreadable, so the list came from the
+#                       branch object's own `.protection.required_status_checks`,
+#                       which any account with repo read access can see
+#   none              — the base branch is unprotected, or is protected with no
+#                       required status checks; pre-#1361 behaviour, nothing added
+#   unavailable       — neither read succeeded; BLOCKS with its own missing[]
+#                       reason (override: --allow-unverified-required-checks)
+#   unknown           — emitted by the early-exit error paths, which never got
+#                       far enough to look
+# `unsatisfied[].state` is `absent` (no check-run and no commit status of that
+# name on HEAD), `wrong_app` (runs of that name exist, but protection pins the
+# context to an `app_id` and none of them came from that app — GitHub would not
+# accept them either), the run's non-`completed` status, its blocking conclusion,
+# or a commit status's `pending`/`failure`/`error`.
 #
 # Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
 # NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
@@ -183,10 +226,22 @@ ALLOW_NONAUTHOR=false
 # The evidence is still computed, still emitted in `review_evidence`, and the
 # override is announced on stderr, so nothing about the bypass is silent.
 # Scope is deliberately narrow: it covers `no_substantive_footprint` and NOTHING
-# else. Temporal inversion, capability failure and self-report SHA mismatch stay
-# blocking even with the flag — those are not "the bot said nothing", they are
-# the bot's own record contradicting the claim that it reviewed this commit.
+# else. Temporal inversion, capability failure, self-report SHA mismatch and
+# pre-run approval (issue #1365) stay blocking even with the flag — those are not
+# "the bot said nothing", they are the bot's own record contradicting the claim
+# that it reviewed this commit. No code change was needed for #1365 to inherit
+# this: override_eligible() subtracts exactly one disqualifier and requires the
+# remainder to be empty, so a new one is refused by construction.
 ALLOW_HOLLOW=false
+# Required-context guard (issue #1361): --allow-unverified-required-checks lets
+# the gate proceed when branch protection's required list could not be READ at
+# all. Explicit per-PR user override ONLY — an agent must never pass it on its
+# own. Deliberately narrow, and narrower than it may look: it covers ONLY the
+# unreadable-list case. A list that WAS read and contains a context absent from
+# HEAD stays blocking with or without the flag — that is not "we could not
+# check", it is "we checked and the check never ran", which is the entire defect
+# #1361 exists to close.
+ALLOW_UNVERIFIED_REQ=false
 
 print_usage() {
   awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"
@@ -204,6 +259,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-hollow-approval)
       ALLOW_HOLLOW=true
+      shift
+      ;;
+    --allow-unverified-required-checks)
+      ALLOW_UNVERIFIED_REQ=true
       shift
       ;;
     --reviewer)
@@ -269,6 +328,15 @@ emit_json() {
   # ${16:-{}} because a literal `{}` inside brace-default expansion is ambiguous.
   local review_evidence="${16:-}"
   if [[ -z "$review_evidence" ]]; then review_evidence='{}'; fi
+  # required_contexts (issue #1361) — arg 17, defaulted the same way. The early
+  # error paths (die_api / die_local / PR-not-open) never reach the protection
+  # read, so they emit source "unknown" rather than claiming "none": "we never
+  # looked" and "there is nothing to look at" are different answers, and only one
+  # of them is safe to read as a pass.
+  local required_contexts="${17:-}"
+  if [[ -z "$required_contexts" ]]; then
+    required_contexts='{"source":"unknown","base":"","contexts":[],"unsatisfied":[],"error":""}'
+  fi
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -286,8 +354,9 @@ emit_json() {
     --argjson primary_review_met "$primary_review_met" \
     --arg authorship "$authorship" \
     --argjson review_evidence "$review_evidence" \
+    --argjson required_contexts "$required_contexts" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence}
+     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts}
      | scrub'
 }
 
@@ -474,6 +543,142 @@ CI_STATUS=$(echo "$CI_STATUS_JSON" | jq -c '{
 }')
 
 # --------------------------------------------------------------------------
+# Branch-protection required contexts (issue #1361)
+# --------------------------------------------------------------------------
+# The gate used to aggregate whatever check-runs existed on HEAD and call the
+# absence of failures a pass. Nothing ever asked which checks were SUPPOSED to
+# report. During the 2026-08-26 Actions outage two required workflows ended in
+# `startup_failure` with zero jobs, so they created no check-runs at all; the
+# four surviving non-required checks were green, and every layer above this one
+# (ci-status.sh, merge-gate.sh, escalate-review.sh, polling-state-gate.sh) said
+# merge. GitHub's own `mergeStateStatus: BLOCKED` was the only dissenting voice.
+#
+# Reading the required list is therefore not optional, and neither is failing
+# when it cannot be read: "no required contexts reported" and "no required
+# contexts exist" produce identical check-run payloads, and only one of them is
+# a pass.
+#
+# TWO reads, in this order, because they fail differently:
+#   1. branches/{base}/protection/required_status_checks — authoritative, but
+#      the protection endpoints need admin access, so a collaborator token gets
+#      403 (and sometimes a permission-shaped 404 that is indistinguishable from
+#      "unprotected" by status code alone).
+#   2. the branch object's own `.protection.required_status_checks` — the legacy
+#      v3 shape, visible to any account that can read the repo. It carries the
+#      same `contexts` list (verified live on this repo and on auerbachb/
+#      still-point), so it answers the question read 1 could not.
+# `.protected` from that same object is what separates "unprotected" from
+# "unreadable" — a distinction no HTTP status makes reliably. Only when BOTH
+# reads fail do we report `unavailable`, which blocks.
+REQUIRED_CONTEXTS_JSON='[]'
+REQUIRED_APPS_JSON='{}'
+REQUIRED_SOURCE="none"
+REQUIRED_ERROR=""
+
+# Extract the context list from either shape. Both carry `contexts`; the
+# protection endpoint additionally carries `checks[].context` (the newer
+# app-scoped form, which is what the UI writes today), so union them. `contexts`
+# alone would miss nothing observed so far, but the union costs one line and
+# fails toward listing MORE required checks, never fewer.
+REQ_CTX_FILTER='
+  if type == "object"
+  then ((( .contexts // [] ) + [ ( .checks // [] )[]? | .context // empty ])
+        | map(select(type == "string" and length > 0)) | unique)
+  else [] end'
+
+# The publisher half of the same answer (issue #1383 review). `checks[]` entries
+# carry an `app_id` alongside the context, and GitHub itself will only accept a
+# check from THAT app for that context — this repo pins `rule-lint` to app_id
+# 15368. Matching on name alone would let a same-named check from any other
+# publisher satisfy a required context, so the gate could report a pass that
+# GitHub would refuse: the required app never verified HEAD. That is the same
+# vacuous pass #1361 exists to close, one axis over.
+#
+# Kept as a SEPARATE {context: app_id} map rather than folded into the context
+# list so the emitted `required_contexts.contexts` stays a plain string array.
+# A null `app_id` means "any app" in GitHub's own semantics, and a context that
+# arrives only via the legacy `contexts` array has no publisher to pin, so both
+# are simply absent from this map and stay name-only.
+REQ_APPS_FILTER='
+  if type == "object"
+  then ([ ( .checks // [] )[]?
+          | select((.context | type) == "string" and (.context | length) > 0)
+          | select(.app_id != null)
+          | {key: .context, value: .app_id} ] | from_entries)
+  else {} end'
+
+BRANCH_READABLE=false
+BRANCH_PROTECTED=""
+BRANCH_CONTEXTS='[]'
+BRANCH_APPS='{}'
+if [[ -n "$BASE_REF" ]]; then
+  BRANCH_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF" 2>/dev/null || true)
+  # `has("name")` is the readability sentinel: a 404/403 body is a `{message:…}`
+  # object that would otherwise parse fine and read as an unprotected branch.
+  if [[ -n "$BRANCH_JSON" ]] && echo "$BRANCH_JSON" | jq -e 'type == "object" and has("name")' >/dev/null 2>&1; then
+    BRANCH_READABLE=true
+    BRANCH_PROTECTED=$(echo "$BRANCH_JSON" | jq -r '(.protected // false) | tostring' 2>/dev/null || echo "")
+    BRANCH_CONTEXTS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_CTX_FILTER" 2>/dev/null || echo '[]')
+    if [[ -z "$BRANCH_CONTEXTS" ]]; then BRANCH_CONTEXTS='[]'; fi
+    BRANCH_APPS=$(echo "$BRANCH_JSON" | jq -c ".protection.required_status_checks | $REQ_APPS_FILTER" 2>/dev/null || echo '{}')
+    if [[ -z "$BRANCH_APPS" ]]; then BRANCH_APPS='{}'; fi
+  fi
+fi
+
+if [[ -z "$BASE_REF" ]]; then
+  # No base branch name means no protection to look up. Report it rather than
+  # silently skipping — this is the same class of gap #1361 is about.
+  REQUIRED_SOURCE="unavailable"
+  REQUIRED_ERROR="PR base branch name unavailable"
+elif [[ "$BRANCH_READABLE" == true && "$BRANCH_PROTECTED" == "false" ]]; then
+  # Unprotected base — there is nothing to require. Pre-#1361 behaviour, and the
+  # cheap path: no protection call at all.
+  REQUIRED_SOURCE="none"
+else
+  # stdout and stderr are captured together deliberately: on success gh writes
+  # only JSON, on failure only a message, so one capture plus the exit code
+  # classifies both without a temp file.
+  if RSC_RAW=$(gh api "repos/$OWNER/$REPO/branches/$BASE_REF/protection/required_status_checks" 2>&1); then
+    RSC_CONTEXTS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_CTX_FILTER" 2>/dev/null || true)
+    RSC_APPS=$(printf '%s' "$RSC_RAW" | jq -c "$REQ_APPS_FILTER" 2>/dev/null || true)
+  else
+    RSC_CONTEXTS=""
+    RSC_APPS=""
+  fi
+  if [[ -n "$RSC_CONTEXTS" ]]; then
+    REQUIRED_CONTEXTS_JSON="$RSC_CONTEXTS"
+    if [[ -n "$RSC_APPS" ]]; then REQUIRED_APPS_JSON="$RSC_APPS"; else REQUIRED_APPS_JSON='{}'; fi
+    REQUIRED_SOURCE="branch_protection"
+  elif [[ "$BRANCH_READABLE" == true ]]; then
+    # The protection endpoint refused (403, or a 404 meaning "required status
+    # checks not enabled"), but the branch object answered. An empty list here
+    # is a real answer, not a shrug: the branch is protected by rules that do
+    # not require any status check, which is a common configuration (review-only
+    # protection) and must not wedge every merge in such a repo.
+    REQUIRED_CONTEXTS_JSON="$BRANCH_CONTEXTS"
+    REQUIRED_APPS_JSON="$BRANCH_APPS"
+    if [[ "$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+      REQUIRED_SOURCE="branch_object"
+    else
+      REQUIRED_SOURCE="none"
+      # Protected branch + refused protection endpoint + an empty fallback list.
+      # Almost always review-only protection, which genuinely requires no status
+      # check — but it is the one shape where "no requirement" and "the
+      # requirement is hidden from this token" look identical, so say so rather
+      # than resolve it silently. Not a blocker: treating it as one would wedge
+      # every merge in a review-only-protected repo, a far larger and more
+      # common cost than the narrow ambiguity it would close.
+      if [[ "$BRANCH_PROTECTED" == "true" ]]; then
+        echo "[merge-gate] base $BASE_REF is protected but exposes no required status checks to this token (protection endpoint refused; branch object lists none). Proceeding as 'no required checks' — if this repo does require checks, the token lacks administration:read and required-context verification is not actually running (issue #1361)." >&2
+      fi
+    fi
+  else
+    REQUIRED_SOURCE="unavailable"
+    REQUIRED_ERROR=$(printf '%s' "${RSC_RAW:-no response}" | tr '\n\r\t' '   ' | cut -c1-200)
+  fi
+fi
+
+# --------------------------------------------------------------------------
 # Reviewer resolution
 # --------------------------------------------------------------------------
 resolve_reviewer() {
@@ -613,6 +818,100 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
 
+# Required-context gate (#1361) — applies to all paths; branch protection is a
+# property of the base branch, not of whichever bot happens to own the review.
+#
+# Deliberately NOT folded into the CI gate above. That gate answers "did
+# everything that ran, pass"; this one answers "did everything that was supposed
+# to run, run". The outage that motivated #1361 is precisely the case where the
+# first question returns a confident yes and the second has never been asked.
+REQUIRED_UNSATISFIED_JSON='[]'
+REQUIRED_COUNT=$(echo "$REQUIRED_CONTEXTS_JSON" | jq 'length' 2>/dev/null || echo 0)
+if [[ "$REQUIRED_SOURCE" == "unavailable" ]]; then
+  if [[ "$ALLOW_UNVERIFIED_REQ" == true ]]; then
+    echo "[merge-gate] --allow-unverified-required-checks: proceeding without verifying branch-protection required contexts on ${BASE_REF:-<unknown base>} (${REQUIRED_ERROR}) — an absent required check cannot be distinguished from an absent requirement (issue #1361)." >&2
+  else
+    MISSING+=("cannot read branch-protection required status checks for base ${BASE_REF:-<unknown>} — required-context verification unavailable ($REQUIRED_ERROR); a required check that never reported is indistinguishable from no requirement, so this fails closed (issue #1361). Pass --allow-unverified-required-checks only under an explicit per-PR user override")
+  fi
+elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
+  # Legacy commit statuses can satisfy a required context just as check-runs can
+  # (Vercel, CircleCI and friends still post them), so a context absent from the
+  # check-run list is not yet absent. Fetched only when there is something to
+  # check, and non-fatal: an unreadable status list simply contributes nothing,
+  # which can withhold a merge but never grant one. Newest-first per the API, so
+  # `first` per context is that context's current state.
+  COMMIT_STATUSES_JSON='[]'
+  if _CS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses?per_page=100" 2>/dev/null); then
+    COMMIT_STATUSES_JSON=$(printf '%s' "$_CS_RAW" | jq -sc 'add // []' 2>/dev/null || echo '[]')
+    if [[ -z "$COMMIT_STATUSES_JSON" ]]; then COMMIT_STATUSES_JSON='[]'; fi
+  fi
+
+  # CHECK_RUNS_JSON is already deduped to the newest suite per (app, name), so a
+  # re-run's superseded record cannot mark a required context failed or pending.
+  # ALL runs of the newest suite are retained, which is what makes the two-jobs-
+  # one-name shape work: still-point publishes a `build` from the TestFlight
+  # workflow and a `build` from Web Build, both GitHub Actions, both in the same
+  # suite. They are matched together here, and the context is satisfied because
+  # neither is blocking — `skipped` is non-blocking by the same rule ci-status.sh
+  # uses, so the skipped leg does not veto its successful sibling.
+  # Publisher scoping (issue #1383 review): when protection pins a context to an
+  # `app_id`, only that app's check-runs count. $named is every run carrying the
+  # name; $r narrows to the ones GitHub would actually accept. Runs present under
+  # the name but all from other apps is its own state — `wrong_app`, not `absent`
+  # — because the two have different fixes and "degraded means say so".
+  # Commit statuses stay name-only on purpose: they carry no app_id, and the
+  # app-scoped `checks[]` shape governs check-runs.
+  REQUIRED_STATE_JSON=$(jq -cn \
+    --argjson req "$REQUIRED_CONTEXTS_JSON" \
+    --argjson apps "$REQUIRED_APPS_JSON" \
+    --argjson runs "$CHECK_RUNS_JSON" \
+    --argjson statuses "$COMMIT_STATUSES_JSON" '
+      def is_blocking: . == "failure" or . == "timed_out" or . == "action_required"
+                       or . == "startup_failure" or . == "stale";
+      $req | map(
+        . as $c
+        | ($apps[$c] // null)                                          as $app
+        | [ $runs.check_runs[]? | select((.name // "") == $c) ]        as $named
+        | (if $app == null then $named
+           else [ $named[] | select((.app.id // null) == $app) ] end)  as $r
+        | ( [ $statuses[]? | select((.context // "") == $c) ] | first ) as $s
+        | (if (($r | length) == 0 and $s == null and ($named | length) > 0) then
+             {context: $c, state: "wrong_app", satisfied: false}
+           elif (($r | length) == 0 and $s == null) then
+             {context: $c, state: "absent", satisfied: false}
+           elif any($r[]; (.status // "") != "completed") then
+             {context: $c,
+              state: ([ $r[] | select((.status // "") != "completed")
+                        | ((.status // "") | if . == "" then "incomplete" else . end) ] | first),
+              satisfied: false}
+           elif any($r[]; ((.conclusion // "") | is_blocking)) then
+             {context: $c,
+              state: ([ $r[] | select(((.conclusion // "") | is_blocking)) | .conclusion ] | first),
+              satisfied: false}
+           elif ($r | length) == 0 and (($s.state // "") != "success") then
+             {context: $c,
+              state: (($s.state // "") | if . == "" then "unknown" else . end),
+              satisfied: false}
+           else
+             {context: $c, state: "passing", satisfied: true}
+           end))' 2>/dev/null || echo '[]')
+  if [[ -z "$REQUIRED_STATE_JSON" ]]; then REQUIRED_STATE_JSON='[]'; fi
+  REQUIRED_UNSATISFIED_JSON=$(echo "$REQUIRED_STATE_JSON" | jq -c '[.[] | select(.satisfied | not)]' 2>/dev/null || echo '[]')
+  if [[ -z "$REQUIRED_UNSATISFIED_JSON" ]]; then REQUIRED_UNSATISFIED_JSON='[]'; fi
+  if [[ "$(echo "$REQUIRED_UNSATISFIED_JSON" | jq 'length')" -gt 0 ]]; then
+    REQUIRED_UNSATISFIED_LIST=$(echo "$REQUIRED_UNSATISFIED_JSON" | jq -r 'map("\(.context) (\(.state))") | join(", ")')
+    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported is not a pass (issue #1361)")
+  fi
+fi
+
+REQUIRED_CONTEXTS_OUT=$(jq -cn \
+  --arg source "$REQUIRED_SOURCE" \
+  --arg base "$BASE_REF" \
+  --arg error "$REQUIRED_ERROR" \
+  --argjson contexts "$REQUIRED_CONTEXTS_JSON" \
+  --argjson unsatisfied "$REQUIRED_UNSATISFIED_JSON" \
+  '{source: $source, base: $base, contexts: $contexts, unsatisfied: $unsatisfied, error: $error}')
+
 # Universal unresolved-thread gate (#211) — applies to all paths regardless of
 # author. Catches threads from any reviewer (CR, BugBot, Greptile, Copilot,
 # human) that the per-path author-scoped checks would miss.
@@ -715,6 +1014,19 @@ substance_reasons() { # <login> — human-readable, comma-joined
     | [ ($r.disqualified_by // [])[]
         | if . == "temporal_inversion" then
             "approved before \($l) announced it had started reviewing"
+          elif . == "pre_run_approval" then
+            # Issue #1365. Sourced from the machine-readable run record the
+            # reviewer itself published, so the message quotes the timestamps
+            # rather than paraphrasing them: a reader can check the claim against
+            # the payload on the PR. Two distinct shapes — still in flight, or
+            # approved before the run began.
+            # (No apostrophes in this block: the whole jq program is one
+            # single-quoted bash string, and one stray quote ends it.)
+            ( if ($r.run_done == false) then
+                "\($l) approved at \($r.approval_submitted_at // "?") while its own recorded analysis of this commit was still in flight (started \($r.run_started_at // "?"), not finished)"
+              else
+                "\($l) approved at \($r.approval_submitted_at // "?") before its own recorded analysis of this commit started (\($r.run_started_at // "?")) — the approval cannot be a verdict from that run"
+              end )
           elif . == "capability_failure" then
             "\($l) reported it could not review this commit"
           elif . == "self_report_mismatch" then
@@ -1654,7 +1966,7 @@ MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 # over a guard the bugbot path never consults.
 [[ "$REVIEWER" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT"
 
 if [[ "$MET" == true ]]; then
   exit 0

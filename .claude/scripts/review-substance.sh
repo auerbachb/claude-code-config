@@ -34,13 +34,22 @@
 #                              approval body or SHA-less descriptive comment
 #                              does NOT clear the mismatch — that would re-open
 #                              the rubber-stamp hole and the #927 launder.
-#   4. substantive           — review body OR inline comments on HEAD OR a
+#   4. pre_run_approval      — the reviewer publishes a MACHINE-READABLE record
+#                              of its own analysis of this commit, and the
+#                              APPROVED does not sit inside it: the run had not
+#                              started when the approval was posted, or has not
+#                              finished yet. Same ordering violation as (1), but
+#                              read off the reviewer's own structured data
+#                              instead of inferred from prose — and therefore
+#                              NOT suppressible by external evidence (issue
+#                              #1365; see $pre_run for why).
+#   5. substantive           — review body OR inline comments on HEAD OR a
 #                              same-SHA status comment naming HEAD OR a long
 #                              descriptive comment in the current review round.
 #                              Never body length on its own, and never a comment
 #                              whose content is the reviewer declining to review
 #                              or a fixed run-start/completion marker.
-#   5. seconds_after_push    — reported only. Timing corroborates, never decides.
+#   6. seconds_after_push    — reported only. Timing corroborates, never decides.
 #
 # This is a pure evaluator: no network, no gh calls. Callers pass the review and
 # comment payloads they already fetched.
@@ -69,6 +78,8 @@
 #        "self_report_mismatch": false,
 #        "temporal_inversion": false, "run_start_marker_at": "…",
 #        "capability_failure": false, "capability_failure_text": "",
+#        "pre_run_approval": false, "run_started_at": "…",
+#        "run_finished_at": "…", "run_done": true,
 #        "substantive": true, "counts_as_coverage": true,
 #        "disqualified_by": [], "seconds_after_push": 214
 #     } },
@@ -77,6 +88,7 @@
 #     "mismatched":        [ … ],                  # approved X, self-reports Y
 #     "inverted":          [ … ],                  # approved before its own run started
 #     "capability_failed": [ … ],                  # said it could not review, approved anyway
+#     "pre_run":           [ … ],                  # approved outside its own recorded run
 #     "corroborating":     ["cursor[bot]"]         # substantive non-approvers on HEAD
 #   }
 #
@@ -86,10 +98,28 @@
 #   inline_comments_on_head   inline diff comments anchored to HEAD (commit_id AND
 #                             original_commit_id == HEAD, so comments GitHub
 #                             "moved" forward on force-push do not count)
+#   run_started_at            from a STRUCTURED run marker the reviewer publishes
+#   run_finished_at           for HEAD — currently CodeAnt's
+#   run_done                  `<!-- codeant-review-status:[…] -->` payload, which
+#                             records {commit, started, finished, done} per
+#                             commit it has touched (issue #1365). Empty/null
+#                             when that reviewer publishes no such record for
+#                             HEAD, which is every other reviewer today. The
+#                             payload's timestamps are naive UTC, so they are
+#                             canonicalised onto the same `Z` spelling as review
+#                             timestamps before any compare.
+#   pre_run_approval          a structured HEAD run marker exists and the
+#                             APPROVED does not sit inside that run: the run is
+#                             not `done`, or submitted_at < run_started_at.
 #   status_comment_names_head a conversation comment by that bot containing the
 #                             HEAD SHA (full, or a >=7-char token that
 #                             prefix-matches HEAD — hex OR all-decimal, issue
-#                             #894) and >= min_chars long. No
+#                             #894) and >= min_chars long, and — when the comment
+#                             IS a structured run-status table — whose HEAD row
+#                             is `done` (issue #1365). An in-flight row is a run
+#                             marker, and a run marker is not evidence that any
+#                             diff was read; letting it through is what made the
+#                             pre-analysis stub self-certifying. No
 #                             freshness filter is applied or needed: naming
 #                             HEAD's SHA is itself proof the comment postdates it.
 #                             Text the reviewer QUOTED rather than wrote is
@@ -149,7 +179,7 @@
 #                             descriptive current-round comment, or a substantive
 #                             non-APPROVED review); what suppresses a
 #                             temporal_inversion verdict
-#   counts_as_coverage        approved AND substantive AND none of the
+#   counts_as_coverage        approved AND substantive AND none of the four
 #                             disqualifiers above. self_report_mismatch is
 #                             omitted from that set when inline_comments_on_head
 #                             > 0 (inventory #416 / this repo #1380).
@@ -266,6 +296,23 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
     (. // "")
     | if . == "" then ""
       else sub("\\.[0-9]+"; "") | sub("(\\+00:00|\\+0000)$"; "Z")
+      end;
+
+  # Structured run markers carry NAIVE timestamps — CodeAnt writes
+  # "2026-08-26T16:16:40.854977" with no zone at all — while every review
+  # timestamp they are compared against ends in "Z". Left alone, the compare is
+  # wrong in the silent direction: "…T16:16:13" is a strict PREFIX of
+  # "…T16:16:13Z", so it sorts BEFORE it, and an approval landing in the same
+  # second as its own run start would read as postdating it. The values are UTC
+  # (confirmed against the live PR #676 payload, where the documented 27-second
+  # gap only holds under that reading), so canonicalise onto the same spelling
+  # and let one lexicographic rule cover both sides. A marker that already
+  # carries a zone is left alone rather than double-suffixed.
+  def canon_marker_ts:
+    (. // "") | tostring
+    | if . == "" then ""
+      else canon_ts
+           | if test("(Z|[+-][0-9]{2}:?[0-9]{2})$") then . else . + "Z" end
       end;
 
   (.head_sha // "" | ascii_downcase)  as $sha
@@ -529,6 +576,53 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
       ($sha | length) > 0
       and any(.[]; . as $t | ($sha | startswith($t)) or ($t | startswith($sha)));
 
+    # ---- Structured run markers (issue #1365) -------------------------------
+    #
+    # CodeAnt maintains ONE in-place-edited conversation comment, "🤖 CodeAnt AI
+    # — Review Status", whose visible table has a row per commit it has touched.
+    # Behind that table it embeds the same data machine-readably:
+    #
+    #   <!-- codeant-review-status:[{"label":"Reviewed your PR",
+    #        "commit":"bb7d4e2…","started":"2026-08-26T16:16:40.854977",
+    #        "finished":"2026-08-26T16:19:51.141986","done":true}, …] -->
+    #
+    # Full 40-char SHA, per-commit started/finished/done. Everything needed to
+    # ask whether an approval was produced by the analysis it claims to report
+    # was already on the PR; nothing read it. Two consequences followed, both
+    # live on still-point PR #676: the in-flight row satisfied
+    # status_comment_names_head (the table contains HEAD"s SHA and clears
+    # min_chars), which set external_evidence_on_head, which suppressed BOTH
+    # temporal_inversion and capability_failure — a run marker certifying
+    # itself, the exact circularity the header warns against. And the prose
+    # marker regex never matched CodeAnt"s wording ("Reviewing your PR" has no
+    # "is " before it), so $marker was structurally null for that bot on every
+    # PR and temporal_inversion was dead code there regardless.
+    #
+    # Scoped to STRUCTURED markers on purpose. The prose regex, $marker,
+    # $descriptive_ev and every #875 shape are left byte-for-byte alone: this
+    # adds a discriminator that reads data the reviewer volunteered, rather than
+    # widening a heuristic that guesses from wording.
+    #
+    # Parsing is total-failure-tolerant by construction — `fromjson?` swallows
+    # an unparseable payload and the whole chain yields [], which lands the
+    # reviewer back on exactly today"s behaviour. The capture runs to the first
+    # `-->` (lazy), so a comment carrying several HTML comments cannot merge
+    # them; whitespace is trimmed because the marker is pretty-printed in some
+    # revisions and inline in others.
+    def run_markers:
+        [ ((. // "") | scan("<!--[[:space:]]*codeant-review-status:([\\s\\S]*?)-->"))
+          | (if type == "array" then (.[0] // "") else . end)
+          | sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; "")
+          | (fromjson? // empty)
+          | (if type == "array" then .[] else empty end)
+          | select(type == "object")
+          | { commit:   ((.commit // "") | tostring | ascii_downcase),
+              label:    ((.label // "") | tostring),
+              started:  (.started  | canon_marker_ts),
+              finished: (.finished | canon_marker_ts),
+              done:     (.done == true) }
+          | select(.commit != "") ];
+
     # ---- Conversation index: one pass, all regex work done here -------------
     #
     # The echo scan is handed updated_at, NOT created_at (BugBot review of this
@@ -569,6 +663,21 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             created: (((.created_at // .updated_at) // "") | canon_ts),
             tokens:  $tok,
             names_head: ($tok | tokens_name_head),
+            # This comment"s structured run record FOR HEAD, or null when it
+            # carries no such payload or the payload covers only other commits.
+            # `last` because the payload lists commits in the order CodeAnt
+            # touched them, so the final HEAD row is the current one — including
+            # when a re-review of the same SHA has reopened it. Deliberately not
+            # "prefer the done row": that would let a completed earlier run vouch
+            # for an analysis that is currently back in flight, which is the
+            # grant direction. Prefix matching in both directions mirrors
+            # tokens_name_head, so a short SHA in the payload still matches.
+            run_marker_head: (
+              [ ($b | run_markers)[]
+                | . as $m
+                | select(($sha | length) > 0
+                         and (($sha | startswith($m.commit)) or ($m.commit | startswith($sha)))) ]
+              | last),
             # "the review has started" markers, used for temporal inversion
             # "the review has started" markers. Deliberately NOT "review
             # triggered" (BugBot review, PR #883): that is the request being
@@ -705,8 +814,20 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # filter the notice would make itself substantive AND, by landing in $ev
         # below, suppress the capability_failure check that exists to catch it.
         # Priority order is documented failure-before-substance; this enforces it.
+        #
+        # An IN-FLIGHT run-status table is not one of those status comments
+        # (issue #1365). Its HEAD row exists the moment analysis is queued, so
+        # it clears min_chars and contains HEAD"s SHA while nothing has been
+        # read yet — the comment says "work began", which the header already
+        # rules out as self-evidence, and admitting it here is what let a
+        # pre-analysis stub manufacture its own external evidence. Only a
+        # structured payload can trip this: `run_marker_head` is null both for
+        # reviewers that publish none and for a payload that does not cover
+        # HEAD, so every pre-#1365 shape — CodeRabbit"s walkthrough, CodeAnt"s
+        # completed #876 re-review table — is admitted exactly as before.
         | ( [ $mine[]
-              | select(.len >= $min_chars and .names_head and (.failure | not)) ] ) as $status_ev
+              | select(.len >= $min_chars and .names_head and (.failure | not)
+                       and (.run_marker_head == null or .run_marker_head.done)) ] ) as $status_ev
         | (($status_ev | length) > 0)                                      as $names_head
 
         # A run-start or fixed completion marker cannot serve as its own
@@ -839,9 +960,52 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             and ($ext_substantive | not) )                                 as $inversion
         | ( $ap != null and $fail != null )                                as $cap_fail
 
+        # This reviewer"s structured run record for HEAD, taken from its LATEST
+        # comment carrying one — the table is edited in place, so .ts
+        # (updated_at) is the dimension that tracks its current contents.
+        | ( [ $mine[] | select(.run_marker_head != null) ]
+            | sort_by(.ts) | last | .run_marker_head )                     as $runmark
+
+        # Pre-run approval (issue #1365): the approval is not inside the run
+        # that supposedly produced it. Two rejected shapes, one accepted:
+        #
+        #   done == false            -> the analysis for HEAD is still running.
+        #                               A verdict cannot precede its own work.
+        #   ap_ts < started          -> the approval predates the run start. All
+        #                               five CodeAnt APPROVEDs on PR #676 are
+        #                               this shape, by 27s to 6m54s.
+        #   done and ap_ts >= started -> counts.
+        #
+        # The lower bound is the run START, not its finish, and that is
+        # deliberate: CodeAnt stamps `finished` when it rewrites the status
+        # table, AFTER posting its verdict object (observed on a5670b7 —
+        # COMMENTED 16:12:07, finished 16:12:21), so a finish-based bound would
+        # reject genuine approvals. `done` guarantees a verdict exists;
+        # `>= started` guarantees this run produced it. Both together reject
+        # every stub without touching the genuine shape.
+        #
+        # NOT suppressed by $ext_substantive, unlike $inversion and $fail. Those
+        # two suppress because external work redeems an approval whose body is
+        # merely thin. Here the suppressing evidence WAS the marker comment
+        # itself — that circle is the defect — and more fundamentally, evidence
+        # that the reviewer eventually did the work does not make an approval
+        # posted before that work a report of it. The correct resolution is the
+        # verdict CodeAnt posts afterwards, which arrives as its own review
+        # object and is evaluated on its own terms.
+        #
+        # Degrades rather than blocks when the record is unusable: no marker for
+        # HEAD, or a done run with no parseable `started`, yields false and the
+        # reviewer is judged exactly as it was pre-#1365.
+        | ( if ($ap == null or $runmark == null or $ap_ts == "") then false
+            elif ($runmark.done | not) then true
+            elif ($runmark.started == "") then false
+            else ($ap_ts < $runmark.started)
+            end )                                                          as $pre_run
+
         | ( [ (if ($ap != null and ($substantive | not)) then "no_substantive_footprint" else empty end),
               (if ($ap != null and $mismatch) then "self_report_mismatch" else empty end),
               (if $inversion then "temporal_inversion" else empty end),
+              (if $pre_run then "pre_run_approval" else empty end),
               (if $cap_fail then "capability_failure" else empty end) ] )  as $disq
 
         | { key: $login,
@@ -865,6 +1029,13 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               # substitution is 1:1, so truncating first gives the identical
               # 160-char result while never scanning a large body.
               capability_failure_text:   (($fail.body // "") | .[0:160] | gsub("[[:cntrl:]]"; " ")),
+              pre_run_approval:          $pre_run,
+              run_started_at:            (($runmark.started) // ""),
+              run_finished_at:           (($runmark.finished) // ""),
+              # null (not false) when this reviewer published no structured run
+              # record for HEAD, so a consumer can tell "no record" from "record
+              # says the run is unfinished".
+              run_done:                  (if $runmark == null then null else $runmark.done end),
               substantive:               $substantive,
               counts_as_coverage:        ($ap != null and $substantive and ($disq | length) == 0),
               disqualified_by:           $disq,
@@ -895,6 +1066,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         mismatched:        [ $map | to_entries[] | select(.value.approved_on_head and .value.self_report_mismatch) | .key ],
         inverted:          [ $map | to_entries[] | select(.value.temporal_inversion) | .key ],
         capability_failed: [ $map | to_entries[] | select(.value.capability_failure) | .key ],
+        pre_run:           [ $map | to_entries[] | select(.value.pre_run_approval) | .key ],
         corroborating:     $corroborating
       }
 ') || {
