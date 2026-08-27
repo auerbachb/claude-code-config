@@ -254,21 +254,34 @@ served() { printf '%s\n' "$1" >> "$STUB_CALLS"; }
 # production while this stub happily answered. Refuse to answer without them.
 [[ "${GH_REPO:-}" == "$EXPECT_REPO" ]] || bad "GH_REPO '${GH_REPO:-}' != expected '$EXPECT_REPO'"
 [[ -n "${GH_TOKEN:-}" ]] || bad "GH_TOKEN is empty — the real gh would be unauthenticated"
+# The repository is not a free parameter of these URLs: real gh substitutes the
+# `{owner}/{repo}` placeholder from GH_REPO, so the only production-correct
+# spellings are that placeholder or GH_REPO written out. The `repos/*/…` globs
+# below wildcard that segment, so a helper edit that hardcoded some other
+# owner/repo would query the wrong repository in production while this stub
+# happily served it the fixture (CodeAnt, PR #1377).
+check_repo() {
+  [[ "$1" == '{owner}/{repo}' || "$1" == "$EXPECT_REPO" ]] \
+    || bad "api repo path '$1' is neither '{owner}/{repo}' nor '$EXPECT_REPO'"
+}
 PAGINATE=0
 for arg in "$@"; do [[ "$arg" == "--paginate" ]] && PAGINATE=1; done
 for arg in "$@"; do
   case "$arg" in
     repos/*/commits/*/check-runs*)
+      rest="${arg#repos/}"; check_repo "${rest%%/commits/*}"
       got="${arg#*/commits/}"; got="${got%%/check-runs*}"
       [[ "$got" == "$EXPECT_SHA" ]] || bad "check-runs sha '$got' != expected '$EXPECT_SHA'"
       served "check-runs:$got"
       cat "$FIXTURE_CHECK_RUNS_JSON"; exit 0 ;;
     repos/*/commits/*)
+      rest="${arg#repos/}"; check_repo "${rest%%/commits/*}"
       got="${arg#*/commits/}"; got="${got%%\?*}"
       [[ "$got" == "$EXPECT_SHA" ]] || bad "commit sha '$got' != expected '$EXPECT_SHA'"
       served "commit:$got"
       printf '%s\n' "$FIXTURE_HEAD_TS"; exit 0 ;;
     repos/*/issues/*/comments*)
+      rest="${arg#repos/}"; check_repo "${rest%%/issues/*}"
       got="${arg#*/issues/}"; got="${got%%/comments*}"
       [[ "$got" == "$EXPECT_PR" ]] || bad "comments pr '$got' != expected '$EXPECT_PR'"
       # Explicit test, not ${PAGINATE:+…}: PAGINATE is "0" when the flag is
