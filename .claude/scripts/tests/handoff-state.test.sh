@@ -41,7 +41,13 @@ check_eq() {
   fi
 }
 
-run() { bash "$SCRIPT" "$@"; }
+# --legacy-flat on every call (issue #1366): this suite asserts against the flat
+# HANDOFF_FILE above, and an omitted scope no longer means "flat" — it derives
+# owner/repo from the cwd (this checkout) or exits 2. Path scoping is
+# handoff-scoping.test.sh's subject; locking, RMW, and dedup semantics are this
+# one's, and they are identical on either path. Declaring the flat path also
+# keeps a standing assertion that --legacy-flat reaches it for every mode.
+run() { bash "$SCRIPT" --legacy-flat "$@"; }
 reset_handoff() { rm -rf "$HANDOFF_FILE" "$LOCK_DIR"; }
 
 SEED_JSON='{"schema_version":"1.0","pr_number":99,"head_sha":"aaa","reviewer":"cr",

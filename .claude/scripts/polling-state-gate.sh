@@ -378,7 +378,13 @@ write_checkpoint_handoff() {
   # this call, --init is a no-op that preserves Phase A's data (Greptile P1, #682).
   # Pass --owner-repo when available so the file lands in the scoped subdirectory
   # (issue #655: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json).
-  local or_flag=()
+  # Scope is always declared explicitly (issue #1366): handoff-state.sh no
+  # longer falls back to the flat path on omission, and this script's cwd is not
+  # necessarily $canon, so letting it derive could name a different repo than
+  # the one this checkpoint belongs to. An empty owner_repo here means both
+  # `gh repo view` and repo_identity() failed — genuinely repo-less, which is
+  # what the legacy flat path is for.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --init "$PR_NUMBER" "$json_body"; then
     echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
@@ -497,7 +503,11 @@ ensure_session() {
 
   # Resolve the canonical handoff path (scoped when owner_repo is known).
   # Use handoff-state.sh --path so path computation is in one place (issue #655).
-  local or_flag=()
+  # --legacy-flat is the explicit default here (issue #1366): with no owner_repo
+  # this checkpoint IS the repo-less case the flat path exists for, and omitting
+  # the scope would now make handoff-state.sh derive one from THIS script's cwd,
+  # which is not necessarily $canon — a different repo's path, or exit 2.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   local handoff_path
   handoff_path="$("$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --path "$PR_NUMBER")"
@@ -515,7 +525,11 @@ ensure_session() {
     # Route through handoff-state.sh --set so the whole RMW cycle is under the advisory lock
     # (issue #682 — same fix as #639 applied to session-state.json).
     # Pass --owner-repo when path is the scoped one so we hold the right lock.
-    local set_or_flag=()
+    # Otherwise we are deliberately refreshing an already-flat handoff, so say
+    # --legacy-flat rather than omitting the scope: omission now derives or
+    # refuses (issue #1366), and either outcome would move this write off the
+    # very file the branch above chose.
+    local set_or_flag=(--legacy-flat)
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
     if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
       echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2

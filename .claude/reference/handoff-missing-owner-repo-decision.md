@@ -1,8 +1,96 @@
-# Missing `--owner-repo` on a handoff write — warn, don't refuse (issue #1302)
+# Missing `--owner-repo` on a handoff write (issues #1302, #1366)
 
 Reference material for `.claude/scripts/handoff-state.sh`. Not auto-loaded; the
 enforced behavior lives in the script and in
-`.claude/scripts/tests/handoff-scoping.test.sh` §12–14.
+`.claude/scripts/tests/handoff-scoping.test.sh` §12–14, §17.
+
+> **Status: the #1302 rule below is SUPERSEDED by issue #1366.** Omitting
+> `--owner-repo` no longer warns-and-writes-flat; it **derives** owner/repo, and
+> refuses when it cannot. The #1302 analysis is kept because it is still the
+> record of *why* the flat path may not simply be removed, and its rejection of
+> refusal still stands. See "Supersession" immediately below.
+
+## Supersession: derive, don't warn (issue #1366)
+
+The warning shipped and was not enough. On 2026-08-26 a Phase B agent's first
+batch of handoff updates landed flat again, on a sibling repo (still-point
+PR #676) — warning emitted, exit 0, updates invisible. The agent caught it only
+by hand-checking the scoped file afterward, then had to redo every write and
+delete the stray artifact.
+
+A one-line stderr warning does not stop a write that reports success. Agents run
+these calls inside tool invocations where stderr is one line among many and the
+operation's own exit code says everything worked. **The defect was never the
+missing warning — it was that the wrong path stayed reachable by omission, and
+omission was the easy default.**
+
+The rule now:
+
+> `--owner-repo` absent → resolve owner/repo from `$CLAUDE_SESSION_REPO`, else
+> the cwd's `origin` (`repo_identity()`, the same resolver the polling gate
+> uses). Every mode — `--path`, `--get`, `--create`, `--init`, `--set`,
+> `--append`, `--delete` — resolves the **scoped** path.
+>
+> Nothing resolves → **exit 2, having written nothing**, naming both
+> `--owner-repo` and the legacy escape.
+>
+> The flat path is reached only by explicit request: `--legacy-flat`, or
+> `CLAUDE_HANDOFF_FLAT_OK=1` for a caller that cannot add a flag. Both silent.
+> An explicit `--owner-repo` **overrides** the environment variable and says so:
+> the variable is ambient, and letting it swallow a call that named its repo
+> would recreate this same defect one scope wider.
+
+### Why derivation clears the bar refusal did not
+
+"Always refuse when a repo is resolvable" was rejected below, correctly, because
+it breaks the callers the flat path legitimately exists for. **Derivation was
+never considered, and it is not the same trade.** Refusal removes the path;
+derivation removes only the *default*:
+
+- Repo-resolvable callers get the path their readers actually use, silently —
+  no failure to absorb, because the derived path is the one they wanted.
+- The deliberate flat callers keep working by naming their intent. They are few
+  and all in-repo: `polling-state-gate.sh` (checkpoint `--init`, the `--path`
+  probe, and the already-flat `--set` refresh), `dismiss-stale-bot-changes.sh`'s
+  flat append, `/wrap`'s flat-layout delete sweep, `handoff-migrate.sh`.
+- Only the genuinely repo-less caller now fails — and what it used to do was
+  write a file no reader ever opens. Trading a silent no-op for a loud refusal
+  is the whole point.
+
+Deriving over an un-migrated flat file, when no scoped file exists yet, warns
+and names `handoff-migrate.sh` rather than orphaning it. Explicit `--owner-repo`
+callers stay quiet: they already chose the scoped path knowingly.
+
+**Which resolver, and its one known divergence.** Derivation reuses
+`repo_identity()` (`lib/pr-scope-resolver.sh`) rather than asking `gh`: no
+network call on a lock helper, and it agrees with `session-state.sh --repo-key`,
+which uses the same origin-derived identity.
+
+It does **not** universally agree with `polling-state-gate.sh`.
+`ensure_session` prefers `gh repo view --json nameWithOwner` and falls back to
+`repo_identity()` only when `gh` fails, then passes the result as
+`--owner-repo`. For an ordinary GitHub `origin` the two agree. For a clone whose
+`origin` is a **local filesystem path**, they do not:
+
+```text
+origin                            /Users/…/develop/claude-code-config
+repo_identity($PWD)               develop/claude-code-config   # last two segments
+gh repo view --json nameWithOwner auerbachb/claude-code-config
+```
+
+Such a clone gets two handoff directories — the gate writing under
+`auerbachb/…`, an omitting `handoff-state.sh` call under `develop/…` — both
+exit 0. Mitigations, in order: every agent-spawned phase passes `--owner-repo`
+explicitly and never relies on derivation; a derived **write** now prints a note
+naming the scope and where it came from, so the divergence is visible rather
+than silent; and the Phase A/B exit checks assert that
+`find ~/.claude/handoffs -name 'pr-N-handoff.json'` returns exactly one path.
+Making `handoff-state.sh` call `gh` too was rejected — a network dependency
+inside the lock helper, on a path that must work offline.
+
+---
+
+_The remainder of this file is the original #1302 record._
 
 ## The situation
 

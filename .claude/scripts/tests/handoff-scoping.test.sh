@@ -7,7 +7,10 @@
 #   - --create / --get with scoped path
 #   - Read-time owner_repo assertion (soft warn, not fail)
 #   - Migration (handoff-migrate.sh): moves flat files, never deletes, idempotent
-#   - Backward compat: flat fallback when --owner-repo not provided
+#   - Scope resolution (issue #1366): --owner-repo, then $CLAUDE_SESSION_REPO,
+#     then the cwd origin; underivable + no flag refuses and writes nothing
+#   - Legacy flat path reachable only via --legacy-flat / CLAUDE_HANDOFF_FLAT_OK=1
+#   - --set rejects raw jq expressions rather than storing them (issue #1357)
 #
 # Discovered by CI auto-detection (hook-scripts.yml) — no workflow edits needed.
 
@@ -51,13 +54,24 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 1. --path mode — flat (no --owner-repo)
+# 1. --path mode — flat, reached by the explicit legacy escape (issue #1366)
+#
+#    Omitting --owner-repo no longer selects this path; it derives owner/repo
+#    from the cwd or refuses (tests 13 and 14). --legacy-flat is now the only
+#    flag-shaped way to ask for the flat layout.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 1. --path: flat (no --owner-repo) ==="
-path_flat="$("$HANDOFF_STATE" --path 42)"
-check "--path flat returns correct path" \
+echo "=== 1. --path: flat (--legacy-flat) ==="
+path_flat="$("$HANDOFF_STATE" --legacy-flat --path 42)"
+check "--path --legacy-flat returns the flat path" \
   "${HANDOFF_DIR}/pr-42-handoff.json" "$path_flat"
+
+# The two scope flags contradict each other, so asking for both is a usage
+# error rather than a silent precedence rule.
+both_rc=0
+both_err="$("$HANDOFF_STATE" --owner-repo "alice/myrepo" --legacy-flat --path 42 2>&1 >/dev/null)" || both_rc=$?
+check "--owner-repo + --legacy-flat exits 2" "2" "$both_rc"
+check_contains "usage error names both flags" "mutually exclusive" "$both_err"
 
 # ---------------------------------------------------------------------------
 # 2. --path mode — scoped (with --owner-repo)
@@ -145,17 +159,34 @@ sha_warn="$("$HANDOFF_STATE" --owner-repo "charlie/repo" --get 77 2>/dev/null | 
 check "content still returned despite mismatch" "zzz" "$sha_warn"
 
 # ---------------------------------------------------------------------------
-# 6. Backward compat: flat path when --owner-repo not provided
+# 6. Legacy escape: --legacy-flat still reaches the flat path, silently
+#    (issue #1366 — the flat layout survives, only its by-omission default is
+#    gone, so pre-migration callers keep working when they say what they mean.)
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 6. Backward compat: flat path ==="
+echo "=== 6. Legacy escape: --legacy-flat round-trip ==="
 BODY_FLAT='{"schema_version":"1.0","pr_number":99,"head_sha":"cccc","phase_completed":"B"}'
-"$HANDOFF_STATE" --create 99 "$BODY_FLAT"
+flat_err="$("$HANDOFF_STATE" --legacy-flat --create 99 "$BODY_FLAT" 2>&1 >/dev/null)"
+check "--legacy-flat write is silent" "" "$flat_err"
 if [[ -f "${HANDOFF_DIR}/pr-99-handoff.json" ]]; then
-  ok "flat file created when no --owner-repo"
+  ok "flat file created with --legacy-flat"
 else fail "flat file missing"; fi
-sha_flat="$("$HANDOFF_STATE" --get 99 | jq -r '.head_sha')"
-check "flat file readable without --owner-repo" "cccc" "$sha_flat"
+sha_flat="$("$HANDOFF_STATE" --legacy-flat --get 99 | jq -r '.head_sha')"
+check "flat file readable with --legacy-flat" "cccc" "$sha_flat"
+
+# The env-var form of the same escape, for callers that cannot add a flag.
+sha_flat_env="$(CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --get 99 | jq -r '.head_sha')"
+check "CLAUDE_HANDOFF_FLAT_OK=1 reaches the same file" "cccc" "$sha_flat_env"
+
+# ...but it must never override a call that named its repo. The variable is
+# ambient (exported around flat-layout sweeps); silently swallowing an explicit
+# --owner-repo inside one would recreate the wrong-path write #1366 closes.
+env_vs_flag="$(CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --owner-repo "alice/myrepo" --path 99)"
+check "explicit --owner-repo beats CLAUDE_HANDOFF_FLAT_OK" \
+  "${HANDOFF_DIR}/alice/myrepo/pr-99-handoff.json" "$env_vs_flag"
+env_vs_flag_err="$(CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --owner-repo "alice/myrepo" --path 99 2>&1 >/dev/null)"
+check_contains "and says the variable was overridden" \
+  "CLAUDE_HANDOFF_FLAT_OK" "$env_vs_flag_err"
 
 # ---------------------------------------------------------------------------
 # 7. --set with scoped path
@@ -388,16 +419,20 @@ echo "=== 12b. Unscoped write diverges from the scoped record ==="
 CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --set 1302 '.reviewer=bugbot'
 
 check "unscoped --set wrote the flat path" \
-  "bugbot" "$("$HANDOFF_STATE" --get 1302 | jq -r '.reviewer')"
+  "bugbot" "$("$HANDOFF_STATE" --legacy-flat --get 1302 | jq -r '.reviewer')"
 check "scoped record was NOT updated by the unscoped write" \
   "greptile" "$("$HANDOFF_STATE" --owner-repo "acme/widgets" --get 1302 | jq -r '.reviewer')"
 
 # ---------------------------------------------------------------------------
-# 13. Soft warning when --owner-repo is omitted but a repo is resolvable
-#     (issue #1302 AC#4). Warn, never refuse — exit must stay 0.
+# 13. Omitted --owner-repo DERIVES the scoped path from the cwd (issue #1366).
+#
+#     This supersedes #1302's warn-and-proceed: a stderr line does not stop a
+#     write that reports success, so the wrong path stayed reachable by the easy
+#     default. Derivation removes the default instead of the path. Every mode
+#     must agree, or a --path probe would name a file --create never wrote.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 13. Flat-path warning in a resolvable-repo context ==="
+echo "=== 13. Omitted --owner-repo derives the scoped path ==="
 
 # A real checkout with an `origin` remote, so repo_identity() yields owner/repo.
 FAKE_REPO="${TMP_DIR}/fake-checkout"
@@ -405,61 +440,100 @@ mkdir -p "$FAKE_REPO"
 git -C "$FAKE_REPO" init -q 2>/dev/null
 git -C "$FAKE_REPO" remote add origin "https://github.com/acme/widgets.git" 2>/dev/null
 
+SCOPED_1400="${HANDOFF_DIR}/acme/widgets/pr-1400-handoff.json"
+
 # `|| rc=$?` keeps `set -e` from aborting on a non-zero exit AND captures the
 # real code — a bare `$?` after the assignment can only ever read 0 here.
-warn_flat_rc=0
-warn_flat="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --create 1400 '{"pr_number":1400}' 2>&1 >/dev/null)" || warn_flat_rc=$?
-check "warned write still exits 0" "0" "$warn_flat_rc"
-check_contains "warning names the flat path" \
-  "pr-1400-handoff.json" "$warn_flat"
-check_contains "warning names the resolved repo" \
-  "acme/widgets" "$warn_flat"
-check_contains "warning names the flag to pass" \
-  "--owner-repo" "$warn_flat"
+derive_rc=0
+derive_err="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --create 1400 '{"pr_number":1400,"head_sha":"drv"}' 2>&1 >/dev/null)" || derive_rc=$?
+check "derived write exits 0" "0" "$derive_rc"
+# Not silent: a derived write names its scope, so a write from a checkout whose
+# origin is not the PR's repo is visible instead of merely succeeding (§16b(b)).
+check_contains "derived write names its derived scope" "acme/widgets" "$derive_err"
+if [[ -f "$SCOPED_1400" ]]; then
+  ok "derived write landed on the SCOPED path"
+else fail "derived write did not create $SCOPED_1400"; fi
 if [[ -f "${HANDOFF_DIR}/pr-1400-handoff.json" ]]; then
-  ok "warned write still landed on the flat path (warn, not refuse)"
-else fail "warned write did not create the flat file — it refused instead of warning"; fi
+  fail "derived write also created a flat file — the by-omission path is still live"
+else ok "derived write created no flat file"; fi
 
-# A scoped write in the same checkout must stay silent.
+# Every mode must resolve the same file the write chose.
+check "--path agrees with the derived write" \
+  "$SCOPED_1400" "$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --path 1400)"
+check "--get reads the derived file" "drv" \
+  "$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --get 1400 | jq -r '.head_sha')"
+(cd "$FAKE_REPO" && "$HANDOFF_STATE" --set 1400 '.head_sha=drv2')
+check "--set updates the derived file" "drv2" "$(jq -r '.head_sha' "$SCOPED_1400")"
+(cd "$FAKE_REPO" && "$HANDOFF_STATE" --append 1400 "threads_replied" "t-1")
+check "--append updates the derived file" "t-1" "$(jq -r '.threads_replied[0]' "$SCOPED_1400")"
+(cd "$FAKE_REPO" && "$HANDOFF_STATE" --init 1400 '{"pr_number":9999}')
+check "--init no-ops on the derived file" "1400" "$(jq -r '.pr_number' "$SCOPED_1400")"
+(cd "$FAKE_REPO" && "$HANDOFF_STATE" --delete 1400)
+if [[ ! -f "$SCOPED_1400" ]]; then ok "--delete removes the derived file"
+else fail "--delete did not remove $SCOPED_1400"; fi
+
+# $CLAUDE_SESSION_REPO outranks cwd derivation (session-state.sh precedence).
+check "\$CLAUDE_SESSION_REPO outranks the cwd origin" \
+  "${HANDOFF_DIR}/other/repo/pr-1402-handoff.json" \
+  "$(cd "$FAKE_REPO" && CLAUDE_SESSION_REPO="Other/Repo" "$HANDOFF_STATE" --path 1402)"
+
+# A set-but-unusable override is a refusal, not a silent fall-through to cwd:
+# answering a different question than the one configured is how #1366 happened.
+badenv_rc=0
+badenv_err="$(cd "$FAKE_REPO" && CLAUDE_SESSION_REPO="notaslug" "$HANDOFF_STATE" --create 1403 '{"pr_number":1403}' 2>&1 >/dev/null)" || badenv_rc=$?
+check "unusable \$CLAUDE_SESSION_REPO exits 2" "2" "$badenv_rc"
+check_contains "and names the variable" "CLAUDE_SESSION_REPO" "$badenv_err"
+
+# A scoped write in the same checkout stays silent (it named its own repo).
 quiet_scoped="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --owner-repo "acme/widgets" --create 1401 '{"pr_number":1401}' 2>&1 >/dev/null)"
-check "scoped write emits no flat-path warning" "" "$quiet_scoped"
+check "explicitly scoped write is silent" "" "$quiet_scoped"
 
-# Read modes never warn — --path is used by callers deliberately probing flat.
-quiet_path="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --path 1400 2>&1 >/dev/null)"
-check "--path emits no flat-path warning" "" "$quiet_path"
-quiet_get="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --get 1400 2>&1 >/dev/null)"
-check "--get emits no flat-path warning" "" "$quiet_get"
-
-# Documented escape hatch for callers that mean the flat path.
-quiet_optout="$(cd "$FAKE_REPO" && CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --set 1400 '.head_sha=x' 2>&1 >/dev/null)"
-check "CLAUDE_HANDOFF_FLAT_OK=1 silences the warning" "" "$quiet_optout"
+# Deriving over an un-migrated flat file names it, rather than orphaning it.
+: > "${HANDOFF_DIR}/pr-1404-handoff.json"
+printf '%s\n' '{"pr_number":1404}' > "${HANDOFF_DIR}/pr-1404-handoff.json"
+migrate_warn="$(cd "$FAKE_REPO" && "$HANDOFF_STATE" --path 1404 2>&1 >/dev/null)"
+check_contains "derivation over a flat file names handoff-migrate.sh" \
+  "handoff-migrate.sh" "$migrate_warn"
+check_contains "and names the un-migrated file" \
+  "pr-1404-handoff.json" "$migrate_warn"
 
 # ---------------------------------------------------------------------------
-# 14. No-repo context still writes the flat path silently, unchanged
-#     (issue #1302 Test Plan item 5 — legacy callers must not regress).
+# 14. No resolvable repo + no flag: refuse loudly, write nothing (issue #1366).
+#
+#     This is the case the flat path used to absorb. A write nobody reads is
+#     worse than a refusal, because it reports success — so the repo-less caller
+#     is now the one that must say --legacy-flat.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== 14. No-repo context: flat path, no warning, no failure ==="
+echo "=== 14. Underivable context: refuse, write nothing ==="
 
 NOREPO_DIR="${TMP_DIR}/not-a-repo"
 mkdir -p "$NOREPO_DIR"
 
 norepo_rc=0
 norepo_err="$(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --create 1500 '{"pr_number":1500,"head_sha":"nr"}' 2>&1 >/dev/null)" || norepo_rc=$?
-check "no-repo write exits 0" "0" "$norepo_rc"
-check "no-repo write emits no warning" "" "$norepo_err"
+check "no-repo write exits non-zero" "2" "$norepo_rc"
+check_contains "refusal says nothing was written" "Nothing was read or written" "$norepo_err"
+check_contains "refusal names the flag to pass" "--owner-repo" "$norepo_err"
+check_contains "refusal names the legacy escape" "--legacy-flat" "$norepo_err"
 if [[ -f "${HANDOFF_DIR}/pr-1500-handoff.json" ]]; then
-  ok "no-repo write created the flat file"
-else fail "no-repo write did not create the flat file"; fi
-check "no-repo flat file readable" "nr" \
-  "$(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --get 1500 | jq -r '.head_sha')"
+  fail "refused write still created the flat file"
+else ok "refused write created no flat file"; fi
 
 # A git checkout with no `origin` also has no owner/repo to name.
 NOORIGIN_DIR="${TMP_DIR}/no-origin"
 mkdir -p "$NOORIGIN_DIR"
 git -C "$NOORIGIN_DIR" init -q 2>/dev/null
-noorigin_err="$(cd "$NOORIGIN_DIR" && "$HANDOFF_STATE" --set 1500 '.head_sha=nr2' 2>&1 >/dev/null)"
-check "origin-less checkout emits no warning" "" "$noorigin_err"
+noorigin_rc=0
+(cd "$NOORIGIN_DIR" && "$HANDOFF_STATE" --set 1500 '.head_sha=nr2' >/dev/null 2>&1) || noorigin_rc=$?
+check "origin-less checkout also refuses" "2" "$noorigin_rc"
+
+# The repo-less caller keeps working by saying what it means.
+norepo_flat_rc=0
+(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --legacy-flat --create 1500 '{"pr_number":1500,"head_sha":"nr"}') || norepo_flat_rc=$?
+check "--legacy-flat works from a non-repo cwd" "0" "$norepo_flat_rc"
+check "no-repo flat file readable" "nr" \
+  "$(cd "$NOREPO_DIR" && "$HANDOFF_STATE" --legacy-flat --get 1500 | jq -r '.head_sha')"
 
 # ---------------------------------------------------------------------------
 # 15. dismiss-stale-bot-changes.sh --owner-repo scopes the handoff append
@@ -553,6 +627,119 @@ GHSTUB
     ok "flat dismissal did not seed a scoped handoff"
   else fail "flat dismissal wrote a scoped handoff the caller never asked for"; fi
 fi
+
+# ---------------------------------------------------------------------------
+# 16b. Derivation hazards that must not be silent (issue #1366 review round).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 16b. Derived-scope hazards ==="
+
+DERIVE_REPO="${TMP_DIR}/derive-checkout"
+mkdir -p "$DERIVE_REPO"
+git -C "$DERIVE_REPO" init -q 2>/dev/null
+git -C "$DERIVE_REPO" remote add origin "https://github.com/acme/widgets.git" 2>/dev/null
+
+# (a) An un-migrated flat record + a derived scope = REFUSE every write.
+#     Seeding a scoped file from {} would strand the flat record's other fields
+#     while reporting success — the loss this issue exists to prevent.
+printf '%s\n' '{"pr_number":970,"schema_version":"1.0","reviewer":"cr","findings_fixed":["f1"],"threads_replied":["t1"]}' \
+  > "${HANDOFF_DIR}/pr-970-handoff.json"
+for m in "--set 970 .head_sha=x" "--append 970 threads_replied t2" "--create 970 {}" "--delete 970"; do
+  # shellcheck disable=SC2086
+  d_rc=0; d_err="$(cd "$DERIVE_REPO" && "$HANDOFF_STATE" $m 2>&1 >/dev/null)" || d_rc=$?
+  check "derived write refused: ${m%% *}" "2" "$d_rc"
+  check_contains "  refusal names handoff-migrate.sh" "handoff-migrate.sh" "$d_err"
+done
+if [[ ! -f "${HANDOFF_DIR}/acme/widgets/pr-970-handoff.json" ]]; then
+  ok "no partial scoped record was seeded"
+else fail "a scoped record was seeded despite the refusal"; fi
+check "the flat record is untouched" "f1" \
+  "$(jq -r '.findings_fixed[0]' "${HANDOFF_DIR}/pr-970-handoff.json")"
+# Both explicit escapes get past it.
+(cd "$DERIVE_REPO" && "$HANDOFF_STATE" --legacy-flat --set 970 '.head_sha=flat') >/dev/null 2>&1
+check "--legacy-flat updates the existing record" "flat" \
+  "$(jq -r '.head_sha' "${HANDOFF_DIR}/pr-970-handoff.json")"
+scoped_rc=0
+(cd "$DERIVE_REPO" && "$HANDOFF_STATE" --owner-repo "acme/widgets" --set 970 '.head_sha=scoped') >/dev/null 2>&1 || scoped_rc=$?
+check "--owner-repo starts a scoped record deliberately" "0" "$scoped_rc"
+
+# (b) A derived WRITE names its scope; a derived READ stays silent.
+w_err="$(cd "$DERIVE_REPO" && "$HANDOFF_STATE" --create 971 '{"pr_number":971}' 2>&1 >/dev/null)"
+check_contains "derived write names the derived scope" "acme/widgets" "$w_err"
+check_contains "  and names where it came from" "derived from" "$w_err"
+check "derived read stays silent" "" \
+  "$(cd "$DERIVE_REPO" && "$HANDOFF_STATE" --path 971 2>&1 >/dev/null)"
+
+# (c) An ambient CLAUDE_HANDOFF_FLAT_OK=1 that bypasses a resolvable scope says so.
+#     It is exported around sweeps, so unlike --legacy-flat it can cover calls
+#     its author never considered.
+env_err="$(cd "$DERIVE_REPO" && CLAUDE_HANDOFF_FLAT_OK=1 "$HANDOFF_STATE" --create 972 '{"pr_number":972}' 2>&1 >/dev/null)"
+check_contains "ambient flat-OK note names the bypassed scope" "acme/widgets" "$env_err"
+check "  and it still wrote flat" "972" \
+  "$(jq -r '.pr_number' "${HANDOFF_DIR}/pr-972-handoff.json")"
+
+# (d) Scope flags AFTER the mode flag are rejected, not discarded. Silently
+#     ignoring a misplaced --legacy-flat would send an explicitly-flat write to
+#     the derived scoped path instead.
+for bad in "--path 973 --legacy-flat" "--create 973 {} --owner-repo a/b"; do
+  # shellcheck disable=SC2086
+  t_rc=0; t_err="$(cd "$DERIVE_REPO" && "$HANDOFF_STATE" $bad 2>&1 >/dev/null)" || t_rc=$?
+  check "trailing scope flag rejected: ${bad}" "2" "$t_rc"
+  check_contains "  and explains flag placement" "BEFORE the mode flag" "$t_err"
+done
+
+# ---------------------------------------------------------------------------
+# 17. --set rejects a raw jq expression instead of storing its source text
+#     (issue #1357).
+#
+#     The harm was the SILENT SUCCESS: `.notes + " ..."` stored its own source
+#     over Phase A's notes, exited 0, and was only caught on read-back. A hard
+#     failure leaves the prior value intact, so every case below asserts both
+#     the non-zero exit AND that the field is unchanged.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== 17. --set rejects raw jq expressions (issue #1357) ==="
+
+SET_OR=(--owner-repo "acme/widgets")
+"$HANDOFF_STATE" "${SET_OR[@]}" --create 1357 \
+  '{"pr_number":1357,"notes":"phase A notes","merge_gate_met":false}' >/dev/null
+
+for expr in '.notes + " appended"' '(.threads // [])' '.a|tostring' '.findings | length'; do
+  rc=0
+  err="$("$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 ".notes=${expr}" 2>&1 >/dev/null)" || rc=$?
+  check "rejected: ${expr}" "4" "$rc"
+  check_contains "  names it a raw jq expression" "raw jq expression" "$err"
+done
+check "notes survived every rejection" "phase A notes" \
+  "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 | jq -r '.notes')"
+
+# Genuine strings must still be stored — especially path-shaped ones, which are
+# valid jq SYNTAX (path, divide, path) and would trip a parse-only heuristic.
+for lit in 'Fixed in abc1234' '.github/workflows/ci.yml' '.claude/scripts/x.sh' \
+           'empty' 'length' '2026-08-27T10:00:00Z' '.head_sha' \
+           '(WIP)' '(none)' '(P0)' '(TBD)' \
+           '.github/workflows/ci.yml, .claude/scripts/x.sh' \
+           '.claude/rules/a.md and .claude/rules/b.md'; do
+  lit_rc=0
+  "$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 ".notes=${lit}" >/dev/null 2>&1 || lit_rc=$?
+  check "accepted literal: ${lit}" "0" "$lit_rc"
+  check "  stored verbatim" "$lit" \
+    "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 | jq -r '.notes')"
+done
+
+# Issue #853 must not regress: false/null/numbers stay JSON literals, not the
+# truthy strings "false"/"null" a `jq -e .` probe would have produced.
+"$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 '.merge_gate_met=false' >/dev/null
+"$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 '.reviewer=null' >/dev/null
+"$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 '.count=42' >/dev/null
+check "#853: false/null/42 keep their JSON types" "boolean,null,number" \
+  "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 \
+     | jq -r '[(.merge_gate_met|type),(.reviewer|type),(.count|type)]|join(",")')"
+
+# Escape hatch: a JSON-quoted value takes the --argjson branch untouched.
+"$HANDOFF_STATE" "${SET_OR[@]}" --set 1357 '.notes="literally .a + .b"' >/dev/null
+check "JSON-quoted literal bypasses the guard" "literally .a + .b" \
+  "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 | jq -r '.notes')"
 
 # ---------------------------------------------------------------------------
 # Summary

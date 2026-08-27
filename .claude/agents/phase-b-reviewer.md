@@ -329,9 +329,10 @@ fi
 PR="{{PR_NUMBER}}"
 
 # --owner-repo on EVERY call, matching the --path call in Runtime Context and
-# the --create call in Phase A. Omitting it writes the legacy flat path
-# ~/.claude/handoffs/pr-$PR-handoff.json, which Phase C never reads: it resolves
-# the scoped path and would go on using Phase A's record — wrong reviewer, wrong
+# the --create call in Phase A. Omitting it makes handoff-state.sh DERIVE a
+# scope from this worktree's origin (issue #1366) — which is the right repo only
+# by luck, and silently the wrong one when it is not. Phase C resolves
+# {{OWNER}}/{{REPO}} and would go on using Phase A's record — wrong reviewer, wrong
 # head_sha, missing arrays (issue #1302).
 OR=(--owner-repo {{OWNER}}/{{REPO}})
 
@@ -349,7 +350,7 @@ dismissed_json='{"id":"<comment-id>","reason":"<why>"}'
 "$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "findings_dismissed" "$dismissed_json"
 ```
 
-**Verify before you exit:** `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get "$PR" | jq -r '.phase_completed, .head_sha'` must show `B` and the SHA you just pushed, and `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` must NOT exist. A flat file appearing there means a call lost its `--owner-repo`.
+**Verify before you exit:** `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get "$PR" | jq -r '.phase_completed, .head_sha'` must show `B` and the SHA you just pushed, **and** `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'` must return exactly ONE path — the `{{OWNER}}/{{REPO}}` one. A second match means a call lost its `--owner-repo` and derived a different scope, so your updates are split across two records (issue #1366). Checking only for a *flat* file no longer detects this: since #1366 a lost flag produces a sibling scoped file, not a flat one.
 
 Deduplication rules enforced by `handoff-state.sh`: `string[]` fields by exact value;
 `findings_dismissed` by `.id`. Unknown fields are always preserved (forward compatibility).

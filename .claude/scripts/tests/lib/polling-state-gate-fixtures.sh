@@ -77,7 +77,13 @@ write_handoff() {
   if [[ -n "$owner_repo" ]]; then
     "$_PSG_HANDOFF_HELPER" --owner-repo "$owner_repo" --create "$pr" "$json_body"
   else
-    "$_PSG_HANDOFF_HELPER" --create "$pr" "$json_body"
+    # An empty owner_repo means this fixture wants the LEGACY FLAT handoff —
+    # the pre-migration state several gate tests set up deliberately. Say so
+    # with --legacy-flat (issue #1366): omitting the scope now derives one from
+    # the cwd, which under `bash .claude/scripts/tests/...` is this very repo,
+    # so the fixture would silently write a scoped file and the gate would then
+    # report the flat handoff missing.
+    "$_PSG_HANDOFF_HELPER" --legacy-flat --create "$pr" "$json_body"
   fi
 }
 

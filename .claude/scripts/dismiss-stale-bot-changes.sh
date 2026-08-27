@@ -185,9 +185,14 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     # only when the resolved handoff is NOT the legacy flat path, so a caller
     # deliberately refreshing a flat file still appends to that file rather than
     # silently seeding a second, scoped one.
+    # The flat branch declares itself with --legacy-flat (issue #1366): an
+    # omitted scope no longer means "flat", it means "derive from cwd, or
+    # refuse", and /fixpr runs this from a worktree whose origin need not match
+    # the PR being dismissed. Naming the intent keeps the append on the same
+    # file --handoff-file already resolved to.
     _ds_owner_repo="${OWNER_REPO_ARG:-$OWNER_REPO}"
     _ds_flat_path="${HOME}/.claude/handoffs/pr-${PR_NUMBER}-handoff.json"
-    _ds_or_flag=()
+    _ds_or_flag=(--legacy-flat)
     _ds_target="$_ds_flat_path"
     if [[ -n "$_ds_owner_repo" && "$HANDOFF_FILE" != "$_ds_flat_path" ]]; then
       _ds_or_flag=(--owner-repo "$_ds_owner_repo")

@@ -205,10 +205,13 @@ HANDOFF_JSON="$(jq -n \
 "$HANDOFF_STATE_SH" --owner-repo {{OWNER}}/{{REPO}} --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
 ```
 
-`--owner-repo` is not optional here. Without it the file lands on the legacy flat
-path and Phase B/C — which resolve the scoped path — never see it (issue #1302).
+`--owner-repo` is not optional here. Without it `handoff-state.sh` derives a scope
+from this worktree's origin (issue #1366) — right only by luck, and silently wrong
+otherwise, leaving Phase B/C reading a record you never wrote.
 Confirm before exiting: `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get {{PR_NUMBER}}`
-returns the JSON you just wrote, and no `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` exists.
+returns the JSON you just wrote, and `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'`
+returns exactly ONE path — the `{{OWNER}}/{{REPO}}` one. Two matches mean a call
+derived a different scope and your record is split.
 
 ### Step 7: Print Exit Report and EXIT
 

@@ -402,7 +402,10 @@ Optional handoff path (per `handoff-files.md`, one JSON file per PR):
 # OWNER_REPO is set in Step 0b from the pr-state.sh bundle; the `gh repo view
 # --json nameWithOwner` form works too for a standalone invocation.
 # With --owner-repo: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json
-# Without         : ~/.claude/handoffs/pr-{N}-handoff.json (legacy flat, backward compat)
+# The literal flat path below is only a fallback for when handoff-state.sh cannot
+# be resolved at all — it is NOT what omitting --owner-repo does. Since issue
+# #1366 an omitted scope derives owner/repo from the cwd, or exits 2 writing
+# nothing; reaching the flat path through the helper needs --legacy-flat.
 if [[ -n "${OWNER_REPO:-}" ]]; then
   HANDOFF_JSON="${HANDOFF_JSON:-$([[ -n "$HANDOFF_STATE_SH" ]] && "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --path "$PR_NUMBER" 2>/dev/null || echo "$HOME/.claude/handoffs/pr-${PR_NUMBER}-handoff.json")}"
 else

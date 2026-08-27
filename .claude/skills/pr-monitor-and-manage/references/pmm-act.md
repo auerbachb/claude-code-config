@@ -211,7 +211,7 @@ run_in_background: true
 - Current HEAD SHA from the tick's gate JSON
 - Reviewer classification (`cr`, `bugbot`, or `greptile`) — omit or set to `none` for merge-conflict-only dispatches
 - **Task type:** `fixpr` (CR/CI findings) or `merge-conflict` (conflict resolution) — for `merge-conflict`, include: "Run the `/merge-conflict` skill workflow: fetch main, rebase, run `resolve_merge_conflicts.py`, resolve complex hunks with judgment, commit + force-push. Exit with `OUTCOME: blocked` if conflicts are genuinely unresolvable."
-- Handoff file path: resolve with `handoff-state.sh [--owner-repo owner/repo] --path N` (scoped: `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`; legacy flat during migration)
+- Handoff file path: resolve with `handoff-state.sh --owner-repo owner/repo --path N` (scoped: `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json`; the legacy flat layout needs an explicit `--legacy-flat`)
 - Pre-fetched findings from Step 3 (`FINDINGS_JSON[N]`) — omit for merge-conflict-only dispatches
 - `SKIP_CR_TRIGGER=1` when `$CR_BUDGET_OK == 0`
 - The verbatim `SAFETY:` block from `.claude/rules/safety.md`
