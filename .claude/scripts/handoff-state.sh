@@ -53,6 +53,11 @@
 #   Scope flags (optional, any order, before the mode flag):
 #     --owner-repo <owner/repo>   scope explicitly — preferred at every call site
 #     --legacy-flat               target the legacy flat path instead
+#     --require-existing          --set/--append update only; exit 3 (nothing
+#                                 written) instead of seeding a new record from
+#                                 `{}` when the target is absent. Checked under
+#                                 the lock, so it is race-free where a caller's
+#                                 own -e test is not.
 #
 #   handoff-state.sh [<scope-flags>] --path   <pr_number>        # print canonical path (no lock)
 #   handoff-state.sh [<scope-flags>] --get    <pr_number>        # lock-free read
@@ -96,7 +101,8 @@
 #   0  Success.
 #   2  Usage error (missing args, unknown flag, malformed path=value,
 #      unresolvable scope — see REPO SCOPING).
-#   3  Handoff file not found (--get only; other modes create/seed from {}).
+#   3  Handoff file not found (--get always; --set/--append only under
+#      --require-existing, which otherwise create/seed from {}).
 #   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
 #      unevaluated jq expression rather than data (issue #1357) — the file is
 #      left unmodified. Evaluate the expression first and pass the result.
@@ -184,6 +190,7 @@ JSON_BODY=""
 OWNER_REPO=""
 OWNER_REPO_EXPLICIT=""
 LEGACY_FLAT=0
+REQUIRE_EXISTING=0
 SCOPE_SOURCE=""
 
 # Print the whole leading comment block. Driven by the comment prefix rather
@@ -215,6 +222,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --legacy-flat)
       LEGACY_FLAT=1
+      shift
+      ;;
+    --require-existing)
+      REQUIRE_EXISTING=1
       shift
       ;;
     *)
@@ -320,7 +331,7 @@ esac
 if [[ $# -gt "$_expected_argc" ]]; then
   shift "$_expected_argc"
   echo "handoff-state.sh: unexpected trailing argument(s) after --${MODE} ${PR_NUMBER}: $*" >&2
-  echo "handoff-state.sh: scope flags (--owner-repo, --legacy-flat) must come BEFORE the mode flag — e.g. 'handoff-state.sh --legacy-flat --${MODE} ${PR_NUMBER} ...'. Nothing was read or written (issue #1366)." >&2
+  echo "handoff-state.sh: leading flags (--owner-repo, --legacy-flat, --require-existing) must come BEFORE the mode flag — e.g. 'handoff-state.sh --legacy-flat --${MODE} ${PR_NUMBER} ...'. Nothing was read or written (issue #1366)." >&2
   exit 2
 fi
 
@@ -508,6 +519,27 @@ _file_dir="$(dirname "$HANDOFF_FILE")"
 mkdir -p "$_file_dir"
 
 state_lock_acquire "$HANDOFF_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
+
+# --require-existing: refuse to CREATE the record, only to update one.
+#
+# --set/--append seed from `{}` when the target is absent, which makes them
+# silently creating operations. A caller that has already decided "no handoff,
+# nothing to update" cannot express that today: it tests -e itself, outside this
+# lock, and a delete or migration landing in that window turns its skip into a
+# partial record holding only the field it appended — the same `{}`-seeded
+# split this file refuses for un-migrated flat records above (issue #1366).
+#
+# Checked HERE, inside the lock, because a caller-side test can only ever be a
+# TOCTOU (CodeAnt, PR #1423). Opt-in, so every existing caller keeps the
+# seed-on-absent behavior it was written against.
+#
+# Scoped to the seeding modes: --create and --init are meant to create, and
+# --delete already tolerates an absent target.
+if [[ "$REQUIRE_EXISTING" -eq 1 && ( "$MODE" == "set" || "$MODE" == "append" ) && ! -f "$HANDOFF_FILE" ]]; then
+  echo "handoff-state.sh: --${MODE} on PR #${PR_NUMBER} requires an existing handoff, but none is at $HANDOFF_FILE (--require-existing). Nothing was written; the record was never created, or was deleted/migrated after the caller checked." >&2
+  state_lock_release
+  exit 3
+fi
 
 # Atomic write using a same-directory temp so mv is on the same filesystem
 # (the POSIX guarantee that mv is atomic only holds within one filesystem).

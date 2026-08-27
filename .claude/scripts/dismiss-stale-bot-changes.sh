@@ -207,14 +207,34 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
       echo "[DISMISS-STALE] WARN: appending to $_ds_target (resolved from owner/repo '$_ds_owner_repo'), not the requested --handoff-file $HANDOFF_FILE" >&2
     fi
 
+    # --require-existing makes the helper re-test presence under its own lock.
+    # The `-e` check above is necessarily a TOCTOU: a concurrent delete or
+    # handoff-migrate.sh run landing between it and the append would otherwise
+    # have the helper seed a fresh record from `{}` holding only this array —
+    # recreating a partial handoff in exactly the case the `else` branch below
+    # decided to skip (CodeAnt, PR #1423).
+    #
+    # Exit 3 is that race, not a failure: the target is gone, so the skip the
+    # caller already chose is the right outcome. Stop appending on it — every
+    # remaining ID would hit the same absent file. Any other non-zero is a
+    # genuine write failure and still exits 4.
+    _ds_append_rc=0
     for id in "${DISMISSED_IDS[@]}"; do
       id_json="$(jq -n --arg x "$id" '$x')"
-      if ! "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json"; then
+      _ds_append_rc=0
+      "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --require-existing \
+        --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json" || _ds_append_rc=$?
+      if [[ "$_ds_append_rc" -eq 3 ]]; then
+        echo "[DISMISS-STALE] WARN: handoff file disappeared before the append (deleted or migrated concurrently); skipping: $_ds_target" >&2
+        break
+      elif [[ "$_ds_append_rc" -ne 0 ]]; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
         exit 4
       fi
     done
-    echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"
+    if [[ "$_ds_append_rc" -eq 0 ]]; then
+      echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"
+    fi
   else
     echo "[DISMISS-STALE] WARN: handoff file missing; skipping append (create full handoff first): $HANDOFF_FILE" >&2
   fi

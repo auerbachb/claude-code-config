@@ -741,6 +741,57 @@ check "#853: false/null/42 keep their JSON types" "boolean,null,number" \
 check "JSON-quoted literal bypasses the guard" "literally .a + .b" \
   "$("$HANDOFF_STATE" "${SET_OR[@]}" --get 1357 | jq -r '.notes')"
 
+echo ""
+echo "=== 18. --require-existing: update-only writes (CodeAnt, PR #1423) ==="
+# --set/--append seed from `{}` when the target is absent, so they are silently
+# CREATING operations. dismiss-stale-bot-changes.sh does not want that: it tests
+# for the handoff itself and skips when there is none. That test is outside the
+# helper's lock, so a delete or migration landing in the window turned its skip
+# into a partial record holding only the appended array. --require-existing moves
+# the check inside the lock.
+REQ_OR=(--owner-repo "acme/widgets")
+REQ_FILE="$HOME/.claude/handoffs/acme/widgets/pr-1423-handoff.json"
+rm -f "$REQ_FILE"
+
+req_rc=0
+req_err="$("$HANDOFF_STATE" "${REQ_OR[@]}" --require-existing \
+  --append 1423 stale_bot_reviews_dismissed '"r1"' 2>&1 >/dev/null)" || req_rc=$?
+check "--append on an absent target exits 3" "3" "$req_rc"
+check_contains "  refusal names the flag" "--require-existing" "$req_err"
+check "  and seeded no partial record" "0" "$(test -e "$REQ_FILE" && echo 1 || echo 0)"
+
+req_rc=0
+"$HANDOFF_STATE" "${REQ_OR[@]}" --require-existing --set 1423 '.head_sha=abc1234' \
+  >/dev/null 2>&1 || req_rc=$?
+check "--set on an absent target exits 3 too" "3" "$req_rc"
+check "  and still seeded nothing" "0" "$(test -e "$REQ_FILE" && echo 1 || echo 0)"
+
+# Default behavior is untouched: without the flag, seeding still happens. This is
+# what every existing caller was written against.
+"$HANDOFF_STATE" "${REQ_OR[@]}" --append 1423 stale_bot_reviews_dismissed '"r1"' >/dev/null
+check "without the flag, --append still seeds a record" "1" \
+  "$(test -f "$REQ_FILE" && echo 1 || echo 0)"
+
+# And once a record exists the flag is transparent — it gates creation, not writes.
+rm -f "$REQ_FILE"
+"$HANDOFF_STATE" "${REQ_OR[@]}" --create 1423 \
+  '{"pr_number":1423,"reviewer":"cr","findings_fixed":["f1"]}' >/dev/null
+req_rc=0
+"$HANDOFF_STATE" "${REQ_OR[@]}" --require-existing \
+  --append 1423 stale_bot_reviews_dismissed '"r9"' >/dev/null 2>&1 || req_rc=$?
+check "--require-existing appends normally to an existing record" "0" "$req_rc"
+check "  the append landed" "r9" \
+  "$("$HANDOFF_STATE" "${REQ_OR[@]}" --get 1423 | jq -r '.stale_bot_reviews_dismissed[-1]')"
+check "  and preserved the fields already there" "cr,f1" \
+  "$("$HANDOFF_STATE" "${REQ_OR[@]}" --get 1423 | jq -r '[.reviewer,.findings_fixed[0]]|join(",")')"
+
+# Misplaced after the mode flag it is rejected like any other leading flag,
+# rather than being silently discarded (issue #1366's trailing-flag rule).
+req_rc=0
+req_err="$("$HANDOFF_STATE" "${REQ_OR[@]}" --get 1423 --require-existing 2>&1 >/dev/null)" || req_rc=$?
+check "trailing --require-existing is rejected" "2" "$req_rc"
+check_contains "  and explains flag placement" "must come BEFORE the mode flag" "$req_err"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
