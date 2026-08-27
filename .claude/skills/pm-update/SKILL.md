@@ -192,7 +192,11 @@ Always run `--check` first. The script never deletes in this mode.
 RC=$?
 ```
 
-`stale-cleanup.sh` reports three categories — stale worktrees, stale local branches, stale remote branches — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree). See `stale-cleanup.sh --help` for the full safety-check contract.
+`stale-cleanup.sh` reports four categories — stale worktrees, stale local branches, stale remote branches, and orphaned worktree registrations (`.git/worktrees/<id>` entries with no live worktree behind them; issue #1402) — plus a "Skipped (safety)" list with the reason each item was protected (main worktree, caller's current worktree, uncommitted changes, open PR, protected branch name, branch checked out in a worktree, locked or caller-owned registration). See `stale-cleanup.sh --help` for the full safety-check contract.
+
+Orphaned registrations are **not** age-gated: a missing worktree directory is definitive, not a heuristic, matching `git worktree prune`'s own semantics. Entries carrying a `locked` marker are reported and left alone unless `--include-locked` is passed.
+
+A trailing `WARNING:` block means the sweep was **incomplete**, and an empty category then means "not classified", not "nothing stale". Two shapes: `worktree enumeration timed_out` or `failed` (worktrees and local branches were not classified — clear the listed registrations with `--apply`, then re-run), and `worktree registrations were not scanned` (the git common dir would not resolve inside its bound — investigate the repo before rerunning; there is nothing to clear). `--check` exits **1** in both. Never report either state as a clean sweep.
 
 Threshold defaults to 7 days; override with `STALE_DAYS=N` if the user requests a different cutoff.
 

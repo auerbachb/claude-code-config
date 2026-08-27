@@ -150,7 +150,7 @@ Scripts that repair trust flags, detect stale worktrees, and sync main.
 | `dirty-main-guard.sh` | Detect and quarantine dirty tracked state on the root repo's main branch |
 | `repo-bootstrap.sh` | Check and optionally install required repo configuration (provisioned file set, branch protection) |
 | `repo-root.sh` | Resolve the absolute path of the root (main) worktree (every git call wall-clock bounded; exit 3 on timeout) |
-| `stale-cleanup.sh` | Detect and optionally remove stale worktrees and branches (out-of-band, safe) |
+| `stale-cleanup.sh` | Detect and optionally remove stale worktrees, branches, and orphaned worktree registrations (out-of-band, safe; every registration read wall-clock bounded) |
 | `main-sync.sh` | Sync a repo's local main branch with `origin/main` |
 
 ## Utilities

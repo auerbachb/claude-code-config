@@ -7,11 +7,13 @@
 #   never deletes itself. Two skills consume this script as the single source of
 #   truth for stale worktree/branch detection and safety — /pm-update (Step 8)
 #   and /pm-clean (workspace sweep) — so their results can never diverge (issue
-#   #618). Detects three classes of stale refs on the target repo's root:
+#   #618). Detects four classes of stale state on the target repo's root:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
 #        than STALE_DAYS.
+#     4. Orphaned worktree *registrations* — `<git-common-dir>/worktrees/<id>`
+#        entries with no live worktree behind them (issue #1402).
 #
 #   TARGET REPO RESOLUTION (invoking-repo scope — issues #687/#697): the swept
 #   repo is resolved from the CALLER's current directory (or an explicit
@@ -40,15 +42,83 @@
 #   Remote branches:
 #     - Skip protected names: main, master, develop, HEAD.
 #     - Skip branches with an open PR.
+#   Worktree registrations:
+#     - Skip any registration whose worktree directory still exists AND whose
+#       metadata reads cleanly — a live entry is never touched.
+#     - Skip the registration belonging to the caller's own worktree.
+#     - Skip `locked` registrations unless --include-locked is passed, and even
+#       then only when the worktree directory is gone or its metadata is
+#       unreadable (a lock on a live worktree is always honoured).
+#
+# ORPHANED WORKTREE REGISTRATIONS (issue #1402)
+#   Every linked worktree has a registration directory at
+#   `<git-common-dir>/worktrees/<id>` holding `gitdir`, `HEAD`, `index`, and
+#   optionally `locked`. Removing a worktree directory without going through
+#   `git worktree remove` leaves that registration behind, and every later
+#   `git worktree list` pays to read it. Enough of them and git stalls — the
+#   2026-08-26 incident that motivated issue #1363 / PR #1386, where 62 stale
+#   registrations pointed at iCloud-evicted (`dataless`) files whose reads
+#   never returned. PR #1386 bounded `repo-root.sh` so the stall could not
+#   freeze the merge path; this script removes the debris that caused it.
+#
+#   Classification (staleness-independent — STALE_DAYS does NOT apply here;
+#   a missing worktree directory is a definitive signal, not an age heuristic,
+#   and this matches `git worktree prune`'s own semantics):
+#     live       — `gitdir` read cleanly and the worktree directory exists.
+#                  Never reported, never touched.
+#     orphaned   — `gitdir` read cleanly and the worktree directory is gone.
+#     unreadable — `gitdir` (or the existence probe on its target) did not
+#                  finish inside the read bound. Reported as
+#                  "unreadable — prunable with warning": we cannot prove the
+#                  worktree is gone, only that git cannot read the entry
+#                  either. Recovery if such a worktree does still exist is
+#                  `git worktree repair <path>`.
+#
+#   Removal paths under --apply (which path handles which case):
+#     `git worktree prune`  — the plain orphaned, unlocked case. Preferred:
+#           git applies its own safety rules and the call is cheap and bounded
+#           once the unreadable entries are out of the way.
+#     targeted removal      — unreadable entries, and locked entries cleared
+#           via --include-locked. `git worktree prune` reads the same `gitdir`
+#           we could not read, so it would hang on exactly these; and it
+#           refuses locked entries by design. The registration directory is
+#           removed directly, under path guards that allow only a single-
+#           segment id directly beneath `<git-common-dir>/worktrees`, never a
+#           symlink, always under the bound. Targeted removals run FIRST so
+#           the subsequent `git worktree prune` cannot stall.
+#
+#   Locks: this repo's agent harness writes a `locked` marker into every
+#   worktree it creates, so abandoned agent worktrees leave *locked* orphans
+#   that `git worktree prune` will not touch. They are reported as skipped and
+#   cleared only with the explicit --include-locked opt-in.
+#
+# BOUNDED READS (NON-NEGOTIABLE)
+#   Every filesystem and git call that can touch a worktree registration runs
+#   under a wall-clock bound and is killed on expiry — the sweep must never
+#   hang on evicted files, which is the failure it exists to clean up. macOS
+#   ships no `timeout(1)`, hence the background-and-poll wrapper (the same
+#   shape `repo-root.sh` uses). `git worktree list --porcelain` is bounded
+#   too: on expiry the worktree and local-branch passes degrade to "not
+#   classified" rather than the whole script blocking, and the registration
+#   sweep — the pass that fixes the cause — still runs.
 #
 # CONFIGURATION
 #   STALE_DAYS — env var, default 7. Tip commits older than this are stale.
+#   STALE_CLEANUP_TIMEOUT_SECS — env var, default 10. Wall-clock bound on each
+#       git call (worktree enumeration, prune, git-dir resolution).
+#   STALE_CLEANUP_READ_TIMEOUT_SECS — env var, default 2. Wall-clock bound on
+#       each per-registration metadata read, existence probe, and targeted
+#       removal. Whole-second resolution, so a bound of N trips between N-1
+#       and N seconds. Worst case is this bound times the registration count,
+#       which is why it is much tighter than the git bound. A non-numeric or
+#       zero value falls back to the default rather than disabling the bound.
 #
 # USAGE
 #   stale-cleanup.sh --check                    # dry-run (default)
 #   stale-cleanup.sh --apply                    # delete stale items
 #   stale-cleanup.sh --check --json             # machine-readable output
 #   stale-cleanup.sh --check --root <path>      # sweep a specific repo
+#   stale-cleanup.sh --apply --include-locked   # also clear locked orphans
 #   stale-cleanup.sh --help | -h
 #
 #   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
@@ -56,7 +126,15 @@
 #              (or no stale items), 2 on partial failure.
 #   --json     Emit a JSON object instead of human-readable text. Includes a
 #              top-level "root" (the resolved main-worktree root being swept)
-#              plus the stale_*/skipped_* arrays (issue #707).
+#              plus the stale_*/skipped_* arrays (issue #707), the
+#              orphaned_registrations/skipped_registrations arrays, and
+#              "worktree_enumeration" ("ok", "timed_out", or "failed").
+#   --include-locked
+#              Also clear orphaned registrations carrying a `locked` marker.
+#              Only ever applies when the worktree directory is gone or its
+#              metadata is unreadable — a lock on a live worktree is always
+#              honoured. Without this flag such entries are reported and left
+#              alone.
 #   --root     Path to (or inside) the repo to sweep. Defaults to the caller's
 #              current directory, so the sweep targets the invoking repo even
 #              when the script runs from another checkout (issues #687/#697).
@@ -71,6 +149,8 @@
 #     <branch> (last commit <YYYY-MM-DD>)
 #   Stale remote branches (older than 7 days):
 #     origin/<branch> (last commit <YYYY-MM-DD>)
+#   Orphaned worktree registrations:
+#     <id> — <reason>
 #   Skipped (with reason):
 #     <name> — <reason>
 #
@@ -79,7 +159,9 @@
 #
 # EXIT STATUS
 #   0  No stale items, or --apply succeeded for all stale items.
-#   1  --check found one or more stale items.
+#   1  --check found one or more stale items — including orphaned worktree
+#      registrations, or a worktree enumeration that did not finish inside its
+#      bound (that is a finding, not a clean sweep).
 #   2  --apply hit one or more deletion failures (other items may have
 #      succeeded — see output).
 #   3  Usage error.
@@ -102,6 +184,7 @@ MODE="check"
 JSON=0
 MODE_SET=0
 ROOT_OVERRIDE=""
+INCLUDE_LOCKED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -118,6 +201,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --json)
       JSON=1
+      shift
+      ;;
+    --include-locked)
+      INCLUDE_LOCKED=1
       shift
       ;;
     --root)
@@ -160,6 +247,155 @@ fi
 
 NOW="$(date +%s)"
 THRESHOLD=$(( NOW - STALE_DAYS * 86400 ))
+
+# --- Bounded execution -------------------------------------------------------
+# macOS ships no `timeout(1)`, so every call that can touch a worktree
+# registration goes through run_bounded: start the child in its own process
+# group, poll the wall clock, kill the group on expiry. Same shape as
+# repo-root.sh (issue #1363) — kept local rather than sourced because
+# repo-root.sh is an executable, not a library.
+
+# A bad override must not silently disable a bound — that is the exact failure
+# these bounds exist to prevent, so anything non-numeric or zero falls back to
+# the default. The `10#` is load-bearing: `08`/`09` are all-digits and pass a
+# `-gt 0` test, but `(( ))` reads a leading zero as octal, where they are not
+# valid literals; the arithmetic then errors, the comparison is false on every
+# pass, and the bound vanishes without a word.
+normalize_bound() { # value, default
+  local v="$1" d="$2"
+  case "$v" in ''|*[!0-9]*) v="$d" ;; esac
+  v="$(( 10#$v ))"
+  [ "$v" -gt 0 ] 2>/dev/null || v="$d"
+  printf '%s' "$v"
+}
+GIT_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_TIMEOUT_SECS:-10}" 10)"
+READ_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_READ_TIMEOUT_SECS:-2}" 2)"
+
+# Created after arg parsing so --help and usage errors leave nothing behind.
+# All four are unconditional, which keeps the EXIT trap a single fixed command
+# list — no empty-variable arguments to guard against, and no early exit path
+# that could leave one behind.
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup.XXXXXX")"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX")"
+WT_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-wt.XXXXXX")"
+GH_TMPERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-gh-stderr.XXXXXX")"
+trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$GH_TMPERR"' EXIT
+
+BOUNDED_TIMED_OUT=0
+BOUNDED_CLOCK_UNREADABLE=0
+
+# Seconds since the epoch, or a non-zero return when the answer is unusable.
+# A blank result must never be accepted: inside `(( ))` an empty variable is 0,
+# so `now - start` would go negative and the bound would never trip.
+now_epoch() {
+  local t
+  t="$(date -u +%s 2>/dev/null || true)"
+  case "$t" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$t"
+}
+
+# Signal the child, preferring its whole process group. The negative form is
+# used ONLY after confirming the child really leads its own group: a group
+# outlives its leader, so a recycled pid can name a live, unrelated group, and
+# signalling that would "succeed" while our actual child kept running.
+kill_child() { # signal, pid
+  local sig="$1" pid="$2" pgid=""
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
+    kill -"$sig" -"$pid" 2>/dev/null || true
+  fi
+  kill -"$sig" "$pid" 2>/dev/null || true
+}
+
+run_bounded() { # bound_secs, command...
+  # stdout lands in $CAPTURE, stderr in $CAPTURE_ERR. Returns the child's real
+  # exit status, or 124 with BOUNDED_TIMED_OUT=1 when the bound cut it short.
+  local bound="$1"; shift
+  BOUNDED_TIMED_OUT=0
+  BOUNDED_CLOCK_UNREADABLE=0
+  : > "$CAPTURE"
+  : > "$CAPTURE_ERR"
+
+  # Job control puts the child in its OWN process group so the kill reaches
+  # anything it spawned. stdin is /dev/null because a job-controlled background
+  # job that reads the terminal takes SIGTTIN and stops, which looks exactly
+  # like the hang we are trying to detect.
+  set -m 2>/dev/null || true
+  "$@" >"$CAPTURE" 2>"$CAPTURE_ERR" </dev/null &
+  local pid=$!
+  set +m 2>/dev/null || true
+
+  local start now rc=0 killed=0 waited=0 reaped=0
+  start="$(now_epoch)" || start=""
+  # The bound reads the clock every pass, never a tick count: a tick is a sleep
+  # plus a fork, so counting iterations drifts past the requested bound.
+  while kill -0 "$pid" 2>/dev/null; do
+    now="$(now_epoch)" || now=""
+    # An unreadable clock cannot be allowed to mean "no bound". Fail closed.
+    if [[ -z "$start" || -z "$now" ]]; then
+      BOUNDED_CLOCK_UNREADABLE=1
+    fi
+    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= bound )); then
+      killed=1
+      kill_child TERM "$pid"
+      for _ in 1 2; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+      done
+      kill_child KILL "$pid"
+      break
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+
+  if [[ "$killed" -eq 1 ]]; then
+    # Bounded reap. SIGKILL is QUEUED, not effective, against a child wedged in
+    # uninterruptible I/O — exactly the evicted-file case these bounds exist
+    # for — so a plain `wait` would inherit the hang we just prevented.
+    while (( waited < 3 )); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        reaped=1
+        rc=0
+        wait "$pid" 2>/dev/null || rc=$?
+        break
+      fi
+      sleep 1
+      waited=$(( waited + 1 ))
+    done
+    # A child that had already finished when the sampling loop tripped left a
+    # complete answer behind: `kill -0` succeeds on a zombie and the clock is
+    # whole-second, so the trip can land after the work was done. Trust the
+    # result over the sampling.
+    if [[ "$reaped" -eq 1 && "$rc" -eq 0 ]]; then
+      return 0
+    fi
+    BOUNDED_TIMED_OUT=1
+    return 124
+  fi
+
+  wait "$pid" 2>/dev/null || rc=$?
+  return "$rc"
+}
+
+# Read the first line of a small metadata file under the read bound. Echoes the
+# line on success; returns non-zero when the read failed or tripped the bound.
+# `cat` is forked deliberately — a builtin `$(<file)` read cannot be killed.
+read_bounded_line() { # path
+  local rc=0
+  run_bounded "$READ_BOUND_SECS" cat "$1" || rc=$?
+  if (( rc != 0 )); then return 1; fi
+  head -n 1 "$CAPTURE"
+}
+
+# Bounded existence probe. 0 = exists, 1 = missing, 2 = could not be determined
+# inside the bound (a stalled stat is itself the symptom we are cleaning up).
+path_exists_bounded() { # path
+  local rc=0
+  run_bounded "$READ_BOUND_SECS" test -e "$1" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 2; fi
+  if (( rc != 0 )); then return 1; fi
+  return 0
+}
 
 # SCRIPT_DIR is used ONLY to locate the repo-root.sh helper next to this
 # script — never to pick the repo to sweep (see TARGET REPO RESOLUTION above).
@@ -237,9 +473,8 @@ is_protected() {
 # trip; for a repo with thousands of open PRs it stays correct without
 # silently dropping entries.
 OPEN_PR_BRANCHES=""
-GH_TMPERR=""
-trap 'rm -f "$GH_TMPERR"' EXIT
-GH_TMPERR="$(mktemp -t stale-cleanup-gh-stderr.XXXXXX)"
+# GH_TMPERR is created with the other capture files above and removed by the
+# shared EXIT trap installed there.
 
 gh_pr_page() {
   # gh pr list with --json forces non-interactive mode; --limit 1000 is the
@@ -379,11 +614,40 @@ parse_worktrees() {
       "branch refs/heads/"*) cur_branch="${line#branch refs/heads/}" ;;
       "detached") cur_branch="" ;;
     esac
-  done < <("${GIT[@]}" worktree list --porcelain)
+  done < "$WT_LIST_FILE"
   flush
 }
 
-parse_worktrees
+# Enumeration is bounded: this is the exact call that froze on the 2026-08-26
+# incident's evicted registrations. On expiry we degrade instead of blocking —
+# the registration sweep below is the pass that actually clears the cause, and
+# it must still run.
+WORKTREE_ENUM_STATE="ok"
+enumerate_worktrees() {
+  local rc=0
+  run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" worktree list --porcelain || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+      echo "warning: could not read the clock, so the ${GIT_BOUND_SECS}s bound on 'git worktree list --porcelain' could not be enforced — killed the call rather than running it unbounded" >&2
+    else
+      echo "warning: 'git worktree list --porcelain' exceeded ${GIT_BOUND_SECS}s and was killed — worktrees and local branches are NOT classified in this run (raise STALE_CLEANUP_TIMEOUT_SECS if the repo is genuinely this slow)" >&2
+    fi
+    WORKTREE_ENUM_STATE="timed_out"
+    return 1
+  fi
+  if (( rc != 0 )); then
+    echo "warning: 'git worktree list --porcelain' failed (exit $rc) — worktrees and local branches are NOT classified in this run" >&2
+    sed 's/^/  git: /' "$CAPTURE_ERR" >&2 || true
+    WORKTREE_ENUM_STATE="failed"
+    return 1
+  fi
+  cat "$CAPTURE" > "$WT_LIST_FILE"
+  return 0
+}
+
+if enumerate_worktrees; then
+  parse_worktrees
+fi
 
 is_branch_checked_out() {
   local b="$1"
@@ -406,7 +670,7 @@ for record in "${WORKTREES[@]}"; do
     continue
   fi
   if [[ ! -d "$wt" ]]; then
-    SKIPPED_WORKTREES+=("${wt}${US}directory missing — run 'git worktree prune'")
+    SKIPPED_WORKTREES+=("${wt}${US}directory missing — its registration is listed under orphaned registrations; clear it with --apply")
     continue
   fi
   # Tracked-only dirty detection inside the worktree.
@@ -432,8 +696,16 @@ for record in "${WORKTREES[@]}"; do
 done
 
 # Local branches: any refs/heads entry whose tip is older than threshold.
+#
+# Skipped wholesale when the worktree enumeration did not complete:
+# CHECKED_OUT_BRANCHES would be empty, so every branch held by a worktree would
+# read as unheld. `git branch -D` refuses a checked-out branch on its own, but
+# that refusal costs git another worktree-registry read — the very call that
+# just timed out. Classifying nothing is the honest answer; the caller sees
+# `worktree_enumeration` and re-runs after the registration sweep.
 STALE_LOCAL_BRANCHES=()
 SKIPPED_LOCAL_BRANCHES=()
+if [[ "$WORKTREE_ENUM_STATE" == "ok" ]]; then
 while IFS="$US" read -r branch ts; do
   [[ -z "$branch" ]] && continue
   if is_protected "$branch"; then
@@ -453,6 +725,7 @@ while IFS="$US" read -r branch ts; do
   fi
   STALE_LOCAL_BRANCHES+=("${branch}${US}${ts}")
 done < <("${GIT[@]}" for-each-ref --format="%(refname:short)${US}%(committerdate:unix)" refs/heads/)
+fi
 
 # Remote branches under origin/. Skip the symbolic origin/HEAD and protected
 # names. We do NOT auto-fetch — that's a network operation the caller can run
@@ -481,6 +754,141 @@ while IFS="$US" read -r ref ts; do
   fi
   STALE_REMOTE_BRANCHES+=("${ref}${US}${ts}")
 done < <("${GIT[@]}" for-each-ref --format="%(refname:short)${US}%(committerdate:unix)" refs/remotes/origin/)
+
+# --- Orphaned worktree registrations (issue #1402) ---------------------------
+# Enumerated by listing <git-common-dir>/worktrees/, which is a directory read
+# and never blocks. Only the per-entry metadata reads can stall, and those are
+# individually bounded, so a wedged entry costs one bound instead of the run.
+
+# The git common dir is resolved separately from ROOT: --separate-git-dir and
+# bare layouts put it somewhere other than "$ROOT/.git". This is the cheapest
+# call git offers and it touches no worktree entries.
+GIT_COMMON_DIR=""
+WORKTREE_REG_DIR=""
+REG_SCAN_STATE="ok"   # ok | unavailable | none
+resolve_common_dir() {
+  local rc=0 out=""
+  run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" rev-parse --path-format=absolute --git-common-dir || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
+  if (( rc != 0 )); then
+    # git < 2.31 has no --path-format; its plain form may answer relative to
+    # the directory the call ran in, which is "$ROOT" here.
+    rc=0
+    run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" rev-parse --git-common-dir || rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 || "$rc" -ne 0 ]]; then return 1; fi
+  fi
+  out="$(head -n 1 "$CAPTURE")"
+  [[ -n "$out" ]] || return 1
+  case "$out" in
+    /*) ;;
+    *) out="$ROOT/$out" ;;
+  esac
+  GIT_COMMON_DIR="$out"
+  return 0
+}
+
+# The caller's own registration is never a removal candidate, mirroring the
+# "caller's current worktree" skip the worktree pass already applies. In a
+# linked worktree `rev-parse --git-dir` answers <common>/worktrees/<id>; in the
+# main worktree it answers the common dir itself and matches no id.
+CALLER_REG_ID=""
+resolve_caller_reg_id() {
+  local rc=0 out=""
+  run_bounded "$GIT_BOUND_SECS" git -C "$CALLER_PWD" rev-parse --path-format=absolute --git-dir || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 || "$rc" -ne 0 ]]; then return 1; fi
+  out="$(head -n 1 "$CAPTURE")"
+  # Match against THIS repo's registration directory, not any path containing
+  # "/worktrees/". Under --root the caller can be standing in an unrelated
+  # repo, and two repos can hold same-named entries (ids are worktree
+  # basenames) — matching on the bare id would then skip a genuinely orphaned
+  # entry here because of a live worktree somewhere else.
+  case "$out" in
+    "$WORKTREE_REG_DIR"/*) CALLER_REG_ID="${out#"$WORKTREE_REG_DIR"/}" ;;
+    *) CALLER_REG_ID="" ;;
+  esac
+  # Only a single-segment id is meaningful; anything else is not an entry name.
+  case "$CALLER_REG_ID" in */*) CALLER_REG_ID="" ;; esac
+  return 0
+}
+
+# Each entry: id US reg_path US worktree_path US reason US method
+#   method: prune    — `git worktree prune` can and should remove it
+#           targeted — git would hang or refuse; remove the directory directly
+ORPHANED_REGISTRATIONS=()
+SKIPPED_REGISTRATIONS=()   # id US reason
+
+scan_registrations() {
+  if ! resolve_common_dir; then
+    REG_SCAN_STATE="unavailable"
+    echo "warning: could not resolve the git common dir within ${GIT_BOUND_SECS}s — worktree registrations were not scanned" >&2
+    return
+  fi
+  WORKTREE_REG_DIR="$GIT_COMMON_DIR/worktrees"
+  if [[ ! -d "$WORKTREE_REG_DIR" ]]; then
+    REG_SCAN_STATE="none"   # no linked worktree has ever been created here
+    return
+  fi
+  resolve_caller_reg_id || true
+
+  local reg id locked_marker=0 lock_reason="" gitdir_line="" wt="" reason="" method=""
+  for reg in "$WORKTREE_REG_DIR"/*; do
+    [[ -d "$reg" ]] || continue
+    id="${reg##*/}"
+    if [[ -n "$CALLER_REG_ID" && "$id" == "$CALLER_REG_ID" ]]; then
+      SKIPPED_REGISTRATIONS+=("${id}${US}caller's own worktree registration")
+      continue
+    fi
+
+    # Presence of `locked` is pure metadata — no content read, so it cannot
+    # stall. The reason text is a bounded read and may legitimately be empty.
+    locked_marker=0
+    lock_reason=""
+    if [[ -f "$reg/locked" ]]; then
+      locked_marker=1
+      lock_reason="$(read_bounded_line "$reg/locked" 2>/dev/null || true)"
+    fi
+
+    reason=""
+    method=""
+    if ! gitdir_line="$(read_bounded_line "$reg/gitdir")" || [[ -z "$gitdir_line" ]]; then
+      # We cannot prove the worktree is gone — only that git cannot read this
+      # entry either, which is precisely what stalls `git worktree list`.
+      reason="unreadable — prunable with warning (metadata did not read within ${READ_BOUND_SECS}s)"
+      method="targeted"
+      wt=""
+    else
+      # `gitdir` holds the path of the worktree's own .git file.
+      wt="${gitdir_line%/.git}"
+      local probe_rc=0
+      path_exists_bounded "$wt" || probe_rc=$?
+      if (( probe_rc == 0 )); then
+        continue   # live entry — never reported, never touched
+      elif (( probe_rc == 2 )); then
+        reason="unreadable — prunable with warning (existence probe on $wt did not finish within ${READ_BOUND_SECS}s)"
+        method="targeted"
+      else
+        reason="worktree directory missing ($wt)"
+        method="prune"
+      fi
+    fi
+
+    if (( locked_marker == 1 )); then
+      # A lock on an entry whose worktree is gone protects nothing real, but
+      # clearing it is still an explicit opt-in: `locked` is the operator's own
+      # "do not prune" marker, and `git worktree prune` refuses it by design.
+      if (( INCLUDE_LOCKED == 0 )); then
+        SKIPPED_REGISTRATIONS+=("${id}${US}locked${lock_reason:+ ($lock_reason)} — pass --include-locked to clear it")
+        continue
+      fi
+      reason="$reason; locked${lock_reason:+ ($lock_reason)}, cleared via --include-locked"
+      method="targeted"   # git worktree prune refuses locked entries
+    fi
+
+    ORPHANED_REGISTRATIONS+=("${id}${US}${reg}${US}${wt}${US}${reason}${US}${method}")
+  done
+}
+
+scan_registrations
 
 ts_to_date() {
   # Portable across BSD/GNU date: read a unix ts on stdin, emit YYYY-MM-DD.
@@ -519,7 +927,25 @@ emit_text() {
       printf '  %s (last commit %s)\n' "$r" "$(ts_to_date "$t")"
     done
   fi
-  local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} ))
+  if (( ${#ORPHANED_REGISTRATIONS[@]} == 0 )); then
+    echo "Orphaned worktree registrations: none"
+  else
+    echo "Orphaned worktree registrations:"
+    for entry in "${ORPHANED_REGISTRATIONS[@]}"; do
+      IFS="$US" read -r rid _ _ rreason rmethod <<<"$entry"
+      printf '  %s — %s [%s]\n' "$rid" "$rreason" "$rmethod"
+    done
+  fi
+  if [[ "$WORKTREE_ENUM_STATE" != "ok" ]]; then
+    echo
+    echo "WARNING: worktree enumeration $WORKTREE_ENUM_STATE — worktrees and local branches were NOT classified in this run."
+    echo "         Clear the registrations above with --apply, then re-run."
+  fi
+  if [[ "$REG_SCAN_STATE" == "unavailable" ]]; then
+    echo
+    echo "WARNING: worktree registrations were not scanned (git common dir unresolved within ${GIT_BOUND_SECS}s)."
+  fi
+  local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} + ${#SKIPPED_REGISTRATIONS[@]} ))
   if (( skipped_total > 0 )); then
     echo
     echo "Skipped (safety):"
@@ -542,6 +968,12 @@ emit_text() {
       for entry in "${SKIPPED_REMOTE_BRANCHES[@]}"; do
         IFS="$US" read -r r reason <<<"$entry"
         printf '  remote %s — %s\n' "$r" "$reason"
+      done
+    fi
+    if (( ${#SKIPPED_REGISTRATIONS[@]} > 0 )); then
+      for entry in "${SKIPPED_REGISTRATIONS[@]}"; do
+        IFS="$US" read -r rid reason <<<"$entry"
+        printf '  registration %s — %s\n' "$rid" "$reason"
       done
     fi
   fi
@@ -574,11 +1006,24 @@ emit_json() {
     sr_json="$(printf '%s\n' "${SKIPPED_REMOTE_BRANCHES[@]}" \
       | jq -Rn --arg D "$US" '[inputs | split($D) | {ref:.[0], reason:.[1]}]')"
   fi
+  local or_json="[]" sg_json="[]"
+  if (( ${#ORPHANED_REGISTRATIONS[@]} > 0 )); then
+    or_json="$(printf '%s\n' "${ORPHANED_REGISTRATIONS[@]}" \
+      | jq -Rn --arg D "$US" '[inputs | split($D)
+          | {id:.[0], registration_path:.[1], worktree_path:.[2], reason:.[3], method:.[4]}]')"
+  fi
+  if (( ${#SKIPPED_REGISTRATIONS[@]} > 0 )); then
+    sg_json="$(printf '%s\n' "${SKIPPED_REGISTRATIONS[@]}" \
+      | jq -Rn --arg D "$US" '[inputs | split($D) | {id:.[0], reason:.[1]}]')"
+  fi
   jq -n --argjson wt "$wt_json" --argjson lb "$lb_json" --argjson rb "$rb_json" \
         --argjson sw "$sw_json" --argjson sl "$sl_json" --argjson sr "$sr_json" \
+        --argjson or "$or_json" --argjson sg "$sg_json" \
         --arg threshold_days "$STALE_DAYS" \
         --arg threshold_ts "$THRESHOLD" \
         --arg root "$ROOT" \
+        --arg enum_state "$WORKTREE_ENUM_STATE" \
+        --arg reg_scan "$REG_SCAN_STATE" \
         '{root:$root,
           stale_days:($threshold_days|tonumber),
           threshold_ts:($threshold_ts|tonumber),
@@ -587,13 +1032,22 @@ emit_json() {
           stale_remote_branches:$rb,
           skipped_worktrees:$sw,
           skipped_local_branches:$sl,
-          skipped_remote_branches:$sr}'
+          skipped_remote_branches:$sr,
+          orphaned_registrations:$or,
+          skipped_registrations:$sg,
+          worktree_enumeration:$enum_state,
+          registration_scan:$reg_scan}'
 }
 
 if [[ "$MODE" == "check" ]]; then
   if (( JSON == 1 )); then emit_json; else emit_text; fi
-  total=$(( ${#STALE_WORKTREES[@]} + ${#STALE_LOCAL_BRANCHES[@]} + ${#STALE_REMOTE_BRANCHES[@]} ))
+  total=$(( ${#STALE_WORKTREES[@]} + ${#STALE_LOCAL_BRANCHES[@]} + ${#STALE_REMOTE_BRANCHES[@]} \
+            + ${#ORPHANED_REGISTRATIONS[@]} ))
   if (( total > 0 )); then exit 1; fi
+  # A sweep that could not classify is a finding, not a clean bill of health:
+  # exiting 0 here would tell the caller "nothing stale" about a repo we never
+  # managed to read.
+  if [[ "$WORKTREE_ENUM_STATE" != "ok" || "$REG_SCAN_STATE" == "unavailable" ]]; then exit 1; fi
   exit 0
 fi
 
@@ -601,6 +1055,79 @@ fi
 FAILURES=0
 emit_text
 echo
+
+# Registrations go first. Targeted removals clear the entries `git worktree
+# prune` would stall on, so the prune that follows — and every `git worktree
+# remove` in the worktree loop below — reads a registry it can actually parse.
+remove_registration() { # id, registration path
+  local id="$1" target="$2" rc=0
+  # Path guards: only a single-segment id directly beneath the resolved
+  # <git-common-dir>/worktrees, a real directory, never a symlink. Anything
+  # else is refused rather than removed.
+  case "$id" in
+    ''|.|..|*/*)
+      echo "failed: worktree registration '$id' — refusing to remove: not a single-segment entry name"
+      return 1
+      ;;
+  esac
+  if [[ -z "$WORKTREE_REG_DIR" || "$target" != "$WORKTREE_REG_DIR/$id" ]]; then
+    echo "failed: worktree registration $id — refusing to remove: $target is not directly beneath $WORKTREE_REG_DIR"
+    return 1
+  fi
+  if [[ -L "$target" || ! -d "$target" ]]; then
+    echo "failed: worktree registration $id — refusing to remove: not a plain directory"
+    return 1
+  fi
+  run_bounded "$READ_BOUND_SECS" rm -rf -- "$target" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "failed: worktree registration $id — removal exceeded ${READ_BOUND_SECS}s and was killed"
+    return 1
+  fi
+  if (( rc != 0 )) || [[ -e "$target" ]]; then
+    echo "failed: worktree registration $id — $(head -n 1 "$CAPTURE_ERR" 2>/dev/null || echo "rm exited $rc")"
+    return 1
+  fi
+  return 0
+}
+
+if (( ${#ORPHANED_REGISTRATIONS[@]} > 0 )); then
+  PRUNE_WANTED=0
+  for entry in "${ORPHANED_REGISTRATIONS[@]}"; do
+    IFS="$US" read -r rid rpath _ _ rmethod <<<"$entry"
+    if [[ "$rmethod" == "targeted" ]]; then
+      if remove_registration "$rid" "$rpath"; then
+        echo "removed: worktree registration $rid (targeted — git could not read or would refuse it)"
+      else
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    else
+      PRUNE_WANTED=1
+    fi
+  done
+
+  if (( PRUNE_WANTED == 1 )); then
+    PRUNE_RC=0
+    run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" worktree prune || PRUNE_RC=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      echo "failed: git worktree prune — exceeded ${GIT_BOUND_SECS}s and was killed"
+    elif (( PRUNE_RC != 0 )); then
+      echo "failed: git worktree prune — $(head -n 1 "$CAPTURE_ERR" 2>/dev/null || echo "exit $PRUNE_RC")"
+    fi
+    # Report per entry from the filesystem rather than from prune's exit code:
+    # prune is all-or-nothing across the registry, so its status cannot say
+    # which entries it actually cleared.
+    for entry in "${ORPHANED_REGISTRATIONS[@]}"; do
+      IFS="$US" read -r rid rpath _ _ rmethod <<<"$entry"
+      [[ "$rmethod" == "prune" ]] || continue
+      if [[ -e "$rpath" ]]; then
+        echo "failed: worktree registration $rid — still present after git worktree prune"
+        FAILURES=$(( FAILURES + 1 ))
+      else
+        echo "removed: worktree registration $rid (git worktree prune)"
+      fi
+    done
+  fi
+fi
 
 # Empty-array guard: under `set -u`, expanding "${ARR[@]}" on an empty
 # array errors with `unbound variable` on bash 3.2 (macOS system bash).
@@ -684,6 +1211,12 @@ for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
+fi
+
+if [[ "$WORKTREE_ENUM_STATE" != "ok" ]]; then
+  echo
+  echo "note: worktree enumeration $WORKTREE_ENUM_STATE, so worktrees and local branches were not swept."
+  echo "      Re-run --apply now that the registrations above are cleared."
 fi
 
 if (( FAILURES > 0 )); then exit 2; fi

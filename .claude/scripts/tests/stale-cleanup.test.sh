@@ -236,6 +236,142 @@ check_eq "T8c: --root= with flag-like value exits 3" 3 "$?"
 ( cd "$REPO_B" && "$SUT" --check --root= >/dev/null 2>&1 )
 check_eq "T8c: --root= with empty value exits 3" 3 "$?"
 
+# ---- T9: orphaned worktree registrations (issue #1402) -----------------------
+# repoC carries four linked worktrees: one live, one whose directory was removed
+# behind git's back (the debris class that accumulated to 62 entries and froze
+# `git worktree list` on 2026-08-26), one orphan carrying a `locked` marker (the
+# shape this repo's agent harness leaves behind), and the caller's own.
+REPO_C="$TMP/repoC"
+mkdir -p "$REPO_C"
+git -C "$REPO_C" init -q
+echo "c" > "$REPO_C/README.md"
+git -C "$REPO_C" add README.md
+commit_old "$REPO_C" "repoC base"
+git -C "$REPO_C" worktree add "$TMP/wtC-orphan" -b issue-201-c-orphan >/dev/null 2>&1
+git -C "$REPO_C" worktree add "$TMP/wtC-locked" -b issue-202-c-locked >/dev/null 2>&1
+# The live worktree is deliberately created off a FRESH tip. Were it old, the
+# pre-existing stale-worktree pass would remove it on --apply and the
+# "live registration untouched" assertions below would pass or fail for a
+# reason unrelated to the registration pass they exist to test.
+echo "fresh" >> "$REPO_C/README.md"
+git -C "$REPO_C" commit -q -am "repoC fresh tip"
+git -C "$REPO_C" worktree add "$TMP/wtC-live" -b issue-200-c-live >/dev/null 2>&1
+REG_C="$REPO_C/.git/worktrees"
+# The live worktree also carries a `locked` marker on purpose. Without it the
+# "live registration untouched" assertions below pass even when the live check
+# is broken, because a misclassified unlocked entry still routes to
+# `git worktree prune`, which refuses to prune a worktree that exists — git's
+# own safety, not ours. Locked + --include-locked routes to targeted removal
+# instead, where the live check is the ONLY thing standing in the way, so the
+# assertions actually bite. Verified by reverting the live check and watching
+# them fail.
+printf 'claude agent wtC-live (pid 4242)\n' > "$REG_C/wtC-live/locked"
+# Remove the working directories without telling git — exactly what leaves a
+# registration behind.
+rm -rf "$TMP/wtC-orphan" "$TMP/wtC-locked"
+printf 'claude agent wtC-locked (pid 4242)\n' > "$REG_C/wtC-locked/locked"
+
+# Tight enough to keep T10's deliberately-hung reads short, loose enough that a
+# healthy call on a loaded CI runner is never mistaken for a hang. The bound
+# only has to exceed the healthy-case duration, which is milliseconds here.
+export STALE_CLEANUP_TIMEOUT_SECS=4
+export STALE_CLEANUP_READ_TIMEOUT_SECS=2
+
+OUT="$(cd "$REPO_C" && "$SUT" --check --json 2>/dev/null)"
+RC=$?
+check_eq "T9: orphaned registrations make --check exit 1" 1 "$RC"
+check_json "T9: unlocked orphan reported, routed to git worktree prune" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtC-orphan" and .method == "prune"
+                                 and (.reason | contains("worktree directory missing")))'
+check_json "T9: locked orphan is skipped, not pruned, without --include-locked" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtC-locked" and (.reason | contains("locked"))))
+   and (.orphaned_registrations | any(.id == "wtC-locked") | not)'
+check_json "T9: live registration appears in neither list (negative control)" "$OUT" \
+  '(.orphaned_registrations | any(.id == "wtC-live") | not)
+   and (.skipped_registrations | any(.id == "wtC-live") | not)'
+check_json "T9: enumeration succeeded, so the pre-existing passes still ran" "$OUT" \
+  '.worktree_enumeration == "ok" and .registration_scan == "ok"
+   and (.skipped_worktrees | any(.reason == "main worktree"))'
+check_json "T9: pre-existing safety skips survive the new pass" "$OUT" \
+  '(.skipped_local_branches | any(.branch == "master" or .branch == "main") )
+   or (.skipped_worktrees | length) > 0'
+
+# --include-locked promotes the locked orphan to a removal candidate, and only
+# ever via the targeted path — `git worktree prune` refuses locked entries.
+OUT="$(cd "$REPO_C" && "$SUT" --check --json --include-locked 2>/dev/null)"
+check_json "T9: --include-locked promotes the locked orphan, targeted path" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtC-locked" and .method == "targeted"
+                                 and (.reason | contains("--include-locked")))'
+
+# Caller's own registration is never a candidate, mirroring the worktree skip.
+OUT="$(cd "$TMP/wtC-live" && "$SUT" --check --json 2>/dev/null)"
+check_json "T9: caller's own registration is skipped by id" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtC-live" and (.reason | contains("caller"))))
+   and (.orphaned_registrations | any(.id == "wtC-live") | not)'
+
+# --apply prunes the unlocked orphan and leaves the live and locked ones alone.
+OUT="$(cd "$REPO_C" && "$SUT" --apply 2>&1)"
+check_contains "T9: --apply reports the prune-path removal" \
+  "removed: worktree registration wtC-orphan" "$OUT"
+check_eq "T9: unlocked orphan registration is gone after --apply" "gone" \
+  "$([[ -e "$REG_C/wtC-orphan" ]] && echo present || echo gone)"
+check_eq "T9: LIVE registration untouched by --apply" "present" \
+  "$([[ -e "$REG_C/wtC-live" ]] && echo present || echo gone)"
+check_eq "T9: locked registration untouched without --include-locked" "present" \
+  "$([[ -e "$REG_C/wtC-locked" ]] && echo present || echo gone)"
+
+OUT="$(cd "$REPO_C" && "$SUT" --apply --include-locked 2>&1)"
+check_contains "T9: --include-locked clears the locked orphan via targeted removal" \
+  "removed: worktree registration wtC-locked (targeted" "$OUT"
+check_eq "T9: locked registration gone after --include-locked" "gone" \
+  "$([[ -e "$REG_C/wtC-locked" ]] && echo present || echo gone)"
+check_eq "T9: LIVE registration still untouched (negative control)" "present" \
+  "$([[ -e "$REG_C/wtC-live" ]] && echo present || echo gone)"
+
+# ---- T10: unreadable registration metadata (the hang class) ------------------
+# A FIFO with no writer stands in for the iCloud-evicted `gitdir` files whose
+# reads never returned. `git worktree list --porcelain` blocks on it, so this
+# also exercises the bounded-enumeration degradation: without the bound the
+# whole sweep would hang here instead of reporting.
+REPO_D="$TMP/repoD"
+mkdir -p "$REPO_D"
+git -C "$REPO_D" init -q
+echo "d" > "$REPO_D/README.md"
+git -C "$REPO_D" add README.md
+commit_old "$REPO_D" "repoD base"
+git -C "$REPO_D" worktree add "$TMP/wtD-stuck" -b issue-300-d-stuck >/dev/null 2>&1
+REG_D="$REPO_D/.git/worktrees"
+rm -f "$REG_D/wtD-stuck/gitdir"
+mkfifo "$REG_D/wtD-stuck/gitdir"
+
+OUT="$(cd "$REPO_D" && "$SUT" --check --json 2>/dev/null)"
+RC=$?
+check_eq "T10: unreadable registration makes --check exit 1" 1 "$RC"
+check_json "T10: reported as unreadable, prunable with warning, targeted path" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtD-stuck" and .method == "targeted"
+                                 and (.reason | contains("unreadable — prunable with warning")))'
+# The contract is "degrades instead of hanging", which both "timed_out" and
+# "failed" satisfy. Asserting the exact value would pin a git implementation
+# detail (whether it blocks on the FIFO or errors out) rather than our
+# behaviour; the assertion above already proves OUR bound fired on the read.
+check_json "T10: bounded enumeration degrades instead of hanging" "$OUT" \
+  '.worktree_enumeration != "ok"'
+check_json "T10: local branches are not classified when enumeration did not complete" "$OUT" \
+  '(.stale_local_branches | length) == 0'
+
+OUT="$(cd "$REPO_D" && "$SUT" --apply 2>&1)"
+check_contains "T10: --apply removes it via the targeted path" \
+  "removed: worktree registration wtD-stuck (targeted" "$OUT"
+check_eq "T10: unreadable registration is gone after --apply" "gone" \
+  "$([[ -e "$REG_D/wtD-stuck" ]] && echo present || echo gone)"
+# End-to-end proof that clearing the debris unblocks git: the same enumeration
+# that timed out above now completes.
+OUT="$(cd "$REPO_D" && "$SUT" --check --json 2>/dev/null)"
+check_json "T10: enumeration recovers once the debris is cleared" "$OUT" \
+  '.worktree_enumeration == "ok" and (.orphaned_registrations | length) == 0'
+
+unset STALE_CLEANUP_TIMEOUT_SECS STALE_CLEANUP_READ_TIMEOUT_SECS
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
