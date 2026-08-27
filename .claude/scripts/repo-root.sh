@@ -89,7 +89,15 @@
 #   REPO_ROOT_TIMEOUT_SECS=2 .claude/scripts/repo-root.sh   # tighter bound
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Usage telemetry, and the ONE thing that runs before the helper preflight
+# below — so it must not narrate a broken PATH on its way there. `${0##*/}` is
+# bash's own basename (no helper call at all), and the `date` substitution is
+# silenced so a missing one leaves an empty field instead of the shell's
+# "command not found" landing on stderr ahead of the guard's single normalized
+# message. The preflight cannot simply move above this line: it would then also
+# precede argument parsing, and `--help` and usage errors would start exiting 4
+# in exactly the broken environment where an operator most needs to read them.
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ 2>/dev/null || true)" "${0##*/}" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
 
 # Self-extract the header block between BEGIN/END markers for --help.
 print_help() {

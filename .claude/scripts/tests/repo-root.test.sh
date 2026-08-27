@@ -508,6 +508,14 @@ RC=0
 ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$BAREBIN" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
 check_eq "T16d a wholesale PATH wipe also exits 4" "4" "$RC"
 check_contains "T16e the diagnostic lists the missing helpers" "awk" "$ERR"
+# The header promises "stderr: one-line error message on failure". The usage-log
+# line runs before the preflight, so if it calls helpers unguarded the shell
+# narrates the broken PATH first and an operator gets three messages where the
+# contract promised one. Count the lines rather than trusting the wording.
+check_eq "T16e2 stderr is exactly one line, per the OUTPUT contract" \
+  "1" "$(printf '%s\n' "$ERR" | grep -c .)"
+check_not_contains "T16e3 no raw shell command-not-found reaches stderr" \
+  "command not found" "$ERR"
 
 # `rm` is required for a non-obvious reason and needs its own case: it runs only
 # in the EXIT trap, but a failing trap overwrites the status. Unguarded, this
