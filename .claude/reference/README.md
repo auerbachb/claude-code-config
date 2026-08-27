@@ -33,6 +33,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `repo-bootstrap-protection.md` — branch-protection remediation mechanism: CI check-name discovery, the confirmation prompt, and the read-then-PUT payload that never downgrades existing protection (`repo-bootstrap.md`; #918)
 - `repo-bootstrap-workflows.md` — provisioned-file design: the one-list guarantee, `get_file_content()` mechanism, drift guard, and `BOOTSTRAP_FILES` as the single authoritative list (`repo-bootstrap.md`; #1282)
 - `dirty-main-guard.md` — how `--check` computes "dirty", what `--quarantine` preserves, and the recovery-branch listing/inspection/deletion commands (`main-hygiene.md`; #918)
+- `worktree-registration-quarantine-20260826.md` — what the 2026-08-26 registration quarantine holds (63 entries, 22 locked, 19 still unreadable), why it is not deletable yet, and the inverse debris class of 59 checkouts with no registration (`stale-cleanup.sh`; #1363, #1402)
 - `review-substance-evidence.md` — why a bot APPROVED requires a substantive review footprint; hollow APPROVED failure mode and evidence checks in `merge-gate.sh` (#875)
 - `wrap-fixpr-delegation.md` — `/wrap` Step 2.1 → full `/fixpr` recovery handoff contract
 - `release-cadence.md` — agent-initiated TestFlight cadence: policy schema, `auto` interval derivation, the per-repo trigger table, why the `release:ios` label must be applied pre-merge, and the structural exclusion of the App Store path (#1169)
