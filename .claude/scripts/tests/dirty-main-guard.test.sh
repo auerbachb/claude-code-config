@@ -11,6 +11,12 @@
 # --quarantine would have quarantined A); post-fix it must see only C.
 # Repo C gets a local bare origin so origin/main exists without network;
 # checks run with --no-fetch anyway per the flag's Stop-hook use case.
+#
+# Cases 7-11 cover the --repo flag (issue #1411). The parity cases run the
+# --repo form from a NON-repo cwd, so a --repo that was ignored (or that fell
+# back to cwd resolution) exits 2 and fails the comparison instead of passing
+# vacuously. Case 11 pins the safety posture: --repo <a-worktree> resolves to
+# that worktree's ROOT repo, never the worktree's own checkout.
 # Requires git. Run from repo root:
 #   bash .claude/scripts/tests/dirty-main-guard.test.sh
 set -uo pipefail
@@ -136,9 +142,130 @@ RC=$?
 check_contains "case6: resolution error surfaced" "could not resolve root repo" "$OUT"
 check_eq "case6: exit 2" "2" "$RC"
 
+# ============================ --repo flag (#1411) ============================
+# C is back on main and clean at this point (case 4 reset, case 5 returned).
+
+# ---- Case 7: --repo works with no cd at all (the #1411 use case) ------------
+# Run from a non-repo cwd: cwd resolution would exit 2 here, so a clean exit 0
+# can only come from --repo actually being honoured.
+OUT=$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$REPO_C")
+RC=$?
+check_eq "case7: --repo resolves C from an unrelated cwd" "clean" "$OUT"
+check_eq "case7: exit 0" "0" "$RC"
+
+# ---- Case 8: --repo is byte-for-byte the cwd form, state by state -----------
+# --check only: --quarantine is not idempotent, so it cannot be run twice on
+# one state. Each state also asserts the expected verdict, so the pair cannot
+# agree vacuously on a wrong answer.
+parity_check() { # desc, expected-stdout, expected-rc
+  local desc="$1" exp_out="$2" exp_rc="$3"
+  local cwd_out cwd_rc=0 repo_out repo_rc=0
+  cwd_out=$(cd "$REPO_C" && "$GUARD" --check --no-fetch) || cwd_rc=$?
+  repo_out=$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$REPO_C") || repo_rc=$?
+  check_eq "$desc: cwd form reports the expected verdict" "$exp_out" "$cwd_out"
+  check_eq "$desc: cwd form exits $exp_rc" "$exp_rc" "$cwd_rc"
+  check_eq "$desc: --repo stdout matches the cwd form" "$cwd_out" "$repo_out"
+  check_eq "$desc: --repo exit status matches the cwd form" "$cwd_rc" "$repo_rc"
+}
+
+parity_check "case8a (clean main)" "clean" "0"
+
+echo "parity edit" >> "$REPO_C/file.txt"
+parity_check "case8b (uncommitted tracked)" "dirty: uncommitted tracked changes" "1"
+git -C "$REPO_C" checkout -q -- file.txt
+
+git -C "$REPO_C" commit -q --allow-empty -m "parity unpushed"
+parity_check "case8c (unpushed commit)" "dirty: 1 unpushed commit(s) on main" "1"
+git -C "$REPO_C" reset -q --hard origin/main
+
+git -C "$REPO_C" checkout -q -b feature-parity
+parity_check "case8d (feature branch)" "clean" "0"
+git -C "$REPO_C" checkout -q main
+
+# ---- Case 9: --repo value validation → usage error, exit 3 ------------------
+OUT=$(cd "$REPO_C" && "$GUARD" --check --no-fetch --repo 2>&1)
+RC=$?
+check_contains "case9a: missing --repo value rejected" "--repo requires a value" "$OUT"
+check_eq "case9a: exit 3" "3" "$RC"
+
+OUT=$(cd "$REPO_C" && "$GUARD" --check --no-fetch --repo "" 2>&1)
+RC=$?
+check_contains "case9b: empty --repo value rejected" "--repo value cannot be empty" "$OUT"
+check_eq "case9b: exit 3" "3" "$RC"
+
+OUT=$(cd "$REPO_C" && "$GUARD" --check --no-fetch --repo= 2>&1)
+RC=$?
+check_contains "case9c: empty --repo=<> value rejected" "--repo value cannot be empty" "$OUT"
+check_eq "case9c: exit 3" "3" "$RC"
+
+OUT=$(cd "$REPO_C" && "$GUARD" --check --no-fetch --repo "$TMP/does-not-exist" 2>&1)
+RC=$?
+check_contains "case9d: nonexistent --repo path rejected" "--repo path does not exist" "$OUT"
+check_eq "case9d: exit 3" "3" "$RC"
+
+# --repo=<path> is the second accepted spelling and must resolve identically.
+OUT=$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo="$REPO_C")
+RC=$?
+check_eq "case9e: --repo=<path> spelling resolves C" "clean" "$OUT"
+check_eq "case9e: exit 0" "0" "$RC"
+
+# ---- Case 10: --repo at a non-repo dir → resolution error, exit 2 ----------
+# Run from inside repo C, where cwd resolution would have reported "clean" —
+# so this also proves --repo overrides the cwd rather than merely defaulting.
+OUT=$(cd "$REPO_C" && "$GUARD" --check --no-fetch --repo "$NONREPO" 2>&1)
+RC=$?
+check_contains "case10: resolution error surfaced" "could not resolve root repo" "$OUT"
+check_contains "case10: error names --repo as the source, not the cwd" \
+  "from --repo $NONREPO" "$OUT"
+check_eq "case10: exit 2" "2" "$RC"
+
+# ---- Case 11: --repo <worktree> guards the ROOT, never the worktree --------
+# Safety posture pin. Repo D sits dirty on main; its linked worktree W sits on
+# a feature branch with its own dirty tracked file. A --repo that targeted the
+# named path directly would see W's feature branch and short-circuit "clean";
+# resolving through repo-root.sh sees D's dirty main instead. The two answers
+# differ, so this case cannot pass under the wrong implementation.
+REPO_D="$TMP/repoD"
+git init -q -b main "$REPO_D"
+git -C "$REPO_D" config user.email "test@example.com"
+git -C "$REPO_D" config user.name "Test"
+echo "root content" > "$REPO_D/root.txt"
+git -C "$REPO_D" add root.txt
+git -C "$REPO_D" commit -q -m "init D"
+git init -q --bare "$TMP/originD.git"
+git -C "$REPO_D" remote add origin "$TMP/originD.git"
+git -C "$REPO_D" push -q -u origin main
+
+WT_W="$TMP/wtW"
+git -C "$REPO_D" worktree add -q "$WT_W" -b feature-w
+echo "worktree edit" >> "$WT_W/root.txt"   # dirty tracked file, W's checkout
+echo "root edit" >> "$REPO_D/root.txt"     # dirty tracked file, D's main
+
+OUT=$(cd "$WT_W" && "$GUARD" --check --no-fetch)
+CWD_RC=$?
+OUT_REPO=$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$WT_W")
+RC=$?
+check_eq "case11: worktree path reports the ROOT's dirty main" \
+  "dirty: uncommitted tracked changes" "$OUT_REPO"
+check_eq "case11: --repo <worktree> stdout matches cd-into-worktree" "$OUT" "$OUT_REPO"
+check_eq "case11: --repo <worktree> exit status matches cd-into-worktree" "$CWD_RC" "$RC"
+
+OUT=$(cd "$NONREPO" && "$GUARD" --quarantine --repo "$WT_W")
+RC=$?
+check_eq "case11: quarantine exit 0" "0" "$RC"
+check_contains "case11: recovery branch reported" "quarantined: recovery/dirty-main-" "$OUT"
+check_eq "case11: W still on its own feature branch" "feature-w" \
+  "$(git -C "$WT_W" symbolic-ref --short HEAD)"
+check_eq "case11: W's dirty tracked file untouched" "worktree edit" \
+  "$(tail -1 "$WT_W/root.txt")"
+check_eq "case11: D's main is clean after quarantine" "root content" \
+  "$(tail -1 "$REPO_D/root.txt")"
+check_eq "case11: exactly one recovery branch in D" "1" \
+  "$(git -C "$REPO_D" branch --list 'recovery/dirty-main-*' | wc -l | tr -d ' ')"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: dirty-main-guard.sh — invoking-repo scope incl. quarantine path locked in (issue #707)"
+echo "OK: dirty-main-guard.sh — invoking-repo scope incl. quarantine path (issue #707) and --repo targeting (issue #1411) locked in"
