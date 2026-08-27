@@ -61,8 +61,14 @@
 # EXIT STATUS
 #   0  Success — path printed on stdout.
 #   1  Not inside a git repo / no worktrees found / resolved path missing.
+#      DETERMINATE: git ran and reported it, so a caller may act on the answer.
 #   2  Usage error (unknown flag or extra argument).
 #   3  Timed out — a git call exceeded REPO_ROOT_TIMEOUT_SECS and was killed.
+#   4  git could not run — the binary is missing, not executable, has an
+#      unusable interpreter, or PATH is broken (the shell returned 126/127
+#      before git's own code ever started). NOT determinate: nothing was
+#      learned about the directory, so a caller must not fall back to another
+#      git call or to $PWD on this code (issue #1403).
 #
 # EXAMPLES
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh)            # from anywhere in repo
@@ -145,6 +151,24 @@ fi
 
 BOUNDED_TIMED_OUT=0
 BOUNDED_CLOCK_UNREADABLE=0
+
+# Set when a git call came back 126/127 — the shell could not launch the binary
+# at all, so git never formed an opinion about this directory. Read ONLY by the
+# final failure branch, which means a later call that does succeed still wins:
+# the flag can escalate the diagnosis of a failure, never turn a success into
+# one.
+GIT_UNRUNNABLE=0
+
+# 127 = the shell could not find the command; 126 = it found it and could not
+# execute it (no execute bit, unusable interpreter, wrong architecture). Both
+# are decided by the shell BEFORE git's own code starts, which is what makes
+# them safe to read as "git could not run" without parsing stderr — a locale-
+# dependent guess this script deliberately avoids. Git's own fatal code is 128,
+# and that one legitimately covers a genuine non-repo alongside a corrupt or
+# unreadable object store, so it keeps exiting 1 with git's stderr appended.
+note_if_unrunnable() { # rc
+  case "$1" in 126|127) GIT_UNRUNNABLE=1 ;; esac
+}
 
 # Seconds since the epoch, or a non-zero return when the answer is unusable.
 # Callers must not accept a blank or non-numeric result: inside `(( ))` an empty
@@ -287,6 +311,7 @@ resolve_via_common_dir() {
     # would only double the outage — fail now.
     timeout_die "git rev-parse --git-common-dir"
   fi
+  note_if_unrunnable "$rc"
   if [[ "$rc" -ne 0 ]]; then
     # git < 2.31 has no --path-format; its plain form may answer with a path
     # relative to the directory the call ran in.
@@ -295,6 +320,7 @@ resolve_via_common_dir() {
     if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
       timeout_die "git rev-parse --git-common-dir"
     fi
+    note_if_unrunnable "$rc"
     [[ "$rc" -eq 0 ]] || return 1
   fi
 
@@ -337,13 +363,20 @@ fi
 
 if [[ -z "$ROOT" ]]; then
   # Porcelain parsing: first `worktree <path>` line is the main worktree root.
-  # The one status that is distinct — the bound tripping — is carried by
-  # BOUNDED_TIMED_OUT and handled first; git's own stderr survives in
-  # $CAPTURE_ERR and is reported below.
-  run_bounded "${GIT_CMD[@]}" worktree list --porcelain || true
+  # The two statuses that are distinct — the bound tripping, and git never
+  # launching — are carried by BOUNDED_TIMED_OUT and GIT_UNRUNNABLE; git's own
+  # stderr survives in $CAPTURE_ERR and is reported below.
+  #
+  # The rc is captured for DIAGNOSIS ONLY, replacing the old `|| true`. Whether
+  # this call succeeded is still decided by what the awk below finds, exactly as
+  # before, so nothing about the resolution outcome moves — the rc only lets a
+  # failure name itself accurately at the bottom of the script.
+  WT_RC=0
+  run_bounded "${GIT_CMD[@]}" worktree list --porcelain || WT_RC=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     timeout_die "git worktree list --porcelain"
   fi
+  note_if_unrunnable "$WT_RC"
   ROOT="$(awk '/^worktree /{sub(/^worktree /, ""); print; exit}' "$CAPTURE")" || ROOT=""
 fi
 
@@ -353,6 +386,21 @@ if [[ -z "$ROOT" ]]; then
   # into one confident sentence — and the callers now relay that sentence with
   # authority. Naming what git actually said is the whole point of this change.
   GIT_SAID="$(head -n 1 "$CAPTURE_ERR" 2>/dev/null || true)"
+  if [[ "$GIT_UNRUNNABLE" -eq 1 ]]; then
+    # Split out of exit 1 by issue #1403. Exit 1 is a DETERMINATE answer — git
+    # ran and reported that this is not a repo — and callers are entitled to act
+    # on it, which is why admin-merge.sh substitutes `git rev-parse` / $PWD
+    # there. Here git never started, so nothing was determined, and that same
+    # substitution would be a guess made with the same broken git. Callers need
+    # the CODE to tell them apart; the appended stderr alone was not enough,
+    # because nothing branches on prose.
+    WHERE="the current directory"
+    if [[ -n "$TARGET" ]]; then
+      WHERE="$TARGET"
+    fi
+    echo "repo-root.sh: git could not run (missing, not executable, or a broken PATH), so nothing was determined about $WHERE${GIT_SAID:+ — git said: $GIT_SAID}" >&2
+    exit 4
+  fi
   if [[ -n "$TARGET" ]]; then
     echo "repo-root.sh: could not resolve main worktree root (not a git repo: $TARGET)${GIT_SAID:+ — git said: $GIT_SAID}" >&2
   else

@@ -173,6 +173,8 @@ RC=0
 HELP="$(cd "$MAIN" && "$SUT" --help 2>&1)" || RC=$?
 check_eq "T8d --help exits 0" "0" "$RC"
 check_contains "T8e --help documents the timeout exit code" "3  Timed out" "$HELP"
+check_contains "T8f --help documents the git-could-not-run exit code" \
+  "4  git could not run" "$HELP"
 
 # ---- T9: the happy path must not enumerate worktrees -----------------------
 # This is the regression itself: the incident was one `git worktree list` over
@@ -361,6 +363,75 @@ else
   fail "T14d took ${ELAPSED}s — the bound did not hold without a clock"
 fi
 rm -f "$STUB/date"
+
+# ---- T15: git that cannot run at all -> exit 4, never exit 1 ---------------
+# The split issue #1403 asked for. "not a git repo" (1) is a DETERMINATE answer
+# a caller may act on; "git never started" is not, and admin-merge.sh's fallback
+# chain keys on that difference. Both fixtures below are REAL exec failures, not
+# a stub that hardcodes an rc: the shell decides 126/127 before any git code
+# runs, which is exactly the signal the script keys on.
+#
+# A dedicated stub dir, not the shared $STUB: every earlier group rewrites
+# $STUB/git, so reusing it would make this group's meaning depend on which
+# block last ran above.
+NOGIT="$TMP/nogit"
+mkdir -p "$NOGIT"
+
+# 126 — the file is there and executable, but its interpreter is not, so exec
+# fails. This is the "not executable / unusable binary" half of the contract.
+cat > "$NOGIT/git" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOGIT/git"
+
+RC=0
+ERR="$(cd "$MAIN" && PATH="$NOGIT:$PATH" "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15 an unexecutable git exits 4, not 1" "4" "$RC"
+check_contains "T15b diagnostic names the cause" "git could not run" "$ERR"
+check_contains "T15c the exec failure itself is relayed" "bad interpreter" "$ERR"
+# The negative control that makes T15 mean something: before this change every
+# one of these landed on the determinate non-repo sentence, which is what let
+# callers substitute a guess.
+check_not_contains "T15d never claims the directory is not a repo" \
+  "not inside a git repo" "$ERR"
+
+# 127 — the command cannot be found. Produced genuinely by exec'ing a missing
+# binary from inside the stub (the shell emits its own "command not found" and
+# exits 127), because emptying PATH to remove git would also remove the date,
+# awk and mktemp the script legitimately needs.
+cat > "$NOGIT/git" <<'EOF'
+#!/usr/bin/env bash
+exec definitely-not-a-real-git-binary-xyz "$@"
+EOF
+chmod +x "$NOGIT/git"
+
+RC=0
+ERR="$(cd "$MAIN" && PATH="$NOGIT:$PATH" "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15e a git that cannot be found exits 4" "4" "$RC"
+check_contains "T15f rc-127 diagnostic names the cause" "git could not run" "$ERR"
+# Assert the name the shell could not find, not the wording around it: `exec`
+# says "not found" where a plain command says "command not found", and the
+# prefix differs again on Linux. The name is what an operator acts on.
+check_contains "T15g the shell's own message is relayed" \
+  "definitely-not-a-real-git-binary-xyz" "$ERR"
+
+# With an explicit [path] argument the message must name that path, not the cwd
+# — the operator's next move depends on which one git failed to read.
+RC=0
+ERR="$(cd "$PLAIN" && PATH="$NOGIT:$PATH" "$SUT" "$MAIN" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15h [path] argument also exits 4" "4" "$RC"
+check_contains "T15i diagnostic names the target path, not the cwd" "$MAIN" "$ERR"
+
+# The other half of the split: a genuinely non-git directory must STILL exit 1
+# with the determinate sentence while a real git is on PATH. Without this, an
+# implementation that returned 4 for every failure would pass T15 and quietly
+# break every caller that acts on the determinate answer.
+RC=0
+ERR="$(cd "$PLAIN" && "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15j a real non-repo still exits 1, so the split is a split" "1" "$RC"
+check_not_contains "T15k non-repo is never reported as a broken git" \
+  "git could not run" "$ERR"
 
 echo
 echo "passed: $PASS  failed: $FAIL"
