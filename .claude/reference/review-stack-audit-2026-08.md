@@ -316,8 +316,11 @@ non-truncated 268-PR measurement, so the two findings share one evidence base.
 
 **The attribution dispute is settled.** #1204 recorded two readings of the $815.58 — genuine BugBot
 spend, or IDE usage mislabelled as `github_bugbot`. The #1228 dashboard event log (763 runs, 324
-PRs, per-PR rows) confirms it really is BugBot. `pricing-matrix.md` §Cursor BugBot still carries the
-older *"Unresolved attribution"* wording; see Follow-ups.
+PRs, per-PR rows) confirms it really is BugBot. ~~`pricing-matrix.md` §Cursor BugBot still carries
+the older *"Unresolved attribution"* wording; see Follow-ups.~~ **Corrected 2026-08-27 in
+[PR #1401](https://github.com/auerbachb/claude-code-config/pull/1401)** (closing
+[Issue #1355](https://github.com/auerbachb/claude-code-config/issues/1355)): that section now marks
+the older wording `SUPERSEDED` and carries a dated `UPDATE` recording the attribution as settled.
 
 ### Incidence and participation
 
@@ -398,11 +401,30 @@ chain-position reconciliation. **Advisory — no routing rule changed.**
 
 ### BugBot follow-ups
 
+> **UPDATE (2026-08-27) — both follow-ups have landed, and follow-up 1's deferral reason was wrong
+> when it was written.** Follow-up 1 shipped in
+> [PR #1395](https://github.com/auerbachb/claude-code-config/pull/1395), closing
+> [Issue #1354](https://github.com/auerbachb/claude-code-config/issues/1354); follow-up 2 shipped in
+> [PR #1401](https://github.com/auerbachb/claude-code-config/pull/1401), closing
+> [Issue #1355](https://github.com/auerbachb/claude-code-config/issues/1355). They landed as two
+> separate PRs, not one. The parenthetical *"the corpus is owned by a sibling PR"* never held: no
+> sibling PR carried `.claude/rules/` —
+> [PR #1338](https://github.com/auerbachb/claude-code-config/pull/1338), the #1303 reconciliation,
+> changed only `.claude/reference/`, `.claude/skills/`, and one test — which is why #1354 and #1355
+> had to be filed at all. The same false parenthetical was caught once before, in PR #1349's own
+> acceptance criteria, and rescoped there
+> ([`ac-checklist-measurement-2026-08.md`](./ac-checklist-measurement-2026-08.md), `#1349` row). The
+> item's other reason — an advisory audit does not edit the rule corpus — was the accurate one. The
+> items below are annotated rather than rewritten: this is a point-in-time record
+> ([Issue #1399](https://github.com/auerbachb/claude-code-config/issues/1399)).
+
 1. **`bugbot.md` and `pricing-matrix.md` describe the wrong failure shape.** Both say the spend-limit
    refusal concludes `success`; measured, it concludes `neutral`. A rule-corpus edit is out of scope
-   here (advisory audit, and the corpus is owned by a sibling PR). Needs its own issue.
+   here (advisory audit, ~~and the corpus is owned by a sibling PR~~ — struck; see the UPDATE above).
+   Needs its own issue. → **Filed as Issue #1354; landed 2026-08-27 in PR #1395.**
 2. **`pricing-matrix.md` §Cursor BugBot still calls the attribution "unresolved".** #1228 settled it.
-   Same PR as BugBot follow-up 1.
+   ~~Same PR as BugBot follow-up 1.~~ → **Filed separately as Issue #1355; landed 2026-08-27 in
+   PR #1401.**
 
 ## Cadence
 
