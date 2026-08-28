@@ -503,4 +503,159 @@ OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
+############################################################################
+# Issue #1440 — the banner is EDITED IN PLACE, so `created_at` is the wrong
+# clock. Everything above this point passed throughout that outage: no fixture
+# above carries `updated_at` at all, so the suite could not tell "ages the
+# banner" apart from "ages the banner's BIRTH". These scenarios re-run the same
+# assertions on the shape CodeRabbit actually maintains.
+############################################################################
+echo "== (r1): updated_at postdates HEAD while created_at predates it -> polling_cr =="
+# The regression proper, reproducing PR #1436. The banner was born 9000s ago —
+# well before the 7200s push, so on main the stale-banner guard denies it — and
+# was REFRESHED 600s ago, comfortably inside the 1620s window its live body
+# states. On main both terms fail (9000 <= 7200 is false, 9000 < 1620 is false)
+# and the PR burns a sticky Greptile assignment while CodeRabbit's allowance is
+# still coming back. Aged from the edit, both terms pass.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R1="$(cr_limit_banner_edited "$(ts_seconds_ago 9000)" "$(ts_seconds_ago 600)" "27 minutes")"
+FAIL_R1="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R1, $BANNER_R1]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (r1b): control — the SAME banner with NO edit time still escalates =="
+# Byte-for-byte (r1) but for the presence of `updated_at`. Without this, (r1)
+# would also pass if the stale-banner guard had simply been deleted — which is
+# the one other change that flips it, and a far wider one. The edit time is the
+# only difference, so it is the only thing that can explain the two verdicts.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R1B="$(cr_limit_banner_included "$(ts_seconds_ago 9000)" "27 minutes")"
+FAIL_R1B="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R1B, $BANNER_R1B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (r2): NEGATIVE CONTROL — a genuinely EXPIRED banner still grants no grace =="
+# The inverse risk the `< window_seconds` bound exists to hold: reading the edit
+# time must not turn a lapsed banner into an indefinite wait. Refreshed 2000s
+# ago against the 1620s window it states, so the window has closed by 380s.
+#
+# The stale-banner guard PASSES here (2000 <= 7200), which is what makes this
+# non-vacuous: elapsed time is the only term that can deny grace, so the
+# scenario fails if the window bound is ever dropped or inverted.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R2="$(cr_limit_banner_edited "$(ts_seconds_ago 9000)" "$(ts_seconds_ago 2000)" "27 minutes")"
+FAIL_R2="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R2, $BANNER_R2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (r2b): control — the SAME banner refreshed 1500s ago is still INSIDE 27 minutes =="
+# 200s to the other side of the 1620s boundary, nothing else changed. Pins the
+# MAGNITUDE the edit time is aged against: a window read as 0 flips (r2b), and
+# one read as unbounded flips (r2). Only 1620 satisfies both.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R2B="$(cr_limit_banner_edited "$(ts_seconds_ago 9000)" "$(ts_seconds_ago 1500)" "27 minutes")"
+FAIL_R2B="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R2B, $BANNER_R2B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (r3): EMPTY updated_at falls back to created_at -> grace preserved =="
+# The silent-loss shape, and the reason the selector takes a max instead of
+# reading the edit time bare. A payload that carries the field but leaves it
+# empty would, under a bare read, produce an empty ts — which the selector
+# DELETES, taking the entire #1199 grace with it and reporting nothing. Under
+# max the birth time is still the floor, so this banner keeps its 300s age and
+# its grace.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R3="$(cr_limit_banner_edited "$(ts_seconds_ago 300)" "" "27 minutes")"
+FAIL_R3="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R3, $BANNER_R3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (r3b): NULL updated_at falls back the same way =="
+# The other absent-field spelling. A bundle written before pr-state.sh projected
+# the field omits the key entirely; a null is what a projection that keeps the
+# key but not the value produces. Both must degrade to the birth time, not to
+# no banner at all.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R3B="$(cr_limit_banner_included "$(ts_seconds_ago 300)" "27 minutes" | jq -c '.updated_at = null')"
+FAIL_R3B="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R3B, $BANNER_R3B]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (r4): MALFORMED updated_at is filtered, not compared -> grace preserved =="
+# max is LEXICOGRAPHIC, so this is not a hypothetical: `not-a-timestamp` begins
+# with `n`, which sorts above the `2` every ISO timestamp this decade begins
+# with. An unfiltered max would hand that string to the ISO shape check in bash,
+# which rejects it — silently converting a readable, in-window banner into no
+# grace. The value is dropped before the comparison, so the valid birth time
+# wins and the banner keeps the grace it earned.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R4="$(cr_limit_banner_edited "$(ts_seconds_ago 300)" "not-a-timestamp" "27 minutes")"
+FAIL_R4="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R4, $BANNER_R4]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (r5): ordering is by LAST-STATED time, not by birth -> escalates =="
+# (h)/(h2)/(p10) pin "newest wins", but every banner there was born and stated at
+# the same instant, so they cannot tell the two clocks apart. Here the orders
+# genuinely disagree: the banner born LATER (3000s ago, 2h window capped to
+# 3600s, so still notionally open) was never edited, while the one born EARLIER
+# (5000s ago) was refreshed 900s ago and states a 5-minute window that closed
+# 600s back. Selecting by birth picks the open one and returns polling_cr;
+# selecting by last-stated picks the refreshed one, whose own window has lapsed.
+# The live statement is the one to read even when it is the older comment.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R5_UNEDITED="$(cr_limit_banner_included "$(ts_seconds_ago 3000)" "2 hours")"
+BANNER_R5_EDITED="$(cr_limit_banner_edited "$(ts_seconds_ago 5000)" "$(ts_seconds_ago 900)" "5 minutes")"
+FAIL_R5="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R5, $BANNER_R5_UNEDITED, $BANNER_R5_EDITED]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (r5b): control — same pair, refreshed banner still INSIDE its window =="
+# Identical to (r5) except the refreshed banner states 27 minutes instead of 5,
+# putting its 900s age inside the window. Without this, (r5) would also pass if
+# the edited banner were simply dropped from the list — escalating for the wrong
+# reason and proving nothing about which comment was selected.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_PUSH")"
+BANNER_R5B_UNEDITED="$(cr_limit_banner_included "$(ts_seconds_ago 3000)" "2 hours")"
+BANNER_R5B_EDITED="$(cr_limit_banner_edited "$(ts_seconds_ago 5000)" "$(ts_seconds_ago 900)" "27 minutes")"
+FAIL_R5B="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_R5B, $BANNER_R5B_UNEDITED, $BANNER_R5B_EDITED]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
 finish_escalate_review_tests "CodeRabbit retry-window"

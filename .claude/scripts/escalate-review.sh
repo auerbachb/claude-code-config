@@ -657,9 +657,17 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
            * (if $m.unit == "hour" then 3600 elif $m.unit == "minute" then 60 else 1 end)
       end;
   # NEWEST banner first, THEN read its window — never the reverse (CodeRabbit
-  # review, PR #1203). An unreadable window yields 0 rather than dropping the
-  # banner from the list, because dropping it would let an OLDER readable banner
-  # win the sort: a CodeRabbit wording change would then hand the PR a grace
+  # review, PR #1203). "Newest" is by the edit-aware ts built below, so it means
+  # MOST RECENTLY STATED, not most recently born (issue #1440): between a banner
+  # CodeRabbit is still refreshing and one it has abandoned, the refreshed one is
+  # the live statement even when it was posted first. With one in-place-edited
+  # banner per PR — the shape CodeRabbit actually ships — this list is usually a
+  # single element and the ordering is moot; it matters only for the leftovers of
+  # a wording change, where the live statement is still the one to read.
+  #
+  # An unreadable window yields 0 rather than dropping the banner from the list,
+  # because dropping it would let an OLDER readable banner win the sort: a
+  # CodeRabbit wording change would then hand the PR a grace
   # period computed from a stale window it had already served. With 0, the
   # newest-banner-has-no-window case grants no grace at all, which is the
   # fail-toward-escalation direction this block is built on.
@@ -693,7 +701,38 @@ read -r CR_BANNER_WINDOW_S CR_BANNER_TS < <(jq -r --argjson cap "$CR_RETRY_WINDO
     # because its only question is whether the comment is a finding; this block
     # asks whether CodeRabbit still owes us a review, which that body answers no.
     | select((.body // "") | test("review limit reached|<!--[^>]*rate[- ]?limited by coderabbit\\.ai"; "i"))
-    | { ts: (.created_at // ""), w: ((.body // "") | window_seconds) }
+    # EDIT-AWARE TIMESTAMP (issue #1440). CodeRabbit keeps ONE banner per PR and
+    # REWRITES it in place as the allowance recovers, refreshing the window
+    # inside it; it does not post a second comment. Reading `created_at` alone
+    # therefore times the banner from its BIRTH, which on a comment edited in
+    # place is the wrong clock. Observed live on PR #1436: a banner born
+    # 01:55:37Z was still being refreshed at 02:05:02Z and still said 33 minutes
+    # remained, yet aged from birth it predated every push and bought no grace at
+    # all. The verdict fell through to a sticky, one-way, budget-consuming
+    # Greptile downgrade while the allowance we had already paid for was still
+    # coming back — the exact outcome this block exists to prevent.
+    #
+    # MAX of the two, not a bare `updated_at`, and the difference is load-
+    # bearing. A bundle written before pr-state.sh projected the field — or any
+    # future payload that stops carrying it — yields no edit time, and a bare
+    # read would then produce an empty ts, which the `select` below DELETES.
+    # The whole grace would disappear SILENTLY on a payload-shape change rather
+    # than merely losing precision, which is the failure mode #1364 already cost
+    # us once. Under max the birth time stays the floor, so a missing edit time
+    # costs nothing beyond the pre-#1440 behaviour. Both fields are GitHub UTC
+    # `Z` strings of one fixed width, so lexicographic max IS chronological max —
+    # the same property `sort_by` below already relies on.
+    #
+    # Non-ISO values are FILTERED OUT rather than compared, because max is
+    # lexicographic: a malformed edit time sorting above a valid birth time would
+    # otherwise win the comparison and then fail the ISO shape check in bash,
+    # turning a perfectly readable banner into no grace. Filtering keeps the
+    # good value and leaves the fallback intact.
+    | { ts: ([ .created_at, .updated_at
+               | strings
+               | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}")) ]
+             | max // ""),
+        w: ((.body // "") | window_seconds) }
     | select(.ts != "") ]
   | sort_by(.ts) | last // {ts: "", w: 0}
   | [ (if .w > $cap then $cap else .w end), .ts ] | @tsv
@@ -711,6 +750,35 @@ if [[ -n "$CR_BANNER_TS" && "$CR_REVIEW_ON_HEAD" != "true" \
   # an earlier SHA must not buy the current one a grace period. Both ages are
   # measured from now by the same function, so "no older than the push" is
   # age <= AGE_SECONDS.
+  #
+  # PER-SHA vs ACCOUNT-WIDE — re-decided for issue #1440, KEPT, and the reasoning
+  # is recorded here because the axis is not self-evident. CodeRabbit's cap is
+  # account-wide, not per-SHA, so a banner raised on an earlier SHA can still be
+  # describing a cap that is live right now; on that reading the per-SHA term
+  # looks like the wrong axis outright, and #1440 asked whether it should go.
+  #
+  # It stays, because the term was never really asking "was this banner raised
+  # for this SHA" — it was asking "is this banner a live statement or an
+  # abandoned leftover", and it was answering with the wrong clock. That was the
+  # whole #1440 defect. `CR_BANNER_TS` is now the banner's LAST-STATED time, so
+  # the same comparison discriminates the thing it was reaching for: CodeRabbit
+  # rewrites the banner in place whenever it declines a review, so a cap that is
+  # still biting produces a fresh edit after the push and grace is granted, while
+  # a cap that has cleared leaves the banner untouched and it ages out. The
+  # residual — a push CodeRabbit has not yet answered at all — correctly grants
+  # nothing: absent any statement from CodeRabbit about this push, there is no
+  # evidence a cap applies to it, and waiting on CodeRabbit's own signal is the
+  # honest default.
+  #
+  # Dropping the term instead would rest the entire grace on `< window_seconds`.
+  # That bound does self-limit (and is capped at CR_RETRY_WINDOW_CAP_SECONDS), so
+  # the blast radius would be bounded rather than unbounded — but it would widen
+  # behaviour on an axis with no observed failure behind it, and it would delete
+  # the only guard standing between a stale banner and a repeat of the indefinite
+  # wait this block was built to avoid. Fixing the clock is the change the
+  # evidence supports; changing the axis is not. Revisit only with a live case
+  # where a banner is genuinely refreshed, genuinely inside its window, and still
+  # denied — which the timestamp fix is expected to make unreachable.
   if [[ "$CR_BANNER_AGE" -le "$AGE_SECONDS" && "$CR_BANNER_AGE" -lt "$CR_BANNER_WINDOW_S" ]]; then
     emit "polling_cr"
   fi
