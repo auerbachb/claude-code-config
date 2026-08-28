@@ -419,12 +419,16 @@ require_text "probe fire bound knob documented"   "$SKILL" 'CLAUDE_HORIZON_PROBE
 # A zero cadence would make the Monitor's `sleep 0` a hot loop, and a zero bound
 # arms a wake that can only ever stop itself; a zero WINDOW is legal and is how
 # reactive parity is requested. The knobs therefore validate differently.
-require_text "probe knobs reject zero"   "$SKILL" 'and `> 0`'
-require_text "window knob permits zero"  "$SKILL" '`0` is legal.*reactive parity'
-require_text "hot-loop risk is stated"   "$SKILL" 'sleep 0.* hot loop'
-# A wake whose TaskStop failed must keep its identity — nulling it strands a
-# ticking Monitor that nothing can name.
-require_text "failed TaskStop aborts the replacement" "$SKILL" 'A failed `TaskStop` aborts the replacement'
+# These three assert the DOCUMENTATION only — the behaviour they describe is
+# proven in the "Knob validation" and "rc propagation" sections below. A grep for
+# a sentence is not coverage of the rule that sentence describes.
+require_text "probe knobs documented as > 0" "$SKILL" 'and `> 0`'
+require_text "window knob documented as 0-legal" "$SKILL" '`0` is legal.*reactive parity'
+require_text "hot-loop rationale is stated"  "$SKILL" 'sleep 0.* hot loop'
+# A wake whose TaskStop failed — or whose registry could not be read — must keep
+# its identity: nulling it strands a ticking Monitor that nothing can name.
+require_text "failed TaskStop aborts the replacement" "$SKILL" 'aborts the replacement'
+require_text "abort is carried by a flag, not a top-level return" "$SKILL" 'ADOPT_ABORT'
 require_text "known reset arms the one-shot instead" "$SKILL" "arm 2D\.6's sleep-until-reset one-shot verbatim"
 require_text "reactive path tags its cause"       "$SKILL" 'day\.limit_cause=..reactive'
 require_text "reactive path adopts a live wake"   "$SKILL" 'Stop it BEFORE the write nulls its ID'
@@ -455,6 +459,149 @@ require_text "doc explains the window deviation" "$DAY_MODE_DOC" 'Why the park w
 # reconstructing state from the schema would drop them.
 SCHEMA_FIELDS=$(jq -r '[paths|join(".")] | map(select(test("day\\.limit_(cause|probe_fires_remaining)$"))) | length' "$SCHEMA")
 check_eq "schema example carries both new fields" "2" "$SCHEMA_FIELDS"
+
+# ---------------------------------------------------------------------------
+echo "== Knob validation: the range is enforced, not just documented (AC 3) =="
+# ---------------------------------------------------------------------------
+# The knobs resolve inside the claim block. Injecting PROBE_CADENCE_MIN /
+# PROBE_MAX_FIRES (as the sections above do) is exactly what hides this: bash
+# arithmetic turns an unset or zero knob into 0, so PARK_EPOCH == NOW_EPOCH and
+# every reader treats a non-future parked_until as "not parked" — the board winds
+# down while its own durable record says it did not. So run the block with the
+# ENV knobs only, and never pre-seed the shell variables.
+run_claim_env() {   # run_claim_env <cadence-env> <fires-env>
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+    CLAUDE_HORIZON_PROBE_CADENCE_MINUTES="$1" CLAUDE_HORIZON_PROBE_MAX_FIRES="$2" \
+    bash -c "$BLOCK_CLAIM" 2>/dev/null
+}
+park_delta() { local p; p="$(day_get parked_until)"; [ "$p" = null ] && { echo -1; return; }; echo $(( $(iso_to_epoch "$p") - $(date -u +%s) )); }
+
+# Unset knobs must fall back to the shipped 30 x 12 = 6h, not collapse to now.
+seed_day_state
+check_eq "knobs unset: claim still wins" "PARK_CLAIM=won" "$(run_claim_env "" "" | tail -1)"
+D=$(park_delta)
+if (( D > 21000 && D <= 21600 )); then
+  PASS=$((PASS + 1)); echo "ok   — knobs unset: defaults give a ~6h park (${D}s)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — knobs unset: expected ~6h park, got ${D}s"
+fi
+
+# Zero and garbage are rejected in favour of the defaults — never accepted, and
+# never allowed to produce a parked_until that is not in the future.
+for BAD in 0 abc -5; do
+  seed_day_state
+  OUT="$(run_claim_env "$BAD" 12 | tail -1)"
+  D=$(park_delta)
+  if [[ "$OUT" == "PARK_CLAIM=won" ]] && (( D > 21000 && D <= 21600 )); then
+    PASS=$((PASS + 1)); echo "ok   — cadence '$BAD' rejected, default 30 used (${D}s)"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — cadence '$BAD' not rejected (out='$OUT' delta=${D}s)"
+  fi
+  seed_day_state
+  OUT="$(run_claim_env 30 "$BAD" | tail -1)"
+  D=$(park_delta)
+  if [[ "$OUT" == "PARK_CLAIM=won" ]] && (( D > 21000 && D <= 21600 )); then
+    PASS=$((PASS + 1)); echo "ok   — fires '$BAD' rejected, default 12 used (${D}s)"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — fires '$BAD' not rejected (out='$OUT' delta=${D}s)"
+  fi
+done
+
+# A valid override is still honoured, or the validation would be a no-op guard.
+seed_day_state
+run_claim_env 1 1 >/dev/null
+D=$(park_delta)
+if (( D > 0 && D <= 60 )); then
+  PASS=$((PASS + 1)); echo "ok   — valid override honoured (1x1 = ${D}s)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — valid override not honoured (got ${D}s)"
+fi
+
+# The window knob is the opposite case: 0 is legal and must survive validation.
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=0 bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "window knob 0 is accepted (reactive parity)" "0" "$WINDOW_OUT"
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=zzz bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "window knob garbage falls back to 2" "2" "$WINDOW_OUT"
+
+# ---------------------------------------------------------------------------
+echo "== rc propagation: a failed write is never reported as success (AC 4) =="
+# ---------------------------------------------------------------------------
+# Every guard below arms something — a bound, an identity pair, a thrash counter.
+# A swallowed rc on any of them reports a guard that was never armed, which is
+# strictly worse than reporting the failure: the probe would run unbounded, or
+# the board would park with a wake that can never resume it.
+# A self-contained stand-in for session-state.sh: --get / --set / --cas against
+# $STATE_FILE with jq, and a fault injected on whichever op $FAULT_ON names.
+# Deliberately NOT a wrapper around the real script — what is under test here is
+# whether the BLOCK propagates a non-zero rc, and delegating would drag the real
+# script's locking and repo-scope resolution into a question that is neither.
+# session-state.sh's own semantics are covered by its own suite.
+FAULT_SH="$STUB_DIR/session-state-fault.sh"
+cat > "$FAULT_SH" <<'FAULT'
+#!/usr/bin/env bash
+op=""; arg=""; expect=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --get) op=get; arg="$2"; shift 2 ;;
+    --set) op=set; arg="$2"; shift 2 ;;
+    --cas) op=cas; arg="$2"; shift 2 ;;
+    --expect) expect="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$op" = "${FAULT_ON:-}" ] && exit "${FAULT_RC:-6}"
+[ -f "$STATE_FILE" ] || exit 3
+path="${arg%%=*}"; value="${arg#*=}"
+case "$op" in
+  get) jq -r "$path" "$STATE_FILE" ;;
+  set) jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+  cas)
+    cur=$(jq -c "$path" "$STATE_FILE")
+    [ "$cur" = "$expect" ] || exit 7
+    jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+esac
+FAULT
+chmod +x "$FAULT_SH"
+
+seed_probe_state 12
+PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=set FAULT_RC=6 \
+  bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
+check_eq "probe: failed decrement fails closed, not 'continue'" "PROBE=fail-closed" "$PROBE_OUT"
+check_eq "probe: failed decrement left the bound untouched" "12" "$(day_get limit_probe_fires_remaining)"
+
+# A lock timeout on the generation read is contention, not supersession. Reading
+# it as `stale` exits silently AND spends no fire, so the bound never advances.
+seed_probe_state 12
+PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=get FAULT_RC=6 \
+  bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
+check_eq "probe: lock timeout on generation read fails closed, not 'stale'" "PROBE=fail-closed" "$PROBE_OUT"
+
+# rc 3 (no state file has ever been written) IS legitimately "no generation".
+seed_probe_state 12
+PROBE_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+  TICK_GENERATION="$GEN" HORIZON_STATUS=critical FAULT_ON=get FAULT_RC=3 \
+  bash -c "$BLOCK_PROBE" 2>/dev/null | tail -1)
+check_eq "probe: rc 3 on generation read is stale, not fail-closed" "PROBE=stale" "$PROBE_OUT"
+
+# The thrash guard is only a guard if the counter is a number: an empty write is
+# coerced back to 0 by 2D.6's own validation, so MAX_LIMIT_HITS could never bite.
+seed_day_state
+RECORD_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+check_eq "record: unset NEW_HITS is refused" "PARK_RECORD=error rc=hits" "$RECORD_OUT"
+check_eq "record: refused write claimed no cause" "null" "$(day_get limit_cause)"
+check_eq "record: refused write left the counter alone" "0" "$(day_get consecutive_limit_hits)"
+
+# A failed metadata write must report the failure, not a written record.
+seed_day_state
+RECORD_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 FAULT_ON=set FAULT_RC=6 \
+  bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+check_eq "record: failed metadata write reports error" "PARK_RECORD=error rc=6" "$RECORD_OUT"
 
 echo
 echo "passed: $PASS   failed: $FAIL"
