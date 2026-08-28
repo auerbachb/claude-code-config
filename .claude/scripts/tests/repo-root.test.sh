@@ -184,8 +184,18 @@ check_contains "T8h --help names the helpers the script itself needs" \
 # The exit-4 contract has one deliberate exception (the teardown `rm`, T16k). A
 # contract that documents a rule and not its exception is worse than one that
 # documents neither, because a caller acts on the rule as written.
-check_contains "T8i --help documents the teardown exception, not just the rule" \
-  "teardown" "$HELP"
+#
+# Both halves of the exception are asserted, and neither is a bare word: `rm`
+# names WHICH command is excepted, and the status clause names what actually
+# happens. Matching only "teardown" would survive deleting the exception if any
+# other help sentence ever used that word — the same weak-anchor trap T16e2
+# avoids by counting lines instead of matching prose. The backticks are
+# backslash-escaped inside double quotes, which makes them literal without the
+# single-quoting that shellcheck flags as SC2016.
+check_contains "T8i --help names which command the exit-4 exception covers" \
+  "teardown \`rm\`" "$HELP"
+check_contains "T8i2 --help states what happens instead of exit 4" \
+  "preserves the status" "$HELP"
 
 # ---- T9: the happy path must not enumerate worktrees -----------------------
 # This is the regression itself: the incident was one `git worktree list` over
