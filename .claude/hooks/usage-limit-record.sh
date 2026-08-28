@@ -42,11 +42,18 @@
 #   The age bound is what keeps "most recent" from meaning "from March".
 #
 # WHY THIS SHAPE (and not a pre-emptive wind-down)
-#   Claude Code exposes no approaching-limit signal to any hook, skill, or
-#   session. The only surface carrying `rate_limits` is the status line, which
-#   is display-only and never executes in a headless (`--output-format
-#   stream-json`) desktop-app session. Full evidence, including the live probe
-#   that produced zero invocations:
+#   No HOOK receives an approaching-limit signal — not this one, not any of the
+#   other 31 events. The only program-facing surface carrying `rate_limits` is
+#   the status line, which is display-only and never executes in a headless
+#   (`--output-format stream-json`) desktop-app session; re-probed 2026-08-27
+#   on 2.1.246, still zero invocations. So this hook stays a post-hoc recorder.
+#
+#   As of 2026-08-27 a pre-emptive signal DOES reach a session, by a route no
+#   hook can use: the harness injects a remaining-token counter directly into
+#   the model's context. That is Probe 0 (.claude/scripts/usage-horizon.sh) and
+#   it does not change this hook's job — the counter says how much runway is
+#   left, this record says the wall was hit. Full evidence and the 2026-08-27
+#   addendum:
 #       .claude/reference/usage-limit-signal-audit-2026-07.md
 #
 # SAFETY (.claude/rules/safety.md §"Anthropic Quota & Spend Authority")

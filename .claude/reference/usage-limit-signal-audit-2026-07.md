@@ -257,3 +257,58 @@ These are string-matching patterns for classifying user-facing chat messages. Th
 ### What remains blocked
 
 The pre-emptive wind-down (issue #824) is still not buildable: no re-check trigger has fired. The four triggers from the original audit still apply; this re-audit closes issue #835 on the "still no signal" branch.
+
+---
+
+## Addendum — 2026-08-27 (issue #1427): a re-check trigger has effectively fired
+
+**Verdict change: a pre-emptive, quantitative, upstream signal now exists.** It did not arrive through any of the four re-check triggers listed above, which is the point worth recording: **it arrived through a signal class the trigger list predates — direct injection into the model's context.**
+
+Every trigger in that list assumes the signal must reach a *program* — a hook payload, a statusLine invocation, an event, a machine-readable export. The harness instead prints the number into the model's own context: a `<total_tokens>N tokens left</total_tokens>` block, present in the system prompt and refreshed after every tool result. No hook sees it; no file carries it; nothing polls for it. The model reads it and can hand it to a script. That transport is invisible to all four triggers, so a monitor watching only for them would have reported "no change" indefinitely while the capability was already live.
+
+**The general lesson for this file:** a re-check trigger list enumerates *known* delivery mechanisms, and a new mechanism is exactly the case it cannot enumerate. Re-reading the triggers is not a substitute for asking the open question — "can a session learn its remaining quota before the wall, by any means?"
+
+### Evidence (2026-08-27)
+
+- **The counter itself.** Observed live in-session, starting at 15,000,000 and decrementing per turn, refreshed after every tool result.
+- **Four concurrent kills, one reset time.** The same afternoon, four sessions on this machine were killed mid-flight within 15 minutes, each learning of the limit only from the kill message ("You've hit your session limit · resets 4:20pm"), all naming the same reset time. Suggestive of an account-window pool — **not proof**; see the open question below.
+
+### What the counter's semantics are — deliberately not settled here
+
+Whether the counter tracks the **account 5-hour window**, a **per-session allowance**, or a **shared pool** is an open question. Issue #1427 instruments it rather than answering it: `.claude/scripts/usage-horizon.sh --observe` appends every reading to `~/.claude/usage-horizon.jsonl`, which accumulates the cross-session, cross-reset series needed to settle it. Full statement of the question and what would settle it: `.claude/reference/budget-source-probe.md` §"Probe 0".
+
+### statusLine re-probe — 2026-08-27: still zero invocations
+
+The audit's own live-probe procedure (§"Reproducing it") was repeated on the current runtime.
+
+| | |
+|---|---|
+| Runtime | **Claude Code 2.1.246** |
+| Binary | `~/Library/Application Support/Claude/claude-code/2.1.246/claude.app/Contents/MacOS/claude` |
+| Size / SHA-256 | 230,824,016 B · `22900f9a2e0492b68e753bbab2a9654dfe97f1d98d4a148fd46711993fbd05ce` |
+| Probed | 2026-08-27, 01:12:01Z → 01:33:19Z UTC (~21 min) |
+| Probe config tier | Project — `.claude/settings.local.json` in the working worktree (reverted after the run) |
+| Session under probe | Desktop app, headless, subagent working session — dozens of tool calls |
+| **Invocations** | **0 — no dump file was ever created** |
+
+Same null result as 2026-07-30 and for the same structural reason: no status line renders in a headless session, so the command is never called. The 2026-07 probe caveat carries over unchanged and is if anything stronger here — the probe was registered at the project tier from a subagent's worktree, so it does not by itself isolate "headless mode" from "tier not honored." It is recorded so the null result is not over-read; §1(a) and §1(b) remain the independent code-level evidence.
+
+**Consequence, per issue #1427's AC 6: nothing was wired.** The `rate_limits.five_hour.{used_percentage, resets_at}` persister — which would have given `usage-horizon.sh --check` an exact reset time to prefer over counter-only readings — was **not** built, because the runtime never feeds it. Building an inert persister is the mistake §"Why this is not simply build the relay anyway" already argued against: it would look shipped and do nothing. If a future probe ever observes a non-zero invocation count, that persister is the change to make, and `--check` is where the preference belongs.
+
+**Reset-time corroboration in the meantime** comes from the vendor's own classifiers, not from us: a usage warning matching `USAGE_WARNING_PREFIXES` ("You've used", "You're close to") appearing in context may be read as corroboration and as a reset-time source. Vendor-classified text only — never free-form phrase matching.
+
+### What this addendum does and does not overturn
+
+- **Overturned:** the headline verdict that no pre-emptive signal is reachable, and with it the blocking premise on which #824 and #835 were closed. A wind-down capability is now buildable on a trustworthy trigger. #1427 supplies the evaluator; consuming its verdict is a separate issue.
+- **Unchanged — §"Why this is not just estimate it locally".** Every word of it still stands. #499's rollback, and the `safety.md` rule it produced, are about *locally-derived* figures. The counter is not derived; it is printed by the harness. `usage-horizon.sh` compares the number it is handed and contains no estimation path.
+- **Unchanged — §"What NOT to build", items 1, 2 and 4.** Transcript-derived estimation stays banned; the statusLine relay stays unbuilt (re-probed above, still inert); `StopFailure` is still a post-mortem.
+- **Superseded — §"What NOT to build" item 3** ("Do not amend `safety.md` for this"). That instruction was correct while nothing shipped acted on a signal; it is not a standing prohibition on recognizing a signal that later appeared. `safety.md` §"Anthropic Quota & Spend Authority" now carries a two-line horizon carve-out naming the counter as upstream-authoritative, with the local-estimation ban restated verbatim.
+- **Unchanged — the recorder.** `.claude/hooks/usage-limit-record.sh` is still correct and still the only automatic signal. Probe 0 does not replace it: the counter says how much runway is left, the recorder says the wall was hit. Its header's "Claude Code exposes no approaching-limit signal to any hook, skill, or session" remains true **for hooks**, and remains the reason it is shaped as a recorder — but it is no longer true for a *session*, which is why that sentence now points here.
+
+### Next re-check triggers (revised)
+
+Carry forward triggers 1–4 above, and add:
+
+5. **The counter's semantics change** — a different starting value, a reset cadence that does not match the 5-hour window, or per-session rather than pooled decrementing. `~/.claude/usage-horizon.jsonl` is the series to check.
+6. **The counter stops being injected**, or its tag changes shape. `usage-horizon.sh` would degrade to `unknown` rather than break, but every consumer would silently lose its signal.
+7. **A signal arrives by a mechanism this list still does not enumerate.** Ask the capability question, not the mechanism question.
