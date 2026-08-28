@@ -131,12 +131,24 @@ None. `.claude/scripts/tests/reply-thread.test.sh` is unchanged.
 - The `strip_standalone_token()` word-boundary rule for `@codeant-ai` must remain
   case-insensitive (cases 3–4) and boundary-aware (case 13: `x@codeant-ai` not stripped).
 - Exit-code contract: inline success → 0; body-empty-after-strip → 2. Cases (14)–(19) pin
-  the fallback outcomes: success → 0, no `--pr` or both endpoints 404 → 3, and fallback
-  non-404 error → 4. The script's documented exit-5 path does not have a dedicated case.
+  the fallback outcomes: success → 0, both endpoints 404 → 3, and fallback non-404 error
+  → 4. Exit 5 gained its first dedicated case in Issue #1446 — case (23b), a non-404
+  failure of the PR-number lookup.
+  **Superseded in part by Issue #1446 (2026-08-28):** the "no `--pr` → 3" leg is gone —
+  the inline route is PR-scoped, so the PR number is resolved from the comment before the
+  inline attempt and a genuine inline 404 can still fall back. Exit 3 now covers
+  "PR number unresolvable from the comment (and no `--pr`)" or "both endpoints 404";
+  case (17) was reworked accordingly.
 - Fallback body must contain `<!-- review-comment-id:$COMMENT_ID -->` when the inline path
   returns 404 (case 20, Issue #1000 provenance requirement).
-- 32 passing assertions total across 20 cases. Any PR that removes or rewrites an assertion
-  should justify the count change explicitly.
+- The inline reply must POST to the **PR-scoped** route
+  `repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies` (case 21, Issue #1446). The
+  PR-less form does not accept POST; pinning the endpoint shape is what makes a silent
+  regression to it testable.
+- Assertion count: 68 across 26 cases (measured on the Issue #1446 branch; 46 across 20
+  cases on the preceding `main` — the "32" recorded here before 2026-08-28 was already
+  stale when written). Any PR that removes or rewrites an assertion should justify the
+  count change explicitly.
 
 ## 6. Future reconsideration
 
