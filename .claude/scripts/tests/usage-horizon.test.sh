@@ -489,7 +489,24 @@ check_eq "$RC" "3" "a failing jq degrades to the unknown exit code"
 # --- 8. observation log hygiene --------------------------------------------------
 reset_home
 run --observe 12000000 --limit 15000000 --session mode
-MODE_BITS="$(stat -f '%Lp' "$(LOG)" 2>/dev/null || stat -c '%a' "$(LOG)" 2>/dev/null)"
+# Portable mode read. A `stat -f '%Lp' || stat -c '%a'` chain is NOT a valid
+# try-both: GNU reads `-f` as --file-system, so it prints a filesystem block
+# for the real operand AND exits non-zero, which fires the fallback too and
+# leaves the substitution holding both outputs — a non-numeric blob. That is
+# why this assertion passed on macOS and failed only on Linux CI. Each form is
+# therefore tried in isolation, GNU first, and the result must look like octal
+# mode bits before it is trusted: "could not determine" must never read as a
+# pass.
+file_mode() { # file_mode <path> — octal permission bits, empty when unreadable
+  local path="$1" bits
+  bits="$(stat -c '%a' "$path" 2>/dev/null)" || bits=""
+  if [[ ! "$bits" =~ ^[0-7]+$ ]]; then
+    bits="$(stat -f '%Lp' "$path" 2>/dev/null)" || bits=""
+  fi
+  [[ "$bits" =~ ^[0-7]+$ ]] || return 1
+  printf '%s' "$bits"
+}
+MODE_BITS="$(file_mode "$(LOG)")" || MODE_BITS="<undeterminable>"
 check_eq "$MODE_BITS" "600" "the observation log is mode 600"
 
 # Single-generation rotation at the 256 KiB cap.
