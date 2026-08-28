@@ -41,9 +41,21 @@ When `(.stale_bot_changes_requested_count // 0) > 0`, invoke dismissal without w
 
 Then: if `mergeable == CONFLICTING` — stop immediately; recommend **`/merge-conflict`** or manual resolution. Do not proceed to Branch B.
 
+## `BEHIND`-only — exit the loop to Step 2.2 (issue #1425)
+
+Evaluated **before** Branch B, after the human-`CHANGES_REQUESTED`, Branch A, and `CONFLICTING` guards.
+
+When `merge_state == "BEHIND"`, the `BEHIND` entry is the **sole** `missing[]` item, and no `WRAP_PHASE1_FINDINGS` are pending: **break out of the recovery loop** and go to SKILL.md Step 2.2, then Step 2.4's clean-`BEHIND` merge path. Do not dispatch `/fixpr` and do not rebase.
+
+The gate never returns exit `0` for a `BEHIND` PR — the entry stays in `missing[]` — so without this clause a clean-`BEHIND` PR could never reach the merge step at all. The clean/non-clean decision belongs to Step 2.4: `clean-behind-check.sh` exit `0` → `admin-merge.sh --auto-plain --ac-verified` (no rebase, no protection change — issue #754); exit `1` → fall through to `/fixpr`'s non-clean `BEHIND` rebase path. Rebasing a *clean* `BEHIND` is the treadmill #754 exists to avoid, and it invalidates the bot approval that just satisfied the rest of the gate.
+
+Sole-item is load-bearing: `merge-gate.sh` gives human `CHANGES_REQUESTED` and `CONFLICTING` their own `missing[]` entries, so neither can be present when this clause fires. AC verification must precede the probe — `clean-behind-check.sh` counts unchecked Test Plan boxes as `reasons_not_safe`, which is why the exit lands on Step 2.2 first.
+
 ## Branch B — Delegate `/fixpr`
 
-Run when **any** of: `missing` mentions unresolved review threads; `merge_state == "BEHIND"`; `missing` reports CI failing (not merely incomplete); `merge_state == "DIRTY"`; or Phase 1 left `WRAP_PHASE1_FINDINGS` pending.
+Run when **any** of: `missing` mentions unresolved review threads; `missing` reports CI failing (not merely incomplete); `merge_state == "DIRTY"`; or Phase 1 left `WRAP_PHASE1_FINDINGS` pending.
+
+**`merge_state == "BEHIND"` is not on its own a Branch B trigger (issue #1425).** It reaches `/fixpr` only when it *accompanies* one of the conditions above — a rebase is needed anyway in that case — or when Step 2.4's `clean-behind-check.sh` probe returns exit `1`, i.e. the `BEHIND` is not clean. A `BEHIND`-only `missing[]` takes the loop exit above instead.
 
 **Threads-only detection (issue #455 / #479):** classify using `merge-gate.sh`'s structured signals:
 

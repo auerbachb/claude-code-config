@@ -214,7 +214,7 @@ fi
 
 After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
 
-**Merge-ready shortcut:** Run `merge-gate.sh` once before the loop. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2.
+**Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
 
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
@@ -224,14 +224,15 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
    - **`mergeable == CONFLICTING`** → stop; recommend `/merge-conflict`.
-   - **B. Delegate `/fixpr`** → when missing has unresolved threads, `BEHIND`, failing CI, `DIRTY`, or `WRAP_PHASE1_FINDINGS` pending. Threads-only check via structured gate signals (issue #455). Execute **full** `fixpr/SKILL.md` workflow (Steps 0–7 including Step 4d). Parse `FIXPR_WRAP_STATUS` and `FIXPR_WAIT_SUMMARY` from `=== fixpr complete ===` footer; emit control-returned heartbeat. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+   - **`BEHIND`-only → break out to Step 2.2** (issue #1425) → when `merge_state == "BEHIND"`, that entry is the sole `missing[]` item, and no `WRAP_PHASE1_FINDINGS` pending. Do not rebase; Step 2.4 decides clean vs. not.
+   - **B. Delegate `/fixpr`** → when missing has unresolved threads, failing CI, `DIRTY`, or `WRAP_PHASE1_FINDINGS` pending — plus `BEHIND` **only when it accompanies one of those**. A `BEHIND`-only `missing[]` exits above instead. Threads-only check via structured gate signals (issue #455). Execute **full** `fixpr/SKILL.md` workflow (Steps 0–7 including Step 4d). Parse `FIXPR_WRAP_STATUS` and `FIXPR_WAIT_SUMMARY` from `=== fixpr complete ===` footer; emit control-returned heartbeat. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
    - **C. Missing fresh bot review signal** → trigger the one bot needed (CR rate-check first); delegate wait to `/fixpr`.
    - **D. CI incomplete only** → delegate wait to `/fixpr` (idempotent — no push).
    - **E. Branch-protection block** → suggest `/admin-merge <PR>`; never modify branch protection.
    - **`merge_state == UNKNOWN`** → re-run gate next iteration.
 4. **End of iteration** — if no branch matched, append "unclassified blocker" + `missing` to audit.
 
-**Loop exit:** gate exit `0` with no `WRAP_PHASE1_FINDINGS` → Step 2.2; gate exit `0` with `WRAP_PHASE1_FINDINGS` still pending → Branch B (findings unresolved despite clean gate). Iteration cap → stop with last `missing` + full `WRAP_RECOVERY_AUDIT`. Genuine block (human CR, `CONFLICTING`, rate-limit, hard `/fixpr` failure) → stop per branch above.
+**Loop exit:** gate exit `0` with no `WRAP_PHASE1_FINDINGS` → Step 2.2; gate exit `1` with `BEHIND` as the sole `missing[]` item and no `WRAP_PHASE1_FINDINGS` → Step 2.2, then the Step 2.4 clean-`BEHIND` path (issue #1425); gate exit `0` with `WRAP_PHASE1_FINDINGS` still pending → Branch B (findings unresolved despite clean gate). Iteration cap → stop with last `missing` + full `WRAP_RECOVERY_AUDIT`. Genuine block (human CR, `CONFLICTING`, rate-limit, hard `/fixpr` failure) → stop per branch above.
 
 ### Step 2.2: Verify acceptance criteria
 
@@ -252,7 +253,7 @@ Exit codes: `0` OK; `1` no Test Plan section — stop; `3` PR not found — stop
 
 ### Step 2.3: Pre-merge safety & CI (handled by Step 2.1)
 
-After the recovery loop, Step 2.1 must have returned gate exit `0` immediately before Step 2.2. That implies SHA freshness, BEHIND/CI/unresolved threads cleared. For deeper CI forensics:
+After the recovery loop, Step 2.1 must have returned gate exit `0` immediately before Step 2.2 — implying SHA freshness, BEHIND/CI/unresolved threads cleared — **with one exception (issue #1425):** the `BEHIND`-only loop exit arrives on gate exit `1` with `BEHIND` still present, cleared later in Step 2.4. Every other precondition holds on both paths. For deeper CI forensics:
 
 ```bash
 "$CI_STATUS_SH" "$PR_NUM"
@@ -278,13 +279,48 @@ fi
 
 ### Step 2.4: Squash merge
 
-After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), run `gh pr merge --squash` with the resolved PR number — per `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3. Always pass the explicit identifier so `/wrap #N` invocations merge the correct PR, not the current-branch PR.
+After blockers clear (Phase 1 + Step 2.1 recovery + Step 2.2), squash-merge the resolved PR — per `CLAUDE.md` "PR MERGE AUTHORIZATION" and `cr-merge-gate.md` Step 3. Always pass the explicit identifier so `/wrap #N` invocations merge the correct PR, not the current-branch PR.
+
+**The merge command depends on `merge_state` (issue #1425)** — read it from the last `merge-gate.sh` JSON, not from a fresh guess:
 
 ```bash
-gh pr merge "$PR_NUM" --squash
+MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 ```
 
-**Release the issue claim** once the merge succeeds — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
+`printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
+
+- **`CLEAN`** → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
+- **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
+
+The merge-state mechanics are owned by `cr-merge-gate.md` Step 1d and implemented identically in `fixpr/SKILL.md` Step 6; the safety conditions live there and are not restated here.
+
+**A losing race still routes correctly.** `merge_state` is a snapshot: a sibling PR can land between the gate read and the merge call, so a PR that read `CLEAN` may be `BEHIND` by the time `gh pr merge` runs. That command's `head branch is not up to date` refusal **is** the `BEHIND` signal — take the clean-`BEHIND` path below rather than reporting a failed merge.
+
+**Clean-`BEHIND` path.** Two helpers, resolved lazily (same pattern as `ESTIMATE_LOG_SH` below) because only this branch needs them:
+
+```bash
+CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh || true)
+ADMIN_MERGE_SH=$(resolve_script admin-merge.sh || true)
+[[ -n "$CLEAN_BEHIND_SH" ]] || { echo "ERROR: clean-behind-check.sh not found (checked all three paths) — clean-BEHIND verification unavailable" >&2; exit 1; }
+[[ -n "$ADMIN_MERGE_SH" ]] || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND merge unavailable" >&2; exit 1; }
+```
+
+Both are required **only** on this branch; the `CLEAN` branch never reads them. If either is empty when this branch runs, **stop** — never fall back to a plain merge, which `strict` would reject anyway.
+
+Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
+
+| Exit | Action |
+|------|--------|
+| `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
+| `1` (`safe_to_offer: false`) | Not clean — surface `reasons_not_safe`, then fall through to the `/fixpr` non-clean `BEHIND` path (rebase + force-push, `fixpr/SKILL.md` Step 6). |
+| `2` / `3` / `4` | Tooling or usage failure — **stop** and surface stderr. Never merge on an indeterminate answer. |
+
+`admin-merge.sh`'s own exits after a clean probe: `8` → the shape needs a protection change, or an auto attempt already ran — **offer `/admin-merge <PR>`** and surface the printed command, never auto-run it. `1` → the clean-`BEHIND` state no longer held at merge time (main advanced) — fall through to the `/fixpr` non-clean `BEHIND` path. Any other exit → stop and surface stderr.
+
+`--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
+
+**Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
 ```bash
 MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
@@ -293,7 +329,7 @@ MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/de
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
 
-**Append actuals log entry** — after the merge and claim-release, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
+**Append actuals log entry** — after the merge and claim-release, on either merge path, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
 
 ```bash
 ESTIMATE_LOG_SH=$(resolve_script estimate-log.sh || true)
