@@ -52,9 +52,24 @@ check_not_contains() {
 # Driven by env vars the test scenarios set:
 #   FAKE_INLINE_MODE    success (default) | 404 | error
 #   FAKE_FALLBACK_MODE  success (default) | 404 | error
-# On inline success: writes the POSTed body to "$TMP/posted_body" and prints
-# a fake JSON response with html_url.
-# On fallback success: prints a fake PR comment URL to stdout.
+#   FAKE_RESOLVE_MODE   success (default) | 404 | error | nourl | nonnumeric
+#   FAKE_RESOLVED_PR    PR number the comment-lookup GET resolves to (default 42)
+#
+# `gh api` calls are dispatched on the ENDPOINT SHAPE, not on call order, so
+# the comment-lookup GET and the inline reply POST stay independently drivable:
+#   .../pulls/{pr}/comments/{id}/replies  -> inline reply POST (FAKE_INLINE_MODE)
+#   .../pulls/comments/{id}               -> comment lookup GET (FAKE_RESOLVE_MODE)
+#   anything else                         -> exit 99 (unexpected route)
+# Note the old PR-less reply route (.../pulls/comments/{id}/replies) also ends
+# in /replies, so it matches the replies branch rather than the 99 branch — the
+# 99 branch only catches a route of neither shape. What actually detects the
+# issue #1446 regression is the POSTED_ENDPOINT equality assertion in case (21).
+#
+# Recorded artifacts (each reset per run by reset_recorded):
+#   $TMP/posted_body      body POSTed inline, or the fallback comment body
+#   $TMP/posted_endpoint  endpoint of the inline reply POST
+#   $TMP/resolve_endpoint endpoint of the comment-lookup GET (absent if skipped)
+#   $TMP/fallback_pr      PR number passed to `gh pr comment`
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/gh" <<'STUB'
@@ -85,17 +100,55 @@ case "$sub" in
           ;;
       esac
     done
-    case "${FAKE_INLINE_MODE:-success}" in
-      success)
-        printf '{"html_url":"https://github.com/test-owner/test-repo/pull/1#pullrequestreview-1"}\n'
+    case "$endpoint" in
+      */replies)
+        # Inline reply POST — record the exact route so tests can pin its shape.
+        printf '%s' "$endpoint" > "${TMP_DIR}/posted_endpoint"
+        case "${FAKE_INLINE_MODE:-success}" in
+          success)
+            printf '{"html_url":"https://github.com/test-owner/test-repo/pull/1#pullrequestreview-1"}\n'
+            ;;
+          404)
+            echo "HTTP 404: Not Found (https://api.github.com/$endpoint)" >&2
+            exit 1
+            ;;
+          error)
+            echo "HTTP 500: Internal Server Error" >&2
+            exit 1
+            ;;
+        esac
         ;;
-      404)
-        echo "HTTP 404: Not Found (https://api.github.com/$endpoint)" >&2
-        exit 1
+      */pulls/comments/*)
+        # Comment-lookup GET used to resolve the PR number when --pr is omitted.
+        printf '%s' "$endpoint" > "${TMP_DIR}/resolve_endpoint"
+        case "${FAKE_RESOLVE_MODE:-success}" in
+          success)
+            printf '{"id":1234567,"pull_request_url":"https://api.github.com/repos/test-owner/test-repo/pulls/%s"}\n' \
+              "${FAKE_RESOLVED_PR:-42}"
+            ;;
+          nourl)
+            # 200 with the field missing — exercises the jq -er leg.
+            printf '{"id":1234567}\n'
+            ;;
+          nonnumeric)
+            # 200 with a pull_request_url whose trailing segment is not a PR number.
+            printf '{"id":1234567,"pull_request_url":"https://api.github.com/repos/test-owner/test-repo/pulls/not-a-number"}\n'
+            ;;
+          404)
+            # Comment genuinely missing — a permanent condition (exit 3).
+            echo "HTTP 404: Not Found (https://api.github.com/$endpoint)" >&2
+            exit 1
+            ;;
+          error)
+            # Transport / server failure — the PR is unknown, not absent (exit 5).
+            echo "HTTP 500: Internal Server Error" >&2
+            exit 1
+            ;;
+        esac
         ;;
-      error)
-        echo "HTTP 500: Internal Server Error" >&2
-        exit 1
+      *)
+        echo "unexpected gh api endpoint: $endpoint" >&2
+        exit 99
         ;;
     esac
     ;;
@@ -104,14 +157,21 @@ case "$sub" in
     shift || true
     case "$pr_action" in
       comment)
-        # gh pr comment N --body "text" — capture the fallback body too.
+        # gh pr comment N --body "text" — capture the target PR and the body.
         while [[ $# -gt 0 ]]; do
           case "$1" in
             --body)
               printf '%s' "${2:-}" > "${TMP_DIR}/posted_body"
               shift 2 || shift
               ;;
-            *) shift ;;
+            --*) shift ;;
+            *)
+              # First positional is the PR number the fallback targets.
+              if [[ ! -f "${TMP_DIR}/fallback_pr" ]]; then
+                printf '%s' "$1" > "${TMP_DIR}/fallback_pr"
+              fi
+              shift
+              ;;
           esac
         done
         case "${FAKE_FALLBACK_MODE:-success}" in
@@ -144,26 +204,45 @@ chmod +x "$STUB_BIN/gh"
 export PATH="$STUB_BIN:$PATH"
 export TMP_DIR="$TMP"
 
+# Helper: clear the stub's recorded artifacts before a run. Absence is
+# meaningful (e.g. no resolve_endpoint = the lookup was correctly skipped), so
+# every capturing helper must reset first or a prior run's file reads as this
+# run's evidence.
+reset_recorded() {
+  rm -f "$TMP/posted_body" "$TMP/posted_endpoint" \
+        "$TMP/resolve_endpoint" "$TMP/fallback_pr"
+}
+# Helper: read the stub's recorded artifacts back into vars. An unwritten
+# artifact reads as the empty string.
+read_recorded() {
+  POSTED_BODY=""; POSTED_ENDPOINT=""; RESOLVE_ENDPOINT=""; FALLBACK_PR=""
+  [[ -f "$TMP/posted_body" ]] && POSTED_BODY="$(cat "$TMP/posted_body")"
+  [[ -f "$TMP/posted_endpoint" ]] && POSTED_ENDPOINT="$(cat "$TMP/posted_endpoint")"
+  [[ -f "$TMP/resolve_endpoint" ]] && RESOLVE_ENDPOINT="$(cat "$TMP/resolve_endpoint")"
+  [[ -f "$TMP/fallback_pr" ]] && FALLBACK_PR="$(cat "$TMP/fallback_pr")"
+  return 0
+}
 # Helper: run the script, capturing stdout+stderr and exit code
 run() {
   OUT="$(bash "$SCRIPT" "$@" 2>&1)"; RC=$?
 }
 # Helper: run and also read what was POSTed to gh api
 run_and_capture() {
-  rm -f "$TMP/posted_body"
+  reset_recorded
   OUT="$(bash "$SCRIPT" "$@" 2>&1)"; RC=$?
-  POSTED_BODY=""
-  if [[ -f "$TMP/posted_body" ]]; then
-    POSTED_BODY="$(cat "$TMP/posted_body")"
-  fi
+  read_recorded
 }
 # Helper: run capturing stdout and stderr into separate vars
-# STDOUT_OUT, STDERR_OUT, RC; also sets OUT = merged (for check_contains compat)
+# STDOUT_OUT, STDERR_OUT, RC; also sets OUT = merged (for check_contains compat).
+# Also reads the stub's recorded artifacts, so a single run can assert on both
+# stream separation and endpoint shape.
 run_split() {
   local stderr_file="$TMP/run_split_stderr"
+  reset_recorded
   STDOUT_OUT="$(bash "$SCRIPT" "$@" 2>"$stderr_file")"; RC=$?
   STDERR_OUT="$(cat "$stderr_file")"
   OUT="${STDOUT_OUT}${STDERR_OUT}"
+  read_recorded
 }
 
 ############################################################################
@@ -304,12 +383,18 @@ bash "$SCRIPT" 1234567 --reviewer bugbot --body "Fixed." --pr 1 >/dev/null 2>/de
 check_eq "cmd && echo ok works on fallback (CHAIN_OK=1)" 1 "$CHAIN_OK"
 
 ############################################################################
-echo "== (17) inline 404, no --pr provided → exit 3 =="
+echo "== (17) inline 404, no --pr → resolved PR still feeds the fallback (exit 0) =="
+# Behavior change (issue #1446): the former "inline 404 and no --pr → exit 3"
+# leg is gone. PR_NUMBER is resolved from the comment before the inline attempt,
+# so a genuine inline 404 (outdated/deleted comment) can still fall back.
 export FAKE_INLINE_MODE="404"
 unset FAKE_FALLBACK_MODE
-run 1234567 --reviewer bugbot --body "Fixed."
-check_eq "no --pr: exit 3" 3 "$RC"
-check_contains "error: inline 404 and --pr not provided" "cannot fall back" "$OUT"
+export FAKE_RESOLVE_MODE="success"
+export FAKE_RESOLVED_PR="42"
+run_split 1234567 --reviewer bugbot --body "Fixed."
+check_eq "no --pr, comment resolves: exit 0" 0 "$RC"
+check_contains "stderr note mentions fallback" "fallback" "$STDERR_OUT"
+check_eq "fallback targets the resolved PR" "42" "$FALLBACK_PR"
 
 ############################################################################
 echo "== (18) both inline and fallback return 404 → exit 3 =="
@@ -335,6 +420,76 @@ check_eq "fallback marker: exit 0" 0 "$RC"
 check_contains "fallback marker names source comment" \
   "<!-- review-comment-id:1234567 -->" "$POSTED_BODY"
 check_contains "fallback marker retains reply body" "Fixed in abc1234." "$POSTED_BODY"
+
+############################################################################
+echo "== (21) REGRESSION: inline reply POSTs to the PR-SCOPED route (issue #1446) =="
+# The pin that would have caught the bug: before the fix the inline POST went to
+# the PR-less route repos/{owner}/{repo}/pulls/comments/{id}/replies, which does
+# not accept POST — every inline attempt 404'd and the PR-level fallback became
+# the de-facto default on every reply, in every repo.
+export FAKE_INLINE_MODE="success"
+export FAKE_FALLBACK_MODE="success"
+export FAKE_RESOLVE_MODE="success"
+run_split 1234567 --reviewer codeant --body "Fixed in abc1234." --pr 317
+check_eq "inline success: exit 0" 0 "$RC"
+check_contains "URL printed on stdout" "https://github.com/" "$STDOUT_OUT"
+check_not_contains "no fallback note on stderr" "fallback" "$STDERR_OUT"
+check_eq "inline endpoint is the PR-scoped route" \
+  "repos/test-owner/test-repo/pulls/317/comments/1234567/replies" "$POSTED_ENDPOINT"
+check_eq "--pr supplied: no comment-lookup GET" "" "$RESOLVE_ENDPOINT"
+
+############################################################################
+echo "== (22) --pr omitted → PR resolved from the comment, inline succeeds =="
+export FAKE_INLINE_MODE="success"
+export FAKE_RESOLVE_MODE="success"
+export FAKE_RESOLVED_PR="4242"
+run_split 1234567 --reviewer cr --body "Fixed in abc1234."
+check_eq "resolved inline success: exit 0" 0 "$RC"
+check_not_contains "no fallback note on stderr" "fallback" "$STDERR_OUT"
+check_eq "comment-lookup GET uses the PR-less comment route" \
+  "repos/test-owner/test-repo/pulls/comments/1234567" "$RESOLVE_ENDPOINT"
+check_eq "inline endpoint carries the RESOLVED PR number" \
+  "repos/test-owner/test-repo/pulls/4242/comments/1234567/replies" "$POSTED_ENDPOINT"
+
+############################################################################
+echo "== (23) --pr omitted, comment 404s → exit 3, no inline POST =="
+export FAKE_INLINE_MODE="success"
+export FAKE_RESOLVE_MODE="404"
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234."
+check_eq "comment 404: exit 3" 3 "$RC"
+check_contains "error names the resolution failure" "could not resolve PR number" "$OUT"
+check_eq "no inline POST attempted" "" "$POSTED_ENDPOINT"
+
+############################################################################
+echo "== (23b) --pr omitted, lookup fails non-404 (5xx) → exit 5, not 3 =="
+# A transient outage must NOT masquerade as "this comment has no resolvable PR":
+# exit 3 is a permanent, data-shaped verdict a caller may act on, whereas a 5xx
+# means the PR is unknown, not absent. Mirrors the inline path's own
+# 404-vs-non-404 split.
+export FAKE_INLINE_MODE="success"
+export FAKE_RESOLVE_MODE="error"
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234."
+check_eq "resolver 5xx: exit 5" 5 "$RC"
+check_contains "error marks the failure non-404" "non-404" "$OUT"
+check_eq "no inline POST attempted" "" "$POSTED_ENDPOINT"
+
+############################################################################
+echo "== (24) --pr omitted, response has no pull_request_url → exit 3 =="
+export FAKE_INLINE_MODE="success"
+export FAKE_RESOLVE_MODE="nourl"
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234."
+check_eq "missing pull_request_url: exit 3" 3 "$RC"
+check_contains "error names the missing field" "no pull_request_url" "$OUT"
+check_eq "no inline POST attempted" "" "$POSTED_ENDPOINT"
+
+############################################################################
+echo "== (25) --pr omitted, pull_request_url has no numeric PR segment → exit 3 =="
+export FAKE_INLINE_MODE="success"
+export FAKE_RESOLVE_MODE="nonnumeric"
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234."
+check_eq "non-numeric PR segment: exit 3" 3 "$RC"
+check_contains "error names the bad segment" "no numeric PR segment" "$OUT"
+check_eq "no inline POST attempted" "" "$POSTED_ENDPOINT"
 
 ############################################################################
 echo ""

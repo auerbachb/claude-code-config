@@ -137,7 +137,7 @@ run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
 ```
 
-Exit codes: `0` inline reply posted; `1` fallback PR-level reply posted (still a successful reply); `3` inline 404 with no `--pr` OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error. Treat `0` and `1` as success. See `run_script reply-thread.sh --help` for the full contract.
+Exit codes: `0` reply posted — by either the inline endpoint or the PR-level fallback (the fallback also emits a note to stderr); `1` unused/reserved; `2` usage error (unknown `--reviewer`, or a body left empty after the @mention strip); `3` PR number could not be resolved from the comment and no `--pr` was supplied, OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error, including a non-404 failure of the PR-number lookup. Treat `0` as success. See `run_script reply-thread.sh --help` for the full contract.
 
 ### Step 5: Resolve Threads
 

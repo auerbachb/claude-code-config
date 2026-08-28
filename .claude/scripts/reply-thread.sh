@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # reply-thread.sh — Post a reviewer-aware reply to a PR review thread.
 #
-# Tries the inline reply endpoint first (pulls/comments/{id}/replies); on 404
-# falls back to a PR-level comment. Applies reviewer-specific @mention rules:
+# Tries the inline reply endpoint first — the PR-scoped route
+# pulls/{pr}/comments/{id}/replies; on 404 falls back to a PR-level comment.
+# Applies reviewer-specific @mention rules:
 #   - cr        : prepends `@coderabbitai ` to the body if not already present
 #   - bugbot    : strips any `@cursor` tokens from the body (may trigger re-review)
 #   - greptile  : strips any `@greptileai` tokens from the body (paid re-review)
@@ -20,9 +21,13 @@
 #   <comment_id>     Numeric databaseId of the review comment to reply to.
 #   --reviewer X     One of: cr, bugbot, greptile, codeant. Controls @mention handling.
 #   --body "<text>"  Reply body (after transformation rules are applied).
-#   --pr N           PR number. Required only for the PR-comment fallback path;
-#                    optional for inline. If omitted and inline returns 404,
-#                    the script cannot fall back — exits 3.
+#   --pr N           PR number. Feeds BOTH the inline attempt (the reply route
+#                    is PR-scoped) and the PR-comment fallback. Optional: when
+#                    omitted the script resolves the PR number from the comment
+#                    itself — one extra GET of
+#                    repos/{owner}/{repo}/pulls/comments/{comment_id}, reading
+#                    the trailing segment of .pull_request_url. A comment that
+#                    cannot be resolved exits 3. Pass --pr to skip that lookup.
 #
 # Prerequisites:
 #   Must be run from inside a git checkout of the target repository — the
@@ -35,9 +40,12 @@
 #      URL printed to stdout. Fallback path also emits a note to stderr.
 #   1  (unused — reserved; was the fallback-success code before issue #884)
 #   2  Usage error
-#   3  Inline returned 404 and no --pr provided OR both endpoints returned 404
+#   3  PR number could not be resolved from the comment (and no --pr supplied)
+#      — the comment 404s, or its pull_request_url is missing/non-numeric —
+#      OR both inline and fallback returned 404
 #   4  Inline returned 404 and fallback failed with a non-404 error
-#   5  gh / network error (unexpected)
+#   5  gh / network error (unexpected), including a non-404 failure of the
+#      PR-number lookup (5xx, auth, network): the PR is unknown, not absent
 #
 # Examples:
 #   reply-thread.sh 2345678901 --reviewer cr \
@@ -236,7 +244,59 @@ if ! OWNER=$(printf '%s' "$REPO_JSON" | jq -er '.owner.login') \
 fi
 
 # --------------------------------------------------------------------------
-# Inline reply attempt — pulls/comments/{id}/replies
+# Resolve the PR number — required by the inline reply route.
+#
+# The reply-creation endpoint is PR-scoped; the PR-less form
+# (pulls/comments/{id}/replies) does not accept POST and always 404s, which
+# made the PR-level fallback the de-facto default on every reply (issue #1446).
+# --pr feeds the inline attempt directly when supplied; otherwise derive the
+# number from the comment's own .pull_request_url so the documented "optional
+# for inline" contract still holds. Either way PR_NUMBER is guaranteed non-empty
+# and positive-integer-validated from here on, so the fallback needs no guard.
+# --------------------------------------------------------------------------
+RESOLVE_ERR=$(mktemp -t reply-thread-resolve-err.XXXXXX)
+# shellcheck disable=SC2064
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR'" EXIT
+
+if [[ -z "$PR_NUMBER" ]]; then
+  RESOLVE_RC=0
+  COMMENT_JSON=$(gh api "repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID" \
+    2>"$RESOLVE_ERR") || RESOLVE_RC=$?
+  if [[ $RESOLVE_RC -ne 0 ]]; then
+    # Classify exactly as the inline path does: a confirmed 404 means the
+    # comment is missing (a permanent, data-shaped condition the caller can act
+    # on) → exit 3. Anything else (5xx, auth, network) is an unexpected gh
+    # failure → exit 5, which is what that code documents. Collapsing a
+    # transient outage into exit 3 would tell the caller the comment has no
+    # resolvable PR when the API was simply unreachable.
+    RESOLVE_ERR_TEXT=$(cat "$RESOLVE_ERR")
+    if printf '%s' "$RESOLVE_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+      echo "ERROR: could not resolve PR number from comment $COMMENT_ID — comment not found: $RESOLVE_ERR_TEXT" >&2
+      echo "       Pass --pr N to skip the lookup." >&2
+      exit 3
+    fi
+    echo "ERROR: PR-number lookup for comment $COMMENT_ID failed (non-404): $RESOLVE_ERR_TEXT" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 5
+  fi
+  # jq -e exits non-zero on null/missing, so a response without the field is
+  # caught here rather than silently yielding an empty PR number.
+  if ! PR_URL=$(printf '%s' "$COMMENT_JSON" | jq -er '.pull_request_url') \
+    || [[ -z "$PR_URL" ]]; then
+    echo "ERROR: could not resolve PR number from comment $COMMENT_ID — response has no pull_request_url" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 3
+  fi
+  PR_NUMBER="${PR_URL##*/}"
+  if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: could not resolve PR number from comment $COMMENT_ID — pull_request_url has no numeric PR segment (got: $PR_URL)" >&2
+    echo "       Pass --pr N to skip the lookup." >&2
+    exit 3
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Inline reply attempt — pulls/{pr}/comments/{id}/replies
 #
 # Capture stdout (JSON response body) and stderr (gh error messages) into
 # separate streams. gh api emits the HTTP-error text to stderr — mixing it
@@ -244,10 +304,10 @@ fi
 # --------------------------------------------------------------------------
 INLINE_ERR=$(mktemp -t reply-thread-inline-err.XXXXXX)
 # shellcheck disable=SC2064
-trap "rm -f '$REPO_ERR' '$INLINE_ERR'" EXIT
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR' '$INLINE_ERR'" EXIT
 
 INLINE_RC=0
-INLINE_RESP=$(gh api "repos/$OWNER/$REPO/pulls/comments/$COMMENT_ID/replies" \
+INLINE_RESP=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
   -f body="$BODY" 2>"$INLINE_ERR") || INLINE_RC=$?
 
 if [[ $INLINE_RC -eq 0 ]]; then
@@ -278,17 +338,13 @@ if [[ $IS_404 -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 404 on inline — try PR-comment fallback if --pr was provided.
+# 404 on inline — the comment is outdated or deleted, so it cannot take an
+# inline reply. Fall back to a PR-level comment. PR_NUMBER is always set by
+# this point (--pr or resolution above), so no empty-PR guard is needed.
 # --------------------------------------------------------------------------
-if [[ -z "$PR_NUMBER" ]]; then
-  echo "ERROR: inline returned 404 and --pr not provided — cannot fall back" >&2
-  echo "       Comment $COMMENT_ID is not an inline review comment (or does not exist)." >&2
-  exit 3
-fi
-
 FALLBACK_ERR=$(mktemp -t reply-thread-fallback-err.XXXXXX)
 # shellcheck disable=SC2064
-trap "rm -f '$REPO_ERR' '$INLINE_ERR' '$FALLBACK_ERR'" EXIT
+trap "rm -f '$REPO_ERR' '$RESOLVE_ERR' '$INLINE_ERR' '$FALLBACK_ERR'" EXIT
 
 FALLBACK_RC=0
 # Preserve the review-comment identity when GitHub cannot accept an inline
