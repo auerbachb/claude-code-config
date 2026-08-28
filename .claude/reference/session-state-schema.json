@@ -14,6 +14,7 @@
       "cr_hourly": "object",
       "greptile_daily": "object",
       "credit_budget": "object",
+      "usage_horizon": "object",
       "pmm_in_flight": "object",
       "pmm_merge_holds": "object",
       "pmm": "object"
@@ -282,6 +283,18 @@
     "status": "ok",
     "budget_usd": 25,
     "source": "no-overage-event-today"
+  },
+  "_usage_horizon_comment": "Usage-horizon runway state (issue #1427). Written ONLY by usage-horizon.sh --observe, in ONE session-state.sh --set call so reading and verdict can never land half-applied. A DIFFERENT wallet from credit_budget: that field tracks credit spend against a dollar budget, this one tracks how much of the account's token window is left. `reading` mirrors one line of ~/.claude/usage-horizon.jsonl verbatim — `ts` (ISO-8601 UTC, the freshness clock), `session_id` (the reading's owner; usage-horizon.sh --check refuses a reading from any other session), `remaining` (number, the figure the HARNESS printed into context as `<total_tokens>N tokens left</total_tokens>`), and `limit` (number, or null when the harness stated no total — percentage thresholds apply when it is a number, the absolute floor when it is null). `status` is the last stable verdict, one of 'clear', 'approaching', or 'critical', computed at observe time with hysteresis against the previous reading in the SAME session; anything else here is malformed and reads as 'unknown'. Note 'unknown' is never STORED — it is a read-time verdict for degraded state, so persisting it would make a transient failure sticky. `status_at` is the verdict timestamp. Thresholds, hysteresis, and the reading TTL come from pm-config.md `## Budget` (usage_horizon_*). ONE SLOT, MACHINE-WIDE: this field holds the most recent observation from ANY session, so on a machine running several at once a displaced session reads 'no-reading-this-session' and gets 'unknown' — never another session's verdict, never 'clear'. Consumers must expect 'unknown' routinely; the full per-session series lives in the jsonl log, not here. Nothing here is ever computed from a transcript or any local token estimate: .claude/rules/safety.md §Anthropic Quota & Spend Authority, .claude/reference/budget-source-probe.md §Probe 0.",
+  "usage_horizon": {
+    "reading": {
+      "ts": "2026-08-27T21:05:00Z",
+      "session_id": "f3c1a9d2-0b47-4e2a-9c11-5d8e6a7b4f20",
+      "remaining": 12000000,
+      "limit": 15000000
+    },
+    "status": "clear",
+    "status_at": "2026-08-27T21:05:00Z",
+    "source": "observed"
   },
   "active_agents": [
     {

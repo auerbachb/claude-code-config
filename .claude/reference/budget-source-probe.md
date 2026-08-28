@@ -14,13 +14,86 @@ estimate. This document records what authoritative signals are actually reachabl
 from a session, in the order they are probed, and defines the degradation
 contract when none are reachable.
 
-Cross-references: `usage-limit-signal-audit-2026-07.md` (full probe that found
-no pre-emptive signal), `issue-852-browser-rung-verification.md` (browser MCP
-read path), `safety.md` §"Anthropic Quota & Spend Authority".
+**Scope note (2026-08-27, issue #1427).** This document has since grown a
+second axis. Probe 0 below covers **window quota runway** in tokens, read from
+the harness-injected in-context counter — a different wallet from the credit
+spend the rest of the file governs, evaluated by a different script
+(`usage-horizon.sh`, not `credit-budget.sh`), and never mixed with it.
+
+Cross-references: `usage-limit-signal-audit-2026-07.md` (the July probe that
+found no pre-emptive signal — see its 2026-08-27 addendum, which records that a
+pre-emptive signal has since appeared via in-context injection),
+`issue-852-browser-rung-verification.md` (browser MCP read path), `safety.md`
+§"Anthropic Quota & Spend Authority".
 
 ---
 
 ## Probe Order
+
+### Probe 0 — In-context remaining-token counter (pre-emptive)
+
+**Files:** `~/.claude/usage-horizon.jsonl` (append-only observation log, mode
+600) and `~/.claude/session-state.json` `.usage_horizon` (last reading + last
+stable verdict).
+
+**Written by:** `.claude/scripts/usage-horizon.sh --observe <remaining>
+[--limit <total>]`, called by the model with the figure the **harness** printed
+into its own context. Nothing writes here automatically — there is no hook that
+can see this number (see the audit's §2), so the model reading it out and
+handing it over IS the transport.
+
+**What it tells you:** How much runway the account has left, *before* the wall.
+The harness injects `<total_tokens>N tokens left</total_tokens>` at session
+start and refreshes it after every tool result; on 2026-08-27 it was observed
+starting at 15,000,000 and decrementing per turn. This is the first
+quantitative, **pre-emptive** quota signal reachable from a session — Probe 1 is
+binary and post-hoc, Probe 2 is not automatable, Probe 3 does not exist.
+
+**How `usage-horizon.sh` uses it:** Comparison only. `--observe` records the
+reading and computes a verdict against the `usage_horizon_*` knobs in
+`pm-config.md` `## Budget` (percentage thresholds when a total is stated, the
+absolute floor when it is not), with hysteresis so adjacent readings cannot
+flap the verdict. `--check` re-reads it, applies the freshness/integrity gate,
+and emits `STATUS=clear|approaching|critical|unknown`. The script never reads a
+transcript, never converts or counts tokens, and has no estimation fallback
+path — the ban in `safety.md` is satisfied architecturally, exactly as it is
+for `credit-budget.sh`.
+
+**Open characterization question (deliberately unanswered):** does the counter
+track the **account 5-hour window**, a **per-session allowance**, or a **shared
+pool** across concurrent sessions? Suggestive evidence for the account-window
+reading: on 2026-08-27 four concurrent sessions on one machine were killed
+within 15 minutes of each other, all naming a single reset time. That is
+consistent with a pooled account window but does not establish it. The
+evidence source for settling this is the observation log,
+`~/.claude/usage-horizon.jsonl` — it accumulates `{ts, session_id, remaining,
+limit}` across sessions and window resets, which is precisely the series
+needed to tell a per-session allowance (each session decrements its own budget
+from the same start) from a shared pool (concurrent sessions decrement one
+series). Until it is settled, no consumer may assume either interpretation.
+
+**Corroboration, not a source:** a vendor-classified usage warning appearing in
+context (`USAGE_WARNING_PREFIXES` — "You've used", "You're close to"; see the
+audit's 2.1.221 notes) may corroborate a reading and supply a reset time. Use
+the vendor's own classification only — never free-form phrase matching, which
+is the failure mode `classifier-override-patterns-source-specific` records.
+
+**Limitations:**
+
+- **Model-mediated.** A session that never calls `--observe` has no reading, so
+  its verdict is `unknown` — never `clear`.
+- **Uncharacterized semantics** (the open question above). No consumer may
+  assume the counter means a session budget or an account pool.
+- **Ages out** at `usage_horizon_reading_ttl_s`.
+- **One state slot, machine-wide.** `.usage_horizon` holds the most recent
+  `--observe` from *any* session. A session displaced by another reads
+  `no-reading-this-session` and gets `unknown` — never the other session's
+  verdict. Safe, but on a machine running several sessions at once (as this one
+  does) it is the **common** case, so a consumer must treat `unknown` as
+  routine rather than exceptional. The observation log is unaffected: every
+  session's readings are appended, so the evidence series stays complete.
+- **Tokens, not dollars.** It says nothing about Probe 1's wallet and never
+  feeds `credit-budget.sh`.
 
 ### Probe 1 — Harness overage/limit signal (automatic, binary, post-hoc)
 
@@ -74,7 +147,7 @@ future implementers do not re-investigate from scratch.
 
 ## Degradation Contract
 
-The automatic evaluation path relies solely on Probe 1 (the harness signal).
+The **automatic** evaluation path relies solely on Probe 1 (the harness signal).
 Because only a binary post-hoc signal is reachable automatically, the budget
 degrades as follows:
 
@@ -84,10 +157,24 @@ degrades as follows:
 | A `rate_limit` event recorded this ET day | `1` (`reached`) | Land near-done work; park until next ET day |
 | Probe 1 unreadable (file missing, corrupt, unwritable) | `2` (`unknown`) | Conservative: finish in-flight, start nothing new |
 
-**Unreadable state is never permission.** An unreadable signal is treated as
-`unknown`, which uses the conservative posture. The probe never falls back to a
-local token/dollar estimate. If no authoritative source is reachable, the system
-says so and starts nothing new — it does not invent a number and proceed.
+Probe 0 is **model-mediated**, so it degrades on its own axis — a session that
+never observed a reading is indistinguishable from one whose reading went
+stale, and both are `unknown`:
+
+| Signal state | `usage-horizon.sh --check` exits | Posture |
+|---|---|---|
+| Fresh reading above the approaching threshold | `0` (`clear`) | Normal working posture |
+| Fresh reading at/below `usage_horizon_approaching_pct` (or the floor) | `1` (`approaching`) | Prefer landing work over starting it |
+| Fresh reading at/below `usage_horizon_critical_pct` (or the derived floor) | `2` (`critical`) | Wind down; checkpoint and hand off |
+| No reading, foreign session, past TTL, corrupt/malformed state, jq or session identity unavailable | `3` (`unknown`) | Conservative: finish in-flight, start nothing new |
+
+**Unreadable state is never permission.** In both probes an unreadable signal
+is treated as `unknown`, which uses the conservative posture. Neither probe
+falls back to a local token/dollar estimate. If no authoritative source is
+reachable, the system says so and starts nothing new — it does not invent a
+number and proceed. `usage-horizon.sh` gives `unknown` its **own exit code**
+rather than folding it into `clear`, precisely so an `if script; then proceed;
+fi` caller cannot read a degraded state as a green light.
 
 **The $25 knob's role:** `daily_credit_budget_usd = 25` in `pm-config.md` is
 the owner's stated daily overage tolerance — a declared preference, not a
@@ -110,6 +197,14 @@ signal files and never computes or consults a token count, a token-to-dollar
 conversion, or any locally-derived spend figure. The rule from `safety.md`
 §"Anthropic Quota & Spend Authority" is satisfied architecturally, not only
 by prose.
+
+`usage-horizon.sh` meets the same bar for Probe 0 and is held to it by a test:
+its inputs are the number the model was handed and the configured thresholds,
+so there is no code path an estimate could enter. That is why the safety
+amendment for #1427 could name the counter as authoritative while leaving the
+estimation ban verbatim — the carve-out admits an *upstream* figure, not a
+derived one, and admitting a derived one would require new code that does not
+exist.
 
 ---
 
