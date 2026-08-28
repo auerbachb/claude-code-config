@@ -1,180 +1,30 @@
 # .claude/scripts/
 
-> **This is an index only.** Each entry gives the script name and a one-sentence purpose. For flags, exit codes, and full contract details, run `.claude/scripts/<name> --help` or read the script header.
+> **This is an index only.** Each category doc gives the script name and a one-sentence purpose. For flags, exit codes, and full contract details, run `.claude/scripts/<name> --help` or read the script header.
 >
-> **Adding a new script?** Add one row in the matching category below. Put the full contract (usage, flags, exit codes) in the script header and `--help` output — not here.
+> **Adding a new script?** Add one row in the matching category doc under [`docs/`](docs/) — not here. Put the full contract (usage, flags, exit codes) in the script header and `--help` output. `.github/scripts/scripts-catalog-lint.sh` fails CI if a script or test has no row, so the row is not optional.
 
 Manually-invoked utility scripts. See [scripts/ vs hooks/](#scripts-vs-hooks) for the distinction.
 
-## PR State & Polling
+## Categories
 
-Scripts that read PR state, track comment watermarks, and determine reviewer ownership.
+| Category | Covers |
+|----------|--------|
+| [PR State & Polling](docs/pr-state-polling.md) | Scripts that read PR state, track comment watermarks, and determine reviewer ownership |
+| [Review & Escalation](docs/review-escalation.md) | Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and round gating |
+| [Merge Gate & Sequencing](docs/merge-gate-sequencing.md) | Scripts that verify merge readiness and sequence a PR fleet to avoid conflict rounds |
+| [Release Cadence](docs/release-cadence.md) | Scripts that decide when a merge is worth a TestFlight build and follow the build to a terminal state |
+| [Review Threads & Diffs](docs/review-threads-diffs.md) | Scripts that resolve review threads and guard the branch diff through a rebase |
+| [Session State & Locking](docs/session-state-locking.md) | Scripts that read and write `~/.claude/session-state.json` and per-PR handoff files |
+| [Scheduling & Monitoring](docs/scheduling-monitoring.md) | Scripts that manage the background-silence ceiling, launchd watchdog, and time helpers |
+| [Backlog & PM](docs/backlog-pm.md) | Scripts that surface stale issues, duplicate candidates, forgotten PRs, and backlog metrics |
+| [Token Measurement](docs/token-measurement.md) | Scripts that capture per-repo token spend and usage baselines |
+| [Skills & Telemetry](docs/skills-telemetry.md) | Scripts that audit, report, and sync skill and script usage telemetry |
+| [Trust, Worktree & Repo](docs/trust-worktree-repo.md) | Scripts that repair trust flags, detect stale worktrees, and sync main |
+| [Utilities](docs/utilities.md) | Miscellaneous helpers used by skills and hooks, plus the Python helpers |
+| [Tests](docs/tests.md) | Every test under `tests/`, all offline (no network required) |
 
-| Script | Purpose |
-|--------|---------|
-| `pr-state.sh` | Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot |
-| `infer-pr.sh` | Resolve a PR reference from an explicit URL/number or from session-state candidates |
-| `poll-watermarks.sh` | Track high-water IDs for the three PR comment endpoints to detect new bot findings |
-| `polling-state-gate.sh` | CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle |
-| `pr-preflight.sh` | Flip a draft PR to ready and trigger the four AI reviewers when absent |
-| `pr-authorship.sh` | Hard authorship gate — verify the authenticated user authored a PR before any automated write |
-| `pr-issue-ref.sh` | Extract the linked issue number from a PR body via GitHub's issue-closing keywords |
-| `reviewer-of.sh` | Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history |
-| `reviewer-activity.sh` | Detect whether each AI reviewer has posted activity on a specific pushed SHA |
-
-## Review & Escalation
-
-Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and round gating.
-
-| Script | Purpose |
-|--------|---------|
-| `escalate-review.sh` | Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help` |
-| `local-review.sh` | Run a local review CLI (CodeRabbit/CodeAnt) with every false-clean check applied; emits the compact result contract |
-| `cr-review-hourly.sh` | Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count |
-| `cr-plan.sh` | Detect a substantive CodeRabbit implementation-plan comment on a GitHub issue |
-| `greptile-budget.sh` | Guard the daily Greptile review budget counter in session-state |
-| `maybe-trigger-ai-review.sh` | Post supplemental AI reviewer triggers when complexity and CR-round gates pass |
-| `complexity-score.sh` | Compute a PR complexity score from additions, deletions, and changed-file count |
-| `cycle-count.sh` | Reconstruct per-PR review-then-fix cycle count for round gating |
-
-## Merge Gate & Sequencing
-
-Scripts that verify merge readiness and sequence a PR fleet to avoid conflict rounds.
-
-| Script | Purpose |
-|--------|---------|
-| `merge-gate.sh` | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
-| `clean-behind-check.sh` | Decide whether a BEHIND PR is safe for /admin-merge (hunk-level overlap check) vs a rebase |
-| `admin-merge.sh` | Generate or execute the solo-owner branch-protection bypass |
-| `merge-sequence.sh` | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
-| `ci-status.sh` | Summarize CI check-run health for a commit or PR |
-| `check-runs-dedup.sh` | Collapse a check-run list to one verdict per check (newest check suite wins) |
-| `ac-checkboxes.sh` | Parse and update the PR body's Test plan checkboxes |
-| `ac-gate.sh` | CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption |
-| `dismiss-stale-bot-changes.sh` | Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push |
-
-## Release Cadence
-
-Scripts that decide when a merge is worth a TestFlight build and follow the build to a terminal state. TestFlight only — the App Store path is never triggered. Mechanism: `.claude/reference/release-cadence.md`.
-
-| Script | Purpose |
-|--------|---------|
-| `release-policy.sh` | Resolve a repo's release policy (default off) and derive the `auto` build interval from its own run history |
-| `release-decide.sh` | Decide whether a merge warrants a build, and optionally pull the trigger that repo already uses |
-| `release-sweep.sh` | Cut pending builds once their window opens and surface failed, skipped, or never-started releases |
-
-## Review Threads & Diffs
-
-Scripts that resolve review threads and guard the branch diff through a rebase.
-
-| Script | Purpose |
-|--------|---------|
-| `resolve-review-threads.sh` | Fetch PR review threads via GraphQL, resolve them, and verify `isResolved` |
-| `reply-thread.sh` | Post a reviewer-aware reply to a PR review thread (inline endpoint, PR-level fallback) |
-| `diff-survival-check.sh` | Verify a rebase or conflict resolution did not vaporize the branch's own diff |
-
-## Session State & Locking
-
-Scripts that read and write `~/.claude/session-state.json` and per-PR handoff files.
-
-| Script | Purpose |
-|--------|---------|
-| `session-state.sh` | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |
-| `background-task-registry.sh` | Locked exact-runtime-ID registry for current and historical Agent, Bash, Monitor, and Workflow tasks |
-| `execution-pause.sh` | Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate |
-| `state-lock.sh` | *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes |
-| `session-state-audit.sh` | Audit and guarded repair of `~/.claude/session-state.json` |
-| `handoff-state.sh` | Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`) |
-| `handoff-migrate.sh` | One-time migration of flat handoff files to per-repo scoped paths |
-
-## Scheduling & Monitoring
-
-Scripts that manage the background-silence ceiling, launchd watchdog, and time helpers.
-
-| Script | Purpose |
-|--------|---------|
-| `bgwork-ceiling.sh` | Hard ceiling on chat silence while background work (subagents, watchers) runs |
-| `active-work-cap.sh` | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
-| `statusline.sh` | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
-| `install-silence-watchdog.sh` | Install the macOS launchd watchdog that monitors Claude heartbeat files |
-| `uninstall-silence-watchdog.sh` | Uninstall the macOS launchd silence watchdog |
-| `silence-watchdog.sh` | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
-| `off-peak-minute.sh` | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
-| `gh-window.sh` | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
-| `workday.sh` | US business-day calculator (ET-anchored, macOS + GNU date) |
-
-## Backlog & PM
-
-Scripts that surface stale issues, duplicate candidates, forgotten PRs, and backlog metrics.
-
-| Script | Purpose |
-|--------|---------|
-| `backlog-staleness.sh` | Detect stale backlog issues (solved by merged PR, inactive, superseded, potential duplicate) |
-| `backlog-health.sh` | Aggregate backlog health metrics wrapping `backlog-staleness.sh` |
-| `churn-hotspots.sh` | Detect files touched by many distinct merged PRs as refactor candidates |
-| `churn-hotspot-wrap-plan.sh` | Classify churn detector JSON into `/wrap` action and suppression sets using recorded decision baselines |
-| `issue-dedup.sh` | Score open issues against keywords to find duplicate candidates before filing |
-| `forgotten-pr-triage.sh` | Detect and classify open PRs that have gone quiet past a staleness threshold |
-| `pm-config-get.sh` | Extract a named section from `.claude/pm-config.md` |
-
-## Token Measurement
-
-Scripts that capture per-repo token spend and usage baselines.
-
-| Script | Purpose |
-|--------|---------|
-| `ccusage-baseline.sh` | Read-only per-session spend baseline via `ccusage`; exits 0 OK / 1 no data / 2 usage error / 3 ccusage missing / 4 invocation error; `--json` for machine output, `--recent` for last 3 days (#781) |
-
-## Skills & Telemetry
-
-Scripts that audit, report, and sync skill and script usage telemetry.
-
-| Script | Purpose |
-|--------|---------|
-| `skill-usage-report.sh` | Read `~/.claude/skill-usage.log` and print usage tables and dead-skill candidates |
-| `skill-usage-snapshot.sh` | Push/restore skill telemetry to/from the repo's dedicated `skill-telemetry` branch |
-| `skill-usage-merge.sh` | Merge another machine's skill-usage telemetry into the live log files |
-| `audit-skill-usage.sh` | Legacy monthly skill-usage audit against `.claude/data/skill-usage.json` |
-| `skill-conventions-audit.sh` | Static audit that `.claude/skills/*/SKILL.md` files match repo conventions |
-| `script-usage-report.sh` | Summarize script adherence telemetry from `~/.claude/script-usage.log` |
-
-## Trust, Worktree & Repo
-
-Scripts that repair trust flags, detect stale worktrees, and sync main.
-
-| Script | Purpose |
-|--------|---------|
-| `repair-trust-single.sh` | Fix trust flags for one project in `~/.claude.json` |
-| `repair-trust-all.sh` | Fix trust flags for all projects in `~/.claude.json` |
-| `repair-worktrees.sh` | Detect stale git worktrees (merged/deleted branch) and optionally remove them |
-| `dirty-main-guard.sh` | Detect and quarantine dirty tracked state on the root repo's main branch |
-| `repo-bootstrap.sh` | Check and optionally install required repo configuration (provisioned file set, branch protection) |
-| `repo-root.sh` | Resolve the absolute path of the root (main) worktree (every git call wall-clock bounded; exit 3 on timeout) |
-| `stale-cleanup.sh` | Detect and optionally remove stale worktrees, branches, and orphaned worktree registrations (out-of-band, safe; every registration read wall-clock bounded) |
-| `main-sync.sh` | Sync a repo's local main branch with `origin/main` |
-
-## Utilities
-
-Miscellaneous helpers used by skills and hooks.
-
-| Script | Purpose |
-|--------|---------|
-| `model-fleet.sh` | Resolve the current Claude model fleet from `.claude/model-fleet.json` |
-| `portable-handoff-context.sh` | Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/end` |
-| `portable-handoff-lint.sh` | Enforce portable handoff structure, working-copy identity, cross-agent resume guidance, and freedom from harness-only references |
-| `portable-handoff-publish.sh` | Lint and atomically update one locked canonical manual handoff per repository/session |
-| `verify-exit-report-block.sh` | Verify stdin contains a parseable EXIT_REPORT with all required fields |
-| `graphite-repo-init.sh` | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
-| `hhg-state.sh` | Extract a 2-letter USPS state code from HHG-formatted text |
-
-## Python helpers
-
-Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usage.
-
-| Script | Purpose |
-|--------|---------|
-| `cr-plan-filter.py` | Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`) |
-| `memory-audit.py` | Memory-store audit engine behind `/memory-clean` |
+Every entry in those docs is a relative link to the file itself, so a name is one click from its source on github.com and in any editor.
 
 ## scripts/ vs hooks/
 
@@ -183,61 +33,6 @@ Called by other scripts; run `python3 .claude/scripts/<name>.py --help` for usag
 
 The `trust-flag-repair.sh` hook in `hooks/` runs automatically after every agent response. These scripts are for manual diagnosis and one-off repairs (e.g., after new worktree/project entries, cloning/moving projects, or config recreation).
 
-## tests/
+## Not indexed here
 
-All tests live in `tests/` and run offline (no network required). Run from the repo root:
-`bash .claude/scripts/tests/<name>.test.sh`
-
-| Test | What it covers |
-|------|----------------|
-| `ccusage-baseline.test.sh` | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
-| `admin-merge.test.sh` | Tests for `admin-merge.sh` |
-| `backlog-health.test.sh` | Tests for `backlog-health.sh` |
-| `backlog-staleness.test.sh` | Tests for `backlog-staleness.sh` |
-| `bgwork-ceiling.test.sh` | Tests for `bgwork-ceiling.sh` |
-| `background-task-registry.test.sh` | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
-| `active-work-cap.test.sh` | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
-| `check-runs-dedup.test.sh` | Tests for `check-runs-dedup.sh` |
-| `churn-hotspot-wrap-plan.test.sh` | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
-| `churn-hotspots.test.sh` | Tests for `churn-hotspots.sh` |
-| `ci-status.test.sh` | Tests for `ci-status.sh` |
-| `clean-behind-check.test.sh` | Tests for `clean-behind-check.sh` |
-| `compaction-resume-polling-state-gate.test.sh` | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
-| `cr-plan.test.sh` | Tests for `cr-plan.sh` |
-| `diff-survival-check.test.sh` | Tests for `diff-survival-check.sh` |
-| `dirty-main-guard.test.sh` | Tests for `dirty-main-guard.sh` |
-| `escalate-review-app-identity.test.sh` | Publishing-app identity and spoof-guard tests for `escalate-review.sh` |
-| `escalate-review-bugbot-classification.test.sh` | BugBot failure and response-classification tests for `escalate-review.sh` |
-| `escalate-review-gate-met.test.sh` | Approval freshness and gate short-circuit tests for `escalate-review.sh` |
-| `escalate-review-never-invited.test.sh` | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
-| `ac-gate.test.sh` | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
-| `forgotten-pr-triage.test.sh` | Tests for `forgotten-pr-triage.sh` |
-| `pr-issue-ref.test.sh` | Tests for `pr-issue-ref.sh` — default mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
-| `handoff-scoping.test.sh` | Tests per-repo handoff path scoping in `handoff-state.sh` |
-| `handoff-state.test.sh` | Tests for `handoff-state.sh` |
-| `infer-pr.test.sh` | Tests for `infer-pr.sh` |
-| `issue-dedup.test.sh` | Tests for `issue-dedup.sh` |
-| `merge-gate-authorship.test.sh` | Tests the authorship guard in `merge-gate.sh` |
-| `merge-gate-bugbot.test.sh` | Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962) |
-| `merge-gate-ci-dedup.test.sh` | Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh` |
-| `merge-gate-greptile-comment.test.sh` | Tests Greptile comment handling in `merge-gate.sh` |
-| `merge-gate-stale-approval.test.sh` | Tests stale-approval rejection in `merge-gate.sh` |
-| `merge-sequence.test.sh` | Tests for `merge-sequence.sh` |
-| `model-fleet.test.sh` | Tests for `model-fleet.sh` |
-| `poll-watermarks.test.sh` | Tests for `poll-watermarks.sh` |
-| `polling-state-gate-multirepo.test.sh` | Tests multi-repo isolation in `polling-state-gate.sh` |
-| `polling-state-gate.test.sh` | Tests for `polling-state-gate.sh` |
-| `pr-authorship.test.sh` | Tests for `pr-authorship.sh` |
-| `pr-preflight.test.sh` | Tests for `pr-preflight.sh` |
-| `pr-state-check-runs.test.sh` | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
-| `pr-state-classify.test.sh` | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
-| `pr-state-infer-candidates.test.sh` | Tests `pr-state.sh --infer-candidates` |
-| `reply-thread.test.sh` | Tests for `reply-thread.sh` |
-| `session-state-audit.test.sh` | Tests for `session-state-audit.sh` |
-| `session-state-migration.test.sh` | Tests the legacy-flat → per-repo migration in `session-state.sh` |
-| `session-state.test.sh` | Tests for `session-state.sh` |
-| `skill-conventions-audit.test.sh` | Tests for `skill-conventions-audit.sh` |
-| `skill-usage-merge.test.sh` | Tests for `skill-usage-merge.sh` |
-| `stale-cleanup.test.sh` | Tests for `stale-cleanup.sh` |
-| `state-lock.test.sh` | Tests for `state-lock.sh` |
-| `statusline.test.sh` | Tests for `statusline.sh` |
+`lib/` holds sourced helper libraries and `jq` programs rather than invocable scripts, and `tests/lib/` and `tests/fixtures/` hold test support files. None of them are catalog entries, and the catalog lint does not require rows for them.
