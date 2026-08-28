@@ -224,15 +224,17 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
    - **`mergeable == CONFLICTING`** → stop; recommend `/merge-conflict`.
-   - **`BEHIND`-only → break out to Step 2.2** (issue #1425) → when `merge_state == "BEHIND"`, that entry is the sole `missing[]` item, and no `WRAP_PHASE1_FINDINGS` pending. Do not rebase; Step 2.4 decides clean vs. not.
-   - **B. Delegate `/fixpr`** → when missing has unresolved threads, failing CI, `DIRTY`, or `WRAP_PHASE1_FINDINGS` pending — plus `BEHIND` **only when it accompanies one of those**. A `BEHIND`-only `missing[]` exits above instead. Threads-only check via structured gate signals (issue #455). Execute **full** `fixpr/SKILL.md` workflow (Steps 0–7 including Step 4d). Parse `FIXPR_WRAP_STATUS` and `FIXPR_WAIT_SUMMARY` from `=== fixpr complete ===` footer; emit control-returned heartbeat. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
+   - **`BEHIND` is transparent to branch selection** (issue #1425) → classify on `REMAINDER` = `missing[]` **minus** the `BEHIND` entry, because Step 2.4 is what clears `BEHIND`. `REMAINDER` empty and no `WRAP_PHASE1_FINDINGS` pending → **break out to Step 2.2**, then Step 2.4's clean-`BEHIND` path; do not rebase. `REMAINDER` non-empty → match the branches below **against `REMAINDER`**, carrying `BEHIND` forward to be re-evaluated next iteration. Never leave a `BEHIND`-plus-something `missing[]` unclassified.
+   - **B. Delegate `/fixpr`** → when `REMAINDER` has unresolved threads, failing CI, `DIRTY`, or `WRAP_PHASE1_FINDINGS` pending. `BEHIND` alongside any of these reaches `/fixpr` here — a rebase is needed regardless; a `BEHIND`-only `missing[]` exits above instead. Threads-only check via structured gate signals (issue #455). Execute **full** `fixpr/SKILL.md` workflow (Steps 0–7 including Step 4d). Parse `FIXPR_WRAP_STATUS` and `FIXPR_WAIT_SUMMARY` from `=== fixpr complete ===` footer; emit control-returned heartbeat. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
    - **C. Missing fresh bot review signal** → trigger the one bot needed (CR rate-check first); delegate wait to `/fixpr`.
-   - **D. CI incomplete only** → delegate wait to `/fixpr` (idempotent — no push).
+   - **D. CI incomplete** → delegate wait to `/fixpr` (idempotent — no push). Fires when incomplete CI is the whole of `REMAINDER`, with or without `BEHIND` alongside.
    - **E. Branch-protection block** → suggest `/admin-merge <PR>`; never modify branch protection.
    - **`merge_state == UNKNOWN`** → re-run gate next iteration.
 4. **End of iteration** — if no branch matched, append "unclassified blocker" + `missing` to audit.
 
 **Loop exit:** gate exit `0` with no `WRAP_PHASE1_FINDINGS` → Step 2.2; gate exit `1` with `BEHIND` as the sole `missing[]` item and no `WRAP_PHASE1_FINDINGS` → Step 2.2, then the Step 2.4 clean-`BEHIND` path (issue #1425); gate exit `0` with `WRAP_PHASE1_FINDINGS` still pending → Branch B (findings unresolved despite clean gate). Iteration cap → stop with last `missing` + full `WRAP_RECOVERY_AUDIT`. Genuine block (human CR, `CONFLICTING`, rate-limit, hard `/fixpr` failure) → stop per branch above.
+
+**Re-entry from Step 2.4 (issue #1425).** Step 2.4's `BEHIND` fall-throughs rebase, which moves HEAD — invalidating the bot approval and restarting CI — so they must **return to this loop**, not merge and not end `/wrap`. Re-enter at the top of the next iteration against the **same** `i` counter and `WRAP_RECOVERY_MAX_ITERATIONS` cap, so a rebase/re-review cycle can never spin unbounded; on exhausting the cap, stop with the last `missing` and the audit. The re-entered loop re-runs the gate on the new SHA, waits out fresh CI and bot review via the branches above, and reaches Step 2.2 again — AC is re-verified on the new SHA before Step 2.4 retries the merge.
 
 ### Step 2.2: Verify acceptance criteria
 
@@ -313,10 +315,12 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 | Exit | Action |
 |------|--------|
 | `0` (`safe_to_offer: true`) | Run `"$ADMIN_MERGE_SH" "$PR_NUM" --auto-plain --ac-verified`. On its exit `0` the PR is **already merged** — relay the `AUTO_PLAIN_MERGED` evidence block and continue to the post-merge actions below. No `AskUserQuestion`: the plain shape modifies no branch protection, so it needs no user turn. |
-| `1` (`safe_to_offer: false`) | Not clean — surface `reasons_not_safe`, then fall through to the `/fixpr` non-clean `BEHIND` path (rebase + force-push, `fixpr/SKILL.md` Step 6). |
+| `1` (`safe_to_offer: false`) | Not clean — surface `reasons_not_safe`, then take the `/fixpr` non-clean `BEHIND` path (rebase + force-push, `fixpr/SKILL.md` Step 6) and **re-enter Step 2.1** (below). |
 | `2` / `3` / `4` | Tooling or usage failure — **stop** and surface stderr. Never merge on an indeterminate answer. |
 
-`admin-merge.sh`'s own exits after a clean probe: `8` → the shape needs a protection change, or an auto attempt already ran — **offer `/admin-merge <PR>`** and surface the printed command, never auto-run it. `1` → the clean-`BEHIND` state no longer held at merge time (main advanced) — fall through to the `/fixpr` non-clean `BEHIND` path. Any other exit → stop and surface stderr.
+`admin-merge.sh`'s own exits after a clean probe: `8` → the shape needs a protection change, or an auto attempt already ran — **offer `/admin-merge <PR>`** and surface the printed command, never auto-run it. `1` → the clean-`BEHIND` state no longer held at merge time (main advanced) — take the `/fixpr` non-clean `BEHIND` path and **re-enter Step 2.1** (below). Any other exit → stop and surface stderr.
+
+**Both fall-throughs re-enter the Step 2.1 recovery loop — they never merge from here and never end `/wrap` (issue #1425).** The rebase moves HEAD, which invalidates the bot approval that satisfied the gate and restarts CI, so the post-rebase SHA is unreviewed by construction: merging it would bypass the gate, and stopping would abandon a PR that is one review round from mergeable. Re-entry runs against the **same** `i` counter and `WRAP_RECOVERY_MAX_ITERATIONS` cap, so rebase → re-review → `BEHIND`-again cannot spin unbounded; exhausting the cap stops with the last `missing` and the full `WRAP_RECOVERY_AUDIT`. Because re-entry passes back through Step 2.2, AC is re-verified against the rebased SHA before Step 2.4 runs again — which is what keeps the later `--ac-verified` attestation truthful on the retry.
 
 `--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
 
