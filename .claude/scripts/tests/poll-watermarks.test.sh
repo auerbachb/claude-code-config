@@ -15,6 +15,20 @@ trap cleanup EXIT
 export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude"
 
+# Repo scope for the seeded state (issue #1424).
+#
+# session-state.sh resolves its .repos["<owner>/<repo>"] scope at run time from
+# --repo, then $CLAUDE_SESSION_REPO, then the cwd's origin remote. poll-watermarks.sh
+# passes no --repo, so an ambient $CLAUDE_SESSION_REPO (any session working out of
+# another repo — these scripts are symlinked into ~/.claude and run repo-wide) or a
+# checkout whose origin is a fork/rename silently sent the runtime to a different
+# scope than the one seeded here. The seeded watermarks became invisible, every
+# pre-existing comment re-read as new, and 4 of 21 cases failed. Pinning the scope
+# makes the suite hermetic: it no longer depends on the ambient environment or on
+# which remote the checkout points at.
+SCOPE_REPO="auerbachb/claude-code-config"
+export CLAUDE_SESSION_REPO="$SCOPE_REPO"
+
 PASS=0
 FAIL=0
 check_eq() {
@@ -56,10 +70,11 @@ seed_state() {
   jq -n \
     --argjson pr "$PR" \
     --argjson wm "${1:-null}" \
+    --arg repo "$SCOPE_REPO" \
     '{
       schema_version: 2,
       repos: {
-        "auerbachb/claude-code-config": {
+        ($repo): {
           prs: {
             ($pr|tostring): (
               if $wm == null then {phase: "B", head_sha: "abc1234"}
@@ -81,6 +96,16 @@ base_fixture() {
     }
   }'
 }
+
+echo "== Scenario 0: seeded scope matches the scope session-state.sh resolves (issue #1424) =="
+# Guard for the whole suite. Every scenario below seeds watermarks under
+# $SCOPE_REPO and then expects poll-watermarks.sh to read them back. That only
+# holds while the runtime resolves the same scope. Without this guard a scope
+# mismatch surfaces as 4 unrelated-looking assertion failures in scenarios 2
+# and 3 rather than as the one thing that actually broke.
+seed_state null
+check_eq "runtime resolves the seeded repo scope" "$SCOPE_REPO" \
+  "$(cd "$REPO_ROOT" && "$SESSION" --session-view 2>/dev/null | jq -r '.repo')"
 
 echo "== Scenario 1: --init snapshots max IDs from all three endpoints =="
 write_fixture "$(jq -n '{
