@@ -281,10 +281,27 @@ if [[ -n "$SESSIONS_SRC" ]]; then
   fi
 fi
 
+# A claim's `claimant_holder` is whatever token the claiming thread resolved,
+# and `resolve_holder`'s documented last resort is `<hostname>:<worktree path>`.
+# That is not a session id and will never appear in a session listing — so
+# looking it up returns `__absent__`, which this script reads as `dead`, the one
+# classification that adopts. Absence is only evidence of death for something
+# that could have been present: a token carrying `:` or `/` is holder-shaped, and
+# its liveness is simply unknown.
+looks_like_session_id() {
+  local tok="$1"
+  [[ -z "$tok" ]] && return 1
+  case "$tok" in
+    *:*|*/*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # session_status <session_id> -> live | dead | indeterminate
 session_status() {
   local sid="$1"
   [[ -z "$sid" ]] && { printf 'indeterminate'; return; }
+  looks_like_session_id "$sid" || { printf 'indeterminate'; return; }
   (( SESSIONS_AVAILABLE )) || { printf 'indeterminate'; return; }
   local st
   st="$(printf '%s' "$SESSIONS_JSON" | jq -r --arg id "$sid" \
@@ -419,16 +436,34 @@ if [[ "$PMM_ACTIVE" != "true" && "$PMM_JSON" != "null" ]]; then
   fi
 fi
 
-# marker_repo <path> <basename> -> owner/repo, or empty when unattributable.
+# marker_parse <path> <basename> -> sets MP_REPO and MP_SESSION (either may be
+# empty, meaning "this marker does not say").
 #
-# Two independent sources, body first because it is exact and every marker
-# shape carries it (`portable-handoff-*` encodes no repo in its name at all):
-#   1. the rendered `Repository: `owner/repo`` line (/pause SKILL.md);
-#   2. the length-prefixed filename field `<len-owner>-<owner>-<len-repo>-<repo>`,
-#      which is injective precisely so owners/repos containing `-` survive it.
-# A `/`-less repo key writes the literal `unknown`, which attributes nothing.
-marker_repo() {
-  local path="$1" base="$2" line owner name rest lo ln
+# Marker names are `pause-<stamp>-<REPO_KEY_SAFE>-<session>-<tag>[-draft].md`,
+# where REPO_KEY_SAFE is `<len-owner>-<owner>-<len-repo>-<repo>` — length-prefixed
+# precisely because owners and repos may contain `-`, so splitting on dashes
+# alone is ambiguous. Walking those lengths is what makes BOTH fields recoverable:
+#   * repo, to refuse a marker belonging to another repository; and
+#   * the session id, which is a UUID and keeps its own dashes. Reading it as a
+#     single dash field returns only the UUID's last group, and a truncated id is
+#     absent from the session listing — which this script reads as `dead`, the
+#     one classification that adopts. A live paused thread would be resumed
+#     underneath, which is the duplicate-ship failure this sweep exists to stop.
+#
+# Repo has a second, preferred source: the rendered ``Repository: `owner/repo` ``
+# line. It is exact, and it is the only one `portable-handoff-*` has — those
+# encode no repo in the filename at all. A `/`-less repo key writes the literal
+# `unknown`, which attributes no repo but still carries a session id.
+#
+# Two globals rather than one delimited string: either field can legitimately be
+# empty, and empty fields do not survive an `IFS` split intact.
+MP_REPO=""
+MP_SESSION=""
+marker_parse() {
+  local path="$1" base="$2" line owner name rest lo ln stripped
+  MP_REPO=""
+  MP_SESSION=""
+
   line="$(grep -m1 -E '^Repository:' "$path" 2>/dev/null || true)"
   if [[ -n "$line" ]]; then
     line="${line#Repository:}"
@@ -437,31 +472,45 @@ marker_repo() {
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     if [[ "$line" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-      printf '%s' "$line" | tr '[:upper:]' '[:lower:]'
-      return 0
+      MP_REPO="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
     fi
   fi
-  # Filename fallback: strip the `pause-`/`suspend-` prefix and the stamp, then
-  # read the two length-prefixed fields.
+
   case "$base" in
-    pause-*|suspend-*) rest="${base#*-}" ;;
+    pause-*|suspend-*) ;;
     *) return 0 ;;
   esac
+  stripped="${base%.md}"
+  stripped="${stripped%-draft}"
+  rest="${stripped#*-}"                 # drop `pause-` / `suspend-`
   rest="${rest#*-}"                     # drop <stamp>
-  lo="${rest%%-*}"                      # <len-owner>
-  [[ "$lo" =~ ^[0-9]+$ ]] || return 0
-  rest="${rest#*-}"
-  owner="${rest:0:$lo}"
-  [[ ${#owner} -eq "$lo" ]] || return 0
-  rest="${rest:$lo}"
-  rest="${rest#-}"
-  ln="${rest%%-*}"                      # <len-repo>
-  [[ "$ln" =~ ^[0-9]+$ ]] || return 0
-  rest="${rest#*-}"
-  name="${rest:0:$ln}"
-  [[ ${#name} -eq "$ln" ]] || return 0
-  [[ -z "$owner" || -z "$name" ]] && return 0
-  printf '%s/%s' "$owner" "$name" | tr '[:upper:]' '[:lower:]'
+  if [[ "$rest" == unknown-* ]]; then
+    rest="${rest#unknown-}"
+  else
+    lo="${rest%%-*}"                    # <len-owner>
+    [[ "$lo" =~ ^[0-9]+$ ]] || return 0
+    rest="${rest#*-}"
+    owner="${rest:0:$lo}"
+    [[ ${#owner} -eq "$lo" ]] || return 0
+    rest="${rest:$lo}"
+    rest="${rest#-}"
+    ln="${rest%%-*}"                    # <len-repo>
+    [[ "$ln" =~ ^[0-9]+$ ]] || return 0
+    rest="${rest#*-}"
+    name="${rest:0:$ln}"
+    [[ ${#name} -eq "$ln" ]] || return 0
+    rest="${rest:$ln}"
+    rest="${rest#-}"
+    # The body line wins when both are present: it is the exact string /pause
+    # rendered, not a reconstruction.
+    if [[ -z "$MP_REPO" && -n "$owner" && -n "$name" ]]; then
+      MP_REPO="$(printf '%s/%s' "$owner" "$name" | tr '[:upper:]' '[:lower:]')"
+    fi
+  fi
+  # What remains is `<session>-<tag>`. The tag is mktemp's own suffix and carries
+  # no dash, so everything before the LAST dash is the session id, dashes intact.
+  [[ "$rest" == *-* ]] || return 0
+  MP_SESSION="${rest%-*}"
 }
 
 # (5) Resume markers on disk. Read once; matched per candidate.
@@ -814,22 +863,15 @@ for ISSUE in "${CANDIDATES[@]}"; do
     # or PR TEXT only — #1431 exists in every repo. Attribute the marker before
     # trusting it: a foreign marker that reaches `note_owner` can carry a dead
     # session id into the owned_dead branch and adopt another repo's work.
-    MF_REPO="$(marker_repo "$MF" "$MF_BASE")"
+    marker_parse "$MF" "$MF_BASE"
+    MF_REPO="$MP_REPO"
     if [[ -n "$MF_REPO" && -n "$REPO_KEY" ]] && [[ "$MF_REPO" != "$REPO_KEY" ]]; then
       continue
     fi
-    # pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md —
-    # the session id is
-    # the second-to-last dash field; a title is not in the name, so ids are the
-    # documented fallback label (issue #1431 "Notes / Open questions").
-    MF_SESSION=""
-    if [[ "$MF_BASE" == pause-* || "$MF_BASE" == suspend-* ]]; then
-      MF_STRIPPED="${MF_BASE%.md}"
-      MF_STRIPPED="${MF_STRIPPED%-draft}"
-      # Drop mktemp's uniqueness tag, then take the field before it.
-      MF_SESSION="${MF_STRIPPED%-*}"
-      MF_SESSION="${MF_SESSION##*-}"
-    fi
+    # The session id comes out of the same length-prefixed walk, dashes intact —
+    # a title is not in the name, so ids are the documented fallback label
+    # (issue #1431 "Notes / Open questions").
+    MF_SESSION="$MP_SESSION"
     if is_self "$MF_SESSION"; then
       add_evidence "resume marker $MF_BASE belongs to this session — not foreign ownership"
       continue
@@ -891,6 +933,9 @@ for ISSUE in "${CANDIDATES[@]}"; do
 
   # -- liveness --------------------------------------------------------------------
   if (( OWNED )); then
+    if [[ -n "$OWNER_SESSION" ]] && ! looks_like_session_id "$OWNER_SESSION"; then
+      add_degraded "owner token $OWNER_SESSION is holder-shaped, not a session id (liveness indeterminate -> owner treated as live)"
+    fi
     LIVENESS="$(session_status "$OWNER_SESSION")"
     if [[ -n "$OWNER_SESSION" ]]; then
       T="$(session_title "$OWNER_SESSION")"

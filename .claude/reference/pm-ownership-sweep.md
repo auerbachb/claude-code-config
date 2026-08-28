@@ -94,7 +94,13 @@ The asymmetry is deliberate. Surfacing a thread that turned out to be dead costs
 
 Two tiers, and the human-readable one wins however late it is found: session-listing `title` > a title a source supplies (`background_tasks[].name`, the marker filename) > the claim-derived description (`<login> thread <holder>`) > the bare session id > `an unnamed thread`. Claims and state files carry session ids as the join key, so ids are the documented fallback, not a failure.
 
-`pause-*.md` marker filenames encode the session id as the field before `mktemp`'s uniqueness tag (`pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md`), which is how a marker attributes itself with no state file involved.
+`pause-*.md` marker filenames encode the session id between the repo fields and `mktemp`'s uniqueness tag (`pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md`), which is how a marker attributes itself with no state file involved.
+
+**Recover it by walking the length prefixes, never by splitting on dashes.** Session ids are UUIDs and keep their own dashes, so "the field before the tag" yields only the UUID's last group. A truncated id is absent from the session listing, absence reads as `dead`, and `dead` is the one classification that adopts — so the parse bug resumed a *live* paused thread underneath, the exact duplicate-ship failure the sweep exists to prevent. The same walk recovers the repo, which is why both come from one parser.
+
+### A holder token is not a session id
+
+`issue-claim.sh` reports `claimant_holder`, and `resolve_holder`'s documented last resort is `<hostname>:<worktree path>` — a token that can never appear in a session listing. Feeding it to the liveness lookup returns "absent", which again reads as `dead` and adopts. Absence is evidence of death only for something that could have been present, so a token carrying `:` or `/` is treated as holder-shaped: liveness `indeterminate`, owner treated as live, and the reason recorded in `degraded[]`.
 
 ### Markers must be attributed to this repo first
 

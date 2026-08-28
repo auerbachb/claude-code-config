@@ -392,6 +392,59 @@ check_contains "ambiguity is named, not silent" "repository unattributable" \
 check_contains "and recorded as degradation" "no repository attribution" \
   "$(field 404 '.degraded | join("|")')"
 
+# Real session ids are UUIDs and /pause keeps their dashes in the filename.
+# Reading the id as a single dash field returned only the UUID's LAST group, and
+# a truncated id is absent from the listing — which this script reads as `dead`,
+# the one verdict that adopts. A live paused thread would be resumed underneath.
+echo "-- (4h) a UUID session id survives the filename parse intact --"
+# Unclaimed on purpose: a claim supplies an owner session of its own, and
+# note_owner is first-write-wins, so a claimed candidate would never exercise
+# the marker's own parse.
+scenario "(4h) dashed session id"
+UUID_SESSION="1d4add05-6a7b-4fad-804b-4986398d6642"
+printf 'Repository: testowner/testrepo\nParked: #407 mid-implementation\n' \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-9-testowner-8-testrepo-$UUID_SESSION-QW3tbW.md"
+seed_sessions "[{\"id\":\"$UUID_SESSION\",\"status\":\"paused\",\"title\":\"parked uuid thread\"}]"
+sweep 407
+check_eq "full UUID recovered, not its last group" "$UUID_SESSION" \
+  "$(field 407 '.owner_session_id')"
+check_eq "so the listing matches and the owner reads live" "live" "$(field 407 '.liveness')"
+check_eq "surfaced, never adopted" "skip" "$(field 407 '.action')"
+check_eq "verdict owned_live" "owned_live" "$(field 407 '.verdict')"
+check_eq "and the listing title is used" "parked uuid thread" "$(field 407 '.owner_label')"
+
+echo "-- (4i) and a UUID-named marker from THIS session is still self-attributed --"
+scenario "(4i) dashed self session id"
+export CLAUDE_SESSION_ID="aaaa1111-bbbb-2222-cccc-333344445555"
+export FAKE_CLAIM_408="stale:selfholder:alice"
+printf 'Repository: testowner/testrepo\nParked: #408\n' \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-9-testowner-8-testrepo-$CLAUDE_SESSION_ID-QW3tbW.md"
+sweep 408
+check_eq "own UUID marker is not foreign ownership" "dispatch" "$(field 408 '.action')"
+check_contains "self-attribution stated" "belongs to this session" \
+  "$(field 408 '.evidence | join("|")')"
+export CLAUDE_SESSION_ID="selfsession"
+
+# `claimant_holder` is whatever the claiming thread resolved, and the documented
+# last resort is `<hostname>:<worktree path>` — never a session-listing entry.
+# Looking it up returns "absent", which this script reads as `dead`, so a
+# readable listing turned an ordinary claim into an adoption.
+# The real fallback token is `<hostname>:<path>`, carrying both a colon and a
+# slash; the stub's own SPEC separator is `:`, so the path half is what this
+# fixture can express. Either character alone is enough to prove the token is
+# not a session id, which is exactly what the guard keys on.
+echo "-- (4j) a holder-shaped owner token is not looked up as a session --"
+scenario "(4j) path-shaped holder"
+export FAKE_CLAIM_409="stale:/Users/dev/worktrees/repo:alice"
+seed_pr 909 409 "issue-409-feature"
+seed_sessions '[{"id":"someoneElse","status":"open","title":"unrelated"}]'
+sweep 409
+check_eq "liveness indeterminate, not dead" "indeterminate" "$(field 409 '.liveness')"
+check_eq "so the owner is treated as live" "owned_live" "$(field 409 '.verdict')"
+check_eq "surfaced, never adopted" "skip" "$(field 409 '.action')"
+check_contains "and the reason is named, not silent" "holder-shaped" \
+  "$(field 409 '.degraded | join("|")')"
+
 ############################################################################
 # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>],
 # and session-state.sh rewrites just `.prs`/`.root_repo` into repo scope — so
