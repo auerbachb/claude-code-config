@@ -227,6 +227,63 @@ run --check --session f10
 check_not_clear "$(status_of)" "$RC" "an impossible calendar date cannot yield clear"
 check_eq "$(reason_of)" "timestamp-unparseable" "an out-of-range month/day is rejected, not coerced"
 
+# In-range-but-nonexistent days are the harder case: every field passes a
+# range check, and civil-from-days is total, so Feb 31 would quietly become
+# Mar 3 rather than failing. Each of these must be refused outright.
+for BAD_TS in 2026-02-31T00:00:00Z 2026-02-30T00:00:00Z 2025-02-29T00:00:00Z \
+              2026-04-31T00:00:00Z 2026-06-31T00:00:00Z 2026-09-31T00:00:00Z \
+              2026-11-31T00:00:00Z; do
+  reset_home
+  run --observe 14000000 --limit 15000000 --session f10b
+  jq --arg ts "$BAD_TS" '.usage_horizon.reading.ts = $ts' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+  run --check --session f10b
+  check_not_clear "$(status_of)" "$RC" "nonexistent date $BAD_TS cannot yield clear"
+  check_eq "$(reason_of)" "timestamp-unparseable" "$BAD_TS is refused, not coerced to a later day"
+done
+
+# Negative control for the same rule: real leap days and real month ends must
+# still parse, or the fix would have bought fail-closed by breaking every read.
+for GOOD_TS in 2024-02-29T00:00:00Z 2000-02-29T00:00:00Z 2026-02-28T00:00:00Z \
+               2026-01-31T00:00:00Z 2026-04-30T00:00:00Z 2026-12-31T23:59:59Z; do
+  reset_home
+  run --observe 14000000 --limit 15000000 --session f10c
+  jq --arg ts "$GOOD_TS" '.usage_horizon.reading.ts = $ts' "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+  # A real date parses, so the verdict turns on the TTL, never on parseability.
+  run --check --session f10c
+  check_eq "$(reason_of)" "reading-stale" "valid date $GOOD_TS still parses (aged out, not unparseable)"
+done
+
+# --check must accept exactly the value set --observe accepts. Each of these
+# is a value the writer would have refused, paired with a stored `clear`:
+# the read path must not hand back permission on any of them.
+for BAD_VAL in '.usage_horizon.reading.remaining = -1' \
+               '.usage_horizon.reading.remaining = 1400.5' \
+               '.usage_horizon.reading.remaining = 1000000000000' \
+               '.usage_horizon.reading.limit = 0' \
+               '.usage_horizon.reading.limit = -15000000' \
+               '.usage_horizon.reading.limit = 15000000.5' \
+               '.usage_horizon.reading.remaining = 16000000'; do
+  reset_home
+  run --observe 14000000 --limit 15000000 --session f11
+  jq "$BAD_VAL" "$(STATE)" > "$TMP/s.json" && mv "$TMP/s.json" "$(STATE)"
+  check_eq "$(jq -r '.usage_horizon.status' "$(STATE)")" "clear" "corruption setup keeps status=clear ($BAD_VAL)"
+  run --check --session f11
+  check_not_clear "$(status_of)" "$RC" "out-of-range stored value cannot yield clear ($BAD_VAL)"
+  check_eq "$(reason_of)" "reading-malformed" "out-of-range stored value names its reason ($BAD_VAL)"
+done
+
+# Negative control: the boundary values --observe DOES accept must still read
+# back, so the tightened gate cannot be passing by refusing everything.
+reset_home
+run --observe 15000000 --limit 15000000 --session f11b
+check_eq "$RC" "0" "remaining == limit is accepted by --observe"
+run --check --session f11b
+check_eq "$(status_of)" "clear" "remaining == limit still reads back as its verdict"
+reset_home
+run --observe 0 --limit 15000000 --session f11c
+run --check --session f11c
+check_eq "$(status_of)" "critical" "a zero remaining reads back rather than being called malformed"
+
 # Documented concurrency behaviour: the state slot is machine-wide and
 # last-writer-wins, so the displaced session degrades to unknown — never to
 # the other session's verdict, and never to clear.

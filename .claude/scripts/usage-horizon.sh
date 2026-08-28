@@ -125,8 +125,11 @@
 #     - no `usage_horizon` reading recorded at all
 #     - the stored reading belongs to a different session
 #     - the stored reading is older than the configured TTL
-#     - the stored timestamp cannot be parsed (an unreadable age is stale)
-#     - a stored value (remaining/limit/status) has the wrong shape
+#     - the stored timestamp cannot be parsed, names an impossible calendar
+#       date, or is otherwise unreadable (an age that cannot be computed is stale)
+#     - a stored value (remaining/limit/status) has the wrong shape, or is one
+#       `--observe` would itself have refused: a negative, fractional, or
+#       >=1e12 token count, a non-positive limit, or remaining above limit
 #     - jq is missing or fails
 #     - the session identity cannot be resolved
 #
@@ -426,8 +429,16 @@ iso_to_epoch() {
     match($0, /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z?$/) {
       y = substr($0,1,4)+0; mo = substr($0,6,2)+0; d = substr($0,9,2)+0
       h = substr($0,12,2)+0; mi = substr($0,15,2)+0; s = substr($0,18,2)+0
-      if (mo < 1 || mo > 12 || d < 1 || d > 31) next
+      if (mo < 1 || mo > 12 || d < 1) next
       if (h > 23 || mi > 59 || s > 60) next
+      # The day must exist in THAT month. A range-only `d > 31` check would let
+      # an impossible date through: civil-from-days is total, so 2026-02-31
+      # would not fail — it would silently become 2026-03-03, an invented epoch
+      # the freshness gate would then age as if it were a real reading.
+      split("31 28 31 30 31 30 31 31 30 31 30 31", mlen, " ")
+      dmax = mlen[mo]
+      if (mo == 2 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) dmax = 29
+      if (d > dmax) next
       yy = y - (mo <= 2 ? 1 : 0)
       era = int((yy >= 0 ? yy : yy - 399) / 400)
       yoe = yy - era * 400
@@ -717,15 +728,25 @@ case "$MODE" in
         "stored reading belongs to session $READ_SESSION, not $SESSION_ID"
     fi
 
-    # Shape check before any value is trusted. A `remaining` that is not a
-    # number, or a `limit` that is neither a number nor null, means the object
-    # was written by something other than --observe.
+    # Shape check before any value is trusted. This mirrors every constraint
+    # --observe enforces on the way in (TOKEN_RE plus the limit-consistency
+    # rules), because `type == "number"` alone is a strictly weaker gate than
+    # the writer's: it admits negatives, fractions, values at or above 1e12,
+    # and a `remaining` exceeding its own `limit`. Since --check trusts the
+    # stored verdict rather than recomputing it, a value the writer would have
+    # refused must not be able to arrive carrying `status: clear`. Reading and
+    # writing therefore accept exactly the same set.
     SHAPE_OK="$(printf '%s' "$HORIZON_RAW" | jq -r '
-      (((.reading.remaining | type) == "number")
-       and ((.reading.limit == null) or ((.reading.limit | type) == "number")))
+      def tokenish: (type == "number") and (. == floor) and (. >= 0) and (. < 1e12);
+      (.reading.remaining as $r
+       | .reading.limit as $l
+       | ($r | tokenish)
+         and (($l == null)
+              or (($l | tokenish) and ($l > 0) and ($r <= $l))))
       | tostring' 2>/dev/null)" || SHAPE_OK="false"
     if [[ "$SHAPE_OK" != "true" ]]; then
-      unknown reading-malformed "stored reading has a non-numeric remaining or limit"
+      unknown reading-malformed \
+        "stored remaining/limit is not the non-negative integer below 1e12 that --observe accepts, or remaining exceeds limit"
     fi
 
     STORED_STATUS="$(printf '%s' "$HORIZON_RAW" | jq -r '.status // ""' 2>/dev/null)" || STORED_STATUS=""
