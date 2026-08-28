@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+# Tests for `/pm` day mode's usage-horizon reflex — issue #1428.
+#
+# WHAT IS UNDER TEST
+#   The REAL fenced bash in `.claude/skills/pm/SKILL.md`, pulled out at run time
+#   by `lib/skill-bash.sh` through the `<!-- test-anchor: … -->` markers and
+#   executed against a stubbed `usage-horizon.sh` and a real `session-state.sh`
+#   driven by a throwaway $HOME. Nothing below is a transcription: edit the
+#   skill and this suite runs the edit. Same principle as
+#   `pmm-wake-step-4a.test.sh` and `pr-state-classify.test.sh`.
+#
+#   Four anchors, four jobs:
+#     pm-day-d2-horizon-branch  D2's tick gate — verdict -> {refill, park, idle}
+#     pm-day-2d7-park-claim     the compare-and-set single-park claim
+#     pm-day-2d7-park-record    the park record, including the cause field
+#     pm-day-2d7-probe-fire     one bounded probe fire (resume / decrement / stop)
+#
+# WHY (issue #1428)
+#   Day mode could only park AFTER a usage-limit kill. The pre-emptive leg fires
+#   on the horizon verdict instead, which means three things have to be true and
+#   none of them is visible from prose review: `unknown` must never park and must
+#   never read as `clear`; exactly one park record may exist when a real kill
+#   races the pre-emptive park; and the probe wake must be bounded by state, not
+#   by the loop, so a restart cannot re-arm a fresh bound forever.
+#
+# NON-VACUITY
+#   Every assertion here can fail. The verdict cases are driven through a stub
+#   whose STATUS line and exit code are set per case (including a stub that does
+#   not exist and one that prints garbage), and the state assertions read the
+#   file back rather than trusting what a block printed — a park block that
+#   printed "won" while writing nothing would pass a printed-output-only test.
+#
+# Requires: bash 3.2+ (macOS system bash), jq. Offline: no gh, no git, no network.
+set -uo pipefail
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
+SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
+PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
+PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
+SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
+DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
+SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
+
+# shellcheck source=lib/skill-bash.sh
+source "$TEST_DIR/lib/skill-bash.sh"
+
+TMP_HOME="$(mktemp -d)"
+STUB_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_HOME" "$STUB_DIR"; }
+trap cleanup EXIT
+export HOME="$TMP_HOME"
+mkdir -p "$HOME/.claude"
+STATE_FILE="$HOME/.claude/session-state.json"
+REPO_KEY="auerbachb/claude-code-config"
+
+PASS=0
+FAIL=0
+check_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    PASS=$((PASS + 1)); echo "ok   — $desc"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (expected '$expected', got '$actual')"
+  fi
+}
+require_text() {
+  local desc="$1" file="$2" pattern="$3"
+  if grep -Eq -- "$pattern" "$file"; then
+    PASS=$((PASS + 1)); echo "ok   — $desc"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (no match for /$pattern/ in $(basename "$file"))"
+  fi
+}
+
+# Extract every anchored block once; a failed extraction is fatal, never skipped
+# (a suite that silently runs zero lines of skill bash passes green forever).
+BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
+BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
+BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
+BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
+
+# A stub standing in for usage-horizon.sh: --check prints the STATUS/REASON pair
+# and exits on the documented code; --observe exits 0 whatever the verdict.
+make_horizon_stub() {
+  local status="$1" observe_rc="${2:-0}" path="$STUB_DIR/usage-horizon.sh"
+  local rc
+  case "$status" in
+    clear) rc=0 ;; approaching) rc=1 ;; critical) rc=2 ;; *) rc=3 ;;
+  esac
+  cat > "$path" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+  --observe) exit $observe_rc ;;
+  --check)   printf 'STATUS=%s\nREASON=%s\n' "$status" "stub"; exit $rc ;;
+esac
+exit 4
+STUB
+  chmod +x "$path"
+  echo "$path"
+}
+
+# Run the D2 gate with a given stub path and reading, return its printed fields.
+run_d2() {
+  local horizon_sh="$1" remaining="${2:-}" limit="${3:-}"
+  USAGE_HORIZON_SH="$horizon_sh" HORIZON_REMAINING="$remaining" HORIZON_LIMIT="$limit" \
+    bash -c "$BLOCK_D2" 2>/dev/null
+}
+field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
+
+# Parse a `…Z` timestamp to epoch on both date flavours. The `-u` on the BSD
+# fallback is load-bearing and was found by this suite: without it macOS reads
+# the Z timestamp as LOCAL time, so on an ET machine every park measures four
+# hours long — the failure mode is a wrong number, not an error, which is
+# exactly the try-both trap `date`/`stat` chains keep setting.
+iso_to_epoch() {
+  date -u -d "$1" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" '+%s'
+}
+
+seed_day_state() {
+  # A day block shaped like 2D.2's init write, with no park recorded.
+  jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {
+      active: true, parked_until: null, limit_kind: null, limit_cause: null,
+      limit_probe_fires_remaining: null, limit_resume_task_id: null,
+      limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
+}
+day_get() { jq -r --arg k "$REPO_KEY" ".repos[\$k].day.$1" "$STATE_FILE"; }
+
+# ---------------------------------------------------------------------------
+echo "== D2 tick-branch matrix (AC 1) =="
+# ---------------------------------------------------------------------------
+
+OUT=$(run_d2 "$(make_horizon_stub clear)" 900000 1000000)
+check_eq "clear: verdict"        "clear" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "clear: refill allowed" "true"  "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "clear: no park"        "false" "$(field "$OUT" HORIZON_PARK)"
+check_eq "clear: no idle reason" ""      "$(field "$OUT" HORIZON_IDLE_REASON)"
+
+OUT=$(run_d2 "$(make_horizon_stub approaching)" 200000 1000000)
+check_eq "approaching: verdict"      "approaching" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "approaching: refill stops" "false"       "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "approaching: never parks"  "false"       "$(field "$OUT" HORIZON_PARK)"
+check_eq "approaching: idle reason"  "paused (horizon approaching)" "$(field "$OUT" HORIZON_IDLE_REASON)"
+
+OUT=$(run_d2 "$(make_horizon_stub critical)" 50000 1000000)
+check_eq "critical: verdict"      "critical" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "critical: refill stops" "false"    "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "critical: parks"        "true"     "$(field "$OUT" HORIZON_PARK)"
+
+OUT=$(run_d2 "$(make_horizon_stub unknown)" 50000 1000000)
+check_eq "unknown: verdict"      "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "unknown: refill stops" "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "unknown: NEVER parks"  "false"   "$(field "$OUT" HORIZON_PARK)"
+
+# Degraded inputs all land on unknown, and unknown is never clear. Each of these
+# would be a fail-open if the branch tested `!= critical` instead of matching
+# the three known verdicts explicitly.
+OUT=$(run_d2 "$STUB_DIR/does-not-exist.sh" 50000 1000000)
+check_eq "missing script: unknown"    "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "missing script: no refill"  "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "missing script: no park"    "false"   "$(field "$OUT" HORIZON_PARK)"
+
+OUT=$(run_d2 "" 50000 1000000)
+check_eq "unresolved helper: unknown" "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "unresolved helper: no park" "false"   "$(field "$OUT" HORIZON_PARK)"
+
+GARBAGE="$STUB_DIR/garbage.sh"
+printf '#!/usr/bin/env bash\necho "Review limit reached"\nexit 0\n' > "$GARBAGE"; chmod +x "$GARBAGE"
+OUT=$(run_d2 "$GARBAGE" 50000 1000000)
+check_eq "garbage output: unknown"      "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "garbage output: not clear"    "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+
+# A --check that prints STATUS=clear but exits 3 must still be read as clear:
+# the verdict comes from the STATUS line, which is what the script documents.
+# (--observe still succeeds here — the clamp above is about observe, not check.)
+MIXED="$STUB_DIR/mixed.sh"
+printf '#!/usr/bin/env bash\ncase "$1" in --observe) exit 0 ;; esac\nprintf "STATUS=clear\\nREASON=x\\n"\nexit 3\n' > "$MIXED"; chmod +x "$MIXED"
+OUT=$(run_d2 "$MIXED" 900000 1000000)
+check_eq "STATUS line drives the verdict" "clear" "$(field "$OUT" HORIZON_STATUS)"
+
+# A failed observe (write/lock error) must clamp to unknown rather than trust a
+# stored verdict this turn's reading never reached. The stub deliberately says
+# `clear` on --check: the counter only falls during a session, so a stale reading
+# is optimistic, and this is the one direction that can green-light a dying board.
+OUT=$(run_d2 "$(make_horizon_stub clear 5)" 50000 1000000)
+check_eq "failed observe clamps to unknown"   "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "failed observe does not refill"     "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "failed observe does not park"       "false"   "$(field "$OUT" HORIZON_PARK)"
+# A lock timeout is the same story with a different code.
+OUT=$(run_d2 "$(make_horizon_stub clear 6)" 50000 1000000)
+check_eq "observe lock timeout clamps too"    "unknown" "$(field "$OUT" HORIZON_STATUS)"
+# ...but a SUCCESSFUL observe still reads the verdict through.
+OUT=$(run_d2 "$(make_horizon_stub clear 0)" 900000 1000000)
+check_eq "successful observe reads through"   "clear"   "$(field "$OUT" HORIZON_STATUS)"
+
+# No reading in context at all (empty HORIZON_REMAINING) must not invent one.
+OUT=$(run_d2 "$(make_horizon_stub unknown)" "" "")
+check_eq "no reading: unknown"  "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "no reading: no park"  "false"   "$(field "$OUT" HORIZON_PARK)"
+
+# ---------------------------------------------------------------------------
+echo "== 2D.7 park claim + park record (AC 2, AC 4) =="
+# ---------------------------------------------------------------------------
+
+run_claim() {
+  local reset_epoch="${1:-}"
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    HORIZON_RESET_EPOCH="$reset_epoch" PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 \
+    bash -c "$BLOCK_CLAIM" 2>/dev/null
+}
+
+seed_day_state
+OUT=$(run_claim)
+check_eq "claim on a clean board wins" "PARK_CLAIM=won" "$(printf '%s\n' "$OUT" | tail -1)"
+PARKED_UNTIL="$(day_get parked_until)"
+if [[ "$PARKED_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — claim persisted an ISO parked_until ($PARKED_UNTIL)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — claim did not persist an ISO parked_until (got '$PARKED_UNTIL')"
+fi
+# The unknown-reset bound is cadence x fires ahead — 6h at the defaults.
+NOW_E=$(date -u +%s)
+PARK_E=$(iso_to_epoch "$PARKED_UNTIL")
+DELTA=$(( PARK_E - NOW_E ))
+if (( DELTA > 21000 && DELTA <= 21600 )); then
+  PASS=$((PASS + 1)); echo "ok   — unknown reset parks to the probe bound (~6h; ${DELTA}s)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — probe bound out of range (${DELTA}s, expected ~21600)"
+fi
+
+# A reactive park already on the board: the pre-emptive claim must LOSE and
+# must not overwrite the reactive timestamp. This is the double-park guard.
+seed_day_state
+jq --arg k "$REPO_KEY" '.repos[$k].day.parked_until="2026-08-28T04:00:00Z"
+  | .repos[$k].day.limit_cause="reactive"' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+OUT=$(run_claim)
+check_eq "claim loses to an existing park" "PARK_CLAIM=lost" "$(printf '%s\n' "$OUT" | tail -1)"
+check_eq "reactive park survives the loss"  "2026-08-28T04:00:00Z" "$(day_get parked_until)"
+check_eq "reactive cause survives the loss" "reactive" "$(day_get limit_cause)"
+
+# A known reset time is used verbatim rather than the probe bound.
+seed_day_state
+KNOWN=$(( $(date -u +%s) + 3600 ))
+OUT=$(run_claim "$KNOWN")
+check_eq "known reset: claim wins" "PARK_CLAIM=won" "$(printf '%s\n' "$OUT" | tail -1)"
+PARK_E=$(iso_to_epoch "$(day_get parked_until)")
+check_eq "known reset used verbatim" "$KNOWN" "$PARK_E"
+
+# A past/garbage reset epoch falls back to the probe bound rather than parking
+# into the past (which would read as "not parked" everywhere downstream).
+seed_day_state
+OUT=$(run_claim "$(( $(date -u +%s) - 500 ))")
+PARK_E=$(iso_to_epoch "$(day_get parked_until)")
+if (( PARK_E > $(date -u +%s) + 21000 )); then
+  PASS=$((PASS + 1)); echo "ok   — past reset epoch falls back to the probe bound"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — past reset epoch was used as the park time"
+fi
+
+run_record() {
+  local reset_known="$1"
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    PARK_RESET_KNOWN="$reset_known" PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    bash -c "$BLOCK_RECORD" 2>/dev/null
+}
+
+seed_day_state
+check_eq "record: writes on a park it still owns" "PARK_RECORD=written" "$(run_record false | tail -1)"
+check_eq "record: rolling_window kind"   "rolling_window" "$(day_get limit_kind)"
+check_eq "record: cause is preemptive"   "preemptive"     "$(day_get limit_cause)"
+check_eq "record: probe bound persisted" "12"             "$(day_get limit_probe_fires_remaining)"
+check_eq "record: thrash counter"        "1"              "$(day_get consecutive_limit_hits)"
+check_eq "record: refill.paused untouched" "null" "$(jq -r --arg k "$REPO_KEY" '.repos[$k].refill // "null"' "$STATE_FILE")"
+
+seed_day_state
+run_record true >/dev/null
+check_eq "known reset: no probe bound" "null" "$(day_get limit_probe_fires_remaining)"
+check_eq "known reset: still preemptive" "preemptive" "$(day_get limit_cause)"
+
+# Winning the Step 1 claim is not a licence to finish: a real kill can take the
+# park during the shutdown that sits between the two. The completion path must
+# then write NOTHING — otherwise it overwrites the reactive winner's cause and
+# probe bound, and goes on to arm a second wake over its identity.
+jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {parked_until: "2026-08-28T04:00:00Z",
+  limit_kind: "rolling_window", limit_cause: "reactive", limit_probe_fires_remaining: null,
+  limit_resume_task_id: "reactive-task", limit_resume_generation: "limit-gen-1",
+  consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
+check_eq "record: stands down when superseded mid-shutdown" "PARK_RECORD=superseded" \
+  "$(run_record false | tail -1)"
+check_eq "superseded: reactive cause survives"      "reactive"       "$(day_get limit_cause)"
+check_eq "superseded: reactive wake survives"       "reactive-task"  "$(day_get limit_resume_task_id)"
+check_eq "superseded: no probe bound written"       "null"           "$(day_get limit_probe_fires_remaining)"
+check_eq "superseded: thrash counter not rewritten" "2"              "$(day_get consecutive_limit_hits)"
+
+# Publication is itself a compare-and-set, so two paths arming at once cannot
+# both own the wake slot — the loser stops its own Monitor instead of orphaning
+# the winner's. (Read-before-arm would leave a window for exactly that.)
+seed_day_state
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" >/dev/null
+PUB_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"probe-task\"" \
+  --expect null >/dev/null 2>&1 || PUB_RC=$?
+check_eq "wake publish loses to an armed wake" "7" "$PUB_RC"
+check_eq "armed wake identity survives" "reactive-task" "$(day_get limit_resume_task_id)"
+
+# ---------------------------------------------------------------------------
+echo "== Concurrent park race (AC 4) =="
+# ---------------------------------------------------------------------------
+
+# Two writers claim the same slot at once. Exactly one may win; the loser must
+# get the distinct CAS-loss code rather than an I/O error, because the two
+# demand opposite handling (stand down vs. fail closed and say so).
+seed_day_state
+RC_A_FILE="$STUB_DIR/rc_a"; RC_B_FILE="$STUB_DIR/rc_b"
+( "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"2026-08-28T04:00:00Z\"" \
+    --expect null >/dev/null 2>&1; echo $? > "$RC_A_FILE" ) &
+( "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"2026-08-28T09:00:00Z\"" \
+    --expect null >/dev/null 2>&1; echo $? > "$RC_B_FILE" ) &
+wait
+RC_A=$(cat "$RC_A_FILE"); RC_B=$(cat "$RC_B_FILE")
+WINS=0; LOSSES=0
+[[ "$RC_A" == "0" ]] && WINS=$((WINS+1)); [[ "$RC_A" == "7" ]] && LOSSES=$((LOSSES+1))
+[[ "$RC_B" == "0" ]] && WINS=$((WINS+1)); [[ "$RC_B" == "7" ]] && LOSSES=$((LOSSES+1))
+check_eq "concurrent claims: exactly one wins" "1" "$WINS"
+check_eq "concurrent claims: loser gets CAS-loss 7" "1" "$LOSSES"
+PARKED_NOW="$(day_get parked_until)"
+if [[ "$PARKED_NOW" == "2026-08-28T04:00:00Z" || "$PARKED_NOW" == "2026-08-28T09:00:00Z" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — exactly one park record landed ($PARKED_NOW)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — park slot holds neither claim ('$PARKED_NOW')"
+fi
+
+# ---------------------------------------------------------------------------
+echo "== Probe fire: bound, resume, stale generation (AC 3, AC 4) =="
+# ---------------------------------------------------------------------------
+
+seed_probe_state() {
+  local fires="$1" generation="${2:-probe-20260828T041500Z-1234-99}"
+  jq -n --arg k "$REPO_KEY" --arg g "$generation" --argjson f "$fires" \
+    '{repos: {($k): {day: {active: true, parked_until: "2026-08-28T09:00:00Z",
+      limit_kind: "rolling_window", limit_cause: "preemptive",
+      limit_probe_fires_remaining: $f, limit_resume_task_id: "task-abc",
+      limit_resume_generation: $g, consecutive_limit_hits: 1}}}}' > "$STATE_FILE"
+}
+run_probe() {
+  local generation="$1" status="$2"
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    TICK_GENERATION="$generation" HORIZON_STATUS="$status" \
+    bash -c "$BLOCK_PROBE" 2>/dev/null
+}
+GEN="probe-20260828T041500Z-1234-99"
+
+seed_probe_state 12
+check_eq "probe: still-critical fire continues" "PROBE=continue" "$(run_probe "$GEN" critical | tail -1)"
+check_eq "probe: bound decremented"             "11"             "$(day_get limit_probe_fires_remaining)"
+
+seed_probe_state 12
+check_eq "probe: replenished window resumes" "PROBE=resume" "$(run_probe "$GEN" clear | tail -1)"
+check_eq "probe: resume spends no fire"      "12"           "$(day_get limit_probe_fires_remaining)"
+
+# `approaching` is a partial refill, not a recovery — resuming there walks back
+# into the wall the thrash guard exists to prevent.
+seed_probe_state 12
+check_eq "probe: approaching does NOT resume" "PROBE=continue" "$(run_probe "$GEN" approaching | tail -1)"
+
+# `unknown` must not resume any more than it may park.
+seed_probe_state 12
+check_eq "probe: unknown does NOT resume" "PROBE=continue" "$(run_probe "$GEN" unknown | tail -1)"
+
+seed_probe_state 1
+check_eq "probe: last fire exhausts the bound" "PROBE=exhausted" "$(run_probe "$GEN" critical | tail -1)"
+check_eq "probe: bound floors at zero"         "0"               "$(day_get limit_probe_fires_remaining)"
+
+seed_probe_state 0
+check_eq "probe: spent bound stays exhausted" "PROBE=exhausted" "$(run_probe "$GEN" critical | tail -1)"
+
+# A stale generation (superseded Monitor) must change nothing and resume nothing.
+seed_probe_state 12
+check_eq "probe: stale generation rejected" "PROBE=stale" "$(run_probe "probe-OLD-0000-1" clear | tail -1)"
+check_eq "probe: stale fire spends no bound" "12" "$(day_get limit_probe_fires_remaining)"
+check_eq "probe: stale fire leaves the park" "2026-08-28T09:00:00Z" "$(day_get parked_until)"
+
+# A stale fire must be rejected even when the verdict says clear — the whole
+# point of the token is that a superseded wake cannot resume the board.
+seed_probe_state 12 "probe-CURRENT-1"
+check_eq "probe: clear verdict cannot rescue a stale token" "PROBE=stale" \
+  "$(run_probe "probe-OTHER-2" clear | tail -1)"
+
+# A probe fire arriving on a REACTIVE park must never resume it. This is the
+# other half of the race: 2D.6 adopts by stopping the armed wake and nulling the
+# identity pair, so if that TaskStop failed and the Monitor kept ticking, the
+# surviving fire meets a null generation and is rejected — no double-wake.
+jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {parked_until: "2026-08-28T04:00:00Z",
+  limit_kind: "rolling_window", limit_cause: "reactive",
+  limit_probe_fires_remaining: null, limit_resume_task_id: null,
+  limit_resume_generation: null, consecutive_limit_hits: 1}}}}' > "$STATE_FILE"
+check_eq "probe fire cannot resume a reactive park" "PROBE=stale" \
+  "$(run_probe "$GEN" clear | tail -1)"
+check_eq "reactive park survives a surviving probe" "2026-08-28T04:00:00Z" "$(day_get parked_until)"
+
+# An unreadable bound must stop probing rather than guess a count.
+jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {limit_probe_fires_remaining: "twelve",
+  limit_resume_generation: "g1", limit_resume_task_id: "t1"}}}}' > "$STATE_FILE"
+check_eq "probe: non-integer bound fails closed" "PROBE=fail-closed" "$(run_probe g1 clear | tail -1)"
+
+# ---------------------------------------------------------------------------
+echo "== Contract: teardown, recovery, schema, scope (AC 2, 5, 6, 7) =="
+# ---------------------------------------------------------------------------
+
+require_text "2D.7 exists as its own sub-step" "$SKILL" '^### 2D\.7: Usage-horizon pre-emptive park'
+require_text "2D.6 is still its own sub-step"  "$SKILL" '^### 2D\.6: Usage-limit park and wake'
+require_text "critical is the only park trigger" "$SKILL" 'Trigger:.*HORIZON_PARK=true.*critical'
+require_text "park reuses the execution gate"  "$SKILL" 'execution-pause\.sh --activate --command pause --window-minutes'
+require_text "park skips the refill.paused write" "$SKILL" 'skipping only Step 1.s `\.refill\.paused` write'
+require_text "wake never passes --resume-refill"  "$SKILL" 'Never pass `--resume-refill`'
+require_text "probe monitor is persistent"        "$SKILL" '/pm day --probe-wake --day-generation'
+require_text "probe defaults are 30m / 12 fires"  "$SKILL" 'CLAUDE_HORIZON_PROBE_CADENCE_MINUTES'
+require_text "probe fire bound knob documented"   "$SKILL" 'CLAUDE_HORIZON_PROBE_MAX_FIRES'
+# A zero cadence would make the Monitor's `sleep 0` a hot loop, and a zero bound
+# arms a wake that can only ever stop itself; a zero WINDOW is legal and is how
+# reactive parity is requested. The knobs therefore validate differently.
+require_text "probe knobs reject zero"   "$SKILL" 'and `> 0`'
+require_text "window knob permits zero"  "$SKILL" '`0` is legal.*reactive parity'
+require_text "hot-loop risk is stated"   "$SKILL" 'sleep 0.* hot loop'
+# A wake whose TaskStop failed must keep its identity — nulling it strands a
+# ticking Monitor that nothing can name.
+require_text "failed TaskStop aborts the replacement" "$SKILL" 'A failed `TaskStop` aborts the replacement'
+require_text "known reset arms the one-shot instead" "$SKILL" "arm 2D\.6's sleep-until-reset one-shot verbatim"
+require_text "reactive path tags its cause"       "$SKILL" 'day\.limit_cause=..reactive'
+require_text "reactive path adopts a live wake"   "$SKILL" 'Stop it BEFORE the write nulls its ID'
+require_text "recovery re-arms with remaining fires" "$SKILL" 'not a fresh bound'
+# Restart recovery compares parked_until against `date -u +%s`, so its BSD
+# fallback must parse the Z timestamp as UTC. A bare `date -j -f` there reads
+# every park four hours long on an ET machine — silently, with no error.
+require_text "restart recovery parses parked_until as UTC" "$SKILL" \
+  "date -u -j -f '%Y-%m-%dT%H:%M:%SZ'"
+require_text "weekly caps stay manual-resume"     "$SKILL" 'weekly caps remain the reactive path.s business and stay manual-resume'
+require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --check` exits 0'
+require_text "non-day threads are out of scope"   "$SKILL" 'Out of scope:.*non-day orchestration threads'
+require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
+
+require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'
+require_text "pause teardown clears the probe bound" "$PAUSE" 'day\.limit_probe_fires_remaining=null'
+require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registry covers both wake shapes'
+require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" 'day\.limit_probe_fires_remaining=null'
+require_text "generation check is unchanged"        "$PAUSE_RESUME" 'day\.limit_resume_generation'
+
+require_text "schema documents limit_cause"    "$SCHEMA" 'limit_cause'
+require_text "schema documents the probe bound" "$SCHEMA" 'limit_probe_fires_remaining'
+require_text "doc records the scope boundary"  "$DAY_MODE_DOC" 'pr-monitor-and-manage.*babysit-pr.*out of scope'
+require_text "doc names the follow-up"         "$DAY_MODE_DOC" 'named follow-up'
+require_text "doc explains the window deviation" "$DAY_MODE_DOC" 'Why the park window is 2 minutes'
+
+# The schema example day block must carry both new fields, or a reader
+# reconstructing state from the schema would drop them.
+SCHEMA_FIELDS=$(jq -r '[paths|join(".")] | map(select(test("day\\.limit_(cause|probe_fires_remaining)$"))) | length' "$SCHEMA")
+check_eq "schema example carries both new fields" "2" "$SCHEMA_FIELDS"
+
+echo
+echo "passed: $PASS   failed: $FAIL"
+[[ "$FAIL" -eq 0 ]]
