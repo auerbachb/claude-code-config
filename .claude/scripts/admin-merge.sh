@@ -98,8 +98,11 @@
 #   2 — usage error, INCLUDING --auto-plain combined with --allow-nonauthor
 #        (issue #1251 — that combination is refused before any pre-flight runs)
 #   3 — PR not found / not open
-#   4 — gh / git / network / jq error, including repo-root.sh timing out while
-#        resolving the repo path (issue #1363 — the path is refused, not guessed)
+#   4 — gh / git / network / jq error, including repo-root.sh timing out (its
+#        exit 3, issue #1363) or being unable to run git at all (its exit 4,
+#        issue #1403) while resolving the repo path. Both are absorbed here
+#        because neither is a determinate answer — the path is refused, not
+#        guessed. A determinate "not a git repo" still takes the fallback chain.
 #   5 — refused: repo is not solo-owned (would skip a real review)
 #   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
 #        not apply — no bypass path detected (inspect branch protection for the
@@ -314,21 +317,29 @@ resolve_repo_path() {
     p="$("$SCRIPT_DIR/repo-root.sh" 2>"$errfile")" || rc=$?
     err="$(head -n 1 "$errfile" 2>/dev/null || true)"
     rm -f "$errfile"
+    # Two repo-root.sh codes mean "git itself is unusable", and NEITHER may fall
+    # through: exit 3, a git call killed at its wall-clock bound (issue #1363),
+    # and exit 4, git never launching at all (issue #1403). The next statement
+    # is an UNBOUNDED `git rev-parse` against that same broken git — for the
+    # timeout it moves the 20-minute freeze rather than removing it, and for a
+    # missing binary it just fails again — and the `$PWD` after it would
+    # silently substitute the invoker's cwd for the root repo on the one path
+    # whose action is irreversible. Refuse, like dirty-main-guard.sh and
+    # stale-cleanup.sh already do. Both land in this script's exit 4 bucket
+    # ("gh / git / network / jq error") via the caller below.
     if [[ "$rc" -eq 3 ]]; then
-      # Exit 3 is repo-root.sh's timeout: a git call was killed at its bound
-      # because git is wedged (issue #1363). Do NOT fall through — the next
-      # statement is an UNBOUNDED `git rev-parse` against that same wedged git,
-      # which moves the 20-minute freeze rather than removing it, and $PWD
-      # after it would silently substitute the invoker's cwd for the root repo
-      # on the one path whose action is irreversible. Refuse, like
-      # dirty-main-guard.sh and stale-cleanup.sh already do.
       echo "ERROR: repo-root.sh timed out resolving the root repo${err:+ — $err}" >&2
       echo "ERROR: refusing to guess the repo path for a merge; pass --repo-path <abs-path> once git responds." >&2
       return 3
     fi
+    if [[ "$rc" -eq 4 ]]; then
+      echo "ERROR: repo-root.sh could not run git at all while resolving the root repo${err:+ — $err}" >&2
+      echo "ERROR: refusing to guess the repo path for a merge; repair git (or pass --repo-path <abs-path>) and retry." >&2
+      return 4
+    fi
     if [[ "$rc" -ne 0 ]]; then
-      # Any other failure is a determinate answer ("not a git repo"), so the
-      # historic fallback chain still applies — it just no longer runs silently.
+      # What is left is a determinate answer ("not a git repo"), so the historic
+      # fallback chain still applies — it just no longer runs silently.
       p=""
       echo "WARNING: repo-root.sh could not resolve the root repo (exit $rc)${err:+ — $err}" >&2
       echo "WARNING: falling back to the current checkout; pass --repo-path <abs-path> to pin it." >&2
@@ -342,9 +353,9 @@ resolve_repo_path() {
   fi
   echo "$p"
 }
-# `|| rc` rather than a bare assignment: resolve_repo_path returns 3 when the
-# root is genuinely unknown, and an `exit` inside it would only leave the
-# command substitution's subshell.
+# `|| rc` rather than a bare assignment: resolve_repo_path returns non-zero (3
+# timed out, 4 git could not run) when the root is genuinely unknown, and an
+# `exit` inside it would only leave the command substitution's subshell.
 REPO_PATH=""
 RESOLVE_RC=0
 REPO_PATH="$(resolve_repo_path)" || RESOLVE_RC=$?

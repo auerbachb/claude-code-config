@@ -716,6 +716,42 @@ else
   ok "no --allow-nonauthor forwarded on --execute when not passed"
 fi
 
+# 29. repo-root.sh exit 4 — "git could not run" (issue #1403) ---------------
+# repo-root.sh now separates "git never launched" (4) from the DETERMINATE "not
+# a git repo" (1). Only the determinate answer may take the historic fallback
+# chain; on 4 the very next statement would be an unbounded `git rev-parse`
+# against that same broken git, and the `$PWD` behind it would substitute the
+# invoker's cwd for the root repo on an irreversible merge.
+#
+# Installed last, and removed immediately after, because every earlier test
+# resolves the repo path through the absence of this helper.
+cat > "$SCRIPTS/repo-root.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "repo-root.sh: git could not run (missing, not executable, or a broken PATH), so nothing was determined about the current directory — git said: git: command not found" >&2
+exit "${FAKE_REPO_ROOT_EXIT:-4}"
+EOF
+chmod +x "$SCRIPTS/repo-root.sh"
+
+export FAKE_REPO_ROOT_EXIT=4
+run 1 --print --branch main
+expect_rc 4 "repo-root.sh exit 4 refuses the merge instead of guessing the repo path"
+grep_ok "could not run git at all" "the refusal names a broken git, not a missing repo"
+grep_ok "repair git" "the operator is told what to fix"
+grep_absent "falling back to the current checkout" \
+  "no silent fallback to the cwd when git itself could not run"
+
+# Negative control: exit 1 is still determinate, so it must STILL reach the
+# historic fallback. Without this, refusing every non-zero code would pass the
+# assertions above while breaking the case the split had to preserve.
+export FAKE_REPO_ROOT_EXIT=1
+run 1 --print --branch main
+grep_ok "falling back to the current checkout" \
+  "a determinate 'not a git repo' answer still takes the fallback chain"
+grep_absent "could not run git at all" "exit 1 is never reported as a broken git"
+
+unset FAKE_REPO_ROOT_EXIT
+rm -f "$SCRIPTS/repo-root.sh"
+
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

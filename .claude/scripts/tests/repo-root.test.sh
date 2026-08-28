@@ -173,6 +173,29 @@ RC=0
 HELP="$(cd "$MAIN" && "$SUT" --help 2>&1)" || RC=$?
 check_eq "T8d --help exits 0" "0" "$RC"
 check_contains "T8e --help documents the timeout exit code" "3  Timed out" "$HELP"
+check_contains "T8f --help documents the exit-4 contract" \
+  "4  Nothing could be determined" "$HELP"
+# Exit 4 covers two causes and the help has to name BOTH, or a caller reading it
+# learns only the half that happened to be written first.
+check_contains "T8g --help still names git as an exit-4 cause" \
+  "git could not run" "$HELP"
+check_contains "T8h --help names the helpers the script itself needs" \
+  "REQUIREMENTS" "$HELP"
+# The exit-4 contract has one deliberate exception (the teardown `rm`, T16k). A
+# contract that documents a rule and not its exception is worse than one that
+# documents neither, because a caller acts on the rule as written.
+#
+# Both halves of the exception are asserted, and neither is a bare word: `rm`
+# names WHICH command is excepted, and the status clause names what actually
+# happens. Matching only "teardown" would survive deleting the exception if any
+# other help sentence ever used that word — the same weak-anchor trap T16e2
+# avoids by counting lines instead of matching prose. The backticks are
+# backslash-escaped inside double quotes, which makes them literal without the
+# single-quoting that shellcheck flags as SC2016.
+check_contains "T8i --help names which command the exit-4 exception covers" \
+  "teardown \`rm\`" "$HELP"
+check_contains "T8i2 --help states what happens instead of exit 4" \
+  "preserves the status" "$HELP"
 
 # ---- T9: the happy path must not enumerate worktrees -----------------------
 # This is the regression itself: the incident was one `git worktree list` over
@@ -361,6 +384,255 @@ else
   fail "T14d took ${ELAPSED}s — the bound did not hold without a clock"
 fi
 rm -f "$STUB/date"
+
+# ---- T15: git that cannot run at all -> exit 4, never exit 1 ---------------
+# The split issue #1403 asked for. "not a git repo" (1) is a DETERMINATE answer
+# a caller may act on; "git never started" is not, and admin-merge.sh's fallback
+# chain keys on that difference. Both fixtures below are REAL exec failures, not
+# a stub that hardcodes an rc: the shell decides 126/127 before any git code
+# runs, which is exactly the signal the script keys on.
+#
+# A dedicated stub dir, not the shared $STUB: every earlier group rewrites
+# $STUB/git, so reusing it would make this group's meaning depend on which
+# block last ran above.
+NOGIT="$TMP/nogit"
+mkdir -p "$NOGIT"
+
+# 126 — the file is there and executable, but its interpreter is not, so exec
+# fails. This is the "not executable / unusable binary" half of the contract.
+cat > "$NOGIT/git" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOGIT/git"
+
+RC=0
+ERR="$(cd "$MAIN" && PATH="$NOGIT:$PATH" "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15 an unexecutable git exits 4, not 1" "4" "$RC"
+check_contains "T15b diagnostic names the cause" "git could not run" "$ERR"
+# Assert the path of the git we broke — the ONLY token both platforms emit.
+# Bash words this failure two incompatible ways, and neither half is portable:
+#   macOS: <stub>: /nonexistent/interpreter: bad interpreter: No such file...
+#   Linux: <stub>: cannot execute: required file not found
+# So "bad interpreter" is absent on Linux (it is also gettext-translated —
+# fr prints "mauvais interpréteur"), and "/nonexistent/interpreter" is absent
+# on Linux, which never names the interpreter at all. Only the stub's own path
+# appears in both. It is a value this test owns, no locale rewrites it, and it
+# is the detail an operator acts on. Same reasoning as T15g below, which
+# asserts the missing binary's name rather than the wording around it.
+check_contains "T15c the exec failure itself is relayed" "$NOGIT/git" "$ERR"
+# The negative control that makes T15 mean something: before this change every
+# one of these landed on the determinate non-repo sentence, which is what let
+# callers substitute a guess.
+check_not_contains "T15d never claims the directory is not a repo" \
+  "not inside a git repo" "$ERR"
+
+# 127 — the command cannot be found. Produced genuinely by exec'ing a missing
+# binary from inside the stub (the shell emits its own "command not found" and
+# exits 127), because emptying PATH to remove git would also remove the date,
+# awk and mktemp the script legitimately needs.
+cat > "$NOGIT/git" <<'EOF'
+#!/usr/bin/env bash
+exec definitely-not-a-real-git-binary-xyz "$@"
+EOF
+chmod +x "$NOGIT/git"
+
+RC=0
+ERR="$(cd "$MAIN" && PATH="$NOGIT:$PATH" "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15e a git that cannot be found exits 4" "4" "$RC"
+check_contains "T15f rc-127 diagnostic names the cause" "git could not run" "$ERR"
+# Assert the name the shell could not find, not the wording around it: `exec`
+# says "not found" where a plain command says "command not found", and the
+# prefix differs again on Linux. The name is what an operator acts on.
+check_contains "T15g the shell's own message is relayed" \
+  "definitely-not-a-real-git-binary-xyz" "$ERR"
+# The helper guard exercised by T16 must not preempt this diagnosis: when git is
+# the broken thing, the message has to name git rather than blaming helpers that
+# are all present. Without this control the guard could pass T16 by firing on
+# every run.
+check_not_contains "T15l a broken git is diagnosed as git, not as a missing helper" \
+  "required helper" "$ERR"
+
+# With an explicit [path] argument the message must name that path, not the cwd
+# — the operator's next move depends on which one git failed to read.
+RC=0
+ERR="$(cd "$PLAIN" && PATH="$NOGIT:$PATH" "$SUT" "$MAIN" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15h [path] argument also exits 4" "4" "$RC"
+check_contains "T15i diagnostic names the target path, not the cwd" "$MAIN" "$ERR"
+
+# The other half of the split: a genuinely non-git directory must STILL exit 1
+# with the determinate sentence while a real git is on PATH. Without this, an
+# implementation that returned 4 for every failure would pass T15 and quietly
+# break every caller that acts on the determinate answer.
+RC=0
+ERR="$(cd "$PLAIN" && "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T15j a real non-repo still exits 1, so the split is a split" "1" "$RC"
+check_not_contains "T15k non-repo is never reported as a broken git" \
+  "git could not run" "$ERR"
+
+# ---- T16: a missing HELPER is also "nothing determined" (4), not the shell's
+# ---- own 127 ---------------------------------------------------------------
+# Besides git, repo-root.sh calls mktemp, awk, head, date, sleep, dirname and
+# basename. Before the guard, the first absent one killed the run through
+# `set -e` at the `mktemp`, and what reached the caller was the SHELL's 127 — a
+# status the contract never named. admin-merge.sh refuses only on 3 and 4 and
+# reads everything else as determinate, so 127 took its `git rev-parse` / $PWD
+# fallback: the exact substitution the exit-4 split exists to prevent, reached
+# through the one door the split had left open.
+#
+# The fixture is a REAL environment, not a stub that hardcodes a status: a
+# directory of genuine symlinks used as the entire PATH, with the helper under
+# test simply absent. `bash` is included deliberately — the shebang is
+# `#!/usr/bin/env bash`, so without it the failure lands at interpreter
+# resolution and the script never starts, which is a different case and not one
+# this script can answer from the inside.
+# The fixture carries every command the script touches — ps, tr, sed and rm
+# included — so that removing one really is the only absence, and a failure
+# cannot be blamed on a helper the fixture merely forgot.
+NOHELP="$TMP/nohelp"
+mkdir -p "$NOHELP"
+populate_helpers() { # dir
+  local d="$1" h hp
+  for h in bash git mktemp awk head date sleep dirname basename ps tr rm sed; do
+    hp="$(command -v "$h" 2>/dev/null)" && ln -sf "$hp" "$d/$h"
+  done
+}
+populate_helpers "$NOHELP"
+
+# Drop exactly ONE helper — CodeAnt's reported case — so this proves the guard
+# fires on a single absence rather than only on a wholesale wipe. git is still
+# present and working here, which is what makes the exit-4 meaningful: the run
+# failed on the environment, not on the repo.
+rm -f "$NOHELP/mktemp"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16 a missing mktemp exits 4, not the shell's 127" "4" "$RC"
+check_contains "T16b the diagnostic names the helper that is missing" "mktemp" "$ERR"
+# The negative control that gives T16 its meaning: 127 used to escape here, and
+# exit 1 would be worse still — both let a caller act on a non-answer.
+check_not_contains "T16c never claims the directory is not a repo" \
+  "not inside a git repo" "$ERR"
+
+# A wholesale wipe (only the interpreter left) must report the same way, and
+# must name the helpers rather than dying at whichever one the code reaches
+# first — the guard runs before any of them is called.
+BAREBIN="$TMP/barebin"
+mkdir -p "$BAREBIN"
+ln -sf "$(command -v bash)" "$BAREBIN/bash"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$BAREBIN" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16d a wholesale PATH wipe also exits 4" "4" "$RC"
+check_contains "T16e the diagnostic lists the missing helpers" "awk" "$ERR"
+# The header promises "stderr: one-line error message on failure". The usage-log
+# line runs before the preflight, so if it calls helpers unguarded the shell
+# narrates the broken PATH first and an operator gets three messages where the
+# contract promised one. Count the lines rather than trusting the wording.
+check_eq "T16e2 stderr is exactly one line, per the OUTPUT contract" \
+  "1" "$(printf '%s\n' "$ERR" | grep -c .)"
+check_not_contains "T16e3 no raw shell command-not-found reaches stderr" \
+  "command not found" "$ERR"
+
+# `rm` is required for a non-obvious reason and needs its own case: it runs only
+# in the EXIT trap, but a failing trap overwrites the status. Unguarded, this
+# run printed the CORRECT root on stdout and still exited 127 — the worst shape,
+# because admin-merge.sh discards a right answer on a non-{0,3,4} status.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+rm -f "$NOHELP/rm"
+RC=0
+OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16f a missing rm exits 4, not 127-with-a-correct-answer" "4" "$RC"
+check_eq "T16f2 and prints nothing, rather than an answer the caller must discard" "" "$OUT"
+
+# ---- T16g/T16h: the guard must NOT over-reach ------------------------------
+# `ps` and `tr` are used by kill_child, and a reviewer proposed requiring them.
+# They are deliberately excluded: their absence is absorbed by design — the pgid
+# lookup yields empty, the group kill is skipped, and the builtin single-pid
+# `kill` still stops the child. Requiring them would refuse to resolve in an
+# environment where the script works. These pin the decline so it is not
+# "completed" by reflex later; if the exclusion is ever revisited, these are the
+# assertions that must be argued with.
+for drop in ps tr; do
+  rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+  rm -f "$NOHELP/$drop"
+  RC=0
+  OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+  if [[ "$drop" == "ps" ]]; then
+    check_eq "T16g a missing ps still resolves (exit 0), guard does not fire" "0" "$RC"
+    check_eq "T16g2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+  else
+    check_eq "T16h a missing tr still resolves (exit 0), guard does not fire" "0" "$RC"
+    check_eq "T16h2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+  fi
+done
+
+# ---- T16i: a helper that RESOLVES but cannot exec ---------------------------
+# `command -v` proves a NAME resolves, not that the file will run. A bad
+# interpreter, a dangling symlink or the wrong architecture all pass the
+# preflight and then return 126/127 at the first call — and no preflight can
+# close the window between the check and the call anyway. So the guarantee is
+# enforced at the exit boundary, and this is the case that proves it: the
+# preflight is deliberately SATISFIED here, and the normalization still holds.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+# `populate_helpers` leaves SYMLINKS, and `cat >` follows one to its target —
+# writing this stub straight over the entry would edit the system binary (or,
+# where the OS forbids that, fail and leave the real mktemp in place, making the
+# case pass vacuously). Unlink first so the stub is a genuinely new file.
+rm -f "$NOHELP/mktemp"
+cat > "$NOHELP/mktemp" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOHELP/mktemp"
+[[ -L "$NOHELP/mktemp" ]] && fail "T16i fixture is still a symlink — stub did not take"
+RC=0
+ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>&1 >/dev/null)" || RC=$?
+check_eq "T16i a helper that resolves but cannot exec still exits 4" "4" "$RC"
+check_contains "T16i2 and says a command could not be launched" \
+  "could not be launched" "$ERR"
+# The control that gives T16i its meaning: 126 is what the shell returned, and
+# letting it through is precisely what admin-merge.sh reads as determinate.
+check_not_contains "T16i3 the raw shell status never reaches the caller as text" \
+  "not inside a git repo" "$ERR"
+
+# ---- T16k: teardown must not CREATE a failure -------------------------------
+# An `rm` that resolves but will not launch fails only in the EXIT trap, after
+# the answer is computed and printed. A reviewer proposed escalating that to
+# exit 4 for consistency with the required-helper contract. Declined: the
+# resolution succeeded, and discarding a correct answer over an undeleted temp
+# file is the same over-reach declined for ps/tr. The trap swallows the status
+# of its own `rm`s while preserving the script's — this pins both halves.
+rm -rf "$NOHELP"; mkdir -p "$NOHELP"; populate_helpers "$NOHELP"
+rm -f "$NOHELP/rm"
+cat > "$NOHELP/rm" <<'EOF'
+#!/nonexistent/interpreter
+echo unreachable
+EOF
+chmod +x "$NOHELP/rm"
+RC=0
+OUT="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$NOHELP" TMPDIR=/tmp "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16k an rm that cannot launch at teardown does not fail the run" "0" "$RC"
+check_eq "T16k2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+
+# ---- T16j: telemetry must never change the contract -------------------------
+# The usage-log append runs before argument parsing. Under `set -e` an unset
+# HOME, a missing ~/.claude or a read-only log would kill the script there and
+# return a shell error in place of the documented status. Sibling scripts
+# (dirty-main-guard.sh, escalate-review.sh, merge-gate.sh) already make this
+# best-effort; this pins that repo-root.sh does too.
+RC=0
+OUT="$(cd "$MAIN" && HOME="$TMP/no-such-home" "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16j an unwritable usage log does not change the exit status" "0" "$RC"
+check_eq "T16j2 and the answer is still the historic root" "$(historic_root "$MAIN")" "$OUT"
+RC=0
+OUT="$(cd "$MAIN" && env -u HOME "$SUT" 2>/dev/null)" || RC=$?
+check_eq "T16j3 an unset HOME does not abort under set -u" "0" "$RC"
+check_eq "T16j4 and still answers correctly" "$(historic_root "$MAIN")" "$OUT"
+# --help must survive the same broken environment, which is the whole reason
+# the preflight sits after argument parsing rather than before the usage log.
+RC=0
+HELP="$(cd "$MAIN" && env -u HOME "$SUT" --help 2>/dev/null)" || RC=$?
+check_eq "T16j5 --help still works with no HOME at all" "0" "$RC"
+check_contains "T16j6 and still documents exit 4" "Nothing could be determined" "$HELP"
 
 echo
 echo "passed: $PASS  failed: $FAIL"
