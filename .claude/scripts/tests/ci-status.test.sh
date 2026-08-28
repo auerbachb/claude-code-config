@@ -168,6 +168,42 @@ run_live "$(bundle "$(cr 1 test failure 100)")$(bundle "$(cr 2 test success 200)
 check_eq 0 "$RC" "live fetch: dedup spans pages of a --paginate response"
 check_eq 1 "$(field .total)" "live fetch: cross-page duplicate collapsed to the newest suite"
 
+# --------------------------------------------------------------------------
+# 9. Telemetry must never change the contract (issue #1430; cf. repo-root
+#    T16j). The usage-log append runs before argument parsing; unguarded, an
+#    unset HOME aborted under `set -u` with exit 1 — the documented
+#    "incomplete, wait" code, so merge-gate.sh would wait on CI forever — and
+#    a missing ~/.claude leaked bash's redirect diagnostic onto stderr ahead
+#    of the real output (issue #1406 ordering).
+# --------------------------------------------------------------------------
+RC=0
+ERR="$(env -u HOME "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq 0 "$RC" "telemetry: --help exits 0 with HOME unset (set -u)"
+check_eq "" "$ERR" "telemetry: no stderr with HOME unset"
+
+NOHOME="$TMP/no-such-home"
+RC=0
+ERR="$(HOME="$NOHOME" "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq 0 "$RC" "telemetry: --help exits 0 when \$HOME/.claude is missing"
+check_eq "" "$ERR" "telemetry: no shell diagnostic when the log dir is missing"
+
+# The full stdin path still classifies with an unwritable log — exit code,
+# stdout, and stderr all intact.
+ERR_FILE="$TMP/telemetry-stderr.cap"
+OUT=$(printf '%s' "$(bundle "$(cr 1 test success 100)")" \
+  | HOME="$NOHOME" "$SUT" "$SHA" --format json --check-runs-stdin 2>"$ERR_FILE"); RC=$?
+check_eq 0 "$RC" "telemetry: full stdin-path run exits 0 with missing log dir"
+check_eq "" "$(cat "$ERR_FILE")" "telemetry: full run leaves stderr empty"
+check_eq 1 "$(field .passing)" "telemetry: JSON output intact under missing log dir"
+
+# Positive control: with the sandbox ~/.claude present the invocation is
+# logged — the guard must not silence telemetry on healthy machines.
+: > "$HOME/.claude/script-usage.log"
+printf '%s' "$(bundle "$(cr 1 test success 100)")" \
+  | "$SUT" "$SHA" --format json --check-runs-stdin >/dev/null 2>&1
+check_eq 1 "$(grep -c 'ci-status.sh' "$HOME/.claude/script-usage.log")" \
+  "telemetry: append still lands when ~/.claude exists"
+
 echo "----------------------------------------"
 echo "ci-status.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

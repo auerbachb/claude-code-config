@@ -425,6 +425,40 @@ check_eq "tab preserved verbatim" "$(printf '\t')" \
   "$(jq -r '.repos["test/repo"].prs["853"].blocker' "$STATE_FILE")"
 
 echo
+echo "== Telemetry must never change the exit contract (issue #1430) =="
+# The usage-log append ran unguarded inside the CLAUDE_SCRIPT_USAGE_LOG
+# conditional: with no ~/.claude under HOME, `set -e` killed the script at
+# that line before argument parsing. It must fall through silently instead
+# (stderr-first ordering per issue #1406). HOME stays REQUIRED for the
+# script's real work (STATE_FILE) — only the telemetry line may not be the
+# thing that kills it, which the unset-HOME probe below pins.
+NOHOME="$TMP_HOME/no-such-home"
+RC=0
+ERR="$(HOME="$NOHOME" bash "$SCRIPT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq "--help exits 0 when \$HOME/.claude is missing" "0" "$RC"
+check_eq "no stderr diagnostic when the log dir is missing" "" "$ERR"
+
+# Note: rc is deliberately NOT expected to be 0 here — session-state.sh
+# requires HOME for STATE_FILE, its real work, and unset HOME still aborts
+# there under `set -u`. What issue #1430 changed is WHERE it fails: the
+# telemetry line no longer gets there first. All three assertions pin that.
+RC=0
+ERR="$(env -u HOME bash "$SCRIPT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq "unset HOME: still exits nonzero for its own STATE_FILE requirement" "1" \
+  "$([[ "$RC" -ne 0 ]] && echo 1 || echo 0)"
+check_eq "unset HOME: the failure is the script's own HOME expansion" "1" \
+  "$(grep -c 'HOME: unbound variable' <<<"$ERR")"
+check_eq "unset HOME: the telemetry line is never the failure site" "0" \
+  "$(grep -c 'script-usage.log' <<<"$ERR")"
+
+# Positive control: append still lands when ~/.claude exists and the
+# opt-out is not engaged.
+: > "$HOME/.claude/script-usage.log"
+bash "$SCRIPT" --help >/dev/null 2>&1
+check_eq "append still lands when ~/.claude exists" "1" \
+  "$(grep -c 'session-state.sh' "$HOME/.claude/script-usage.log")"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"

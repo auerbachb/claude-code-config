@@ -352,8 +352,11 @@ set -euo pipefail
 # this script on a refresh timer, so it sets CLAUDE_SCRIPT_USAGE_LOG=0 to keep
 # thousands of automatic reads a day out of the denominator (issue #779).
 # Opt-out only, and never the default: every ordinary call still logs.
-if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" ]]; then
-  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort — must never change this script's exit contract (issue #1430):
+# skipped when HOME is unset, stderr muted BEFORE the append per issue #1406's
+# ordering.
+if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" && -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
 STATE_FILE="${HOME}/.claude/session-state.json"

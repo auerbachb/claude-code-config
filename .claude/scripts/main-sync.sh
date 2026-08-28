@@ -86,7 +86,11 @@
 #   STATUS=$(bash .claude/scripts/main-sync.sh --repo "$ROOT_REPO")
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 # Collapse a captured git stderr blob into a single whitespace-normalized line
 # so the "failed: ..." status string honors the single-line stdout contract
