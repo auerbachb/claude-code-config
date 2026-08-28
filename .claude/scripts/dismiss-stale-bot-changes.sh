@@ -21,13 +21,15 @@
 #   4 — gh / network error, real dismissal failure, invalid handoff JSON, or handoff merge failure
 #   5 — dismissals APPLIED, but handoff bookkeeping is incomplete: the handoff
 #       was deleted or migrated while the dismissed IDs were being recorded, so
-#       some or NONE of them were written. Retryable — re-run once
-#       the handoff exists to record the remainder. Distinct from 4 so a caller
-#       can tell a bookkeeping race from a failed dismissal (retrying a dismissal
-#       is wasted work — the reviews are already dismissed), and distinct from 0
-#       so it cannot be read as full success (CodeAnt, PR #1423). A handoff that
-#       was already absent before any append is the documented optional skip and
-#       still exits 0.
+#       some or NONE of them were written. NOT recoverable by re-running: the
+#       reviews are already dismissed and no longer match this script's
+#       CHANGES_REQUESTED filter, so the unrecorded IDs exist only in the
+#       failing run's output — it prints them with a ready-to-paste
+#       handoff-state.sh --append command for each. Distinct from 4 so a caller
+#       can tell a bookkeeping race from a failed dismissal, and distinct from 0
+#       so it cannot be read as full success (CodeAnt + Greptile, PR #1423). A
+#       handoff that was already absent before any append is the documented
+#       optional skip and still exits 0.
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME}/.claude/script-usage.log" 2>/dev/null || true
@@ -244,8 +246,20 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
       "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --require-existing \
         --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json" || _ds_append_rc=$?
       if [[ "$_ds_append_rc" -eq 3 ]]; then
-        echo "[DISMISS-STALE] WARN: handoff file disappeared before the append (deleted or migrated concurrently): $_ds_target" >&2
-        echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); $((_ds_total - _ds_recorded)) not recorded. The reviews were dismissed on GitHub regardless; re-run once the handoff exists to record the remainder." >&2
+        # Emit the unrecorded IDs, because THIS PROCESS IS THE ONLY PLACE THEY
+        # STILL EXIST (Greptile P1, PR #1423). Re-running cannot recover them:
+        # the selection above matches reviews in CHANGES_REQUESTED, and these
+        # were just dismissed, so the next invocation filters them out and the
+        # recreated handoff stays permanently incomplete. Telling the caller to
+        # "re-run" would have been advice that cannot work — print the IDs and
+        # the exact command that records them instead.
+        _ds_missing=("${DISMISSED_IDS[@]:$_ds_recorded}")
+        echo "[DISMISS-STALE] WARN: handoff file disappeared during the append (deleted or migrated concurrently): $_ds_target" >&2
+        echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); ${#_ds_missing[@]} not recorded." >&2
+        echo "[DISMISS-STALE] WARN: the reviews ARE dismissed on GitHub, so re-running this script will NOT record them — they no longer match its CHANGES_REQUESTED filter. Record them directly once the handoff exists:" >&2
+        for _ds_m in ${_ds_missing[@]+"${_ds_missing[@]}"}; do
+          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
+        done
         break
       elif [[ "$_ds_append_rc" -ne 0 ]]; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
