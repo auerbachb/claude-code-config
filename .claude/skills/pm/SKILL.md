@@ -66,6 +66,7 @@ resolve_script() {
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 BACKLOG_HEALTH=$(resolve_script backlog-health.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 MAKESPAN_SH=$(resolve_script makespan.sh || true)
@@ -81,6 +82,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering any chip. The gate is what keeps inline-first work inline; a `/pm` that cannot read it is precisely the run that spawns one thread per ready issue (#1189), so refusing to offer is the safe failure.
 - `SESSION_STATE_SH` empty → **required for orchestration state**. Print `ERROR: session-state.sh not found (checked all three paths) — refill pause, slot tracking, and monitoring state unavailable`. Rank and report, but do not start or refill pipelines: without persisted state a "stop" the user set earlier is invisible, and silently resuming refill against it is the worst available failure.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim checks skipped; issues may already be held by another thread` and continue.
+- `CANDIDATE_OWNERSHIP` empty → **optional**. Print `DEGRADED: candidate-ownership.sh not found (checked all three paths) — ownership sweep skipped; a candidate paused in another thread may be re-dispatched here` and fall back to claim-gate-only behavior for every candidate (1B.5, 3.4). **Never block dispatch on this** — the sweep exists to stop duplicate work, and a sweep that cannot run must not also stop the work it was meant to protect.
 - `BACKLOG_HEALTH` empty → **optional**. Print `DEGRADED: backlog-health.sh not found (checked all three paths) — staleness block omitted` and skip that block.
 - `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, bounding chips on the per-thread ceiling only` and cap the 3.1 chip batch at the 3–4 ceiling instead. A **non-zero exit** from a script that *did* resolve is not the same thing: it means a count source could not be read, so treat it as `FREE = 0` and defer rather than offering as if the repo were idle (`active-work-cap.md` "Resolution order and failure behavior").
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
@@ -526,6 +528,39 @@ fi
    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].window.batch_issues=${BATCH_NUMS}" 2>/dev/null || true
    ```
    When `MAKESPAN_SH` or `ESTIMATE_RESOLVE_SH` is unavailable: print `DEGRADED: makespan unavailable — window fit skipped; dispatching full ranked batch`.
+
+**Ownership sweep (runs after ranking and window-fit selection, before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. Run the sweep over the selected inline-eligible candidates and branch three ways (issue #1431):
+
+```bash
+if [[ -n "$CANDIDATE_OWNERSHIP" ]]; then
+  SWEEP=$("$CANDIDATE_OWNERSHIP" "${CANDIDATE_NUMS[@]}" --json 2>/dev/null) || SWEEP=""
+fi
+```
+
+Pass `--sessions <path>` when a session listing is available (write the listing to a temp file first); without it liveness is `indeterminate`, which resolves to **live** — fail toward surfacing, never toward adopting. Each line carries `action`, and `action` is the whole contract:
+
+| `action` | `/pm` does |
+|---|---|
+| `dispatch` | hand to 3.1 exactly as today — the common case, unchanged |
+| `skip` | do not dispatch; print the owned line below. **Never** resume, message, or write the owning thread's state: a human parked it, and running the same work in two places is how duplicates get shipped |
+| `adopt` | the owner is archived or gone. Take the claim over via the existing stale-takeover path (`issue-claim.sh <N> --claim`) and dispatch **from the surviving state** named in `adopt` — `from: pr` enters the normal PR flow at `adopt.phase`, `from: branch` resumes Phase A on that branch, `from: null` is a fresh dispatch. Work with surviving state is never redone from scratch |
+
+Print one line per non-dispatch candidate, as a sibling of the window-fit exclusion idiom, immediately before `## Suggested Next Issues`:
+
+```
+- `#N` — owned by {owner_label} ({state}); resume with {resume_route}
+- `#N` — adopted from {owner_label} (archived); resuming from {adopt.from} #{adopt.pr}
+- `#N` — sweep degraded: {degraded[0]}; using claim gate only
+```
+
+Rules that bind this step:
+
+- **The sweep never blocks.** It is read-only, it never waits on a user answer while any unowned candidate remains dispatchable, and its only writes are on the adoption path (the claim takeover plus normal dispatch bookkeeping).
+- **A degraded candidate falls back to claim-gate-only** — name the file in the line above and treat that one candidate as today. A read failure is never a silent skip of the whole sweep and never a dispatch block.
+- **All-owned edge case only:** if every rankable candidate is owned and the pipeline would otherwise sit idle, present a menu (`ask-menu.md`) listing the owned items and their resume routes. In every other case keep the surface-and-skip posture — no permission questions.
+- The paused PR fleet is not a special case any more, just the instance whose `resume_route` is `/pr-monitor-and-manage-wake`. Day mode's arm-time fleet takeover (2D.1(a)) is a different decision and is unchanged.
+
+Mechanism, reader set, and verdict table: `.claude/reference/pm-ownership-sweep.md`.
 
 **Dispatch the top batch — the default, with no confirmation turn.** The ranking **is** the selection. Take the top-ranked batch and hand its **inline-eligible** issues to **Step 3.1**, which claims each one and runs it through the `/subagent` A→B→C flow up to the **3–4 concurrent-pipeline** ceiling, queueing the remainder. Do not ask "should I start these?" — free capacity is a trigger, not a question (`CLAUDE.md` "KEEP THE PIPELINE FULL"), and the launches are **reported, never proposed**, exactly as 3.4 reports a refill. Step 3.1 owns the mechanics — issue claims (`/subagent` 6.0), overlap chains (6.0b), the ceiling and the inline queue (Step 7) — and this step restates none of them. **Prompts and chips are the exception, not the act:** an issue produces one only when it carries a named `/subagent` Step 4 disqualifier (quoted in the offer) or the user explicitly asks for prompts — see 3.1.
 
@@ -1621,7 +1656,9 @@ Refill from two sources, in this order:
 3. Take the highest-ranked **inline-eligible** candidates from what survives, up to the number of free slots.
 4. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).
 
-**Re-validate every pick, from either source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5. Closed, already has its own PR, or now too big → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). Backlog refill reuses this validation rather than defining its own.
+**Re-validate every pick, from either source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5, **plus the 1B.5 ownership sweep** (`candidate-ownership.sh`, issue #1431). Closed, already has its own PR, now too big, or `action: skip` → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). `action: adopt` launches from the surviving state instead of a fresh start. Backlog refill reuses this validation rather than defining its own.
+
+**Read ownership per pick, not once per tick** — the same discipline as the per-pick pause re-read below, and for the same reason: another thread can park or die inside the window between a re-scan and a launch. An owned pick never stalls the refill: skip it, print its one-line surface, and take the next unowned candidate until the free slots are filled or the candidate set is exhausted.
 
 **Re-read the pause in that same pre-launch check**, per pick, not once per tick. A re-scan plus a re-score is not instantaneous, and the user may have said stop inside that window — a pick validated before the stop must not launch after it. `paused: true`, or a read that fails per the table above, cancels every remaining launch this tick.
 
