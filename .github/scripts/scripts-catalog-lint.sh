@@ -11,9 +11,12 @@
 #      across the category docs — no missing rows, no duplicates, no rows
 #      naming a file that is not in scope.
 #   2. Every table row is a relative link that resolves to an existing file,
-#      and the link text names the same file the link points at.
-#   3. The index links every doc in docs/ and every doc it links exists.
-#   4. Every category doc carries the back-link to the index.
+#      the link text names the same file the link points at, and the target is
+#      that file at its in-scope location — not a same-named file elsewhere.
+#   3. The index links every doc in docs/ exactly once, and every doc it links
+#      exists.
+#   4. Every category doc carries the back-link to the index, outside any
+#      fenced code block — a link shown as an example is not navigation.
 #   5. The index itself holds no per-script rows — its table links only into
 #      docs/, so per-script rows have exactly one home.
 #
@@ -75,22 +78,53 @@ if [[ ! -d "$DOCS_DIR" ]]; then
   exit 1
 fi
 
+# Shared awk prelude for reading a catalog document. Provides trim() and drops
+# every line inside a fenced code block: a table row or a back-link shown inside
+# a fence documents the format, so neither may count as catalog content.
+AWK_DOC_PRELUDE='
+  function trim(s) {
+    gsub(/^[[:space:]]+/, "", s)
+    gsub(/[[:space:]]+$/, "", s)
+    return s
+  }
+  /^[[:space:]]*(```|~~~)/ {
+    marker = ($0 ~ /^[[:space:]]*```/) ? "```" : "~~~"
+    if (!in_fence) { in_fence = 1; fence = marker }
+    else if (marker == fence) { in_fence = 0; fence = "" }
+    next
+  }
+  in_fence { next }
+'
+
 # Emit "name<US>target" for every catalog table row in the given file.
 # A catalog row looks like:  | [pr-state.sh](../pr-state.sh) | Purpose |
 # The unit separator keeps the two fields apart without colliding with the
 # markdown pipe that delimits the table itself.
+#
+# Cell padding is matched as any run of spaces or tabs, not a single literal
+# space. Markdown treats the two the same, so a table realigned by a formatter
+# (or by hand) still parses; requiring exact spacing would drop every reflowed
+# row out of the inventory and report each one as missing.
 entry_rows() {
-  awk '
-    /^\| \[[^]]+\]\([^)]+\) \|/ {
+  awk "$AWK_DOC_PRELUDE"'
+    /^[[:space:]]*\|[[:space:]]*\[[^]]+\]\([^)]+\)[[:space:]]*\|/ {
       s = index($0, "[") + 1
       e = index($0, "]")
-      name = substr($0, s, e - s)
+      name = trim(substr($0, s, e - s))
       rest = substr($0, e + 1)
       s2 = index(rest, "(") + 1
       e2 = index(rest, ")")
-      target = substr(rest, s2, e2 - s2)
+      target = trim(substr(rest, s2, e2 - s2))
       printf "%s\037%s\n", name, target
     }
+  ' "$1"
+}
+
+# True when the doc carries a real back-link — one outside any code fence.
+has_backlink() {
+  awk "$AWK_DOC_PRELUDE"'
+    index($0, "](../README.md)") > 0 { found = 1 }
+    END { if (found) exit 0; exit 1 }
   ' "$1"
 }
 
@@ -179,16 +213,38 @@ while IFS=$'\037' read -r doc name target; do
   if [[ "$(basename "$target")" != "$name" ]]; then
     echo "::error file=${doc}::row '${name}' links to '${target}' — the link text and the link target name different files"
     errors=$((errors + 1))
+    continue
+  fi
+  # Naming an in-scope file is not enough: the link has to point at that file
+  # where the inventory found it. Otherwise a row reading
+  # [foo.sh](../lib/foo.sh) passes on the strength of a top-level foo.sh while
+  # sending the reader to an out-of-scope helper.
+  if [[ "$target" != "../${name}" && "$target" != "../tests/${name}" ]]; then
+    echo "::error file=${doc}::row '${name}' links to '${target}' — an in-scope entry must link to ../${name} or ../tests/${name}"
+    errors=$((errors + 1))
   fi
 done <<< "$all_rows"
 
 # --- 3. Index <-> docs bijection ------------------------------------------
 index_rows=$(entry_rows "$INDEX" || true)
-docs_linked=$(printf '%s\n' "$index_rows" \
+docs_linked_all=$(printf '%s\n' "$index_rows" \
   | awk -F'\037' 'NF > 1 && $2 ~ /^docs\// { sub(/^docs\//, "", $2); print $2 }' \
-  | LC_ALL=C sort -u)
+  | LC_ALL=C sort)
+docs_linked=$(printf '%s\n' "$docs_linked_all" | grep . | LC_ALL=C sort -u || true)
 
 docs_present=$(printf '%s\n' "${doc_files[@]}" | xargs -n1 basename | LC_ALL=C sort -u)
+
+# A doc linked twice survives the sort -u below, so the set comparison alone
+# would call a duplicated category row a bijection. Count before dedup.
+linked_count=$(printf '%s\n' "$docs_linked_all" | grep -c . || true)
+linked_unique=$(printf '%s\n' "$docs_linked" | grep -c . || true)
+if (( linked_count != linked_unique )); then
+  printf '%s\n' "$docs_linked_all" | uniq -d | while IFS= read -r dupe; do
+    [[ -z "$dupe" ]] && continue
+    echo "::error file=${INDEX}::the index links docs/${dupe} more than once — each category doc gets exactly one index row"
+  done
+  errors=$((errors + linked_count - linked_unique))
+fi
 
 if [[ -z "$docs_linked" ]]; then
   echo "::error file=${INDEX}::the index links no category docs — the categories table is missing or malformed"
@@ -216,7 +272,7 @@ fi
 
 # --- 4. Every category doc links back to the index ------------------------
 for doc in "${doc_files[@]}"; do
-  if ! grep -qF '](../README.md)' "$doc"; then
+  if ! has_backlink "$doc"; then
     echo "::error file=${doc}::missing the back-link to the index (expected a link to ../README.md)"
     errors=$((errors + 1))
   fi

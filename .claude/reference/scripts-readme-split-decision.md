@@ -73,9 +73,10 @@ looks by-design in the churn data was, a third of the time, not happening at all
 ## For future churn-hotspot runs
 
 A re-file of this file is **not** a re-file of a consciously-dropped decision.
-#795 was dropped, #898 was implemented, and the churn signal that drove it was
-real. Classify a future `.claude/scripts/README.md` hotspot against this record
-rather than against #795's closure, and expect the index itself to be nearly
+Issue #795 was dropped, issue #898 was implemented, and the churn signal that
+drove it was real. Classify a future `.claude/scripts/README.md` hotspot against
+this record rather than against issue #795's closure, and expect the index
+itself to be nearly
 churn-free from here — new scripts now register in a category doc.
 
 ## Cross-references

@@ -162,6 +162,14 @@ expect "link text naming a different file than the target fails" 1 \
   "link text and the link target name different files" \
   sed -i.bak 's#\[gamma\.sh\](\.\./gamma\.sh)#[gamma.sh](../alpha.sh)#' .claude/scripts/docs/tools.md
 
+# Right name, wrong file: the basename check alone passes because a top-level
+# alpha.sh also exists, so the row silently points at the lib/ helper.
+expect "row linking to a same-named out-of-scope file fails" 1 \
+  'an in-scope entry must link to \.\./alpha\.sh' \
+  bash -c 'printf "#!/usr/bin/env bash\n" > .claude/scripts/lib/alpha.sh
+           sed -i.bak "s#\[alpha\.sh\](\.\./alpha\.sh)#[alpha.sh](../lib/alpha.sh)#" \
+             .claude/scripts/docs/tools.md'
+
 # --- 3. index <-> docs bijection ------------------------------------------
 expect "doc missing from the index fails" 1 \
   'docs/tests\.md exists but the index does not link it' \
@@ -171,10 +179,51 @@ expect "index link to a deleted doc fails" 1 \
   'the index links docs/tools\.md but no such file exists' \
   rm -f .claude/scripts/docs/tools.md
 
+# sort -u would collapse the repeat and call the set comparison a bijection.
+expect "duplicate category row in the index fails" 1 \
+  'the index links docs/tools\.md more than once' \
+  bash -c 'printf "%s\n" "| [Tools again](docs/tools.md) | Duplicate category row |" \
+             >> .claude/scripts/README.md'
+
 # --- 4. back-link ---------------------------------------------------------
 expect "category doc without the back-link fails" 1 \
   'missing the back-link to the index' \
   drop_line 'back to the index' .claude/scripts/docs/tools.md
+
+# A link that only ever appears inside a code fence is an example of the
+# format, not navigation — the doc is still unreachable from the index.
+expect "back-link only inside a code fence fails" 1 \
+  'missing the back-link to the index' \
+  bash -c 'drop_line() { grep -v "$1" "$2" > "${2}.new" && mv "${2}.new" "$2"; };
+           drop_line "back to the index" .claude/scripts/docs/tools.md
+           printf "%s\n" "" "\`\`\`markdown" "[back to the index](../README.md)" "\`\`\`" \
+             >> .claude/scripts/docs/tools.md'
+
+# --- whitespace tolerance in table rows -----------------------------------
+# Markdown treats any run of spaces or tabs as cell padding, so a realigned
+# table must still parse. Without this the rows vanish from the inventory and
+# every script in the doc is reported missing.
+expect "space-padded table cells still parse" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  sed -i.bak 's#^| \[alpha\.sh\](\.\./alpha\.sh) | First |#|   [alpha.sh](../alpha.sh)     | First |#' \
+    .claude/scripts/docs/tools.md
+
+expect "tab-padded table cells still parse" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  bash -c 'printf "%s\t%s\t%s\n" "|" "[gamma.sh](../gamma.sh)" "| Third |" > /tmp/row.$$
+           grep -v "^| \[gamma\.sh\]" .claude/scripts/docs/tools.md > .claude/scripts/docs/tools.new
+           cat /tmp/row.$$ >> .claude/scripts/docs/tools.new
+           printf "%s\n" "" "[back to the index](../README.md)" >> .claude/scripts/docs/tools.new
+           mv .claude/scripts/docs/tools.new .claude/scripts/docs/tools.md
+           rm -f /tmp/row.$$'
+
+# --- rows inside a code fence are not catalog content ---------------------
+# The looser cell matching makes an example row inside a fence matchable, so
+# the fence skip has to hold or the example becomes a phantom entry.
+expect "example row inside a code fence is not counted" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  bash -c 'printf "%s\n" "" "\`\`\`markdown" "| [nope.sh](../nope.sh) | Example only |" "\`\`\`" \
+             >> .claude/scripts/docs/tools.md'
 
 # --- 5. index purity ------------------------------------------------------
 expect "per-script row in the index fails" 1 \
