@@ -345,6 +345,77 @@ sweep 402
 check_eq "dispatch (own marker)" "dispatch" "$(field 402 '.action')"
 check_contains "self-attribution stated" "belongs to this session" "$(field 402 '.evidence | join("|")')"
 
+# $HANDOFF_DIR is shared across repositories and the marker match is issue/PR
+# TEXT only, so #403 exists in every repo. Before the repo check, a foreign
+# marker owned this candidate outright — and, with its session archived, carried
+# it into owned_dead/adopt: /pm would have adopted another repo's parked work.
+echo "-- (4d) a marker belonging to ANOTHER repo is not evidence at all --"
+scenario "(4d) foreign-repo marker"
+export FAKE_CLAIM_403="stale:threadFar:alice"
+# Real markers render the repo inside backticks; 4b covers the bare form, so
+# between them both shapes the parser must strip are exercised. The backtick is
+# built from a variable rather than written literally inside single quotes,
+# which shellcheck reads as an unexpanded command substitution (SC2016).
+BT='`'
+printf 'Repository: %sotherowner/otherrepo%s\nParked: #403 mid-implementation\n' "$BT" "$BT" \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-10-otherowner-9-otherrepo-threadFar-AbCdEf.md"
+seed_sessions '[{"id":"threadOther","status":"open","title":"unrelated"}]'
+sweep 403
+check_eq "not owned by a foreign marker" "false" "$(field 403 '.owned')"
+check_eq "still dispatchable" "dispatch" "$(field 403 '.action')"
+check_eq "and never adopted from it" "unowned" "$(field 403 '.verdict')"
+check_not_contains "foreign marker is not cited as evidence" "otherrepo" \
+  "$(field 403 '.evidence | join("|")')"
+
+# The name says `unknown` (a `/`-less repo key) and there is no Repository line,
+# so the marker may or may not be ours. It still surfaces — fail toward
+# surfacing — but its session id must not reach the liveness lookup, where
+# `absent from the listing` = dead would turn it into an adoption.
+# The candidate is deliberately UNCLAIMED so the marker is the sole evidence:
+# a stale claim would supply an owner session of its own (that one IS attributable
+# to this repo), and the assertions below would then be testing the claim path.
+echo "-- (4e) an unattributable marker surfaces but can never adopt --"
+scenario "(4e) unattributable marker"
+printf 'Parked: #404 mid-implementation\n' \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-unknown-threadUnk-AbCdEf.md"
+seed_sessions '[{"id":"someoneElse","status":"open","title":"unrelated"}]'
+sweep 404
+check_eq "owned (surfaced)" "true" "$(field 404 '.owned')"
+check_eq "skip, never adopt" "skip" "$(field 404 '.action')"
+check_eq "owner session withheld (emitted null, per the JSON contract)" "null" \
+  "$(field 404 '.owner_session_id')"
+check_not_contains "the marker's session never becomes the owner" "threadUnk" \
+  "$(field 404 '.owner_session_id')"
+check_eq "liveness stays indeterminate" "indeterminate" "$(field 404 '.liveness')"
+check_contains "ambiguity is named, not silent" "repository unattributable" \
+  "$(field 404 '.evidence | join("|")')"
+check_contains "and recorded as degradation" "no repository attribution" \
+  "$(field 404 '.degraded | join("|")')"
+
+############################################################################
+# execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>],
+# and session-state.sh rewrites just `.prs`/`.root_repo` into repo scope — so
+# the original top-level `.execution_pauses` read matched nothing and every
+# /end and /pause launch gate was invisible to the sweep.
+scenario "(4f) an active execution pause is read at its repo-scoped path"
+export FAKE_CLAIM_405="claimed:threadPaused:alice"
+seed_state ".execution_pauses={\"threadPaused\":{\"active\":true,\"command\":\"pause\",\"session_id\":\"threadPaused\",\"window_minutes\":10,\"deadline_epoch\":9999999999,\"at\":\"2026-08-28T00:00:00Z\",\"cleared_at\":null}}"
+seed_sessions '[{"id":"threadPaused","status":"open","title":"gated thread"}]'
+sweep 405
+check_eq "owned" "true" "$(field 405 '.owned')"
+check_eq "state paused, not active" "paused" "$(field 405 '.state')"
+check_contains "launch gate cited" "execution pause active for session threadPaused" \
+  "$(field 405 '.evidence | join("|")')"
+# Negative control: the same record at the TOP level is the pre-fix shape, and
+# must NOT be picked up — otherwise this pair would pass against either path.
+scenario "(4g) a top-level execution_pauses record is not the contract"
+export FAKE_CLAIM_406="claimed:threadPaused:alice"
+"$STUB_SCRIPTS/session-state.sh" --raw-path --set '.execution_pauses={"threadPaused":{"active":true,"command":"pause"}}' >/dev/null
+seed_sessions '[{"id":"threadPaused","status":"open","title":"gated thread"}]'
+sweep 406
+check_not_contains "top-level record ignored" "execution pause active" \
+  "$(field 406 '.evidence | join("|")')"
+
 ############################################################################
 scenario "(5) candidate owned by the paused PR fleet — route is /pmm-wake"
 export FAKE_CLAIM_501="claimed:threadFleet:alice"

@@ -383,9 +383,15 @@ else
     PAUSE_JSON="$SS_VALUE"
     ss_get ".repos[\"$REPO_KEY\"].background_tasks" "background_tasks" || true
     BG_TASKS_JSON="$SS_VALUE"
+    # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>];
+    # session-state.sh rewrites just `.prs` / `.root_repo` into repo scope, so a
+    # top-level `.execution_pauses` read finds nothing and every /end or /pause
+    # launch gate is invisible to the sweep.
+    ss_get ".repos[\"$REPO_KEY\"].execution_pauses" "execution_pauses" || true
+    EXEC_PAUSES_JSON="$SS_VALUE"
+  else
+    batch_degrade "execution_pauses: no repo key (repo-scoped launch-gate evidence not consulted)"
   fi
-  ss_get '.execution_pauses' "execution_pauses" || true
-  EXEC_PAUSES_JSON="$SS_VALUE"
   ss_get '.pmm_active' "pmm_active" || true
   PMM_ACTIVE="$SS_VALUE"
   ss_get '.pmm' "pmm" || true
@@ -412,6 +418,51 @@ if [[ "$PMM_ACTIVE" != "true" && "$PMM_JSON" != "null" ]]; then
       (.fleet_at_pause // []) | .[]? | if type == "object" then (.pr // .number // empty) else . end' 2>/dev/null || true)"
   fi
 fi
+
+# marker_repo <path> <basename> -> owner/repo, or empty when unattributable.
+#
+# Two independent sources, body first because it is exact and every marker
+# shape carries it (`portable-handoff-*` encodes no repo in its name at all):
+#   1. the rendered `Repository: `owner/repo`` line (/pause SKILL.md);
+#   2. the length-prefixed filename field `<len-owner>-<owner>-<len-repo>-<repo>`,
+#      which is injective precisely so owners/repos containing `-` survive it.
+# A `/`-less repo key writes the literal `unknown`, which attributes nothing.
+marker_repo() {
+  local path="$1" base="$2" line owner name rest lo ln
+  line="$(grep -m1 -E '^Repository:' "$path" 2>/dev/null || true)"
+  if [[ -n "$line" ]]; then
+    line="${line#Repository:}"
+    line="${line//\`/}"
+    # Trim surrounding whitespace without a subshell.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ "$line" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      printf '%s' "$line" | tr '[:upper:]' '[:lower:]'
+      return 0
+    fi
+  fi
+  # Filename fallback: strip the `pause-`/`suspend-` prefix and the stamp, then
+  # read the two length-prefixed fields.
+  case "$base" in
+    pause-*|suspend-*) rest="${base#*-}" ;;
+    *) return 0 ;;
+  esac
+  rest="${rest#*-}"                     # drop <stamp>
+  lo="${rest%%-*}"                      # <len-owner>
+  [[ "$lo" =~ ^[0-9]+$ ]] || return 0
+  rest="${rest#*-}"
+  owner="${rest:0:$lo}"
+  [[ ${#owner} -eq "$lo" ]] || return 0
+  rest="${rest:$lo}"
+  rest="${rest#-}"
+  ln="${rest%%-*}"                      # <len-repo>
+  [[ "$ln" =~ ^[0-9]+$ ]] || return 0
+  rest="${rest#*-}"
+  name="${rest:0:$ln}"
+  [[ ${#name} -eq "$ln" ]] || return 0
+  [[ -z "$owner" || -z "$name" ]] && return 0
+  printf '%s/%s' "$owner" "$name" | tr '[:upper:]' '[:lower:]'
+}
 
 # (5) Resume markers on disk. Read once; matched per candidate.
 MARKER_FILES=()
@@ -759,6 +810,14 @@ for ISSUE in "${CANDIDATES[@]}"; do
     fi
     (( MF_HIT )) || continue
     MF_BASE="$(basename "$MF")"
+    # $HANDOFF_DIR is shared across repositories, and the match above is issue
+    # or PR TEXT only — #1431 exists in every repo. Attribute the marker before
+    # trusting it: a foreign marker that reaches `note_owner` can carry a dead
+    # session id into the owned_dead branch and adopt another repo's work.
+    MF_REPO="$(marker_repo "$MF" "$MF_BASE")"
+    if [[ -n "$MF_REPO" && -n "$REPO_KEY" ]] && [[ "$MF_REPO" != "$REPO_KEY" ]]; then
+      continue
+    fi
     # pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md —
     # the session id is
     # the second-to-last dash field; a title is not in the name, so ids are the
@@ -778,6 +837,17 @@ for ISSUE in "${CANDIDATES[@]}"; do
     OWNED=1
     RESUMABLE=1
     note_state paused
+    if [[ -z "$MF_REPO" ]]; then
+      # Unattributable: `unknown` in the name and no `Repository:` line. It may
+      # be ours, so it still surfaces (fail toward surfacing) — but an owner
+      # session that cannot be tied to THIS repo must not reach the liveness
+      # lookup, where `dead` would turn a foreign marker into an adoption.
+      add_evidence "resume marker $MF_BASE references #$ISSUE (repository unattributable — surfaced, not adoptable)"
+      add_degraded "marker $MF_BASE: no repository attribution (owner session not consulted; candidate surfaced, never adopted)"
+      note_title "$MF_BASE"
+      note_owner "$MF_BASE" ""
+      continue
+    fi
     add_evidence "resume marker $MF_BASE references #$ISSUE"
     note_title "$MF_BASE"
     note_owner "$MF_BASE" "$MF_SESSION"

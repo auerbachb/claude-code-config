@@ -32,13 +32,15 @@ The sweep adds **no new registry**. It reads the same sources `/wave` Step 2 and
 | `gh pr list --state open` | once | open PRs and their closing refs, joining issue → PR → branch |
 | `session-state.sh --get .repos[<key>].pause` | once | parked units, their stopping point, the marker path |
 | `session-state.sh --get .repos[<key>].background_tasks` | once | per-task owner, session id, status, recovery path |
-| `session-state.sh --get .execution_pauses` | once | session-scoped launch gates — what makes an owner *paused* rather than dead |
+| `session-state.sh --get .repos[<key>].execution_pauses` | once | session-scoped launch gates — what makes an owner *paused* rather than dead |
 | `session-state.sh --get .pmm_active` / `.pmm` | once | the paused PR fleet and the PRs it held |
 | `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` | per linked PR | the phase the dead thread reached — the adoption entry point |
 | `~/.claude/handoffs/pause-*.md`, `suspend-*.md`, `portable-handoff-*.md` | once, globbed (`*-checkpoint.md` excluded) | resume markers naming the issue, and the session id in the filename |
 | `git for-each-ref` | per candidate, on demand | a surviving `issue-N-*` branch — the adoption source of last resort |
 
 `.pause`, `.day`, `.resume`, and `.execution_pauses` are **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`), so each is fetched by explicit `--get`. A sweep built on `--session-view` would report every armed pause as absent.
+
+Each of those also has to be addressed at its **repo-scoped** path. `session-state.sh` transparently rewrites only a leading `.prs` or `.root_repo` into the active repo's scope; everything else is read literally. `execution-pause.sh` writes solely to `.repos[<key>].execution_pauses[<session>]`, so a top-level `.execution_pauses` read matches nothing and every `/end` and `/pause` launch gate is invisible to the sweep — the same trap the `.pause` / `.background_tasks` rows above avoid, and one a passing test suite will not catch unless a negative control pins the top-level shape as *not* the contract.
 
 ## The owned-resumable upgrade
 
@@ -93,6 +95,16 @@ The asymmetry is deliberate. Surfacing a thread that turned out to be dead costs
 Two tiers, and the human-readable one wins however late it is found: session-listing `title` > a title a source supplies (`background_tasks[].name`, the marker filename) > the claim-derived description (`<login> thread <holder>`) > the bare session id > `an unnamed thread`. Claims and state files carry session ids as the join key, so ids are the documented fallback, not a failure.
 
 `pause-*.md` marker filenames encode the session id as the field before `mktemp`'s uniqueness tag (`pause-<stamp>-<len-owner>-<owner>-<len-repo>-<repo>-<session>-<tag>.md`), which is how a marker attributes itself with no state file involved.
+
+### Markers must be attributed to this repo first
+
+`~/.claude/handoffs/` is shared across every repository, and a marker is matched on issue or PR **text** — `#1431` exists in all of them. So a marker earns its say only once it is attributed to the repo under sweep, from either of two independent sources: the rendered ``Repository: `owner/repo` `` line (exact, and present in every marker shape — `portable-handoff-*` encodes no repo in its filename at all), or the length-prefixed `<len-owner>-<owner>-<len-repo>-<repo>` filename fields, an encoding that is injective precisely so owners and repos containing `-` survive it.
+
+Three outcomes, and the middle one is the whole point:
+
+- **Matches** the swept repo → full evidence, including its session id.
+- **Names a different repo** → not evidence at all; the marker is skipped. Without this the sweep both skipped unrelated backlog work *and* — with the foreign session archived — carried the candidate into `owned_dead`, adopting another repository's parked work.
+- **Unattributable** (a `/`-less repo key writes the literal `unknown`, and no `Repository:` line) → the candidate is still surfaced, because it may be ours and surfacing is the safe direction. But its session id is withheld from the liveness lookup, where "absent from the listing" means dead — so an unattributable marker can never become an adoption. The ambiguity is named in `degraded[]` rather than passed off as certainty.
 
 ## State precedence
 
