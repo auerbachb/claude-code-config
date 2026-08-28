@@ -115,6 +115,35 @@ A usage limit is an explicit upstream signal — different in kind from a local 
 
 **Why this is not a D4 exit condition.** D4 (exit and pause check) is evaluated from state readable at the start of a tick, while a usage-limit signal is an error that arrives during a tick. Adding it to D4 would require polling for a signal that does not exist between turns — which is exactly the local-estimate pattern the quota rule forbids. 2D.6 runs when the signal arrives, not on the next scheduled check.
 
+## Pre-emptive park at the usage horizon (#1428)
+
+Issue #1288 gave day mode a survivable crash landing. It could not see the wall coming: the first signal any turn received was the kill itself, so in-flight subagents died without checkpoints and runway that could have landed near-done PRs was spent starting work that died unclean. 2D.7 adds the pre-kill leg on top of the same machinery.
+
+**The signal is upstream, not an estimate.** The harness prints `<total_tokens>N tokens left</total_tokens>` into context and refreshes it after every tool result. Day mode reads *that* number and hands it to `usage-horizon.sh --observe`, then branches on `--check` (#1427 owns thresholds, hysteresis, and the degradation contract; day mode consumes `STATUS=` and nothing else). This is `safety.md`'s horizon carve-out, not a hole in it — the script compares a figure the harness stated and has no path that could consume a locally-derived one.
+
+**Why the branch lives in D2 and not D4.** Same reason 2D.6 sits outside the exit table: D4 is first-match-wins over conditions read at tick start, and this verdict has to gate *refill* — the decision D2 makes — before any pick is dispatched. A `critical` verdict evaluated in D4 would launch a pipeline and then park it.
+
+| Verdict | Refill | Park |
+|---------|--------|------|
+| `clear` | normal | no |
+| `approaching` | stopped for this run, one heartbeat line naming the runway | no |
+| `critical` | stopped | yes — 2D.7, before the tick ends |
+| `unknown` | stopped | **never** |
+
+**`unknown` is a posture, not an event.** The horizon slot is one machine-wide field, so a session displaced by a sibling reads `unknown` routinely rather than exceptionally (`usage-horizon.sh --help` §CONCURRENT SESSIONS). Parking on it would park healthy boards for the wrong reason; reading it as `clear` would be the fail-open the separate exit code exists to prevent. So it stops new work and does nothing else — the same conservative posture `credit-budget.sh` exit 2 already takes.
+
+**Why the park window is 2 minutes and not `--window 0`.** The reactive path uses `--window 0` because by then the account is refusing work: `/pause` Steps 4–5 could not land anything even if given time. The whole premise of firing before the kill is that calls still succeed, so a PR one merge from done can still land. The window is a budget, not a promise — `/pause`'s own `T_END` check reclassifies anything that has not landed as `park` — and `CLAUDE_HORIZON_PARK_WINDOW_MINUTES=0` selects exact reactive parity for anyone who wants it. This is the one parameter that differs between the two paths.
+
+**One park record, decided by compare-and-set.** A real kill can land while the pre-emptive park is mid-flight. Both paths write `parked_until`, `limit_kind`, and `consecutive_limit_hits`, so 2D.7 claims the slot first with `session-state.sh --cas … --expect null` (#1195): exit 7 is a clean loss and the pre-emptive path stands down without shutting anything down, arming anything, or printing anything. In the other direction, 2D.6 stops whatever wake is already armed *before* its write nulls the identity pair — otherwise the reactive write would strand a live probe Monitor with no ID left to `TaskStop`. The vendor reset time then wins on content, because it is better information than a probe bound. `limit_cause` records which path produced the surviving record.
+
+**The probe wake, and why a Monitor cannot do it alone.** With no reset time there is nothing to sleep until, so the wake is one persistent Monitor at 30 minutes, at most 12 fires (≈6 hours, comfortably outside the 5-hour rolling window). Each fire re-invokes `/pm day --probe-wake` rather than checking anything itself: the counter lives in the model's context, so only a turn can read it. A `clear` verdict fires the existing generation-checked `/pause-resume --generation …`; `approaching` deliberately does **not** resume, since a window that has begun refilling but not recovered is exactly what the thrash guard exists to keep the loop out of. The bound lives in `limit_probe_fires_remaining`, not in the loop, so a session restart re-arms with the fires that are left — re-arming a fresh twelve on every restart would make a bounded probe unbounded. Exhausting it stops the Monitor, keeps the park, and says so in one line; a park that never comes back and never mentions it is the silent-watcher failure.
+
+**No new monitor class.** The probe records its identity in `limit_resume_task_id` / `limit_resume_generation` — the fields `/pause` Step 2 item 4 already tears down, `/pause-resume` Step 5 already disarms, and `/pause-resume` Step 0 already generation-checks. Teardown, restart recovery, and stale-wake rejection therefore needed no new code paths, only the extra field reads that pick *which* wake to re-arm.
+
+**Unchanged and still winning:** weekly caps stay reactive-only and manual-resume (the horizon verdict measures the rolling window and classifies no cap kind); `credit-budget.sh` still gates refill when the loop resumes; and the automatic path still never writes the human-owned `refill.paused`, so the wake still never passes `--resume-refill`.
+
+**Scope boundary.** `/pr-monitor-and-manage` and `/babysit-pr` are explicitly out of scope. The day-mode carve-out in `pm-monitoring-decision.md` makes day mode the one loop that owns a repo's between-turn dispatch, which is what makes it the one loop entitled to park that repo; giving a second owner the same reflex would reintroduce the two-owner race that carve-out exists to prevent. Extending the reflex to `monitor-mode.md`'s per-cycle checklist is a named follow-up to be filed once this lands.
+
 ## Handoff as the session seam
 
 Teardown runs the full `/pm-handoff` workflow inline and prints its prompt, on **every** exit and pause. A day is expected to be a chain of long sessions rather than one marathon (#773), so the seam between them has to be automatic: a run that ends without a handoff makes the next thread cold-start from nothing, which is the cost this mode exists to remove.

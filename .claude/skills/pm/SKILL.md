@@ -26,7 +26,8 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
 - **Day mode + its flags (strip each token as you read it):**
   - `day` (its own whitespace-delimited word) or `--run` → `DAY_MODE=true`; otherwise `false`.
   - `--tick` → `DAY_TICK=true`. This is **internal**: only the Monitor armed in 2D.2 passes it. It implies `DAY_MODE=true`.
-  - `--day-generation <token>` → `TICK_GENERATION`. Internal, always paired with `--tick`.
+  - `--day-generation <token>` → `TICK_GENERATION`. Internal, always paired with `--tick` or `--probe-wake`.
+  - `--probe-wake` → `DAY_PROBE_WAKE=true`. **Internal**: only the bounded probe Monitor armed in 2D.7 passes it, always with `--day-generation`. It implies `DAY_MODE=true` and routes straight to 2D.7's probe-fire handler — **not** to 2D.3's tick, which must not run while the board is parked.
   - `--cadence Nm` → `DAY_CADENCE_MIN=N` (default `5`, range `[1, 60]`).
   - `--max-pipeline-failures N` → `MAX_PIPELINE_FAILURES=N` (default `3`, range `[1, 10]`).
 
@@ -36,6 +37,8 @@ Parse `$ARGUMENTS` in this order — day tokens first (so they never fall throug
 - **Mode:** if the remaining `$ARGUMENTS` contains "resume" or "handoff", enter Resume mode (Step 1A). Otherwise enter Cold Start mode (Step 1B). Any remaining text is the **business goal** — the outcome to rank the backlog against (see 1B.4). Hold it in `BUSINESS_GOAL` (empty when none), which is what 2D.2 persists so a day loop keeps ranking against it across ticks and context turnover. No goal is fine; ranking falls back to repo signals.
 
 Day mode composes with everything above rather than replacing it: `/pm day` is a cold start that then keeps running, `/pm day resume` resumes and then keeps running, and `/pm day increase scraping throughput` carries that goal into every re-rank for the whole run.
+
+**A probe wake is not a tick either.** When `DAY_PROBE_WAKE=true`, run Step 0, then go **straight to 2D.7's probe-fire handler** — skip 2D.3 entirely. A probe fire exists to re-read the runway while the board is parked; running a tick from it would dispatch work into the very wall the park was called to avoid.
 
 **A tick is not a fresh invocation.** When `DAY_TICK=true`, run Step 0 (resolve tooling), then go **straight to 2D.3's D0 gate** — before Step 0a, so a tick from a superseded Monitor exits without printing anything, including 0a's "Active gh user" line. A gate that narrates is not silent. Once D0 passes, run Step 0a (D2's slot counting is author-scoped and needs `$GH_USER`), then continue through the rest of 2D.3. **Skip Step 1 entirely** — re-running the cold-start scan, Step 1C's cleanup gates, and Step 1D's triage every tick would re-ask, once per cadence all day, confirmations the user already answered.
 
@@ -68,6 +71,7 @@ ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 MAKESPAN_SH=$(resolve_script makespan.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 WINDOW_PLAN_SH=$(resolve_script window-plan.sh || true)
+USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
@@ -80,6 +84,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `BACKLOG_HEALTH` empty → **optional**. Print `DEGRADED: backlog-health.sh not found (checked all three paths) — staleness block omitted` and skip that block.
 - `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, bounding chips on the per-thread ceiling only` and cap the 3.1 chip batch at the 3–4 ceiling instead. A **non-zero exit** from a script that *did* resolve is not the same thing: it means a count source could not be read, so treat it as `FREE = 0` and defer rather than offering as if the repo were idle (`active-work-cap.md` "Resolution order and failure behavior").
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
+- `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
 - `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 
@@ -706,7 +711,9 @@ LIMIT_KIND_RC=0
 PARK_LIMIT_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind") || LIMIT_KIND_RC=$?
 ```
 
-Apply 3.4's exit-code table to both: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once (exit `6` is a lock timeout and documented as retryable; `handoff-files.md`), then fail closed: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)`): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: re-arm the limit-wake Monitor (2D.6 Step 3) using the remaining time from now to `PARKED_UNTIL`, say so in one line (`Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`), and **stop without running Steps 1 and 2** — the board is parked and will resume when the Monitor fires. If `parked_until` is in the past or null, the park resolved or never existed; continue arming normally.
+Apply 3.4's exit-code table to both: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once (exit `6` is a lock timeout and documented as retryable; `handoff-files.md`), then fail closed: report the read failure and stop before normal arming. Do not treat an unreadable `parked_until` as "no park pending" — a lock timeout or parse failure can hide an active park, allowing Steps 1 and 2 to dispatch while the account limit is still active. If `PARKED_UNTIL` is non-null, non-JSON-`"null"`, and in the future (`date -u -d "$PARKED_UNTIL" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARKED_UNTIL" '+%s'` is greater than `$(date -u +%s)` — **`-u` on the BSD fallback too**: without it macOS parses the `Z` timestamp as local time, so an ET machine reads every park as four hours longer than it is): the session restarted while a park was active. Only re-arm the limit-wake Monitor if `PARK_LIMIT_KIND == "rolling_window"` — weekly parks cannot be auto-woken because no in-session Monitor can outlast days. If limit_kind is readable and not "rolling_window" (or is readable and non-"rolling_window"), do not re-arm; print one line (`Session restarted during weekly-cap park; manual resume required when window reopens`) and stop. If limit_kind is unreadable (LIMIT_KIND_RC non-zero and non-3), fail closed: do not re-arm and print one line naming the read failure. For a confirmed rolling_window park: re-arm the limit-wake Monitor and say so in one line, then **stop without running Steps 1 and 2**. **Which wake** depends on how the park was recorded — read `day.limit_cause` and `day.limit_probe_fires_remaining` with the same exit-code table (`0` value, `3` no state file, anything else unreadable → fail closed and re-arm nothing): a null/absent `limit_probe_fires_remaining` re-arms 2D.6's sleep-until-reset one-shot using the remaining time from now to `PARKED_UNTIL` (`Session restarted during usage-window park; resuming automatically at {PARKED_UNTIL}`); a `limit_cause == "preemptive"` park with a positive integer fires-remaining re-arms 2D.7's probe Monitor **with that count**, not a fresh bound (`Session restarted during pre-emptive park; probing every {N}m, {F} checks left`). Zero fires left means the bound was already spent — stay parked, manual resume, no re-arm. Either way the board is parked and will resume when the wake fires.
+
+**A spent bound outlives its own deadline — check it before the expiry shortcut.** A pre-emptive park with an unknown reset sets `parked_until` to exactly `cadence x fires` ahead, which is the same instant the last probe fires. So the moment the bound is spent, `parked_until` is in the *past* — and an expiry-first test reads that as "the park resolved". It did not: `PROBE=exhausted` leaves the park in place, awaiting a manual `/pause-resume`, with the execution gate still closed. Arming normally there erases the manual-resume state and starts a loop whose every launch the gate then blocks — a live board that cannot dispatch and never says why. So when `limit_cause == "preemptive"` and `limit_probe_fires_remaining` reads `0`, stay parked **regardless of `parked_until`**: re-arm nothing, print one line (`Day loop parked (probe bound spent) — resume manually with /pause-resume`), and stop recovery. Only with that case excluded does the expiry shortcut apply: if `parked_until` is in the past or null, the park resolved or never existed; continue arming normally.
 
 **(c) Settle the race before arming: publish, then re-read.** (a) and (b) are read-then-write across separate `session-state.sh` calls, so each call is locked but the pair is not: `/pm day` and `/pr-monitor-and-manage` starting within the same moment can each read the other as clear and both arm. Close it without inventing a lease — write your own claim **first**, then re-read theirs:
 
@@ -824,8 +831,59 @@ Name each blocked pipeline's issue and its blocker, so the user can see at a gla
 
 The placement is the point: D2 reads `refill_halted` to decide whether to launch, so evaluating the threshold in D4 would let the very tick that crossed it refill first and halt afterwards, pushing one more pipeline into a board already known to be failing. A halt that takes effect one tick late is a halt that fired after the damage.
 
-**D2 — Refill.** Run **Step 3.4 unchanged** — the pause read with its exit-code table, `$SCOPE` narrowing, queue before backlog, per-pick re-validation, overlap chains, `FREE` from `active-work-cap.sh`, and the reported-not-proposed launch lines. Two day-mode conditions sit **on top of** it, neither replacing any part:
+**D2 — Refill.** Run **Step 3.4 unchanged** — the pause read with its exit-code table, `$SCOPE` narrowing, queue before backlog, per-pick re-validation, overlap chains, `FREE` from `active-work-cap.sh`, and the reported-not-proposed launch lines. Day-mode conditions sit **on top of** it, none replacing any part:
 
+**The usage-horizon gate runs first, before any pick is dispatched** (#1428). The harness prints the in-context remaining-token counter (`<total_tokens>N tokens left</total_tokens>`) into this turn's context and refreshes it after every tool result; read **that** number — never a count derived from the transcript or any local estimate — and hand it to `usage-horizon.sh --observe`, then branch on `--check`. This is the `safety.md` §"Anthropic Quota & Spend Authority" horizon carve-out: the figure is upstream-authoritative, and the script only compares it.
+
+<!-- test-anchor: pm-day-d2-horizon-branch -->
+
+```bash
+# HORIZON_REMAINING / HORIZON_LIMIT: the numbers the HARNESS printed this turn.
+# Leave both empty when the counter is not in context — an absent reading is
+# `unknown`, which is never `clear` and never a park trigger.
+HORIZON_STATUS=unknown
+HORIZON_OBSERVE_RC=0
+if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
+  if [ -n "${HORIZON_LIMIT:-}" ]; then
+    "$USAGE_HORIZON_SH" --observe "$HORIZON_REMAINING" --limit "$HORIZON_LIMIT" \
+      >/dev/null 2>&1 || HORIZON_OBSERVE_RC=$?
+  else
+    "$USAGE_HORIZON_SH" --observe "$HORIZON_REMAINING" >/dev/null 2>&1 || HORIZON_OBSERVE_RC=$?
+  fi
+fi
+if [ -n "${USAGE_HORIZON_SH:-}" ] && [ "$HORIZON_OBSERVE_RC" -eq 0 ]; then
+  HORIZON_OUT=$("$USAGE_HORIZON_SH" --check 2>/dev/null) || true
+  _HS=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^STATUS=//p' | head -1)
+  case "$_HS" in clear|approaching|critical) HORIZON_STATUS="$_HS" ;; *) HORIZON_STATUS=unknown ;; esac
+  # Keep the script's own REASON for the heartbeat. A run-long `unknown` otherwise
+  # looks identical whether the script is missing, its write is failing, the TTL
+  # expired, or a sibling session holds the slot — and only the last is benign.
+  HORIZON_REASON=$(printf '%s\n' "$HORIZON_OUT" | sed -n 's/^REASON=//p' | head -1)
+fi
+case "$HORIZON_STATUS" in
+  clear)       HORIZON_REFILL_OK=true;  HORIZON_PARK=false; HORIZON_IDLE_REASON="" ;;
+  approaching) HORIZON_REFILL_OK=false; HORIZON_PARK=false; HORIZON_IDLE_REASON="paused (horizon approaching)" ;;
+  critical)    HORIZON_REFILL_OK=false; HORIZON_PARK=true;  HORIZON_IDLE_REASON="paused (horizon critical)" ;;
+  *)           HORIZON_REFILL_OK=false; HORIZON_PARK=false; HORIZON_IDLE_REASON="paused (horizon unknown)" ;;
+esac
+printf 'HORIZON_STATUS=%s\nHORIZON_REFILL_OK=%s\nHORIZON_PARK=%s\nHORIZON_IDLE_REASON=%s\nHORIZON_REASON=%s\n' \
+  "$HORIZON_STATUS" "$HORIZON_REFILL_OK" "$HORIZON_PARK" "$HORIZON_IDLE_REASON" "${HORIZON_REASON:-}"
+```
+
+`--observe` exits `0` on a successful record **whatever the verdict** — only `--check` maps verdicts to exit codes — so a non-zero `HORIZON_OBSERVE_RC` is a real write/usage/lock failure, not a bad verdict, and the gate **skips `--check` entirely** and holds `unknown`. That clamp is the one place this gate second-guesses the script, and it earns it: a failed observe means this turn's reading did not land, so any stored verdict is knowably older than what we just tried to record — and because the counter only falls during a session, a stale reading is *optimistic*, the one direction that matters. Skipping the read costs at most a tick of refill and can never park (`unknown` never parks). Never substitute a remembered number for a failed observe.
+
+**A tick with no counter in context still reads `--check`.** The absent-reading case is deliberately *not* clamped: a reading recorded by an earlier tick of this same session is legitimate evidence, and the script's own TTL and session-ownership gates are what decide whether it is still good. Requiring a fresh reading every tick would force `unknown` on every turn where the counter did not surface, which stops refill on a healthy board — turning a wind-down feature into a board-stopper. Then:
+
+| Verdict | Refill | Park | Chat |
+|---------|--------|------|------|
+| `clear` | normal | no | nothing — the tick proceeds unchanged |
+| `approaching` | **stop for this run** — start no new chip and dispatch no new pipeline | no | one always-emit heartbeat line naming the runway (`horizon approaching — ~N tokens left; starting nothing new`) |
+| `critical` | stop | **yes — run 2D.7 before this tick ends**, then stop the tick | 2D.7's ≤2-line park surface |
+| `unknown` | stop | **never** | nothing — `unknown` is reported on the idle line only |
+
+`unknown` is a **posture, not an event**: in-flight work finishes, nothing new starts, and no park is ever triggered by it alone. On a machine running several sessions the horizon slot is machine-wide and a displaced session reads `unknown` routinely (`usage-horizon.sh --help` §CONCURRENT SESSIONS), so treating it as a park trigger would park healthy boards for the wrong reason. The one thing it must never do is read as `clear` — hence the `case` default above, not a `[ "$_HS" != critical ]` test.
+
+- **Refill runs only when the horizon gate above sets `HORIZON_REFILL_OK=true`.** Report the horizon reason on the idle line (`paused (horizon approaching)` / `paused (horizon critical)` / `paused (horizon unknown)`). When `HORIZON_REASON` is non-empty, append it parenthetically on the `unknown` idle line only — `paused (horizon unknown) — {HORIZON_REASON}`. The `IDLE_REASON` digest input stays the bare form above, so the annotation never perturbs the stable-state hash.
 - **Refill runs only when `day.refill_halted` is `false`.** This is day mode's own automatic halt, set in D1 the moment the streak crosses the threshold so it binds on the same tick, and it is deliberately a *separate* field from `.repos[<key>].refill`: that one is contractually human-written-only, and a machine writing it would blur the very distinction that keeps issue text from being able to halt a pipeline. Read both; refill needs both clear. Report a halt as `paused (pipeline failures)` on the idle line.
 - **Refill runs only when `credit-budget.sh --check` exits 0 (`ok`).** Read it once per D2 tick (same moment as the refill.paused read, not in a separate phase). Apply 3.4's exit-code table: exit 1 (`reached`) → land near-done work and park (3.4's budget gate above); exit 2 (`unknown`) → conservative posture — finish in-flight, start nothing new, report `paused (budget unknown)`. The budget check is re-read per pick exactly as refill.paused is.
 - **At most one new chip per turn — counting the arming turn as tick 0.** Day mode runs for hours, so a thread-prompt issue deferred now is offered on the next tick, minutes later — spreading costs nothing, and a wall of chips is the exact failure day mode exists to end (#1190). `FREE` still bounds it from above; this is a second, tighter bound that applies only in day mode. **The bound covers Step 1's dispatch too, not just later ticks:** Step 1 runs inside the arming turn and reaches 3.1's chip path bounded only by `FREE`, so without this it would be the *first* turn of a run that emits six chips at once — the failure, on the turn most likely to be watched. Report the rest as deferred exactly as 3.1 already does, with `Deferred (cap)` rows so nothing is forgotten; they are re-offered one per tick as the run proceeds. Inline dispatch is **not** rate-limited — it fills to the ceiling on the turn it can.
@@ -839,7 +897,7 @@ The placement is the point: D2 reads `refill_halted` to decide whether to launch
 | `PIPELINES_SORTED` | The Active Work table (3.2) after D1's transitions: `issue:phase:head_sha` per row whose Thread is `Inline` and whose status is non-terminal, joined and **sorted by issue number** so row order never changes the hash. Empty string when no pipeline is running. |
 | `QUEUE_LEN` | Count of issues queued behind the ceiling (3.1 / `/subagent` Step 7). `0` when the queue is empty. |
 | `BACKLOG_HEAD` | The top-ranked eligible candidate D2's refill considered, or the literal `-` when it found none. |
-| `IDLE_REASON` | The reason D2 reported on its idle line — one of `ceiling reached`, `nothing eligible`, `chained`, `paused`, `paused (pipeline failures)`, `paused (budget reached)`, `paused (budget unknown)` (3.4). |
+| `IDLE_REASON` | The reason D2 reported on its idle line — one of `ceiling reached`, `nothing eligible`, `chained`, `paused`, `paused (pipeline failures)`, `paused (budget reached)`, `paused (budget unknown)` (3.4), `paused (horizon approaching)`, `paused (horizon unknown)` (D2's horizon gate; `paused (horizon critical)` never reaches the digest — that tick parks in 2D.7 and ends). |
 
 ```bash
 DAY_DIGEST=$(printf '%s|%s|%s|%s' "$PIPELINES_SORTED" "$QUEUE_LEN" "$BACKLOG_HEAD" "$IDLE_REASON" \
@@ -930,7 +988,7 @@ On any exit or pause, in this order — the order matters, because the stop flag
 
 A day loop can outlive the context that armed it. After compaction, `monitor-mode.md` "Post-Compaction Recovery" runs first; then read `.repos[<key>].day` explicitly. It is **not** in `--session-view`'s projection — that lifts only `.prs` and `.root_repo` out of the repo block — so a `--session-view` read alone reports an armed day loop as absent, exactly as it would a refill pause (1A.2). Reconcile `active`, the identity pair, and `last_tick_at` against the freshness window from 2D.1(b): fresh → resume ticking and say so in one line; stale → the loop died, so reclaim and re-arm. `/pm` resume (1A.4) reports a paused or interrupted day loop alongside the refill posture for the same reason: a state the user cannot see is one they cannot lift.
 
-**Also check `day.parked_until` and `day.limit_kind` during recovery.** Read both explicitly (they are not in `--session-view`). Apply 3.4's exit-code table: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once, then fail closed: report the read failure and stop rather than treating an unreadable `parked_until` as null. A lock timeout or parse failure can hide an active park, allowing the tick Monitor to re-arm while the account limit is still active. If `parked_until` is non-null and in the future, the loop is parked due to a usage-limit hit (2D.6) and the original auto-wake Monitor died with the prior session. Only re-arm the limit-wake Monitor if `limit_kind == "rolling_window"` — weekly parks require manual resume, never an in-session auto-wake. For weekly parks or an unreadable `limit_kind`, report one line (`Day loop parked (weekly cap or unreadable kind) — manual resume required`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. For a confirmed rolling_window park: re-arm the limit-wake Monitor (2D.6 Step 3) with the remaining time from now to `parked_until`, report one line (`Day loop parked until {parked_until} — re-arming auto-wake`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. Only when `parked_until` is in the past or null may recovery continue normally.
+**Also check `day.parked_until` and `day.limit_kind` during recovery.** Read both explicitly (they are not in `--session-view`). Apply 3.4's exit-code table: `0` is the stored value, `3` means no state file has ever been written, anything else is unreadable — retry once, then fail closed: report the read failure and stop rather than treating an unreadable `parked_until` as null. A lock timeout or parse failure can hide an active park, allowing the tick Monitor to re-arm while the account limit is still active. If `parked_until` is non-null and in the future, the loop is parked due to a usage-limit hit (2D.6) and the original auto-wake Monitor died with the prior session. Only re-arm the limit-wake Monitor if `limit_kind == "rolling_window"` — weekly parks require manual resume, never an in-session auto-wake. For weekly parks or an unreadable `limit_kind`, report one line (`Day loop parked (weekly cap or unreadable kind) — manual resume required`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. For a confirmed rolling_window park: re-arm the limit-wake Monitor, report one line (`Day loop parked until {parked_until} — re-arming auto-wake`), do not re-arm the tick Monitor, and **stop recovery** — do not continue to the generic stale-loop path. **Read `limit_cause` and `limit_probe_fires_remaining` here too**, with the same exit-code table, and pick the wake exactly as 2D.1(b+) does: null fires-remaining → 2D.6's sleep-until-reset one-shot with the remaining time; `preemptive` cause with a positive integer → 2D.7's probe Monitor re-armed with that many fires left; zero or unreadable → stay parked and require manual resume. Re-arming a fresh twelve-fire bound on every restart would turn a bounded probe into an unbounded one. **Read that pair before applying the expiry test, not after** — for the reason 2D.1(b+) gives: an unknown-reset park's `parked_until` is the same instant its last probe fires, so a spent bound always sits fractionally in the past, and an expiry-first test would call that resolved while the park is still standing and the execution gate still closed. A `preemptive` cause with `limit_probe_fires_remaining == 0` therefore stays parked whatever `parked_until` says — no re-arm, one line (`Day loop parked (probe bound spent) — resume manually with /pause-resume`), stop recovery. Only with that case excluded may recovery continue normally when `parked_until` is in the past or null.
 
 ### 2D.6: Usage-limit park and wake
 
@@ -986,22 +1044,62 @@ fi
 [[ "$PRIOR_HITS" =~ ^[0-9]+$ ]] || PRIOR_HITS=0
 NEW_HITS=$(( PRIOR_HITS + 1 ))
 MAX_LIMIT_HITS=3  # mirrors max_pipeline_failures range; not currently user-configurable
+```
 
+**Adopt an existing pre-emptive park rather than opening a second one (#1428).** A real kill can land while 2D.7 has already parked the board pre-emptively. Both paths write these same fields, so the reactive write below would otherwise overwrite `parked_until` **and** null the wake identity pair — stranding a live probe Monitor that nothing can name to `TaskStop`. Before writing, stop whatever wake is already armed; the vendor reset time this signal carries is strictly better information than 2D.7's probe bound, so the reactive record then wins on content:
+
+<!-- test-anchor: pm-day-2d6-adopt-wake -->
+
+```bash
+# Race with 2D.7: a wake may already be armed. Stop it BEFORE the write nulls its ID.
+# `TaskStop` here is the harness tool, not a binary — the one non-shell call in this
+# block. Everything else runs as written.
+ADOPT_ABORT=false
+PRIOR_WAKE_RC=0
+PRIOR_WAKE_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id") || PRIOR_WAKE_RC=$?
+if [ "$PRIOR_WAKE_RC" -ne 0 ] && [ "$PRIOR_WAKE_RC" -ne 3 ]; then
+  # Only rc 3 (no state file has ever been written) proves there is no wake. Every
+  # other failure is a read we could not make, and a lock timeout is likeliest exactly
+  # when a fleet is contending for this file. Falling through to the write would null
+  # the ID of a Monitor that may well be ticking — the irreversible mistake named below.
+  echo "Parked (usage limit) — could not read the wake registry (rc=$PRIOR_WAKE_RC); not replacing the park. Resume manually."
+  ADOPT_ABORT=true
+elif [ -n "$PRIOR_WAKE_ID" ] && [ "$PRIOR_WAKE_ID" != null ]; then
+  if ! TaskStop "$PRIOR_WAKE_ID"; then
+    echo "Parked (usage limit) — could not stop the armed wake $PRIOR_WAKE_ID; keeping its identity and not replacing the park. Resume manually."
+    ADOPT_ABORT=true
+  fi
+fi
+```
+
+**A failed `TaskStop` — or an unreadable registry — aborts the replacement** rather than proceeding: the same rule 2D.4 teardown already applies. Nulling `limit_resume_task_id` for a Monitor that is still ticking is the one irreversible mistake available here: the ID exists nowhere else, so the wake becomes unstoppable, and it would then fire a resume against a park record that has meanwhile been rewritten. Keeping the old identity leaves the existing (still valid) wake in charge, which is the safe side of the trade.
+
+`ADOPT_ABORT` carries that decision rather than a bare `return`: this block is not a function body, and at top level `return` prints an error and **execution continues** — straight into the write it was meant to prevent. The flag is checked below, where the guard actually has to bite.
+
+On a confirmed stop, write the park record, tagging its cause so recovery can tell the two apart:
+
+```bash
+if [ "$ADOPT_ABORT" = true ]; then
+  :   # guard fired above — no write, no wake, message already surfaced
+else
 STATE_WRITE_RC=0
 "$SESSION_STATE_SH" \
   --set ".repos[\"$REPO_KEY\"].day.parked_until=\"$PARKED_UNTIL\"" \
   --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"$LIMIT_KIND\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
   --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
   --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
   --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" || STATE_WRITE_RC=$?
 # If the write failed, the park metadata is not durable — do not arm a Monitor.
 if [[ "$STATE_WRITE_RC" -ne 0 ]]; then
   echo "Parked (usage limit) — state write failed (rc=$STATE_WRITE_RC); not arming auto-wake. Resume manually."
-  # EXIT this section — do not arm a Monitor
+  ADOPT_ABORT=true   # EXIT this section — do not arm a Monitor
+fi
 fi
 ```
 
-**Thrash guard.** If `HITS_RC` is unreadable (non-zero and non-3), or the state write failed, exit this section immediately without arming — the fail-closed exits above handle those paths. If `NEW_HITS >= MAX_LIMIT_HITS`, stay parked permanently and notify, with no auto-wake:
+**Thrash guard.** If `ADOPT_ABORT` is `true` — an unreadable registry, a failed `TaskStop`, or a failed state write — arm nothing and stop here. Likewise if `HITS_RC` is unreadable (non-zero and non-3): the fail-closed exits above handle those paths. If `NEW_HITS >= MAX_LIMIT_HITS`, stay parked permanently and notify, with no auto-wake:
 
 > Parked (usage limit) — {NEW_HITS} consecutive limit hits on resume; staying parked to avoid a hot loop. Resume manually when the window reopens.
 
@@ -1045,9 +1143,258 @@ invoked the command or estimating quota. Write `parked_until` and
 - Rolling window: `parked until {PARKED_UNTIL} — usage window; resuming automatically`
 - Weekly: `stopped — weekly cap reached; awaiting manual resume`
 
-**On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires.
+**On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended.
 
 **Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race.
+
+### 2D.7: Usage-horizon pre-emptive park (#1428)
+
+**Trigger:** D2's horizon gate set `HORIZON_PARK=true` (verdict `critical`). Run this before the tick ends, then stop the tick. Nothing else triggers it — `approaching` only stops refill, and `unknown` is a posture, never a park.
+
+The difference from 2D.6 is *when*, not *what*: no error has fired yet, so there is still runway to land near-done work, and there may be no vendor reset time to sleep until. Everything else is 2D.6's machinery, reused by reference — the execution gate, `/pause` Steps 2–7 with checkpoints, the same park fields and thrash guard, the same generation-tagged wake in the same `limit_resume_task_id` registry, the same teardown and recovery paths. **Do not add a second park record, a second wake class, or a second resume route.**
+
+**Knobs** (env override; shipped defaults otherwise). The validation is **executed in Step 1's block below**, not left to this table — it falls back to the shipped default and names the rejected input on stderr, exactly as the preamble does for `--cadence`. A documented range that no code enforces is not a range:
+
+| Value | Default | Env | Accepted |
+|-------|---------|-----|----------|
+| Landing window for the park | `2` minutes | `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` | `^[0-9]+$` — **`0` is legal** and selects reactive parity |
+| Probe cadence | `30` minutes | `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` | `^[0-9]+$` **and `> 0`** |
+| Probe fire bound | `12` fires | `CLAUDE_HORIZON_PROBE_MAX_FIRES` | `^[0-9]+$` **and `> 0`** |
+
+The two probe knobs reject zero for concrete reasons, not tidiness: a cadence of `0` makes the Monitor's `sleep 0` a hot loop firing a turn as fast as the harness allows — the runaway this whole park exists to avoid, at the worst possible moment — and a bound of `0` arms a wake whose first fire immediately reads the bound as spent, so the board parks with a Monitor that can only ever stop itself. The window knob is the opposite case: `0` is the documented way to ask for 2D.6's exact behavior.
+
+**Step 1 — Claim the park, before shutting anything down.** Exactly one park record may exist. A real kill can already have parked the board through 2D.6 microseconds earlier; claiming first means a lost race costs nothing, while shutting down first and *then* losing would leave a stopped board with no park record and no wake. `session-state.sh --cas` decides it under one lock hold (exit `7` is a clean loss, distinct from I/O failure):
+
+<!-- test-anchor: pm-day-2d7-park-claim -->
+
+```bash
+# Knobs resolve HERE, in executable code. The table above documents them; it cannot
+# enforce them. Bash arithmetic turns an unset or zero probe knob into 0, which makes
+# PARK_EPOCH equal NOW_EPOCH below — and every reader in this skill treats a
+# non-future parked_until as "the park resolved or never existed". The board would
+# wind down while its own durable record says it is not parked.
+PARK_WINDOW_MIN=2; PROBE_CADENCE_MIN=30; PROBE_MAX_FIRES=12
+if [ -n "${CLAUDE_HORIZON_PARK_WINDOW_MINUTES:-}" ]; then
+  if [[ "$CLAUDE_HORIZON_PARK_WINDOW_MINUTES" =~ ^[0-9]+$ ]]; then
+    PARK_WINDOW_MIN="$CLAUDE_HORIZON_PARK_WINDOW_MINUTES"   # 0 is legal — reactive parity
+  else
+    echo "horizon: rejected CLAUDE_HORIZON_PARK_WINDOW_MINUTES='$CLAUDE_HORIZON_PARK_WINDOW_MINUTES' — using 2" >&2
+  fi
+fi
+if [ -n "${CLAUDE_HORIZON_PROBE_CADENCE_MINUTES:-}" ]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" -gt 0 ]; then
+    PROBE_CADENCE_MIN="$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES"
+  else
+    echo "horizon: rejected CLAUDE_HORIZON_PROBE_CADENCE_MINUTES='$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES' — using 30" >&2
+  fi
+fi
+if [ -n "${CLAUDE_HORIZON_PROBE_MAX_FIRES:-}" ]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" -gt 0 ]; then
+    PROBE_MAX_FIRES="$CLAUDE_HORIZON_PROBE_MAX_FIRES"
+  else
+    echo "horizon: rejected CLAUDE_HORIZON_PROBE_MAX_FIRES='$CLAUDE_HORIZON_PROBE_MAX_FIRES' — using 12" >&2
+  fi
+fi
+
+NOW_EPOCH=$(date -u +%s)
+# Reset time from a vendor-classified notice, when one is in hand; otherwise the
+# probe bound (cadence x fires) is the conservative outer edge of the park.
+if [[ "${HORIZON_RESET_EPOCH:-}" =~ ^[0-9]+$ ]] && (( HORIZON_RESET_EPOCH > NOW_EPOCH )); then
+  PARK_EPOCH="$HORIZON_RESET_EPOCH"; PARK_RESET_KNOWN=true
+else
+  PARK_EPOCH=$(( NOW_EPOCH + PROBE_CADENCE_MIN * PROBE_MAX_FIRES * 60 )); PARK_RESET_KNOWN=false
+fi
+PREEMPTIVE_PARKED_UNTIL=$(date -u -d "@$PARK_EPOCH" +%FT%TZ 2>/dev/null || date -u -r "$PARK_EPOCH" +%FT%TZ)
+
+PARK_CLAIM_RC=0
+if [ "$PARK_EPOCH" -le "$NOW_EPOCH" ]; then
+  # Refuse rather than claim: a deadline that is not in the future is indistinguishable
+  # from no park at all, so claiming one would shut the board down invisibly.
+  echo "PARK_CLAIM=error rc=window"
+else
+  "$SESSION_STATE_SH" \
+    --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"$PREEMPTIVE_PARKED_UNTIL\"" \
+    --expect null >/dev/null 2>&1 || PARK_CLAIM_RC=$?
+  case "$PARK_CLAIM_RC" in
+    0) echo "PARK_CLAIM=won" ;;
+    7) echo "PARK_CLAIM=lost" ;;   # a park record already exists — 2D.6 got there first
+    *) echo "PARK_CLAIM=error rc=$PARK_CLAIM_RC" ;;
+  esac
+fi
+```
+
+- **`won`** → continue to Step 2.
+- **`lost`** → the board is already parked and a wake is already armed or being armed by the path that won. **Do nothing else**: no shutdown, no second write, no second Monitor, no second chat line. Stop the tick.
+- **`error`** (a write failure, or `rc=window` — a deadline that is not in the future) → fail closed exactly as 2D.6 does on an unreadable count: park nothing, arm nothing, shut nothing down, and say in one line that the horizon read critical but the park record could not be written, so manual wind-down is needed. A shutdown with no durable record is the one outcome worse than not parking.
+
+**Step 2 — Wind down through the existing pause mechanics.** Activate the execution gate (`execution-pause.sh --activate --command pause --window-minutes "$PARK_WINDOW_MIN"`), then run `/pause` Steps 2–7 with `--window "${PARK_WINDOW_MIN}m"`, **skipping only Step 1's `.refill.paused` write** — the same carve-out 2D.6 makes, for the same reason: that field is human-owned, and an automatic wake that cleared it would lift a pause the user set by hand.
+
+**Why a non-zero window here when 2D.6 uses `--window 0`.** The window is the one parameter that differs, and it differs because the situations do: 2D.6 runs *after* the account is already refusing work, so there is nothing to land and `/pause` Steps 4–5 are skipped; 2D.7 runs while calls still succeed, and landing a PR that is one merge away is the entire reason to fire before the wall instead of after it. Two minutes is deliberately small — a budget, not a promise, enforced by `/pause`'s own `T_END` check, which reclassifies any unit that has not landed by then as `park` rather than leaving it running. Setting `CLAUDE_HORIZON_PARK_WINDOW_MINUTES=0` selects exact reactive parity.
+
+**If the shutdown aborts** before Step 3 persists the rest of the record, release the claim — `--cas ".repos[…].day.parked_until=null" --expect "\"$PREEMPTIVE_PARKED_UNTIL\""` — so the board is not left reading as parked with no wake. Expecting your own value is what keeps this from clobbering a reactive park that landed meanwhile.
+
+**Step 3 — Finish the park record, re-checking ownership.** Read and increment `consecutive_limit_hits` exactly as 2D.6 does, including its fail-closed exit when the count is unreadable and its `MAX_LIMIT_HITS=3` thrash guard (at the cap: stay parked, no wake, notify). A pre-emptive park is always `rolling_window` — the horizon verdict measures the rolling window's runway and carries no weekly-cap classification, and **weekly caps remain the reactive path's business and stay manual-resume**.
+
+**Winning Step 1 is not a licence to finish.** The shutdown between them takes up to the landing window, and a real kill can fire inside it: 2D.6 then rewrites the park with a vendor reset time and arms its own wake. A plain `--set` here would overwrite that winner's `limit_cause` and probe bound, and Step 4 would then arm a *second* Monitor over its identity — the double-wake this issue exists to prevent. So ownership is re-taken by compare-and-set on `limit_cause`, which is null until exactly one path claims it:
+
+<!-- test-anchor: pm-day-2d7-park-record -->
+
+```bash
+if [ "$PARK_RESET_KNOWN" = true ]; then PROBE_FIRES=null; else PROBE_FIRES="$PROBE_MAX_FIRES"; fi
+RECORD_RC=0
+if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
+  # The thrash guard is only a guard if the counter is a number. An unset NEW_HITS
+  # writes an empty string, which 2D.6's own `[[ =~ ^[0-9]+$ ]] || PRIOR_HITS=0`
+  # coercion then reads as a reset streak — so MAX_LIMIT_HITS could never bite.
+  echo "PARK_RECORD=error rc=hits"
+else
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"preemptive\"" \
+    --expect null >/dev/null 2>&1 || RECORD_RC=$?
+  if [ "$RECORD_RC" -eq 7 ]; then
+    echo "PARK_RECORD=superseded"   # a reactive kill took the park mid-shutdown — write nothing, arm nothing
+  elif [ "$RECORD_RC" -ne 0 ]; then
+    echo "PARK_RECORD=error rc=$RECORD_RC"
+  else
+    "$SESSION_STATE_SH" \
+      --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"rolling_window\"" \
+      --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$PROBE_FIRES" \
+      --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" || RECORD_RC=$?
+    if [ "$RECORD_RC" -ne 0 ]; then
+      echo "PARK_RECORD=error rc=$RECORD_RC"
+    else
+      # Winning the CAS and finishing the write are two lock holds, not one: a
+      # reactive kill landing between them rewrites the cause and we would then
+      # arm a second wake over its record. Re-read the field we claimed; if it is
+      # no longer ours, the reactive path won and its record is the better one.
+      OWNER=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_cause" 2>/dev/null) || OWNER=""
+      if [ "$OWNER" = preemptive ]; then echo "PARK_RECORD=written"; else echo "PARK_RECORD=superseded"; fi
+    fi
+  fi
+fi
+```
+
+`superseded` ends the sub-step: the reactive record and its wake are already in place and are the better ones, so 2D.7 says nothing and arms nothing.
+
+**What the ownership re-read does and does not buy.** `session-state.sh` locks each invocation, not a sequence of them, and there is no multi-field compare-and-set — so winning the cause CAS and completing the metadata write are two separate lock holds, and a reactive kill can land between them. The re-read closes the outcome that matters: whatever the interleaving wrote, 2D.7 arms a wake only while it still holds the cause it claimed, so the double-wake this issue exists to prevent cannot happen. It does not make the pair atomic — a kill landing inside the window can still leave a record mixing the two paths' fields, which the reactive record's own write then largely overwrites. Narrowing that to a single atomic write needs a multi-key CAS in `session-state.sh`, which is a change to that script's contract and is out of scope here.
+
+**Any `PARK_RECORD=error` must undo Step 1's claim.** By this point the board is already stopped, so simply arming nothing would leave the worst state available: `parked_until` durably set, no cause, no kind, no bound, and no wake. Worse, the half-record *reads as a different park* — `limit_probe_fires_remaining` still null is exactly what recovery uses to mean "reset time known, re-arm the sleep-until-reset one-shot", against a `parked_until` that is really the fabricated cadence×fires outer edge, and a null `limit_kind` routes recovery to its "weekly cap or unreadable kind" line. So on any non-zero: release the claim with `--cas ".repos[…].day.parked_until=null" --expect "\"$PREEMPTIVE_PARKED_UNTIL\""` (expecting your own value, so a reactive park that landed meanwhile is never clobbered), then surface one line — `parked pre-emptively (usage horizon) — park record could not be written (rc={RC}); board is stopped and will not wake itself. Resume with /pause-resume.` A silent half-park is the one outcome this whole step exists to prevent.
+
+**Step 4 — Arm exactly one wake, in the existing registry.**
+
+Both branches bind the same two variables — `WAKE_GENERATION` (minted here) and `WAKE_TASK_ID` (returned by the arming call) — so the publish below is identical either way:
+
+- **Reset time known** (`PARK_RESET_KNOWN=true`): arm 2D.6's sleep-until-reset one-shot verbatim — same `while sleep … printf '/pause-resume --generation …'; break; done` shape, same reset-plus-2-minute buffer, same `2^(hits-1)` backoff — with `WAKE_GENERATION` in 2D.6's `limit-…` form.
+- **Reset time unknown:** arm **one persistent** `Monitor` at the probe cadence. It re-invokes this skill, which is what lets the session re-read the harness counter — a Monitor cannot read the context by itself, so the fire has to come back through a turn:
+
+  ```bash
+  WAKE_GENERATION="probe-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+  while sleep "$(( PROBE_CADENCE_MIN * 60 ))"; do
+    printf '%s\n' "/pm day --probe-wake --day-generation $WAKE_GENERATION"
+  done
+  ```
+
+Either way, publish the identity pair **immediately** into the same fields `/pause` Step 2 item 4 and 2D.6 already read — and publish the task id by **compare-and-set from null**, not a plain write, so publication is itself the last mutual-exclusion point rather than a read-before-arm check that a kill can land inside:
+
+<!-- test-anchor: pm-day-2d7-wake-publish -->
+
+```bash
+# `TaskStop` below is the harness tool, not a binary — the one non-shell call here.
+PUBLISH_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"$WAKE_TASK_ID\"" \
+  --expect null >/dev/null 2>&1 || PUBLISH_RC=$?
+GEN_WRITE_RC=0
+if [ "$PUBLISH_RC" -eq 0 ]; then
+  # The generation is half the identity pair, so this write is as load-bearing as the
+  # CAS above. Unchecked, a failure publishes a task id with a null generation — and
+  # every one of the 12 fires then reads that null, exits `stale`, spends no fire, and
+  # says nothing. The board never resumes, while Step 6 has already promised probing.
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"$WAKE_GENERATION\"" \
+    || GEN_WRITE_RC=$?
+fi
+if [ "$PUBLISH_RC" -eq 0 ] && [ "$GEN_WRITE_RC" -eq 0 ]; then
+  # Same two-lock-holds problem as Step 3: a reactive kill can adopt and clear our
+  # wake between the CAS and the generation write, leaving a generation attached to
+  # an id that is no longer ours. Confirm we still hold the slot before believing it.
+  HOLDER=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id" 2>/dev/null) || HOLDER=""
+  if [ "$HOLDER" = "$WAKE_TASK_ID" ]; then
+    echo "WAKE_PUBLISH=armed"
+  else
+    TaskStop "$WAKE_TASK_ID" && echo "WAKE_PUBLISH=lost" || echo "WAKE_PUBLISH=stranded"
+  fi
+else
+  if [ "$PUBLISH_RC" -eq 0 ]; then
+    # Task id landed, generation did not — take our own slot back before stopping.
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+      --expect "\"$WAKE_TASK_ID\"" >/dev/null 2>&1 || true
+  fi
+  if TaskStop "$WAKE_TASK_ID"; then
+    if [ "$PUBLISH_RC" -eq 7 ]; then echo "WAKE_PUBLISH=lost"; else echo "WAKE_PUBLISH=failed"; fi
+  else
+    echo "WAKE_PUBLISH=stranded"
+  fi
+fi
+```
+
+The three non-`armed` outcomes are not interchangeable, and only one of them is silent:
+
+- **`lost`** (rc 7) — another path published its wake first and ours is stopped. Exactly one wake is armed, which is the contract; say nothing.
+- **`failed`** — nobody owns the slot and ours is stopped, so the board is parked with **no** wake. Surface it: `parked pre-emptively (usage horizon) — could not register a wake; resume with /pause-resume.`
+- **`stranded`** — the stop itself failed, so a Monitor is live that nothing can name. Surface the ID: `parked pre-emptively (usage horizon) — could not stop the unrecorded wake {WAKE_TASK_ID}; stop it manually.`
+
+That is the whole teardown story: the probe wake is not a new monitor class, it is the existing one with a different sleep, so manual `/pause` stops it, `/pause-resume` disarms it, and a stale fire is rejected by the same generation check.
+
+**Step 5 — The probe fire (`--probe-wake`).** Validate the generation, re-observe the counter, then resume or decrement. The bound lives in state, not in the loop, so a session restart re-arms with the fires that are left rather than a fresh twelve:
+
+<!-- test-anchor: pm-day-2d7-probe-fire -->
+
+```bash
+GEN_RC=0
+STORED_GEN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_generation") || GEN_RC=$?
+if [ "$GEN_RC" -ne 0 ] && [ "$GEN_RC" -ne 3 ]; then
+  # Only rc 3 (no state file) is legitimately "no generation". A lock timeout is
+  # contention — likeliest precisely when a fleet is hammering this file — and reading
+  # it as `stale` would exit silently AND spend no fire, so the bound never advances.
+  echo "PROBE=fail-closed"
+elif [ -z "$STORED_GEN" ] || [ "$STORED_GEN" = null ] || [ "$TICK_GENERATION" != "$STORED_GEN" ]; then
+  echo "PROBE=stale"                    # superseded Monitor: no resume, no write, no output beyond this
+else
+  FIRES_RC=0; DEC_RC=0
+  FIRES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining") || FIRES_RC=$?
+  if [ "$FIRES_RC" -ne 0 ] || ! [[ "$FIRES" =~ ^[0-9]+$ ]]; then
+    echo "PROBE=fail-closed"            # unreadable bound: stop probing, stay parked, surface it
+  elif [ "$HORIZON_STATUS" = clear ]; then
+    echo "PROBE=resume"                 # window replenished -> /pause-resume --generation "$STORED_GEN"
+  elif [ "$FIRES" -le 1 ]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=0" || DEC_RC=$?
+    [ "$DEC_RC" -eq 0 ] && echo "PROBE=exhausted" || echo "PROBE=fail-closed"
+  else
+    # The decrement IS the bound. `|| true` here would report a fire that was never
+    # recorded, so every later fire re-reads the same count, `exhausted` is never
+    # reached, and the Monitor probes forever — the runaway this park exists to avoid.
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$(( FIRES - 1 ))" || DEC_RC=$?
+    [ "$DEC_RC" -eq 0 ] && echo "PROBE=continue" || echo "PROBE=fail-closed"
+  fi
+fi
+```
+
+`HORIZON_STATUS` comes from re-running D2's horizon block (observe, then `--check`) at the top of the fire — the same gate, so `unknown` cannot resume any more than it can park. Only `clear` resumes: `approaching` means the window has begun refilling but has not recovered, and resuming there walks straight back into the wall the thrash guard exists to prevent.
+
+- `PROBE=resume` → invoke `/pause-resume --generation "$STORED_GEN"`, which validates the token, reopens the gate, and re-arms the day loop through `/pm day resume`. **Never pass `--resume-refill`** — this park never wrote `.refill.paused`.
+- `PROBE=exhausted` / `PROBE=fail-closed` → `TaskStop` the recorded Monitor, null `limit_resume_task_id` and `limit_resume_generation`, leave the park in place, and surface one line: `probe wake exhausted after {N} checks — still parked; resume manually with /pause-resume`. Silence here would be a board that never comes back and never says so.
+- `PROBE=stale` → exit silently, exactly as D0 does for a superseded tick.
+
+**Step 6 — Chat surfacing (always-emit).** Two lines on park, one on resume; nothing else:
+
+```
+parked pre-emptively (usage horizon) — landed #1421, checkpointed #1430 (Phase B), 2 queued
+window reset unknown — probing every 30m, up to 12 checks (through 05:12 AM ET)
+```
+
+With a known reset the second line is 2D.6's shape instead (`resuming automatically at {PARKED_UNTIL}`). On resume: `resumed (usage window replenished) — day loop re-armed`.
+
+**Recovery and teardown parity.** 2D.1(b+) and 2D.5 already gate on `parked_until` + `limit_kind`; both now also read `limit_cause` and `limit_probe_fires_remaining` so a restart re-arms the *right* wake: a known reset (`limit_probe_fires_remaining` null) re-arms the sleep-until-reset one-shot with the remaining time, and a pre-emptive park with fires left re-arms the probe Monitor with that count. Zero fires left, a weekly kind, or an unreadable value all take the existing manual-resume branch unchanged. A `preemptive` cause is never a reason to skip a check the reactive path makes — it only selects which wake to re-arm.
+
+**Out of scope:** non-day orchestration threads. `/pr-monitor-and-manage` and `/babysit-pr` do not consult the horizon and are unchanged — the day-mode carve-out in `.claude/reference/pm-monitoring-decision.md` is what makes day mode the one loop that owns a repo's between-turn dispatch, so it is the one loop that can park it. Extending the reflex to `monitor-mode.md`'s per-cycle checklist is a named follow-up, not part of this change.
 
 ---
 

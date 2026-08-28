@@ -62,6 +62,8 @@ Five knobs turning the harness-injected in-context remaining-token counter into 
 - **usage_horizon_hysteresis_pct** — integer percent `0`–`100`, default **3**. Env: **`CLAUDE_USAGE_HORIZON_HYSTERESIS_PCT`**. Stops adjacent readings from flapping the verdict: worsening applies immediately, while leaving a band requires exceeding that band's threshold by this margin (scaled into tokens by the same ratio in floor mode). `0` disables hysteresis.
 - **usage_horizon_reading_ttl_s** — seconds, `1`–`999999999`, default **1800**. Env: **`CLAUDE_USAGE_HORIZON_TTL_SECONDS`**. A stored reading older than this is `unknown`, not `clear`.
 
+**Consuming the verdict — `/pm` day mode (#1428).** Three further values shape what day mode *does* with a verdict, and they are **env-only** — deliberately not `ini` keys here, because nothing reads this file for them and a knob that silently does nothing is worse than no knob: `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` (default **2** — the landing window the pre-emptive park gives `/pause`; `0` selects exact reactive-park parity), `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` (default **30**), and `CLAUDE_HORIZON_PROBE_MAX_FIRES` (default **12**) — the bounded probe wake used when a park has no known reset time. Contract: `/pm` Step 2D.7; rationale: `.claude/reference/pm-day-mode.md`.
+
 **These knobs gate horizon verdicts only.** They never authorize local token estimation — `usage-horizon.sh` compares an upstream-supplied number and has no code path that could consume an estimate (`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority"; `.claude/reference/budget-source-probe.md` §"Probe 0").
 
 ## Infrastructure
