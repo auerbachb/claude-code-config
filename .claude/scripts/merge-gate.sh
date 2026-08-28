@@ -1904,6 +1904,10 @@ case "$REVIEWER" in
       # carries no "Last reviewed commit" footer — both mean "no claim about
       # which commit was reviewed", never "reviewed a different commit".
       G_FOOTER_SHA=""
+      # True only when the footer positively names some commit other than HEAD.
+      # Declared out here beside G_FOOTER_SHA because Path B reads it whether or
+      # not a summary comment exists, and the script runs under `set -u`.
+      G_FOOTER_CONTRADICTS=false
       G_HEAD_SHA_LC=$(printf '%s' "$HEAD_SHA" | tr "[:upper:]" "[:lower:]")
       if [[ -n "$LATEST_G_COMMENT" ]]; then
         G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
@@ -1923,14 +1927,27 @@ case "$REVIEWER" in
           | [scan("last reviewed commit:[^\n]*/commit/([0-9a-f]{40})")]
           | (last // []) | (.[0] // "")')
         G_FOOTER_ON_HEAD=false
-        if [[ -n "$G_FOOTER_SHA" && "$G_FOOTER_SHA" == "$G_HEAD_SHA_LC" ]]; then
-          G_FOOTER_ON_HEAD=true
+        if [[ -n "$G_FOOTER_SHA" ]]; then
+          if [[ "$G_FOOTER_SHA" == "$G_HEAD_SHA_LC" ]]; then
+            G_FOOTER_ON_HEAD=true
+          else
+            G_FOOTER_CONTRADICTS=true
+          fi
         fi
 
         # Clean = the footer names HEAD (or the supplemental bot-comment 👍),
         # no inline findings, and no formal P0 badge in any channel of the
         # current review round.
-        if [[ "$G_FOOTER_ON_HEAD" == true || "$G_THUMBSUP" -gt 0 ]] \
+        #
+        # A contradicting footer vetoes the whole branch, 👍 included. The
+        # reaction is a weaker signal than the footer and cannot overrule it:
+        # 👍 on a Greptile comment is a routine workflow artifact — greptile.md
+        # makes 👍/👎 the bot's only learning channel — so without this veto a
+        # single feedback reaction on a stale summary would mark the comment
+        # clean, skip Path B entirely, and silently defeat the contradiction
+        # guard below (the guard runs only when G_COMMENT_CLEAN is false).
+        if [[ "$G_FOOTER_CONTRADICTS" != true ]] \
+           && [[ "$G_FOOTER_ON_HEAD" == true || "$G_THUMBSUP" -gt 0 ]] \
            && [[ "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
           G_COMMENT_CLEAN=true
         fi
@@ -1947,7 +1964,11 @@ case "$REVIEWER" in
         # commit other than HEAD, the fresh path has no verdict on HEAD to give,
         # so block and keep polling for the re-review. Only a footer that
         # disagrees blocks; a missing footer changes nothing.
-        if [[ -n "$G_FOOTER_SHA" && "$G_FOOTER_SHA" != "$G_HEAD_SHA_LC" ]]; then
+        #
+        # Same G_FOOTER_CONTRADICTS the Path A veto reads, so the two sites
+        # cannot drift: whatever Path A refuses to call clean is exactly what
+        # gets reported here.
+        if [[ "$G_FOOTER_CONTRADICTS" == true ]]; then
           MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (trigger @greptileai)")
         fi
 

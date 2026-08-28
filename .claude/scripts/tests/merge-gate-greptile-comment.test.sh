@@ -11,6 +11,7 @@
 #   1. Clean 👍 + no inline comments → gate met (primary fix)
 #   2. 👍 + P0-badged inline findings → gate not met (severity gate)
 #   3. 👍 comment created BEFORE last push (stale) → gate not met (freshness)
+#   33. A bot-comment thumbsup must not overrule a contradicting footer.
 #   29-32. Footer-SHA detection with ZERO reactions on the bot comment — the
 #     PR #1379 shape, where Greptile reacted to the trigger comment instead.
 #
@@ -723,6 +724,23 @@ run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT32]" "[$INLINE_P0_32]"
 check_eq "false" "$(met)" "footer + P0: met == false"
 check_eq "yes"   "$(missing_has "P0")" "footer + P0: missing contains P0 message"
 check_eq "1"     "$RC"    "footer + P0: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 33: a 👍 on the bot comment must not overrule a contradicting footer.
+# The supplemental reaction is OR'd with the footer-on-HEAD check, so without an
+# explicit veto a stale summary carrying any 👍 would mark the comment clean and
+# skip Path B — the branch that reports the mismatch — leaving the contradiction
+# guard unreachable exactly when it matters. Not a theoretical shape: greptile.md
+# makes 👍/👎 the bot's only learning channel, so reactions land on Greptile
+# comments as a routine part of the workflow. (CodeAnt, PR #1454.)
+# --------------------------------------------------------------------------
+echo "--- Test 33: bot-comment thumbsup cannot launder a stale footer ---"
+COMMENT33="$(greptile_comment "$FRESH_TS" 1 "$FRESH_TS" "$STALE_FOOTER_SHA")"
+run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT33]" "[]"
+
+check_eq "false" "$(met)" "stale footer + thumbsup: met == false"
+check_eq "yes"   "$(missing_has "not HEAD")" "stale footer + thumbsup: missing names the SHA mismatch"
+check_eq "1"     "$RC"    "stale footer + thumbsup: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"
