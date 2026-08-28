@@ -427,6 +427,38 @@ check_eq "$(status_of)" "approaching" "session hs-a is approaching"
 run --observe 3800000 --limit 15000000 --session hs-b
 check_eq "$(status_of)" "clear" "a foreign session's level does not make hs-b sticky"
 
+# Neither does a reading past the TTL, even from the SAME session. --check
+# already reports such a reading as unknown/reading-stale, and an unknown is not
+# a level, so --observe must not let an expired verdict drag a fresh reading
+# into a more severe band.
+backdate_reading() { # backdate_reading <seconds-ago> — age the stored reading
+  local secs="$1" epoch ts
+  epoch=$(( $(date -u +%s) - secs ))
+  # Each form tried in ISOLATION with the result shape validated before it is
+  # trusted: GNU `date -r` means "reference FILE", so a try-both chain would
+  # otherwise yield something that is not a timestamp (same trap as file_mode).
+  ts="$(date -u -d "@$epoch" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || ts=""
+  if [[ ! "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    ts="$(date -u -r "$epoch" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)" || ts=""
+  fi
+  [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  jq --arg ts "$ts" '.usage_horizon.reading.ts = $ts' "$(STATE)" > "$TMP/bd.json" \
+    && mv "$TMP/bd.json" "$(STATE)"
+}
+
+reset_home
+run --observe 3000000 --limit 15000000 --session hy-ttl   # 20% -> approaching
+check_eq "$(status_of)" "approaching" "stale-anchor setup: 20% is approaching"
+if backdate_reading 7200; then ok "the stored reading can be backdated past the TTL"; else bad "backdate_reading failed (no usable date form)"; fi
+run --check --session hy-ttl
+check_eq "$(status_of)" "unknown" "the backdated reading is unknown to --check"
+check_eq "$(reason_of)" "reading-stale" "the backdated reading is unknown BECAUSE it is stale"
+# 25.33%: above the 25% threshold but below the 28% margin. With a LIVE
+# `approaching` anchor this exact reading is sticky (asserted at the top of this
+# section); with an EXPIRED one it must release to clear.
+run --observe 3800000 --limit 15000000 --session hy-ttl
+check_eq "$(status_of)" "clear" "a TTL-expired prior verdict does not anchor hysteresis"
+
 # --- 7. negative controls: nothing degraded may yield clear ---------------------
 # 7a. Missing sibling helper. Paired with a positive control on the identical
 #     reading, so the negative result cannot pass vacuously.
@@ -517,6 +549,32 @@ run --observe 12000000 --limit 15000000 --session rot
 check_present "$(LOG).1" "an oversized log rotates to a single .1 generation"
 check_eq "$(wc -l < "$(LOG)" | tr -d ' ')" "1" "the live log restarts with just the new record"
 check_absent "$(LOG).2" "rotation stays single-generation"
+
+# A rotation that CANNOT happen must be reported rather than swallowed —
+# otherwise the log silently grows past its documented bound.
+# Setup: `.1` is a NON-WRITABLE DIRECTORY, so `rm -f` fails (it is a directory)
+# and `mv` fails (it cannot create an entry inside it), while the log itself
+# stays appendable and the parent stays writable so the lock is still
+# acquirable. Needs no root, so it runs on CI as well as locally.
+reset_home
+mkdir -p "$FAKE_HOME/.claude"
+head -c 262144 /dev/zero | tr '\0' 'x' > "$(LOG)"
+mkdir -p "$(LOG).1"
+: > "$(LOG).1/keep"
+chmod 500 "$(LOG).1"
+run --observe 12000000 --limit 15000000 --session rotfail
+ROT_ERR="$(cat "$TMP/stderr")"
+ROT_SIZE="$(wc -c < "$(LOG)" | tr -d ' ')"
+chmod 700 "$(LOG).1"   # restore before the EXIT trap cleans up
+check_contains "$ROT_ERR" "could not rotate" "a failed rotation is reported on stderr"
+# Proves the report is not vacuous: the bound really was exceeded.
+if [[ "$ROT_SIZE" -gt 262144 ]]; then
+  ok "the failed rotation really did leave the log past its bound"
+else
+  bad "the failed rotation assertion is vacuous (log is ${ROT_SIZE}B, expected >262144B)"
+fi
+check_eq "$(status_of)" "clear" "the reading is still recorded despite the failed rotation"
+check_eq "$RC" "0" "a failed rotation does not fail the observation"
 
 # --- 9. knobs really come from pm-config.md -------------------------------------
 # With the env overrides removed, the thresholds must come from the `## Budget`

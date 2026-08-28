@@ -459,6 +459,23 @@ read_horizon_state() {
   jq -c '.usage_horizon // null' "$STATE_FILE" 2>/dev/null || return 4
 }
 
+# prior_reading_is_fresh <horizon-json> — true when the stored reading is still
+# inside the TTL, using the SAME window --check applies: a future timestamp is
+# as untrustworthy as a stale one, and an age that cannot be computed is stale.
+# Both modes must agree on which readings are still alive, because a reading
+# --check already calls `unknown` is not a level (see HYSTERESIS above) and so
+# must not anchor a new verdict either.
+prior_reading_is_fresh() {
+  local ts epoch now age
+  ts="$(printf '%s' "$1" | jq -r '.reading.ts // ""' 2>/dev/null)" || return 1
+  epoch="$(iso_to_epoch "$ts")"
+  [[ -n "$epoch" ]] || return 1
+  now="$(date -u +%s 2>/dev/null)" || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  age=$(( now - epoch ))
+  (( age >= 0 && age <= TTL_SECONDS ))
+}
+
 # --- verdict arithmetic --------------------------------------------------------
 # severity_rank <status> — ordering used to decide whether a raw verdict is a
 # worsening (applied immediately) or an improvement (must clear hysteresis).
@@ -581,9 +598,17 @@ append_observation() { # $1 = one-line JSON record
   # UTF-8 and defer rotation past the cap.
   record_bytes="$(printf '%s\n' "$record" | wc -c | tr -d '[:space:]')"
   [[ "$record_bytes" =~ ^[0-9]+$ ]] || record_bytes=${#record}
-  if (( size + record_bytes >= LOG_MAX_SIZE )); then
+  if [[ -f "$OBS_LOG" ]] && (( size + record_bytes >= LOG_MAX_SIZE )); then
+    # A rotation that cannot happen must not pass as one. The append below still
+    # runs on failure — dropping an authoritative reading is worse than an
+    # oversized log — but the log is then past its documented bound, so say so
+    # instead of swallowing it. Only the `mv` verdict is reported: `rm -f` on an
+    # absent `.1` is a success, and its failure alone is harmless because the
+    # `mv` that follows either overwrites `.1` anyway or fails and is caught here.
     rm -f "${OBS_LOG}.1" 2>/dev/null || true
-    mv "$OBS_LOG" "${OBS_LOG}.1" 2>/dev/null || true
+    if ! mv "$OBS_LOG" "${OBS_LOG}.1" 2>/dev/null; then
+      echo "usage-horizon.sh: could not rotate $OBS_LOG to ${OBS_LOG}.1; the log will exceed its ${LOG_MAX_SIZE}-byte bound" >&2
+    fi
   fi
 
   if ! printf '%s\n' "$record" >> "$OBS_LOG" 2>/dev/null; then
@@ -626,13 +651,19 @@ case "$MODE" in
     }
 
     # Prior verdict for hysteresis. It anchors the new verdict ONLY when the
-    # previous reading came from this same session: another session's level is
-    # not this session's runway, and a prior `unknown` is not a level at all.
+    # previous reading came from this same session AND is still inside the TTL:
+    # another session's level is not this session's runway, and a prior
+    # `unknown` is not a level at all. The TTL half matters as much as the
+    # session half — a reading past the TTL is precisely what --check reports as
+    # `unknown`/`reading-stale`, so letting it anchor here would let a verdict
+    # this script has already declared dead drag a fresh reading into a more
+    # severe band (an hour-old `critical` holding a healthy reading at
+    # `approaching`).
     PRIOR_STATUS=""
     PRIOR_RAW=""
     if PRIOR_RAW="$(read_horizon_state)"; then
       PRIOR_SESSION="$(printf '%s' "$PRIOR_RAW" | jq -r '.reading.session_id // ""' 2>/dev/null)" || PRIOR_SESSION=""
-      if [[ "$PRIOR_SESSION" == "$SESSION_ID" ]]; then
+      if [[ "$PRIOR_SESSION" == "$SESSION_ID" ]] && prior_reading_is_fresh "$PRIOR_RAW"; then
         PRIOR_STATUS="$(printf '%s' "$PRIOR_RAW" | jq -r '.status // ""' 2>/dev/null)" || PRIOR_STATUS=""
       fi
     fi
