@@ -537,6 +537,7 @@ reset_candidate() {
   OWNER_TITLE=""
   OWNER_FALLBACK=""
   OWNER_SESSION=""
+  OWNER_SESSIONS=()
   RESUME_ROUTE=""
   EVIDENCE=()
   DEGRADED=()
@@ -560,10 +561,38 @@ add_degraded() {
 # title beats a machine token however early the token was found. The final
 # ranking is session-listing title > source-supplied title > claim-derived
 # description > session id (issue #1431 "Notes / Open questions").
+# The LABEL is first-write-wins by preference order, but every session id an
+# evidence source attributes to this candidate is kept. Liveness is a question
+# about the work, not about whichever source happened to run first: the claim
+# gate always runs before markers, background tasks, and the fleet, so keeping
+# only its session id let a claim whose session is absent (-> dead) outrank a
+# marker naming a session that is demonstrably live, and adopt underneath it.
 note_owner() { # note_owner <fallback-label> <session_id>
   [[ -z "$OWNER_FALLBACK" && -n "$1" ]] && OWNER_FALLBACK="$1"
   [[ -z "$OWNER_SESSION" && -n "$2" ]] && OWNER_SESSION="$2"
+  if [[ -n "$2" ]]; then
+    local s
+    for s in ${OWNER_SESSIONS[@]+"${OWNER_SESSIONS[@]}"}; do
+      [[ "$s" == "$2" ]] && return 0
+    done
+    OWNER_SESSIONS+=("$2")
+  fi
   return 0
+}
+
+# Liveness over EVERY attributed session. One live session means the work is
+# live; `dead` requires that something actually resolved dead and nothing
+# resolved live. Anything else is indeterminate, which the caller treats as
+# live — the direction that costs a surfaced line instead of a duplicate.
+owner_liveness() {
+  local sid st saw_dead=0
+  for sid in ${OWNER_SESSIONS[@]+"${OWNER_SESSIONS[@]}"}; do
+    st="$(session_status "$sid")"
+    [[ "$st" == "live" ]] && { printf 'live'; return; }
+    [[ "$st" == "dead" ]] && saw_dead=1
+  done
+  (( saw_dead )) && { printf 'dead'; return; }
+  printf 'indeterminate'
 }
 note_title() { # note_title <human-readable title>
   [[ -z "$OWNER_TITLE" && -n "$1" ]] && OWNER_TITLE="$1"
@@ -675,26 +704,37 @@ for ISSUE in "${CANDIDATES[@]}"; do
     fi
   fi
 
-  case "$CLAIM_VERDICT" in
-    claimed)
-      OWNED=1
-      note_state active
-      add_evidence "claim: fresh claim held by ${CLAIM_LOGIN:-another account} (holder ${CLAIM_HOLDER:-unknown})"
-      note_owner "${CLAIM_LOGIN:+$CLAIM_LOGIN }thread ${CLAIM_HOLDER:-unknown}" "$CLAIM_HOLDER"
-      ;;
-    stale)
-      # Not owned yet — the owned-resumable upgrade below decides.
-      note_state stale
-      add_evidence "claim: stale claim by ${CLAIM_LOGIN:-another account} (holder ${CLAIM_HOLDER:-unknown})"
-      note_owner "${CLAIM_LOGIN:+$CLAIM_LOGIN }thread ${CLAIM_HOLDER:-unknown}" "$CLAIM_HOLDER"
-      ;;
-    unknown)
-      add_evidence "claim: state undetermined (issue-claim.sh fail-closed)"
-      ;;
-  esac
-  # A claim held by THIS thread is not another thread's ownership.
+  # Decide self-attribution BEFORE the claim can confer ownership. `mine` is the
+  # gate's own verdict; `is_self` additionally catches a claim this thread wrote
+  # under a different token than the one `resolve_holder` produces now (a session
+  # id where the holder is `CLAUDE_CLAIM_HOLDER`, or vice versa). Appending
+  # "held by this thread" AFTER setting OWNED left the flag standing, so a thread
+  # skipped its own claimed work as if a stranger held it.
+  CLAIM_IS_SELF=0
   if [[ "$CLAIM_VERDICT" == "mine" ]] || is_self "$CLAIM_HOLDER"; then
+    CLAIM_IS_SELF=1
+  fi
+
+  if (( CLAIM_IS_SELF )); then
     add_evidence "claim: held by this thread — not foreign ownership"
+  else
+    case "$CLAIM_VERDICT" in
+      claimed)
+        OWNED=1
+        note_state active
+        add_evidence "claim: fresh claim held by ${CLAIM_LOGIN:-another account} (holder ${CLAIM_HOLDER:-unknown})"
+        note_owner "${CLAIM_LOGIN:+$CLAIM_LOGIN }thread ${CLAIM_HOLDER:-unknown}" "$CLAIM_HOLDER"
+        ;;
+      stale)
+        # Not owned yet — the owned-resumable upgrade below decides.
+        note_state stale
+        add_evidence "claim: stale claim by ${CLAIM_LOGIN:-another account} (holder ${CLAIM_HOLDER:-unknown})"
+        note_owner "${CLAIM_LOGIN:+$CLAIM_LOGIN }thread ${CLAIM_HOLDER:-unknown}" "$CLAIM_HOLDER"
+        ;;
+      unknown)
+        add_evidence "claim: state undetermined (issue-claim.sh fail-closed)"
+        ;;
+    esac
   fi
 
   if [[ -n "$LABELED_NUMS" ]] && printf '%s\n' "$LABELED_NUMS" | grep -qx "$ISSUE"; then
@@ -933,10 +973,11 @@ for ISSUE in "${CANDIDATES[@]}"; do
 
   # -- liveness --------------------------------------------------------------------
   if (( OWNED )); then
-    if [[ -n "$OWNER_SESSION" ]] && ! looks_like_session_id "$OWNER_SESSION"; then
-      add_degraded "owner token $OWNER_SESSION is holder-shaped, not a session id (liveness indeterminate -> owner treated as live)"
-    fi
-    LIVENESS="$(session_status "$OWNER_SESSION")"
+    for OS in ${OWNER_SESSIONS[@]+"${OWNER_SESSIONS[@]}"}; do
+      looks_like_session_id "$OS" || \
+        add_degraded "owner token $OS is holder-shaped, not a session id (liveness indeterminate -> owner treated as live)"
+    done
+    LIVENESS="$(owner_liveness)"
     if [[ -n "$OWNER_SESSION" ]]; then
       T="$(session_title "$OWNER_SESSION")"
       # A title the listing supplies is the most human-readable name available,

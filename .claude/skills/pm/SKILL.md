@@ -532,18 +532,27 @@ fi
 **Ownership sweep (runs after ranking and window-fit selection, before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. Run the sweep over the selected inline-eligible candidates and branch three ways (issue #1431):
 
 ```bash
-SWEEP_ARGS=("${CANDIDATE_NUMS[@]}" --json)
-# Liveness needs a session listing, and no CLI enumerates Claude sessions — it
-# comes from the harness. When this thread can list sessions, write that JSON to
-# a temp file and pass it; the `owned_dead` -> adopt branch is unreachable
-# without it, so a dead thread's work is surfaced rather than resumed.
-if [[ -n "${SESSION_LISTING_PATH:-}" && -r "${SESSION_LISTING_PATH:-}" ]]; then
-  SWEEP_ARGS+=(--sessions "$SESSION_LISTING_PATH")
-fi
-if [[ -n "$CANDIDATE_OWNERSHIP" ]]; then
-  SWEEP=$("$CANDIDATE_OWNERSHIP" "${SWEEP_ARGS[@]}" 2>/dev/null) || SWEEP=""
+# The issue numbers about to be dispatched: the window-fit batch when a window
+# is armed (BATCH_ISSUES above), otherwise the ranked inline-eligible picks.
+CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})
+
+SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
+if [[ -n "$CANDIDATE_OWNERSHIP" && ${#CANDIDATE_NUMS[@]} -gt 0 ]]; then
+  SWEEP_ARGS=("${CANDIDATE_NUMS[@]}" --json)
+  # Liveness needs a session listing, and no CLI enumerates Claude sessions — it
+  # comes from the harness. When this thread can list sessions, write that JSON to
+  # a temp file and pass it; the `owned_dead` -> adopt branch is unreachable
+  # without it, so a dead thread's work is surfaced rather than resumed.
+  if [[ -n "${SESSION_LISTING_PATH:-}" && -r "${SESSION_LISTING_PATH:-}" ]]; then
+    SWEEP_ARGS+=(--sessions "$SESSION_LISTING_PATH")
+  fi
+  SWEEP_ERRFILE="$(mktemp)"
+  SWEEP="$("$CANDIDATE_OWNERSHIP" "${SWEEP_ARGS[@]}" 2>"$SWEEP_ERRFILE")" || SWEEP_RC=$?
+  SWEEP_ERR="$(cat "$SWEEP_ERRFILE")"; rm -f "$SWEEP_ERRFILE"
 fi
 ```
+
+**A sweep that did not run is a named degradation, never a silent one.** `SWEEP_RC` non-zero or empty output with candidates present means the ownership filter is *off* for this tick — print the `sweep degraded` line below for every candidate, quoting `SWEEP_ERR`, and fall back to claim-gate-only. Discarding the error and continuing would let a usage error silently disable the whole guard, which is the failure mode this sweep exists to prevent.
 
 **Obtain the listing before the sweep when you can.** If this thread has a session-listing tool available (`mcp__ccd_session_mgmt__list_sessions` or equivalent), call it, write the JSON to a temp file, and set `SESSION_LISTING_PATH` to that path. Without a listing, liveness is `indeterminate`, which resolves to **live** — fail toward surfacing, never toward adopting. That direction is deliberate: surfacing a thread that turned out to be dead costs one line, adopting work a live thread is still doing costs a duplicate implementation. Each line carries `action`, and `action` is the whole contract:
 

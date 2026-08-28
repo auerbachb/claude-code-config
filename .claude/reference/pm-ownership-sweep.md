@@ -98,6 +98,16 @@ Two tiers, and the human-readable one wins however late it is found: session-lis
 
 **Recover it by walking the length prefixes, never by splitting on dashes.** Session ids are UUIDs and keep their own dashes, so "the field before the tag" yields only the UUID's last group. A truncated id is absent from the session listing, absence reads as `dead`, and `dead` is the one classification that adopts — so the parse bug resumed a *live* paused thread underneath, the exact duplicate-ship failure the sweep exists to prevent. The same walk recovers the repo, which is why both come from one parser.
 
+### Liveness spans every attributed session
+
+The owner *label* is first-write-wins by preference order, but liveness is not. The claim gate always runs before markers, background tasks, and the fleet, so keeping only its session id let a claim whose session is absent — read as `dead` — outrank a marker naming a session the listing shows open, and adopt underneath a thread that was still working.
+
+Liveness is therefore resolved over **every** session id any evidence source attributed to the candidate: one `live` makes the work live; `dead` requires that something resolved dead and nothing resolved live; anything else is `indeterminate`. That ordering is the fail-toward-surfacing rule applied to a set rather than to a single lucky first write.
+
+### A self-held claim confers no ownership
+
+`mine` is the claim gate's own verdict, but a thread can also hold a claim it wrote under a *different* token than `resolve_holder` produces now — a session id where the holder is `CLAUDE_CLAIM_HOLDER`, or the reverse. Self-attribution is therefore decided **before** the claim can set `OWNED`, not appended as evidence afterwards: appending left the flag standing, so a thread skipped its own claimed work as though a stranger held it.
+
 ### A holder token is not a session id
 
 `issue-claim.sh` reports `claimant_holder`, and `resolve_holder`'s documented last resort is `<hostname>:<worktree path>` — a token that can never appear in a session listing. Feeding it to the liveness lookup returns "absent", which again reads as `dead` and adopts. Absence is evidence of death only for something that could have been present, so a token carrying `:` or `/` is treated as holder-shaped: liveness `indeterminate`, owner treated as live, and the reason recorded in `degraded[]`.

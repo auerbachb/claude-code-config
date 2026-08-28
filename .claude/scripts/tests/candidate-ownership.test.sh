@@ -445,6 +445,56 @@ check_eq "surfaced, never adopted" "skip" "$(field 409 '.action')"
 check_contains "and the reason is named, not silent" "holder-shaped" \
   "$(field 409 '.degraded | join("|")')"
 
+# The claim gate always runs before markers, background tasks and the fleet, and
+# note_owner's LABEL is first-write-wins. Keeping only the claim's session id let
+# a claim whose session is absent (-> dead) outrank a marker naming a session the
+# listing shows live, and adopt the work underneath it.
+echo "-- (4k) a live marker session outranks a dead claim session --"
+scenario "(4k) dead claim vs live marker"
+export FAKE_CLAIM_410="stale:threadVanished:alice"
+printf 'Repository: testowner/testrepo\nParked: #410 mid-implementation\n' \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-9-testowner-8-testrepo-threadAlive-QW3tbW.md"
+# threadVanished is absent from the listing (= dead); threadAlive is open.
+seed_sessions '[{"id":"threadAlive","status":"open","title":"still working"}]'
+sweep 410
+check_eq "one live session makes the work live" "live" "$(field 410 '.liveness')"
+check_eq "verdict owned_live" "owned_live" "$(field 410 '.verdict')"
+check_eq "surfaced, never adopted" "skip" "$(field 410 '.action')"
+
+echo "-- (4l) and with NO live session among them, dead still means dead --"
+scenario "(4l) all attributed sessions dead"
+export FAKE_CLAIM_411="stale:threadVanished:alice"
+seed_pr 911 411 "issue-411-feature"
+printf 'Repository: testowner/testrepo\nParked: #411\n' \
+  > "$HOME/.claude/handoffs/pause-20260828T000000Z-9-testowner-8-testrepo-threadAlsoGone-QW3tbW.md"
+seed_sessions '[{"id":"someoneElse","status":"open","title":"unrelated"}]'
+sweep 411
+check_eq "all absent, so dead" "dead" "$(field 411 '.liveness')"
+check_eq "and adoption is still reachable" "adopt" "$(field 411 '.action')"
+
+# A `claimed` verdict set OWNED before the self-check ran, and the self-check
+# only appended evidence — so a thread whose claim was written under a different
+# token than resolve_holder produces now skipped its OWN work as foreign.
+echo "-- (4m) this thread's own fresh claim is not foreign ownership --"
+scenario "(4m) self claim under the session-id token"
+# Claim holder is this thread's SESSION id, while HOLDER resolves to
+# $CLAUDE_CLAIM_HOLDER (selfholder) — the mismatch BugBot described.
+export FAKE_CLAIM_412="claimed:selfsession:alice"
+sweep 412
+check_eq "not owned by ourselves" "false" "$(field 412 '.owned')"
+check_eq "dispatchable" "dispatch" "$(field 412 '.action')"
+check_contains "self-attribution stated" "held by this thread" \
+  "$(field 412 '.evidence | join("|")')"
+check_not_contains "and not reported as a foreign claim" "fresh claim held by" \
+  "$(field 412 '.evidence | join("|")')"
+
+echo "-- (4n) control: the same claim under a FOREIGN token still owns --"
+scenario "(4n) foreign fresh claim"
+export FAKE_CLAIM_413="claimed:threadOther:alice"
+sweep 413
+check_eq "owned" "true" "$(field 413 '.owned')"
+check_eq "skip" "skip" "$(field 413 '.action')"
+
 ############################################################################
 # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>],
 # and session-state.sh rewrites just `.prs`/`.root_repo` into repo scope — so
