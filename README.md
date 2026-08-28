@@ -194,7 +194,7 @@ For the full per-hook manifest (script name, event, purpose) and auto-registrati
 
 Shared helpers in `.claude/scripts/` are used by skills, hooks, and review subagents for repeatable GitHub, git, and PM workflow operations.
 
-See **[.claude/scripts/README.md](.claude/scripts/README.md)** for the script catalog (one-sentence purpose per script). For full contracts, arguments, and exit codes run the script with `--help` or read the script header.
+See **[.claude/scripts/README.md](.claude/scripts/README.md)** for the script catalog — a category index linking one doc per category under [.claude/scripts/docs/](.claude/scripts/docs/), each carrying a one-sentence purpose per script. For full contracts, arguments, and exit codes run the script with `--help` or read the script header.
 
 ---
 
