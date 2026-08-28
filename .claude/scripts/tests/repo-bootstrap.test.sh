@@ -396,6 +396,32 @@ if [[ "$DRIFT_FOUND" -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
+# Case 8: telemetry must never change the exit contract (issue #1430)
+#
+# The usage-log append ran unguarded before argument parsing: with no
+# ~/.claude under HOME, `set -e` killed the script at that line before
+# --help or the usage error could answer, and an unset HOME died on the
+# `set -u` expansion. Both must now fall through, with no bash redirect
+# diagnostic on stderr (stderr-first ordering per issue #1406).
+# --------------------------------------------------------------------------
+RC=0
+ERR="$(env -u HOME bash "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq "case8: --help exits 0 with HOME unset" "0" "$RC"
+check_eq "case8: no stderr with HOME unset" "" "$ERR"
+
+RC=0
+ERR="$(HOME="$TMP/case8-no-such-home" bash "$SUT" not-a-flag 2>&1 >/dev/null)" || RC=$?
+check_eq "case8: unknown arg still exits 2 when \$HOME/.claude is missing" "2" "$RC"
+check_contains "case8: the script's own usage error is intact" "unknown argument" "$ERR"
+check_not_contains "case8: no script-usage.log diagnostic leaks" "script-usage.log" "$ERR"
+
+# Positive control: with the sandbox ~/.claude present the invocation logs.
+: > "$HOME/.claude/script-usage.log"
+bash "$SUT" --help >/dev/null 2>&1
+check_eq "case8: append still lands when ~/.claude exists" "1" \
+  "$(grep -c 'repo-bootstrap.sh' "$HOME/.claude/script-usage.log")"
+
+# --------------------------------------------------------------------------
 # Summary
 # --------------------------------------------------------------------------
 echo ""

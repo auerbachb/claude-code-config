@@ -600,6 +600,21 @@ fi
 
 unset STALE_CLEANUP_TIMEOUT_SECS STALE_CLEANUP_READ_TIMEOUT_SECS
 
+# ---- T15: telemetry must never change the exit contract (issue #1430) -------
+# The usage-log append at the top of stale-cleanup.sh ran unguarded before
+# argument parsing: an unset HOME died on the `set -u` expansion and a HOME
+# without .claude/ died through `set -e` at the failed redirect — both before
+# any work. Now both fall through, with no bash redirect diagnostic on stderr
+# (stderr-first ordering per issue #1406).
+RC=0
+ERR="$(env -u HOME bash "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq "T15: --help exits 0 with HOME unset" "0" "$RC"
+check_eq "T15b: no stderr with HOME unset" "" "$ERR"
+RC=0
+ERR="$(HOME="$TMP/t15-no-such-home" bash "$SUT" --help 2>&1 >/dev/null)" || RC=$?
+check_eq "T15c: --help exits 0 when \$HOME/.claude is missing" "0" "$RC"
+check_eq "T15d: no shell diagnostic when the log dir is missing" "" "$ERR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then

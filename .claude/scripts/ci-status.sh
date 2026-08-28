@@ -65,7 +65,16 @@
 # turn red too; the caller should fix the known failures first.
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430): under `set -u` an unset HOME aborted the script here, before
+# argument parsing, and returned 1 ("incomplete — wait") to merge-gate.sh in
+# place of the documented codes. Skipped when HOME is unset rather than
+# expanded — a `${HOME:-}` fallback would drop /.claude/script-usage.log at the
+# filesystem root. Stderr is muted BEFORE the append (issue #1406's ordering)
+# so a missing ~/.claude leaks no shell diagnostic into captured output.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 FORMAT="json"
 INPUT=""

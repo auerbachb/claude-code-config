@@ -178,4 +178,21 @@ run_watchdog
 [[ "$(notify_count)" -eq 0 ]] || fail "(g) armed session with stale bgwork marker should NOT notify — armed guard must suppress historical-work false positives"
 ok "(g) armed ceiling + bgwork marker present, stale heartbeat -> silent (Monitor was responsible; armed guard suppresses false positive)"
 
+# ── (h) Telemetry guard: HOME trouble must never abort the watchdog ─────────
+# (issue #1430) The usage-log append at the top of the script ran unguarded
+# under `set -euo pipefail`: a HOME without .claude/ killed the run at the
+# failed redirect before any marker was read, and an unset HOME died on the
+# `set -u` expansion. Both must now fall through to a normal (silent) run,
+# with no bash redirect diagnostic on stderr (issue #1406 ordering).
+reset_all
+RC=0
+ERR="$(HOME="$TMP_DIR/no-such-home" bash "$WATCHDOG" 2>&1 >/dev/null)" || RC=$?
+[[ "$RC" -eq 0 ]] || fail "(h) HOME without .claude/ must not abort the watchdog (rc=$RC, stderr: $ERR)"
+case "$ERR" in *script-usage.log*) fail "(h) bash redirect diagnostic leaked to stderr: $ERR" ;; esac
+RC=0
+ERR="$(env -u HOME bash "$WATCHDOG" 2>&1 >/dev/null)" || RC=$?
+[[ "$RC" -eq 0 ]] || fail "(h) unset HOME must not abort the watchdog (rc=$RC, stderr: $ERR)"
+case "$ERR" in *"unbound variable"*) fail "(h) unset HOME still trips set -u: $ERR" ;; esac
+ok "(h) telemetry guard: missing/unset HOME leaves the watchdog contract intact (issue #1430)"
+
 echo "PASS: silence-watchdog tests"

@@ -4,16 +4,24 @@
 # macOS-only v1. Linux/systemd support is intentionally out of scope.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"
+# Best-effort usage telemetry — must never change this script's exit contract
+# (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
+if [[ -n "${HOME:-}" ]]; then
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
+fi
 
 LABEL="com.user.claude-silence-watchdog"
-PLIST_DEST="$HOME/Library/LaunchAgents/${LABEL}.plist"
-STATE_FILE="$HOME/.claude/logs/watchdog-state.json"
 
+# Platform check BEFORE any $HOME expansion: on a non-Darwin host with HOME
+# unset, `set -u` would otherwise abort at PLIST_DEST below instead of taking
+# this documented exit-0 path (CodeAnt finding on PR #1433, issue #1430).
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "claude-silence-watchdog is macOS-only in v1; Linux support is out of scope."
   exit 0
 fi
+
+PLIST_DEST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+STATE_FILE="$HOME/.claude/logs/watchdog-state.json"
 
 remove_state=false
 if [[ "${1:-}" == "--remove-state" ]]; then
