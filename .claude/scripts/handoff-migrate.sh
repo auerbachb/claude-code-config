@@ -255,6 +255,12 @@ for src in "${FLAT_FILES[@]}"; do
       if [[ -f "$dest" ]]; then
         rc=22
       elif ! cp "$src" "$dest" || [[ ! -f "$dest" ]]; then
+        # A failed or short cp can still leave a partial file behind. Remove it:
+        # the source is preserved for a retry, but a leftover truncated $dest
+        # would make the destination-exists check skip this record on every
+        # future run, stranding the valid flat file behind corrupt scoped JSON
+        # that readers would parse as the real handoff (CodeAnt, PR #1423).
+        rm -f "$dest" 2>/dev/null || true
         rc=23
       elif ! cmp -s "$src" "$dest"; then
         # Verify content is identical; drop a bad copy rather than keep it.
