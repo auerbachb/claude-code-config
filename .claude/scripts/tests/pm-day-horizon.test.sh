@@ -603,6 +603,91 @@ RECORD_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$RE
   bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
 check_eq "record: failed metadata write reports error" "PARK_RECORD=error rc=6" "$RECORD_OUT"
 
+# ---------------------------------------------------------------------------
+echo "== Greptile round: expired-but-unresolved park, and CAS interleaving =="
+# ---------------------------------------------------------------------------
+# P1: an unknown-reset park sets parked_until to exactly cadence x fires ahead,
+# which is the same instant the last probe fires — so a spent bound always sits
+# fractionally in the PAST. Both recovery sites must consult the bound before the
+# expiry shortcut, or they call a standing park "resolved", erase the
+# manual-resume state, and arm a loop the still-closed execution gate then blocks.
+require_text "2D.1(b+) checks the spent bound before expiry" "$SKILL" \
+  'spent bound outlives its own deadline'
+require_text "2D.5 checks the spent bound before expiry" "$SKILL" \
+  'Read that pair before applying the expiry test'
+require_text "spent bound stays parked whatever parked_until says" "$SKILL" \
+  'stays parked whatever `parked_until` says'
+require_text "spent-bound recovery names the manual resume" "$SKILL" \
+  'probe bound spent.*resume manually with /pause-resume'
+# Non-vacuity for the ordering claim. The finding is ORDER, not presence: each
+# recovery paragraph is one long line, so take the line carrying the expiry
+# phrase and assert the bound check sits at a smaller offset WITHIN THAT LINE.
+# A test that merely greps both strings would pass with the guard written after
+# the shortcut it is supposed to qualify — i.e. with the bug still in place.
+assert_bound_precedes_expiry() {
+  local desc="$1" marker="$2" line off_bound off_expiry
+  line=$(grep -F -- "$marker" "$SKILL" | head -1)
+  if [ -z "$line" ]; then
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (no line carrying '$marker')"; return
+  fi
+  local before="${line%%probe bound spent*}"
+  if [ "$before" = "$line" ]; then
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (that paragraph never checks the spent bound)"; return
+  fi
+  off_bound=${#before}
+  local before_e="${line%%$marker*}"
+  off_expiry=${#before_e}
+  if [ "$off_bound" -lt "$off_expiry" ]; then
+    PASS=$((PASS + 1)); echo "ok   — $desc (bound at $off_bound, expiry at $off_expiry)"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (bound at $off_bound is NOT before expiry at $off_expiry)"
+  fi
+}
+assert_bound_precedes_expiry "2D.1(b+) qualifies its expiry shortcut" 'the park resolved or never existed'
+assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recovery continue normally'
+
+# P1: the cause CAS and the metadata write are two lock holds. A reactive kill
+# landing between them must not leave 2D.7 arming a second wake over its record.
+seed_day_state
+RECORD_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+check_eq "record: uncontended write still reports written" "PARK_RECORD=written" "$RECORD_OUT"
+
+# Simulate the interleave: the stand-in lets the cause CAS win, then flips the
+# cause to "reactive" behind the metadata write, exactly as a kill would.
+STEAL_SH="$STUB_DIR/session-state-steal.sh"
+cat > "$STEAL_SH" <<'STEAL'
+#!/usr/bin/env bash
+op=""; arg=""; expect=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --get) op=get; arg="$2"; shift 2 ;;
+    --set) op=set; arg="$2"; shift 2 ;;
+    --cas) op=cas; arg="$2"; shift 2 ;;
+    --expect) expect="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -f "$STATE_FILE" ] || exit 3
+path="${arg%%=*}"; value="${arg#*=}"
+case "$op" in
+  get) jq -r "$path" "$STATE_FILE" ;;
+  set) jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE"
+       # A reactive kill lands the instant the metadata write completes.
+       jq '.repos["auerbachb/claude-code-config"].day.limit_cause = "reactive"' \
+         "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+  cas) cur=$(jq -c "$path" "$STATE_FILE"); [ "$cur" = "$expect" ] || exit 7
+       jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+esac
+STEAL
+chmod +x "$STEAL_SH"
+
+seed_day_state
+RECORD_OUT=$(SESSION_STATE_SH="$STEAL_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+check_eq "record: a kill landing mid-write stands the park down" "PARK_RECORD=superseded" "$RECORD_OUT"
+check_eq "record: the reactive winner keeps the cause" "reactive" "$(day_get limit_cause)"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
