@@ -665,19 +665,34 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             names_head: ($tok | tokens_name_head),
             # This comment"s structured run record FOR HEAD, or null when it
             # carries no such payload or the payload covers only other commits.
-            # `last` because the payload lists commits in the order CodeAnt
-            # touched them, so the final HEAD row is the current one — including
-            # when a re-review of the same SHA has reopened it. Deliberately not
-            # "prefer the done row": that would let a completed earlier run vouch
-            # for an analysis that is currently back in flight, which is the
-            # grant direction. Prefix matching in both directions mirrors
-            # tokens_name_head, so a short SHA in the payload still matches.
+            # SELECTED BY CONTENT, NEVER BY LIST POSITION (issue #1419). The
+            # first cut took `| last` on the belief that the payload lists
+            # commits in the order CodeAnt touched them; live PR #1378 refuted
+            # that — CodeAnt PREPENDS each new run row, newest first (three
+            # rows for one SHA ordered 16:35, 16:31, 15:48, and the 5-row
+            # visible table dropped its oldest commit when a new row arrived),
+            # so `last` returned the OLDEST run and the intended guarantee
+            # inverted: a stale completed run was exactly what vouched for a
+            # re-review still in flight, and a fresh stub posted at a re-run"s
+            # start cleared pre_run_approval against the old row"s `started`.
+            # Vendor insertion order is not a contract in either direction, so
+            # no positional pick can be right; the row is chosen by its own
+            # data instead. An in-flight row (done == false) outranks every
+            # completed one — preserving the retained intent that a completed
+            # earlier run must not vouch for an analysis that is currently
+            # back in flight — and otherwise the latest `started` wins.
+            # max_by orders false < true, so [(.done | not), .started] ranks
+            # in-flight rows first and breaks the remainder on the later
+            # start; on an empty match list max_by yields null, preserving
+            # the "no record for HEAD" shape. Prefix matching in both
+            # directions mirrors tokens_name_head, so a short SHA in the
+            # payload still matches.
             run_marker_head: (
               [ ($b | run_markers)[]
                 | . as $m
                 | select(($sha | length) > 0
                          and (($sha | startswith($m.commit)) or ($m.commit | startswith($sha)))) ]
-              | last),
+              | max_by([(.done | not), .started])),
             # "the review has started" markers, used for temporal inversion
             # "the review has started" markers. Deliberately NOT "review
             # triggered" (BugBot review, PR #883): that is the request being
