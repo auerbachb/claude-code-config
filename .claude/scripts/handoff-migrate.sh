@@ -53,6 +53,25 @@ else
 fi
 unset _NORMALIZER_LIB
 
+# Serialize against handoff-state.sh (issue #1366; CodeAnt, PR #1423). That
+# helper takes this same per-file advisory lock, and under --require-existing it
+# re-tests the target's presence INSIDE the lock precisely because a caller-side
+# `-e` test can only ever be a TOCTOU. That guarantee only holds if everything
+# that removes a handoff participates in the lock: migrating a flat record
+# without it can land the removal between the helper's in-lock check and its
+# read-modify-write, so the helper seeds a fresh `{}` record holding only the
+# field being appended — the partial handoff --require-existing exists to
+# prevent. Fatal when missing rather than degrading to an unlocked move: a
+# silent unlocked migration is the exact failure mode this closes.
+_LOCK_LIB="${SCRIPT_DIR}/state-lock.sh"
+if [[ ! -f "$_LOCK_LIB" ]]; then
+  echo "handoff-migrate.sh: missing sibling library: $_LOCK_LIB" >&2
+  exit 5
+fi
+# shellcheck source=./state-lock.sh
+source "$_LOCK_LIB"
+unset _LOCK_LIB
+
 HANDOFF_DIR="${HOME}/.claude/handoffs"
 STATE_FILE="${HOME}/.claude/session-state.json"
 APPLY=0
@@ -189,24 +208,95 @@ for src in "${FLAT_FILES[@]}"; do
       ERRORS=$((ERRORS + 1))
       continue
     fi
-    # Copy first, verify, then remove source — safer than mv across potential
-    # filesystem boundaries (e.g., ~/.claude on a different mount point).
-    if cp "$src" "$dest" && [[ -f "$dest" ]]; then
-      # Verify content is identical.
-      if cmp -s "$src" "$dest"; then
+    # Hold the SOURCE record's lock across the whole copy-verify-remove. This is
+    # the lock handoff-state.sh takes for any write to that same flat path, so a
+    # concurrent --require-existing append either completes before the move or
+    # waits for it — it can never observe the file vanish mid-operation.
+    if ! state_lock_acquire "$src"; then
+      log "  ERROR: could not acquire the handoff lock for $basename_file within the timeout (another writer holds it); source preserved" >&2
+      ERRORS=$((ERRORS + 1))
+      continue
+    fi
+    # Re-test both ends under the lock. The checks above ran outside it, so a
+    # writer holding the lock may have removed the source or created the
+    # destination in the meantime; acting on those stale reads is the race this
+    # lock was taken to close.
+    if [[ ! -f "$src" ]]; then
+      state_lock_release
+      verbose "  SKIP $basename_file (removed concurrently)"
+      continue
+    fi
+    # The destination needs the lock too, not just the source (CodeAnt, PR
+    # #1423). handoff-state.sh writers lock the path they write, so an explicit
+    # `--owner-repo … --set/--append` locks $dest — nothing the source lock
+    # excludes. Holding only $src, the -f test below could pass, that writer
+    # could then create $dest, and this cp would overwrite its brand-new scoped
+    # record with the stale flat one.
+    #
+    # state-lock.sh tracks a single lock per process (one STATE_LOCK_HELD_DIR),
+    # so the second acquisition goes in a SUBSHELL: it gets its own copies of
+    # those globals, leaving the parent's $src bookkeeping untouched. Ordering is
+    # always source-then-destination; every other actor takes exactly one lock,
+    # so no cycle exists and the nesting cannot deadlock. The copy result comes
+    # back as the subshell's exit status.
+    #
+    # The release is EXPLICIT rather than trap-driven. state_lock_acquire's EXIT
+    # trap does not stand in for it here: the subshell inherits the parent's
+    # trap-registration bookkeeping but not the parent's actual trap (bash resets
+    # traps in a subshell), so the acquire skips re-registering and nothing fires
+    # on the way out — the destination lock leaks and blocks writers until the
+    # stale-age expiry. Verified by the leak this replaces. One release point,
+    # reached on every path that took the lock.
+    copy_rc=0
+    (
+      state_lock_acquire "$dest" || exit 21
+      rc=0
+      # Re-test inside the destination's own lock — the check above raced.
+      if [[ -f "$dest" ]]; then
+        rc=22
+      elif ! cp "$src" "$dest" || [[ ! -f "$dest" ]]; then
+        # A failed or short cp can still leave a partial file behind. Remove it:
+        # the source is preserved for a retry, but a leftover truncated $dest
+        # would make the destination-exists check skip this record on every
+        # future run, stranding the valid flat file behind corrupt scoped JSON
+        # that readers would parse as the real handoff (CodeAnt, PR #1423).
+        rm -f "$dest" 2>/dev/null || true
+        rc=23
+      elif ! cmp -s "$src" "$dest"; then
+        # Verify content is identical; drop a bad copy rather than keep it.
+        rm -f "$dest" 2>/dev/null || true
+        rc=24
+      fi
+      state_lock_release
+      exit "$rc"
+    ) || copy_rc=$?
+
+    case "$copy_rc" in
+      0)
+        # Still holding $src's lock, so the removal is serialized against any
+        # writer that would otherwise see the record vanish mid-write.
         rm -f "$src" 2>/dev/null || {
           log "  WARNING: copied to $dest but could not remove $src" >&2
         }
         log "  MOVED $basename_file -> $dest"
-      else
-        rm -f "$dest" 2>/dev/null || true
+        ;;
+      21)
+        log "  ERROR: could not acquire the destination lock for $dest within the timeout (a scoped writer holds it); source preserved" >&2
+        ERRORS=$((ERRORS + 1))
+        ;;
+      22)
+        log "  SKIP $basename_file — destination created concurrently: $dest" >&2
+        ;;
+      24)
         log "  ERROR: copy verification failed for $basename_file (source preserved)" >&2
         ERRORS=$((ERRORS + 1))
-      fi
-    else
-      log "  ERROR: cp failed for $basename_file" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
+        ;;
+      *)
+        log "  ERROR: cp failed for $basename_file" >&2
+        ERRORS=$((ERRORS + 1))
+        ;;
+    esac
+    state_lock_release
   else
     # Dry-run: just report what would happen.
     log "  WOULD MOVE $basename_file -> $dest"

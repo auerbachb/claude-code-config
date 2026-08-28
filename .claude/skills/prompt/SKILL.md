@@ -402,7 +402,7 @@ These are mandatory verification points. The executing agent MUST follow these:
 
 **If the task involves subagent orchestration:**
 - [ ] After Phase A completes: Launch Phase B within 60 seconds — this is the highest priority action
-- [ ] Write handoff file to `~/.claude/handoffs/pr-{N}-handoff.json` before exiting Phase A
+- [ ] Write handoff file to `~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json` before exiting Phase A — always via `handoff-state.sh --owner-repo <owner>/<repo>`
 - [ ] Enter monitor mode when subagents are active — do NOT do substantive work yourself
 
 **If the task involves merging:**

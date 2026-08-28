@@ -30,7 +30,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7**.
 3. **Verify the push.** `gh pr view N --json commits --jq '.commits[-1].oid'` — confirm SHA matches. Mismatch = silent failure.
 4. **Clean up the Phase A worktree:** `git worktree remove <path> --force` (or `git worktree prune` on failure). Releases the branch lock for Phase B.
-5. **Verify handoff file.** Resolve path with `handoff-state.sh [--owner-repo owner/repo] --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
+5. **Verify handoff file.** Resolve path with `handoff-state.sh --owner-repo owner/repo --path N` and confirm the file exists with `phase_completed: "A"`. If missing, reconstruct and write it yourself.
 6. **Launch Phase B within 60 seconds.** Check all 3 comment endpoints; include findings and handoff path.
 7. **Update `session-state.json`.** Record phase transition and HEAD SHA.
 
@@ -55,7 +55,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
    - `merged` → verify GitHub confirms the PR is merged (`merged == true`), then proceed to cleanup.
    - `blocked` → report blocker details to user. Do NOT merge.
 3. **Update `session-state.json`.** Mark Phase C complete, remove from `active_agents`.
-4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh [--owner-repo owner/repo] --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
+4. **Handoff cleanup (after successful merge only).** Delete the handoff file (`handoff-state.sh --owner-repo owner/repo --delete N`) after `OUTCOME: merged` confirmed by GitHub. If merge fails or is aborted, do NOT delete. Emit one line — `merged PR #N` — after a clean merge.
 
 ## `/wrap` → `/fixpr` Delegation Contract
 

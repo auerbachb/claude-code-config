@@ -205,10 +205,20 @@ HANDOFF_JSON="$(jq -n \
 "$HANDOFF_STATE_SH" --owner-repo {{OWNER}}/{{REPO}} --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
 ```
 
-`--owner-repo` is not optional here. Without it the file lands on the legacy flat
-path and Phase B/C — which resolve the scoped path — never see it (issue #1302).
-Confirm before exiting: `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get {{PR_NUMBER}}`
-returns the JSON you just wrote, and no `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` exists.
+`--owner-repo` is not optional here. Without it `handoff-state.sh` derives a scope
+from this worktree's origin (issue #1366) — right only by luck, and silently wrong
+otherwise, leaving Phase B/C reading a record you never wrote.
+Confirm before exiting that `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get {{PR_NUMBER}}`
+returns the JSON you just wrote — that is the assertion, and it is checked against
+the resolved scoped path directly.
+
+A repo-wide `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'` is
+useful context but proves nothing on its own: PR numbers are per-repo, so records
+for the same number in other repos are expected, and a legacy flat record may
+legitimately coexist during migration. Treat extra matches as something to look
+at — a match at `~/.claude/handoffs/pr-{{PR_NUMBER}}-handoff.json` or under a
+*different* owner/repo than `{{OWNER}}/{{REPO}}` is worth explaining — never as
+automatic failure.
 
 ### Step 7: Print Exit Report and EXIT
 

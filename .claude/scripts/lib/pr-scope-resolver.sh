@@ -150,6 +150,43 @@ is_owner_repo_identity() {
   esac
 }
 
+# is_strict_owner_repo <value> — the shape a handoff path may actually be scoped
+# to (issue #1366; CodeAnt, PR #1423).
+#
+# is_owner_repo_identity() above answers a looser question — "does this look like
+# an owner/repo rather than a gitdir:/path: sentinel?" — and every caller that
+# turns the answer into a filesystem path or a session-state key needs more than
+# that. Three concrete defects came from using the loose test at those sites:
+#
+#   org/repo name   passes (it has a slash), but session-state.sh keys on
+#                   ^[A-Za-z0-9._/-]+$ and routes it to `_unknown`, so the
+#                   handoff lands where session state never looks.
+#   org/a/b, org/,  pass, but name no single {owner}/{repo} directory pair;
+#   /repo           handoff-state.sh then refuses them after the caller has
+#                   already committed to the scope.
+#   ./.             passes and resolves back to the legacy flat path, silently
+#                   reaching the target --legacy-flat exists to gate.
+#
+# So: exactly two components, both non-empty, neither a traversal element, and
+# each drawn from session-state's own character class minus the separator.
+is_strict_owner_repo() {
+  local v="$1" owner repo
+  case "$v" in
+    ""|_unknown|gitdir:*|path:*) return 1 ;;
+    */*) : ;;
+    *) return 1 ;;
+  esac
+  owner="${v%%/*}"
+  repo="${v#*/}"
+  case "$repo" in */*) return 1 ;; esac   # three or more components
+  [[ -n "$owner" && -n "$repo" ]] || return 1
+  case "$owner" in .|..) return 1 ;; esac
+  case "$repo"  in .|..) return 1 ;; esac
+  [[ "$owner" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ "$repo"  =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  return 0
+}
+
 resolve_root_repo() {
   local from_arg="$1"
   local from_state_pr=""

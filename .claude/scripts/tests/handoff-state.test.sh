@@ -41,7 +41,18 @@ check_eq() {
   fi
 }
 
-run() { bash "$SCRIPT" "$@"; }
+# --legacy-flat on every call (issue #1366): this suite asserts against the flat
+# HANDOFF_FILE above, and an omitted scope no longer means "flat" — it derives
+# owner/repo from the cwd (this checkout) or exits 2. Path scoping is
+# handoff-scoping.test.sh's subject; locking, RMW, and dedup semantics are this
+# one's, and they are identical on either path. Declaring the flat path also
+# keeps a standing assertion that --legacy-flat reaches it for the modes this
+# suite exercises — --create, --init, --get, --set, --append, --delete, and the
+# unknown-mode rejection. It does NOT cover --path: that mode returns before any
+# lock or write, and its --legacy-flat assertion lives in handoff-scoping.test.sh
+# (test 1), so claiming "every mode" here would let a --legacy-flat --path
+# regression pass this suite unnoticed (CodeAnt, PR #1423).
+run() { bash "$SCRIPT" --legacy-flat "$@"; }
 reset_handoff() { rm -rf "$HANDOFF_FILE" "$LOCK_DIR"; }
 
 SEED_JSON='{"schema_version":"1.0","pr_number":99,"head_sha":"aaa","reviewer":"cr",
@@ -418,7 +429,12 @@ run --set "$PR" ".notes=phase_a_findings"
 set_bounded() {                    # set_bounded <value> -> echoes rc (124 = hung)
   local value="$1" pid rc waited=0 drain=0
   set -m
-  bash "$SCRIPT" --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
+  # --legacy-flat for the same reason run() carries it (issue #1366): this suite
+  # asserts against the flat $HANDOFF_FILE, and an omitted scope now derives from
+  # the cwd — which, with an un-migrated flat record already present and no scoped
+  # one, is refused (exit 2) rather than written. Without the flag every shape
+  # below would report the refusal instead of exercising the probe.
+  bash "$SCRIPT" --legacy-flat --set "$PR" ".notes=${value}" >/dev/null 2>&1 &
   pid=$!
   set +m
   while kill -0 "$pid" 2>/dev/null; do

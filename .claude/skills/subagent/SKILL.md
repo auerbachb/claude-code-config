@@ -433,7 +433,7 @@ Body:
    OUTCOME: {pushed_fixes|no_findings|exhaustion}
    FILES_CHANGED: {comma-separated file paths}
    NEXT_PHASE: B
-   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
+   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}
    ```
 10. EXIT immediately after printing the exit report. Do NOT enter a polling loop.
 ```
@@ -549,7 +549,7 @@ When a Phase A subagent returns:
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
    - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user.
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
-4. **Verify handoff file:** resolve path with `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
+4. **Verify handoff file:** resolve path with `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
 6. **Update `session-state.json`** — record phase transition.
 7. **Report to user** with timestamp.
@@ -560,7 +560,7 @@ When a Phase A subagent returns:
 You are a Phase B review-loop agent for PR #{PR_NUMBER} (Issue #{ISSUE_NUMBER}).
 
 ## Handoff File
-Read the handoff file first (resolve path: `handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}`). Use it to avoid duplicate work.
+Read the handoff file first (resolve path: `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}`). Use it to avoid duplicate work.
 If missing, reconstruct state from GitHub API.
 
 ## Guardrails (MANDATORY)
@@ -587,7 +587,7 @@ If missing, reconstruct state from GitHub API.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
-10. Update the handoff file. Pass `--owner-repo {owner}/{repo}` on **every** call — without it the write lands on the legacy flat path `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`, which Phase C never reads, leaving it on Phase A's stale `reviewer`/`head_sha` (issue #1302):
+10. Update the handoff file. Pass `--owner-repo {owner}/{repo}` on **every** call — without it `handoff-state.sh` derives a scope from the worktree's origin (issue #1366), which is the right repo only by luck; when it is not, Phase C reads `{owner}/{repo}` and stays on Phase A's stale `reviewer`/`head_sha`:
     ```bash
     # HANDOFF_STATE_SH: resolve handoff-state.sh per RESOLVE (same candidate order as Phase A).
     OR=(--owner-repo {owner}/{repo})
@@ -599,7 +599,7 @@ If missing, reconstruct state from GitHub API.
     "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "threads_resolved" "$thread_id"
     "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "files_changed"    "$filename"
     ```
-    Then verify: `--get` shows `phase_completed: "B"` with your SHA, and no flat file exists at `~/.claude/handoffs/pr-{PR_NUMBER}-handoff.json`.
+    Then verify: `--get` shows `phase_completed: "B"` with your SHA, and `find ~/.claude/handoffs -name 'pr-{PR_NUMBER}-handoff.json'` returns exactly ONE path — the `{owner}/{repo}` one. A second match means a call lost its `--owner-repo` and derived a different scope (issue #1366); checking only for a flat file no longer catches that.
 11. Print Structured Exit Report:
     ```
     EXIT_REPORT
@@ -610,7 +610,7 @@ If missing, reconstruct state from GitHub API.
     OUTCOME: {clean|fixes_pushed|merge_ready|blocked_self_review|exhaustion}
     FILES_CHANGED: {files changed in this phase}
     NEXT_PHASE: {C|B}
-    HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
+    HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}
     ```
 12. EXIT immediately.
 ```
@@ -702,7 +702,7 @@ Resolve the path with `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_N
    OUTCOME: {merged|blocked}
    FILES_CHANGED:
    NEXT_PHASE: none
-   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh [--owner-repo owner/repo] --path {PR_NUMBER}
+   HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}
    ```
 11. EXIT immediately.
 ```

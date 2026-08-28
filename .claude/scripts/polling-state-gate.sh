@@ -378,7 +378,14 @@ write_checkpoint_handoff() {
   # this call, --init is a no-op that preserves Phase A's data (Greptile P1, #682).
   # Pass --owner-repo when available so the file lands in the scoped subdirectory
   # (issue #655: ~/.claude/handoffs/{owner}/{repo}/pr-{N}-handoff.json).
-  local or_flag=()
+  # Scope is always declared explicitly (issue #1366): handoff-state.sh no
+  # longer falls back to the flat path on omission, and this script's cwd is not
+  # necessarily $canon, so letting it derive could name a different repo than
+  # the one this checkpoint belongs to. An empty owner_repo here means all three
+  # sources failed — `gh repo view`, repo_identity(), and the session's declared
+  # $CLAUDE_SESSION_REPO — i.e. genuinely repo-less, which is what the legacy
+  # flat path is for.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --init "$PR_NUMBER" "$json_body"; then
     echo "polling-state-gate.sh: handoff-state.sh --init failed for PR #$PR_NUMBER" >&2
@@ -455,6 +462,40 @@ ensure_session() {
       owner_repo="$derived"
     fi
   fi
+  if [[ -z "$owner_repo" ]] && is_owner_repo_identity "${CLAUDE_SESSION_REPO:-}"; then
+    # Last resort before the flat path: the session's own declared scope, set
+    # from --repo or inherited supply-only (issue #967) and already exported
+    # above. Reaching here means $canon names no owner/repo of its own — an
+    # origin-less checkout, or one whose `origin` is a local filesystem path.
+    #
+    # Without this the checkpoint lands flat while session-state is written
+    # under .repos["$CLAUDE_SESSION_REPO"] (session-state.sh derives its own key
+    # from the same variable), so the two halves of one poll's state disagree
+    # and no scoped reader ever finds the handoff. The flat file is also shared
+    # by every repo, so falling back to it is strictly more collision-prone than
+    # honouring a scope the session has already declared — the same precedence
+    # handoff-state.sh itself applies (--owner-repo -> $CLAUDE_SESSION_REPO ->
+    # cwd origin) when the flag is omitted (issue #1366).
+    # is_owner_repo_identity() only rejects the empty/_unknown/gitdir:/path:
+    # sentinels and then tests for a slash — too loose to turn into a path. It
+    # admits `org/repo name` (session-state.sh keys on ^[A-Za-z0-9._/-]+$ and
+    # routes anything else to `_unknown`, so the handoff lands where session
+    # state never looks) and equally `org/a/b`, `org/`, `/repo`, which name no
+    # {owner}/{repo} pair at all — this value is passed straight to
+    # handoff-state.sh as --owner-repo, which now refuses them, so accepting one
+    # here would update session state and then fail to resolve the checkpoint
+    # (CodeAnt, PR #1423). One strict validator, shared with handoff-state.sh,
+    # keeps both ends agreeing on what a scope is; the flat path is the right
+    # fallback for anything they cannot.
+    local _sess_key
+    _sess_key="$(normalize_repo_key "$CLAUDE_SESSION_REPO")"
+    if is_strict_owner_repo "$_sess_key"; then
+      owner_repo="$_sess_key"
+      echo "polling-state-gate.sh: notice: '$canon' names no owner/repo; scoping PR #$PR_NUMBER's handoff to the session repo '$owner_repo' (\$CLAUDE_SESSION_REPO) rather than the shared flat path" >&2
+    else
+      echo "polling-state-gate.sh: notice: \$CLAUDE_SESSION_REPO '$CLAUDE_SESSION_REPO' is not a usable repo key (session-state.sh would route it to '_unknown'); leaving PR #$PR_NUMBER's handoff on the flat path rather than scoping it somewhere session state will never look" >&2
+    fi
+  fi
   local reviewer="cr"
   if [[ -f "$STATE_FILE" ]]; then
     local r
@@ -497,7 +538,13 @@ ensure_session() {
 
   # Resolve the canonical handoff path (scoped when owner_repo is known).
   # Use handoff-state.sh --path so path computation is in one place (issue #655).
-  local or_flag=()
+  # --legacy-flat is the explicit default here (issue #1366): with no owner_repo
+  # — none of `gh repo view`, repo_identity(), or $CLAUDE_SESSION_REPO could name
+  # one — this checkpoint IS the repo-less case the flat path exists for, and
+  # omitting the scope would now make handoff-state.sh derive one from THIS
+  # script's cwd, which is not necessarily $canon — a different repo's path,
+  # or exit 2.
+  local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
   local handoff_path
   handoff_path="$("$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} --path "$PR_NUMBER")"
@@ -515,7 +562,11 @@ ensure_session() {
     # Route through handoff-state.sh --set so the whole RMW cycle is under the advisory lock
     # (issue #682 — same fix as #639 applied to session-state.json).
     # Pass --owner-repo when path is the scoped one so we hold the right lock.
-    local set_or_flag=()
+    # Otherwise we are deliberately refreshing an already-flat handoff, so say
+    # --legacy-flat rather than omitting the scope: omission now derives or
+    # refuses (issue #1366), and either outcome would move this write off the
+    # very file the branch above chose.
+    local set_or_flag=(--legacy-flat)
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
     if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
       echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2

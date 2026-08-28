@@ -32,7 +32,7 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 | `{{OWNER}}` | GitHub repo owner | `auerbachb` |
 | `{{REPO}}` | GitHub repo name | `claude-code-config` |
 | `{{HEAD_SHA}}` | Current HEAD commit SHA | `7b2cfbf` |
-| `{{HANDOFF_FILE}}` | Path to handoff JSON | `~/.claude/handoffs/pr-618-handoff.json` |
+| `{{HANDOFF_FILE}}` | Path to handoff JSON (scoped per repo) | `~/.claude/handoffs/auerbachb/claude-code-config/pr-618-handoff.json` |
 | `{{REVIEWER}}` | Assigned reviewer (`cr`, `bugbot`, or `greptile`) | `cr` |
 | `{{EXISTING_FINDINGS}}` | Pre-fetched review findings (optional) | JSON or summary text |
 | `{{RESEARCH_QUESTION}}` | Research/audit question for the `researcher` agent | `"List every skill that uses the `Bash` tool"` |
@@ -97,7 +97,7 @@ Agent tool call:
   model: "opus"
   prompt: "Work on PR #618 for issue #617 on branch issue-617-add-auth.
            Repo: auerbachb/claude-code-config
-           Handoff file: ~/.claude/handoffs/pr-618-handoff.json
+           Handoff file: ~/.claude/handoffs/auerbachb/claude-code-config/pr-618-handoff.json
 
            SAFETY: Do NOT delete, overwrite, move, or modify .env files — anywhere,
            any repo. Exception: template files matching .env.<example|sample|template>

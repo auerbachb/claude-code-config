@@ -19,6 +19,17 @@
 #   2 — usage error
 #   3 — could not resolve PR / HEAD
 #   4 — gh / network error, real dismissal failure, invalid handoff JSON, or handoff merge failure
+#   5 — dismissals APPLIED, but handoff bookkeeping is incomplete: the handoff
+#       was deleted or migrated while the dismissed IDs were being recorded, so
+#       some or NONE of them were written. NOT recoverable by re-running: the
+#       reviews are already dismissed and no longer match this script's
+#       CHANGES_REQUESTED filter, so the unrecorded IDs exist only in the
+#       failing run's output — it prints them with a ready-to-paste
+#       handoff-state.sh --append command for each. Distinct from 4 so a caller
+#       can tell a bookkeeping race from a failed dismissal, and distinct from 0
+#       so it cannot be read as full success (CodeAnt + Greptile, PR #1423). A
+#       handoff that was already absent before any append is the documented
+#       optional skip and still exits 0.
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME}/.claude/script-usage.log" 2>/dev/null || true
@@ -185,9 +196,14 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
     # only when the resolved handoff is NOT the legacy flat path, so a caller
     # deliberately refreshing a flat file still appends to that file rather than
     # silently seeding a second, scoped one.
+    # The flat branch declares itself with --legacy-flat (issue #1366): an
+    # omitted scope no longer means "flat", it means "derive from cwd, or
+    # refuse", and /fixpr runs this from a worktree whose origin need not match
+    # the PR being dismissed. Naming the intent keeps the append on the same
+    # file --handoff-file already resolved to.
     _ds_owner_repo="${OWNER_REPO_ARG:-$OWNER_REPO}"
     _ds_flat_path="${HOME}/.claude/handoffs/pr-${PR_NUMBER}-handoff.json"
-    _ds_or_flag=()
+    _ds_or_flag=(--legacy-flat)
     _ds_target="$_ds_flat_path"
     if [[ -n "$_ds_owner_repo" && "$HANDOFF_FILE" != "$_ds_flat_path" ]]; then
       _ds_or_flag=(--owner-repo "$_ds_owner_repo")
@@ -202,17 +218,73 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
       echo "[DISMISS-STALE] WARN: appending to $_ds_target (resolved from owner/repo '$_ds_owner_repo'), not the requested --handoff-file $HANDOFF_FILE" >&2
     fi
 
+    # --require-existing makes the helper re-test presence under its own lock.
+    # The `-e` check above is necessarily a TOCTOU: a concurrent delete or
+    # handoff-migrate.sh run landing between it and the append would otherwise
+    # have the helper seed a fresh record from `{}` holding only this array —
+    # recreating a partial handoff in exactly the case the `else` branch below
+    # decided to skip (CodeAnt, PR #1423).
+    #
+    # Exit 3 from the helper is that race, not a write failure: the target is
+    # gone. Stop appending on it — every remaining ID would hit the same absent
+    # file. Any other non-zero IS a genuine write failure and still exits 4.
+    #
+    # But a race partway through the loop is NOT the outer skip: some IDs were
+    # recorded and the rest were not, and a caller reading only the exit status
+    # would take that partial state for full success and never retry. So it is
+    # reported twice over — an explicit WARN carrying recorded/unrecorded counts,
+    # and a dedicated exit 5 (CodeAnt, PR #1423). Exit 5 rather than 4 because
+    # the dismissals themselves succeeded: this is retryable bookkeeping, not a
+    # failed dismissal, and conflating the two would send callers off to
+    # re-dismiss reviews that are already dismissed.
+    _ds_append_rc=0
+    _ds_recorded=0
+    _ds_total="${#DISMISSED_IDS[@]}"
     for id in "${DISMISSED_IDS[@]}"; do
       id_json="$(jq -n --arg x "$id" '$x')"
-      if ! "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json"; then
+      _ds_append_rc=0
+      "$_ds_handoff_helper" ${_ds_or_flag[@]+"${_ds_or_flag[@]}"} --require-existing \
+        --append "$PR_NUMBER" "stale_bot_reviews_dismissed" "$id_json" || _ds_append_rc=$?
+      if [[ "$_ds_append_rc" -eq 3 ]]; then
+        # Emit the unrecorded IDs, because THIS PROCESS IS THE ONLY PLACE THEY
+        # STILL EXIST (Greptile P1, PR #1423). Re-running cannot recover them:
+        # the selection above matches reviews in CHANGES_REQUESTED, and these
+        # were just dismissed, so the next invocation filters them out and the
+        # recreated handoff stays permanently incomplete. Telling the caller to
+        # "re-run" would have been advice that cannot work — print the IDs and
+        # the exact command that records them instead.
+        _ds_missing=("${DISMISSED_IDS[@]:$_ds_recorded}")
+        echo "[DISMISS-STALE] WARN: handoff file disappeared during the append (deleted or migrated concurrently): $_ds_target" >&2
+        echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); ${#_ds_missing[@]} not recorded." >&2
+        echo "[DISMISS-STALE] WARN: the reviews ARE dismissed on GitHub, so re-running this script will NOT record them — they no longer match its CHANGES_REQUESTED filter. Record them directly once the handoff exists:" >&2
+        for _ds_m in ${_ds_missing[@]+"${_ds_missing[@]}"}; do
+          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
+        done
+        break
+      elif [[ "$_ds_append_rc" -ne 0 ]]; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2
         exit 4
       fi
+      _ds_recorded=$((_ds_recorded + 1))
     done
-    echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"
+    if [[ "$_ds_append_rc" -eq 0 ]]; then
+      echo "[DISMISS-STALE] appended review IDs to handoff file: $_ds_target"
+    fi
   else
     echo "[DISMISS-STALE] WARN: handoff file missing; skipping append (create full handoff first): $HANDOFF_FILE" >&2
   fi
+fi
+
+# Exit 5 for the append race, whether or not any ID was recorded first. The
+# loop above is reached ONLY when the outer -e check found the handoff, so a
+# helper exit 3 inside it always means the record vanished underneath a caller
+# that had every reason to expect bookkeeping to happen. Recording zero of N is
+# the worst version of that, not an exemption from it: gating on a non-zero
+# count would report the total-loss case as full success (CodeAnt, PR #1423).
+# The genuinely absent handoff never enters the loop — it takes the `else`
+# branch above and stays exit 0 as the documented optional skip.
+if [[ "${_ds_append_rc:-0}" -eq 3 ]]; then
+  exit 5
 fi
 
 exit 0
