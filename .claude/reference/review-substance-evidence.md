@@ -177,6 +177,45 @@ contradicted the repo's own classification — and because `$marker` takes the
 and stopped a later approval from looking inverted against the bot's genuine
 notice.
 
+### Structured run markers and `run_marker_head` selection (issues #1365, #1419)
+
+CodeAnt maintains one in-place-edited "Review Status" conversation comment and
+embeds machine-readable per-run data behind its visible table:
+`<!-- codeant-review-status:[{"commit":…,"started":…,"finished":…,"done":…}] -->`,
+one row per run, full 40-char SHA, naive-UTC timestamps (canonicalised onto the
+`Z` spelling before any compare). The evaluator parses it into `run_started_at`
+/ `run_finished_at` / `run_done` and two verdict inputs: an **in-flight HEAD
+row is not evidence** (`status_comment_names_head` stays false — a run marker
+says work began, not that any diff was read), and an approval outside its own
+recorded run is disqualified **`pre_run_approval`** (`done` false, or
+`submitted_at < started`; the bound is the run *start* because CodeAnt stamps
+`finished` after posting its verdict). `pre_run_approval` is deliberately not
+suppressed by `external_evidence_on_head` — in the reported trace the
+suppressing evidence *was* the marker comment — and a malformed or HEAD-less
+payload degrades to the pre-#1365 verdict rather than blocking.
+
+**Row selection is by content, never by list position** (issue #1419). The
+first cut took `| last`, believing the payload appends in touch order; live
+PR #1378 refuted it — CodeAnt **prepends** each new run row (three rows for one
+SHA ordered 16:35, 16:31, 15:48, and the 5-row visible table dropped its oldest
+commit when a new row arrived), so `last` returned the *oldest* run: a stale
+completed run vouched for a re-review still in flight, and a stub posted
+between two runs cleared `pre_run_approval` against the old row's `started`.
+Selection is now `max_by([(.done | not), .started])` over the HEAD-matching
+rows: an in-flight row outranks every completed one — a completed earlier run
+must not vouch for an analysis currently back in flight — and otherwise the
+latest `started` wins, so newest-first and append-ordered payloads resolve
+identically.
+
+The comment is PATCHed in place, so its `created_at` can predate the push by
+hours (~19 h on PR #1378) while `updated_at` tracks the runs. The structured
+path therefore reads **content, never `created_at`** — in both directions:
+an in-flight row is refused and a completed run redeems regardless of how old
+the comment object is. Fixtures (o)/(p) in
+`merge-gate-codeant-run-marker.test.sh` pin exactly that, against the
+plausible-looking `created_at >= push` refactor that would silently reopen the
+PR #1378 hole.
+
 ### Substance is pooled across a bot's approvals on one SHA
 
 `body_len` is the maximum across every `APPROVED` that reviewer left on HEAD, not

@@ -50,6 +50,28 @@
 #   (i) merge-gate missing[] names reviewer + timing, not "need 1 approval"
 #   (j) the full PR #676 table               -> all five stubs rejected
 #
+# Issue #1419 (observed live on PR #1378): the payload is NOT append-ordered —
+# CodeAnt PREPENDS each new run row, so the old `| last` selection returned the
+# OLDEST HEAD run and the verdict depended on vendor insertion order. Selection
+# is now by content: an in-flight row outranks completed ones, then the latest
+# `started` wins.
+#
+#   (k) multi-row, newest-first            -> resolves to the newest run
+#   (l) multi-row, oldest-first            -> identical verdict (order-agnostic)
+#   (m) stub between two completed runs    -> pre_run_approval (the #1419 bypass;
+#                                             granted by `| last` before the fix)
+#   (n) re-review in flight over a done run -> in-flight row governs: names_head
+#                                             false, pre_run_approval (the #1372
+#                                             multi-row window)
+#   (o) frozen created_at, in-flight row   -> still refused (PR #1378 report,
+#                                             defects 1+2: the status comment is
+#                                             PATCHed in place, created_at ~19h
+#                                             stale; structured path reads
+#                                             content, not created_at)
+#   (p) frozen created_at, completed run   -> still redeems (created_at must
+#                                             never gate the structured path in
+#                                             the grant direction either)
+#
 # Run from repo root: bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
 # shellcheck source=tests/lib/merge-gate-test-fixtures.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -270,6 +292,134 @@ j_case "2026-08-26T16:16:12Z" "2026-08-26T16:16:40" "2026-08-26T16:19:51" "bb7d4
 j_case "2026-08-26T18:16:56Z" "2026-08-26T18:23:50" "2026-08-26T18:27:07" "3df6f81 (6m54s early)"
 j_case "2026-08-26T18:30:06Z" "2026-08-26T18:31:55" "2026-08-26T18:35:00" "440ded9 (1m49s early)"
 j_case "2026-08-26T18:38:26Z" "2026-08-26T18:40:41" "2026-08-26T18:44:21" "2ac8055 (2m15s early)"
+
+# --------------------------------------------------------------------------
+# (k)-(n) Multi-row selection (issue #1419). Live PR #1378: CodeAnt PREPENDS
+#     each new run row (three rows for one SHA ordered 16:35, 16:31, 15:48; the
+#     5-row visible table dropped its oldest commit when a new row arrived), so
+#     the old `| last` picked the OLDEST run. Rows carry their own started/done
+#     data, so selection must not read list position at all.
+# --------------------------------------------------------------------------
+run_row() { # commit done started [finished]
+  jq -cn --arg commit "$1" --arg done "$2" --arg st "$3" --arg fin "${4:-}" '
+    {label: (if $done == "true" then "Reviewed your PR" else "Reviewing your PR" end),
+     commit: $commit}
+    + (if $st == "" then {} else {started: $st} end)
+    + (if $fin == "" then {} else {finished: $fin} end)
+    + {done: ($done == "true")}'
+}
+
+# Same visible-table + embedded-payload shape as status_comment(), but carrying
+# an arbitrary rows array so one comment can record several runs of one commit.
+status_comment_rows() { # rows_json [created] [updated]
+  jq -cn --argjson rows "$1" \
+         --arg created "${2:-2026-08-26T16:16:05Z}" --arg updated "${3:-2026-08-26T16:16:45Z}" \
+         --arg login "$CA" '
+    { user: {login: $login, type: "Bot"},
+      created_at: $created, updated_at: $updated,
+      body: ("## 🤖 CodeAnt AI — Review Status\n\n| Commit | Status |\n|---|---|\n"
+             + ([ $rows[] | ("| `" + (.commit | .[0:7]) + "` | "
+                  + (if .done then "Reviewed your PR" else "🔄 Reviewing your PR…" end)
+                  + " |\n") ] | add)
+             + "\n<!-- codeant-review-status:" + ($rows | tojson) + " -->") }'
+}
+
+STARTED2="2026-08-26T16:25:00.500000"
+FINISHED2="2026-08-26T16:27:00.100000"
+ROWS_NEWEST_FIRST="[$(run_row "$HEAD_SHA" true "$STARTED2" "$FINISHED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+ROWS_OLDEST_FIRST="[$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED"),$(run_row "$HEAD_SHA" true "$STARTED2" "$FINISHED2")]"
+
+# (k) Newest-first (the observed live ordering): the newest run governs, and an
+#     approval inside it is coverage.
+EV_K=$(evidence "[$(approval "$CA" "2026-08-26T16:26:00Z")]" \
+                "[$(status_comment_rows "$ROWS_NEWEST_FIRST")]")
+check_eq "2026-08-26T16:25:00Z" "$(r_field "$EV_K" run_started_at)" \
+  "(k) newest-first payload: run_started_at is the newest run, not the oldest"
+check_eq "2026-08-26T16:27:00Z" "$(r_field "$EV_K" run_finished_at)" \
+  "(k) newest-first payload: run_finished_at is the newest run"
+check_eq "true" "$(r_field "$EV_K" counts_as_coverage)" \
+  "(k) approval inside the newest run: counts as coverage"
+check_eq "" "$(r_disq "$EV_K")" "(k) approval inside the newest run: nothing disqualifying"
+
+# (l) Oldest-first mirror: byte-identical reviewer verdict. Pinning the whole
+#     object (sorted keys) is the order-independence claim itself.
+EV_L=$(evidence "[$(approval "$CA" "2026-08-26T16:26:00Z")]" \
+                "[$(status_comment_rows "$ROWS_OLDEST_FIRST")]")
+check_eq "2026-08-26T16:25:00Z" "$(r_field "$EV_L" run_started_at)" \
+  "(l) oldest-first payload resolves to the same newest run"
+check_eq "$(echo "$EV_K" | jq -cS '.reviewers')" "$(echo "$EV_L" | jq -cS '.reviewers')" \
+  "(l) reviewer verdicts identical under both payload orderings"
+
+# (m) The #1419 bypass, pinned as a negative control: a stub posted AFTER the
+#     older run started but BEFORE the newest run started. Under `| last` on
+#     the live (newest-first) ordering the stale row vouched for it —
+#     pre_run_approval false, coverage granted. It must be refused, under both
+#     orderings.
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:20:00Z")]" \
+              "[$(status_comment_rows "$ROWS_NEWEST_FIRST")]")
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(m) stub between runs: pre_run_approval fires against the newest run"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" "(m) stub between runs: not coverage"
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:20:00Z")]" \
+              "[$(status_comment_rows "$ROWS_OLDEST_FIRST")]")
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(m) stub between runs: same refusal under oldest-first ordering"
+
+# (n) Re-review in flight over a completed first run (the issue #1372 multi-row
+#     window): the in-flight row governs even though a done row exists, so the
+#     comment stops being evidence and the approval is pre-run. Both orderings.
+ROWS_REFLIGHT_NF="[$(run_row "$HEAD_SHA" false "$STARTED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+ROWS_REFLIGHT_OF="[$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED"),$(run_row "$HEAD_SHA" false "$STARTED2")]"
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:26:00Z")]" \
+              "[$(status_comment_rows "$ROWS_REFLIGHT_NF")]")
+check_eq "false" "$(r_field "$EV" run_done)" "(n) re-review in flight: the in-flight row governs"
+check_eq "2026-08-26T16:25:00Z" "$(r_field "$EV" run_started_at)" \
+  "(n) re-review in flight: run_started_at is the in-flight run"
+check_eq "false" "$(r_field "$EV" status_comment_names_head)" \
+  "(n) a completed earlier run does not vouch while a re-review is in flight"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(n) approval during re-flight: refused"
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:26:00Z")]" \
+              "[$(status_comment_rows "$ROWS_REFLIGHT_OF")]")
+check_eq "false" "$(r_field "$EV" status_comment_names_head)" \
+  "(n) same refusal under oldest-first ordering"
+
+# A QUEUED in-flight row — done:false with no started at all — still governs
+# over a completed sibling (CodeRabbit CLI review of this PR proposed excluding
+# empty-started rows before max_by; that would let the completed run vouch the
+# instant a re-review is queued, and a sole queued row would fall back to the
+# legacy names-HEAD path — both reopen #1365 in the grant direction).
+ROWS_QUEUED="[$(run_row "$HEAD_SHA" false ""),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:26:00Z")]" \
+              "[$(status_comment_rows "$ROWS_QUEUED")]")
+check_eq "false" "$(r_field "$EV" status_comment_names_head)" \
+  "(n) queued re-review (no started yet): completed run still does not vouch"
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(n) queued re-review: approval refused while the queued run governs"
+
+# --------------------------------------------------------------------------
+# (o)/(p) Frozen created_at (PR #1378 report, 2026-08-27, defects 1+2). CodeAnt
+#     PATCHes its one status comment in place: on PR #1378 created_at
+#     (2026-08-26T21:00:22Z) predated the push by ~19h while updated_at tracked
+#     the run. Every fixture above uses a post-push created_at, so these two pin
+#     that the structured path reads CONTENT, never created_at — in the refuse
+#     direction (o) and the redeem direction (p). A refactor filtering the
+#     structured path on `created_at >= push` would fail (p); one keying the
+#     refusals on created_at would fail (o).
+# --------------------------------------------------------------------------
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:16:28Z")]" \
+              "[$(status_comment "$HEAD_SHA" false "$STARTED" "" "2026-08-25T21:00:22Z" "2026-08-26T16:16:45Z")]")
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(o) frozen created_at: in-flight marker still read via content, approval 12s pre-start refused"
+check_eq "false" "$(r_field "$EV" status_comment_names_head)" \
+  "(o) frozen created_at: in-flight row is still not HEAD evidence"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" "(o) frozen created_at: not coverage"
+
+EV=$(evidence "[$(approval "$CA" "2026-08-26T16:17:30Z")]" \
+              "[$(status_comment "$HEAD_SHA" true "$STARTED" "$FINISHED" "2026-08-25T21:00:22Z" "2026-08-26T16:20:00Z")]")
+check_eq "true" "$(r_field "$EV" status_comment_names_head)" \
+  "(p) frozen created_at, completed run: table still names HEAD as evidence"
+check_eq "true" "$(r_field "$EV" counts_as_coverage)" \
+  "(p) frozen created_at, completed run: redemption unaffected by comment age"
 
 # --------------------------------------------------------------------------
 # (h)/(i) merge-gate.sh integration: the verdict has to reach the gate, and the
