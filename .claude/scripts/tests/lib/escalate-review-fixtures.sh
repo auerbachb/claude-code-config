@@ -329,6 +329,25 @@ cr_non_banner_comment() {
 cr_limit_banner_foreign_author() {
   printf '{"user": {"login": "test-user"}, "created_at": "%s", "body": "## Review limit reached **Next review available in:** **%s**"}' "$1" "$2"
 }
+# The banner as it actually lives on a PR: EDITED IN PLACE (issue #1440).
+# CodeRabbit rewrites this one comment as the allowance recovers — `created_at`
+# stays frozen at the banner's birth while `updated_at` tracks the window the
+# body currently states. Observed on PR #1436: created 01:55:37Z saying 43
+# minutes, updated 02:05:02Z saying 33.
+#
+# Every OTHER banner helper above deliberately omits `updated_at`, which makes
+# the rest of this suite the missing-field control for the max() fallback: if
+# the selector ever reads the edit time bare instead of taking the max, those
+# scenarios lose their timestamp entirely and go red as a group.
+#
+# $1 = created_at, $2 = updated_at (pass "" for the empty-field shape a payload
+# that stopped projecting the field would produce), $3 = window text, or "" for
+# a banner carrying no readable window. Built by editing the CURRENT-wording
+# banner so the two helpers cannot drift apart.
+cr_limit_banner_edited() {
+  cr_limit_banner_included "$1" "${3-}" | jq -c --arg u "$2" '.updated_at = $u'
+}
+
 # A CodeRabbit review object on the current HEAD — proves CR has already
 # answered, so there is nothing left to wait for.
 cr_review_on_head() {
