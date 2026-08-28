@@ -3,13 +3,16 @@
 # merge-gate.sh Greptile path must detect comment-based clean passes.
 #
 # Greptile posts via ISSUE COMMENTS (not formal PR review objects).
-# A clean pass = fresh greptile-apps[bot] issue comment with 👍 reaction +
-# zero inline diff comments on the PR.
+# A clean pass = fresh greptile-apps[bot] issue comment whose "Last reviewed
+# commit" footer names HEAD (issue #1390; the bot-comment 👍 of issue #723 is
+# retained as a supplemental signal) + zero inline diff comments on the PR.
 #
 # Tests:
 #   1. Clean 👍 + no inline comments → gate met (primary fix)
 #   2. 👍 + P0-badged inline findings → gate not met (severity gate)
 #   3. 👍 comment created BEFORE last push (stale) → gate not met (freshness)
+#   29-32. Footer-SHA detection with ZERO reactions on the bot comment — the
+#     PR #1379 shape, where Greptile reacted to the trigger comment instead.
 #
 # Only `gh` is stubbed; merge-gate.sh, ci-status.sh and check-runs-dedup.sh
 # are the real scripts run in place.
@@ -130,19 +133,32 @@ export PR_AUTHOR_LOGIN
 # GitHub's API always includes updated_at; we default it here so existing tests
 # continue to produce a comment that has updated_at == created_at (pre-push when
 # created_at is pre-push), preserving the stale-comment test expectations.
-greptile_comment() { # created_at thumbsup_count [updated_at]
-  local ts="$1" up="$2" upd="${3:-$1}"
-  jq -cn --arg ts "$ts" --argjson up "$up" --arg upd "$upd" \
+#
+# Fourth arg (footer_sha) is optional — when set, the body carries the
+# "Last reviewed commit" footer Greptile appends to its summary, linking that
+# SHA (issue #1390). Omitting it reproduces the older footer-less shape, which
+# must keep behaving exactly as it did before that fix.
+greptile_comment() { # created_at thumbsup_count [updated_at] [footer_sha]
+  local ts="$1" up="$2" upd="${3:-$1}" footer_sha="${4:-}"
+  jq -cn --arg ts "$ts" --argjson up "$up" --arg upd "$upd" --arg fsha "$footer_sha" \
     '{id:1001, user:{login:"greptile-apps[bot]"},
-      body:"<h3>Greptile Summary</h3>\nClean review.",
+      body:("<h3>Greptile Summary</h3>\nClean review."
+            + (if $fsha == "" then "" else
+                 "\n\n<sub>Reviews (1): Last reviewed commit: [\"fix: change\"]"
+                 + "(https://github.com/solo/repo/commit/" + $fsha + ")"
+                 + " | [Re-trigger Greptile](https://app.greptile.com/x)</sub>"
+               end)),
       created_at:$ts, updated_at:$upd,
       reactions:{url:"",total_count:$up,"+1":$up,"-1":0}}'
 }
 
-greptile_trigger() { # created_at
-  jq -cn --arg ts "$1" --arg author "$PR_AUTHOR_LOGIN" \
+# Second arg (thumbsup_count) is optional — Greptile reacts 👍 to the comment it
+# is replying to, i.e. the trigger, not its own summary (issue #1390).
+greptile_trigger() { # created_at [thumbsup_count]
+  jq -cn --arg ts "$1" --arg author "$PR_AUTHOR_LOGIN" --argjson up "${2:-0}" \
     '{id:9001, user:{login:$author}, body:"@greptileai",
-      created_at:$ts, updated_at:$ts}'
+      created_at:$ts, updated_at:$ts,
+      reactions:{url:"",total_count:$up,"+1":$up,"-1":0}}'
 }
 
 # Helper: build a Greptile inline diff comment with a formal P0 severity badge.
@@ -648,6 +664,65 @@ check_eq "false" "$(met)" "edited trigger: met == false"
 check_eq "yes" "$(missing_has "no Greptile review")" \
   "edited trigger: earlier clean evidence cannot answer edited command"
 check_eq "1" "$RC" "edited trigger: exit code 1"
+
+# --------------------------------------------------------------------------
+# Tests 29-32 pin the issue #1390 fix: the clean pass is detected from the
+# "Last reviewed commit" footer SHA, not from a 👍 on the bot comment.
+# Every fixture below leaves the bot comment at "+1": 0 — the shape measured on
+# PR #1379, where Greptile put its 👍 on the trigger comment instead. A trigger
+# after the push, answered by a later summary, is the durable-round boundary.
+# --------------------------------------------------------------------------
+TRIGGER_1390="$(greptile_trigger "2026-07-23T13:02:00Z" 1)"
+STALE_FOOTER_SHA="00112233445566778899aabbccddeeff00112233"
+
+# --------------------------------------------------------------------------
+# Test 29: PR #1379 shape — footer names HEAD, bot comment carries no reaction.
+# --------------------------------------------------------------------------
+echo "--- Test 29: footer SHA on HEAD with zero bot reactions ---"
+COMMENT29="$(greptile_comment "$FRESH_TS" 0 "$FRESH_TS" "$HEAD_SHA")"
+run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT29]" "[]"
+
+check_eq "true" "$(met)"           "footer on HEAD: met == true"
+check_eq "0"    "$(missing_count)" "footer on HEAD: missing array empty"
+check_eq "0"    "$RC"              "footer on HEAD: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 30: negative control — the footer SHA is checked AGAINST HEAD, not just
+# read. A fresh summary that reports on another commit has no verdict on HEAD.
+# --------------------------------------------------------------------------
+echo "--- Test 30: footer SHA naming another commit blocks ---"
+COMMENT30="$(greptile_comment "$FRESH_TS" 0 "$FRESH_TS" "$STALE_FOOTER_SHA")"
+run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT30]" "[]"
+
+check_eq "false" "$(met)" "stale footer: met == false"
+check_eq "yes"   "$(missing_has "not HEAD")" "stale footer: missing names the SHA mismatch"
+check_eq "1"     "$RC"    "stale footer: exit code 1"
+
+# --------------------------------------------------------------------------
+# Test 31: a summary with no footer at all makes no claim about which commit
+# was reviewed, so it must not block — the guard fails open on that shape
+# (older comments, and any future vendor format change).
+# --------------------------------------------------------------------------
+echo "--- Test 31: absent footer never blocks ---"
+COMMENT31="$(greptile_comment "$FRESH_TS" 0)"
+run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT31]" "[]"
+
+check_eq "true" "$(met)"           "no footer: met == true"
+check_eq "0"    "$(missing_count)" "no footer: missing array empty"
+check_eq "0"    "$RC"              "no footer: exit code 0"
+
+# --------------------------------------------------------------------------
+# Test 32: a footer naming HEAD is a statement about which commit was read, not
+# an all-clear — it must not launder a P0 finding from the same round.
+# --------------------------------------------------------------------------
+echo "--- Test 32: footer on HEAD does not launder a P0 finding ---"
+COMMENT32="$(greptile_comment "$FRESH_TS" 0 "$FRESH_TS" "$HEAD_SHA")"
+INLINE_P0_32="$(greptile_p0_inline)"
+run_gate "$PUSH_TS" "[$TRIGGER_1390,$COMMENT32]" "[$INLINE_P0_32]"
+
+check_eq "false" "$(met)" "footer + P0: met == false"
+check_eq "yes"   "$(missing_has "P0")" "footer + P0: missing contains P0 message"
+check_eq "1"     "$RC"    "footer + P0: exit code 1"
 
 echo "----------------------------------------"
 echo "merge-gate-greptile-comment.test.sh: $PASS passed, $FAIL failed"

@@ -10,7 +10,7 @@ Greptile is the second fallback — only after both CR and BugBot fail (chain + 
 
 ## Greptile Basics
 
-Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. Signals: 👀 analyzing, 👍 complete, 😕 failed. Setup: `greptile-setup.md`.
+Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. Signals — reactions on the **trigger** comment, not the bot's: 👀 analyzing, 👍 complete, 😕 failed. Setup: `greptile-setup.md`.
 
 ## Daily Budget
 
@@ -31,7 +31,7 @@ Once triggered, Greptile owns the PR permanently (`cr-github-review.md`) — sti
 
 ## Polling for Greptile Response
 
-Poll per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter `greptile-apps[bot]`. **Completion:** 👍 or review comments = done; 😕 = failed; no signal after **10 min** = timeout.
+Poll per the shared cadence/endpoints (`cr-github-review.md` §Polling); filter `greptile-apps[bot]`. **Completion:** 👍 or review comments = done; 😕 = failed; no signal after **10 min** = timeout. The **merge gate** reads neither reaction: its clean pass is the summary comment's `Last reviewed commit` footer naming HEAD (`cr-merge-gate.md`).
 
 ## Processing Greptile Findings
 
