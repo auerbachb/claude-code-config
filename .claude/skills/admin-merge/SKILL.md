@@ -147,7 +147,7 @@ Then run the standard `/wrap` follow-ups: sync root `main`, detect follow-up iss
 
 - **Auto-path mechanism** (shape gate, repeat guard, TOCTOU re-validation, exit-code contract, evidence-report shape, and the resolved #754 open questions): `.claude/reference/admin-merge-auto-plain.md`.
 - **API contract (verified on PR #535):** the re-enable `POST .../protection/enforce_admins` is sent with **no body**. A body (`-f enabled=true`) returns HTTP 422 "`enabled` is not a permitted key". `admin-merge.sh` generates the bare POST — never add a field flag.
-- **Repo path:** if the script can't resolve the local clone, pass `--repo-path <abs-path>`. The `cd`-prefix is what makes the command safe to run from any directory.
+- **Repo path:** if the script can't resolve the local clone, pass `--repo-path <abs-path>`. The `cd`-prefix is what makes the printed command safe to run from any directory. Since issue #1439 the flag is also **authoritative over the invoker's cwd**: the script enters that path before resolving owner/repo, so you no longer have to `cd` into the target clone first to run it against another repo. An unusable value is a hard error (exit 7), never a silent fall back to the cwd's repo.
 - **Other protection blockers** (required signed commits, required linear history, required status checks): start with `enforce_admins`; the script surfaces adjacent settings as informational notes. Extend as new cases come up.
 - **Symlink (post-merge):** after this skill merges to `main`, symlink it globally per `skill-symlinks.md`:
 

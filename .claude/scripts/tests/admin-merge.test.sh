@@ -28,9 +28,14 @@ SUT="$SCRIPTS/admin-merge.sh"
 # independent authorship guard: it appends the authorship-blocker string to
 # missing[] unless --allow-nonauthor is present in argv — modeling the real
 # script's "adds a `missing` entry unless --allow-nonauthor is passed" behavior.
+#
+# FAKE_GATE_PWD_LOG (issue #1439) — when set, each invocation's cwd is appended.
+# merge-gate.sh is cwd-scoped, so this proves the pre-flight SUBPROCESSES were
+# scoped to --repo-path too, not just admin-merge.sh's own gh calls.
 cat > "$SCRIPTS/merge-gate.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${FAKE_GATE_LOG:-}" ]; then printf '%s\n' "$*" >> "$FAKE_GATE_LOG"; fi
+if [ -n "${FAKE_GATE_PWD_LOG:-}" ]; then printf '%s\n' "$PWD" >> "$FAKE_GATE_PWD_LOG"; fi
 MISSING="${FAKE_GATE_MISSING:-[]}"
 HUMAN="${FAKE_GATE_HUMAN:-[]}"
 SAW_ALLOW_NONAUTHOR=0
@@ -139,10 +144,35 @@ chmod +x "$SCRIPTS/pr-authorship.sh"
 # Every invocation is appended to $FAKE_GH_LOG when set, so tests can assert on
 # the calls actually ISSUED (e.g. "no protection API call") rather than only on
 # printed output (issue #754).
+#
+# GH_FAKE_REPO_BY_CWD (issue #1439) — when 1, repo identity is resolved from the
+# fake's OWN cwd via a `.fake-repo-slug` marker file, the way real gh infers
+# owner/repo from the cwd's git remote, and `gh pr view` only finds the PR in the
+# repo that holds it. That makes a cwd-scoped call OBSERVABLE: without it the
+# fake answers "solo/repo" from anywhere, so a cross-cwd test would pass whether
+# or not --repo-path was honoured. Off by default so every other test is
+# unaffected.
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 ARGS="$*"
 if [ -n "${FAKE_GH_LOG:-}" ]; then printf '%s\n' "$ARGS" >> "$FAKE_GH_LOG"; fi
+if [ "${GH_FAKE_REPO_BY_CWD:-0}" = "1" ]; then
+  CWD_SLUG=""
+  if [ -f "$PWD/.fake-repo-slug" ]; then CWD_SLUG=$(cat "$PWD/.fake-repo-slug"); fi
+  case "$ARGS" in
+    "repo view --json nameWithOwner --jq .nameWithOwner")
+      if [ -z "$CWD_SLUG" ]; then
+        echo "fake gh: not a git repository (cwd=$PWD)" >&2; exit 1
+      fi
+      echo "$CWD_SLUG"; exit 0 ;;
+    "pr view "*baseRefName*)
+      # The PR lives in ONE repo. Anywhere else, fail the way real gh does.
+      if [ "$CWD_SLUG" != "${GH_FAKE_PR_HOME:-solo/repo}" ]; then
+        echo "fake gh: no pull request found (cwd=$PWD, repo=${CWD_SLUG:-none})" >&2
+        exit 1
+      fi ;;
+  esac
+fi
 case "$ARGS" in
   "repo view --json nameWithOwner --jq .nameWithOwner")
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
@@ -281,12 +311,18 @@ fi
 # 9. Static: execute mode has a trap that re-enables protection.
 if grep -q "trap reenable_protection EXIT" "$SRC"; then ok "execute mode installs re-enable trap"; else bad "missing trap in execute mode"; fi
 
-# 9b. Static: execute mode cd's into the resolved repo path before the dance
-# (so `gh pr merge` targets the right repo from any cwd — BugBot finding).
-if awk '/MODE" == "execute"/{f=1} f && /cd "\$REPO_PATH"/{found=1} END{exit !found}' "$SRC"; then
-  ok "execute mode cd's into repo path before the dance"
+# 9b. Static (issue #1439): the process enters $REPO_PATH BEFORE the first
+# repo-identity call, so `gh` — and every cwd-scoped helper — resolves the
+# --repo-path target instead of the invoker's cwd. This supersedes the old
+# per-branch cd in --execute/--auto-plain (a BugBot finding that only covered the
+# two executing modes): one early cd now covers all four, and the ORDER relative
+# to `gh repo view` is the property that actually fixes the cross-repo bug.
+if awk '/^if ! cd "\$REPO_PATH"/{cd_seen=1}
+        /OWNER_REPO=\$\(gh repo view/{if (cd_seen) good=1; exit}
+        END{exit !good}' "$SRC"; then
+  ok "the early cd into \$REPO_PATH precedes the cwd-based owner/repo resolution"
 else
-  bad "execute mode does not cd into \$REPO_PATH before running gh"
+  bad "repo identity is resolved before the process enters \$REPO_PATH (issue #1439 regression)"
 fi
 
 # 9c. Static: execute mode revalidates a clean-BEHIND bypass BEFORE disabling
@@ -751,6 +787,67 @@ grep_absent "could not run git at all" "exit 1 is never reported as a broken git
 
 unset FAKE_REPO_ROOT_EXIT
 rm -f "$SCRIPTS/repo-root.sh"
+
+# ============================================================================
+# Regression (issue #1439): --repo-path did not override cwd repo detection.
+# `gh repo view` ran ~60 lines BEFORE REPO_PATH was even computed, so a run from
+# another repo's checkout resolved THAT repo and exited 3 ("PR not found in
+# <wrong repo>") even though the flag named the right clone — observed live on
+# PR #1423's Phase C. Every caller had to cd first, which the flag existed to
+# avoid.
+#
+# GH_FAKE_REPO_BY_CWD makes the fake gh resolve owner/repo from its own cwd, so
+# a cwd-scoped call FAILS the test instead of passing vacuously: reaching
+# solo/repo from $OTHER is only possible by entering $CLONE. Placed after test
+# 29's repo-root.sh fixture is removed, so path resolution here uses the same
+# fallback chain as every other case.
+# ============================================================================
+printf 'solo/repo\n' > "$CLONE/.fake-repo-slug"
+OTHER="$TMP/other-repo"; mkdir -p "$OTHER"; printf 'other/elsewhere\n' > "$OTHER/.fake-repo-slug"
+
+# Compare directories by physical path — $TMP is under /var on macOS, which is a
+# symlink to /private/var, so a literal string compare can differ spuriously.
+same_dir() { [[ "$(cd "$1" 2>/dev/null && pwd -P)" == "$(cd "$2" 2>/dev/null && pwd -P)" ]]; }
+
+# 30. --repo-path from an UNRELATED repo's cwd resolves the flagged repo.
+new_log
+GATE_PWD="$TMP/gate-pwd.log"; : > "$GATE_PWD"
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_PWD_LOG="$GATE_PWD" \
+  FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --repo-path "$CLONE" --branch main 2>&1 )"; RC=$?
+expect_rc 0 "--repo-path resolves the flagged repo from an unrelated cwd (exit 0)"
+grep_ok "repos/solo/repo/branches/main/protection/enforce_admins" \
+  "cross-cwd run resolved the --repo-path repo (solo/repo)"
+grep_absent "other/elsewhere" "cross-cwd run never resolved the invoker's cwd repo"
+grep_ok "cd $CLONE && \\\\" "cross-cwd run still prints the portable cd prefix"
+GATE_CWD="$(head -n 1 "$GATE_PWD" 2>/dev/null)"
+if [[ -n "$GATE_CWD" ]] && same_dir "$GATE_CWD" "$CLONE"; then
+  ok "the cwd-scoped merge-gate.sh pre-flight subprocess also ran inside the flagged clone"
+else
+  bad "merge-gate.sh ran in '${GATE_CWD:-<never invoked>}', not the --repo-path clone ($CLONE)"
+fi
+
+# 30b. Negative control: the SAME invocation WITHOUT --repo-path still resolves
+#      the invoker's cwd repo and fails exactly as the ticket reported. Without
+#      this, case 30 could pass against a fake gh that ignored cwd altogether —
+#      and it pins that the cwd fallback is preserved when no flag is given.
+new_log
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 3 "without --repo-path the invoker's cwd repo is used (exit 3)"
+grep_ok "not found in other/elsewhere" \
+  "the cwd-scoped run fails with the ticket's wrong-repo error — the bug this fix removes"
+
+# 30c. An explicit --repo-path that cannot be entered is a hard error in the
+#      read-only mode too (exit 7), never a silent fall back to the cwd: the
+#      alternative is printing a bypass for whatever repo the cwd happens to be.
+new_log
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --repo-path "$TMP/no-such-clone" --branch main 2>&1 )"; RC=$?
+expect_rc 7 "an unusable explicit --repo-path refuses even in --print (exit 7)"
+grep_ok "cannot cd into repo path" "the refusal names the unusable path"
+grep_absent "other/elsewhere" "no fallback to the invoker's cwd repo on an unusable --repo-path"
+log_absent "." "the repo-path refusal fires before any gh call"
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

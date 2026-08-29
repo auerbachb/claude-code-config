@@ -250,6 +250,16 @@ fi
 # --------------------------------------------------------------------------
 # Resolve owner/repo + PR metadata
 # --------------------------------------------------------------------------
+# AUDIT (issue #1439): this script is INTENTIONALLY cwd-scoped and has no
+# --repo-path flag, so it carries none of the cwd-vs-flag divergence that bug
+# describes. It resolves owner/repo exactly once, here, and threads that single
+# value explicitly through every later API call — there is no second, disagreeing
+# source of repo identity to drift from. Nothing to fix.
+#
+# Deliberately NOT adding a --repo-path flag: this is a read-only reporter, and
+# its one automated caller (admin-merge.sh) now enters its own resolved
+# --repo-path before invoking this script, so the cwd this inherits IS the
+# flagged clone. A second path flag would only add a way for the two to disagree.
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
 if [[ -z "$OWNER_REPO" ]]; then
   echo "ERROR: 'gh repo view' failed — not in a git repo or no remote configured." >&2

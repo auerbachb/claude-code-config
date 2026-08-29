@@ -57,7 +57,14 @@
 #
 # Options:
 #   --repo-path <path>  Absolute path of the local clone to cd into (default:
-#                       repo-root.sh / git toplevel of the cwd).
+#                       repo-root.sh / git toplevel of the cwd). AUTHORITATIVE
+#                       over the invoker's cwd (issue #1439): the script enters
+#                       this path BEFORE it resolves owner/repo, so gh's cwd
+#                       inference and every cwd-scoped helper (pr-authorship.sh,
+#                       merge-gate.sh, clean-behind-check.sh) target it too — a
+#                       cross-repo invocation no longer needs the caller to cd
+#                       first. A value that cannot be entered is a hard error
+#                       (exit 7) in every mode, never a silent cwd fallback.
 #   --branch <name>     Protected branch (default: the PR's base branch).
 #   --ac-verified       REQUIRED by --auto-plain. Caller attests it has completed
 #                       cr-merge-gate.md Step 2 — per-criterion Test Plan
@@ -107,9 +114,15 @@
 #   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
 #        not apply — no bypass path detected (inspect branch protection for the
 #        actual blocker)
-#   7 — execute/auto-plain failure (unusable --repo-path, merge failed, or the PR
-#        never reported state=MERGED; in execute's toggle shape the trap
-#        re-enabled protection)
+#   7 — unusable repo path, or an execute/auto-plain failure (merge failed, or
+#        the PR never reported state=MERGED; in execute's toggle shape the trap
+#        re-enabled protection). The repo-path refusal fires right after argument
+#        parsing, before any gh call, whenever the resolved path cannot be
+#        entered AND acting on the invoker's cwd instead would be wrong: an
+#        explicit --repo-path (any mode — honouring it is the flag's purpose), or
+#        --auto-plain/--execute with any resolved path (an irreversible merge).
+#        A read-only mode with an auto-resolved bad path keeps warning and
+#        continuing in the cwd it derived that path from.
 #   8 — refused by --auto-plain: the diagnosed shape is not `plain` (protection
 #        modification is prohibited for Claude), --ac-verified was not passed, an
 #        auto attempt already ran for this PR, or the repeat-guard marker could not
@@ -241,69 +254,28 @@ if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# Resolve owner/repo + PR metadata
+# Resolve the local clone FIRST, then scope the whole process to it (issue #1439)
 # --------------------------------------------------------------------------
-OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
-if [[ -z "$OWNER_REPO" ]]; then
-  echo "ERROR: 'gh repo view' failed — not in a git repo or no remote configured." >&2
-  exit 4
-fi
-OWNER="${OWNER_REPO%/*}"
-REPO="${OWNER_REPO#*/}"
-
-PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,baseRefName,headRefName 2>/dev/null || true)
-if [[ -z "$PR_JSON" ]]; then
-  echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
-  exit 3
-fi
-PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
-PR_MERGED=$(echo "$PR_JSON" | jq -r '(.state == "MERGED")')
-BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
-
-if [[ "$PR_MERGED" == "true" ]]; then
-  echo "PR #$PR_NUMBER is already merged — nothing to do." >&2
-  exit 3
-fi
-if [[ "$PR_STATE" != "OPEN" ]]; then
-  echo "ERROR: PR #$PR_NUMBER is $PR_STATE — not open." >&2
-  exit 3
-fi
-
-# --------------------------------------------------------------------------
-# Authorship guard (issue #733) — refuse a bypass merge on a PR the
-# authenticated user did not author. Delegated to pr-authorship.sh (single
-# source of truth); fail-closed on any non-zero (not_mine / unknown / not_found).
-# --allow-nonauthor bypasses ONLY under an explicit per-PR user override.
-# --------------------------------------------------------------------------
-if [[ "$ALLOW_NONAUTHOR" != true ]]; then
-  PR_AUTHORSHIP=""
-  for candidate in \
-    "$SCRIPT_DIR/pr-authorship.sh" \
-    "$HOME/.claude/skills-worktree/.claude/scripts/pr-authorship.sh" \
-    "$HOME/.claude/scripts/pr-authorship.sh"; do
-    if [[ -x "$candidate" ]]; then PR_AUTHORSHIP="$candidate"; break; fi
-  done
-  if [[ -z "$PR_AUTHORSHIP" ]]; then
-    echo "REFUSED: pr-authorship.sh not found — cannot verify PR authorship (issue #733 guard); refusing fail-closed." >&2
-    exit 1
-  fi
-  AUTH_OUT="$("$PR_AUTHORSHIP" "$PR_NUMBER" 2>&1)"; AUTH_RC=$?
-  if [[ "$AUTH_RC" -ne 0 ]]; then
-    echo "REFUSED: admin-merge will not act on PR #$PR_NUMBER — authorship guard (.claude/rules/safety.md): ${AUTH_OUT}" >&2
-    echo "Pass --allow-nonauthor ONLY under an explicit per-PR user override." >&2
-    exit 1
-  fi
-fi
-
-BRANCH="${BRANCH_OVERRIDE:-$BASE_REF}"
-if [[ -z "$BRANCH" ]]; then
-  echo "ERROR: could not determine the protected branch (pass --branch)." >&2
-  exit 4
-fi
-
-# --------------------------------------------------------------------------
-# Resolve absolute path of the local clone (for the cd-prefix)
-# --------------------------------------------------------------------------
+# --repo-path exists so a caller can point this script at a clone OTHER than the
+# invoker's cwd. It used to fail at that: repo identity was resolved from the cwd
+# (`gh repo view`, which infers owner/repo from the cwd's git remote) long before
+# REPO_PATH was computed, so a cross-repo invocation resolved the WRONG repo and
+# exited 3 ("PR not found") even when the flag named the right clone — observed
+# live on PR #1423's Phase C from an unrelated repo's checkout.
+#
+# Resolving the path here — before the first repo-identity call — and entering it
+# once makes --repo-path authoritative for every cwd-sensitive consumer at the
+# same time, without threading an explicit repo scope through each of them:
+# `gh repo view` / `gh pr view`, the pr-authorship.sh / merge-gate.sh /
+# clean-behind-check.sh pre-flight subprocesses (all cwd-scoped), the AUTO_MARKER
+# dedup key, and the final `gh pr merge`. It runs before the mode branches
+# diverge, so all four modes (--print, --launch-terminal, --auto-plain,
+# --execute) get it. The printed BYPASS_CMD keeps its own `cd %q` prefix so the
+# emitted one-liner stays portable for a human pasting it elsewhere.
+#
+# resolve_repo_path() itself still reads the cwd (repo-root.sh / git toplevel /
+# $PWD) when no override is given — that fallback chain, and its precedence, are
+# unchanged; only the moment it runs moved.
 resolve_repo_path() {
   if [[ -n "$REPO_PATH_OVERRIDE" ]]; then
     echo "$REPO_PATH_OVERRIDE"; return
@@ -362,9 +334,88 @@ REPO_PATH="$(resolve_repo_path)" || RESOLVE_RC=$?
 if [[ "$RESOLVE_RC" -ne 0 ]]; then
   exit 4
 fi
+
+# Enter the resolved clone ONCE, before any repo-identity resolution, so cwd,
+# gh's repo inference, and every helper subprocess below agree on one repo.
 REPO_PATH_NOTE=""
-if [[ ! -d "$REPO_PATH" ]]; then
-  REPO_PATH_NOTE="WARNING: resolved repo path '$REPO_PATH' is not a directory — pass --repo-path <abs-path>."
+if ! cd "$REPO_PATH" 2>/dev/null; then
+  # Refuse whenever continuing could act on a DIFFERENT repo than the one asked
+  # for:
+  #   * an explicit --repo-path names a target we cannot honour — falling back
+  #     to the invoker's cwd is precisely issue #1439's bug, and would print (or
+  #     run) a bypass against whatever repo the cwd happens to be, which may
+  #     well have a PR at this number;
+  #   * --auto-plain / --execute merge for real, so a wrong cwd is irreversible.
+  #     This preserves the refusal those two branches carried before #1439.
+  # A read-only mode with an AUTO-RESOLVED path keeps the historic
+  # warn-and-continue: that path was derived from this very cwd, so the cwd is a
+  # coherent fallback, and the note tells the operator to pin it.
+  if [[ -n "$REPO_PATH_OVERRIDE" || "$MODE" == "auto-plain" || "$MODE" == "execute" ]]; then
+    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path> naming an existing local clone." >&2
+    exit 7
+  fi
+  REPO_PATH_NOTE="WARNING: resolved repo path '$REPO_PATH' could not be entered — pass --repo-path <abs-path>."
+fi
+
+# --------------------------------------------------------------------------
+# Resolve owner/repo + PR metadata
+# --------------------------------------------------------------------------
+OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+if [[ -z "$OWNER_REPO" ]]; then
+  echo "ERROR: 'gh repo view' failed — not in a git repo or no remote configured." >&2
+  exit 4
+fi
+OWNER="${OWNER_REPO%/*}"
+REPO="${OWNER_REPO#*/}"
+
+PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,baseRefName,headRefName 2>/dev/null || true)
+if [[ -z "$PR_JSON" ]]; then
+  echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
+  exit 3
+fi
+PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "UNKNOWN"')
+PR_MERGED=$(echo "$PR_JSON" | jq -r '(.state == "MERGED")')
+BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName // ""')
+
+if [[ "$PR_MERGED" == "true" ]]; then
+  echo "PR #$PR_NUMBER is already merged — nothing to do." >&2
+  exit 3
+fi
+if [[ "$PR_STATE" != "OPEN" ]]; then
+  echo "ERROR: PR #$PR_NUMBER is $PR_STATE — not open." >&2
+  exit 3
+fi
+
+# --------------------------------------------------------------------------
+# Authorship guard (issue #733) — refuse a bypass merge on a PR the
+# authenticated user did not author. Delegated to pr-authorship.sh (single
+# source of truth); fail-closed on any non-zero (not_mine / unknown / not_found).
+# --allow-nonauthor bypasses ONLY under an explicit per-PR user override.
+# --------------------------------------------------------------------------
+if [[ "$ALLOW_NONAUTHOR" != true ]]; then
+  PR_AUTHORSHIP=""
+  for candidate in \
+    "$SCRIPT_DIR/pr-authorship.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/pr-authorship.sh" \
+    "$HOME/.claude/scripts/pr-authorship.sh"; do
+    if [[ -x "$candidate" ]]; then PR_AUTHORSHIP="$candidate"; break; fi
+  done
+  if [[ -z "$PR_AUTHORSHIP" ]]; then
+    echo "REFUSED: pr-authorship.sh not found — cannot verify PR authorship (issue #733 guard); refusing fail-closed." >&2
+    exit 1
+  fi
+  AUTH_OUT="$("$PR_AUTHORSHIP" "$PR_NUMBER" 2>&1)"; AUTH_RC=$?
+  if [[ "$AUTH_RC" -ne 0 ]]; then
+    echo "REFUSED: admin-merge will not act on PR #$PR_NUMBER — authorship guard (.claude/rules/safety.md): ${AUTH_OUT}" >&2
+    echo "Pass --allow-nonauthor ONLY under an explicit per-PR user override." >&2
+    exit 1
+  fi
+fi
+
+BRANCH="${BRANCH_OVERRIDE:-$BASE_REF}"
+if [[ -z "$BRANCH" ]]; then
+  echo "ERROR: could not determine the protected branch (pass --branch)." >&2
+  exit 4
 fi
 
 # --------------------------------------------------------------------------
@@ -762,12 +813,11 @@ if [[ "$MODE" == "auto-plain" ]]; then
     exit 8
   fi
 
-  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from the
-  # cwd's git remote) targets the intended repo regardless of the invoker's cwd.
-  if ! cd "$REPO_PATH" 2>/dev/null; then
-    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
-    exit 7
-  fi
+  # NOTE: the process is already inside $REPO_PATH — it was entered right after
+  # argument parsing (issue #1439), so `gh pr merge` below (which infers
+  # owner/repo from the cwd's git remote) targets the intended repo regardless of
+  # the invoker's cwd, and an unusable path already refused with exit 7 there.
+  # Do not re-add a cd here: one early cd is the single source of truth.
 
   # Mandatory re-validation (TOCTOU): CLEAN_BEHIND_OK above is a snapshot, and
   # main may have advanced since — turning a clean BEHIND into one whose base
@@ -852,14 +902,11 @@ fi
 # Mode: execute (USER-INVOKED ONLY) — toggle-merge-toggle with safe re-enable.
 # --------------------------------------------------------------------------
 if [[ "$MODE" == "execute" ]]; then
-  # Run from the resolved clone so `gh pr merge` (which infers owner/repo from
-  # the cwd's git remote) targets the intended repo regardless of the invoker's
-  # cwd — mirrors the cd-prefix baked into the --print one-liner. Fail before
-  # touching protection if the path is bad.
-  if ! cd "$REPO_PATH" 2>/dev/null; then
-    echo "ERROR: cannot cd into repo path '$REPO_PATH' — pass --repo-path <abs-path>." >&2
-    exit 7
-  fi
+  # NOTE: the process is already inside $REPO_PATH — it was entered right after
+  # argument parsing (issue #1439), mirroring the cd-prefix baked into the
+  # --print one-liner, so `gh pr merge` targets the intended repo regardless of
+  # the invoker's cwd. An unusable path refused with exit 7 there, well before
+  # any protection call. Do not re-add a cd here.
 
   # Safety-critical revalidation (issue #631): the pre-flight above computed
   # CLEAN_BEHIND_OK from a snapshot. When this bypass is proceeding over a clean
