@@ -1654,9 +1654,20 @@ case "$REVIEWER" in
     # unresolved thread. This path adds severity context (P0 vs P1/P2) only.
     #
     # Greptile posts via issue comments (not formal PR review objects). Detection
-    # (issue #723 — observed live on PR #721):
-    #   Clean pass: latest fresh greptile-apps[bot] issue comment with 👍 (+1)
-    #     reaction AND zero greptile-apps[bot] inline diff comments on the PR.
+    # (issue #723 — observed live on PR #721; corrected by issue #1390):
+    #   Clean pass: latest fresh greptile-apps[bot] summary comment whose
+    #     "Last reviewed commit" footer names the current HEAD SHA, AND zero
+    #     greptile-apps[bot] inline diff comments on the PR, AND zero formal P0
+    #     badges in the current review round.
+    #   Why the footer and not the 👍: issue #723 keyed the clean pass on a 👍
+    #     (+1) reaction carried by the bot's own comment, but Greptile reacts to
+    #     the comment it is REPLYING TO — the @greptileai trigger, authored by
+    #     whoever asked for the review — so the bot comment sits at +1 == 0 on a
+    #     genuinely clean pass (measured on PR #1379). The footer SHA is also
+    #     strictly better evidence: it is checkable against HEAD rather than
+    #     merely present, and survives another vendor change to reactions.
+    #   The bot-comment 👍 is retained only as a SUPPLEMENTAL alternative, so a
+    #     reaction that does land on the bot comment still counts.
     #   Freshness: comment.created_at > LAST_COMMIT_TS (mirrors the BugBot
     #     push-timestamp lesson — repo memory feedback_bugbot_commit_id_stale).
     #   Formal review objects (pulls/{N}/reviews) are kept as supplemental signal.
@@ -1889,17 +1900,78 @@ case "$REVIEWER" in
 
       # --- Path A: comment-based clean pass (primary Greptile channel) ---
       G_COMMENT_CLEAN=false
+      # Empty when there is no fresh summary comment, or when that comment
+      # carries no "Last reviewed commit" footer — both mean "no claim about
+      # which commit was reviewed", never "reviewed a different commit".
+      G_FOOTER_SHA=""
+      # True only when the footer positively names some commit other than HEAD.
+      # Declared out here beside G_FOOTER_SHA because Path B reads it whether or
+      # not a summary comment exists, and the script runs under `set -u`.
+      G_FOOTER_CONTRADICTS=false
+      G_HEAD_SHA_LC=$(printf '%s' "$HEAD_SHA" | tr "[:upper:]" "[:lower:]")
       if [[ -n "$LATEST_G_COMMENT" ]]; then
         G_THUMBSUP=$(echo "$LATEST_G_COMMENT" | jq -r '.reactions["+1"] // 0')
-        # Clean = 👍 present, no inline findings, and no formal P0 badge in
-        # any channel of the current review round.
-        if [[ "$G_THUMBSUP" -gt 0 && "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
+
+        # Primary signal (issue #1390): Greptile closes its summary comment with
+        #   Reviews (N): Last reviewed commit: [<title>](<repo-url>/commit/<sha>)
+        # Extract that SHA. The link carries the full 40 characters, so it is
+        # compared against the full HEAD_SHA — never the short form, which any
+        # commit sharing the prefix would satisfy. The pattern is anchored on the
+        # marker and confined to the marker line, so an unrelated commit link
+        # elsewhere in the body cannot be read as the footer. Extraction happens
+        # inside jq against .body, the same idiom as CODEANT_CONVO_ON_HEAD and
+        # G_FIX_PROVENANCE. A body with no footer yields "" and is treated as
+        # having made no claim (older comments, and any future format change).
+        G_FOOTER_SHA=$(echo "$LATEST_G_COMMENT" | jq -r '
+          ((.body // "") | ascii_downcase)
+          | [scan("last reviewed commit:[^\n]*/commit/([0-9a-f]{40})")]
+          | (last // []) | (.[0] // "")')
+        G_FOOTER_ON_HEAD=false
+        if [[ -n "$G_FOOTER_SHA" ]]; then
+          if [[ "$G_FOOTER_SHA" == "$G_HEAD_SHA_LC" ]]; then
+            G_FOOTER_ON_HEAD=true
+          else
+            G_FOOTER_CONTRADICTS=true
+          fi
+        fi
+
+        # Clean = the footer names HEAD (or the supplemental bot-comment 👍),
+        # no inline findings, and no formal P0 badge in any channel of the
+        # current review round.
+        #
+        # A contradicting footer vetoes the whole branch, 👍 included. The
+        # reaction is a weaker signal than the footer and cannot overrule it:
+        # 👍 on a Greptile comment is a routine workflow artifact — greptile.md
+        # makes 👍/👎 the bot's only learning channel — so without this veto a
+        # single feedback reaction on a stale summary would mark the comment
+        # clean, skip Path B entirely, and silently defeat the contradiction
+        # guard below (the guard runs only when G_COMMENT_CLEAN is false).
+        if [[ "$G_FOOTER_CONTRADICTS" != true ]] \
+           && [[ "$G_FOOTER_ON_HEAD" == true || "$G_THUMBSUP" -gt 0 ]] \
+           && [[ "$G_INLINE_COUNT" -eq 0 && "$P0_COUNT" -eq 0 ]]; then
           G_COMMENT_CLEAN=true
         fi
       fi
 
       if [[ "$G_COMMENT_CLEAN" != true ]]; then
         # --- Path B: severity gate ---
+        # Footer that positively contradicts HEAD (issue #1390). A summary
+        # comment can be fresh by timestamp and still report on an older commit:
+        # Greptile edits its summary in place (#748), so updated_at moves before
+        # the new round finishes. Timestamp freshness is therefore not evidence
+        # about HEAD — the same lesson #836/#876 taught on the CR path — while
+        # the footer states outright which commit was read. When it names some
+        # commit other than HEAD, the fresh path has no verdict on HEAD to give,
+        # so block and keep polling for the re-review. Only a footer that
+        # disagrees blocks; a missing footer changes nothing.
+        #
+        # Same G_FOOTER_CONTRADICTS the Path A veto reads, so the two sites
+        # cannot drift: whatever Path A refuses to call clean is exactly what
+        # gets reported here.
+        if [[ "$G_FOOTER_CONTRADICTS" == true ]]; then
+          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (trigger @greptileai)")
+        fi
+
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
         # whether a re-review is required after fixing.
         UNRESOLVED_G=$(echo "$THREADS_JSON" | jq -r '
