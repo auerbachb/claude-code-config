@@ -130,10 +130,10 @@ One commit = one review consumed. Never push multiple commits for separate findi
 
 ### Step 4: Reply to Review Threads
 
-Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai` for BugBot/Greptile):
+Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for Graphite — each mode strips only its own token, never another's):
 
 ```bash
-run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile \
+run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
 ```
 
