@@ -80,6 +80,7 @@ It is only ever an explicit per-issue, per-session instruction from the user in 
 | chip-launched thread | first action in the `prompt`, after the MODEL GUARD preamble, before any repo read |
 | ad-hoc "work on #N" | `.claude/rules/issue-planning.md` step 0 |
 | `/wave` | Step 2 candidate filter (see batching below) |
+| `candidate-ownership.sh` | per-candidate `--check --json`, inside `/pm`'s pre-dispatch ownership sweep (1B.5 / 3.4; #1431) |
 | `/wrap` | after Step 2.4's squash merge succeeds — `--release` |
 | `admin-merge.sh` | after each `FINAL_MERGED == true` — `--release` |
 | chip stale-hygiene trigger 4 | issue closed without a merged PR — `--release` |
@@ -87,6 +88,14 @@ It is only ever an explicit per-issue, per-session instruction from the user in 
 ### `/wave` batching
 
 Running `--check` per candidate over a 30-issue backlog would be ~90 API calls. `/wave` instead makes **one** `gh issue list --label in-progress --json number` call and runs the helper only for candidates in that (usually tiny) intersection. Candidates outside it cannot hold a claim, because the label is written before the claim comment.
+
+### The owned-resumable upgrade lives outside this script (#1431)
+
+`/pm`'s ownership sweep treats a `stale` verdict as **owned** when resumable evidence stands behind it — a parked entry, a resume marker, a handoff file, a surviving branch. A *bare* stale claim keeps the warn-and-proceed above, unchanged.
+
+That rule is layered on top of `issue-claim.sh`, never inside it. This script answers one question from GitHub alone — who holds the claim, and is it fresh. Teaching it about local markers and handoff files would make every caller depend on local disk state to answer a question about a shared remote claim. Mechanism: `pm-ownership-sweep.md`.
+
+Adoption, when the sweep finds a dead owner, reuses the **existing** stale-takeover path (`--claim` re-stamping a stale claim). A *fresh* foreign claim is never adopted: taking it needs `--allow-claimed`, which stays a user instruction and is never inferred.
 
 ### Release is best-effort at merge time
 

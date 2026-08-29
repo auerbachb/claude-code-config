@@ -29,6 +29,16 @@ Day mode is also the strictly better owner for its own PRs: it holds the issue c
 
 **Scope of the carve-out.** It is one `Monitor` per repo, armed only by an explicit `/pm day` or `/pm --run`, torn down on every exit path, and reclaimed by a freshness window when its session dies. Everything else in this document is unchanged: a bare `/pm` still arms nothing, and `CronCreate` is still never an option.
 
+## Paused work resumes where it lives (#1431)
+
+The general rule, of which the paused fleet is one instance: **paused work is resumed in the thread that owns it when that thread still exists, and adopted here when it does not.**
+
+`/pm`'s pre-dispatch ownership sweep (Step 1B.5 and Step 3.4) applies that per candidate. A candidate owned by a live thread — open or paused — is skipped with a one-line surface naming the owner, its state, and its resume route: `/go-on` for an ordinary thread, `/pr-monitor-and-manage-wake` for the paused PR fleet. A candidate whose owner is archived or gone is adopted from its surviving state. Mechanism: `pm-ownership-sweep.md`.
+
+This replaces the hand-maintained fleet carve-out **in prose only**. The fleet stops being a special case in the dispatch path and becomes the instance whose route differs; nothing about how the fleet is armed or taken over changes.
+
+**Arm-time behavior is untouched.** Step 2D.1(a) is a precondition on `/pm day` arming — a different decision from "may I dispatch this backlog candidate?" — and it still reads `.pmm_active`, still refuses a live fleet, and still arms over a *paused* one while saying the fleet stays paused. The dispatch sweep is the **surfacing** side of ownership: it emits `/pr-monitor-and-manage-wake` as a route for a candidate the paused fleet owns, and it never takes over, wakes, or writes fleet state.
+
 ## Rationale
 
 The canonical PM manager use case is **tracking worker output across GitHub-visible artifacts**: issues, feature branches, PRs, review findings, CI state, handoff files, and Phase A/B/C state. The PM may be coordinating multiple coding threads or `/subagent`-launched Phase agents, but `/pm` itself should not arm a recurring poll — that overlaps with `/pr-monitor-and-manage`, which adds per-PR state classification, auto-dispatch to `/fixpr` and `/wrap`, and idle auto-pause.
