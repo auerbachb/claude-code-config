@@ -35,7 +35,9 @@
 #   closed and loudly instead of hanging indistinguishably from slow work.
 #   A run makes at most two bounded git calls, so the worst case is bounded
 #   too. There is no `timeout(1)` on stock macOS, hence the background-and-poll
-#   shape below rather than a wrapper binary.
+#   shape rather than a wrapper binary — which now lives in
+#   `lib/bounded-run.sh`, shared with the callers that bound their own
+#   post-resolution git calls (issue #1404).
 #
 # USAGE
 #   repo-root.sh [path]
@@ -84,9 +86,12 @@
 # REQUIREMENTS
 #   Besides git, this script REQUIRES mktemp, awk, head, date, sleep, dirname,
 #   basename and rm. All are checked up front; a missing one exits 4 rather than
-#   letting the shell's own 127 escape as an undocumented status.
+#   letting the shell's own 127 escape as an undocumented status. It also
+#   REQUIRES `lib/bounded-run.sh` beside it — the shared wall-clock bound — and
+#   an unreadable one exits 4 for the same reason: without the bound nothing
+#   about the directory could be determined safely.
 #
-#   `ps` and `tr` are used too (by kill_child) but are deliberately NOT
+#   `ps` and `tr` are used too (by the library's kill_child) but are deliberately NOT
 #   required: without them the process-group kill is skipped and the builtin
 #   single-pid `kill` still stops the child, so a timeout still exits 3 with the
 #   right message. Requiring them would refuse to resolve in an environment
@@ -245,20 +250,32 @@ if [[ -n "$MISSING_HELPERS" ]]; then
   exit 4
 fi
 
+# The wall-clock bound itself, shared with the three callers that bound their
+# own post-resolution git calls (issue #1404). Checked like any other required
+# helper and for the same reason: without it this script has no bound, and a
+# run with no bound is exactly the 20-minute silent stall it exists to prevent.
+# Refusing here is therefore "nothing was determined" — exit 4, never a fall
+# through to an unbounded call.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+BOUNDED_RUN_LIB="${SCRIPT_DIR:-.}/lib/bounded-run.sh"
+if [[ ! -r "$BOUNDED_RUN_LIB" ]]; then
+  echo "repo-root.sh: required library not found at $BOUNDED_RUN_LIB, so the wall-clock bound could not be loaded and nothing was determined${TARGET:+ about $TARGET} — reinstall .claude/scripts/lib/ and retry" >&2
+  exit 4
+fi
+# shellcheck source=lib/bounded-run.sh
+source "$BOUNDED_RUN_LIB"
+
 # A bad override must not silently disable the bound — that is the exact
 # failure this script exists to prevent. Anything non-numeric or zero falls
-# back to the default instead.
-#
-# The `10#` is load-bearing, not defensive noise: `08` and `09` are all-digits
-# and pass `-gt 0`, but `(( ))` reads a leading zero as octal, where they are
-# not valid literals. The arithmetic then ERRORS, the comparison returns false
-# on every pass, and the bound disappears without a word — the precise failure
-# this script exists to remove, reached through a value both gates accepted.
-# `10#` also stops `010` from silently meaning 8 while the diagnostic says 010.
-TIMEOUT_SECS="${REPO_ROOT_TIMEOUT_SECS:-10}"
-case "$TIMEOUT_SECS" in ''|*[!0-9]*) TIMEOUT_SECS=10 ;; esac
-TIMEOUT_SECS="$(( 10#$TIMEOUT_SECS ))"
-[ "$TIMEOUT_SECS" -gt 0 ] 2>/dev/null || TIMEOUT_SECS=10
+# back to the default instead (normalize_bound, including the `10#` octal
+# hardening, lives in the library).
+TIMEOUT_SECS="$(normalize_bound "${REPO_ROOT_TIMEOUT_SECS:-10}" 10)"
+
+# This script's ANSWER is the capture: it reads a path out of $CAPTURE. So a
+# child that finished with an EMPTY capture must not be trusted over the
+# sampling — there is no answer there to keep. See BOUNDED_REQUIRE_OUTPUT in
+# lib/bounded-run.sh.
+BOUNDED_REQUIRE_OUTPUT=1
 
 # Created after arg parsing so --help and usage errors leave nothing behind.
 # The EXIT trap that removes these was installed at the top of the script, so
@@ -273,9 +290,6 @@ GIT_CMD=(git)
 if [[ -n "$TARGET" ]]; then
   GIT_CMD=(git -C "$TARGET")
 fi
-
-BOUNDED_TIMED_OUT=0
-BOUNDED_CLOCK_UNREADABLE=0
 
 # Set when a git call came back 126/127 — the shell could not launch the binary
 # at all, so git never formed an opinion about this directory. Read ONLY by the
@@ -293,117 +307,6 @@ GIT_UNRUNNABLE=0
 # unreadable object store, so it keeps exiting 1 with git's stderr appended.
 note_if_unrunnable() { # rc
   case "$1" in 126|127) GIT_UNRUNNABLE=1 ;; esac
-}
-
-# Seconds since the epoch, or a non-zero return when the answer is unusable.
-# Callers must not accept a blank or non-numeric result: inside `(( ))` an empty
-# variable is 0, so `now - start` would go negative and the bound below would
-# never trip — the bound would vanish without a word, which is the exact class
-# of failure this script exists to remove.
-now_epoch() {
-  local t
-  t="$(date -u +%s 2>/dev/null || true)"
-  case "$t" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$t"
-}
-
-# Signal the child, preferring its whole process group. The negative form is
-# used ONLY after confirming the child really leads its own group: a process
-# group outlives its leader, so a recycled pid can name a live, unrelated group.
-# Signalling that group would also "succeed", skipping the single-pid fallback
-# and leaving our actual child running.
-kill_child() { # signal, pid
-  local sig="$1" pid="$2" pgid=""
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)"
-  if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
-    kill -"$sig" -"$pid" 2>/dev/null || true
-  fi
-  kill -"$sig" "$pid" 2>/dev/null || true
-}
-
-run_bounded() {
-  # Run "$@" with a wall-clock bound. stdout lands in $CAPTURE, stderr in
-  # $CAPTURE_ERR (kept so a failure can name its real cause instead of being
-  # flattened into "not a git repo"). Returns the child's real exit status, or
-  # 124 with BOUNDED_TIMED_OUT=1 when the bound cut the call short.
-  BOUNDED_TIMED_OUT=0
-  BOUNDED_CLOCK_UNREADABLE=0
-  : > "$CAPTURE"
-  : > "$CAPTURE_ERR"
-
-  # Job control puts the child in its OWN process group, so the kill below
-  # reaches anything git spawned (pager, credential helper, alias) instead of
-  # only the direct pid — a survivor would keep the stalled fd open while we
-  # reported the call as stopped. stdin is /dev/null because a job-controlled
-  # background job that reads the terminal takes SIGTTIN and stops, which looks
-  # exactly like the hang we are trying to detect.
-  set -m 2>/dev/null || true
-  "$@" >"$CAPTURE" 2>"$CAPTURE_ERR" </dev/null &
-  local pid=$!
-  set +m 2>/dev/null || true
-
-  local start now rc=0 killed=0 waited=0 reaped=0
-  start="$(now_epoch)" || start=""
-  # The bound reads the clock every pass, never a tick count: a tick is a sleep
-  # plus a fork, so counting iterations drifts past the requested bound under
-  # load — unbounded drift on the one path that is supposed to be bounded.
-  while kill -0 "$pid" 2>/dev/null; do
-    now="$(now_epoch)" || now=""
-    # An unreadable clock cannot be allowed to mean "no bound". Fail closed:
-    # stop the call and say why, rather than running it unbounded.
-    if [[ -z "$start" || -z "$now" ]]; then
-      BOUNDED_CLOCK_UNREADABLE=1
-    fi
-    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= TIMEOUT_SECS )); then
-      killed=1
-      kill_child TERM "$pid"
-      # Polled grace so a child that dies at once does not hold the wrapper
-      # past the bound it was just held to.
-      for _ in 1 2; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 1
-      done
-      kill_child KILL "$pid"
-      break
-    fi
-    # Sub-second polling keeps the healthy path (a few milliseconds) fast; this
-    # script runs on every hook. A `sleep` without fractional support fails
-    # instantly and the whole-second form takes over.
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  if [[ "$killed" -eq 1 ]]; then
-    # Bounded reap. SIGKILL is QUEUED, not effective, against a child wedged in
-    # uninterruptible I/O — exactly the stalled-mount case this bound exists
-    # for. A plain `wait` here would block until that I/O returns, inheriting
-    # the very hang the bound just prevented. So give up on the status instead:
-    # the script exits moments later and init reaps the orphan.
-    while (( waited < 3 )); do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        reaped=1
-        rc=0
-        wait "$pid" 2>/dev/null || rc=$?
-        break
-      fi
-      sleep 1
-      waited=$(( waited + 1 ))
-    done
-    # A child that had already finished when the sampling loop tripped left a
-    # complete answer behind: `kill -0` succeeds on a zombie and the clock is
-    # whole-second, so the trip can land after the work was done. Trust the
-    # result over the sampling — reporting a timeout here would throw away a
-    # correct answer that is already sitting in $CAPTURE.
-    if [[ "$reaped" -eq 1 && "$rc" -eq 0 && -s "$CAPTURE" ]]; then
-      return 0
-    fi
-    BOUNDED_TIMED_OUT=1
-    return 124
-  fi
-
-  # The child finished on its own, so `wait` returns its real exit status
-  # rather than a zombie plus a guess.
-  wait "$pid" 2>/dev/null || rc=$?
-  return "$rc"
 }
 
 timeout_die() {
@@ -429,7 +332,7 @@ ROOT=""
 resolve_via_common_dir() {
   local rc=0 common base parent
 
-  run_bounded "${GIT_CMD[@]}" rev-parse --path-format=absolute --git-common-dir || rc=$?
+  run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" rev-parse --path-format=absolute --git-common-dir || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     # git rev-parse is the cheapest call this script can make. If it cannot
     # finish inside the bound, git is wedged and the heavier enumeration below
@@ -441,7 +344,7 @@ resolve_via_common_dir() {
     # git < 2.31 has no --path-format; its plain form may answer with a path
     # relative to the directory the call ran in.
     rc=0
-    run_bounded "${GIT_CMD[@]}" rev-parse --git-common-dir || rc=$?
+    run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" rev-parse --git-common-dir || rc=$?
     if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
       timeout_die "git rev-parse --git-common-dir"
     fi
@@ -497,7 +400,7 @@ if [[ -z "$ROOT" ]]; then
   # before, so nothing about the resolution outcome moves — the rc only lets a
   # failure name itself accurately at the bottom of the script.
   WT_RC=0
-  run_bounded "${GIT_CMD[@]}" worktree list --porcelain || WT_RC=$?
+  run_bounded "$TIMEOUT_SECS" "${GIT_CMD[@]}" worktree list --porcelain || WT_RC=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     timeout_die "git worktree list --porcelain"
   fi

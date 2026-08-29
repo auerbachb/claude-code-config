@@ -16,7 +16,12 @@ set -uo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 TMP="$(mktemp -d)"
-cleanup() { rm -rf "$TMP"; }
+cleanup() {
+  # T16's stall stub spawns a self-limiting sleeper; kill any survivor so a
+  # failing process-group kill cannot leak one into the runner.
+  pkill -f "$TMP/gitstub/stub-sleeper" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 # Redirect HOME: scripts append to $HOME/.claude/script-usage.log, and the
@@ -80,6 +85,10 @@ cp "$REPO_ROOT/.claude/scripts/stale-cleanup.sh" \
    "$REPO_ROOT/.claude/scripts/repo-root.sh" \
    "$REPO_ROOT/.claude/scripts/dirty-main-guard.sh" \
    "$REPO_A/.claude/scripts/"
+# All three source the shared wall-clock bound from lib/ (issue #1404) and
+# refuse to run git unbounded without it, so the copy includes lib/ too.
+mkdir -p "$REPO_A/.claude/scripts/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$REPO_A/.claude/scripts/lib/"
 SUT="$REPO_A/.claude/scripts/stale-cleanup.sh"
 GUARD="$REPO_A/.claude/scripts/dirty-main-guard.sh"
 
@@ -615,9 +624,128 @@ ERR="$(HOME="$TMP/t15-no-such-home" bash "$SUT" --help 2>&1 >/dev/null)" || RC=$
 check_eq "T15c: --help exits 0 when \$HOME/.claude is missing" "0" "$RC"
 check_eq "T15d: no shell diagnostic when the log dir is missing" "" "$ERR"
 
+# ---- T16: the sweep's own git calls are bounded (issue #1404) ---------------
+# PR #1386 bounded the enumeration; the calls the sweep makes AFTER it —
+# `for-each-ref`, `branch -D`, the per-worktree dirty checks — were still
+# unbounded, and on the filesystem behind #1363 they stall exactly the same way.
+# The two halves of the contract are asserted separately because they are
+# deliberately different: a classification call DEGRADES (the run continues so
+# the registration sweep still clears the cause), a deletion is a per-item
+# `failed:` that reaches exit 2.
+GIT_STUB="$TMP/gitstub"
+mkdir -p "$GIT_STUB"
+cp "$STUB_BIN/gh" "$GIT_STUB/gh"
+REAL_GIT="$(command -v git)"
+export REAL_GIT
+cat > "$GIT_STUB/stub-sleeper" <<'EOF'
+#!/usr/bin/env bash
+# Self-limited (~10s) so a failed process-group kill cannot leak a sleeper.
+for _ in $(seq 1 50); do
+  printf 'tick\n' >> "$TICK_FILE"
+  sleep 0.2
+done
+EOF
+chmod +x "$GIT_STUB/stub-sleeper"
+export TICK_FILE="$TMP/t16-tick"
+: > "$TICK_FILE"
+
+# A repo of its own: one stale local branch, no worktrees, so exactly one
+# deletion is attempted and the stall costs one bound, not one per item.
+REPO_T16="$TMP/repoT16"
+git init -q -b main "$REPO_T16"
+git -C "$REPO_T16" config user.email "test@example.com"
+git -C "$REPO_T16" config user.name "Test"
+echo "t16" > "$REPO_T16/file.txt"
+git -C "$REPO_T16" add file.txt
+commit_old "$REPO_T16" "t16 base"
+git -C "$REPO_T16" branch issue-900-t16-stale
+
+make_git_stub() { # stalling-subcommand
+  cat > "$GIT_STUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t16-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "$1" ]]; then
+    "$GIT_STUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+  chmod +x "$GIT_STUB/git"
+}
+
+# T16a — a wedged `for-each-ref` degrades: no classification, but the run
+# finishes, says so, and reports exit 1 (incomplete sweep) rather than 0.
+# 3s, not 1s: the clock is whole-second, so a 1s bound can trip before the stub
+# is even live.
+: > "$TMP/t16-argv.log"
+make_git_stub for-each-ref
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$REPO_T16" && PATH="$GIT_STUB:$PATH" STALE_CLEANUP_TIMEOUT_SECS=3 \
+  "$SUT" --check --json 2>"$TMP/t16-err.log")" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+check_eq "T16a: a wedged for-each-ref still exits (1, incomplete sweep)" "1" "$RC"
+check_json "T16a: ref_scan reports the timeout" "$OUT" '.ref_scan == "timed_out"'
+check_json "T16a: and no branch is classified from a pass that never ran" "$OUT" \
+  '(.stale_local_branches | length) == 0'
+check_contains "T16a: the warning names the bound that tripped" \
+  "exceeded 3s and was killed" "$(cat "$TMP/t16-err.log")"
+if (( ELAPSED < 40 )); then
+  pass "T16a: returned in ${ELAPSED}s — the bound held (each stub call sleeps 30s)"
+else
+  fail "T16a: took ${ELAPSED}s — the bound did not hold"
+fi
+if grep -q 'for-each-ref' "$TMP/t16-argv.log"; then
+  pass "T16a: control — the stalling subcommand really was invoked"
+else
+  fail "T16a: control — the stub never saw for-each-ref, so nothing was bounded"
+fi
+# The degrade must not swallow the registration pass, which is the pass that
+# clears the cause of the stall in the first place.
+check_json "T16a: the registration scan still ran" "$OUT" '.registration_scan != "unavailable"'
+
+# T16b — a wedged deletion is a per-item failure and reaches exit 2, rather
+# than aborting the sweep or being reported as a success.
+: > "$TMP/t16-argv.log"
+make_git_stub -D
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$REPO_T16" && PATH="$GIT_STUB:$PATH" STALE_CLEANUP_TIMEOUT_SECS=3 \
+  "$SUT" --apply 2>/dev/null)" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+check_eq "T16b: a wedged branch deletion exits 2 (deletion failure)" "2" "$RC"
+check_contains "T16b: reported as a per-item failure naming the bound" \
+  "failed: local branch issue-900-t16-stale — 'git branch -D' exceeded 3s and was killed" "$OUT"
+if (( ELAPSED < 40 )); then
+  pass "T16b: returned in ${ELAPSED}s — the bound held"
+else
+  fail "T16b: took ${ELAPSED}s — the bound did not hold"
+fi
+check_eq "T16b: control — the branch is still there, so nothing was reported removed" \
+  "issue-900-t16-stale" \
+  "$(git -C "$REPO_T16" for-each-ref --format='%(refname:short)' refs/heads/issue-900-t16-stale)"
+
+# T16c — control: with nothing stalling, the same stub sweeps normally. Without
+# it, T16a/T16b would also pass against a stub that broke every git call.
+: > "$TMP/t16-argv.log"
+cat > "$GIT_STUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GIT_STUB/git"
+RC=0
+OUT="$(cd "$REPO_T16" && PATH="$GIT_STUB:$PATH" STALE_CLEANUP_TIMEOUT_SECS=3 \
+  "$SUT" --apply 2>/dev/null)" || RC=$?
+check_eq "T16c: control — a pass-through stub sweeps cleanly (exit 0)" "0" "$RC"
+check_contains "T16c: control — and the branch is removed for real" \
+  "removed: local branch issue-900-t16-stale" "$OUT"
+pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: stale-cleanup.sh + dirty-main-guard.sh — invoking-repo scope verified (issue #697)"
+echo "OK: stale-cleanup.sh + dirty-main-guard.sh — invoking-repo scope (issue #697) and the sweep's git bounds (issue #1404) verified"
