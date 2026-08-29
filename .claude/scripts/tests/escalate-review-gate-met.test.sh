@@ -193,6 +193,108 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
 
 ############################################################################
+# (h6f)-(h6h) pin the #876 redemption path this script gained in issue #1387.
+#
+# All three share (h6)'s shape — an APPROVED on HEAD whose submitted_at predates
+# the HEAD commit — and differ ONLY in what the reviewer left on HEAD outside
+# the review object. (h6) itself stays the control: a substantive approval BODY
+# and nothing else still escalates, because a body can never redeem its own
+# frozen timestamp.
+#
+# A shared SHA for the "reviewed a different commit" fixtures below. Full 40
+# chars on purpose: a short SHA would prefix-match HEAD and agree vacuously.
+OLD_SHA_H6="7c1f2b3a4d5e60718293a4b5c6d7e8f901234567"
+
+echo "== Scenario (h6f): stale submitted_at + HEAD-anchored inline comments -> gate_met (issue #876 redemption, parity with merge-gate.sh) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H6F="$(failure_comment "$(ts_seconds_ago 60)")"
+# The in-place re-review edit: CodeAnt PATCHes its EXISTING review object, so
+# commit_id advances to the new HEAD while submitted_at stays frozen at the
+# original submission. Body is EMPTY on purpose — the only thing that can make
+# this approval count is the external evidence below, so if redemption is ever
+# reverted this case fails rather than passing on a substantive body.
+CODEANT_STALE_H6F='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 3600)"'"}'
+# Inline findings anchored to HEAD by BOTH commit_id and original_commit_id, and
+# created after the push — first-party proof this reviewer read the current diff.
+CODEANT_INLINE_H6F='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "original_commit_id": "'"$HEAD_SHA"'", "created_at": "'"$(ts_seconds_ago 120)"'", "path": "a.sh", "body": "Suggestion: this early return leaves the lock held on the error path."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6F]" "[$CODEANT_INLINE_H6F]" "[$FAILURE_COMMENT_H6F]"
+OUT=$(run_script 2>"$TMP/h6f-stderr.txt"); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=gate_met" "STATUS=gate_met" "$OUT"
+# The verdict must come from REDEMPTION, not from the approval having been fresh
+# all along — otherwise this case would keep passing with the fix reverted.
+# Assert the grant announced itself.
+if grep -q "issue #876, escalation parity #1387" "$TMP/h6f-stderr.txt"; then
+  check_eq "redemption fired (stderr notice present)" "present" "present"
+else
+  check_eq "redemption fired (stderr notice present)" "present" "absent"
+fi
+
+############################################################################
+echo "== Scenario (h6g): stale submitted_at REDEEMED, but the approval is hollow -> trigger_greptile (issue #875 guard survives redemption) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H6G="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_STALE_H6G='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 3600)"'"}'
+# A post-push status comment NAMING HEAD — genuine external evidence, so the
+# freshness filter redeems the frozen timestamp exactly as in (h6f).
+CODEANT_NAMES_HEAD_H6G="$(jq -cn --arg ts "$(ts_seconds_ago 200)" --arg sha "$HEAD_SHA" \
+  '{user: {login: "codeant-ai[bot]"}, created_at: $ts,
+    body: ("CodeAnt AI reviewed commit " + $sha + " and walked every changed hunk in the escalation gate before reporting back.")}')"
+# ...and then this bot own newest SHA-naming self-report names a DIFFERENT
+# commit, which is not suppressed by external evidence (self_report_mismatch).
+# So redemption grants at the freshness stage and the hollow guard withholds
+# afterwards — the exact laundering path this scenario exists to close.
+CODEANT_OLD_SHA_H6G="$(jq -cn --arg ts "$(ts_seconds_ago 150)" --arg sha "$OLD_SHA_H6" \
+  '{user: {login: "codeant-ai[bot]"}, created_at: $ts,
+    body: ("CodeAnt AI - Review Status: reviewed your PR at commit " + $sha + " and finished without blocking findings.")}')"
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6G]" "[]" \
+  "[$FAILURE_COMMENT_H6G, $CODEANT_NAMES_HEAD_H6G, $CODEANT_OLD_SHA_H6G]"
+OUT=$(run_script 2>"$TMP/h6g-stderr.txt"); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+# Both halves must be observed: redemption GRANTED (so this is genuinely the
+# redeemed path, not a stale approval that never got that far), and the #875
+# guard is what withheld. Without the first assertion this case would keep
+# passing if redemption silently stopped working.
+if grep -q "issue #876, escalation parity #1387" "$TMP/h6g-stderr.txt"; then
+  check_eq "redemption fired before the substance guard" "present" "present"
+else
+  check_eq "redemption fired before the substance guard" "present" "absent"
+fi
+if grep -q "no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence" "$TMP/h6g-stderr.txt"; then
+  check_eq "substance guard still withheld a redeemed approval" "present" "present"
+else
+  check_eq "substance guard still withheld a redeemed approval" "present" "absent"
+fi
+
+############################################################################
+echo "== Scenario (h6h): stale submitted_at + only run-start/completion markers -> trigger_greptile (a constant redeems nothing) =="
+reset_state
+write_commits "$(ts_seconds_ago 300)"
+FAILURE_COMMENT_H6H="$(failure_comment "$(ts_seconds_ago 60)")"
+CODEANT_STALE_H6H='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'", "state": "APPROVED", "body": "", "submitted_at": "'"$(ts_seconds_ago 3600)"'"}'
+# The fixed strings a bot posts around every run. Accepting either as the
+# redeemer would let a bot certify its own freshness with a constant, so
+# review-substance.sh excludes them from external_evidence_on_head and this PR
+# must still escalate.
+CODEANT_MARKER_H6H='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 200)"'", "body": "CodeAnt AI is running the review on your pull request. Results will be posted shortly."}'
+CODEANT_FINISH_H6H='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_seconds_ago 150)"'", "body": "CodeAnt AI finished running the review."}'
+write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6H]" "[]" \
+  "[$FAILURE_COMMENT_H6H, $CODEANT_MARKER_H6H, $CODEANT_FINISH_H6H]"
+OUT=$(run_script 2>"$TMP/h6h-stderr.txt"); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+# Redemption must NOT have fired — the verdict has to come from the approval
+# still being stale, not from a later guard mopping up after a bad grant.
+if grep -q "issue #876, escalation parity #1387" "$TMP/h6h-stderr.txt"; then
+  check_eq "no redemption from markers alone" "absent" "present"
+else
+  check_eq "no redemption from markers alone" "absent" "absent"
+fi
+
+############################################################################
 echo "== Scenario (h7): HEAD commit timestamp unavailable -> fail closed, no gate_met =="
 reset_state
 write_commits "$(ts_seconds_ago 300)"

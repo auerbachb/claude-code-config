@@ -166,6 +166,15 @@ PRIMARY_REVIEW_MET=false
 # itself stayed blocked, which is the same escalation stall this file exists to
 # prevent. Fetched once, only when an approval actually exists.
 HEAD_COMMIT_TS=""
+# Review-substance evidence (issues #875, #876). Computed ONCE, here, because
+# BOTH the freshness redemption immediately below and the hollow-approval guard
+# further down read it — merge-gate.sh likewise computes REVIEW_EVIDENCE once
+# and reuses it, and two evaluations of the same payload could drift apart
+# between the two verdicts. Fail-closed default: an unusable evaluator leaves
+# this at '{}', which reports no external evidence for any login, so redemption
+# can only ever be withheld by a broken evaluator, never granted.
+SUBSTANCE_JSON='{}'
+SUBSTANCE_OK=false
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
   if [[ -z "$HEAD_COMMIT_TS" ]]; then
@@ -176,16 +185,73 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     VALID_APPROVERS=""
     echo "escalate-review.sh: cannot verify approval freshness — HEAD commit timestamp unavailable; not reporting gate_met (issues #836, #875)" >&2
   else
+    # HEAD_COMMIT_TS is non-empty from here on, so the evaluator always gets the
+    # push_ts its temporal-inversion and capability-failure signals need. Same
+    # input projection merge-gate.sh uses, and no extra API calls — pr-state.sh
+    # already fetched reviews plus both comment endpoints.
+    REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
+    if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+      echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+    else
+      SUBSTANCE_RAW="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
+          head_sha: $sha,
+          push_ts: $push,
+          reviews: (.comments.reviews // []),
+          pr_comments: (.comments.inline // []),
+          issue_comments: (.comments.conversation // [])
+        }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
+      # Structure, not just parseability (same test merge-gate.sh applies): the
+      # redemption term and the hollow guard both read .reviewers[<login>], and a
+      # well-formed-but-wrong shape would silently read as "nothing is
+      # substantive" for every reviewer.
+      if [[ -n "$SUBSTANCE_RAW" ]] && echo "$SUBSTANCE_RAW" \
+          | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+        SUBSTANCE_JSON="$SUBSTANCE_RAW"
+        SUBSTANCE_OK=true
+      else
+        # Unusable evaluator output. Fail closed to match merge-gate.sh, which
+        # die_local()s on the same condition: claiming gate_met here would stop
+        # escalation on a PR whose gate is simultaneously refusing to pass,
+        # leaving it stalled with no reviewer working on it.
+        echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
+      fi
+    fi
+
     # Evaluated into a temporary first so a jq FAILURE is distinguishable from a
     # successful "every approval is stale" (BugBot review, PR #883). Both clear
     # VALID_APPROVERS, but only one is a degraded run, and silently reporting it
     # as "no valid approvers" would escalate to a PAID Greptile review on what is
     # really a tooling fault. The two sibling guards in this block both announce
     # themselves on stderr; this one used to be the exception.
+    #
+    # STALE-APPROVAL REDEMPTION (issue #1387, mirroring merge-gate.sh #876).
+    # A pure `submitted_at >= push` compare is STRICTER than the gate it fronts.
+    # CodeAnt PATCHes its EXISTING review object on a re-review — same review id,
+    # commit_id advanced to the new HEAD, submitted_at frozen at the original
+    # submission, because GitHub treats that field as immutable creation time. So
+    # every in-place re-review reads as permanently stale here, VALID_APPROVERS
+    # empties, and a PR whose merge gate already reports primary_review_met: true
+    # keeps escalating toward a PAID Greptile review with no reviewer needed
+    # (observed on PR #1373 at HEAD 39d0442). A caller stricter than the gate
+    # burns money exactly as a caller more permissive than the gate strands PRs.
+    #
+    # The redeeming term is external_evidence_on_head, NOT reviewer identity:
+    # "CodeAnt timestamps are unreliable, so skip staleness for CodeAnt" would
+    # re-open the hole #875 closed, since that bot also emits genuinely hollow
+    # approvals. CodeRabbit and CodeAnt get identical treatment. Nor can an
+    # approval redeem itself — review-substance.sh computes that flag from
+    # substance produced OUTSIDE the review object whose timestamp is in doubt,
+    # and excludes fixed run-start/completion markers and capability-failure
+    # notices, so a bot cannot certify its own freshness with a constant.
+    # The hollow-approval guard below still runs on whatever survives here, so
+    # redemption cannot launder a rubber stamp.
+    FRESH_EVAL=""
     FRESH_APPROVERS=""
+    REDEEMED_APPROVERS=""
     FRESHNESS_OK=true
-    FRESH_APPROVERS="$(jq -rn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
-      --arg logins "$VALID_APPROVERS" --slurpfile doc "$STATE_PATH" '
+    FRESH_EVAL="$(jq -cn --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" \
+      --arg logins "$VALID_APPROVERS" --argjson evidence "$SUBSTANCE_JSON" \
+      --slurpfile doc "$STATE_PATH" '
       # Canonicalise before comparing (BugBot review, PR #883): this is a
       # lexicographic string compare, so when two timestamps share a
       # whole-second prefix the zone suffix is the first differing character —
@@ -225,15 +291,40 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
       | ($push | canon_ts) as $push_c
       | [ $candidates[]
           | . as $l
-          | select(
-              ([ $d.comments.reviews[]?
-                 | select(.user.login == $l and (.commit_id // "") == $sha
-                          and .state == "APPROVED")
-                 | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
-              | ($approved_at != "") and ($approved_at >= $push_c)) ]
-      | join(",")')" || FRESHNESS_OK=false
+          | ([ $d.comments.reviews[]?
+               | select(.user.login == $l and (.commit_id // "") == $sha
+                        and .state == "APPROVED")
+               | (.submitted_at | canon_ts) ] | sort | last // "") as $approved_at
+          | select($approved_at != "")
+          # Two terms, not one: fresh by its own timestamp, OR stale but redeemed
+          # by evidence this reviewer left on HEAD outside the review object.
+          # Keyed strictly by login — no allowlist, no identity branch.
+          | { login: $l,
+              fresh: ($approved_at >= $push_c),
+              redeemed: (($evidence.reviewers[$l].external_evidence_on_head // false) == true) }
+          | select(.fresh or .redeemed) ]
+      | { keep: [ .[].login ],
+          redeemed: [ .[] | select(.fresh | not) | .login ] }')" || FRESHNESS_OK=false
+    # A jq program can succeed and still hand back something unusable, so pin the
+    # shape — both keys, both arrays — before reading the two lists out of it.
+    # Checking only `has()` would let a non-array through, and the extractions
+    # below would then fail into empty strings, which read as "every approval is
+    # stale": a degraded run wearing a legitimate verdict.
+    if [[ "$FRESHNESS_OK" == "true" ]] \
+       && ! echo "$FRESH_EVAL" \
+          | jq -e '(.keep | type == "array") and (.redeemed | type == "array")' \
+            >/dev/null 2>&1; then
+      FRESHNESS_OK=false
+    fi
     if [[ "$FRESHNESS_OK" == "true" ]]; then
+      FRESH_APPROVERS="$(echo "$FRESH_EVAL" | jq -r '.keep | join(",")' 2>/dev/null || true)"
+      REDEEMED_APPROVERS="$(echo "$FRESH_EVAL" | jq -r '.redeemed | join(",")' 2>/dev/null || true)"
       VALID_APPROVERS="$FRESH_APPROVERS"
+      if [[ -n "$REDEEMED_APPROVERS" ]]; then
+        # Parallel to merge-gate.sh's #876 message: names the head SHA, says what
+        # was redeemed and why, so a redemption is never silent.
+        echo "escalate-review.sh: APPROVED on ${HEAD_SHA:0:7} from $REDEEMED_APPROVERS has a stale submitted_at (< $HEAD_COMMIT_TS) but left substantive evidence on this SHA outside the review object — in-place re-review edit, counting it as fresh to match merge-gate.sh (issue #876, escalation parity #1387)" >&2
+      fi
     else
       VALID_APPROVERS=""
       echo "escalate-review.sh: approval-freshness filter failed to evaluate (malformed state payload or jq error) — treating every approval as unverifiable; not reporting gate_met (issues #836, #875)" >&2
@@ -244,50 +335,37 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
 fi
 
 # Review-substance guard (issue #875): the check above only asks whether an
-# APPROVED exists on HEAD, not whether anything reviewed it. merge-gate.sh now
-# discounts hollow approvals, so without the same test here a rubber stamp would
-# short-circuit escalation ("gate_met") while the gate itself stays blocked —
-# the PR would sit with no reviewer working on it and no escalation in flight.
-# Same evaluator, same definition, no extra API calls (pr-state.sh already
-# fetched reviews + both comment endpoints).
+# APPROVED exists on HEAD and whether its timestamp holds up, not whether
+# anything reviewed it. merge-gate.sh discounts hollow approvals, so without the
+# same test here a rubber stamp would short-circuit escalation ("gate_met")
+# while the gate itself stays blocked — the PR would sit with no reviewer
+# working on it and no escalation in flight. It is also what stops the #876
+# redemption above from laundering one: an approval whose stale timestamp was
+# redeemed still has to clear this guard on its own substance.
+#
+# Reuses the SUBSTANCE_JSON computed alongside the freshness filter (no second
+# review-substance.sh call): one evaluation, so the redemption verdict and the
+# hollow verdict can never disagree about the same payload.
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
-  REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
-  if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+  if [[ "$SUBSTANCE_OK" != "true" ]]; then
+    # The evaluator was missing or returned an unusable shape; that was announced
+    # on stderr where it was computed. Fail closed here, matching merge-gate.sh,
+    # which die_local()s on the same condition: claiming gate_met would stop
+    # escalation on a PR whose gate is simultaneously refusing to pass, leaving
+    # it stalled with no reviewer working on it.
     PRIMARY_REVIEW_MET=false
-    echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
-  else
-    # HEAD_COMMIT_TS was fetched by the freshness guard above and is guaranteed
-    # non-empty here (that guard clears PRIMARY_REVIEW_MET otherwise), so the
-    # evaluator always gets the push_ts its temporal-inversion and
-    # capability-failure signals need.
-    SUBSTANCE_JSON="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
-        head_sha: $sha,
-        push_ts: $push,
-        reviews: (.comments.reviews // []),
-        pr_comments: (.comments.inline // []),
-        issue_comments: (.comments.conversation // [])
-      }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
-    if [[ -z "$SUBSTANCE_JSON" ]] || ! echo "$SUBSTANCE_JSON" \
-        | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
-      # Unusable evaluator output. Fail closed to match merge-gate.sh, which
-      # die_local()s on the same condition: claiming gate_met here would stop
-      # escalation on a PR whose gate is simultaneously refusing to pass, leaving
-      # it stalled with no reviewer working on it.
-      PRIMARY_REVIEW_MET=false
-      echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
-    elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
+  elif ! echo "$SUBSTANCE_JSON" | jq -e --arg valid "$VALID_APPROVERS" '
             ($valid | split(",") | map(select(length > 0))) as $v
             | [ (.substantive // [])[] | select(. as $s | $v | index($s)) ]
             | length > 0' >/dev/null 2>&1; then
-      # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
-      # Testing `.substantive | length > 0` on its own let a substantive but
-      # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
-      # actually on the table was a hollow CodeAnt stamp — emitting gate_met
-      # while merge-gate.sh rejected both, which strands the PR with no reviewer
-      # working on it and no escalation in flight.
-      PRIMARY_REVIEW_MET=false
-      echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
-    fi
+    # The SAME reviewer must clear both gates (CodeAnt review, PR #883).
+    # Testing `.substantive | length > 0` on its own let a substantive but
+    # RETRACTED CodeRabbit approval satisfy the check while the fresh approval
+    # actually on the table was a hollow CodeAnt stamp — emitting gate_met
+    # while merge-gate.sh rejected both, which strands the PR with no reviewer
+    # working on it and no escalation in flight.
+    PRIMARY_REVIEW_MET=false
+    echo "escalate-review.sh: no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence (valid approvals: ${VALID_APPROVERS:-none}; substantive: $(echo "$SUBSTANCE_JSON" | jq -r '(.substantive // []) | join(", ") | if . == "" then "none" else . end'); hollow: $(echo "$SUBSTANCE_JSON" | jq -r '(.hollow // []) | join(", ") | if . == "" then "none" else . end')) — not treating the gate as met (issue #875)" >&2
   fi
 fi
 
