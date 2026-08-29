@@ -61,7 +61,7 @@ Refusals distinguish the routing decision. Any non-BEHIND blocker keeps the gene
 | `2` / `3` / `4` | Usage / PR not found / gh-jq error. | Surface stderr, stop. |
 | `5` | Not solo-owned. | Standard review flow. |
 | `6` | No bypass path detected. | Inspect branch protection. |
-| `7` | Unusable `--repo-path`, merge failed, or the PR never reported `state=MERGED`. | Verify manually; do not retry blindly (if the merge itself ran, the marker is already written). |
+| `7` | Unusable repo path (refused right after argument parsing, before any `gh` call — issue #1439), merge failed, or the PR never reported `state=MERGED`. | Verify manually; do not retry blindly (if the merge itself ran, the marker is already written). A path refusal is safe to retry with a corrected `--repo-path`: nothing ran. |
 | `8` | Refused by the auto path: shape is not `plain`, or an attempt already ran. The command is printed. | Fall back to the normal `/admin-merge` print flow. |
 
 Exit `8` is deliberately distinct from `1`: `1` means *the merge is not safe*, `8` means *the merge may be safe but Claude must not be the one to run it*.
