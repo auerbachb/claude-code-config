@@ -34,6 +34,31 @@ jobs:
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
 
+      # PyYAML is a HARD dependency of the bash suites (issue #1392):
+      # cursor-review-workflow-suppression.test.sh parses
+      # .github/workflows/cursor-review-pr-comment.yml and exits 1 when `import yaml`
+      # fails — skipping there would pass vacuously. ubuntu-latest happens to ship it
+      # today, so this step DECLARES the dependency instead of inheriting it, pinned so
+      # neither runner-image drift nor a bad release reddens this job for a
+      # non-regression. Not redundant — "the image already has it" IS the exposure.
+      #
+      # The venv is the install TARGET, not job isolation: ubuntu-latest's python3 is
+      # PEP 668 externally-managed, so a bare `pip install` only lands because the image
+      # ships /etc/pip.conf `break-system-packages = true` — trading one undeclared image
+      # dependency for another. A venv is immune. `--system-site-packages` keeps every
+      # module the suites import today (venv site-packages still win, so the pin is what
+      # `import yaml` resolves to), and building it from the ambient python3 keeps this
+      # job on "whatever ubuntu-latest ships" — the 3.10+ counterpart to hook-tests-py39.
+      - name: Install PyYAML (pinned — bash suites parse workflow YAML)
+        run: |
+          python3 -m venv --system-site-packages "$RUNNER_TEMP/pyyaml-venv"
+          "$RUNNER_TEMP/pyyaml-venv/bin/python" -m pip install "PyYAML==6.0.3"
+          echo "$RUNNER_TEMP/pyyaml-venv/bin" >> "$GITHUB_PATH"
+          # $GITHUB_PATH only takes effect in LATER steps; mirror it here so the assert
+          # resolves the same `python3` the suites will.
+          export PATH="$RUNNER_TEMP/pyyaml-venv/bin:$PATH"
+          python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__} on sys.path, expected 6.0.3"; print("PyYAML", yaml.__version__)'
+
       - name: Run bash hook + script test suites (auto-discovered)
         run: bash .github/scripts/summarize-test-run.sh "Bash test suites" .github/scripts/run-hook-tests.sh
 
