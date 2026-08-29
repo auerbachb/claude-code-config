@@ -140,18 +140,29 @@ LEGACY_COMMAND="/""stop"
 # Prints surviving matches and returns 0 when the scan ran; returns 2 when it
 # could not run. It never returns an empty result for a scan that did not happen.
 scan_legacy_command() {
-  local target="$1" raw="" kept="" rc=0
+  local target="$1" raw="" kept="" line="" residue="" rc=0
   raw=$(grep -rnFI --exclude-dir=.git --exclude-dir=worktrees \
     -e "$LEGACY_COMMAND" -- "$target") || rc=$?
   # 0 = matches, 1 = no matches; both mean the scan executed. 2+ is a scan error.
   (( rc <= 1 )) || return 2
   [[ -n "$raw" ]] || return 0
   # Compound forms carrying a pause/resume/re-arm/exit/widen prefix are ordinary
-  # vocabulary, not references to the retired command. rc 1 here means every
-  # line was filtered out — the success case; 2+ is a broken filter, not a pass.
-  rc=0
-  kept=$(grep -Ev "(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}" <<<"$raw") || rc=$?
-  (( rc <= 1 )) || return 2
+  # vocabulary, not references to the retired command. Filter per OCCURRENCE, not
+  # per line: a `grep -Ev` drops the WHOLE line on a single compound match, so a
+  # line carrying both `pause<cmd>` and a genuine bare `<cmd>` disappeared and the
+  # guard passed despite the stale reference — the same vacuous-pass shape this
+  # block exists to rule out. Strip the compound occurrences, then ask whether a
+  # bare reference survives on that line; report the ORIGINAL line, not the residue.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    # sed is the only command in this substitution, so its rc is read directly and
+    # never after a pipe. A filter that cannot run fails closed; it never passes.
+    residue=$(sed -E "s#(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}##g" <<<"$line") \
+      || return 2
+    case "$residue" in
+      *"$LEGACY_COMMAND"*) kept+="$line"$'\n' ;;
+    esac
+  done <<<"$raw"
   printf '%s' "$kept"
 }
 
@@ -181,6 +192,16 @@ COMPOUND=$(scan_legacy_command "$SCAN_FIXTURE") \
   || fail "scan control: the scan could not run over its own fixture"
 [[ -z "$COMPOUND" ]] \
   || fail "scan control: legitimate compound forms were flagged as stale references"
+
+# A compound form and a genuine bare reference on the SAME line. Whole-line
+# filtering dropped this line and reported clean; the per-occurrence filter must
+# still surface it, or the guard is maskable by one adjacent legitimate word.
+printf 'pause%s and also invoke %s here\n' "$LEGACY_COMMAND" "$LEGACY_COMMAND" \
+  >"$SCAN_FIXTURE/planted.txt"
+MIXED=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -n "$MIXED" ]] \
+  || fail "scan control: a stale reference sharing a line with a compound form was masked by the filter"
 
 UNSCANNABLE_RC=0
 scan_legacy_command "$SCAN_FIXTURE/no-such-target" >/dev/null 2>&1 || UNSCANNABLE_RC=$?
