@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Offline unit tests for reply-thread.sh (issue #772 — codeant reviewer mode).
-# Covers: --reviewer validation (all four modes accepted; unknown rejected);
-# @codeant-ai strip behavior (plain-text, no auto-mention); existing modes
-# (cr/bugbot/greptile) unchanged; body-empty-after-strip guard.
+# Offline unit tests for reply-thread.sh (issue #772 — codeant reviewer mode;
+# issue #1374 — graphite reviewer mode).
+# Covers: --reviewer validation (all five modes accepted; unknown rejected);
+# @codeant-ai and @graphite-app strip behavior (plain-text, no auto-mention);
+# per-reviewer strip-rule independence (neither token is eaten by the other
+# reviewer's rule); existing modes (cr/bugbot/greptile) unchanged;
+# body-empty-after-strip guard.
 #
 # Strategy: stub `gh` on PATH to capture calls without any network I/O. The
 # stub records the API endpoint and body arguments so tests can assert on
@@ -305,15 +308,20 @@ check_not_contains "no @coderabbitai prepended" "@coderabbitai" "$POSTED_BODY"
 
 ############################################################################
 echo "== (8) unknown reviewer exits 2 =="
+# The expected string must carry the FULL enumeration including the newest
+# value: a shorter prefix would still substring-match the widened message and
+# pass vacuously, so this assertion would stop guarding the accept-list.
 run 1234567 --reviewer unknown --body "test"
 check_eq "exit 2 for unknown reviewer" 2 "$RC"
-check_contains "error message lists all four modes" "cr, bugbot, greptile, codeant" "$OUT"
+check_contains "error message lists all five modes" \
+  "cr, bugbot, greptile, codeant, graphite" "$OUT"
 
 ############################################################################
 echo "== (9) missing --reviewer exits 2 =="
 run 1234567 --body "test"
 check_eq "exit 2 for missing --reviewer" 2 "$RC"
-check_contains "error message lists all four modes" "cr|bugbot|greptile|codeant" "$OUT"
+check_contains "error message lists all five modes" \
+  "cr|bugbot|greptile|codeant|graphite" "$OUT"
 
 ############################################################################
 echo "== (10) CR mode still works — @coderabbitai prepended =="
@@ -353,6 +361,137 @@ run_and_capture 1234567 --reviewer codeant \
 check_eq "exit 0" 0 "$RC"
 # The 'x' immediately before '@' is alnum, so the left boundary fails — not stripped.
 check_contains "x@codeant-ai not stripped (no left boundary)" "x@codeant-ai" "$POSTED_BODY"
+
+############################################################################
+# Graphite reviewer mode (issue #1374). Graphite (`graphite-app[bot]`) is a
+# supplemental CR-path reviewer that posts real findings, but `--reviewer
+# graphite` was rejected, forcing callers to pass `--reviewer codeant` instead.
+# That substitution happened to be harmless only because the bodies involved
+# carried no `@codeant-ai` token — a coincidence, not a contract. Cases (13i)
+# and (13j) below pin the contract that made it a coincidence.
+############################################################################
+echo "== (13a) --reviewer graphite accepted — reply posted (exit 0) =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite --body "Fixed in abc1234."
+check_eq "exit 0" 0 "$RC"
+check_contains "stdout contains URL" "https://github.com/" "$OUT"
+
+############################################################################
+echo "== (13b) @graphite-app stripped from body =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "Fixed in abc1234. @graphite-app re-review please."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "body does not contain @graphite-app" "@graphite-app" "$POSTED_BODY"
+check_contains "body retains non-mention text" "Fixed in abc1234." "$POSTED_BODY"
+
+############################################################################
+echo "== (13c) @GRAPHITE-APP (uppercase) stripped (case-insensitive) =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "@GRAPHITE-APP issue addressed."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "uppercase @GRAPHITE-APP stripped" "@GRAPHITE-APP" "$POSTED_BODY"
+check_not_contains "lowercase variant also gone" "@graphite-app" "$POSTED_BODY"
+check_contains "body retains non-mention text" "issue addressed." "$POSTED_BODY"
+
+############################################################################
+echo "== (13d) @Graphite-App (mixed case) stripped =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "Good catch, @Graphite-App — fixed."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "mixed-case variant stripped" "@Graphite-App" "$POSTED_BODY"
+check_contains "body retains remaining text" "Good catch," "$POSTED_BODY"
+
+############################################################################
+echo "== (13e) adjacent @graphite-app @graphite-app both stripped =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "@graphite-app @graphite-app duplicate mention removed."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "both adjacent @graphite-app tokens stripped" "@graphite-app" "$POSTED_BODY"
+check_contains "body retains remaining text" "duplicate mention removed." "$POSTED_BODY"
+
+############################################################################
+echo "== (13f) body-only @graphite-app → empty after strip → exit 2 =="
+run 1234567 --reviewer graphite --body "@graphite-app"
+check_eq "exit 2 on empty-after-strip" 2 "$RC"
+check_contains "error message" "empty or whitespace-only" "$OUT"
+
+############################################################################
+echo "== (13g) no mention prepended when graphite body is clean =="
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "No mention in this reply."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "no @graphite-app prepended" "@graphite-app" "$POSTED_BODY"
+check_not_contains "no @coderabbitai prepended" "@coderabbitai" "$POSTED_BODY"
+check_contains "body posted unchanged" "No mention in this reply." "$POSTED_BODY"
+
+############################################################################
+echo "== (13h) graphite: x@graphite-app NOT stripped (word boundary) =="
+# The 'x' immediately before '@' is alnum, so the left boundary guard fails and
+# the token is left alone — same semantics as case (13) for codeant.
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "See x@graphite-app for details."
+check_eq "exit 0" 0 "$RC"
+check_contains "x@graphite-app not stripped (no left boundary)" \
+  "x@graphite-app" "$POSTED_BODY"
+
+############################################################################
+echo "== (13i) NEGATIVE CONTROL: graphite mode leaves @codeant-ai intact =="
+# The exact defect issue #1374 names. Replying to a Graphite finding used to
+# require `--reviewer codeant`; had the body legitimately mentioned CodeAnt,
+# the wrong strip rule would have silently eaten it. Each reviewer strips only
+# its OWN token — so a body carrying both loses exactly one of them here.
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "Confirmed by @codeant-ai too. @graphite-app re-review."
+check_eq "exit 0" 0 "$RC"
+check_contains "@codeant-ai preserved under --reviewer graphite" \
+  "@codeant-ai" "$POSTED_BODY"
+check_not_contains "own @graphite-app token still stripped" "@graphite-app" "$POSTED_BODY"
+
+############################################################################
+echo "== (13j) NEGATIVE CONTROL (converse): codeant mode leaves @graphite-app intact =="
+# Pins rule independence in the other direction, so neither branch can later be
+# widened into a shared pattern without a test failing.
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer codeant \
+  --body "Confirmed by @graphite-app too. @codeant-ai please re-review."
+check_eq "exit 0" 0 "$RC"
+check_contains "@graphite-app preserved under --reviewer codeant" \
+  "@graphite-app" "$POSTED_BODY"
+check_not_contains "own @codeant-ai token still stripped" "@codeant-ai" "$POSTED_BODY"
+
+############################################################################
+echo "== (13k) graphite: right-hyphen boundary strips, matching the other modes =="
+# Pins INTENTIONAL shared-helper semantics, not an accident: '-' is a non-alnum
+# char, so it satisfies the right-hand boundary guard and @graphite-app is
+# stripped out of @graphite-app-helper. Identical to @cursor-thing -> -thing and
+# @codeant-ai-bot -> -bot (see case (13)'s note); graphite deliberately does not
+# diverge. Narrowing this belongs in a cross-reviewer change to
+# strip_standalone_token, not in the graphite branch alone.
+export FAKE_INLINE_MODE="success"
+run_and_capture 1234567 --reviewer graphite \
+  --body "Ping @graphite-app-helper about it."
+check_eq "exit 0" 0 "$RC"
+check_not_contains "@graphite-app prefix stripped at a hyphen boundary" \
+  "@graphite-app" "$POSTED_BODY"
+check_contains "trailing text after the hyphen survives" "-helper about it." "$POSTED_BODY"
+
+############################################################################
+echo "== (13l) --help documents the graphite reviewer value =="
+run --help
+check_eq "exit 0" 0 "$RC"
+check_contains "usage line lists graphite" \
+  "--reviewer cr|bugbot|greptile|codeant|graphite" "$OUT"
+check_contains "argument list names graphite" \
+  "One of: cr, bugbot, greptile, codeant, graphite" "$OUT"
+check_contains "help describes the graphite strip rule" \
+  "strips any \`@graphite-app\` tokens" "$OUT"
 
 ############################################################################
 echo "== (14) REGRESSION: fallback success exits 0 (inline 404, pr-level comment succeeds) =="
