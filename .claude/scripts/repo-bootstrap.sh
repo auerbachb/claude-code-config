@@ -223,7 +223,7 @@ REPO_BOOTSTRAP_FILE_EOF
 #   ac-gate.sh 1234    # exits 0 (pass) or non-zero (fail, message on stderr)
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_ISSUE_REF_SH="$SCRIPT_DIR/pr-issue-ref.sh"
@@ -547,7 +547,7 @@ REPO_BOOTSTRAP_FILE_EOF
 #   pr-issue-ref.sh --all 290   # → one issue number per line (e.g. "271\n345")
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_usage() {
   cat <<'EOF'

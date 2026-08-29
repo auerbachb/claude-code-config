@@ -26,7 +26,7 @@
 # Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_HELPER="${SCRIPT_DIR}/session-state.sh"

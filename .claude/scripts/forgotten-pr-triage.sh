@@ -73,7 +73,7 @@
 #   - gh CLI (authenticated), git, jq, bash 3.2+ (macOS-compatible)
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
   # Print only the leading comment block (stops at the first non-comment line)

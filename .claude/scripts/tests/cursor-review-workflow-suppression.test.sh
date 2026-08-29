@@ -506,8 +506,35 @@ if [[ -z "$BASE_REF" ]]; then
 else
   for f in .claude/scripts/bugbot-refused-head.sh .claude/scripts/lib/ts-normalizer.sh; do
     base_hash="$(git rev-parse --verify --quiet "$BASE_REF:$f" 2>/dev/null || echo "absent-on-base")"
-    check_eq "$(basename "$f") is identical to $BASE_REF (else update this suite: CI runs the base copy)" \
-      "$base_hash" "$(git hash-object "$REPO_ROOT/$f")"
+    tree_hash="$(git hash-object "$REPO_ROOT/$f")"
+    drift=""
+    if [[ "$base_hash" != "$tree_hash" && "$base_hash" != "absent-on-base" ]]; then
+      drift="$(git -C "$REPO_ROOT" diff "$BASE_REF" -- "$f" | grep -E '^[+-][^+-]' || true)"
+    fi
+    DRIFT_IS_REORDER=0
+    if [[ -n "$drift" ]]; then
+      # Accept ONLY the exact issue #1406 transformation, not any diff that
+      # happens to mention the log file: every removed line must be the old
+      # guard-after-append shape and every added line the canonical
+      # guard-before-append shape, both anchored to end-of-line so a smuggled
+      # extra command (e.g. `|| true; extra`) breaks the match and fails loud.
+      REMOVED_BAD=$(grep -c '^-' <<<"$drift" || true)
+      ADDED_BAD=$(grep -c '^+' <<<"$drift" || true)
+      REMOVED_OK=$(grep '^-' <<<"$drift" | grep -Ec '>>[[:space:]]*"[^"]*script-usage\.log"[[:space:]]+2>/dev/null[[:space:]]+\|\|[[:space:]]+true[[:space:]]*$' || true)
+      ADDED_OK=$(grep '^+' <<<"$drift" | grep -Ec '2>/dev/null[[:space:]]+>>[[:space:]]*"[^"]*script-usage\.log"[[:space:]]+\|\|[[:space:]]+true[[:space:]]*$' || true)
+      if [[ "$REMOVED_BAD" -gt 0 && "$REMOVED_OK" == "$REMOVED_BAD" && "$ADDED_OK" == "$ADDED_BAD" ]]; then
+        DRIFT_IS_REORDER=1
+      fi
+    fi
+    if [[ "$DRIFT_IS_REORDER" -eq 1 ]]; then
+      # The drift is exactly the usage-telemetry guard reorder (issue #1406) —
+      # neutral for scenarios (a)-(j), which never assert that line.
+      # CI still runs the base copy; (k)'s contract coverage carries regardless.
+      PASS=$((PASS + 1)); echo "ok   — $(basename "$f") drifts from $BASE_REF only by the script-usage.log guard reorder (behavior-neutral; CI runs the base copy)"
+    else
+      check_eq "$(basename "$f") is identical to $BASE_REF (else update this suite: CI runs the base copy)" \
+        "$base_hash" "$tree_hash"
+    fi
   done
 fi
 

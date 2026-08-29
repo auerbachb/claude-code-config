@@ -154,7 +154,7 @@ trap on_exit EXIT
 # filesystem root instead of logging nothing.
 if [[ -n "${HOME:-}" ]]; then
   printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ 2>/dev/null || true)" "${0##*/}" "${*//$'\n'/ }" \
-    >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+    2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
 # Self-extract the header block between BEGIN/END markers for --help.
