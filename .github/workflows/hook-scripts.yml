@@ -40,6 +40,45 @@ jobs:
       - name: Run Python hook unit tests (auto-discovered)
         run: bash .github/scripts/summarize-test-run.sh "Python unit tests" .github/scripts/run-python-tests.sh
 
+  # The fleet's primary platform is macOS (state-lock.sh: no flock(1), BSD
+  # userland, ~8ms forks) while the job above runs on ubuntu-latest only — so a
+  # macOS-only divergence passed CI and surfaced solely in local runs (issue
+  # #1473: the portable-handoff-publish lock-contention flake). This job runs
+  # the SAME bash-suite discovery on macos-latest; a new test is covered by
+  # both jobs with no edit here.
+  hook-tests-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure git (worktree tests)
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+
+      # The runner's /bin/bash is 3.2 (last GPLv2 release) and several suites
+      # use bash-4+ features. The discovery runner invokes each suite as
+      # `bash suite.sh`, resolved through PATH — Homebrew's bin precedes /bin
+      # on these images, so installing its bash is enough. Install only when
+      # the PATH-resolved bash is actually old, then assert, so a future image
+      # that ships a modern bash skips the install instead of masking it.
+      - name: Ensure bash >= 4 on PATH
+        run: |
+          set -euo pipefail
+          if ! bash -c 'exit $(( BASH_VERSINFO[0] >= 4 ? 0 : 1 ))'; then
+            brew install bash
+            # The probe above hashed `bash` as /bin/bash in THIS shell; without
+            # a rehash the assert below would re-test the old binary.
+            hash -r
+          fi
+          bash -c 'echo "bash on PATH: $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" -ge 4 ]'
+
+      - name: Run bash hook + script test suites (auto-discovered, macOS)
+        run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh
+
   # macOS system python3 is 3.9.6 (Xcode CLT) while ubuntu-latest ships 3.10+,
   # so a hook that crashes on 3.9 (e.g. eagerly-evaluated PEP 604 unions,
   # issue #560) passes the job above yet fails open locally. Pin 3.9 here. This
