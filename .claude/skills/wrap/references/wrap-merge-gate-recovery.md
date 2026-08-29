@@ -127,11 +127,13 @@ Do not fix anything. Delegate the wait to `/fixpr` (idempotent — no push; its 
 
 ## Branch E — Branch-protection block
 
-When the **only** outstanding blocker is `missing` reporting `branch protection reviewDecision is … not APPROVED, with <bot> in CODEOWNERS` **and** that bot already has a fresh `APPROVED` on HEAD (so Branch C's re-trigger won't help — the AI reviewer auto-skipped the code-owner path), this is the solo-owner `enforce_admins` bypass scenario.
+When the protection note is the **only** entry in `REMAINDER` — `missing` reporting `branch protection reviewDecision is … not APPROVED, with <bot> in CODEOWNERS` — **and** that bot already has a fresh `APPROVED` on HEAD (so Branch C's re-trigger won't help — the AI reviewer auto-skipped the code-owner path), this is the solo-owner `enforce_admins` bypass scenario.
+
+Like every branch here, Branch E matches on `REMAINDER`, so a `BEHIND` entry **alongside** the protection note does not disqualify it (issue #1425) — that pair reached `/fixpr` through Branch B before `BEHIND` became transparent, and must still land here rather than falling through to "unclassified blocker" and burning the cap without ever offering `/admin-merge`.
 
 **Stop and suggest `/admin-merge <PR>`** — never tell the user to toggle `enforce_admins` in the GitHub UI, and never modify branch protection yourself. `/admin-merge` prints a user-runnable bypass command (gate is re-verified first). Record the suggestion in the audit.
 
-**A clean `BEHIND` is NOT this branch (issue #754):** that bypass changes no protection — `/fixpr`'s BEHIND row auto-runs `admin-merge.sh <PR> --auto-plain --ac-verified` and the merge completes without a user turn. Only a protection-**modifying** bypass stops here.
+**A `BEHIND`-only `missing[]` is NOT this branch (issue #754):** that bypass changes no protection — Step 2.4's clean-`BEHIND` path auto-runs `admin-merge.sh <PR> --auto-plain --ac-verified` and the merge completes without a user turn. Only a protection-**modifying** bypass stops here. This excludes `BEHIND` as the *sole* blocker, never a `BEHIND` accompanying the protection note above.
 
 ## `merge_state == UNKNOWN`
 

@@ -228,7 +228,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
    - **B. Delegate `/fixpr`** → when `REMAINDER` has unresolved threads, failing CI, `DIRTY`, or `WRAP_PHASE1_FINDINGS` pending. `BEHIND` alongside any of these reaches `/fixpr` here — a rebase is needed regardless; a `BEHIND`-only `missing[]` exits above instead. Threads-only check via structured gate signals (issue #455). Execute **full** `fixpr/SKILL.md` workflow (Steps 0–7 including Step 4d). Parse `FIXPR_WRAP_STATUS` and `FIXPR_WAIT_SUMMARY` from `=== fixpr complete ===` footer; emit control-returned heartbeat. Full handoff semantics: `.claude/reference/wrap-fixpr-delegation.md`.
    - **C. Missing fresh bot review signal** → trigger the one bot needed (CR rate-check first); delegate wait to `/fixpr`.
    - **D. CI incomplete** → delegate wait to `/fixpr` (idempotent — no push). Fires when incomplete CI is the whole of `REMAINDER`, with or without `BEHIND` alongside.
-   - **E. Branch-protection block** → suggest `/admin-merge <PR>`; never modify branch protection.
+   - **E. Branch-protection block** → fires when the protection note is the whole of `REMAINDER`, with or without `BEHIND` alongside; suggest `/admin-merge <PR>`; never modify branch protection.
    - **`merge_state == UNKNOWN`** → re-run gate next iteration.
 4. **End of iteration** — if no branch matched, append "unclassified blocker" + `missing` to audit.
 
