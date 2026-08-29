@@ -38,6 +38,17 @@
 #   consumes. Redemption is announced on stderr and never bypasses the substance
 #   verdict, so a rubber stamp whose status comment names an older SHA still
 #   fails as `self_report_mismatch`.
+#
+# Pre-run-approval redemption (issue #1432): a SEPARATE axis from the above —
+#   #876 asks whether the approval object is fresh, this asks whether anything
+#   actually reviewed the commit. review-substance.sh clears `pre_run_approval`
+#   when that reviewer"s own run marker for the SAME SHA reached `done` with
+#   zero findings on it, which is the only shape a clean pass can take on repos
+#   where CodeAnt emits APPROVED solely as a pre-run stub (still-point PR #696,
+#   this repo PR #1454). The verdict is computed THERE, not here, so
+#   escalate-review.sh — which reads only `.substantive[]` — inherits the same
+#   answer and the two cannot drift. This file only ANNOUNCES it
+#   (announce_clean_run_redemption), keeping every redemption non-silent.
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
@@ -231,7 +242,10 @@ ALLOW_NONAUTHOR=false
 # "the bot said nothing", they are the bot's own record contradicting the claim
 # that it reviewed this commit. No code change was needed for #1365 to inherit
 # this: override_eligible() subtracts exactly one disqualifier and requires the
-# remainder to be empty, so a new one is refused by construction.
+# remainder to be empty, so a new one is refused by construction. The issue
+# #1432 redemption does not widen this flag either: it removes tags from
+# `disqualified_by` upstream, on evidence, so the override still sees exactly
+# what it always did — and a stub the redemption refused stays refused here.
 ALLOW_HOLLOW=false
 # Required-context guard (issue #1361): --allow-unverified-required-checks lets
 # the gate proceed when branch protection's required list could not be READ at
@@ -1086,6 +1100,22 @@ external_evidence_ok() { # <login>
   echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
     '.reviewers[$l].external_evidence_on_head // false' >/dev/null 2>&1 && echo true || echo false
 }
+# Pre-run-approval redemption (issue #1432). Reported, never recomputed here:
+# review-substance.sh owns the verdict so escalate-review.sh — which reads only
+# .substantive[] — can never disagree with the gate about the same payload.
+# Announcing it keeps the "redemption is never silent" convention the #876
+# STALE_REDEEMED messages established.
+clean_run_redeemed() { # <login>
+  echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
+    '.reviewers[$l].redeemed_by_clean_run // false' >/dev/null 2>&1 && echo true || echo false
+}
+announce_clean_run_redemption() { # <label> <login>
+  [[ "$(clean_run_redeemed "$2")" == true ]] || return 0
+  local started finished
+  started=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_started_at // "?"' 2>/dev/null || echo "?")
+  finished=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_finished_at // "?"' 2>/dev/null || echo "?")
+  echo "[merge-gate] $1 APPROVED on ${HEAD_SHA:0:7} was posted before its own recorded analysis started, but that analysis then COMPLETED on this same SHA (started $started, finished $finished) with zero findings — counting it as review coverage (issue #1432)." >&2
+}
 
 # Fetch and compute per-bot approval state. Called once per bot for the shared
 # CR/CodeAnt approval block (issue #865 / Issue #936 hotspot extraction).
@@ -1246,6 +1276,12 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   if [[ "$CA_APPROVAL_STALE" == true && "$CA_STALE_REDEEMED" == false ]]; then
     CA_APPROVAL_STALE_BLOCKING=true
   fi
+
+  # Separate axis from the #876 staleness redemption above: that one asks
+  # whether the approval object is FRESH, this one whether anything actually
+  # reviewed the commit. Both are announced; neither substitutes for the other.
+  announce_clean_run_redemption "CodeRabbit" "coderabbitai[bot]"
+  announce_clean_run_redemption "CodeAnt" "codeant-ai[bot]"
 
   # CR_HOLLOW / CA_HOLLOW: the approval cleared every pre-#875 check (present,
   # fresh, not retracted) but nothing evidences that a review happened. Kept

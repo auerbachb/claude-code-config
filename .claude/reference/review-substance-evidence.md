@@ -118,7 +118,19 @@ Implemented in `.claude/scripts/review-substance.sh` (pure evaluator; no network
 5. **Timing proximity to the push.** Reported as `seconds_after_push`,
    corroborating only. An 8-second approval is suspicious, not disqualifying.
 
-`counts_as_coverage = approved ∧ substantive ∧ ¬inversion ∧ ¬capability_failure ∧ ¬mismatch`.
+`counts_as_coverage = approved ∧ (substantive ∨ redeemed_by_clean_run) ∧ disqualified_by = ∅`,
+where `disqualified_by` collects `no_substantive_footprint`,
+`self_report_mismatch`, `temporal_inversion`, `pre_run_approval` and
+`capability_failure`.
+
+`pre_run_approval` (issue #1365) is the fourth disqualifier, read off the
+reviewer's own structured run record rather than inferred from prose;
+`redeemed_by_clean_run` (issue #1432) is its one narrow redemption. Note what
+redemption does and does not touch: the raw `pre_run_approval` **boolean stays
+`true`**, and it is the **tag** that leaves `disqualified_by` (together with
+`no_substantive_footprint`). Writing the predicate as `… ∧ ¬pre_run_approval`
+would therefore be wrong — it would read a redeemed approval as still blocked.
+Both are detailed under "Structured run markers" below.
 
 `self_report_mismatch` is the latest SHA-naming conversation comment naming a commit other than HEAD, **unless** that reviewer also left inline comments anchored to HEAD (`commit_id` AND `original_commit_id` == HEAD). Those inlines are first-party evidence of which SHA was read, so they supersede a stale status table (inventory #416 / this repo #1380 — CodeAnt records only push-triggered auto-reviews). A long approval body or a SHA-less descriptive comment does **not** clear the mismatch: that would re-open the rubber-stamp hole and the #927 launder. A status comment that names no SHA at all is not a self-report candidate (`$selfrep` is null), so it never raises the mismatch.
 
@@ -206,6 +218,71 @@ rows: an in-flight row outranks every completed one — a completed earlier run
 must not vouch for an analysis currently back in flight — and otherwise the
 latest `started` wins, so newest-first and append-ordered payloads resolve
 identically.
+
+### `redeemed_by_clean_run` — the one exception (issue #1432)
+
+The paragraph above is still the rule; this is its single documented exception,
+and it is narrow on purpose.
+
+`pre_run_approval` conflates two shapes: *an approval with no run behind it* (a
+rubber stamp — must block) and *an approval whose timestamp merely precedes a
+run that then completed clean on the same SHA* (an emission-order artefact). On
+some repos the second is the **only** shape a clean pass can produce. Observed
+on still-point PR #696 (HEAD `1ecca19`): CodeAnt emitted `APPROVED` 18 s before
+its own run started, followed with `COMMENTED` when it had findings, and
+followed with **nothing** when the run came back clean. A perfectly-reviewed PR
+therefore could never obtain a gate-valid approval — the CR path deadlocked with
+no exit but a paid Greptile escalation or `/admin-merge`.
+
+Re-triggering the bot is not a workaround and never can be. On this repo's
+PR #1454 an explicit `@codeant-ai review` produced a genuine completed clean run
+on HEAD `52a3338` (started 16:29:53Z, finished 16:32:38Z, `done: true`, zero new
+findings, 0 unresolved threads) while `submitted_at` stayed frozen at the
+previous day's 19:04:56Z — CodeAnt PATCHes the review object in place (#876), so
+the only timestamp the guard can read is the *first* submission's and it can
+never move forward. Any redemption keyed on `submitted_at` overtaking the run
+start is structurally unable to fire for exactly the reviewer that needs it.
+
+So the rule keys on the run marker instead:
+
+> A `pre_run_approval` is redeemed **iff** the same reviewer's run marker for
+> the **same SHA** reaches `done: true` **and** that reviewer left **zero
+> findings on that SHA** — no `COMMENTED`/`CHANGES_REQUESTED` review and no
+> HEAD-anchored inline comment — **and** no other disqualifier survives.
+
+Findings are read by **presence on the `commit_id`-scoped indexes** (`$ridx`,
+`$iidx`), never by ordering anything against the run window — the same frozen
+timestamp that motivates the rule would make an ordering test meaningless. That
+detection is deliberately *not* filtered through `fresh_review`: a `COMMENTED`
+review GitHub re-pointed onto HEAD cannot be proven to belong to this round, and
+the conservative reading of an unprovable finding is that it counts, since this
+term only ever **withholds** the redemption.
+
+When the shape holds, both `pre_run_approval` and `no_substantive_footprint`
+leave `disqualified_by` — the completed clean run *is* the footprint, and
+withholding coverage for want of evidence while holding the reviewer's own
+completed analysis of HEAD would just relocate the deadlock. `counts_as_coverage`
+then flips through the ordinary rule, so `merge-gate.sh`'s `substance_reasons()`
+/ `override_eligible()` and `escalate-review.sh`'s `.substantive[]` read need no
+tag-specific logic and cannot drift apart
+(`tests/escalate-review-merge-gate-freshness-parity.test.sh` projections (R)/(Rn)).
+
+Never redeemed by: reviewer identity, an in-flight run (`done: false` — the
+other `pre_run_approval` shape), a run that produced any finding on HEAD, an
+absent/HEAD-less/unparseable run record, prose of any length, or a payload where
+`temporal_inversion`, `self_report_mismatch` or `capability_failure` still
+stands — `redeemed_by_clean_run` is `false` whenever any of those survive, so
+the tag never reads as "gate cleared" when it was not. `--allow-hollow-approval`
+is unchanged and still cannot launder a genuine stub.
+
+The raw `pre_run_approval` boolean stays `true` when redeemed (the ordering
+violation really did happen), a new `run_has_findings_on_head` boolean reports
+the deciding term, and the login appears in both the `pre_run[]` and
+`redeemed_by_clean_run[]` top-level buckets. `merge-gate.sh` announces every
+redemption on stderr — the same "redemption is never silent" convention as
+the #876 `STALE_REDEEMED` messages. The two are **separate axes**: #876 asks
+whether the approval object is fresh, #1432 asks whether anything actually
+reviewed the commit. Neither substitutes for the other.
 
 The comment is PATCHed in place, so its `created_at` can predate the push by
 hours (~19 h on PR #1378) while `updated_at` tracks the runs. The structured
@@ -468,11 +545,17 @@ itself passed 40 comments across the two endpoints during its own review.
   blocks on it.
 - `review_evidence` is emitted on every path (`{}` only on early failure exits)
   with per-reviewer detail plus `substantive[]`, `hollow[]`, `mismatched[]`,
-  `inverted[]`, `capability_failed[]` and advisory `corroborating[]`.
+  `inverted[]`, `capability_failed[]`, `pre_run[]`,
+  `redeemed_by_clean_run[]` and advisory `corroborating[]`.
 - `missing[]` says *why* — "approved before CodeAnt announced it had started
   reviewing", not "need 1 approval".
 - Discounted approvals are announced on stderr even when the gate passes on
   another reviewer, so a rubber stamp is never silently absorbed.
+- **Redemptions are announced too**, on the same principle: `merge-gate.sh`
+  prints the #876 `STALE_REDEEMED` line for a redeemed frozen `submitted_at`,
+  and an issue-#1432 line naming the login, HEAD and the run start/finish for a
+  `pre_run_approval` cleared by a completed clean run. A verdict that turned on
+  a redemption is never silent in either direction.
 - `--allow-hollow-approval` exists as an explicit per-PR user override. An agent
   must never pass it on its own; the evidence is still computed and emitted and
   the override is announced on stderr. Its scope is exactly one disqualifier,
