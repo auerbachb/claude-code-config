@@ -48,7 +48,9 @@
 #   this repo PR #1454). The verdict is computed THERE, not here, so
 #   escalate-review.sh — which reads only `.substantive[]` — inherits the same
 #   answer and the two cannot drift. This file only ANNOUNCES it
-#   (announce_clean_run_redemption), keeping every redemption non-silent.
+#   (announce_clean_run_redemption), keeping every redemption non-silent. The
+#   announcement claims only the substance axis it controls, never merge
+#   coverage — the orthogonal axes are still ahead of it (CodeAnt, PR #1476).
 # Also enforces the pre-merge CI gate from .claude/rules/cr-merge-gate.md Step 1b
 # (incomplete runs OR blocking conclusions = not merge-ready), merge metadata
 # (mergeStateStatus including BEHIND, mergeable including CONFLICTING) per
@@ -1109,12 +1111,23 @@ clean_run_redeemed() { # <login>
   echo "$REVIEW_EVIDENCE" | jq -e --arg l "$1" \
     '.reviewers[$l].redeemed_by_clean_run // false' >/dev/null 2>&1 && echo true || echo false
 }
+# The wording is deliberately scoped to the ONE term redemption controls — the
+# #875 substance axis (`pre_run_approval` / `no_substantive_footprint`) — and
+# says so, because this fires before the caller derives <P>_APPROVAL_VALID.
+# A redeemed approval can still be rejected on an orthogonal axis it never
+# touches: stale `submitted_at` (#836 <P>_APPROVAL_STALE_BLOCKING, reachable
+# when a rebase re-points a carried-over approval's commit_id onto a HEAD that
+# then gets its own clean run), a newer same-SHA CHANGES_REQUESTED, a missing
+# `submitted_at`, failing CI, or an unresolved thread. Claiming "review
+# coverage" here would announce a merge verdict this function does not decide
+# (CodeAnt, PR #1476). Sibling convention: the #876 STALE_REDEEMED lines below
+# likewise claim only their own axis ("counting it as fresh"), never the gate.
 announce_clean_run_redemption() { # <label> <login>
   [[ "$(clean_run_redeemed "$2")" == true ]] || return 0
   local started finished
   started=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_started_at // "?"' 2>/dev/null || echo "?")
   finished=$(echo "$REVIEW_EVIDENCE" | jq -r --arg l "$2" '.reviewers[$l].run_finished_at // "?"' 2>/dev/null || echo "?")
-  echo "[merge-gate] $1 APPROVED on ${HEAD_SHA:0:7} was posted before its own recorded analysis started, but that analysis then COMPLETED on this same SHA (started $started, finished $finished) with zero findings — counting it as review coverage (issue #1432)." >&2
+  echo "[merge-gate] $1 APPROVED on ${HEAD_SHA:0:7} was posted before its own recorded analysis started, but that analysis then COMPLETED on this same SHA (started $started, finished $finished) with zero findings — counting it as substantive review evidence rather than a hollow approval (issue #1432). Freshness, retraction, CI and thread state are separate checks; this line is not a merge verdict." >&2
 }
 
 # Fetch and compute per-bot approval state. Called once per bot for the shared

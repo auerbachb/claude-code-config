@@ -555,7 +555,14 @@ itself passed 40 comments across the two endpoints during its own review.
   prints the #876 `STALE_REDEEMED` line for a redeemed frozen `submitted_at`,
   and an issue-#1432 line naming the login, HEAD and the run start/finish for a
   `pre_run_approval` cleared by a completed clean run. A verdict that turned on
-  a redemption is never silent in either direction.
+  a redemption is never silent in either direction. Both lines claim **only
+  their own axis** — #876 says the approval object is *fresh*, #1432 says the
+  approval is *substantive rather than hollow* — and neither announces merge
+  coverage. Both fire before `<P>_APPROVAL_VALID` is derived, so an approval
+  redeemed on one axis can still be rejected on an orthogonal one (a stale
+  `submitted_at`, a newer same-SHA `CHANGES_REQUESTED`, failing CI, an
+  unresolved thread). Worded as a coverage decision, the stderr would contradict
+  the gate's own answer (CodeAnt, PR #1476).
 - `--allow-hollow-approval` exists as an explicit per-PR user override. An agent
   must never pass it on its own; the evidence is still computed and emitted and
   the override is announced on stderr. Its scope is exactly one disqualifier,
