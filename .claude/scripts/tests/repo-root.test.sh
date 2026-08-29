@@ -597,9 +597,11 @@ run_timeout_case() { # helper to drop ("" = keep them all)
   # is the trap T16i documents). Unlink first so the stub is a genuinely new file.
   rm -f "$TIMEOUT_FIXT/git"
   # The wedged git from T10: sleeps far past the bound and spawns a descendant.
-  # The sleeper is the suite's own $STUB/stub-sleeper — self-limiting AND already
-  # covered by the cleanup trap's pkill, so the tr-absent run (whose whole point
-  # is that the process-group kill is skipped) cannot leak one into later tests.
+  # The sleeper is the suite's own $STUB/stub-sleeper — self-limiting (~10s) and
+  # covered by the cleanup trap's pkill, so nothing escapes into the runner. It
+  # DOES outlive the tr-absent run, whose whole point is that the process-group
+  # kill is skipped: measured, it is still ticking when that case returns ~4s in.
+  # The explicit reap after that case is what keeps it out of the controls below.
   cat > "$TIMEOUT_FIXT/git" <<EOF
 #!/usr/bin/env bash
 "$STUB/stub-sleeper" &
@@ -634,6 +636,28 @@ check_not_contains "T16m3 no raw shell command-not-found reaches stderr" \
   "command not found" "$TIMEOUT_ERR"
 check_contains "T16m4 and the diagnostic still names the bound that tripped" \
   "timed out after 3s" "$TIMEOUT_ERR"
+
+# The tr-absent case is the ONE whose process-group kill is skipped by design, so
+# its sleeper survives the direct-pid kill and keeps ticking into the two control
+# cases below — which share this TICK_FILE and truncate it on entry. Nothing
+# asserts ticks after T16m0, so no case reads a corrupted count today, but a tick
+# assertion added down here would be satisfied by the survivor instead of its own
+# fixture: exactly the vacuous pass T16m0 exists to prevent. Reap it now that
+# T16m0 has read its evidence. `pkill` is the suite's existing idiom (see
+# cleanup), and the pattern is this run's own $STUB, so a concurrently running
+# suite's sleepers are out of range.
+pkill -f "$STUB/stub-sleeper" >/dev/null 2>&1 || true
+# Prove the reap rather than assume it, in the T11/T11b before-and-after shape:
+# T16m0 just showed this sleeper ticking every 0.2s, so an empty file after a
+# 0.6s window means nothing is still writing here. Not vacuous — the ticks it
+# would have written are the same ones T16m0 counted.
+: > "$TMP/tick-timeout"
+sleep 0.6
+if (( $(wc -l < "$TMP/tick-timeout") == 0 )); then
+  pass "T16m4b the tr-absent case's surviving sleeper is reaped before the controls"
+else
+  fail "T16m4b a sleeper is still ticking into the control cases"
+fi
 
 run_timeout_case ""
 check_eq "T16m5 control: with every helper present, still exit 3" "3" "$TIMEOUT_RC"
