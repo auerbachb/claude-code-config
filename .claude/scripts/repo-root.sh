@@ -90,7 +90,11 @@
 #   required: without them the process-group kill is skipped and the builtin
 #   single-pid `kill` still stops the child, so a timeout still exits 3 with the
 #   right message. Requiring them would refuse to resolve in an environment
-#   where this script demonstrably works. `sed` is help-only. Pinned by T16g/T16h.
+#   where this script demonstrably works. BOTH carry their own `2>/dev/null` so
+#   that absence degrades QUIETLY — unguarded, the shell narrated its own
+#   `command not found` ahead of the diagnostic and the one-line stderr contract
+#   above became three lines (issue #1435). `sed` is help-only.
+#   Pinned by T16g/T16h (status) and T16m (the one-line contract).
 #
 # EXAMPLES
 #   ROOT_REPO=$(.claude/scripts/repo-root.sh)            # from anywhere in repo
@@ -220,6 +224,9 @@ done
 # git still exits 3 in the same time, with the same message. Requiring them
 # would refuse to resolve in an environment where this script works correctly.
 # T16g/T16h pin that, so a later reader does not "complete" the list by reflex.
+# Absorbing it also means staying QUIET about it: each of the two carries its own
+# `2>/dev/null` at the call site, so the shell cannot narrate a missing one to
+# stderr where the header promises a single line (T16m).
 #
 # `git` is deliberately NOT in this list either. A git that cannot run is
 # diagnosed by the 126/127 machinery below, which relays what the shell actually
@@ -307,7 +314,7 @@ now_epoch() {
 # and leaving our actual child running.
 kill_child() { # signal, pid
   local sig="$1" pid="$2" pgid=""
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)"
   if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
     kill -"$sig" -"$pid" 2>/dev/null || true
   fi

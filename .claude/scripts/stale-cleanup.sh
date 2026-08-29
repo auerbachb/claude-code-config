@@ -344,7 +344,7 @@ now_epoch() {
 # signalling that would "succeed" while our actual child kept running.
 kill_child() { # signal, pid
   local sig="$1" pid="$2" pgid=""
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)"
   if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
     kill -"$sig" -"$pid" 2>/dev/null || true
   fi

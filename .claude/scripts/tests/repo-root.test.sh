@@ -565,6 +565,84 @@ for drop in ps tr; do
   fi
 done
 
+# ---- T16m: the one-line stderr contract holds on the TIMEOUT path too -------
+# T16e2 pins "stderr: one-line error message on failure" on the PREFLIGHT path
+# only, and the timeout path leaked through that gap: `tr` ran unguarded in
+# kill_child, so with tr absent the shell narrated two `command not found` lines
+# ahead of the diagnostic — three lines where the header promises one (#1435).
+# `ps` in the same pipeline was already guarded, which is exactly why only tr
+# leaked. The two controls below are what make this a fix rather than a
+# coincidence: all-present and ps-absent must stay at one line, so a regression
+# here can only be the tr guard coming off. The status was never wrong — this is
+# the documented ps/tr degradation (T16g/T16h) narrating instead of staying
+# quiet, so every case asserts exit 3 as well as the line count.
+TIMEOUT_FIXT="$TMP/timeout-nohelp"
+TIMEOUT_RC=0
+TIMEOUT_ERR=""
+TIMEOUT_LINES=0
+run_timeout_case() { # helper to drop ("" = keep them all)
+  local drop="$1"
+  rm -rf "$TIMEOUT_FIXT"; mkdir -p "$TIMEOUT_FIXT"
+  populate_helpers "$TIMEOUT_FIXT"
+  # `seq` is NOT one of the commands repo-root.sh touches, so populate_helpers
+  # rightly omits it — but the shared stub-sleeper loops over `seq 1 50`, and
+  # this fixture is the ENTIRE PATH. Without it the sleeper exits instantly, the
+  # descendant never exists, and the tr-absent case would silently stop
+  # exercising the skipped group kill it is here to cover. T16m0 proves it ran.
+  local seq_path
+  seq_path="$(command -v seq 2>/dev/null)" && ln -sf "$seq_path" "$TIMEOUT_FIXT/seq"
+  # populate_helpers leaves a SYMLINK to the real git, and `cat >` follows one to
+  # its target — writing the stub straight over it would edit the system binary
+  # (or fail and leave real git in place, making the case pass vacuously, which
+  # is the trap T16i documents). Unlink first so the stub is a genuinely new file.
+  rm -f "$TIMEOUT_FIXT/git"
+  # The wedged git from T10: sleeps far past the bound and spawns a descendant.
+  # The sleeper is the suite's own $STUB/stub-sleeper — self-limiting AND already
+  # covered by the cleanup trap's pkill, so the tr-absent run (whose whole point
+  # is that the process-group kill is skipped) cannot leak one into later tests.
+  cat > "$TIMEOUT_FIXT/git" <<EOF
+#!/usr/bin/env bash
+"$STUB/stub-sleeper" &
+sleep 30
+EOF
+  chmod +x "$TIMEOUT_FIXT/git"
+  [[ -L "$TIMEOUT_FIXT/git" ]] && fail "T16m fixture git is still a symlink — stub did not take"
+  [[ -n "$drop" ]] && rm -f "$TIMEOUT_FIXT/$drop"
+  # TICK_FILE is passed explicitly because env -i drops it: the ticks ARE the
+  # liveness evidence T16m0 reads, and without the variable the sleeper would
+  # instead append to "" once per tick, erroring into the child's captured
+  # stderr. Its own scratch file, so T11's already-asserted ticks stay intact.
+  : > "$TMP/tick-timeout"
+  TIMEOUT_RC=0
+  TIMEOUT_ERR="$(cd "$MAIN" && env -i HOME="$HOME" PATH="$TIMEOUT_FIXT" TMPDIR=/tmp \
+    TICK_FILE="$TMP/tick-timeout" REPO_ROOT_TIMEOUT_SECS=3 "$SUT" 2>&1 >/dev/null)" || TIMEOUT_RC=$?
+  TIMEOUT_LINES="$(printf '%s\n' "$TIMEOUT_ERR" | grep -c .)"
+}
+
+run_timeout_case "tr"
+# Fixture liveness first: a sleeper that never started would make the case below
+# assert against a timeout with no process group to skip killing — passing for
+# the wrong reason. The ticks prove the descendant was really there.
+if (( $(wc -l < "$TMP/tick-timeout") > 0 )); then
+  pass "T16m0 the wedged git really spawned a descendant, so the case is live"
+else
+  fail "T16m0 no ticks — the sleeper never ran, T16m would pass vacuously"
+fi
+check_eq "T16m a wedged git with tr absent still times out (exit 3)" "3" "$TIMEOUT_RC"
+check_eq "T16m2 and stderr is exactly one line, per the OUTPUT contract" "1" "$TIMEOUT_LINES"
+check_not_contains "T16m3 no raw shell command-not-found reaches stderr" \
+  "command not found" "$TIMEOUT_ERR"
+check_contains "T16m4 and the diagnostic still names the bound that tripped" \
+  "timed out after 3s" "$TIMEOUT_ERR"
+
+run_timeout_case ""
+check_eq "T16m5 control: with every helper present, still exit 3" "3" "$TIMEOUT_RC"
+check_eq "T16m6 control: with every helper present, still one stderr line" "1" "$TIMEOUT_LINES"
+
+run_timeout_case "ps"
+check_eq "T16m7 control: a missing ps still exits 3" "3" "$TIMEOUT_RC"
+check_eq "T16m8 control: a missing ps still emits one stderr line" "1" "$TIMEOUT_LINES"
+
 # ---- T16i: a helper that RESOLVES but cannot exec ---------------------------
 # `command -v` proves a NAME resolves, not that the file will run. A bad
 # interpreter, a dangling symlink or the wrong architecture all pass the
