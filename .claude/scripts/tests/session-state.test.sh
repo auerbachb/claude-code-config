@@ -429,27 +429,61 @@ echo "== Telemetry must never change the exit contract (issue #1430) =="
 # The usage-log append ran unguarded inside the CLAUDE_SCRIPT_USAGE_LOG
 # conditional: with no ~/.claude under HOME, `set -e` killed the script at
 # that line before argument parsing. It must fall through silently instead
-# (stderr-first ordering per issue #1406). HOME stays REQUIRED for the
-# script's real work (STATE_FILE) — only the telemetry line may not be the
-# thing that kills it, which the unset-HOME probe below pins.
+# (stderr-first ordering per issue #1406). This block covers HOME set to a
+# directory with no ~/.claude in it; the unset-HOME contract is pinned
+# separately below (issue #1434).
 NOHOME="$TMP_HOME/no-such-home"
 RC=0
 ERR="$(HOME="$NOHOME" bash "$SCRIPT" --help 2>&1 >/dev/null)" || RC=$?
 check_eq "--help exits 0 when \$HOME/.claude is missing" "0" "$RC"
 check_eq "no stderr diagnostic when the log dir is missing" "" "$ERR"
 
-# Note: rc is deliberately NOT expected to be 0 here — session-state.sh
-# requires HOME for STATE_FILE, its real work, and unset HOME still aborts
-# there under `set -u`. What issue #1430 changed is WHERE it fails: the
-# telemetry line no longer gets there first. All three assertions pin that.
+echo
+echo "== Unset HOME: cheap paths answer, load-bearing paths fail named (issue #1434) =="
+# These assertions CHANGED deliberately in issue #1434. Issue #1430 guarded the
+# telemetry line but left the STATE_FILE assignment one statement below it
+# expanding ${HOME} unconditionally under `set -u`, so --help still died with
+# `HOME: unbound variable` — which the probes here used to pin as the contract.
+# The contract is now: --help (and every usage error, and --repo-key) answers
+# without HOME; only modes that actually open the state file require it, and
+# they fail with ONE named line and exit 8 rather than a bash trace.
 RC=0
 ERR="$(env -u HOME bash "$SCRIPT" --help 2>&1 >/dev/null)" || RC=$?
-check_eq "unset HOME: still exits nonzero for its own STATE_FILE requirement" "1" \
-  "$([[ "$RC" -ne 0 ]] && echo 1 || echo 0)"
-check_eq "unset HOME: the failure is the script's own HOME expansion" "1" \
-  "$(grep -c 'HOME: unbound variable' <<<"$ERR")"
+check_eq "unset HOME: --help exits 0" "0" "$RC"
+check_eq "unset HOME: --help writes nothing to stderr" "" "$ERR"
+
+# A usage error needs nothing from HOME either — it must still be exit 2.
+RC=0
+ERR="$(env -u HOME bash "$SCRIPT" --bogus-flag 2>&1 >/dev/null)" || RC=$?
+check_eq "unset HOME: usage error still exits 2, not the HOME code" "2" "$RC"
+check_eq "unset HOME: usage error names the flag, not HOME" "1" \
+  "$(grep -c 'unknown flag: --bogus-flag' <<<"$ERR")"
+
+# --repo-key resolves from --repo/\$CLAUDE_SESSION_REPO/cwd origin and never
+# opens the state file, so it must not require HOME either.
+RC=0
+ERR="$(env -u HOME bash "$SCRIPT" --repo test/repo --repo-key 2>&1 >/dev/null)" || RC=$?
+check_eq "unset HOME: --repo-key exits 0 (never opens the state file)" "0" "$RC"
+
+# A HOME-REQUIRING run: --get must open ~/.claude/session-state.json.
+RC=0
+ERR="$(env -u HOME bash "$SCRIPT" --get '.active_agents' 2>&1 >/dev/null)" || RC=$?
+check_eq "unset HOME: --get exits 8 (documented HOME-unset code)" "8" "$RC"
+check_eq "unset HOME: --get emits the named error line" "1" \
+  "$(grep -c 'session-state.sh: HOME is unset; cannot resolve ~/.claude/session-state.json' <<<"$ERR")"
+check_eq "unset HOME: --get emits exactly one stderr line" "1" \
+  "$(printf '%s\n' "$ERR" | grep -c .)"
+check_eq "unset HOME: no bash unbound-variable trace survives" "0" \
+  "$(grep -c 'unbound variable' <<<"$ERR")"
 check_eq "unset HOME: the telemetry line is never the failure site" "0" \
   "$(grep -c 'script-usage.log' <<<"$ERR")"
+
+# --set takes the same guard before it can create or lock anything.
+RC=0
+ERR="$(env -u HOME bash "$SCRIPT" --set '.active_agents=[]' 2>&1 >/dev/null)" || RC=$?
+check_eq "unset HOME: --set exits 8 before any write is attempted" "8" "$RC"
+check_eq "unset HOME: --set emits the named error line" "1" \
+  "$(grep -c 'HOME is unset; cannot resolve' <<<"$ERR")"
 
 # Positive control: append still lands when ~/.claude exists and the
 # opt-out is not engaged.

@@ -24,8 +24,40 @@
 #                                bgwork-ceiling.sh)
 #   CLAUDE_WATCHDOG_FORCE_RUN  — set to "1" to bypass the Darwin-only guard
 #   BGWORK_CEILING_SH          — override path to bgwork-ceiling.sh
+#
+# USAGE
+#   silence-watchdog.sh          — run one watchdog sweep (the launchd entry point)
+#   silence-watchdog.sh --help   — print this header and exit 0
+#
+# EXIT CODES
+#   0  Sweep completed (also the non-Darwin no-op and --help).
+#   8  HOME is unset AND CLAUDE_WATCHDOG_LOG_DIR is not set, so the log/state
+#      directory cannot be resolved (issue #1434). Matches the code
+#      session-state.sh and reviewer-of.sh use for the same condition. There
+#      is deliberately no ${HOME:-} fallback: defaulting to empty would
+#      fabricate a root-anchored /.claude/logs and strew state at the
+#      filesystem root. Three things answer BEFORE this guard: --help, the
+#      non-Darwin no-op above, and setting CLAUDE_WATCHDOG_LOG_DIR — which
+#      lets a full sweep run with no HOME at all. So 8 is reachable only on
+#      Darwin (or under CLAUDE_WATCHDOG_FORCE_RUN=1).
 
 set -euo pipefail
+
+usage() {
+  # Whole header block, terminating at the first non-comment line, so this can
+  # never drift out of sync with the header the way a hardcoded line range does.
+  sed -n '2,/^[^#]/{/^[^#]/!p;}' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# --help must answer before ANY $HOME use (issue #1434), so this is the first
+# executable statement after `set -euo pipefail` — ahead of both the telemetry
+# append and the LOG_DIR resolution below. The no-argument launchd invocation
+# and any other argument fall through to the sweep exactly as before.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 # Best-effort usage telemetry — must never change this script's exit contract
 # (issue #1430); stderr muted BEFORE the append per issue #1406's ordering.
 if [[ -n "${HOME:-}" ]]; then
@@ -33,6 +65,18 @@ if [[ -n "${HOME:-}" ]]; then
 fi
 
 LABEL="com.user.claude-silence-watchdog"
+
+# Platform check hoisted above every $HOME expansion (issue #1434), matching the
+# fix PR #1433 applied to uninstall-silence-watchdog.sh: on a non-Darwin host
+# this script is a documented no-op, so it must reach its exit-0 contract even
+# with no HOME rather than failing over a log directory it will never use.
+# Moving it changes nothing on macOS — everything it skipped was assignment-only,
+# and the first side effect (mkdir) still happens below.
+if [[ "$(uname -s)" != "Darwin" ]] && [[ "${CLAUDE_WATCHDOG_FORCE_RUN:-}" != "1" ]]; then
+  echo "$LABEL: macOS-only v1; Linux support is out of scope." >&2
+  exit 0
+fi
+
 # CLAUDE_BGWORK_MARKER_DIR is the authoritative override for all markers (shared
 # with bgwork-ceiling.sh). CLAUDE_WATCHDOG_MARKER_DIR overrides only the
 # heartbeat and active markers; when unset it falls back to CLAUDE_BGWORK_MARKER_DIR
@@ -46,16 +90,18 @@ if [[ ! "$THRESHOLD_MINUTES" =~ ^[0-9]+$ ]] || (( THRESHOLD_MINUTES == 0 )); the
   THRESHOLD_MINUTES=10
 fi
 THRESHOLD_S=$((THRESHOLD_MINUTES * 60))
+# One named line + exit 8 instead of bash's `HOME: unbound variable` trace
+# (issue #1434). Only reached when the explicit override is absent too — with
+# CLAUDE_WATCHDOG_LOG_DIR set, a sweep needs no HOME at all.
+if [[ -z "${CLAUDE_WATCHDOG_LOG_DIR:-}" && -z "${HOME:-}" ]]; then
+  echo "$LABEL: HOME is unset and CLAUDE_WATCHDOG_LOG_DIR is not set; cannot resolve ~/.claude/logs" >&2
+  exit 8
+fi
 LOG_DIR="${CLAUDE_WATCHDOG_LOG_DIR:-$HOME/.claude/logs}"
 STATE_FILE="$LOG_DIR/watchdog-state.json"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BGWORK_CEILING_SH="${BGWORK_CEILING_SH:-${SCRIPT_DIR}/bgwork-ceiling.sh}"
-
-if [[ "$(uname -s)" != "Darwin" ]] && [[ "${CLAUDE_WATCHDOG_FORCE_RUN:-}" != "1" ]]; then
-  echo "$LABEL: macOS-only v1; Linux support is out of scope." >&2
-  exit 0
-fi
 
 mkdir -p "$LOG_DIR"
 

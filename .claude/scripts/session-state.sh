@@ -177,6 +177,15 @@
 #      not match the --expect value. The state file is left unmodified. This
 #      code is distinct from all I/O or locking failures so callers can
 #      differentiate a lost race from a broken environment.
+#   8  HOME unset — ~/.claude/session-state.json cannot be resolved, so no
+#      mode that touches the state file can run (issue #1434). A fresh number
+#      rather than an overload of 2-7 above, chosen the way state-lock.sh
+#      chose 6, so callers can tell "no HOME in this environment" from a
+#      usage error or a genuine I/O failure. --help, every usage error, and
+#      --repo-key answer BEFORE this guard — none of them read the state
+#      file. There is deliberately no ${HOME:-} fallback: defaulting to empty
+#      would fabricate a root-anchored /.claude/session-state.json and strew
+#      state at the filesystem root.
 #
 # LOCKING (issue #639)
 #   --set and --cas take an exclusive advisory lock around the ENTIRE
@@ -359,8 +368,12 @@ if [[ "${CLAUDE_SCRIPT_USAGE_LOG:-1}" != "0" && -n "${HOME:-}" ]]; then
   printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
-STATE_FILE="${HOME}/.claude/session-state.json"
-
+# NOTE: $STATE_FILE is deliberately NOT computed here. Its ${HOME} expansion
+# used to sit at this line and aborted every HOME-less invocation under `set -u`
+# before argument parsing could answer --help (issue #1434). It is now
+# initialized, behind an explicit guard, just below the --repo-key block — the
+# first point past which every remaining mode reads or writes the state file.
+#
 # Saved before any parsing consumes them, so a read-modify-write whose lock was
 # stolen mid-flight can be retried from scratch by re-exec'ing this script (see
 # the state_lock_assert_held branch just before the commit, near the end).
@@ -413,6 +426,14 @@ die_usage() {
   echo "session-state.sh: $1" >&2
   echo "Run with --help for usage." >&2
   exit 2
+}
+
+# One named line + exit 8 instead of bash's `HOME: unbound variable` trace
+# (issue #1434). Same shape as die_usage above; see the EXIT STATUS header for
+# why 8 and why no ${HOME:-} fallback.
+die_home_unset() {
+  echo "session-state.sh: HOME is unset; cannot resolve ~/.claude/session-state.json" >&2
+  exit 8
 }
 
 # Validate that the state file contains exactly ONE top-level JSON object.
@@ -1103,17 +1124,28 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 5
 fi
 
-# --- ensure state-file directory exists (only needed for --set) ---
-STATE_DIR="$(dirname "$STATE_FILE")"
-
 # ============================================================================
 # --repo-key
 # ============================================================================
+# Ordered ahead of the state-path init below: resolving the repo key reads
+# --repo / $CLAUDE_SESSION_REPO / the cwd's origin remote and never opens the
+# state file, so this mode has no reason to require HOME (issue #1434).
 if [[ "$MODE" == "repo-key" ]]; then
   resolve_repo_key
   echo
   exit 0
 fi
+
+# --- state-file path (requires HOME) ---
+# Every mode from here down reads or writes ~/.claude/session-state.json, so
+# HOME is genuinely load-bearing past this point. Everything above — --help,
+# every usage error, the dependency check, and --repo-key — answers without it.
+if [[ -z "${HOME:-}" ]]; then
+  die_home_unset
+fi
+STATE_FILE="${HOME}/.claude/session-state.json"
+# --- ensure state-file directory exists (only needed for --set) ---
+STATE_DIR="$(dirname "$STATE_FILE")"
 
 # Warn (once) when the file carries legacy keys we refuse to reshape, so the
 # data is never silently stranded under an old path nobody reads any more.
