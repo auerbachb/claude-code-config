@@ -81,6 +81,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
 | [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path |
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
+| [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
 | [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |
 | [session-state-audit.test.sh](../tests/session-state-audit.test.sh) | Tests for `session-state-audit.sh` |
 | [session-state-cas.test.sh](../tests/session-state-cas.test.sh) | Tests `session-state.sh --cas` — compare-and-set success, loss, a distinct exit code, and concurrent writers |

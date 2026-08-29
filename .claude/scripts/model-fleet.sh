@@ -57,7 +57,7 @@
 #   .claude/scripts/model-fleet.sh --list
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "${HOME:-/tmp}/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
 
 print_help() {
   # Header block from the line after the shebang to the first blank line,

@@ -133,7 +133,7 @@
 #   session-state-audit.sh --apply --prune --retention-days 60
 
 set -uo pipefail
-{ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"; } 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEMA_FILE="${SCRIPT_DIR}/../reference/session-state-schema.json"

@@ -189,7 +189,7 @@
 #   4 — gh / network / jq error
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 # --------------------------------------------------------------------------
 # Shared timestamp normaliser (issue #885)

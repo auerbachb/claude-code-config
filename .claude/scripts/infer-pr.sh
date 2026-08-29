@@ -63,7 +63,7 @@
 set -uo pipefail
 # Best-effort usage log. The braces ensure a failed redirect target (e.g. a
 # missing ~/.claude dir) is swallowed too, not just printf's own stderr.
-{ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log"; } 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 STATE_FILE="${HOME}/.claude/session-state.json"
 

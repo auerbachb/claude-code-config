@@ -102,7 +102,7 @@
 # move to 3/4 rather than the repo's more usual "2 = usage".
 
 set -uo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" >> "$HOME/.claude/script-usage.log" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SNAPSHOT_NAME="claude-diff-survival.json"
 SNAPSHOT_VERSION=1
