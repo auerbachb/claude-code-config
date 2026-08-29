@@ -20,6 +20,16 @@
 #   script-bypass.log : timestamp UTC, cwd, matched pattern, suggested script,
 #                       command truncated to 200 chars
 #   Both logs are tab-separated and stored under ~/.claude/.
+#
+# EXIT CODES:
+#   0  Report printed, or --help.
+#   2  Usage error (unknown argument, missing/malformed --days or --since).
+#   8  HOME unset — the ~/.claude logs this report reads cannot be located
+#      (issue #1434). Matches the code session-state.sh and reviewer-of.sh use
+#      for the same condition. --help and every usage error answer before this
+#      guard. There is deliberately no ${HOME:-} fallback: defaulting to empty
+#      would read a root-anchored /.claude/script-usage.log and silently report
+#      on the wrong (or an empty) log.
 
 set -euo pipefail
 # Best-effort usage telemetry — must never change this script's exit contract
@@ -29,7 +39,11 @@ if [[ -n "${HOME:-}" ]]; then
 fi
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  # Whole header block, terminating at the first non-comment line. The old
+  # hardcoded `2,19p` range already cut off mid-LOG FORMATS and would have
+  # hidden the EXIT CODES section added for issue #1434; this form cannot
+  # drift out of sync with the header at all.
+  sed -n '2,/^[^#]/{/^[^#]/!p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 DAYS=7
@@ -87,6 +101,15 @@ done
 if ! [[ "$DAYS" =~ ^[0-9]+$ ]] || [[ "$DAYS" -lt 1 ]]; then
   echo "ERROR: --days must be a positive integer" >&2
   exit 2
+fi
+
+# One named line + exit 8 instead of bash's `HOME: unbound variable` trace
+# (issue #1434). HOME is genuinely load-bearing only from here — the report
+# input lives under ~/.claude — so --help and every usage error above answer
+# without it. See the EXIT CODES header for why 8 and why no ${HOME:-}.
+if [[ -z "${HOME:-}" ]]; then
+  echo "script-usage-report.sh: HOME is unset; cannot read ~/.claude logs" >&2
+  exit 8
 fi
 
 python3 - "$DAYS" "$HOME/.claude/script-usage.log" "$HOME/.claude/script-bypass.log" <<'PY'

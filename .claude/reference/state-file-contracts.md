@@ -100,6 +100,19 @@ Both exit **6** on lock timeout; the caller retries. Locks whose holder process 
 
 The reason inline `jq … > tmp && mv tmp` is banned is that it is atomic with respect to the *file* but not with respect to the *lock* — it will happily clobber a concurrent writer's siblings.
 
+## `HOME` unset — exit 8 (issue #1434)
+
+`session-state.sh` and `reviewer-of.sh` resolve their state file from `$HOME`. When `HOME` is unset there is no state file to resolve, so both exit **8** with a single named stderr line (`HOME is unset; cannot resolve ~/.claude/session-state.json`) instead of aborting with bash's `HOME: unbound variable` under `set -u`. `silence-watchdog.sh` and `script-usage-report.sh` use the same code for the same condition on their own `~/.claude` paths.
+
+Like the lock-timeout **6** above, 8 is a fresh number rather than an overload of the existing 2–7 vocabulary, so a caller can tell "no HOME in this environment" from a usage error (2) or a genuine I/O failure (5).
+
+Two properties callers can rely on:
+
+- **Cheap paths never require `HOME`.** `--help`, every usage error, and `session-state.sh --repo-key` answer before the guard — none of them open the state file. Exit 8 means a mode that genuinely needed `~/.claude` was reached.
+- **No fabricated paths.** There is deliberately no `${HOME:-}` fallback anywhere on a load-bearing path: an empty default would produce root-anchored `/.claude/...` paths and strew state at the filesystem root — the stray-file hazard issue #1430 removed. The guard fails fast instead. The non-load-bearing usage-telemetry append is separate: it is skipped entirely when `HOME` is unset, and never changes any script's exit contract.
+
+Pinned by `.claude/scripts/tests/unset-home-contract.test.sh` (all four scripts) and the unset-`HOME` block in `session-state.test.sh` (per-mode).
+
 ## Scoping is not retroactive (issue #651)
 
 Adding scoping did not rewrite entries already on disk. Legacy entries lacking `owner_repo` / `root_repo` stay in `_unknown`, where they still collide in `infer-pr.sh` and `pr-state.sh` candidate lists.
