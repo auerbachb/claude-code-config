@@ -78,9 +78,20 @@ jobs:
 
       # The workflow-reading suites import yaml; ubuntu images preinstall
       # PyYAML, the macOS image does not. Bind the install to the same
-      # interpreter the suites resolve (`python3`).
+      # interpreter the suites resolve (`python3`). That interpreter is
+      # Homebrew-managed on this image, so a bare `pip install --user` is
+      # refused under PEP 668 (externally-managed-environment) — retry with
+      # --break-system-packages, which pip's own refusal names as the
+      # override; the plain first try keeps images whose pip predates the
+      # flag working. The final import is the real success condition.
       - name: Install PyYAML for workflow-reading suites
-        run: python3 -m pip install --user pyyaml
+        run: |
+          set -uo pipefail
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            python3 -m pip install --user pyyaml 2>/dev/null \
+              || python3 -m pip install --user --break-system-packages pyyaml
+          fi
+          python3 -c 'import yaml; print("PyYAML available:", yaml.__version__)'
 
       - name: Run bash hook + script test suites (auto-discovered, macOS)
         run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh
