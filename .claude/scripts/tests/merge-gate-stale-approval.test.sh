@@ -26,7 +26,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+# Overridable so this suite can be pointed at another checkout's merge-gate.sh
+# (issue #1485); the guard stops a mistyped path from reading as a real result.
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+[[ -f "$SUT" && -x "$SUT" ]] || { echo "FAIL: SUT is not an executable file: $SUT" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }

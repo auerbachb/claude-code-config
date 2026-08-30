@@ -57,6 +57,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [merge-gate-review-substance.test.sh](../tests/merge-gate-review-substance.test.sh) | Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage |
 | [merge-gate-stale-approval.test.sh](../tests/merge-gate-stale-approval.test.sh) | Tests stale-approval rejection in `merge-gate.sh` |
 | [merge-gate-sticky-cr-approval.test.sh](../tests/merge-gate-sticky-cr-approval.test.sh) | Tests that a fresh CR-path approval on current HEAD satisfies the gate even when the sticky reviewer is BugBot |
+| [merge-gate-sut-override.test.sh](../tests/merge-gate-sut-override.test.sh) | Tests the `SUT` / `EVAL_SUT` / `MERGE_GATE` override contract for the `merge-gate-*` family — defaults, environment overrides, refusal of a mistyped path, and that no assignment is re-hardcoded |
 | [merge-sequence.test.sh](../tests/merge-sequence.test.sh) | Tests for `merge-sequence.sh` |
 | [model-fleet.test.sh](../tests/model-fleet.test.sh) | Tests for `model-fleet.sh` |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
@@ -98,6 +99,42 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+
+## Pointing a merge-gate suite at another checkout
+
+The `merge-gate-*` suites resolve the scripts they exercise through overridable
+variables (issue #1485). Each defaults to this checkout's copy, so a plain
+`bash .claude/scripts/tests/<name>.test.sh` behaves exactly as before:
+
+| Variable | Script | Suites |
+|----------|--------|--------|
+| `SUT` | `merge-gate.sh` | every `merge-gate-*` suite except `merge-gate-authorship` |
+| `EVAL_SUT` | `review-substance.sh` | `merge-gate-codeant-run-marker`, `merge-gate-json-escaping`, `merge-gate-review-substance` |
+| `MERGE_GATE` | `merge-gate.sh` | `merge-gate-authorship` (its own long-standing name) |
+
+Setting one runs the suite's assertions against a different copy of the script.
+That is how you get a **negative control** — evidence that the assertions a PR
+adds genuinely fail against the code being replaced, rather than passing for some
+unrelated reason:
+
+```bash
+# Extract the pre-change evaluator once...
+git show <sha-before-the-change>:.claude/scripts/review-substance.sh > /tmp/eval-main.sh
+chmod +x /tmp/eval-main.sh
+# ...then run the suite against it.
+EVAL_SUT=/tmp/eval-main.sh bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
+```
+
+Two things to know:
+
+- **`merge-gate.sh` resolves `review-substance.sh` as its own sibling.** So
+  `EVAL_SUT` steers only the cases that invoke the evaluator directly; cases that
+  run through `merge-gate.sh` follow whatever sits next to `SUT`. Point both at
+  the same foreign checkout for a whole-suite control.
+- **A mistyped path exits 1** with `FAIL: <VAR> is not an executable file: …`.
+  Without that guard a bad path would empty every invocation, fail every
+  assertion, and look exactly like a successful negative control while proving
+  nothing.
 
 ---
 

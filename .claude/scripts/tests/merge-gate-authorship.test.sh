@@ -6,7 +6,11 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-MERGE_GATE="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+# Overridable so this suite can be pointed at another checkout's merge-gate.sh
+# (issue #1485); the guard stops a mistyped path from reading as a real result.
+# Named MERGE_GATE here, not SUT, as it has been since this suite was written.
+MERGE_GATE="${MERGE_GATE:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+[[ -f "$MERGE_GATE" && -x "$MERGE_GATE" ]] || { echo "FAIL — MERGE_GATE is not an executable file: $MERGE_GATE" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
