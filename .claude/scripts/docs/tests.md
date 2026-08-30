@@ -17,7 +17,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
 | [check-runs-dedup.test.sh](../tests/check-runs-dedup.test.sh) | Tests for `check-runs-dedup.sh` |
 | [checkpoint-handoff.test.sh](../tests/checkpoint-handoff.test.sh) | Tests the degrade ladder in `checkpoint-handoff.sh` — the emitted document must pass `portable-handoff-lint.sh` in any repository, harness-shaped filenames included |
-| [chip-offer-registry.test.sh](../tests/chip-offer-registry.test.sh) | Tests for `chip-offer-registry.sh` — reservation, cap exhaustion, transitions, counting, concurrent emitters, TTL expiry |
+| [chip-offer-registry.test.sh](../tests/chip-offer-registry.test.sh) | Tests for `chip-offer-registry.sh` — reservation, cap exhaustion, transitions, counting, concurrent emitters, TTL expiry, and the `--help` / `--emitter` allowlist drift guard |
 | [churn-hotspot-wrap-plan.test.sh](../tests/churn-hotspot-wrap-plan.test.sh) | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
 | [churn-hotspots.test.sh](../tests/churn-hotspots.test.sh) | Tests for `churn-hotspots.sh` |
 | [ci-status.test.sh](../tests/ci-status.test.sh) | Tests for `ci-status.sh` |

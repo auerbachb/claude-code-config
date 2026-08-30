@@ -80,7 +80,9 @@
 #   not treated as old). Matches the stale-agent guard in active-work-cap.sh.
 #
 # VALID EMITTERS
-#   pm, prompt, wave, issue-maker, start-issue
+#   pm, prompt, wave, issue-maker, start-issue, harness-audit
+#   (the six canonical chip emitters named in chip-launching.md; kept in sync
+#   with the --emitter case allowlist by chip-offer-registry.test.sh)
 #
 # FLAGS
 #   --repo <owner/name>   Registry scope. Defaults to the origin remote of cwd.
