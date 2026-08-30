@@ -665,12 +665,34 @@ bash "$DEP_STUB/handoff-state.sh" --owner-repo stub/repo --path 4242 >/dev/null 
 check_eq "a stub holding only the documented dependencies runs" "0" "$?"
 
 # The widened exit-5 row claims a missing sibling library exits 5. Pin that
-# behaviour so the row stays true rather than merely present.
-LIBLESS_STUB="$TMP_HOME/libless-stub"; mkdir -p "$LIBLESS_STUB"
-cp "$SCRIPT" "$LIBLESS_STUB/"
-cp "$LOCK_LIB" "$LIBLESS_STUB/"
-bash "$LIBLESS_STUB/handoff-state.sh" --owner-repo stub/repo --path 4242 >/dev/null 2>&1
-check_eq "a missing sibling library exits 5, as EXIT CODES documents" "5" "$?"
+# behaviour for EACH library separately. Omitting several at once would let
+# whichever guard comes first in source order answer for all of them, so a later
+# guard could be deleted or broken without turning this red — the vacuous pass
+# these drift guards exist to prevent. Dropping exactly one library keeps every
+# other guard satisfied, so the assertion can only hold if that library's own
+# guard fired.
+LIBLESS_ROOT="$TMP_HOME/libless"; mkdir -p "$LIBLESS_ROOT"
+LIBLESS_CHECKED=0
+while IFS= read -r _omit; do
+  [[ -z "$_omit" ]] && continue
+  _stub="$LIBLESS_ROOT/$(printf '%s' "$_omit" | tr '/.' '__')"
+  mkdir -p "$_stub"
+  cp "$SCRIPT" "$_stub/"
+  while IFS= read -r _keep; do
+    [[ -z "$_keep" || "$_keep" == "$_omit" ]] && continue
+    mkdir -p "$_stub/$(dirname "$_keep")"
+    cp "$REPO_ROOT/.claude/scripts/$_keep" "$_stub/$_keep"
+  done <<< "$SIBLING_LIBS"
+  # </dev/null so the script cannot swallow this loop's herestring stdin.
+  bash "$_stub/handoff-state.sh" --owner-repo stub/repo --path 4242 \
+    </dev/null >/dev/null 2>&1
+  check_eq "a missing $_omit exits 5, as EXIT CODES documents" "5" "$?"
+  LIBLESS_CHECKED=$((LIBLESS_CHECKED + 1))
+done <<< "$SIBLING_LIBS"
+# Fail closed: a loop that silently ran zero times would leave the exit-5 row
+# unpinned while still reporting no failures.
+check_eq "every hard-required sibling library got its own exit-5 check" "3" \
+  "$LIBLESS_CHECKED"
 
 # Every literal exit code the script can return must have an EXIT CODES row.
 # Comment lines are stripped first so the header describing a code cannot be
