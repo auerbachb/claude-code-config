@@ -76,6 +76,12 @@ jobs:
           fi
           bash -c 'echo "bash on PATH: $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" -ge 4 ]'
 
+      # The workflow-reading suites import yaml; ubuntu images preinstall
+      # PyYAML, the macOS image does not. Bind the install to the same
+      # interpreter the suites resolve (`python3`).
+      - name: Install PyYAML for workflow-reading suites
+        run: python3 -m pip install --user pyyaml
+
       - name: Run bash hook + script test suites (auto-discovered, macOS)
         run: bash .github/scripts/summarize-test-run.sh "Bash test suites (macOS)" .github/scripts/run-hook-tests.sh
 
