@@ -38,10 +38,12 @@
 #   comments on this repo's 25 most recently merged PRs, not guessed. A vendor
 #   reword is therefore a one-line fix in one place.
 #
-#   A comment that looks limit-shaped but matches nothing declared is reported
-#   in `unclassified[]` — NEVER silently counted as healthy. A stale phrase
-#   table that quietly reads "active" for a capped tool would defeat the whole
-#   audit, so the failure is made visible instead.
+#   Limit-shaped language that no declared pattern explains is reported in
+#   `unclassified[]` — NEVER silently counted as healthy. That holds per SIGNAL,
+#   not per comment: a body whose declared phrase matched is still probed for
+#   anything the match does not account for (#1342). A stale phrase table that
+#   quietly reads "active" for a capped tool would defeat the whole audit, so
+#   the failure is made visible instead.
 #
 # USAGE
 #   measure.sh [--repo owner/name] [--since YYYY-MM-DD | --days N] [--limit N]
@@ -78,7 +80,9 @@
 #                "changes_requested", "inline_findings", "issue_comments",
 #                "sole_provider_on", "cap_signals": [...], "cap_kinds": [...]}],
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
-#     "unclassified_hits": N,   # raw probe hits before (tool, token) dedup
+#     "unclassified_hits": N,   # comments carrying >=1 unexplained limit-shaped
+#                               # token, before the (tool, token) dedup that
+#                               # collapses `unclassified` itself
 #     "notes": [...]
 #   }
 #
@@ -290,6 +294,11 @@ PLAN_PATTERNS = [
 
 # Generic probe for the unclassified report. Deliberately NOT a cap classifier:
 # a hit here means "a human should look", never "this tool is capped".
+#
+# It runs on EVERY body, not only on bodies nothing declared matched (#1342).
+# Spans a matched declared pattern already explains are excluded first, so the
+# declared phrases' own limit-shaped words ("...spend limit", "...subscription")
+# never re-enter the report as unknowns.
 LIMIT_SHAPED = re.compile(
     r"\b(usage limit|spend limit|rate limit|rate-limited|quota|out of credits|"
     r"subscription|upgrade your plan|billing|trial)\b", re.I)
@@ -454,22 +463,25 @@ unclassified_seen = set()
 # Entries are deduped per (tool, token) so one reworded vendor phrase repeated
 # across 30 PRs does not produce 30 rows. But the DEDUPED count is what a human
 # reads when deciding whether a new CAP_SIGNALS entry is warranted, and "1"
-# reads as noise whether it happened once or thirty times. Keep the raw count
-# so the report can state the frequency.
+# reads as noise whether it happened once or thirty times. Keep the frequency
+# count so the report can state it: how many COMMENTS carried unexplained
+# limit-shaped language, which is what "is this a vendor reword or noise?"
+# actually turns on. A comment counts once however many tokens it carries.
 unclassified_hits = 0
 
 
 def classify_body(key, pr_number, body):
     """Record cap signals and plan observations from one comment body."""
+    global unclassified_hits
     if not body:
         return
     low = body.lower()
-    matched = False
+    matched_patterns = []
     for sig in CAP_SIGNALS:
         if sig["tool"] != key:
             continue
         if sig["pattern"] in low:
-            matched = True
+            matched_patterns.append(sig["pattern"])
             entry = {"pr": pr_number, "kind": sig["kind"], "pattern": sig["pattern"]}
             # Dedupe per (PR, kind): one capped PR is one observation however
             # many comments the vendor posts about it.
@@ -484,21 +496,51 @@ def classify_body(key, pr_number, body):
         m = re.search(pp["regex"], body, re.I)
         if m and not stats[key]["plan_observed"]:
             stats[key]["plan_observed"] = m.group(1).strip().lower()
-    if not matched:
-        probe = strip_boilerplate(body)
-        hit = LIMIT_SHAPED.search(probe)
-        if hit:
-            global unclassified_hits
+
+    # The probe runs on EVERY body, including one that already matched a
+    # declared classifier (issue #1342). Gating it on "nothing matched" meant a
+    # banner carrying a declared phrase AND a separate undeclared limit signal
+    # recorded only the declared kind, and the undeclared one never reached
+    # `unclassified[]` — silent by construction, and worst exactly where the
+    # vendor says the most. The #1303 window carries the live case: the org
+    # usage-spending-cap sentence rode inside comments that already matched, so
+    # the audit's own blind-spot surface could not see it.
+    #
+    # What the probe must NOT do is re-report the declared phrases themselves:
+    # several contain limit-shaped words ("...spend limit", "...subscription"),
+    # so every span a matched pattern already explains is excluded first. Spans
+    # are located in the same stripped-and-lowered string the probe reads, so
+    # the overlap test is exact rather than an offset approximation.
+    probe = strip_boilerplate(body)
+    probe_low = probe.lower()
+    declared_spans = []
+    for pattern in matched_patterns:
+        pos = probe_low.find(pattern)
+        while pos != -1:
+            declared_spans.append((pos, pos + len(pattern)))
+            pos = probe_low.find(pattern, pos + 1)
+
+    counted = False
+    for hit in LIMIT_SHAPED.finditer(probe):
+        if any(hit.start() < span_end and span_start < hit.end()
+               for span_start, span_end in declared_spans):
+            continue
+        # `unclassified_hits` counts COMMENTS, not raw matches: the note it
+        # feeds reads "across N limit-shaped comment(s)", and a human weighs it
+        # as "how often did a vendor say this". Counting a second token in the
+        # same comment as a second comment would overstate that frequency.
+        if not counted:
+            counted = True
             unclassified_hits += 1
-            token = hit.group(0).lower()
-            dedupe_key = (key, token)
-            if dedupe_key not in unclassified_seen:
-                unclassified_seen.add(dedupe_key)
-                start = max(0, hit.start() - 60)
-                unclassified.append({
-                    "tool": key, "pr": pr_number, "token": token,
-                    "excerpt": " ".join(probe[start:hit.end() + 60].split()),
-                })
+        token = hit.group(0).lower()
+        dedupe_key = (key, token)
+        if dedupe_key not in unclassified_seen:
+            unclassified_seen.add(dedupe_key)
+            excerpt_start = max(0, hit.start() - 60)
+            unclassified.append({
+                "tool": key, "pr": pr_number, "token": token,
+                "excerpt": " ".join(probe[excerpt_start:hit.end() + 60].split()),
+            })
 
 
 for pr in prs:
@@ -565,10 +607,13 @@ for t in TOOLS:
 if unclassified:
     notes.append(
         "%d distinct (tool, token) pair(s) across %d limit-shaped comment(s) "
-        "matched no declared classifier — see `unclassified`. These are NOT "
-        "counted as caps; a human decides whether the CAP_SIGNALS table needs a "
-        "new phrase. The comment count is the one to weigh: a phrase recurring "
-        "across many PRs is a vendor reword, not noise."
+        "carry language no declared classifier explains — see `unclassified`. A "
+        "comment can appear here AND be classified: the probe reports only the "
+        "part its declared match does not account for, so a second cap phrase "
+        "riding in a recognised banner is visible rather than swallowed. These "
+        "are NOT counted as caps; a human decides whether the CAP_SIGNALS table "
+        "needs a new phrase. The comment count is the one to weigh: a phrase "
+        "recurring across many PRs is a vendor reword, not noise."
         % (len(unclassified), unclassified_hits))
 
 snapshot = {
