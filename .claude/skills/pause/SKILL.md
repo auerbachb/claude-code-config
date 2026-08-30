@@ -376,10 +376,15 @@ and record each at its actual state. Step 6 then records those units without
 mutation, and the run proceeds to the bounded terminal path.
 
 For each `land` unit, dispatch `/wrap`. Monitor its outcome. If the window
-expires while a `/wrap` is still in flight, request its checkpoint, record its
-actual boundary, then hard-stop its exact runtime ID via the shared shutdown
-contract. Reclassify the unit `park`; `/pause-resume` re-reads GitHub before
-deciding whether it still needs work.
+expires while a `/wrap` is still in flight, request its checkpoint and record
+its actual boundary, then **stop waiting on it — never hard-stop its runtime
+ID.** This is the Step 2 carve-out in full: a merge killed mid-write is exactly
+the unrecorded state this command exists to prevent, so an in-flight `/wrap` is
+the one productive task the exact-ID hard stop never claims (`pause-state.md`
+§Deadline semantics). Reclassify the unit `park` and record it as still in
+flight at the boundary, never as finished; `/pause-resume` re-reads GitHub
+before deciding whether it still needs work, so a merge that completed after the
+window shows up as landed at resume.
 
 A `land` unit that hits a hard stop during `/wrap` (human `CHANGES_REQUESTED`, protection-modifying bypass, etc.) is reclassified `park` immediately and the hard stop is named in its `stopped_at` field.
 
