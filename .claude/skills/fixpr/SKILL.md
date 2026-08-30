@@ -241,8 +241,15 @@ PR_NUMBER=$(jq -r '.pr.number' "$AUDIT")
 OWNER=$(jq -r '.pr.owner' "$AUDIT")
 REPO=$(jq -r '.pr.repo' "$AUDIT")
 # Combined form for handoff scoping. Step 3a's path resolution reads
-# ${OWNER_REPO:-}; leaving it unset silently falls through to the legacy flat
-# handoff path, which the phase agents never read back (issue #1302).
+# ${OWNER_REPO:-}; leaving it unset skips handoff-state.sh entirely and takes
+# Step 3a's own hard-coded literal flat path, which the phase agents never read
+# back (issue #1302) — that is this skill's last-ditch fallback, not a helper
+# fall-through. Since issue #1366 the helper resolves an omitted --owner-repo
+# from $CLAUDE_SESSION_REPO, then the cwd's `origin`, and when neither yields an
+# owner/repo it "exits 2 having written nothing.  It does NOT fall back to the
+# flat path" (handoff-state.sh header) — reaching that path through the helper
+# takes an explicit --legacy-flat. Set OWNER_REPO here so both branches stay
+# scoped.
 OWNER_REPO="$OWNER/$REPO"
 BRANCH=$(jq -r '.pr.branch' "$AUDIT")
 HEAD_SHA=$(jq -r '.pr.head_sha' "$AUDIT")
@@ -420,7 +427,14 @@ if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
   if [[ -n "$DISMISS_STALE_SCRIPT" ]]; then
     if [[ -n "${HANDOFF_JSON:-}" ]]; then
       # --owner-repo scopes the handoff append to the same file --handoff-file
-      # names; without it the append resolves the flat path (issue #1302).
+      # names. Step 0b sets OWNER_REPO on every /fixpr run, so this is the
+      # branch taken here. Without the flag dismiss-stale-bot-changes.sh
+      # "[d]efaults to the `gh repo view` value" (its own header), which for a
+      # /fixpr worktree need not match the PR being dismissed — so the IDs can
+      # land in a different repo's scoped file, the split-brain that issue #1302
+      # is about. Omission does not reach the flat path: that branch fires only
+      # when --handoff-file already IS the flat path, and declares itself
+      # --legacy-flat (issue #1366).
       if [[ -n "${OWNER_REPO:-}" ]]; then
         "$DISMISS_STALE_SCRIPT" "$PR_NUMBER" --handoff-file "$HANDOFF_JSON" --owner-repo "$OWNER_REPO"
       else
