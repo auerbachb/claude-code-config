@@ -2,8 +2,8 @@
 # chip-offer-registry.sh — Repo-scoped, lifecycle-aware chip offer registry.
 #
 # PURPOSE
-#   Tracks chip offers from all emitters (/pm, /prompt, /wave, /issue-maker,
-#   /start-issue) in a single durable, cross-thread store (Issue #1225).
+#   Tracks chip offers from every canonical chip emitter (enumerated once under
+#   VALID EMITTERS below) in a single durable, cross-thread store (Issue #1225).
 #   Provides an atomic reservation at the creation boundary, closing the race
 #   where two concurrent emitters could both observe the same FREE slot and
 #   both create offers, together exceeding the cap.
