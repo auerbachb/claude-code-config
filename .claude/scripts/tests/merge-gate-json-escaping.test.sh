@@ -144,7 +144,10 @@ approval() { # <login> <body> [submitted_at]
     '[{user:{login:$l,type:"Bot"}, commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$t}]'
 }
 convo() { # <login> <body> <created_at>
-  jq -cn --args '[ $ARGS.positional | _nwise(3)
+  # nwise is defined inline: jq's `_nwise` is an undocumented internal that jq
+  # 1.8 stopped exposing (first caught by the macOS CI job's newer jq — #1473).
+  jq -cn --args 'def nwise($n): . as $a | range(0; length; $n) | $a[. : . + $n];
+                 [ $ARGS.positional | nwise(3)
                    | {user:{login:.[0],type:"Bot"}, body:.[1], created_at:.[2], updated_at:.[2]} ]' -- "$@"
 }
 

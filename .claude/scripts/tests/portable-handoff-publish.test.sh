@@ -143,27 +143,50 @@ printf 'not a directory\n' >"$TMP/not-a-directory"
   --out-dir "$TMP/not-a-directory" --lint "$LINT" --lint-root "$REPO_ROOT" >/dev/null 2>&1
 check "write failure is reported" test "$?" = 5
 
+# The holder must keep the lock for the publisher's ENTIRE run, not for a fixed
+# duration. The publisher stages and lints BEFORE acquiring, and that phase is
+# fork-heavy — ~8ms per fork on macOS (state-lock.sh header), hundreds of forks
+# in the lint — so under load it outlasts any fixed sleep, the holder releases
+# early, and the publish "wrongly" succeeds (issue #1473, the macOS-only flake
+# this block used to be). A RELEASE sentinel created only after the publisher
+# has exited makes the contention window cover the whole run on any machine at
+# any load. STALE_AGE is pinned high for the same reason: a pre-acquire phase
+# slower than the 120s default would age the LIVE holder's lock into
+# breakability and hand the publisher the lock anyway.
 READY="$TMP/lock-ready"
+RELEASE="$TMP/lock-release"
 ( source "$LOCK"
   state_lock_acquire "$OUT1" || exit $?
   trap 'state_lock_release' EXIT
   : >"$READY"
-  sleep 3
+  for _ in {1..600}; do [[ -e "$RELEASE" ]] && break; sleep 0.1; done
+  # Distinct exit when the ~60s ceiling expired before the parent signalled:
+  # the hold no longer provably covered the publisher's run, so the contention
+  # assertions below would be vacuous rather than failed.
+  [[ -e "$RELEASE" ]] || exit 99
 ) &
 holder=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$READY" ]] && break; sleep 0.1; done
+for _ in {1..300}; do [[ -f "$READY" ]] && break; sleep 0.1; done
 if [[ ! -f "$READY" ]]; then
+  : >"$RELEASE"
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
   echo "FAIL — lock holder did not become ready within the bounded wait"
   exit 1
 fi
-CLAUDE_STATE_LOCK_TIMEOUT=1 "$SUT" --input "$DOC" --repo test/portable --session session-1 \
+CLAUDE_STATE_LOCK_TIMEOUT=1 CLAUDE_STATE_LOCK_STALE_AGE=600 \
+  "$SUT" --input "$DOC" --repo test/portable --session session-1 \
   --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT" >/dev/null 2>&1
 lock_rc=$?
+: >"$RELEASE"
 wait "$holder"
+holder_rc=$?
 check "lock contention is bounded and fails closed" test "$lock_rc" = 6
 check "lock failure leaves the previous note intact" grep -q 'implemented and verified' "$OUT1"
+check "holder held the lock for the publisher's entire run" test "$holder_rc" = 0
+OUT_AFTER=$("$SUT" --input "$TMP/handoff-updated.md" --repo test/portable --session session-1 \
+  --out-dir "$OUT_DIR" --lint "$LINT" --lint-root "$REPO_ROOT")
+check "canonical path is publishable again once the holder releases" test "$OUT_AFTER" = "$OUT1"
 
 printf '\npassed: %d   failed: %d\n' "$passed" "$failed"
 (( failed == 0 ))
