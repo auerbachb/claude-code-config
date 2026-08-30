@@ -268,7 +268,7 @@ BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/dirty-main-guard-err.XXXXXX"
 # unbound-variable error under `set -u` on macOS's bash 3.2.
 trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"} 2>/dev/null || true' EXIT
 
-timeout_die() { # what
+timeout_message() { # what
   if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
     # Naming which of the two it was matters: reporting a clock failure as an
     # elapsed-time timeout is its own misdiagnosis.
@@ -276,6 +276,10 @@ timeout_die() { # what
   else
     echo "error: '$1' exceeded ${GIT_BOUND_SECS}s and was killed — the repo is not answering (raise REPO_ROOT_TIMEOUT_SECS if it is genuinely this slow)"
   fi
+}
+
+timeout_die() { # what
+  timeout_message "$1"
   exit 2
 }
 
@@ -305,6 +309,43 @@ git_bounded() { # git args…
   git_bounded_soft "$@" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     timeout_die "git $*"
+  fi
+  return "$rc"
+}
+
+# Between the checkout onto the recovery branch and the checkout back, the root
+# repo is NOT on main, and a bare `exit 2` would leave it there. That is not
+# just an untidy exit: the branch short-circuit below reads any non-main branch
+# as "nothing to guard", so the next `--check` prints `clean` for a repo whose
+# main is still dirty and `--quarantine` no-ops. The guard would stop guarding,
+# silently, and the Stop hook — which surfaces only exit 1 — would never say so.
+#
+# So every bounded call made while off main dies through this instead: it always
+# attempts the return trip first, and always names the branch the repo was left
+# on when that trip does not land. QUARANTINE_BRANCH is set at the moment the
+# window opens; empty means the window was never entered.
+QUARANTINE_BRANCH=""
+quarantine_die() { # first_line
+  local back_rc=0
+  git_bounded_soft checkout --quiet main || back_rc=$?
+  echo "$1"
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 || "$back_rc" -ne 0 ]]; then
+    echo "error: the root repo was left on ${QUARANTINE_BRANCH:-the recovery branch} — return it to main by hand, or the guard will report a dirty main as clean"
+  else
+    echo "note: the root repo was returned to main; the quarantined work is on ${QUARANTINE_BRANCH:-the recovery branch}"
+  fi
+  exit 2
+}
+
+# The fatal form for that window. The message is composed BEFORE the return trip
+# because `git_bounded_soft` resets BOUNDED_TIMED_OUT / BOUNDED_CLOCK_UNREADABLE
+# — read afterwards, every timeout would describe the checkout instead of the
+# call that actually tripped.
+git_bounded_offmain() { # git args…
+  local rc=0
+  git_bounded_soft "$@" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    quarantine_die "$(timeout_message "git $*")"
   fi
   return "$rc"
 }
@@ -445,34 +486,54 @@ fi
 # Plain untracked-and-unstaged files remain untracked throughout.
 moved_what=""
 if (( HAS_UNCOMMITTED == 1 )); then
+  # The window opens here. A timeout on this very checkout is ambiguous — git
+  # may or may not have switched before it was killed — so the branch is named
+  # from this point on and the off-main form is used, which checks rather than
+  # assumes.
+  QUARANTINE_BRANCH="$RECOVERY"
   checkout_rc=0
-  git_bounded checkout --quiet "$RECOVERY" || checkout_rc=$?
+  git_bounded_offmain checkout --quiet "$RECOVERY" || checkout_rc=$?
   if (( checkout_rc != 0 )); then
     echo "error: could not checkout recovery branch — $(git_failure_text "$checkout_rc")"
     exit 2
   fi
   commit_rc=0
-  git_bounded -c core.hooksPath=/dev/null commit -a -m "dirty-main quarantine $STAMP" || commit_rc=$?
+  git_bounded_offmain -c core.hooksPath=/dev/null commit -a -m "dirty-main quarantine $STAMP" || commit_rc=$?
   if (( commit_rc != 0 )); then
     # Return to main before bailing so we don't leave the user on recovery.
     # Captured first: the return trip overwrites GIT_ERR with its own result.
     commit_err="$(git_failure_text "$commit_rc")"
     # Soft: this is best-effort cleanup on a path that is already failing, and
-    # the commit error is the actionable one. A timeout still says so, and says
-    # where the repo was left.
-    git_bounded_soft checkout --quiet main || true
+    # the commit error is the actionable one. But a return trip that does not
+    # land still has to be said out loud, whichever way it failed — a stranded
+    # repo makes the next `--check` answer `clean` for a dirty main.
+    back_rc=0
+    git_bounded_soft checkout --quiet main || back_rc=$?
     if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
       echo "warning: 'git checkout main' exceeded ${GIT_BOUND_SECS}s and was killed — the root repo may be left on $RECOVERY" >&2
+    elif (( back_rc != 0 )); then
+      echo "warning: could not return the root repo to main — it may be left on $RECOVERY" >&2
     fi
     echo "error: could not commit quarantined changes — $commit_err"
     exit 2
   fi
+  # The return trip. Soft, because both ways it can fail leave the repo on the
+  # recovery branch, and the caller has to be told that — a bare "could not
+  # return to main" reads as an untidy exit rather than a guard that will now
+  # answer `clean` for a dirty main.
   back_rc=0
-  git_bounded checkout --quiet main || back_rc=$?
-  if (( back_rc != 0 )); then
-    echo "error: could not return to main after commit — $(git_failure_text "$back_rc")"
+  git_bounded_soft checkout --quiet main || back_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    timeout_message "git checkout --quiet main"
+    echo "error: the root repo was left on $RECOVERY — return it to main by hand, or the guard will report a dirty main as clean"
     exit 2
   fi
+  if (( back_rc != 0 )); then
+    echo "error: could not return to main after commit — $(git_failure_text "$back_rc")"
+    echo "error: the root repo was left on $RECOVERY — return it to main by hand, or the guard will report a dirty main as clean"
+    exit 2
+  fi
+  QUARANTINE_BRANCH=""
   moved_what="uncommitted"
 fi
 

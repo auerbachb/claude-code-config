@@ -353,6 +353,93 @@ check_eq "case12: control — a pass-through stub matches the unstubbed status" 
 check_eq "case12: control — and the unstubbed answer" "$BASELINE" "$OUT"
 pkill -f "$STUB/stub-sleeper" >/dev/null 2>&1 || true
 
+# ---- case 13: a bound that trips mid-quarantine still returns to main --------
+# The quarantine path checks out the recovery branch, commits onto it, and
+# checks main back out. A bound tripping between those two checkouts used to
+# `exit 2` from inside the bounded wrapper, skipping the return trip that the
+# ordinary commit-failure path performs — leaving the ROOT REPO on the recovery
+# branch. That is not a cosmetic exit: the guard's own short-circuit reads any
+# non-main branch as "nothing to guard", so the next --check answers `clean`
+# for a repo whose main is still dirty, and --quarantine no-ops. The guard
+# stops guarding, and the Stop hook (exit 1 only) never says so.
+#
+# Stub a git that stalls ONLY `commit` and forwards everything else, so the
+# checkout onto recovery succeeds and the stall lands inside the window.
+REPO_E="$TMP/repoE"
+git init -q -b main "$REPO_E"
+git -C "$REPO_E" config user.email "test@example.com"
+git -C "$REPO_E" config user.name "Test"
+echo "base" > "$REPO_E/f.txt"
+git -C "$REPO_E" add f.txt
+git -C "$REPO_E" commit -q -m "init E"
+git init -q --bare "$TMP/originE.git"
+git -C "$REPO_E" remote add origin "$TMP/originE.git"
+git -C "$REPO_E" push -q -u origin main
+echo "dirty edit" >> "$REPO_E/f.txt"
+
+: > "$TMP/stub-argv.log"
+: > "$TICK_FILE"
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/stub-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "commit" ]]; then
+    "$STUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --quarantine --repo "$REPO_E" 2>/dev/null)" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+
+check_eq "case13: a stalled commit exits 2, not 0 and not a hang" "2" "$RC"
+check_contains "case13: the diagnostic names the call that was killed" "commit" "$OUT"
+check_contains "case13: and names the bound that tripped" "exceeded 3s" "$OUT"
+# The regression itself: whatever the guard reports, it must not walk away
+# leaving the root repo parked on the recovery branch.
+check_eq "case13: the root repo is back on main, not stranded on recovery" "main" \
+  "$(git -C "$REPO_E" symbolic-ref --short HEAD)"
+check_contains "case13: and the report says where the quarantined work went" \
+  "recovery/dirty-main-" "$OUT"
+# Stranding is silent by construction, so prove the guard did not simply go on
+# reporting `clean` for a main that is still dirty.
+check_eq "case13: a later --check still sees the dirty main" \
+  "dirty: uncommitted tracked changes" \
+  "$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$REPO_E" 2>/dev/null)"
+if (( ELAPSED < 15 )); then
+  pass "case13: returned in ${ELAPSED}s — the bound held (the stub sleeps 30s)"
+else
+  fail "case13: took ${ELAPSED}s — the bound did not hold"
+fi
+if grep -q 'commit' "$TMP/stub-argv.log"; then
+  pass "case13: control — the stalling subcommand really was invoked"
+else
+  fail "case13: control — the stub never saw commit, so nothing was bounded"
+fi
+# Control the other way: with nothing stalling, the same stub quarantines
+# normally. Without it, case13 would also pass against a stub that broke the
+# whole quarantine before it ever reached the recovery branch.
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --quarantine --repo "$REPO_E" 2>/dev/null)" || RC=$?
+check_eq "case13: control — an unstalled quarantine still succeeds" "0" "$RC"
+check_contains "case13: control — and reports its recovery branch" \
+  "quarantined: recovery/dirty-main-" "$OUT"
+check_eq "case13: control — and lands back on main" "main" \
+  "$(git -C "$REPO_E" symbolic-ref --short HEAD)"
+pkill -f "$STUB/stub-sleeper" >/dev/null 2>&1 || true
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then

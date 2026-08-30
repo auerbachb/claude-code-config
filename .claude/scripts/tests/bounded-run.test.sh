@@ -181,6 +181,61 @@ for consumer in repo-root.sh dirty-main-guard.sh stale-cleanup.sh admin-merge.sh
   fi
 done
 
+# ---- T10: a late child's real FAILURE status survives the trip --------------
+# The exception for a child that finished around the trip used to be gated on a
+# ZERO status, so an ordinary git failure landing a moment before the bound came
+# back as 124: dirty-main-guard would announce "the repo is not answering" for a
+# plain error, and git's own stderr diagnostic was thrown away with it.
+#
+# Deterministic by construction rather than by racing the clock. The stub clock
+# below is CAUSAL, not timed: it reads the same instant until the child says it
+# is ready, then jumps past the bound. So the trip provably lands after the
+# child is up with its TERM handler installed — a plain "make the clock
+# unreadable" trip fires on the first pass instead, often before the child has
+# even been exec'd, and measures the kill rather than the late completion.
+#
+# The child then ignores that TERM and exits 3 on its own, so at the decision
+# point the status is genuinely the child's and not our kill's.
+TERM_FILE="$TMP/termed"
+READY_FILE="$TMP/ready"
+: > "$TERM_FILE"
+rm -f "$READY_FILE"
+cat > "$TMP/stub-late-failure" <<EOF
+#!/usr/bin/env bash
+trap "echo x >> '$TERM_FILE'" TERM
+echo late-failure-diagnostic >&2
+: > '$READY_FILE'
+sleep 1
+exit 3
+EOF
+chmod +x "$TMP/stub-late-failure"
+
+# now_epoch calls \`date\`; a shell function shadows the binary for the duration.
+date() {
+  if [[ -e "$READY_FILE" ]]; then printf '%s' 1999; else printf '%s' 1000; fi
+}
+RC=0
+run_bounded 3 "$TMP/stub-late-failure" || RC=$?
+unset -f date
+
+check_eq "T10 a child that failed on its own reports its real status, not 124" "3" "$RC"
+check_eq "T10b and it is not reported as a timeout" "0" "$BOUNDED_TIMED_OUT"
+# check_contains, not check_eq: the stub's own shell also reports the `sleep` it
+# lost to the process-group TERM. What matters is that the child's diagnostic is
+# still there to hand back — under the old gate the whole capture was discarded.
+check_contains "T10c and its stderr diagnostic survives" "late-failure-diagnostic" "$(cat "$CAPTURE_ERR")"
+# Non-vacuity control: if the bound never tripped, T10 would be testing the
+# ordinary fast path (T1 already covers that) and would prove nothing about the
+# late-completion branch. The TERM receipt is the proof that it did trip.
+if [[ -s "$TERM_FILE" ]]; then
+  pass "T10d control: the bound really tripped and signalled the child"
+else
+  fail "T10d control: no TERM was delivered, so T10 never reached the late-completion branch"
+fi
+# The guard in the other direction — a child that our kill really did stop must
+# still read as a timeout — is T4: its stub dies from the signal (143) and comes
+# back 124.
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 if (( FAIL > 0 )); then

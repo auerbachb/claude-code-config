@@ -27,7 +27,10 @@
 #     caller-owned temp files, truncated on entry). Returns the child's REAL
 #     exit status, or 124 with BOUNDED_TIMED_OUT=1 when the bound cut the call
 #     short. A child that had already finished when the sampling loop tripped is
-#     NOT reported as a timeout — its result is trusted over the sampling.
+#     NOT reported as a timeout — its real status is trusted over the sampling,
+#     failures included, so an ordinary git error never arrives dressed as a
+#     hang. The exception to the exception is a status that is our own kill
+#     (143/137), which means the bound genuinely did cut the call short.
 #     <secs> must be a positive integer; normalize_bound() produces one.
 #
 #     Never call this inside `$( )`. Command substitution runs the whole
@@ -199,11 +202,32 @@ run_bounded() { # bound_secs, command...
     # A child that had already finished when the sampling loop tripped left a
     # complete answer behind: `kill -0` succeeds on a zombie and the clock is
     # whole-second, so the trip can land after the work was done. Trust the
-    # result over the sampling — reporting a timeout here would throw away a
-    # correct answer that is already sitting in $CAPTURE.
-    if [[ "$reaped" -eq 1 && "$rc" -eq 0 ]] \
-       && { [[ "${BOUNDED_REQUIRE_OUTPUT:-0}" -ne 1 ]] || [[ -s "$CAPTURE" ]]; }; then
-      return 0
+    # result over the sampling — reporting a timeout here would throw away an
+    # answer already sitting in $CAPTURE/$CAPTURE_ERR.
+    #
+    # That answer counts just as much when it is a FAILURE. A git call that
+    # returned 128 a moment before the trip is an ordinary error carrying its
+    # own stderr diagnostic; calling it 124 sends every caller down its "the
+    # repo is not answering" path instead — dirty-main-guard would die with a
+    # hang message for a plain git error, and stale-cleanup would report an
+    # exceeded bound. Hence the real status, not a blanket 0-only exception.
+    #
+    # What must NOT be trusted is a status that is our OWN kill. The signals
+    # sent above surface through `wait` as 128+signum, so 143 (TERM) and 137
+    # (KILL) mean the sampling was right and the bound really did cut the call
+    # short. A child that picked those statuses for itself in that same instant
+    # is indistinguishable from one we killed, and reads as a timeout — the
+    # conservative direction, and the pre-existing behaviour.
+    #
+    # BOUNDED_REQUIRE_OUTPUT gates only the SUCCESS case. It exists so an empty
+    # capture is never read as a successful answer (repo-root.sh reads a path
+    # out of it); a non-zero status is not an answer that can go missing, and
+    # failures write to stderr, not $CAPTURE.
+    if [[ "$reaped" -eq 1 && "$rc" -ne 143 && "$rc" -ne 137 ]] \
+       && { [[ "$rc" -ne 0 ]] \
+            || [[ "${BOUNDED_REQUIRE_OUTPUT:-0}" -ne 1 ]] \
+            || [[ -s "$CAPTURE" ]]; }; then
+      return "$rc"
     fi
     # Still alive after SIGKILL means wedged in uninterruptible I/O, which no
     # signal can end — that is the kernel's call, not ours. What we can stop is
