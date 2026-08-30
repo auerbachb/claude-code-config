@@ -13,6 +13,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [backlog-staleness.test.sh](../tests/backlog-staleness.test.sh) | Tests for `backlog-staleness.sh` |
 | [candidate-ownership.test.sh](../tests/candidate-ownership.test.sh) | Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee |
 | [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
+| [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, and the source-only guard |
 | [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
 | [check-runs-dedup.test.sh](../tests/check-runs-dedup.test.sh) | Tests for `check-runs-dedup.sh` |
 | [checkpoint-handoff.test.sh](../tests/checkpoint-handoff.test.sh) | Tests the degrade ladder in `checkpoint-handoff.sh` — the emitted document must pass `portable-handoff-lint.sh` in any repository, harness-shaped filenames included |

@@ -81,9 +81,27 @@
 # EXIT STATUS
 #   0  Clean, or quarantine succeeded, or no-op (not on main).
 #   1  Dirty (--check only — --quarantine uses 0 for "no-op when clean").
-#   2  Failure (git error, could not create recovery branch, etc.).
+#   2  Failure (git error, could not create recovery branch, etc.), INCLUDING a
+#      post-resolution git call killed at its wall-clock bound (issue #1404) —
+#      see BOUNDED GIT CALLS below.
 #   3  Usage error (unknown flag, conflicting modes, missing/empty --repo
 #      value, --repo path does not exist).
+#
+# BOUNDED GIT CALLS (issue #1404)
+#   repo-root.sh bounds the calls that RESOLVE the root; every call this script
+#   then makes against that root is bounded too, by the same knob
+#   (REPO_ROOT_TIMEOUT_SECS, default 10s) through lib/bounded-run.sh. On expiry
+#   the child's process group is killed and the guard exits 2 with a one-line
+#   diagnostic naming the command and the bound — it never falls through to an
+#   unbounded retry, and it never reports "clean" for a tree it could not read.
+#   The `git fetch` is the one exception: its failure is already non-fatal by
+#   design, so a timeout there warns on stderr and the comparison continues
+#   against the origin/main already on disk.
+#
+#   The Stop hook (dirty-main-warn.sh) needs no change and stays quiet: it acts
+#   only on exit 1, so a wedged git makes no per-turn noise there — exactly as
+#   every other exit-2 git error already behaves — while session-start and
+#   /wrap callers, the ones that act on the answer, see the diagnostic.
 #
 # EXAMPLES
 #   # Session-start gate: check then quarantine if dirty.
@@ -210,10 +228,144 @@ fi
 
 GIT=(git -C "$ROOT")
 
+# --- Bounded git calls (issue #1404) -----------------------------------------
+# repo-root.sh bounds the calls it makes to RESOLVE the root; everything below
+# runs against that root and was unbounded until now. Cheapness is no defence:
+# the #1363 incident was an iCloud-evicted (`dataless`) tree that stalls PER
+# FILE, so a single-file `symbolic-ref` read is cheap in I/O terms and still
+# unbounded in wall-clock terms — a stall here reproduces the same no-output,
+# no-diagnostic freeze one call further down the chain.
+#
+# Every call goes through git_bounded, and a timeout is a hard exit 2 (this
+# script's existing "git error" code) with a one-line diagnostic — never a fall
+# through to an unbounded retry. The Stop hook stays advisory without any change
+# to it: dirty-main-warn.sh acts only on exit 1, so a wedged git makes no noise
+# per turn there, exactly as every other exit-2 git error already behaves, while
+# session-start and /wrap callers — the ones that act on the answer — see the
+# diagnostic and a non-zero status.
+BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+if [[ ! -r "$BOUNDED_RUN_LIB" ]]; then
+  echo "error: bounded-run library not found at $BOUNDED_RUN_LIB — refusing to run git calls unbounded"
+  exit 2
+fi
+# shellcheck source=lib/bounded-run.sh
+source "$BOUNDED_RUN_LIB"
+
+# One knob for the whole chain: the same variable repo-root.sh already reads,
+# so an operator raising the bound for a genuinely slow repo raises it once.
+GIT_BOUND_SECS="$(normalize_bound "${REPO_ROOT_TIMEOUT_SECS:-10}" 10)"
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/dirty-main-guard.XXXXXX")"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/dirty-main-guard-err.XXXXXX")"
+# Opt into the library's orphan handover. Every fatal timeout exits, but the
+# SOFT one (the fetch) does not: the guard runs on past it, so a child left
+# unkillable in uninterruptible I/O would still hold these descriptors open
+# while the calls after it truncate and re-read the same files. Handing the pair
+# over costs two temp files and removes that contamination entirely.
+ORPHANED_CAPTURES=()
+BOUNDED_CAPTURE_TEMPLATE="${TMPDIR:-/tmp}/dirty-main-guard.XXXXXX"
+BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/dirty-main-guard-err.XXXXXX"
+# `[@]+` is the portable empty-array expansion — a bare "${arr[@]}" is an
+# unbound-variable error under `set -u` on macOS's bash 3.2.
+trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"} 2>/dev/null || true' EXIT
+
+timeout_message() { # what
+  if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+    # Naming which of the two it was matters: reporting a clock failure as an
+    # elapsed-time timeout is its own misdiagnosis.
+    echo "error: could not read the clock (date -u +%s), so the ${GIT_BOUND_SECS}s bound on '$1' could not be enforced — killed the call rather than running it unbounded"
+  else
+    echo "error: '$1' exceeded ${GIT_BOUND_SECS}s and was killed — the repo is not answering (raise REPO_ROOT_TIMEOUT_SECS if it is genuinely this slow)"
+  fi
+}
+
+timeout_die() { # what
+  timeout_message "$1"
+  exit 2
+}
+
+# Run one git call against $ROOT under the bound. Returns git's real exit
+# status; its stdout lands in GIT_OUT and its stderr in GIT_ERR (both with
+# trailing newlines stripped, exactly as the `$( )` captures they replace).
+#
+# NEVER call this inside `$( )`: timeout_die's `exit` would only leave the
+# command substitution's subshell, and the guard would sail on past a bound it
+# had already tripped.
+GIT_OUT=""
+GIT_ERR=""
+git_bounded_soft() { # git args…
+  local rc=0
+  run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" "$@" || rc=$?
+  GIT_OUT="$(cat "$CAPTURE")" || GIT_OUT=""
+  GIT_ERR="$(cat "$CAPTURE_ERR")" || GIT_ERR=""
+  return "$rc"
+}
+
+# The fatal form: everything whose answer the guard actually reports. A stall
+# here means the guard cannot tell clean from dirty, and "clean" would be a
+# lie — so it dies with the diagnostic instead. The one caller that wants the
+# soft form (the fetch) says so at its own site.
+git_bounded() { # git args…
+  local rc=0
+  git_bounded_soft "$@" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    timeout_die "git $*"
+  fi
+  return "$rc"
+}
+
+# Between the checkout onto the recovery branch and the checkout back, the root
+# repo is NOT on main, and a bare `exit 2` would leave it there. That is not
+# just an untidy exit: the branch short-circuit below reads any non-main branch
+# as "nothing to guard", so the next `--check` prints `clean` for a repo whose
+# main is still dirty and `--quarantine` no-ops. The guard would stop guarding,
+# silently, and the Stop hook — which surfaces only exit 1 — would never say so.
+#
+# So every bounded call made while off main dies through this instead: it always
+# attempts the return trip first, and always names the branch the repo was left
+# on when that trip does not land. QUARANTINE_BRANCH is set at the moment the
+# window opens; empty means the window was never entered.
+QUARANTINE_BRANCH=""
+quarantine_die() { # first_line
+  local back_rc=0
+  git_bounded_soft checkout --quiet main || back_rc=$?
+  echo "$1"
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 || "$back_rc" -ne 0 ]]; then
+    echo "error: the root repo was left on ${QUARANTINE_BRANCH:-the recovery branch} — return it to main by hand, or the guard will report a dirty main as clean"
+  else
+    echo "note: the root repo was returned to main; the quarantined work is on ${QUARANTINE_BRANCH:-the recovery branch}"
+  fi
+  exit 2
+}
+
+# The fatal form for that window. The message is composed BEFORE the return trip
+# because `git_bounded_soft` resets BOUNDED_TIMED_OUT / BOUNDED_CLOCK_UNREADABLE
+# — read afterwards, every timeout would describe the checkout instead of the
+# call that actually tripped.
+git_bounded_offmain() { # git args…
+  local rc=0
+  git_bounded_soft "$@" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    quarantine_die "$(timeout_message "git $*")"
+  fi
+  return "$rc"
+}
+
+# git's own last words for a failure message, in the order they are useful:
+# stderr, then stdout, then a bare status so the message is never a dangling
+# dash.
+git_failure_text() { # rc
+  local msg="$GIT_ERR"
+  [[ -n "$msg" ]] || msg="$GIT_OUT"
+  [[ -n "$msg" ]] || msg="git exited $1"
+  printf '%s' "$msg"
+}
+
 # Short-circuit: if root repo is not on main, the guard has nothing to enforce.
 # Feature branches are expected to carry dirty state; this guard only cares
 # about the root-repo main branch.
-CURRENT_BRANCH="$("${GIT[@]}" symbolic-ref --short HEAD 2>/dev/null || true)"
+CURRENT_BRANCH=""
+git_bounded symbolic-ref --short HEAD || true
+CURRENT_BRANCH="$GIT_OUT"
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
   if [[ "$MODE" == "check" ]]; then
     echo "clean"
@@ -227,9 +379,9 @@ fi
 # --quiet` covers staged. Using --porcelain would include untracked files,
 # which should NOT block (see memory `feedback_porcelain_untracked.md`).
 unstaged_rc=0
-"${GIT[@]}" diff --quiet 2>/dev/null || unstaged_rc=$?
+git_bounded diff --quiet || unstaged_rc=$?
 staged_rc=0
-"${GIT[@]}" diff --cached --quiet 2>/dev/null || staged_rc=$?
+git_bounded diff --cached --quiet || staged_rc=$?
 if (( unstaged_rc > 1 || staged_rc > 1 )); then
   echo "error: could not inspect working tree (diff rc=$unstaged_rc, diff --cached rc=$staged_rc)"
   exit 2
@@ -249,18 +401,31 @@ fi
 # commits or uncommitted changes, it can only make `rev-list ahead` stale,
 # which is still correct for "did I commit something here?" detection.
 if (( NO_FETCH == 0 )); then
-  "${GIT[@]}" fetch origin main --quiet 2>/dev/null || true
+  # Bounded like the rest, and for a second reason on top of the evicted-file
+  # one: this is the only network call the guard makes, so a black-holed remote
+  # would otherwise hang it with no diagnostic at all.
+  #
+  # The SOFT bound, uniquely, because a fetch failure is already non-fatal by
+  # design (the paragraph above): a slow remote must not turn a guard that can
+  # still answer from the origin/main on disk into a hard error. The timeout is
+  # said out loud on stderr rather than swallowed.
+  git_bounded_soft fetch origin main --quiet || true
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "warning: 'git fetch origin main' exceeded ${GIT_BOUND_SECS}s and was killed — comparing against the origin/main already on disk" >&2
+  fi
 fi
 # Fail fast if we can't compare HEAD to origin/main. Silently defaulting
 # AHEAD=0 would mask the case where origin/main is missing (unusual remote
 # config, first-ever clone with no successful fetch) and cause --check to
 # report "clean" on a tree we never actually compared. Per the script's
 # contract, git errors exit 2 rather than normalize to zero.
-if ! ahead_raw="$("${GIT[@]}" rev-list --count origin/main..HEAD 2>&1)"; then
-  echo "error: could not compare HEAD to origin/main — $(printf '%s' "$ahead_raw" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g')"
+rev_list_rc=0
+git_bounded rev-list --count origin/main..HEAD || rev_list_rc=$?
+if (( rev_list_rc != 0 )); then
+  echo "error: could not compare HEAD to origin/main — $(git_failure_text "$rev_list_rc" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g')"
   exit 2
 fi
-AHEAD="$ahead_raw"
+AHEAD="$GIT_OUT"
 # Normalize to integer; rev-list yields a plain count, but guard against
 # leading whitespace or empty string from unusual git output.
 AHEAD="${AHEAD//[^0-9]/}"
@@ -299,14 +464,16 @@ RECOVERY="recovery/dirty-main-$STAMP"
 
 # Defensive: if the branch name is already taken (clock skew, rapid re-runs),
 # append a disambiguating suffix rather than clobbering.
-if "${GIT[@]}" show-ref --verify --quiet "refs/heads/$RECOVERY"; then
+if git_bounded show-ref --verify --quiet "refs/heads/$RECOVERY"; then
   RECOVERY="$RECOVERY-$$"
 fi
 
 # Step 1: create the recovery branch at the current main HEAD. This preserves
 # any unpushed commits even if there are no uncommitted changes to move.
-if ! branch_out="$("${GIT[@]}" branch "$RECOVERY" 2>&1)"; then
-  echo "error: could not create recovery branch — $branch_out"
+branch_rc=0
+git_bounded branch "$RECOVERY" || branch_rc=$?
+if (( branch_rc != 0 )); then
+  echo "error: could not create recovery branch — $(git_failure_text "$branch_rc")"
   exit 2
 fi
 
@@ -319,20 +486,54 @@ fi
 # Plain untracked-and-unstaged files remain untracked throughout.
 moved_what=""
 if (( HAS_UNCOMMITTED == 1 )); then
-  if ! checkout_out="$("${GIT[@]}" checkout --quiet "$RECOVERY" 2>&1)"; then
-    echo "error: could not checkout recovery branch — $checkout_out"
+  # The window opens here. A timeout on this very checkout is ambiguous — git
+  # may or may not have switched before it was killed — so the branch is named
+  # from this point on and the off-main form is used, which checks rather than
+  # assumes.
+  QUARANTINE_BRANCH="$RECOVERY"
+  checkout_rc=0
+  git_bounded_offmain checkout --quiet "$RECOVERY" || checkout_rc=$?
+  if (( checkout_rc != 0 )); then
+    echo "error: could not checkout recovery branch — $(git_failure_text "$checkout_rc")"
     exit 2
   fi
-  if ! commit_out="$("${GIT[@]}" -c core.hooksPath=/dev/null commit -a -m "dirty-main quarantine $STAMP" 2>&1)"; then
+  commit_rc=0
+  git_bounded_offmain -c core.hooksPath=/dev/null commit -a -m "dirty-main quarantine $STAMP" || commit_rc=$?
+  if (( commit_rc != 0 )); then
     # Return to main before bailing so we don't leave the user on recovery.
-    "${GIT[@]}" checkout --quiet main 2>/dev/null || true
-    echo "error: could not commit quarantined changes — $commit_out"
+    # Captured first: the return trip overwrites GIT_ERR with its own result.
+    commit_err="$(git_failure_text "$commit_rc")"
+    # Soft: this is best-effort cleanup on a path that is already failing, and
+    # the commit error is the actionable one. But a return trip that does not
+    # land still has to be said out loud, whichever way it failed — a stranded
+    # repo makes the next `--check` answer `clean` for a dirty main.
+    back_rc=0
+    git_bounded_soft checkout --quiet main || back_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      echo "warning: 'git checkout main' exceeded ${GIT_BOUND_SECS}s and was killed — the root repo may be left on $RECOVERY" >&2
+    elif (( back_rc != 0 )); then
+      echo "warning: could not return the root repo to main — it may be left on $RECOVERY" >&2
+    fi
+    echo "error: could not commit quarantined changes — $commit_err"
     exit 2
   fi
-  if ! back_out="$("${GIT[@]}" checkout --quiet main 2>&1)"; then
-    echo "error: could not return to main after commit — $back_out"
+  # The return trip. Soft, because both ways it can fail leave the repo on the
+  # recovery branch, and the caller has to be told that — a bare "could not
+  # return to main" reads as an untidy exit rather than a guard that will now
+  # answer `clean` for a dirty main.
+  back_rc=0
+  git_bounded_soft checkout --quiet main || back_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    timeout_message "git checkout --quiet main"
+    echo "error: the root repo was left on $RECOVERY — return it to main by hand, or the guard will report a dirty main as clean"
     exit 2
   fi
+  if (( back_rc != 0 )); then
+    echo "error: could not return to main after commit — $(git_failure_text "$back_rc")"
+    echo "error: the root repo was left on $RECOVERY — return it to main by hand, or the guard will report a dirty main as clean"
+    exit 2
+  fi
+  QUARANTINE_BRANCH=""
   moved_what="uncommitted"
 fi
 
@@ -346,8 +547,10 @@ fi
 
 # Step 3: reset main to origin/main. Safe now — all tracked state is on the
 # recovery branch, and --hard leaves untracked files untouched.
-if ! reset_out="$("${GIT[@]}" reset --hard origin/main 2>&1)"; then
-  echo "error: could not reset main to origin/main — $reset_out"
+reset_rc=0
+git_bounded reset --hard origin/main || reset_rc=$?
+if (( reset_rc != 0 )); then
+  echo "error: could not reset main to origin/main — $(git_failure_text "$reset_rc")"
   exit 2
 fi
 

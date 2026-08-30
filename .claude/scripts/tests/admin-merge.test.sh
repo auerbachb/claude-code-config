@@ -8,7 +8,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SRC="$REPO_ROOT/.claude/scripts/admin-merge.sh"
 
 TMP="$(mktemp -d)"
-cleanup() { rm -rf "$TMP"; }
+cleanup() {
+  # Test 31's stall stub spawns a self-limiting sleeper; kill any survivor so a
+  # failing process-group kill cannot leak one into the runner.
+  pkill -f "$TMP/gitstub/stub-sleeper" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 export HOME="$TMP/home"; mkdir -p "$HOME/.claude"
@@ -19,6 +24,13 @@ CLONE="$TMP/clone"; mkdir -p "$CLONE"
 # admin-merge.sh resolves merge-gate.sh next to itself, so run a copy from $SCRIPTS.
 cp "$SRC" "$SCRIPTS/admin-merge.sh"; chmod +x "$SCRIPTS/admin-merge.sh"
 SUT="$SCRIPTS/admin-merge.sh"
+
+# lib/bounded-run.sh ships beside the script and supplies the wall-clock bound
+# on resolve_repo_path's `git rev-parse --show-toplevel` fallback (issue #1404).
+# Copied here so $SCRIPTS looks like a real install; test 30b removes it again
+# to pin the refusal that fires when it is genuinely absent.
+mkdir -p "$SCRIPTS/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$SCRIPTS/lib/"
 
 # --- Fake merge-gate.sh: emits JSON; behaviour driven by env vars. ----------
 # FAKE_GATE_LOG (issue #1251) — when set, every invocation's raw argv ("$*") is
@@ -848,6 +860,98 @@ expect_rc 7 "an unusable explicit --repo-path refuses even in --print (exit 7)"
 grep_ok "cannot cd into repo path" "the refusal names the unusable path"
 grep_absent "other/elsewhere" "no fallback to the invoker's cwd repo on an unusable --repo-path"
 log_absent "." "the repo-path refusal fires before any gh call"
+
+# ============================================================================
+# 31 (issue #1404): the exit-1 fallback `git rev-parse --show-toplevel` is
+# bounded. PR #1386 refused rather than fall through on repo-root.sh's timeout,
+# but left this call unbounded because it is a cheap single-file read — a claim
+# about COST, not about stall risk. The #1363 filesystem stalls per file, so an
+# unbounded call here re-creates the same no-output freeze one step further
+# down, on the path whose next action is an irreversible merge.
+#
+# There is no repo-root.sh in $SCRIPTS (test 29 removed its fixture), so a run
+# without --repo-path reaches this fallback directly.
+# ============================================================================
+GITSTUB="$TMP/gitstub"; mkdir -p "$GITSTUB"
+REAL_GIT="$(command -v git)"
+export REAL_GIT TICK_FILE="$TMP/t31-tick"
+cat > "$GITSTUB/stub-sleeper" <<'EOF'
+#!/usr/bin/env bash
+# Self-limited (~10s) so a failing process-group kill cannot leak a sleeper.
+for _ in $(seq 1 50); do
+  printf 'tick\n' >> "$TICK_FILE"
+  sleep 0.2
+done
+EOF
+chmod +x "$GITSTUB/stub-sleeper"
+cat > "$GITSTUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t31-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "--show-toplevel" ]]; then
+    "$GITSTUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GITSTUB/git"
+
+# 31a. A wedged fallback refuses instead of hanging — and instead of guessing.
+# A 3s bound, not 1s: the clock is whole-second, so a 1s bound can trip before
+# the stub is even live.
+new_log
+: > "$TMP/t31-argv.log"
+: > "$TICK_FILE"
+T31_START="$(date +%s)"
+OUT="$( cd "$OTHER" && PATH="$GITSTUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+T31_ELAPSED=$(( $(date +%s) - T31_START ))
+expect_rc 4 "a wedged 'git rev-parse --show-toplevel' refuses the merge (exit 4)"
+grep_ok "exceeded the 3s bound" "the refusal names the bound that tripped"
+grep_ok "refusing to guess the repo path" "the refusal is explicit about not guessing"
+grep_ok "pass --repo-path" "the operator is told what to do instead"
+grep_absent "not found in other/elsewhere" \
+  "no fall through to \$PWD — the cwd repo is never resolved on a killed call"
+log_absent "." "the refusal fires before any gh call"
+if (( T31_ELAPSED < 15 )); then
+  ok "the bounded refusal returned in ${T31_ELAPSED}s (the stub sleeps 30s)"
+else
+  bad "the refusal took ${T31_ELAPSED}s — the bound did not hold"
+fi
+if grep -q -- '--show-toplevel' "$TMP/t31-argv.log"; then
+  ok "control: the stalling call really was reached"
+else
+  bad "control: the stub never saw --show-toplevel, so nothing was bounded"
+fi
+
+# 31b. The library is what makes that bound possible, so its absence is a
+#      refusal too — never a quiet fall back to the unbounded call.
+new_log
+rm -rf "${SCRIPTS:?}/lib"
+OUT="$( cd "$OTHER" && GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 4 "a missing bounded-run library refuses rather than running unbounded (exit 4)"
+grep_ok "bounded-run library not found" "the refusal names the missing library"
+grep_absent "not found in other/elsewhere" "and still never guesses the repo path"
+mkdir -p "$SCRIPTS/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$SCRIPTS/lib/"
+
+# 31c. Control: with nothing stalling, the same stub resolves as before. Without
+#      it, 31a would also pass against a stub that broke every git call.
+new_log
+cat > "$GITSTUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$GITSTUB/git"
+OUT="$( cd "$OTHER" && PATH="$GITSTUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  GH_FAKE_REPO_BY_CWD=1 FAKE_GATE_EXIT=0 FAKE_GATE_MISSING='[]' \
+  "$SUT" 30 --print --branch main 2>&1 )"; RC=$?
+expect_rc 3 "control: a pass-through stub still resolves the cwd repo (exit 3, as in 30b)"
+grep_absent "exceeded the 3s bound" "control: nothing is reported as timed out"
+pkill -f "$GITSTUB/stub-sleeper" >/dev/null 2>&1 || true
 
 echo "----------------------------------------"
 echo "admin-merge.test.sh: $PASS passed, $FAIL failed"

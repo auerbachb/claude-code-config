@@ -93,14 +93,27 @@
 #   cleared only with the explicit --include-locked opt-in.
 #
 # BOUNDED READS (NON-NEGOTIABLE)
-#   Every git call, and every *content* read, that can touch a worktree
-#   registration runs under a wall-clock bound and is killed on expiry — the
-#   sweep must never hang on evicted files, which is the failure it exists to
-#   clean up. macOS ships no `timeout(1)`, hence the background-and-poll
-#   wrapper (the same shape `repo-root.sh` uses). `git worktree list
-#   --porcelain` is bounded too: on expiry the worktree and local-branch
-#   passes degrade to "not classified" rather than the whole script blocking,
-#   and the registration sweep — the pass that fixes the cause — still runs.
+#   EVERY git call this script makes, and every *content* read that can touch a
+#   worktree registration, runs under a wall-clock bound and is killed on
+#   expiry — the sweep must never hang on evicted files, which is the failure it
+#   exists to clean up. macOS ships no `timeout(1)`, hence the
+#   background-and-poll wrapper, now shared with repo-root.sh as
+#   `lib/bounded-run.sh` (issue #1404).
+#
+#   What a bound does on expiry is decided per call, and never by going quiet:
+#     * Classification (`worktree list --porcelain`, `log -1`, both
+#       `for-each-ref` passes, the per-worktree dirty checks) DEGRADES: the
+#       affected pass reports "not classified" on stderr and in the JSON, the
+#       run continues — the registration sweep is the pass that fixes the
+#       cause, so it must still run — and the exit status is 1 (incomplete
+#       sweep), never a 0 that would read as a clean bill of health. A dirty
+#       check that could not finish skips its worktree: "could not verify"
+#       must never mean "safe to delete".
+#     * Deletion under --apply (`worktree remove`, `show-ref`, `branch -D`,
+#       `push origin --delete`, the targeted registration `rm`) is reported as
+#       a per-item `failed: … exceeded Ns and was killed` and counts toward
+#       exit 2, exactly like any other deletion failure. Aborting the whole
+#       run on one wedged item would strand every item after it.
 #
 #   Where the bound stops, stated exactly because "every filesystem call"
 #   would overclaim: the enumeration glob over <common>/worktrees and the
@@ -120,7 +133,14 @@
 # CONFIGURATION
 #   STALE_DAYS — env var, default 7. Tip commits older than this are stale.
 #   STALE_CLEANUP_TIMEOUT_SECS — env var, default 10. Wall-clock bound on each
-#       git call (worktree enumeration, prune, git-dir resolution).
+#       LOCAL git call: worktree enumeration, prune, git-dir resolution, and
+#       (since issue #1404) every sweep and apply call — `log -1`, both
+#       `for-each-ref` passes, the per-worktree dirty checks, `worktree
+#       remove`, `show-ref`, and `branch -D`.
+#   STALE_CLEANUP_NET_TIMEOUT_SECS — env var, default 60. Wall-clock bound on
+#       the one NETWORK call, `git push origin --delete`. Separate and much
+#       larger on purpose: the bound exists to stop an unbounded hang, not to
+#       impose a local-read SLA on a round trip to the forge.
 #   STALE_CLEANUP_READ_TIMEOUT_SECS — env var, default 2. Wall-clock bound on
 #       each per-registration metadata read, existence probe, and targeted
 #       removal. Whole-second resolution, so a bound of N trips between N-1
@@ -145,14 +165,17 @@
 #              top-level "root" (the resolved main-worktree root being swept)
 #              plus the stale_*/skipped_* arrays (issue #707), the
 #              orphaned_registrations/skipped_registrations arrays,
-#              "worktree_enumeration" ("ok", "timed_out", or "failed"), and
+#              "worktree_enumeration" ("ok", "timed_out", or "failed"),
 #              "registration_scan" ("ok", "none" when the repo has never had a
 #              linked worktree, or "unavailable" when the git common dir did
-#              not resolve inside the bound). Anything other than
-#              worktree_enumeration "ok", and a registration_scan of
-#              "unavailable", each make --check exit 1 on their own: the sweep
-#              could not classify, which is a finding, not a clean bill of
-#              health. "none" is a clean state and does not.
+#              not resolve inside the bound), and "ref_scan" ("ok",
+#              "timed_out", or "failed" — the two `for-each-ref` passes that
+#              classify branches). Anything other than worktree_enumeration
+#              "ok", a registration_scan of "unavailable", and anything other
+#              than ref_scan "ok" each make --check exit 1 on their own: the
+#              sweep could not classify, which is a finding, not a clean bill
+#              of health. registration_scan "none" is a clean state and does
+#              not.
 #   --include-locked
 #              Also clear orphaned registrations carrying a `locked` marker.
 #              Only ever applies when the worktree directory is gone or its
@@ -185,16 +208,18 @@
 #   0  No stale items, or --apply swept every category with no failures.
 #   1  Incomplete sweep — the same meaning in both modes. --check found one or
 #      more stale items, including orphaned worktree registrations; or, in
-#      either mode, a worktree enumeration or registration scan that did not
-#      finish inside its bound. An --apply that skipped a whole category is
-#      reported here rather than as success: a caller that reads 0 as "done"
-#      would otherwise never re-run it.
+#      either mode, a worktree enumeration, ref enumeration, or registration
+#      scan that did not finish inside its bound. An --apply that skipped a
+#      whole category is reported here rather than as success: a caller that
+#      reads 0 as "done" would otherwise never re-run it.
 #   2  --apply hit one or more deletion failures (other items may have
-#      succeeded — see output). Takes precedence over 1. A registration the
-#      re-check declined to remove because its worktree reappeared is NOT a
-#      failure and does not reach this code.
+#      succeeded — see output), including a deletion killed at its bound.
+#      Takes precedence over 1. A registration the re-check declined to remove
+#      because its worktree reappeared is NOT a failure and does not reach this
+#      code.
 #   3  Usage error.
-#   4  Environment error (cannot resolve repo, gh missing, etc.).
+#   4  Environment error (cannot resolve repo, gh missing, lib/bounded-run.sh
+#      missing, etc.).
 
 set -euo pipefail
 # Best-effort usage telemetry — must never change this script's exit contract
@@ -284,28 +309,32 @@ THRESHOLD=$(( NOW - STALE_DAYS * 86400 ))
 # --- Bounded execution -------------------------------------------------------
 # macOS ships no `timeout(1)`, so every call that can touch a worktree
 # registration goes through run_bounded: start the child in its own process
-# group, poll the wall clock, kill the group on expiry. Same shape as
-# repo-root.sh (issue #1363) — kept local rather than sourced because
-# repo-root.sh is an executable, not a library.
+# group, poll the wall clock, kill the group on expiry. That wrapper lived here
+# as a second copy of repo-root.sh's (issue #1363); issue #1404 moved the one
+# definition both scripts use into lib/bounded-run.sh, which also supplies
+# normalize_bound. Sourced, never executed — it is a library, not a script.
+#
+# SCRIPT_DIR is used ONLY to locate the helpers that ship beside this script —
+# never to pick the repo to sweep (see TARGET REPO RESOLUTION above).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+if [[ ! -r "$BOUNDED_RUN_LIB" ]]; then
+  echo "error: bounded-run library not found at $BOUNDED_RUN_LIB — refusing to sweep with unbounded reads" >&2
+  exit 4
+fi
+# shellcheck source=lib/bounded-run.sh
+source "$BOUNDED_RUN_LIB"
 
-# A bad override must not silently disable a bound — that is the exact failure
-# these bounds exist to prevent, so anything non-numeric or zero falls back to
-# the default. The `10#` is load-bearing: `08`/`09` are all-digits and pass a
-# `-gt 0` test, but `(( ))` reads a leading zero as octal, where they are not
-# valid literals; the arithmetic then errors, the comparison is false on every
-# pass, and the bound vanishes without a word.
-normalize_bound() { # value, default
-  local v="$1" d="$2"
-  case "$v" in ''|*[!0-9]*) v="$d" ;; esac
-  v="$(( 10#$v ))"
-  [ "$v" -gt 0 ] 2>/dev/null || v="$d"
-  printf '%s' "$v"
-}
 GIT_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_TIMEOUT_SECS:-10}" 10)"
 READ_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_READ_TIMEOUT_SECS:-2}" 2)"
+# The network deletion gets its own, much larger bound. These bounds exist to
+# stop an UNBOUNDED hang, not to impose a local-read SLA on a round trip to the
+# forge: a `git push --delete` that legitimately takes 20s over a slow link is
+# not the failure being prevented, and killing it would be a regression.
+NET_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_NET_TIMEOUT_SECS:-60}" 60)"
 
 # Created after arg parsing so --help and usage errors leave nothing behind.
-# All four are unconditional — no empty-variable arguments to guard against,
+# All five are unconditional — no empty-variable arguments to guard against,
 # and no early exit path that could leave one behind. CAPTURE/CAPTURE_ERR can
 # be replaced mid-run (see run_bounded's orphan handover), so cleanup is a
 # function over the current values plus any handed-over ones rather than a
@@ -313,126 +342,63 @@ READ_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_READ_TIMEOUT_SECS:-2}" 2)"
 CAPTURE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup.XXXXXX")"
 CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX")"
 WT_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-wt.XXXXXX")"
+REF_LIST_FILE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-refs.XXXXXX")"
 GH_TMPERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-gh-stderr.XXXXXX")"
 ORPHANED_CAPTURES=()
+# Opt into the library's orphan handover: this script keeps running after a
+# wedged call, so an unkillable child must not be left writing into files a
+# later call has truncated. (repo-root.sh exits moments later and opts out.)
+BOUNDED_CAPTURE_TEMPLATE="${TMPDIR:-/tmp}/stale-cleanup.XXXXXX"
+BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX"
 # The trap stays a single command rather than a function so it reads as the
 # fixed cleanup list it is. It expands at EXIT, so it removes whatever
 # CAPTURE/CAPTURE_ERR point at by then plus any handed-over pair. The
 # `[@]+` guard is the portable empty-array expansion — a bare "${arr[@]}" is
 # an unbound-variable error under `set -u` on macOS's bash 3.2.
-trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$GH_TMPERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}' EXIT
+trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$REF_LIST_FILE" "$GH_TMPERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}' EXIT
 
-BOUNDED_TIMED_OUT=0
-BOUNDED_CLOCK_UNREADABLE=0
 # read_bounded_line's out-parameter. See that function for why the answer comes
 # back through a global instead of stdout.
 BOUNDED_LINE=""
 
-# Seconds since the epoch, or a non-zero return when the answer is unusable.
-# A blank result must never be accepted: inside `(( ))` an empty variable is 0,
-# so `now - start` would go negative and the bound would never trip.
-now_epoch() {
-  local t
-  t="$(date -u +%s 2>/dev/null || true)"
-  case "$t" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s' "$t"
-}
-
-# Signal the child, preferring its whole process group. The negative form is
-# used ONLY after confirming the child really leads its own group: a group
-# outlives its leader, so a recycled pid can name a live, unrelated group, and
-# signalling that would "succeed" while our actual child kept running.
-kill_child() { # signal, pid
-  local sig="$1" pid="$2" pgid=""
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' 2>/dev/null)"
-  if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
-    kill -"$sig" -"$pid" 2>/dev/null || true
-  fi
-  kill -"$sig" "$pid" 2>/dev/null || true
-}
-
-run_bounded() { # bound_secs, command...
-  # stdout lands in $CAPTURE, stderr in $CAPTURE_ERR. Returns the child's real
-  # exit status, or 124 with BOUNDED_TIMED_OUT=1 when the bound cut it short.
-  local bound="$1"; shift
-  BOUNDED_TIMED_OUT=0
-  BOUNDED_CLOCK_UNREADABLE=0
-  : > "$CAPTURE"
-  : > "$CAPTURE_ERR"
-
-  # Job control puts the child in its OWN process group so the kill reaches
-  # anything it spawned. stdin is /dev/null because a job-controlled background
-  # job that reads the terminal takes SIGTTIN and stops, which looks exactly
-  # like the hang we are trying to detect.
-  set -m 2>/dev/null || true
-  "$@" >"$CAPTURE" 2>"$CAPTURE_ERR" </dev/null &
-  local pid=$!
-  set +m 2>/dev/null || true
-
-  local start now rc=0 killed=0 waited=0 reaped=0
-  start="$(now_epoch)" || start=""
-  # The bound reads the clock every pass, never a tick count: a tick is a sleep
-  # plus a fork, so counting iterations drifts past the requested bound.
-  while kill -0 "$pid" 2>/dev/null; do
-    now="$(now_epoch)" || now=""
-    # An unreadable clock cannot be allowed to mean "no bound". Fail closed.
-    if [[ -z "$start" || -z "$now" ]]; then
-      BOUNDED_CLOCK_UNREADABLE=1
-    fi
-    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]] || (( now - start >= bound )); then
-      killed=1
-      kill_child TERM "$pid"
-      for _ in 1 2; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 1
-      done
-      kill_child KILL "$pid"
-      break
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  if [[ "$killed" -eq 1 ]]; then
-    # Bounded reap. SIGKILL is QUEUED, not effective, against a child wedged in
-    # uninterruptible I/O — exactly the evicted-file case these bounds exist
-    # for — so a plain `wait` would inherit the hang we just prevented.
-    while (( waited < 3 )); do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        reaped=1
-        rc=0
-        wait "$pid" 2>/dev/null || rc=$?
-        break
-      fi
-      sleep 1
-      waited=$(( waited + 1 ))
-    done
-    # A child that had already finished when the sampling loop tripped left a
-    # complete answer behind: `kill -0` succeeds on a zombie and the clock is
-    # whole-second, so the trip can land after the work was done. Trust the
-    # result over the sampling.
-    if [[ "$reaped" -eq 1 && "$rc" -eq 0 ]]; then
-      return 0
-    fi
-    # Still alive after SIGKILL means wedged in uninterruptible I/O, which no
-    # signal can end — that is the kernel's call, not ours. What we can stop is
-    # the contamination: the orphan still holds this call's stdout/stderr open,
-    # so if its read ever completes it writes into files a LATER call will have
-    # truncated and be reading. Hand the descriptors over to the orphan and
-    # continue on fresh ones; the handed-over paths are unlinked by the EXIT
-    # trap like any other temp. (Deleting a registration out from under such a
-    # child is separately safe — POSIX unlink on an open file is well defined,
-    # and the inode survives until the last descriptor closes.)
-    if kill -0 "$pid" 2>/dev/null; then
-      ORPHANED_CAPTURES+=("$CAPTURE" "$CAPTURE_ERR")
-      CAPTURE="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup.XXXXXX")"
-      CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX")"
-    fi
-    BOUNDED_TIMED_OUT=1
-    return 124
-  fi
-
-  wait "$pid" 2>/dev/null || rc=$?
+# Run one git call against $ROOT under the git bound. Returns git's real exit
+# status, or 124 with BOUNDED_TIMED_OUT=1 on expiry — the CALLER decides between
+# degrading (a classification pass that reports "not classified") and a
+# `failed:` line, per BOUNDED READS above. Never wrap this in `$( )`: the
+# subshell would discard BOUNDED_TIMED_OUT and the library's orphan handover.
+git_bounded() { # git args...
+  local rc=0
+  run_bounded "$GIT_BOUND_SECS" "${GIT[@]}" "$@" || rc=$?
   return "$rc"
+}
+
+# git's own last words for a `failed:` line: stderr first, then stdout, then a
+# bare status so the message never ends in a dangling dash.
+git_error_text() { # rc
+  local msg=""
+  msg="$(head -n 1 "$CAPTURE_ERR" 2>/dev/null || true)"
+  [[ -n "$msg" ]] || msg="$(head -n 1 "$CAPTURE" 2>/dev/null || true)"
+  [[ -n "$msg" ]] || msg="exit $1"
+  printf '%s' "$msg"
+}
+
+# Bounded tracked-only dirty probe on one worktree, used by both the
+# classification pass and the --apply re-check.
+#   0 = clean
+#   1 = dirty, or git refused to say (either way: do not delete)
+#   2 = a bound expired — an evicted worktree is exactly what stalls here, and
+#       "could not verify" must never read as "clean enough to remove"
+# Statement form only, never `$( )` — see git_bounded.
+worktree_dirty_state() { # worktree path
+  local wt="$1" rc=0
+  run_bounded "$GIT_BOUND_SECS" git -C "$wt" diff --quiet || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 2; fi
+  if (( rc != 0 )); then return 1; fi
+  rc=0
+  run_bounded "$GIT_BOUND_SECS" git -C "$wt" diff --cached --quiet || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 2; fi
+  if (( rc != 0 )); then return 1; fi
+  return 0
 }
 
 # Read the first line of a small metadata file under the read bound. On success
@@ -505,9 +471,9 @@ path_exists_bounded() { # path
   return 1
 }
 
-# SCRIPT_DIR is used ONLY to locate the repo-root.sh helper next to this
-# script — never to pick the repo to sweep (see TARGET REPO RESOLUTION above).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SCRIPT_DIR (resolved with the bounded-run library above) locates the
+# repo-root.sh helper next to this script — never the repo to sweep (see TARGET
+# REPO RESOLUTION above).
 REPO_ROOT_SH="$SCRIPT_DIR/repo-root.sh"
 if [[ ! -x "$REPO_ROOT_SH" ]]; then
   echo "error: repo-root.sh not found or not executable at $REPO_ROOT_SH" >&2
@@ -717,7 +683,17 @@ parse_worktrees() {
         # THRESHOLD and force the worktree to be classified stale even
         # though we couldn't read its HEAD. Classification skips entries
         # with empty/non-numeric ts and logs the worktree.
-        cur_head="$("${GIT[@]}" log -1 --format=%ct "$sha" 2>/dev/null || echo "")"
+        #
+        # Bounded (issue #1404): this reads an object out of the store one
+        # commit at a time, so an evicted pack stalls here per worktree. A
+        # timeout degrades exactly like an unreadable HEAD — the worktree is
+        # skipped rather than deleted — and says so instead of going quiet.
+        cur_head=""
+        if git_bounded log -1 --format=%ct "$sha"; then
+          cur_head="$(head -n 1 "$CAPTURE")"
+        elif [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+          echo "warning: 'git log -1 --format=%ct $sha' exceeded ${GIT_BOUND_SECS}s and was killed — worktree $cur_path is reported as HEAD-unreadable rather than classified" >&2
+        fi
         ;;
       "branch refs/heads/"*) cur_branch="${line#branch refs/heads/}" ;;
       "detached") cur_branch="" ;;
@@ -788,9 +764,14 @@ for record in "${WORKTREES[@]}"; do
     SKIPPED_WORKTREES+=("${wt}${US}directory missing — its registration is listed under orphaned registrations; clear it with --apply")
     continue
   fi
-  # Tracked-only dirty detection inside the worktree.
-  if ! git -C "$wt" diff --quiet 2>/dev/null \
-     || ! git -C "$wt" diff --cached --quiet 2>/dev/null; then
+  # Tracked-only dirty detection inside the worktree, bounded (issue #1404).
+  dirty_rc=0
+  worktree_dirty_state "$wt" || dirty_rc=$?
+  if (( dirty_rc == 2 )); then
+    SKIPPED_WORKTREES+=("${wt}${US}dirty check exceeded ${GIT_BOUND_SECS}s and was killed — cannot confirm it is safe to remove")
+    continue
+  fi
+  if (( dirty_rc != 0 )); then
     SKIPPED_WORKTREES+=("${wt}${US}uncommitted tracked changes")
     continue
   fi
@@ -821,7 +802,38 @@ fi
 # `worktree_enumeration` and re-runs after the registration sweep.
 STALE_LOCAL_BRANCHES=()
 SKIPPED_LOCAL_BRANCHES=()
-if [[ "$WORKTREE_ENUM_STATE" == "ok" ]]; then
+
+# Both ref passes are bounded (issue #1404) and degrade the same way the
+# worktree enumeration does: a pass that cannot complete classifies nothing and
+# says so, rather than blocking the registration sweep that clears the cause.
+# The result is copied out of $CAPTURE before the loop runs, so a bounded call
+# made from inside the loop cannot truncate the list being read — the same
+# reason the enumeration writes $WT_LIST_FILE.
+REF_SCAN_STATE="ok"
+list_refs_bounded() { # refs prefix, human label
+  local rc=0
+  : > "$REF_LIST_FILE"
+  git_bounded for-each-ref --format="%(refname:short)${US}%(committerdate:unix)" "$1" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+      echo "warning: could not read the clock, so the ${GIT_BOUND_SECS}s bound on 'git for-each-ref $1' could not be enforced — killed the call rather than running it unbounded" >&2
+    else
+      echo "warning: 'git for-each-ref $1' exceeded ${GIT_BOUND_SECS}s and was killed — $2 are NOT classified in this run (raise STALE_CLEANUP_TIMEOUT_SECS if the repo is genuinely this slow)" >&2
+    fi
+    REF_SCAN_STATE="timed_out"
+    return 1
+  fi
+  if (( rc != 0 )); then
+    echo "warning: 'git for-each-ref $1' failed (exit $rc) — $2 are NOT classified in this run" >&2
+    sed 's/^/  git: /' "$CAPTURE_ERR" >&2 || true
+    REF_SCAN_STATE="failed"
+    return 1
+  fi
+  cat "$CAPTURE" > "$REF_LIST_FILE"
+  return 0
+}
+
+if [[ "$WORKTREE_ENUM_STATE" == "ok" ]] && list_refs_bounded refs/heads/ "local branches"; then
 while IFS="$US" read -r branch ts; do
   [[ -z "$branch" ]] && continue
   if is_protected "$branch"; then
@@ -840,7 +852,7 @@ while IFS="$US" read -r branch ts; do
     continue
   fi
   STALE_LOCAL_BRANCHES+=("${branch}${US}${ts}")
-done < <("${GIT[@]}" for-each-ref --format="%(refname:short)${US}%(committerdate:unix)" refs/heads/)
+done < "$REF_LIST_FILE"
 fi
 
 # Remote branches under origin/. Skip the symbolic origin/HEAD and protected
@@ -849,6 +861,7 @@ fi
 # still real signal.
 STALE_REMOTE_BRANCHES=()
 SKIPPED_REMOTE_BRANCHES=()
+if list_refs_bounded refs/remotes/origin/ "remote branches"; then
 while IFS="$US" read -r ref ts; do
   [[ -z "$ref" ]] && continue
   # ref is e.g. "origin/feature-x"; strip leading origin/.
@@ -869,7 +882,8 @@ while IFS="$US" read -r ref ts; do
     continue
   fi
   STALE_REMOTE_BRANCHES+=("${ref}${US}${ts}")
-done < <("${GIT[@]}" for-each-ref --format="%(refname:short)${US}%(committerdate:unix)" refs/remotes/origin/)
+done < "$REF_LIST_FILE"
+fi
 
 # --- Orphaned worktree registrations (issue #1402) ---------------------------
 # Enumerated by listing <git-common-dir>/worktrees/, which is a directory read
@@ -1072,6 +1086,10 @@ emit_text() {
     echo
     echo "WARNING: worktree registrations were not scanned (git common dir unresolved within ${GIT_BOUND_SECS}s)."
   fi
+  if [[ "$REF_SCAN_STATE" != "ok" ]]; then
+    echo
+    echo "WARNING: ref enumeration $REF_SCAN_STATE — branches were NOT classified in this run."
+  fi
   local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} + ${#SKIPPED_REGISTRATIONS[@]} ))
   if (( skipped_total > 0 )); then
     echo
@@ -1151,6 +1169,7 @@ emit_json() {
         --arg root "$ROOT" \
         --arg enum_state "$WORKTREE_ENUM_STATE" \
         --arg reg_scan "$REG_SCAN_STATE" \
+        --arg ref_scan "$REF_SCAN_STATE" \
         '{root:$root,
           stale_days:($threshold_days|tonumber),
           threshold_ts:($threshold_ts|tonumber),
@@ -1163,7 +1182,8 @@ emit_json() {
           orphaned_registrations:$or,
           skipped_registrations:$sg,
           worktree_enumeration:$enum_state,
-          registration_scan:$reg_scan}'
+          registration_scan:$reg_scan,
+          ref_scan:$ref_scan}'
 }
 
 if [[ "$MODE" == "check" ]]; then
@@ -1174,7 +1194,8 @@ if [[ "$MODE" == "check" ]]; then
   # A sweep that could not classify is a finding, not a clean bill of health:
   # exiting 0 here would tell the caller "nothing stale" about a repo we never
   # managed to read.
-  if [[ "$WORKTREE_ENUM_STATE" != "ok" || "$REG_SCAN_STATE" == "unavailable" ]]; then exit 1; fi
+  if [[ "$WORKTREE_ENUM_STATE" != "ok" || "$REG_SCAN_STATE" == "unavailable" \
+        || "$REF_SCAN_STATE" != "ok" ]]; then exit 1; fi
   exit 0
 fi
 
@@ -1314,16 +1335,28 @@ for entry in "${STALE_WORKTREES[@]}"; do
   # branch. Re-run the same safety checks used during classification and
   # skip if anything has changed — losing user work to a stale dry-run is
   # a much bigger problem than skipping a deletion.
-  if [[ -d "$p" ]] && { ! git -C "$p" diff --quiet 2>/dev/null \
-       || ! git -C "$p" diff --cached --quiet 2>/dev/null; }; then
-    echo "skipped: worktree $p (became dirty after dry-run)"
-    continue
+  if [[ -d "$p" ]]; then
+    dirty_rc=0
+    worktree_dirty_state "$p" || dirty_rc=$?
+    if (( dirty_rc == 2 )); then
+      echo "skipped: worktree $p (dirty re-check exceeded ${GIT_BOUND_SECS}s and was killed — not removing what we could not verify)"
+      continue
+    fi
+    if (( dirty_rc != 0 )); then
+      echo "skipped: worktree $p (became dirty after dry-run)"
+      continue
+    fi
   fi
   if [[ -n "$b" ]] && has_open_pr "$b"; then
     echo "skipped: worktree $p (open PR on branch $b appeared after dry-run)"
     continue
   fi
-  if out="$("${GIT[@]}" worktree remove "$p" 2>&1)"; then
+  wt_rm_rc=0
+  git_bounded worktree remove "$p" || wt_rm_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "failed: worktree $p — 'git worktree remove' exceeded ${GIT_BOUND_SECS}s and was killed"
+    FAILURES=$(( FAILURES + 1 ))
+  elif (( wt_rm_rc == 0 )); then
     echo "removed: worktree $p"
     # The branch this worktree was holding was NOT classified as a stale
     # local branch (parse_worktrees adds every worktree's branch to
@@ -1335,17 +1368,27 @@ for entry in "${STALE_WORKTREES[@]}"; do
     # don't abort the script; we surface them via the FAILURES counter
     # only when the branch actually exists and refuses deletion.
     if [[ -n "$b" ]] && ! is_protected "$b" && ! has_open_pr "$b"; then
-      if "${GIT[@]}" show-ref --verify --quiet "refs/heads/$b"; then
-        if branch_out="$("${GIT[@]}" branch -D "$b" 2>&1)"; then
+      ref_rc=0
+      git_bounded show-ref --verify --quiet "refs/heads/$b" || ref_rc=$?
+      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+        echo "failed: local branch $b (after worktree $p removed) — 'git show-ref' exceeded ${GIT_BOUND_SECS}s and was killed"
+        FAILURES=$(( FAILURES + 1 ))
+      elif (( ref_rc == 0 )); then
+        del_rc=0
+        git_bounded branch -D "$b" || del_rc=$?
+        if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+          echo "failed: local branch $b (after worktree $p removed) — 'git branch -D' exceeded ${GIT_BOUND_SECS}s and was killed"
+          FAILURES=$(( FAILURES + 1 ))
+        elif (( del_rc == 0 )); then
           echo "removed: local branch $b (was on stale worktree $p)"
         else
-          echo "failed: local branch $b (after worktree $p removed) — $branch_out"
+          echo "failed: local branch $b (after worktree $p removed) — $(git_error_text "$del_rc")"
           FAILURES=$(( FAILURES + 1 ))
         fi
       fi
     fi
   else
-    echo "failed: worktree $p — $out"
+    echo "failed: worktree $p — $(git_error_text "$wt_rm_rc")"
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
@@ -1360,10 +1403,15 @@ for entry in "${STALE_LOCAL_BRANCHES[@]}"; do
     echo "skipped: local branch $b (open PR appeared after dry-run)"
     continue
   fi
-  if out="$("${GIT[@]}" branch -D "$b" 2>&1)"; then
+  del_rc=0
+  git_bounded branch -D "$b" || del_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "failed: local branch $b — 'git branch -D' exceeded ${GIT_BOUND_SECS}s and was killed"
+    FAILURES=$(( FAILURES + 1 ))
+  elif (( del_rc == 0 )); then
     echo "removed: local branch $b"
   else
-    echo "failed: local branch $b — $out"
+    echo "failed: local branch $b — $(git_error_text "$del_rc")"
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
@@ -1378,10 +1426,19 @@ for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
     echo "skipped: remote branch $branch (open PR appeared after dry-run)"
     continue
   fi
-  if out="$("${GIT[@]}" push origin --delete "$branch" 2>&1)"; then
+  # The one network call in the sweep, on its own much larger bound (see
+  # NET_BOUND_SECS): it is the highest-risk call here — an unbounded push
+  # against a black-holed remote hangs with no diagnostic at all — but it is
+  # also the one call for which seconds of latency are normal.
+  push_rc=0
+  run_bounded "$NET_BOUND_SECS" "${GIT[@]}" push origin --delete "$branch" || push_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "failed: remote branch $branch — 'git push origin --delete' exceeded ${NET_BOUND_SECS}s and was killed (raise STALE_CLEANUP_NET_TIMEOUT_SECS if the remote is genuinely this slow)"
+    FAILURES=$(( FAILURES + 1 ))
+  elif (( push_rc == 0 )); then
     echo "removed: remote branch $branch"
   else
-    echo "failed: remote branch $branch — $out"
+    echo "failed: remote branch $branch — $(git_error_text "$push_rc")"
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
@@ -1398,6 +1455,12 @@ if [[ "$REG_SCAN_STATE" == "unavailable" ]]; then
   INCOMPLETE_SWEEP=1
   echo
   echo "note: registration scan unavailable (git common dir unresolved), so orphaned registrations were not swept."
+  echo "      Re-run --apply once the repo responds inside the bound."
+fi
+if [[ "$REF_SCAN_STATE" != "ok" ]]; then
+  INCOMPLETE_SWEEP=1
+  echo
+  echo "note: ref enumeration $REF_SCAN_STATE, so stale branches were not classified or swept."
   echo "      Re-run --apply once the repo responds inside the bound."
 fi
 

@@ -25,7 +25,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
-cleanup() { rm -rf "$TMP" "$TMP_HOME"; }
+cleanup() {
+  # case12's stall stub spawns a self-limiting sleeper; kill any survivor so a
+  # failing process-group test cannot leak one into the runner.
+  pkill -f "$TMP/stubbin/stub-sleeper" >/dev/null 2>&1 || true
+  rm -rf "$TMP" "$TMP_HOME"
+}
 trap cleanup EXIT
 export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude"
@@ -65,6 +70,11 @@ git -C "$REPO_A" commit -q -m "init A"
 echo "dirty A state" >> "$REPO_A/marker.txt"   # tracked, uncommitted → dirty
 cp "$REPO_ROOT/.claude/scripts/dirty-main-guard.sh" "$REPO_A/.claude/scripts/"
 cp "$REPO_ROOT/.claude/scripts/repo-root.sh" "$REPO_A/.claude/scripts/"
+# Both scripts source the shared wall-clock bound from lib/ (issue #1404), and
+# both refuse to run git unbounded without it — so the copy has to include it,
+# exactly as a real install does.
+mkdir -p "$REPO_A/.claude/scripts/lib"
+cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$REPO_A/.claude/scripts/lib/"
 chmod +x "$REPO_A/.claude/scripts/dirty-main-guard.sh" "$REPO_A/.claude/scripts/repo-root.sh"
 GUARD="$REPO_A/.claude/scripts/dirty-main-guard.sh"
 
@@ -263,9 +273,176 @@ check_eq "case11: D's main is clean after quarantine" "root content" \
 check_eq "case11: exactly one recovery branch in D" "1" \
   "$(git -C "$REPO_D" branch --list 'recovery/dirty-main-*' | wc -l | tr -d ' ')"
 
+# ---- case 12: a wedged git after resolution fails fast, loudly (issue #1404) --
+# repo-root.sh has bounded the calls that RESOLVE the root since #1363; every
+# call the guard then makes against that root was still unbounded, and on the
+# filesystem behind that incident a single-file `symbolic-ref` read stalls just
+# as thoroughly. Stub a git that stalls ONLY `symbolic-ref` and forwards
+# everything else to the real one, so resolution succeeds and the stall lands
+# exactly where the bound was missing.
+REAL_GIT="$(command -v git)"
+STUB="$TMP/stubbin"
+mkdir -p "$STUB"
+TICK_FILE="$TMP/tick"
+export TICK_FILE REAL_GIT
+cat > "$STUB/stub-sleeper" <<'EOF'
+#!/usr/bin/env bash
+# Descendant of the stubbed git: self-limited (~10s) so a failing process-group
+# kill cannot leave a sleeper running for the rest of the suite.
+for _ in $(seq 1 50); do
+  printf 'tick\n' >> "$TICK_FILE"
+  sleep 0.2
+done
+EOF
+chmod +x "$STUB/stub-sleeper"
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/stub-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "symbolic-ref" ]]; then
+    "$STUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+
+# A 3s bound, not 1s: the clock is whole-second, so an N-second bound trips
+# anywhere in (N-1, N] — at N=1 the kill can land before the stub is even live.
+: > "$TMP/stub-argv.log"
+: > "$TICK_FILE"
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --check --no-fetch --repo "$REPO_C" 2>/dev/null)" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+
+check_eq "case12: a wedged git exits 2 (failure), not 0 and not a hang" "2" "$RC"
+check_contains "case12: the diagnostic names the command that was killed" \
+  "git symbolic-ref --short HEAD" "$OUT"
+check_contains "case12: and names the bound that tripped" "exceeded 3s" "$OUT"
+if (( ELAPSED < 15 )); then
+  pass "case12: returned in ${ELAPSED}s — the bound held (the stub sleeps 30s)"
+else
+  fail "case12: took ${ELAPSED}s — the bound did not hold"
+fi
+# The `|| RC=$?` above would swallow a guard that died before reaching git at
+# all, so prove the stall was actually reached rather than assumed.
+if grep -q 'symbolic-ref' "$TMP/stub-argv.log"; then
+  pass "case12: control — the stalling subcommand really was invoked"
+else
+  fail "case12: control — the stub never saw symbolic-ref, so nothing was bounded"
+fi
+# Control the other way: with nothing stalling, the same stub answers normally.
+# Without this, case12 would also pass against a stub that broke every git call.
+# Compared against a freshly measured unstubbed run rather than a literal, so
+# the control cannot rot as earlier cases change what repo C holds.
+BASE_RC=0
+BASELINE="$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$REPO_C" 2>/dev/null)" || BASE_RC=$?
+: > "$TMP/stub-argv.log"
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --check --no-fetch --repo "$REPO_C" 2>/dev/null)" || RC=$?
+check_eq "case12: control — a pass-through stub matches the unstubbed status" "$BASE_RC" "$RC"
+check_eq "case12: control — and the unstubbed answer" "$BASELINE" "$OUT"
+pkill -f "$STUB/stub-sleeper" >/dev/null 2>&1 || true
+
+# ---- case 13: a bound that trips mid-quarantine still returns to main --------
+# The quarantine path checks out the recovery branch, commits onto it, and
+# checks main back out. A bound tripping between those two checkouts used to
+# `exit 2` from inside the bounded wrapper, skipping the return trip that the
+# ordinary commit-failure path performs — leaving the ROOT REPO on the recovery
+# branch. That is not a cosmetic exit: the guard's own short-circuit reads any
+# non-main branch as "nothing to guard", so the next --check answers `clean`
+# for a repo whose main is still dirty, and --quarantine no-ops. The guard
+# stops guarding, and the Stop hook (exit 1 only) never says so.
+#
+# Stub a git that stalls ONLY `commit` and forwards everything else, so the
+# checkout onto recovery succeeds and the stall lands inside the window.
+REPO_E="$TMP/repoE"
+git init -q -b main "$REPO_E"
+git -C "$REPO_E" config user.email "test@example.com"
+git -C "$REPO_E" config user.name "Test"
+echo "base" > "$REPO_E/f.txt"
+git -C "$REPO_E" add f.txt
+git -C "$REPO_E" commit -q -m "init E"
+git init -q --bare "$TMP/originE.git"
+git -C "$REPO_E" remote add origin "$TMP/originE.git"
+git -C "$REPO_E" push -q -u origin main
+echo "dirty edit" >> "$REPO_E/f.txt"
+
+: > "$TMP/stub-argv.log"
+: > "$TICK_FILE"
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/stub-argv.log"
+for a in "\$@"; do
+  if [[ "\$a" == "commit" ]]; then
+    "$STUB/stub-sleeper" &
+    sleep 30
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --quarantine --repo "$REPO_E" 2>/dev/null)" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+
+check_eq "case13: a stalled commit exits 2, not 0 and not a hang" "2" "$RC"
+check_contains "case13: the diagnostic names the call that was killed" "commit" "$OUT"
+check_contains "case13: and names the bound that tripped" "exceeded 3s" "$OUT"
+# The regression itself: whatever the guard reports, it must not walk away
+# leaving the root repo parked on the recovery branch.
+check_eq "case13: the root repo is back on main, not stranded on recovery" "main" \
+  "$(git -C "$REPO_E" symbolic-ref --short HEAD)"
+check_contains "case13: and the report says where the quarantined work went" \
+  "recovery/dirty-main-" "$OUT"
+# Stranding is silent by construction, so prove the guard did not simply go on
+# reporting `clean` for a main that is still dirty.
+check_eq "case13: a later --check still sees the dirty main" \
+  "dirty: uncommitted tracked changes" \
+  "$(cd "$NONREPO" && "$GUARD" --check --no-fetch --repo "$REPO_E" 2>/dev/null)"
+if (( ELAPSED < 15 )); then
+  pass "case13: returned in ${ELAPSED}s — the bound held (the stub sleeps 30s)"
+else
+  fail "case13: took ${ELAPSED}s — the bound did not hold"
+fi
+if grep -q 'commit' "$TMP/stub-argv.log"; then
+  pass "case13: control — the stalling subcommand really was invoked"
+else
+  fail "case13: control — the stub never saw commit, so nothing was bounded"
+fi
+# Control the other way: with nothing stalling, the same stub quarantines
+# normally. Without it, case13 would also pass against a stub that broke the
+# whole quarantine before it ever reached the recovery branch.
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$STUB/git"
+RC=0
+OUT="$(cd "$NONREPO" && PATH="$STUB:$PATH" REPO_ROOT_TIMEOUT_SECS=3 \
+  "$GUARD" --quarantine --repo "$REPO_E" 2>/dev/null)" || RC=$?
+check_eq "case13: control — an unstalled quarantine still succeeds" "0" "$RC"
+check_contains "case13: control — and reports its recovery branch" \
+  "quarantined: recovery/dirty-main-" "$OUT"
+check_eq "case13: control — and lands back on main" "main" \
+  "$(git -C "$REPO_E" symbolic-ref --short HEAD)"
+pkill -f "$STUB/stub-sleeper" >/dev/null 2>&1 || true
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: dirty-main-guard.sh — invoking-repo scope incl. quarantine path (issue #707) and --repo targeting (issue #1411) locked in"
+echo "OK: dirty-main-guard.sh — invoking-repo scope incl. quarantine path (issue #707), --repo targeting (issue #1411), and the post-resolution git bound (issue #1404) locked in"

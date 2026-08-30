@@ -109,7 +109,10 @@
 #        exit 3, issue #1363) or being unable to run git at all (its exit 4,
 #        issue #1403) while resolving the repo path. Both are absorbed here
 #        because neither is a determinate answer — the path is refused, not
-#        guessed. A determinate "not a git repo" still takes the fallback chain.
+#        guessed. A determinate "not a git repo" still takes the fallback chain,
+#        whose own `git rev-parse --show-toplevel` is bounded too (issue #1404,
+#        via lib/bounded-run.sh): on expiry — or with that library missing — the
+#        path is refused here rather than guessed from $PWD.
 #   5 — refused: repo is not solo-owned (would skip a real review)
 #   6 — refused: enforce_admins is disabled and strict+clean-BEHIND bypass does
 #        not apply — no bypass path detected (inspect branch protection for the
@@ -132,6 +135,19 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The shared wall-clock bound (issue #1404). Loaded here, consumed only by
+# resolve_repo_path's fallback below — the one git call this script makes
+# itself. Loading is best-effort at this point ON PURPOSE: every other mode,
+# --repo-path included, needs no git call at all, and refusing a merge over a
+# library that path never reaches would be its own bug. The refusal lives at
+# the call site, where the alternative really is an unbounded call.
+BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+BOUNDED_RUN_OK=0
+if [[ -r "$BOUNDED_RUN_LIB" ]]; then
+  # shellcheck source=lib/bounded-run.sh
+  if source "$BOUNDED_RUN_LIB"; then BOUNDED_RUN_OK=1; fi
+fi
 
 # release_issue_claim — drop the pick-time claim on the PR's linked issue once
 # the merge is confirmed (issue #873). A merged PR is a terminal state, so the
@@ -318,7 +334,48 @@ resolve_repo_path() {
     fi
   fi
   if [[ -z "$p" ]]; then
-    p="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    # The determinate-answer fallback, now BOUNDED (issue #1404). PR #1386
+    # refused rather than fall through on repo-root.sh's timeout, but left this
+    # call unbounded on the grounds that it is a cheap single-file read. That
+    # is a statement about COST, not about stall risk: the #1363 filesystem
+    # stalls per file, so this reproduces the same no-output freeze one call
+    # further down the chain — on the path whose next action is irreversible.
+    # On expiry, refuse exactly as the rc=3 path above does: the `$PWD`
+    # substitution below is a guess, and a merge must not be aimed by a guess.
+    # CAPTURE/CAPTURE_ERR are the library's caller-owned inputs; declaring them
+    # `local` keeps bash's dynamic scoping (run_bounded still sees them) without
+    # leaving globals pointing at files this function has already unlinked.
+    # BOUNDED_REQUIRE_OUTPUT: like repo-root.sh, the ANSWER here is the
+    # capture — a path. A late child that finished with an EMPTY capture has
+    # left nothing to keep, and treating it as success would return an empty
+    # $p straight into the `$PWD` fallback this refusal exists to prevent.
+    local rp_rc=0 capfile="" caperr="" bound="" CAPTURE CAPTURE_ERR
+    local BOUNDED_REQUIRE_OUTPUT=1
+    if (( BOUNDED_RUN_OK != 1 )); then
+      echo "ERROR: bounded-run library not found at $BOUNDED_RUN_LIB, so 'git rev-parse --show-toplevel' cannot be bounded" >&2
+      echo "ERROR: refusing to run it unbounded (issue #1363) or to guess the repo path for a merge; pass --repo-path <abs-path>." >&2
+      return 3
+    fi
+    # Same fallback-path shape as errfile above: this script runs without
+    # `set -e`, so a bare `mktemp` failure must not leave an empty redirect.
+    capfile="$(mktemp 2>/dev/null)" || capfile="${TMPDIR:-/tmp}/admin-merge-toplevel.$$"
+    caperr="$(mktemp 2>/dev/null)" || caperr="${TMPDIR:-/tmp}/admin-merge-toplevel-err.$$"
+    CAPTURE="$capfile"
+    CAPTURE_ERR="$caperr"
+    # The NORMALIZED bound in both the call and the message: reporting the raw
+    # override would name a value that was never enforced.
+    bound="$(normalize_bound "${REPO_ROOT_TIMEOUT_SECS:-10}" 10)"
+    run_bounded "$bound" git rev-parse --show-toplevel || rp_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      rm -f "$capfile" "$caperr"
+      echo "ERROR: 'git rev-parse --show-toplevel' exceeded the ${bound}s bound and was killed while resolving the root repo" >&2
+      echo "ERROR: refusing to guess the repo path for a merge; pass --repo-path <abs-path> once git responds." >&2
+      return 3
+    fi
+    if (( rp_rc == 0 )); then
+      p="$(head -n 1 "$capfile" 2>/dev/null || true)"
+    fi
+    rm -f "$capfile" "$caperr"
   fi
   if [[ -z "$p" ]]; then
     p="$PWD"
@@ -328,6 +385,13 @@ resolve_repo_path() {
 # `|| rc` rather than a bare assignment: resolve_repo_path returns non-zero (3
 # timed out, 4 git could not run) when the root is genuinely unknown, and an
 # `exit` inside it would only leave the command substitution's subshell.
+#
+# The `$( )` here is compatible with run_bounded's "never in a command
+# substitution" rule, and stays so only under three conditions: the timeout
+# path RETURNS (it does not `exit`, which would leave only this subshell), the
+# status is carried out by RESOLVE_RC below, and BOUNDED_CAPTURE_TEMPLATE is
+# unset so there is no parent-state handover to lose. Changing any of the three
+# would break the contract silently.
 REPO_PATH=""
 RESOLVE_RC=0
 REPO_PATH="$(resolve_repo_path)" || RESOLVE_RC=$?
