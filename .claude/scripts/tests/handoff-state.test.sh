@@ -611,6 +611,83 @@ run --delete 2>/dev/null; check_eq "--delete missing args exits 2" "2" "$?"
 run --bogus 2>/dev/null;  check_eq "unknown flag exits 2" "2" "$?"
 
 echo
+echo "== --help contract: the header IS the contract surface (issue #1461) =="
+# handoff-files.md names `handoff-state.sh --help` as the canonical contract, and
+# print_usage() emits the leading comment block verbatim — so a header that
+# under-reports the script's real requirements is contract drift, not a typo.
+# These guards are FAIL-CLOSED: each asserts it actually discovered something
+# before asserting the discovered set is documented, so a grep that silently
+# stops matching fails the suite instead of passing vacuously.
+USAGE_TEXT="$(bash "$SCRIPT" --help 2>/dev/null)"
+check_eq "--help prints the header" "nonempty" \
+  "$([[ -n "$USAGE_TEXT" ]] && echo nonempty || echo empty)"
+
+# Sibling libraries the script HARD-REQUIRES (each exits 5 when absent), read
+# out of the script body rather than restated here.
+# The sed expressions use `#` as the delimiter and carry no backslash escapes,
+# so BSD and GNU sed read them identically (a `\}` here errors on GNU sed).
+SIBLING_LIBS="$(grep -oE '^[A-Za-z_]+="\$\{SCRIPT_DIR\}/[^"]+"' "$SCRIPT" \
+  | sed -e 's#.*SCRIPT_DIR}/##' -e 's#"$##' | sort -u)"
+check_eq "sibling-library discovery found the hard requirements (fail-closed)" "3" \
+  "$(printf '%s\n' "$SIBLING_LIBS" | grep -c .)"
+
+DEPS_BLOCK="$(printf '%s\n' "$USAGE_TEXT" | awk '/^DEPENDENCIES$/ { f = 1; next } f && /^[A-Z]/ { exit } f { print }')"
+UNDOCUMENTED_LIBS=""
+while IFS= read -r _lib; do
+  [[ -z "$_lib" ]] && continue
+  case "$DEPS_BLOCK" in *"$_lib"*) ;; *) UNDOCUMENTED_LIBS="$UNDOCUMENTED_LIBS $_lib" ;; esac
+done <<< "$SIBLING_LIBS"
+check_eq "--help DEPENDENCIES names every hard-required sibling library" "" "$UNDOCUMENTED_LIBS"
+
+# The list is only useful if it is SUFFICIENT: build a stub holding exactly the
+# files DEPENDENCIES names and prove the script runs there. Before #1461 the
+# block named state-lock.sh alone, so this stub exited 5 on the missing
+# normalizer — the documented contract could not actually be followed.
+DOC_DEPS="$(printf '%s\n' "$DEPS_BLOCK" | grep -oE '[A-Za-z0-9._/-]+\.sh' \
+  | sed 's#^\.claude/scripts/##' | sort -u)"
+check_eq "documented-dependency stub derived a file list (fail-closed)" "3" \
+  "$(printf '%s\n' "$DOC_DEPS" | grep -c .)"
+# Both stubs live under the suite's TMP_HOME so the existing EXIT trap removes
+# them even if an assertion below aborts the run.
+DEP_STUB="$TMP_HOME/dep-stub"; mkdir -p "$DEP_STUB"
+cp "$SCRIPT" "$DEP_STUB/"
+MISSING_DOC_DEPS=""
+while IFS= read -r _dep; do
+  [[ -z "$_dep" ]] && continue
+  if [[ ! -f "$REPO_ROOT/.claude/scripts/$_dep" ]]; then
+    MISSING_DOC_DEPS="$MISSING_DOC_DEPS $_dep"; continue
+  fi
+  mkdir -p "$DEP_STUB/$(dirname "$_dep")"
+  cp "$REPO_ROOT/.claude/scripts/$_dep" "$DEP_STUB/$_dep"
+done <<< "$DOC_DEPS"
+check_eq "every file DEPENDENCIES names exists on disk" "" "$MISSING_DOC_DEPS"
+bash "$DEP_STUB/handoff-state.sh" --owner-repo stub/repo --path 4242 >/dev/null 2>&1
+check_eq "a stub holding only the documented dependencies runs" "0" "$?"
+
+# The widened exit-5 row claims a missing sibling library exits 5. Pin that
+# behaviour so the row stays true rather than merely present.
+LIBLESS_STUB="$TMP_HOME/libless-stub"; mkdir -p "$LIBLESS_STUB"
+cp "$SCRIPT" "$LIBLESS_STUB/"
+cp "$LOCK_LIB" "$LIBLESS_STUB/"
+bash "$LIBLESS_STUB/handoff-state.sh" --owner-repo stub/repo --path 4242 >/dev/null 2>&1
+check_eq "a missing sibling library exits 5, as EXIT CODES documents" "5" "$?"
+
+# Every literal exit code the script can return must have an EXIT CODES row.
+# Comment lines are stripped first so the header describing a code cannot be
+# what makes that code look documented.
+EXIT_BLOCK="$(printf '%s\n' "$USAGE_TEXT" | awk '/^EXIT CODES$/ { f = 1; next } f && /^[A-Z]/ { exit } f { print }')"
+EXIT_CODES="$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -oE 'exit [0-9]+' | awk '{ print $2 }' | sort -u)"
+check_eq "exit-code discovery found the literal codes (fail-closed)" "5" \
+  "$(printf '%s\n' "$EXIT_CODES" | grep -c .)"
+UNDOCUMENTED_CODES=""
+while IFS= read -r _code; do
+  [[ -z "$_code" ]] && continue
+  printf '%s\n' "$EXIT_BLOCK" | grep -qE "^ +${_code}  " \
+    || UNDOCUMENTED_CODES="$UNDOCUMENTED_CODES $_code"
+done <<< "$EXIT_CODES"
+check_eq "--help EXIT CODES documents every literal exit code" "" "$UNDOCUMENTED_CODES"
+
+echo
 echo "==================================="
 echo "Results: $PASS passed, $FAIL failed"
 echo "==================================="
