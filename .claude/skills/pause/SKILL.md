@@ -172,8 +172,11 @@ launch gates is what makes a stop a stop, so it runs to completion whenever it
 is reached, before any deadline arithmetic can shorten it.
 
 **The checkable rule:** every step that runs after `T_END` is computed either
-calls `past_deadline` before each unit of work, or is one of the named moves
-above. No step in this skill is exempt, and none may run unbounded.
+calls `past_deadline` before each unit of work, is one of the named moves
+above, or is one of the two bookkeeping exceptions named below. No step in this
+skill is exempt, and none may run unbounded. **The rule governs work that waits
+or mutates**; the exceptions are neither, and they run to completion without a
+`past_deadline` check of their own.
 
 **Two named exceptions, both bookkeeping rather than work.** Neither waits, and
 neither mutates anything outside this run's own in-memory board, which is why
@@ -185,14 +188,21 @@ neither is a hole in the rule above:
    bounded reads run; skipping them would publish an empty record of a machine
    that was not empty. The skip belongs to a window that was spent, not to one
    never offered.
-2. **Step 4's post-deadline sweep.** Relabelling every already-collected unit
-   `park` is an in-memory pass with no `gh` call and nothing that can block. It
-   must run to completion: a half-swept board strands `land` units that no step
-   will then dispatch or record.
+2. **The post-deadline bookkeeping pass — Step 4's classification and sweep,
+   and Step 6's recording.** These carry already-collected units to the
+   terminal path: Step 4 relabels every unit `park` (an in-memory pass with no
+   `gh` call and nothing that can block), and Step 6 records each at its actual
+   state *without mutation*. Both must run to completion. A half-swept board
+   strands `land` units that no step will then dispatch, and an unrecorded unit
+   is lost exactly as surely as one never read — which is why Step 3 forbids
+   routing collected work straight to the terminal path. **So "only these four
+   moves" means only these four may *wait or mutate*; it never barred the
+   non-mutating bookkeeping that gives them something to write.**
 
-Both are bounded by construction — a fixed number of non-blocking steps over an
-already-finite board — not by a clock check. Everything else stays subject to
-the rule above, and the terminal-move and gate-write restrictions are unchanged.
+Both exceptions are bounded by construction — a fixed number of non-blocking
+steps over an already-finite board — not by a clock check. Everything else
+stays subject to the rule above, and the terminal-move and gate-write
+restrictions are unchanged.
 
 **Re-check the clock at terminal entry.** `WINDOW_EXPIRED` only latches when
 `past_deadline` is actually called, so call it once more on entering the
@@ -590,6 +600,12 @@ to recover, and nothing else.
   exact recovery path — keeping the `issue-N` branch and `#N` issue references
   that `candidate-ownership.sh` matches on
 - The stopped-task records with their exact recovery paths
+- **The stopped-Monitor records** — each entry's owner and whether the stop was
+  confirmed. `/pause-resume` re-arms babysit, fleet, and day-mode watchers from
+  `monitors_stopped`, and on the marker-only path it has nothing but this
+  section to rebuild them from. Dropping it leaves those Monitors stopped with
+  no record that they ever existed, which is the one loss a resume cannot
+  detect by re-reading GitHub.
 - The refill pause status and how to lift it
 - The resume command line
 
@@ -682,12 +698,16 @@ Stopped: <WINDDOWN_PERSISTED=1: "refill paused (lift with: tell Claude 'resume r
 
 Landed:
   merged PR #N  (one line per merged PR)
-  <nothing landed> if the list is empty
+  <nothing landed> only if collection was COMPLETE and the list is empty
+  <PR list unread — deadline; landed state unknown> if the PR list was PARTIAL or SKIPPED
 
 Parked (<N> units):
   PR #M — <stopped_at> · next: <next_move> · waiting on: <waiting_on>
   Subagent <kind> — handoff at <path>
-  <nothing parked> if the list is empty
+  <nothing parked> only if collection was COMPLETE and the list is empty
+  <subagent list unread — deadline> if item 2 was PARTIAL or SKIPPED
+  <worktree scan cut short — N unread> if item 3 was PARTIAL
+  <board not collected — deadline; N sources unread> if collection was SKIPPED
 
 Monitors stopped: <N stopped of M total; any not-stopped named here>
 Background tasks stopped: <N stopped of M total; exact unresolved IDs named here>
@@ -700,6 +720,30 @@ Resume state: <PAUSE_PERSISTED=0: "stored in session state; marker at $MARKER_PA
 Resume with: <MARKER_AUTO_DISCOVERABLE=true: "/go-on [--resume-refill]   (routes to /pause-resume; call it directly if you prefer)">
              <MARKER_AUTO_DISCOVERABLE=false: "/pause-resume --marker $MARKER_PATH [--resume-refill]   (an undiscoverable marker cannot be classified, so /go-on cannot route it)">
 ```
+
+**An empty list is never printed for a source that was not read.** Step 3's
+rule — "we did not look" must never render as "nothing was there" — binds the
+report and the marker, not just the prose: `<nothing landed>` and `<nothing
+parked>` assert a board was collected and found empty, so they are reserved for
+that case alone.
+
+**Collection has three outcomes, tracked separately from whether it ran at
+all** — the budget check fires before each source and again before each
+worktree, so it can stop partway:
+
+- **Complete** — every source in Step 3 was read. Only here may an empty list
+  print `<nothing landed>` / `<nothing parked>`.
+- **Partial** — some sources read, others cut short. **Track it per source**
+  (Step 3's three items), not as one flag for the whole board, and render each
+  unread source in the section that would otherwise have shown its results —
+  even when what *was* read came back empty. An unread PR list makes the
+  `Landed:` section unknown, not empty; unread agents or worktrees do the same
+  to `Parked:`.
+- **Skipped** — the deadline had already passed at Step 3, so nothing was read.
+
+Neither a reader nor a marker-only `/pause-resume` can then mistake an unread
+or half-read board for a clean idle session. The compact marker carries the
+same three-way distinction on the same terms.
 
 **The `Timing:` line is always printed**, on-time runs included — an overrun
 should be visible in the transcript without a stopwatch. Elapsed is
