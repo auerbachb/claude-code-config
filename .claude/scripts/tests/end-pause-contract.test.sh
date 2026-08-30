@@ -122,13 +122,118 @@ LEGACY_RESUME_SKILL="${LEGACY_SKILL}-resume"
 [[ ! -e "$LEGACY_RESUME_SKILL" ]] || fail "retired long-cessation resume directory still exists"
 
 LEGACY_COMMAND="/""stop"
-STALE_COMMANDS=$(rg --hidden -n -F "$LEGACY_COMMAND" "$ROOT" \
-  --glob '!**/.git/**' --glob '!**/.claude/worktrees/**' \
-  | grep -Ev "(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}" || true)
+
+# Portable retired-command scan (issue #1421). This block used to shell
+# `rg --hidden ... | grep -Ev ... || true`. On a machine without ripgrep the
+# pipeline died with 127, the substitution came back empty, the trailing
+# `|| true` swallowed the failure, and the emptiness check below passed without
+# a single file having been scanned — a guard reporting success precisely
+# because it could not run. `grep -r` ships with every POSIX system, so the scan
+# always runs here; a scan that genuinely cannot run fails closed instead.
+#
+# `--exclude-dir` stands in for the previous `!**/.git/**` and
+# `!**/.claude/worktrees/**` globs (no tracked directory is named `worktrees`,
+# and nested worktree checkouts are separate trees, not this repo's content).
+# `-I` skips binaries so stray bytes in a generated artifact cannot masquerade
+# as a source reference.
+#
+# Prints surviving matches and returns 0 when the scan ran; returns 2 when it
+# could not run. It never returns an empty result for a scan that did not happen.
+scan_legacy_command() {
+  local target="$1" raw="" kept="" line="" probe="" residue="" rc=0
+  raw=$(grep -rnFI --exclude-dir=.git --exclude-dir=worktrees \
+    -e "$LEGACY_COMMAND" -- "$target") || rc=$?
+  # 0 = matches, 1 = no matches; both mean the scan executed. 2+ is a scan error.
+  (( rc <= 1 )) || return 2
+  [[ -n "$raw" ]] || return 0
+  # Compound forms carrying a pause/resume/re-arm/exit/widen prefix are ordinary
+  # vocabulary, not references to the retired command. Filter per OCCURRENCE, not
+  # per line: a `grep -Ev` drops the WHOLE line on a single compound match, so a
+  # line carrying both `pause<cmd>` and a genuine bare `<cmd>` disappeared and the
+  # guard passed despite the stale reference — the same vacuous-pass shape this
+  # block exists to rule out. Strip the compound occurrences, then ask whether a
+  # bare reference survives on that line; report the ORIGINAL line, not the residue.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    # `grep -rn` prefixes every hit with `<path>:<lineno>:`, and that path is the
+    # ABSOLUTE one. Test the residue below the scan root only: a checkout sitting
+    # under a directory named for the retired command (…<cmd>/repo) otherwise puts
+    # the command in every hit's prefix and fails the guard on a clean tree. What
+    # survives the strip is the repo-relative path plus content — and a
+    # repo-relative path carrying the command IS content worth flagging.
+    probe=${line#"$target"}
+    # sed is the only command in this substitution, so its rc is read directly and
+    # never after a pipe. A filter that cannot run fails closed; it never passes.
+    residue=$(sed -E "s#(pause|resume|re-arm|exit|widen)${LEGACY_COMMAND}##g" <<<"$probe") \
+      || return 2
+    case "$residue" in
+      *"$LEGACY_COMMAND"*) kept+="$line"$'\n' ;;
+    esac
+  done <<<"$raw"
+  printf '%s' "$kept"
+}
+
+STALE_SCAN_RC=0
+STALE_COMMANDS=$(scan_legacy_command "$ROOT") || STALE_SCAN_RC=$?
+(( STALE_SCAN_RC == 0 )) || fail \
+  "retired-command scan could not run over $ROOT (rc $STALE_SCAN_RC) — refusing to report success without having scanned"
 if [[ -n "$STALE_COMMANDS" ]]; then
   printf '%s\n' "$STALE_COMMANDS"
   fail "retired project command remains referenced: $LEGACY_COMMAND"
 fi
+
+# Controls for the guard above: it must be able to FAIL, and it must say so when
+# it cannot look. A scan that can only ever return "nothing found" is the vacuous
+# pass this whole block exists to rule out (issue #1421).
+SCAN_FIXTURE="$TMP_HANDOFF/scan-fixture"
+mkdir -p "$SCAN_FIXTURE"
+
+printf 'invoke %s here\n' "$LEGACY_COMMAND" >"$SCAN_FIXTURE/planted.txt"
+PLANTED=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -n "$PLANTED" ]] \
+  || fail "scan control: a planted retired-command reference was not caught — the scan is not scanning"
+
+printf 'pause%s and resume%s\n' "$LEGACY_COMMAND" "$LEGACY_COMMAND" >"$SCAN_FIXTURE/planted.txt"
+COMPOUND=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -z "$COMPOUND" ]] \
+  || fail "scan control: legitimate compound forms were flagged as stale references"
+
+# A compound form and a genuine bare reference on the SAME line. Whole-line
+# filtering dropped this line and reported clean; the per-occurrence filter must
+# still surface it, or the guard is maskable by one adjacent legitimate word.
+printf 'pause%s and also invoke %s here\n' "$LEGACY_COMMAND" "$LEGACY_COMMAND" \
+  >"$SCAN_FIXTURE/planted.txt"
+MIXED=$(scan_legacy_command "$SCAN_FIXTURE") \
+  || fail "scan control: the scan could not run over its own fixture"
+[[ -n "$MIXED" ]] \
+  || fail "scan control: a stale reference sharing a line with a compound form was masked by the filter"
+
+# A checkout whose own absolute path carries the retired command. `grep -rn`
+# stamps that path onto every hit, so testing the whole line flagged a clean tree.
+# The scan root here sits UNDER a directory named for the command; the file below
+# it holds only a legitimate compound form.
+PATHY_ROOT="$TMP_HANDOFF/${LEGACY_COMMAND#/}/inner"
+mkdir -p "$PATHY_ROOT"
+printf 'pause%s only\n' "$LEGACY_COMMAND" >"$PATHY_ROOT/doc.txt"
+PATHY=$(scan_legacy_command "$PATHY_ROOT") \
+  || fail "scan control: the scan could not run over its path fixture"
+[[ -z "$PATHY" ]] \
+  || fail "scan control: a checkout path containing the retired command tripped the guard on a clean tree"
+
+# …and the same root must still catch a genuine reference, so the prefix strip
+# cannot be hiding real content along with the path.
+printf 'invoke %s here\n' "$LEGACY_COMMAND" >"$PATHY_ROOT/doc.txt"
+PATHY_REAL=$(scan_legacy_command "$PATHY_ROOT") \
+  || fail "scan control: the scan could not run over its path fixture"
+[[ -n "$PATHY_REAL" ]] \
+  || fail "scan control: the scan-root prefix strip swallowed a genuine reference"
+
+UNSCANNABLE_RC=0
+scan_legacy_command "$SCAN_FIXTURE/no-such-target" >/dev/null 2>&1 || UNSCANNABLE_RC=$?
+(( UNSCANNABLE_RC == 2 )) \
+  || fail "scan control: an unscannable target returned $UNSCANNABLE_RC, not the fail-closed code 2"
 
 DUPLICATE_NAMES=$(find "$ROOT/.claude/skills" -name SKILL.md -type f -exec \
   awk '/^name: / { print substr($0, 7); exit }' {} \; | sort | uniq -d)
