@@ -296,9 +296,9 @@ hits="$(jget "$OUT" "d['unclassified_hits']")"
   && ok "measure: declared patterns do not report their own limit-shaped words as unknown" \
   || fail "measure: purely-declared bodies leaked $n entries / $hits hits"
 
-# unclassified_hits counts COMMENTS, not raw matches — the note it feeds says
-# "across N limit-shaped comment(s)" and a human reads it as how often a vendor
-# said this. Two unknown tokens in one comment are two rows but one comment.
+# unclassified_hits counts BODIES, not raw matches — the note it feeds says
+# "across N limit-shaped comment(s)/review(s)" and a human reads it as how often
+# a vendor said this. Two unknown tokens in one body are two rows but one body.
 F="$TMP_DIR/unclass-two-tokens.json"
 fixture_write "$F" '[
  {"number":11,"merged_at":"2026-08-03T00:00:00Z","reviews":[],"pr_comments":[],
@@ -310,6 +310,29 @@ hits="$(jget "$OUT" "d['unclassified_hits']")"
 [[ "$n" == "2" && "$hits" == "1" ]] \
   && ok "measure: two unknown tokens in one comment count as one comment" \
   || fail "measure: expected 2 entries / 1 hit, got $n / $hits"
+
+# classify_body() is fed REVIEW bodies as well as comments (CodeAnt, PR #1490),
+# so the tally is over bodies, not comments. A vendor cap notice posted as a
+# review body must count exactly like the same text posted as a comment —
+# narrowing the probe to comments to make a "comment count" label true would
+# reintroduce the #1342 blind spot on a different axis. Every other fixture here
+# leaves "reviews" empty, so without this case the review path is unpinned.
+F="$TMP_DIR/unclass-review-body.json"
+fixture_write "$F" '[
+ {"number":12,"merged_at":"2026-08-04T00:00:00Z","pr_comments":[],"issue_comments":[],
+  "reviews":[{"user":"greptile-apps[bot]","state":"COMMENTED","body":"Skipping review: this org has exhausted its monthly quota."}]}]'
+OUT="$TMP_DIR/unclass-review-body.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on review-body fixture"
+n="$(jget "$OUT" "len(d['unclassified'])")"
+hits="$(jget "$OUT" "d['unclassified_hits']")"
+[[ "$n" == "1" && "$hits" == "1" ]] \
+  && ok "measure: an unexplained signal in a REVIEW body is tallied like a comment" \
+  || fail "measure: review body not counted, got $n entries / $hits hits"
+notes="$(jget "$OUT" "' '.join(d['notes'])")"
+case "$notes" in
+  *"comment(s)/review(s)"*) ok "measure: the note names reviews, not comments alone" ;;
+  *) fail "measure: note still labels review bodies as comments: $notes" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # measure.sh — multi-page gh output (Greptile P1 on PR #1206)
@@ -387,7 +410,7 @@ hits="$(jget "$OUT" "d['unclassified_hits']")"
   || fail "measure: expected 1 entry / 3 hits, got $entries / $hits"
 notes="$(jget "$OUT" "' '.join(d['notes'])")"
 case "$notes" in
-  *"across 3 limit-shaped comment"*) ok "measure: the note states the comment count, not just distinct pairs" ;;
+  *"across 3 limit-shaped comment(s)/review(s)"*) ok "measure: the note states the body count, not just distinct pairs" ;;
   *) fail "measure: note understates frequency: $notes" ;;
 esac
 

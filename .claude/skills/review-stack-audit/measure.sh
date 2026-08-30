@@ -80,9 +80,10 @@
 #                "changes_requested", "inline_findings", "issue_comments",
 #                "sole_provider_on", "cap_signals": [...], "cap_kinds": [...]}],
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
-#     "unclassified_hits": N,   # comments carrying >=1 unexplained limit-shaped
-#                               # token, before the (tool, token) dedup that
-#                               # collapses `unclassified` itself
+#     "unclassified_hits": N,   # bodies (review body, inline comment, or
+#                               # conversation comment) carrying >=1 unexplained
+#                               # limit-shaped token, before the (tool, token)
+#                               # dedup that collapses `unclassified` itself
 #     "notes": [...]
 #   }
 #
@@ -464,9 +465,15 @@ unclassified_seen = set()
 # across 30 PRs does not produce 30 rows. But the DEDUPED count is what a human
 # reads when deciding whether a new CAP_SIGNALS entry is warranted, and "1"
 # reads as noise whether it happened once or thirty times. Keep the frequency
-# count so the report can state it: how many COMMENTS carried unexplained
+# count so the report can state it: how many BODIES carried unexplained
 # limit-shaped language, which is what "is this a vendor reword or noise?"
-# actually turns on. A comment counts once however many tokens it carries.
+# actually turns on. A body counts once however many tokens it carries.
+#
+# BODIES, not comments: classify_body() is fed review bodies as well as inline
+# and conversation comments, so a comment-only label would misreport a vendor
+# banner posted as a review. Reviews are deliberately in scope — a cap notice is
+# the same signal wherever it is posted — so the unit is named for what is
+# actually tallied rather than narrowed to make an inaccurate name true.
 unclassified_hits = 0
 
 
@@ -525,10 +532,10 @@ def classify_body(key, pr_number, body):
         if any(hit.start() < span_end and span_start < hit.end()
                for span_start, span_end in declared_spans):
             continue
-        # `unclassified_hits` counts COMMENTS, not raw matches: the note it
-        # feeds reads "across N limit-shaped comment(s)", and a human weighs it
-        # as "how often did a vendor say this". Counting a second token in the
-        # same comment as a second comment would overstate that frequency.
+        # `unclassified_hits` counts BODIES, not raw matches: the note it feeds
+        # reads "across N limit-shaped comment(s)/review(s)", and a human weighs
+        # it as "how often did a vendor say this". Counting a second token in
+        # the same body as a second body would overstate that frequency.
         if not counted:
             counted = True
             unclassified_hits += 1
@@ -606,14 +613,15 @@ for t in TOOLS:
 
 if unclassified:
     notes.append(
-        "%d distinct (tool, token) pair(s) across %d limit-shaped comment(s) "
-        "carry language no declared classifier explains — see `unclassified`. A "
-        "comment can appear here AND be classified: the probe reports only the "
-        "part its declared match does not account for, so a second cap phrase "
-        "riding in a recognised banner is visible rather than swallowed. These "
-        "are NOT counted as caps; a human decides whether the CAP_SIGNALS table "
-        "needs a new phrase. The comment count is the one to weigh: a phrase "
-        "recurring across many PRs is a vendor reword, not noise."
+        "%d distinct (tool, token) pair(s) across %d limit-shaped "
+        "comment(s)/review(s) carry language no declared classifier explains — "
+        "see `unclassified`. A body can appear here AND be classified: the "
+        "probe reports only the part its declared match does not account for, "
+        "so a second cap phrase riding in a recognised banner is visible rather "
+        "than swallowed. These are NOT counted as caps; a human decides whether "
+        "the CAP_SIGNALS table needs a new phrase. The body count is the one to "
+        "weigh: a phrase recurring across many PRs is a vendor reword, not "
+        "noise."
         % (len(unclassified), unclassified_hits))
 
 snapshot = {
