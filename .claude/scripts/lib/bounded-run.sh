@@ -52,7 +52,8 @@
 #     carry their own `2>/dev/null`: without them the group kill is skipped and
 #     the builtin single-pid `kill` still stops the child, so absence degrades
 #     QUIETLY rather than narrating `command not found` over a caller's one-line
-#     stderr contract (issue #1435).
+#     stderr contract (issue #1435). Both guards are pinned by bounded-run.test.sh
+#     T11 — drop either one and that suite goes red (issue #1474).
 #
 #   now_epoch
 #     Seconds since the epoch, or a non-zero return when the answer is unusable.

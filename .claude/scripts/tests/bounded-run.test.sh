@@ -7,7 +7,10 @@
 # a fast command comes back with its REAL status and no timeout flag, a wedged
 # one is killed at the bound with 124, the kill reaches the whole process group,
 # a bad bound override falls back to the default instead of vanishing, and the
-# file refuses to be executed rather than sourced.
+# file refuses to be executed rather than sourced — and, since the extraction
+# left ONE copy of kill_child where there were two, that its `ps`/`tr` guards
+# keep a missing helper from narrating over a consumer's stderr contract (T11,
+# issues #1435/#1474).
 #
 # T5 is the negative control: the same stall, started WITHOUT the bound, is
 # still running when the bounded call had already returned. Without it T4 could
@@ -24,6 +27,7 @@ cleanup() {
   # Anything a stall stub left behind dies with the suite, so a failing
   # process-group test cannot leak sleepers into the runner.
   pkill -f "$TMP/stub-sleeper" >/dev/null 2>&1 || true
+  pkill -f "$TMP/stub-wedged" >/dev/null 2>&1 || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -236,10 +240,131 @@ fi
 # still read as a timeout — is T4: its stub dies from the signal (143) and comes
 # back 124.
 
+# ---- T11: kill_child's ps/tr absence degrades QUIETLY -----------------------
+# kill_child shells out to `ps` and `tr` for the pgid lookup and both carry their
+# own `2>/dev/null`. Losing a guard costs nothing functionally — the lookup comes
+# back empty, the group kill is skipped, and the builtin single-pid `kill` still
+# stops the child — but the SHELL narrates `command not found` on the CALLER's
+# stderr, and every consumer here documents a one-line-on-failure stderr contract
+# (repo-root.sh exit 3, dirty-main-guard exit 2, stale-cleanup's per-item
+# `failed:`). That leak is issue #1435, and suppressing it is why the guards
+# exist.
+#
+# Issue #1474: until now the guards were pinned only through ONE consumer, end to
+# end (repo-root.test.sh T16m). This library is the single definition all four
+# share, so its own suite is where the guard belongs — otherwise a consumer that
+# stops sourcing the lib, or a fixture that drifts, silently takes the only
+# coverage with it, and the other three go back to leaking.
+#
+# The bound has to trip for kill_child to run at all, so every case asserts 124
+# as well as the stderr count. The status was never the bug — this is the
+# documented degradation narrating instead of staying quiet — and the two
+# controls (all-present, ps-absent) are what make a failure here specifically the
+# tr guard coming off rather than the harness breaking.
+KILL_FIXT="$TMP/kill-nohelp"
+KILL_TICKS="$TMP/kill-ticks"
+KILL_STDERR=""
+KILL_LINES=0
+KILL_RC=0
+
+# The wedged child leaves liveness evidence as it goes: it ticks every 0.2s and
+# self-limits at 60 ticks (~12s), which outlives the 3s bound and its grace and
+# reap windows — so "it stopped ticking" below is the kill's doing, not the
+# stub's own exit — while still guaranteeing nothing leaks into the rest of the
+# run. `printf` is a builtin, so the stub needs only `sleep` from the fixture.
+cat > "$TMP/stub-wedged" <<'EOF'
+#!/usr/bin/env bash
+for ((i = 0; i < 60; i++)); do
+  printf 'tick\n' >> "$KILL_TICKS"
+  sleep 0.2
+done
+EOF
+chmod +x "$TMP/stub-wedged"
+
+# The bounded call has to happen in a shell whose ENTIRE PATH is the fixture, so
+# a dropped helper is missing exactly where kill_child looks for it. Sourcing the
+# library there is also the honest shape — it is how all four consumers use it —
+# and it puts kill_child's narration on this child's stderr, which is the stream
+# a consumer's contract is written about.
+cat > "$TMP/bounded-runner" <<EOF
+#!/usr/bin/env bash
+CAPTURE="\$1"
+CAPTURE_ERR="\$2"
+source "$LIB"
+rc=0
+run_bounded 3 "$TMP/stub-wedged" || rc=\$?
+printf '%s' "\$rc"
+EOF
+chmod +x "$TMP/bounded-runner"
+
+run_kill_case() { # helper to drop ("" = keep them all)
+  local drop="$1" b path
+  rm -rf "$KILL_FIXT"; mkdir -p "$KILL_FIXT"
+  # Everything the library and the stub reach for by NAME. `kill`, `wait` and
+  # `printf` are builtins and need no entry, and `mktemp` is unreachable because
+  # BOUNDED_CAPTURE_TEMPLATE is unset here. `env` and `bash` are for the stub's
+  # own shebang: without them it would never start and every case would be
+  # measuring an exec failure instead of a timeout.
+  for b in env bash date sleep ps tr; do
+    path="$(command -v "$b" 2>/dev/null)" || continue
+    ln -sf "$path" "$KILL_FIXT/$b"
+  done
+  [[ -n "$drop" ]] && rm -f "$KILL_FIXT/$drop"
+  : > "$KILL_TICKS"
+  KILL_RC="$(env -i HOME="$HOME" PATH="$KILL_FIXT" TMPDIR=/tmp \
+    KILL_TICKS="$KILL_TICKS" bash "$TMP/bounded-runner" \
+    "$TMP/kill-capture" "$TMP/kill-capture-err" 2>"$TMP/kill-stderr")"
+  KILL_STDERR="$(cat "$TMP/kill-stderr")"
+  KILL_LINES="$(printf '%s\n' "$KILL_STDERR" | grep -c .)"
+}
+
+run_kill_case "tr"
+# Fixture control FIRST: the cases below say something only if `tr` is genuinely
+# unreachable in that PATH and this shell says so out loud. Run the very pipeline
+# an unguarded kill_child would run, in the same environment, and require the
+# narration the guard exists to suppress — a fixture that still resolved `tr`
+# would otherwise make T11b-T11c pass while proving nothing.
+KILL_PROBE="$(env -i HOME="$HOME" PATH="$KILL_FIXT" TMPDIR=/tmp \
+  bash -c 'ps -o pgid= -p $$ 2>/dev/null | tr -d "[:space:]"' 2>&1 >/dev/null)"
+check_contains "T11 fixture control: an unguarded tr really does narrate here" \
+  "command not found" "$KILL_PROBE"
+check_eq "T11b a wedged child with tr absent still times out (124)" "124" "$KILL_RC"
+if [[ "$KILL_LINES" -eq 0 ]]; then
+  pass "T11c and the library narrates nothing onto the caller's stderr"
+else
+  fail "T11c the library leaked $KILL_LINES stderr line(s) into a caller's one-line contract: $KILL_STDERR"
+fi
+# Quiet must not mean broken: with tr absent the group kill is skipped BY DESIGN,
+# so the single-pid kill is all that stops the child. Sampling mid-life (>0 and
+# <60 ticks) is what keeps the "it stopped" check below honest — 0 ticks would
+# mean the stub never ran and 60 that it had already finished on its own, and
+# either would satisfy the check for the wrong reason.
+KILL_BEFORE="$(wc -l < "$KILL_TICKS" | tr -d ' ')"
+if (( KILL_BEFORE > 0 && KILL_BEFORE < 60 )); then
+  pass "T11d the wedged child was sampled mid-life (${KILL_BEFORE}/60 ticks), so T11e is a live check"
+else
+  fail "T11d wedged child at ${KILL_BEFORE}/60 ticks — outside its life, T11e would pass vacuously"
+fi
+: > "$KILL_TICKS"
+sleep 0.6
+if (( $(wc -l < "$KILL_TICKS") == 0 )); then
+  pass "T11e and the child really was stopped — the skipped group kill degrades quietly, not silently-broken"
+else
+  fail "T11e the child is still ticking — a missing tr cost the kill, not just the narration"
+fi
+
+run_kill_case ""
+check_eq "T11f control: with every helper present, still 124" "124" "$KILL_RC"
+check_eq "T11g control: with every helper present, still nothing on stderr" "0" "$KILL_LINES"
+
+run_kill_case "ps"
+check_eq "T11h control: a missing ps still times out (124)" "124" "$KILL_RC"
+check_eq "T11i control: a missing ps still emits nothing on stderr" "0" "$KILL_LINES"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 if (( FAIL > 0 )); then
   echo "FAILED: lib/bounded-run.sh"
   exit 1
 fi
-echo "OK: lib/bounded-run.sh — shared wall-clock bound (issues #1363, #1404)"
+echo "OK: lib/bounded-run.sh — shared wall-clock bound (issues #1363, #1404, #1435, #1474)"
