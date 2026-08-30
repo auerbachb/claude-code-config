@@ -175,6 +175,25 @@ is reached, before any deadline arithmetic can shorten it.
 calls `past_deadline` before each unit of work, or is one of the named moves
 above. No step in this skill is exempt, and none may run unbounded.
 
+**Two named exceptions, both bookkeeping rather than work.** Neither waits, and
+neither mutates anything outside this run's own in-memory board, which is why
+neither is a hole in the rule above:
+
+1. **Step 3 collection under `--window 0`.** `T_END == T_START` makes
+   `past_deadline` true before the first read, but this path does no landing
+   and no mutation, so the collected board *is* its whole output. The three
+   bounded reads run; skipping them would publish an empty record of a machine
+   that was not empty. The skip belongs to a window that was spent, not to one
+   never offered.
+2. **Step 4's post-deadline sweep.** Relabelling every already-collected unit
+   `park` is an in-memory pass with no `gh` call and nothing that can block. It
+   must run to completion: a half-swept board strands `land` units that no step
+   will then dispatch or record.
+
+Both are bounded by construction — a fixed number of non-blocking steps over an
+already-finite board — not by a clock check. Everything else stays subject to
+the rule above, and the terminal-move and gate-write restrictions are unchanged.
+
 **Re-check the clock at terminal entry.** `WINDOW_EXPIRED` only latches when
 `past_deadline` is actually called, so call it once more on entering the
 terminal path — before choosing the marker form in Step 7a and before building
@@ -189,6 +208,14 @@ landing and checkpoint work entirely, and stops immediately. `T_END` equals
 `T_START`, so `past_deadline` is true from the first call — the immediate
 branch and the past-deadline branch are the same shape reached two ways, and
 the terminal path still publishes the marker and the JSON state.
+
+**"Immediately" scopes to waiting and mutation, never to reading.** What
+`--window 0` skips is landing, checkpoint time, and every park-phase mutation —
+not Step 3's collection, which ran on this path before the ceiling existed and
+still does. The marker and JSON state this path publishes are built *from* the
+collected board, so a `--window 0` run that read nothing would publish an empty
+record of a machine that was not empty. Step 3 states the same carve-out from
+its own side; the two are one rule.
 
 ## Step 1: Close both launch gates
 
@@ -298,8 +325,18 @@ without mutation. **Collected results are never routed straight to the terminal
 path:** a unit that was read but never classified or recorded is lost exactly
 as surely as one never read. What the deadline skips is new reads and every
 mutation, never the recording of what is already in hand. In practice this step
-runs minutes before the deadline; reaching it expired means a window too short
-to have collected a board at all.
+runs minutes before the deadline.
+
+**`--window 0` still collects the board.** `T_END == T_START` makes
+`past_deadline` true from the first call, so the check above would otherwise
+skip every read on the immediate path — which does no landing and no mutation,
+making the recorded board its *entire* output. Skipping collection there would
+leave the marker holding nothing but Step 2's registry leftovers and strand
+every open PR, exactly the "we did not look" rendered as "nothing was there"
+that the next paragraph forbids. So the skip is scoped to a window that was
+*spent*: it applies when `WINDOW_MINUTES > 0` and the clock ran out, never to
+`--window 0`, where the three bounded reads always run. This is what keeps
+`--window 0` behavior unchanged from before the ceiling existed.
 
 **What went uncollected is recorded unavailable, never as empty.** This is the
 same rule Step 0 states for an unreadable inventory — "we did not look" must
@@ -345,13 +382,39 @@ park  ←  everything else
 
 Subagents are **never** `land` — they cannot be driven to a merge from outside. `--window 0` forces every unit to `park` before this step runs.
 
-**Budget check — call `past_deadline` once before classifying, and again before
-each `merge-gate.sh` run.** Past the deadline every unit is `park` by
+**Budget check — call `past_deadline` once before classifying, again before
+each `merge-gate.sh` run, and once more immediately after each returns, before
+its result is recorded.** A gate call takes real time, so the deadline can pass
+*during* it; without the after-check a `land` verdict earned a moment too late
+would be printed as `land` and only corrected at Step 5. Past the deadline
+every unit is `park` by
 definition: there is no runway left to land anything, so the gate is not worth
-querying. Skip the remaining gate calls, classify the rest `park`, print the
-classification, and go to Step 6 — which records them without mutation. This is
-the same forcing `--window 0` applies, reached by the clock instead of the
+querying. Skip the remaining gate calls, then — **in this order** — sweep,
+print, and go to Step 6, which records the result without mutation. This is the
+same forcing `--window 0` applies, reached by the clock instead of the
 argument.
+
+**The sweep reclassifies *every* unit `park`, not only the ones still
+unclassified.** The deadline can trip partway through this step, after some
+units have already been classified `land`. Because this branch goes straight to
+Step 6, it never reaches Step 5's "reclassify every remaining `land` unit
+`park`" rule — so a unit left holding `land` here is dispatched by nobody and
+recorded by nobody, and it reaches neither the marker nor the pause state.
+Sweep the whole board, including units classified earlier in this same pass.
+
+**The sweep itself carries no deadline check, and must not grow one.** It is an
+in-memory relabel of units already collected — no `gh` call, no `merge-gate.sh`
+run (the budget check above already skipped those), nothing that can block — so
+there is no operation here for `T_END` or `T_GRACE_END` to bound. Aborting it
+partway would leave exactly the orphaned `land` units it exists to prevent, so
+a half-swept board is strictly worse than a late one. The grace bound belongs
+to the terminal moves that follow, which own it already.
+
+**Sweep before printing.** The printed classification is this step's contract
+with the user (`Every in-flight unit gets exactly one of land | park, stated
+with its reason before any action is taken`), so it must show the post-sweep
+board — the same one Step 6 consumes. Printing first would announce a `land`
+that nothing will ever dispatch.
 
 **`mergeStateStatus: BEHIND` is not a special case here.** `land` dispatches `/wrap`, and Step 1d's clean-`BEHIND` handling lives inside that path already. A protection-modifying bypass remains a hard stop that parks the unit and prints the `/admin-merge` runbook.
 
