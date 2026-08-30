@@ -245,6 +245,95 @@ n="$(jget "$OUT" "len(d['unclassified'])")"
 [[ "$n" == "0" ]] && ok "measure: collapsed vendor boilerplate is stripped before the generic probe" \
   || fail "measure: boilerplate leaked $n unclassified entries"
 
+# A declared match used to suppress the generic probe for the WHOLE body
+# (#1342), so a banner carrying a declared phrase AND a separate undeclared
+# limit signal recorded only the declared kind — and the unknown one never
+# reached the surface whose entire job is to flag phrase-table gaps. The body
+# below is the issue's evidence verbatim. Both halves are asserted together:
+# the declared kind must survive, and the undeclared token must appear.
+F="$TMP_DIR/unclass-plus-declared.json"
+fixture_write "$F" '[
+ {"number":9,"merged_at":"2026-08-01T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"Your included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Separately, your account is out of credits."}]}]'
+OUT="$TMP_DIR/unclass-plus-declared.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on declared-plus-undeclared fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$kinds" == "['fair_usage']" ]] \
+  && ok "measure: a body carrying both signals still records the declared kind" \
+  || fail "measure: declared kind lost on combined body, got $kinds"
+tok="$(jget "$OUT" "[u['token'] for u in d['unclassified']]")"
+[[ "$tok" == "['out of credits']" ]] \
+  && ok "measure: the undeclared signal in that same body reaches unclassified[]" \
+  || fail "measure: expected ['out of credits'] in unclassified, got $tok"
+
+# The live case this cost us: the org usage-spending-cap sentence rides inside
+# comments that already match a declared classifier, so through the #1303 window
+# the audit's own blind-spot mechanism could not see it at all
+# (review-stack-audit-2026-08.md). It must surface now.
+F="$TMP_DIR/unclass-spending-cap.json"
+fixture_write "$F" '[
+ {"number":10,"merged_at":"2026-08-02T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"You have reached a temporary PR review limit under our Fair Usage Limits Policy. Your organization has reached its usage spending cap. Adjust your spending cap in the billing tab."}]}]'
+OUT="$TMP_DIR/unclass-spending-cap.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on spending-cap fixture"
+kinds="$(jget "$OUT" "[t['cap_kinds'] for t in d['tools'] if t['key']=='coderabbit'][0]")"
+tok="$(jget "$OUT" "[u['token'] for u in d['unclassified']]")"
+[[ "$kinds" == "['fair_usage']" && "$tok" == "['billing']" ]] \
+  && ok "measure: a third signal inside a classified banner is no longer invisible" \
+  || fail "measure: spending-cap case wrong (kinds=$kinds tokens=$tok)"
+
+# NEGATIVE CONTROL for the two cases above, and the reason the probe excludes
+# spans a declared pattern already explains. Several declared patterns CONTAIN
+# limit-shaped words — "...hit a usage or spend limit", "...PR Review
+# subscription" — so simply ungating the probe would report the phrase table
+# back to itself as unknown. Measured: with the exclusion removed this same
+# fixture yields 2 entries (codeant/subscription, bugbot/spend limit).
+OUT="$TMP_DIR/caps-noleak.out.json"
+"$MEASURE" --fixture "$TMP_DIR/caps.json" --json > "$OUT" || fail "measure.sh failed re-running cap fixture"
+n="$(jget "$OUT" "len(d['unclassified'])")"
+hits="$(jget "$OUT" "d['unclassified_hits']")"
+[[ "$n" == "0" && "$hits" == "0" ]] \
+  && ok "measure: declared patterns do not report their own limit-shaped words as unknown" \
+  || fail "measure: purely-declared bodies leaked $n entries / $hits hits"
+
+# unclassified_hits counts BODIES, not raw matches — the note it feeds says
+# "across N limit-shaped comment(s)/review(s)" and a human reads it as how often
+# a vendor said this. Two unknown tokens in one body are two rows but one body.
+F="$TMP_DIR/unclass-two-tokens.json"
+fixture_write "$F" '[
+ {"number":11,"merged_at":"2026-08-03T00:00:00Z","reviews":[],"pr_comments":[],
+  "issue_comments":[{"user":"coderabbitai[bot]","body":"Your included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Your account is out of credits; see the billing tab."}]}]'
+OUT="$TMP_DIR/unclass-two-tokens.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on two-token fixture"
+n="$(jget "$OUT" "len(d['unclassified'])")"
+hits="$(jget "$OUT" "d['unclassified_hits']")"
+[[ "$n" == "2" && "$hits" == "1" ]] \
+  && ok "measure: two unknown tokens in one comment count as one comment" \
+  || fail "measure: expected 2 entries / 1 hit, got $n / $hits"
+
+# classify_body() is fed REVIEW bodies as well as comments (CodeAnt, PR #1490),
+# so the tally is over bodies, not comments. A vendor cap notice posted as a
+# review body must count exactly like the same text posted as a comment —
+# narrowing the probe to comments to make a "comment count" label true would
+# reintroduce the #1342 blind spot on a different axis. Every other fixture here
+# leaves "reviews" empty, so without this case the review path is unpinned.
+F="$TMP_DIR/unclass-review-body.json"
+fixture_write "$F" '[
+ {"number":12,"merged_at":"2026-08-04T00:00:00Z","pr_comments":[],"issue_comments":[],
+  "reviews":[{"user":"greptile-apps[bot]","state":"COMMENTED","body":"Skipping review: this org has exhausted its monthly quota."}]}]'
+OUT="$TMP_DIR/unclass-review-body.out.json"
+"$MEASURE" --fixture "$F" --json > "$OUT" || fail "measure.sh failed on review-body fixture"
+n="$(jget "$OUT" "len(d['unclassified'])")"
+hits="$(jget "$OUT" "d['unclassified_hits']")"
+[[ "$n" == "1" && "$hits" == "1" ]] \
+  && ok "measure: an unexplained signal in a REVIEW body is tallied like a comment" \
+  || fail "measure: review body not counted, got $n entries / $hits hits"
+notes="$(jget "$OUT" "' '.join(d['notes'])")"
+case "$notes" in
+  *"comment(s)/review(s)"*) ok "measure: the note names reviews, not comments alone" ;;
+  *) fail "measure: note still labels review bodies as comments: $notes" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # measure.sh — multi-page gh output (Greptile P1 on PR #1206)
 # ---------------------------------------------------------------------------
@@ -321,7 +410,7 @@ hits="$(jget "$OUT" "d['unclassified_hits']")"
   || fail "measure: expected 1 entry / 3 hits, got $entries / $hits"
 notes="$(jget "$OUT" "' '.join(d['notes'])")"
 case "$notes" in
-  *"across 3 limit-shaped comment"*) ok "measure: the note states the comment count, not just distinct pairs" ;;
+  *"across 3 limit-shaped comment(s)/review(s)"*) ok "measure: the note states the body count, not just distinct pairs" ;;
   *) fail "measure: note understates frequency: $notes" ;;
 esac
 

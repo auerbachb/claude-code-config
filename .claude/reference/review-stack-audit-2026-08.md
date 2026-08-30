@@ -90,6 +90,11 @@ surfaces for a human instead of being silently counted as a cap, which is the be
 `unclassified[]` probe exists to provide. A future reworded refusal lands there too rather than being
 dropped.
 
+> **Superseded figure.** That 28 was measured by a probe that skipped any comment already carrying a
+> declared match. #1342 removed that gate; the same window now reads **1,026** comments across 11
+> pairs, with the declared counts in this paragraph unchanged. See Caveats → *Re-measured after the
+> probe fix*.
+
 ### A third signal, newly present and not yet a cap kind
 
 Some banners also carry: *"Your organization has reached its usage spending cap. Adjust your spending
@@ -102,11 +107,16 @@ This is a third, distinct mechanism — the metered usage-based overflow add-on,
 evidently now on *and* exhausted. It is **not** recorded as a cap kind in this PR, because:
 
 - in every instance checked here it sat inside a comment that already matched a declared classifier,
-  and `classify_body` short-circuits on the first declared match — so it never reaches the
-  `unclassified[]` probe, and the audit's own blind-spot mechanism cannot surface it; and
+  and `classify_body` short-circuited on the first declared match — so it never reached the
+  `unclassified[]` probe, and the audit's own blind-spot mechanism could not surface it; and
 - adding a third kind is a scope expansion past what this finding asked for.
 
 Both halves of that are recorded as follow-ups rather than left implicit.
+
+**The first half is now fixed (#1342):** the probe runs on every body, so a spending-cap sentence
+riding inside a recognised banner reaches `unclassified[]` instead of vanishing. It is still not a
+declared cap kind — that remains a human's call, which is precisely what the surface exists to
+prompt.
 
 ## Per-tool measurements
 
@@ -246,10 +256,12 @@ Two further notes so this is not over-read:
 1. **Report-filename collision in `/review-stack-audit` SKILL.md Step 7.** `--report-to-repo` derives
    one path per calendar month and will overwrite a prior month-mate. Not fixed here (skill change,
    out of this finding's scope).
-2. **Recognizer blind spot: first-match short-circuit.** `classify_body` stops probing once any
-   declared pattern matches, so a second, unrecognized cap phrase riding in the same comment is
-   invisible to `unclassified[]`. The org spending-cap phrase is a live example. The audit's
-   "never silently healthy" guarantee holds only for comments that match *nothing*.
+2. ~~**Recognizer blind spot: first-match short-circuit.**~~ **FIXED (#1342).** `classify_body` used
+   to stop probing once any declared pattern matched, so a second, unrecognized cap phrase riding in
+   the same comment was invisible to `unclassified[]` — the org spending-cap phrase being the live
+   example. The probe now runs on every body and excludes only the spans a matched pattern already
+   accounts for, so the "never silently healthy" guarantee holds per **signal** rather than only for
+   comments that match nothing. Re-measured counts: the Caveats section below.
 3. **Usage-based overflow is on and exhausted.** `cr-oss-vs-paid-decision.md` records the metered
    add-on as off (2026-08-21); the App banner says the org spending cap is reached (2026-08-23
    onward). Someone should reconcile what is enabled and at what cap.
@@ -296,6 +308,36 @@ Two further notes so this is not over-read:
   audit reading its own subject matter: a repo whose documentation is largely *about* review-tool
   caps will always generate limit-shaped prose for the generic probe to catch. That is the probe
   working — it surfaces candidates for a human, and it explicitly does not count them as caps.
+
+- **Re-measured after the probe fix (#1342): 11 pairs across 1,026 comments, against the 8 / 28
+  above.** The figures above are what this report published, and they were produced by a probe that
+  skipped any comment already carrying a declared match (follow-up 2, now fixed). Both the old and
+  the new classifier were replayed over one captured payload of the same window
+  (`merged:2026-07-25..2026-08-26`, 285 PRs, `truncated=false`, captured 2026-08-29) so the delta is
+  attributable to the code and nothing else. **The control run reproduces this report's numbers
+  exactly** — same 8 pairs, same PR attributions, same 28 — which is what makes the comparison
+  meaningful despite the capture holding 285 PRs to the original run's 268; the 17 extra PRs
+  contribute no unclassified comment the old probe would have seen. Declared classification is
+  byte-identical across both runs (every tool's `observed_state`, `cap_kinds` and `cap_signals`
+  count unchanged), so no cap verdict in this report moves. No pair was lost.
+
+  The three pairs the fix newly surfaces, all of which had been riding inside comments that already
+  matched a declared pattern:
+
+  | Tool | PR | Token | What it actually is |
+  |---|---|---|---|
+  | BugBot | #1384 | `usage limit` | The refusal *heading* — "Bugbot couldn't run - usage limit reached" — beside the declared sentence "…hit a usage or spend limit" |
+  | CodeAnt | #1221 | `subscription` | A third seat-gap wording: "does not have a PR Review subscription" |
+  | CodeRabbit | #1208 | `rate-limited` | Prose about this repo's own metered-billing rows |
+
+  **Still no phrase-table entry is warranted**, for the same reason as above plus one more: each new
+  pair is a *second wording of a cap the table already catches on that same comment*, so declaring it
+  would change no verdict. The 28 → 1,026 jump is frequency, not new candidates — three phrases
+  account for 1,015 of the comments (`bugbot`/`usage limit` 597, `coderabbit`/`billing` 226,
+  `codeant`/`subscription` 192), each recurring across a window in which those tools were capped
+  almost continuously. `drift.sh`'s caveat reads the *pair* count, so what a run surfaces to a human
+  moves 8 → 11, not 28 → 1,026. (Per-pair counts sum to 1,027 against 1,026 comments: one comment
+  carries two distinct unexplained tokens, and a comment is counted once however many it carries.)
 
 ## BugBot cap reconciliation (Issue #1304)
 

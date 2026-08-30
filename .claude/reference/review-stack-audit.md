@@ -78,13 +78,21 @@ its limit message, the pattern stops matching, and every affected tool reads
 `active` forever. That failure is indistinguishable from good news, which makes
 it the worst possible failure for this audit.
 
-The mitigation is the `unclassified` array. Any comment from a known bot that
-looks limit-shaped (`quota`, `usage limit`, `subscription`, `billing`, …) but
-matches no declared pattern is reported. It is deliberately **not** counted as a
-cap — a generic word is not evidence — but it is never dropped, and `drift.sh`
-turns a non-empty array into a caveat on the whole run. "0 drift with 3
-unclassified cap candidates" is a materially weaker claim than "0 drift", and the
-user sees the difference without opening the JSON.
+The mitigation is the `unclassified` array. Limit-shaped language from a known
+bot (`quota`, `usage limit`, `subscription`, `billing`, …) that no declared
+pattern explains is reported. It is deliberately **not** counted as a cap — a
+generic word is not evidence — but it is never dropped, and `drift.sh` turns a
+non-empty array into a caveat on the whole run. "0 drift with 3 unclassified cap
+candidates" is a materially weaker claim than "0 drift", and the user sees the
+difference without opening the JSON.
+
+That guarantee is per **signal**, not per comment (#1342). The probe used to be
+skipped entirely once any declared pattern matched the body, so a banner that
+announced a recognized cap *and* a second, unrecognized one recorded only the
+first — and the more complete the phrase table got, the more bodies matched and
+the less the audit could see. The probe now runs on every body, excluding the
+spans a matched pattern already accounts for so the declared phrases' own
+limit-shaped words (`…hit a usage or spend limit`) are not read back as unknowns.
 
 **One repo-specific caveat:** this repo's own subject matter *is* rate limits and
 quotas, so bot comments reviewing our prose about caps land in `unclassified`
