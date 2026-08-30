@@ -438,14 +438,19 @@ fi
 #     usage() prints the header verbatim (sed '2,/^$/p'), so --help output IS
 #     the header: a stale emitter list is a user-facing contract bug, not a
 #     comment typo.  Pins the harness-audit drift found in Issue #1464.
+#     Both lists are extracted by anchoring on a structural marker and reading
+#     the next line -- the VALID EMITTERS heading for the header, the
+#     `case "$EMITTER" in` statement for the allowlist -- then sorted before
+#     comparison, so reordering the case alternation (semantically a no-op in
+#     bash) does not trip the guard.
 #     Fails closed if either list cannot be extracted.
 # ---------------------------------------------------------------------------
 H="$(make_home)"
 HELP_EMITTERS="$(HOME="$H" bash "$REGISTRY" --help 2>/dev/null \
   | awk '/^VALID EMITTERS$/{getline; print; exit}' \
   | tr -d ' \t' | tr ',' '\n' | grep . | sort | tr '\n' ' ')"
-CASE_EMITTERS="$(grep -oE '^[[:space:]]*pm\|[a-z|-]+\)' "$REGISTRY" \
-  | head -1 | tr -d ' \t' | sed 's/)$//' | tr '|' '\n' | grep . | sort | tr '\n' ' ')"
+CASE_EMITTERS="$(awk '/^[[:space:]]*case[[:space:]]+"\$EMITTER"[[:space:]]+in/{getline; print; exit}' "$REGISTRY" \
+  | tr -d ' \t' | sed 's/).*$//' | tr '|' '\n' | grep . | sort | tr '\n' ' ')"
 if [[ -z "$HELP_EMITTERS" || -z "$CASE_EMITTERS" ]]; then
   fail "emitter drift guard could not extract both lists (help='$HELP_EMITTERS' case='$CASE_EMITTERS')"
 elif [[ "$HELP_EMITTERS" == "$CASE_EMITTERS" ]]; then
