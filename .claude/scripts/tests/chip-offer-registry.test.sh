@@ -443,14 +443,18 @@ fi
 #     `case "$EMITTER" in` statement for the allowlist -- then sorted before
 #     comparison, so reordering the case alternation (semantically a no-op in
 #     bash) does not trip the guard.
+#     Each list is split into tokens BEFORE whitespace is trimmed, and only the
+#     token edges are trimmed, so whitespace interior to a name is preserved --
+#     a malformed header entry like "harness -audit" stays distinct from
+#     "harness-audit" and is reported as drift rather than normalized away.
 #     Fails closed if either list cannot be extracted.
 # ---------------------------------------------------------------------------
 H="$(make_home)"
 HELP_EMITTERS="$(HOME="$H" bash "$REGISTRY" --help 2>/dev/null \
   | awk '/^VALID EMITTERS$/{getline; print; exit}' \
-  | tr -d ' \t' | tr ',' '\n' | grep . | sort | tr '\n' ' ')"
+  | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . | sort | tr '\n' ' ')"
 CASE_EMITTERS="$(awk '/^[[:space:]]*case[[:space:]]+"\$EMITTER"[[:space:]]+in/{getline; print; exit}' "$REGISTRY" \
-  | tr -d ' \t' | sed 's/).*$//' | tr '|' '\n' | grep . | sort | tr '\n' ' ')"
+  | sed 's/).*$//' | tr '|' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . | sort | tr '\n' ' ')"
 if [[ -z "$HELP_EMITTERS" || -z "$CASE_EMITTERS" ]]; then
   fail "emitter drift guard could not extract both lists (help='$HELP_EMITTERS' case='$CASE_EMITTERS')"
 elif [[ "$HELP_EMITTERS" == "$CASE_EMITTERS" ]]; then
