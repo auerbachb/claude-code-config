@@ -6,7 +6,7 @@
 
 BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
-**Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` (`cursor-review-pr-comment.yml`); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
+**Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` (`cursor-review-pr-comment.yml`, which consults `bugbot-refused-head.sh` first); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
@@ -14,7 +14,7 @@ BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-git
 
 - **Bot username:** `cursor[bot]`
 - **Trigger:** `@cursor review` comment (`/fixpr` or CI — duplicates OK, but see §Re-Reviews).
-- **Cost:** Highest per review in the stack. One nudge per HEAD; after a usage-limit refusal, `maybe-trigger-ai-review.sh` suppresses further nudges until the next push.
+- **Cost:** Highest per review in the stack. One nudge per HEAD; after a usage-limit refusal all three trigger paths — `maybe-trigger-ai-review.sh`, `/fixpr` Step 3b, CI — suppress further nudges until the next push, via the shared fail-open `bugbot-refused-head.sh`.
 - **Review time:** ~1–3 min. **No CLI** (GitHub-only).
 
 ## Polling for BugBot Reviews
@@ -43,4 +43,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-BugBot doesn't auto-review pushes. After a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set; otherwise post it manually — one nudge per HEAD.
+BugBot doesn't auto-review pushes. After a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set — necessary, not sufficient: a refusal on that HEAD still suppresses; otherwise post it manually — one nudge per HEAD.
