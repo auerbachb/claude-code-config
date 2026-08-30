@@ -35,7 +35,13 @@ The rule now:
 > `--owner-repo` and the legacy escape.
 >
 > The flat path is reached only by explicit request: `--legacy-flat`, or
-> `CLAUDE_HANDOFF_FLAT_OK=1` for a caller that cannot add a flag. Both silent.
+> `CLAUDE_HANDOFF_FLAT_OK=1` for a caller that cannot add a flag. They differ in
+> what they say. `--legacy-flat` is silent — the caller named the path on that
+> call. `CLAUDE_HANDOFF_FLAT_OK=1` is silent only when it bypassed nothing:
+> whenever the context would have resolved a scope, it notes on stderr that it
+> `sent --<mode> on PR #<N> to the legacy flat path, bypassing the scope
+> '<owner/repo>' this context resolves to` — the note that keeps this defect
+> visible when the ambient variable reaches calls its author never considered.
 > An explicit `--owner-repo` **overrides** the environment variable and says so:
 > the variable is ambient, and letting it swallow a call that named its repo
 > would recreate this same defect one scope wider.
@@ -151,9 +157,12 @@ Three conditions narrow it so the warning stays meaningful:
   caller that genuinely has no repo to name, and stays silent. The library is
   treated as optional: a checkout without it keeps the pre-#1302 behavior rather
   than failing a write over a missing warning.
-- **`CLAUDE_HANDOFF_FLAT_OK=1` silences it.** For a caller that means the flat
-  path on purpose — `/wrap`'s flat-layout stale-handoff sweep, migration
-  tooling. Scoped calls must never set it.
+- **`CLAUDE_HANDOFF_FLAT_OK=1` silenced it** — the #1302 warning described in
+  this section, which #1366 removed. For a caller that means the flat path on
+  purpose — `/wrap`'s flat-layout stale-handoff sweep, migration tooling. Scoped
+  calls must never set it. Under #1366 the variable is no longer silent: it
+  emits its own stderr note whenever it bypasses a scope the context resolves
+  (see "Supersession" above).
 
 ## Designs rejected
 

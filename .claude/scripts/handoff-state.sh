@@ -30,10 +30,18 @@
 # LEGACY FLAT PATH (issues #1302, #1366)
 #     ~/.claude/handoffs/pr-{N}-handoff.json
 #   is reachable ONLY on explicit request — --legacy-flat, or
-#   CLAUDE_HANDOFF_FLAT_OK=1 for a caller that cannot add a flag.  Both are
-#   silent: naming the flat path means you meant it (polling-state-gate.sh
-#   refreshing an already-flat handoff, /wrap's flat-layout delete sweep,
-#   handoff-migrate.sh).  Omission is NOT a request for it.
+#   CLAUDE_HANDOFF_FLAT_OK=1 for a caller that cannot add a flag.  Omission is
+#   NOT a request for it.
+#
+#   The two escapes differ in what they say.  --legacy-flat is silent: naming
+#   the flat path per call means you meant it (polling-state-gate.sh refreshing
+#   an already-flat handoff, /wrap's flat-layout delete sweep,
+#   handoff-migrate.sh).  CLAUDE_HANDOFF_FLAT_OK=1 is silent only when nothing
+#   was bypassed; when the context WOULD have resolved a scope it notes on
+#   stderr that it "sent --<mode> on PR #<N> to the legacy flat path, bypassing
+#   the scope '<owner/repo>' this context resolves to".  The variable is
+#   ambient, so it can cover calls its author never considered — that note is
+#   what keeps the #1366 defect visible when it is set wider than intended.
 #
 #   An explicit --owner-repo always wins over CLAUDE_HANDOFF_FLAT_OK=1, and says
 #   so on stderr.  The env var is ambient — /wrap exports it for a flat-layout
@@ -523,7 +531,10 @@ fi
 # fired when a write omitted --owner-repo in a repo-resolvable checkout, and
 # that case now resolves the scoped path instead of the flat one, so the
 # condition can no longer occur. The flat path is reached only through
-# --legacy-flat / CLAUDE_HANDOFF_FLAT_OK=1, where a warning would be noise.
+# --legacy-flat, where a warning would be noise because the caller named the
+# path on that very call, or through CLAUDE_HANDOFF_FLAT_OK=1, which is ambient
+# and therefore carries its own note at scope-resolution time whenever it
+# bypasses a scope this context resolves.
 
 # ---------------------------------------------------------------------------
 # All write modes: ensure the directory exists, then acquire the lock.
