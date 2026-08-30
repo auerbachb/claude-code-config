@@ -42,7 +42,8 @@
 #                              read off the reviewer's own structured data
 #                              instead of inferred from prose — and therefore
 #                              NOT suppressible by external evidence (issue
-#                              #1365; see $pre_run for why).
+#                              #1365; see $pre_run for why). One narrow
+#                              redemption: see redeemed_by_clean_run below.
 #   5. substantive           — review body OR inline comments on HEAD OR a
 #                              same-SHA status comment naming HEAD OR a long
 #                              descriptive comment in the current review round.
@@ -78,7 +79,8 @@
 #        "self_report_mismatch": false,
 #        "temporal_inversion": false, "run_start_marker_at": "…",
 #        "capability_failure": false, "capability_failure_text": "",
-#        "pre_run_approval": false, "run_started_at": "…",
+#        "pre_run_approval": false, "run_has_findings_on_head": false,
+#        "redeemed_by_clean_run": false, "run_started_at": "…",
 #        "run_finished_at": "…", "run_done": true,
 #        "substantive": true, "counts_as_coverage": true,
 #        "disqualified_by": [], "seconds_after_push": 214
@@ -89,6 +91,8 @@
 #     "inverted":          [ … ],                  # approved before its own run started
 #     "capability_failed": [ … ],                  # said it could not review, approved anyway
 #     "pre_run":           [ … ],                  # approved outside its own recorded run
+#     "redeemed_by_clean_run": [ … ],              # of those, the ones a completed
+#                                                  # clean run on HEAD redeemed
 #     "corroborating":     ["cursor[bot]"]         # substantive non-approvers on HEAD
 #   }
 #
@@ -111,6 +115,35 @@
 #   pre_run_approval          a structured HEAD run marker exists and the
 #                             APPROVED does not sit inside that run: the run is
 #                             not `done`, or submitted_at < run_started_at.
+#                             Reported raw — it stays true when redeemed.
+#   run_has_findings_on_head  that reviewer left a non-APPROVED review or an
+#                             inline comment on HEAD. Read by PRESENCE on the
+#                             commit_id-scoped indexes, never by ordering
+#                             against the run window: CodeAnt freezes
+#                             submitted_at on in-place edits (#876), so a
+#                             timestamp test cannot fire for the reviewer this
+#                             term exists to judge.
+#   redeemed_by_clean_run     the ONE narrow exception to "pre_run_approval is
+#                             not suppressed by external evidence" (issue
+#                             #1432). True when pre_run_approval holds AND the
+#                             same reviewer's run marker for THIS SHA reached
+#                             `done` AND run_has_findings_on_head is false AND
+#                             no other disqualifier survives. It drops both
+#                             `pre_run_approval` and `no_substantive_footprint`
+#                             from disqualified_by, so counts_as_coverage flips
+#                             through the ordinary rule and every consumer
+#                             inherits the verdict with no tag-specific logic.
+#                             Rationale: some repos see CodeAnt emit APPROVED
+#                             only as a pre-run stub, post findings as a later
+#                             COMMENTED review, and post NOTHING when the run is
+#                             clean — so a clean pass could never produce a
+#                             gate-valid approval and the CR path deadlocked
+#                             (still-point PR #696, this repo PR #1454).
+#                             Re-triggering never fixes it: the frozen
+#                             submitted_at can never move past the run start.
+#                             NEVER redeemed by: reviewer identity, an in-flight
+#                             run, a run that produced any finding on HEAD, an
+#                             absent or unparseable run record, or prose.
 #   status_comment_names_head a conversation comment by that bot containing the
 #                             HEAD SHA (full, or a >=7-char token that
 #                             prefix-matches HEAD — hex OR all-decimal, issue
@@ -179,10 +212,11 @@
 #                             descriptive current-round comment, or a substantive
 #                             non-APPROVED review); what suppresses a
 #                             temporal_inversion verdict
-#   counts_as_coverage        approved AND substantive AND none of the four
-#                             disqualifiers above. self_report_mismatch is
-#                             omitted from that set when inline_comments_on_head
-#                             > 0 (inventory #416 / this repo #1380).
+#   counts_as_coverage        approved AND (substantive OR redeemed_by_clean_run)
+#                             AND none of the four disqualifiers above.
+#                             self_report_mismatch is omitted from that set when
+#                             inline_comments_on_head > 0 (inventory #416 / this
+#                             repo #1380).
 #
 # `corroborating` lists reviewers with a substantive footprint on HEAD that did
 # not themselves approve (typically cursor[bot]). It is REPORTED, never gating:
@@ -1017,11 +1051,87 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             else ($ap_ts < $runmark.started)
             end )                                                          as $pre_run
 
-        | ( [ (if ($ap != null and ($substantive | not)) then "no_substantive_footprint" else empty end),
+        # Did this reviewer produce FINDINGS on HEAD? Detected by commit_id-scoped
+        # PRESENCE alone — never by ordering a finding against the run window.
+        # $ridx and $iidx are already filtered to HEAD, so a non-APPROVED review
+        # or an inline comment anchored here can only have come from a run on
+        # this commit. A submitted_at comparison would be worse than imprecise:
+        # CodeAnt PATCHes its review objects in place and never refreshes
+        # submitted_at (#876), so the timestamps of the very reviewer this term
+        # exists to judge are frozen and unorderable.
+        #
+        # Deliberately NOT filtered through fresh_review, unlike
+        # $other_review_len. A COMMENTED review that GitHub re-pointed onto HEAD
+        # cannot be proven to belong to this round, and the conservative reading
+        # of an unprovable finding is that it counts — this term only ever
+        # WITHHOLDS the redemption below.
+        #
+        # An explicit allow-list of the two states that CARRY findings, not
+        # `!= "APPROVED"` (CodeRabbit CLI review of this PR). The GitHub review
+        # states are exactly APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+        # and PENDING, and the last two are not findings: PENDING is an
+        # unsubmitted draft, and DISMISSED is a review this repo"s own tooling
+        # ruled obsolete — `/fixpr` runs dismiss-stale-bot-changes.sh after every
+        # push. Since GitHub re-points commit_id onto HEAD across a conflict-free
+        # rebase, a dismissed review can arrive carrying HEAD"s SHA; counting it
+        # would block redemption permanently on any PR that ever had one, which
+        # is the exact stranding the dismissal exists to clear. A missing or
+        # unrecognised state likewise does not block — inventing a blocker from
+        # unusable data is the failure mode #836 warns about.
+        | ( (([ $ridx[]
+                | select(.login == $login
+                         and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")) ]
+              | length) > 0)
+            or (($inl | length) > 0) )                                     as $run_has_findings
+
+        # Redemption of a pre-run approval (issue #1432) — the one narrow
+        # exception to "$pre_run is not suppressed by external evidence".
+        #
+        # The disqualifier above conflates two shapes. A stub with no run behind
+        # it is a rubber stamp and must block. But CodeAnt now emits APPROVED
+        # ONLY as a pre-run stub on some repos: findings arrive later as a
+        # COMMENTED review, and a CLEAN run produces no further review object at
+        # all. On those repos a clean pass could never yield a gate-valid
+        # approval, so a perfectly-reviewed PR deadlocked with no exit but a paid
+        # Greptile escalation or an admin merge (still-point PR #696; this repo
+        # PR #1454). Re-triggering the bot is not a workaround and never will
+        # be — the frozen submitted_at cannot move forward past the run start.
+        #
+        # What redeems: the reviewer"s OWN machine-readable record of this
+        # commit reaching done, with zero findings on this commit. That is not
+        # the approval vouching for itself and it is not the marker vouching for
+        # the approval — it is a completed analysis of HEAD whose result was
+        # "nothing to report", which is the same claim the approval makes.
+        #
+        # What never redeems: reviewer identity, an in-flight run ($runmark.done
+        # false, which is the OTHER $pre_run shape), a run that produced any
+        # finding on HEAD, an absent or unparseable run record, or any amount of
+        # external prose. Each of those leaves $pre_run in $disq exactly as
+        # before, so the #875 rubber-stamp guard and the #1365 in-flight guard
+        # are untouched in the refuse direction.
+        | ( $pre_run
+            and $runmark != null
+            and ($runmark.done == true)
+            and ($run_has_findings | not) )                                as $redeem_shape
+
+        # When the shape holds, BOTH tags leave $disq. `pre_run_approval` because
+        # the clean run is the corroboration it was missing;
+        # `no_substantive_footprint` because that completed run IS the footprint —
+        # withholding coverage for want of evidence while holding the reviewer"s
+        # own completed analysis of HEAD would just relocate the same deadlock.
+        # The raw booleans are still reported, so an audit sees the full shape.
+        | ( [ (if ($ap != null and ($substantive | not) and ($redeem_shape | not)) then "no_substantive_footprint" else empty end),
               (if ($ap != null and $mismatch) then "self_report_mismatch" else empty end),
               (if $inversion then "temporal_inversion" else empty end),
-              (if $pre_run then "pre_run_approval" else empty end),
+              (if ($pre_run and ($redeem_shape | not)) then "pre_run_approval" else empty end),
               (if $cap_fail then "capability_failure" else empty end) ] )  as $disq
+
+        # Reported as redeemed only when redemption actually decided the
+        # outcome: an unrelated disqualifier still standing (temporal_inversion,
+        # self_report_mismatch, capability_failure) keeps the reviewer blocked
+        # and this flag false, so the tag can never be read as "gate cleared"
+        # when it was not.
+        | ( $redeem_shape and ($disq | length) == 0 )                      as $redeemed
 
         | { key: $login,
             value: {
@@ -1044,7 +1154,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               # substitution is 1:1, so truncating first gives the identical
               # 160-char result while never scanning a large body.
               capability_failure_text:   (($fail.body // "") | .[0:160] | gsub("[[:cntrl:]]"; " ")),
+              # Raw, and deliberately still true when redeemed: the ordering
+              # violation really did happen, and an audit reading only
+              # disqualified_by would otherwise lose the shape entirely.
               pre_run_approval:          $pre_run,
+              run_has_findings_on_head:  $run_has_findings,
+              redeemed_by_clean_run:     $redeemed,
               run_started_at:            (($runmark.started) // ""),
               run_finished_at:           (($runmark.finished) // ""),
               # null (not false) when this reviewer published no structured run
@@ -1052,7 +1167,11 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               # says the run is unfinished".
               run_done:                  (if $runmark == null then null else $runmark.done end),
               substantive:               $substantive,
-              counts_as_coverage:        ($ap != null and $substantive and ($disq | length) == 0),
+              # `$redeemed` is an alternative to `$substantive`, never to the
+              # empty-$disq requirement: it can only satisfy the "something read
+              # this commit" half, and it is itself false whenever any
+              # disqualifier survives.
+              counts_as_coverage:        ($ap != null and ($substantive or $redeemed) and ($disq | length) == 0),
               disqualified_by:           $disq,
               seconds_after_push:        secs_after_push($ap_ts)
             } } ]
@@ -1081,7 +1200,13 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         mismatched:        [ $map | to_entries[] | select(.value.approved_on_head and .value.self_report_mismatch) | .key ],
         inverted:          [ $map | to_entries[] | select(.value.temporal_inversion) | .key ],
         capability_failed: [ $map | to_entries[] | select(.value.capability_failure) | .key ],
+        # Reports the SHAPE, so a redeemed approver appears here AND in
+        # .substantive[]. Nothing gates on this bucket — .hollow[] is the
+        # discounted set — and an audit that could not see a redeemed pre-run
+        # approval at all would be blind to exactly the case worth watching.
         pre_run:           [ $map | to_entries[] | select(.value.pre_run_approval) | .key ],
+        redeemed_by_clean_run:
+                           [ $map | to_entries[] | select(.value.redeemed_by_clean_run) | .key ],
         corroborating:     $corroborating
       }
 ') || {

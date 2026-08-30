@@ -225,4 +225,102 @@ check_eq "(N) both evaluators agree the primary review is NOT satisfied" \
 check_eq "(P)/(N) the two projections reach DIFFERENT verdicts" \
   "true" "$([[ "$MG_P_MET" != "$MG_N_MET" && "$ESC_P" != "$ESC_N" ]] && echo true || echo false)"
 
+############################################################################
+# Issue #1432 — the pre-run-approval redemption, held to the same parity bar.
+#
+# Same drift risk, different rule: merge-gate.sh grants coverage when a pre-run
+# stub is corroborated by a COMPLETED CLEAN run on the same SHA, and if
+# escalate-review.sh did not it would burn a paid Greptile review on a PR the
+# gate already considers reviewed. The redemption deliberately lives in
+# review-substance.sh's verdict rather than in either caller, so BOTH inherit it
+# from one evaluation — these two projections are what pins that.
+#
+#   (R)  stub + completed clean run on HEAD              -> both grant
+#   (Rn) the identical payload + one COMMENTED finding   -> both withhold
+#
+# The projections differ ONLY in that finding, so a redemption that fired
+# unconditionally — or one wired into a single caller — fails (Rn) rather than
+# passing here.
+############################################################################
+# submitted_at is AFTER the push and BEFORE the run start: the #836/#876
+# freshness rule is satisfied outright, so nothing above can carry this verdict
+# and what is under test is only the pre-run ordering.
+R_APPROVAL_TS="$(ts_seconds_ago 240)"
+R_RUN_STARTED="$(ts_seconds_ago 220)"
+R_RUN_FINISHED="$(ts_seconds_ago 100)"
+R_FINDING_TS="$(ts_seconds_ago 90)"
+
+R_APPROVAL="$(jq -cn --arg sha "$HEAD_SHA" --arg ts "$R_APPROVAL_TS" \
+  '{id: 4833716092, user: {login: "codeant-ai[bot]", type: "Bot"},
+    commit_id: $sha, state: "APPROVED", submitted_at: $ts, body: ""}')"
+
+# CodeAnt's Review Status comment carrying the structured payload. The naive
+# (zone-less) `started`/`finished` spelling is the live shape; canon_marker_ts
+# folds it onto Z before any compare.
+R_STATUS="$(jq -cn --arg sha "$HEAD_SHA" \
+  --arg st "${R_RUN_STARTED%Z}" --arg fin "${R_RUN_FINISHED%Z}" --arg upd "$R_RUN_FINISHED" '
+  ($sha | .[0:7]) as $short
+  | {user: {login: "codeant-ai[bot]", type: "Bot"},
+     created_at: $upd, updated_at: $upd,
+     body: ("## 🤖 CodeAnt AI — Review Status\n\nReviewing your PR and tracking every commit in one place below.\n\n"
+            + "| Commit | Status |\n|---|---|\n| `" + $short + "` | Reviewed your PR |\n\n"
+            + "<!-- codeant-review-status:[{\"label\":\"Reviewed your PR\",\"commit\":\"" + $sha
+            + "\",\"started\":\"" + $st + "\",\"finished\":\"" + $fin + "\",\"done\":true}] -->")}')"
+
+# The discrimination control: the COMMENTED verdict object CodeAnt posts when a
+# run is NOT clean. Its presence on HEAD is the whole difference between (R)
+# and (Rn).
+R_FINDING="$(jq -cn --arg sha "$HEAD_SHA" --arg ts "$R_FINDING_TS" \
+  '{id: 4833716093, user: {login: "codeant-ai[bot]", type: "Bot"},
+    commit_id: $sha, state: "COMMENTED", submitted_at: $ts,
+    body: "The early return on the error path leaves the advisory lock held; release it before returning."}')"
+
+run_escalation_1432() { # <reviews-array-json>
+  reset_state
+  write_commits "$PUSH_TS"
+  write_state "[$BUGBOT_CHECK_RUN_OK]" "$1" "[]" "[$BUGBOT_FAILURE,$R_STATUS]"
+  run_script 2>/dev/null
+}
+run_merge_gate_1432() { # <reviews-array-json>
+  ( cd "$REPO_ROOT" && PATH="$MG_BIN:$PATH" \
+      FIXTURE_HEAD_SHA="$HEAD_SHA" \
+      FIXTURE_PUSH_TS="$PUSH_TS" \
+      FAKE_REVIEWS="$1" \
+      FAKE_PR_COMMENTS="[]" \
+      FAKE_ISSUE_COMMENTS="[$BUGBOT_FAILURE,$R_STATUS]" \
+      "$MERGE_GATE" 1432 --reviewer cr 2>/dev/null )
+}
+
+############################################################################
+echo "== Projection (R): pre-run stub + COMPLETED CLEAN run on the same SHA =="
+############################################################################
+ESC_R="$(run_escalation_1432 "[$R_APPROVAL]")"
+MG_R="$(run_merge_gate_1432 "[$R_APPROVAL]")"
+MG_R_MET="$(primary_met "$MG_R")"
+
+check_eq "(R) merge-gate.sh: primary_review_met == true" "true" "$MG_R_MET"
+check_eq "(R) escalate-review.sh: STATUS=gate_met" "STATUS=gate_met" "$ESC_R"
+
+ESC_R_SATISFIED=$([[ "$ESC_R" == "STATUS=gate_met" ]] && echo true || echo false)
+check_eq "(R) both evaluators agree the primary review is satisfied" \
+  "$MG_R_MET" "$ESC_R_SATISFIED"
+
+############################################################################
+echo "== Projection (Rn): identical payload plus a COMMENTED finding on HEAD =="
+############################################################################
+ESC_RN="$(run_escalation_1432 "[$R_APPROVAL,$R_FINDING]")"
+MG_RN="$(run_merge_gate_1432 "[$R_APPROVAL,$R_FINDING]")"
+MG_RN_MET="$(primary_met "$MG_RN")"
+
+check_eq "(Rn) merge-gate.sh: primary_review_met == false" "false" "$MG_RN_MET"
+check_eq "(Rn) escalate-review.sh: STATUS=trigger_greptile (not gate_met)" \
+  "STATUS=trigger_greptile" "$ESC_RN"
+
+ESC_RN_SATISFIED=$([[ "$ESC_RN" == "STATUS=gate_met" ]] && echo true || echo false)
+check_eq "(Rn) both evaluators agree the primary review is NOT satisfied" \
+  "$MG_RN_MET" "$ESC_RN_SATISFIED"
+
+check_eq "(R)/(Rn) the two projections reach DIFFERENT verdicts" \
+  "true" "$([[ "$MG_R_MET" != "$MG_RN_MET" && "$ESC_R" != "$ESC_RN" ]] && echo true || echo false)"
+
 finish_escalate_review_tests "merge-gate freshness parity"
