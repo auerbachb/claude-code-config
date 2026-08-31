@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# report-path.sh — Choose a report destination that cannot overwrite a prior one.
+#
+# PURPOSE
+#   /review-stack-audit writes one report per run. Step 7 used to derive that
+#   path from the calendar month alone, so two audits landing in the same month
+#   resolved to the same file and the second silently destroyed the first. That
+#   is not hypothetical: it happened in 2026-08 and PR #1338 had to invent a
+#   per-report deviation to work around it (#1345).
+#
+#   This script is that decision, made once and made testable. Given a target
+#   directory and a month it returns the canonical name when that name is free,
+#   and the first free counter-suffixed name when it is not.
+#
+#   It is a pure function of the directory listing. It reaches no network,
+#   creates nothing, and WRITES NOTHING — it only reads the directory and prints
+#   one path to stdout. The caller does the writing.
+#
+# NAMING
+#   Base:       <series>-<month>.md          e.g. review-stack-audit-2026-08.md
+#   On clash:   <series>-<month>-<N>.md      e.g. review-stack-audit-2026-08-2.md
+#   N counts from 2 upward, so the first report of a month keeps the unsuffixed
+#   name and reads exactly as it always has.
+#
+#   A name is "taken" if ANYTHING occupies it — a file, a directory, or a
+#   symlink including a dangling one. All three would be clobbered or would
+#   break a subsequent `mv`, so none of them is a free slot.
+#
+# FAIL CLOSED
+#   A directory that cannot be listed cannot prove a name is free. Rather than
+#   returning the base name on an unverifiable directory — laundering "I could
+#   not check" into "no collision" — this exits 1 and prints no path. A missing
+#   directory is the same refusal: callers create their target first (Step 0
+#   does `mkdir -p`), so its absence means the caller and this script disagree
+#   about where the report goes, which is exactly when guessing is worst.
+#
+# CONCURRENCY
+#   The returned path is free at the moment of the check. Two audits running at
+#   the same instant against the same directory could both be handed it. That is
+#   not the failure #1345 describes (reports written days or weeks apart) and a
+#   lock here would not help, because the caller writes afterwards regardless.
+#   Callers wanting atomicity should create the file with O_EXCL.
+#
+# USAGE
+#   report-path.sh --dir <directory> --month <YYYY-MM> [--series <name>]
+#   report-path.sh --help | -h
+#
+#   --dir     Directory the report will be written into. Must already exist and
+#             be readable and searchable.
+#   --month   Report month, `YYYY-MM`.
+#   --series  Filename series. Default `review-stack-audit` — the canonical
+#             series for this skill's reports, in both destinations.
+#
+# OUTPUT
+#   One line on stdout: the chosen path, `<dir>/<name>.md`. Nothing else.
+#
+# EXIT STATUS
+#   0  A free path was found and printed.
+#   1  Input or environment error: --dir missing, unreadable, or not a
+#      directory; or every suffix up to the bound is taken. No path printed.
+#   2  Usage error.
+#
+# EXAMPLES
+#   .claude/skills/review-stack-audit/report-path.sh \
+#     --dir ~/.claude/review-stack-audit --month 2026-08
+#
+#   .claude/skills/review-stack-audit/report-path.sh \
+#     --dir "$REPO_ROOT/.claude/reference" --month 2026-08
+
+set -euo pipefail
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
+
+print_help() {
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+}
+
+usage_error() {
+  echo "report-path.sh: $1" >&2
+  echo "Run with --help for usage." >&2
+  exit 2
+}
+
+input_error() {
+  echo "report-path.sh: $1" >&2
+  exit 1
+}
+
+# Upper bound on the suffix search. Reaching it means something is very wrong
+# with the directory, not that the next name is free — exhaustion is an error,
+# never a wraparound onto an occupied path.
+MAX_SUFFIX=999
+
+DIR=""
+MONTH=""
+SERIES="review-stack-audit"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) print_help; exit 0 ;;
+    --dir)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--dir requires a value"
+      DIR="$2"; shift 2 ;;
+    --dir=*)
+      DIR="${1#--dir=}"; [[ -n "$DIR" ]] || usage_error "--dir value cannot be empty"; shift ;;
+    --month)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--month requires a value"
+      MONTH="$2"; shift 2 ;;
+    --month=*)
+      MONTH="${1#--month=}"; [[ -n "$MONTH" ]] || usage_error "--month value cannot be empty"; shift ;;
+    --series)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--series requires a value"
+      SERIES="$2"; shift 2 ;;
+    --series=*)
+      SERIES="${1#--series=}"; [[ -n "$SERIES" ]] || usage_error "--series value cannot be empty"; shift ;;
+    --) shift; break ;;
+    -*) usage_error "unknown flag: $1" ;;
+    *)  usage_error "unexpected positional argument: $1" ;;
+  esac
+done
+
+[[ $# -eq 0 ]] || usage_error "unexpected positional argument: $1"
+
+[[ -n "$DIR"   ]] || usage_error "--dir is required"
+[[ -n "$MONTH" ]] || usage_error "--month is required"
+
+# A malformed month would silently produce a name outside the series, which no
+# later run would recognise as a month-mate — so it would stop colliding by
+# being unfindable instead of by being distinct.
+[[ "$MONTH" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]] \
+  || usage_error "--month must be YYYY-MM (got: $MONTH)"
+
+# The series becomes a filename component. Anything with a slash, or a
+# dot-leading name, would write somewhere other than --dir or produce a hidden
+# file that the README index and every later run would miss.
+[[ "$SERIES" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || usage_error "--series must start alphanumeric and contain only [A-Za-z0-9._-] (got: $SERIES)"
+
+DIR="${DIR%/}"
+[[ -n "$DIR" ]] || DIR="/"
+
+[[ -e "$DIR" ]] || input_error "target directory does not exist: $DIR"
+[[ -d "$DIR" ]] || input_error "target path is not a directory: $DIR"
+[[ -r "$DIR" && -x "$DIR" ]] \
+  || input_error "target directory is not readable and searchable, so a free name cannot be proven: $DIR"
+
+# `-e` follows symlinks, so a DANGLING symlink reads as absent; `-L` catches it.
+# Both occupy the name.
+name_taken() {
+  [[ -e "$1" || -L "$1" ]]
+}
+
+CANDIDATE="$DIR/$SERIES-$MONTH.md"
+if ! name_taken "$CANDIDATE"; then
+  printf '%s\n' "$CANDIDATE"
+  exit 0
+fi
+
+for (( n = 2; n <= MAX_SUFFIX; n++ )); do
+  CANDIDATE="$DIR/$SERIES-$MONTH-$n.md"
+  if ! name_taken "$CANDIDATE"; then
+    printf '%s\n' "$CANDIDATE"
+    exit 0
+  fi
+done
+
+input_error "every name from $SERIES-$MONTH.md through $SERIES-$MONTH-$MAX_SUFFIX.md is taken in $DIR"

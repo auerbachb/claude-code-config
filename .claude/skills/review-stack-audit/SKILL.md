@@ -43,17 +43,19 @@ REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 [[ -n "$REPO_ROOT_SH" ]] || { echo "ERROR: repo-root.sh not found (checked all three paths) — review-stack audit root unavailable" >&2; exit 1; }
 ```
 
-## The two engines
+## The engines
 
-Both are plain scripts, so the judgment in this file stays small and their
+All three are plain scripts, so the judgment in this file stays small and their
 behavior is testable offline (`.claude/scripts/tests/review-stack-audit.test.sh`).
 
 | Engine | Job |
 |--------|-----|
 | `measure.sh` | What each tool actually did: billed signals, caps, throughput, unique value. No verdicts. |
 | `drift.sh` | Snapshot vs baseline → one finding per divergence, each with a stable dedup marker. Pure function of two JSON files. |
+| `report-path.sh` | Where this run's report goes, guaranteed not to be a path something already occupies (Step 7). Pure function of the target directory. Writes nothing. |
 
-Run `--help` on either for its full contract. Do not reimplement their logic here.
+Run `--help` on any of them for its full contract. Do not reimplement their
+logic here.
 
 ---
 
@@ -77,6 +79,7 @@ REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"
 MEASURE="$SKILL_DIR/measure.sh"
 DRIFT="$SKILL_DIR/drift.sh"
+REPORT_PATH="$SKILL_DIR/report-path.sh"
 DEDUP="$REPO_ROOT/.claude/scripts/issue-dedup.sh"
 STATE_DIR="$HOME/.claude/review-stack-audit"
 WATERMARK="$STATE_DIR/last-run.json"
@@ -179,7 +182,12 @@ Resolution order, first hit wins:
 1. `.claude/reference/review-stack-baseline.json` — the canonical machine-readable
    record. **This is the path #1199's decision record writes to.**
 2. A fenced ```json block tagged `review-stack-baseline` inside the newest
-   `.claude/reference/ai-review-tool-audit-*.md`.
+   `.claude/reference/review-stack-audit-*.md` **or**
+   `.claude/reference/ai-review-tool-audit-*.md` — newest across both globs.
+   Two globs because there are two series: this skill writes the first (Step 7),
+   and the hand-run audits that preceded it wrote the second. Dropping either
+   makes a baseline block in that series unreachable, and this rung would fail by
+   silently never matching rather than by saying anything.
 3. Neither → **bootstrap mode.**
 
 **Bootstrap mode is a real outcome, not an error.** Publish the snapshot, file
@@ -289,18 +297,37 @@ The snapshot is already at `$STATE_DIR/snapshot-$MONTH.json` (Step 3) — dated,
 throughput, spend, and value stay comparable run over run. Never overwrite a
 prior month's.
 
-**Default report destination is outside the repo:**
-`~/.claude/review-stack-audit/review-stack-audit-YYYY-MM.md`.
+### The report's name — one series, one collision rule
+
+**The series is `review-stack-audit-YYYY-MM.md`, in both destinations.** It is
+this skill's own name, and it is the *only* name a report of this skill takes —
+there is no second series to choose between and no reason for a report to invent
+a deviation (#1345).
+
+> **Not `ai-review-tool-audit-*`.** That series belongs to the hand-run audits
+> (2026-04, 2026-06, 2026-08 / #1199). Writing into someone else's slot is what
+> collided in 2026-08, forcing PR #1338 to rename its report by hand and explain
+> itself in the header. This rule is that explanation, made once and made
+> permanent.
+
+**A month can hold more than one report.** When the name is already taken the
+report lands under a counter suffix — `review-stack-audit-2026-08-2.md`, then
+`-3` — so a second audit in the same month can never overwrite the first. Never
+derive this by hand: `report-path.sh` (below) returns a path proven free, and
+refuses rather than guessing when it cannot read the target directory.
+
+### Where `$REPORT_DIR` points
+
+**Default is outside the repo:** `REPORT_DIR="$STATE_DIR"`.
 
 > **Why outside.** A tick can run in a session sitting on the root repo on `main`.
 > Writing there would put changes on `main` — against `CLAUDE.md` §ALWAYS USE A
 > WORKTREE — and trip `dirty-main-guard`. Landing a report *in* the repo stays a
 > deliberate, human, PR-shaped act.
 
-`--report-to-repo` writes `.claude/reference/ai-review-tool-audit-YYYY-MM.md`
-instead — continuing the established series the 2026-06 audit named for its own
-successor — and is valid **only** in a worktree that is not the root repo, on a
-branch that is not `main`:
+`--report-to-repo` sets `REPORT_DIR="$REPO_ROOT/.claude/reference"` instead, and
+is valid **only** in a worktree that is not the root repo, on a branch that is
+not `main`:
 
 ```bash
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
@@ -308,9 +335,28 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [[ "$(git rev-parse --show-toplevel)" != "$("$REPO_ROOT_SH")" ]]
 ```
 
-Refuse otherwise, explain why, and fall back to the default path. When it does
-land in-repo, add the one-line entry under **"Audits and research
-(point-in-time)"** in `.claude/reference/README.md`.
+Refuse otherwise, explain why, and fall back to the default directory. When it
+does land in-repo, add the one-line entry under **"Audits and research
+(point-in-time)"** in `.claude/reference/README.md`, naming the filename
+`report-path.sh` actually returned — suffix included, if it has one.
+
+### Resolve the path, then write
+
+With `$REPORT_DIR` settled, resolve the destination and write through a temp file
+in that same directory, the same idiom as Step 3's snapshot, so a half-written
+report is never what a reader finds:
+
+```bash
+REPORT="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" \
+  || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
+TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
+# ...compose the report into "$TMP_REPORT"...
+mv "$TMP_REPORT" "$REPORT"
+```
+
+**A non-zero exit from `report-path.sh` is a hard stop, not a cue to fall back to
+the base name.** The whole point is that the unverified path is exactly the one
+that destroys a prior report.
 
 Report shape, following the prior audits in this series:
 
