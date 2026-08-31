@@ -22,11 +22,26 @@ non-negative window. The command stops earlier when all owned work is terminal.
 At the chosen deadline it stops leftovers; it never merely returns while
 billable work continues.
 
+**The window is a ceiling on the whole run, not a budget for its middle.** It
+bounds every phase — landing, park bookkeeping, marker writing, state
+persistence — and not merely the land phase. Once the deadline passes, the run
+stops all remaining non-terminal work and cuts straight to the bounded terminal
+path defined in Step 0, degrading optional output rather than blowing the
+ceiling. A `/pause --window 15m` is observably finished shortly after minute
+15, every time, and Step 8 names what was skipped to make that true.
+
 ## Step 0: Resolve helpers and parse arguments
 
 `/pause` is invocable from any thread — including one whose cwd is not this repo. Resolve each helper the same way every other stop-style command does:
 
 ```bash
+# Command entry — stamp the clock FIRST. The window is measured from the moment
+# /pause was invoked, so preflight (resolving helpers, discovering the repo,
+# reading the shutdown reference) is spent inside the window, not free time
+# before it. Starting the clock after preflight would silently extend every
+# deadline and under-report elapsed time in Step 8.
+T_START=$(date -u +%s)
+
 resolve_script() {
   local name="$1" candidate
   for candidate in \
@@ -105,10 +120,119 @@ done
 if [[ "$_NEXT_IS_WINDOW" == true ]]; then
   echo "ERROR: --window requires a value." >&2; exit 2
 fi
-T_END=$(( $(date -u +%s) + WINDOW_MINUTES * 60 ))
+# T_START was stamped at command entry, above — never re-stamp it here.
+T_END=$(( T_START + WINDOW_MINUTES * 60 ))
+# Fixed post-deadline ceiling: three minutes. Enough for one slow TaskStop or
+# state-lock retry plus two file writes and the report — no more.
+GRACE_SECONDS=180
+T_GRACE_END=$(( T_END + GRACE_SECONDS ))
+# Always defined before Step 7b builds PAUSE_JSON with --argjson.
+WINDOW_EXPIRED=false
 ```
 
+### The deadline model (one model, used by every later step)
+
+**The check idiom.** Every step that performs work calls this before each unit
+of work. The first call that finds the deadline passed latches
+`WINDOW_EXPIRED`; it never unlatches:
+
+```bash
+past_deadline() {                       # true once T_END has passed
+  (( $(date -u +%s) >= T_END )) && WINDOW_EXPIRED=true
+  [[ "$WINDOW_EXPIRED" == true ]]
+}
+past_grace() { (( $(date -u +%s) >= T_GRACE_END )); }
+```
+
+**The bounded terminal path** is exactly four moves, in this order:
+
+1. Stop leftover work (Step 2) — the specialized Monitor teardown and the
+   exact-ID hard-stops are both this one move, not separate phases
+2. Write the marker — compact form when `WINDOW_EXPIRED` is true (Step 7a)
+3. Persist pause state (Step 7b)
+4. Print the report (Step 8)
+
+**`T_GRACE_END` bounds each of those four moves, not just the run as a whole.**
+Call `past_grace` before starting a terminal move and before any retry inside
+one — a state-lock retry, a re-attempted `mv`. A pre-check alone cannot bound an
+operation that hangs, so **invoke each move bounded**: rely on the helpers' own
+timeouts rather than waiting indefinitely (`session-state.sh` and
+`handoff-state.sh` exit `6` on lock timeout; a `TaskStop` that does not confirm
+is recorded `stopped: false`, never awaited). When a move exceeds the bound,
+stop waiting rather than finishing: record that move as incomplete, do not
+retry it, skip straight to the report, and select `INCOMPLETE SHUTDOWN` under
+the existing rules below. A grace bound that nothing checks is decoration; this is the check
+that makes three minutes a real ceiling.
+
+**Only these four moves may run between `T_END` and `T_GRACE_END`.** Everything
+else — landing a further unit, a local review round, a commit or push, a
+long-form marker section — is skipped the moment `past_deadline` returns true.
+Step 1's two gate writes are the one other unconditional move: closing the
+launch gates is what makes a stop a stop, so it runs to completion whenever it
+is reached, before any deadline arithmetic can shorten it.
+
+**The checkable rule:** every step that runs after `T_END` is computed either
+calls `past_deadline` before each unit of work, is one of the named moves
+above, or is one of the two bookkeeping exceptions named below. No step in this
+skill is exempt, and none may run unbounded. **The rule governs work that waits
+or mutates**; the exceptions are neither, and they run to completion without a
+`past_deadline` check of their own.
+
+**Two named exceptions, both bookkeeping rather than work.** Neither waits, and
+neither mutates anything outside this run's own in-memory board, which is why
+neither is a hole in the rule above:
+
+1. **Step 3 collection under `--window 0`.** `T_END == T_START` makes
+   `past_deadline` true before the first read, but this path does no landing
+   and no mutation, so the collected board *is* its whole output. The three
+   bounded reads run; skipping them would publish an empty record of a machine
+   that was not empty. The skip belongs to a window that was spent, not to one
+   never offered.
+2. **The post-deadline bookkeeping pass — Step 4's classification and sweep,
+   and Step 6's recording.** These carry already-collected units to the
+   terminal path: Step 4 relabels every unit `park` (an in-memory pass with no
+   `gh` call and nothing that can block), and Step 6 records each at its actual
+   state *without mutation*. Both must run to completion. A half-swept board
+   strands `land` units that no step will then dispatch, and an unrecorded unit
+   is lost exactly as surely as one never read — which is why Step 3 forbids
+   routing collected work straight to the terminal path. **So "only these four
+   moves" means only these four may *wait or mutate*; it never barred the
+   non-mutating bookkeeping that gives them something to write.**
+
+Both exceptions are bounded by construction — a fixed number of non-blocking
+steps over an already-finite board — not by a clock check. Everything else
+stays subject to the rule above, and the terminal-move and gate-write
+restrictions are unchanged.
+
+**Re-check the clock at terminal entry.** `WINDOW_EXPIRED` only latches when
+`past_deadline` is actually called, so call it once more on entering the
+terminal path — before choosing the marker form in Step 7a and before building
+`PAUSE_JSON` in Step 7b. Without that call a run whose last working-step check
+fell just inside the window would write a full-length marker and record
+`window_expired: false` while already past the deadline. The recorded flag must
+describe the clock at the moment the artifacts are built, not the last time a
+working step happened to look.
+
+**`--window 0` is unchanged.** It still forces every unit to `park`, skips
+landing and checkpoint work entirely, and stops immediately. `T_END` equals
+`T_START`, so `past_deadline` is true from the first call — the immediate
+branch and the past-deadline branch are the same shape reached two ways, and
+the terminal path still publishes the marker and the JSON state.
+
+**"Immediately" scopes to waiting and mutation, never to reading.** What
+`--window 0` skips is landing, checkpoint time, and every park-phase mutation —
+not Step 3's collection, which ran on this path before the ceiling existed and
+still does. The marker and JSON state this path publishes are built *from* the
+collected board, so a `--window 0` run that read nothing would publish an empty
+record of a machine that was not empty. Step 3 states the same carve-out from
+its own side; the two are one rule.
+
 ## Step 1: Close both launch gates
+
+**Bounded move — runs unconditionally, deadline or not** (Step 0). These are two
+state writes with no waiting in them, and leaving a gate open is worse than any
+overrun: a `/pause` that skipped them would let another thread start new work
+while the laptop is closing.
 
 Stop every launch path before reading the board so nothing new enters the
 pipeline during the runway:
@@ -143,6 +267,14 @@ fi
 
 Stop persistent Monitors owned by this session **before** the landing phase. This makes landing single-writer: a live `/babysit-pr` tick can dispatch `/fixpr` on the same PR `/pause` is about to drive through `/wrap`, and the two would race. The stop comes first so landing is orderly.
 
+**The specialized Monitor teardown below is the first half of terminal move 1**
+(Step 0) — the same move as the exact-ID hard-stops further down, not a phase
+before them. It runs whether or not the deadline has passed: these are stops and
+their bookkeeping writes, never waits, and a Monitor left ticking after the
+laptop closes is the exact failure this command exists to prevent. Attempt each
+stop within `T_GRACE_END`; a Monitor that cannot be stopped inside that bound is
+recorded `stopped: false` and named in Step 8, never retried indefinitely.
+
 Enumerate Monitors in this order and record the result of each stop:
 
 1. **Per-PR babysit watchers** — for each PR where `.prs["N"].babysit.active == true`: delegate to the existing `/babysit-pr-stop <PR>` skill. Record `stopped: true` on success.
@@ -166,6 +298,21 @@ remaining IDs at `T_END`. Record output, handoff, worktree, and recovery paths
 in `parked`. A failed stop keeps the gates closed and makes the result
 incomplete.
 
+**The hard-stop of remaining task IDs is the first move of the
+bounded terminal path** (Step 0), so it still runs after the deadline — that is the whole point
+of a hard stop. Call `past_deadline` before granting checkpoint time: **if the
+deadline has already passed when this step is reached, skip the cooperative
+checkpoint interval entirely**, hard-stop by exact ID every remaining productive
+task the shutdown contract marks safe to stop, and leave `WINDOW_EXPIRED`
+latched true. **The one carve-out is a `/wrap` in flight** — a merge killed
+mid-write is the unrecorded state this command exists to prevent, so it is
+checkpointed and recorded per Step 5, never stopped where it stands. Selection
+of what is safe to stop stays with `background-task-shutdown.md`; the deadline
+changes the timing, never the contract. Checkpoint time
+is the negotiable part; the stop itself never is. A failed stop still keeps the
+gates closed and still makes the result incomplete — the grace path weakens
+none of that.
+
 ## Step 3: Collect the board
 
 Gather the complete picture of what is in flight. For authorship reasons (`safety.md` §"Authorship"), only PRs authored by `@me` in the current repo are eligible for landing or parking by this session's automation.
@@ -177,6 +324,47 @@ Collect:
 3. **Worktree branches with uncommitted or unpushed work** — check each local worktree for staged/unstaged changes and commits not yet on the remote.
 
 With no `session-state.sh` resolved, collection is limited to what `gh pr list` returns. Report "could not read what was running" for subagents and worktrees rather than "nothing was running".
+
+**Budget check — call `past_deadline` before each collection above, and again
+before each worktree in item 3.** Collection is not a terminal move, so it does
+not run past `T_END`: **start no new read once the deadline has passed** — no
+`gh pr list`, no `session-state` read, no worktree enumeration or status scan.
+Finish the read already in progress — then continue through Step 4, which
+classifies everything collected `park`, and Step 6, which records those units
+without mutation. **Collected results are never routed straight to the terminal
+path:** a unit that was read but never classified or recorded is lost exactly
+as surely as one never read. What the deadline skips is new reads and every
+mutation, never the recording of what is already in hand. In practice this step
+runs minutes before the deadline.
+
+**`--window 0` still collects the board.** `T_END == T_START` makes
+`past_deadline` true from the first call, so the check above would otherwise
+skip every read on the immediate path — which does no landing and no mutation,
+making the recorded board its *entire* output. Skipping collection there would
+leave the marker holding nothing but Step 2's registry leftovers and strand
+every open PR, exactly the "we did not look" rendered as "nothing was there"
+that the next paragraph forbids. So the skip is scoped to a window that was
+*spent*: it applies when `WINDOW_MINUTES > 0` and the clock ran out, never to
+`--window 0`, where the three bounded reads always run. This is what keeps
+`--window 0` behavior unchanged from before the ceiling existed.
+
+**What went uncollected is recorded unavailable, never as empty.** This is the
+same rule Step 0 states for an unreadable inventory — "we did not look" must
+never render as "nothing was there", because an in-flight unit that goes
+unlisted is a unit the user cannot resume. Concretely:
+
+- A collection not performed is named in the Step 8 report as unread
+  (`PR list unread — deadline`, `worktree scan cut short — N unread`), never
+  reported as an empty list.
+- Work already known from Step 2's registry teardown is still parked and
+  recorded — that inventory is in hand and costs nothing to reuse.
+- A worktree enumerated but not scanned gets its own `park` entry, with
+  `stopped_at` of `working-tree state unread — deadline` and a `next_move`
+  naming the check the resume should run first. It keeps its `issue-N` branch
+  name, so `candidate-ownership.sh` still matches it and `/pause-resume`
+  re-reads it cold.
+
+Every unit collected still gets a `land` or `park` classification in Step 4.
 
 ## Step 4: Triage — print before acting
 
@@ -204,6 +392,40 @@ park  ←  everything else
 
 Subagents are **never** `land` — they cannot be driven to a merge from outside. `--window 0` forces every unit to `park` before this step runs.
 
+**Budget check — call `past_deadline` once before classifying, again before
+each `merge-gate.sh` run, and once more immediately after each returns, before
+its result is recorded.** A gate call takes real time, so the deadline can pass
+*during* it; without the after-check a `land` verdict earned a moment too late
+would be printed as `land` and only corrected at Step 5. Past the deadline
+every unit is `park` by
+definition: there is no runway left to land anything, so the gate is not worth
+querying. Skip the remaining gate calls, then — **in this order** — sweep,
+print, and go to Step 6, which records the result without mutation. This is the
+same forcing `--window 0` applies, reached by the clock instead of the
+argument.
+
+**The sweep reclassifies *every* unit `park`, not only the ones still
+unclassified.** The deadline can trip partway through this step, after some
+units have already been classified `land`. Because this branch goes straight to
+Step 6, it never reaches Step 5's "reclassify every remaining `land` unit
+`park`" rule — so a unit left holding `land` here is dispatched by nobody and
+recorded by nobody, and it reaches neither the marker nor the pause state.
+Sweep the whole board, including units classified earlier in this same pass.
+
+**The sweep itself carries no deadline check, and must not grow one.** It is an
+in-memory relabel of units already collected — no `gh` call, no `merge-gate.sh`
+run (the budget check above already skipped those), nothing that can block — so
+there is no operation here for `T_END` or `T_GRACE_END` to bound. Aborting it
+partway would leave exactly the orphaned `land` units it exists to prevent, so
+a half-swept board is strictly worse than a late one. The grace bound belongs
+to the terminal moves that follow, which own it already.
+
+**Sweep before printing.** The printed classification is this step's contract
+with the user (`Every in-flight unit gets exactly one of land | park, stated
+with its reason before any action is taken`), so it must show the post-sweep
+board — the same one Step 6 consumes. Printing first would announce a `land`
+that nothing will ever dispatch.
+
 **`mergeStateStatus: BEHIND` is not a special case here.** `land` dispatches `/wrap`, and Step 1d's clean-`BEHIND` handling lives inside that path already. A protection-modifying bypass remains a hard stop that parks the unit and prints the `/admin-merge` runbook.
 
 Example output:
@@ -219,13 +441,23 @@ Example output:
 
 Serial, not parallel — two concurrent `/wrap` runs against one repo race on main.
 
-**The window is a budget, not a promise.** Before dispatching each `land` unit, check `$(date -u +%s)` against `T_END`. A unit that has not reached `merged` by `T_END` is reclassified `park` and recorded at its actual state — never left running on the assumption the user is still watching.
+**The window is a budget, not a promise.** Before dispatching each `land` unit, call `past_deadline` (Step 0) — it compares `$(date -u +%s)` against `T_END` and latches `WINDOW_EXPIRED`. A unit that has not reached `merged` by `T_END` is reclassified `park` and recorded at its actual state — never left running on the assumption the user is still watching.
+
+**On the first `past_deadline` true, landing is over.** `WINDOW_EXPIRED` is now
+`true`: dispatch nothing further, reclassify every remaining `land` unit `park`,
+and record each at its actual state. Step 6 then records those units without
+mutation, and the run proceeds to the bounded terminal path.
 
 For each `land` unit, dispatch `/wrap`. Monitor its outcome. If the window
-expires while a `/wrap` is still in flight, request its checkpoint, record its
-actual boundary, then hard-stop its exact runtime ID via the shared shutdown
-contract. Reclassify the unit `park`; `/pause-resume` re-reads GitHub before
-deciding whether it still needs work.
+expires while a `/wrap` is still in flight, request its checkpoint and record
+its actual boundary, then **stop waiting on it — never hard-stop its runtime
+ID.** This is the Step 2 carve-out in full: a merge killed mid-write is exactly
+the unrecorded state this command exists to prevent, so an in-flight `/wrap` is
+the one productive task the exact-ID hard stop never claims (`pause-state.md`
+§Deadline semantics). Reclassify the unit `park` and record it as still in
+flight at the boundary, never as finished; `/pause-resume` re-reads GitHub
+before deciding whether it still needs work, so a merge that completed after the
+window shows up as landed at resume.
 
 A `land` unit that hits a hard stop during `/wrap` (human `CHANGES_REQUESTED`, protection-modifying bypass, etc.) is reclassified `park` immediately and the hard stop is named in its `stopped_at` field.
 
@@ -240,8 +472,24 @@ Set the boundary to `stopped immediately; no mutation attempted` plus the exact
 recovery path. This is the machine-park path and the explicit user fast-stop
 path; Step 7 still publishes the marker and JSON state.
 
+**Past-deadline branch (`past_deadline` returns true):** the same shape as the
+immediate branch, reached by the clock instead of the argument. **The window is
+a budget here too, not a promise** — call `past_deadline` before each unit, and
+again before each mutating action within a unit (posting review replies in
+action 1; running local review, committing, and pushing in action 2). A unit
+reached after `T_END` records the state it is actually in, attempts no
+mutation, and sets its `boundary` to `stopped past deadline; no mutation
+attempted` plus the exact recovery path. Never start a local review round, a
+commit, or a push once the deadline has passed — an unpushed fix recorded
+truthfully is recoverable; a shutdown that overran is not.
+
+**Keep the machine-required fields in both branches.** `candidate-ownership.sh`
+matches parked entries by regex, so a unit that maps to an issue keeps its
+`branch` in `issue-N-*` form and keeps the `#N` reference inside `stopped_at`
+or `next_move`. A compact boundary string never costs a unit its identity.
+
 1. **Post pending review replies** — any bot finding that has been addressed but not yet replied to gets a reply now.
-2. **Commit and push fixes** — if the remaining budget allows a local review loop, run it; otherwise commit and push anyway. When a push is impossible (no upstream, auth failure, conflict), say exactly why in the parked entry's `boundary` field: "pushed without local review — window expired", "push failed: no upstream", etc. Never leave fixes only in a worktree when a push was possible.
+2. **Commit and push fixes** — **inside the window only** (`past_deadline` false; past it, the branch above has already recorded the unit unmutated). If the remaining budget before `T_END` allows a local review loop, run it; otherwise skip the review and commit and push anyway — the push is the cheaper half and the one that makes the work recoverable. When a push is impossible (no upstream, auth failure, conflict), say exactly why in the parked entry's `boundary` field: "pushed without local review — window expired", "push failed: no upstream", etc. Never leave fixes only in a worktree when a push was possible inside the window.
 3. **Record the stopping point** — fill in `stopped_at` (what state it reached), `next_move` (the next action for resume), `waiting_on` (reviewer | ci | null), and `boundary` (pushed | unpushed with reason).
 
 No half-applied review round: either a round's fixes are all committed and its threads replied, or the entry records exactly which findings were applied and which were not.
@@ -260,6 +508,12 @@ New pauses write only `.repos[<key>].pause` state and `pause-*.md` markers.
 legacy records.
 
 ### 7a: Write the human-readable marker
+
+**Terminal-path move 2** (Step 0) — it is never skipped for being past the
+deadline, and is bounded by `T_GRACE_END` like every terminal move. What the
+deadline changes is how much it says, never whether or where it is published;
+what `T_GRACE_END` changes is that an unfinished write stops rather than runs
+on, leaving `MARKER_PUBLISHED=false` and an `INCOMPLETE SHUTDOWN` report.
 
 Use the same atomic `mktemp` + `mv` publish that `/end` Step 6 uses. Staging inside `$OUT_DIR` keeps `mv` on one filesystem. The marker filename includes the repo key so a resume from a different repo cannot accidentally pick it up as a cross-repo fallback:
 
@@ -325,7 +579,71 @@ the `pause` state block in human-readable form: what landed, what is parked,
 each parked unit's stopping point and next move, exact stopped-task recovery
 records, and the refill pause status with how to lift it.
 
+#### Compact marker (selected when `WINDOW_EXPIRED` is true)
+
+**The marker step can never be the reason the window blows.** Past the
+deadline, write the compact form: everything a machine or a cold reader needs
+to recover, and nothing else.
+
+**Kept — non-negotiable, these are what make the marker a recovery artifact:**
+
+- The exact ``Repository: `owner/repo` `` line, first field, unchanged — Step 1
+  of `/pause-resume` greps it verbatim for auto-discovery
+- The landed list (one merged PR per line), and — because this marker is
+  written only when the deadline passed — an explicit line marking it
+  provisional: `Window expired: landed list may be incomplete; re-read GitHub`.
+  The marker is the fallback index used exactly when `session-state.sh` is
+  unreadable, so a resume reading it never sees the JSON `window_expired` flag.
+  Dropping this line lets a marker-only resume trust a landed list that a
+  `/wrap` finishing after the deadline has already made stale.
+- Each parked unit: its identity, its stopping point, its next move, and its
+  exact recovery path — keeping the `issue-N` branch and `#N` issue references
+  that `candidate-ownership.sh` matches on
+- The stopped-task records with their exact recovery paths
+- **The stopped-Monitor records** — each entry's owner and whether the stop was
+  confirmed. `/pause-resume` re-arms babysit, fleet, and day-mode watchers from
+  `monitors_stopped`, and on the marker-only path it has nothing but this
+  section to rebuild them from. Dropping it leaves those Monitors stopped with
+  no record that they ever existed, which is the one loss a resume cannot
+  detect by re-reading GitHub.
+- The refill pause status and how to lift it
+- The resume command line
+
+**Dropped:** long-form narrative prose, per-unit explanation and rationale,
+formatted tables, restated triage reasoning, and any section that exists to
+read well rather than to be acted on. Terse lines and fragments are correct
+here; polish is the optional output the ceiling spends first.
+
+Everything mechanical stays exactly as above: the atomic `mktemp` + `mv`
+publish, the injective `pause-<stamp>-<repokey>-<session>-<tag>.md` filename
+encoding, the fallback-path behavior, and the `chmod 644` permissions. A
+compact marker is discovered by `/pause-resume` the same way a full one is.
+
+**`WINDOW_EXPIRED` is the only trigger for the compact form** — there is no
+second rule. Because `T_GRACE_END` is reachable only after `T_END`, an
+approaching grace bound is always already inside the expired path; it tightens
+how much the compact marker says, never whether the compact form is chosen.
+
+**The compact marker is always preferred over exceeding `T_GRACE_END`** — pick
+the compact form as soon as the path is entered, so the write finishes inside
+the bound rather than racing it. **No marker write begins or continues past
+`T_GRACE_END`:** check `past_grace` before starting the write and before any
+retry of the `mv` publish; if it is already true, do not start one. A write cut
+short leaves `MARKER_PUBLISHED=false`, and the existing `INCOMPLETE SHUTDOWN`
+handling applies unchanged — report that no artifact exists rather than
+claiming a fallback that is not there. Degrading the marker is how the bound is
+met; overrunning it is not an available trade.
+
 ### 7b: `session-state.sh --set` the `.repos[<key>].pause` block
+
+**Terminal-path move 3** (Step 0) — never skipped for being past the deadline,
+and its shape does not degrade: the state block is the machine record the whole
+command exists to produce. It is bounded by `T_GRACE_END` like every terminal
+move: bound the state-lock retry rather than waiting indefinitely, and on
+expiry leave `PAUSE_PERSISTED` nonzero and report `INCOMPLETE SHUTDOWN`. `WINDOW_EXPIRED` is initialized `false` in
+Step 0 and only ever latched `true`, so it is always a bare `true`/`false` by
+the time `jq -n` reads it — `--argjson window_expired` never sees an empty
+string.
 
 **This block is invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`). Like `refill` and `day`, read it with an explicit `--get` or an armed pause reports as absent. Never inline `jq … > tmp && mv tmp` — that bypasses the state lock (`handoff-files.md`).
 
@@ -369,21 +687,27 @@ If `session-state.sh` was not resolved in Step 0, skip this write and set `PAUSE
 
 ## Step 8: Report
 
-Compact, per `CLAUDE.md` #3. No phase-by-phase narration, no progress tables.
+**Terminal-path move 4** (Step 0). Compact, per `CLAUDE.md` #3. No phase-by-phase narration, no progress tables.
 
 ```
 === Pause <complete | INCOMPLETE SHUTDOWN> ===
+Timing: window <WINDOW_MINUTES>m · elapsed <M>m · grace <used | not used>
+        <WINDOW_EXPIRED=true: "skipped to meet the deadline: <what was skipped>">
 Stopped: <WINDDOWN_PERSISTED=1: "refill paused (lift with: tell Claude 'resume refilling' in the next session)">
          <WINDDOWN_PERSISTED=0: "COULD NOT record the refill pause — another thread may still start new work">
 
 Landed:
   merged PR #N  (one line per merged PR)
-  <nothing landed> if the list is empty
+  <nothing landed> only if collection was COMPLETE and the list is empty
+  <PR list unread — deadline; landed state unknown> if the PR list was PARTIAL or SKIPPED
 
 Parked (<N> units):
   PR #M — <stopped_at> · next: <next_move> · waiting on: <waiting_on>
   Subagent <kind> — handoff at <path>
-  <nothing parked> if the list is empty
+  <nothing parked> only if collection was COMPLETE and the list is empty
+  <subagent list unread — deadline> if item 2 was PARTIAL or SKIPPED
+  <worktree scan cut short — N unread> if item 3 was PARTIAL
+  <board not collected — deadline; N sources unread> if collection was SKIPPED
 
 Monitors stopped: <N stopped of M total; any not-stopped named here>
 Background tasks stopped: <N stopped of M total; exact unresolved IDs named here>
@@ -396,6 +720,49 @@ Resume state: <PAUSE_PERSISTED=0: "stored in session state; marker at $MARKER_PA
 Resume with: <MARKER_AUTO_DISCOVERABLE=true: "/go-on [--resume-refill]   (routes to /pause-resume; call it directly if you prefer)">
              <MARKER_AUTO_DISCOVERABLE=false: "/pause-resume --marker $MARKER_PATH [--resume-refill]   (an undiscoverable marker cannot be classified, so /go-on cannot route it)">
 ```
+
+**An empty list is never printed for a source that was not read.** Step 3's
+rule — "we did not look" must never render as "nothing was there" — binds the
+report and the marker, not just the prose: `<nothing landed>` and `<nothing
+parked>` assert a board was collected and found empty, so they are reserved for
+that case alone.
+
+**Collection has three outcomes, tracked separately from whether it ran at
+all** — the budget check fires before each source and again before each
+worktree, so it can stop partway:
+
+- **Complete** — every source in Step 3 was read. Only here may an empty list
+  print `<nothing landed>` / `<nothing parked>`.
+- **Partial** — some sources read, others cut short. **Track it per source**
+  (Step 3's three items), not as one flag for the whole board, and render each
+  unread source in the section that would otherwise have shown its results —
+  even when what *was* read came back empty. An unread PR list makes the
+  `Landed:` section unknown, not empty; unread agents or worktrees do the same
+  to `Parked:`.
+- **Skipped** — the deadline had already passed at Step 3, so nothing was read.
+
+Neither a reader nor a marker-only `/pause-resume` can then mistake an unread
+or half-read board for a clean idle session. The compact marker carries the
+same three-way distinction on the same terms.
+
+**The `Timing:` line is always printed**, on-time runs included — an overrun
+should be visible in the transcript without a stopwatch. Elapsed is
+`$(date -u +%s) - T_START` rounded to the nearest minute; `grace used` when the
+run passed `T_END`, `not used` otherwise. Report the elapsed time actually
+measured — never the window as if it were the outcome.
+
+**When `WINDOW_EXPIRED` is true, name what was skipped** on the second line, in
+the command's own terms: `landing cut short (N units reclassified park)`,
+`park mutations skipped on N units`, `long-form marker prose dropped`,
+`worktree scan cut short — N unread`. Name the work that did **not** happen — the compact
+marker was written, so it is never listed as skipped; what was dropped is its
+prose. A run that met its deadline by doing less says so; silently doing less
+is the failure this line exists to prevent.
+
+**Truthful reporting is not weakened by the grace path.** Every
+`INCOMPLETE SHUTDOWN` condition below binds exactly as before — meeting the
+deadline is never a reason to call an incomplete shutdown complete, and
+`window_expired` is a note about scope, never an excuse for an unstopped task.
 
 The `Resume with:` line names `/go-on` because a resume days later should not
 depend on remembering that this stop was a pause (Issue #1397). Its second form
