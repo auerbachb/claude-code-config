@@ -2,6 +2,8 @@
 
 Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and round gating.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [escalate-review.sh](../escalate-review.sh) | Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help` |

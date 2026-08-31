@@ -2,6 +2,8 @@
 
 Scripts that read and write `~/.claude/session-state.json` and per-PR handoff files.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header (for a sourced library, the header); where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [session-state.sh](../session-state.sh) | Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed) |

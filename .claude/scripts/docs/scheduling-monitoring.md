@@ -2,6 +2,8 @@
 
 Scripts that manage the background-silence ceiling, launchd watchdog, and time helpers.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
