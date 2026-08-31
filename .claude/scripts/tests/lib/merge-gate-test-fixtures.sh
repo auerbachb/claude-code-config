@@ -38,6 +38,15 @@ EVAL_SUT="${EVAL_SUT:-$REPO_ROOT/.claude/scripts/review-substance.sh}"
 # from its own directory, so every suite here already needs both files.
 # `-f` as well as `-x`: every directory is `-x`, so an override that stopped one
 # component short of the script would otherwise sail through and fail at exec.
+#
+# BOTH variables are validated in every consuming suite, including the three that
+# only ever execute SUT (bugbot, ci-dedup, required-contexts). That is deliberate,
+# not an oversight: the override is normally exported once and left set across a
+# whole family run, so validating only what a given suite happens to read would let
+# a typo'd EVAL_SUT abort the run-marker suite while those three report a green
+# pass the user credits to the foreign evaluator they never actually ran. Aborting
+# uniformly is the whole point — the cost is paid only on a typo, and the refusal
+# names the offending variable.
 for _sut_var in SUT EVAL_SUT; do
   _sut_path="${!_sut_var}"
   [[ -f "$_sut_path" && -x "$_sut_path" ]] || {

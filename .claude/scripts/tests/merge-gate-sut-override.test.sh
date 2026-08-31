@@ -48,8 +48,17 @@ check_contains() { # needle haystack label
 # harness is cheap: it only resolves paths, mints a temp dir, and writes a gh stub.
 resolved() { bash -c 'cd "$1" && source "$2" && printf "%s\n%s\n" "$SUT" "$EVAL_SUT"' _ "$REPO_ROOT" "$HARNESS" 2>&1; }
 
+# Every call below sets BOTH variables explicitly — the ones a case does not
+# exercise are cleared to empty. A caller who exported SUT or EVAL_SUT (exactly
+# what this change invites: `export EVAL_SUT=…` before running the family) would
+# otherwise have that value inherited straight through `resolved`'s child shell,
+# so the default cases would assert against the caller's path and fail, and a bad
+# inherited value would preempt the refusal cases and name the wrong variable.
+# Empty is the right neutral: the harness resolves with `${VAR:-default}`, whose
+# colon form treats empty as unset and falls back to the default.
+
 # --- (a) defaults: the enclosing checkout's scripts ---------------------------
-DEFAULTS="$(resolved)"
+DEFAULTS="$(SUT='' EVAL_SUT='' resolved)"
 check_eq "$REPO_ROOT/.claude/scripts/merge-gate.sh" "$(printf '%s\n' "$DEFAULTS" | sed -n 1p)" \
   "(a) SUT defaults to this checkout's merge-gate.sh"
 check_eq "$REPO_ROOT/.claude/scripts/review-substance.sh" "$(printf '%s\n' "$DEFAULTS" | sed -n 2p)" \
@@ -69,7 +78,7 @@ check_eq "$FAKE_EVAL" "$(printf '%s\n' "$OVERRIDDEN" | sed -n 2p)" "(b) EVAL_SUT
 
 # Overriding one must not disturb the other — the negative control in the issue
 # sets EVAL_SUT alone.
-EVAL_ONLY="$(EVAL_SUT="$FAKE_EVAL" resolved)"
+EVAL_ONLY="$(SUT='' EVAL_SUT="$FAKE_EVAL" resolved)"
 check_eq "$REPO_ROOT/.claude/scripts/merge-gate.sh" "$(printf '%s\n' "$EVAL_ONLY" | sed -n 1p)" \
   "(b) overriding EVAL_SUT alone leaves SUT at its default"
 check_eq "$FAKE_EVAL" "$(printf '%s\n' "$EVAL_ONLY" | sed -n 2p)" \
@@ -78,7 +87,7 @@ check_eq "$FAKE_EVAL" "$(printf '%s\n' "$EVAL_ONLY" | sed -n 2p)" \
 # --- (c) a bad path is refused, loudly ---------------------------------------
 # Asserted on the harness AND end-to-end on a suite that sources it: a value that
 # reaches the harness in isolation but not a real suite would be no use at all.
-MISSING_OUT="$(EVAL_SUT="$TMP/no-such-evaluator.sh" resolved)"; MISSING_RC=$?
+MISSING_OUT="$(SUT='' EVAL_SUT="$TMP/no-such-evaluator.sh" resolved)"; MISSING_RC=$?
 check_eq "1" "$MISSING_RC" "(c) a nonexistent EVAL_SUT exits 1"
 check_contains "FAIL: EVAL_SUT is not an executable file:" "$MISSING_OUT" \
   "(c) the refusal names the offending variable"
@@ -88,19 +97,19 @@ check_contains "FAIL: EVAL_SUT is not an executable file:" "$MISSING_OUT" \
 NOEXEC="$TMP/not-executable.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$NOEXEC"
 chmod -x "$NOEXEC"
-NOEXEC_OUT="$(SUT="$NOEXEC" resolved)"; NOEXEC_RC=$?
+NOEXEC_OUT="$(SUT="$NOEXEC" EVAL_SUT='' resolved)"; NOEXEC_RC=$?
 check_eq "1" "$NOEXEC_RC" "(c) a non-executable SUT exits 1"
 check_contains "FAIL: SUT is not an executable file:" "$NOEXEC_OUT" \
   "(c) the non-executable refusal names SUT"
 
 # Every directory satisfies `-x`, so a path that stops one component short of the
 # script would pass a bare executability test and only fail later, at exec.
-DIR_OUT="$(SUT="$TMP" resolved)"; DIR_RC=$?
+DIR_OUT="$(SUT="$TMP" EVAL_SUT='' resolved)"; DIR_RC=$?
 check_eq "1" "$DIR_RC" "(c) a directory is not accepted as SUT"
 check_contains "FAIL: SUT is not an executable file:" "$DIR_OUT" \
   "(c) the directory refusal names SUT"
 
-E2E_OUT="$(cd "$REPO_ROOT" && EVAL_SUT="$TMP/no-such-evaluator.sh" bash "$RUN_MARKER" 2>&1)"; E2E_RC=$?
+E2E_OUT="$(cd "$REPO_ROOT" && SUT='' EVAL_SUT="$TMP/no-such-evaluator.sh" bash "$RUN_MARKER" 2>&1)"; E2E_RC=$?
 check_eq "1" "$E2E_RC" "(c) the override reaches a real suite — run-marker exits 1 on a bad EVAL_SUT"
 check_contains "FAIL: EVAL_SUT is not an executable file:" "$E2E_OUT" \
   "(c) run-marker refuses with the harness message"
