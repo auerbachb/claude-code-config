@@ -2,6 +2,8 @@
 
 Miscellaneous helpers used by skills and hooks.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [model-fleet.sh](../model-fleet.sh) | Resolve the current Claude model fleet from `.claude/model-fleet.json` |

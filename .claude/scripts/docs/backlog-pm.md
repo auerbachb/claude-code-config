@@ -2,6 +2,8 @@
 
 Scripts that surface stale issues, duplicate candidates, forgotten PRs, and backlog metrics.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [backlog-staleness.sh](../backlog-staleness.sh) | Detect stale backlog issues (solved by merged PR, inactive, superseded, potential duplicate) |

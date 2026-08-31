@@ -2,6 +2,8 @@
 
 Scripts that repair trust flags, detect stale worktrees, and sync main.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [repair-trust-single.sh](../repair-trust-single.sh) | Fix trust flags for one project in `~/.claude.json` |

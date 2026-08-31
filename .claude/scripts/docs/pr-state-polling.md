@@ -2,6 +2,8 @@
 
 Scripts that read PR state, track comment watermarks, and determine reviewer ownership.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [pr-state.sh](../pr-state.sh) | Gather full PR state (threads, CI, comments, merge state) into a JSON snapshot |

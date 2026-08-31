@@ -2,6 +2,8 @@
 
 Scripts that resolve review threads and guard the branch diff through a rebase.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [resolve-review-threads.sh](../resolve-review-threads.sh) | Fetch PR review threads via GraphQL, resolve them, and verify `isResolved` |

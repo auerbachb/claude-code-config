@@ -2,6 +2,8 @@
 
 Scripts that audit, report, and sync skill and script usage telemetry.
 
+Full contract — flags, exit codes, behavior — lives in each script's `--help` output and header; where a reference doc owns the mechanism, this page names it.
+
 | Script | Purpose |
 |--------|---------|
 | [skill-usage-report.sh](../skill-usage-report.sh) | Read `~/.claude/skill-usage.log` and print usage tables and dead-skill candidates |
