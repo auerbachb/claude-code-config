@@ -621,7 +621,11 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2).
 2. **Execute pending phase transitions.** For each completed subagent:
-   Re-check both launch gates before every successor; when either is closed,
+   Re-check **every** launch control before every successor — the full set is
+   `phase-protocols.md` §"Launch gate before every successor" (refill pause,
+   execution pause, **and** the armed-deadline decline of Step 7); read it there
+   rather than counting them here, since a fixed count in a second place is how
+   this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).

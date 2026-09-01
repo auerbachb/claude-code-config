@@ -548,6 +548,20 @@ require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
 require_text .claude/skills/pause-resume/SKILL.md 'and it is delivered the same way every other check-in is' \
   'a resume past a fired check-in must deliver the overdue check-in, not silently skip it'
 
+# Step 11's table must be TOTAL over the four epoch orderings. A missing row is not a
+# no-op: `future`/`past` (the deadline moved in under the check-in, which /pm --window
+# can do to shared .window) fell through to undefined behavior.
+require_text "$LEAVE_SKILL" 'The deadline moved in under the check-in' \
+  'Step 11 must define the future-checkin / past-deadline row, not fall through it'
+
+# The monitor loop that actually launches successors must not carry its own count of the
+# launch controls — a fixed count in a second place is exactly how the deadline got left
+# out of it while phase-protocols.md named three.
+reject_text "$SUBAGENT_SKILL" 'Re-check both launch gates' \
+  'the monitor loop must not restate a two-gate launch check that omits the deadline'
+require_text "$SUBAGENT_SKILL" 'Re-check **every** launch control before every successor' \
+  'the monitor loop must defer to the canonical launch-gate list rather than counting gates'
+
 # Successor launches are launches: the auto-loaded gate must name the deadline too.
 require_text .claude/rules/phase-protocols.md 'subagent-step7-deadline-decline' \
   'the successor launch gate must run the armed-deadline check, not only refill + execution-pause'

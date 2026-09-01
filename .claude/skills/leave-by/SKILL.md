@@ -507,6 +507,7 @@ With `leave.active == true` and both epochs readable:
 | future | future | Re-arm the wind-down Monitor for the **remaining** time, with a fresh generation; publish the new identity pair. One line: `Leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET` |
 | past | future | The check-in was missed while the session was down and the deadline has not arrived, so deliver it **overdue**: publish a fresh generation and arm the Monitor, whose sleep clamps to one second. Do **not** call Step 8 with the pair still null — 8.1 validates the generation and would exit silently on the one event that most needs to fire |
 | past | past | The leave time has expired. Clear `.leave.active` and the armed `.window`; say so in one line |
+| future | past | **The deadline moved in under the check-in** — only `/pm --window` or a shortened re-declaration produces this, and it is the one row where the two records disagree about which is nearer. The deadline governs: the leave time is spent, so retire it exactly as the `past`/`past` row does. Never re-arm toward a `checkin_epoch` for a deadline that has already gone by |
 
 Recovery re-arms at most one Monitor. If `winddown_task_id` is non-null on entry, the previous
 session recorded a wake that no longer exists — treat the stored ID as dead, null the pair before
