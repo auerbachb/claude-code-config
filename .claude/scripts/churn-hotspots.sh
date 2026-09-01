@@ -718,7 +718,13 @@ enumerate_git() {
         CUR_ROWS[${#CUR_ROWS[@]}]="$line"
         ;;
     esac
-  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-status \
+  # `-M` pins rename detection ON regardless of the ambient `diff.renames`
+  # setting. Without it a repo that disables renames reports every rename as
+  # `D old` + `A new`, so the destination would be dropped as a CREATION — a
+  # result that silently varied with the caller's git config, and a regression
+  # against the `--name-only` behaviour this replaced (which always printed the
+  # destination as an ordinary touch).
+  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-status -M \
              --pretty=format:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
   flush_commit
 }

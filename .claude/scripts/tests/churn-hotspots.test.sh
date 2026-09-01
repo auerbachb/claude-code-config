@@ -1002,6 +1002,34 @@ check_jq "23c: the score formula the consumer asserts still holds exactly" "$OUT
 rm -f "$HOME/.claude/session-state.json"
 
 # =============================================================================
+# Scenario 24 — a rename destination is a touch, not a creation, whatever the
+# ambient `diff.renames` setting says
+#
+# `--name-status` reports a rename as `R100 old new` only while rename
+# detection is on. With `diff.renames = false` the same commit reports
+# `D old` + `A new`, so the destination would be dropped as a CREATION — a
+# result that varied with the caller's git config and regressed the
+# `--name-only` behaviour, which always printed the destination as a touch.
+# The detector pins `-M`, so both configs agree.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+for renames in false true; do
+  R24=$(new_repo_on "r24_$renames" main)
+  git -C "$R24" config diff.renames "$renames"
+  commit_touch "$R24" "2026-02-01T00:00:00" "seed" src/Before.ts
+  git -C "$R24" mv src/Before.ts src/After.ts
+  GIT_AUTHOR_DATE="2026-02-02T00:00:00" GIT_COMMITTER_DATE="2026-02-02T00:00:00" \
+    git -C "$R24" commit -q -m "refactor(#40): rename it (#1601)"
+  commit_touch "$R24" "2026-02-03T00:00:00" "fix(#41): edit (#1602)" src/After.ts
+  commit_touch "$R24" "2026-02-04T00:00:00" "fix(#42): edit (#1603)" src/After.ts
+
+  run_in "$R24" --since "$WINDOW_START" --json
+  check_jq "24 (diff.renames=$renames): the rename destination counts as a touch, not a creation" "$OUT" \
+    '.hotspots[] | select(.file=="src/After.ts")
+     | .pr_numbers == [1601,1602,1603] and .created_in_window == false'
+done
+
+# =============================================================================
 echo
 echo "churn-hotspots.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
