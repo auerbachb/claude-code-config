@@ -104,7 +104,10 @@ header block **is** the CLI contract. The CONFIGURATION block stated:
 > call**, `git push origin --delete`.
 
 That was false. `gh pr list` (`fetch_open_prs`) is a second network call, and it
-is the **only unbounded external call in the script**.
+is the **only unbounded network call in the script** — the other one,
+`git push origin --delete`, is bounded. (Local helpers like `jq` and `date` are
+unbounded too, but they cannot block on a remote, which is what these bounds
+exist for.)
 
 Verified exhaustively: all six `"${GIT[@]}"` call sites and both
 `git -C "$wt"` dirty probes go through `run_bounded`. The `gh` invocation does

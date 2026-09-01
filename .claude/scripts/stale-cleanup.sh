@@ -131,8 +131,10 @@
 #   "unavailable" rather than proceeding on an unverified path.
 #
 #   The bound also stops at the open-PR query. `gh pr list` (fetch_open_prs) is
-#   the one external call this script makes UNBOUNDED, and it is a network call:
-#   it runs on every invocation, before any classification, so a wedged forge or
+#   the one NETWORK call that runs UNBOUNDED — the other one, `git push origin
+#   --delete`, is bounded. (Local helpers like jq and date are unbounded too,
+#   but they cannot block on a remote, which is what these bounds are for.) It
+#   runs on every invocation, before any classification, so a wedged forge or
 #   a hung TLS handshake stalls the whole sweep there with nothing to kill it.
 #   It is unwrapped because run_bounded hands its child's stdout back through
 #   $CAPTURE and must never be used inside `$( )`, while fetch_open_prs reads

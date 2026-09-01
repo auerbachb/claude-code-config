@@ -747,7 +747,7 @@ pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
 # print_help emits the header verbatim, so the header IS the CLI contract. It
 # used to state that STALE_CLEANUP_NET_TIMEOUT_SECS bounds "the one NETWORK
 # call, `git push origin --delete`". That was false: fetch_open_prs' `gh pr
-# list` is a second network call, and it is the ONLY unbounded external call in
+# list` is a second network call, and it is the ONLY unbounded network call in
 # the script — it runs on every invocation, before any classification. The
 # header's "where the bound stops" paragraph, which exists precisely to
 # enumerate the unbounded edges, omitted it, so a reader consulting --help for
