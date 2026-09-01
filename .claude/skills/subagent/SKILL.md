@@ -448,17 +448,31 @@ Body:
 
 ### 7.1: Record each pipeline's launch time (once, at spawn)
 
-The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
+The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
 
 ```bash
-LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
-  --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
-  --set '.monitoring_active=true'
-  # …batched with this spawn's active_agents write, so all spawn-time state
-  # commits in ONE atomic write rather than leaving a partial record behind.
+# Stamp the launch record ONCE per issue. A replacement Phase A (exhaustion
+# respawn — Step 9) re-enters this same spawn path, so an unconditional write
+# would reset Start / Projected end / Remaining for a pipeline that began
+# earlier and hide the very overrun this table exists to surface. Read first;
+# a value already on disk wins over the clock.
+LAUNCHED_AT=$("$SESSION_STATE_SH" \
+  --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
+[[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
+if [[ -z "$LAUNCHED_AT" ]]; then
+  LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
+    --set '.monitoring_active=true'
+    # …batched with this spawn's active_agents write, so all spawn-time state
+    # commits in ONE atomic write rather than leaving a partial record behind.
+else
+  # Respawn: the launch record stands. Never re-null `.pr` either — that link is
+  # the heartbeat's fallback to `pipeline_started_at` (Step 8).
+  "$SESSION_STATE_SH" --set '.monitoring_active=true'
+fi
 ```
 
 **Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
@@ -628,7 +642,7 @@ When a Phase A subagent returns:
    - If no exit report: treat as silent failure — report to user and check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
-   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user.
+   - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. The replacement re-enters Step 7.1, which reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
 4. **Verify handoff file:** resolve path with `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
