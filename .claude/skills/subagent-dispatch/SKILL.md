@@ -57,6 +57,10 @@ Multiple tasks?
 
 Count your currently open PRs (`gh pr list --author "@me" --state open`) as a conservative proxy for pipeline load. Dispatch only enough agents to stay at or below the pipeline ceiling (3–4). Agents that would exceed the ceiling queue inline — they do not get their own chips. (The canonical ceiling definition — actively CR-polled PRs authored by `@me` — lives in `.claude/rules/subagent-orchestration.md`; dormant open PRs are counted here for safety.)
 
+**Then check the armed deadline, per agent (issue #1525).** A planning window (`/pm --window`) or a declared leave time (`/leave-by`) writes one `deadline_epoch` into `.repos["<key>"].window`; an agent whose planning bound cannot finish before it is not dispatched. **Run `/subagent` Step 7's fenced block** (`<!-- test-anchor: subagent-step7-deadline-decline -->`) — it is the canonical executable form and owns the sentinel handling (only the literal `null` and exit 3 mean "no deadline"), the bound comparison, and the decline wording. Read it there; do not restate or fork it here, because two copies of one gate is how the two come to disagree.
+
+Dispatch-specific behavior only: the check runs **per agent**, so a declined agent is simply not dispatched while every other agent in the batch is still evaluated on its own bound — this gate declines individuals, never the batch, and never reorders it.
+
 Spawn mechanics, model tiers (Opus for Phase A/B, Sonnet for Phase C/PM), and mode settings live in `.claude/rules/subagent-orchestration.md`. Read that file; do not restate it here.
 
 ---

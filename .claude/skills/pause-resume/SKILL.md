@@ -339,6 +339,65 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
 fi
 ```
 
+**Disarm and clear the leave-time wind-down too (issue #1525).** Same shape as the block above, over
+`.repos["$REPO_KEY"].leave.winddown_task_id`: read it with its exit code (unreadable → one
+`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), `TaskStop` a
+non-null ID, and on a confirmed stop clear the pair:
+
+```bash
+"$SESSION_STATE_SH" \
+  --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
+```
+
+**Then branch on the deadline, not on the pause.** Read `.repos["$REPO_KEY"].window.deadline_epoch`
+(the leave block never carries it — `/leave-by` Step 5) and compare it to now:
+
+- **Deadline still in the future** → the leave time **still applies**, and this resume is an
+  ordinary mid-afternoon return, not a withdrawal. Keep `leave.active=true`, keep `.window`, and
+  **re-arm the wind-down** for the remaining time with a **fresh generation**, publishing the new
+  identity pair exactly as `/leave-by` Step 6 does. Say it in one line:
+  `leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET`. Clearing here instead would
+  mean a coffee-break `/pause` at 4 PM silently cancels the 7 PM wind-down the user asked for once
+  and never hears about again — the exact promise this feature exists to keep.
+- **Deadline confirmed in the past** → the leave time is spent. Retire it per the branches below;
+  do not re-arm. Resuming *past* a declared leave time is the user saying it no longer applies, and
+  re-arming then would park the board again minutes after they asked for it back.
+- **Deadline absent, non-numeric, or unreadable, with `leave.active == true`** → an **inconsistent
+  record**, not an expired one — the same verdict `/leave-by` Step 11 reaches on the same evidence.
+  Report it in one line, preserve `leave.active` **and** the shared `.window` exactly as found, and
+  neither re-arm nor retire. Retiring here would destroy a live deadline on the strength of a lock
+  timeout, and the two files must not disagree about what a half-readable record means.
+
+**`leave.active=false` is written on both resolved paths, not only after a `TaskStop`.** The
+already-null path is the *normal* one — `/pause` Step 2 stopped the wind-down and nulled the pair
+before this ever runs — so clearing only after a stop this step performed would leave the common
+case at `active: true` with no Monitor behind it, and `/leave-by` Step 11's recovery would re-arm
+the wind-down on the next session start: a leave time the user explicitly resumed past, resurrected
+by the resume itself. So:
+
+**Read `leave.active` before touching anything, and do nothing here unless it is `true`.** The
+window is **shared state**: `/pm --window` arms the same `.repos["<key>"].window` with no `.leave`
+block at all, and the "nothing armed" reading below is *also* what that case looks like. Clearing
+the window on a null task ID alone would wipe a PM planning deadline that no leave time ever
+touched, on every ordinary `/pause` → `/pause-resume` cycle. `leave.active != true` (false, null,
+absent, or unreadable) → skip this whole block, leave `.window` exactly as found, and settle no
+entry.
+
+With `leave.active == true` **and the deadline spent**:
+
+- **Null / exit 3 (nothing armed), or a confirmed `TaskStop`** → in one write, set
+  `leave.active=false` with the (already or newly) null pair **and** clear the armed deadline
+  (`.repos["$REPO_KEY"].window=null`). Clearing the window is the load-bearing half: a spent
+  `deadline_epoch` left behind sits in the past forever, so `/subagent` Step 7's gate would decline
+  every pipeline in this repo from here on — the resume would reopen the launch gates and then
+  refuse all work through a different one. Mark the `owner: "leave_winddown"` entry in
+  `monitors_stopped` `rearmed: true` — for this owner "resolved" means disarmed, not restarted —
+  and say it in one line: `leave time cleared — re-declare with /leave-by if it still applies`.
+- **Unreadable, or an unconfirmed `TaskStop`** → keep `active=true` and the ID, leave the entry
+  `rearmed: false`, and report it. Never claim a Monitor stopped when the stop was not confirmed,
+  and never print the cleared line for a leave time that is still armed.
+
 For each entry in `monitors_stopped` where `stopped: true` and `rearmed` is not
 already `true`, delegate to the appropriate re-arm skill — never reimplement
 their logic. Skip entries already confirmed rearmed so retries are idempotent.
@@ -368,6 +427,13 @@ before either one persists the pause-state array:
   `LIMIT_WAKE_RESOLVED=true`; otherwise preserve `rearmed: false` and record
   the read, stop, or state-clear error. Never close recovery around an
   unconfirmed disarm.
+- **Leave-time wind-down** — entries with `owner: "leave_winddown"` are settled by
+  the leave block above, which branches on the **deadline**, not on the pause
+  (issue #1525): a deadline still in the future is re-armed with a fresh
+  generation and keeps the leave time live; a spent one is disarmed and retired,
+  never re-armed, since resuming past a declared leave time is the user
+  withdrawing it. Set `rearmed: true` only when the re-arm was published or the
+  clear succeeded, and report an unconfirmed disarm exactly as the row above does.
 
 Entries with `stopped: false` are listed as "not confirmed stopped at pause time — verify manually before re-arming."
 

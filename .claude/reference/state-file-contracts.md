@@ -162,6 +162,27 @@ Sub-shape documents may explain their own state machines without becoming schema
 `merge-sequencing.md` owns merge-hold behavior, and `/babysit-pr` owns its Monitor lifecycle; the
 JSON field names and enforced types remain authoritative in `session-state-schema.json`.
 
+#### Worked example: `.repos["<key>"].leave` (issue #1525)
+
+The declared-leave-time block exercises every branch of the procedure above, including the one that
+is most often got wrong — step 1's *only when*:
+
+1. **No `_field_types` entry.** The runtime contract loads `top_level` and `pr_nested` only, and
+   `pr_nested` applies to entries under a repo's `prs` map. A repo-scoped sibling like `leave` (or
+   `day`, or `pause`) is therefore **unvalidatable today**, so adding keys for it would be inert
+   decoration that reads like a guard. Widening enforcement to repo-scoped blocks is a change to
+   `session-state.sh`'s contract, not a schema edit.
+2. **Representative document updated**, because the shape is a cross-agent contract: `/leave-by`
+   writes it, `/pause` Step 2 and `/pause-resume` Step 5 tear it down, and `/subagent` Step 7 reads
+   its sibling `.window`. The `_leave_comment` carries writer, lifecycle, and the staleness rule.
+3. **Alignment test added** (`leave-time.test.sh`), because the identity pair
+   `winddown_task_id` + `winddown_generation` must change together — the same reason
+   `_auto_wake_comment` pins its pair.
+4. **Rationale here and in `leave-time.md`.** Notably `leave.deadline_epoch` is present and
+   permanently `null`: the deadline lives once, in `.window.deadline_epoch`, and the null field is
+   the signpost that says so. A reader who finds a number there is looking at corruption, not at a
+   second source of truth.
+
 ## Handoff file migration
 
 The legacy flat layout `~/.claude/handoffs/pr-{N}-handoff.json` is preserved for compatibility. `handoff-migrate.sh --apply` moves flat files into the scoped `{owner}/{repo}/` layout.
