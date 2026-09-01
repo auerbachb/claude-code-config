@@ -48,8 +48,12 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
-EVAL_SUT="$REPO_ROOT/.claude/scripts/review-substance.sh"
+# Overridable so this suite can be pointed at another checkout's scripts (issue
+# #1485); the guards stop a mistyped path from reading as a real result.
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+EVAL_SUT="${EVAL_SUT:-$REPO_ROOT/.claude/scripts/review-substance.sh}"
+[[ -f "$SUT" && -x "$SUT" ]] || { echo "FAIL: SUT is not an executable file: $SUT" >&2; exit 1; }
+[[ -f "$EVAL_SUT" && -x "$EVAL_SUT" ]] || { echo "FAIL: EVAL_SUT is not an executable file: $EVAL_SUT" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }

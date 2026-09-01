@@ -105,9 +105,12 @@
 # Run from repo root: bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
 # shellcheck source=tests/lib/merge-gate-test-fixtures.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SUT and EVAL_SUT come from the harness sourced on the next line, which honours
+# an environment override (issue #1485) — so the origin/main negative control for
+# the assertions below is one command, not a clone-and-overlay:
+#   EVAL_SUT=/path/to/main/.claude/scripts/review-substance.sh bash "$0"
 source "$SCRIPT_DIR/lib/merge-gate-test-fixtures.sh"
 
-EVAL_SUT="$REPO_ROOT/.claude/scripts/review-substance.sh"
 CA="codeant-ai[bot]"
 CR_BOT="coderabbitai[bot]"
 PUSH_TS="2026-08-26T16:16:00Z"

@@ -5,15 +5,54 @@
 # will not execute it directly.
 #
 # Consumed by:
-#   merge-gate-ci-dedup.test.sh  — CI check-run dedup + CodeAnt supplemental gate (issue #675)
-#   merge-gate-bugbot.test.sh    — BugBot reviewer merge-gate paths (issues #844, #962)
+#   merge-gate-bugbot.test.sh             — BugBot reviewer merge-gate paths (issues #844, #962)
+#   merge-gate-ci-dedup.test.sh           — CI check-run dedup + CodeAnt supplemental gate (issue #675)
+#   merge-gate-codeant-run-marker.test.sh — CodeAnt pre-run approval stubs (issues #1432, #1476)
+#   merge-gate-required-contexts.test.sh  — branch-protection required contexts (issue #1361)
 #
 # Source from repo root or any worktree — REPO_ROOT is resolved via git.
+#
+# Scripts under test (issue #1485). SUT (merge-gate.sh) and EVAL_SUT
+# (review-substance.sh) default to this checkout's copies and are overridable
+# from the environment, so pointing a suite at another checkout's evaluator —
+# the origin/main negative control — is one command:
+#
+#   EVAL_SUT=/path/to/main/.claude/scripts/review-substance.sh \
+#     bash .claude/scripts/tests/merge-gate-codeant-run-marker.test.sh
+#
+# rather than a clone-and-overlay. Note that merge-gate.sh resolves the
+# evaluator as its OWN sibling, so EVAL_SUT steers only the cases that invoke
+# review-substance.sh directly; point SUT at the same foreign checkout to steer
+# the cases that go through merge-gate.sh.
 
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SUT="$REPO_ROOT/.claude/scripts/merge-gate.sh"
+SUT="${SUT:-$REPO_ROOT/.claude/scripts/merge-gate.sh}"
+EVAL_SUT="${EVAL_SUT:-$REPO_ROOT/.claude/scripts/review-substance.sh}"
+
+# A mistyped override must not read as evidence. Left unchecked, a bad path
+# makes every invocation produce empty output and every assertion FAIL — which
+# looks exactly like a successful negative control while proving nothing. No new
+# dependency: merge-gate.sh already dies when review-substance.sh is missing
+# from its own directory, so every suite here already needs both files.
+# `-f` as well as `-x`: every directory is `-x`, so an override that stopped one
+# component short of the script would otherwise sail through and fail at exec.
+#
+# BOTH variables are validated in every consuming suite, including the three that
+# only ever execute SUT (bugbot, ci-dedup, required-contexts). That is deliberate,
+# not an oversight: the override is normally exported once and left set across a
+# whole family run, so validating only what a given suite happens to read would let
+# a typo'd EVAL_SUT abort the run-marker suite while those three report a green
+# pass the user credits to the foreign evaluator they never actually ran. Aborting
+# uniformly is the whole point — the cost is paid only on a typo, and the refusal
+# names the offending variable.
+for _sut_var in SUT EVAL_SUT; do
+  _sut_path="${!_sut_var}"
+  [[ -f "$_sut_path" && -x "$_sut_path" ]] || {
+    echo "FAIL: $_sut_var is not an executable file: $_sut_path" >&2; exit 1; }
+done
+unset _sut_var _sut_path
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
