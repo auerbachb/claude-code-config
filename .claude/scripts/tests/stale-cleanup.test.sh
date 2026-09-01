@@ -660,6 +660,14 @@ git -C "$REPO_T16" add file.txt
 commit_old "$REPO_T16" "t16 base"
 git -C "$REPO_T16" branch issue-900-t16-stale
 
+# The stall marker is the load-immune stand-in for a wall-clock assertion
+# (issue #1537). The line after `sleep 30` is reached ONLY when the stall ran to
+# completion — i.e. the sweep waited it out instead of cutting it short — and in
+# that case it is written before the sweep returns, so the check below cannot
+# race it. A duration cannot say this on a loaded host: an elapsed reading is
+# scheduler noise (115s observed under ~20 concurrent agents) and `< 40` was in
+# any case satisfied by a single fully-waited-out 30s stall, so it asserted
+# almost nothing while flaking on load.
 make_git_stub() { # stalling-subcommand
   cat > "$GIT_STUB/git" <<EOF
 #!/usr/bin/env bash
@@ -668,6 +676,7 @@ for a in "\$@"; do
   if [[ "\$a" == "$1" ]]; then
     "$GIT_STUB/stub-sleeper" &
     sleep 30
+    printf '%s\n' "\$*" >> "$TMP/t16-stall-completed"
   fi
 done
 exec "$REAL_GIT" "\$@"
@@ -680,6 +689,7 @@ EOF
 # 3s, not 1s: the clock is whole-second, so a 1s bound can trip before the stub
 # is even live.
 : > "$TMP/t16-argv.log"
+: > "$TMP/t16-stall-completed"
 make_git_stub for-each-ref
 START="$(date +%s)"
 RC=0
@@ -692,10 +702,10 @@ check_json "T16a: and no branch is classified from a pass that never ran" "$OUT"
   '(.stale_local_branches | length) == 0'
 check_contains "T16a: the warning names the bound that tripped" \
   "exceeded 3s and was killed" "$(cat "$TMP/t16-err.log")"
-if (( ELAPSED < 40 )); then
-  pass "T16a: returned in ${ELAPSED}s — the bound held (each stub call sleeps 30s)"
+if [[ ! -s "$TMP/t16-stall-completed" ]]; then
+  pass "T16a: the 30s stall was cut short, not waited out (ran in ${ELAPSED}s)"
 else
-  fail "T16a: took ${ELAPSED}s — the bound did not hold"
+  fail "T16a: the stub's 30s stall ran to completion — the bound did not hold"
 fi
 if grep -q 'for-each-ref' "$TMP/t16-argv.log"; then
   pass "T16a: control — the stalling subcommand really was invoked"
@@ -709,6 +719,7 @@ check_json "T16a: the registration scan still ran" "$OUT" '.registration_scan !=
 # T16b — a wedged deletion is a per-item failure and reaches exit 2, rather
 # than aborting the sweep or being reported as a success.
 : > "$TMP/t16-argv.log"
+: > "$TMP/t16-stall-completed"
 make_git_stub -D
 START="$(date +%s)"
 RC=0
@@ -718,10 +729,10 @@ ELAPSED=$(( $(date +%s) - START ))
 check_eq "T16b: a wedged branch deletion exits 2 (deletion failure)" "2" "$RC"
 check_contains "T16b: reported as a per-item failure naming the bound" \
   "failed: local branch issue-900-t16-stale — 'git branch -D' exceeded 3s and was killed" "$OUT"
-if (( ELAPSED < 40 )); then
-  pass "T16b: returned in ${ELAPSED}s — the bound held"
+if [[ ! -s "$TMP/t16-stall-completed" ]]; then
+  pass "T16b: the 30s stall was cut short, not waited out (ran in ${ELAPSED}s)"
 else
-  fail "T16b: took ${ELAPSED}s — the bound did not hold"
+  fail "T16b: the stub's 30s stall ran to completion — the bound did not hold"
 fi
 check_eq "T16b: control — the branch is still there, so nothing was reported removed" \
   "issue-900-t16-stale" \
@@ -873,12 +884,15 @@ case "\$*" in
     # kill cannot leak a survivor; then stall far past any bound under test.
     "$GIT_STUB/stub-sleeper" &
     sleep 30
+    # Stall marker — see make_git_stub above (issue #1537).
+    printf '%s\n' "\$*" >> "$TMP/t18-stall-completed"
     ;;
 esac
 cat "$TMP/t18-prs.json"
 EOF
 chmod +x "$GH_STALL_BIN/gh"
 : > "$TMP/t18-argv.log"
+: > "$TMP/t18-stall-completed"
 START="$(date +%s)"
 RC=0
 OUT="$(cd "$REPO_T18" && PATH="$GH_STALL_BIN:$PATH" STALE_CLEANUP_GH_TIMEOUT_SECS=3 \
@@ -890,13 +904,16 @@ check_contains "T18a: and refuses on an unverified open-PR set" \
   "refusing to run with an unverified open-PR set" "$T18_ERR"
 check_contains "T18a: naming the bound that tripped" \
   "exceeded 3s and was killed" "$T18_ERR"
-# The stub stalls 30s, which is exactly what the unbounded call waited out. The
-# bound's own worst case is 3s + a 2s TERM grace + a 3s reap, so anything under
-# 15s is the bound holding — and is unreachable without it.
-if (( ELAPSED < 15 )); then
-  pass "T18a: returned in ${ELAPSED}s — the bound held (the stub stalls for 30s)"
+# The stub stalls 30s, which is exactly what the unbounded call waited out, so
+# the property to assert is that the stall was CUT SHORT. This used to read
+# `ELAPSED < 15` — sound arithmetic (a 3s bound, a 2s TERM grace, a 3s reap) but
+# measured against a clock the test does not own, and the tightest of the file's
+# three gates. Same marker as T16 (issue #1537): written only if the stall ran
+# out, and written before the sweep could return, so load cannot move it.
+if [[ ! -s "$TMP/t18-stall-completed" ]]; then
+  pass "T18a: the 30s stall was cut short, not waited out (ran in ${ELAPSED}s)"
 else
-  fail "T18a: took ${ELAPSED}s — the bound did not hold"
+  fail "T18a: the stub's 30s stall ran to completion — the bound did not hold"
 fi
 if grep -q 'pr list' "$TMP/t18-argv.log"; then
   pass "T18a: control — the stalling 'gh pr list' really was invoked"
