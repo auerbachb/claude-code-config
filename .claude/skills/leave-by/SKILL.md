@@ -335,6 +335,17 @@ exit silently on the *live* wind-down, which then never fires at all. So exit as
 `checkin_epoch` is more than **120 s** ahead — a gap that large is a genuinely re-declared time, not
 scheduling jitter. Within the tolerance, proceed with the check-in.
 
+**Then check the two records still agree.** `.window` is **shared** — `/pm --window` writes the same
+`deadline_epoch` and knows nothing about `.leave`, so it can move the deadline out from under a
+Monitor that was scheduled from `.leave.checkin_epoch` and cannot be re-scheduled by a write it never
+sees. A fresh generation is not minted on that path, so 8.1 passes and this event would otherwise
+wind the board down against a deadline the leave time never targeted. Compare: if
+`deadline_epoch - lead_minutes × 60` is more than **120 s** away from the armed `checkin_epoch`, the
+two records have desynced. Do **not** wind down. Say so in one line and **re-plan** — recompute
+`checkin_epoch` from the current deadline and re-arm with a fresh generation, exactly as a
+re-declaration would. The deadline on disk is always the plan; the leave record must be brought to
+it, never the other way around.
+
 **8.3 — Render the check-in.** Print `/subagent` Step 7.2's "Running now" table
 (`.claude/reference/time-estimates.md` §"Running now Table") with **one added column** —
 `By {H:MM} ET` — holding `finishes by deadline` or `parks` per pipeline:
@@ -349,11 +360,15 @@ scheduling jitter. Within the tolerance, proceed with the check-in.
 | #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — | parks |
 ```
 
-The verdict is computed, not judged: `finishes by deadline` when
-`started_at_epoch + BOUND_MIN × 60 ≤ deadline_epoch`, `parks` otherwise. **Every other case is
-`parks`** — a queued row (nothing started, and the launch gate is about to close), an unestimated
-row, and any row whose `started_at` or bound could not be read. Fail closed: claiming a pipeline
-lands by 7:00 when nothing proves it does is the one wrong answer here.
+The verdict is computed, not judged, and `time-estimates.md` §"Deadline variant" is its **single
+definition** — read it there rather than re-deriving it here. In one line: the comparison uses the
+**effective projected finish the row already displays** (`start + bound` on track, the pace-scaled
+revised finish once over the bound), never the original bound, because those two diverge exactly
+when it matters and the bound-only form lets an overrun row read `finishes by deadline` while its
+own `Projected end` cell shows a later clock time. **Every other case is `parks`** — a queued row
+(nothing started, and the launch gate is about to close), an unestimated row, an overrun row whose
+revised finish will not resolve, and any row whose `started_at` or bound could not be read. Fail
+closed: claiming a pipeline lands by 7:00 when nothing proves it does is the one wrong answer here.
 
 **8.4 — Post without waiting.** The check-in is a notification, not a question. Print it and
 continue in the same turn; do not call `AskUserQuestion` and do not pause for a reply. A live user
@@ -470,17 +485,27 @@ permanently null by design (Step 5) — reading it here would compare every reco
 and take the same branch forever. Apply the exit-code table `/pm` Step 3.4 uses to each read: `0` is
 the value, `3` means no state file has ever been written, anything else is **unreadable** — retry
 once (exit `6` is a documented retryable lock timeout), then report the read failure and re-arm
-nothing rather than treating it as "no leave time armed". A readable `leave` block whose paired
-`.window.deadline_epoch` is unreadable, `null`, or non-numeric is an **inconsistent** record, not an
-expired one: report it in one line and clear nothing, since a wrongly-cleared leave time is
-invisible until 7 PM arrives with the board still running.
+nothing rather than treating it as "no leave time armed".
+
+**Check `leave.active` before judging the pair.** `active: false` with `.window` null is the
+**normal retired shape** — Step 8.6 and `/pause-resume` both write exactly that on a completed or
+cancelled leave — so it means "nothing armed": recover nothing, report nothing, and move on. Only
+with `leave.active == true` does a missing deadline mean anything is wrong. Without that ordering
+every session start after a leave time ends would report a recovery failure for a declaration that
+retired exactly as designed, and a warning that fires on every ordinary morning is one nobody reads
+on the morning it is real.
+
+With `leave.active == true`, a paired `.window.deadline_epoch` that is unreadable, `null`, or
+non-numeric is an **inconsistent** record, not an expired one: report it in one line and clear
+nothing, since a wrongly-cleared leave time is invisible until 7 PM arrives with the board still
+running.
 
 With `leave.active == true` and both epochs readable:
 
 | `leave.checkin_epoch` | `window.deadline_epoch` | Action |
 |---|---|---|
 | future | future | Re-arm the wind-down Monitor for the **remaining** time, with a fresh generation; publish the new identity pair. One line: `Leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET` |
-| past | future | Run Step 8 **immediately** — the check-in was missed while the session was down, and the deadline has not arrived |
+| past | future | The check-in was missed while the session was down and the deadline has not arrived, so deliver it **overdue**: publish a fresh generation and arm the Monitor, whose sleep clamps to one second. Do **not** call Step 8 with the pair still null — 8.1 validates the generation and would exit silently on the one event that most needs to fire |
 | past | past | The leave time has expired. Clear `.leave.active` and the armed `.window`; say so in one line |
 
 Recovery re-arms at most one Monitor. If `winddown_task_id` is non-null on entry, the previous

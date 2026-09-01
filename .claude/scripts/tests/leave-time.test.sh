@@ -545,8 +545,8 @@ require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
   'still before stopping anything' \
   'TaskStop` a' \
   '/pause-resume must validate the deadline before stopping the wind-down Monitor'
-require_text .claude/skills/pause-resume/SKILL.md 'already due: run `/leave-by` Step 8 now' \
-  'a resume past a fired check-in must run the check-in, not re-arm a Monitor in the past'
+require_text .claude/skills/pause-resume/SKILL.md 'and it is delivered the same way every other check-in is' \
+  'a resume past a fired check-in must deliver the overdue check-in, not silently skip it'
 
 # Successor launches are launches: the auto-loaded gate must name the deadline too.
 require_text .claude/rules/phase-protocols.md 'subagent-step7-deadline-decline' \
@@ -556,9 +556,38 @@ require_text .claude/rules/phase-protocols.md 'frees no' \
 require_text .claude/skills/subagent-dispatch/SKILL.md 'still holds its overlap chain' \
   '/subagent-dispatch must state the chain exception, not just "every other agent"'
 
-# The deadline verdict must read the same projected finish the row displays.
+# The deadline verdict must read the same projected finish the row displays — in BOTH
+# places it was stated. Fixing one copy and leaving the other is how the two come to
+# disagree, and the bound-only form is the one that reads an overrun row as landing.
 require_text .claude/reference/time-estimates.md 'effective projected finish' \
   'the By-deadline verdict must use the displayed projected finish, not the original bound'
+require_text "$LEAVE_SKILL" 'effective projected finish' \
+  'the check-in must use the displayed projected finish too, not a second bound-only formula'
+reject_text "$LEAVE_SKILL" 'started_at_epoch + BOUND_MIN' \
+  'the check-in must not restate the bound-only verdict formula it just replaced'
+
+# The retired shape (active:false + window:null) is normal, not an inconsistent record —
+# otherwise every session start after a leave time ends reports a false recovery failure.
+require_text "$LEAVE_SKILL" 'normal retired shape' \
+  'a completed or cancelled leave must not read as an inconsistent record forever'
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  'Check `leave.active` before judging the pair' \
+  'is an **inconsistent** record' \
+  'Step 11 must test leave.active BEFORE calling a missing deadline inconsistent'
+
+# An overdue check-in is delivered as an armed event, never by calling Step 8 inline with
+# a nulled pair: 8.1 would validate against the generation just cleared and exit silently,
+# and from /pause-resume it would also nest a /pause inside the running restore.
+require_text .claude/skills/pause-resume/SKILL.md 'Never invoke Step 8 inline from here' \
+  '/pause-resume must deliver an overdue check-in as an armed event, not a nested Step 8'
+require_text "$LEAVE_SKILL" 'Do **not** call Step 8 with the pair still null' \
+  'Step 11 must not run Step 8 against a nulled generation'
+
+# .window is shared with /pm --window, which can move the deadline without minting a new
+# generation — so 8.1 passes and the event would wind down against a deadline the leave
+# time never targeted.
+require_text "$LEAVE_SKILL" 'two records have desynced' \
+  'the check-in must detect a deadline moved by /pm --window rather than winding down against it'
 
 # Recovery has to be reachable from something that actually runs at session start.
 require_text .claude/rules/scheduling-reliability.md 'Step 11' \

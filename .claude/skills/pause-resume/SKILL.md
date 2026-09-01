@@ -379,7 +379,13 @@ above:
   in the past, and arming a Monitor for a past instant clamps the sleep to one second and winds the
   board down again seconds after the user asked for it back. `checkin_epoch` in the future → re-arm
   for the remaining time. `checkin_epoch` past with the deadline still ahead → the check-in is
-  already due: run `/leave-by` Step 8 now instead of arming anything. Say it in one line:
+  **overdue**, and it is delivered the same way every other check-in is: arm the Monitor with a
+  **fresh published generation** and let its sleep clamp to one second, so the check-in arrives as
+  its own event once this resume has returned. **Never invoke Step 8 inline from here.** Two
+  distinct failures come of that: it nests a `/pause` inside the restore that is still running, and
+  Step 8.1 would validate against the generation this step just nulled and exit silently — losing
+  the wind-down at the exact moment it was due. The armed-event route has neither problem, because
+  Step 6 publishes the generation before arming. Say it in one line:
   `leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET`. Clearing here instead would
   mean a coffee-break `/pause` at 4 PM silently cancels the 7 PM wind-down the user asked for once
   and never hears about again — the exact promise this feature exists to keep.
