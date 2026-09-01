@@ -456,11 +456,15 @@ splice_continuations() {
 # that failure — so a successful match returns non-zero. It surfaces only when
 # the match is far enough from EOF for awk to still be writing, which made it
 # look like one caller was broken and the other fine. No pipeline, no race.
-call_matches() {
+call_match_count() {
   local joined
   joined="$(splice_continuations "$1")"
-  grep -qE "$(call_pattern "$2")" <<<"$joined"
+  grep -cE "$(call_pattern "$2")" <<<"$joined"
 }
+
+# Boolean form for the controls, defined in terms of the counter so both run the
+# one mechanism.
+call_matches() { [[ "$(call_match_count "$1" "$2")" -gt 0 ]]; }
 
 assert_caller() {
   local label="$1" md="$2" series="$3"
@@ -485,9 +489,19 @@ assert_caller() {
   # The `-e` guard is gone with the leading `--`: this pattern starts with `^`,
   # so grep cannot mistake it for one of its own options. Restore `-e` for any
   # future pattern that does start with a dash — that bug cost a whole assertion.
-  call_matches "$md" "$series" \
-    && ok "$label: resolves its report path through report-path.sh with its own --series" \
-    || fail "$label: no report-path.sh call passing --series $series — the report could land in the sibling's series"
+  # EXACTLY one live call. The match runs over the whole document, so a second
+  # copy — a stale fenced example left behind by an edit — would let the
+  # assertion pass on the dead one after the live recipe changed or went away
+  # (CodeAnt, PR #1523). A count of 1 removes the ambiguity: with only one
+  # candidate in the file, the thing that matched is the thing that ships. Two
+  # copies of the recipe is itself the drift this suite exists to prevent, the
+  # same reason a skill may not keep a private copy of the engine.
+  local calls; calls="$(call_match_count "$md" "$series")"
+  case "$calls" in
+    1) ok "$label: resolves its report path through report-path.sh with its own --series, in exactly one place" ;;
+    0) fail "$label: no report-path.sh call passing --series $series — the report could land in the sibling's series" ;;
+    *) fail "$label: $calls copies of the resolver call — the assertion cannot tell which one ships, and the spare will drift" ;;
+  esac
 
   # Closes the other end of the chain: the call above invokes "$REPORT_PATH",
   # so that variable must point at the SHARED engine. Without this a caller
@@ -598,6 +612,15 @@ printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH
 call_matches "$CALL_FIXTURE" harness-audit \
   && fail "call shape: a call passing the sibling's --series matches anyway — the series is not being checked" \
   || ok "call shape: a call passing the sibling's --series does not match — the series is discriminated"
+
+# CONTROL for the exactly-one rule: a file carrying the live call AND a stale
+# fenced copy must be REJECTED, not quietly matched on whichever came first.
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' \
+  'Older example, kept by accident:' \
+  '  CANDIDATE="$("$REPORT_PATH" --dir "$OLD_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
+[[ "$(call_match_count "$CALL_FIXTURE" harness-audit)" -eq 2 ]] \
+  && ok "call shape: a stale duplicate of the call is counted, so the exactly-one rule can reject it" \
+  || fail "call shape: a duplicated call was not counted twice — the exactly-one rule cannot fire"
 
 assert_caller "review-stack-audit" "$RSA_SKILL_MD" review-stack-audit
 assert_caller "harness-audit" "$HA_SKILL_MD" harness-audit
