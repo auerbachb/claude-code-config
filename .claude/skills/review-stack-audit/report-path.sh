@@ -64,8 +64,8 @@
 # EXIT STATUS
 #   0  A free path was found and printed.
 #   1  Environment error: the --dir DIRECTORY does not exist, is not a
-#      directory, or is not readable and searchable; or every suffix up to the
-#      bound is taken. No path printed.
+#      directory, is not readable and searchable, or is not writable; or every
+#      suffix up to the bound is taken. No path printed.
 #   2  Usage error: a required FLAG is absent (--dir, --month), a flag value is
 #      empty, a flag is unknown, or --month/--series is malformed.
 #
@@ -151,6 +151,14 @@ DIR="${DIR%/}"
 [[ -d "$DIR" ]] || input_error "target path is not a directory: $DIR"
 [[ -r "$DIR" && -x "$DIR" ]] \
   || input_error "target directory is not readable and searchable, so a free name cannot be proven: $DIR"
+
+# Writability is not needed to PROVE a name free, but a path in a directory the
+# caller cannot write to is unusable, and failing here names the real problem.
+# Step 7 claims the returned path with O_EXCL and retries on failure, so without
+# this check a read-only directory would surface as "lost the claim race 5
+# times" — a race that never happened.
+[[ -w "$DIR" ]] \
+  || input_error "target directory is not writable, so the returned path could not be claimed: $DIR"
 
 # `-e` follows symlinks, so a DANGLING symlink reads as absent; `-L` catches it.
 # Both occupy the name.

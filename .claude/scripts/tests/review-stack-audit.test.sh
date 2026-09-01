@@ -22,7 +22,10 @@ REPORT_PATH="$REPO_ROOT/.claude/skills/review-stack-audit/report-path.sh"
 BASELINE_REAL="$REPO_ROOT/.claude/reference/review-stack-baseline.json"
 
 TMP_DIR="$(mktemp -d)"
-cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
+# u+rwx, not u+w: the unreadable-directory case leaves a dir at mode 000, and
+# without READ and SEARCH restored neither chmod -R nor rm -rf can descend into
+# it — the tree then survives the trap and leaks a temp dir on every run.
+cleanup() { chmod -R u+rwx "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 # Sandbox HOME before any engine runs. `.claude/` is created so the telemetry
@@ -1037,6 +1040,20 @@ if [[ -r "$SKILL_MD" ]]; then
   grep -qF 'REPORT_DIR="$REPO_ROOT/.claude/reference"' "$SKILL_MD" \
     && fail "skill: --report-to-repo targets \$REPO_ROOT — the root checkout the guard excludes, so the report would dirty main and miss the PR" \
     || ok "skill: --report-to-repo never targets \$REPO_ROOT, the root checkout its own guard excludes"
+
+  # step7_claim above is a REPLICA of the documented block. On its own it would
+  # keep passing while SKILL.md quietly lost the retry or the trap, so the tests
+  # would certify a recipe nobody ships. Assert the three load-bearing lines are
+  # still in the doc itself.
+  grep -qF 'if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi' "$SKILL_MD" \
+    && ok "skill: Step 7 still claims the resolved path with O_EXCL" \
+    || fail "skill: Step 7 lost its 'set -o noclobber' claim — the resolve/write race is reopened"
+  grep -qF 'for _attempt in 1 2 3 4 5; do' "$SKILL_MD" \
+    && ok "skill: Step 7 still retries a lost claim instead of discarding the audit" \
+    || fail "skill: Step 7 lost its claim retry loop — a lost race would discard the audit"
+  grep -qF 'trap cleanup_report EXIT' "$SKILL_MD" \
+    && ok "skill: Step 7 still clears its claim on failure" \
+    || fail "skill: Step 7 lost its EXIT trap — a failed compose would park an empty file on the canonical name"
 else
   fail "skill: SKILL.md not readable at $SKILL_MD"
 fi
