@@ -421,7 +421,46 @@ got="$(claim_recipe "$D3" 2026-08 harness-audit ok)"
 # agreement with the assertion that actually runs. `printf '%s'` passes the
 # pattern through with no escape interpretation — the `\$` and `\(` reach grep
 # as written.
-call_pattern() { printf '%s' '^[[:space:]]*CANDIDATE="\$\(.*--series '"$1"; }
+#
+# `"$REPORT_PATH"` is pinned as the command being substituted, not left to `.*`:
+# an unpinned command would let a caller resolve through some OTHER tool that
+# happens to accept `--series` and still pass an assertion whose whole claim is
+# "resolves through report-path.sh" (CodeAnt, PR #1523). What `$REPORT_PATH`
+# itself points at is asserted separately, below, so the chain is closed at both
+# ends. The span between the command and `--series` stays open, so flag order
+# remains the caller's business.
+call_pattern() { printf '%s' '^[[:space:]]*CANDIDATE="\$\("\$REPORT_PATH".*--series '"$1"; }
+
+# `grep` matches one PHYSICAL line, so a caller that wrapped its invocation
+# across a `\` continuation would fail the pattern above — precisely the rewrap
+# the comment calls the caller's business (CodeAnt, PR #1523). Splicing
+# continuations first makes the mechanism deliver what the comment promises,
+# rather than the two quietly disagreeing.
+#
+# awk, not `sed -e :a -e '/\\$/N; ...'`: on a file whose LAST line ends with a
+# backslash, BSD sed's `N` has no next line to fetch and quits WITHOUT printing,
+# silently dropping that line — the matcher would then report "no such call" for
+# a file that contains one. Caught here by the trailing-backslash fixture below,
+# which is why that fixture keeps its `\`. awk's `getline` simply fails at EOF,
+# leaving the final line intact.
+splice_continuations() {
+  awk '{ while (/\\$/ && (getline nxt) > 0) { sub(/\\$/, ""); $0 = $0 nxt } print }' "$1"
+}
+
+# Single entry point: the assertion and every control below run this exact
+# path, so the controls prove the mechanism that actually ships.
+#
+# The splice is captured FIRST and matched from a here-string rather than piped
+# into grep. Under this suite's `set -o pipefail`, `grep -q` exits the moment it
+# matches, awk takes SIGPIPE for the unread remainder, and the PIPELINE reports
+# that failure — so a successful match returns non-zero. It surfaces only when
+# the match is far enough from EOF for awk to still be writing, which made it
+# look like one caller was broken and the other fine. No pipeline, no race.
+call_matches() {
+  local joined
+  joined="$(splice_continuations "$1")"
+  grep -qE "$(call_pattern "$2")" <<<"$joined"
+}
 
 assert_caller() {
   local label="$1" md="$2" series="$3"
@@ -446,9 +485,18 @@ assert_caller() {
   # The `-e` guard is gone with the leading `--`: this pattern starts with `^`,
   # so grep cannot mistake it for one of its own options. Restore `-e` for any
   # future pattern that does start with a dash — that bug cost a whole assertion.
-  grep -qE "$(call_pattern "$series")" "$md" \
+  call_matches "$md" "$series" \
     && ok "$label: resolves its report path through report-path.sh with its own --series" \
     || fail "$label: no report-path.sh call passing --series $series — the report could land in the sibling's series"
+
+  # Closes the other end of the chain: the call above invokes "$REPORT_PATH",
+  # so that variable must point at the SHARED engine. Without this a caller
+  # could aim REPORT_PATH at a private copy and every other assertion here
+  # would still pass. The root derivation is left free — only the shared
+  # location is pinned.
+  grep -qE '^[[:space:]]*REPORT_PATH=.*/\.claude/scripts/report-path\.sh"' "$md" \
+    && ok "$label: points REPORT_PATH at the shared .claude/scripts/report-path.sh" \
+    || fail "$label: REPORT_PATH does not resolve to .claude/scripts/report-path.sh — it may be aimed at a private copy"
 
   grep -qF 'if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi' "$md" \
     && ok "$label: still claims the resolved path with O_EXCL" \
@@ -509,21 +557,37 @@ CALL_FIXTURE="$TMP_DIR/call-shape.md"
 # reporting on the pattern rather than on the callers. Anchoring on the closing
 # `)` failed exactly this way before.
 printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)" \' > "$CALL_FIXTURE"
-grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+call_matches "$CALL_FIXTURE" harness-audit \
   && ok "call shape: the real indented, line-continued invocation matches — the pattern is not over-anchored" \
   || fail "call shape: the pattern rejects the invocation both skills ship — it is over-anchored"
+
+# POSITIVE: a caller that wraps its flags across a `\` continuation is correct
+# bash and must pass. A single-line grep would reject it, so this control is
+# what keeps the "flag order is the caller's business" comment honest.
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" \' '    --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" harness-audit \
+  && ok "call shape: a caller wrapping --series onto a continuation line still matches — continuations are spliced" \
+  || fail "call shape: a legitimately rewrapped invocation fails — the matcher is line-bound and over-anchored"
+
+# NEGATIVE: the command being substituted is load-bearing. Resolving through
+# some other tool that happens to take --series is not resolving through
+# report-path.sh, and the assertion claims it is.
+printf '%s\n' '  CANDIDATE="$(some-other-resolver --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
+call_matches "$CALL_FIXTURE" harness-audit \
+  && fail "call shape: a call through a different command matches — the resolver itself is not being checked" \
+  || ok "call shape: a call through a different command does not match — the resolver is pinned"
 
 # NEGATIVE: the false pass this pattern was tightened to close — the real call
 # deleted, a commented-out copy left behind. A fragment match would call that a
 # healthy caller.
 printf '%s\n' '# CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
-grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+call_matches "$CALL_FIXTURE" harness-audit \
   && fail "call shape: a commented-out call satisfies the pattern — the assertion can pass with no live invocation" \
   || ok "call shape: a commented-out call does not satisfy the pattern"
 
 # NEGATIVE: prose naming the flags is not an invocation either.
 printf '%s\n' 'Run it with `--month "$MONTH" --series harness-audit` to select the series.' > "$CALL_FIXTURE"
-grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+call_matches "$CALL_FIXTURE" harness-audit \
   && fail "call shape: prose naming the flags satisfies the pattern" \
   || ok "call shape: prose naming the flags does not satisfy the pattern"
 
@@ -531,7 +595,7 @@ grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
 # with the SIBLING's series is the #1519 wrong-slot bug wearing a correct-looking
 # call, so the pattern must discriminate on it.
 printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series review-stack-audit)"' > "$CALL_FIXTURE"
-grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+call_matches "$CALL_FIXTURE" harness-audit \
   && fail "call shape: a call passing the sibling's --series matches anyway — the series is not being checked" \
   || ok "call shape: a call passing the sibling's --series does not match — the series is discriminated"
 
