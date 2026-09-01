@@ -203,10 +203,15 @@ same on-track / running-slow semantics the readout above already has.
 
 ### Helper: `overrun-check.sh --readout-cells`
 
-`overrun-check.sh --readout-cells --pr N --bound-min M --started-at ISO8601 [--now ISO8601]`
+`overrun-check.sh --readout-cells [--pr N] --bound-min M --started-at ISO8601 [--now ISO8601]`
 prints ONE tab-separated line — `{Start}\t{Projected end}\t{Remaining}` — for a single
 started row (exit 0 always). Same inputs, same pace model, and the same
 no-window/no-state-marker guarantee as `--readout`, whose output it leaves untouched.
+
+- **`--pr` is optional here** (and in `--readout`), required only on the breach path
+  that keys session state by PR. A Phase A pipeline has a `started_at` but no PR yet,
+  so callers must be able to omit it — demanding one turned a launch table with real
+  clocks into em dashes on the next heartbeat tick. Supply it and it is still validated.
 
 - Both clock cells are ET `%-I:%M %p` with **no** `ET` suffix; the column headers carry
   the zone.

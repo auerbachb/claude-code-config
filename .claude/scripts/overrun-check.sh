@@ -16,11 +16,18 @@
 #   overrun-check.sh --pr N --bound-min M --started-at ISO8601 \
 #                    [--window-deadline EPOCH] [--window-issues "N1,N2,..."] \
 #                    [--repo owner/repo] [--now ISO8601]
-#   overrun-check.sh --readout --pr N --bound-min M --started-at ISO8601 \
+#   overrun-check.sh --readout [--pr N] --bound-min M --started-at ISO8601 \
 #                    [--now ISO8601]
-#   overrun-check.sh --readout-cells --pr N --bound-min M --started-at ISO8601 \
+#   overrun-check.sh --readout-cells [--pr N] --bound-min M --started-at ISO8601 \
 #                    [--now ISO8601]
 #   overrun-check.sh --help
+#
+#   --pr is REQUIRED for the breach path (it keys the session-state record read
+#   and written there) and OPTIONAL for --readout / --readout-cells, which are
+#   pure computation over --bound-min/--started-at and never touch session
+#   state. Phase A pipelines have a started_at but no PR yet, so requiring one
+#   in cell mode blanked their row on every heartbeat tick. When supplied it is
+#   validated in every mode.
 #
 # OUTPUT
 #   exit 0: no breach — print nothing (breach mode) OR print readout line (readout mode)
@@ -120,12 +127,24 @@ if [[ "$READOUT_MODE" == "true" && "$CELLS_MODE" == "true" ]]; then
   exit 3
 fi
 
-if [[ -z "$PR_NUMBER" || -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
+# --pr identifies the session-state record the breach path reads and writes, so
+# it is required there. Readout and cell modes are pure computation over
+# --bound-min/--started-at and exit before any session-state I/O, so requiring a
+# PR there would blank the row for exactly the pipelines that need it most:
+# during Phase A no PR exists yet, while started_at DOES (issue-keyed). Demanding
+# one made a launch table that showed real clocks decay to em dashes on the next
+# heartbeat tick. A PR number is still accepted, and still validated when given.
+if [[ "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" ]]; then
+  if [[ -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
+    printf 'overrun-check.sh: --bound-min and --started-at are required\n' >&2
+    exit 3
+  fi
+elif [[ -z "$PR_NUMBER" || -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
   printf 'overrun-check.sh: --pr, --bound-min, and --started-at are required\n' >&2
   exit 3
 fi
 
-if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   printf 'overrun-check.sh: --pr must be a positive integer\n' >&2
   exit 3
 fi

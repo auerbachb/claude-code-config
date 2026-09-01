@@ -193,6 +193,46 @@ check_contains "readout: still emits no tab-separated cells" "on track" "$OUT"
 check_eq "readout: is a single field, not a cell row" "1" \
   "$(printf '%s\n' "$OUT" | awk -F'\t' '{print NF}')"
 
+# =============================================================================
+# 6. Cell mode does not require --pr.
+#    During Phase A the pipeline has a started_at (issue-keyed) but no PR yet.
+#    Cell mode is pure computation and exits before any session-state I/O, so
+#    demanding a PR blanked the row for exactly those pipelines: the launch
+#    table showed real clocks, then every later heartbeat tick rendered em
+#    dashes. The breach path DOES key session state by PR, so it still requires
+#    one.
+# =============================================================================
+run_capture bash "$OVERRUN" --readout-cells --bound-min "$BOUND" \
+  --started-at "$START" --now "$ON_TRACK_NOW"
+check_eq "no --pr: cell mode exits 0" "0" "$RC"
+check_eq "no --pr: renders the same three cells as the --pr call" \
+  "12:00 PM	1:30 PM	45 min" "$OUT"
+
+# The heartbeat passes "$PR_NUM" unquoted-empty during Phase A — the exact shape
+# BugBot flagged. An empty value must behave like an absent one, not like a
+# malformed one.
+run_capture bash "$OVERRUN" --readout-cells --pr "" --bound-min "$BOUND" \
+  --started-at "$START" --now "$ON_TRACK_NOW"
+check_eq "empty --pr: cell mode exits 0" "0" "$RC"
+check_eq "empty --pr: still renders clocks, never an empty row" \
+  "12:00 PM	1:30 PM	45 min" "$OUT"
+
+run_capture bash "$OVERRUN" --readout --bound-min "$BOUND" \
+  --started-at "$START" --now "$ON_TRACK_NOW"
+check_eq "no --pr: --readout mode is equally PR-free" "0" "$RC"
+check_contains "no --pr: --readout still emits its line" "on track" "$OUT"
+
+# Guard both halves of the narrowing: the breach path must still demand a PR,
+# and a malformed PR must still be rejected wherever it is supplied.
+run_capture bash "$OVERRUN" --bound-min "$BOUND" --started-at "$START"
+check_eq "breach mode without --pr: still a usage error" "3" "$RC"
+check_contains "breach mode without --pr: names --pr" "--pr" "$ERR"
+run_capture bash "$OVERRUN" --readout-cells --pr abc --bound-min "$BOUND" \
+  --started-at "$START"
+check_eq "malformed --pr: still rejected in cell mode" "3" "$RC"
+check_contains "malformed --pr: names the integer requirement" \
+  "positive integer" "$ERR"
+
 echo
 echo "overrun-check.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
