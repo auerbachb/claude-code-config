@@ -709,6 +709,61 @@ while IFS= read -r _code; do
 done <<< "$EXIT_CODES"
 check_eq "--help EXIT CODES documents every literal exit code" "" "$UNDOCUMENTED_CODES"
 
+# A row EXISTING is not the same as a row still SAYING what it said. The check
+# above matches "^ +5  " and nothing more, so deleting any cause from the exit-5
+# row -- or the unchanged-file promise it makes -- left every assertion above
+# green (CodeRabbit, PR #1500). Pin the row's own text, fail-closed.
+CODE5_ROW="$(printf '%s\n' "$EXIT_BLOCK" \
+  | awk '/^ +5  / { f = 1; print; next } f && /^ +[0-9]+  / { exit } f { print }')"
+check_eq "exit-5 row extracted from EXIT CODES (fail-closed)" "nonempty" \
+  "$([[ -n "${CODE5_ROW//[[:space:]]/}" ]] && echo nonempty || echo empty)"
+# The row wraps across lines, so collapse whitespace before matching: a phrase
+# broken by the wrap ("missing at\n     startup") is still the same claim.
+CODE5_TEXT="$(printf '%s\n' "$CODE5_ROW" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+MISSING_CAUSES=""
+CAUSES_CHECKED=0
+while IFS= read -r _cause; do
+  [[ -z "$_cause" ]] && continue
+  CAUSES_CHECKED=$((CAUSES_CHECKED + 1))
+  case "$CODE5_TEXT" in
+    *"$_cause"*) ;;
+    *) MISSING_CAUSES="$MISSING_CAUSES [$_cause]" ;;
+  esac
+done <<'CAUSES'
+mktemp / temp-write / mv failure
+rm failure under --delete
+REQUIRED sibling library missing at startup
+all leaving the handoff file exactly as it was
+CAUSES
+check_eq "exit-5 cause list is fail-closed (4 phrases checked)" "4" "$CAUSES_CHECKED"
+check_eq "exit-5 row still names every documented cause" "" "$MISSING_CAUSES"
+
+# The row promises all three causes leave the handoff file EXACTLY as it was.
+# Prove it for the cause this suite can induce -- a missing REQUIRED library,
+# which the row says fails "before anything is read" -- by attempting a real
+# --set that would otherwise rewrite the file. Reuses the stubs built above.
+reset_handoff
+run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
+BEFORE_EXIT5="$(cat "$HANDOFF_FILE")"
+LIBLESS_WRITE_CHECKED=0
+EXIT5_WRITE_VIOLATIONS=""
+while IFS= read -r _omit; do
+  [[ -z "$_omit" ]] && continue
+  _stub="$LIBLESS_ROOT/$(printf '%s' "$_omit" | tr '/.' '__')"
+  [[ -f "$_stub/handoff-state.sh" ]] || continue
+  bash "$_stub/handoff-state.sh" --legacy-flat --set "$PR" '.notes=exit5_must_not_land' \
+    </dev/null >/dev/null 2>&1
+  _rc=$?
+  LIBLESS_WRITE_CHECKED=$((LIBLESS_WRITE_CHECKED + 1))
+  [[ "$_rc" == "5" ]] || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS rc($_omit)=$_rc"
+  [[ "$(cat "$HANDOFF_FILE")" == "$BEFORE_EXIT5" ]] \
+    || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS modified($_omit)"
+done <<< "$SIBLING_LIBS"
+check_eq "every library got an exit-5 write attempt (fail-closed)" "3" \
+  "$LIBLESS_WRITE_CHECKED"
+check_eq "a --set that exits 5 leaves the handoff file byte-identical" "" \
+  "$EXIT5_WRITE_VIOLATIONS"
+
 echo
 echo "==================================="
 echo "Results: $PASS passed, $FAIL failed"
