@@ -42,6 +42,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
 | [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |
 | [handoff-state.test.sh](../tests/handoff-state.test.sh) | Tests for `handoff-state.sh` |
+| [help-output.test.sh](../tests/help-output.test.sh) | `--help` contract for every repo script (#1513/#1475) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, with fixtures proving the checker rejects both pre-fix forms |
 | [infer-pr.test.sh](../tests/infer-pr.test.sh) | Tests for `infer-pr.sh` |
 | [issue-claim.test.sh](../tests/issue-claim.test.sh) | Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next |
 | [issue-dedup.test.sh](../tests/issue-dedup.test.sh) | Tests for `issue-dedup.sh` |

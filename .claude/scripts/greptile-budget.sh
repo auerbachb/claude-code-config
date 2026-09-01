@@ -101,7 +101,7 @@ if ! source "$SELF_DIR/state-lock.sh"; then
 fi
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 die_usage() {

@@ -182,7 +182,7 @@ EXIT_WRITE=5
 EXIT_LOCK=6
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# DEPENDENCIES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 die_usage() {

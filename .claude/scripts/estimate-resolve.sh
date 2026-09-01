@@ -53,7 +53,7 @@ while [[ $# -gt 0 ]]; do
     --repo=*)
       REPO="${1#--repo=}"; shift ;;
     --help|-h)
-      sed -n '2,/^set -/{ /^#/{ s/^# \?//; p }; /^set -/q }' "$0"
+      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
       exit 0 ;;
     -*)
       printf 'Usage: %s <issue_number> [--repo owner/repo]\n' "$(basename "$0")" >&2
