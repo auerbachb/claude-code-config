@@ -1019,6 +1019,29 @@ got="$(step7_claim "$D3" 2026-08 ok)"
   || fail "step7: expected the canonical name to be free again, got '$got'"
 
 # ---------------------------------------------------------------------------
+# --report-to-repo must target the CURRENT worktree (Bugbot High, PR #1511)
+#
+# Step 7's guard admits the flag only when the current tree is NOT repo-root.sh's
+# answer. Deriving the destination from $REPO_ROOT therefore contradicts the very
+# condition that let the flag through: the report would land in the root
+# checkout — normally on `main` — dirtying main and leaving the file out of the
+# PR the flag exists to produce. A doc assertion because the destination lives in
+# SKILL.md, not in a script.
+# ---------------------------------------------------------------------------
+
+SKILL_MD="$REPO_ROOT/.claude/skills/review-stack-audit/SKILL.md"
+if [[ -r "$SKILL_MD" ]]; then
+  grep -qF 'REPORT_DIR="$WORKTREE_ROOT/.claude/reference"' "$SKILL_MD" \
+    && ok "skill: --report-to-repo derives its destination from the current worktree" \
+    || fail "skill: --report-to-repo no longer targets \$WORKTREE_ROOT"
+  grep -qF 'REPORT_DIR="$REPO_ROOT/.claude/reference"' "$SKILL_MD" \
+    && fail "skill: --report-to-repo targets \$REPO_ROOT — the root checkout the guard excludes, so the report would dirty main and miss the PR" \
+    || ok "skill: --report-to-repo never targets \$REPO_ROOT, the root checkout its own guard excludes"
+else
+  fail "skill: SKILL.md not readable at $SKILL_MD"
+fi
+
+# ---------------------------------------------------------------------------
 # The shipped baseline must be valid against the shipped drift engine.
 # ---------------------------------------------------------------------------
 

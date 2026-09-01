@@ -325,15 +325,25 @@ refuses rather than guessing when it cannot read the target directory.
 > WORKTREE — and trip `dirty-main-guard`. Landing a report *in* the repo stays a
 > deliberate, human, PR-shaped act.
 
-`--report-to-repo` sets `REPORT_DIR="$REPO_ROOT/.claude/reference"` instead, and
-is valid **only** in a worktree that is not the root repo, on a branch that is
-not `main`:
+`--report-to-repo` sets `REPORT_DIR="$WORKTREE_ROOT/.claude/reference"` instead —
+the **current worktree**, and it is valid **only** in a worktree that is not the
+root repo, on a branch that is not `main`:
 
 ```bash
+WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   && [[ "$(git branch --show-current)" != "main" ]] \
-  && [[ "$(git rev-parse --show-toplevel)" != "$("$REPO_ROOT_SH")" ]]
+  && [[ "$WORKTREE_ROOT" != "$("$REPO_ROOT_SH")" ]]
 ```
+
+> **Not `$REPO_ROOT`.** `$REPO_ROOT` is `repo-root.sh`'s answer — the root
+> checkout, which normally sits on `main`. Writing the report there would put the
+> file on `main` and leave it out of the very PR the flag exists to produce,
+> which is precisely what the guard above is testing *against*: the third
+> condition passes only when the current tree is **not** that path. The
+> destination must be the tree the guard just validated, so both derive from the
+> same `$WORKTREE_ROOT`. The sibling `/harness-audit` recipe writes to the
+> current tree for the same reason.
 
 Refuse otherwise, explain why, and fall back to the default directory. When it
 does land in-repo, add the one-line entry under **"Audits and research
