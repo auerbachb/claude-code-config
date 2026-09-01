@@ -929,6 +929,96 @@ ln -s "$D/nonexistent-target" "$D/review-stack-audit-2026-09.md"
   || ok "report-path: O_EXCL and the resolver agree that a dangling symlink is an occupied name"
 
 # ---------------------------------------------------------------------------
+# The whole Step 7 recipe — claim, retry, and clean up
+#
+# The claim introduced two failure modes of its own, both caught in review on
+# PR #1511: a lost race must not discard the audit (CodeAnt Major), and a failed
+# compose must not park an empty file on the canonical name (Bugbot Medium).
+# step7_claim mirrors the documented block exactly so those are pinned behaviour,
+# not just prose. `mode=fail` aborts after claiming, standing in for a compose
+# that dies before `mv`.
+# ---------------------------------------------------------------------------
+
+step7_claim() {
+  bash -c '
+    set -u
+    REPORT_PATH="$1"; REPORT_DIR="$2"; MONTH="$3"; MODE="$4"
+    REPORT=""
+    for _attempt in 1 2 3 4 5; do
+      CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" || exit 1
+      if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi
+    done
+    [[ -n "$REPORT" ]] || exit 1
+    TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
+    cleanup_report() { rm -f "$TMP_REPORT"; [[ -s "$REPORT" ]] || rm -f "$REPORT"; }
+    trap cleanup_report EXIT
+    printf "%s\n" "$REPORT"
+    [[ "$MODE" == "fail" ]] && exit 9
+    printf "report body\n" > "$TMP_REPORT"
+    mv "$TMP_REPORT" "$REPORT"
+  ' _ "${4:-$REPORT_PATH}" "$1" "$2" "$3"
+}
+
+# A resolver that loses the race exactly once: it creates the very path it
+# returns, but only on its first call. That is the window between resolving and
+# claiming — the only thing the retry loop exists for. A merely pre-existing file
+# cannot exercise it, because report-path.sh would skip that name up front.
+RACER="$TMP_DIR/racing-report-path.sh"
+cat > "$RACER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+P="\$("$REPORT_PATH" "\$@")"
+if [[ ! -e "$TMP_DIR/racer-fired" ]]; then
+  : > "$TMP_DIR/racer-fired"
+  : > "\$P"
+fi
+printf '%s\n' "\$P"
+EOF
+chmod +x "$RACER"
+
+D="$RP_DIR/step7"; mkdir -p "$D"
+
+# Happy path: the claimed name is the canonical one and survives with content.
+got="$(step7_claim "$D" 2026-08 ok)"
+[[ "$got" == "$D/review-stack-audit-2026-08.md" && -s "$got" ]] \
+  && ok "step7: a successful run keeps its claimed report, non-empty, at the canonical name" \
+  || fail "step7: expected a non-empty canonical report, got '$got'"
+
+# Lost race, injected in the real window: the first resolve is stolen out from
+# under the claim. The run must retry onto the next suffix, NOT abort — aborting
+# would throw away a completed measurement run over a moment's contention.
+D2="$RP_DIR/step7-race"; mkdir -p "$D2"
+got="$(step7_claim "$D2" 2026-08 ok "$RACER")"; rc=$?
+[[ $rc -eq 0 && "$got" == "$D2/review-stack-audit-2026-08-2.md" && -s "$got" ]] \
+  && ok "step7: a claim stolen mid-window is retried onto the next suffix, not discarded" \
+  || fail "step7: race path returned rc=$rc path='$got' (expected the -2 suffix, written)"
+[[ -e "$D2/review-stack-audit-2026-08.md" ]] \
+  && ok "step7: the winner's claim is left untouched by the audit that lost the race" \
+  || fail "step7: the losing run removed the winner's claimed file"
+
+# Failed compose: the claim is a zero-byte placeholder, so the trap must remove
+# it. Otherwise the canonical name stays occupied by a blank file and every later
+# audit that month is pushed onto a suffix — the confusion #1345 is about.
+D3="$RP_DIR/step7-crash"; mkdir -p "$D3"
+got="$(step7_claim "$D3" 2026-08 fail)"; rc=$?
+[[ $rc -eq 9 ]] \
+  && ok "step7: a compose failure propagates its exit status" \
+  || fail "step7: expected rc=9 from the failing compose, got $rc"
+[[ ! -e "$got" ]] \
+  && ok "step7: a failed run removes its empty claim — the canonical name is not left occupied by a blank file" \
+  || fail "step7: empty placeholder survived a failed run at $got"
+[[ -z "$(ls -A "$D3")" ]] \
+  && ok "step7: a failed run leaves the directory exactly as it found it (temp file included)" \
+  || fail "step7: failed run left debris: $(ls -A "$D3")"
+
+# ...and because the name was released, the next audit gets the canonical name
+# back rather than being pushed onto -2 forever.
+got="$(step7_claim "$D3" 2026-08 ok)"
+[[ "$got" == "$D3/review-stack-audit-2026-08.md" && -s "$got" ]] \
+  && ok "step7: after a failed run the canonical name is reusable — no permanent suffix drift" \
+  || fail "step7: expected the canonical name to be free again, got '$got'"
+
+# ---------------------------------------------------------------------------
 # The shipped baseline must be valid against the shipped drift engine.
 # ---------------------------------------------------------------------------
 

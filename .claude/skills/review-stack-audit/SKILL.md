@@ -347,17 +347,28 @@ in that same directory, the same idiom as Step 3's snapshot, so a half-written
 report is never what a reader finds:
 
 ```bash
-REPORT="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" \
-  || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
-
-# Claim the path atomically, before composing anything. `set -o noclobber` opens
-# with O_EXCL, so if a simultaneous audit resolved the same name first, this
-# fails instead of overwriting it. Runs in a subshell so noclobber does not leak
-# into the rest of the flow.
-( set -o noclobber; : > "$REPORT" ) \
-  || { echo "ERROR: $REPORT was claimed by another audit between resolving and reserving it — not writing." >&2; exit 1; }
+# Resolve, then CLAIM. `set -o noclobber` opens with O_EXCL, so if a simultaneous
+# audit took the name between resolving and reserving, the claim fails instead of
+# overwriting. Losing that race is not fatal — ask for the next free name and
+# claim again. The subshell keeps noclobber out of the rest of the flow.
+REPORT=""
+for _attempt in 1 2 3 4 5; do
+  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" \
+    || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
+  if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi
+done
+[[ -n "$REPORT" ]] \
+  || { echo "ERROR: lost the claim race 5 times in $REPORT_DIR — not writing." >&2; exit 1; }
 
 TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
+
+# The claim is an EMPTY placeholder until `mv` lands. If composition dies in
+# between, drop it — otherwise the canonical name stays occupied by a blank file
+# and every later audit that month is pushed onto -2, -3, … reintroducing the
+# confusion #1345 is about. `-s` keeps a real report: after `mv` it is non-empty.
+cleanup_report() { rm -f "$TMP_REPORT"; [[ -s "$REPORT" ]] || rm -f "$REPORT"; }
+trap cleanup_report EXIT
+
 # ...compose the report into "$TMP_REPORT"...
 mv "$TMP_REPORT" "$REPORT"
 ```
@@ -366,13 +377,25 @@ mv "$TMP_REPORT" "$REPORT"
 the base name.** The whole point is that the unverified path is exactly the one
 that destroys a prior report.
 
-**The reservation is what makes the resolved path yours.** `report-path.sh`
-creates nothing, so its answer is only true at the instant it is given; a lock
-inside it could not help, because it exits before this flow writes. Reserving
-with O_EXCL closes that window at the only layer that can close it: a concurrent
-audit then sees the name occupied and is handed the next suffix. Because
-`$TMP_REPORT` is derived from the reserved `$REPORT`, the temp file is unique
-too, so two audits cannot collide on it either.
+**The claim is what makes the resolved path yours.** `report-path.sh` creates
+nothing, so its answer is only true at the instant it is given; a lock inside it
+could not help, because it exits before this flow writes. Claiming with O_EXCL
+closes that window at the only layer that can close it. Because `$TMP_REPORT` is
+derived from the claimed `$REPORT`, the temp file is unique too, so two audits
+cannot collide on it either.
+
+**Two failure modes the claim introduces, and how the block above handles them:**
+
+- **Losing the race must not lose the audit.** A bare hard-stop on a failed claim
+  would discard a completed measurement run because another audit happened to be
+  writing at that instant. The loop re-resolves instead, so the loser takes the
+  next suffix; only five consecutive losses — which would mean something is very
+  wrong — abort.
+- **A crashed run must not leave the name occupied.** The claim is a zero-byte
+  placeholder until `mv` lands, and `report-path.sh` counts any existing file as
+  taken. Without cleanup, one failed compose would park an empty file on the
+  canonical name and push every later report that month onto a suffix. The `EXIT`
+  trap removes the placeholder unless it holds a real report.
 
 Report shape, following the prior audits in this series:
 
