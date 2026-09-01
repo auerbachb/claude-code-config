@@ -82,8 +82,8 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [reply-thread.test.sh](../tests/reply-thread.test.sh) | Tests for `reply-thread.sh` |
 | [repo-bootstrap.test.sh](../tests/repo-bootstrap.test.sh) | Tests for `repo-bootstrap.sh` — file-set check/apply/report behavior and the exit-code contract |
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
-| [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path |
 | [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control |
+| [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path |
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
 | [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
 | [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |
