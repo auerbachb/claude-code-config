@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
-# Tests for /review-stack-audit's two engines (issue #1201):
-#   measure.sh — per-tool measurement and cap classification
-#   drift.sh   — snapshot vs baseline comparison
+# Tests for /review-stack-audit's three engines (issues #1201, #1345):
+#   measure.sh     — per-tool measurement and cap classification
+#   drift.sh       — snapshot vs baseline comparison
+#   report-path.sh — collision-free report destination
 #
 # Every case is OFFLINE. measure.sh is driven through --fixture, which feeds the
 # SAME code path live gh data takes, so these exercise the real classifier
-# rather than a parallel reimplementation of it. HOME is not touched.
+# rather than a parallel reimplementation of it.
+#
+# HOME is sandboxed to a mktemp tree (script-usage-log-redirect.test.sh
+# pattern), so the real ~/.claude is never touched. All three engines append a
+# telemetry line to $HOME/.claude/script-usage.log on every invocation, so
+# without this the suite would write into the developer's own log — and this
+# header used to claim otherwise.
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 MEASURE="$REPO_ROOT/.claude/skills/review-stack-audit/measure.sh"
 DRIFT="$REPO_ROOT/.claude/skills/review-stack-audit/drift.sh"
+REPORT_PATH="$REPO_ROOT/.claude/skills/review-stack-audit/report-path.sh"
 BASELINE_REAL="$REPO_ROOT/.claude/reference/review-stack-baseline.json"
 
 TMP_DIR="$(mktemp -d)"
-cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
+# u+rwx, not u+w: the unreadable-directory case leaves a dir at mode 000, and
+# without READ and SEARCH restored neither chmod -R nor rm -rf can descend into
+# it — the tree then survives the trap and leaks a temp dir on every run.
+cleanup() { chmod -R u+rwx "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+
+# Sandbox HOME before any engine runs. `.claude/` is created so the telemetry
+# append still succeeds — the goal is to redirect that write, not to silently
+# exercise a different (log-disabled) path than production takes. Set after the
+# REPO_ROOT lookup above, which is the suite's only HOME-sensitive command.
+export HOME="$TMP_DIR/home"
+mkdir -p "$HOME/.claude"
 
 FAILED=0
 fail() { echo "FAIL: $*" >&2; FAILED=1; }
@@ -23,6 +41,7 @@ ok() { echo "ok   — $*"; }
 
 [[ -x "$MEASURE" ]] || { echo "FAIL: measure.sh missing or not executable" >&2; exit 1; }
 [[ -x "$DRIFT"   ]] || { echo "FAIL: drift.sh missing or not executable" >&2; exit 1; }
+[[ -x "$REPORT_PATH" ]] || { echo "FAIL: report-path.sh missing or not executable" >&2; exit 1; }
 
 # jq-free field reader: these run wherever python3 does, and python3 is already
 # a hard dependency of both scripts under test.
@@ -725,6 +744,319 @@ case "$notes" in
   *unclassified*) ok "drift: unclassified cap candidates are surfaced as a caveat" ;;
   *) fail "drift: unclassified entries produced no caveat: $notes" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# report-path.sh — a second audit in one month must never overwrite the first
+#
+# The bug this pins (issue #1345): Step 7 derived the report path from the
+# calendar month alone, so two audits in one month resolved to the SAME file and
+# the second silently destroyed the first. It happened for real in 2026-08 and
+# PR #1338 had to rename its report by hand. Every case below is offline and
+# builds its own directory, so none can pass because of another's leftovers.
+# ---------------------------------------------------------------------------
+
+RP_DIR="$TMP_DIR/report-path"
+mkdir -p "$RP_DIR"
+
+# rp_run <dir> <month> [extra args...] — echoes the path, returns the exit code.
+rp_run() { "$REPORT_PATH" --dir "$1" --month "$2" "${@:3}"; }
+
+# Case 1 — an empty directory yields the unsuffixed canonical name. The first
+# report of a month must read exactly as it always has; a fix that renamed every
+# report would be a different (and worse) change.
+D="$RP_DIR/empty"; mkdir -p "$D"
+got="$(rp_run "$D" 2026-08)" \
+  && [[ "$got" == "$D/review-stack-audit-2026-08.md" ]] \
+  && ok "report-path: a free month returns the canonical unsuffixed name — the common case is unchanged" \
+  || fail "report-path: empty dir should return $D/review-stack-audit-2026-08.md, got '$got'"
+
+# Case 2 — the base name taken yields a DISTINCT path. This is the collision the
+# issue reports; before the fix both runs returned the same string.
+D="$RP_DIR/collide"; mkdir -p "$D"
+base="$D/review-stack-audit-2026-08.md"
+printf 'first audit\n' > "$base"
+second="$(rp_run "$D" 2026-08)"
+[[ -n "$second" && "$second" != "$base" ]] \
+  && ok "report-path: a second same-month audit gets a distinct path — the month-mate is not overwritten" \
+  || fail "report-path: second run returned '$second', which must differ from '$base'"
+[[ "$second" == "$D/review-stack-audit-2026-08-2.md" ]] \
+  && ok "report-path: the first collision suffix is -2 — a stable, predictable series" \
+  || fail "report-path: expected the -2 suffix, got '$second'"
+
+# Case 3 — base AND -2 taken yields a third distinct path, so the counter walks
+# rather than parking on the first suffix (which would collide from run three on).
+printf 'second audit\n' > "$second"
+third="$(rp_run "$D" 2026-08)"
+[[ "$third" == "$D/review-stack-audit-2026-08-3.md" ]] \
+  && ok "report-path: the counter advances past every taken name — run three lands on -3" \
+  || fail "report-path: expected the -3 suffix, got '$third'"
+
+# The acceptance criterion in one assertion: over a run of audits, EVERY path
+# handed back is free at the moment it is handed back, and every report survives.
+D="$RP_DIR/sequence"; mkdir -p "$D"
+collided=""
+for i in 1 2 3 4 5; do
+  p="$(rp_run "$D" 2026-08)" || { fail "report-path: run $i exited non-zero"; break; }
+  if [[ -e "$p" || -L "$p" ]]; then collided="$p"; fi
+  printf 'audit %s\n' "$i" > "$p"
+done
+[[ -z "$collided" ]] \
+  && ok "report-path: five same-month audits never target an existing name — nothing is overwritten" \
+  || fail "report-path: returned an already-occupied path: $collided"
+n="$(ls -1 "$D" | wc -l | tr -d ' ')"
+[[ "$n" == "5" ]] \
+  && ok "report-path: all five same-month reports survive on disk (the #1345 acceptance criterion)" \
+  || fail "report-path: expected 5 surviving reports, found $n"
+
+# A DIRECTORY or a DANGLING SYMLINK occupies the name just as a file does: `mv`
+# onto either loses the report. A plain `-f` test would call both slots free.
+D="$RP_DIR/nonfile"; mkdir -p "$D"
+mkdir "$D/review-stack-audit-2026-09.md"
+got="$(rp_run "$D" 2026-09)"
+[[ "$got" != "$D/review-stack-audit-2026-09.md" ]] \
+  && ok "report-path: a directory occupying the name counts as taken — mv onto it would not produce a report" \
+  || fail "report-path: a directory at the base name was treated as free"
+ln -s "$D/no-such-target" "$D/review-stack-audit-2026-10.md"
+got="$(rp_run "$D" 2026-10)"
+[[ "$got" != "$D/review-stack-audit-2026-10.md" ]] \
+  && ok "report-path: a dangling symlink counts as taken — -e alone reads it as absent" \
+  || fail "report-path: a dangling symlink at the base name was treated as free"
+
+# It is a PURE function: the caller writes, never the script. A script that
+# created its own placeholder would make the audit's advisory-only contract false.
+D="$RP_DIR/pure"; mkdir -p "$D"
+before="$(ls -A "$D" | sort)"
+rp_run "$D" 2026-08 >/dev/null
+rp_run "$D" 2026-08 >/dev/null
+after="$(ls -A "$D" | sort)"
+[[ "$before" == "$after" ]] \
+  && ok "report-path: resolving a path writes nothing — the skill stays advisory-only" \
+  || fail "report-path: the script mutated its target directory"
+
+# --series keeps the manual ai-review-tool-audit-* series reachable without a
+# second copy of the suffix logic living somewhere else.
+D="$RP_DIR/series"; mkdir -p "$D"
+got="$(rp_run "$D" 2026-08 --series ai-review-tool-audit)"
+[[ "$got" == "$D/ai-review-tool-audit-2026-08.md" ]] \
+  && ok "report-path: --series honoured, so a second series needs no second implementation" \
+  || fail "report-path: --series override returned '$got'"
+
+# Bad input is refused loudly. A malformed month would silently produce a name
+# outside the series, so later runs would not recognise it as a month-mate — it
+# would stop colliding by being unfindable rather than by being distinct.
+months_ok=yes
+for bad in 2026-13 2026-00 26-08 2026-8 "" ; do
+  "$REPORT_PATH" --dir "$RP_DIR" --month "$bad" >/dev/null 2>&1
+  if [[ $? -ne 2 ]]; then
+    fail "report-path: month '$bad' must be a usage error (exit 2)"
+    months_ok=no
+  fi
+done
+[[ "$months_ok" == "yes" ]] \
+  && ok "report-path: malformed months are usage errors, never a silently off-series name" \
+  || true
+
+"$REPORT_PATH" --month 2026-08 >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "report-path: missing --dir is a usage error" \
+  || fail "report-path: missing --dir should exit 2"
+"$REPORT_PATH" --dir "$RP_DIR" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "report-path: missing --month is a usage error" \
+  || fail "report-path: missing --month should exit 2"
+"$REPORT_PATH" --dir "$RP_DIR" --month 2026-08 --series ../escape >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "report-path: a --series with path separators is refused — the report cannot land outside --dir" \
+  || fail "report-path: --series ../escape should exit 2"
+
+# The failure this script exists to prevent, in its subtlest form: a directory it
+# cannot read cannot prove a name is free. Returning the base name there would
+# launder "I could not check" into "no collision" — the exact
+# guards-that-pass-by-not-running shape. It must refuse, and print NO path, so a
+# caller doing `REPORT=$(...)` gets an empty string rather than a live target.
+"$REPORT_PATH" --dir "$RP_DIR/definitely-not-here" --month 2026-08 >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "report-path: a missing target directory is refused, never assumed empty" \
+  || fail "report-path: a missing --dir should exit 1"
+
+D="$RP_DIR/locked"; mkdir -p "$D"
+printf 'prior audit\n' > "$D/review-stack-audit-2026-08.md"
+chmod 000 "$D"
+out="$("$REPORT_PATH" --dir "$D" --month 2026-08 2>/dev/null)"; rc=$?
+chmod 755 "$D"
+if [[ $rc -eq 0 ]] && [[ "$(id -u)" == "0" ]]; then
+  # root ignores the permission bits, so this case cannot be staged there.
+  ok "report-path: unreadable-directory case skipped as root (chmod 000 is not enforced for uid 0)"
+else
+  [[ $rc -eq 1 && -z "$out" ]] \
+    && ok "report-path: an unreadable directory refuses and prints no path — 'cannot check' never becomes 'no collision'" \
+    || fail "report-path: unreadable dir should exit 1 with empty stdout (rc=$rc, out='$out')"
+fi
+
+# ---------------------------------------------------------------------------
+# The Step 7 reservation — resolve, then CLAIM with O_EXCL
+#
+# report-path.sh creates nothing, so its answer is only true at the instant it
+# is given (CodeAnt Critical + CodeRabbit major on PR #1511). Step 7 closes that
+# window by reserving the returned path with `set -o noclobber`. These cases pin
+# the contract that fix depends on: the reservation is atomic, and a reserved
+# path is subsequently seen as taken by the resolver.
+# ---------------------------------------------------------------------------
+
+D="$RP_DIR/reserve"; mkdir -p "$D"
+
+# Interleave two audits the way concurrency would: A resolves and reserves, then
+# B resolves. B must be handed a different name — the reservation, not luck, is
+# what makes A's path safe to write.
+a_path="$(rp_run "$D" 2026-08)"
+( set -o noclobber; : > "$a_path" ) 2>/dev/null \
+  && ok "report-path: a freshly resolved path can be reserved with O_EXCL — the claim succeeds on the happy path" \
+  || fail "report-path: could not reserve freshly resolved path $a_path"
+b_path="$(rp_run "$D" 2026-08)"
+[[ "$b_path" != "$a_path" ]] \
+  && ok "report-path: a path reserved by O_EXCL is seen as taken by the next run — interleaved audits cannot share a name" \
+  || fail "report-path: second run returned the reserved path '$a_path' again"
+
+# The reservation must REFUSE rather than truncate, otherwise it would itself be
+# the overwrite #1345 is about. Re-reserving A's path has to fail with the file's
+# contents intact.
+printf 'audit A body\n' > "$a_path"
+( set -o noclobber; : > "$a_path" ) 2>/dev/null \
+  && fail "report-path: O_EXCL reservation overwrote an existing report — the guard is inert" \
+  || ok "report-path: reserving an already-claimed path fails instead of truncating it"
+[[ "$(cat "$a_path")" == "audit A body" ]] \
+  && ok "report-path: the refused reservation left the prior report byte-for-byte intact" \
+  || fail "report-path: prior report was damaged by a refused reservation"
+
+# A dangling symlink occupies a name for the resolver (`-e || -L`); the
+# reservation must agree, or the two layers would disagree about what is free.
+ln -s "$D/nonexistent-target" "$D/review-stack-audit-2026-09.md"
+( set -o noclobber; : > "$D/review-stack-audit-2026-09.md" ) 2>/dev/null \
+  && fail "report-path: O_EXCL wrote through a dangling symlink the resolver treats as taken" \
+  || ok "report-path: O_EXCL and the resolver agree that a dangling symlink is an occupied name"
+
+# ---------------------------------------------------------------------------
+# The whole Step 7 recipe — claim, retry, and clean up
+#
+# The claim introduced two failure modes of its own, both caught in review on
+# PR #1511: a lost race must not discard the audit (CodeAnt Major), and a failed
+# compose must not park an empty file on the canonical name (Bugbot Medium).
+# step7_claim mirrors the documented block exactly so those are pinned behaviour,
+# not just prose. `mode=fail` aborts after claiming, standing in for a compose
+# that dies before `mv`.
+# ---------------------------------------------------------------------------
+
+step7_claim() {
+  bash -c '
+    set -u
+    REPORT_PATH="$1"; REPORT_DIR="$2"; MONTH="$3"; MODE="$4"
+    REPORT=""
+    for _attempt in 1 2 3 4 5; do
+      CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" || exit 1
+      if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi
+    done
+    [[ -n "$REPORT" ]] || exit 1
+    TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
+    cleanup_report() { rm -f "$TMP_REPORT"; [[ -s "$REPORT" ]] || rm -f "$REPORT"; }
+    trap cleanup_report EXIT
+    printf "%s\n" "$REPORT"
+    [[ "$MODE" == "fail" ]] && exit 9
+    printf "report body\n" > "$TMP_REPORT"
+    mv "$TMP_REPORT" "$REPORT"
+  ' _ "${4:-$REPORT_PATH}" "$1" "$2" "$3"
+}
+
+# A resolver that loses the race exactly once: it creates the very path it
+# returns, but only on its first call. That is the window between resolving and
+# claiming — the only thing the retry loop exists for. A merely pre-existing file
+# cannot exercise it, because report-path.sh would skip that name up front.
+RACER="$TMP_DIR/racing-report-path.sh"
+cat > "$RACER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+P="\$("$REPORT_PATH" "\$@")"
+if [[ ! -e "$TMP_DIR/racer-fired" ]]; then
+  : > "$TMP_DIR/racer-fired"
+  : > "\$P"
+fi
+printf '%s\n' "\$P"
+EOF
+chmod +x "$RACER"
+
+D="$RP_DIR/step7"; mkdir -p "$D"
+
+# Happy path: the claimed name is the canonical one and survives with content.
+got="$(step7_claim "$D" 2026-08 ok)"
+[[ "$got" == "$D/review-stack-audit-2026-08.md" && -s "$got" ]] \
+  && ok "step7: a successful run keeps its claimed report, non-empty, at the canonical name" \
+  || fail "step7: expected a non-empty canonical report, got '$got'"
+
+# Lost race, injected in the real window: the first resolve is stolen out from
+# under the claim. The run must retry onto the next suffix, NOT abort — aborting
+# would throw away a completed measurement run over a moment's contention.
+D2="$RP_DIR/step7-race"; mkdir -p "$D2"
+got="$(step7_claim "$D2" 2026-08 ok "$RACER")"; rc=$?
+[[ $rc -eq 0 && "$got" == "$D2/review-stack-audit-2026-08-2.md" && -s "$got" ]] \
+  && ok "step7: a claim stolen mid-window is retried onto the next suffix, not discarded" \
+  || fail "step7: race path returned rc=$rc path='$got' (expected the -2 suffix, written)"
+[[ -e "$D2/review-stack-audit-2026-08.md" ]] \
+  && ok "step7: the winner's claim is left untouched by the audit that lost the race" \
+  || fail "step7: the losing run removed the winner's claimed file"
+
+# Failed compose: the claim is a zero-byte placeholder, so the trap must remove
+# it. Otherwise the canonical name stays occupied by a blank file and every later
+# audit that month is pushed onto a suffix — the confusion #1345 is about.
+D3="$RP_DIR/step7-crash"; mkdir -p "$D3"
+got="$(step7_claim "$D3" 2026-08 fail)"; rc=$?
+[[ $rc -eq 9 ]] \
+  && ok "step7: a compose failure propagates its exit status" \
+  || fail "step7: expected rc=9 from the failing compose, got $rc"
+[[ ! -e "$got" ]] \
+  && ok "step7: a failed run removes its empty claim — the canonical name is not left occupied by a blank file" \
+  || fail "step7: empty placeholder survived a failed run at $got"
+[[ -z "$(ls -A "$D3")" ]] \
+  && ok "step7: a failed run leaves the directory exactly as it found it (temp file included)" \
+  || fail "step7: failed run left debris: $(ls -A "$D3")"
+
+# ...and because the name was released, the next audit gets the canonical name
+# back rather than being pushed onto -2 forever.
+got="$(step7_claim "$D3" 2026-08 ok)"
+[[ "$got" == "$D3/review-stack-audit-2026-08.md" && -s "$got" ]] \
+  && ok "step7: after a failed run the canonical name is reusable — no permanent suffix drift" \
+  || fail "step7: expected the canonical name to be free again, got '$got'"
+
+# ---------------------------------------------------------------------------
+# --report-to-repo must target the CURRENT worktree (Bugbot High, PR #1511)
+#
+# Step 7's guard admits the flag only when the current tree is NOT repo-root.sh's
+# answer. Deriving the destination from $REPO_ROOT therefore contradicts the very
+# condition that let the flag through: the report would land in the root
+# checkout — normally on `main` — dirtying main and leaving the file out of the
+# PR the flag exists to produce. A doc assertion because the destination lives in
+# SKILL.md, not in a script.
+# ---------------------------------------------------------------------------
+
+SKILL_MD="$REPO_ROOT/.claude/skills/review-stack-audit/SKILL.md"
+if [[ -r "$SKILL_MD" ]]; then
+  grep -qF 'REPORT_DIR="$WORKTREE_ROOT/.claude/reference"' "$SKILL_MD" \
+    && ok "skill: --report-to-repo derives its destination from the current worktree" \
+    || fail "skill: --report-to-repo no longer targets \$WORKTREE_ROOT"
+  grep -qF 'REPORT_DIR="$REPO_ROOT/.claude/reference"' "$SKILL_MD" \
+    && fail "skill: --report-to-repo targets \$REPO_ROOT — the root checkout the guard excludes, so the report would dirty main and miss the PR" \
+    || ok "skill: --report-to-repo never targets \$REPO_ROOT, the root checkout its own guard excludes"
+
+  # step7_claim above is a REPLICA of the documented block. On its own it would
+  # keep passing while SKILL.md quietly lost the retry or the trap, so the tests
+  # would certify a recipe nobody ships. Assert the three load-bearing lines are
+  # still in the doc itself.
+  grep -qF 'if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi' "$SKILL_MD" \
+    && ok "skill: Step 7 still claims the resolved path with O_EXCL" \
+    || fail "skill: Step 7 lost its 'set -o noclobber' claim — the resolve/write race is reopened"
+  grep -qF 'for _attempt in 1 2 3 4 5; do' "$SKILL_MD" \
+    && ok "skill: Step 7 still retries a lost claim instead of discarding the audit" \
+    || fail "skill: Step 7 lost its claim retry loop — a lost race would discard the audit"
+  grep -qF 'trap cleanup_report EXIT' "$SKILL_MD" \
+    && ok "skill: Step 7 still clears its claim on failure" \
+    || fail "skill: Step 7 lost its EXIT trap — a failed compose would park an empty file on the canonical name"
+else
+  fail "skill: SKILL.md not readable at $SKILL_MD"
+fi
 
 # ---------------------------------------------------------------------------
 # The shipped baseline must be valid against the shipped drift engine.
