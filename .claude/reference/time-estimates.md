@@ -150,7 +150,104 @@ Simple elapsed/bound ratio — no phase weighting. When elapsed ≤ bound the pi
 
 | Surface | When to emit |
 |---------|-------------|
-| `/subagent` heartbeat (Step 8.5) | Per active pipeline, every heartbeat tick |
-| `/subagent` on-demand | When the user asks "how far along?" — answer with the readout shape for each active pipeline |
+| `/subagent` heartbeat (Step 8.5) | Superseded by the "Running now" table below — the readout's verdict now lives in that table's Remaining column |
+| `/subagent` on-demand | When the user asks "how far along?" — answer with the table below, so single- and multi-pipeline answers share one shape |
 | `/pm day` D5 heartbeat | Per active pipeline alongside the tick summary |
 | Chip-launched thread | Lead the **first status message** with the readout; repeat whenever the user asks for a progress update |
+
+---
+
+## "Running now" Table (increment 6)
+
+The readout answers "how far along?"; it does not answer "when will this land?". A
+reader juggling several sub-threads — testing between rounds, filing the next batch
+as results arrive — has to plan against a clock, and prose bullets carrying only a
+duration force them to remember launch times and do the arithmetic themselves.
+
+**One table, everywhere a round is dispatched.** The moment a batch is filed or
+queued, and on every later multi-pipeline progress update, the thread renders one
+table covering **every issue in the round, in execution order** — queued rows
+included. It replaces the bulleted-list shape, not just augments it.
+
+### Columns
+
+| Column | Value |
+|--------|-------|
+| **Issue** | `#N` |
+| **Scope** | Short description, truncated to 40 chars (`cut -c1-40`) so each row stays one line |
+| **Status** | `queued` for a not-yet-launched row; otherwise the phase — `Phase A`, `Phase B`, `Phase C` |
+| **Est** | `Est: {lo}–{hi} min · plan on {bound}` from `estimate-resolve.sh`, or `unestimated` |
+| **Start (ET)** | Wall-clock launch time, e.g. `12:18 PM` |
+| **Projected end (ET)** | On-track: start + planning bound. Over the bound: the pace-scaled revised finish |
+| **Remaining** | On-track: `bound − elapsed`. Over the bound: the overrun marker `+{over} over plan` |
+
+**Queued rows carry `—` in all three clock columns** — Start, Projected end, and
+Remaining. Nothing has started, so there is nothing honest to print; the row exists
+to show run order and the estimate.
+
+**A started row never shows an ETA in the past.** Once elapsed exceeds the planning
+bound, the row switches to the revised finish plus the overrun marker, keeping the
+same on-track / running-slow semantics the readout above already has.
+
+### Example
+
+```markdown
+**Running now**
+
+| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-----|-----------|--------------------|-----------|
+| #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
+| #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
+```
+
+### Helper: `overrun-check.sh --readout-cells`
+
+`overrun-check.sh --readout-cells [--pr N] --bound-min M --started-at ISO8601 [--now ISO8601]`
+prints ONE tab-separated line — `{Start}\t{Projected end}\t{Remaining}` — for a single
+started row (exit 0 always). Same inputs, same pace model, and the same
+no-window/no-state-marker guarantee as `--readout`, whose output it leaves untouched.
+
+- **`--pr` is optional here** (and in `--readout`), required only on the breach path
+  that keys session state by PR. A Phase A pipeline has a `started_at` but no PR yet,
+  so callers must be able to omit it — demanding one turned a launch table with real
+  clocks into em dashes on the next heartbeat tick. Supply it and it is still validated.
+
+- Both clock cells are ET `%-I:%M %p` with **no** `ET` suffix; the column headers carry
+  the zone.
+- On track: `Projected end = start + bound`, `Remaining = bound − elapsed`.
+- Over the bound: `Projected end` is the pace-scaled revised finish, **floored at
+  `--now`** so it is never a clock time in the past; `Remaining` becomes
+  `+{over} over plan` (e.g. `+22 min over plan`) — rendered `+<1 min over plan`
+  for the first 59 s past the bound, so a row in the overrun branch never reads
+  as on-plan.
+- Consume with `cut -f1`/`-f2`/`-f3`, **not** `IFS=$'\t' read` — that idiom collapses
+  empty fields and shifts the rest.
+- Prints nothing (still exit 0) when a timestamp will not parse or the start is in the
+  future; render `—` in that case, exactly as for a queued row.
+
+When the helper is unavailable, leave the three clock columns blank or `unestimated`
+per the caller's degraded-mode rule — never omit the table.
+
+### Start times come from state, never from the clock at read time
+
+Each pipeline's launch timestamp is recorded **once, at spawn**, into
+`.repos["<key>"].pipelines["<issue>"].started_at` (issue-keyed — no PR exists yet) and
+copied verbatim into `.prs["<pr>"].pipeline_started_at` once Phase A creates the PR.
+Every later render reads it back. Re-deriving it — from `gh pr view --json createdAt`,
+or from "when this tick noticed the pipeline" — would move Start on every rebuild
+after a context compaction, which is precisely what the recorded value prevents.
+`createdAt` stays a last-resort fallback for pipelines that predate the record.
+
+### Usage by surface
+
+| Surface | When to emit |
+|---------|-------------|
+| `/subagent` launch (Step 7) | Immediately after the batch is filed/queued — the whole round, launched rows and queued rows alike |
+| `/subagent` heartbeat (Step 8 item 6) | Re-render every tick: Start unchanged, Remaining recomputed, queued rows flipping to started as they launch |
+| `/subagent` on-demand | Same table when the user asks "how far along?" |
+| `/pm`, `/pr-monitor-and-manage` | May adopt this shape in a follow-up; their column sets diverge today, so the format lives here rather than in any one skill |
+
+Ad-hoc orchestration threads — a feedback round that files issues then dispatches
+agents — emit the same shape by reading this section; the table is venue-independent
+by construction.

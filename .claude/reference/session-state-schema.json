@@ -29,6 +29,8 @@
       "cr_explicit_triggers": "array",
       "digest_streak": "number",
       "conflict_streak": "number",
+      "pipeline_started_at": "string",
+      "_pipeline_started_at_comment": "ISO-8601 UTC launch timestamp of THIS PR's pipeline (issue #1512), the Start column of the \"Running now\" table and the `--started-at` input to overrun-check.sh. Recorded ONCE, at spawn, into the issue-keyed `.repos[\"<key>\"].pipelines[\"<issue>\"]` block below — a PR does not exist yet at spawn — and copied here verbatim by `/subagent` Phase A Completion once the PR number is known. It is never re-derived: a later tick that recomputes it from `gh pr view --json createdAt` would move Start every time a pipeline is rebuilt after context compaction, which is the exact defect this field exists to prevent. Typed as a string so a numeric epoch is rejected at write time rather than silently formatting as a nonsense clock.",
       "allow_nonauthor": "boolean",
       "_allow_nonauthor_comment": "Persisted per-PR authorship override (issue #1266), written by polling-state-gate.sh --ensure-session and read back by its default poll-cycle mode, which forwards --allow-nonauthor to merge-gate.sh when this reads true. Enrolment writes it on every run — true with the flag, false without — so re-enrolling without the override clears a stale true. Typed because it gates a safety guard (.claude/rules/safety.md §Authorship): a corrupted value must be rejected at write time, not read as permission. Only the literal boolean true grants the bypass; absent/false/null all mean not overridden.",
       "poll_watermarks": "object"
@@ -173,12 +175,20 @@
         "interval_source": "auto",
         "derived_at": "2026-08-18T14:05:00Z"
       },
+      "_pipelines_comment": "Per-ROUND pipeline launch record for this repo (issue #1512), keyed by ISSUE number because it is written at spawn — before Phase A has created a PR, and while queued issues have no PR at all. Written ONCE per issue by `/subagent` Step 7, in the same session-state.sh call as the active_agents/monitoring_active spawn writes; `pr` is filled in later by Phase A Completion, which also copies `started_at` verbatim into `.prs[\"<pr>\"].pipeline_started_at`. Two locations, one recording: the issue-keyed entry is what survives to the next tick and past a context compaction, and the PR-keyed copy is what PR-scoped consumers (the merge-gate/monitor loops) already read. Neither is ever recomputed — `gh pr view --json createdAt` stays a last-resort fallback for pipelines that predate this record, never a refresh. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view (which lifts only .prs and .root_repo out of the repo block), so address it by its full `.repos[\"<key>\"].pipelines[...]` path. Do NOT reach for --raw-path: that flag is per-INVOCATION, not per---set, and a fully-spelled `.repos[...]` path already survives scope_path() untouched — passing it would send any `.prs[...]` --set batched into the same atomic write to the top level instead of the repo scope, silently stranding the mirror. Table format: .claude/reference/time-estimates.md §\"Running now Table\".",
+      "pipelines": {
+        "1512": {
+          "started_at": "2026-09-01T16:18:00Z",
+          "pr": 1513
+        }
+      },
       "prs": {
         "618": {
           "root_repo": "/Users/user/repos/my-project",
           "owner_repo": "org/repo",
           "phase": "B",
           "head_sha": "7b2cfbf",
+          "pipeline_started_at": "2026-04-29T13:40:00Z",
           "reviewer": "cr",
           "needs": "cr_confirmation_pass",
           "bugbot_installed": true,
