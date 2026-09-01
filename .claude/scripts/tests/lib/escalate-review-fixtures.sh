@@ -192,10 +192,27 @@ EOF
 # max(commit date, newest force-push), so this is how a scenario says "the commit
 # is old but it only became HEAD just now" — the case a commit date cannot
 # express. Call AFTER write_commits, which resets the timeline.
+#
+# $2 = the event's commit_id, defaulting to the fixture HEAD. Real
+# `head_ref_force_pushed` events DO carry a populated commit_id — verified live
+# against this repo's own timelines (PRs #1203, #1500), not assumed — so the
+# fixture emits one to match the payload shape a scenario is standing in for.
+#
+# escalate-review.sh deliberately does NOT filter on it (CodeAnt, PR for #1517).
+# The anchor takes the NEWEST force-push and applies it only when it makes the
+# age SMALLER, which is equivalent to a commit_id filter in every reachable case:
+# when the current SHA arrived by force-push the newest event IS that event, and
+# when it arrived by an ordinary push afterwards the older foreign event loses
+# the min() anyway — scenario (c) pins that half. The two designs diverge only if
+# a foreign force-push were NEWER than the HEAD commit's own date, which needs a
+# forged or skewed committer date; there the no-filter form degrades toward
+# "younger", i.e. keep polling the current tier, while a commit_id filter would
+# fall back to the stale commit date and re-open the very stall #1517 fixes.
+# Scenario (g) pins that divergence so the filter cannot be added silently.
 write_force_push() {
-  local ts="$1"
+  local ts="$1" commit_id="${2:-$HEAD_SHA}"
   cat > "$TMP/timeline.json" <<EOF
-[{"event": "head_ref_force_pushed", "created_at": "$ts"}]
+[{"event": "head_ref_force_pushed", "commit_id": "$commit_id", "created_at": "$ts"}]
 EOF
   export FIXTURE_TIMELINE_JSON="$TMP/timeline.json"
 }

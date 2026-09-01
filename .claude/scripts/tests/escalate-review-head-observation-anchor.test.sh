@@ -168,7 +168,32 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
 
 ############################################################################
-echo "== (g): the anchor adds no second timestamp-ordering rule =="
+echo "== (g): a fresh force-push attributed to ANOTHER SHA still anchors HEAD =="
+# The anchor reads the newest `head_ref_force_pushed` event and never looks at
+# its commit_id, which CodeAnt read as missing HEAD-specific attribution. It is
+# deliberate, and this is the scenario that holds it in place.
+#
+# Byte-for-byte (a) except the event names a foreign SHA, so the ONLY difference
+# between the two verdicts is whether attribution is filtered. Current behaviour
+# keeps the 30s anchor and escalates. A commit_id == HEAD filter would find no
+# matching event, fall back to the 7200s commit date, and let the 1800s banner
+# from the PRIOR head read as fresh again — flipping this to polling_cr, which is
+# precisely the stall #1517 exists to remove. So this goes RED on exactly the
+# "tighten it up by filtering on commit_id" refactor that looks like an
+# improvement, and scenario (c) cannot catch: (c) agrees under BOTH designs,
+# because there the foreign event loses the min() either way.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_COMMIT")"
+write_force_push "$(ts_seconds_ago "$JUST_PUSHED")" "feedfacecafe0000000000000000000000001234"
+BANNER_G="$(cr_limit_banner "$(ts_seconds_ago 1800)" "50 minutes")"
+FAIL_G="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_G, $BANNER_G]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
+echo "== (h): the anchor adds no second timestamp-ordering rule =="
 # ts-normalizer-parity.test.sh pins the ONE `def canon_ts:` in escalate-review.sh
 # against merge-gate.sh's norm_ts, and the file's own comment warns that a
 # near-copy under another name reintroduces the drift that guard exists to
@@ -177,7 +202,7 @@ echo "== (g): the anchor adds no second timestamp-ordering rule =="
 # string compare is caught by this suite as well as by the parity guard.
 CANON_DEFS="$(grep -c '^[[:space:]]*def canon_ts:' "$ESCALATE_SRC" || true)"
 check_eq "still exactly one canon_ts definition" "1" "$CANON_DEFS"
-# ...and the anchor really is the min-over-ages form, so (g) cannot pass by the
+# ...and the anchor really is the min-over-ages form, so (h) cannot pass by the
 # anchor having been deleted entirely.
 if grep -q 'FORCE_PUSH_AGE" -lt "\$AGE_SECONDS' "$ESCALATE_SRC"; then
   check_eq "anchor compares ages, not timestamp strings" "present" "present"
