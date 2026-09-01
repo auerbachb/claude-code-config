@@ -743,30 +743,43 @@ check_contains "T16c: control — and the branch is removed for real" \
   "removed: local branch issue-900-t16-stale" "$OUT"
 pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
 
-# ---- T17: the --help network-bound contract (issue #1479) -------------------
+# ---- T17: the --help network-bound contract (issues #1479, #1509) -----------
 # print_help emits the header verbatim, so the header IS the CLI contract. It
 # used to state that STALE_CLEANUP_NET_TIMEOUT_SECS bounds "the one NETWORK
 # call, `git push origin --delete`". That was false: fetch_open_prs' `gh pr
-# list` is a second network call, and it is the ONLY unbounded network call in
-# the script — it runs on every invocation, before any classification. The
+# list` is a second network call, and until issue #1509 it was the ONLY
+# unbounded one — running on every invocation, before any classification. The
 # header's "where the bound stops" paragraph, which exists precisely to
 # enumerate the unbounded edges, omitted it, so a reader consulting --help for
 # the remaining hang surface would conclude every network path was bounded.
+#
+# Issue #1509 bounded the call, so the disclosure the #1479 guard pinned had to
+# invert with it: --help must now tie `gh pr list` to the bound that holds it,
+# and must no longer call it unbounded. Both directions are asserted, and both
+# are re-run against a reconstructed pre-fix header in T17d so neither can pass
+# vacuously.
 HELP_OUT="$(bash "$SUT" --help 2>/dev/null)"
 
-# The premise this guard rests on: an unwrapped gh invocation really is there.
-# When issue #1509 bounds it, these controls fail loudly and the disclosure
-# assertions below must be revisited — rather than passing on a stale premise.
-GH_INVOKE="$(grep -E 'gh pr list --search' "$SUT" | grep -vE '^[[:space:]]*#' || true)"
-if [[ -n "$GH_INVOKE" ]]; then
-  pass "T17: control — the open-PR gh invocation is present in the script"
+# The premise these guards rest on: the open-PR invocation lives in gh_pr_page
+# and is bounded there. Read the whole function body rather than one grepped
+# line — the bounded call spans several lines, so a line-anchored match would
+# report "unbounded" for a reflow (it did exactly that when #1509 landed).
+GH_FN="$(awk '/^gh_pr_page\(\) \{/ { inside = 1 } inside { print } inside && /^\}/ { exit }' "$SUT")"
+if printf '%s' "$GH_FN" | grep -q 'gh pr list --search'; then
+  pass "T17: control — the open-PR gh invocation is present in gh_pr_page"
 else
-  fail "T17: control — no 'gh pr list --search' invocation found; the guard below has no premise"
+  fail "T17: control — no 'gh pr list --search' invocation in gh_pr_page; the guards below have no premise"
 fi
-if [[ -n "$GH_INVOKE" ]] && ! printf '%s' "$GH_INVOKE" | grep -q 'run_bounded'; then
-  pass "T17: control — that invocation is still unbounded (issue #1509 open)"
+if printf '%s' "$GH_FN" | grep -q 'run_bounded'; then
+  pass "T17: the open-PR gh invocation runs under run_bounded (issue #1509)"
 else
-  fail "T17: control — the gh invocation is bounded now; update --help and this guard (issue #1509)"
+  fail "T17: the open-PR gh invocation is unbounded again — the --help claims below are now false (issue #1509)"
+fi
+# The pre-fix shape specifically: an unwrapped subshell around the gh call.
+if grep -qF '( cd "$ROOT" && gh pr list' "$SUT"; then
+  fail "T17: the pre-#1509 unbounded 'cd \$ROOT && gh pr list' subshell is back"
+else
+  pass "T17: the pre-#1509 unbounded gh subshell is gone"
 fi
 
 # T17a — the false single-network-call claim must not come back.
@@ -776,22 +789,28 @@ else
   pass "T17a: --help no longer claims a single network call"
 fi
 
-# T17b/T17c — while an unbounded gh call exists, --help must disclose it by
-# name and say plainly that it is unbounded.
-check_contains "T17b: --help names the unbounded open-PR query" "gh pr list" "$HELP_OUT"
-# The disclosure must TIE the call to its unboundedness, on one line. A bare
-# search for "unbounded" passes on the pre-fix header too — the word already
-# appears there in unrelated sentences ("stop an unbounded hang", "the parent's
-# own glob unbounded"), so that weaker form was a vacuous pass.
-if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
-  pass "T17c: --help ties the open-PR query to being unbounded"
+# T17b/T17c — --help must name the open-PR query and TIE it to the bound that
+# holds it, on one line. The tie is the env var, not the word "bounded":
+# "unbounded" contains "bounded", so the weaker needle would pass on the very
+# text this guard exists to catch — the same vacuous-pass trap the pre-#1509
+# draft of T17c fell into with a bare search for "unbounded".
+check_contains "T17b: --help names the open-PR query" "gh pr list" "$HELP_OUT"
+if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS'; then
+  pass "T17c: --help ties the open-PR query to the bound that holds it"
 else
-  fail "T17c: --help mentions gh pr list but never says it is unbounded"
+  fail "T17c: --help mentions gh pr list but never names STALE_CLEANUP_GH_TIMEOUT_SECS"
+fi
+# T17e — and the superseded disclosure must not survive alongside it: no line
+# may still describe the open-PR query as unbounded.
+if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
+  fail "T17e: --help still calls the open-PR query unbounded (issue #1509 bounded it)"
+else
+  pass "T17e: --help no longer calls the open-PR query unbounded"
 fi
 
-# T17d — negative control. Reconstruct the pre-fix wording and re-run T17a's
-# assertion against it: if the phrase cannot be detected even when present,
-# T17a is passing vacuously and proves nothing.
+# T17d — negative controls. Each assertion above is re-run against a
+# reconstructed PRE-fix header: an assertion that cannot tell the two apart is
+# proving nothing. First the #1479 wording, then the #1509 one.
 PREFIX_SUT="$TMP/stale-cleanup-prefix.sh"
 sed -e 's/the network DELETION, `git push origin --delete`/the one NETWORK call, `git push origin --delete`/' \
     "$SUT" > "$PREFIX_SUT"
@@ -801,6 +820,162 @@ if printf '%s' "$PREFIX_HELP" | grep -q 'the one NETWORK call'; then
 else
   fail "T17d: negative control — the pre-fix wording was not reproduced, so T17a proves nothing"
 fi
+
+PREFIX_SUT_GH="$TMP/stale-cleanup-prefix-gh.sh"
+sed -e 's/`gh pr list` (fetch_open_prs) runs under STALE_CLEANUP_GH_TIMEOUT_SECS and/`gh pr list` (fetch_open_prs) is the only network call that runs UNBOUNDED and/' \
+    "$SUT" > "$PREFIX_SUT_GH"
+PREFIX_HELP_GH="$(bash "$PREFIX_SUT_GH" --help 2>/dev/null)"
+if printf '%s' "$PREFIX_HELP_GH" | grep -i 'gh pr list' | grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS'; then
+  fail "T17f: negative control — T17c passes on the pre-#1509 header too, so it proves nothing"
+else
+  pass "T17f: negative control — T17c's assertion goes red on the pre-#1509 header"
+fi
+if printf '%s' "$PREFIX_HELP_GH" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
+  pass "T17f: negative control — T17e's assertion does fire on the pre-#1509 header"
+else
+  fail "T17f: negative control — the pre-#1509 disclosure was not reproduced, so T17e proves nothing"
+fi
+
+# ---- T18: the open-PR query is bounded and fails closed (issue #1509) -------
+# `gh pr list` (fetch_open_prs) runs on EVERY invocation, before any
+# classification, and until #1509 it was the one unbounded network call in a
+# script whose stated purpose is that the sweep must never hang. Bounding it is
+# only half the contract: the open-PR set is what stands between this sweep and
+# deleting a branch that has an open PR, so an expired bound has to refuse the
+# whole run — "could not verify" must never mean "no open PRs".
+GH_STALL_BIN="$TMP/ghstub"
+mkdir -p "$GH_STALL_BIN"
+
+# One stale branch WITH an open PR in the fixture and one WITHOUT. The pair is
+# what makes the fail-closed assertion bite: a run that fell through to an empty
+# PR set would classify both as deletable and, under --apply, remove them.
+REPO_T18="$TMP/repoT18"
+git init -q -b main "$REPO_T18"
+git -C "$REPO_T18" config user.email "test@example.com"
+git -C "$REPO_T18" config user.name "Test"
+echo "t18" > "$REPO_T18/file.txt"
+git -C "$REPO_T18" add file.txt
+commit_old "$REPO_T18" "t18 base"
+git -C "$REPO_T18" branch issue-901-t18-openpr
+git -C "$REPO_T18" branch issue-902-t18-stale
+
+cat > "$TMP/t18-prs.json" <<'FIXTURE'
+[{"headRefName":"issue-901-t18-openpr","createdAt":"2026-07-01T00:00:00Z"}]
+FIXTURE
+
+# T18a — a wedged `gh pr list` is killed at the bound and the sweep refuses.
+cat > "$GH_STALL_BIN/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t18-argv.log"
+case "\$*" in
+  "pr list"*)
+    # The self-limiting sleeper (shared with T16) so a failed process-group
+    # kill cannot leak a survivor; then stall far past any bound under test.
+    "$GIT_STUB/stub-sleeper" &
+    sleep 30
+    ;;
+esac
+cat "$TMP/t18-prs.json"
+EOF
+chmod +x "$GH_STALL_BIN/gh"
+: > "$TMP/t18-argv.log"
+START="$(date +%s)"
+RC=0
+OUT="$(cd "$REPO_T18" && PATH="$GH_STALL_BIN:$PATH" STALE_CLEANUP_GH_TIMEOUT_SECS=3 \
+  "$SUT" --apply 2>"$TMP/t18-err.log")" || RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+T18_ERR="$(cat "$TMP/t18-err.log")"
+check_eq "T18a: a wedged 'gh pr list' exits 4" "4" "$RC"
+check_contains "T18a: and refuses on an unverified open-PR set" \
+  "refusing to run with an unverified open-PR set" "$T18_ERR"
+check_contains "T18a: naming the bound that tripped" \
+  "exceeded 3s and was killed" "$T18_ERR"
+# The stub stalls 30s, which is exactly what the unbounded call waited out. The
+# bound's own worst case is 3s + a 2s TERM grace + a 3s reap, so anything under
+# 15s is the bound holding — and is unreachable without it.
+if (( ELAPSED < 15 )); then
+  pass "T18a: returned in ${ELAPSED}s — the bound held (the stub stalls for 30s)"
+else
+  fail "T18a: took ${ELAPSED}s — the bound did not hold"
+fi
+if grep -q 'pr list' "$TMP/t18-argv.log"; then
+  pass "T18a: control — the stalling 'gh pr list' really was invoked"
+else
+  fail "T18a: control — the stub never saw 'pr list', so nothing was bounded"
+fi
+# The fail-closed half, under --apply so a fall-through would really delete.
+if git -C "$REPO_T18" show-ref --verify --quiet refs/heads/issue-902-t18-stale; then
+  pass "T18a: fail-closed — the PR-free stale branch survives an unverified PR set"
+else
+  fail "T18a: fail-closed — a branch was deleted on an unverified open-PR set"
+fi
+if git -C "$REPO_T18" show-ref --verify --quiet refs/heads/issue-901-t18-openpr; then
+  pass "T18a: fail-closed — the open-PR branch survives too"
+else
+  fail "T18a: fail-closed — the open-PR branch was deleted"
+fi
+if printf '%s' "$OUT" | grep -q 'removed:'; then
+  fail "T18a: fail-closed — a deletion was reported despite refusing to classify"
+else
+  pass "T18a: fail-closed — nothing was reported removed"
+fi
+
+# T18b — pagination survives the rewiring. The page now comes out of $CAPTURE
+# rather than the function's stdout, and the `created:<cursor` walk runs on it;
+# a first page of exactly --limit entries is what forces the second fetch.
+GH_PAGE_BIN="$TMP/ghstub-page"
+mkdir -p "$GH_PAGE_BIN"
+jq -n '[range(1000) | {headRefName: "pr-filler-\(.)", createdAt: "2026-07-02T00:00:00Z"}]' \
+  > "$TMP/t18-page1.json"
+cp "$TMP/t18-prs.json" "$TMP/t18-page2.json"
+cat > "$GH_PAGE_BIN/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t18-page-argv.log"
+case "\$*" in
+  *"created:<"*) cat "$TMP/t18-page2.json" ;;
+  "pr list"*)    cat "$TMP/t18-page1.json" ;;
+  *)             echo "[]" ;;
+esac
+EOF
+chmod +x "$GH_PAGE_BIN/gh"
+: > "$TMP/t18-page-argv.log"
+RC=0
+OUT="$(cd "$REPO_T18" && PATH="$GH_PAGE_BIN:$PATH" "$SUT" --check --json 2>/dev/null)" || RC=$?
+check_eq "T18b: a multi-page fetch completes (exit 1, stale items found)" "1" "$RC"
+if grep -q 'created:<' "$TMP/t18-page-argv.log"; then
+  pass "T18b: control — a second page really was requested"
+else
+  fail "T18b: control — no 'created:<' page was requested, so pagination never ran"
+fi
+check_json "T18b: the open-PR branch served on page 2 is skipped as such" "$OUT" \
+  '.skipped_local_branches | any(.branch == "issue-901-t18-openpr" and .reason == "open PR")'
+check_json "T18b: and the PR-free branch is still classified stale" "$OUT" \
+  '.stale_local_branches | map(.branch) | index("issue-902-t18-stale") != null'
+
+# T18c — control: with nothing stalling, the same stub shape sweeps for real.
+# Without it, T18a would also pass against a stub that simply broke every call.
+: > "$TMP/t18-argv.log"
+cat > "$GH_STALL_BIN/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/t18-argv.log"
+case "\$*" in
+  "pr list"*) cat "$TMP/t18-prs.json" ;;
+  *)          echo "[]" ;;
+esac
+EOF
+chmod +x "$GH_STALL_BIN/gh"
+RC=0
+OUT="$(cd "$REPO_T18" && PATH="$GH_STALL_BIN:$PATH" STALE_CLEANUP_GH_TIMEOUT_SECS=3 \
+  "$SUT" --apply 2>/dev/null)" || RC=$?
+check_eq "T18c: control — a non-stalling gh sweeps cleanly (exit 0)" "0" "$RC"
+check_contains "T18c: control — the PR-free branch is removed for real" \
+  "removed: local branch issue-902-t18-stale" "$OUT"
+if git -C "$REPO_T18" show-ref --verify --quiet refs/heads/issue-901-t18-openpr; then
+  pass "T18c: control — the open-PR branch is skipped, not deleted"
+else
+  fail "T18c: control — the open-PR branch was deleted despite an open PR"
+fi
+pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

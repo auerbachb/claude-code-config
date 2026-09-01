@@ -133,6 +133,15 @@ code whose silent failure would make every branch look PR-free and eligible for
 deletion. That is a behavioral change to the highest-risk code in the file, and
 it does not belong in a KEEP adjudication. Tracked as **Issue #1509**.
 
+**Landed since (Issue #1509).** The call is now bounded by
+`STALE_CLEANUP_GH_TIMEOUT_SECS` and fails closed — an expired bound exits 4
+rather than continuing with an empty PR set. Both command substitutions came
+off the path: `gh_pr_page` leaves the page in `$CAPTURE`, and `fetch_open_prs`
+reports through the `OPEN_PR_BRANCHES` global (the `read_bounded_line` shape).
+The T17 drift guard inverted with it — it now pins the bound and the new
+`--help` disclosure instead of the unbounded one — so the sections above are the
+historical record of the deferral, not the current state.
+
 ## Scope boundary — handoff reaping is NOT in this script's remit
 
 A sibling thread flagged stale cross-repo handoff entries (`_unknown/*`,

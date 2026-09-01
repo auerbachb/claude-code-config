@@ -130,18 +130,21 @@
 #   reason — it is a git call — and degrades to registration_scan
 #   "unavailable" rather than proceeding on an unverified path.
 #
-#   The bound also stops at the open-PR query. `gh pr list` (fetch_open_prs) is
-#   the only network call that runs UNBOUNDED — the other one, `git push origin
-#   --delete`, is bounded. (Local helpers like jq and date are unbounded too,
-#   but they cannot block on a remote, which is what these bounds are for.) It
-#   runs on every invocation, before any classification, so a wedged forge or
-#   a hung TLS handshake stalls the whole sweep there with nothing to kill it.
-#   It is unwrapped because run_bounded hands its child's stdout back through
-#   $CAPTURE and must never be used inside `$( )`, while fetch_open_prs reads
-#   gh's stdout by command substitution and pages on it; rewiring that is a
-#   change to the fail-closed open-PR safety path, tracked separately (issue
-#   #1509, and .claude/reference/stale-cleanup-hotspot-decision.md).
-#   STALE_CLEANUP_NET_TIMEOUT_SECS does NOT apply to it.
+#   The bound does NOT stop at the open-PR query any more (issue #1509).
+#   `gh pr list` (fetch_open_prs) runs under STALE_CLEANUP_GH_TIMEOUT_SECS and
+#   fails CLOSED: an expired bound exits 4, "refusing to run with an unverified
+#   open-PR set", rather than continuing with an empty PR set — which would
+#   make every branch look PR-free and eligible for deletion, the silent
+#   failure that check exists to prevent. It runs on every invocation before
+#   any classification, so leaving it unwrapped let a wedged forge or a hung
+#   TLS handshake stall the whole sweep there with nothing to kill it. Bounding
+#   it took rewiring both command substitutions off that path, since
+#   run_bounded returns its child's stdout through $CAPTURE and must never be
+#   used inside `$( )`: gh_pr_page now leaves the page in $CAPTURE, and
+#   fetch_open_prs reports through the OPEN_PR_BRANCHES global instead of
+#   stdout — the same shape, for the same reason, as read_bounded_line.
+#   (Local helpers like jq and date are unbounded still, but they cannot block
+#   on a remote, which is what these bounds are for.)
 #
 # CONFIGURATION
 #   STALE_DAYS — env var, default 7. Tip commits older than this are stale.
@@ -155,8 +158,14 @@
 #       larger on purpose: the bound exists to stop an unbounded hang, not to
 #       impose a local-read SLA on a round trip to the forge. It is NOT the
 #       only network call in the script and does not cover the other one —
-#       the `gh pr list` open-PR query is unbounded (see "Where the bound
-#       stops" above).
+#       the open-PR query has its own bound, below.
+#   STALE_CLEANUP_GH_TIMEOUT_SECS — env var, default 60. Wall-clock bound on
+#       the open-PR query, `gh pr list` (fetch_open_prs). Network-range like
+#       the deletion bound and separate from it on purpose: this query runs on
+#       EVERY invocation, before any classification, so tightening it to fail
+#       fast on a wedged forge must not also shorten the bound on a legitimate
+#       `push --delete` over a slow link. Expiry is fail-closed — exit 4, never
+#       an empty PR set (issue #1509).
 #   STALE_CLEANUP_READ_TIMEOUT_SECS — env var, default 2. Wall-clock bound on
 #       each per-registration metadata read, existence probe, and targeted
 #       removal. Whole-second resolution, so a bound of N trips between N-1
@@ -348,6 +357,13 @@ READ_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_READ_TIMEOUT_SECS:-2}" 2)"
 # forge: a `git push --delete` that legitimately takes 20s over a slow link is
 # not the failure being prevented, and killing it would be a regression.
 NET_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_NET_TIMEOUT_SECS:-60}" 60)"
+# The open-PR query is network too, so it sits in the same range — but it gets
+# its OWN knob rather than sharing the deletion's (issue #1509). The two calls
+# fail differently: `push --delete` runs per item under --apply, while
+# `gh pr list` runs on every invocation before any classification and gates the
+# whole sweep. An operator tightening this one to fail fast on a wedged forge
+# must not thereby shorten the bound on a legitimate push over a slow link.
+GH_BOUND_SECS="$(normalize_bound "${STALE_CLEANUP_GH_TIMEOUT_SECS:-60}" 60)"
 
 # Created after arg parsing so --help and usage errors leave nothing behind.
 # All five are unconditional — no empty-variable arguments to guard against,
@@ -566,6 +582,11 @@ OPEN_PR_BRANCHES=""
 # GH_TMPERR is created with the other capture files above and removed by the
 # shared EXIT trap installed there.
 
+# Fetch one page of open PRs under the network bound (issue #1509). The page is
+# left in $CAPTURE for the CALLER to read; the return is gh's real status, or
+# 124 with BOUNDED_TIMED_OUT=1 on expiry. Statement form only, never `$( )` —
+# a subshell would discard BOUNDED_TIMED_OUT and the library's orphan handover,
+# turning a bounded failure back into the silent one this path must never have.
 gh_pr_page() {
   # gh pr list with --json forces non-interactive mode; --limit 1000 is the
   # max gh accepts per call. We use the search API via --search to enable
@@ -574,7 +595,7 @@ gh_pr_page() {
   # "no PRs" from "gh failed" — silently swallowing errors here would
   # let the open-PR safety check return false for every branch and
   # delete branches that actually have open PRs.
-  local cursor="$1"
+  local cursor="$1" rc=0
   local query="state:open"
   if [[ -n "$cursor" ]]; then
     query="$query created:<$cursor"
@@ -583,19 +604,61 @@ gh_pr_page() {
   # PR set must describe the repo being swept — not the caller's cwd repo,
   # which differs under --root (and differed under the pre-#697 scope bug,
   # silently voiding the open-PR safety check).
-  ( cd "$ROOT" && gh pr list --search "$query" --limit 1000 --json headRefName,createdAt ) 2>"$GH_TMPERR"
+  #
+  # `bash -c '… && exec gh …'` rather than a cd in THIS shell: exec replaces the
+  # wrapper, so gh is the process run_bounded tracks and its process-group kill
+  # reaches gh and anything it spawns (a credential helper, a pager). `env -C`
+  # would be shorter but is GNU-only, and moving this shell's cwd would follow
+  # into CALLER_PWD below, which decides whether we are standing in a worktree
+  # we must not delete. A failing cd short-circuits before exec, so a bad $ROOT
+  # returns non-zero rather than an empty page.
+  run_bounded "$GH_BOUND_SECS" "${BASH:-bash}" -c \
+    'cd "$1" && exec gh pr list --search "$2" --limit 1000 --json headRefName,createdAt' \
+    stale-cleanup-gh "$ROOT" "$query" || rc=$?
+  # Land gh's stderr on the script-owned path the failure reporting below reads:
+  # $CAPTURE_ERR can be re-pointed at a fresh file by the orphan handover, and a
+  # later page must not surface an earlier page's stderr either. Truncate first
+  # so a failed copy leaves an empty file rather than the previous page's words,
+  # and never let this bookkeeping decide the run's exit status.
+  : >"$GH_TMPERR" || true
+  cat "$CAPTURE_ERR" >>"$GH_TMPERR" 2>/dev/null || true
+  return "$rc"
 }
+# Fills OPEN_PR_BRANCHES with the open PRs' head refs, one per line.
+#
+# The answer comes back through that global rather than stdout ON PURPOSE, and
+# the call site must never wrap this in `$( )` — the same reasoning as
+# read_bounded_line: the bounded call inside reports expiry through
+# BOUNDED_TIMED_OUT and hands its captures over by mutating THIS shell's state,
+# and command substitution discards both.
 fetch_open_prs() {
   local cursor=""
   local prev_cursor=""
   local accumulated=""
+  OPEN_PR_BRANCHES=""
   while :; do
-    local page
-    if ! page="$(gh_pr_page "$cursor")"; then
+    local page rc=0
+    gh_pr_page "$cursor" || rc=$?
+    # Every failure shape fails CLOSED. An unverified PR set must never be read
+    # as an EMPTY one: that would make every branch look PR-free, and this check
+    # is the only thing standing between the sweep and a branch with an open PR.
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+        echo "error: could not read the clock, so the ${GH_BOUND_SECS}s bound on 'gh pr list' could not be enforced — killed the call rather than running it unbounded, and refusing to run with an unverified open-PR set" >&2
+      else
+        echo "error: 'gh pr list' exceeded ${GH_BOUND_SECS}s and was killed — refusing to run with an unverified open-PR set (raise STALE_CLEANUP_GH_TIMEOUT_SECS if the forge is genuinely this slow)" >&2
+      fi
+      sed 's/^/  gh: /' "$GH_TMPERR" >&2 || true
+      exit 4
+    fi
+    if (( rc != 0 )); then
       echo "error: gh pr list failed — refusing to run with an unverified open-PR set" >&2
       sed 's/^/  gh: /' "$GH_TMPERR" >&2 || true
       exit 4
     fi
+    # Safe where the substitution around run_bounded was not: $CAPTURE is our
+    # own temp file, and any handover has already happened in this shell.
+    page="$(cat "$CAPTURE")"
     [[ -z "$page" ]] && break
     local count
     if ! count="$(printf '%s' "$page" | jq 'length')"; then
@@ -627,9 +690,10 @@ fetch_open_prs() {
       break
     fi
   done
-  printf '%s' "$accumulated"
+  OPEN_PR_BRANCHES="$accumulated"
+  return 0
 }
-OPEN_PR_BRANCHES="$(fetch_open_prs)"
+fetch_open_prs
 has_open_pr() {
   local b="$1"
   [[ -z "$OPEN_PR_BRANCHES" ]] && return 1
