@@ -206,7 +206,16 @@ if [[ "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" ]]; then
       PROJECTED_EPOCH=$(( READOUT_START + REVISED * 60 ))
       (( PROJECTED_EPOCH < READOUT_NOW )) && PROJECTED_EPOCH="$READOUT_NOW"
       CELL_END=$(format_et_clock "$PROJECTED_EPOCH")
-      CELL_REMAINING="+$(format_duration_min "$(( (READOUT_ELAPSED_SECS - BOUND_MIN * 60) / 60 ))") over plan"
+      # Excess is truncated to whole minutes, so the first 59 s past the bound
+      # would render "+0 min over plan" — a row that reads as on-plan while
+      # sitting in the overrun branch. Same sub-minute boundary the --readout
+      # branch below guards; say "<1 min" rather than round a real overrun to 0.
+      CELL_OVER_SECS=$(( READOUT_ELAPSED_SECS - BOUND_MIN * 60 ))
+      if (( CELL_OVER_SECS < 60 )); then
+        CELL_REMAINING="+<1 min over plan"
+      else
+        CELL_REMAINING="+$(format_duration_min "$(( CELL_OVER_SECS / 60 ))") over plan"
+      fi
     fi
     printf '%s\t%s\t%s\n' "$CELL_START" "$CELL_END" "$CELL_REMAINING"
     exit 0

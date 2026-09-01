@@ -125,6 +125,13 @@ check_eq "past-ETA edge: projected end is floored at now, never behind it" \
 check_ne "past-ETA edge: projected end is not the pre-clamp past clock" \
   "1:30 PM" "$(cell 2 "$OUT")"
 check_contains "past-ETA edge: still reports the overrun form" "over plan" "$OUT"
+# 10 s past the bound truncates to zero whole minutes. Pin the exact cell: a bare
+# "contains over plan" passes just as happily on "+0 min over plan", which reads
+# as on-plan while the row is in the overrun branch.
+check_eq "past-ETA edge: sub-minute overrun is not rounded down to +0 min" \
+  "+<1 min over plan" "$(cell 3 "$OUT")"
+check_ne "past-ETA edge: never renders a zero-minute overrun" \
+  "+0 min over plan" "$(cell 3 "$OUT")"
 
 # ---- NEGATIVE CONTROL -------------------------------------------------------
 # Half one, portable: the production script must still carry the floor.

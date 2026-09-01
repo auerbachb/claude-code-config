@@ -213,7 +213,9 @@ no-window/no-state-marker guarantee as `--readout`, whose output it leaves untou
 - On track: `Projected end = start + bound`, `Remaining = bound − elapsed`.
 - Over the bound: `Projected end` is the pace-scaled revised finish, **floored at
   `--now`** so it is never a clock time in the past; `Remaining` becomes
-  `+{over} over plan` (e.g. `+22 min over plan`).
+  `+{over} over plan` (e.g. `+22 min over plan`) — rendered `+<1 min over plan`
+  for the first 59 s past the bound, so a row in the overrun branch never reads
+  as on-plan.
 - Consume with `cut -f1`/`-f2`/`-f3`, **not** `IFS=$'\t' read` — that idiom collapses
   empty fields and shifts the rest.
 - Prints nothing (still exit 0) when a timestamp will not parse or the start is in the
