@@ -744,7 +744,11 @@ check_eq "exit-5 row still names every documented cause" "" "$MISSING_CAUSES"
 # --set that would otherwise rewrite the file. Reuses the stubs built above.
 reset_handoff
 run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
-BEFORE_EXIT5="$(cat "$HANDOFF_FILE")"
+# cmp(1), not $(cat ...): command substitution strips trailing newlines, so a
+# failed write that changed ONLY those bytes would pass an assertion whose
+# whole point is byte identity (CodeRabbit, PR #1500).
+BEFORE_EXIT5="$TMP_HOME/exit5-baseline.json"
+cp "$HANDOFF_FILE" "$BEFORE_EXIT5"
 LIBLESS_WRITE_CHECKED=0
 EXIT5_WRITE_VIOLATIONS=""
 while IFS= read -r _omit; do
@@ -756,7 +760,7 @@ while IFS= read -r _omit; do
   _rc=$?
   LIBLESS_WRITE_CHECKED=$((LIBLESS_WRITE_CHECKED + 1))
   [[ "$_rc" == "5" ]] || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS rc($_omit)=$_rc"
-  [[ "$(cat "$HANDOFF_FILE")" == "$BEFORE_EXIT5" ]] \
+  cmp -s "$HANDOFF_FILE" "$BEFORE_EXIT5" \
     || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS modified($_omit)"
 done <<< "$SIBLING_LIBS"
 check_eq "every library got an exit-5 write attempt (fail-closed)" "3" \

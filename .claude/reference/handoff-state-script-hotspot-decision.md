@@ -168,7 +168,7 @@ changes runtime behavior.
    `rm` failure under `--delete`. The row now covers all three causes and states
    the common invariant — the handoff file is left exactly as it was.
 
-**Guards added** (`handoff-state.test.sh`, 166 → 175 assertions, no existing test
+**Guards added** (`handoff-state.test.sh`, additive only — no existing test
 modified), all fail-closed — each asserts it discovered something before asserting
 the discovered set is documented, so a grep that stops matching fails the suite
 instead of passing vacuously:
@@ -183,9 +183,10 @@ instead of passing vacuously:
   describing a code cannot be what makes it look documented) must have an
   `EXIT CODES` row.
 
-Negative control: the new assertions were added before the header fix and three of
-them observed to fail against the unmodified script (`172 passed, 3 failed`), then
-pass after it (`175 passed, 0 failed`).
+Negative control: the new assertions were added before the header fix and observed
+to fail against the unmodified script, then pass after it. Current assertion totals
+and negative-control output live in the PR's test plan, not here — they change with
+every later commit, and a permanent record that restates them only drifts.
 
 ## Preserved invariants
 
@@ -210,8 +211,8 @@ Nothing below changed, and no future cleanup of this file may change them silent
 - **`--require-existing`** — checked *inside* the lock, so it is race-free where a
   caller's own `-e` test is not (#1423).
 
-Concurrency and scoping behavior is pinned by `handoff-scoping.test.sh`
-(153 assertions, unchanged by this decision).
+Concurrency and scoping behavior is pinned by `handoff-scoping.test.sh`,
+unchanged by this decision.
 
 ## Reconsideration criteria
 
