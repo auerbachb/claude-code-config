@@ -59,7 +59,7 @@ the same create–complete–maintain lifecycle already adjudicated KEEP in
 
 ## Decision: KEEP the single file
 
-The 605-line file is ~122 header lines plus ~480 lines of code implementing five
+The 607-line file is ~125 header lines plus ~480 lines of code implementing five
 modes (`--reserve`, `--transition`, `--retract`, `--count`, `--list`) over one
 store. Every consumer calls one script and receives one result. The dual
 `issue`/`issues[]` schema and the lifecycle counting rules are a single
@@ -130,7 +130,10 @@ One real defect surfaced during adjudication and was fixed:
   emitters (`pm, prompt, wave, issue-maker, start-issue`) while the `--emitter`
   `case` statement accepts six — `harness-audit` included. `chip-launching.md`
   confirms six canonical emitters. Because `usage()` prints the header verbatim,
-  `--help` was under-reporting the accepted values. The header now lists all six.
+  `--help` was under-reporting the accepted values. The header now lists all six,
+  and the `PURPOSE` block — printed by the same `usage()` call — was
+  de-duplicated to point at `VALID EMITTERS` rather than carry a second copy of
+  the list that could drift independently. One enumeration, one source of truth.
 - **Drift-guard regression test** (`chip-offer-registry.test.sh` test 36) parses
   the emitter list out of `--help` and out of the `case` allowlist and asserts
   they match, failing closed if either list cannot be extracted. Verified against
@@ -141,7 +144,10 @@ One real defect surfaced during adjudication and was fixed:
 - **Behavioral pin** (test 37) asserts `--emitter harness-audit` is accepted by
   `--reserve`.
 
-Suite: **35 tests before, 37 after, all passing.** No existing test was modified.
+Both additions are additive regression guards on contracts this record depends
+on — the drift guard keeps `--help` honest about the accepted emitters, and the
+behavioral pin keeps `harness-audit` accepted — and neither weakens or rewrites
+an existing assertion.
 
 ## What was explicitly preserved
 
@@ -152,7 +158,10 @@ Suite: **35 tests before, 37 after, all passing.** No existing test was modified
 - [x] `--cap-free` admission-limit semantics and the RESERVATION LEASE prose
 - [x] The atomic critical section, `state_lock_assert_held` re-check, and `_retry_or_fail`
 - [x] TTL handling, including fail-closed treatment of a missing `offered_at`
-- [x] `--help` output, other than the corrected emitter list
+- [x] `--help` output, apart from the two header edits that *are* the remedy:
+      the corrected `VALID EMITTERS` list, and the `PURPOSE` block pointing at
+      that list instead of re-enumerating it. `usage()` prints the whole header,
+      so both are user-visible; nothing else in the output changed.
 
 ## What would change this verdict
 
