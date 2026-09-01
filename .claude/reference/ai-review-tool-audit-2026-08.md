@@ -26,14 +26,18 @@ chain quietly routes past all three to the one tool we deliberately do not pay f
 - **CodeAnt warned `User ci@example.com does not have a PR Review subscription` on 206 PRs (84%)**
   — and approved anyway. It is the only bot that issues `APPROVED` at all.
 - **Greptile absorbed the overflow: 130 PRs (53%), 41 of them sole-source — the highest unique
-  contribution of any tool in the window — and it never refused once.** It is the tool the
-  operator states is deliberately unpaid.
+  contribution of any tool in the window — and it never refused once.** It was believed at the time
+  to be deliberately unpaid. **That premise was wrong.** Round 2 read the right account: the
+  `auerbachb` org is on paid Pro, **uncapped**, and this repo is its largest lifetime consumer, so
+  those 130 reviews were billed — roughly 80 as flex overage (§Item 3, the current conclusion).
 - **Graphite ran on every PR and found something on 9.** Its paid plan is new, so this window
   measures its pre-payment behaviour.
 
 **The money and the workflow have not merely drifted apart — they have inverted.** The chain spends
-its unpaid last resort on more than half of all PRs while the paid primary's allowance goes partly
-unused behind a 12-minute retry window nothing waits for.
+its **uncapped, metered** last resort on more than half of all PRs while the paid primary's
+allowance goes partly unused behind a 12-minute retry window nothing waits for. *(Round 1 read
+"unpaid last resort"; Item 3 round 2 corrected the billing premise, which sharpens this finding
+rather than softening it — the overflow was not free, it was the most open-ended line in the stack.)*
 
 ### Methodology & caveats
 
@@ -62,7 +66,7 @@ unused behind a 12-minute retry window nothing waits for.
 |---|------|------------------------------|-------------|----------------|
 | 1 | CodeAnt | Paid | `User ci@example.com does not have a PR Review subscription` on 206/244 PRs — **while still approving 360 times** | The subscription is keyed to the **commit-author email**, and this repo's automation commits as the placeholder `ci@example.com`. The seat is almost certainly provisioned for a different address. Add `ci@example.com` to the PR Review subscription, or set a real committer identity. |
 | 2 | BugBot | Paid (per-seat) | `Bugbot couldn't run — usage limit reached … this run hit a usage or spend limit` on 156/244 PRs | Per-seat billing does **not** make BugBot uncapped: Cursor meters it against a usage/spend limit that our PR volume exhausts. Raise the limit in the Cursor dashboard, or accept that BugBot covers roughly a third of PRs. |
-| 3 | Greptile | **Not paid** (deliberately — pricing judged a bad deal) | 130 reviews in 30 days, **zero** refusals, quota notices, or billing warnings | Either Greptile is serving this volume on an allowance that costs nothing, or an unbilled/overage balance is accruing invisibly. Nothing inside the repo can tell these apart. **Check the Greptile dashboard before the next audit** — this is the single highest-value unknown in the chain. |
+| 3 | Greptile | ~~**Not paid** (deliberately — pricing judged a bad deal)~~ — **the operator-stated premise, and it was wrong** | 130 reviews in 30 days, **zero** refusals, quota notices, or billing warnings | **ANSWERED in round 2 — the second branch was the true one.** Round 1 could only say that either Greptile served this volume for nothing or an overage was accruing invisibly, and that nothing inside the repo could tell them apart. Reading the dashboard settled it: paid Pro, **uncapped**, this repo the top lifetime consumer, ~80 of these reviews billed as flex. See §Item 3. |
 
 Items 1 and 2 are **dashboard actions for the operator**; the agent cannot enter payment or
 subscription details. Item 3 is a dashboard *reading*, and it determines whether Greptile's role in
@@ -253,7 +257,7 @@ in the June window: it is a finder, never an approver. Every other tool is likew
   comment text, which is why `merge-gate.sh` and `escalate-review.sh` both content-classify rather
   than trusting the check-run conclusion alone (issue #552).
 
-### Greptile — unpaid, and carrying the chain
+### Greptile — carrying the chain (round 1 read this tool as unpaid; superseded by §Item 3)
 
 - **Volume:** 130 of 244 PRs (53%), 71 review objects, 90 inline findings on 69 PRs.
 - **Trigger provenance:** **132 `@greptileai` comments, all posted by the PR author** (the agent
@@ -306,7 +310,7 @@ in the June window: it is a finder, never an approver. Every other tool is likew
 | CodeRabbit | Paid | 22 | 91% banner-only on 183/223 banner PRs | **Underused.** Paying for allowance the chain does not wait to collect. |
 | CodeAnt | Paid | 16 | 0% (warning only) | **Load-bearing.** The only approver; its warning is a misconfiguration, not a lapse. |
 | BugBot | Paid (per-seat) | 29 | **64%** | **Capped, not cheap.** Good yield when it runs; the "always-trigger" assumption is wrong. |
-| Greptile | **Not paid** | **41** | **0%** | **Highest unique yield, unknown bill.** Cannot be judged until the dashboard is read. |
+| Greptile | **Paid, uncapped** (round 2; round 1 read "not paid") | **41** | **0%** | **Highest unique yield, and the most open-ended bill in the stack.** The dashboard was read: paid Pro, no flex cap, ~80 of the window's reviews billed as overage. Setting the vendor-side Flex Usage Limit is the action this row implies. |
 | Graphite | Newly paid | 1 | 0% | **Unmeasured at its new price.** Keep supplemental; re-measure. |
 
 ## Recommended posture (formalised in the decision record)

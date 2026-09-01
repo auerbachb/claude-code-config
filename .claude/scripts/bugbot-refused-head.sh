@@ -85,4 +85,29 @@ RUNS="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" 
 jq -e '[.check_runs[]? | select((.name // "") == "Cursor Bugbot" and (.app.slug // "") == "cursor")] | length > 0' \
   <<<"$RUNS" >/dev/null 2>&1 || exit 1
 
-[[ ! "$(norm_ts "$REFUSAL_TS")" < "$(norm_ts "$HEAD_TS")" ]]
+# VALIDATE BEFORE COMPARING (issue #1517, CodeRabbit's post-merge review of PR
+# #1203). Lines 67 and 82 guard the RAW values for emptiness; nothing guarded
+# what norm_ts produced, and this is the last line of the script — its status IS
+# the exit status. A non-empty value that norm_ts cannot render orderable makes
+# the bash `<` compare answer on byte order alone, and when it happens to sort at
+# or above HEAD the script returns 0 and SUPPRESSES a required `@cursor review`.
+# That inverts the fail-open contract this file promises in its header: every
+# uncertain case is supposed to return 1 and post the nudge.
+#
+# This is not only a garbage-input concern. ts-normalizer.sh's contract
+# deliberately LEAVES a genuine non-UTC offset untouched rather than mangling it
+# into a wrong instant, so `2026-08-21T16:39:20-04:00` is valid library output
+# and is still not orderable against a bare UTC value — hence the anchored `$`.
+# The optional fractional group is required in the other direction: norm_ts
+# deliberately KEEPS fractional seconds, so a stricter shape would reject values
+# the library is expected to emit and turn this into a script that never
+# suppresses.
+ISO_CMP_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$'
+REFUSAL_CMP="$(norm_ts "$REFUSAL_TS")"
+HEAD_CMP="$(norm_ts "$HEAD_TS")"
+if ! [[ "$REFUSAL_CMP" =~ $ISO_CMP_RE ]] || ! [[ "$HEAD_CMP" =~ $ISO_CMP_RE ]]; then
+  echo "bugbot-refused-head.sh: timestamps are not comparison-safe after normalisation (refusal: '$REFUSAL_CMP', head: '$HEAD_CMP') — not suppressing" >&2
+  exit 1
+fi
+
+[[ ! "$REFUSAL_CMP" < "$HEAD_CMP" ]]
