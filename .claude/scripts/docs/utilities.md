@@ -14,6 +14,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [graphite-repo-init.sh](../graphite-repo-init.sh) | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |
 | [reference-catalog-lint.sh](../reference-catalog-lint.sh) | Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates) |
+| [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first |
 
 ## Python helpers
 

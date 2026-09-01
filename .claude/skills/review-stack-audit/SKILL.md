@@ -46,13 +46,20 @@ REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 ## The engines
 
 All three are plain scripts, so the judgment in this file stays small and their
-behavior is testable offline (`.claude/scripts/tests/review-stack-audit.test.sh`).
+behavior is testable offline (`.claude/scripts/tests/review-stack-audit.test.sh`
+for the first two, `.claude/scripts/tests/report-path.test.sh` for the third).
 
-| Engine | Job |
-|--------|-----|
-| `measure.sh` | What each tool actually did: billed signals, caps, throughput, unique value. No verdicts. |
-| `drift.sh` | Snapshot vs baseline → one finding per divergence, each with a stable dedup marker. Pure function of two JSON files. |
-| `report-path.sh` | Where this run's report goes, guaranteed not to be a path something already occupies (Step 7). Pure function of the target directory. Writes nothing. |
+| Engine | Where | Job |
+|--------|-------|-----|
+| `measure.sh` | this skill | What each tool actually did: billed signals, caps, throughput, unique value. No verdicts. |
+| `drift.sh` | this skill | Snapshot vs baseline → one finding per divergence, each with a stable dedup marker. Pure function of two JSON files. |
+| `report-path.sh` | `.claude/scripts/` — **shared** | Where this run's report goes, guaranteed not to be a path something already occupies (Step 7). Pure function of the target directory. Writes nothing. |
+
+> **`report-path.sh` is not this skill's private engine.** `/harness-audit` writes
+> a monthly report on the same cadence and had the identical collision (#1519), so
+> the script lives in `.claude/scripts/` and both audits call it with their own
+> `--series`. Change it with both callers in mind, and never give `--series` a
+> default: a forgotten flag would file one skill's report under the other's name.
 
 Run `--help` on any of them for its full contract. Do not reimplement their
 logic here.
@@ -79,7 +86,7 @@ REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"
 MEASURE="$SKILL_DIR/measure.sh"
 DRIFT="$SKILL_DIR/drift.sh"
-REPORT_PATH="$SKILL_DIR/report-path.sh"
+REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"   # shared with /harness-audit
 DEDUP="$REPO_ROOT/.claude/scripts/issue-dedup.sh"
 STATE_DIR="$HOME/.claude/review-stack-audit"
 WATERMARK="$STATE_DIR/last-run.json"
@@ -363,7 +370,7 @@ report is never what a reader finds:
 # claim again. The subshell keeps noclobber out of the rest of the flow.
 REPORT=""
 for _attempt in 1 2 3 4 5; do
-  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" \
+  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series review-stack-audit)" \
     || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
   if ( set -o noclobber; : > "$CANDIDATE" ) 2>/dev/null; then REPORT="$CANDIDATE"; break; fi
 done
