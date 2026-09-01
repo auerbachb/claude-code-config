@@ -2,15 +2,22 @@
 # report-path.sh — Choose a report destination that cannot overwrite a prior one.
 #
 # PURPOSE
-#   /review-stack-audit writes one report per run. Step 7 used to derive that
-#   path from the calendar month alone, so two audits landing in the same month
-#   resolved to the same file and the second silently destroyed the first. That
-#   is not hypothetical: it happened in 2026-08 and PR #1338 had to invent a
-#   per-report deviation to work around it (#1345).
+#   A monthly audit writes one report per run. Both /review-stack-audit and
+#   /harness-audit used to derive that path from the calendar month alone, so
+#   two audits landing in the same month resolved to the same file and the
+#   second silently destroyed the first. That is not hypothetical: it happened
+#   to /review-stack-audit in 2026-08 and PR #1338 had to invent a per-report
+#   deviation to work around it (#1345, fixed by PR #1511; the /harness-audit
+#   instance is #1519).
 #
 #   This script is that decision, made once and made testable. Given a target
-#   directory and a month it returns the canonical name when that name is free,
-#   and the first free counter-suffixed name when it is not.
+#   directory, a month, and a series it returns the canonical name when that
+#   name is free, and the first free counter-suffixed name when it is not.
+#
+#   It lives here rather than in either skill's directory because it now has two
+#   consumers. .claude/scripts/ is where a helper shared across skills belongs —
+#   the home the catalog, portability, and telemetry lints cover — and neither
+#   audit should have to reach into the other's private directory to find it.
 #
 #   It is a pure function of the directory listing. It reaches no network and
 #   CREATES NOTHING IN --dir — it only reads that directory and prints one path
@@ -43,20 +50,24 @@
 #   The returned path is free at the moment of the check, and this script cannot
 #   itself reserve it: it creates nothing, and any lock it took would be released
 #   when it exits — before the caller writes. Atomicity therefore belongs to the
-#   caller, and Step 7 claims the returned path immediately with O_EXCL
+#   caller, and the caller claims the returned path immediately with O_EXCL
 #   (`set -o noclobber`), so a simultaneous second audit finds it taken and is
 #   handed the next suffix. `noclobber` refuses an existing file AND a dangling
 #   symlink, matching this script's own definition of a taken name exactly.
 #
 # USAGE
-#   report-path.sh --dir <directory> --month <YYYY-MM> [--series <name>]
+#   report-path.sh --dir <directory> --month <YYYY-MM> --series <name>
 #   report-path.sh --help | -h
 #
 #   --dir     Directory the report will be written into. Must already exist and
 #             be readable and searchable.
 #   --month   Report month, `YYYY-MM`.
-#   --series  Filename series. Default `review-stack-audit` — the canonical
-#             series for this skill's reports, in both destinations.
+#   --series  Filename series — the calling skill's own name, e.g.
+#             `review-stack-audit` or `harness-audit`. REQUIRED, deliberately:
+#             this engine serves more than one audit, and a default would let a
+#             forgotten flag file one skill's report under another skill's
+#             series. Writing into someone else's slot is the failure #1345
+#             already had to undo by hand — it must not be the fallback.
 #
 # OUTPUT
 #   One line on stdout: the chosen path, `<dir>/<name>.md`. Nothing else.
@@ -66,15 +77,15 @@
 #   1  Environment error: the --dir DIRECTORY does not exist, is not a
 #      directory, is not readable and searchable, or is not writable; or every
 #      suffix up to the bound is taken. No path printed.
-#   2  Usage error: a required FLAG is absent (--dir, --month), a flag value is
-#      empty, a flag is unknown, or --month/--series is malformed.
+#   2  Usage error: a required FLAG is absent (--dir, --month, --series), a flag
+#      value is empty, a flag is unknown, or --month/--series is malformed.
 #
 # EXAMPLES
-#   .claude/skills/review-stack-audit/report-path.sh \
-#     --dir ~/.claude/review-stack-audit --month 2026-08
+#   .claude/scripts/report-path.sh \
+#     --dir ~/.claude/review-stack-audit --month 2026-08 --series review-stack-audit
 #
-#   .claude/skills/review-stack-audit/report-path.sh \
-#     --dir "$REPO_ROOT/.claude/reference" --month 2026-08
+#   .claude/scripts/report-path.sh \
+#     --dir "$WORKTREE_ROOT/.claude/reference" --month 2026-08 --series harness-audit
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
@@ -101,7 +112,7 @@ MAX_SUFFIX=999
 
 DIR=""
 MONTH=""
-SERIES="review-stack-audit"
+SERIES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -131,6 +142,11 @@ done
 
 [[ -n "$DIR"   ]] || usage_error "--dir is required"
 [[ -n "$MONTH" ]] || usage_error "--month is required"
+
+# No default series. Two skills call this, so a default would silently file one
+# skill's report under the other's name on a forgotten flag — the same
+# wrong-slot failure #1345 documents, arrived at from the other direction.
+[[ -n "$SERIES" ]] || usage_error "--series is required (the calling skill's own name, e.g. review-stack-audit or harness-audit)"
 
 # A malformed month would silently produce a name outside the series, which no
 # later run would recognise as a month-mate — so it would stop colliding by
