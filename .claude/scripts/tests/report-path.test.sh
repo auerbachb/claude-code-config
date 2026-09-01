@@ -416,6 +416,13 @@ got="$(claim_recipe "$D3" 2026-08 harness-audit ok)"
 # both callers are asserted here, not just the one this suite was written for.
 # ---------------------------------------------------------------------------
 
+# The resolver-call pattern, defined ONCE. The controls below prove the
+# behaviour of this exact string, so there is no second copy to drift out of
+# agreement with the assertion that actually runs. `printf '%s'` passes the
+# pattern through with no escape interpretation — the `\$` and `\(` reach grep
+# as written.
+call_pattern() { printf '%s' '^[[:space:]]*CANDIDATE="\$\(.*--series '"$1"; }
+
 assert_caller() {
   local label="$1" md="$2" series="$3"
   if [[ ! -r "$md" ]]; then
@@ -423,15 +430,23 @@ assert_caller() {
     return
   fi
 
-  # Match the resolver CALL, not just the flag: a bare `--series <name>` would
-  # also match prose naming the flag, and anchoring on the closing `)` of the
-  # command substitution would fail a caller that is correct but wrapped its
-  # invocation differently. `--month ... --series ...` is the call itself.
+  # Match the resolver CALL as a CALL. A flag fragment on its own is satisfied by
+  # any line that merely mentions the flag — a comment, or prose naming it — so
+  # deleting the real invocation and leaving a `#` line behind would keep this
+  # assertion green (CodeAnt Major, PR #1523). Requiring the assignment-from-
+  # command-substitution shape at the START of a line rejects both: a comment
+  # opens with `#`, and prose does not open a line with `CANDIDATE="$(`.
   #
-  # `-e` is load-bearing: the pattern starts with `--`, which grep would
-  # otherwise parse as one of its own options and then fail the whole assertion
-  # for a reason that has nothing to do with the file.
-  grep -qF -e "--month \"\$MONTH\" --series $series" "$md" \
+  # It anchors on the OPENING of the substitution, never the closing `)` —
+  # anchoring on the close is what failed a correct-but-rewrapped caller before.
+  # Everything between the open and `--series` is unconstrained, so a caller may
+  # still reorder or rewrap its flags. Pinning the name `CANDIDATE` adds no new
+  # coupling: the O_EXCL assertion below already requires that exact name.
+  #
+  # The `-e` guard is gone with the leading `--`: this pattern starts with `^`,
+  # so grep cannot mistake it for one of its own options. Restore `-e` for any
+  # future pattern that does start with a dash — that bug cost a whole assertion.
+  grep -qE "$(call_pattern "$series")" "$md" \
     && ok "$label: resolves its report path through report-path.sh with its own --series" \
     || fail "$label: no report-path.sh call passing --series $series — the report could land in the sibling's series"
 
@@ -441,9 +456,29 @@ assert_caller() {
   grep -qF 'for _attempt in 1 2 3 4 5; do' "$md" \
     && ok "$label: still retries a lost claim instead of discarding the audit" \
     || fail "$label: lost its claim retry loop — a lost race would discard the audit"
+
+  # A retry loop that runs out must ABORT. Without this guard the shipped block
+  # would fall through with REPORT empty and compose onto "$REPORT_DIR/" — the
+  # loop above would look intact while the failure it exists for went unhandled.
+  grep -qF '[[ -n "$REPORT" ]]' "$md" \
+    && ok "$label: still aborts when every claim attempt is lost, rather than writing to an empty path" \
+    || fail "$label: lost its post-loop '[[ -n \"\$REPORT\" ]]' guard — an exhausted retry would compose onto an empty path"
+
   grep -qF 'trap cleanup_report EXIT' "$md" \
     && ok "$label: still clears its claim on failure" \
     || fail "$label: lost its EXIT trap — a failed compose would park an empty file on the canonical name"
+
+  # The trap is only as good as the handler it installs. Asserting the `trap`
+  # line alone leaves `cleanup_report` free to degrade to `rm -f "$TMP_REPORT"`,
+  # which reintroduces the PR #1511 Bugbot Medium verbatim — the claim survives
+  # as an empty file on the canonical name and every later audit that month is
+  # pushed onto -2, -3, … The `-s` test is the whole fix, so pin the BODY too.
+  # This is the concrete half of "a replica can drift from the shipped block"
+  # (CodeAnt Major, PR #1523): claim_recipe cleans up correctly, and until now
+  # nothing required the shipped handler to do the same.
+  grep -qF '[[ -s "$REPORT" ]] || rm -f "$REPORT"' "$md" \
+    && ok "$label: its cleanup still drops an unfilled claim, not just the temp file" \
+    || fail "$label: cleanup_report no longer removes an empty claim — a failed compose parks a blank file on the canonical name"
 
   # The bug itself: a path built from the month alone, with nothing consulting
   # what is already on disk. Its return in either file is the regression.
@@ -462,6 +497,43 @@ printf 'REPORT="$REPORT_DIR/harness-audit-$MONTH.md"\n' > "$DETECTOR_FIXTURE"
 grep -qE '(REPORT|CANDIDATE)="\$(REPORT_DIR|\{REPORT_DIR\})/harness-audit-\$(MONTH|\{MONTH\})' "$DETECTOR_FIXTURE" \
   && ok "detector: the month-only derivation pattern fires on a regressed file — the two absence checks below are live" \
   || fail "detector: the month-only pattern does not match the bug it describes, so its absence proves nothing"
+
+# CONTROLS for the resolver-call pattern. The assertion it backs is a text match
+# against Markdown — there is no binary to execute — so its worth rests entirely
+# on matching a live invocation and nothing else. Both directions are checked:
+# too loose and a deleted call still passes; too tight and a correct caller fails.
+CALL_FIXTURE="$TMP_DIR/call-shape.md"
+
+# POSITIVE: the shape both skills actually ship — indented, line-continued —
+# must match, or the pattern is over-anchored and the verdicts below would be
+# reporting on the pattern rather than on the callers. Anchoring on the closing
+# `)` failed exactly this way before.
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)" \' > "$CALL_FIXTURE"
+grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+  && ok "call shape: the real indented, line-continued invocation matches — the pattern is not over-anchored" \
+  || fail "call shape: the pattern rejects the invocation both skills ship — it is over-anchored"
+
+# NEGATIVE: the false pass this pattern was tightened to close — the real call
+# deleted, a commented-out copy left behind. A fragment match would call that a
+# healthy caller.
+printf '%s\n' '# CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series harness-audit)"' > "$CALL_FIXTURE"
+grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+  && fail "call shape: a commented-out call satisfies the pattern — the assertion can pass with no live invocation" \
+  || ok "call shape: a commented-out call does not satisfy the pattern"
+
+# NEGATIVE: prose naming the flags is not an invocation either.
+printf '%s\n' 'Run it with `--month "$MONTH" --series harness-audit` to select the series.' > "$CALL_FIXTURE"
+grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+  && fail "call shape: prose naming the flags satisfies the pattern" \
+  || ok "call shape: prose naming the flags does not satisfy the pattern"
+
+# NEGATIVE: the series name is load-bearing, not decoration. A caller resolving
+# with the SIBLING's series is the #1519 wrong-slot bug wearing a correct-looking
+# call, so the pattern must discriminate on it.
+printf '%s\n' '  CANDIDATE="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH" --series review-stack-audit)"' > "$CALL_FIXTURE"
+grep -qE "$(call_pattern harness-audit)" "$CALL_FIXTURE" \
+  && fail "call shape: a call passing the sibling's --series matches anyway — the series is not being checked" \
+  || ok "call shape: a call passing the sibling's --series does not match — the series is discriminated"
 
 assert_caller "review-stack-audit" "$RSA_SKILL_MD" review-stack-audit
 assert_caller "harness-audit" "$HA_SKILL_MD" harness-audit
