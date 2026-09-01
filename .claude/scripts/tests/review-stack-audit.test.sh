@@ -6,7 +6,13 @@
 #
 # Every case is OFFLINE. measure.sh is driven through --fixture, which feeds the
 # SAME code path live gh data takes, so these exercise the real classifier
-# rather than a parallel reimplementation of it. HOME is not touched.
+# rather than a parallel reimplementation of it.
+#
+# HOME is sandboxed to a mktemp tree (script-usage-log-redirect.test.sh
+# pattern), so the real ~/.claude is never touched. All three engines append a
+# telemetry line to $HOME/.claude/script-usage.log on every invocation, so
+# without this the suite would write into the developer's own log — and this
+# header used to claim otherwise.
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -18,6 +24,13 @@ BASELINE_REAL="$REPO_ROOT/.claude/reference/review-stack-baseline.json"
 TMP_DIR="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+
+# Sandbox HOME before any engine runs. `.claude/` is created so the telemetry
+# append still succeeds — the goal is to redirect that write, not to silently
+# exercise a different (log-disabled) path than production takes. Set after the
+# REPO_ROOT lookup above, which is the suite's only HOME-sensitive command.
+export HOME="$TMP_DIR/home"
+mkdir -p "$HOME/.claude"
 
 FAILED=0
 fail() { echo "FAIL: $*" >&2; FAILED=1; }
@@ -872,6 +885,48 @@ else
     && ok "report-path: an unreadable directory refuses and prints no path — 'cannot check' never becomes 'no collision'" \
     || fail "report-path: unreadable dir should exit 1 with empty stdout (rc=$rc, out='$out')"
 fi
+
+# ---------------------------------------------------------------------------
+# The Step 7 reservation — resolve, then CLAIM with O_EXCL
+#
+# report-path.sh creates nothing, so its answer is only true at the instant it
+# is given (CodeAnt Critical + CodeRabbit major on PR #1511). Step 7 closes that
+# window by reserving the returned path with `set -o noclobber`. These cases pin
+# the contract that fix depends on: the reservation is atomic, and a reserved
+# path is subsequently seen as taken by the resolver.
+# ---------------------------------------------------------------------------
+
+D="$RP_DIR/reserve"; mkdir -p "$D"
+
+# Interleave two audits the way concurrency would: A resolves and reserves, then
+# B resolves. B must be handed a different name — the reservation, not luck, is
+# what makes A's path safe to write.
+a_path="$(rp_run "$D" 2026-08)"
+( set -o noclobber; : > "$a_path" ) 2>/dev/null \
+  && ok "report-path: a freshly resolved path can be reserved with O_EXCL — the claim succeeds on the happy path" \
+  || fail "report-path: could not reserve freshly resolved path $a_path"
+b_path="$(rp_run "$D" 2026-08)"
+[[ "$b_path" != "$a_path" ]] \
+  && ok "report-path: a path reserved by O_EXCL is seen as taken by the next run — interleaved audits cannot share a name" \
+  || fail "report-path: second run returned the reserved path '$a_path' again"
+
+# The reservation must REFUSE rather than truncate, otherwise it would itself be
+# the overwrite #1345 is about. Re-reserving A's path has to fail with the file's
+# contents intact.
+printf 'audit A body\n' > "$a_path"
+( set -o noclobber; : > "$a_path" ) 2>/dev/null \
+  && fail "report-path: O_EXCL reservation overwrote an existing report — the guard is inert" \
+  || ok "report-path: reserving an already-claimed path fails instead of truncating it"
+[[ "$(cat "$a_path")" == "audit A body" ]] \
+  && ok "report-path: the refused reservation left the prior report byte-for-byte intact" \
+  || fail "report-path: prior report was damaged by a refused reservation"
+
+# A dangling symlink occupies a name for the resolver (`-e || -L`); the
+# reservation must agree, or the two layers would disagree about what is free.
+ln -s "$D/nonexistent-target" "$D/review-stack-audit-2026-09.md"
+( set -o noclobber; : > "$D/review-stack-audit-2026-09.md" ) 2>/dev/null \
+  && fail "report-path: O_EXCL wrote through a dangling symlink the resolver treats as taken" \
+  || ok "report-path: O_EXCL and the resolver agree that a dangling symlink is an occupied name"
 
 # ---------------------------------------------------------------------------
 # The shipped baseline must be valid against the shipped drift engine.

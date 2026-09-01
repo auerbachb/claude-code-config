@@ -349,6 +349,14 @@ report is never what a reader finds:
 ```bash
 REPORT="$("$REPORT_PATH" --dir "$REPORT_DIR" --month "$MONTH")" \
   || { echo "ERROR: report-path.sh could not resolve a free report path in $REPORT_DIR — not writing." >&2; exit 1; }
+
+# Claim the path atomically, before composing anything. `set -o noclobber` opens
+# with O_EXCL, so if a simultaneous audit resolved the same name first, this
+# fails instead of overwriting it. Runs in a subshell so noclobber does not leak
+# into the rest of the flow.
+( set -o noclobber; : > "$REPORT" ) \
+  || { echo "ERROR: $REPORT was claimed by another audit between resolving and reserving it — not writing." >&2; exit 1; }
+
 TMP_REPORT="$REPORT_DIR/.$(basename "$REPORT").tmp"
 # ...compose the report into "$TMP_REPORT"...
 mv "$TMP_REPORT" "$REPORT"
@@ -357,6 +365,14 @@ mv "$TMP_REPORT" "$REPORT"
 **A non-zero exit from `report-path.sh` is a hard stop, not a cue to fall back to
 the base name.** The whole point is that the unverified path is exactly the one
 that destroys a prior report.
+
+**The reservation is what makes the resolved path yours.** `report-path.sh`
+creates nothing, so its answer is only true at the instant it is given; a lock
+inside it could not help, because it exits before this flow writes. Reserving
+with O_EXCL closes that window at the only layer that can close it: a concurrent
+audit then sees the name occupied and is handed the next suffix. Because
+`$TMP_REPORT` is derived from the reserved `$REPORT`, the temp file is unique
+too, so two audits cannot collide on it either.
 
 Report shape, following the prior audits in this series:
 

@@ -12,9 +12,14 @@
 #   directory and a month it returns the canonical name when that name is free,
 #   and the first free counter-suffixed name when it is not.
 #
-#   It is a pure function of the directory listing. It reaches no network,
-#   creates nothing, and WRITES NOTHING — it only reads the directory and prints
-#   one path to stdout. The caller does the writing.
+#   It is a pure function of the directory listing. It reaches no network and
+#   CREATES NOTHING IN --dir — it only reads that directory and prints one path
+#   to stdout. The caller does the writing.
+#
+#   (Like every script in this repo it appends one telemetry line to
+#   $HOME/.claude/script-usage.log — the repo-wide convention enforced by
+#   .github/scripts/script-usage-redirect-lint.sh, issue #1406. That write never
+#   touches --dir and never affects the returned path.)
 #
 # NAMING
 #   Base:       <series>-<month>.md          e.g. review-stack-audit-2026-08.md
@@ -35,11 +40,13 @@
 #   about where the report goes, which is exactly when guessing is worst.
 #
 # CONCURRENCY
-#   The returned path is free at the moment of the check. Two audits running at
-#   the same instant against the same directory could both be handed it. That is
-#   not the failure #1345 describes (reports written days or weeks apart) and a
-#   lock here would not help, because the caller writes afterwards regardless.
-#   Callers wanting atomicity should create the file with O_EXCL.
+#   The returned path is free at the moment of the check, and this script cannot
+#   itself reserve it: it creates nothing, and any lock it took would be released
+#   when it exits — before the caller writes. Atomicity therefore belongs to the
+#   caller, and Step 7 claims the returned path immediately with O_EXCL
+#   (`set -o noclobber`), so a simultaneous second audit finds it taken and is
+#   handed the next suffix. `noclobber` refuses an existing file AND a dangling
+#   symlink, matching this script's own definition of a taken name exactly.
 #
 # USAGE
 #   report-path.sh --dir <directory> --month <YYYY-MM> [--series <name>]
@@ -56,9 +63,11 @@
 #
 # EXIT STATUS
 #   0  A free path was found and printed.
-#   1  Input or environment error: --dir missing, unreadable, or not a
-#      directory; or every suffix up to the bound is taken. No path printed.
-#   2  Usage error.
+#   1  Environment error: the --dir DIRECTORY does not exist, is not a
+#      directory, or is not readable and searchable; or every suffix up to the
+#      bound is taken. No path printed.
+#   2  Usage error: a required FLAG is absent (--dir, --month), a flag value is
+#      empty, a flag is unknown, or --month/--series is malformed.
 #
 # EXAMPLES
 #   .claude/skills/review-stack-audit/report-path.sh \
