@@ -73,6 +73,8 @@
 #   handoff-state.sh [<scope-flags>] --init   <pr_number> <json> # locked create-if-absent (no-op if exists)
 #   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
 #   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
+#                               <field> must name one of the schema's array
+#                               fields — see --append FIELD NAMES below
 #   handoff-state.sh [<scope-flags>] --delete <pr_number>        # locked delete
 #
 # CONCURRENCY MODEL
@@ -98,6 +100,26 @@
 #     • findings_dismissed: dedup by .id (object identity).
 #   Unknown fields are always preserved (forward compatibility).
 #
+# --append FIELD NAMES (issue #1514)
+#   <field> is checked against the array fields the handoff schema defines
+#   (HANDOFF_ARRAY_FIELDS below); anything else exits 2 having written nothing.
+#   The check closes two silent losses, both of which used to exit 0:
+#     • a MISORDERED FLAG — `--append 452 --owner-repo o/r` stored the literal
+#       key "--owner-repo", discarded the write the caller meant, and left a
+#       record that parses as valid JSON while holding no real field at all.
+#     • a TYPO — `threads_replyed` created its own field just as quietly.
+#
+#   This restricts only what --append may CREATE. The forward-compatibility rule
+#   above is untouched: unknown fields already in a record are still preserved
+#   verbatim across every read-modify-write. To add an array field, add it to
+#   .claude/reference/handoff-file-schema.json AND to HANDOFF_ARRAY_FIELDS —
+#   handoff-state.test.sh fails if the two drift apart.
+#
+#   --set needs no equivalent guard (audited under #1514, pinned by tests): its
+#   argument must contain `=` (exit 2 otherwise), and the path before the `=`
+#   must compile as a jq path, which no flag-shaped or bare-identifier key does
+#   — jq rejects it and the file is left unmodified (exit 4).
+#
 # --set VALUES (issue #1357)
 #   A value that parses as JSON is stored as that JSON literal; anything else is
 #   stored verbatim as a string.  The one exception is a raw jq PROGRAM
@@ -108,7 +130,9 @@
 # EXIT CODES
 #   0  Success.
 #   2  Usage error (missing args, unknown flag, malformed path=value,
-#      unresolvable scope — see REPO SCOPING).
+#      an --append <field> that is not one of the schema's array fields,
+#      including a misordered flag — see --append FIELD NAMES —
+#      unresolvable scope, see REPO SCOPING).
 #   3  Handoff file not found (--get always; --set/--append only under
 #      --require-existing, which otherwise create/seed from {}).
 #   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
@@ -208,6 +232,18 @@ OWNER_REPO_EXPLICIT=""
 LEGACY_FLAT=0
 REQUIRE_EXISTING=0
 SCOPE_SOURCE=""
+
+# Every array field the handoff schema defines — the complete set --append may
+# create (issue #1514; see --append FIELD NAMES in the header for why this is an
+# allowlist rather than a bare "reject anything starting with -").
+#
+# Kept as a literal here rather than parsed out of
+# .claude/reference/handoff-file-schema.json at run time: that file is a
+# reference document, not a shipped dependency, so reading it would add a fourth
+# hard requirement and a new startup failure for a copy of this script that
+# carries only .claude/scripts/. handoff-state.test.sh compares this list against
+# the schema's array-typed keys instead, so the two cannot drift silently.
+HANDOFF_ARRAY_FIELDS="findings_fixed findings_dismissed threads_replied threads_resolved files_changed stale_bot_reviews_dismissed"
 
 # Print the whole leading comment block. Driven by the comment prefix rather
 # than a hardcoded line range so adding a header section can never silently
@@ -322,6 +358,31 @@ case "$1" in
     if [[ -z "$PR_NUMBER" || -z "$ARRAY_FIELD" || -z "$ARRAY_VALUE" ]]; then
       echo "handoff-state.sh: --append requires <pr_number> <field> <value>" >&2; exit 2
     fi
+    # Validate <field> HERE — before scope resolution, before the lock, before
+    # anything is read (issue #1514). Non-emptiness was the only check, so any
+    # string became a schema field: the misordered call
+    # `--append 452 --owner-repo auerbachb/inventory` wrote
+    # {"--owner-repo":["auerbachb/inventory"]} and exited 0, and an artifact of
+    # exactly that shape sat in ~/.claude/handoffs/_unknown/ unattributable at
+    # migration time. Same class as #1357 (--set storing a raw jq expression):
+    # a write that reports success while storing nothing usable.
+    #
+    # The flag case gets its own message because its CAUSE is different from a
+    # typo's — the argument order is wrong, not the field name — and the fix is
+    # to move the flag, which the message has to say.
+    if [[ "$ARRAY_FIELD" == -* ]]; then
+      echo "handoff-state.sh: --append field name '$ARRAY_FIELD' starts with '-', so it is a misordered flag rather than a schema field. Scope flags (--owner-repo, --legacy-flat, --require-existing) must come BEFORE the mode flag — e.g. 'handoff-state.sh --owner-repo <owner>/<repo> --append ${PR_NUMBER} <field> <value>'. Nothing was read or written (issue #1514)." >&2
+      exit 2
+    fi
+    # Quoted inside the pattern so a field containing glob metacharacters is
+    # compared literally instead of being matched as a pattern.
+    case " $HANDOFF_ARRAY_FIELDS " in
+      *" $ARRAY_FIELD "*) ;;
+      *)
+        echo "handoff-state.sh: --append field '$ARRAY_FIELD' is not one of the handoff schema's array fields (${HANDOFF_ARRAY_FIELDS// /, }). Nothing was read or written. Check for a typo; to add a new array field, add it to .claude/reference/handoff-file-schema.json and to HANDOFF_ARRAY_FIELDS in this script (issue #1514)." >&2
+        exit 2
+        ;;
+    esac
     ;;
   --delete)
     MODE="delete"

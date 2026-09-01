@@ -611,6 +611,181 @@ run --delete 2>/dev/null; check_eq "--delete missing args exits 2" "2" "$?"
 run --bogus 2>/dev/null;  check_eq "unknown flag exits 2" "2" "$?"
 
 echo
+echo "== --append <field> validation (issue #1514) =="
+# Non-emptiness was the only check on <field>, so ANY string became a schema
+# field. `--append 452 --owner-repo auerbachb/inventory` stored the literal key
+# "--owner-repo", exited 0 and printed success: the write the caller meant was
+# lost, and what landed was a record that parses as valid JSON while holding no
+# real field at all. An artifact of exactly that shape sat in
+# ~/.claude/handoffs/_unknown/pr-452-handoff.json, unattributable at migration
+# time precisely because the owner_repo it should have carried was eaten as a
+# field NAME. A typo (`threads_replyed`) was equally silent.
+#
+# The negative control at the end of this block rebuilds the pre-fix script and
+# proves these assertions fail against it, so none of them can pass vacuously.
+SCHEMA_FILE="$REPO_ROOT/.claude/reference/handoff-file-schema.json"
+check_eq "the handoff schema reference exists" "1" \
+  "$([[ -f "$SCHEMA_FILE" ]] && echo 1 || echo 0)"
+
+# The issue's own reproduction: a misordered scope flag consumed as <field>.
+reset_handoff
+APPEND_FLAG_RC=0
+APPEND_FLAG_ERR="$(run --append "$PR" --owner-repo auerbachb/inventory 2>&1 >/dev/null)" \
+  || APPEND_FLAG_RC=$?
+check_eq "--append with a misordered flag as <field> exits 2" "2" "$APPEND_FLAG_RC"
+check_eq "the refusal names the misordered-flag cause" "named" \
+  "$(case "$APPEND_FLAG_ERR" in *"misordered flag"*) echo named ;; *) echo "unnamed: $APPEND_FLAG_ERR" ;; esac)"
+check_eq "a refused --append creates no handoff file" "0" \
+  "$([[ -f "$HANDOFF_FILE" ]] && echo 1 || echo 0)"
+
+# Same refusal against an EXISTING record: it must be left untouched, not
+# merely un-appended. cmp(1) rather than $(cat ...) — command substitution
+# strips trailing newlines, so a write that changed only those bytes would pass
+# an assertion whose whole point is byte identity (CodeRabbit, PR #1500).
+reset_handoff
+run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
+APPEND_BASELINE="$TMP_HOME/append-field-baseline.json"
+cp "$HANDOFF_FILE" "$APPEND_BASELINE"
+run --append "$PR" --owner-repo auerbachb/inventory >/dev/null 2>&1
+check_eq "a refused --append exits 2 against an existing record" "2" "$?"
+check_eq "a refused --append leaves the record byte-identical" "0" \
+  "$(cmp -s "$HANDOFF_FILE" "$APPEND_BASELINE"; echo $?)"
+check_eq "no flag-shaped key reached the record" "false" \
+  "$(jq 'has("--owner-repo")' "$HANDOFF_FILE")"
+
+# Every non-schema shape is refused, and each is checked separately so one
+# passing guard cannot answer for the rest. `-x` covers a SHORT misordered flag;
+# the others are typos and non-identifiers.
+APPEND_BAD_CHECKED=0
+APPEND_BAD_VIOLATIONS=""
+for _bad in "--legacy-flat" "-x" "threads_replyed" "not a field" "a/b" ".notes" "*"; do
+  reset_handoff
+  run --append "$PR" "$_bad" "v" >/dev/null 2>&1
+  _rc=$?
+  APPEND_BAD_CHECKED=$((APPEND_BAD_CHECKED + 1))
+  [[ "$_rc" == "2" ]] || APPEND_BAD_VIOLATIONS="$APPEND_BAD_VIOLATIONS rc($_bad)=$_rc"
+  [[ -f "$HANDOFF_FILE" ]] && APPEND_BAD_VIOLATIONS="$APPEND_BAD_VIOLATIONS wrote($_bad)"
+done
+check_eq "every rejected <field> shape was exercised (fail-closed)" "7" "$APPEND_BAD_CHECKED"
+check_eq "every rejected <field> exits 2 and writes nothing" "" "$APPEND_BAD_VIOLATIONS"
+
+# The restriction is on what --append may CREATE, so every field the schema
+# does define must still append. The list is READ FROM THE SCHEMA rather than
+# restated here: a field added to the schema but not to the script's allowlist
+# must turn this red.
+SCHEMA_ARRAY_FIELDS="$(jq -r 'to_entries[] | select(.value | type == "array") | .key' \
+  "$SCHEMA_FILE" 2>/dev/null | sort)"
+check_eq "schema array-field discovery found the fields (fail-closed)" "6" \
+  "$(printf '%s\n' "$SCHEMA_ARRAY_FIELDS" | grep -c .)"
+reset_handoff
+run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
+APPEND_OK_CHECKED=0
+APPEND_OK_VIOLATIONS=""
+while IFS= read -r _field; do
+  [[ -z "$_field" ]] && continue
+  # findings_dismissed is the one array of objects; the rest take strings.
+  if [[ "$_field" == "findings_dismissed" ]]; then
+    _elem='{"id":"fd-1514","reason":"schema coverage"}'
+  else
+    _elem="v-$_field"
+  fi
+  run --append "$PR" "$_field" "$_elem" >/dev/null 2>&1 \
+    || APPEND_OK_VIOLATIONS="$APPEND_OK_VIOLATIONS rejected($_field)"
+  [[ "$(jq --arg f "$_field" '.[$f] | length' "$HANDOFF_FILE")" == "1" ]] \
+    || APPEND_OK_VIOLATIONS="$APPEND_OK_VIOLATIONS unstored($_field)"
+  APPEND_OK_CHECKED=$((APPEND_OK_CHECKED + 1))
+done <<< "$SCHEMA_ARRAY_FIELDS"
+check_eq "every schema array field got an --append attempt (fail-closed)" "6" \
+  "$APPEND_OK_CHECKED"
+check_eq "every schema array field still appends and stores" "" "$APPEND_OK_VIOLATIONS"
+
+# Forward compatibility (handoff-files.md): the guard restricts creation, never
+# preservation. An unknown field already in a record survives a valid --append
+# to a DIFFERENT field, verbatim and structurally intact.
+reset_handoff
+run --create "$PR" \
+  '{"schema_version":"1.0","future_field":{"nested":["keep","me"]},"threads_replied":["t-0"]}' \
+  >/dev/null 2>&1
+run --append "$PR" "files_changed" "src/new.ts" >/dev/null 2>&1
+check_eq "a valid --append preserves an unknown field verbatim" \
+  '{"nested":["keep","me"]}' "$(jq -c '.future_field' "$HANDOFF_FILE")"
+check_eq "the valid --append still landed alongside it" "src/new.ts" \
+  "$(jq -r '.files_changed[0]' "$HANDOFF_FILE")"
+
+# The allowlist and the schema are two files that must move together; the script
+# cannot read the schema at run time (it is a reference document, not a shipped
+# dependency), so the sync is asserted here instead.
+SCRIPT_ARRAY_FIELDS="$(grep -oE '^HANDOFF_ARRAY_FIELDS="[^"]*"' "$SCRIPT" \
+  | sed -e 's#^HANDOFF_ARRAY_FIELDS="##' -e 's#"$##' | tr ' ' '\n' | sort)"
+check_eq "the script's allowlist was discovered (fail-closed)" "6" \
+  "$(printf '%s\n' "$SCRIPT_ARRAY_FIELDS" | grep -c .)"
+check_eq "HANDOFF_ARRAY_FIELDS matches the schema's array fields" \
+  "$SCHEMA_ARRAY_FIELDS" "$SCRIPT_ARRAY_FIELDS"
+
+echo
+echo "== --set field paths: audited for the same gap (issue #1514) =="
+# --set needs no allowlist: two independent mechanisms already stop a misordered
+# flag from becoming a key, and neither writes. Pinned so the audit's conclusion
+# cannot quietly stop being true.
+reset_handoff
+run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
+SET_BASELINE="$TMP_HOME/set-audit-baseline.json"
+cp "$HANDOFF_FILE" "$SET_BASELINE"
+run --set "$PR" --owner-repo auerbachb/inventory >/dev/null 2>&1
+check_eq "--set with a misordered flag exits 2 (the argument has no '=')" "2" "$?"
+run --set "$PR" --owner-repo=auerbachb/inventory >/dev/null 2>&1
+check_eq "--set with a flag-shaped jq path exits 4 (jq refuses it)" "4" "$?"
+check_eq "neither --set misorder modified the record" "0" \
+  "$(cmp -s "$HANDOFF_FILE" "$SET_BASELINE"; echo $?)"
+check_eq "no flag-shaped key reached the record via --set" "false" \
+  "$(jq 'has("--owner-repo")' "$HANDOFF_FILE")"
+
+echo
+echo "== Negative control: the assertions above fail against the pre-fix script =="
+# Rebuild the pre-fix script by stripping the guard out of the CURRENT source,
+# rather than reading it back from git history: CI checks out shallow, so a
+# `git show <sha>:` control would be unrunnable there — and once this lands on
+# main, a control that reads main would be testing the fixed copy and pass
+# vacuously forever.
+PREFIX_DIR="$TMP_HOME/prefix-append"; mkdir -p "$PREFIX_DIR/lib"
+awk '
+  $0 ~ /ARRAY_FIELD" == -\*/ { skip = 1 }
+  skip && /^    esac$/       { skip = 0; next }
+  !skip                      { print }
+' "$SCRIPT" > "$PREFIX_DIR/handoff-state.sh"
+cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$PREFIX_DIR/"
+cp "$REPO_ROOT"/.claude/scripts/lib/*.sh "$PREFIX_DIR/lib/"
+# Fail closed on the rebuild itself: a strip that removed nothing, removed too
+# much, or produced an unrunnable script would make every "pre-fix accepts it"
+# assertion below meaningless.
+check_eq "the guard is present in the shipped script" "1" \
+  "$(grep -c 'is not one of the handoff schema' "$SCRIPT")"
+check_eq "the negative control stripped the guard out" "0" \
+  "$(grep -c 'is not one of the handoff schema' "$PREFIX_DIR/handoff-state.sh")"
+check_eq "the pre-fix rebuild is syntactically valid" "0" \
+  "$(bash -n "$PREFIX_DIR/handoff-state.sh" 2>/dev/null; echo $?)"
+prefix_run() { bash "$PREFIX_DIR/handoff-state.sh" --legacy-flat "$@"; }
+# The rebuild still works for a LEGITIMATE append — proof the strip removed the
+# guard and not the mode.
+reset_handoff
+prefix_run --append "$PR" "files_changed" "src/control.ts" >/dev/null 2>&1
+check_eq "the pre-fix rebuild still performs a valid --append" "src/control.ts" \
+  "$(jq -r '.files_changed[0]' "$HANDOFF_FILE" 2>/dev/null)"
+# And it exhibits the defect: both refused shapes are accepted, exit 0, and
+# store their bogus key.
+reset_handoff
+prefix_run --append "$PR" --owner-repo auerbachb/inventory >/dev/null 2>&1
+check_eq "pre-fix: the misordered flag exits 0" "0" "$?"
+check_eq "pre-fix: the flag name was stored as a field" '{"--owner-repo":["auerbachb/inventory"]}' \
+  "$(jq -c . "$HANDOFF_FILE" 2>/dev/null)"
+reset_handoff
+prefix_run --append "$PR" "threads_replyed" "t-1" >/dev/null 2>&1
+check_eq "pre-fix: a typo'd field exits 0" "0" "$?"
+check_eq "pre-fix: the typo was stored as a field" "true" \
+  "$(jq 'has("threads_replyed")' "$HANDOFF_FILE" 2>/dev/null)"
+reset_handoff
+
+echo
 echo "== --help contract: the header IS the contract surface (issue #1461) =="
 # handoff-files.md names `handoff-state.sh --help` as the canonical contract, and
 # print_usage() emits the leading comment block verbatim — so a header that
