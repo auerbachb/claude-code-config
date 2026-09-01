@@ -491,9 +491,10 @@ Per row:
 BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
 CELLS=""
 if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$LAUNCHED_AT" ]]; then
-  # No PR exists yet at launch; --pr is unused in cell mode but must still be a
-  # positive integer, so pass the issue number rather than a placeholder.
-  CELLS=$("$OVERRUN_CHECK_SH" --readout-cells --pr "$ISSUE_NUM" \
+  # No PR exists yet at launch, and cell mode does not need one — it is pure
+  # computation over the bound and start time. Omit --pr rather than smuggling
+  # the issue number through a PR-shaped flag.
+  CELLS=$("$OVERRUN_CHECK_SH" --readout-cells \
     --bound-min "$BOUND_MIN" --started-at "$LAUNCHED_AT" 2>/dev/null) || CELLS=""
 fi
 # Three cells, ALWAYS non-empty when CELLS is non-empty. Use cut -f, never
