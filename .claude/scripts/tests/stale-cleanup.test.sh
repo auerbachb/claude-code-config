@@ -743,6 +743,65 @@ check_contains "T16c: control — and the branch is removed for real" \
   "removed: local branch issue-900-t16-stale" "$OUT"
 pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
 
+# ---- T17: the --help network-bound contract (issue #1479) -------------------
+# print_help emits the header verbatim, so the header IS the CLI contract. It
+# used to state that STALE_CLEANUP_NET_TIMEOUT_SECS bounds "the one NETWORK
+# call, `git push origin --delete`". That was false: fetch_open_prs' `gh pr
+# list` is a second network call, and it is the ONLY unbounded network call in
+# the script — it runs on every invocation, before any classification. The
+# header's "where the bound stops" paragraph, which exists precisely to
+# enumerate the unbounded edges, omitted it, so a reader consulting --help for
+# the remaining hang surface would conclude every network path was bounded.
+HELP_OUT="$(bash "$SUT" --help 2>/dev/null)"
+
+# The premise this guard rests on: an unwrapped gh invocation really is there.
+# When issue #1509 bounds it, these controls fail loudly and the disclosure
+# assertions below must be revisited — rather than passing on a stale premise.
+GH_INVOKE="$(grep -E 'gh pr list --search' "$SUT" | grep -vE '^[[:space:]]*#' || true)"
+if [[ -n "$GH_INVOKE" ]]; then
+  pass "T17: control — the open-PR gh invocation is present in the script"
+else
+  fail "T17: control — no 'gh pr list --search' invocation found; the guard below has no premise"
+fi
+if [[ -n "$GH_INVOKE" ]] && ! printf '%s' "$GH_INVOKE" | grep -q 'run_bounded'; then
+  pass "T17: control — that invocation is still unbounded (issue #1509 open)"
+else
+  fail "T17: control — the gh invocation is bounded now; update --help and this guard (issue #1509)"
+fi
+
+# T17a — the false single-network-call claim must not come back.
+if printf '%s' "$HELP_OUT" | grep -q 'the one NETWORK call'; then
+  fail "T17a: --help still claims 'the one NETWORK call' — gh pr list is a second one"
+else
+  pass "T17a: --help no longer claims a single network call"
+fi
+
+# T17b/T17c — while an unbounded gh call exists, --help must disclose it by
+# name and say plainly that it is unbounded.
+check_contains "T17b: --help names the unbounded open-PR query" "gh pr list" "$HELP_OUT"
+# The disclosure must TIE the call to its unboundedness, on one line. A bare
+# search for "unbounded" passes on the pre-fix header too — the word already
+# appears there in unrelated sentences ("stop an unbounded hang", "the parent's
+# own glob unbounded"), so that weaker form was a vacuous pass.
+if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
+  pass "T17c: --help ties the open-PR query to being unbounded"
+else
+  fail "T17c: --help mentions gh pr list but never says it is unbounded"
+fi
+
+# T17d — negative control. Reconstruct the pre-fix wording and re-run T17a's
+# assertion against it: if the phrase cannot be detected even when present,
+# T17a is passing vacuously and proves nothing.
+PREFIX_SUT="$TMP/stale-cleanup-prefix.sh"
+sed -e 's/the network DELETION, `git push origin --delete`/the one NETWORK call, `git push origin --delete`/' \
+    "$SUT" > "$PREFIX_SUT"
+PREFIX_HELP="$(bash "$PREFIX_SUT" --help 2>/dev/null)"
+if printf '%s' "$PREFIX_HELP" | grep -q 'the one NETWORK call'; then
+  pass "T17d: negative control — T17a's assertion does fire on the pre-fix wording"
+else
+  fail "T17d: negative control — the pre-fix wording was not reproduced, so T17a proves nothing"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then

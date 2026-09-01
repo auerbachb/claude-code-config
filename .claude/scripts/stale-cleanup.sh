@@ -130,6 +130,19 @@
 #   reason — it is a git call — and degrades to registration_scan
 #   "unavailable" rather than proceeding on an unverified path.
 #
+#   The bound also stops at the open-PR query. `gh pr list` (fetch_open_prs) is
+#   the only network call that runs UNBOUNDED — the other one, `git push origin
+#   --delete`, is bounded. (Local helpers like jq and date are unbounded too,
+#   but they cannot block on a remote, which is what these bounds are for.) It
+#   runs on every invocation, before any classification, so a wedged forge or
+#   a hung TLS handshake stalls the whole sweep there with nothing to kill it.
+#   It is unwrapped because run_bounded hands its child's stdout back through
+#   $CAPTURE and must never be used inside `$( )`, while fetch_open_prs reads
+#   gh's stdout by command substitution and pages on it; rewiring that is a
+#   change to the fail-closed open-PR safety path, tracked separately (issue
+#   #1509, and .claude/reference/stale-cleanup-hotspot-decision.md).
+#   STALE_CLEANUP_NET_TIMEOUT_SECS does NOT apply to it.
+#
 # CONFIGURATION
 #   STALE_DAYS — env var, default 7. Tip commits older than this are stale.
 #   STALE_CLEANUP_TIMEOUT_SECS — env var, default 10. Wall-clock bound on each
@@ -138,9 +151,12 @@
 #       `for-each-ref` passes, the per-worktree dirty checks, `worktree
 #       remove`, `show-ref`, and `branch -D`.
 #   STALE_CLEANUP_NET_TIMEOUT_SECS — env var, default 60. Wall-clock bound on
-#       the one NETWORK call, `git push origin --delete`. Separate and much
+#       the network DELETION, `git push origin --delete`. Separate and much
 #       larger on purpose: the bound exists to stop an unbounded hang, not to
-#       impose a local-read SLA on a round trip to the forge.
+#       impose a local-read SLA on a round trip to the forge. It is NOT the
+#       only network call in the script and does not cover the other one —
+#       the `gh pr list` open-PR query is unbounded (see "Where the bound
+#       stops" above).
 #   STALE_CLEANUP_READ_TIMEOUT_SECS — env var, default 2. Wall-clock bound on
 #       each per-registration metadata read, existence probe, and targeted
 #       removal. Whole-second resolution, so a bound of N trips between N-1
