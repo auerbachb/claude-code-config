@@ -39,6 +39,30 @@ reject_text() {
   local file=$1 text=$2 message=$3
   if grep -Fq -- "$text" "$ROOT/$file"; then fail "$message"; fi
 }
+# An ORDERING contract needs the positions, not the prose describing them: a sentence
+# saying "X before Y" survives X and Y being swapped underneath it. `require_order`
+# asserts that `$first` actually precedes `$second`, scoped to one `## ` section so a
+# same-shaped line elsewhere in the file cannot satisfy it.
+require_order() {
+  local file=$1 section=$2 first=$3 second=$4 message=$5
+  local slice="$TMP/order-slice.txt" a b
+  awk -v s="$section" 'index($0,s)==1 && !seen {seen=1; print; next}
+                       seen && /^## / {exit} seen {print}' "$ROOT/$file" >"$slice"
+  if [ ! -s "$slice" ]; then
+    fail "$message (section '$section' not found in $file)"; return
+  fi
+  # `|| true` on each pipeline, deliberately: a marker that has been RENAMED AWAY is the
+  # loudest form of this failure, and under `set -e` an empty grep would abort the whole
+  # suite before the ABSENT branch below could name which marker vanished — an exit code
+  # with no diagnostic. The emptiness is handled explicitly instead.
+  a=$( { grep -nF -- "$first" "$slice" || true; } | head -1 | cut -d: -f1)
+  b=$( { grep -nF -- "$second" "$slice" || true; } | head -1 | cut -d: -f1)
+  if [ -z "$a" ] || [ -z "$b" ]; then
+    fail "$message (missing marker in '$section': first=${a:-ABSENT} second=${b:-ABSENT})"
+  elif [ "$a" -ge "$b" ]; then
+    fail "$message (order inverted: first at line $a, second at line $b)"
+  fi
+}
 
 TMP=$(mktemp -d)
 cleanup() { rm -rf "$TMP"; }
@@ -53,10 +77,16 @@ SUBAGENT_SKILL=".claude/skills/subagent/SKILL.md"
 LEAD_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-lead-cascade)" \
   || { fail 'could not extract the leave-by lead cascade block'; LEAD_BLOCK=""; }
 
-# Stub pm-config-get.sh: prints whatever Budget body the case under test wants.
+# Stub pm-config-get.sh: prints whatever Budget body the case under test wants, and
+# records every argv it was handed. A stub that answers ANY arguments proves only that
+# the cascade called something — a dropped or renamed `--section Budget` would still be
+# served the fixture and read as a configured value, so the interface is asserted below
+# rather than assumed.
 STUB_CONFIG="$TMP/pm-config-get.sh"
+STUB_CONFIG_ARGS="$TMP/pm-config-args.txt"
 cat >"$STUB_CONFIG" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_CONFIG_ARGS_FILE:-/dev/null}"
 cat "${STUB_BUDGET_FILE:-/dev/null}"
 exit "${STUB_CONFIG_RC:-0}"
 STUB
@@ -68,7 +98,7 @@ run_lead() {
   printf '%s\n' "$budget" >"$TMP/budget.txt"
   (
     set -euo pipefail
-    export STUB_BUDGET_FILE="$TMP/budget.txt"
+    export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
     while [ "$#" -gt 0 ]; do export "$1"; shift; done
@@ -83,12 +113,16 @@ run_lead_stderr() {
   printf '%s\n' "$budget" >"$TMP/budget.txt"
   (
     set -euo pipefail
-    export STUB_BUDGET_FILE="$TMP/budget.txt"
+    export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
     while [ "$#" -gt 0 ]; do export "$1"; shift; done
-    eval "$LEAD_BLOCK"
-  ) 2>&1 >/dev/null
+    # Discard the block's stdout at the source and let the subshell's stderr become the
+    # captured stream. The equivalent `) 2>&1 >/dev/null` reads as the stdout+stderr
+    # idiom written in the wrong order (ShellCheck SC2069) even though it is correct
+    # here — expressing it this way needs no suppression comment to stay legible.
+    eval "$LEAD_BLOCK" >/dev/null
+  ) 2>&1
 }
 
 if [ -n "$LEAD_BLOCK" ]; then
@@ -187,6 +221,18 @@ if [ -n "$LEAD_BLOCK" ]; then
     *) fail "a failing getter must report DEGRADED before falling back (got: $ERR)" ;;
   esac
 
+  # The getter's INTERFACE, not just its output. Every case above asserts what the
+  # cascade did with the body it got back; none of them would notice the cascade asking
+  # for the wrong thing. The non-empty check is the negative control: an unset recorder
+  # path would send every argv to /dev/null and let the comparison below pass vacuously.
+  if [ ! -s "$STUB_CONFIG_ARGS" ]; then
+    fail 'the config path never invoked pm-config-get.sh — the cascade cannot be reading pm-config.md'
+  else
+    CFG_BAD=$(grep -vcxF -- '--section Budget' "$STUB_CONFIG_ARGS" || true)
+    [ "$CFG_BAD" = "0" ] || fail \
+      "pm-config-get.sh must be called as '--section Budget' ($CFG_BAD call(s) differed: $(sort -u "$STUB_CONFIG_ARGS" | paste -sd'|' -))"
+  fi
+
   ok_group 'lead-time cascade: env > pm-config.md > 30, out-of-range rejected not clamped'
 fi
 
@@ -196,10 +242,15 @@ fi
 DECLINE_BLOCK="$(extract_skill_bash "$ROOT/$SUBAGENT_SKILL" subagent-step7-deadline-decline)" \
   || { fail 'could not extract the /subagent Step 7 deadline decline block'; DECLINE_BLOCK=""; }
 
-# Stub session-state.sh: emits STUB_DEADLINE and exits STUB_STATE_RC.
+# Stub session-state.sh: emits STUB_DEADLINE, exits STUB_STATE_RC, and records its argv.
+# Answering any argv would serve the fixture deadline to a block reading the WRONG state
+# path — a renamed field, an uninterpolated repo key, or a `--set` where a `--get` was
+# meant — so the query itself is asserted after the cases below.
 STUB_STATE="$TMP/session-state.sh"
+STUB_STATE_ARGS="$TMP/session-state-args.txt"
 cat >"$STUB_STATE" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_STATE_ARGS_FILE:-/dev/null}"
 # `-` not `:-`: an empty STUB_DEADLINE is a deliberate test input (an empty read),
 # and `:-` would silently rewrite it to `null` — turning the empty-read case into
 # the absent case and passing the assertion vacuously.
@@ -208,10 +259,13 @@ exit "${STUB_STATE_RC:-0}"
 STUB
 chmod +x "$STUB_STATE"
 
-# Stub estimate-resolve.sh: emits STUB_EST verbatim.
+# Stub estimate-resolve.sh: emits STUB_EST verbatim, and records its argv for the same
+# reason — the gate must ask about the issue it is actually launching.
 STUB_EST_SH="$TMP/estimate-resolve.sh"
+STUB_EST_ARGS="$TMP/estimate-resolve-args.txt"
 cat >"$STUB_EST_SH" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_EST_ARGS_FILE:-/dev/null}"
 printf '%s\n' "${STUB_EST:-unestimated}"
 exit "${STUB_EST_RC:-0}"
 STUB
@@ -223,6 +277,7 @@ run_decline() {
   (
     set -euo pipefail
     export STUB_DEADLINE="$1" STUB_STATE_RC="$2" STUB_EST="$3" STUB_EST_RC="${5:-0}"
+    export STUB_STATE_ARGS_FILE="$STUB_STATE_ARGS" STUB_EST_ARGS_FILE="$STUB_EST_ARGS"
     # Freeze the clock when asked, so a boundary case tests the boundary rather than
     # however many milliseconds elapsed between the fixture and the block.
     if [ -n "${6:-}" ]; then
@@ -340,6 +395,25 @@ if [ -n "$DECLINE_BLOCK" ]; then
   [ "$OUT" = "true|estimate lookup failed (rc=4)" ] \
     || fail "an estimate-resolver failure must decline with its own reason (got: $OUT)"
 
+  # The QUERIES, not just the answers. Every case above feeds the block a deadline and
+  # checks what it decided; none would notice the block reading a different state path
+  # or asking about a different issue. The non-empty checks are the negative control —
+  # an unset recorder path routes every argv to /dev/null and passes vacuously.
+  if [ ! -s "$STUB_STATE_ARGS" ]; then
+    fail 'the decline gate never invoked session-state.sh — it cannot be reading the armed deadline'
+  else
+    ST_BAD=$(grep -vcxF -- '--get .repos["org/repo"].window.deadline_epoch' "$STUB_STATE_ARGS" || true)
+    [ "$ST_BAD" = "0" ] || fail \
+      "the gate must read .repos[REPO_KEY].window.deadline_epoch ($ST_BAD call(s) differed: $(sort -u "$STUB_STATE_ARGS" | paste -sd'|' -))"
+  fi
+  if [ ! -s "$STUB_EST_ARGS" ]; then
+    fail 'the decline gate never invoked estimate-resolve.sh — it cannot be bounding the work'
+  else
+    EST_BAD=$(grep -vcxF -- '61' "$STUB_EST_ARGS" || true)
+    [ "$EST_BAD" = "0" ] || fail \
+      "the gate must resolve the estimate for \$ISSUE_NUM ($EST_BAD call(s) differed: $(sort -u "$STUB_EST_ARGS" | paste -sd'|' -))"
+  fi
+
   ok_group 'deadline decline: fits launches, overruns declines, unknown duration/deadline fail closed'
 fi
 
@@ -387,7 +461,7 @@ require_text .claude/skills/pause-resume/SKILL.md '.repos["$REPO_KEY"].window=nu
   '/pause-resume must clear the armed window when it retires a leave time'
 # The window is SHARED with /pm --window: clearing it on a null task ID alone would
 # wipe a PM planning deadline no leave time ever touched.
-require_text .claude/skills/pause-resume/SKILL.md 'do nothing here unless it is `true`' \
+require_text .claude/skills/pause-resume/SKILL.md 'skip this entire block' \
   '/pause-resume must gate the window clear on leave.active, not on a null task ID'
 require_text "$LEAVE_SKILL" '/pause --window ${REMAINING_MIN}m' \
   'the wind-down must delegate to /pause with the remaining minutes as its window'
@@ -410,10 +484,82 @@ require_text .claude/skills/pause-resume/SKILL.md 'never re-arm' \
 require_text .claude/skills/pause-resume/SKILL.md 'on both resolved paths' \
   '/pause-resume must clear leave.active on the already-null path too, not only after a TaskStop'
 
+# The identity must be committed before the Monitor can emit anything against it: the
+# wake sleeps a 1-second minimum and a state write can outlast that under lock
+# contention, so a generation published after arming can still be null when Step 8.1
+# validates — rejecting the very wake that was just created, with no second chance.
+require_order "$LEAVE_SKILL" '## Step 6:' \
+  'leave.winddown_generation=\"$WINDDOWN_GENERATION\"' \
+  'while sleep "$WINDDOWN_SLEEP"' \
+  'the generation must be published BEFORE the wind-down Monitor is armed'
+# Both Step 6 anchors must still EXTRACT. Prose inserted between an anchor and its
+# fence makes extract_skill_bash exit 5, and an anchor nobody extracts today is exactly
+# the one a later edit breaks unnoticed.
+for anchor in leave-by-publish-generation leave-by-arm-monitor leave-by-arm-state; do
+  extract_skill_bash "$ROOT/$LEAVE_SKILL" "$anchor" >/dev/null \
+    || fail "anchor '$anchor' no longer extracts a bash block (extract_skill_bash rc=$?)"
+done
+
+# A still-future checkin_epoch is jitter, not proof of replacement — Step 8.1's
+# generation check is what detects a re-declaration. Exiting on jitter loses the
+# one-shot wind-down entirely.
+require_text "$LEAVE_SKILL" 'not by itself a replacement' \
+  'an early Monitor wake must not be read as a replaced declaration'
+require_text "$LEAVE_SKILL" 'exit without winding down' \
+  'an unreadable or non-numeric deadline must stop the check-in before the runway math'
+
+# /pause reports INCOMPLETE SHUTDOWN when a stop, the persistence write, or a gate
+# could not be confirmed; retiring the declaration there reopens dispatch on a board
+# that never parked and destroys the record recovery needs.
+require_text "$LEAVE_SKILL" 'Retire only on a complete shutdown' \
+  'an incomplete /pause must not retire the leave declaration'
+
+# Same ordering property as Step 9, at /pause's own teardown site.
+require_order .claude/skills/pause/SKILL.md '## Step 2' \
+  'leave.winddown_generation=null' \
+  'only then `TaskStop` the leave-time wind-down ID' \
+  "/pause Step 2 must null the wind-down generation before TaskStop, not after"
+
+# The gate that admits the whole block must precede every branch it governs, and the
+# deadline must be validated before anything is stopped.
+require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+  'Gate first: `leave.active` must be `true`' \
+  'Deadline still in the future' \
+  '/pause-resume must gate on leave.active BEFORE the deadline branches, not after'
+require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+  'still before stopping anything' \
+  'TaskStop` a' \
+  '/pause-resume must validate the deadline before stopping the wind-down Monitor'
+require_text .claude/skills/pause-resume/SKILL.md 'already due: run `/leave-by` Step 8 now' \
+  'a resume past a fired check-in must run the check-in, not re-arm a Monitor in the past'
+
+# Successor launches are launches: the auto-loaded gate must name the deadline too.
+require_text .claude/rules/phase-protocols.md 'subagent-step7-deadline-decline' \
+  'the successor launch gate must run the armed-deadline check, not only refill + execution-pause'
+require_text .claude/rules/phase-protocols.md 'frees no' \
+  'a deadline-declined successor must not free its overlap-chain successors'
+require_text .claude/skills/subagent-dispatch/SKILL.md 'still holds its overlap chain' \
+  '/subagent-dispatch must state the chain exception, not just "every other agent"'
+
+# The deadline verdict must read the same projected finish the row displays.
+require_text .claude/reference/time-estimates.md 'effective projected finish' \
+  'the By-deadline verdict must use the displayed projected finish, not the original bound'
+
+# Recovery has to be reachable from something that actually runs at session start.
+require_text .claude/rules/scheduling-reliability.md 'Step 11' \
+  'an always-loaded rule must route session-start recovery to /leave-by Step 11'
+
 # Ordering: invalidate the generation BEFORE stopping, so an already-queued event
 # cannot match live state and wind down against a deadline the user just moved.
 require_text "$LEAVE_SKILL" 'Invalidate the generation in state first, then stop the task' \
   'a countermand must null the generation before TaskStop, not after'
+# …and the snippet must actually be in that order. The sentence above is documentation;
+# swapping the two lines it describes would leave it true-looking and the race live.
+# Scoped to Step 9 because Step 8's teardown nulls the same field on its own path.
+require_order "$LEAVE_SKILL" '## Step 9:' \
+  '.leave.winddown_generation=null' \
+  'only now TaskStop the recorded winddown_task_id' \
+  "the countermand snippet must null winddown_generation BEFORE the TaskStop it describes"
 
 # The gate reaches any orchestration thread, not just /pm.
 require_text .claude/skills/subagent-dispatch/SKILL.md 'subagent-step7-deadline-decline' \

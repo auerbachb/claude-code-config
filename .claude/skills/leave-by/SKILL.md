@@ -219,10 +219,28 @@ visible, correctable, and recovered on the next session start (Step 11).
 Skip entirely when `CHECKIN_NOW` is true. Otherwise arm **one persistent `Monitor`** that sleeps to
 the check-in time, fires once, and breaks — `/pm` Step 2D.6's one-shot pattern:
 
-<!-- test-anchor: leave-by-arm-monitor -->
+**Publish the generation BEFORE arming**, not after. The Monitor sleeps a minimum of one second, and
+a `session-state.sh` write can exceed that under lock contention — so a generation written after the
+arm can still be `null` when the event fires, and Step 8.1 would reject the very wake this step just
+created. A one-shot Monitor gets no second chance, so that ordering loses the wind-down silently.
+The token is generated locally and needs no task ID, so nothing forces it to wait:
+
+<!-- test-anchor: leave-by-publish-generation -->
 
 ```bash
 WINDDOWN_GENERATION="leave-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+PUBLISH_RC=0
+"$SESSION_STATE_SH" \
+  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=\"$WINDDOWN_GENERATION\"" || PUBLISH_RC=$?
+```
+
+A non-zero `PUBLISH_RC` here (retry once on exit `6`) → arm nothing and roll back as under "Arming
+failed" below; an unpublishable generation means every event this Monitor emits would be rejected.
+Only with the token committed, arm:
+
+<!-- test-anchor: leave-by-arm-monitor -->
+
+```bash
 WINDDOWN_SLEEP=$(( CHECKIN_EPOCH - $(date -u +%s) ))
 (( WINDDOWN_SLEEP < 1 )) && WINDDOWN_SLEEP=1
 while sleep "$WINDDOWN_SLEEP"; do
@@ -235,14 +253,11 @@ Pass `persistent: true` and description `leave-time wind-down`. **Never `CronCre
 of one-shot wake-ups, never a dynamic `/loop`** — `scheduling-reliability.md` is the contract, and
 `Monitor` is the only primitive with positive out-of-turn liveness evidence (issues #914, #924).
 
-Publish the identity pair **immediately** — an unrecorded Monitor cannot be stopped, and `/pause`
-Step 2 and `/pause-resume` Step 5 both tear down by exactly these fields. **Generation first, then
-the task ID under a compare-and-set:**
+Publish the task ID **immediately** — an unrecorded Monitor cannot be stopped, and `/pause`
+Step 2 and `/pause-resume` Step 5 both tear down by exactly these fields. The generation is already
+committed (above); the task ID follows **under a compare-and-set:**
 
 ```bash
-PUBLISH_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=\"$WINDDOWN_GENERATION\"" || PUBLISH_RC=$?
 if [ "$PUBLISH_RC" -eq 0 ]; then
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=\"$WINDDOWN_TASK_ID\"" \
     --expect null >/dev/null 2>&1 || PUBLISH_RC=$?
@@ -256,8 +271,9 @@ fi
 ```
 
 **Why this order and not a single two-field `--set`.** The generation is what every later reader
-validates against, so writing it first means a `--checkin` that somehow fires early finds a token it
-can check rather than a null it must reject. The CAS is what stops a *late* publish from
+validates against, so committing it *before the Monitor exists* means a `--checkin` that fires early
+— or fires while this publish is still waiting on the lock — finds a token it can check rather than
+a null it must reject. The CAS is what stops a *late* publish from
 resurrecting a wake that has already been torn down: Step 8.5's disarm and Step 9's countermand both
 null this pair, and a plain `--set` arriving afterwards would re-record an identity for a Monitor
 that has already fired or been stopped — leaving `/pause` Step 2 to `TaskStop` a dead ID and report
@@ -265,9 +281,11 @@ a failed stop for a wake nobody armed. `--expect null` writes only into a genuin
 exit `7` is a clean loss, not an I/O error, and is handled below like any other publish failure.
 
 - **Arming failed** (the Monitor call errored or returned no task ID): roll the whole declaration
-  back — `--set ".repos[\"$REPO_KEY\"].leave.active=false"` and clear the armed `.window` — then say
+  back — `--set ".repos[\"$REPO_KEY\"].leave.active=false"`, null the already-published
+  `winddown_generation`, and clear the armed `.window` — then say
   `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed would decline
-  pipelines all afternoon for a wind-down that will never fire.
+  pipelines all afternoon for a wind-down that will never fire; leaving the generation behind would
+  leave a token validating for a Monitor that was never created.
 - **Arming succeeded, publish failed:** `TaskStop` the ID you are holding right now — it exists
   nowhere else — then roll back as above. If the `TaskStop` also fails, name the task ID in the
   message so a human can stop it; a live Monitor nobody can name is strictly worse than one they can.
@@ -297,10 +315,25 @@ that does not match, or `leave.active != true`, is a **stale event**: exit silen
 and printing nothing. A superseded Monitor that narrates is a superseded Monitor that confuses.
 (The inline branch skips this check — it holds no token and has just written the state itself.)
 
-**8.2 — Re-read the deadline.** Read `.window.deadline_epoch` fresh. A live user message may have
-re-declared the time since this Monitor was armed (Step 9); the record on disk is the plan, never
-the value this event was armed with. If the fresh `checkin_epoch` is still in the future, the
-declaration was replaced and a newer Monitor owns it — exit silently.
+**8.2 — Re-read and validate the deadline.** Read `.window.deadline_epoch` fresh. A live user message
+may have re-declared the time since this Monitor was armed (Step 9); the record on disk is the plan,
+never the value this event was armed with.
+
+**Validate it before anything downstream uses it**, with Step 11's exit-code table and the same
+`^[1-9][0-9]{0,10}$` numeric test: `0` plus a canonical epoch is the value; `3`, `null`, empty,
+non-numeric, or an unreadable read (retry once on exit `6`) is **not** a deadline. On any of those,
+report the read failure in one line and **exit without winding down** — do not fall through to 8.6.
+Unvalidated, the runway arithmetic there turns an empty read into a zero-minute window, calls
+`/pause --window 0m`, and then retires `.leave` and `.window`: a live declaration destroyed by a
+lock timeout, which is the opposite of failing closed.
+
+**A still-future `checkin_epoch` is not by itself a replacement.** Step 8.1's generation check is the
+authoritative replacement detector — a re-declaration always mints a fresh token (Step 9 nulls the
+pair, Step 6 publishes a new one), so a stale event has already been dropped before reaching here.
+A one-shot Monitor can also simply wake a second or two early, and treating that as "replaced" would
+exit silently on the *live* wind-down, which then never fires at all. So exit as replaced only when
+`checkin_epoch` is more than **120 s** ahead — a gap that large is a genuinely re-declared time, not
+scheduling jitter. Within the tolerance, proceed with the check-in.
 
 **8.3 — Render the check-in.** Print `/subagent` Step 7.2's "Running now" table
 (`.claude/reference/time-estimates.md` §"Running now Table") with **one added column** —
@@ -352,8 +385,16 @@ writes the resume state `/go-on` reads.
 ceiling on the entire run (issue #1482), which is precisely why the wind-down delegates rather than
 improvising a landing loop.
 
-When `/pause` returns, retire the declaration in **one** write — `leave.active=false` **and**
-`.window=null`:
+**Retire only on a complete shutdown.** `/pause` Step 8 reports either `complete` or
+`INCOMPLETE SHUTDOWN` — the latter when a `TaskStop`, the persistence write, or an execution-gate
+activation could not be confirmed. On `INCOMPLETE SHUTDOWN`, **keep `leave.active` and `.window`
+exactly as they are**, say so in one line, and retire nothing: work is still live, the launch gates
+may not be closed, and clearing the deadline there would reopen dispatch on a board that never
+actually parked — while also erasing the record Step 11 needs to finish the job on the next session.
+An incomplete shutdown is the case the declaration is *most* needed for, not least.
+
+When `/pause` reports a complete shutdown, retire the declaration in **one** write —
+`leave.active=false` **and** `.window=null`:
 
 ```bash
 "$SESSION_STATE_SH" \

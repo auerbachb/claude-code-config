@@ -7,12 +7,18 @@
 ## Launch gate before every successor
 
 Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch, re-read
-both stop controls. Launch only when both reads succeed and return explicit
-clear values: repo `refill.paused` false/null, and
+all three stop controls. Launch only when every read succeeds and returns an
+explicit clear value: repo `refill.paused` false/null,
 `execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reporting
-`inactive`. Anything else — paused, `active`, a missing helper, a non-zero read,
-any other output — **fails closed**: persist the pending transition, report
-which control was unreadable, launch nothing. This gate overrides every "within
+`inactive`, and the armed-deadline gate (`/subagent` Step 7's
+`subagent-step7-deadline-decline` block) returning `LAUNCH_DECLINED=false`. A
+successor is a launch like any other: omitting the deadline here is how an
+A→A or queued-head start runs past a declared leave time through the one gate
+that never saw it. Anything else — paused, `active`, declined, a missing helper,
+a non-zero read, any other output — **fails closed**: persist the pending
+transition, report which control was unreadable, launch nothing. A launch the
+deadline gate declined stays queued and is **not** terminal: it frees no
+overlap-chain successor. This gate overrides every "within
 60 seconds" instruction below; only an explicit `/end-resume` or
 `/pause-resume` reopens it.
 

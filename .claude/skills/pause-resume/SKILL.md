@@ -339,8 +339,26 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
 fi
 ```
 
-**Disarm and clear the leave-time wind-down too (issue #1525).** Same shape as the block above, over
-`.repos["$REPO_KEY"].leave.winddown_task_id`: read it with its exit code (unreadable → one
+**Handle the leave-time wind-down too (issue #1525) — but read before you touch anything.**
+
+**Gate first: `leave.active` must be `true`.** The window is **shared state**: `/pm --window` arms
+the same `.repos["<key>"].window` with no `.leave` block at all, and that case is indistinguishable
+downstream from "nothing armed". `leave.active != true` (false, null, absent, or unreadable) →
+**skip this entire block**: stop nothing, re-arm nothing, leave `.window` exactly as found, and
+settle no entry. Without the gate here — ahead of every branch below, not after them — an ordinary
+coffee-break `/pause` → `/pause-resume` on a PM planning board would arm a phantom `/leave-by`
+check-in and later `/pause` a board that never declared a leave time.
+
+**Then read and validate the deadline, still before stopping anything.** Read
+`.repos["$REPO_KEY"].window.deadline_epoch` (the leave block never carries it — `/leave-by` Step 5)
+with Step 11's exit-code table and numeric test. Validating *after* the `TaskStop` is what strands a
+declaration: the stop clears the identity pair, the deadline then reads unreadable, and the
+inconsistent-record branch preserves `leave.active` while re-arming nothing — an active leave time
+with no Monitor and no task ID left to recover it. Read first, and the stop only ever runs on a
+branch that knows what it will do next.
+
+With the gate passed and the deadline read, disarm: same shape as the block above, over
+`.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
 `DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), `TaskStop` a
 non-null ID, and on a confirmed stop clear the pair:
 
@@ -350,13 +368,18 @@ non-null ID, and on a confirmed stop clear the pair:
   --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
 ```
 
-**Then branch on the deadline, not on the pause.** Read `.repos["$REPO_KEY"].window.deadline_epoch`
-(the leave block never carries it — `/leave-by` Step 5) and compare it to now:
+**Then branch on the deadline, not on the pause** — using the value already read and validated
+above:
 
 - **Deadline still in the future** → the leave time **still applies**, and this resume is an
   ordinary mid-afternoon return, not a withdrawal. Keep `leave.active=true`, keep `.window`, and
   **re-arm the wind-down** for the remaining time with a **fresh generation**, publishing the new
-  identity pair exactly as `/leave-by` Step 6 does. Say it in one line:
+  identity pair exactly as `/leave-by` Step 6 does. **Branch on `checkin_epoch` the way Step 11's
+  table does, rather than re-arming blindly:** a check-in that already fired leaves `checkin_epoch`
+  in the past, and arming a Monitor for a past instant clamps the sleep to one second and winds the
+  board down again seconds after the user asked for it back. `checkin_epoch` in the future → re-arm
+  for the remaining time. `checkin_epoch` past with the deadline still ahead → the check-in is
+  already due: run `/leave-by` Step 8 now instead of arming anything. Say it in one line:
   `leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET`. Clearing here instead would
   mean a coffee-break `/pause` at 4 PM silently cancels the 7 PM wind-down the user asked for once
   and never hears about again — the exact promise this feature exists to keep.
@@ -376,15 +399,13 @@ case at `active: true` with no Monitor behind it, and `/leave-by` Step 11's reco
 the wind-down on the next session start: a leave time the user explicitly resumed past, resurrected
 by the resume itself. So:
 
-**Read `leave.active` before touching anything, and do nothing here unless it is `true`.** The
-window is **shared state**: `/pm --window` arms the same `.repos["<key>"].window` with no `.leave`
-block at all, and the "nothing armed" reading below is *also* what that case looks like. Clearing
-the window on a null task ID alone would wipe a PM planning deadline that no leave time ever
-touched, on every ordinary `/pause` → `/pause-resume` cycle. `leave.active != true` (false, null,
-absent, or unreadable) → skip this whole block, leave `.window` exactly as found, and settle no
-entry.
+The `leave.active` gate that admitted this block at all is stated once, at the top — it governs
+every branch here, the future-deadline re-arm included, and is not re-derived per branch. Its
+load-bearing consequence for *this* path: clearing the window on a null task ID alone would wipe a
+PM planning deadline that no leave time ever touched, on every ordinary `/pause` → `/pause-resume`
+cycle.
 
-With `leave.active == true` **and the deadline spent**:
+With the gate passed **and the deadline spent**:
 
 - **Null / exit 3 (nothing armed), or a confirmed `TaskStop`** → in one write, set
   `leave.active=false` with the (already or newly) null pair **and** clear the armed deadline

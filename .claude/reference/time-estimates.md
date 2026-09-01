@@ -237,9 +237,15 @@ holding `finishes by deadline` or `parks` per row. It is an added column, never 
 the reader comparing "what is running" against "what survives the deadline" should not have to
 reconcile two shapes.
 
-The verdict is computed, not judged: `finishes by deadline` when
-`started_at_epoch + bound × 60 ≤ deadline_epoch`, `parks` otherwise. **Every other case is `parks`** —
-a queued row, an unestimated row, and any row whose start or bound would not read. Fail closed: a
+The verdict is computed, not judged, and it reads the **same projected finish the row already
+displays** — the on-track `start + bound` while a row is inside its bound, and the pace-scaled
+revised finish once it is over (the `Projected end` rules above). `finishes by deadline` when that
+effective projected finish is at or before `deadline_epoch`. Comparing the original bound instead
+would let an overrun row claim `finishes by deadline` while its own `Projected end` cell shows a
+clock time past the deadline — the row contradicting itself, in the one direction that costs the
+user the guarantee. **Every other case is `parks`** —
+a queued row, an unestimated row, an overrun row whose revised finish will not resolve, and any row
+whose start or bound would not read. Fail closed: a
 wrong `parks` costs one pipeline a resumable delay, while a wrong `finishes by deadline` costs the
 user the guarantee the deadline existed to buy (`leave-time.md` §"Why every unknown resolves to
 `parks`").
