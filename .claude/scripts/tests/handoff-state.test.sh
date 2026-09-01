@@ -611,6 +611,164 @@ run --delete 2>/dev/null; check_eq "--delete missing args exits 2" "2" "$?"
 run --bogus 2>/dev/null;  check_eq "unknown flag exits 2" "2" "$?"
 
 echo
+echo "== --help contract: the header IS the contract surface (issue #1461) =="
+# handoff-files.md names `handoff-state.sh --help` as the canonical contract, and
+# print_usage() emits the leading comment block verbatim — so a header that
+# under-reports the script's real requirements is contract drift, not a typo.
+# These guards are FAIL-CLOSED: each asserts it actually discovered something
+# before asserting the discovered set is documented, so a grep that silently
+# stops matching fails the suite instead of passing vacuously.
+USAGE_TEXT="$(bash "$SCRIPT" --help 2>/dev/null)"
+check_eq "--help prints the header" "nonempty" \
+  "$([[ -n "$USAGE_TEXT" ]] && echo nonempty || echo empty)"
+
+# Sibling libraries the script HARD-REQUIRES (each exits 5 when absent), read
+# out of the script body rather than restated here.
+# The sed expressions use `#` as the delimiter and carry no backslash escapes,
+# so BSD and GNU sed read them identically (a `\}` here errors on GNU sed).
+SIBLING_LIBS="$(grep -oE '^[A-Za-z_]+="\$\{SCRIPT_DIR\}/[^"]+"' "$SCRIPT" \
+  | sed -e 's#.*SCRIPT_DIR}/##' -e 's#"$##' | sort -u)"
+check_eq "sibling-library discovery found the hard requirements (fail-closed)" "3" \
+  "$(printf '%s\n' "$SIBLING_LIBS" | grep -c .)"
+
+DEPS_BLOCK="$(printf '%s\n' "$USAGE_TEXT" | awk '/^DEPENDENCIES$/ { f = 1; next } f && /^[A-Z]/ { exit } f { print }')"
+UNDOCUMENTED_LIBS=""
+while IFS= read -r _lib; do
+  [[ -z "$_lib" ]] && continue
+  case "$DEPS_BLOCK" in *"$_lib"*) ;; *) UNDOCUMENTED_LIBS="$UNDOCUMENTED_LIBS $_lib" ;; esac
+done <<< "$SIBLING_LIBS"
+check_eq "--help DEPENDENCIES names every hard-required sibling library" "" "$UNDOCUMENTED_LIBS"
+
+# The list is only useful if it is SUFFICIENT: build a stub holding exactly the
+# files DEPENDENCIES names and prove the script runs there. Before #1461 the
+# block named state-lock.sh alone, so this stub exited 5 on the missing
+# normalizer — the documented contract could not actually be followed.
+DOC_DEPS="$(printf '%s\n' "$DEPS_BLOCK" | grep -oE '[A-Za-z0-9._/-]+\.sh' \
+  | sed 's#^\.claude/scripts/##' | sort -u)"
+check_eq "documented-dependency stub derived a file list (fail-closed)" "3" \
+  "$(printf '%s\n' "$DOC_DEPS" | grep -c .)"
+# Both stubs live under the suite's TMP_HOME so the existing EXIT trap removes
+# them even if an assertion below aborts the run.
+DEP_STUB="$TMP_HOME/dep-stub"; mkdir -p "$DEP_STUB"
+cp "$SCRIPT" "$DEP_STUB/"
+MISSING_DOC_DEPS=""
+while IFS= read -r _dep; do
+  [[ -z "$_dep" ]] && continue
+  if [[ ! -f "$REPO_ROOT/.claude/scripts/$_dep" ]]; then
+    MISSING_DOC_DEPS="$MISSING_DOC_DEPS $_dep"; continue
+  fi
+  mkdir -p "$DEP_STUB/$(dirname "$_dep")"
+  cp "$REPO_ROOT/.claude/scripts/$_dep" "$DEP_STUB/$_dep"
+done <<< "$DOC_DEPS"
+check_eq "every file DEPENDENCIES names exists on disk" "" "$MISSING_DOC_DEPS"
+bash "$DEP_STUB/handoff-state.sh" --owner-repo stub/repo --path 4242 >/dev/null 2>&1
+check_eq "a stub holding only the documented dependencies runs" "0" "$?"
+
+# The widened exit-5 row claims a missing sibling library exits 5. Pin that
+# behaviour for EACH library separately. Omitting several at once would let
+# whichever guard comes first in source order answer for all of them, so a later
+# guard could be deleted or broken without turning this red — the vacuous pass
+# these drift guards exist to prevent. Dropping exactly one library keeps every
+# other guard satisfied, so the assertion can only hold if that library's own
+# guard fired.
+LIBLESS_ROOT="$TMP_HOME/libless"; mkdir -p "$LIBLESS_ROOT"
+LIBLESS_CHECKED=0
+while IFS= read -r _omit; do
+  [[ -z "$_omit" ]] && continue
+  _stub="$LIBLESS_ROOT/$(printf '%s' "$_omit" | tr '/.' '__')"
+  mkdir -p "$_stub"
+  cp "$SCRIPT" "$_stub/"
+  while IFS= read -r _keep; do
+    [[ -z "$_keep" || "$_keep" == "$_omit" ]] && continue
+    mkdir -p "$_stub/$(dirname "$_keep")"
+    cp "$REPO_ROOT/.claude/scripts/$_keep" "$_stub/$_keep"
+  done <<< "$SIBLING_LIBS"
+  # </dev/null so the script cannot swallow this loop's herestring stdin.
+  bash "$_stub/handoff-state.sh" --owner-repo stub/repo --path 4242 \
+    </dev/null >/dev/null 2>&1
+  check_eq "a missing $_omit exits 5, as EXIT CODES documents" "5" "$?"
+  LIBLESS_CHECKED=$((LIBLESS_CHECKED + 1))
+done <<< "$SIBLING_LIBS"
+# Fail closed: a loop that silently ran zero times would leave the exit-5 row
+# unpinned while still reporting no failures.
+check_eq "every hard-required sibling library got its own exit-5 check" "3" \
+  "$LIBLESS_CHECKED"
+
+# Every literal exit code the script can return must have an EXIT CODES row.
+# Comment lines are stripped first so the header describing a code cannot be
+# what makes that code look documented.
+EXIT_BLOCK="$(printf '%s\n' "$USAGE_TEXT" | awk '/^EXIT CODES$/ { f = 1; next } f && /^[A-Z]/ { exit } f { print }')"
+EXIT_CODES="$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -oE 'exit [0-9]+' | awk '{ print $2 }' | sort -u)"
+check_eq "exit-code discovery found the literal codes (fail-closed)" "5" \
+  "$(printf '%s\n' "$EXIT_CODES" | grep -c .)"
+UNDOCUMENTED_CODES=""
+while IFS= read -r _code; do
+  [[ -z "$_code" ]] && continue
+  printf '%s\n' "$EXIT_BLOCK" | grep -qE "^ +${_code}  " \
+    || UNDOCUMENTED_CODES="$UNDOCUMENTED_CODES $_code"
+done <<< "$EXIT_CODES"
+check_eq "--help EXIT CODES documents every literal exit code" "" "$UNDOCUMENTED_CODES"
+
+# A row EXISTING is not the same as a row still SAYING what it said. The check
+# above matches "^ +5  " and nothing more, so deleting any cause from the exit-5
+# row -- or the unchanged-file promise it makes -- left every assertion above
+# green (CodeRabbit, PR #1500). Pin the row's own text, fail-closed.
+CODE5_ROW="$(printf '%s\n' "$EXIT_BLOCK" \
+  | awk '/^ +5  / { f = 1; print; next } f && /^ +[0-9]+  / { exit } f { print }')"
+check_eq "exit-5 row extracted from EXIT CODES (fail-closed)" "nonempty" \
+  "$([[ -n "${CODE5_ROW//[[:space:]]/}" ]] && echo nonempty || echo empty)"
+# The row wraps across lines, so collapse whitespace before matching: a phrase
+# broken by the wrap ("missing at\n     startup") is still the same claim.
+CODE5_TEXT="$(printf '%s\n' "$CODE5_ROW" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+MISSING_CAUSES=""
+CAUSES_CHECKED=0
+while IFS= read -r _cause; do
+  [[ -z "$_cause" ]] && continue
+  CAUSES_CHECKED=$((CAUSES_CHECKED + 1))
+  case "$CODE5_TEXT" in
+    *"$_cause"*) ;;
+    *) MISSING_CAUSES="$MISSING_CAUSES [$_cause]" ;;
+  esac
+done <<'CAUSES'
+mktemp / temp-write / mv failure
+rm failure under --delete
+REQUIRED sibling library missing at startup
+all leaving the handoff file exactly as it was
+CAUSES
+check_eq "exit-5 cause list is fail-closed (4 phrases checked)" "4" "$CAUSES_CHECKED"
+check_eq "exit-5 row still names every documented cause" "" "$MISSING_CAUSES"
+
+# The row promises all three causes leave the handoff file EXACTLY as it was.
+# Prove it for the cause this suite can induce -- a missing REQUIRED library,
+# which the row says fails "before anything is read" -- by attempting a real
+# --set that would otherwise rewrite the file. Reuses the stubs built above.
+reset_handoff
+run --create "$PR" "$SEED_JSON" >/dev/null 2>&1
+# cmp(1), not $(cat ...): command substitution strips trailing newlines, so a
+# failed write that changed ONLY those bytes would pass an assertion whose
+# whole point is byte identity (CodeRabbit, PR #1500).
+BEFORE_EXIT5="$TMP_HOME/exit5-baseline.json"
+cp "$HANDOFF_FILE" "$BEFORE_EXIT5"
+LIBLESS_WRITE_CHECKED=0
+EXIT5_WRITE_VIOLATIONS=""
+while IFS= read -r _omit; do
+  [[ -z "$_omit" ]] && continue
+  _stub="$LIBLESS_ROOT/$(printf '%s' "$_omit" | tr '/.' '__')"
+  [[ -f "$_stub/handoff-state.sh" ]] || continue
+  bash "$_stub/handoff-state.sh" --legacy-flat --set "$PR" '.notes=exit5_must_not_land' \
+    </dev/null >/dev/null 2>&1
+  _rc=$?
+  LIBLESS_WRITE_CHECKED=$((LIBLESS_WRITE_CHECKED + 1))
+  [[ "$_rc" == "5" ]] || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS rc($_omit)=$_rc"
+  cmp -s "$HANDOFF_FILE" "$BEFORE_EXIT5" \
+    || EXIT5_WRITE_VIOLATIONS="$EXIT5_WRITE_VIOLATIONS modified($_omit)"
+done <<< "$SIBLING_LIBS"
+check_eq "every library got an exit-5 write attempt (fail-closed)" "3" \
+  "$LIBLESS_WRITE_CHECKED"
+check_eq "a --set that exits 5 leaves the handoff file byte-identical" "" \
+  "$EXIT5_WRITE_VIOLATIONS"
+
+echo
 echo "==================================="
 echo "Results: $PASS passed, $FAIL failed"
 echo "==================================="

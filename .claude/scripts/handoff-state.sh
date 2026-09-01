@@ -114,11 +114,19 @@
 #   4  jq parse or evaluation failure. ALSO: --set refuses a value that is an
 #      unevaluated jq expression rather than data (issue #1357) — the file is
 #      left unmodified. Evaluate the expression first and pass the result.
-#   5  Write failure (mktemp / mv).
+#   5  Cannot complete the operation on disk. Three causes, all leaving the
+#      handoff file exactly as it was: mktemp / temp-write / mv failure,
+#      rm failure under --delete, or a REQUIRED sibling library missing at
+#      startup (see DEPENDENCIES — that one fails before anything is read).
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
 #
 # DEPENDENCIES
-#   jq, mktemp, mv (POSIX), .claude/scripts/state-lock.sh (sibling library).
+#   jq, mktemp, mv, rm (POSIX), plus THREE required sibling libraries. Each is
+#   sourced at startup and a missing one exits 5, so a copy of this script that
+#   carries only some of them cannot run at all:
+#     .claude/scripts/state-lock.sh             lock lifecycle (issue #639)
+#     .claude/scripts/lib/repo-normalizer.sh    owner/repo case key (issue #704)
+#     .claude/scripts/lib/pr-scope-resolver.sh  cwd -> owner/repo (issue #1366)
 
 set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
