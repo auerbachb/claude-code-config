@@ -18,13 +18,16 @@
 #                    [--repo owner/repo] [--now ISO8601]
 #   overrun-check.sh --readout --pr N --bound-min M --started-at ISO8601 \
 #                    [--now ISO8601]
+#   overrun-check.sh --readout-cells --pr N --bound-min M --started-at ISO8601 \
+#                    [--now ISO8601]
 #   overrun-check.sh --help
 #
 # OUTPUT
 #   exit 0: no breach — print nothing (breach mode) OR print readout line (readout mode)
+#           OR print the tab-separated table cells (cell mode)
 #   exit 1: first breach — print the alert line to stdout
 #   exit 2: already alerted — print nothing (suppress)
-#   exit 3: usage error
+#   exit 3: usage error (including --readout and --readout-cells together)
 #   exit 4: session-state read/write error (treated as exit 0 — skip silently)
 #
 # READOUT MODE (--readout)
@@ -33,6 +36,26 @@
 #   Format (from time-estimates.md §"Progress Readout Format"):
 #     Est {bound} · {elapsed} elapsed · on track — likely done in ~{remaining}
 #     Est {bound} · {elapsed} elapsed · running slow — revised finish ~{revised_total} total
+#
+# CELL MODE (--readout-cells)
+#   Same inputs and same pace model as --readout, but emits the three discrete
+#   values a "Running now" table row needs (time-estimates.md §"Running now
+#   Table") instead of a sentence. ONE line, TAB-separated, always exits 0:
+#
+#     {start ET}\t{projected end ET}\t{remaining | overrun marker}
+#
+#   - {start ET} / {projected end ET} — ET wall-clock, `%-I:%M %p` (e.g.
+#     `12:18 PM`). No "ET" suffix: the table's column headers carry the zone.
+#   - On track: projected end = start + bound; third cell = remaining duration.
+#   - Over the bound: projected end = start + pace-scaled revised total, floored
+#     at `--now` so it is NEVER a clock time in the past; third cell is the
+#     overrun marker `+{over} over plan` (e.g. `+22 min over plan`).
+#   - All three cells are always non-empty, so `cut -f1/-f2/-f3` is the consumer
+#     idiom. Do NOT parse with `IFS=$'\t' read` — it collapses empty fields and
+#     shifts the rest, which would silently mis-column a future format change.
+#   - Prints NOTHING (still exit 0) when a timestamp will not parse or the start
+#     is in the future — identical to --readout, so both modes share one
+#     degradation contract and the caller renders `—`.
 #
 # ALERT LINE FORMAT (stdout, only on exit 1)
 #   ⚠ PR #N overrun: {elapsed} h elapsed vs {bound} min plan · revised finish ~HH:MM ET
@@ -63,6 +86,7 @@ WINDOW_ISSUES=""        # comma-separated list of other PR numbers in window
 REPO=""
 NOW_OVERRIDE=""
 READOUT_MODE=false      # --readout: print progress readout, skip breach/state logic
+CELLS_MODE=false        # --readout-cells: print table cells, skip breach/state logic
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,12 +105,20 @@ while [[ $# -gt 0 ]]; do
     --now)              shift; NOW_OVERRIDE="${1:-}"; [[ $# -gt 0 ]] && shift ;;
     --now=*)            NOW_OVERRIDE="${1#--now=}"; shift ;;
     --readout)          READOUT_MODE=true; shift ;;
+    --readout-cells)    CELLS_MODE=true; shift ;;
     --help|-h)
       sed -n '2,/^set -/{ /^#/{ s/^# \{0,1\}//; p }; /^set -/q }' "$0"
       exit 0 ;;
     *) printf 'overrun-check.sh: unknown flag: %s\n' "$1" >&2; exit 3 ;;
   esac
 done
+
+if [[ "$READOUT_MODE" == "true" && "$CELLS_MODE" == "true" ]]; then
+  # Refuse rather than silently picking one: the two modes emit different shapes,
+  # and a caller that asked for both has a bug worth surfacing.
+  printf 'overrun-check.sh: --readout and --readout-cells are mutually exclusive\n' >&2
+  exit 3
+fi
 
 if [[ -z "$PR_NUMBER" || -z "$BOUND_MIN" || -z "$STARTED_AT" ]]; then
   printf 'overrun-check.sh: --pr, --bound-min, and --started-at are required\n' >&2
@@ -124,11 +156,26 @@ format_duration_min() {
 }
 
 # ---------------------------------------------------------------------------
-# Readout mode — compute and print the progress readout; skip breach/state.
-# Defined early so it can re-use the epoch/elapsed helpers below and exit
-# before any session-state I/O.
+# ET wall-clock formatter (epoch -> "12:18 PM"), same BSD-then-GNU fallback
+# chain the breach alert uses below. No " ET" suffix — cell mode's column
+# headers carry the zone; the breach alert appends its own.
+# Never returns empty: a blank cell means "not started" in the table, so a
+# formatting failure must be visible as "(unknown)" rather than mimic it.
 # ---------------------------------------------------------------------------
-if [[ "$READOUT_MODE" == "true" ]]; then
+format_et_clock() {
+  local epoch="$1"
+  TZ='America/New_York' date -j -f '%s' "$epoch" +'%-I:%M %p' 2>/dev/null \
+    || TZ='America/New_York' date -d "@$epoch" +'%-I:%M %p' 2>/dev/null \
+    || date -u -d "@$epoch" +'%H:%M UTC' 2>/dev/null \
+    || printf '(unknown)'
+}
+
+# ---------------------------------------------------------------------------
+# Readout / cell mode — compute and print the progress readout or the table
+# cells; skip breach/state. Defined early so both re-use the epoch/elapsed
+# helpers below and exit before any session-state I/O.
+# ---------------------------------------------------------------------------
+if [[ "$READOUT_MODE" == "true" || "$CELLS_MODE" == "true" ]]; then
   # Compute NOW_EPOCH
   if [[ -n "$NOW_OVERRIDE" ]]; then
     READOUT_NOW=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$NOW_OVERRIDE" '+%s' 2>/dev/null \
@@ -143,6 +190,27 @@ if [[ "$READOUT_MODE" == "true" ]]; then
   READOUT_ELAPSED=$(( READOUT_ELAPSED_SECS / 60 ))
   # Clamp to 0 — future start timestamps produce negative elapsed; skip silently.
   (( READOUT_ELAPSED_SECS < 0 )) && exit 0
+
+  if [[ "$CELLS_MODE" == "true" ]]; then
+    CELL_START=$(format_et_clock "$READOUT_START")
+    if (( READOUT_ELAPSED_SECS <= BOUND_MIN * 60 )); then
+      # On track: the plan still holds, so the finish clock is start + bound.
+      CELL_END=$(format_et_clock "$(( READOUT_START + BOUND_MIN * 60 ))")
+      CELL_REMAINING=$(format_duration_min "$(( (BOUND_MIN * 60 - READOUT_ELAPSED_SECS) / 60 ))")
+    else
+      # Over the bound: same pace-scaled revised total as --readout's running-slow
+      # branch. Floor the projected finish at NOW: truncating the revised total to
+      # whole minutes can land a hair behind the clock in the first seconds past
+      # the bound, and the table must never show an ETA in the past.
+      REVISED=$(( READOUT_ELAPSED_SECS * READOUT_ELAPSED_SECS / (BOUND_MIN * 60) / 60 ))
+      PROJECTED_EPOCH=$(( READOUT_START + REVISED * 60 ))
+      (( PROJECTED_EPOCH < READOUT_NOW )) && PROJECTED_EPOCH="$READOUT_NOW"
+      CELL_END=$(format_et_clock "$PROJECTED_EPOCH")
+      CELL_REMAINING="+$(format_duration_min "$(( (READOUT_ELAPSED_SECS - BOUND_MIN * 60) / 60 ))") over plan"
+    fi
+    printf '%s\t%s\t%s\n' "$CELL_START" "$CELL_END" "$CELL_REMAINING"
+    exit 0
+  fi
 
   BOUND_STR=$(format_duration_min "$BOUND_MIN")
   ELAPSED_STR=$(format_duration_min "$READOUT_ELAPSED")

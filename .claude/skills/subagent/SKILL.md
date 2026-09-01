@@ -446,9 +446,68 @@ Body:
 
 > **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the harness injects the project CLAUDE.md + `.claude/rules/*.md` into general-purpose spawns (verified — see `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1). If rules are absent from your context at session start, read `CLAUDE.md` and `.claude/rules/*.md` before proceeding.
 
-**Launch announcement:** Before spawning, print one line naming the issues and their estimates — e.g., `Launching: #42 (Est: 45–90 min · plan on 90), #55 (unestimated)`. Resolve each via `estimate-resolve.sh <N>` (Step 0 candidate order); if the script is unavailable, omit the Est parenthetical silently.
+### 7.1: Record each pipeline's launch time (once, at spawn)
+
+The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
+
+```bash
+LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+"$SESSION_STATE_SH" \
+  --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
+  --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
+  --set '.monitoring_active=true'
+  # …batched with this spawn's active_agents write, so all spawn-time state
+  # commits in ONE atomic write rather than leaving a partial record behind.
+```
+
+**Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
 
 Record each spawned agent in `session-state.json` under `active_agents` and set `monitoring_active=true`. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
+
+### 7.2: Launch announcement — the "Running now" table
+
+**Immediately after the batch is filed/queued, print the "Running now" table** — the canonical shape in `.claude/reference/time-estimates.md` §"Running now Table", not a bulleted list and not the old `Launching: #42 (Est: …)` line. It covers **the whole round in execution order**, so queued issues appear as rows too, and Step 8 re-renders the same table on every later tick.
+
+Execution order is Step 6.0b's: each chain's head, then its queued members in chain order; independent chains follow their launch order.
+
+```markdown
+**Running now**
+
+| Issue | Scope | Status | Est | Start (ET) | Projected end (ET) | Remaining |
+|-------|-------|--------|-----|-----------|--------------------|-----------|
+| #42 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:18 PM | 1:48 PM | 1.5 h |
+| #55 | Prune the stale worktree sweep | queued | unestimated | — | — | — |
+```
+
+Per row:
+
+- **Scope** — truncate to 40 chars so each row stays one line: `printf '%s' "$ISSUE_SCOPE" | cut -c1-40`.
+- **Est** — `estimate-resolve.sh <N>` (Step 0 candidate order); `unestimated` when it exits 2.
+- **Clock columns** — from `overrun-check.sh --readout-cells`, using the `started_at` just recorded in 7.1. At launch this is start + bound and the full planning bound remaining.
+- **Queued rows** — `—` in all three clock columns. Nothing has started, so there is nothing honest to print.
+
+```bash
+BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
+CELLS=""
+if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$LAUNCHED_AT" ]]; then
+  # No PR exists yet at launch; --pr is unused in cell mode but must still be a
+  # positive integer, so pass the issue number rather than a placeholder.
+  CELLS=$("$OVERRUN_CHECK_SH" --readout-cells --pr "$ISSUE_NUM" \
+    --bound-min "$BOUND_MIN" --started-at "$LAUNCHED_AT" 2>/dev/null) || CELLS=""
+fi
+# Three cells, ALWAYS non-empty when CELLS is non-empty. Use cut -f, never
+# `IFS=$'\t' read` — that collapses empty fields and shifts the rest.
+if [[ -n "$CELLS" ]]; then
+  CELL_START=$(printf '%s' "$CELLS" | cut -f1)
+  CELL_END=$(printf '%s' "$CELLS" | cut -f2)
+  CELL_REMAINING=$(printf '%s' "$CELLS" | cut -f3)
+else
+  CELL_START="—"; CELL_END="—"; CELL_REMAINING="—"
+fi
+```
+
+**Degraded mode:** when `ESTIMATE_RESOLVE_SH` or `OVERRUN_CHECK_SH` did not resolve (Step 0), still print the table — with `unestimated` in Est and `—` in the clock columns. The Step 0 `DEGRADED:` line already told the user why; silently dropping the table would hide the round's run order too.
 
 ## Step 8: Enter Monitor Mode
 
@@ -464,7 +523,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
 4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
-5. **Compute progress readout and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the readout (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable.
+5. **Compute this pipeline's table cells and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the cells (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable — the row still renders, with `—` in the clock columns.
    ```bash
    # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
    BOUND_MIN=""
@@ -472,25 +531,33 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) && \
        BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
    fi
-   # Compute the progress readout for THIS pipeline (no window required).
-   # STARTED_AT = ISO8601 timestamp when this PR's pipeline was launched (claim-comment
-   # timestamp → PR createdAt fallback; sourced from session-state or the PR itself).
-   # This value is per-PR — accumulate into the heartbeat string separately for each PR.
+   # Compute the Start / Projected end / Remaining cells for THIS pipeline's row
+   # (no window required). Per-PR — accumulate one row per PR, not one string.
    # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
-   # Derive STARTED_AT: claim-comment timestamp from session-state, fallback to PR createdAt.
+   # Resolve STARTED_AT from the value RECORDED AT SPAWN (Step 7.1) — never re-derive
+   # it. PR-keyed copy first (Phase A Completion mirrors it there), then the
+   # issue-keyed record, which is the one that exists before the PR does and the one
+   # that survives a context compaction. `gh pr view --json createdAt` is a
+   # last-resort fallback for pipelines launched before either record existed;
+   # re-deriving from it on a normal tick would move Start on every rebuild.
    STARTED_AT=""
    if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$PR_NUM" ]]; then
      STARTED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].pipeline_started_at" 2>/dev/null) || STARTED_AT=""
      [[ "$STARTED_AT" == "null" ]] && STARTED_AT=""
    fi
+   if [[ -z "$STARTED_AT" && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$ISSUE_NUM" ]]; then
+     STARTED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"$ISSUE_NUM\"].started_at" 2>/dev/null) || STARTED_AT=""
+     [[ "$STARTED_AT" == "null" ]] && STARTED_AT=""
+   fi
    if [[ -z "$STARTED_AT" && -n "$PR_NUM" ]]; then
      STARTED_AT=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt' 2>/dev/null) || STARTED_AT=""
    fi
-   PROGRESS_READOUT_THIS_PR=""
+   # Table cells for this PR's row (Start / Projected end / Remaining).
+   CELLS_THIS_PR=""
    if [[ -n "$OVERRUN_CHECK_SH" && -n "$BOUND_MIN" && -n "$STARTED_AT" ]]; then
-     PROGRESS_READOUT_THIS_PR=$("$OVERRUN_CHECK_SH" --readout --pr "$PR_NUM" \
-       --bound-min "$BOUND_MIN" --started-at "$STARTED_AT" 2>/dev/null) || PROGRESS_READOUT_THIS_PR=""
+     CELLS_THIS_PR=$("$OVERRUN_CHECK_SH" --readout-cells --pr "$PR_NUM" \
+       --bound-min "$BOUND_MIN" --started-at "$STARTED_AT" 2>/dev/null) || CELLS_THIS_PR=""
    fi
    DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) || DEADLINE=""
    [[ "$DEADLINE" == "null" ]] && DEADLINE=""
@@ -518,9 +585,22 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi
    ```
-6. **Send heartbeat.** If >5 minutes since last user message, send a status update. Include: active agents, PR phases, pending transitions, blockers, and per-pipeline progress readout (the `PROGRESS_READOUT_THIS_PR` computed in step 5 for each active PR, accumulated per iteration — format: `#N {phase} [{readout}]`). Always start with a timestamp: `TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`.
+6. **Send heartbeat.** If >5 minutes since last user message, send a status update: a timestamp line (`TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'`), then the **"Running now" table** — the same shape Step 7.2 printed at launch, re-rendered — then pending transitions and blockers.
 
-   **When the user asks "how far along?" or an equivalent progress question:** answer with the readout shape from `time-estimates.md` §"Progress Readout Format" for each active pipeline. Recompute via `overrun-check.sh --readout` for freshness (same args as step 5).
+   Build the table from the `CELLS_THIS_PR` computed in step 5, one row per pipeline, accumulated across iterations. **`Start` is read back from state and stays constant across ticks**; only Status, Projected end, and Remaining are recomputed. Queued issues stay in the table as `queued` rows with `—` clocks, and flip to a started row on the tick after they launch. Never emit the round as a bulleted list.
+
+   ```bash
+   if [[ -n "$CELLS_THIS_PR" ]]; then
+     ROW_START=$(printf '%s' "$CELLS_THIS_PR" | cut -f1)
+     ROW_END=$(printf '%s' "$CELLS_THIS_PR" | cut -f2)
+     ROW_REMAINING=$(printf '%s' "$CELLS_THIS_PR" | cut -f3)
+   else
+     ROW_START="—"; ROW_END="—"; ROW_REMAINING="—"
+   fi
+   ROW_SCOPE=$(printf '%s' "$ISSUE_SCOPE" | cut -c1-40)
+   ```
+
+   **When the user asks "how far along?" or an equivalent progress question:** answer with this same table, recomputed for freshness — one shape whether one pipeline is running or five. Column set and cell semantics: `time-estimates.md` §"Running now Table".
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:
@@ -551,8 +631,22 @@ When a Phase A subagent returns:
 3. **Verify the push:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[-1].oid'` — confirm SHA matches.
 4. **Verify handoff file:** resolve path with `handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}` and `cat` it — confirm valid JSON with `phase_completed: "A"`.
 5. **Launch Phase B within 60 seconds.** Check if reviewers already posted findings. Include handoff file path in the Phase B prompt.
-6. **Update `session-state.json`** — record phase transition.
-7. **Report to user** with timestamp.
+6. **Update `session-state.json`** — record the phase transition, and link the now-known PR number back to the launch record from Step 7.1:
+
+   ```bash
+   REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+   PIPELINE_STARTED_AT=$("$SESSION_STATE_SH" \
+     --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at")
+   [[ "$PIPELINE_STARTED_AT" == "null" ]] && PIPELINE_STARTED_AT=""
+   # Copy the RECORDED value verbatim; never re-derive it from the clock or from
+   # `gh pr view --json createdAt` — Start must not move between ticks.
+   [[ -n "$PIPELINE_STARTED_AT" ]] && "$SESSION_STATE_SH" \
+     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr={PR_NUMBER}" \
+     --set ".prs[\"{PR_NUMBER}\"].pipeline_started_at=$PIPELINE_STARTED_AT"
+   ```
+
+   No `--raw-path`: it is per-invocation, and adding it would push the `.prs[...]` write to the top level instead of this repo's scope (Step 7.1).
+7. **Re-render the "Running now" table** if the user is due a status update — the row for this PR flips from `Phase A` to `Phase B` with its Start unchanged.
 
 ### Phase B Subagent Prompt Template
 
