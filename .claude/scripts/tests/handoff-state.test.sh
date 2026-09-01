@@ -184,7 +184,12 @@ echo "== Lock timeout: exit 6, handoff file unmodified =="
 reset_handoff
 run --create "$PR" "$SEED_JSON"
 run --set "$PR" ".notes=untouched"
-BEFORE="$(cat "$HANDOFF_FILE")"
+# cmp(1) against a real file, NOT $(cat ...): command substitution strips
+# trailing newlines, so a write that changed only those bytes would pass an
+# assertion whose whole point is byte identity (issue #1531 — the same pattern
+# PR #1500 introduced for its own assertions below).
+LOCK_TIMEOUT_BEFORE="$TMP_HOME/before-lock-timeout.json"
+cp "$HANDOFF_FILE" "$LOCK_TIMEOUT_BEFORE"
 mkdir -p "$LOCK_DIR"
 {
   printf 'pid=%s\n' "$$"
@@ -193,9 +198,24 @@ mkdir -p "$LOCK_DIR"
 } > "$LOCK_DIR/owner"
 OUT="$(CLAUDE_STATE_LOCK_TIMEOUT=1 run --set "$PR" ".notes=should_not_land" 2>&1)"; RC=$?
 check_eq "timed-out writer exits 6" "6" "$RC"
-check_eq "handoff file byte-identical after timeout" "$BEFORE" "$(cat "$HANDOFF_FILE")"
+check_eq "handoff file byte-identical after timeout" "0" \
+  "$(cmp -s "$LOCK_TIMEOUT_BEFORE" "$HANDOFF_FILE"; echo $?)"
 check_eq "live holder's lock NOT broken" "1" "$([[ -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
 rm -rf "$LOCK_DIR"
+
+# Negative control for the assertion above: the comparator must SEE a
+# trailing-newline-only difference, and the retired cat-substitution idiom must
+# not. Without this pair, "byte-identical after timeout" could pass vacuously
+# against a write that touched only those bytes (issue #1531).
+NL_CONTROL_A="$TMP_HOME/nl-control-a.json"
+NL_CONTROL_B="$TMP_HOME/nl-control-b.json"
+cp "$HANDOFF_FILE" "$NL_CONTROL_A"
+cp "$NL_CONTROL_A" "$NL_CONTROL_B"
+printf '\n' >> "$NL_CONTROL_B"
+check_eq "cmp -s catches a trailing-newline-only difference" "1" \
+  "$(cmp -s "$NL_CONTROL_A" "$NL_CONTROL_B"; echo $?)"
+check_eq "the retired cat-substitution idiom is blind to it" "blind" \
+  "$([[ "$(cat "$NL_CONTROL_A")" == "$(cat "$NL_CONTROL_B")" ]] && echo blind || echo sees)"
 
 echo
 echo "== --init: create-if-absent (no-op when file exists) =="
@@ -633,8 +653,16 @@ APPEND_FLAG_RC=0
 APPEND_FLAG_ERR="$(run --append "$PR" --owner-repo auerbachb/inventory 2>&1 >/dev/null)" \
   || APPEND_FLAG_RC=$?
 check_eq "--append with a misordered flag as <field> exits 2" "2" "$APPEND_FLAG_RC"
-check_eq "the refusal names the misordered-flag cause" "named" \
-  "$(case "$APPEND_FLAG_ERR" in *"misordered flag"*) echo named ;; *) echo "unnamed: $APPEND_FLAG_ERR" ;; esac)"
+# Classify in a STANDALONE case, never inside $( ... ): bash 3.2 reads the `)`
+# closing a case PATTERN as the one closing the substitution, so the inline form
+# ends the substitution early and the assertion fails to parse (issue #1541).
+# Hoisting also dodges the `[[ ... ]] && echo ... || echo ...` precedence trap,
+# where a non-zero "named" branch would silently fall through to the else arm.
+case "$APPEND_FLAG_ERR" in
+  *"misordered flag"*) APPEND_FLAG_CAUSE="named" ;;
+  *) APPEND_FLAG_CAUSE="unnamed: $APPEND_FLAG_ERR" ;;
+esac
+check_eq "the refusal names the misordered-flag cause" "named" "$APPEND_FLAG_CAUSE"
 check_eq "a refused --append creates no handoff file" "0" \
   "$([[ -f "$HANDOFF_FILE" ]] && echo 1 || echo 0)"
 
