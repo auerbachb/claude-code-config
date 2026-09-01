@@ -55,8 +55,23 @@ require_order() {
   # loudest form of this failure, and under `set -e` an empty grep would abort the whole
   # suite before the ABSENT branch below could name which marker vanished — an exit code
   # with no diagnostic. The emptiness is handled explicitly instead.
-  a=$( { grep -nF -- "$first" "$slice" || true; } | head -1 | cut -d: -f1)
-  b=$( { grep -nF -- "$second" "$slice" || true; } | head -1 | cut -d: -f1)
+  local ah bh na nb
+  ah=$( { grep -nF -- "$first" "$slice" || true; } )
+  bh=$( { grep -nF -- "$second" "$slice" || true; } )
+  na=$(printf '%s' "$ah" | grep -c . || true)
+  nb=$(printf '%s' "$bh" | grep -c . || true)
+  # AMBIGUITY IS A FAILURE, NOT A TIE-BREAK. Taking the first hit silently compares
+  # whichever occurrence happens to come first — so a prose sentence or a bash comment
+  # mentioning the marker can satisfy the ordering while the live statements underneath
+  # stay reversed. That is not hypothetical: an earlier draft of this suite matched a
+  # `TaskStop the recorded ID` line belonging to a different teardown entry and reported
+  # an inverted order for code that was correct. A duplicated marker now says so.
+  if [ "$na" -gt 1 ] || [ "$nb" -gt 1 ]; then
+    fail "$message (ambiguous marker in '$section': first matched $na line(s), second $nb — pick markers unique to the statements under test)"
+    return
+  fi
+  a=$(printf '%s' "$ah" | head -1 | cut -d: -f1)
+  b=$(printf '%s' "$bh" | head -1 | cut -d: -f1)
   if [ -z "$a" ] || [ -z "$b" ]; then
     fail "$message (missing marker in '$section': first=${a:-ABSENT} second=${b:-ABSENT})"
   elif [ "$a" -ge "$b" ]; then
