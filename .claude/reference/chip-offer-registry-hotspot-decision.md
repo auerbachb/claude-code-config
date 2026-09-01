@@ -14,7 +14,7 @@ Reference for Issue #1464 (`.claude/scripts/chip-offer-registry.sh` churn hotspo
 ## The problem being read
 
 `.claude/scripts/chip-offer-registry.sh` was touched by 3 distinct merged PRs
-since 2026-08-15: #1250, #1267, #1458. The file is a 605-line repo-scoped,
+since 2026-08-15: #1250, #1267, #1458. The file is a 607-line repo-scoped,
 lifecycle-aware registry of chip offers. It is structurally central: every chip
 emitter (`/pm`, `/prompt`, `/wave`, `/issue-maker`, `/start-issue`,
 `/harness-audit`) must call `--reserve` before `spawn_task`, and
