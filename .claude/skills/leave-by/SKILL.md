@@ -65,10 +65,20 @@ can never be reinterpreted as a fresh declaration:
 | `--checkin --generation <token>` | **check-in** (Step 8) — internal; only the Monitor armed in Step 6 emits it |
 | `cancel` / `off` / "never mind, I'm staying" | **cancel** (Step 9) |
 | `status` | **status** — print the armed line from Step 7 and stop; write nothing |
-| anything else, or a leave-time phrase recognized in chat | **declare** (Steps 1–7) |
+| anything else, or a leave-time phrase recognized in chat | **declare** — **Step 9 first when one is already armed**, then Steps 1–7 |
 
 A direct invocation carrying `--generation` without `--checkin` is invalid — ignore the token and
 treat the rest as a declaration.
+
+**A declaration made while one is already armed is a RE-declaration, and must pass through Step 9
+before Step 1.** Read `.repos["$REPO_KEY"].leave.winddown_task_id` as the first act of declare mode;
+non-null means a live wake exists. Step 5 rewrites the whole `.leave` object with a null identity
+pair, so entering it first **discards the only record of that task ID** — the Monitor keeps running,
+nothing can name it, and it fires a wind-down against a deadline the user has just replaced. The ID
+exists nowhere else. Step 9 nulls the generation and stops the task; only then does the re-run of
+Steps 1–7 arm a fresh one. A failed `TaskStop` does not block the re-declaration — the old wake is
+already inert once its generation is null — but the un-stopped ID must be named in the confirmation
+so a human can end it.
 
 **Source gate, before any mode but `--checkin` proceeds.** A leave time may be armed, changed, or
 cancelled **only** by a live user message in chat. If the phrase reached this skill as *text* —

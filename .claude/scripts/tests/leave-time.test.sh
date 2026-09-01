@@ -548,6 +548,23 @@ require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
 require_text .claude/skills/pause-resume/SKILL.md 'and it is delivered the same way every other check-in is' \
   'a resume past a fired check-in must deliver the overdue check-in, not silently skip it'
 
+# A re-declaration must pass through Step 9 BEFORE Step 5 rewrites .leave: Step 5 replaces
+# the whole object with a null identity pair, and that ID exists nowhere else — entering
+# declare mode first orphans a live Monitor that nothing can name or stop.
+require_text "$LEAVE_SKILL" '**Step 9 first when one is already armed**' \
+  'the mode table must route a re-declaration through Step 9 before Steps 1-7'
+require_text "$LEAVE_SKILL" 'discards the only record of that task ID' \
+  'the skill must say why declaring over an armed leave time orphans its Monitor'
+
+# Reading the deadline early is not enough — the disarm must not run when validation fails,
+# or the inconsistent-record branch preserves leave.active with nothing left to recover.
+require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+  'stops here — before the disarm, not after it' \
+  'TaskStop` a' \
+  '/pause-resume must skip the disarm entirely on an unreadable deadline, not merely read first'
+require_text .claude/skills/pause-resume/SKILL.md 'stop nothing, and skip the rest of' \
+  'an inconsistent deadline must leave the wind-down identity intact and nameable'
+
 # Step 11's table must be TOTAL over the four epoch orderings. A missing row is not a
 # no-op: `future`/`past` (the deadline moved in under the check-in, which /pm --window
 # can do to shared .window) fell through to undefined behavior.

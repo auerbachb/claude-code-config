@@ -357,8 +357,17 @@ inconsistent-record branch preserves `leave.active` while re-arming nothing — 
 with no Monitor and no task ID left to recover it. Read first, and the stop only ever runs on a
 branch that knows what it will do next.
 
-With the gate passed and the deadline read, disarm: same shape as the block above, over
-`.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
+**An unreadable or malformed deadline stops here — before the disarm, not after it.** Reading early
+is not enough on its own: if the validation fails and the disarm runs anyway, the identity pair is
+gone and the inconsistent-record branch below then preserves `leave.active` while re-arming
+nothing — an active leave time with no Monitor and no task ID, which is precisely the state that
+branch exists to avoid creating. So on any non-numeric, `null`, or unreadable deadline with
+`leave.active == true`: report the one-line inconsistent-record verdict, **leave
+`winddown_task_id` and `winddown_generation` exactly as found**, stop nothing, and skip the rest of
+this block. The live wake stays live and nameable, and `/leave-by` Step 11 can still recover it.
+
+With the gate passed and the deadline read **and validated**, disarm: same shape as the block above,
+over `.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
 `DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), `TaskStop` a
 non-null ID, and on a confirmed stop clear the pair:
 
