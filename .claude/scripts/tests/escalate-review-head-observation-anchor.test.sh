@@ -100,6 +100,40 @@ check_eq "exit 0" 0 "$RC"
 check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
 
 ############################################################################
+echo "== (d2): a VALID-LOOKING PREFIX with trailing junk is rejected too =="
+# The shape test has to be anchored at both ends, not just matched at the start.
+# `…T12:00:00-GARBAGE` is well-formed for nineteen characters, is unparseable to
+# iso_age_seconds, and would therefore score 0 — "HEAD is brand new" — reaching
+# the exact failure the test exists to stop, through the test itself. (d) alone
+# does not catch this: its value fails a prefix match as well as an anchored one.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_COMMIT")"
+write_force_push "$(ts_seconds_ago "$JUST_PUSHED")-GARBAGE"
+BANNER_D2="$(cr_limit_banner "$(ts_seconds_ago 1800)" "50 minutes")"
+FAIL_D2="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_D2, $BANNER_D2]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=polling_cr" "STATUS=polling_cr" "$OUT"
+
+############################################################################
+echo "== (d3): CONTROL — the other UTC spelling is still ACCEPTED (anchored, not narrowed) =="
+# Bounds (d2) in the opposite direction. GitHub ships "…Z" and "…+00:00" for the
+# same instant (ts-normalizer.sh), so an anchored test keyed on `Z` alone would
+# silently stop anchoring the moment the wire spelling changed — degrading to the
+# commit date with nothing to say why. Same fixture as (a) but for the spelling,
+# so it must reach (a)'s verdict.
+reset_state
+write_commits "$(ts_seconds_ago "$OLD_COMMIT")"
+write_force_push "$(ts_seconds_ago_utc_offset "$JUST_PUSHED")"
+BANNER_D3="$(cr_limit_banner "$(ts_seconds_ago 1800)" "50 minutes")"
+FAIL_D3="$(failure_comment "$(ts_seconds_ago 7000)")"
+write_state "[]" "[]" "[]" "[$FAIL_D3, $BANNER_D3]"
+OUT=$(run_script); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+
+############################################################################
 echo "== (e): trigger comment from the PRIOR head + fresh force-push -> switch_bugbot =="
 # The SECOND consumer of AGE_SECONDS: `BUGBOT_TRIGGER_AGE -le AGE_SECONDS` asks
 # whether an `@cursor review` invitation postdates the push. Against the commit

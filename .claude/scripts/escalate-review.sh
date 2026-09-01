@@ -460,6 +460,15 @@ PY
 # because iso_age_seconds returns 0 for anything it cannot parse, and 0 would
 # read here as "HEAD is brand new" — the stall direction being fixed.
 #
+# The shape test is ANCHORED AT BOTH ENDS (CodeRabbit CLI, PR for #1517). A
+# prefix match would admit `…T12:00:00-GARBAGE`: well-formed for the first
+# nineteen characters, unparseable to iso_age_seconds, and therefore scored 0 —
+# the exact failure the test is here to stop, reached through the test itself.
+# The accepted zone suffixes are the two UTC spellings datetime.fromisoformat
+# handles on every Python this repo supports once a trailing `Z` is mapped; the
+# compact `+0000` form and genuine offsets are refused on purpose, degrading to
+# the commit date rather than risking a wrong instant.
+#
 # Not a meta-guard L violation. That guard (escalate-review-gate-met.test.sh)
 # bans a direct per-commit check-run fetch from this file, so check-run data
 # keeps coming from pr-state.sh's deduped bundle. This call reads the PR
@@ -476,7 +485,7 @@ FORCE_PUSH_TS="$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/timelin
     ' 2>/dev/null || true)"
 
 AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
-if [[ "$FORCE_PUSH_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+if [[ "$FORCE_PUSH_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|\+00:00)$ ]]; then
   FORCE_PUSH_AGE="$(iso_age_seconds "$FORCE_PUSH_TS")"
   if [[ "$FORCE_PUSH_AGE" -lt "$AGE_SECONDS" ]]; then
     AGE_SECONDS="$FORCE_PUSH_AGE"

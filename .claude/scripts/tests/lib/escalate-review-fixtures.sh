@@ -117,6 +117,18 @@ print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H
 "
 }
 
+# The same instant as ts_seconds_ago in GitHub's OTHER UTC spelling.
+# ts-normalizer.sh documents "…Z", "…+00:00", and "…+0000" as all live on the
+# wire, so a shape test keyed on one of them is a silent single-spelling
+# dependency. Used by the head-observation anchor suite to prove its test is
+# ANCHORED rather than narrowed.
+ts_seconds_ago_utc_offset() {
+  python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H:%M:%S') + '+00:00')
+"
+}
+
 # Reset per-scenario state: fresh session-state.json (no cached bugbot_installed)
 # so every run exercises the cache-miss classification branch.
 reset_state() {
