@@ -21,7 +21,8 @@
 #   churn-hotspots.sh [--since <date|ref>] [--threshold N] [--repo <owner/repo>]
 #                     [--conflict-weight N] [--exclude <glob,glob>]
 #                     [--no-default-excludes] [--source auto|git|gh]
-#                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N] [--json]
+#                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N]
+#                     [--sweep-threshold N] [--include-creation] [--json]
 #   churn-hotspots.sh --help
 #
 #   --since <date|ref>   Window start. A date (YYYY-MM-DD) is used as-is; any
@@ -55,6 +56,12 @@
 #                        (all). `total_hotspot_count` always reports the full
 #                        pre-truncation count, so a bounded call never hides how
 #                        much it dropped.
+#   --sweep-threshold N  A commit (git path) or PR (gh path) touching N or MORE
+#                        paths is a mechanical SWEEP and contributes nothing to
+#                        any file's score. DEFAULT 20. Pass 0 to disable the rule
+#                        and score sweeps like ordinary touches.
+#   --include-creation   Count the commit that CREATED a file toward its score.
+#                        OFF by default: a file's birth is not churn.
 #   --json               Emit a single JSON object. Default emits TSV rows.
 #
 # SCORING (the documented weight — issue #755 AC 2):
@@ -88,6 +95,54 @@
 #   as often as not. A missing state file, missing repo scope, or missing key
 #   all read as 0 — which is what lets this run in a fresh clone with no session
 #   history at all.
+#
+# SWEEP AND CREATION FILTERS (issue #1547):
+#   Two systematic biases inflated every score before these existed. A
+#   three-round triage of 39 flagged files closed 37 of them as by-design, and
+#   the two shapes below supplied most of the inflation. Both filters drop the
+#   touch EVENT before aggregation — they never re-weight the score formula —
+#   so `score == pr_count + conflict_weight * conflict_rounds` still holds
+#   exactly and every reported number stays an integer.
+#
+#   1. FILE CREATION IS NOT CHURN. The commit that adds a path is that file's
+#      birth, not evidence that the file is a magnet. 7 of one triage round's
+#      14 files were created inside their own scan window, so each mechanically
+#      started at score 1-2 and reached the reporting threshold on one sweep
+#      plus one real touch. The creating commit is now excluded (git path: diff
+#      status `A`; gh path: `"status": "added"`), reported as
+#      `creation_skipped_count`. A rename DESTINATION is not a creation —
+#      renames already read as two paths, and mass renames are caught by rule 2.
+#      `--include-creation` restores the old behaviour.
+#
+#   2. REPO-WIDE SWEEPS ARE NOT FILE-LOCAL CHURN. One 72-file mechanical sweep
+#      and two 39-file rename sweeps supplied the majority of events across
+#      dozens of flagged files, none of which had anything to do with those
+#      files' concerns. A commit touching >= --sweep-threshold paths (DEFAULT
+#      20) therefore contributes nothing, reported as `sweep_commit_count` and
+#      `sweep_skipped_count`.
+#
+#      The count is the commit's RAW path count, taken before the exclusion and
+#      existence filters: a 72-file sweep is a sweep even after 60 of its paths
+#      were later deleted.
+#
+#      The unit differs by enumeration path — a COMMIT on the git path, the
+#      whole PR's file list on the gh path (which has no per-commit granularity).
+#      For a squash-merge repo these are the same thing.
+#
+#   WHY 0 AND NOT A FRACTION. `churn-hotspot-wrap-plan.sh` validates this
+#   envelope with `score == pr_count + conflict_weight * conflict_rounds` and
+#   `floor == .` on every count, and /wrap files nothing when that check fails.
+#   A fractional sweep weight would break that consumer contract; dropping the
+#   event is the weight-0 case, and it needs no consumer change.
+#
+#   A PR is still counted for a file when any OTHER commit of that PR touched it
+#   non-mechanically — that is precisely what weighting the sweep commit 0 means.
+#   Only in-window commits are scanned, so a file created BEFORE the window is
+#   untouched by rule 1.
+#
+#   The creation fact is reported, not just spent: each hotspot carries
+#   `created_in_window` and `creation_pr`, so a file born in the window that
+#   still crosses the threshold on its other PRs can be read for what it is.
 #
 # DEFAULT EXCLUSIONS:
 #   package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock,
@@ -160,11 +215,16 @@
 #   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
 #   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
 #   `scanned_pr_count`, `excluded_count`, `missing_count` (paths dropped because
-#   the file does not exist at the scanned ref or in the working tree), `truncated`,
+#   the file does not exist at the scanned ref or in the working tree),
+#   `sweep_threshold`, `include_creation`, `creation_skipped_count` (touches
+#   dropped as a file's own creation), `sweep_commit_count` (commits/PRs
+#   classified as sweeps), `sweep_skipped_count` (touches dropped as sweeps),
+#   `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
-#   `last_merged_at`, `existing_hotspot_issue`, `existing_hotspot_issue_state`
+#   `last_merged_at`, `created_in_window`, `creation_pr`,
+#   `existing_hotspot_issue`, `existing_hotspot_issue_state`
 #   — `"open"`, `"closed"`, `"unknown"` when a match was found but its state
 #   could not be read, or null ONLY when there is no match at all. Null never
 #   means "matched but unclassifiable": a caller may read `state == null` as
@@ -219,7 +279,15 @@ DO_FETCH=0
 PR_CAP=150
 TOP=0
 AS_JSON=0
+SWEEP_THRESHOLD=20
+INCLUDE_CREATION=0
 ISSUE_LOOKUP_CAP=200
+
+# A literal tab, built with printf rather than ANSI-C quoting. `--name-status`
+# separates the diff status from the path with a tab, and under bash 3.2 (macOS)
+# `${line#$'\t'}` can silently fail to strip even where the matching `case`
+# pattern succeeds — the same trap the @@C@@ sentinels below exist to avoid.
+TAB_CHAR=$(printf '\t')
 
 DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
 
@@ -246,6 +314,9 @@ while [ $# -gt 0 ]; do
     --pr-cap)             shift; [ $# -gt 0 ] || { err "--pr-cap requires a value"; exit 2; }; PR_CAP="$1" ;;
     --top=*)              TOP="${1#*=}" ;;
     --top)                shift; [ $# -gt 0 ] || { err "--top requires a value"; exit 2; }; TOP="$1" ;;
+    --sweep-threshold=*)  SWEEP_THRESHOLD="${1#*=}" ;;
+    --sweep-threshold)    shift; [ $# -gt 0 ] || { err "--sweep-threshold requires a value"; exit 2; }; SWEEP_THRESHOLD="$1" ;;
+    --include-creation)   INCLUDE_CREATION=1 ;;
     --json)               AS_JSON=1 ;;
     --help|-h)            print_help; exit 0 ;;
     *)                    err "unknown argument: $1"; exit 2 ;;
@@ -258,6 +329,7 @@ case "$CONFLICT_WEIGHT" in ''|*[!0-9]*) err "--conflict-weight must be a non-neg
 case "$PR_CAP" in ''|*[!0-9]*) err "--pr-cap must be a non-negative integer"; exit 2 ;; esac
 [ "$PR_CAP" -gt 0 ] || { err "--pr-cap must be positive"; exit 2; }
 case "$TOP" in ''|*[!0-9]*) err "--top must be a non-negative integer"; exit 2 ;; esac
+case "$SWEEP_THRESHOLD" in ''|*[!0-9]*) err "--sweep-threshold must be a non-negative integer (0 disables the sweep filter)"; exit 2 ;; esac
 case "$SOURCE_MODE" in auto|git|gh) ;; *) err "--source must be one of: auto, git, gh"; exit 2 ;; esac
 
 command -v jq >/dev/null 2>&1 || { err "jq is required but not installed"; exit 3; }
@@ -271,6 +343,9 @@ SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
 MISSING_COUNT=0
+CREATION_SKIPPED_COUNT=0
+SWEEP_COMMIT_COUNT=0
+SWEEP_SKIPPED_COUNT=0
 TRUNCATED=false
 LOOKUP_FAILED=false
 TOTAL_HOTSPOT_COUNT=0
@@ -290,6 +365,9 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
   as_number SCANNED_PR_COUNT
   as_number EXCLUDED_COUNT
   as_number MISSING_COUNT
+  as_number CREATION_SKIPPED_COUNT
+  as_number SWEEP_COMMIT_COUNT
+  as_number SWEEP_SKIPPED_COUNT
   as_number TOTAL_HOTSPOT_COUNT
   case "$hotspots" in ''|null) hotspots='[]' ;; esac
   if [ "$AS_JSON" -eq 1 ]; then
@@ -305,6 +383,11 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --argjson scanned "$SCANNED_PR_COUNT" \
       --argjson excluded "$EXCLUDED_COUNT" \
       --argjson missing "$MISSING_COUNT" \
+      --argjson sweep_threshold "$SWEEP_THRESHOLD" \
+      --argjson include_creation "$( [ "$INCLUDE_CREATION" -eq 1 ] && printf 'true' || printf 'false' )" \
+      --argjson creation_skipped "$CREATION_SKIPPED_COUNT" \
+      --argjson sweep_commits "$SWEEP_COMMIT_COUNT" \
+      --argjson sweep_skipped "$SWEEP_SKIPPED_COUNT" \
       --argjson truncated "$TRUNCATED" \
       --argjson lookup_failed "$LOOKUP_FAILED" \
       --argjson total "$TOTAL_HOTSPOT_COUNT" \
@@ -313,6 +396,9 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
         scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
         scanned_pr_count:$scanned, excluded_count:$excluded, missing_count:$missing,
+        sweep_threshold:$sweep_threshold, include_creation:$include_creation,
+        creation_skipped_count:$creation_skipped,
+        sweep_commit_count:$sweep_commits, sweep_skipped_count:$sweep_skipped,
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
         total_hotspot_count:$total, hotspots:$hotspots}'
   else
@@ -506,19 +592,110 @@ file_present() {  # $1 path -> 0 when the file exists at the scan target
 # Both paths produce the same TSV stream on stdout: pr <TAB> merged_at <TAB> file
 TOUCH_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
 SEEN_PRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
-cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS"; }
+CREATION_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
+cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV"; }
 trap cleanup EXIT
 
+# is_creation_status — 0 when git's diff status marks the path as newly created.
+# `A` is an add. `C` (copy destination) is also a path that did not exist
+# before, so it reads the same way. `R` (rename destination) deliberately does
+# NOT: renames already read as two unrelated paths here, and the mass renames
+# that motivated issue #1547 are caught by the sweep rule instead.
+is_creation_status() {  # $1 status token
+  case "$1" in A|C*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---- per-commit buffer (git path) -------------------------------------------
+# A commit's sweep classification depends on how many paths it touched IN TOTAL,
+# and that is not known until its last path row has been read. Rows are
+# therefore buffered and flushed at the next commit header and once at EOF.
+# These are globals rather than locals so the flush is an ordinary function
+# instead of a call that silently depends on bash's dynamic scope.
+CUR_PR=""
+CUR_DATE=""
+CUR_ROWS=()
+
+flush_commit() {
+  local total=${#CUR_ROWS[@]}
+  local is_sweep=0 row status file
+  if [ "$total" -eq 0 ] || [ -z "$CUR_PR" ]; then
+    CUR_ROWS=()
+    return 0
+  fi
+
+  # Count the RAW path total, before exclusions and the existence filter: a
+  # 72-file mechanical sweep is a sweep even after most of its paths were later
+  # deleted or are on the exclusion list.
+  if [ "$SWEEP_THRESHOLD" -gt 0 ] && [ "$total" -ge "$SWEEP_THRESHOLD" ]; then
+    is_sweep=1
+    SWEEP_COMMIT_COUNT=$((SWEEP_COMMIT_COUNT + 1))
+  fi
+
+  # A PR-marked commit that touched files was SEEN in the window even when every
+  # one of its paths is then filtered out. Recording it here rather than per
+  # emitted row keeps `scanned_pr_count` — the figure that says how big the
+  # window was — immune to the sweep and creation filters.
+  printf '%s\n' "$CUR_PR" >> "$SEEN_PRS"
+
+  for row in ${CUR_ROWS[@]+"${CUR_ROWS[@]}"}; do
+    # `--name-status` rows are `status<TAB>path`, or `R100<TAB>old<TAB>new` for
+    # a rename/copy — the path is always the last tab-separated field. A row
+    # with no tab at all degrades to "unknown status, whole line is the path",
+    # which counts the touch rather than silently dropping it.
+    case "$row" in
+      *"$TAB_CHAR"*)
+        status="${row%%"$TAB_CHAR"*}"
+        file="${row##*"$TAB_CHAR"}"
+        ;;
+      *)
+        status=""
+        file="$row"
+        ;;
+    esac
+    [ -n "$file" ] || continue
+
+    if is_excluded "$file"; then
+      EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+      continue
+    fi
+    if ! file_present "$file"; then
+      MISSING_COUNT=$((MISSING_COUNT + 1))
+      continue
+    fi
+
+    # Record the creation fact BEFORE either drop, so `created_in_window` stays
+    # true even for a file born inside a sweep.
+    if is_creation_status "$status"; then
+      printf '%s\t%s\n' "$file" "$CUR_PR" >> "$CREATION_TSV"
+    fi
+
+    if [ "$is_sweep" -eq 1 ]; then
+      SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
+      continue
+    fi
+    if [ "$INCLUDE_CREATION" -eq 0 ] && is_creation_status "$status"; then
+      CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
+      continue
+    fi
+
+    printf '%s\t%s\t%s\n' "$CUR_PR" "$CUR_DATE" "$file" >> "$TOUCH_TSV"
+  done
+
+  CUR_ROWS=()
+}
+
 enumerate_git() {
-  local line rest commit_date subject pr file
+  local line rest commit_date subject pr
   # `@@C@@date@@S@@subject` marks a commit header; every other non-empty line is
-  # a path. Plain ASCII sentinels, not control bytes: under bash 3.2 (macOS)
-  # `${line#$'\x01'}` silently fails to strip even where the matching `case`
-  # pattern succeeds, which leaked the byte into every timestamp. Nothing here
-  # relies on ANSI-C quoting.
+  # a `status<TAB>path` row. Plain ASCII sentinels, not control bytes: under
+  # bash 3.2 (macOS) `${line#$'\x01'}` silently fails to strip even where the
+  # matching `case` pattern succeeds, which leaked the byte into every
+  # timestamp. Nothing here relies on ANSI-C quoting.
+  CUR_PR=""; CUR_DATE=""; CUR_ROWS=()
   while IFS= read -r line; do
     case "$line" in
       '@@C@@'*)
+        flush_commit
         rest="${line#@@C@@}"
         commit_date="${rest%%@@S@@*}"
         subject="${rest#*@@S@@}"
@@ -529,26 +706,21 @@ enumerate_git() {
         # contributes nothing. `fix(#749): repair (#750)` still yields 750.
         pr=$(printf '%s' "$subject" | grep -oE '\(#[0-9]+\)[[:space:]]*$' 2>/dev/null | tr -dc '0-9')
         [ -n "$pr" ] && GIT_MARKED_COMMITS=$((GIT_MARKED_COMMITS + 1))
+        CUR_PR="$pr"
+        CUR_DATE="$commit_date"
         ;;
       '')
         ;;
       *)
-        file="$line"
-        [ -n "${pr:-}" ] || continue
-        if is_excluded "$file"; then
-          EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
-          continue
-        fi
-        if ! file_present "$file"; then
-          MISSING_COUNT=$((MISSING_COUNT + 1))
-          continue
-        fi
-        printf '%s\t%s\t%s\n' "$pr" "$commit_date" "$file" >> "$TOUCH_TSV"
-        printf '%s\n' "$pr" >> "$SEEN_PRS"
+        # Buffer only PR-attributed commits — an unmarked commit contributes
+        # nothing regardless of how many paths it touched.
+        [ -n "${CUR_PR:-}" ] || continue
+        CUR_ROWS[${#CUR_ROWS[@]}]="$line"
         ;;
     esac
-  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-only \
+  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-status \
              --pretty=format:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
+  flush_commit
 }
 
 enumerate_gh() {
@@ -586,14 +758,40 @@ enumerate_gh() {
   local pr merged_at files
   while IFS=$'\t' read -r pr merged_at; do
     [ -n "$pr" ] || continue
+    # `status<TAB>filename` per file. The filter is per-element, so it composes
+    # correctly with --paginate (which runs --jq once per PAGE); the PR's total
+    # file count is taken from the concatenated result below, in the shell.
     files=$(gh api "repos/${owner_repo}/pulls/${pr}/files" --paginate \
-              --jq '.[].filename' 2>/dev/null) || {
+              --jq '.[] | [(.status // ""), .filename] | join("\u0009")' 2>/dev/null) || {
       err "gh api pulls/${pr}/files failed — skipping PR #${pr}"
       continue
     }
     printf '%s\n' "$pr" >> "$SEEN_PRS"
-    local file
-    while IFS= read -r file; do
+    local file status row pr_file_total=0 pr_is_sweep=0
+    # The gh path has no per-commit granularity, so the sweep unit is the PR's
+    # whole file list. On a squash-merge repo that is the same thing.
+    if [ -n "$files" ]; then
+      pr_file_total=$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d '[:space:]')
+      case "$pr_file_total" in ''|*[!0-9]*) pr_file_total=0 ;; esac
+    fi
+    if [ "$SWEEP_THRESHOLD" -gt 0 ] && [ "$pr_file_total" -ge "$SWEEP_THRESHOLD" ]; then
+      pr_is_sweep=1
+      SWEEP_COMMIT_COUNT=$((SWEEP_COMMIT_COUNT + 1))
+    fi
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      # A fixture or payload with no status column degrades to "unknown status,
+      # whole line is the filename" — the touch still counts.
+      case "$row" in
+        *"$TAB_CHAR"*)
+          status="${row%%"$TAB_CHAR"*}"
+          file="${row##*"$TAB_CHAR"}"
+          ;;
+        *)
+          status=""
+          file="$row"
+          ;;
+      esac
       [ -n "$file" ] || continue
       if is_excluded "$file"; then
         EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
@@ -607,6 +805,19 @@ enumerate_gh() {
       # are not silently dropped.
       if [ "$IN_CHECKOUT" -eq 1 ] && ! file_present "$file"; then
         MISSING_COUNT=$((MISSING_COUNT + 1))
+        continue
+      fi
+      # Record the creation fact BEFORE either drop, so `created_in_window`
+      # stays true even for a file born inside a sweep.
+      if [ "$status" = "added" ]; then
+        printf '%s\t%s\n' "$file" "$pr" >> "$CREATION_TSV"
+      fi
+      if [ "$pr_is_sweep" -eq 1 ]; then
+        SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
+        continue
+      fi
+      if [ "$INCLUDE_CREATION" -eq 0 ] && [ "$status" = "added" ]; then
+        CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
         continue
       fi
       printf '%s\t%s\t%s\n' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"
@@ -643,7 +854,13 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   fi
   : > "$TOUCH_TSV"
   : > "$SEEN_PRS"
+  : > "$CREATION_TSV"
   EXCLUDED_COUNT=0
+  # The git attempt's filter tallies describe a scan that is being discarded;
+  # leaving them would double-count against the gh enumeration about to run.
+  CREATION_SKIPPED_COUNT=0
+  SWEEP_COMMIT_COUNT=0
+  SWEEP_SKIPPED_COUNT=0
   # The gh path enumerates merged PRs over the API — no ref is involved, and
   # reporting a leftover one would misdescribe what was scanned.
   SCAN_REF=""
@@ -692,9 +909,23 @@ if [ -n "$SESSION_STATE_SH" ]; then
   case "$CONFLICT_MAP" in ''|null) CONFLICT_MAP='{}' ;; esac
 fi
 
+# ---- creation map -----------------------------------------------------------
+# path -> the PR whose commit created it inside the window. Recorded whether or
+# not the creation touch was scored, so `created_in_window` is a LABEL rather
+# than a by-product of the filter. Log order is newest-first, so reversing
+# before from_entries (which keeps the LAST occurrence of a key) reports the
+# most recent creation for a path created more than once in the window.
+CREATION_MAP=$(jq -Rs -c '
+  split("\n")
+  | map(select(length > 0) | split("\t") | select(length >= 2)
+        | {key: .[0], value: (.[1] | tonumber? // .[1])})
+  | reverse | from_entries' < "$CREATION_TSV" 2>/dev/null) || CREATION_MAP=""
+case "$CREATION_MAP" in ''|null) CREATION_MAP='{}' ;; esac
+
 # ---- aggregate --------------------------------------------------------------
 HOTSPOTS=$(jq -Rs -c \
   --argjson conflicts "$CONFLICT_MAP" \
+  --argjson creations "$CREATION_MAP" \
   --argjson threshold "$THRESHOLD" \
   --argjson weight "$CONFLICT_WEIGHT" \
   --argjson min_prs "$MIN_PRS" '
@@ -702,19 +933,22 @@ HOTSPOTS=$(jq -Rs -c \
   | map(select(length > 0) | split("\t") | {pr: .[0], merged_at: .[1], file: .[2]})
   | group_by(.file)
   | map(
-      (map(.pr) | unique) as $prs
+      (.[0].file) as $f
+      | (map(.pr) | unique) as $prs
       | ($prs | map($conflicts[.] // 0)) as $rounds
       | ($rounds | add // 0) as $conflict_rounds
       | ($prs | length) as $pr_count
       | {
-          file: .[0].file,
+          file: $f,
           pr_count: $pr_count,
           pr_numbers: ($prs | map(tonumber? // .) | sort),
           conflict_rounds: $conflict_rounds,
           conflict_prs: [ $prs[] | select(($conflicts[.] // 0) > 0) | (tonumber? // .) ] | sort,
           score: ($pr_count + ($weight * $conflict_rounds)),
           first_merged_at: (map(.merged_at) | sort | .[0]),
-          last_merged_at: (map(.merged_at) | sort | .[-1])
+          last_merged_at: (map(.merged_at) | sort | .[-1]),
+          created_in_window: ($creations | has($f)),
+          creation_pr: ($creations[$f] // null)
         }
     )
   | map(select(.pr_count >= $min_prs and .score >= $threshold))
