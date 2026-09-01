@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --strict) STRICT=1; shift ;;
     --help|-h)
-      sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
+      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
       exit 0
       ;;
     *)

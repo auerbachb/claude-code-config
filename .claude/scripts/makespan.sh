@@ -97,7 +97,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -lt 2 ]] && { printf 'makespan.sh: --now requires an argument\n' >&2; exit 2; }
       NOW_OVERRIDE="$2"; shift 2 ;;
     --help|-h)
-      sed -n '2,/^set -/{ /^#/{ s/^# \?//; p }; /^set -/q }' "$0"
+      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
       exit 0 ;;
     *)
       printf 'makespan.sh: unknown argument: %s\n' "$1" >&2

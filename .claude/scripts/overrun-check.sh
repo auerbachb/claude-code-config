@@ -114,7 +114,7 @@ while [[ $# -gt 0 ]]; do
     --readout)          READOUT_MODE=true; shift ;;
     --readout-cells)    CELLS_MODE=true; shift ;;
     --help|-h)
-      sed -n '2,/^set -/{ /^#/{ s/^# \{0,1\}//; p }; /^set -/q }' "$0"
+      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
       exit 0 ;;
     *) printf 'overrun-check.sh: unknown flag: %s\n' "$1" >&2; exit 3 ;;
   esac

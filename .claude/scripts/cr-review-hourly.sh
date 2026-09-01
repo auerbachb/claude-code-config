@@ -70,7 +70,7 @@ BUDGET="${CR_HOURLY_BUDGET:-$DEFAULT_BUDGET}"
 NOW_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# DEPENDENCIES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 die_usage() {

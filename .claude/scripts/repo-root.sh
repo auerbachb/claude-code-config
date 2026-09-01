@@ -166,9 +166,13 @@ if [[ -n "${HOME:-}" ]]; then
     2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
-# Self-extract the header block between BEGIN/END markers for --help.
+# Self-extract the leading header comment block for --help: every line from the
+# one after the shebang up to (not including) the first blank line. Terminating
+# on a BLANK line rather than a named heading is deliberate — a `sed` range ends
+# AT its terminator, so the previous `/^# EXAMPLES$/` anchor emitted the EXAMPLES
+# heading and swallowed every example under it (issue #1475).
 print_help() {
-  sed -n '/^# PURPOSE$/,/^# EXAMPLES$/p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 TARGET=""

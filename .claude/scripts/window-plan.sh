@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     --now)        shift; NOW_OVERRIDE="${1:-}"; [[ $# -gt 0 ]] && shift ;;
     --now=*)      NOW_OVERRIDE="${1#--now=}"; shift ;;
     --help|-h)
-      sed -n '2,/^set -/{ /^#/{ s/^# \{0,1\}//; p }; /^set -/q }' "$0"
+      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
       exit 0 ;;
     *) printf 'window-plan.sh: unknown flag: %s\n' "$1" >&2; exit 2 ;;
   esac

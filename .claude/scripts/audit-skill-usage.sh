@@ -41,7 +41,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 # Help flag
 # ──────────────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '2,/^# EXIT STATUS:/{ /^# EXIT STATUS:/d; s/^# \{0,1\}//; p }' "$0"
+  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
   exit 0
 fi
 
