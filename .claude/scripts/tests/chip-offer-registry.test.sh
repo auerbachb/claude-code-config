@@ -7,6 +7,8 @@
 #   --count / --list: with and without --state filter
 #   Concurrent reservation: two simultaneous emitters against FREE=1
 #   TTL expiry
+#   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
+#     must match the --emitter case allowlist (Issue #1464)
 #
 # All tests use a temp HOME dir so ~/.claude/session-state.json is not touched.
 
@@ -429,6 +431,49 @@ if [[ $rc_29d -eq 7 ]]; then
   ok "existing registry entries: 7th reserve exits 7 (admission limit reached)"
 else
   fail "existing registry entries: 7th reserve should exit 7, got $rc_29d"
+fi
+
+# ---------------------------------------------------------------------------
+# 36. Header VALID EMITTERS list matches the --emitter case allowlist.
+#     usage() prints the header verbatim (sed '2,/^$/p'), so --help output IS
+#     the header: a stale emitter list is a user-facing contract bug, not a
+#     comment typo.  Pins the harness-audit drift found in Issue #1464.
+#     Both lists are extracted by anchoring on a structural marker and reading
+#     the next line -- the VALID EMITTERS heading for the header, the
+#     `case "$EMITTER" in` statement for the allowlist -- then sorted before
+#     comparison, so reordering the case alternation (semantically a no-op in
+#     bash) does not trip the guard.
+#     Each list is split into tokens BEFORE whitespace is trimmed, and only the
+#     token edges are trimmed, so whitespace interior to a name is preserved --
+#     a malformed header entry like "harness -audit" stays distinct from
+#     "harness-audit" and is reported as drift rather than normalized away.
+#     Fails closed if either list cannot be extracted.
+# ---------------------------------------------------------------------------
+H="$(make_home)"
+HELP_EMITTERS="$(HOME="$H" bash "$REGISTRY" --help 2>/dev/null \
+  | awk '/^VALID EMITTERS$/{getline; print; exit}' \
+  | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . | sort | tr '\n' ' ')"
+CASE_EMITTERS="$(awk '/^[[:space:]]*case[[:space:]]+"\$EMITTER"[[:space:]]+in/{getline; print; exit}' "$REGISTRY" \
+  | sed 's/).*$//' | tr '|' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . | sort | tr '\n' ' ')"
+if [[ -z "$HELP_EMITTERS" || -z "$CASE_EMITTERS" ]]; then
+  fail "emitter drift guard could not extract both lists (help='$HELP_EMITTERS' case='$CASE_EMITTERS')"
+elif [[ "$HELP_EMITTERS" == "$CASE_EMITTERS" ]]; then
+  ok "header VALID EMITTERS matches the --emitter case allowlist"
+else
+  fail "emitter drift: header='$HELP_EMITTERS' but case allowlist='$CASE_EMITTERS'"
+fi
+
+# ---------------------------------------------------------------------------
+# 37. harness-audit is accepted by --reserve (behavioral pin for the sixth
+#     canonical emitter named in chip-launching.md).
+# ---------------------------------------------------------------------------
+H="$(make_home)"
+rc_ha=0
+tid_ha="$(run_registry "$H" --reserve --emitter harness-audit --issue 1464 --cap-free 3 2>/dev/null)" || rc_ha=$?
+if [[ $rc_ha -eq 0 && -n "$tid_ha" ]]; then
+  ok "--emitter harness-audit is accepted by --reserve"
+else
+  fail "--emitter harness-audit should be accepted (rc=$rc_ha, tid='$tid_ha')"
 fi
 
 # ---------------------------------------------------------------------------

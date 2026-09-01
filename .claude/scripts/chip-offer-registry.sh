@@ -2,8 +2,8 @@
 # chip-offer-registry.sh — Repo-scoped, lifecycle-aware chip offer registry.
 #
 # PURPOSE
-#   Tracks chip offers from all emitters (/pm, /prompt, /wave, /issue-maker,
-#   /start-issue) in a single durable, cross-thread store (Issue #1225).
+#   Tracks chip offers from every canonical chip emitter (enumerated once under
+#   VALID EMITTERS below) in a single durable, cross-thread store (Issue #1225).
 #   Provides an atomic reservation at the creation boundary, closing the race
 #   where two concurrent emitters could both observe the same FREE slot and
 #   both create offers, together exceeding the cap.
@@ -80,7 +80,9 @@
 #   not treated as old). Matches the stale-agent guard in active-work-cap.sh.
 #
 # VALID EMITTERS
-#   pm, prompt, wave, issue-maker, start-issue
+#   pm, prompt, wave, issue-maker, start-issue, harness-audit
+#   (the six canonical chip emitters named in chip-launching.md; kept in sync
+#   with the --emitter case allowlist by chip-offer-registry.test.sh)
 #
 # FLAGS
 #   --repo <owner/name>   Registry scope. Defaults to the origin remote of cwd.
