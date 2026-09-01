@@ -554,7 +554,7 @@ for candidate in \
   ".claude/scripts/bugbot-refused-head.sh"; do
   if [[ -x "$candidate" ]]; then BUGBOT_REFUSED_SH="$candidate"; break; fi
 done
-if [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$HEAD_SHA" >/dev/null 2>&1; then
+if [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
   echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
 else
   gh pr comment "$PR_NUMBER" --body "@cursor review"

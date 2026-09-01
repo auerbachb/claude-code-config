@@ -123,6 +123,29 @@ print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H
 "
 }
 
+# Issue #1517 fixtures. Both produce values the RAW-emptiness guards accept, so
+# they reach the comparison the way real data does.
+#
+# ts_with_offset: a wall-clock reading N seconds from now carrying a genuine
+# non-UTC offset — norm_ts leaves it untouched by contract, so it stays
+# unorderable against a bare UTC value. Pass a NEGATIVE age for a reading in the
+# future, which is what makes it sort above HEAD while its true instant is
+# earlier.
+ts_with_offset() {
+  python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H:%M:%S') + '$2')
+"
+}
+# ts_fractional: a well-formed UTC timestamp carrying fractional seconds, which
+# norm_ts deliberately KEEPS. Used by the negative control.
+ts_fractional() {
+  python3 -c "
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) - timedelta(seconds=$1)).strftime('%Y-%m-%dT%H:%M:%S') + '.500000Z')
+"
+}
+
 setup() {
   local head_age="$1" comments_json="$2"
   rm -f "$HOME/.claude/session-state.json"
@@ -233,6 +256,67 @@ check_eq "cursor step recorded true (suppressed counts as done)" "true" "$(read_
 # above is the value this branch wrote and not everything defaulting true.
 check_eq "graphite step still false (record is partial, not all-true)" "false" "$(read_step graphite)"
 check_eq "no @cursor review posted" "0" "$(posted_cursor)"
+
+############################################################################
+# ISSUE #1517 — the normalised timestamps are VALIDATED before they are ordered.
+#
+# WHY THESE EXIST
+#   bugbot-refused-head.sh's final line IS its exit status, and it used to be a
+#   bare `[[ ! "$(norm_ts A)" < "$(norm_ts B)" ]]`. Lines 67/82 guard the RAW
+#   values for emptiness; nothing guarded what norm_ts produced. A non-empty
+#   value the normaliser cannot render orderable makes bash answer on BYTE ORDER,
+#   and whenever those bytes land at or above HEAD the script returns 0 and
+#   SUPPRESSES a required `@cursor review`. That inverts the fail-open contract
+#   the file's own header promises: every uncertain case must return 1 and post.
+#
+#   Each scenario below is built so the PRE-FIX comparison lands on the
+#   suppressing side — a fixture that merely fails to suppress would pass against
+#   the old script too and prove nothing. (p) is the negative control.
+echo "== (m): malformed refusal timestamp sorting ABOVE HEAD -> fail open, nudge posts =="
+# `zzz…` sorts above any `2026-…` HEAD value, so the pre-fix compare returned 0
+# and suppressed. The only readable answer is "not comparable" -> post.
+setup 600 "[$(refusal "zzz-not-a-timestamp")]"
+run_script
+check_eq "@cursor review posted (unorderable refusal timestamp)" "1" "$(posted_cursor)"
+check_eq "all three nudges posted" "3" "$(posted_count)"
+
+############################################################################
+echo "== (n): norm_ts PASSTHROUGH — a non-UTC offset is valid output and still unorderable =="
+# Not a garbage-input case. ts-normalizer.sh's contract deliberately LEAVES a
+# genuine non-UTC offset untouched rather than mangling it into a wrong instant,
+# so `…+05:00` is valid library output that cannot be compared against a bare
+# UTC value. This fixture's wall-clock reading sorts ABOVE HEAD while its true
+# instant is hours BEFORE it, so the pre-fix compare suppressed on a refusal that
+# predates the push — the exact wrong answer, reached without any malformed data.
+# This is why the shape check is anchored at `$` rather than matching a prefix.
+setup 600 "[$(refusal "$(ts_with_offset -3000 '+05:00')")]"
+run_script
+check_eq "@cursor review posted (offset-bearing timestamp is not orderable)" "1" "$(posted_cursor)"
+check_eq "all three nudges posted" "3" "$(posted_count)"
+
+############################################################################
+echo "== (o): malformed HEAD timestamp -> fail open, nudge posts =="
+# The HEAD side needs the same guard as the refusal side. A head value sorting
+# BELOW a valid refusal made the pre-fix compare suppress. The refusal fixture is
+# the same well-formed one scenario (a) suppresses on, so the HEAD value is the
+# only difference and a green result here is attributable to it.
+setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
+export FIXTURE_HEAD_TS="0000-bad-head"
+run_script
+check_eq "@cursor review posted (unorderable HEAD timestamp)" "1" "$(posted_cursor)"
+check_eq "all three nudges posted" "3" "$(posted_count)"
+
+############################################################################
+echo "== (p): NEGATIVE CONTROL — fractional seconds are valid and STILL suppress =="
+# Guards the other direction. norm_ts deliberately KEEPS fractional seconds, so a
+# shape check that only accepted whole seconds would reject values the library is
+# expected to emit and turn this into a script that never suppresses — every
+# scenario above would go green while the feature was dead. A `.500000` refusal
+# postdating HEAD must behave exactly like the plain one in (a).
+setup 600 "[$(refusal "$(ts_fractional 60)")]"
+run_script
+check_eq "no @cursor review posted (fractional seconds are comparison-safe)" "0" "$(posted_cursor)"
+check_eq "the other two nudges still posted" "2" "$(posted_count)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

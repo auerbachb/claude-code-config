@@ -378,6 +378,9 @@ COMMITS_JSON="$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/commits?p
   exit 4
 }
 
+# A COMMIT date, which is NOT when this SHA became HEAD. It is only the FLOOR of
+# the head-observation anchor computed at AGE_SECONDS below (issue #1517); do not
+# feed it to an age comparison directly.
 PUSH_TIMESTAMP="$(jq -r --arg sha "$HEAD_SHA" '
   (map(select(.sha == $sha)) | last // {})
   | .commit.committer.date // .commit.author.date // empty
@@ -417,7 +420,68 @@ print(max(0, int((datetime.now(timezone.utc) - ts).total_seconds())))
 PY
 }
 
+# HEAD-OBSERVATION ANCHOR (issue #1517 — CodeRabbit's post-merge review of PR #1203).
+#
+# PUSH_TIMESTAMP is a COMMIT date, not the moment this SHA became HEAD: the same
+# class of mistake as the commit_id re-pointing trap, where commit metadata gets
+# read as push attribution. A force-push can move an OLDER commit onto HEAD, and
+# every consumer of AGE_SECONDS then measures from that older date.
+#
+# The harm is concrete, not theoretical. `CR_BANNER_AGE -le AGE_SECONDS` and
+# `BUGBOT_TRIGGER_AGE -le AGE_SECONDS` both encode "posted after the push", so an
+# inflated AGE_SECONDS lets a CodeRabbit rate-limit banner or an `@cursor review`
+# trigger left over from the PRIOR head read as current — emitting polling_cr for
+# up to a full retry window on a signal that belongs to a different HEAD. That is
+# precisely the escalation stall this file exists to prevent.
+#
+# The anchor is max(commit date, newest `head_ref_force_pushed` event), expressed
+# as min() over AGES so both timestamps go through the ONE parsing rule this file
+# already owns. A second lexicographic timestamp compare is deliberately avoided
+# here for the reason iso_age_seconds states above: ts-normalizer-parity.test.sh
+# pins the single `def canon_ts:` in this file against merge-gate.sh's norm_ts,
+# and a near-copy under another name reintroduces exactly the drift that guard
+# exists to prevent.
+#
+# SAFE BY CONSTRUCTION — the anchor is never LATER than the true moment this SHA
+# became HEAD. A commit cannot be pushed before it exists, and the newest
+# force-push either IS when the current SHA became HEAD or precedes a later
+# ordinary push that set it. So this never understates age; it only removes the
+# overstatement. Every consumer therefore moves in the same direction: keep
+# polling the current tier a little longer rather than escalate to a paid one on
+# evidence about a previous HEAD.
+#
+# RESIDUAL, known and unchanged: a commit authored well before it was pushed with
+# no force-push involved still anchors on the commit date. GitHub's timeline
+# records no event for an ordinary push, so there is nothing to read — this
+# narrows the defect to that case rather than closing it outright.
+#
+# FAILS SOFT: an unreachable, empty, or unparseable timeline leaves AGE_SECONDS
+# exactly as it is today. The ISO shape test is required rather than optional
+# because iso_age_seconds returns 0 for anything it cannot parse, and 0 would
+# read here as "HEAD is brand new" — the stall direction being fixed.
+#
+# Not a meta-guard L violation. That guard (escalate-review-gate-met.test.sh)
+# bans a direct per-commit check-run fetch from this file, so check-run data
+# keeps coming from pr-state.sh's deduped bundle. This call reads the PR
+# TIMELINE — content the bundle does not carry, and not check-run data at all.
+# The guard is a source grep, so do not spell its banned path here even in prose.
+FORCE_PUSH_TS="$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/timeline?per_page=100" 2>/dev/null \
+  | jq -rs '
+      [ .[]? | .[]?
+        | select(type == "object")
+        | select((.event // "") == "head_ref_force_pushed")
+        | (.created_at // "")
+        | select(. != "") ]
+      | sort | last // ""
+    ' 2>/dev/null || true)"
+
 AGE_SECONDS="$(iso_age_seconds "$PUSH_TIMESTAMP")"
+if [[ "$FORCE_PUSH_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+  FORCE_PUSH_AGE="$(iso_age_seconds "$FORCE_PUSH_TS")"
+  if [[ "$FORCE_PUSH_AGE" -lt "$AGE_SECONDS" ]]; then
+    AGE_SECONDS="$FORCE_PUSH_AGE"
+  fi
+fi
 
 # DELIBERATELY NOT WIDENED with the banner parsers below (issue #1364). This is
 # the windowless commit-status/check-run shape (b) from cr-rate-limits.md, and it

@@ -497,6 +497,16 @@ echo "== (l): PREMISE — the helper under test is the one production will run =
 # Where the base is unreachable (CI checks out shallow) this reports UNVERIFIED
 # instead of passing quietly; the suite never claimed to test the base copy, so
 # every other assertion stands either way (CodeAnt, PR #1377).
+#
+# HUMAN-ACKNOWLEDGED DRIFT is the "update this suite" action the failure message
+# asks for. Each line is `<path> <base-blob-hash> — <why>`, so an acknowledgment
+# is scoped to the EXACT base it was reviewed against: when main moves the hash
+# stops matching and the guard goes loud again, and once the change lands there
+# is no drift left to acknowledge. It records provenance and pins no
+# implementation bytes, so it deliberately cannot certify the change correct —
+# that job belongs to the helper's own suite plus (k)'s contract coverage, which
+# is the interchangeability argument this file already makes above.
+ACK_HELPER_DRIFT='.claude/scripts/bugbot-refused-head.sh 40516261c50fbd305105b9bb8adf573c3f8339c8 — issue #1517: validate norm_ts output before comparing, so a malformed non-empty timestamp can no longer suppress a required nudge. BEHAVIOURAL, not neutral. Scenarios (a)-(j) all feed well-formed timestamps and describe both copies unchanged; the delta is pinned by maybe-trigger-bugbot-suppression.test.sh.'
 BASE_REF=""
 for cand in origin/main main; do
   if git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
@@ -531,6 +541,8 @@ else
       # neutral for scenarios (a)-(j), which never assert that line.
       # CI still runs the base copy; (k)'s contract coverage carries regardless.
       PASS=$((PASS + 1)); echo "ok   — $(basename "$f") drifts from $BASE_REF only by the script-usage.log guard reorder (behavior-neutral; CI runs the base copy)"
+    elif [[ -n "$drift" ]] && printf '%s\n' "$ACK_HELPER_DRIFT" | grep -qF "$f $base_hash"; then
+      PASS=$((PASS + 1)); echo "ok   — $(basename "$f") drift from $BASE_REF is acknowledged for this exact base (see ACK_HELPER_DRIFT; CI runs the base copy, so (k) carries the contract until this merges)"
     else
       check_eq "$(basename "$f") is identical to $BASE_REF (else update this suite: CI runs the base copy)" \
         "$base_hash" "$tree_hash"

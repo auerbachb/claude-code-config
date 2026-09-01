@@ -69,6 +69,18 @@ case "$sub" in
           cat "$FIXTURE_COMMITS_JSON"
           exit 0
           ;;
+        repos/*/issues/*/timeline*)
+          # PR timeline — source of the head-observation anchor (issue #1517).
+          # Defaults to an empty timeline so every suite written before this
+          # existed keeps the behaviour the stub's `[]` fallback already gave
+          # them: no force-push event, anchor falls back to the commit date.
+          if [[ -n "${FIXTURE_TIMELINE_JSON:-}" ]]; then
+            cat "$FIXTURE_TIMELINE_JSON"
+          else
+            echo "[]"
+          fi
+          exit 0
+          ;;
         repos/*/git/commits/*)
           # HEAD committer date (issue #875). escalate-review.sh feeds this to
           # review-substance.sh as push_ts, and BOTH the temporal-inversion and
@@ -156,6 +168,24 @@ EOF
 {"sha": "$HEAD_SHA", "committer": {"date": "$push_ts"}, "author": {"date": "$push_ts"}}
 EOF
   export FIXTURE_GIT_COMMIT_JSON="$TMP/git-commit.json"
+  # Issue #1517: reset the timeline on every scenario. Clearing it HERE rather
+  # than in write_force_push is what stops a force-push event leaking from one
+  # scenario into the next — every suite calls write_commits per scenario, so an
+  # event set once would otherwise silently apply to everything after it.
+  printf '[]\n' > "$TMP/timeline.json"
+  export FIXTURE_TIMELINE_JSON="$TMP/timeline.json"
+}
+
+# The head ref MOVED BY FORCE at $1 (issue #1517). The head-observation anchor is
+# max(commit date, newest force-push), so this is how a scenario says "the commit
+# is old but it only became HEAD just now" — the case a commit date cannot
+# express. Call AFTER write_commits, which resets the timeline.
+write_force_push() {
+  local ts="$1"
+  cat > "$TMP/timeline.json" <<EOF
+[{"event": "head_ref_force_pushed", "created_at": "$ts"}]
+EOF
+  export FIXTURE_TIMELINE_JSON="$TMP/timeline.json"
 }
 
 # CodeRabbit rate-limited check-run — included in every scenario so the script
