@@ -123,7 +123,7 @@ Scan each PR body for:
 - **Concrete numbers** — record counts, accuracy metrics, coverage stats, thresholds
 - **Which part of the system** this advances — classification, scraping, data pipeline, UI, etc.
 
-If a PR body is thin or template-only, extract the linked issue number via `pr-issue-ref.sh` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and read the issue body. /standup runs from arbitrary repos, so resolve the script path with the same multi-candidate lookup used for `workday.sh` above. The helper exits 1 with empty stdout when no link is found — distinguish that benign case from exits 2/3/4 (real errors) so genuine failures surface:
+If a PR body is thin or template-only, extract the linked issue number via `pr-issue-ref.sh --first` (matches all nine GitHub closing keywords — `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`, case-insensitive) and read the issue body. `--first` is required: default mode is set-valued (issue #1492), and this call feeds a single `gh issue view`. /standup runs from arbitrary repos, so resolve the script path with the same multi-candidate lookup used for `workday.sh` above. The helper exits 1 with empty stdout when no link is found — distinguish that benign case from exits 2/3/4 (real errors) so genuine failures surface:
 ```bash
 PR_ISSUE_REF_SH=""
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
@@ -143,7 +143,7 @@ if [ -z "$PR_ISSUE_REF_SH" ]; then
   exit 1
 fi
 ISSUE_NUMBER=""
-if RAW_REF=$("$PR_ISSUE_REF_SH" "$PR_NUMBER" 2>&1); then
+if RAW_REF=$("$PR_ISSUE_REF_SH" --first "$PR_NUMBER" 2>&1); then
   ISSUE_NUMBER="$RAW_REF"
 else
   REF_RC=$?

@@ -272,10 +272,13 @@ printf '%s' "$OPEN_PRS" \
       REC="merge"
       RATIONALE=""
 
-      # Signal (b): linked issue closed (cheap — no git). First match wins.
+      # Signal (b): linked issue closed (cheap — no git). One primary issue is
+      # enough for this signal, so ask for it explicitly with --first: default
+      # mode is set-valued (issue #1492) and a two-line value would be handed
+      # straight to `gh issue view` below.
       ISSUE=""
       if [ -x "$PR_ISSUE_REF" ]; then
-        ISSUE="$("$PR_ISSUE_REF" "$NUM" 2>/dev/null || true)"
+        ISSUE="$("$PR_ISSUE_REF" --first "$NUM" 2>/dev/null || true)"
       else
         err "pr-issue-ref.sh not found at $PR_ISSUE_REF — linked-issue signal skipped for #$NUM"
       fi

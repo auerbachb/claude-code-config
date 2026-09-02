@@ -72,7 +72,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [portable-handoff-lint.test.sh](../tests/portable-handoff-lint.test.sh) | Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff |
 | [portable-handoff-publish.test.sh](../tests/portable-handoff-publish.test.sh) | Tests canonical `/end` handoff publication |
 | [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
-| [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — default mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
+| [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
 | [pr-preflight.test.sh](../tests/pr-preflight.test.sh) | Tests for `pr-preflight.sh` |
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |

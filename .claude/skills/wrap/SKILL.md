@@ -326,10 +326,19 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 
 **Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
+**Release every issue the PR closed, not just one.** `pr-issue-ref.sh` is set-valued: a PR carrying two `Closes` trailers prints both numbers, one per line. Loop over them — taking a single value here is exactly what stranded #1541's claim after PR #1546 merged, and #1407's after PR #1489 (issue #1492):
+
 ```bash
-MERGED_ISSUE=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
-[ -n "$MERGED_ISSUE" ] && [ -n "$ISSUE_CLAIM_SH" ] && "$ISSUE_CLAIM_SH" "$MERGED_ISSUE" --release || true
+MERGED_ISSUES=$([[ -n "$PR_ISSUE_REF_SH" ]] && "$PR_ISSUE_REF_SH" "$PR_NUM" 2>/dev/null || true)
+if [ -n "$MERGED_ISSUES" ] && [ -n "$ISSUE_CLAIM_SH" ]; then
+  printf '%s\n' "$MERGED_ISSUES" | while IFS= read -r MERGED_ISSUE; do
+    [ -n "$MERGED_ISSUE" ] || continue
+    "$ISSUE_CLAIM_SH" "$MERGED_ISSUE" --release >/dev/null 2>&1 || true
+  done
+fi
 ```
+
+Releasing an issue you do not hold is safe and silent: `issue-claim.sh --release` compares logins and drops **your own** claim only, never a collaborator's, so an extra number in the set is a documented no-op rather than a stomp.
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
 
@@ -456,13 +465,13 @@ dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
 
 ### Step 3.1: Detect follow-up items
 
-1. Extract the linked issue number from the PR body via `pr-issue-ref.sh` (matches all nine GitHub closing keywords). Distinguish exit `1` (no link — expected) from exits `2`/`3`/`4` (real errors):
+1. Extract the linked issue number from the PR body via `pr-issue-ref.sh --first` (matches all nine GitHub closing keywords). `--first` is required: follow-up attribution wants one primary issue, and the default mode is set-valued, so a PR closing two issues would otherwise hand `gh issue view` a two-line argument. Distinguish exit `1` (no link — expected) from exits `2`/`3`/`4` (real errors):
 
    ```bash
    PR_NUMBER="$PR_NUM"
    PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
    ISSUE_N=""
-   if [[ -n "$PR_ISSUE_REF_SH" ]] && RAW_REF=$("$PR_ISSUE_REF_SH" "$PR_NUMBER" 2>&1); then
+   if [[ -n "$PR_ISSUE_REF_SH" ]] && RAW_REF=$("$PR_ISSUE_REF_SH" --first "$PR_NUMBER" 2>&1); then
      ISSUE_N="$RAW_REF"
    else
      REF_RC=$?

@@ -31,7 +31,8 @@ GATE_BY_PR[$N]="$GATE"   # retain per-PR — Step 5c/5d look up THIS PR's gate b
                           # iterated and goes stale/wrong once other steps
                           # iterate their own PR lists.
 # Linked issue for the Issue column (exit 1 = no link, expected).
-ISSUE=$("$PR_ISSUE_REF_SH" "$N" 2>/dev/null || true)
+# --first: the column holds one primary issue; default mode is set-valued (#1492).
+ISSUE=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null || true)
 # Unresolved review threads (GraphQL — covers every bot/human author).
 UNRESOLVED=$(gh api graphql -f query='
   query($owner:String!,$repo:String!,$n:Int!){
