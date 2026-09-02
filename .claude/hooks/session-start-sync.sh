@@ -110,23 +110,31 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # Short bound: this hook is registered with timeout 30, and a real critical
   # section is milliseconds. A scheduled sync that genuinely holds the lock for
   # longer has already done this hook's work.
-  # Contention is detected two ways, OR-ed, because neither alone is sound.
+  # Contention is detected three ways, OR-ed, because none alone is sound.
   #
   #   1. Structural: does the lock directory already exist as we walk up to it?
   #      state-lock.sh's lock for a given base is "${base}.lock" (documented in
   #      its header). Present => somebody else holds it right now.
-  #   2. Timing: whole-second stamps either side of the acquire.
+  #   2. Probe: a zero-timeout state_lock_acquire. Its loop attempts mkdir
+  #      BEFORE its first deadline check, so a 0 bound is a single non-blocking
+  #      attempt — success proves no wait happened at all; failure proves a
+  #      live holder in that instant. A stale lock does not false-positive:
+  #      the loop breaks it and wins mkdir on the next iteration, still ahead
+  #      of the deadline check.
+  #   3. Timing: whole-second stamps either side of the acquire.
   #
   # The timing check ALONE is not enough: `date +%s` has one-second resolution,
   # so a real wait shorter than a second reads as a delta of 0 and would be
   # misreported as uncontended — which would clear the restart marker for
   # definitions this session never loaded (the failure that matters, since it
-  # silently withholds the restart reminder). The structural check catches
-  # exactly that sub-second window. The timing check still earns its keep for a
-  # lock taken after our test but before our acquire.
+  # silently withholds the restart reminder). The structural check narrows that
+  # window but cannot close it: a holder appearing after the test and releasing
+  # within the same whole second slips both. The probe closes exactly that gap
+  # — any wait at all implies a failed first attempt.
   #
-  # Both are biased toward reporting CONTENDED, whose only cost is a duplicate
-  # reminder. An unusable clock reads as CONTENDED for the same reason.
+  # All three are biased toward reporting CONTENDED, whose only cost is a
+  # duplicate reminder. An unusable clock reads as CONTENDED for the same
+  # reason.
   _lock_contended_pre=0
   [[ -d "${_sync_lock_base}.lock" ]] && _lock_contended_pre=1
   _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
@@ -134,12 +142,18 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # (see the deadline block above), so a long wait does not overrun the hook —
   # it shortens those calls. Capping it anyway keeps a contended login from
   # spending the whole budget queueing for work the other holder is already
-  # doing.
-  if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
+  # doing. The 0-timeout probe costs nothing when uncontended and never waits.
+  _lock_probe_waited=0
+  if state_lock_acquire "$_sync_lock_base" 0 2>/dev/null; then
     _lock_held=1
+  else
+    _lock_probe_waited=1
+    if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
+      _lock_held=1
+    fi
   fi
   _lock_t1="$(date -u +%s 2>/dev/null)" || _lock_t1=""
-  if (( _lock_contended_pre == 1 )); then
+  if (( _lock_contended_pre == 1 || _lock_probe_waited == 1 )); then
     _lock_contended=1
   elif [[ "$_lock_t0" =~ ^[0-9]+$ && "$_lock_t1" =~ ^[0-9]+$ ]]; then
     (( _lock_t1 > _lock_t0 )) && _lock_contended=1
@@ -336,7 +350,14 @@ fi
 _root_repo=""
 _repo_root_helper="${_scripts_dir}/repo-root.sh"
 if [[ -f "$_repo_root_helper" ]]; then
-  _root_repo="$(bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
+  # Bounded to fit this hook's own arithmetic: repo-root.sh defaults to 10s
+  # PER git call and may run two, which alone exceeds the 9s post-region
+  # reserve — a slow-but-successful reset could then have the hook killed
+  # before publish with no recorded failure token, the exact unrecorded-kill
+  # the deadline scheduling above exists to prevent. 3s x 2 calls fits the
+  # reserve with room for the file-level work that follows, and the lookup is
+  # a local `git worktree list`, for which 3s is generous.
+  _root_repo="$(REPO_ROOT_TIMEOUT_SECS=3 bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
 fi
 
 # --- Publish skill and agent symlinks on the steady-state path ---
@@ -643,7 +664,10 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   # next reader concludes the two are meant to differ.
   root_repo=""
   if [[ -f "$_repo_root_helper" ]]; then
-    root_repo="$(bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
+    # Same 3s-per-call bound as the _root_repo lookup above. This one runs
+    # outside the lock, but it spends the same registered-30s hook budget —
+    # and the two spellings staying identical is the point.
+    root_repo="$(REPO_ROOT_TIMEOUT_SECS=3 bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
   fi
   if [[ -n "$root_repo" && -e "$root_repo/.git" ]]; then
     # Only pull if on main branch (don't disrupt feature branches).

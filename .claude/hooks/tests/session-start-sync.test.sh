@@ -121,6 +121,26 @@ grep -q 'state_lock_release' "$HOOK" \
 grep -qF '.claude/logs/claude-config-sync-state.json' "$HOOK" \
   || fail "session-start-sync.sh does not use claude-config-sync.sh's canonical lock base"
 
+# Sub-second contention probe (BugBot 6f97b65b, PR #1553): a holder that
+# appears after the structural lockdir test and releases within the same whole
+# second defeats both the structural and the whole-second timing checks — the
+# startup then reads as uncontended and clears the restart marker for
+# definitions this session never loaded. The zero-timeout acquire is a single
+# non-blocking attempt (state-lock.sh tries mkdir before its first deadline
+# check), so any wait at all implies a failed probe.
+grep -qF 'state_lock_acquire "$_sync_lock_base" 0 ' "$HOOK" \
+  || fail "session-start-sync.sh lacks the zero-timeout contention probe — a sub-second lock wait reads as uncontended and can clear the restart marker for definitions this session never loaded"
+grep -qF '_lock_probe_waited == 1' "$HOOK" \
+  || fail "session-start-sync.sh does not feed the probe result into _lock_contended"
+
+# Post-region budget honesty (BugBot 111e48c9, PR #1553): repo-root.sh defaults
+# to 10s per git call and may run two, which alone exceeds the hook's 9s
+# post-region reserve — a slow-but-successful reset could then have the hook
+# killed before publish with nothing recorded. Both lookups must carry the
+# explicit 3s-per-call bound so the reserve arithmetic actually covers them.
+[ "$(grep -cF 'REPO_ROOT_TIMEOUT_SECS=3 bash "$_repo_root_helper"' "$HOOK")" -eq 2 ] \
+  || fail "session-start-sync.sh must bound BOTH repo-root.sh lookups with REPO_ROOT_TIMEOUT_SECS=3 — the 10s/call default exceeds the 9s post-region reserve"
+
 # The lock must be released BEFORE the root-repo sync: that is a different
 # resource, and holding the config-sync lock across a `git pull` would block
 # every scheduled tick for the duration of the pull.
