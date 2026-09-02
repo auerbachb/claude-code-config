@@ -61,7 +61,7 @@ case "\$args" in
   *"pr list"*)        cat "$TMP/pr_list.json" ;;
   *"/files"*)
     pr=\$(printf '%s' "\$args" | sed -n 's|.*/pulls/\([0-9][0-9]*\)/files.*|\1|p')
-    if [ -f "$TMP/files_\$pr.txt" ]; then cat "$TMP/files_\$pr.txt"; else printf ''; fi
+    if [ -f "$TMP/files_\$pr.json" ]; then cat "$TMP/files_\$pr.json"; else printf '[]'; fi
     ;;
   *) echo "gh stub: unhandled args: \$args" >&2; exit 1 ;;
 esac
@@ -72,6 +72,27 @@ export PATH="$STUB_BIN:$PATH"
 printf 'testowner/testrepo\n' > "$TMP/repo_view.txt"
 printf '[]\n' > "$TMP/issue_list.json"
 printf '[]\n' > "$TMP/pr_list.json"
+
+# gh_files <PR> [<status> <path>]... — write the JSON that `pulls/{N}/files`
+# returns, one object per status/path pair.
+#
+# These fixtures hold the API's OWN payload, not the post-`--jq` stream the old
+# `files_<PR>.txt` fixtures held. That difference is the point: the detector now
+# pipes the raw response through its own jq filter, so a fixture in the old
+# shape would stub past the very code that turns a payload into NUL-delimited
+# records (issue #1554).
+#
+# An EMPTY status writes a row with NO `status` key at all — how the real schema
+# expresses a payload without one, which must still count as a touch. `--args`
+# carries each value through argv, so a path containing a newline or a tab
+# reaches the fixture verbatim instead of being re-split by the shell.
+gh_files() {  # $1 PR number, then alternating <status> <path> arguments
+  local pr="$1"; shift
+  jq -nc '[ range(0; ($ARGS.positional | length); 2)
+            | { status: $ARGS.positional[.], filename: $ARGS.positional[. + 1] }
+            | if .status == "" then del(.status) else . end ]' \
+    --args "$@" > "$TMP/files_$pr.json"
+}
 
 # ---- helpers ----------------------------------------------------------------
 WINDOW_START="2026-01-01"
@@ -460,10 +481,12 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":803,"mergedAt":"2026-02-03T00:00:00Z"},
  {"number":804,"mergedAt":"2020-01-01T00:00:00Z"}]
 EOF
-printf 'src/Api.ts\nREADME.md\n' > "$TMP/files_801.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_802.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_803.txt"
-printf 'src/Api.ts\n'             > "$TMP/files_804.txt"
+# No `status` key on any of these rows — the status-less payload shape, which
+# must still enumerate rather than being silently dropped (11a-11i below).
+gh_files 801 '' src/Api.ts '' README.md
+gh_files 802 '' src/Api.ts
+gh_files 803 '' src/Api.ts
+gh_files 804 '' src/Api.ts
 
 R11=$(new_repo r11)
 commit_touch "$R11" "2026-02-01T00:00:00" "unmarked local commit" src/Ignored.ts
@@ -496,7 +519,7 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":813,"mergedAt":"2026-03-03T12:00:00Z"},
  {"number":814,"mergedAt":"2026-02-28T23:59:00Z"}]
 EOF
-for n in 811 812 813 814; do printf 'src/Edge.ts\n' > "$TMP/files_$n.txt"; done
+for n in 811 812 813 814; do gh_files "$n" '' src/Edge.ts; done
 run_in "$R11" --since "2026-03-01" --source gh --json
 check_jq "11f: a PR merged late on the boundary day is inside the window" "$OUT" \
   '.hotspots[] | select(.file=="src/Edge.ts") | (.pr_numbers | index(811)) != null'
@@ -523,7 +546,7 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":822,"mergedAt":"2026-03-01T20:00:00Z"},
  {"number":823,"mergedAt":"2026-03-04T09:00:00Z"}]
 EOF
-for n in 821 822 823; do printf 'src/Ref.ts\n' > "$TMP/files_$n.txt"; done
+for n in 821 822 823; do gh_files "$n" '' src/Ref.ts; done
 run_in "$R11B" --since "$REF_SHA" --source gh --json
 check_jq "11i: a git-ref --since counts every PR merged on that calendar day" "$OUT" \
   '.hotspots[] | select(.file=="src/Ref.ts") | .pr_numbers == [821,822,823]'
@@ -938,9 +961,9 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":1402,"mergedAt":"2026-02-02T00:00:00Z"},
  {"number":1403,"mergedAt":"2026-02-03T00:00:00Z"}]
 EOF
-printf 'added\tsrc/GhBorn.ts\n'    > "$TMP/files_1401.txt"
-printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1402.txt"
-printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1403.txt"
+gh_files 1401 added    src/GhBorn.ts
+gh_files 1402 modified src/GhBorn.ts
+gh_files 1403 modified src/GhBorn.ts
 
 printf '[]\n' > "$TMP/issue_list.json"
 run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
@@ -957,18 +980,22 @@ check_jq "22c: NEGATIVE CONTROL — --include-creation restores the gh creation 
   '.hotspots[] | select(.file=="src/GhBorn.ts") | .pr_numbers == [1401,1402,1403]'
 
 # A 20-file PR is a sweep on the gh path too.
-{
-  printf 'modified\tsrc/GhBorn.ts\n'
-  i=1; while [ "$i" -le 19 ]; do printf 'modified\tsrc/ghsweep_%s.ts\n' "$i"; i=$((i + 1)); done
-} > "$TMP/files_1403.txt"
+SWEEP_ARGS=(modified src/GhBorn.ts)
+i=1
+while [ "$i" -le 19 ]; do
+  SWEEP_ARGS[${#SWEEP_ARGS[@]}]=modified
+  SWEEP_ARGS[${#SWEEP_ARGS[@]}]="src/ghsweep_$i.ts"
+  i=$((i + 1))
+done
+gh_files 1403 "${SWEEP_ARGS[@]}"
 run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
 check_eq "22d: a 20-file PR is a sweep, dropping the file below threshold 2" "1" "$RC"
 check_jq "22e: the sweep PR is counted on the gh path" "$OUT" \
   '.sweep_commit_count == 1 and .sweep_skipped_count == 20'
 
-# Scenario 11's fixtures are bare filenames with no status column — that path is
-# still enumerated rather than silently dropped (verified by 11a-11i above).
-printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1403.txt"
+# Scenario 11's fixtures carry no status key at all — that payload is still
+# enumerated rather than silently dropped (verified by 11a-11i above).
+gh_files 1403 modified src/GhBorn.ts
 
 # =============================================================================
 # Scenario 23 — a file with recorded conflict cost is still flagged
@@ -1050,9 +1077,9 @@ cat > "$TMP/pr_list.json" <<'EOF'
  {"number":1702,"mergedAt":"2026-02-02T00:00:00Z"},
  {"number":1703,"mergedAt":"2026-02-03T00:00:00Z"}]
 EOF
-printf 'copied\tsrc/Copied.ts\n'   > "$TMP/files_1701.txt"
-printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1702.txt"
-printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1703.txt"
+gh_files 1701 copied   src/Copied.ts
+gh_files 1702 modified src/Copied.ts
+gh_files 1703 modified src/Copied.ts
 
 run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
 check_jq "25a: a \"copied\" birth is not scored as churn on the gh path" "$OUT" \
@@ -1070,12 +1097,193 @@ check_jq "25c: NEGATIVE CONTROL — --include-creation restores the copied touch
   '.hotspots[] | select(.file=="src/Copied.ts") | .pr_numbers == [1701,1702,1703]'
 
 # A "renamed" destination is NOT a creation — the same guard must not overreach.
-printf 'renamed\tsrc/Copied.ts\n' > "$TMP/files_1701.txt"
+gh_files 1701 renamed src/Copied.ts
 run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
 check_jq "25d: a \"renamed\" destination is still a touch, not a creation" "$OUT" \
   '.creation_skipped_count == 0
    and (.hotspots[] | select(.file=="src/Copied.ts")
         | .pr_numbers == [1701,1702,1703] and .created_in_window == false)'
+
+# =============================================================================
+# Scenario 26 — a filename with an EMBEDDED NEWLINE is ONE file on both backends
+# (issue #1554)
+#
+# A path may carry any byte but NUL and `/`, a newline included. The gh backend
+# counted newline-delimited LINES, so a 2-file PR whose one filename embedded a
+# newline counted 3 and drove the --sweep-threshold classification off the wrong
+# number. The git backend did not miscount — git C-quotes such a path onto a
+# single line — but it then reported the ESCAPED path, which failed the
+# existence check and vanished into missing_count. So neither backend told the
+# truth and the two disagreed about identical history; both now enumerate
+# NUL-delimited, and the assertions below pin them to the SAME answer.
+#
+# THE PRE-FIX CONTROL IS HERMETIC ON PURPOSE. Running `origin/main`'s copy of the
+# detector is the obvious reproduction, but CI checks out shallow (no
+# `fetch-depth: 0` in .github/workflows/hook-scripts.yml), so that control would
+# SKIP in exactly the environment it exists to protect — a guard that passes by
+# not running. Instead: 26i applies the literal pre-fix counting expression to
+# the literal pre-fix byte stream, and 26g/26h run the shipped detector twice at
+# ONE threshold over payloads differing only in whether the third record is a
+# real file or a newline artifact.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+NL_PATH=$(printf 'src/two\nlines.ts')
+TAB_PATH=$(printf 'src/tab\there.ts')
+# jq string literals cannot carry a raw newline, so the assertions below compare
+# against the JSON-escaped form jq itself produces for these paths.
+NL_JSON=$(printf '%s' "$NL_PATH" | jq -Rs '.')
+TAB_JSON=$(printf '%s' "$TAB_PATH" | jq -Rs '.')
+
+R26=$(new_repo_on r26 main)
+# src/Second.ts and src/Third.ts exist only so the gh-path existence check can
+# find them in 26h; no PR-marked commit ever touches them, so they stay out of
+# the git-path parity comparison.
+commit_touch "$R26" "2026-02-01T00:00:00" "seed the fixture paths" \
+  "$NL_PATH" src/Plain.ts src/Second.ts src/Third.ts
+commit_touch "$R26" "2026-02-02T00:00:00" "first (#1801)"  "$NL_PATH" src/Plain.ts
+commit_touch "$R26" "2026-02-03T00:00:00" "second (#1802)" "$NL_PATH" src/Plain.ts
+
+run_in "$R26" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json
+check_eq "26a: git — exit 0 with an embedded-newline path in history" "0" "$RC"
+# THE git-side regression pin. Pre-fix this path arrived C-quoted as
+# "src/two\nlines.ts", failed `git cat-file -e` under that literal name, and was
+# dropped as missing — so the file was invisible rather than miscounted.
+check_jq "26b: git — the embedded-newline path is reported VERBATIM, not escaped" "$OUT" \
+  ".hotspots | map(.file) | index($NL_JSON) != null"
+check_jq "26c: git — it is ONE file carrying both PRs" "$OUT" \
+  ".hotspots[] | select(.file == $NL_JSON) | .pr_count == 2 and .pr_numbers == [1801,1802]"
+check_jq "26d: git — 2 paths is not a sweep at --sweep-threshold 3" "$OUT" \
+  '.sweep_commit_count == 0 and .missing_count == 0'
+
+# NEGATIVE CONTROL — the sweep rule is live on this history: at a threshold of 2
+# the same two commits DO sweep, so 26d is a measurement and not an inert pass.
+run_in "$R26" --since "$WINDOW_START" --threshold 2 --sweep-threshold 2 --json
+check_jq "26e: NEGATIVE CONTROL — git — the same commits sweep at --sweep-threshold 2" "$OUT" \
+  '.sweep_commit_count == 2 and (.hotspots | length) == 0'
+
+# A TAB inside a filename is a hazard `-z` INTRODUCES: git used to quote such a
+# path, and the old parser took the last tab-separated field as the path, so a
+# verbatim tab would have truncated it to "here.ts".
+R26B=$(new_repo_on r26b main)
+commit_touch "$R26B" "2026-02-01T00:00:00" "seed" "$TAB_PATH"
+commit_touch "$R26B" "2026-02-02T00:00:00" "one (#1811)"   "$TAB_PATH"
+commit_touch "$R26B" "2026-02-03T00:00:00" "two (#1812)"   "$TAB_PATH"
+commit_touch "$R26B" "2026-02-04T00:00:00" "three (#1813)" "$TAB_PATH"
+run_in "$R26B" --since "$WINDOW_START" --json
+check_jq "26f: git — a TAB inside a filename survives verbatim, untruncated" "$OUT" \
+  ".hotspots[] | select(.file == $TAB_JSON) | .pr_numbers == [1811,1812,1813]"
+
+# ---- the gh backend, same history ------------------------------------------
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1801,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1802,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1801 modified "$NL_PATH" modified src/Plain.ts
+gh_files 1802 modified "$NL_PATH" modified src/Plain.ts
+
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json
+check_eq "26g: gh — exit 0; a 2-file PR is not a sweep at --sweep-threshold 3" "0" "$RC"
+check_jq "26h: gh — the embedded-newline filename counts as ONE file, not two" "$OUT" \
+  ".sweep_commit_count == 0
+   and (.hotspots[] | select(.file == $NL_JSON) | .pr_count == 2 and .pr_numbers == [1801,1802])"
+
+# PARITY — the whole point of the ticket: identical history, identical answer.
+GIT_VIEW=$(cd "$R26" && bash "$SCRIPT" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json 2>/dev/null \
+  | jq -c '[.hotspots[] | {file, pr_count, pr_numbers}] | sort_by(.file)')
+GH_VIEW=$(cd "$R26" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json 2>/dev/null \
+  | jq -c '[.hotspots[] | {file, pr_count, pr_numbers}] | sort_by(.file)')
+check_eq "26i: PARITY — git and gh report identical files, counts and PR evidence" "$GIT_VIEW" "$GH_VIEW"
+check_jq "26j: PARITY — and that shared answer really contains the newline path" "$GIT_VIEW" \
+  "map(.file) | index($NL_JSON) != null"
+
+# NEGATIVE CONTROL — at the SAME --sweep-threshold 3, a payload whose third file
+# is REAL does sweep. The only difference from 26h is whether the third record is
+# a file or a newline artifact, which is exactly what the pre-fix line count
+# could not tell apart.
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1821,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1822,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+gh_files 1821 modified src/Plain.ts modified src/Second.ts modified src/Third.ts
+gh_files 1822 modified src/Plain.ts modified src/Second.ts modified src/Third.ts
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --sweep-threshold 3 --json
+check_eq "26k: NEGATIVE CONTROL — gh — a genuine 3-file PR still sweeps at the same threshold" "1" "$RC"
+check_jq "26l: NEGATIVE CONTROL — gh — both real 3-file PRs are counted as sweeps" "$OUT" \
+  '.sweep_commit_count == 2 and .sweep_skipped_count == 6'
+
+# PRE-FIX CONTROL — the exact stream `gh api --jq '… | join("<TAB>")'` emitted for
+# the 26h payload, counted with the exact pre-fix expression. Three lines for two
+# files: that number is the bug, and 26h shows the shipped detector now says two.
+{ printf 'modified\t%s\n' "$NL_PATH"; printf 'modified\t%s\n' 'src/Plain.ts'; } > "$TMP/prefix_stream.txt"
+check_eq "26m: PRE-FIX CONTROL — the newline-delimited stream counts 3 lines for 2 files" \
+  "3" "$(sed '/^$/d' "$TMP/prefix_stream.txt" | wc -l | tr -d '[:space:]')"
+check_eq "26n: PRE-FIX CONTROL — NUL-terminating the same two records counts 2" \
+  "2" "$({ printf 'modified\t%s\000' "$NL_PATH"; printf 'modified\t%s\000' 'src/Plain.ts'; } | tr -dc '\000' | wc -c | tr -d '[:space:]')"
+
+# An EMPTY file payload must leave the NUL reader at zero records rather than
+# tripping `set -u` on the loop guard that catches an unterminated final record.
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1831,"mergedAt":"2026-02-02T00:00:00Z"}]
+EOF
+gh_files 1831
+run_in "$R26" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_eq "26o: gh — a PR with an empty file list exits clean, not with an error" "1" "$RC"
+check_jq "26p: gh — the empty PR is still counted as scanned, with no touches" "$OUT" \
+  '.scanned_pr_count == 1 and (.hotspots | length) == 0 and .sweep_commit_count == 0'
+
+# =============================================================================
+# Scenario 27 — a filename cannot spoof a commit header (git backend)
+#
+# `-z` deletes the one thing that used to make the git reader unspoofable: the
+# status column that always sat in front of the path on the same line. With the
+# fields now bare NUL tokens, a path is a path only because of WHERE it arrives,
+# so the reader must test POSITION before content. Test content first and a file
+# literally named `@@C@@…@@S@@… (#N)` parses as a commit header: flush_commit
+# fires mid-record, the path itself is dropped, CUR_PR is hijacked to the
+# invented number, and every remaining token in that commit shifts onto it.
+#
+# The fixture path is adversarial on purpose — it carries BOTH sentinels and a
+# trailing `(#9999)`, so the pre-fix reader does not merely stumble, it produces
+# a specific wrong answer this scenario names: PR 9999 present, the spoof path
+# absent, and its co-touched neighbour attributed to 9999 instead of 1901/1902.
+# The gh backend needs no counterpart — its reader alternates status/path with
+# no sentinel at all, so there is nothing there for a filename to impersonate.
+# =============================================================================
+# AT THE REPO ROOT ON PURPOSE — do not "tidy" this into src/. The header test is
+# an anchored prefix match, so only a path whose FIRST bytes are the sentinel can
+# collide; a nested `src/@@C@@…` starts with `src/` and defangs the guard while
+# still looking adversarial.
+SPOOF_PATH='@@C@@2026-02-09@@S@@spoofed (#9999).ts'
+SPOOF_JSON=$(printf '%s' "$SPOOF_PATH" | jq -Rs '.')
+
+R27=$(new_repo_on r27 main)
+commit_touch "$R27" "2026-02-01T00:00:00" "seed the fixture paths" "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-02T00:00:00" "first (#1901)"  "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-03T00:00:00" "second (#1902)" "$SPOOF_PATH" src/Plain.ts
+
+run_in "$R27" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json
+check_eq "27a: git — exit 0 with a header-shaped filename in history" "0" "$RC"
+check_jq "27b: git — the header-shaped path is reported VERBATIM as a file" "$OUT" \
+  ".hotspots | map(.file) | index($SPOOF_JSON) != null"
+check_jq "27c: git — it carries the REAL PRs, not the number embedded in its name" "$OUT" \
+  ".hotspots[] | select(.file == $SPOOF_JSON) | .pr_numbers == [1901,1902]"
+# The desync tell: pre-fix the spoof path hijacked CUR_PR, so the file touched
+# ALONGSIDE it in the same commits was scored under the invented PR.
+check_jq "27d: git — the co-touched neighbour keeps its own PR attribution" "$OUT" \
+  '.hotspots[] | select(.file == "src/Plain.ts") | .pr_numbers == [1901,1902]'
+# The `length == 2` clause is load-bearing, not decoration: pre-fix this history
+# produced NO hotspots at all, and "9999 is absent" is vacuously true of an empty
+# list. Pinning the set size first makes the absence a measurement.
+check_jq "27e: git — both files are present and the invented PR 9999 appears nowhere" "$OUT" \
+  '(.hotspots | length) == 2
+   and ([.hotspots[].pr_numbers[]] | index(9999)) == null
+   and .missing_count == 0'
+
+# NEGATIVE CONTROL — the header parser is still LIVE on this same history: a
+# genuine trailing `(#N)` in a real SUBJECT is still extracted. Without this,
+# 27c/27e would also pass if the reader had simply stopped recognising headers.
+check_jq "27f: NEGATIVE CONTROL — git — real subjects still yield their PR numbers" "$OUT" \
+  '.scanned_pr_count == 2 and ([.hotspots[].pr_numbers[]] | unique) == [1901,1902]'
 
 # =============================================================================
 echo
