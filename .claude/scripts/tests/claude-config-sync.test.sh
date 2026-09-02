@@ -49,6 +49,24 @@ assert() {
 
 section() { echo ""; echo -e "${BOLD}━━━ $1 ━━━${NC}"; }
 
+# awk_block <start-regex> <end-regex> <file> — print one awk range.
+#
+# Callers CAPTURE this and match with `contains`; they must never pipe it into
+# `grep -q`. This file runs under `set -o pipefail`, where `grep -q` exits at the
+# first match, awk dies of SIGPIPE, and the PIPELINE reports FAILURE on a
+# SUCCESSFUL match. Whether it trips depends on how much awk still had left to
+# write, so it is size- AND platform-dependent: the record_failure assertions in
+# Test 14 passed on macOS and failed on Linux CI for exactly this reason, which
+# makes the idiom read as a broken assertion rather than a broken pipeline
+# (repo memory: pipefail-sigpipe-false-failure). The deliberate SIGPIPE in
+# Test 11's control is the one place the shape is allowed, and its stderr is
+# redirected there so the runner does not see a real "Broken pipe" diagnostic.
+awk_block() { awk "/$1/,/$2/" "$3"; }
+
+# contains <haystack> <needle> — literal substring test in the shell, with no
+# subprocess and therefore no pipeline to break.
+contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
 git_commit() {
   local repo="$1" message="$2"
   git -C "$repo" add -A >/dev/null 2>&1
@@ -499,19 +517,28 @@ test_14_restart_signal_survives_a_failed_tick() {
 
   # The collection must happen at the fast-forward, NOT in Step 5 — Step 5 sits
   # after the publishers, which are exactly what record_failure aborts on.
+  # Captured, then matched in the shell — see awk_block's note on why piping a
+  # range into `grep -q` under pipefail fails on a SUCCESSFUL match.
+  local rf_body ff_body step5_body
+  rf_body="$(awk_block '^record_failure\(\)' '^}' "$SYNC")"
+  ff_body="$(awk_block 'HEAD_CHANGED="true"' '^  else$' "$SYNC")"
+  step5_body="$(awk_block 'Step 5 — change detection' 'De-duplicate while preserving order' "$SYNC")"
+
   assert "the categories are collected in a named helper" \
     "grep -q 'collect_head_change_categories()' '$SYNC'"
+  assert "(setup) record_failure's body was located" "[ -n \"\$rf_body\" ]"
   assert "the helper is invoked at the fast-forward" \
-    "awk '/HEAD_CHANGED=\"true\"/,/^  else\$/' '$SYNC' | grep -q 'collect_head_change_categories'"
+    "contains \"\$ff_body\" 'collect_head_change_categories'"
   assert "record_failure re-emits restart_recommended" \
-    "awk '/^record_failure\\(\\)/,/^}/' '$SYNC' | grep -q 'restart_recommended'"
+    "contains \"\$rf_body\" 'restart_recommended'"
   assert "record_failure only does so when categories exist" \
-    "awk '/^record_failure\\(\\)/,/^}/' '$SYNC' | grep -qF 'if (( \${#RESTART_CATEGORIES[@]} > 0 )); then'"
+    "contains \"\$rf_body\" 'if (( \${#RESTART_CATEGORIES[@]} > 0 )); then'"
 
   # Negative control: Step 5 must no longer carry the diff itself, or the fix
   # would be a duplicate rather than a move.
+  assert "(setup) Step 5's block was located" "[ -n \"\$step5_body\" ]"
   assert "(control) Step 5 no longer runs the diff" \
-    "! awk '/Step 5 — change detection/,/De-duplicate while preserving order/' '$SYNC' | grep -q 'diff --name-only'"
+    "! contains \"\$step5_body\" 'diff --name-only'"
 }
 
 # ── Test 15: the marker clear re-checks under the lock ───────────────────────
@@ -589,10 +616,16 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
   # configured ceiling below the floor decline every call instead of honouring
   # it — which is how a 2s test bound turned into "declined" rather than a real
   # 2s run. Both files carry the same shape, so pin both.
+  local hook_budget_body sync_budget_body run_locked_body
+  hook_budget_body="$(awk_block '^_budget_remaining\(\)' '^}' "$HOOK")"
+  sync_budget_body="$(awk_block '^_git_region_remaining\(\)' '^}' "$SYNC")"
+  run_locked_body="$(awk_block '^_run_locked\(\)' '^}' "$HOOK")"
+  assert "(setup) both budget helpers were located" \
+    "[ -n \"\$hook_budget_body\" ] && [ -n \"\$sync_budget_body\" ]"
   assert "the hook's budget helper returns the budget, not a clamped bound" \
-    "! awk '/^_budget_remaining\\(\\)/,/^}/' '$HOOK' | grep -q 'remaining > cap'"
+    "! contains \"\$hook_budget_body\" 'remaining > cap'"
   assert "the sync's budget helper returns the budget, not a clamped bound" \
-    "! awk '/^_git_region_remaining\\(\\)/,/^}/' '$SYNC' | grep -q 'remaining > GIT_BOUND_SECS'"
+    "! contains \"\$sync_budget_body\" 'remaining > GIT_BOUND_SECS'"
   assert "the hook tests the floor against the budget, not the clamped bound" \
     "grep -q 'budget_left < _HOOK_MIN_BOUND_SECS' '$HOOK'"
   assert "the sync tests the floor against the budget, not the clamped bound" \
@@ -602,7 +635,7 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
   assert "a call with too little budget left is declined, not started" \
     "grep -q '_HOOK_MIN_BOUND_SECS' '$HOOK'"
   assert "the decline is recorded as a bound trip so the publish guard holds" \
-    "awk '/^_run_locked\\(\\)/,/^}/' '$HOOK' | grep -q 'BOUNDED_TIMED_OUT=1'"
+    "contains \"\$run_locked_body\" 'BOUNDED_TIMED_OUT=1'"
   # (control) no call site may still pass the old single-bound signature.
   assert "(control) every _run_locked call passes an explicit ceiling" \
     "! grep -qE '_run_locked (bash|git) ' '$HOOK'"
@@ -769,8 +802,12 @@ test_11_root_repo_lookup_survives_sigpipe() {
 
   # The hazard itself, kept as executable documentation: this is what an inline
   # early-exiting consumer does under pipefail, and why the shape is banned.
+  # stderr is redirected because the SIGPIPE here is DELIBERATE: bash's printf
+  # writes "printf: write error: Broken pipe" when the pipe closes under it, and
+  # the CI runner treats any suite stderr as a failed suite — so this control
+  # failed the whole `hook-tests` job while every assertion in it passed.
   local old_rc=0
-  bash -c "set -o pipefail; { $producer; } | awk '/^worktree /{sub(/^worktree /, \"\"); print; exit}' >/dev/null" || old_rc=$?
+  bash -c "set -o pipefail; { $producer; } | awk '/^worktree /{sub(/^worktree /, \"\"); print; exit}' >/dev/null" 2>/dev/null || old_rc=$?
   assert "(control) the pre-fix early-exit expression DOES report failure" \
     "[ $old_rc -ne 0 ]"
 
