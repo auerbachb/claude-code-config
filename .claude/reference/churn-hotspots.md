@@ -121,7 +121,35 @@ The fallback is gated on *marker count*, not on an empty result. A run whose eve
 
 Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md` — generated or append-only files that churn by design and are never refactor candidates.
 
-The list is deliberately **universal**. Repo-specific by-design churn belongs in `--exclude`, not baked in: this repo's `.claude/scripts/README.md` scores 12 PRs purely because every new script registers a row there, but that is a fact about this repo, not about lockfiles everywhere.
+The list is deliberately **universal**. Repo-specific by-design churn is not baked in here — a lint-enforced catalog belongs in the persisted **exemption file** below (which requires a stated lint), while `--exclude` stays what it always was: the per-invocation escape hatch, and the home for generated files.
+
+## Catalog exemptions (issue #1571)
+
+Three different things now keep a file quiet, and conflating them is how one of them ends up doing the wrong job:
+
+| Term | Who does it | What happens to the file |
+|------|-------------|--------------------------|
+| **excluded** | detector, `--exclude` / `DEFAULT_EXCLUDES` | The touch event is dropped before aggregation. The file is never scored and appears nowhere but `excluded_count`. |
+| **exempt (catalog)** | detector, `.claude/reference/churn-hotspot-exemptions.json` | The file is scored normally, then reclassified out of `hotspots[]` into `exemptions[]` and onto a distinct `# exempt (catalog)` TSV line. Score history stays complete; the **flag** is suppressed, not the fact. |
+| **suppressed** | `churn-hotspot-wrap-plan.sh` | The file is a real hotspot with a closed issue and no conflict cost; `/wrap` hides the decision bullet until the 2× material-growth gate trips. |
+
+**The problem being solved.** Some files churn because a **lint requires it**. `.claude/scripts/README.md` and `.claude/scripts/docs/tests.md` are enforced by `scripts-catalog-lint.sh` (via `run-doc-lints.sh` in `rule-lint.yml`): the index must link every category doc exactly once and hold no per-script rows, and every `tests/*.test.sh` needs exactly one catalog row. Adding or renaming a script or a test suite therefore *has* to edit them, or CI fails. No refactor can retire that flag — the scripts README hit 3–5× its baseline twice in one week *after* its hotspot issue (#898) closed, each time producing an advisory flag and a needs-decision item. A flag that can never be resolved is not a signal; it is training to skim past churn warnings, which is how a real hotspot eventually gets missed.
+
+**Every entry must name its enforcing lint.** `lint` and `reason` are both required and both must be non-empty; an entry supplying neither is rejected with **exit 3 naming the offending path**. That is the whole guard against the mechanism becoming a mute button: a file cannot claim exemption by assertion, only by pointing at the check that forces the edit. `lint` is the short enforcing-check token the TSV prints; `reason` is the sentence explaining why that check forces a row edit.
+
+**Scoring is untouched, and the flag is what is suppressed.** Exempt files run through the identical score formula and keep their real `pr_count`, `pr_numbers`, `score`, and window bounds — the open question in the ticket, answered the way it leaned. Only the classification changes. Consequences worth stating:
+
+- **Reported, never silently omitted.** Any exempt file touched in the window appears in `exemptions[]` and on its TSV line *regardless of threshold*; the `score >= threshold AND pr_count >= 2` floor governs `hotspots[]` alone. It is also reported on the clean exit-1 path, which is exactly where a suppressed file would otherwise disappear.
+- **Non-exempt scoring is byte-for-byte unchanged.** Partitioning happens after scoring, so a control file with identical churn flags exactly as before — pinned by a regression assertion comparing the same fixture with and without the feature.
+- **The exit code keys on `hotspots[]` alone.** A run whose only reported paths are exempt is clean (exit 1).
+- **The issue lookup is skipped** for exempt files — they are never filed, so there is nothing to dedupe against.
+- **Exclusion still wins.** An excluded path never reaches aggregation, so it can never surface on the exempt line.
+
+**No consumer change was needed.** `churn-hotspot-wrap-plan.sh` classifies `hotspots[]`; an exempt file is simply absent from it, so no comment, file, growth, unknown, or suppressed entry is produced and the wrap sweep stops asking the same keep-or-reopen question every run. The envelope validator checks named fields rather than rejecting unknown ones, so `exemptions`, `exempt_count`, and `exemptions_file` pass through untouched.
+
+**`--no-exemptions` is the negative control**, and it wins over `--exemptions` (the file is then not read at all). The disabled state is never silent: `exemptions_file` reports `null`.
+
+**Possible follow-up, deliberately out of scope.** Auto-generating the catalog rows from the directory contents would remove both the churn *and* the recurring merge-conflict surface — a base-commit overlap in the tests catalog forced a rebase on PR #1543 on 2026-09-01. That is a larger change to the lint contract itself and is noted here rather than attempted.
 
 ## The dedup key
 
@@ -185,11 +213,16 @@ So neither backend told the truth and the two disagreed about identical history,
 | `truncated` | boolean | True when `--top` or the issue-lookup cap clipped output |
 | `existing_lookup_failed` | boolean | True when the issue lookup was incomplete or errored |
 | `total_hotspot_count` | number | Full pre-truncation hotspot count |
+| `exemptions_file` | `string` or `null` | Resolved exemption file, or `null` when the feature is off or no file was found — issue #1571 |
+| `exempt_count` | number | Touched exempt files; always equals the length of `exemptions` |
+| `exemptions` | array | Scored catalog-exempt entries, never bounded by `--top` or the threshold |
 | `hotspots` | array | Scored hotspot entries (see fields below) |
 
 Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `created_in_window`, `creation_pr`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
 
-A path dropped by exclusion is counted only as `excluded_count`, never also as swept — the filters are applied in order (exclusion, existence, sweep, creation) and each touch is counted exactly once.
+Each `exemptions[]` entry carries the same scored fields **minus** the two issue-lookup fields (exempt files are never filed), **plus** `lint` and `reason` copied from the exemption entry.
+
+A path dropped by exclusion is counted only as `excluded_count`, never also as swept — the filters are applied in order (exclusion, existence, sweep, creation) and each touch is counted exactly once. Exemption is not one of those filters: it runs *after* scoring, so an exempt path is counted exactly once as an ordinary touch and then reclassified.
 
 ## Related
 
@@ -198,3 +231,5 @@ A path dropped by exclusion is counted only as `excluded_count`, never also as s
 - Issue #681 — `hook-scripts.yml` de-hotspotting, the change this detector would have flagged.
 - Issue #1118 — false-positive for deleted file; added existence filter and `missing_count`.
 - Issue #1547 — creation commits and repo-wide sweeps inflated every score; both now weighted 0. Evidence: the 37 by-design closures from triage rounds 1–3, notably Issues #1341, #1408, and #1415.
+- Issue #1571 — lint-enforced catalog files churn by design and no refactor can retire their flag; they are now exempted (scored, reported, never flagged). Seeded with `.claude/scripts/README.md` and `.claude/scripts/docs/tests.md`, both enforced by `scripts-catalog-lint.sh`.
+- Issue #898 — the scripts-catalog split that reduced, but could not remove, the index's lint-forced churn.
