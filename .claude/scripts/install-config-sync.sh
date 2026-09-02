@@ -116,10 +116,15 @@ fi
 
 # Prefer the main-pinned worktree copy so the scheduled job never runs a feature
 # branch's version of itself.
-if [[ -f "$WORKTREE_SYNC" ]]; then
+# `-r`, not just `-f`: the plist points launchd at this path, and a present but
+# UNREADABLE script — a partially-populated worktree, a permissions mishap —
+# would install a scheduler that fails on every tick with nothing here to say
+# why. Falling through to the local copy is the better answer, and the `-r` also
+# covers the `-f` case, so both candidates are tested the same way.
+if [[ -f "$WORKTREE_SYNC" && -r "$WORKTREE_SYNC" ]]; then
   SYNC_SCRIPT="$WORKTREE_SYNC"
   SYNC_SOURCE="skills worktree (pinned to main)"
-elif [[ -f "$LOCAL_SYNC" ]]; then
+elif [[ -f "$LOCAL_SYNC" && -r "$LOCAL_SYNC" ]]; then
   SYNC_SCRIPT="$LOCAL_SYNC"
   SYNC_SOURCE="this checkout (no skills worktree yet)"
 else

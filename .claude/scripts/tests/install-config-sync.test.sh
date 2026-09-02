@@ -474,6 +474,44 @@ test_9_enable_failure_fails_install() {
   rm -rf "$root"
 }
 
+# ── Test 10: an unreadable worktree script falls back to the local copy ──────
+#
+# The plist points launchd at whichever copy is selected here, so selecting one
+# that cannot be read installs a scheduler that fails on every tick with nothing
+# in the install output to say why. `-f` alone accepted that file; `-r` is what
+# makes the check match how the path is actually used.
+
+test_10_unreadable_worktree_script_falls_back() {
+  section "Test 10: an unreadable worktree script is not chosen for the plist"
+
+  local root home wt_script out
+  root="$(make_env Darwin)"
+  home="$root/home"
+  wt_script="$home/.claude/skills-worktree/.claude/scripts/claude-config-sync.sh"
+
+  mkdir -p "$(dirname "$wt_script")"
+  printf '#!/bin/bash\n' > "$wt_script"
+  chmod 000 "$wt_script"
+
+  # A root-owned test runner can read a 000 file, which would make this vacuous.
+  if [[ -r "$wt_script" ]]; then
+    echo "  (skipped: this user can read a 0000-mode file — no readability to test)"
+    rm -rf "$root"
+    return 0
+  fi
+
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+        bash "$INSTALL" 2>&1)" || true
+
+  assert "the install did not select the unreadable worktree copy" \
+    "! printf '%s' \"\$out\" | grep -q 'skills worktree (pinned to main)'"
+  assert "it fell back to this checkout and said so" \
+    "printf '%s' \"\$out\" | grep -q 'no skills worktree yet'"
+
+  chmod 644 "$wt_script" 2>/dev/null || true
+  rm -rf "$root"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -490,6 +528,7 @@ test_5_uninstall_failure_is_loud
 test_6_platform_guard
 test_8_lookalike_label_is_not_our_job
 test_9_enable_failure_fails_install
+test_10_unreadable_worktree_script_falls_back
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

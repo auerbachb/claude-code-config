@@ -1084,6 +1084,56 @@ test_21_marker_removal_is_lock_checked() {
     "[ -n \"\$(printf '%s' \"\$body\" | grep 'commit_json')\" ]"
 }
 
+# ── Test 22: clear-safety is tracked apart from error severity ──────────────
+#
+# The agent publisher's absence is reported as a NOTICE, matching the sync. But
+# the marker's restart_recommended covers the AGENTS category, so a startup that
+# never refreshed those links must not delete a signal describing them — and the
+# clear keys off `errors`, which a notice deliberately does not set. Severity and
+# clear-safety are different questions; `_publish_incomplete` answers the second
+# one so the answer to the first stays free to be quiet.
+
+test_22_publisher_miss_blocks_the_clear_regardless_of_severity() {
+  section "Test 22: a publisher that never ran blocks the clear, loudly or not"
+
+  assert "the hook tracks publisher completeness separately from errors" \
+    "grep -q '_publish_incomplete=0' '$HOOK'"
+  assert "a missing agent publisher sets it, even though it is only a notice" \
+    "[ -n \"\$(grep -A3 'publish-agent-symlinks.sh not found' '$HOOK' | grep '_publish_incomplete=1')\" ]"
+  assert "a missing skills publisher sets it too" \
+    "[ -n \"\$(grep -A2 'skill symlink publish failed: .* not found' '$HOOK' | grep '_publish_incomplete=1')\" ]"
+  assert "the clear requires it to be clear" \
+    "grep -q '_publish_incomplete\" == 0' '$HOOK'"
+  # Control: the agent miss must still NOT be an error, or this fix has silently
+  # changed what the session is told rather than what it is allowed to clear.
+  assert "(control) the agent miss is still not an error" \
+    "[ -z \"\$(grep -A3 'publish-agent-symlinks.sh not found' '$HOOK' | grep 'errors=')\" ]"
+}
+
+# ── Test 23: the bootstrap bound is clamped to the region, not the ceiling ───
+#
+# GIT_BOUND_SECS is a per-call CEILING; the region budget is what defends the
+# lock. Passing the ceiling raw let an operator override — normalize_bound
+# accepts any size — schedule one lock-held call for longer than the staleness
+# window, so the bound meant to prevent dispossession could licence it instead.
+# git_sync already clamped; the bootstrap did not.
+
+test_23_bootstrap_bound_is_clamped_to_the_region() {
+  section "Test 23: the bootstrap bound cannot exceed the lock-held region budget"
+
+  assert "the bootstrap consults the remaining region budget" \
+    "grep -q '_bootstrap_region_left=' '$SYNC'"
+  assert "and clamps the per-call ceiling against it" \
+    "[ -n \"\$(grep -A2 '_bootstrap_region_left=' '$SYNC' | grep 'GIT_LAST_BOUND > GIT_BOUND_SECS')\" ]"
+  assert "the bounded call uses the clamped value, not the raw ceiling" \
+    "grep -q 'run_bounded \"\$GIT_LAST_BOUND\" bash' '$SYNC'"
+  assert "too little region left declines rather than starting the call" \
+    "[ -n \"\$(grep -A2 '_bootstrap_region_left < _GIT_MIN_BOUND_SECS' '$SYNC' | grep 'GIT_TIMED_OUT=1')\" ]"
+  # Control: the raw ceiling must no longer be handed to run_bounded anywhere.
+  assert "(control) no call passes the unclamped ceiling" \
+    "! grep -q 'run_bounded \"\$GIT_BOUND_SECS\"' '$SYNC'"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1124,6 +1174,8 @@ test_18_hook_bootstrap_and_steady_state_are_exclusive
 test_19_marker_clear_is_anchored_at_region_exit
 test_20_missing_skills_publisher_is_an_error_in_both_writers
 test_21_marker_removal_is_lock_checked
+test_22_publisher_miss_blocks_the_clear_regardless_of_severity
+test_23_bootstrap_bound_is_clamped_to_the_region
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

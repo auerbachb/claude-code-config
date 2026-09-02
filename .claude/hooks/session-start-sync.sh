@@ -263,6 +263,12 @@ _run_locked() { # _run_locked <cap-seconds> <command…>
 # carry its token or a bound trip would silently re-open the very partial-tree
 # publish that guard exists to block.
 _bootstrapped=0
+# Set when a publisher could not be run at all, so its links were never
+# refreshed. Kept separate from `errors` because it answers a different
+# question: `errors` drives what the session is TOLD, this drives whether the
+# restart marker may be CLEARED. A publisher that never ran leaves stale links
+# in a category the marker describes, whether or not the miss was loud.
+_publish_incomplete=0
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
     if ! _run_locked "$_setup_bound_secs" bash "$setup_script"; then
@@ -391,17 +397,26 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     # stale. The wording keeps the "publish failed" shape the other publish
     # failures use.
     errors="${errors:+$errors; }skill symlink publish failed: $_skills_publish_script not found — skill/CLAUDE.md/rules links not refreshed"
+    _publish_incomplete=1
   fi
 
   _agents_publish_script="${_scripts_dir}/publish-agent-symlinks.sh"
   if [[ -f "$_agents_publish_script" ]]; then
     _publish_one "$_agents_publish_script" "agent"
   else
-    # A notice, NOT an error — deliberately asymmetric with the skills publisher
-    # above, and asymmetric in the same direction claude-config-sync.sh chose:
-    # it record_failure's a missing skills publisher but only warns for agents.
+    # Severity stays a NOTICE, matching claude-config-sync.sh, which
+    # record_failure's a missing skills publisher but only warns for agents.
+    #
+    # Severity and clear-safety are different questions, though, and conflating
+    # them is what made this a bug rather than a style choice. The marker's
+    # restart_recommended covers the AGENTS category too, so a startup that never
+    # refreshed the agent links must not delete a signal describing them, however
+    # quietly it reports the miss. In the sync a warn is harmless because the
+    # sync WRITES the marker; here an empty `errors` is exactly what lets the
+    # clear fire, so the clear gets its own flag instead.
     _agents_notices="${_agents_notices:+$_agents_notices
 }publish-agent-symlinks.sh not found — agent links not refreshed"
+    _publish_incomplete=1
   fi
 
   [[ -n "$_publish_err_file" ]] && rm -f "$_publish_err_file" 2>/dev/null
@@ -562,8 +577,14 @@ if [[ -f "$_marker_file" ]]; then
   # before the marker was read. The region-exit snapshot covers both: if it
   # differs from what was surfaced, some sync published after this session did
   # its work, and the marker describes definitions this session never loaded.
+  # Fifth condition: every publisher actually ran. A publisher that could not be
+  # run refreshed none of its links, and the marker's categories cover those
+  # links — so clearing here would retire a signal for definitions still stale on
+  # disk. The agent publisher reaches this as a NOTICE rather than an error, so
+  # `errors` alone cannot see it.
   if [[ "$session_source" == "startup" && -z "$_skip_notice" && -z "$errors" \
-        && "$_lock_contended" == 0 && "$_region_exit_restart" == "$_surfaced_restart" ]]; then
+        && "$_lock_contended" == 0 && "$_region_exit_restart" == "$_surfaced_restart" \
+        && "$_publish_incomplete" == 0 ]]; then
     _clear_locked=0
     if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
       _clear_locked=1

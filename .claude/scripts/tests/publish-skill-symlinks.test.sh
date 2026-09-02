@@ -561,6 +561,50 @@ test_16_regression_unremovable_stale_link_exits_1() {
   cleanup "$tmp_home"
 }
 
+# ── Test 17: regression — repointing never manufactures a dangling link ──────
+#
+# The repoint branch relinked to new_target WITHOUT the existence test its two
+# sibling branches (legacy migration, first creation) both apply. So when the
+# worktree did not carry the target — not yet on main, or the definition removed
+# upstream — a link that was resolving a moment earlier was replaced with a
+# dangling one. Leaving it alone is strictly better: it still points at something
+# that exists, and the warning says why it was not moved.
+
+test_17_regression_repoint_never_creates_a_dangling_link() {
+  section "Test 17: a repoint with no worktree target leaves the working link alone"
+
+  local tmp_home fake_wt output exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+
+  # A worktree with no CLAUDE.md — the "not on main yet" shape — while the
+  # installed link is setup-owned but points elsewhere inside the worktree, which
+  # is exactly the repoint branch.
+  rm -f "$fake_wt/CLAUDE.md"
+  mkdir -p "$tmp_home/.claude"
+  ln -s "$fake_wt/.claude/rules" "$tmp_home/.claude/CLAUDE.md"
+
+  assert "(setup) the link resolves before the run" \
+    "[ -e '$tmp_home/.claude/CLAUDE.md' ]"
+  assert "(setup) the worktree really has no CLAUDE.md to point at" \
+    "[ ! -e '$fake_wt/CLAUDE.md' ]"
+
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1)"
+  exit_code=$?
+
+  assert "publish still exits 0" "[ $exit_code -eq 0 ]"
+  # The assertion that fails against the pre-fix script: it relinked to the
+  # missing target, leaving a symlink that no longer resolves.
+  assert "the link still resolves — it was not repointed at a missing target" \
+    "[ -e '$tmp_home/.claude/CLAUDE.md' ]"
+  assert "and it was left exactly where it was" \
+    "[ \"\$(readlink '$tmp_home/.claude/CLAUDE.md')\" = '$fake_wt/.claude/rules' ]"
+  assert "the skip is explained rather than silent" \
+    "printf '%s' \"\$output\" | grep -q 'worktree target is missing'"
+
+  cleanup "$tmp_home"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -584,6 +628,7 @@ test_13_regression_setup_preflight
 test_14_regression_setup_repo_root_is_cwd_independent
 test_15_regression_relative_legacy_link_preserved
 test_16_regression_unremovable_stale_link_exits_1
+test_17_regression_repoint_never_creates_a_dangling_link
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

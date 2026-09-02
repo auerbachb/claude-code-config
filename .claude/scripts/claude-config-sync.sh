@@ -698,7 +698,24 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
     record_failure "cannot bootstrap: bounded-run.sh unavailable — refusing to run setup-skills-worktree.sh unbounded while holding the config-sync lock, which could outlive the ${_stale_age}s staleness window and let a concurrent sync mutate the same worktree"
   else
     _bootstrap_rc=0
-    run_bounded "$GIT_BOUND_SECS" bash "$repo_root/setup-skills-worktree.sh" || _bootstrap_rc=$?
+    # Clamped to what is LEFT of the lock-held region, exactly as git_sync
+    # clamps its own calls — GIT_BOUND_SECS is only a per-call ceiling. Passing
+    # that ceiling raw let an operator override (CLAUDE_CONFIG_SYNC_GIT_BOUND,
+    # which normalize_bound accepts at any size) schedule a single lock-held
+    # call for longer than the ${_stale_age}s staleness window, so the bound
+    # meant to prevent dispossession could licence it instead.
+    #
+    # Same floor/ceiling separation as git_sync: the floor is asked of the
+    # REGION ("is there room to finish?"), the ceiling of the call.
+    _bootstrap_region_left="$(_git_region_remaining)"
+    GIT_LAST_BOUND="$_bootstrap_region_left"
+    (( GIT_LAST_BOUND > GIT_BOUND_SECS )) && GIT_LAST_BOUND="$GIT_BOUND_SECS"
+    if (( _bootstrap_region_left < _GIT_MIN_BOUND_SECS )); then
+      GIT_TIMED_OUT=1
+      GIT_ERR="declined: only ${_bootstrap_region_left}s left of the ${_git_region_budget}s lock-held region budget"
+      record_failure "setup-skills-worktree.sh $(_git_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+    fi
+    run_bounded "$GIT_LAST_BOUND" bash "$repo_root/setup-skills-worktree.sh" || _bootstrap_rc=$?
     bootstrap_out="$(cat "$CAPTURE" 2>/dev/null)" || bootstrap_out=""
     _bootstrap_err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bootstrap_err=""
     if (( _bootstrap_rc != 0 )); then

@@ -207,8 +207,19 @@ migrate_symlink() {
         echo "  $label — WARNING: legacy root-repo symlink exists but target not in worktree (not on main yet)" >&2
       fi
     else
-      echo "  $label — updating symlink (was: $current_target)"
-      relink_atomic "$link" "$new_target"
+      # Guarded by the same existence test the legacy-migration branch above and
+      # the creation branch below already use. Without it this was the ONE path
+      # that could turn a WORKING link into a dangling one: an absent new_target
+      # — the worktree not yet on main, or the definition removed upstream —
+      # was relinked anyway, so a definition that resolved a moment earlier
+      # stopped resolving. Leaving the existing link alone is strictly better,
+      # because it keeps pointing at something that exists.
+      if test "$existence_test" "$new_target"; then
+        echo "  $label — updating symlink (was: $current_target)"
+        relink_atomic "$link" "$new_target"
+      else
+        echo "  $label — WARNING: symlink points elsewhere but the worktree target is missing; left as-is (was: $current_target)" >&2
+      fi
     fi
   elif [[ -e "$link" ]]; then
     echo "  WARNING: $link is not a symlink — skipping (will not overwrite)" >&2
