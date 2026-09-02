@@ -34,6 +34,7 @@ PR_STATE_SH=$(resolve_script pr-state.sh || true)
 REPLY_THREAD_SH=$(resolve_script reply-thread.sh || true)
 RESOLVE_REVIEW_THREADS_SH=$(resolve_script resolve-review-threads.sh || true)
 MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
+CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — resume authorship gate unavailable" >&2; exit 1; }
 [[ -n "$DIFF_SURVIVAL_SH" ]] || { echo "ERROR: diff-survival-check.sh not found (checked all three paths) — rebase survival gate unavailable" >&2; exit 1; }
@@ -42,6 +43,7 @@ AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 [[ -n "$REPLY_THREAD_SH" ]] || { echo "ERROR: reply-thread.sh not found (checked all three paths) — review replies unavailable" >&2; exit 1; }
 [[ -n "$RESOLVE_REVIEW_THREADS_SH" ]] || { echo "ERROR: resolve-review-threads.sh not found (checked all three paths) — thread resolution unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
+[[ -n "$CLEAN_BEHIND_SH" ]] || { echo "ERROR: clean-behind-check.sh not found (checked all three paths) — clean-BEHIND verification unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
 ```
 
@@ -555,7 +557,27 @@ Branch on the exit code:
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
   - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
-  - **"branch is BEHIND base"**: `[ACTION]` — `diff-survival-check.sh snapshot`, rebase onto base, then `diff-survival-check.sh verify` (Step 1 branch table) and force-push **only** on exit 0; wait for a fresh review, then re-run the gate.
+  - **"branch is BEHIND base"**: **probe before prescribing anything** (issue #1564). A *verified clean* `BEHIND` is an auto-merge, not a rebase — canonical in `.claude/rules/cr-merge-gate.md` Step 1d and `CLAUDE.md` "PR MERGE AUTHORIZATION" (issue #754), and encoded the same way in `.claude/agents/phase-c-merger.md` (issue #1563) and `fixpr/SKILL.md` Step 6. Rebasing a clean `BEHIND` moves HEAD, discarding the bot approval that had already satisfied the rest of the gate and restarting CI — the treadmill the carve-out exists to avoid.
+
+    ```bash
+    # `|| CB_EXIT=$?`, not a bare assignment: exit 1 is the EXPECTED pre-tick
+    # result here, and under `set -e` a bare assignment would abort the block
+    # before the status was ever captured.
+    CB_EXIT=0
+    if [[ -n "$REVIEWER" ]]; then
+      CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM" --reviewer "$REVIEWER") || CB_EXIT=$?
+    else
+      CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM") || CB_EXIT=$?
+    fi
+    ```
+
+    Read the JSON, never `$?` after a pipe. Branch on `CB_EXIT`:
+    - `0` (`safe_to_offer: true`) → `[ACTION]` — **verified clean `BEHIND`.** No snapshot, no rebase, no force-push. Set `CLEAN_BEHIND=1` and continue to **Step 9**: this path is **AC-first**, Step 9a finishes the verification, and Step 10 hands the merge to `/wrap`.
+    - `1` whose `reasons_not_safe` / `residual_blockers` are **only** the unchecked-Test-Plan-checkbox count and/or a sole `ac-gate` check-run — **failing *or* still incomplete** — → `[ACTION]` — **clean-`BEHIND` candidate**, i.e. "waiting on Step 9", not a blocker. `clean-behind-check.sh` counts unticked boxes as `reasons_not_safe`, so a pre-tick exit `1` is bookkeeping rather than a real blocker. Treat exactly as `0`: set `CLEAN_BEHIND=1`, continue to Step 9.
+    - `1` with **any other** residual blocker → genuinely non-clean `BEHIND`. Surface `reasons_not_safe`, then `[ACTION]` — `diff-survival-check.sh snapshot`, rebase onto base, then `diff-survival-check.sh verify` (Step 1 branch table) and force-push **only** on exit 0; wait for a fresh review, then re-run the gate.
+    - `2`/`3`/`4` → `[BLOCKED]` — usage error / PR not found or not open / `gh`-network-jq error. Surface the JSON or stderr. Nothing was reported *about this `BEHIND`*, so it is neither clean nor unclean — **never** read a non-`1` failure as a rebase signal, which would buy a rebase on evidence you do not have.
+
+    `churn.advisory` is context, never a gate.
   - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
 - `3` → `[BLOCKED]` — PR not found (closed or merged).
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
@@ -582,6 +604,16 @@ Branch on exit code:
 
 ---
 
+## Step 9a: Clean-`BEHIND` follow-through (candidates only)
+
+`[SKIP]` unless Step 8 set `CLEAN_BEHIND=1`. Ticking AC has two after-effects; both must settle before Step 10, and they overlap, so run them in this order and wait once. Mirrors `.claude/agents/phase-c-merger.md` Step 2a (issue #1563).
+
+1. **Re-run the failed `ac-gate` check.** `ac-gate.yml` triggers on `opened`/`synchronize`/`reopened`, so a PR-body edit never re-fires it — a red `ac-gate` on an unticked PR is by design and stays red until rerun. The id `merge-gate.sh` reports in `ci_status.blocking[].id` is a **job** id: `gh run rerun --job "$AC_GATE_JOB_ID"`. A rejected rerun (stale id, permissions, GitHub error) means `ac-gate` was never re-fired, so waiting would burn the whole deadline for nothing → `[BLOCKED]`, reporting the `gh` error and the job id, without entering the wait. An **empty** id is not a green light either — re-read the check-run on HEAD before continuing. The rerun publishes a **new** job id on the same run, so poll that one (or re-read the check-run by name from the HEAD SHA); the old id stays `failure` forever, so polling it would never terminate.
+2. **Wait out the mergeability recompute.** `ac-checkboxes.sh --tick` / `--all-pass` PATCHes the PR body, and GitHub invalidates mergeability on any body write — the next gate read returns `merge_state: "UNKNOWN"` with the `BEHIND` entry **gone from `missing[]`**. That is not a new blocker and never a reason to rebase. Proceed only when **both** hold: the `ac-gate` check-run on HEAD has reached a terminal `status: "completed"` (any conclusion), **and** `gh pr view "$PR_NUM" --json mergeStateStatus` is no longer `UNKNOWN` (~30–60s). Advancing on mergeability alone hands item 3 a still-queued `ac-gate`, which `clean-behind-check.sh` reports as an *incomplete*-CI residual — read as a non-clean `BEHIND`, that triggers exactly the rebase this path exists to prevent. **Both waits share one 10-minute deadline** from the rerun; the deadline is a stop condition, never a licence to proceed with a condition unmet. Either still unmet at the deadline → `[BLOCKED]`, naming which one did not settle plus the job's URL and status: do **not** re-probe and do **not** rebase — an unsettled wait is not evidence the `BEHIND` is unclean. An `ac-gate` that completes with a **failing** conclusion is a real AC failure → back to Step 9, not a rerun loop.
+3. **Re-probe.** Run `clean-behind-check.sh` again — same invocation *and the same exit-code table* as Step 8, so `2`/`3`/`4` block here too rather than being read as an unclean `BEHIND`. Exit `0` / `safe_to_offer: true` is the authorization Step 10 carries. A still-**incomplete** `ac-gate` in `residual_blockers` here means item 2's wait was left early — go back and finish it. Exit `1` once AC is ticked and `ac-gate` has completed **green** → the `BEHIND` genuinely is not clean: take the Step 8 non-clean rebase path.
+
+---
+
 ## Step 10: Report completion
 
 Output a summary:
@@ -593,7 +625,7 @@ Stoppage: <pause | end | token_exhaustion | unplanned> (recorded <record_at>)
 Branch: $BRANCH
 PR: #$PR_NUM
 Reviewer: CR / Greptile
-Merge gate: MET / NOT MET
+Merge gate: MET / MET (clean BEHIND — cleared by /wrap Step 2.4) / NOT MET
 Acceptance criteria: ALL PASSED / N FAILED
 Refill: <still paused — clear with /go-on --resume-refill | cleared via <command> --resume-refill | not paused>
 Status: Ready for wrap
@@ -602,3 +634,5 @@ Status: Ready for wrap
 A delegated lane (`pause` / `end`) reports the companion command's own board instead of this block, plus the `Stoppage:` and `Refill:` lines. Ranks 4 and unclassifiable report only what was found — no board, no status line, no state change.
 
 If the merge gate is met and all AC pass, run `/wrap` immediately — no pre-merge prompt (`CLAUDE.md` "PR MERGE AUTHORIZATION"). Honor an explicit user opt-out ("don't merge" / "wait for my approval") if given in chat.
+
+**A verified clean `BEHIND` counts as met for this hand-off (issue #1564).** `BEHIND` is cleared *by* the merge, so on that path the gate still reports exit `1` with the `BEHIND` entry present — the same loop-exit rule `/wrap` applies to itself (gate exit `1` with `BEHIND` as the sole `missing[]` item; issue #1425). When Step 9a's re-probe returned exit `0`, dispatch `/wrap` on that basis rather than reporting NOT MET. **`/wrap` Step 2.4 is the merge executor** — it runs `admin-merge.sh "$PR_NUM" --auto-plain --ac-verified` itself, with no `AskUserQuestion` (issue #754): the plain shape modifies no branch protection, so it needs no user turn. **Do not run `admin-merge.sh` from `/go-on`** — `--auto-plain` carries a repeat guard, so a call here would consume the one attempt and `/wrap`'s would then refuse with exit `8`, merging nothing. Step 2.4 owns that script's semantics; its exits map as: `0` → merged, relay the `AUTO_PLAIN_MERGED` evidence block; `8` → the shape needs a protection change (or an auto attempt already ran) → **surface `/admin-merge $PR_NUM` as a user choice and never auto-run it**; `1` → the clean state no longer held at merge time (main advanced) → Step 2.4's own rebase fall-through and recovery loop.
