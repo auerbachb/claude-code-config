@@ -641,6 +641,60 @@ test_11_root_repo_lookup_survives_sigpipe() {
     "printf 'X=\"\$(cmd)\" || ROOT_REPO_HINT=\"\"\n' | grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT='"
 }
 
+# ── Test 12: newly created skill links recommend a restart with no SHA move ──
+#
+# The skills / CLAUDE.md / rules categories used to come only from the Step 5
+# `git diff`, which requires HEAD to have moved. That misses the migration this
+# feature exists to perform: on a machine where the old session-start hook kept
+# the worktree at origin/main but published only AGENT symlinks, the first run
+# of this sync creates the missing links with no SHA change at all — definitions
+# a live session cannot pick up, and no restart was ever recommended for them.
+
+test_12_new_skill_links_recommend_restart_without_sha_move() {
+  section "Test 12: links created without a SHA move still recommend a restart"
+
+  local tmp home wt marker before_sha after_sha
+  tmp="$(make_fixture)"
+  home="$tmp/home"
+  wt="$home/.claude/skills-worktree"
+  marker="$home/.claude/sync-restart-recommended.json"
+
+  # Bring the worktree to origin/main WITHOUT publishing anything, standing in
+  # for the old hook: it fast-forwarded the tree but never linked skills.
+  git -C "$wt" fetch origin main --quiet 2>/dev/null
+  git -C "$wt" reset --hard origin/main --quiet 2>/dev/null
+  before_sha="$(git -C "$wt" rev-parse HEAD)"
+
+  assert "(setup) the worktree is already current — no SHA move to detect" \
+    "[ \"\$(git -C '$tmp/origin' rev-parse HEAD)\" = '$before_sha' ]"
+  assert "(setup) no skill links exist yet" \
+    "[ ! -e '$home/.claude/skills/alpha' ]"
+
+  run_sync "$home" >/dev/null
+  after_sha="$(git -C "$wt" rev-parse HEAD)"
+
+  assert "the run really did NOT move HEAD" "[ '$before_sha' = '$after_sha' ]"
+  assert "(control) the publish nevertheless created the skill links" \
+    "[ -L '$home/.claude/skills/alpha' ]"
+  assert "a marker was written despite the unchanged SHA" "[ -f '$marker' ]"
+  assert "and it names the skills category" \
+    "jq -e '.restart_recommended.categories | index(\"skills\")' '$marker'"
+  assert "and the CLAUDE.md category" \
+    "jq -e '.restart_recommended.categories | index(\"claude-md\")' '$marker'"
+  assert "and the rules category" \
+    "jq -e '.restart_recommended.categories | index(\"rules\")' '$marker'"
+
+  # A second, genuinely idempotent run must NOT re-recommend: the links are now
+  # identical, so the snapshots compare equal. Without this the new comparison
+  # would be a permanent nag rather than a change signal.
+  rm -f "$marker"
+  run_sync "$home" >/dev/null
+  assert "an unchanged re-run raises no new restart recommendation" \
+    "[ ! -f '$marker' ] || jq -e '(.restart_recommended // null) == null' '$marker'"
+
+  rm -rf "$tmp"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -658,6 +712,7 @@ test_8_agent_repoint_recommends_restart
 test_9_state_commit_failure_is_reported
 test_10_legacy_hooks_dir_reaches_both_automated_paths
 test_11_root_repo_lookup_survives_sigpipe
+test_12_new_skill_links_recommend_restart_without_sha_move
 test_4_failure_and_recovery
 test_5_lock_overlap
 test_6_root_repo_untouched

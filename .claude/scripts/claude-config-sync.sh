@@ -545,16 +545,46 @@ agents_dir_existed=true
 # name-only comparison would stay silent on the one case the worktree
 # indirection exists to handle. Non-symlink entries readlink to the empty
 # string, which compares fine and needs no special case.
-snapshot_agent_links() {
-  local entry name
-  [[ -d "$AGENTS_LINK_DIR" ]] || return 0
-  for entry in "$AGENTS_LINK_DIR"/*; do
+snapshot_link_dir() { # snapshot_link_dir <directory>
+  local dir="$1" entry name
+  [[ -d "$dir" ]] || return 0
+  for entry in "$dir"/*; do
     [[ -e "$entry" || -L "$entry" ]] || continue
     name="$(basename "$entry")"
     printf '%s -> %s\n' "$name" "$(readlink "$entry" 2>/dev/null)"
   done | sort
 }
+
+# Single-path variant for the two links that are not directories of links.
+# A missing path prints the `absent` sentinel rather than nothing, so
+# "was missing, now linked" is a visible transition while "missing before and
+# after" (the publisher never ran) compares equal and raises no permanent nag.
+snapshot_one_link() { # snapshot_one_link <path>
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    printf '%s -> %s\n' "$(basename "$path")" "$(readlink "$path" 2>/dev/null)"
+  else
+    printf 'absent\n'
+  fi
+}
+
+snapshot_agent_links() { snapshot_link_dir "$AGENTS_LINK_DIR"; }
 agents_before="$(snapshot_agent_links)" || agents_before=""
+
+# The SAME treatment for skills, CLAUDE.md and rules. Deriving those three
+# categories only from the Step 5 `git diff` (which needs HEAD to have moved)
+# misses the migration this whole feature exists to perform: on a machine where
+# the old session-start hook kept the worktree at origin/main but published only
+# AGENT symlinks, the first run of this sync creates the missing skill /
+# CLAUDE.md / rules links with no SHA change at all. Those are definitions a
+# live session cannot pick up, and without a filesystem snapshot no restart
+# would ever be recommended for them.
+SKILLS_LINK_DIR="$HOME/.claude/skills"
+CLAUDE_MD_LINK="$HOME/.claude/CLAUDE.md"
+RULES_LINK="$HOME/.claude/rules"
+skills_before="$(snapshot_link_dir "$SKILLS_LINK_DIR")"   || skills_before=""
+claude_md_before="$(snapshot_one_link "$CLAUDE_MD_LINK")" || claude_md_before=""
+rules_before="$(snapshot_one_link "$RULES_LINK")"         || rules_before=""
 
 publish_skills="$(resolve_helper publish-skill-symlinks.sh)" || publish_skills=""
 if [[ -n "$publish_skills" ]]; then
@@ -565,6 +595,25 @@ if [[ -n "$publish_skills" ]]; then
   [[ -n "$PUBLISH_STDERR" ]] && warn "skills publish advisory: $(one_line "$PUBLISH_STDERR")"
 else
   warn "publish-skill-symlinks.sh not found — skill/CLAUDE.md/rules links not refreshed"
+fi
+
+# Compare immediately after the publish that owns these three legs, so the
+# categories reflect what the publisher actually did rather than what the diff
+# in Step 5 suggests it might have done. Step 5 still contributes its own
+# entries when HEAD moved; the de-duplication below merges the two sources.
+skills_after="$(snapshot_link_dir "$SKILLS_LINK_DIR")"   || skills_after=""
+claude_md_after="$(snapshot_one_link "$CLAUDE_MD_LINK")" || claude_md_after=""
+rules_after="$(snapshot_one_link "$RULES_LINK")"         || rules_after=""
+# Spelled as `if` blocks, not `[[ … ]] && …`: a trailing false test would leave
+# a non-zero $? for whatever runs next to trip over.
+if [[ "$skills_before" != "$skills_after" ]]; then
+  RESTART_CATEGORIES+=("skills")
+fi
+if [[ "$claude_md_before" != "$claude_md_after" ]]; then
+  RESTART_CATEGORIES+=("claude-md")
+fi
+if [[ "$rules_before" != "$rules_after" ]]; then
+  RESTART_CATEGORIES+=("rules")
 fi
 
 publish_agents="$(resolve_helper publish-agent-symlinks.sh)" || publish_agents=""
