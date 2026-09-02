@@ -455,23 +455,64 @@ continue in the same turn; do not call `AskUserQuestion` and do not pause for a 
 message can still countermand — Step 9 is what handles it, and `/pause`'s own runway is where a
 message arriving mid-wind-down lands.
 
-**8.5 — Disarm before delegating.** Null the identity pair *before* invoking `/pause`, so `/pause`
-Step 2 does not find a task ID for a Monitor that has already fired and record a failed stop:
+**8.5 — Capture the identity, then disarm.** Null the identity pair *before* invoking `/pause`, so
+`/pause` Step 2 does not find a task ID for a Monitor that has already fired and record a failed
+stop. **Both captures come first, before this sub-step writes anything**, and the disarm itself is
+CAS-pinned to the generation this wind-down is running under:
 
 ```bash
+# Identity of the declaration being wound down, read BEFORE the disarm writes anything. The
+# 8.6 retirement compares against BOTH so a re-declaration during the runway is not clobbered
+# and a .window some other writer now owns is not cleared.
+RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || RETIRE_DECLARED_AT=""
+# The WHOLE window object, not its deadline_epoch: --expect is compared against the value at
+# the --cas path, and that path is `.window`. Expecting a scalar there can never match.
+RETIRE_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
+  || RETIRE_WINDOW=""
+RETIRE_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_task_id" 2>/dev/null) \
+  || RETIRE_TASK_ID=""
+# The generation this wind-down runs under: the token 8.1 validated on the Monitor path, and
+# `null` on the inline CHECKIN_NOW branch, where Step 6 was skipped and the pair is still the
+# null Step 5 wrote. Either way it is what proves `.leave` is still this declaration's.
+WINDDOWN_GENERATION="${CHECKIN_GENERATION:-null}"
+
 DISARM_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" || DISARM_RC=$?
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
+  --expect "$WINDDOWN_GENERATION" >/dev/null 2>&1 || DISARM_RC=$?
+if [ "$DISARM_RC" -eq 0 ] && [ -n "$RETIRE_TASK_ID" ] && [ "$RETIRE_TASK_ID" != "null" ]; then
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+    --expect "$RETIRE_TASK_ID" >/dev/null 2>&1 || :   # exit 7 = the slot is already a successor's
+fi
 # retry once on 6 (lock timeout); anything still non-zero is reported, not assumed
 ```
 
-**Read that exit code — the disarm is the whole point of this sub-step.** An unchecked `--set`
-that silently failed leaves exactly the state 8.5 exists to prevent: `/pause` Step 2 finds a task
-ID for a Monitor that has already fired, `TaskStop`s a dead wake, and reports a failed stop nobody
-can explain. **Still delegate to `/pause`** — the deadline is real and the wind-down matters more
-than the bookkeeping — but on a non-zero `DISARM_RC` after the retry, say so in one line so the
-spurious failed-stop entry in `/pause`'s Step 8 report has a cause attached to it.
+**Capture before you disarm, not after.** Reading `declared_at` *after* the disarm reads whatever a
+countermand landing in that gap left behind — the **successor's** identity — and 8.6's `HOLDER_AT`
+re-read would then compare equal, so the completing wind-down would retire the successor's `.leave`
+and CAS-clear the `.window` the user just re-armed, with every guard passing. The capture is only an
+identity if nothing this step does can change what it captures.
+
+**Disarm under a CAS, not a blind `--set`.** The pair is exactly what Step 6 publishes, so an
+unguarded null lands on whatever occupies the slot at that instant: a re-declaration that has
+already re-armed loses its `winddown_task_id`, and its live Monitor becomes one nobody can name or
+stop. The generation CAS is the same ownership proof Step 6's rollback and Step 9 use — winning it
+means no successor has published yet, so the ID read above is still this wind-down's; the ID's own
+`--expect` closes the remaining gap and its exit `7` means a successor claimed the slot first and
+there is nothing left to release.
+
+**Read that exit code — the disarm is the whole point of this sub-step.** An unchecked write that
+silently failed leaves exactly the state 8.5 exists to prevent: `/pause` Step 2 finds a task ID for
+a Monitor that has already fired, `TaskStop`s a dead wake, and reports a failed stop nobody can
+explain. On an I/O failure (`DISARM_RC` non-zero and not `7`, after the retry) **still delegate to
+`/pause`** — the deadline is real and the wind-down matters more than the bookkeeping — but say so
+in one line so the spurious failed-stop entry in `/pause`'s Step 8 report has a cause attached.
+
+**`DISARM_RC == 7` is not an I/O failure — a successor owns `.leave`.** Do **not** wind down, retire
+nothing, and say nothing about the leave time: the same posture Step 6's `PUBLISH_RC == 7` bullet
+takes, for the same reason. A re-declaration replaced this deadline with a later one and armed its
+own Monitor, so its check-in will fire on its own schedule; delegating to `/pause` here would park
+the board against the very deadline the user just bought their way out of.
 
 **8.6 — Wind down through `/pause`.** Compute the runway and invoke the real command — do not
 re-implement any part of it:
@@ -480,15 +521,8 @@ re-implement any part of it:
 REMAINING_MIN=$(( ( DEADLINE_EPOCH - $(date -u +%s) + 59 ) / 60 ))
 (( REMAINING_MIN < 0 )) && REMAINING_MIN=0
 (( REMAINING_MIN > 1440 )) && REMAINING_MIN=1440   # /pause's own --window bound
-# Identity of the declaration being wound down, read BEFORE /pause runs. The retirement
-# below compares against BOTH so a re-declaration during the runway is not clobbered and a
-# .window some other writer now owns is not cleared.
-RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
-  || RETIRE_DECLARED_AT=""
-# The WHOLE window object, not its deadline_epoch: --expect is compared against the value at
-# the --cas path, and that path is `.window`. Expecting a scalar there can never match.
-RETIRE_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
-  || RETIRE_WINDOW=""
+# RETIRE_DECLARED_AT and RETIRE_WINDOW were captured at the top of 8.5, before the disarm —
+# see there for why the capture must precede every write this check-in makes.
 ```
 
 Then `/pause --window ${REMAINING_MIN}m`. That single call is the whole wind-down: it closes both
@@ -508,12 +542,13 @@ An incomplete shutdown is the case the declaration is *most* needed for, not lea
 
 When `/pause` reports a complete shutdown, retire the declaration — `leave.active=false` **and**
 `.window=null` — but **only while the declaration being wound down is
-still the current one.** Capture `.leave.declared_at` before invoking `/pause` and re-read it here;
+still the current one.** Capture `.leave.declared_at` before invoking `/pause` — 8.5 does it before
+its own disarm, which is the first write of the check-in — and re-read it here;
 a re-declaration during the runway (Step 9's countermand clause) rewrites the whole `.leave` object
 in Step 5, so a changed `declared_at` means a **successor** now owns it:
 
 ```bash
-# RETIRE_DECLARED_AT / RETIRE_WINDOW were read before the 8.6 /pause call
+# RETIRE_DECLARED_AT / RETIRE_WINDOW were read at the top of 8.5, before its disarm
 HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
 if [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
   # .leave is still ours. The shared .window is a separate claim — clear it only under a CAS
@@ -653,6 +688,12 @@ explicitly — `--session-view` projects neither:
 ```bash
 LEAVE_BLOCK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave")               # active, checkin_epoch
 DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch")
+# The judgment reads the scalar; the retirement below CASes on `.window`, so capture the WHOLE
+# object here too — expecting a scalar at an object path can never compare equal.
+RECOVERY_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
+  || RECOVERY_WINDOW=""
+RECOVERY_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || RECOVERY_DECLARED_AT=""
 ```
 
 **Both reads are required, and the deadline comes from `.window`.** `leave.deadline_epoch` is
@@ -681,8 +722,36 @@ With `leave.active == true` and both epochs readable:
 |---|---|---|
 | future | future | Re-arm the wind-down Monitor for the **remaining** time, with a fresh generation; publish the new identity pair. One line: `Leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET` |
 | past | future | The check-in was missed while the session was down and the deadline has not arrived, so deliver it **overdue**: publish a fresh generation and arm the Monitor, whose sleep clamps to one second. Do **not** call Step 8 with the pair still null — 8.1 validates the generation and would exit silently on the one event that most needs to fire |
-| past | past | The leave time has expired. Clear `.leave.active` and the armed `.window`; say so in one line |
+| past | past | The leave time has expired. Retire it with the block below; say so in one line |
 | future | past | **The deadline moved in under the check-in** — only `/pm --window` or a shortened re-declaration produces this, and it is the one row where the two records disagree about which is nearer. The deadline governs: the leave time is spent, so retire it exactly as the `past`/`past` row does. Never re-arm toward a `checkin_epoch` for a deadline that has already gone by |
+
+**Both retiring rows clear under the same guards as every other retirement** — recovery is not a
+licence to write the shared slot blind:
+
+```bash
+HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+if [ -n "$RECOVERY_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RECOVERY_DECLARED_AT" ]; then
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+  if [ -n "$RECOVERY_WINDOW" ]; then
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$RECOVERY_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  fi
+fi
+```
+
+**A CAS loss here strands nothing.** The spent `deadline_epoch` is what `/subagent` Step 7 declines
+against, so the fear is that a guarded clear leaves it armed forever — but exit `7` means the value
+at `.window` is *no longer the object recovery judged*: `/pm --window` armed a live planning deadline
+in the gap. Clearing that is how a recovery retires somebody else's deadline on its way out, which is
+the failure the blind clear actually produces; declining to clear it strands only a deadline that no
+longer exists. The `.leave.active=false` write stays unconditional once the identity matches, the
+same deliberate split as Step 8.6: the declaration *is* spent, while `.window` is shared.
+
+**And the identity re-read is why the clear is not blind about `.leave` either.** Recovery can be
+re-entered after a compaction, with live user turns in between — a re-declaration landing there
+rewrites `.leave` with a future deadline, and an unguarded `active=false` would retire the
+declaration the user made seconds ago while leaving its Monitor ticking toward a check-in that 8.1
+now rejects. An unreadable re-read is a mismatch, not a match, for the same reason it is in 8.6.
 
 Recovery re-arms at most one Monitor. If `winddown_task_id` is non-null on entry, the previous
 session recorded a wake that no longer exists — treat the stored ID as dead, null the pair before

@@ -486,8 +486,12 @@ require_text "$LEAVE_SKILL" '--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id
 require_text "$LEAVE_SKILL" 'exit silently, writing nothing' \
   'a stale --checkin generation must be a silent no-op'
 
-# Disarm before delegating, then delegate to the real /pause.
-require_text "$LEAVE_SKILL" '8.5 — Disarm before delegating' \
+# Disarm before delegating, then delegate to the real /pause. Asserted positionally rather than
+# by sub-step heading: the contract is that the pair is nulled BEFORE the /pause call, and a
+# heading string goes on matching after the two are reordered underneath it.
+require_order "$LEAVE_SKILL" '## Step 8:' \
+  '--expect "$WINDDOWN_GENERATION"' \
+  '/pause --window ${REMAINING_MIN}m' \
   'leave-by must null the identity pair before invoking /pause'
 # A spent deadline left armed declines every future launch in the repo. The clear is now
 # CAS-pinned at every site (retirement, cancel, arm-failure rollback) because `.window` is
@@ -679,6 +683,27 @@ require_text "$LEAVE_SKILL" 'CANCEL_WINDOW=' \
 require_text "$LEAVE_SKILL" 'ARM_WINDOW=' \
   'the arm-failure rollback must pin its window clear to the window it armed'
 
+# The 8.5 disarm is the FIRST write the check-in makes, so the identity 8.6 retires against must
+# be captured BEFORE it. Capturing afterwards reads whatever a countermand left in the gap — the
+# successor declared_at — and the 8.6 HOLDER_AT re-read then compares equal, so the completing
+# wind-down retires the successor and CAS-clears the window the user just re-armed, with every
+# guard passing. Prose cannot hold this contract; only the positions can.
+require_order "$LEAVE_SKILL" '## Step 8:' \
+  'RETIRE_DECLARED_AT=$("$SESSION_STATE_SH"' \
+  '--expect "$WINDDOWN_GENERATION"' \
+  'Step 8.5 must capture the retirement identity BEFORE its disarm, not after it in 8.6'
+# And the disarm itself is CAS-pinned. A blind null lands on whatever occupies the slot, so a
+# re-declaration that has already re-armed loses its winddown_task_id and its live Monitor
+# becomes one nobody can name or stop.
+reject_text "$LEAVE_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
+  'the 8.5 disarm must CAS the identity pair, never blind-set it over a successor'
+require_text "$LEAVE_SKILL" '--expect "$WINDDOWN_GENERATION"' \
+  'the 8.5 disarm must prove ownership through the generation CAS before nulling the pair'
+require_text "$LEAVE_SKILL" '`DISARM_RC` non-zero and not `7`' \
+  'Step 8.5 must separate an I/O disarm failure from a CAS loss'
+require_text "$LEAVE_SKILL" 'a successor owns `.leave`.** Do **not** wind down' \
+  'a lost disarm CAS must stop the wind-down, not park the board against a replaced deadline'
+
 # All THREE copies of the invalidate-then-stop ordering must read the exit code and fail closed.
 # Fixing only /leave-by Step 9 leaves the two siblings stopping tasks on an open queue window.
 require_text .claude/skills/pause/SKILL.md 'INVALIDATE_RC' \
@@ -700,6 +725,28 @@ require_text .claude/skills/pause-resume/SKILL.md 'stop nothing, and skip the re
 # can do to shared .window) fell through to undefined behavior.
 require_text "$LEAVE_SKILL" 'The deadline moved in under the check-in' \
   'Step 11 must define the future-checkin / past-deadline row, not fall through it'
+
+# Step 11 retires the same SHARED slot every other retirement pins, so it takes the same guards.
+# Recovery is not a licence to clear blind: /pm --window can arm a live planning deadline in the
+# gap between the read and the clear, and wiping that is the failure the blind form produces. The
+# CAS cannot strand the spent deadline it was meant to clear, because a loss means the spent value
+# is already gone.
+require_text "$LEAVE_SKILL" 'RECOVERY_WINDOW=' \
+  'Step 11 must bind the whole window object for its retirement CAS'
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  'RECOVERY_WINDOW=$("$SESSION_STATE_SH"' \
+  '--expect "$RECOVERY_WINDOW"' \
+  'Step 11 must capture the window it judged before CAS-clearing it'
+require_text "$LEAVE_SKILL" 'A CAS loss here strands nothing' \
+  'Step 11 must say why a guarded clear cannot leave a spent deadline armed forever'
+reject_text "$LEAVE_SKILL" 'Clear `.leave.active` and the armed `.window`; say so in one line' \
+  'the expired row must route through the guarded retirement, not clear the shared slot blind'
+# The .leave half needs the identity re-read too: recovery re-entered after a compaction can have
+# live user turns behind it, and a re-declaration landing there gets retired by a blind write.
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  'RECOVERY_DECLARED_AT=$("$SESSION_STATE_SH"' \
+  '"$HOLDER_AT" = "$RECOVERY_DECLARED_AT"' \
+  'Step 11 must capture the declaration identity before re-reading it to authorize the clear'
 
 # The monitor loop that actually launches successors must not carry its own count of the
 # launch controls — a fixed count in a second place is exactly how the deadline got left
