@@ -257,9 +257,20 @@ The token is generated locally and needs no task ID, so nothing forces it to wai
 ```bash
 WINDDOWN_GENERATION="leave-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
 PUBLISH_RC=0
+# --expect null: Step 5 left this field null, so an EMPTY slot is the only one this publish is
+# entitled to fill. Exit 7 means a successor already published into it.
 "$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=\"$WINDDOWN_GENERATION\"" || PUBLISH_RC=$?
+  --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=$(printf '%s' "$WINDDOWN_GENERATION" | jq -R .)" \
+  --expect null || PUBLISH_RC=$?
 ```
+
+**The publish is a CAS, not a `--set`, and `--expect null` is the whole point.** The holder re-read
+after the task-ID CAS detects only that *this* token was later replaced; it cannot see this write
+**replacing a successor's**. A blind `--set` from a slower overlapping flow — a re-declaration, or a
+Step 11 recovery publish — lands on a live token after that successor already re-read its own and
+armed its Monitor: the successor reports the leave time set, and its `--checkin` then fails Step 8.1
+against a generation it never wrote. The wind-down is lost silently, on the path that reported
+success. Exit `7` means the slot is already someone else's, which is the exit-`7` bullet below.
 
 A non-zero `PUBLISH_RC` here (retry once on exit `6`) → arm nothing and roll back as under "Arming
 failed" below; an unpublishable generation means every event this Monitor emits would be rejected.
@@ -741,7 +752,10 @@ session; the record did not. At session start (or post-compaction recovery), rea
 explicitly — `--session-view` projects neither:
 
 ```bash
-LEAVE_BLOCK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave")               # active, checkin_epoch
+# BOTH reads carry an exit code — the table below applies to each of them, and an unreadable
+# read is not an absent one at either path.
+LEAVE_BLOCK_RC=0
+LEAVE_BLOCK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave") || LEAVE_BLOCK_RC=$?
 # ONE .window read. The judgment and the retirement CAS must be the same snapshot, so the
 # deadline is DERIVED from the object rather than fetched by a second --get.
 RECOVERY_WINDOW_RC=0
@@ -764,6 +778,14 @@ nothing rather than treating it as "no leave time armed".
 > the exact outcome the CAS exists to prevent, reached through the guard rather than around it. Read
 > the object once and derive `deadline_epoch` from it; a snapshot that goes stale between the read
 > and the write loses the CAS, which is the correct and safe outcome.
+
+**An unreadable `.leave` is not an absent one, and `LEAVE_BLOCK_RC` is what says so.** A failed
+read leaves `LEAVE_BLOCK` empty, which reads as "no declaration" and skips recovery entirely — while
+a `.window` deadline stays armed, declining every pipeline in the repo with no Monitor behind it and
+no warning. Exit `3` (no state file has ever been written) genuinely means nothing is armed;
+anything else non-zero means **report the read failure and recover nothing**, exactly as the
+`.window` read does. Applying the table to one path and not the other is how a symmetric contract
+comes apart at the read that happened to be added first.
 
 **Check `leave.active` before judging the pair.** `active: false` with `.window` null is the
 **normal retired shape** — Step 8.6 and `/pause-resume` both write exactly that on a completed or

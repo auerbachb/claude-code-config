@@ -413,11 +413,20 @@ this ordering exists to prevent. On a non-zero `INVALIDATE_RC` after the retry: 
 nothing, re-arm nothing; report it in one line naming the task ID, and leave `.leave` as found for
 `/leave-by` Step 11.
 
-Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding:
+Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding — **under
+the same CAS the unconfirmed path uses**, because a confirmed stop says the *Monitor* is gone, not
+that the slot is still this step's to empty:
 
 ```bash
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)"   # exit 7 = replaced, nothing to do
 ```
+
+**Confirming the stop does not make the write unconditional.** A re-declaration completing during
+the `TaskStop` publishes a *new* ID into that slot, and a blind `--set` afterwards discards the only
+record of a Monitor that is very much alive — so it can be neither named nor stopped, and its own
+`--checkin` later finds a state that no longer matches. Nulling what you no longer hold is the same
+mistake in both branches; the two differ only in what they may *claim*, never in how they write.
 
 **On an unconfirmed stop, release the slot anyway — under a CAS, and without claiming the stop.**
 The generation is already null, so that Monitor's every event is inert; what the dead ID does still

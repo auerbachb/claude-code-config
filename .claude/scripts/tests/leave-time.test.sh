@@ -532,7 +532,7 @@ require_text "$PAUSE_RESUME_SKILL" 'on both resolved paths' \
 # contention, so a generation published after arming can still be null when Step 8.1
 # validates — rejecting the very wake that was just created, with no second chance.
 require_order "$LEAVE_SKILL" '## Step 6:' \
-  'leave.winddown_generation=\"$WINDDOWN_GENERATION\"' \
+  'leave.winddown_generation=$(printf' \
   'while sleep "$WINDDOWN_SLEEP"' \
   'the generation must be published BEFORE the wind-down Monitor is armed'
 # Both Step 6 anchors must still EXTRACT. Prose inserted between an anchor and its
@@ -768,6 +768,35 @@ require_order "$LEAVE_SKILL" '## Step 9:' \
   'CANCEL_DECLARED_AT=$("$SESSION_STATE_SH"' \
   '"$HOLDER_AT" = "$CANCEL_DECLARED_AT"' \
   'the cancel must capture the identity before re-reading it to authorize the clear'
+
+# EVERY write to the identity pair is a CAS, in BOTH branches. A confirmed TaskStop says the
+# MONITOR is gone, not that the slot is still this step to empty: a re-declaration publishing a
+# new ID during that external call loses the only record of a live Monitor, so it can be neither
+# named nor stopped. The confirmed and unconfirmed paths differ in what they may CLAIM, never in
+# how they write - and the blind --set survived precisely because it sat on the happy path.
+reject_text "$PAUSE_RESUME_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
+  'the confirmed-stop path must CAS the task-ID slot, not blind-set it over a successor'
+require_text "$PAUSE_RESUME_SKILL" 'Confirming the stop does not make the write unconditional' \
+  'pause-resume must state why a confirmed stop still writes the slot under a CAS'
+
+# The generation publish fills a slot Step 5 left null, so --expect null is what stops a slower
+# overlapping flow from landing on a LIVE token. The holder re-read cannot cover this: it detects
+# only that OUR token was replaced, never that we replaced someone else - so the successor arms,
+# reports the leave time set, and its --checkin then fails 8.1 against a token it never wrote.
+reject_text "$LEAVE_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_generation=\"$WINDDOWN_GENERATION\""' \
+  'the Step 6 generation publish must CAS into an empty slot, not blind-set over a successor'
+require_text "$LEAVE_SKILL" 'The publish is a CAS, not a `--set`' \
+  'Step 6 must state why the generation publish is compare-and-set'
+
+# The exit-code table applies to BOTH Step 11 reads. Adding it to .window and not .leave leaves an
+# unreadable .leave looking absent, so recovery is skipped while a .window deadline stays armed.
+# Matched on the CODE line, not the bare variable name: the paragraph below explains the guard
+# by name, so a require_text on `LEAVE_BLOCK_RC` alone stays green after the capture itself is
+# deleted. Caught by this assertion own negative control, which is what the control is for.
+require_text "$LEAVE_SKILL" '.leave") || LEAVE_BLOCK_RC=$?' \
+  'Step 11 must distinguish an unreadable .leave from an absent one, as it does for .window'
+require_text "$LEAVE_SKILL" 'An unreadable `.leave` is not an absent one' \
+  'Step 11 must say what an unreadable leave block means, not only an unreadable window'
 
 # All THREE copies of the invalidate-then-stop ordering must read the exit code and fail closed.
 # Fixing only /leave-by Step 9 leaves the two siblings stopping tasks on an open queue window.
