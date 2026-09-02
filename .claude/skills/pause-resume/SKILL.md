@@ -392,8 +392,14 @@ over `.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code
 value** so the release CAS below can name exactly the ID this step was holding:
 
 ```bash
+# Initialised first: on a SUCCESSFUL read the `||` never fires, so an uninitialised RC would stay
+# unbound and every `-ne 0` test on it below would be a syntax error on the empty string.
+OLD_WINDDOWN_TASK_RC=0
 OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_task_id" 2>/dev/null) \
   || OLD_WINDDOWN_TASK_RC=$?
+# The generation this resume is entitled to invalidate — read with the ID, before any write.
+OLD_WINDDOWN_GENERATION=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_generation" 2>/dev/null) \
+  || OLD_WINDDOWN_GENERATION=""
 ```
 
 Then
@@ -404,8 +410,14 @@ restore that is still running — the very nesting the re-arm branch below refus
 Nulling the token first makes every queued event inert whatever the stop then does:
 
 ```bash
+if [ -n "$OLD_WINDDOWN_GENERATION" ] && [ "$OLD_WINDDOWN_GENERATION" != "null" ]; then
+  EXPECT_GEN=$(printf '%s' "$OLD_WINDDOWN_GENERATION" | jq -R .)
+else
+  EXPECT_GEN=null
+fi
 INVALIDATE_RC=0
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" || INVALIDATE_RC=$?
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
+  --expect "$EXPECT_GEN" >/dev/null 2>&1 || INVALIDATE_RC=$?
 # retry once on 6 (lock timeout)
 ```
 
@@ -417,13 +429,23 @@ this ordering exists to prevent. On a non-zero `INVALIDATE_RC` after the retry: 
 nothing, re-arm nothing; report it in one line naming the task ID, and leave `.leave` as found for
 `/leave-by` Step 11.
 
+**And invalidate under a CAS, not a blind `--set`** — the same field `/leave-by` Step 6 publishes
+and Step 8.5 disarms, both under CAS. `.leave` is repo-scoped state another session can rewrite, so
+a re-declaration publishing between the read above and this write would have its token wiped by an
+unguarded null, leaving a live Monitor whose `--checkin` fails Step 8.1 (issue #1525).
+`INVALIDATE_RC == 7` says exactly that happened *before* this write rather than after: a successor
+owns the pair, so stop nothing, release nothing, re-arm nothing, and say nothing about the leave
+time — its new owner has its own live Monitor.
+
 Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding — **under
 the same CAS the unconfirmed path uses**, because a confirmed stop says the *Monitor* is gone, not
 that the slot is still this step's to empty:
 
 ```bash
+RELEASE_RC=0
 "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)"   # exit 7 = replaced, nothing to do
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)" >/dev/null 2>&1 || RELEASE_RC=$?
+# retry once on 6 (lock timeout); 7 = replaced, nothing to do
 ```
 
 **Confirming the stop does not make the write unconditional.** A re-declaration completing during
@@ -441,13 +463,24 @@ wake inert, the new one stopped, the check-in never firing (issue #1525). Releas
 hold, never a slot someone else has taken since:
 
 ```bash
+RELEASE_RC=0
 "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)"   # exit 7 = replaced, nothing to do
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)" >/dev/null 2>&1 || RELEASE_RC=$?
+# retry once on 6 (lock timeout); 7 = replaced, nothing to do
 ```
 
 This releases the slot without asserting the Monitor stopped: **still report the un-stopped task ID**
 so a human can end it, and still leave its `monitors_stopped` entry `stopped: false`. Releasing the
 slot and claiming the stop are different claims, and only the first is true here.
+
+**`RELEASE_RC` is read on both branches, and a discarded one is a false cleanup record.** `0` means
+the slot is empty; `7` means a successor took it, so there is nothing to release and the re-arm
+below must not treat the slot as its own. Any other code, after the retry, means **the ID is still
+there** — and since the paragraph below hands the un-stopped ID's custody to `monitors_stopped` on
+the grounds that the slot was emptied, a swallowed failure makes that handover a lie: the field
+still holds an ID that a later `/leave-by` Step 6 publish will collide with at `--expect null`.
+Report the release failure in the same line as the stop's own outcome, and do not claim the slot
+was cleared.
 
 **Where the un-stopped ID lives after this.** Releasing the slot empties
 `leave.winddown_task_id`, so that field is no longer the record of an un-stopped Monitor and no
@@ -510,9 +543,14 @@ With the gate passed **and the deadline spent**:
   # RESUMED_DECLARED_AT was captured with RESUMED_WINDOW at the top of this step.
   HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
   if [ -n "$RESUMED_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RESUMED_DECLARED_AT" ]; then
-    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+    # Window first, `.leave` only once its outcome is resolved — /leave-by Step 6,
+    # "Only exit 7 is ownership loss". Retry once on 6 (lock timeout) before judging.
+    WINDOW_CAS_RC=0
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-      --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+      --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?
+    if [ "$WINDOW_CAS_RC" -eq 0 ] || [ "$WINDOW_CAS_RC" -eq 7 ]; then
+      "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+    fi   # any other code: retire NOTHING and report the still-armed window
   fi
   ```
 
@@ -529,7 +567,10 @@ With the gate passed **and the deadline spent**:
   deadline this resume never examined — the same hazard the gate note above raises for the
   null-task-ID path, one step further along. The CAS pins the write to the exact
   `deadline_epoch` the spent-verdict was reached on, and its exit `7` means the window moved on and
-  is no longer this step's to clear. Clearing the window is the load-bearing half: a spent
+  is no longer this step's to clear. **Only that code means so** — a lock timeout or I/O failure
+  leaves the spent window armed *and still this resume's*, so retiring `.leave` alongside it would
+  produce the one shape `/leave-by` Step 11 reads as normal and passes over in silence, declining
+  every launch in the repo thereafter. Hence the order above, and hence the report. Clearing the window is the load-bearing half: a spent
   `deadline_epoch` left behind sits in the past forever, so `/subagent` Step 7's gate would decline
   every pipeline in this repo from here on — the resume would reopen the launch gates and then
   refuse all work through a different one. Mark the `owner: "leave_winddown"` entry in

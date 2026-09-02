@@ -686,7 +686,9 @@ require_text "$LEAVE_SKILL" 'roll back only what is still yours' \
   'arm-failure rollback must be identity-guarded, not blind'
 require_text "$LEAVE_SKILL" '`.window` is shared; `.leave` is not' \
   'the retirement must treat the shared window as a separate claim from the leave record'
-require_text "$PAUSE_RESUME_SKILL" 'exit 7 = another writer owns .window' \
+# The EXECUTABLE endpoint, not the comment that used to sit beside it: a bash comment
+# describing the CAS survives the CAS being replaced by a blind --set.
+require_text "$PAUSE_RESUME_SKILL" '--expect "$RESUMED_WINDOW"' \
   'the pause-resume retirement must CAS the window clear, not write it blind'
 # The window CAS is only meaningful if it pins the value the verdict was reached on.
 require_text "$PAUSE_RESUME_SKILL" 'RESUMED_DEADLINE_EPOCH' \
@@ -785,7 +787,9 @@ require_text "$LEAVE_SKILL" '"$HOLDER_AT" = "$ARM_DECLARED_AT"' \
   'the arm-failure rollback must re-read the identity before deactivating the declaration'
 require_text "$LEAVE_SKILL" 'ARM_DECLARED_AT="$NOW_ISO"' \
   'the rollback identity must be bound to what Step 5 actually stored as declared_at'
-require_text "$LEAVE_SKILL" 'the pair belongs to the declaration recovery read' \
+# Executable endpoint again: the owner branch must NULL the dead ID under a CAS naming it,
+# not merely carry a comment saying it would be safe to.
+require_text "$LEAVE_SKILL" '--expect "$(printf '"'"'%s'"'"' "$RECOVERY_TASK_ID" | jq -R .)"' \
   'Step 11 must guard the pair-null on the identity, not null a successor live Monitor'
 require_order "$LEAVE_SKILL" '## Step 11:' \
   'null the pair before' \
@@ -880,7 +884,7 @@ require_text "$PAUSE_RESUME_SKILL" 'fail closed — the same contract as `/leave
 # Bare `TaskStop` is not usable as a marker here - it occurs several times in each section,
 # and require_order treats that ambiguity as a failure.
 require_order "$PAUSE_SKILL" '## Step 2' \
-  'INVALIDATE_RC=0; "$SESSION_STATE_SH"' \
+  'INVALIDATE_RC=0; EXPECT_GEN=' \
   'only then `TaskStop` the leave-time wind-down ID' \
   '/pause Step 2 must invalidate the generation BEFORE stopping the wind-down task'
 require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
@@ -893,7 +897,7 @@ require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
 # release that runs only after it. Prose endpoints catch a sentence moved past the block; these
 # catch the block moved past everything downstream of the stop, which prose endpoints cannot.
 require_order "$PAUSE_SKILL" '## Step 2' \
-  'INVALIDATE_RC=0; "$SESSION_STATE_SH"' \
+  'INVALIDATE_RC=0; EXPECT_GEN=' \
   '--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
   '/pause Step 2 must invalidate before the post-stop release, on executable endpoints'
 require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
@@ -927,7 +931,7 @@ require_order "$LEAVE_SKILL" '## Step 11:' \
   'RECOVERY_WINDOW=$("$SESSION_STATE_SH"' \
   '--expect "$RECOVERY_WINDOW"' \
   'Step 11 must capture the window it judged before CAS-clearing it'
-require_text "$LEAVE_SKILL" 'A CAS loss here strands nothing' \
+require_text "$LEAVE_SKILL" 'A CAS loss at exit `7` strands nothing' \
   'Step 11 must say why a guarded clear cannot leave a spent deadline armed forever'
 reject_text "$LEAVE_SKILL" 'Clear `.leave.active` and the armed `.window`; say so in one line' \
   'the expired row must route through the guarded retirement, not clear the shared slot blind'
@@ -1044,6 +1048,108 @@ require_text .claude/pm-config.md 'CLAUDE_LEAVE_LEAD_TIME_MIN' \
   'pm-config.md must document the lead-time env override'
 
 ok_group 'cross-file contracts: one deadline source, Monitor wake, teardown both sides'
+
+GROUP_MARK=$FAILURES
+# ---------------------------------------------------------------------------
+# CAS RESULTS ARE CLASSIFIED, NEVER DISCARDED (round 15)
+#
+# `|| :` collapses two opposite outcomes: exit 7 (another writer owns the slot -
+# leaving it is CORRECT) and a lock timeout / I/O failure (the write did NOT happen
+# and the slot is still ours - leaving it strands a spent deadline that declines
+# every pipeline in the repo, forever, behind a pair Step 11 reads as the normal
+# retired shape). Every shared-state CAS therefore captures an RC.
+# ---------------------------------------------------------------------------
+
+# No `.window` or identity CAS may swallow its status. The bare `|| :` form is the
+# defect itself, so its ABSENCE is the assertion - a require_text on the RC name
+# would pass while a second, unguarded site still used `|| :`.
+for _f in "$LEAVE_SKILL" "$PAUSE_RESUME_SKILL"; do
+  reject_text "$_f" '>/dev/null 2>&1 || :' \
+    "$_f must classify every CAS exit code, never discard it with '|| :'"
+done
+require_text "$LEAVE_SKILL" 'WINDOW_CAS_RC' \
+  'the .window clears must capture their CAS exit code'
+require_text "$PAUSE_RESUME_SKILL" 'WINDOW_CAS_RC' \
+  '/pause-resume Step 5 must capture its .window CAS exit code'
+require_text "$LEAVE_SKILL" 'Only exit `7` is ownership loss' \
+  'leave-by must state the canonical exit-code contract for the shared-window clears'
+require_text "$LEAVE_SKILL" 'window-cas-exit-codes' \
+  'the exit-code contract needs a stable anchor for the sibling sites to cite'
+
+# ORDER, not prose: `.window` is cleared BEFORE `.leave.active=false`, so a lock
+# timeout cannot leave active=false over a window this declaration still owns.
+# Section-scoped and positional - a sentence saying "window first" survives a swap.
+require_order "$LEAVE_SKILL" '## Step 8:' \
+  '--expect "$RETIRE_WINDOW"' \
+  '"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"' \
+  '8.6 must resolve the window CAS before marking the declaration inactive'
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  '--expect "$RECOVERY_WINDOW"' \
+  '"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"' \
+  'Step 11 recovery must resolve the window CAS before marking the declaration inactive'
+
+# The generation invalidation is a CAS at ALL THREE countermand sites - it is the
+# field Step 6 publishes and 8.5 disarms, both guarded. A blind --set wipes a
+# successor's token and leaves a live Monitor that can never fire (issue #1525).
+for _f in "$LEAVE_SKILL" "$PAUSE_SKILL" "$PAUSE_RESUME_SKILL"; do
+  reject_text "$_f" '--set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"' \
+    "$_f must CAS the generation invalidation, never --set it blind"
+done
+require_text "$LEAVE_SKILL" 'COUNTERMAND_GENERATION' \
+  'Step 9 must capture the generation it is entitled to invalidate before writing'
+require_text "$PAUSE_SKILL" 'OLD_WINDDOWN_GENERATION' \
+  '/pause Step 2 must capture the generation before invalidating it'
+require_text "$PAUSE_RESUME_SKILL" 'OLD_WINDDOWN_GENERATION' \
+  '/pause-resume Step 5 must capture the generation before invalidating it'
+
+# /pause Step 2 referenced $OLD_WINDDOWN_TASK_ID without ever binding it: the
+# --expect became "" and the release CAS lost every time, silently, leaving a dead
+# ID squatting the slot Step 6 must win with --expect null.
+require_text "$PAUSE_SKILL" 'OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get' \
+  '/pause Step 2 must BIND OLD_WINDDOWN_TASK_ID - the release CAS names it'
+require_order "$PAUSE_SKILL" '## Step 2:' \
+  'OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get' \
+  '--expect "$(printf '"'"'%s'"'"' "$OLD_WINDDOWN_TASK_ID" | jq -R .)"' \
+  '/pause Step 2 must bind the task ID before the CAS that expects it'
+
+# A confirmed TaskStop proves the Monitor is gone, not that the slot is still ours:
+# the cancel waits on that external call, so the ID is captured before it and the
+# release is a CAS on that value.
+require_text "$LEAVE_SKILL" 'CANCEL_TASK_ID' \
+  'the cancel must capture the task ID before the TaskStop it waits on'
+require_order "$LEAVE_SKILL" '## Step 9:' \
+  'CANCEL_TASK_ID=$("$SESSION_STATE_SH" --get' \
+  '--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
+  'the cancel must capture the task ID before releasing the slot under CAS'
+require_text "$LEAVE_SKILL" 'RELEASE_RC' \
+  'task-ID releases must capture their CAS exit code'
+require_text "$PAUSE_SKILL" 'RELEASE_RC' \
+  '/pause must capture the release CAS exit code before claiming cleanup'
+require_text "$PAUSE_RESUME_SKILL" 'RELEASE_RC' \
+  '/pause-resume must capture the release CAS exit code on both branches'
+
+# Step 11's re-arm guard had `:` in BOTH arms - an identity check that decided
+# nothing, so the dead pair survived and the COMMON re-arm path ran regardless.
+require_text "$LEAVE_SKILL" 'REARM_ALLOWED' \
+  'the Step 11 re-arm guard must publish a value the re-arm path reads'
+require_text "$LEAVE_SKILL" 'REARM_ALLOWED=false' \
+  'REARM_ALLOWED must default false so an untaken branch arms nothing'
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  'REARM_ALLOWED=false' \
+  'if [ "$REARM_ALLOWED" = true ]; then' \
+  'the re-arm guard must be set before the publish that reads it'
+require_text "$LEAVE_SKILL" 'RECOVERY_TASK_ID' \
+  'recovery must derive the dead task ID from the single .leave read'
+require_text "$LEAVE_SKILL" 'RECOVERY_GENERATION' \
+  'recovery must derive the dead generation from the single .leave read'
+
+# An RC read on a SUCCESSFUL read never fires its `||`, so it must be pre-initialised.
+require_order "$PAUSE_RESUME_SKILL" '## Step 5:' \
+  'OLD_WINDDOWN_TASK_RC=0' \
+  'OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get' \
+  'OLD_WINDDOWN_TASK_RC must be initialised before the read that conditionally sets it'
+
+ok_group 'CAS results are classified, not discarded; re-arm guard decides'
 
 if [ "$FAILURES" -ne 0 ]; then
   printf 'FAIL: %d leave-time assertion(s) failed\n' "$FAILURES" >&2
