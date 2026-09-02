@@ -1017,6 +1017,36 @@ test_20_missing_skills_publisher_is_an_error_in_both_writers() {
     "[ -z \"\$(grep 'publish-agent-symlinks.sh not found' '$HOOK' | grep 'errors=')\" ]"
 }
 
+# ── Test 21: removing the marker is lock-checked, like writing it ───────────
+#
+# write_marker's commit path inherits state_lock_assert_held from
+# state_lock_commit; its REMOVAL path used a bare `rm` and returned 0. That made
+# the delete the only mutation in the file a dispossessed holder could still
+# land — a run whose lock had already been broken on age wiping a restart or
+# failure marker the new owner had just written. The delete is the worst shape
+# for that loss, because nothing is left to show a signal was dropped.
+
+test_21_marker_removal_is_lock_checked() {
+  section "Test 21: a dispossessed holder cannot delete the marker"
+
+  # The assert must appear INSIDE write_marker, before the rm — not merely
+  # somewhere in the file, which the commit path already guarantees.
+  local body
+  body="$(awk '/^write_marker\(\) \{/,/^\}/' "$SYNC")"
+  assert "(setup) write_marker's body was located" "[ -n \"\$body\" ]"
+  assert "the removal path asserts the lock is still held" \
+    "[ -n \"\$(printf '%s' \"\$body\" | grep 'state_lock_assert_held')\" ]"
+  assert "the assert precedes the rm" \
+    "[ \"\$(printf '%s' \"\$body\" | grep -n 'state_lock_assert_held' | head -1 | cut -d: -f1)\" -lt \"\$(printf '%s' \"\$body\" | grep -n 'rm -f' | head -1 | cut -d: -f1)\" ]"
+  assert "a refused removal is reported to the caller, not swallowed as success" \
+    "[ -n \"\$(printf '%s' \"\$body\" | grep 'return 1')\" ]"
+
+  # Control: the commit path's own check still comes from state_lock_commit, so
+  # this test is pinning the removal path specifically.
+  assert "(control) the commit path still goes through commit_json" \
+    "[ -n \"\$(printf '%s' \"\$body\" | grep 'commit_json')\" ]"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1056,6 +1086,7 @@ test_17_missing_bound_declines_instead_of_running_unbounded
 test_18_hook_bootstrap_and_steady_state_are_exclusive
 test_19_marker_clear_is_anchored_at_region_exit
 test_20_missing_skills_publisher_is_an_error_in_both_writers
+test_21_marker_removal_is_lock_checked
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

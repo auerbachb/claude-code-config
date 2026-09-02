@@ -452,6 +452,20 @@ write_marker() {
     ((.restart_recommended // null) == null) and ((.sync_failure // null) == null)
   ' 2>/dev/null)" || empty="false"
   if [[ "$empty" == "true" ]]; then
+    # Removal is a WRITE and gets the same ownership check the commit path
+    # inherits from state_lock_commit. Without it this was the only mutation in
+    # the file a DISPOSSESSED holder could still land: a run whose lock had
+    # already been broken on age would delete a restart or failure marker the new
+    # owner had just written. That is the precise loss this lock exists to
+    # prevent, in its worst shape — a delete leaves nothing behind to show a
+    # signal was dropped, so the user simply never sees the reminder.
+    #
+    # Returning non-zero rather than exiting: every caller already treats a
+    # non-zero write_marker as "marker not persisted" and says so.
+    if ! state_lock_assert_held; then
+      warn "lock was broken by another writer; refusing to remove $MARKER_FILE — a newer marker may be present"
+      return 1
+    fi
     rm -f "$MARKER_FILE" 2>/dev/null || true
     return 0
   fi
