@@ -489,8 +489,10 @@ require_text "$LEAVE_SKILL" 'exit silently, writing nothing' \
 # Disarm before delegating, then delegate to the real /pause.
 require_text "$LEAVE_SKILL" '8.5 — Disarm before delegating' \
   'leave-by must null the identity pair before invoking /pause'
-# A spent deadline left armed declines every future launch in the repo.
-require_text "$LEAVE_SKILL" '--set ".repos[\"$REPO_KEY\"].window=null"' \
+# A spent deadline left armed declines every future launch in the repo. The clear is now
+# CAS-pinned at every site (retirement, cancel, arm-failure rollback) because `.window` is
+# shared with `/pm --window` — the intent is unchanged, the write is just no longer blind.
+require_text "$LEAVE_SKILL" '--cas ".repos[\"$REPO_KEY\"].window=null"' \
   'a completed wind-down must clear the armed window, not just leave.active'
 require_text .claude/skills/pause-resume/SKILL.md '.repos["$REPO_KEY"].window=null' \
   '/pause-resume must clear the armed window when it retires a leave time'
@@ -669,6 +671,20 @@ require_text "$LEAVE_SKILL" 'RETIRE_WINDOW=' \
   'leave-by must bind the whole window object for its retirement CAS'
 require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_WINDOW=' \
   'pause-resume must bind the whole window object for its retirement CAS'
+
+# EVERY .window clear is CAS-pinned, not just the two retirements. Cancel and the arm-failure
+# rollback write the same shared slot, and /pm --window also owns it.
+require_text "$LEAVE_SKILL" 'CANCEL_WINDOW=' \
+  'the cancel path must pin its window clear to the window it armed'
+require_text "$LEAVE_SKILL" 'ARM_WINDOW=' \
+  'the arm-failure rollback must pin its window clear to the window it armed'
+
+# All THREE copies of the invalidate-then-stop ordering must read the exit code and fail closed.
+# Fixing only /leave-by Step 9 leaves the two siblings stopping tasks on an open queue window.
+require_text .claude/skills/pause/SKILL.md 'INVALIDATE_RC' \
+  '/pause Step 2 must check the generation invalidation before stopping the task'
+require_text .claude/skills/pause-resume/SKILL.md 'fail closed — the same contract as `/leave-by` Step 9' \
+  '/pause-resume Step 5 must fail closed on a failed generation invalidation'
 
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.

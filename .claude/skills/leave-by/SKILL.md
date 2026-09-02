@@ -224,6 +224,9 @@ ARM_RC=0
   --set ".repos[\"$REPO_KEY\"].window={\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}" \
   --set ".repos[\"$REPO_KEY\"].leave={\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null}" \
   2>/dev/null || ARM_RC=$?
+# The window object this declaration just armed, for the Step 6 rollback CAS. Read it back
+# rather than reconstructing it, so the expected value is byte-for-byte what is stored.
+[ "$ARM_RC" -eq 0 ] && { ARM_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) || ARM_WINDOW=""; }
 ```
 
 `deadline_epoch` inside `.leave` stays **null on purpose** — the field exists so a reader who looks
@@ -330,11 +333,18 @@ publish-failure rollback, because losing the slot means someone else now owns th
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
     --expect "$WINDDOWN_GENERATION" >/dev/null 2>&1 || ROLLBACK_RC=$?
   if [ "$ROLLBACK_RC" -eq 0 ]; then      # still ours: finish the rollback
-    "$SESSION_STATE_SH" \
-      --set ".repos[\"$REPO_KEY\"].leave.active=false" \
-      --set ".repos[\"$REPO_KEY\"].window=null"
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+    # ARM_WINDOW is the object written in Step 5, captured before the Monitor call.
+    if [ -n "$ARM_WINDOW" ]; then
+      "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+        --expect "$ARM_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+    fi
   fi
   ```
+
+  The window clear is CAS-pinned here for the same reason as everywhere else: winning the
+  generation CAS proves `.leave` is still this declaration's, and says nothing about the **shared**
+  `.window`, which `/pm --window` also writes.
 
   Then say `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed
   would decline pipelines all afternoon for a wind-down that will never fire; leaving the generation
@@ -604,7 +614,22 @@ that looks retired.
   `/pause` is landing work — **re-plans; it never proceeds on the stale deadline.** Re-declare on the
   new time and let `/pause-resume` (via `/go-on`) restore whatever the partial wind-down parked.
 - **Cancel** ("never mind, I'm staying") → invalidate the generation, `TaskStop` the recorded task,
-  then set `active=false` and clear the armed `.window`, so dispatch stops declining work. **Both
+  then set `active=false` and clear the armed `.window`, so dispatch stops declining work.
+  **Clear `.window` under the same CAS Step 8.6 uses**, against the whole window object captured
+  before the cancel began — `.window` is shared with `/pm --window`, so a blind `--set` here wipes a
+  planning deadline whenever `/pm` has rewritten the slot since this leave time was armed:
+
+  ```bash
+  CANCEL_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) || CANCEL_WINDOW=""
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+  if [ -n "$CANCEL_WINDOW" ]; then
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$CANCEL_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  fi
+  ```
+
+  Cancelling **this** leave time is always this step's to do; clearing the **shared** deadline is
+  only its to do while the deadline is still the one it armed. **Both
   outcomes clear the cancellation; they differ only on the task ID:**
   - *Stop confirmed* → also null `winddown_task_id`. Confirm in one line.
   - *Stop failed* → **retain** `winddown_task_id` and name it in the report. The leave time is still

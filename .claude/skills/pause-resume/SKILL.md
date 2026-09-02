@@ -395,8 +395,18 @@ restore that is still running — the very nesting the re-arm branch below refus
 Nulling the token first makes every queued event inert whatever the stop then does:
 
 ```bash
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
+INVALIDATE_RC=0
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" || INVALIDATE_RC=$?
+# retry once on 6 (lock timeout)
 ```
+
+**Read that exit code, and fail closed — the same contract as `/leave-by` Step 9.** The null
+precedes the `TaskStop` only because a queued `--checkin` stays valid until the token is gone, so a
+failed write leaves that window open. Stopping the task and continuing anyway would let a queued
+event pass Step 8.1 and start a `/pause` inside a restore that is still running — the exact nesting
+this ordering exists to prevent. On a non-zero `INVALIDATE_RC` after the retry: stop nothing, clear
+nothing, re-arm nothing; report it in one line naming the task ID, and leave `.leave` as found for
+`/leave-by` Step 11.
 
 Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding:
 
