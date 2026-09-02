@@ -339,6 +339,260 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
 fi
 ```
 
+**Handle the leave-time wind-down too (issue #1525) — but read before you touch anything.**
+
+**Gate first: `leave.active` must be `true`.** The window is **shared state**: `/pm --window` arms
+the same `.repos["<key>"].window` with no `.leave` block at all, and that case is indistinguishable
+downstream from "nothing armed". `leave.active != true` (false, null, absent, or unreadable) →
+**skip this entire block**: stop nothing, re-arm nothing, leave `.window` exactly as found, and
+settle no entry. Without the gate here — ahead of every branch below, not after them — an ordinary
+coffee-break `/pause` → `/pause-resume` on a PM planning board would arm a phantom `/leave-by`
+check-in and later `/pause` a board that never declared a leave time.
+
+**Then read and validate the deadline, still before stopping anything.** Read
+`.repos["$REPO_KEY"].window` **once** (the leave block never carries the deadline — `/leave-by`
+Step 5) with Step 11's exit-code table and numeric test, **binding the object** so the retirement
+CAS below can pin its write to the exact snapshot the spent-verdict was reached on:
+
+```bash
+RESUMED_DEADLINE_RC=0
+# ONE read of the shared slot, binding the WHOLE window object — that is what the CAS below
+# because --expect is matched at the --cas path and that path is `.window`, not a scalar under
+# it — and the verdict is DERIVED from that same object rather than fetched separately, so
+# /pm --window cannot swap the window between the judgment and the write.
+RESUMED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || RESUMED_DEADLINE_RC=$?
+RESUMED_DEADLINE_EPOCH=$(printf '%s' "$RESUMED_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
+# The declaration identity, captured with the window: the retirement below guards `.leave` on it,
+# the same way /leave-by Steps 8.6, 9 and 11 do. Captured here, before anything is stopped.
+RESUMED_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || RESUMED_DECLARED_AT=""
+```
+
+**Two reads would make the CAS win against a window this step never judged** — the verdict taken on
+the old `deadline_epoch`, the `--expect` holding the object that replaced it. One read, derived and
+carried, is what makes exit `7` mean "someone else owns this slot" instead of "you cleared theirs".
+ Validating *after* the `TaskStop` is what strands a
+declaration: the stop clears the identity pair, the deadline then reads unreadable, and the
+inconsistent-record branch preserves `leave.active` while re-arming nothing — an active leave time
+with no Monitor and no task ID left to recover it. Read first, and the stop only ever runs on a
+branch that knows what it will do next.
+
+**An unreadable or malformed deadline stops here — before the disarm, not after it.** Reading early
+is not enough on its own: if the validation fails and the disarm runs anyway, the identity pair is
+gone and the inconsistent-record branch below then preserves `leave.active` while re-arming
+nothing — an active leave time with no Monitor and no task ID, which is precisely the state that
+branch exists to avoid creating. So on any non-numeric, `null`, or unreadable deadline with
+`leave.active == true`: report the one-line inconsistent-record verdict, **leave
+`winddown_task_id` and `winddown_generation` exactly as found**, stop nothing, and skip the rest of
+this block. The live wake stays live and nameable, and `/leave-by` Step 11 can still recover it.
+
+With the gate passed and the deadline read **and validated**, disarm: same shape as the block above,
+over `.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
+`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), **binding the
+value** so the release CAS below can name exactly the ID this step was holding:
+
+```bash
+# Initialised first: on a SUCCESSFUL read the `||` never fires, so an uninitialised RC would stay
+# unbound and every `-ne 0` test on it below would be a syntax error on the empty string.
+OLD_WINDDOWN_TASK_RC=0
+OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_task_id" 2>/dev/null) \
+  || OLD_WINDDOWN_TASK_RC=$?
+# The generation this resume is entitled to invalidate — read with the ID, before any write.
+OLD_WINDDOWN_GENERATION=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_generation" 2>/dev/null) \
+  || OLD_WINDDOWN_GENERATION=""
+```
+
+Then
+**invalidate the generation before stopping the task** — the order `/leave-by` Step 9 mandates and
+`/pause` Step 2 repeats, for the same reason: a `TaskStop` cannot retract a `--checkin` the Monitor
+has already emitted, and a queued one still passes Step 8.1 here, starting a `/pause` inside a
+restore that is still running — the very nesting the re-arm branch below refuses to do inline.
+Nulling the token first makes every queued event inert whatever the stop then does:
+
+```bash
+if [ -n "$OLD_WINDDOWN_GENERATION" ] && [ "$OLD_WINDDOWN_GENERATION" != "null" ]; then
+  EXPECT_GEN=$(printf '%s' "$OLD_WINDDOWN_GENERATION" | jq -R .)
+else
+  EXPECT_GEN=null
+fi
+INVALIDATE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
+  --expect "$EXPECT_GEN" >/dev/null 2>&1 || INVALIDATE_RC=$?
+# retry once on 6 (lock timeout)
+```
+
+**Read that exit code, and fail closed — the same contract as `/leave-by` Step 9.** The null
+precedes the `TaskStop` only because a queued `--checkin` stays valid until the token is gone, so a
+failed write leaves that window open. Stopping the task and continuing anyway would let a queued
+event pass Step 8.1 and start a `/pause` inside a restore that is still running — the exact nesting
+this ordering exists to prevent. On a non-zero `INVALIDATE_RC` after the retry: stop nothing, clear
+nothing, re-arm nothing; report it in one line naming the task ID, and leave `.leave` as found for
+`/leave-by` Step 11.
+
+**And invalidate under a CAS, not a blind `--set`** — the same field `/leave-by` Step 6 publishes
+and Step 8.5 disarms, both under CAS. `.leave` is repo-scoped state another session can rewrite, so
+a re-declaration publishing between the read above and this write would have its token wiped by an
+unguarded null, leaving a live Monitor whose `--checkin` fails Step 8.1 (issue #1525).
+`INVALIDATE_RC == 7` says exactly that happened *before* this write rather than after: a successor
+owns the pair, so stop nothing, release nothing, re-arm nothing, and say nothing about the leave
+time — its new owner has its own live Monitor.
+
+Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding — **under
+the same CAS the unconfirmed path uses**, because a confirmed stop says the *Monitor* is gone, not
+that the slot is still this step's to empty:
+
+```bash
+RELEASE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)" >/dev/null 2>&1 || RELEASE_RC=$?
+# retry once on 6 (lock timeout); 7 = replaced, nothing to do
+```
+
+**Confirming the stop does not make the write unconditional.** A re-declaration completing during
+the `TaskStop` publishes a *new* ID into that slot, and a blind `--set` afterwards discards the only
+record of a Monitor that is very much alive — so it can be neither named nor stopped, and its own
+`--checkin` later finds a state that no longer matches. Nulling what you no longer hold is the same
+mistake in both branches; the two differ only in what they may *claim*, never in how they write.
+
+**On an unconfirmed stop, release the slot anyway — under a CAS, and without claiming the stop.**
+The generation is already null, so that Monitor's every event is inert; what the dead ID does still
+do is **squat the slot** the re-arm below must win with `--expect null`. Left there, Step 6's CAS
+returns `7`, and its exit-7 bullet — written for a *live successor* owning `.leave` — then
+`TaskStop`s the Monitor this step just created and leaves the leave time silently un-armed: the old
+wake inert, the new one stopped, the check-in never firing (issue #1525). Release exactly what you
+hold, never a slot someone else has taken since:
+
+```bash
+RELEASE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)" >/dev/null 2>&1 || RELEASE_RC=$?
+# retry once on 6 (lock timeout); 7 = replaced, nothing to do
+```
+
+This releases the slot without asserting the Monitor stopped: **still report the un-stopped task ID**
+so a human can end it, and still leave its `monitors_stopped` entry `stopped: false`. Releasing the
+slot and claiming the stop are different claims, and only the first is true here.
+
+**`RELEASE_RC` is read on both branches, and a discarded one is a false cleanup record.** `0` means
+the slot is empty; `7` means a successor took it, so there is nothing to release and the re-arm
+below must not treat the slot as its own. Any other code, after the retry, means **the ID is still
+there** — and since the paragraph below hands the un-stopped ID's custody to `monitors_stopped` on
+the grounds that the slot was emptied, a swallowed failure makes that handover a lie: the field
+still holds an ID that a later `/leave-by` Step 6 publish will collide with at `--expect null`.
+Report the release failure in the same line as the stop's own outcome, and do not claim the slot
+was cleared.
+
+**Where the un-stopped ID lives after this.** Releasing the slot empties
+`leave.winddown_task_id`, so that field is no longer the record of an un-stopped Monitor and no
+later branch may claim it is. The durable copy is the `owner: "leave_winddown"` entry in
+`monitors_stopped`, which carries the ID alongside `stopped: false` and outlives this step; the
+in-memory copy is `OLD_WINDDOWN_TASK_ID`, which is what the report prints. Both branches below that
+mention an un-stopped ID mean **those** two, never the released slot.
+
+**Then branch on the deadline, not on the pause** — using the value already read and validated
+above:
+
+- **Deadline still in the future** → the leave time **still applies**, and this resume is an
+  ordinary mid-afternoon return, not a withdrawal. Keep `leave.active=true`, keep `.window`, and
+  **re-arm the wind-down** for the remaining time with a **fresh generation**, publishing the new
+  identity pair exactly as `/leave-by` Step 6 does. **Branch on `checkin_epoch` the way Step 11's
+  table does, rather than re-arming blindly:** a check-in that already fired leaves `checkin_epoch`
+  in the past, and arming a Monitor for a past instant clamps the sleep to one second and winds the
+  board down again seconds after the user asked for it back. `checkin_epoch` in the future → re-arm
+  for the remaining time. `checkin_epoch` past with the deadline still ahead → the check-in is
+  **overdue**, and it is delivered the same way every other check-in is: arm the Monitor with a
+  **fresh published generation** and let its sleep clamp to one second, so the check-in arrives as
+  its own event once this resume has returned. **Never invoke Step 8 inline from here.** Two
+  distinct failures come of that: it nests a `/pause` inside the restore that is still running, and
+  Step 8.1 would validate against the generation this step just nulled and exit silently — losing
+  the wind-down at the exact moment it was due. The armed-event route has neither problem, because
+  Step 6 publishes the generation before arming. Say it in one line:
+  `leave time still armed: until 7:00 PM ET · check-in at 6:30 PM ET`. Clearing here instead would
+  mean a coffee-break `/pause` at 4 PM silently cancels the 7 PM wind-down the user asked for once
+  and never hears about again — the exact promise this feature exists to keep.
+- **Deadline confirmed in the past** → the leave time is spent. Retire it per the branches below;
+  do not re-arm. Resuming *past* a declared leave time is the user saying it no longer applies, and
+  re-arming then would park the board again minutes after they asked for it back.
+- **Deadline absent, non-numeric, or unreadable, with `leave.active == true`** → an **inconsistent
+  record**, not an expired one — the same verdict `/leave-by` Step 11 reaches on the same evidence.
+  Report it in one line, preserve `leave.active` **and** the shared `.window` exactly as found, and
+  neither re-arm nor retire. Retiring here would destroy a live deadline on the strength of a lock
+  timeout, and the two files must not disagree about what a half-readable record means.
+
+**`leave.active=false` is written on both resolved paths, not only after a `TaskStop`.** The
+already-null path is the *normal* one — `/pause` Step 2 stopped the wind-down and nulled the pair
+before this ever runs — so clearing only after a stop this step performed would leave the common
+case at `active: true` with no Monitor behind it, and `/leave-by` Step 11's recovery would re-arm
+the wind-down on the next session start: a leave time the user explicitly resumed past, resurrected
+by the resume itself. So:
+
+The `leave.active` gate that admitted this block at all is stated once, at the top — it governs
+every branch here, the future-deadline re-arm included, and is not re-derived per branch. Its
+load-bearing consequence for *this* path: clearing the window on a null task ID alone would wipe a
+PM planning deadline that no leave time ever touched, on every ordinary `/pause` → `/pause-resume`
+cycle.
+
+With the gate passed **and the deadline spent**:
+
+- **Null / exit 3 (nothing armed), or a confirmed `TaskStop`** → set
+  `leave.active=false` with the (already or newly) null pair **and** clear the armed deadline
+  (`.repos["$REPO_KEY"].window=null`) — the latter **under a CAS on the deadline this step read and
+  validated**, never blind:
+
+  ```bash
+  # RESUMED_DECLARED_AT was captured with RESUMED_WINDOW at the top of this step.
+  HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+  if [ -n "$RESUMED_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RESUMED_DECLARED_AT" ]; then
+    # Window first, `.leave` only once its outcome is resolved — /leave-by Step 6,
+    # "Only exit 7 is ownership loss". Retry once on 6 (lock timeout) before judging.
+    WINDOW_CAS_RC=0
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?
+    if [ "$WINDOW_CAS_RC" -eq 0 ] || [ "$WINDOW_CAS_RC" -eq 7 ]; then
+      "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+    fi   # any other code: retire NOTHING and report the still-armed window
+  fi
+  ```
+
+  **`.leave` needs the identity guard too, not just `.window` the CAS.** `/leave-by` Steps 8.6, 9
+  and 11 all require a matching `declared_at` before touching `.leave`, and this retirement is the
+  same claim made from the other side. Without it, a re-declaration landing between this step's
+  snapshot and the write is deactivated while its own `.window` survives the CAS — leaving a
+  deadline that declines every launch and a Monitor whose `--checkin` exits silently on
+  `leave.active`, which is the worst of both records. A mismatch retires nothing.
+
+  `.window` is shared with `/pm` planning deadlines, and this block only ever established that the
+  *leave* record is spent. Between the read at the top of this block and the write here, a
+  re-declaration or a planning deadline can take the slot; a blind `--set` would then clear a live
+  deadline this resume never examined — the same hazard the gate note above raises for the
+  null-task-ID path, one step further along. The CAS pins the write to the exact
+  `deadline_epoch` the spent-verdict was reached on, and its exit `7` means the window moved on and
+  is no longer this step's to clear. **Only that code means so** — a lock timeout or I/O failure
+  leaves the spent window armed *and still this resume's*, so retiring `.leave` alongside it would
+  produce the one shape `/leave-by` Step 11 reads as normal and passes over in silence, declining
+  every launch in the repo thereafter. Hence the order above, and hence the report. Clearing the window is the load-bearing half: a spent
+  `deadline_epoch` left behind sits in the past forever, so `/subagent` Step 7's gate would decline
+  every pipeline in this repo from here on — the resume would reopen the launch gates and then
+  refuse all work through a different one. Mark the `owner: "leave_winddown"` entry in
+  `monitors_stopped` `rearmed: true` — for this owner "resolved" means disarmed, not restarted —
+  and say it in one line: `leave time cleared — re-declare with /leave-by if it still applies`.
+- **An unconfirmed `TaskStop`** → the deadline is still **spent**, so retire it exactly as above —
+  `leave.active=false` **and** `.repos["$REPO_KEY"].window=null` — leave the entry `rearmed: false`
+  and `stopped: false`, and name the un-stopped ID from `OLD_WINDDOWN_TASK_ID` and the
+  `monitors_stopped` entry in the report. **Do not look for it in `leave.winddown_task_id`:** the
+  release CAS above already emptied that slot, so treating the field as the surviving record would
+  report an un-stopped Monitor as stopped.
+  A stop that was not confirmed says nothing about whether the deadline passed, and the two must not
+  be conflated: holding `.window` open here re-creates the precise failure the bullet above exists
+  to prevent — a past `deadline_epoch` sitting in the past forever while `/subagent` Step 7 declines
+  every pipeline in this repo, from a resume that had just reopened the launch gates (issue #1525).
+  The Monitor is inert either way (its generation was nulled above), so nothing is left to fire.
+  Never claim a Monitor stopped when the stop was not confirmed — retaining and naming the ID is how
+  that promise is kept, not by leaving a spent deadline armed.
+- **Unreadable** → keep `active=true`, the ID, and `.window` exactly as found, leave the entry
+  `rearmed: false`, and report it. Here the deadline genuinely is not known to be spent, so there is
+  nothing to retire and no cleared line to print.
+
 For each entry in `monitors_stopped` where `stopped: true` and `rearmed` is not
 already `true`, delegate to the appropriate re-arm skill — never reimplement
 their logic. Skip entries already confirmed rearmed so retries are idempotent.
@@ -368,6 +622,13 @@ before either one persists the pause-state array:
   `LIMIT_WAKE_RESOLVED=true`; otherwise preserve `rearmed: false` and record
   the read, stop, or state-clear error. Never close recovery around an
   unconfirmed disarm.
+- **Leave-time wind-down** — entries with `owner: "leave_winddown"` are settled by
+  the leave block above, which branches on the **deadline**, not on the pause
+  (issue #1525): a deadline still in the future is re-armed with a fresh
+  generation and keeps the leave time live; a spent one is disarmed and retired,
+  never re-armed, since resuming past a declared leave time is the user
+  withdrawing it. Set `rearmed: true` only when the re-arm was published or the
+  clear succeeded, and report an unconfirmed disarm exactly as the row above does.
 
 Entries with `stopped: false` are listed as "not confirmed stopped at pause time — verify manually before re-arming."
 

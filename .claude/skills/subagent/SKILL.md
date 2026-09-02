@@ -360,6 +360,95 @@ persist a pending transition. Apply both gates again to all A→A, A→B, B→B,
 B→C, queued-head, and refill launches. Only `/end-resume` or
 `/pause-resume` may clear the execution gate.
 
+- **Then check the armed deadline — one pipeline at a time (issue #1525).** A planning window set by
+  `/pm --window` or a leave time set by `/leave-by` writes one `deadline_epoch`; a pipeline whose
+  planning bound cannot finish before it does not start. This is a **per-issue** check — the batch
+  window-fit trim (`makespan.sh`, `/pm` Step 3.3) is a different gate at a different moment, and
+  `makespan.sh` is not used here:
+
+  <!-- test-anchor: subagent-step7-deadline-decline -->
+
+  ```bash
+  DEADLINE_RC=0
+  DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+    || DEADLINE_RC=$?
+  LAUNCH_DECLINED=false
+  DECLINE_REASON=""
+  if [[ "$DEADLINE_RC" -ne 0 && "$DEADLINE_RC" -ne 3 ]]; then
+    # Unreadable is NOT absent. A lock timeout or parse failure can hide an armed
+    # deadline, and launching through one is the failure this gate exists to stop —
+    # the same fail-closed reading the refill and execution gates above use.
+    LAUNCH_DECLINED=true; DECLINE_REASON="deadline unreadable (rc=$DEADLINE_RC)"
+  elif [[ "$DEADLINE_RC" -eq 0 && "$DEADLINE_EPOCH" != "null" \
+          && ( ! "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ) ]]; then
+    # Exit 0 carrying something that is neither the absent sentinel nor an epoch —
+    # `-1`, a truncated string, a jq filter written in verbatim, or an EMPTY read — is
+    # CORRUPTION, not "no deadline". Absent has exactly one exit-0 shape: the literal
+    # `null` that `jq -r` prints for an unset path. Empty is not that: it means the
+    # field holds an empty string, which is no more a valid epoch than `-1` is.
+    # `^[1-9][0-9]{0,10}$` is range AND representation validation, not cosmetics. The
+    # length bound stops an arbitrarily long digit string from overflowing the bash
+    # arithmetic below — an overflow under `set -e` aborts the launch path instead of
+    # declining it (11 digits reaches year 5138). The leading-digit rule stops the
+    # subtler one: bash reads a leading-zero literal as OCTAL, so `0123456789` would
+    # silently mean a different instant and `09…` is not even valid octal, failing the
+    # arithmetic outright. Only canonical decimal is accepted.
+    LAUNCH_DECLINED=true; DECLINE_REASON="deadline malformed"
+  elif [[ "$DEADLINE_RC" -eq 0 && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
+    # Compare in SECONDS. Truncating the remainder to whole minutes first would make
+    # the comparison drift by up to 59 s in whichever direction the truncation fell.
+    REMAINING_SEC=$(( DEADLINE_EPOCH - $(date -u +%s) ))
+    BOUND_MIN=""; EST_RC=0
+    if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
+      EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
+      # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is genuinely
+      # unestimated; 3/4 are the TOOL failing, which is a different problem and gets
+      # its own reason rather than being laundered into "this issue has no estimate".
+      if (( EST_RC <= 2 )); then
+        BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
+          | grep -E '^[0-9]{1,6}$' || true)   # bounded: see the epoch note above
+      fi
+    fi
+    # An unresolvable bound is NOT a pass, whatever caused it. Near a deadline, "we
+    # don't know how long this takes" is exactly the pipeline that runs past it.
+    if (( EST_RC >= 3 )); then
+      LAUNCH_DECLINED=true; DECLINE_REASON="estimate lookup failed (rc=$EST_RC)"
+    elif [[ -z "$BOUND_MIN" ]]; then
+      LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
+    elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
+      # `>=`, not `>`: an exact fit lands ON the deadline, leaving zero runway for the
+      # wind-down that has to happen before it.
+      LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
+    fi
+  fi
+  ```
+
+  On `LAUNCH_DECLINED`, do not launch that pipeline; leave it queued and emit exactly one line
+  carrying `$DECLINE_REASON`, plus the deadline clock **when there is one** (the unreadable and
+  malformed paths have no valid epoch to render, and print their own tail instead):
+
+  ```text
+  Declined #61 (plan on 180 min) — cannot finish before 7:00 PM ET
+  ```
+
+  Render the clock from `deadline_epoch`, never from the phrase the user typed
+  (`TZ='America/New_York' date -j -f '%s' "$DEADLINE_EPOCH" +'%-I:%M %p ET' 2>/dev/null || TZ='America/New_York' date -d "@$DEADLINE_EPOCH" +'%-I:%M %p ET'`).
+  The unreadable- and malformed-deadline declines have no clock to name and say so instead, each
+  naming its own failure — they are different problems and a shared message would hide which one
+  happened: `Declined #61 (deadline unreadable (rc=6)) — deadline state could not be read` for a
+  failed read, and `Declined #61 (deadline malformed) — deadline state is not a valid epoch` for a
+  read that succeeded and returned nonsense. Apply
+  this check at every launch point that already re-applies those gates.
+
+  **A decline is per-issue, not per-round — but it does not promote anything.** Any *independent*
+  issue still eligible on its own bound launches as usual; the gate never stops the round. A queued
+  member of a Step 6.0b **overlap chain** is the exception: `declined` is **not** a terminal
+  predecessor state, so it does not free the successor the way `merged` or `blocked` does. The head
+  never ran, so its files are exactly as contested as before, and a shorter chain member launching
+  past it would be the serialization break the chain exists to prevent — the whole chain waits.
+  Report the chain as held, naming the declined head, rather than silently skipping to its
+  successor.
+
 **Subagent prompt template** (fill in variables per issue):
 
 ```
@@ -532,7 +621,11 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2).
 2. **Execute pending phase transitions.** For each completed subagent:
-   Re-check both launch gates before every successor; when either is closed,
+   Re-check **every** launch control before every successor — the full set is
+   `phase-protocols.md` §"Launch gate before every successor" (refill pause,
+   execution pause, **and** the armed-deadline decline of Step 7); read it there
+   rather than counting them here, since a fixed count in a second place is how
+   this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).

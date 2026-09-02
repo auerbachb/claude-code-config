@@ -229,6 +229,27 @@ no-window/no-state-marker guarantee as `--readout`, whose output it leaves untou
 When the helper is unavailable, leave the three clock columns blank or `unestimated`
 per the caller's degraded-mode rule — never omit the table.
 
+### Deadline variant: the `By {H:MM} ET` column (issue #1525)
+
+When a deadline is armed — `/pm --window`, or a leave time declared through `/leave-by` — the
+leave-time check-in renders **this same table plus one trailing column**, headed `By {H:MM} ET` and
+holding `finishes by deadline` or `parks` per row. It is an added column, never a different table:
+the reader comparing "what is running" against "what survives the deadline" should not have to
+reconcile two shapes.
+
+The verdict is computed, not judged, and it reads the **same projected finish the row already
+displays** — the on-track `start + bound` while a row is inside its bound, and the pace-scaled
+revised finish once it is over (the `Projected end` rules above). `finishes by deadline` when that
+effective projected finish is at or before `deadline_epoch`. Comparing the original bound instead
+would let an overrun row claim `finishes by deadline` while its own `Projected end` cell shows a
+clock time past the deadline — the row contradicting itself, in the one direction that costs the
+user the guarantee. **Every other case is `parks`** —
+a queued row, an unestimated row, an overrun row whose revised finish will not resolve, and any row
+whose start or bound would not read. Fail closed: a
+wrong `parks` costs one pipeline a resumable delay, while a wrong `finishes by deadline` costs the
+user the guarantee the deadline existed to buy (`leave-time.md` §"Why every unknown resolves to
+`parks`").
+
 ### Start times come from state, never from the clock at read time
 
 Each pipeline's launch timestamp is recorded **once, at spawn**, into
@@ -247,6 +268,7 @@ after a context compaction, which is precisely what the recorded value prevents.
 | `/subagent` heartbeat (Step 8 item 6) | Re-render every tick: Start unchanged, Remaining recomputed, queued rows flipping to started as they launch |
 | `/subagent` on-demand | Same table when the user asks "how far along?" |
 | `/pm`, `/pr-monitor-and-manage` | May adopt this shape in a follow-up; their column sets diverge today, so the format lives here rather than in any one skill |
+| `/leave-by` check-in | At `deadline − lead`, unprompted — this table plus the `By {H:MM} ET` column above |
 
 Ad-hoc orchestration threads — a feedback round that files issues then dispatches
 agents — emit the same shape by reading this section; the table is venue-independent

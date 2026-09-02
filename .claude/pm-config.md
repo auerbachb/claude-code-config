@@ -41,6 +41,8 @@ ACTIVE_WORK_CAP=6
 ```ini
 daily_credit_budget_usd = 25
 
+LEAVE_LEAD_TIME_MIN = 30
+
 usage_horizon_approaching_pct = 25
 usage_horizon_critical_pct    = 10
 usage_horizon_floor_tokens    = 2000000
@@ -51,6 +53,8 @@ usage_horizon_reading_ttl_s   = 1800
 - **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). User-editable; window is an ET calendar day. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `.claude/scripts/credit-budget.sh`. This wallet covers Anthropic credit spend **only** — third-party reviewer-tool costs are tracked separately in `pricing-matrix.md`.
 - **Default 25** — $25/day is the owner's stated acceptable overage exposure for a continuous autonomous thread. Budget is evaluated against authoritative harness signals only (see `.claude/reference/budget-source-probe.md`); local token/cost estimation is never used.
 - **Gates autonomous dispatch only** — explicit user requests in chat always proceed with a one-line budget note. Day mode and refill respect this cap; interactive work does not.
+- **LEAVE_LEAD_TIME_MIN** — minutes before a declared leave time at which the thread posts its check-in and starts winding down (issue #1525). Must be an **integer in [5, 240]**; an out-of-range or unparseable value is rejected on stderr and falls back to the default rather than being clamped — a 2-minute lead is a wind-down that cannot finish, and a 10-hour one fires before the work does. **`CLAUDE_LEAVE_LEAD_TIME_MIN` env overrides** when set, and an explicit `--lead Nm` on the invocation beats both. Read by **`/leave-by`** via `pm-config-get.sh --section Budget`, same env → config → code-default cascade as `STALL_MARGIN_MIN`.
+- **Default 30** — the motivating case: told at 3 PM that the desk is empty at 7, the thread checks in at 6:30. Long enough for `/pause` to land a PR that is one merge away, short enough that the last half-hour is not spent idle. Whether it should scale with fleet size is open (issue #1525 notes).
 
 ### Usage horizon (window runway)
 
