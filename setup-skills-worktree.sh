@@ -32,7 +32,10 @@ REPO_ROOT_HELPER="$SCRIPT_DIR/.claude/scripts/repo-root.sh"
 if [[ -x "$REPO_ROOT_HELPER" ]]; then
   REPO_ROOT="$("$REPO_ROOT_HELPER" "$SCRIPT_DIR" 2>/dev/null)" || true
 else
-  REPO_ROOT="$(git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
+  # No `exit` in the awk: under `set -o pipefail` an early-exiting consumer
+  # SIGPIPEs `git worktree list` mid-write, so the pipeline reports failure with
+  # the right answer already on stdout. Consuming the whole stream avoids it.
+  REPO_ROOT="$(git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')" || true
 fi
 
 if [[ -z "$REPO_ROOT" || ! -d "$REPO_ROOT/.git" ]]; then
@@ -70,7 +73,10 @@ if [[ -d "$SKILLS_WORKTREE" ]]; then
   if [[ -x "$REPO_ROOT_HELPER" ]]; then
     wt_root="$("$REPO_ROOT_HELPER" "$SKILLS_WORKTREE" 2>/dev/null)" || wt_root=""
   else
-    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || wt_root=""
+    # Same SIGPIPE reasoning as the lookup above, and here the `|| wt_root=""`
+    # made it worse: a wiped value fails the comparison below and the script
+    # aborts claiming the worktree "belongs to a different repo".
+    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')"
   fi
   if [[ "$wt_root" == "$REPO_ROOT" ]]; then
     echo "Skills worktree already exists at $SKILLS_WORKTREE — updating to latest main."

@@ -485,8 +485,20 @@ fi
 # Step 2 — publish symlinks. Links are the whole point of the pass, so a
 # publisher failure is a hard failure.
 # ---------------------------------------------------------------------------
-ROOT_REPO_HINT=""
-ROOT_REPO_HINT="$(git -C "$SKILLS_WT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || ROOT_REPO_HINT=""
+# The awk deliberately does NOT `exit` after the first match, and there is no
+# `|| ROOT_REPO_HINT=""` fallback. This file runs under `set -o pipefail`: an
+# early-exiting consumer closes the pipe while `git worktree list` is still
+# writing, git dies of SIGPIPE, and the PIPELINE reports failure even though the
+# correct path already reached stdout — so the fallback would erase a perfectly
+# good answer. It is load-bearing twice over: an empty hint drops
+# MANAGED_LEGACY_HOOKS_DIR below and the publishers' legacy-migration argument,
+# silently disabling both migrations on exactly the long-lived machines that
+# have enough worktrees to trigger the race. Consuming the whole stream costs
+# nothing here and removes the failure mode outright. A genuine git failure
+# still yields an empty string, which every consumer already treats as "no
+# legacy root known".
+ROOT_REPO_HINT="$(git -C "$SKILLS_WT" worktree list --porcelain 2>/dev/null \
+  | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')"
 
 # run_publisher <script> — run a publish script with its two streams captured
 # SEPARATELY, because they mean different things: stdout is one line per CHANGE

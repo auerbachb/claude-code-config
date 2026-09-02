@@ -592,6 +592,55 @@ test_10_legacy_hooks_dir_reaches_both_automated_paths() {
     "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$_root_repo/.claude/hooks\"' '$hook'"
 }
 
+# ── Test 11: the root-repo lookup survives pipefail + SIGPIPE ────────────────
+#
+# This file runs under `set -o pipefail`. An awk that `exit`s on the first match
+# closes the pipe while `git worktree list` is still writing; git dies of
+# SIGPIPE and the PIPELINE reports failure even though the correct path already
+# reached stdout. Paired with `|| ROOT_REPO_HINT=""` that erased a good answer —
+# and an empty hint silently drops MANAGED_LEGACY_HOOKS_DIR and the publishers'
+# legacy-migration argument. It only bites once the repo has enough worktrees
+# for git to still be writing, which is why a single-worktree test fixture never
+# reproduced it.
+
+test_11_root_repo_lookup_survives_sigpipe() {
+  section "Test 11: the root-repo lookup is not wiped by pipefail + SIGPIPE"
+
+  # A producer shaped like `git worktree list --porcelain` on a long-lived
+  # machine: the main worktree first, then thousands of registered worktrees.
+  local producer captured rc
+  producer='printf "worktree /Users/me/repo\nHEAD abc\n\n"; for i in $(seq 1 20000); do printf "worktree /Users/me/repo/.claude/worktrees/wt-%s\nHEAD def\n\n" "$i"; done'
+
+  # The expression under test, lifted from the script rather than retyped, so a
+  # future edit that reintroduces `exit` fails this test instead of passing a
+  # stale copy.
+  local expr
+  expr="$(grep -o "awk '/\^worktree /{if (!seen++).*}'" "$SYNC" | head -1)"
+  assert "the awk expression was found in the script" "[ -n \"\$expr\" ]"
+  assert "and it does NOT early-exit" \
+    "case \"\$expr\" in *exit*) false ;; *) : ;; esac"
+
+  captured="$(bash -c "set -o pipefail; { $producer; } | $expr")"
+  rc=$?
+  assert "the pipeline succeeds despite a huge producer" "[ $rc -eq 0 ]"
+  assert "and it yields the main worktree path" \
+    "[ \"\$captured\" = '/Users/me/repo' ]"
+
+  # Negative control: the pre-fix expression really does fail this way, so the
+  # assertions above are testing the hazard rather than a tautology.
+  local old_rc=0
+  bash -c "set -o pipefail; { $producer; } | awk '/^worktree /{sub(/^worktree /, \"\"); print; exit}' >/dev/null" || old_rc=$?
+  assert "(control) the pre-fix early-exit expression DOES report failure" \
+    "[ $old_rc -ne 0 ]"
+
+  # Code only — `^[^#]*` cannot cross the leading `#` of the comment that
+  # explains why the fallback was removed.
+  assert "no wiping fallback remains on the ROOT_REPO_HINT assignment" \
+    "! grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT=' '$SYNC'"
+  assert "(control) the guard would still see such a fallback if one existed" \
+    "printf 'X=\"\$(cmd)\" || ROOT_REPO_HINT=\"\"\n' | grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT='"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -608,6 +657,7 @@ test_1_stale_machine
 test_8_agent_repoint_recommends_restart
 test_9_state_commit_failure_is_reported
 test_10_legacy_hooks_dir_reaches_both_automated_paths
+test_11_root_repo_lookup_survives_sigpipe
 test_4_failure_and_recovery
 test_5_lock_overlap
 test_6_root_repo_untouched
