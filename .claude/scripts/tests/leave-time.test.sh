@@ -113,6 +113,11 @@ run_lead() {
   printf '%s\n' "$budget" >"$TMP/budget.txt"
   (
     set -euo pipefail
+    # Start from a known-unset slate. Every case that passes no assignment for a
+    # knob is asserting the knob is ABSENT; inheriting an ambient value there
+    # does not just fail the run, it silently converts those cases into coverage
+    # of a different branch. Unset before applying the caller's assignments.
+    unset CLAUDE_LEAVE_LEAD_TIME_MIN STUB_CONFIG_RC
     export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
@@ -128,6 +133,7 @@ run_lead_stderr() {
   printf '%s\n' "$budget" >"$TMP/budget.txt"
   (
     set -euo pipefail
+    unset CLAUDE_LEAVE_LEAD_TIME_MIN STUB_CONFIG_RC   # same clean slate as run_lead
     export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
@@ -147,6 +153,20 @@ if [ -n "$LEAD_BLOCK" ]; then
 
   OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 45')
   [ "$OUT" = "45 config" ] || fail "pm-config.md value must win over the code default (got: $OUT)"
+
+  # Negative control for the harness itself: with the knob set in the AMBIENT
+  # environment, every case that passes no assignment must still see it unset.
+  # Before run_lead unset it, this ran green only on a machine that happened not
+  # to export it — the suite reported coverage of the default/config branches
+  # while exercising the env branch instead.
+  export CLAUDE_LEAVE_LEAD_TIME_MIN=7
+  OUT=$(run_lead '')
+  [ "$OUT" = "30 default" ] || fail "ambient env must not leak into a no-assignment run (got: $OUT)"
+  OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 45')
+  [ "$OUT" = "45 config" ] || fail "ambient env must not outrank pm-config.md in a no-assignment run (got: $OUT)"
+  ERR=$(run_lead_stderr '')
+  [ -z "$ERR" ] || fail "ambient env must not reach the stderr helper either (got: $ERR)"
+  unset CLAUDE_LEAVE_LEAD_TIME_MIN
 
   OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 45' 'CLAUDE_LEAVE_LEAD_TIME_MIN=60')
   [ "$OUT" = "60 env" ] || fail "env override must win over pm-config.md (got: $OUT)"
