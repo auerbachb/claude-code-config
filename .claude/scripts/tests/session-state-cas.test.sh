@@ -259,6 +259,92 @@ check_eq "state file byte-unchanged after a rejected top-level --cas" "$BEFORE_D
 
 # ---------------------------------------------------------------------------
 echo
+echo "== Field-type contract: --cas parity for the three shapes of issue #1340 =="
+# ---------------------------------------------------------------------------
+# FAILS-WITHOUT-FIX: on origin/main all three --cas writes below are committed.
+# #1283's promise is that --set and --cas enforce the same contract, so each
+# gap closed for --set has to be closed here too — pinned per shape.
+
+# Gap 1 — whole-entry --cas carrying a known field as an explicit null.
+reset_state
+run --repo test/repo --set '.prs["999"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+G1_OUT=$(run --repo test/repo \
+  --cas '.prs["999"]={"phase":"B","last_cron_action":null}' \
+  --expect '{"phase":"A"}' 2>&1); G1_RC=$?
+check_eq "gap 1: whole-entry --cas with an explicit-null known field rejected (exit 4)" "4" "$G1_RC"
+check_eq "gap 1: error names the field and 'null' as the offending type" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'null' but must be 'object'" <<<"$G1_OUT")"
+check_eq "gap 1: state file byte-unchanged after the rejected --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# Gap 2 — --raw-path --cas to an explicitly-scoped per-PR field.
+reset_state
+run --raw-path --set '.repos["test/repo"].prs["1"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+G2_OUT=$(run --raw-path \
+  --cas '.repos["test/repo"].prs["1"].last_cron_action=bad' \
+  --expect null 2>&1); G2_RC=$?
+check_eq "gap 2: --raw-path scoped nested --cas rejected (exit 4)" "4" "$G2_RC"
+check_eq "gap 2: error names the scoped nested field" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$G2_OUT")"
+check_eq "gap 2: state file byte-unchanged after the rejected --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# Positive control: the same shape overrun-check.sh writes — a fully-spelled
+# scoped path to a field outside the contract — must still win its CAS.
+reset_state
+run --repo test/repo --set '.prs["1"].phase=A'
+run --cas '.repos["test/repo"].prs["1"].overrun={"alerted_at":"2026-09-02T00:00:00Z","bound_min":30}' \
+  --expect null
+check_eq "gap 2: overrun-check's scoped --cas claim still wins" "0" "$?"
+check_eq "gap 2: the untyped claim was written as given" '{"alerted_at":"2026-09-02T00:00:00Z","bound_min":30}' \
+  "$(jq -c '.repos["test/repo"].prs["1"].overrun' "$STATE_FILE")"
+
+# Gap 3 — --cas replacing the whole `.prs` map.
+reset_state
+run --repo test/repo --set '.prs["1"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+G3_OUT=$(run --repo test/repo \
+  --cas '.prs={"9":{"last_cron_action":"bad"}}' \
+  --expect '{"1":{"phase":"A"}}' 2>&1); G3_RC=$?
+check_eq "gap 3: whole-map --cas with a malformed entry rejected (exit 4)" "4" "$G3_RC"
+check_eq "gap 3: error names the offending entry inside the replacement" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"9\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$G3_OUT")"
+check_eq "gap 3: state file byte-unchanged after the rejected --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# A well-formed whole-map --cas still wins, so the guard did not narrow --cas.
+run --repo test/repo --cas '.prs={"9":{"phase":"C","digest_streak":2}}' \
+  --expect '{"1":{"phase":"A"}}'
+check_eq "gap 3: a well-formed whole-map --cas still wins" "0" "$?"
+check_eq "gap 3: the replacement is applied wholesale" '{"9":{"phase":"C","digest_streak":2}}' \
+  "$(jq -c '.repos["test/repo"].prs' "$STATE_FILE")"
+
+# Opaque nested tail (CodeAnt, PR #1573) — `."key"` is valid jq that
+# path_take_segment() cannot decompose, so the single-path check had no path to
+# check and the write committed. --set and --cas share pr_record_write_target(),
+# so the entry-scan fallback has to reach both; pinned here per #1283.
+reset_state
+run --repo test/repo --set '.prs["1"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+G4_OUT=$(run --repo test/repo \
+  --cas '.prs["1"]."last_cron_action"="bad"' \
+  --expect null 2>&1); G4_RC=$?
+check_eq "opaque tail: dot-quoted nested --cas rejected (exit 4)" "4" "$G4_RC"
+check_eq "opaque tail: error names the field via the entry scan" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$G4_OUT")"
+check_eq "opaque tail: state file byte-unchanged after the rejected --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# The well-typed value in the same spelling must still win its CAS.
+run --repo test/repo --cas '.prs["1"]."last_cron_action"={"type":"delete"}' --expect null
+check_eq "opaque tail: a well-typed dot-quoted --cas still wins" "0" "$?"
+check_eq "opaque tail: the well-typed --cas was applied as given" '{"type":"delete"}' \
+  "$(jq -c '.repos["test/repo"].prs["1"].last_cron_action' "$STATE_FILE")"
+
+# ---------------------------------------------------------------------------
+echo
 echo "== Field-type contract: untyped fields stay unvalidated under --cas =="
 # ---------------------------------------------------------------------------
 # `.release.in_flight` — the claim slot --cas was built for (issue #1195) — is
