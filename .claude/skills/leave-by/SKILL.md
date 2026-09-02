@@ -320,11 +320,27 @@ exit `7` is a clean loss, not an I/O error — and it gets its own bullet below,
 publish-failure rollback, because losing the slot means someone else now owns this declaration.
 
 - **Arming failed** (the Monitor call errored or returned no task ID): roll the whole declaration
-  back — `--set ".repos[\"$REPO_KEY\"].leave.active=false"`, null the already-published
-  `winddown_generation`, and clear the armed `.window` — then say
-  `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed would decline
-  pipelines all afternoon for a wind-down that will never fire; leaving the generation behind would
-  leave a token validating for a Monitor that was never created.
+  back — but **roll back only what is still yours.** The generation was published before the arm,
+  so a countermand or re-declaration can land in that gap and a blind rollback would then clear a
+  *successor's* state, exactly as the exit-`7` bullet below describes. Release the generation under
+  a CAS first, and let it decide:
+
+  ```bash
+  ROLLBACK_RC=0
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
+    --expect "$WINDDOWN_GENERATION" >/dev/null 2>&1 || ROLLBACK_RC=$?
+  if [ "$ROLLBACK_RC" -eq 0 ]; then      # still ours: finish the rollback
+    "$SESSION_STATE_SH" \
+      --set ".repos[\"$REPO_KEY\"].leave.active=false" \
+      --set ".repos[\"$REPO_KEY\"].window=null"
+  fi
+  ```
+
+  Then say `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed
+  would decline pipelines all afternoon for a wind-down that will never fire; leaving the generation
+  behind would leave a token validating for a Monitor that was never created. **A CAS exit `7` here
+  means a successor already owns `.leave`** — clear nothing further and say nothing about the leave
+  time, the same posture as `PUBLISH_RC == 7` below.
 - **Arming succeeded, publish failed with a `PUBLISH_RC` other than `7`:** the slot is still yours
   and the write genuinely failed. `TaskStop` the ID you are holding right now — it exists
   nowhere else — then roll back as above. If the `TaskStop` also fails, name the task ID in the
@@ -446,9 +462,12 @@ REMAINING_MIN=$(( ( DEADLINE_EPOCH - $(date -u +%s) + 59 ) / 60 ))
 (( REMAINING_MIN < 0 )) && REMAINING_MIN=0
 (( REMAINING_MIN > 1440 )) && REMAINING_MIN=1440   # /pause's own --window bound
 # Identity of the declaration being wound down, read BEFORE /pause runs. The retirement
-# below compares against it so a re-declaration during the runway is not clobbered.
+# below compares against BOTH so a re-declaration during the runway is not clobbered and a
+# .window some other writer now owns is not cleared.
 RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
   || RETIRE_DECLARED_AT=""
+RETIRE_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+  || RETIRE_DEADLINE=""
 ```
 
 Then `/pause --window ${REMAINING_MIN}m`. That single call is the whole wind-down: it closes both
@@ -466,23 +485,38 @@ may not be closed, and clearing the deadline there would reopen dispatch on a bo
 actually parked — while also erasing the record Step 11 needs to finish the job on the next session.
 An incomplete shutdown is the case the declaration is *most* needed for, not least.
 
-When `/pause` reports a complete shutdown, retire the declaration in **one** write —
-`leave.active=false` **and** `.window=null` — but **only while the declaration being wound down is
+When `/pause` reports a complete shutdown, retire the declaration — `leave.active=false` **and**
+`.window=null` — but **only while the declaration being wound down is
 still the current one.** Capture `.leave.declared_at` before invoking `/pause` and re-read it here;
 a re-declaration during the runway (Step 9's countermand clause) rewrites the whole `.leave` object
 in Step 5, so a changed `declared_at` means a **successor** now owns it:
 
 ```bash
-# RETIRE_DECLARED_AT was read before the 8.6 /pause call
+# RETIRE_DECLARED_AT / RETIRE_DEADLINE were read before the 8.6 /pause call
 HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
 if [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].leave.active=false" \
-    --set ".repos[\"$REPO_KEY\"].window=null"
+  # .leave is still ours. The shared .window is a separate claim — clear it only under a CAS
+  # on the exact deadline this declaration armed.
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+  if [ -n "$RETIRE_DEADLINE" ]; then
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$RETIRE_DEADLINE" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  fi
 else
   : # successor owns .leave, or the identity was unreadable — retire nothing, report below
 fi
 ```
+
+**`.window` is shared; `.leave` is not.** `/pm` planning deadlines write the same `.window`, so
+matching `declared_at` proves only that *this leave declaration* is still current — not that the
+deadline sitting there is still the one it armed. Clearing it unconditionally is how a wind-down
+retires somebody else's planning deadline on its way out. The `--cas … --expect
+"$RETIRE_DEADLINE"` narrows the write to exactly the value 8.6 was winding down; its exit `7` means
+the window moved on and is no longer this declaration's to clear.
+
+> **Two writes, deliberately.** `leave.active=false` is unconditional once `.leave` is ours — the
+> declaration *is* spent — while `.window` is conditional. Collapsing them into one call would
+> re-couple the two claims that this split exists to separate.
 
 **A mismatch retires nothing and says nothing about the leave time** — the same posture Step 6's
 `PUBLISH_RC == 7` bullet takes for the same reason. Retiring there would set `active=false` and null
@@ -498,8 +532,15 @@ session start, which is exactly the record Step 11 needs left intact.
 **Clearing the window is not optional bookkeeping.** A spent `deadline_epoch` left armed sits in the
 past forever, so `remaining` is permanently negative and Step 10's gate declines **every** pipeline
 in this repo from then on — a thread that quietly refuses all work with a one-line reason nobody
-connects to yesterday's leave time. Retiring both together in one call also keeps recovery honest:
-`active=false` with a live window would re-declined work the wind-down already parked.
+connects to yesterday's leave time. Retiring both in the same step also keeps recovery honest:
+`active=false` over a window **this declaration still owns** would re-decline work the wind-down
+already parked.
+
+**The one state that is not incoherent** is `active=false` with a window the deadline CAS declined
+to clear — there the live window belongs to another writer (a `/pm` planning deadline), and leaving
+it is the correct outcome, not a half-finished retirement. That is the whole reason the window
+clear is a CAS rather than part of the same `--set`: "retire my declaration" and "clear the shared
+deadline" are two claims, and only the first is unconditionally this step's to make.
 
 Leave the rest of the `leave` block in place as the record of what was declared.
 

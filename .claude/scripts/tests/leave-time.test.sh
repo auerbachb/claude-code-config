@@ -635,6 +635,19 @@ require_text "$LEAVE_SKILL" 'unreadable re-read is not a lost slot' \
 require_text "$LEAVE_SKILL" 'recovery may **re-arm what is already persisted**' \
   'the source gate must exempt Step 11 recovery, and bound that exemption to re-arming'
 
+# Every destructive leave-state write must prove it still owns what it is clearing. Three sites,
+# one contract: arm-failure rollback, Step 8.6 retirement, and the /pause-resume retirement.
+# A half-applied ownership rule is worse than none — the guarded sites imply the others are safe.
+require_text "$LEAVE_SKILL" 'roll back only what is still yours' \
+  'arm-failure rollback must be identity-guarded, not blind'
+require_text "$LEAVE_SKILL" '`.window` is shared; `.leave` is not' \
+  'the retirement must treat the shared window as a separate claim from the leave record'
+require_text .claude/skills/pause-resume/SKILL.md 'exit 7 = another writer owns .window' \
+  'the pause-resume retirement must CAS the window clear, not write it blind'
+# The window CAS is only meaningful if it pins the value the verdict was reached on.
+require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_DEADLINE_EPOCH' \
+  'the resumed deadline must be bound so the retirement CAS can pin its write to it'
+
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
 require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \

@@ -351,7 +351,14 @@ check-in and later `/pause` a board that never declared a leave time.
 
 **Then read and validate the deadline, still before stopping anything.** Read
 `.repos["$REPO_KEY"].window.deadline_epoch` (the leave block never carries it — `/leave-by` Step 5)
-with Step 11's exit-code table and numeric test. Validating *after* the `TaskStop` is what strands a
+with Step 11's exit-code table and numeric test, **binding it** so the retirement CAS below can pin
+its write to the exact value the spent-verdict was reached on:
+
+```bash
+RESUMED_DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+  || RESUMED_DEADLINE_RC=$?
+```
+ Validating *after* the `TaskStop` is what strands a
 declaration: the stop clears the identity pair, the deadline then reads unreadable, and the
 inconsistent-record branch preserves `leave.active` while re-arming nothing — an active leave time
 with no Monitor and no task ID left to recover it. Read first, and the stop only ever runs on a
@@ -462,9 +469,24 @@ cycle.
 
 With the gate passed **and the deadline spent**:
 
-- **Null / exit 3 (nothing armed), or a confirmed `TaskStop`** → in one write, set
+- **Null / exit 3 (nothing armed), or a confirmed `TaskStop`** → set
   `leave.active=false` with the (already or newly) null pair **and** clear the armed deadline
-  (`.repos["$REPO_KEY"].window=null`). Clearing the window is the load-bearing half: a spent
+  (`.repos["$REPO_KEY"].window=null`) — the latter **under a CAS on the deadline this step read and
+  validated**, never blind:
+
+  ```bash
+  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+    --expect "$RESUMED_DEADLINE_EPOCH" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  ```
+
+  `.window` is shared with `/pm` planning deadlines, and this block only ever established that the
+  *leave* record is spent. Between the read at the top of this block and the write here, a
+  re-declaration or a planning deadline can take the slot; a blind `--set` would then clear a live
+  deadline this resume never examined — the same hazard the gate note above raises for the
+  null-task-ID path, one step further along. The CAS pins the write to the exact
+  `deadline_epoch` the spent-verdict was reached on, and its exit `7` means the window moved on and
+  is no longer this step's to clear. Clearing the window is the load-bearing half: a spent
   `deadline_epoch` left behind sits in the past forever, so `/subagent` Step 7's gate would decline
   every pipeline in this repo from here on — the resume would reopen the launch gates and then
   refuse all work through a different one. Mark the `owner: "leave_winddown"` entry in
