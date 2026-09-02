@@ -12,9 +12,50 @@ session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 
 # --- Sync skills worktree ---
 skills_wt="$HOME/.claude/skills-worktree"
-setup_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
+_hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+_scripts_dir="$(cd "$_hook_dir/../scripts" 2>/dev/null && pwd)"
+setup_script="$(cd "$_hook_dir/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
 errors=""
 _agents_notices=""
+_marker_notice=""   # config-sync marker text (restart recommended / sync failing)
+_skip_notice=""     # why the config-sync region was skipped this session, if it was
+
+# --- Config-sync mutex (issue #1524) ---
+# The scheduled claude-config-sync.sh LaunchAgent performs the SAME worktree
+# fast-forward, symlink publish and hook registration this hook does, on its own
+# hourly schedule. Both take the one lock below so an overlap serializes instead
+# of racing a `git reset --hard` against a symlink publish reading the same tree.
+#
+# The lock base path is claude-config-sync.sh's canonical state file; that script
+# owns the definition and .claude/scripts/tests/claude-config-sync.test.sh holds
+# the two spellings to each other.
+_sync_lock_base="$HOME/.claude/logs/claude-config-sync-state.json"
+_lock_lib="${_scripts_dir}/state-lock.sh"
+_lock_held=0
+_lock_available=0
+if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
+  _lock_available=1
+  mkdir -p "$(dirname "$_sync_lock_base")" 2>/dev/null || true
+  # shellcheck source=../scripts/state-lock.sh
+  source "$_lock_lib"
+  # Short bound: this hook is registered with timeout 30, and a real critical
+  # section is milliseconds. A scheduled sync that genuinely holds the lock for
+  # longer has already done this hook's work.
+  if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-10}" 2>/dev/null; then
+    _lock_held=1
+  fi
+fi
+
+if [[ "$_lock_held" != 1 ]]; then
+  # Skip cleanly rather than proceed unserialized. Either the scheduled sync is
+  # mid-run (it is doing exactly this work) or state-lock.sh is missing from the
+  # checkout — in both cases an unlocked fast-forward is the wrong answer.
+  if [[ "$_lock_available" == 1 ]]; then
+    _skip_notice="CONFIG SYNC: the scheduled config sync holds the lock — skipped the worktree/symlink refresh this session start; it is already running."
+  else
+    _skip_notice="CONFIG SYNC: state-lock.sh not found at ${_lock_lib:-<unresolved>} — skipped the worktree/symlink refresh rather than running it unserialized."
+  fi
+else
 
 # Bootstrap missing skills worktree if setup script is available
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
@@ -35,25 +76,141 @@ elif [[ -z "$errors" ]]; then
   errors="skills worktree not found at $skills_wt"
 fi
 
-# --- Publish agent symlinks on the steady-state path (issue #1197) ---
-# git reset --hard above updates worktree contents (including .claude/agents/)
-# but never creates ~/.claude/agents/ or its per-file symlinks. Run the publish
-# every session so new, renamed, and removed agent definitions propagate without
-# requiring a manual setup-skills-worktree.sh run on existing installs.
+# --- Publish skill and agent symlinks on the steady-state path ---
+# git reset --hard above updates worktree contents (including .claude/skills/
+# and .claude/agents/) but never creates the per-entry symlinks under
+# ~/.claude/. Run both publishes every session so new, renamed, and removed
+# definitions propagate without a manual setup-skills-worktree.sh run on
+# existing installs (agents: issue #1197; skills/CLAUDE.md/rules: issue #1524).
 # Run whenever the worktree is present AND the reset did not fail:
 #   - Fetch failure leaves the worktree in its last-good state — safe to publish.
 #   - Reset failure may leave the worktree in a partially-updated state; the
-#     publish script interprets absent worktree files as authoritative removals,
-#     so publishing from a partial reset could prune valid installed-agent links.
+#     publish scripts interpret absent worktree files as authoritative removals,
+#     so publishing from a partial reset could prune valid installed links.
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
    ! [[ "$errors" == *"reset failed"* ]]; then
-  _agents_publish_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/publish-agent-symlinks.sh"
+  _root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""
+
+  # Both publishers separate their streams on purpose: stdout is one line per
+  # CHANGE, stderr carries standing advisories (a user-owned symlink left alone,
+  # a legacy link not yet on main). Capture them apart so an advisory is never
+  # mistaken for a change; both still reach the session, labelled.
+  _publish_err_file=$(mktemp "${TMPDIR:-/tmp}/session-start-publish.XXXXXX" 2>/dev/null) || _publish_err_file=""
+
+  _publish_one() { # _publish_one <script> <label>
+    local script="$1" label="$2" out="" err="" rc=0
+    if [[ -n "$_publish_err_file" ]]; then
+      out=$(bash "$script" "$skills_wt" "${_root_repo}" 2>"$_publish_err_file") || rc=$?
+      err=$(cat "$_publish_err_file" 2>/dev/null)
+    else
+      out=$(bash "$script" "$skills_wt" "${_root_repo}" 2>&1) || rc=$?
+    fi
+    if [[ $rc -ne 0 ]]; then
+      errors="${errors:+$errors; }${label} symlink publish failed: ${err:-$out}"
+      return 0
+    fi
+    [[ -n "$out" ]] && _agents_notices="${_agents_notices:+$_agents_notices
+}$out"
+    [[ -n "$err" ]] && _agents_notices="${_agents_notices:+$_agents_notices
+}$err"
+    return 0
+  }
+
+  _skills_publish_script="${_scripts_dir}/publish-skill-symlinks.sh"
+  if [[ -f "$_skills_publish_script" ]]; then
+    _publish_one "$_skills_publish_script" "skill"
+  fi
+
+  _agents_publish_script="${_scripts_dir}/publish-agent-symlinks.sh"
   if [[ -f "$_agents_publish_script" ]]; then
-    _root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""
-    if ! _agents_out=$(bash "$_agents_publish_script" "$skills_wt" "${_root_repo}" 2>&1); then
-      errors="${errors:+$errors; }agent symlink publish failed: $_agents_out"
-    elif [[ -n "$_agents_out" ]]; then
-      _agents_notices="$_agents_out"
+    _publish_one "$_agents_publish_script" "agent"
+  fi
+
+  [[ -n "$_publish_err_file" ]] && rm -f "$_publish_err_file" 2>/dev/null
+fi
+
+# --- Sync hooks from global-settings.json into ~/.claude/settings.json ---
+# Ensures new hooks added to the template are auto-registered each session.
+# Uses the same registration logic as setup-skills-worktree.sh Step 6.
+# Matches by script basename to detect existing hooks; preserves user hooks
+# and custom timeouts. No-op if the skills worktree is unavailable.
+#
+# Inside the config-sync lock: claude-config-sync.sh runs the same registration
+# on its schedule, and two concurrent writers of ~/.claude/settings.json is
+# exactly the interleaving the lock exists to prevent.
+if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+  register_script="${_hook_dir}/register-hooks.py"
+  if [[ -f "$register_script" ]]; then
+    if ! err=$(python3 "$register_script" "$skills_wt" 2>&1); then
+      errors="${errors:+$errors; }hook sync failed: $err"
+    fi
+  else
+    errors="${errors:+$errors; }hook sync helper missing: $register_script"
+  fi
+fi
+
+fi  # end of config-sync locked region
+
+# Release as soon as the shared region is done — the root-repo sync below is a
+# different resource and must not hold this lock while it pulls.
+if [[ "$_lock_held" == 1 ]]; then
+  state_lock_release
+  _lock_held=0
+fi
+
+# --- Surface (and, on a true restart, clear) the config-sync marker ---
+# claude-config-sync.sh writes ~/.claude/sync-restart-recommended.json when a
+# landed sync changed something a live session cannot pick up, and when the job
+# has been failing repeatedly. Deliver both into the session context here.
+#
+# READING is lock-free and runs even when the sync region above was skipped: a
+# lock-contention skip must never suppress the one notice that asks the user to
+# act. The CLEAR is a read-modify-write shared with claude-config-sync.sh, so it
+# takes the lock briefly; if it cannot, the marker simply survives to the next
+# startup — a duplicate reminder, never a lost one.
+#
+# `source == "startup"` is a genuinely NEW session: it already loaded the linked
+# agents, rules and skills, so the restart portion has served its purpose and is
+# cleared. resume/clear/compact fire INSIDE a live session that has NOT picked
+# the changes up, so the signal must survive those. The failure portion is never
+# cleared here — only a successful sync tick clears it.
+_marker_file="$HOME/.claude/sync-restart-recommended.json"
+if [[ -f "$_marker_file" ]]; then
+  _marker_text=$(jq -r '
+    [ (.restart_recommended // empty
+       | "RESTART RECOMMENDED: " + (.reason // "config sync landed changes")
+         + " (" + ((.at // "unknown time") | tostring) + "). Restart Claude Code when convenient so the new definitions register."),
+      (.sync_failure // empty
+       | "CONFIG SYNC FAILING: " + (.message // "repeated config sync failures"))
+    ] | join("\n")
+  ' "$_marker_file" 2>/dev/null) || _marker_text=""
+  if [[ -n "$_marker_text" ]]; then
+    _marker_notice="$_marker_text"
+  fi
+
+  if [[ "$session_source" == "startup" ]]; then
+    _clear_locked=0
+    if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
+      _clear_locked=1
+    fi
+    if [[ "$_clear_locked" == 1 ]]; then
+      _cleared=$(jq -c 'del(.restart_recommended)' "$_marker_file" 2>/dev/null) || _cleared=""
+      if [[ -n "$_cleared" ]]; then
+        if [[ "$(jq -r 'if (.sync_failure // null) == null then "empty" else "keep" end' <<<"$_cleared" 2>/dev/null)" == "empty" ]]; then
+          rm -f "$_marker_file" 2>/dev/null || true
+        else
+          _marker_tmp="${_marker_file}.tmp.$$"
+          if printf '%s\n' "$_cleared" > "$_marker_tmp" 2>/dev/null; then
+            # Match the marker's owner-only mode before it replaces the original;
+            # the temp file would otherwise inherit whatever umask is in effect.
+            chmod 600 "$_marker_tmp" 2>/dev/null || true
+            mv -f "$_marker_tmp" "$_marker_file" 2>/dev/null || rm -f "$_marker_tmp" 2>/dev/null || true
+          else
+            rm -f "$_marker_tmp" 2>/dev/null || true
+          fi
+        fi
+      fi
+      state_lock_release
     fi
   fi
 fi
@@ -92,23 +249,6 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   fi
 fi
 
-# --- Sync hooks from global-settings.json into ~/.claude/settings.json ---
-# Ensures new hooks added to the template are auto-registered each session.
-# Uses the same registration logic as setup-skills-worktree.sh Step 6.
-# Matches by script basename to detect existing hooks; preserves user hooks
-# and custom timeouts. No-op if root_repo is unavailable or template is missing.
-
-if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
-  register_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/register-hooks.py"
-  if [[ -f "$register_script" ]]; then
-    if ! err=$(python3 "$register_script" "$skills_wt" 2>&1); then
-      errors="${errors:+$errors; }hook sync failed: $err"
-    fi
-  else
-    errors="${errors:+$errors; }hook sync helper missing: $register_script"
-  fi
-fi
-
 # --- Reconcile durable scheduling state (issue #827) ---
 # CronCreate jobs are in-memory and die with the session that armed them, so
 # every job this file recorded before now is already gone. Purge that dead
@@ -137,7 +277,7 @@ if [[ -f "$reconcile_script" ]]; then
   fi
 fi
 
-# Fold agent-publish notices into the notices variable before sanitization so
+# Fold symlink-publish notices into the notices variable before sanitization so
 # they reach the user when no other notices are present.
 if [[ -n "$_agents_notices" ]]; then
   if [[ -n "$notices" ]]; then
@@ -145,6 +285,24 @@ if [[ -n "$_agents_notices" ]]; then
 ${_agents_notices}"
   else
     notices="$_agents_notices"
+  fi
+fi
+
+# The config-sync notices go FIRST — the marker is the one notice that asks the
+# user to do something, and the skip notice explains why the refresh below may
+# not have run at all. Joined here so each keeps its own variable above.
+_config_sync_notice="$_marker_notice"
+if [[ -n "$_skip_notice" ]]; then
+  _config_sync_notice="${_skip_notice}${_config_sync_notice:+
+$_config_sync_notice}"
+fi
+if [[ -n "$_config_sync_notice" ]]; then
+  if [[ -n "$notices" ]]; then
+    notices="${_config_sync_notice}
+
+${notices}"
+  else
+    notices="$_config_sync_notice"
   fi
 fi
 

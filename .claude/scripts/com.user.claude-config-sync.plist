@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.user.claude-config-sync</string>
+
+  <!-- __SHELL__, __SCRIPT_PATH__ and __HOME__ are substituted by
+       install-config-sync.sh at install time. --quiet keeps stdout clean: the
+       run detail goes to ~/.claude/logs/claude-config-sync.log, so the launchd
+       stdout/stderr files below stay empty unless something unexpected happens. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SHELL__</string>
+    <string>__SCRIPT_PATH__</string>
+    <string>--quiet</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- RunAtLoad fires one pass at login, so a machine is fresh before the first
+       session opens. StartInterval repeats it (hourly by default; --interval
+       rewrites the value on the line directly after this key, so the template
+       stays a valid plist and no other integer is touched). launchd coalesces
+       every interval missed while the machine slept into a single run on wake,
+       which is what satisfies the catch-up-after-sleep requirement without a
+       hand-rolled catch-up path. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.claude/logs/config-sync-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.claude/logs/config-sync-stderr.log</string>
+</dict>
+</plist>

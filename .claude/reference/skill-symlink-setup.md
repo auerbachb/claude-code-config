@@ -25,7 +25,15 @@ if [[ ! -d "$HOME/.claude/skills-worktree/.claude/skills" ]]; then
 fi
 ```
 
+## Where the symlink installation lives
+
+`.claude/scripts/publish-skill-symlinks.sh` owns the skill, `CLAUDE.md` and `rules` legs (issue #1524); `publish-agent-symlinks.sh` owns the agents leg (issue #1197). `setup-skills-worktree.sh` delegates to both rather than carrying its own copy of the state machine.
+
+That matters because the publishers no longer run only at setup time. They also run on **every session start** (`session-start-sync.sh`) and on **every scheduled tick** (`claude-config-sync.sh`, hourly under launchd — `skill-sync-hooks.md`), which is what makes a skill merged on another machine appear here without anyone re-running setup. Both are idempotent and silent when nothing changed, and both leave user-owned symlinks — any target outside the worktree — alone.
+
 ## Installing a new skill's symlink
+
+The publishers do this on their own. The manual form below is for a link you want immediately, without waiting for the next session start or scheduled tick.
 
 Only after the skill has reached `main`:
 
@@ -43,7 +51,7 @@ Create `~/.claude/skills/` first with `mkdir -p` if it does not exist.
 
 ## Installing the phase-agent symlinks
 
-`setup-skills-worktree.sh` Step 5b publishes `.claude/agents/*.md` into
+`setup-skills-worktree.sh` Step 5b delegates to `publish-agent-symlinks.sh`, which publishes `.claude/agents/*.md` into
 `~/.claude/agents/` so `subagent_type: "phase-a-fixer"` resolves from any repo,
 not just this one. Claude Code discovers agent definitions at both user scope
 (`~/.claude/agents/`) and project scope (`<repo>/.claude/agents/`), with project

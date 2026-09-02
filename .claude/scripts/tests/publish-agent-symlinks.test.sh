@@ -203,10 +203,13 @@ test_5_regression_hook_calls_publish() {
   #   if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   # The publish call must appear after the bootstrap fi closes.
   local line_publish line_bootstrap_open line_bootstrap_close
-  # Match the bash invocation specifically, not the variable assignment above it.
-  # This ensures a removed bash call fails the assertion even if the variable
-  # assignment line remains in the file.
-  line_publish="$(grep -n 'bash.*_agents_publish_script' "$hook_file" | head -1 | cut -d: -f1)"
+  # Match the INVOCATION specifically, not the variable assignment above it, so a
+  # removed call fails the assertion even when the assignment line remains. The
+  # hook routes both publishers through the `_publish_one` helper (issue #1524),
+  # which captures stdout and stderr separately; a direct `bash "$..."` call is
+  # still accepted so this guard survives a refactor back to the simpler shape.
+  # `^[^#]*` keeps a comment that merely mentions the call from satisfying this.
+  line_publish="$(grep -nE '^[^#]*(bash|_publish_one) .*_agents_publish_script' "$hook_file" | head -1 | cut -d: -f1)"
   # Bootstrap opens at the "if [[ ! -d" block checking for the missing worktree
   line_bootstrap_open="$(grep -n 'Bootstrap missing skills worktree' "$hook_file" | head -1 | cut -d: -f1)"
   # Estimate the bootstrap's fi as the first bare "fi" after the bootstrap open

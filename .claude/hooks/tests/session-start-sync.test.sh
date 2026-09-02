@@ -108,4 +108,107 @@ event = d.get("hookSpecificOutput", {}).get("hookEventName", "")
 sys.exit(0 if event == "SessionStart" else 1)
 PY
 
+# --- 8. Config-sync mutex: the worktree/symlink region runs under the lock ---
+# Issue #1524: claude-config-sync.sh performs the same fast-forward, symlink
+# publish and hook registration on an hourly LaunchAgent. Both sides must take
+# the one lock, or a scheduled `git reset --hard` can race this hook's publish.
+grep -q 'state-lock.sh' "$HOOK" \
+  || fail "session-start-sync.sh does not source state-lock.sh — the config-sync region is unserialized"
+grep -q 'state_lock_acquire' "$HOOK" \
+  || fail "session-start-sync.sh never calls state_lock_acquire"
+grep -q 'state_lock_release' "$HOOK" \
+  || fail "session-start-sync.sh never releases the lock"
+grep -qF '.claude/logs/claude-config-sync-state.json' "$HOOK" \
+  || fail "session-start-sync.sh does not use claude-config-sync.sh's canonical lock base"
+
+# The lock must be released BEFORE the root-repo sync: that is a different
+# resource, and holding the config-sync lock across a `git pull` would block
+# every scheduled tick for the duration of the pull.
+# Matched by symbol with a word boundary, on the first non-comment line: keying
+# on exact indentation would break on any reformat that leaves the contract
+# intact.
+line_release="$(grep -nE '^[^#]*\bstate_lock_release\b' "$HOOK" | head -1 | cut -d: -f1)"
+line_root_sync="$(grep -n 'Sync root repo' "$HOOK" | head -1 | cut -d: -f1)"
+[[ -n "$line_release" && -n "$line_root_sync" ]] \
+  || fail "could not locate the lock release / root-repo sync markers in session-start-sync.sh"
+[[ "$line_release" -lt "$line_root_sync" ]] \
+  || fail "session-start-sync.sh holds the config-sync lock across the root-repo sync"
+
+# --- 9. The hook publishes skill symlinks, not just agent symlinks ---
+grep -q 'publish-skill-symlinks' "$HOOK" \
+  || fail "session-start-sync.sh does not publish skill/CLAUDE.md/rules symlinks (issue #1524)"
+
+# --- 10. Marker handling: surfaced always, restart portion cleared on startup ---
+grep -qF '.claude/sync-restart-recommended.json' "$HOOK" \
+  || fail "session-start-sync.sh does not read the config-sync marker"
+grep -q 'del(.restart_recommended)' "$HOOK" \
+  || fail "session-start-sync.sh never clears the restart portion of the marker"
+
+# --- 11. Functional: marker surfaced on resume, cleared only on startup ---
+# A skills-worktree shaped just enough to skip the bootstrap branch keeps this
+# fast: the fetch fails, the hook records that as an error, and the marker path
+# — the part under test — still runs.
+MARKER_HOME="$(mktemp -d)"
+marker_cleanup() { rm -rf "$TMP_HOME" "$MARKER_HOME"; }
+trap marker_cleanup EXIT
+mkdir -p "$MARKER_HOME/.claude/skills-worktree/.claude/skills"
+: > "$MARKER_HOME/.claude/skills-worktree/.git"
+cat > "$MARKER_HOME/.claude/sync-restart-recommended.json" <<'JSON'
+{
+  "restart_recommended": {
+    "reason": "config sync updated agents, rules",
+    "categories": ["agents", "rules"],
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "at": "2026-09-01T00:00:00Z"
+  },
+  "sync_failure": {
+    "message": "config sync has been failing for 2 day(s) — 5 consecutive failures",
+    "consecutive_failures": 5,
+    "first_failure_at": "2026-08-30T00:00:00Z",
+    "at": "2026-09-01T00:00:00Z"
+  }
+}
+JSON
+
+resume_out=$(printf '{"source":"resume"}' | HOME="$MARKER_HOME" bash "$HOOK" 2>/dev/null || true)
+RESUME_OUT="$resume_out" python3 - <<'PY' || fail "resume did not surface both marker portions; got: $resume_out"
+import json, os, sys
+text = os.environ.get("RESUME_OUT", "").strip()
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if "RESTART RECOMMENDED" in ctx and "CONFIG SYNC FAILING" in ctx else 1)
+PY
+
+python3 - "$MARKER_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "resume cleared the restart portion — only a true startup may clear it"
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
+startup_out=$(printf '{"source":"startup"}' | HOME="$MARKER_HOME" bash "$HOOK" 2>/dev/null || true)
+STARTUP_OUT="$startup_out" python3 - <<'PY' || fail "startup did not surface the marker before clearing it; got: $startup_out"
+import json, os, sys
+text = os.environ.get("STARTUP_OUT", "").strip()
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if "RESTART RECOMMENDED" in ctx else 1)
+PY
+
+python3 - "$MARKER_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "startup did not clear the restart portion, or wrongly cleared the failure portion"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    # Both portions gone is only correct when there was no failure portion.
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+ok = d.get("restart_recommended") is None and d.get("sync_failure") is not None
+sys.exit(0 if ok else 1)
+PY
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

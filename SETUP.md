@@ -66,6 +66,28 @@ Default locations (may vary with your setup):
 8. Symlinks each `~/.claude/agents/<name>.md` → skills worktree, so the phase agents (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`, `researcher`) are spawnable from any repo. **A brand-new `~/.claude/agents/` directory needs a session restart before the types register** — until then, spawn `general-purpose` with the verbatim SAFETY/MINDSET/SKILLS blocks instead (`.claude/rules/subagent-orchestration.md`)
 8. Verifies all hook paths in `settings.json` resolve to existing, executable scripts
 
+## Optional: keep this machine current on its own (macOS)
+
+`setup.sh` makes the machine current **now**; session-start hooks keep it current whenever you open a session **here**. A machine you have not worked on lately still drifts — it runs stale rules, and skills or agents merged on another machine are never linked at all.
+
+One command per machine fixes that:
+
+```bash
+bash .claude/scripts/install-config-sync.sh
+```
+
+That runs the sync once at login and hourly thereafter. To pick a different cadence, run this **instead**:
+
+```bash
+bash .claude/scripts/install-config-sync.sh --interval 1800
+```
+
+It registers `claude-config-sync.sh` as a launchd LaunchAgent: the job survives reboots, catches up after sleep, fast-forwards the skills worktree, links anything newly merged, and re-runs the idempotent setup steps. It never touches the root repo checkout.
+
+When a sync lands something a live session cannot pick up (a new agent, changed rules), the next session start says `RESTART RECOMMENDED` and the status line shows `↻ restart`; the signal clears once you restart. Repeated failures surface the same way (`⚠ sync failing`) and clear on the next good run. Logs: `~/.claude/logs/claude-config-sync.log`.
+
+Remove it with `bash .claude/scripts/uninstall-config-sync.sh`. Details: [`.claude/reference/skill-sync-hooks.md`](.claude/reference/skill-sync-hooks.md).
+
 ## Prerequisites
 
 - **Git** — the repo must be cloned (not downloaded as a zip)
