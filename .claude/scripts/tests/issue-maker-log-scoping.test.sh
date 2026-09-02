@@ -77,13 +77,50 @@ make_home() {
 # run_block — execute production bash with the harness environment the skill
 # sees. CLAUDE_SESSION_ID is deliberately unset: that IS the precondition of
 # the incident.
+#
+# The real conversation's CLAUDE_CODE_*_SESSION_ID DO reach a Bash tool subshell
+# (that is exactly why resolve-log.sh can use them as a stable anchor), so they
+# are unset here too — otherwise every fabricated conversation in this suite
+# would inherit ONE ambient anchor. `anchor` is the explicit per-test override.
 run_block() {
-  local home="$1" conv="$2" body="$3"
+  local home="$1" conv="$2" body="$3" anchor="${4:-}"
   local f="$TMP_DIR/block-$$-$RANDOM.sh"
   printf '%s\n' "$body" > "$f"
-  ( unset CLAUDE_SESSION_ID
+  ( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID \
+          ISSUE_MAKER_STABLE_ANCHOR
     export HOME="$home" ISSUE_MAKER_CONV_ID="$conv"
+    if [[ -n "$anchor" ]]; then export ISSUE_MAKER_STABLE_ANCHOR="$anchor"; fi
     bash "$f" )
+}
+
+# resolve_key — call resolve-log.sh directly for the key alone. `mode` picks
+# what is captured: "key" -> stdout, "err" -> stderr.
+resolve_key() { # resolve_key <home> <conv> <anchor> [mode]
+  local home="$1" conv="$2" anchor="$3" mode="${4:-key}"
+  ( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID \
+          ISSUE_MAKER_STABLE_ANCHOR
+    export HOME="$home" ISSUE_MAKER_CONV_ID="$conv"
+    if [[ -n "$anchor" ]]; then export ISSUE_MAKER_STABLE_ANCHOR="$anchor"; fi
+    if [[ "$mode" == "err" ]]; then
+      # No --key here: that mode prints the key and exits before the notes, so
+      # asking for stderr means asking for the full path-resolving run.
+      "$home/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null
+    else
+      "$home/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null
+    fi )
+}
+
+marker_dir() { printf '%s' "$1/.claude/handoffs/.issue-maker-keys"; }
+
+# distinct_marker_keys — every distinct key recorded across <home>'s markers.
+# Adoption must never grow this set; minting always does.
+distinct_marker_keys() {
+  local d f; d="$(marker_dir "$1")"
+  [[ -d "$d" ]] || return 0
+  for f in "$d"/imk-*; do
+    [[ -f "$f" ]] || continue
+    head -n 1 "$f"
+  done | LC_ALL=C sort -u
 }
 
 seed_log() {   # seed_log <path> <target_repo> <json-issues-array>
@@ -468,6 +505,194 @@ if printf '%s' "$STDERR_OK" | grep -q 'could not read session_id'; then
   fail "F5: a valid log with no session_id wrongly warned (stderr: $STDERR_OK)"
 else
   ok "F5: a valid log with no session_id stays quiet — the new warning is read-failure only"
+fi
+
+# =============================================================================
+# TEST G — issue #1572: ONE conversation must not fragment across TWO logs when
+#          its `claude` ancestor changes mid-conversation (sleep/wake, harness
+#          reconnect). The mirror image of #1369, so every positive assertion
+#          here is paired with the control that reproduces the fragmentation.
+# =============================================================================
+H_G="$(make_home g)"
+G_ANCHOR="conv-alpha"
+G_KEY_1="$(resolve_key "$H_G" "claude=8001|start=Mon Sep  1 22:29:54 2026" "$G_ANCHOR")"
+# The ancestor walk now lands on a different `claude` process — a new pid AND a
+# new start time, exactly what the overnight sleep produced.
+G_KEY_2="$(resolve_key "$H_G" "claude=9002|start=Tue Sep  2 08:04:11 2026" "$G_ANCHOR")"
+
+if [[ -n "$G_KEY_1" && "$G_KEY_1" == "$G_KEY_2" ]]; then
+  ok "G1: a drifted ancestor identity resolves the ORIGINAL key, not a sibling log"
+else
+  fail "G1: key drifted mid-conversation ('$G_KEY_1' -> '$G_KEY_2')"
+fi
+
+# A third, still-different identity — so this exercises the adoption path again
+# rather than the pointer marker G_KEY_2 just published.
+G_ERR="$(resolve_key "$H_G" "claude=9003|start=Tue Sep  2 09:15:00 2026" "$G_ANCHOR" err)"
+if printf '%s' "$G_ERR" | grep -q "kept its ORIGINAL key '$G_KEY_1'"; then
+  ok "G2: adoption after drift is announced on stderr, naming the retained key"
+else
+  fail "G2: no drift note emitted (stderr: $G_ERR)"
+fi
+
+if [[ "$(distinct_marker_keys "$H_G" | wc -l | tr -d ' ')" == "1" ]]; then
+  ok "G3: three drifted identities left exactly ONE key across all markers (nothing minted)"
+else
+  fail "G3: adoption minted a sibling key ($(distinct_marker_keys "$H_G" | tr '\n' ' '))"
+fi
+
+# NEGATIVE CONTROL — the same drift with NO anchor available. This is the
+# pre-#1572 code path, and it must still fragment: without it G1 could pass on a
+# resolver that had simply stopped distinguishing identities at all.
+H_G_NC="$(make_home g-nc)"
+NC_KEY_1="$(resolve_key "$H_G_NC" "claude=8001|start=Mon Sep  1 22:29:54 2026" "")"
+NC_KEY_2="$(resolve_key "$H_G_NC" "claude=9002|start=Tue Sep  2 08:04:11 2026" "")"
+if [[ -n "$NC_KEY_1" && -n "$NC_KEY_2" && "$NC_KEY_1" != "$NC_KEY_2" ]]; then
+  ok "G4 (negative control): with no derivable anchor the SAME drift DOES fragment (the #1572 bug)"
+else
+  fail "G4 (negative control): drift did not reproduce ('$NC_KEY_1' vs '$NC_KEY_2')"
+fi
+
+# #1369 must not regress: two genuinely different conversations still separate.
+H_G2="$(make_home g2)"
+SEP_1="$(resolve_key "$H_G2" "claude=1001|start=T1" "conv-one")"
+SEP_2="$(resolve_key "$H_G2" "claude=2002|start=T2" "conv-two")"
+if [[ -n "$SEP_1" && -n "$SEP_2" && "$SEP_1" != "$SEP_2" ]]; then
+  ok "G5: distinct anchors keep distinct conversations on distinct logs (#1369 holds)"
+else
+  fail "G5: two conversations merged onto one log ('$SEP_1' / '$SEP_2')"
+fi
+
+# A simulated identity must never borrow the AMBIENT conversation's anchor —
+# otherwise the harness ids leaking into any subshell would merge every
+# fabricated conversation onto one log.
+H_G3="$(make_home g3)"
+amb_key() {
+  ( unset CLAUDE_SESSION_ID
+    export HOME="$H_G3" ISSUE_MAKER_CONV_ID="$1"
+    export CLAUDE_CODE_HOST_SESSION_ID="local_ambient-host-id"
+    export CLAUDE_CODE_SESSION_ID="ambient-session-id"
+    unset ISSUE_MAKER_STABLE_ANCHOR
+    "$H_G3/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null )
+}
+AMB_1="$(amb_key "claude=3001|start=T3")"
+AMB_2="$(amb_key "claude=4001|start=T4")"
+if [[ -n "$AMB_1" && -n "$AMB_2" && "$AMB_1" != "$AMB_2" ]]; then
+  ok "G6: an overridden identity ignores the ambient harness anchor (simulated conversations stay separate)"
+else
+  fail "G6: ambient anchor merged two overridden identities ('$AMB_1' / '$AMB_2')"
+fi
+
+# Ambiguity: two markers claim one anchor with DIFFERENT keys. Pick
+# deterministically, name both on stderr, and mint nothing.
+H_G4="$(make_home g4)"
+MD_G4="$(marker_dir "$H_G4")"
+mkdir -p "$MD_G4"
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\nident=old-a\nanchor=conv-amb\nepoch=1000\n' > "$MD_G4/imk-older"
+printf 'fallback-bbbbbbbbbbbbbbbbbbbb\nident=old-b\nanchor=conv-amb\nepoch=2000\n' > "$MD_G4/imk-newer"
+AMBIG_KEY="$(resolve_key "$H_G4" "claude=6001|start=T6" "conv-amb")"
+AMBIG_ERR="$(resolve_key "$H_G4" "claude=6002|start=T7" "conv-amb" err)"
+
+if [[ "$AMBIG_KEY" == "fallback-bbbbbbbbbbbbbbbbbbbb" ]]; then
+  ok "G7: ambiguous candidates resolve deterministically to the newest recorded epoch"
+else
+  fail "G7: ambiguity resolved to '$AMBIG_KEY' instead of the newest-epoch key"
+fi
+if printf '%s' "$AMBIG_ERR" | grep -q 'imk-older' && printf '%s' "$AMBIG_ERR" | grep -q 'imk-newer' \
+   && printf '%s' "$AMBIG_ERR" | grep -q 'DIFFERENT keys'; then
+  ok "G8: the ambiguity WARN names every candidate marker rather than picking silently"
+else
+  fail "G8: ambiguity was not warned about by name (stderr: $AMBIG_ERR)"
+fi
+if [[ "$(distinct_marker_keys "$H_G4" | wc -l | tr -d ' ')" == "2" ]]; then
+  ok "G9: no THIRD key was minted while candidates existed"
+else
+  fail "G9: a new key was minted despite candidates ($(distinct_marker_keys "$H_G4" | tr '\n' ' '))"
+fi
+
+# A pre-#1572 one-line marker must still be readable, and must gain an anchor on
+# its next hit — that migration is the only thing that makes an ALREADY-running
+# conversation drift-recoverable.
+H_G5="$(make_home g5)"
+LEG_KEY="$(resolve_key "$H_G5" "claude=5005|start=TL" "conv-legacy")"
+LEG_MARKER="$(ls "$(marker_dir "$H_G5")"/imk-* 2>/dev/null | head -n 1)"
+printf '%s\n' "$LEG_KEY" > "$LEG_MARKER"   # downgrade to the pre-#1572 format
+LEG_AGAIN="$(resolve_key "$H_G5" "claude=5005|start=TL" "conv-legacy")"
+if [[ "$LEG_AGAIN" == "$LEG_KEY" ]]; then
+  ok "G10: a legacy single-line marker is still read as this conversation's key"
+else
+  fail "G10: legacy marker not honoured ('$LEG_KEY' -> '$LEG_AGAIN')"
+fi
+if grep -q '^anchor=conv-legacy$' "$LEG_MARKER"; then
+  ok "G11: the legacy marker is migrated in place to carry the anchor"
+else
+  fail "G11: legacy marker was not migrated (content: $(cat "$LEG_MARKER"))"
+fi
+LEG_DRIFT="$(resolve_key "$H_G5" "claude=5006|start=TM" "conv-legacy")"
+if [[ "$LEG_DRIFT" == "$LEG_KEY" ]]; then
+  ok "G12: a conversation that started pre-#1572 survives its first drift after migration"
+else
+  fail "G12: post-migration drift still fragmented ('$LEG_KEY' -> '$LEG_DRIFT')"
+fi
+
+# set-log.sh stays loud on a missing path — the failure that made the original
+# #1572 fragmentation visible at all.
+MISSING_LOG="$TMP_DIR/no-such-session-log.json"
+SETLOG_ERR="$("$SET_LOG" "$MISSING_LOG" '.mode = $v' --arg v rapid-fire 2>&1 >/dev/null)"
+SETLOG_RC=$?
+if [[ $SETLOG_RC -ne 0 ]] && printf '%s' "$SETLOG_ERR" | grep -q "$MISSING_LOG"; then
+  ok "G13: set-log.sh on a missing path exits non-zero and names the path"
+else
+  fail "G13: set-log.sh missing-path failure was quiet (rc=$SETLOG_RC stderr: $SETLOG_ERR)"
+fi
+if [[ ! -e "$MISSING_LOG" ]]; then
+  ok "G14: the failed set-log write created nothing"
+else
+  fail "G14: set-log.sh created the missing log instead of failing"
+fi
+
+# An invocation that cannot derive an anchor must not ERASE the one already
+# recorded: the cost would be invisible until the NEXT drift, which is precisely
+# when the recovery is needed.
+H_G6="$(make_home g6)"
+KEEP_KEY="$(resolve_key "$H_G6" "claude=4004|start=TK" "conv-keep")"
+KEEP_MARKER="$(ls "$(marker_dir "$H_G6")"/imk-* 2>/dev/null | head -n 1)"
+# A sentinel epoch, so "the anchor survived" cannot pass just because the
+# anchor-less run never touched the marker at all.
+printf 'epoch=SENTINEL\n' >> "$KEEP_MARKER"
+resolve_key "$H_G6" "claude=4004|start=TK" "" >/dev/null   # same identity, no anchor
+if grep -q '^anchor=conv-keep$' "$KEEP_MARKER" && ! grep -q '^epoch=SENTINEL$' "$KEEP_MARKER"; then
+  ok "G16: an anchor-less invocation rewrites the marker yet preserves the anchor already recorded"
+else
+  fail "G16: the recorded anchor was erased or the marker was never rewritten (content: $(cat "$KEEP_MARKER"))"
+fi
+KEEP_DRIFT="$(resolve_key "$H_G6" "claude=4005|start=TL" "conv-keep")"
+if [[ "$KEEP_DRIFT" == "$KEEP_KEY" ]]; then
+  ok "G17: drift recovery still works after an anchor-less invocation"
+else
+  fail "G17: anchor-less invocation cost the conversation its drift recovery ('$KEEP_KEY' -> '$KEEP_DRIFT')"
+fi
+
+# NEGATIVE CONTROL for the publish primitive, now that a marker is a MULTI-LINE
+# record. A `noclobber` redirect wins the race but creates an EMPTY file and
+# writes after, so a loser reading in that window sees no key and re-mints its
+# own — one conversation on two logs again. Linking an already-written temp file
+# both refuses an existing target and is complete from the instant it appears.
+LN_DIR="$TMP_DIR/publish-primitive"
+mkdir -p "$LN_DIR"
+LN_TARGET="$LN_DIR/marker"
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\nanchor=x\n' > "$LN_DIR/staged-a"
+printf 'fallback-bbbbbbbbbbbbbbbbbbbb\nanchor=x\n' > "$LN_DIR/staged-b"
+ln "$LN_DIR/staged-a" "$LN_TARGET" 2>/dev/null
+LN_SECOND_RC=0
+ln "$LN_DIR/staged-b" "$LN_TARGET" 2>/dev/null || LN_SECOND_RC=$?
+LN_WINNER="$(head -n 1 "$LN_TARGET")"
+: > "$LN_DIR/created-then-written"          # the create half of a noclobber publish
+NC_WINDOW="$(head -n 1 "$LN_DIR/created-then-written")"
+if [[ $LN_SECOND_RC -ne 0 && "$LN_WINNER" == "fallback-aaaaaaaaaaaaaaaaaaaa" && -z "$NC_WINDOW" ]]; then
+  ok "G15 (negative control): the link publish refuses an existing marker AND lands complete, where create-then-write is observably keyless first"
+else
+  fail "G15 (negative control): publish primitives misbehaved (second-ln rc=$LN_SECOND_RC winner='$LN_WINNER' window='$NC_WINDOW')"
 fi
 
 # =============================================================================
