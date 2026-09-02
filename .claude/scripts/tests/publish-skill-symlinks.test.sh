@@ -470,6 +470,97 @@ test_14_regression_setup_repo_root_is_cwd_independent() {
     "grep -q 'never from the' '$setup'"
 }
 
+# ── Test 15: regression — a RELATIVE legacy link survives the prune ───────────
+#
+# Test 6 covers the absolute legacy link. The prune guard and the Step 3 trigger
+# used to compare readlink's raw text against the absolute legacy path, while
+# skill_owned_by_setup normalized the same target and called it setup-owned — so
+# a relative legacy link for a skill not yet on main reached the prune loop and
+# was deleted instead of preserved with the not-on-main warning.
+
+test_15_regression_relative_legacy_link_preserved() {
+  section "Test 15: regression — relative legacy link is preserved, not pruned"
+
+  local tmp_home fake_wt fake_root stderr_out exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+  fake_root="$tmp_home/root-repo"
+
+  # 'gamma' exists in the root repo but NOT in the worktree — same shape as
+  # test 6, except the link is written RELATIVE to ~/.claude/skills/.
+  mkdir -p "$fake_root/.claude/skills/gamma" "$tmp_home/.claude/skills"
+  ln -s "../../root-repo/.claude/skills/gamma" "$tmp_home/.claude/skills/gamma"
+
+  # Precondition: the link really is relative and really does resolve to the
+  # legacy location. Without this the test could pass by not exercising the
+  # relative path at all.
+  assert "fixture link is stored as a relative target" \
+    "[ \"\$(readlink '$tmp_home/.claude/skills/gamma')\" = '../../root-repo/.claude/skills/gamma' ]"
+  assert "fixture link resolves into the root repo" \
+    "[ -d '$tmp_home/.claude/skills/gamma' ]"
+
+  stderr_out="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" "$fake_root" 2>&1 >/dev/null)"
+  exit_code=$?
+
+  assert "publish exits 0" "[ $exit_code -eq 0 ]"
+  assert "relative legacy gamma link preserved (not pruned)" \
+    "[ -L '$tmp_home/.claude/skills/gamma' ]"
+  assert "gamma still points at the root repo" \
+    "[ \"\$(readlink '$tmp_home/.claude/skills/gamma')\" = '../../root-repo/.claude/skills/gamma' ]"
+  assert "warning names the not-on-main case" \
+    "printf '%s' \"\$stderr_out\" | grep -q 'not in worktree'"
+  assert "no stale-prune line was emitted for gamma" \
+    "! printf '%s' \"\$stderr_out\" | grep -q 'removing stale symlink'"
+
+  cleanup "$tmp_home"
+}
+
+# ── Test 16: regression — an un-removable stale link exits 1 ──────────────────
+#
+# The EXIT CODES block promises 1 when "a symlink could not be created or
+# removed". The prune loop deliberately keeps going after a failed rm so the
+# rest of the publish still happens, and that `|| warn` used to swallow the
+# status entirely — the script warned on stderr and still exited 0.
+
+test_16_regression_unremovable_stale_link_exits_1() {
+  section "Test 16: regression — a stale link that cannot be removed exits 1"
+
+  local tmp_home fake_wt stderr_out exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+
+  # Empty the worktree's skills directory so Step 1 publishes nothing and needs
+  # no write access to ~/.claude/skills — the read-only directory below then
+  # blocks ONLY the prune, which is what this test is about.
+  rm -rf "${fake_wt:?}/.claude/skills/alpha" "${fake_wt:?}/.claude/skills/beta"
+
+  # A setup-owned link whose skill no longer exists in the worktree: the prune
+  # loop's target. Making its PARENT read-only is what makes `rm` fail.
+  mkdir -p "$tmp_home/.claude/skills"
+  ln -s "$fake_wt/.claude/skills/ghost" "$tmp_home/.claude/skills/ghost"
+  chmod 555 "$tmp_home/.claude/skills"
+
+  stderr_out="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1 >/dev/null)"
+  exit_code=$?
+
+  chmod 755 "$tmp_home/.claude/skills"
+
+  # Assert the failure path actually RAN. Running as root (or on a filesystem
+  # that ignores the mode) would let rm succeed, and then an exit-0 assertion
+  # would be vacuous rather than meaningful.
+  assert "the removal genuinely failed (warning emitted)" \
+    "printf '%s' \"\$stderr_out\" | grep -q 'could not remove'"
+  assert "publish exits 1 per the documented exit-code contract" "[ $exit_code -eq 1 ]"
+  assert "the un-removable link is still present" \
+    "[ -L '$tmp_home/.claude/skills/ghost' ]"
+  assert "CLAUDE.md still published despite the prune failure" \
+    "[ -L '$tmp_home/.claude/CLAUDE.md' ]"
+  assert "rules still published despite the prune failure" \
+    "[ -L '$tmp_home/.claude/rules' ]"
+
+  cleanup "$tmp_home"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -491,6 +582,8 @@ test_11_regression_setup_delegates
 test_12_regression_normpath_unavailable
 test_13_regression_setup_preflight
 test_14_regression_setup_repo_root_is_cwd_independent
+test_15_regression_relative_legacy_link_preserved
+test_16_regression_unremovable_stale_link_exits_1
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

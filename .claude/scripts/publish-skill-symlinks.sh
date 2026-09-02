@@ -146,6 +146,11 @@ REPO_ROOT="$(normalize_arg "${2:-}")"
 SKILLS_DIR="$HOME/.claude/skills"
 WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
 
+# Set when a stale managed symlink could not be removed. The prune loop keeps
+# going after such a failure (see its `|| warn` below), so the status has to be
+# carried to the end of the run rather than raised where it happens.
+PRUNE_FAILED=0
+
 # --- Helper: migrate_symlink ---
 # --- Helper: relink_atomic ---
 # Repoint an EXISTING symlink at a new target without ever unlinking it first.
@@ -255,6 +260,33 @@ skill_owned_by_setup() {
   return 1
 }
 
+# --- Helper: is_legacy_skill_link ---
+# True when RAW_TARGET names the legacy root-repo location for SKILL_NAME.
+#
+# Normalizes the target exactly as skill_owned_by_setup does, and for the same
+# reason: `readlink` returns the link's raw text, so a RELATIVE legacy link
+# (../../<repo>/.claude/skills/<name>) is never string-equal to the absolute
+# legacy path. That asymmetry mattered because skill_owned_by_setup ALREADY
+# resolves such a link and calls it setup-owned — so a raw comparison at the two
+# call sites below let the prune loop delete a legacy link while Step 3, using
+# the same raw comparison, declined to migrate it. The link vanished instead of
+# being preserved with the "not on main yet" warning the flow promises.
+is_legacy_skill_link() {
+  local raw_target="$1" skill_name="$2" candidate target
+  [[ -n "$REPO_ROOT" ]] || return 1
+  if [[ "$raw_target" == /* ]]; then
+    candidate="$raw_target"
+  else
+    candidate="$SKILLS_DIR/$raw_target"
+  fi
+  if (( _NORMPATH_OK == 1 )); then
+    target="$(_normpath "$candidate")" || return 1
+  else
+    target="$candidate"
+  fi
+  [[ "$target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]
+}
+
 mkdir -p "$SKILLS_DIR"
 
 # --- Step 1: Publish one symlink per skill in the worktree ---
@@ -334,12 +366,15 @@ else
     # Skip legacy root-repo links: Step 3 migrates them via migrate_symlink,
     # which preserves the link and warns when the worktree target does not yet
     # exist (skill not on main). Pruning here would remove it first.
-    if [[ -n "$REPO_ROOT" && "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
+    if is_legacy_skill_link "$current_target" "$skill_name"; then
       continue
     fi
     if [[ ! -d "$WORKTREE_SKILLS/$skill_name" ]]; then
       echo "  $skill_name — removing stale symlink (no matching skill in worktree)"
-      rm "$link" || echo "  WARNING: could not remove $link — remove it manually" >&2
+      rm "$link" || {
+        echo "  WARNING: could not remove $link — remove it manually" >&2
+        PRUNE_FAILED=1
+      }
     fi
   done
 
@@ -351,9 +386,15 @@ else
       [[ -L "$link" ]] || continue
       skill_name="$(basename "$link")"
       current_target="$(readlink "$link")"
-      if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
+      if is_legacy_skill_link "$current_target" "$skill_name"; then
+        # Pass the link's OWN target as the legacy argument, not the canonical
+        # absolute path: migrate_symlink compares legacy_target raw, and we have
+        # just established through normalization that this target IS the legacy
+        # location. Handing it the canonical form would miss a relative link all
+        # over again — it would fall through to the generic "updating symlink"
+        # branch and repoint blindly, losing the not-on-main-yet warning.
         migrate_symlink "$link" "$WORKTREE_SKILLS/$skill_name" \
-          "$REPO_ROOT/.claude/skills/$skill_name" "$skill_name" -d
+          "$current_target" "$skill_name" -d
       fi
     done
   fi
@@ -381,3 +422,13 @@ fi
 
 migrate_symlink "$CLAUDE_MD_LINK" "$CLAUDE_MD_TARGET" "$legacy_claude_md" "CLAUDE.md" -f
 migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$legacy_rules" "rules" -d
+
+# EXIT CODES above promise 1 when "a symlink could not be created or removed".
+# The creation half already behaves that way — a bare `ln -s` aborts the run
+# under `set -e`. The removal half does not abort on purpose: one un-removable
+# stale link must not stop the remaining skills, CLAUDE.md and rules from
+# publishing. Reporting it here keeps both properties — the run finishes its
+# work AND the caller still learns that something was left undone.
+if (( PRUNE_FAILED )); then
+  exit 1
+fi

@@ -93,7 +93,7 @@ for order.
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
-| [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning, and the `setup-skills-worktree.sh` delegation guard |
+| [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, and the `setup-skills-worktree.sh` delegation guard |
 | [reference-catalog-lint.test.sh](../tests/reference-catalog-lint.test.sh) | Tests that `reference-catalog-lint.sh` fails on every drift class it claims to catch |
 | [release-decide.test.sh](../tests/release-decide.test.sh) | Tests for `release-decide.sh` |
 | [release-policy.test.sh](../tests/release-policy.test.sh) | Tests for `release-policy.sh` |
