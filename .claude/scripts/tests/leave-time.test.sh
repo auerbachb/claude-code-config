@@ -595,6 +595,29 @@ require_text "$LEAVE_SKILL" '**Step 9 first when one is already armed**' \
 require_text "$LEAVE_SKILL" 'discards the only record of that task ID' \
   'the skill must say why declaring over an armed leave time orphans its Monitor'
 
+# Routing through Step 9 is only half the gate — WHICH field decides "already armed" is the
+# other half. Step 8.5 nulls winddown_task_id before delegating to /pause, so a task-ID-only
+# sentinel reads "nothing armed" for the whole runway: precisely the window the countermand
+# clause covers. The pair is the contract; pinning the routing alone let that through.
+require_text "$LEAVE_SKILL" 'a non-null task ID **or**' \
+  'the declare-mode gate must accept EITHER sentinel, not the task ID alone'
+require_text "$LEAVE_SKILL" '`active` stays true across that whole window' \
+  'the skill must say why active is the sentinel that covers the runway'
+
+# The retirement is the other side of the same defect: a re-declaration during the runway
+# arms a successor, and an unguarded 8.6 then clears ITS window. Retire only what you own.
+require_text "$LEAVE_SKILL" 'Capture `.leave.declared_at` before invoking' \
+  'Step 8.6 must capture the declaration identity before /pause so retirement can verify it'
+require_text "$LEAVE_SKILL" 'is a mismatch, not a match' \
+  'two unreadable identity reads must not compare equal and retire an unidentifiable declaration'
+
+# A failed TaskStop leaves a dead ID squatting the slot the re-arm must win with --expect null.
+# Step 6 exit-7 then stops the Monitor this step just created; releasing the slot prevents it.
+require_text .claude/skills/pause-resume/SKILL.md 'release the slot anyway' \
+  'a failed stop must still release the ID slot, or the re-arm CAS loses to a dead ID'
+require_text .claude/skills/pause-resume/SKILL.md 'holding `.window` open here re-creates the precise failure' \
+  'a spent deadline must be retired on an unconfirmed stop, not left arming every decline'
+
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
 require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
