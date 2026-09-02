@@ -493,6 +493,150 @@ check_eq "append still lands when ~/.claude exists" "1" \
   "$(grep -c 'session-state.sh' "$HOME/.claude/script-usage.log")"
 
 echo
+echo "== Write-time guard: three uncovered write shapes (issue #1340) =="
+# FAILS-WITHOUT-FIX: on origin/main every "rejected" assertion below returns 0
+# and the malformed value is committed. Verified by running this block against
+# the pre-fix session-state.sh; the two controls at the end of the block are
+# rejected on both copies, so they prove the harness itself is sound.
+SEEDED_PRS='{"schema_version":2,"repos":{"test/repo":{"prs":{"1":{"phase":"A"}}}}}'
+seed_prs() { printf '%s\n' "$SEEDED_PRS" > "$STATE_FILE"; }
+
+# --- Gap 1: a whole-entry write may carry a known field as an explicit null.
+# The old scan skipped any key whose FINAL type was "null", which cannot tell
+# an omitted key from one written as null — while the single-path write of the
+# same null was (and still is) rejected. Presence is now decided with has().
+seed_prs
+BEFORE_DOC="$(cat "$STATE_FILE")"
+OUT=$(run --repo test/repo --set '.prs["999"]={"phase":"B","last_cron_action":null}' 2>&1); RC=$?
+check_eq "gap 1: whole-entry write with an explicit-null known field rejected (exit 4)" "4" "$RC"
+check_eq "gap 1: error names the field and 'null' as the offending type" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'null' but must be 'object'" <<<"$OUT")"
+check_eq "gap 1: state file byte-unchanged after the rejected whole-entry write" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# The other half of the contract: OMITTING a known field is not corruption.
+seed_prs
+run --repo test/repo --set '.prs["999"]={"phase":"B","reviewer":"cr"}'
+check_eq "gap 1: a whole-entry write that omits known fields is still accepted" "0" "$?"
+check_eq "gap 1: the omitting write applied as given" '{"phase":"B","reviewer":"cr"}' \
+  "$(jq -c '.repos["test/repo"].prs["999"]' "$STATE_FILE")"
+
+# Clearing a whole entry to null is not corruption either — there is no entry
+# left to scan. Pinned so the has() change cannot quietly outlaw it.
+seed_prs
+run --repo test/repo --set '.prs["1"]=null'
+check_eq "gap 1: clearing a whole entry to null is still accepted" "0" "$?"
+
+# A non-object entry cannot hold known fields at all, so it is reported as the
+# entry's own type violation rather than as a bare-empty type.
+seed_prs
+OUT=$(run --repo test/repo --set '.prs["7"]=42' 2>&1); RC=$?
+check_eq "gap 1: a non-object whole-entry write rejected (exit 4)" "4" "$RC"
+check_eq "gap 1: error names the entry itself and 'object'" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"7\"\]' would become type 'number' but must be 'object'" <<<"$OUT")"
+
+# --- Gap 2: --raw-path writes to an explicitly-scoped per-PR field. The old
+# helpers matched only a leading `.prs`, so a fully-spelled `.repos[...]` path
+# classified as touching top-level `repos` and the nested field went unchecked.
+seed_prs
+BEFORE_DOC="$(cat "$STATE_FILE")"
+OUT=$(run --raw-path --set '.repos["test/repo"].prs["1"].last_cron_action=bad' 2>&1); RC=$?
+check_eq "gap 2: --raw-path scoped nested write rejected (exit 4)" "4" "$RC"
+check_eq "gap 2: error names the scoped nested field" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "gap 2: state file byte-unchanged after the rejected --raw-path write" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# The all-bracket spelling session-scheduling-reconcile.sh renders from a jq
+# path array (`as_path`, line ~247) is the live shape of this gap.
+seed_prs
+OUT=$(run --raw-path --set '.["repos"]["test/repo"]["prs"]["1"]["last_cron_action"]=bad' 2>&1); RC=$?
+check_eq "gap 2: bracket-spelled scoped nested write rejected (exit 4)" "4" "$RC"
+check_eq "gap 2: error names the bracket-spelled path" "1" \
+  "$(grep -c "field '.\[\"repos\"\]\[\"test/repo\"\]\[\"prs\"\]\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+
+# Positive control for the same call site: the two writes it actually makes
+# leave `babysit` an object, so the newly-reached guard must accept them.
+seed_prs
+run --raw-path --set '.["repos"]["test/repo"]["prs"]["1"]["babysit"]["active"]=false' \
+    --set '.["repos"]["test/repo"]["prs"]["1"]["babysit"]["cron_job_id"]=null'
+check_eq "gap 2: session-scheduling-reconcile's own writes still accepted" "0" "$?"
+check_eq "gap 2: babysit stayed an object with both edits applied" '{"active":false,"cron_job_id":null}' \
+  "$(jq -c '.repos["test/repo"].prs["1"].babysit' "$STATE_FILE")"
+
+# overrun-check.sh writes a fully-spelled scoped path to a field that is NOT in
+# the contract; the newly-reached classifier must leave it unvalidated.
+seed_prs
+run --raw-path --set '.repos["test/repo"].prs["1"].overrun=anything-at-all'
+check_eq "gap 2: an unknown nested field on a scoped path stays unvalidated" "0" "$?"
+
+# jq's optional-index `?` is a legal spelling of the same node, and
+# scope_path() has always scoped it — so a `?` anywhere along the path must not
+# make the write invisible to the classifier (CodeRabbit, local review).
+seed_prs
+OUT=$(run --repo test/repo --set '.prs?["1"].last_cron_action=bad' 2>&1); RC=$?
+check_eq "gap 2: optional-index on the map segment still classified (exit 4)" "4" "$RC"
+check_eq "gap 2: error names the optional-index path verbatim" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs?\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+seed_prs
+RC=0; run --repo test/repo --set '.prs["1"]?.last_cron_action=bad' >/dev/null 2>&1 || RC=$?
+check_eq "gap 2: optional-index on the entry segment still classified (exit 4)" "4" "$RC"
+seed_prs
+RC=0; run --raw-path --set '.repos["test/repo"]?.prs["1"].last_cron_action=bad' >/dev/null 2>&1 || RC=$?
+check_eq "gap 2: optional-index on the repo segment still classified (exit 4)" "4" "$RC"
+seed_prs
+run --repo test/repo --set '.prs?["1"].babysit.active=true'
+check_eq "gap 2: a well-typed optional-index write is still accepted" "0" "$?"
+
+# --- Gap 3: replacing the whole `.prs` map. With no PR-number selector nothing
+# classified the write, so only the `.repos[*].prs`-is-an-object check ran and
+# malformed entries inside the replacement committed.
+seed_prs
+BEFORE_DOC="$(cat "$STATE_FILE")"
+OUT=$(run --repo test/repo --set '.prs={"999":{"last_cron_action":"bad"}}' 2>&1); RC=$?
+check_eq "gap 3: whole-map replacement with a malformed entry rejected (exit 4)" "4" "$RC"
+check_eq "gap 3: error names the offending entry inside the replacement" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"999\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "gap 3: state file byte-unchanged after the rejected whole-map write" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+seed_prs
+OUT=$(run --raw-path --set '.repos["test/repo"].prs={"998":{"digest_streak":"nope"}}' 2>&1); RC=$?
+check_eq "gap 3: --raw-path whole-map replacement rejected (exit 4)" "4" "$RC"
+check_eq "gap 3: error names the offending entry and both types" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"998\"\].digest_streak' would become type 'string' but must be 'number'" <<<"$OUT")"
+
+seed_prs
+OUT=$(run --repo test/repo --set '.prs={"7":42}' 2>&1); RC=$?
+check_eq "gap 3: a non-object entry inside a replacement rejected (exit 4)" "4" "$RC"
+check_eq "gap 3: error names that entry and 'object'" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"7\"\]' would become type 'number' but must be 'object'" <<<"$OUT")"
+
+# A clean replacement still lands, and still replaces (the prior entry is gone).
+seed_prs
+run --repo test/repo --set '.prs={"999":{"phase":"C","digest_streak":4,"last_cron_action":{"type":"delete"}}}'
+check_eq "gap 3: a well-formed whole-map replacement is accepted" "0" "$?"
+check_eq "gap 3: the replacement is applied wholesale" '{"999":{"phase":"C","digest_streak":4,"last_cron_action":{"type":"delete"}}}' \
+  "$(jq -c '.repos["test/repo"].prs' "$STATE_FILE")"
+
+# Ordering regression: the per-PR scans now run after issue #638's scope check,
+# so a non-object `.prs` must still be reported by #638 and not by the scan.
+seed_prs
+OUT=$(run --repo test/repo --set '.prs=[1,2,3]' 2>&1); RC=$?
+check_eq "gap 3: a non-object .prs is still #638's message, not the entry scan's" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs' would become type 'array' but must be 'object' (see issue #638)" <<<"$OUT")"
+check_eq "gap 3: non-object .prs still exits 4" "4" "$RC"
+
+# --- Controls: rejected on the pre-fix copy too, so a green run of the block
+# above cannot be an artifact of a broken harness.
+seed_prs
+OUT=$(run --repo test/repo --set '.prs["999"]={"last_cron_action":"bad"}' 2>&1); RC=$?
+check_eq "control: whole-entry write with a bare-string known field rejected" "4" "$RC"
+seed_prs
+OUT=$(run --repo test/repo --set '.prs["1"].last_cron_action=null' 2>&1); RC=$?
+check_eq "control: single-path write of null to a known field rejected" "4" "$RC"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"

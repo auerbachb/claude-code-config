@@ -227,9 +227,20 @@
 #   contract follows it there: `repos` itself must be an object, every
 #   `.repos[*]` must be an object, and every `.repos[*].prs` present must be
 #   an object. The `pr_nested` checks apply to entries under each repo's
-#   `prs` map. Classification runs on the caller's ORIGINAL path (which
-#   still reads `.prs["<N>"].<field>`) while the jq check path is scoped,
-#   so #640's guarantee is not quietly lost to the restructure.
+#   `prs` map. Classification runs on the CONCRETE path — the caller's path
+#   after scope_path() has resolved it — so the same guard reaches a write
+#   however it is spelled: auto-scoped (`.prs["<N>"].<field>`) or fully
+#   spelled under --raw-path, in dot or all-bracket form (issue #1340).
+#
+#   Three shapes of write against the per-PR map are each classified and
+#   checked (issue #1340): a nested field (`.prs["<N>"].<field>`, including
+#   deeper subpaths), a whole entry (`.prs["<N>"]={...}`), and a whole map
+#   (`.prs={...}`). For the latter two every known field PRESENT in the
+#   written entry is checked — presence via `has(...)`, so a field written as
+#   an explicit null is rejected exactly as the single-path write of that
+#   same null always was, while a field simply omitted is not corruption.
+#   A whole-repo-scope write (`.repos["<key>"]={...}`) is deliberately NOT
+#   classified: it has no caller and is out of #1340's scope.
 #
 #   --set and --cas both check the FINAL value of any touched known field
 #   after the whole write is applied (not just the raw value passed in), so
@@ -457,6 +468,12 @@ is_single_object_state_file() {
 FIELD_TYPES_LOADED=0
 FIELD_TYPES_TOP=""
 FIELD_TYPES_NESTED=""
+# Same `pr_nested` contract as FIELD_TYPES_NESTED, kept as compact JSON for the
+# jq-side entry scan (issue #1340) so a caller-supplied PR key never has to be
+# interpolated into a jq filter. Stays `{}` whenever the schema is missing or
+# unparseable, which keeps the documented "type guard disabled for this run"
+# degradation path (issue #640) covering the entry scan too.
+FIELD_TYPES_NESTED_JSON="{}"
 
 load_field_types() {
   if [[ "$FIELD_TYPES_LOADED" -eq 1 ]]; then
@@ -475,6 +492,8 @@ load_field_types() {
   nested="$(jq -r '._field_types.pr_nested // {} | to_entries[] | "\(.key)=\(.value)"' "$SCHEMA_FILE" 2>/dev/null)" || nested=""
   FIELD_TYPES_TOP="$top"
   FIELD_TYPES_NESTED="$nested"
+  FIELD_TYPES_NESTED_JSON="$(jq -c '._field_types.pr_nested // {}' "$SCHEMA_FILE" 2>/dev/null)" || FIELD_TYPES_NESTED_JSON="{}"
+  [[ -n "$FIELD_TYPES_NESTED_JSON" ]] || FIELD_TYPES_NESTED_JSON="{}"
 }
 
 # Prints the expected JSON type ("array"/"object"/etc) for a known top-level
@@ -735,92 +754,212 @@ top_level_key_of() {
   fi
 }
 
-# Extract the PR-number key from a path whose top-level key is "prs", e.g.
-# `.prs["287"].last_cron_action` -> "287". Every known caller uses bracket
-# notation for the PR-number selector (`.prs["<N>"]`), so only that form is
-# recognized; a bare `.prs.287...` (unusual — jq requires bracket or quoted-
-# dot notation for a numeric key) returns empty, same as an absent selector.
-pr_number_of() {
-  local path="${1#.prs}"
-  if [[ "$path" != \[* ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  path="${path#\[}"
-  path="${path%%]*}"
-  path="${path#[\"\']}"
-  path="${path%[\"\']}"
-  printf '%s' "$path"
-}
+# --- per-PR write classification (issues #640, #1340) -----------------------
+#
+# Everything below classifies a CONCRETE write path — the path after
+# scope_path() has resolved it, i.e. exactly where the write lands in the final
+# document. Classifying the concrete path rather than the caller's spelling is
+# what closes issue #1340's gap 2: helpers that matched only a leading `.prs`
+# saw nothing in a fully-spelled `.repos["o/r"].prs["1"].<field>` write (the
+# shape session-scheduling-reconcile.sh renders through --raw-path), so the
+# nested guard silently did not run. As a bonus, the concrete path is also the
+# check path, so nothing has to be scoped back at the point of use.
+#
+# Globals published by path_take_segment(); read immediately after each call.
+SEG_TEXT=""
+SEG_KEY=""
+SEG_REST=""
 
-# Extract the per-PR nested field name immediately after the PR-number
-# selector, e.g. `.prs["287"].babysit.active` -> "babysit" (the known field
-# two levels up from a subpath write — the same principle top_level_key_of()
-# applies for top-level fields, e.g. `.active_agents[0].id` -> "active_agents").
-# Returns empty if the path's top-level key isn't "prs", there's no bracket
-# PR-number selector, or nothing follows it (a whole-`.prs["<N>"]` entry
-# replacement isn't checked here — the existing top-level object-type check
-# on `prs` itself still applies).
-pr_nested_key_of() {
-  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  local path
-  path="$(pr_number_of "$1")"
-  if [[ -z "$path" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  # Re-derive the remainder after the PR-number selector (pr_number_of()
-  # only returns the extracted number, not the leftover path).
-  path="${1#.prs}"
-  path="${path#\[*\]}"
-  path="${path#.}"
-  if [[ -z "$path" ]]; then
-    printf '%s' ""
-    return 0
-  fi
-  if [[ "$path" == \[* ]]; then
-    path="${path#\[}"
-    path="${path%%]*}"
-    path="${path#[\"\']}"
-    path="${path%[\"\']}"
-    printf '%s' "$path"
+# Consume the leading path segment of $1, publishing:
+#   SEG_TEXT — the literal jq text consumed (re-emittable verbatim)
+#   SEG_KEY  — the object key it selects; empty for a numeric array index
+#   SEG_REST — the unconsumed remainder
+# Returns 1 when the remainder does not begin with a segment shape we
+# understand, which callers treat as "stop classifying".
+#
+# Both spellings of every segment are recognized, because both are produced by
+# live callers: the dot form (`.prs["287"].babysit`, hand-written) and the
+# all-bracket form (`.["repos"]["o/r"]["prs"]["287"]["babysit"]`, rendered by
+# session-scheduling-reconcile.sh's `as_path`). Each also accepts a trailing
+# jq optional-index `?`, which scope_path() already treats as a legal spelling
+# of the same node: without it a `.prs?["287"].<field>` write would scope
+# correctly and then classify as nothing, escaping the very guard this
+# function feeds. Written with regexes held in variables so bash 3.2 (macOS
+# system bash) applies them as regexes rather than literals.
+path_take_segment() {
+  local p="$1"
+  local re_dquote='^\.?\["([^"]*)"\]\??'
+  local re_squote="^[.]?\\['([^']*)'\\]\\??"
+  local re_index='^\.?\[([0-9]+)\]\??'
+  local re_ident='^\.([A-Za-z_][A-Za-z0-9_]*)\??'
+  SEG_TEXT=""; SEG_KEY=""; SEG_REST=""
+  if [[ "$p" =~ $re_dquote ]] || [[ "$p" =~ $re_squote ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY="${BASH_REMATCH[1]}"
+  elif [[ "$p" =~ $re_index ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY=""
+  elif [[ "$p" =~ $re_ident ]]; then
+    SEG_TEXT="${BASH_REMATCH[0]}"; SEG_KEY="${BASH_REMATCH[1]}"
   else
-    printf '%s' "${path%%[.[]*}"
+    return 1
   fi
+  SEG_REST="${p#"$SEG_TEXT"}"
+  return 0
 }
 
-# Returns the PR number when `path` is a WHOLE-entry write, e.g. `.prs["999"]`
-# -> "999" (nothing follows the PR-number selector) — as opposed to a nested
-# write like `.prs["999"].reviewer`, which returns empty here even though
-# "reviewer" isn't a known field. This distinction matters (CodeAnt finding,
-# issue #640, PR #654): pr_nested_key_of() deliberately returns empty for a
-# whole-entry write since there's no single nested key to check — but that
-# left a real gap, since a whole-entry write's value can still embed a
-# malformed known nested field (e.g. `--set '.prs["999"]={"last_cron_action":
-# "bare string"}'`) that the top-level `.prs` object-type check alone can't
-# catch. Used below to trigger a full per-known-field scan of the written
-# entry, not just the single-path check pr_nested_key_of() enables.
-pr_whole_entry_write_number_of() {
-  if [[ "$(top_level_key_of "$1")" != "prs" ]]; then
-    printf '%s' ""
+# Classify a concrete write path against the per-PR map, publishing:
+#   PR_PATH_KIND   — "map"    the write replaces a whole `.prs` map
+#                    "entry"  the write replaces a whole `.prs["<N>"]` entry
+#                    "nested" the write lands inside a `.prs["<N>"]` entry
+#                    ""       the path does not address a per-PR map at all
+#   PR_PATH_PREFIX — the literal jq path of that map / entry
+#   PR_PATH_KEY    — for "nested", the segment immediately after the PR-number
+#                    selector; the known-nested-field candidate (empty when
+#                    that segment is a numeric index)
+#
+# Accepts a leading `.prs` (the legacy/--raw-path top level) as well as
+# `.repos["<key>"].prs` (the scoped shape since issue #638). A whole-repo-scope
+# write (`.repos["<key>"]=…`) and a whole-`.repos` write classify as "" — a
+# distinct shape with no live caller, deliberately out of issue #1340's scope.
+PR_PATH_KIND=""
+PR_PATH_PREFIX=""
+PR_PATH_KEY=""
+pr_path_classify() {
+  local rest="$1" prefix=""
+  PR_PATH_KIND=""; PR_PATH_PREFIX=""; PR_PATH_KEY=""
+
+  path_take_segment "$rest" || return 0
+  if [[ "$SEG_KEY" == "repos" ]]; then
+    prefix="$SEG_TEXT"
+    # The repo-scope key, then the `prs` segment beneath it.
+    path_take_segment "$SEG_REST" || return 0
+    [[ -n "$SEG_KEY" ]] || return 0
+    prefix="$prefix$SEG_TEXT"
+    path_take_segment "$SEG_REST" || return 0
+    [[ "$SEG_KEY" == "prs" ]] || return 0
+  elif [[ "$SEG_KEY" != "prs" ]]; then
     return 0
   fi
-  local num
-  num="$(pr_number_of "$1")"
-  if [[ -z "$num" ]]; then
-    printf '%s' ""
+
+  # SEG_* now holds the `prs` segment in both branches.
+  prefix="$prefix$SEG_TEXT"
+  rest="$SEG_REST"
+  if [[ -z "$rest" ]]; then
+    PR_PATH_KIND="map"; PR_PATH_PREFIX="$prefix"
     return 0
   fi
-  local rest="${1#.prs}"
-  rest="${rest#\[*\]}"
-  if [[ -n "$rest" ]]; then
-    printf '%s' ""
+
+  # The PR-number selector. A numeric index here (`.prs[0]`) selects no entry —
+  # `.prs` is an object — so it is not a per-PR write.
+  path_take_segment "$rest" || return 0
+  [[ -n "$SEG_KEY" ]] || return 0
+  prefix="$prefix$SEG_TEXT"
+  rest="$SEG_REST"
+  if [[ -z "$rest" ]]; then
+    PR_PATH_KIND="entry"; PR_PATH_PREFIX="$prefix"
     return 0
   fi
-  printf '%s' "$num"
+
+  PR_PATH_KIND="nested"
+  PR_PATH_PREFIX="$prefix"
+  if path_take_segment "$rest"; then
+    PR_PATH_KEY="$SEG_KEY"
+  fi
+  return 0
+}
+
+# jq program shared by the whole-entry and whole-map scans below. `offences`
+# decides presence with `has(...)` rather than by comparing the value's type
+# against "null" (issue #1340, gap 1): an omitted known field and one written
+# as an explicit null are the same jq type but not the same write, and the
+# nested single-path check has always rejected the latter. A null ENTRY is
+# still skipped — clearing an entry is not corruption — while a non-object
+# entry is reported, since its fields cannot be scanned at all.
+#
+# `render` builds the whole message jq-side so a caller-supplied PR key is
+# never interpolated into a jq filter. Quoted heredoc: the body is literal, so
+# the apostrophes the message needs are safe here.
+PR_ENTRY_SCAN_JQ="$(cat <<'PR_ENTRY_SCAN_JQ_EOF'
+def offences($entry; $types):
+  if $entry == null then empty
+  elif ($entry | type) != "object"
+  then {f: null, actual: ($entry | type), expected: "object"}
+  else ( $types | to_entries[] as $t
+         | select($entry | has($t.key))
+         | select(($entry[$t.key] | type) != $t.value)
+         | {f: $t.key, actual: ($entry[$t.key] | type), expected: $t.value} )
+  end;
+def render($prefix; $statefile):
+  ( $prefix
+    + (if .ent == null then "" else "[\"" + .ent + "\"]" end)
+    + (if .f == null then "" else "." + .f end) ) as $p
+  | "session-state.sh: refusing to write — field '" + $p
+    + "' would become type '" + .actual
+    + "' but must be '" + .expected
+    + "' (see issue #640); " + $statefile + " left unmodified";
+PR_ENTRY_SCAN_JQ_EOF
+)"
+
+# Record one concrete write path in the three per-PR lists (deduped). Shared by
+# --set, once per assignment, and --cas, once for its single target, so the two
+# write paths cannot classify differently — the issue #1283 lesson applied to
+# classification as well as to the checks it feeds. The lists are NEWLINE-
+# separated: they hold concrete jq paths, and a --raw-path repo key is caller
+# text that may contain a space.
+pr_record_write_target() {
+  local record
+  pr_path_classify "$1"
+  case "$PR_PATH_KIND" in
+    nested)
+      [[ -n "$PR_PATH_KEY" ]] || return 0
+      [[ -n "$(known_nested_field_type "$PR_PATH_KEY")" ]] || return 0
+      record="${PR_PATH_KEY}"$'\x1f'"${PR_PATH_PREFIX}.${PR_PATH_KEY}"
+      case $'\n'"$TOUCHED_NESTED_CHECKS"$'\n' in
+        *$'\n'"$record"$'\n'*) ;;
+        *) TOUCHED_NESTED_CHECKS="${TOUCHED_NESTED_CHECKS}${TOUCHED_NESTED_CHECKS:+$'\n'}${record}" ;;
+      esac
+      ;;
+    entry)
+      case $'\n'"$WHOLE_ENTRY_PATHS"$'\n' in
+        *$'\n'"$PR_PATH_PREFIX"$'\n'*) ;;
+        *) WHOLE_ENTRY_PATHS="${WHOLE_ENTRY_PATHS}${WHOLE_ENTRY_PATHS:+$'\n'}${PR_PATH_PREFIX}" ;;
+      esac
+      ;;
+    map)
+      case $'\n'"$WHOLE_MAP_PATHS"$'\n' in
+        *$'\n'"$PR_PATH_PREFIX"$'\n'*) ;;
+        *) WHOLE_MAP_PATHS="${WHOLE_MAP_PATHS}${WHOLE_MAP_PATHS:+$'\n'}${PR_PATH_PREFIX}" ;;
+      esac
+      ;;
+  esac
+  return 0
+}
+
+# Run one per-PR field-type scan and exit 4 on the first offence, exactly as
+# every other check in enforce_field_type_contract() does — so, like it, this
+# MUST be invoked as a plain statement.
+#   $1 candidate document   $2 the concrete path being scanned
+#   $3 the jq body that turns it into offence records
+#   $4 the noun used if the scan itself cannot run
+# A jq failure here is a surprise rather than a finding (issue #638's scope
+# check has already established that every `.repos[*].prs` is an object), so it
+# fails closed instead of being swallowed into a vacuous pass.
+run_pr_entry_scan() {
+  local candidate="$1" target="$2" body="$3" noun="$4"
+  local msg rc=0
+  msg="$(jq -r --argjson __types "$FIELD_TYPES_NESTED_JSON" \
+    --arg __prefix "$target" --arg __statefile "$STATE_FILE" \
+    "$PR_ENTRY_SCAN_JQ
+     $body | first // empty | render(\$__prefix; \$__statefile)" \
+    "$candidate" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "session-state.sh: refusing to write — could not scan the PR $noun at '$target' against the field-type contract; $STATE_FILE left unmodified" >&2
+    exit 4
+  fi
+  if [[ -n "$msg" ]]; then
+    printf '%s\n' "$msg" >&2
+    exit 4
+  fi
+  return 0
 }
 
 # Field-type contract enforcement, shared by --set and --cas (issue #1283).
@@ -830,11 +969,14 @@ pr_whole_entry_write_number_of() {
 # than duplicated so the two write paths can never drift apart — the whole
 # point of #1283 was that --cas silently accepted values --set rejects.
 #
-# $1 is the candidate file. The touched-field records are read from three
-# variables the caller populates while classifying its write path(s):
+# $1 is the candidate file. The touched-field records are read from four
+# variables the caller populates while classifying its write path(s). The three
+# per-PR lists are NEWLINE-separated (issue #1340): they hold concrete jq paths
+# now, and a --raw-path repo key is caller text that may contain a space.
 #   TOUCHED_KNOWN_FIELDS  — space-separated known-typed top-level keys
-#   TOUCHED_NESTED_CHECKS — space-separated "<PR-number>:<nested-key>" pairs
-#   WHOLE_ENTRY_PRS       — space-separated PRs written as a whole entry
+#   TOUCHED_NESTED_CHECKS — "<nested-key><US><concrete check path>" records
+#   WHOLE_ENTRY_PATHS     — concrete paths of entries written whole
+#   WHOLE_MAP_PATHS       — concrete paths of `.prs` maps written whole
 #
 # On any violation this exits 4 directly instead of returning — both callers
 # want exactly that, and it keeps the message and exit behavior identical
@@ -843,11 +985,10 @@ pr_whole_entry_write_number_of() {
 enforce_field_type_contract() {
   local candidate="$1"
   local set_touched_key set_expected_type set_actual_type
-  local nested_pair nested_pr_number nested_field_key nested_expected_type
+  local nested_record nested_field_key nested_expected_type
   local nested_check_path nested_actual_type
-  local whole_entry_pr whole_entry_key whole_entry_expected_type
-  local whole_entry_check_path whole_entry_actual_type
-  local known_nested_keys bad_scope bad_path bad_actual
+  local scan_target
+  local bad_scope bad_path bad_actual
 
   # The input document was already required to be exactly one JSON object; a
   # candidate that is not is a jq-pipeline surprise, and committing it would
@@ -873,52 +1014,6 @@ enforce_field_type_contract() {
       exit 4
     fi
   done
-
-  # Field-type contract, per-PR nested fields (issue #640): same principle as
-  # the top-level loop above, extended to reach fields nested under a specific
-  # `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
-  # string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
-  # object. Checked against the FINAL value at the concrete `.prs["<N>"].<key>`
-  # path, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
-  # covered by checking the whole `babysit` object's final type, not just the
-  # raw written value.
-  for nested_pair in $TOUCHED_NESTED_CHECKS; do
-    nested_pr_number="${nested_pair%%:*}"
-    nested_field_key="${nested_pair#*:}"
-    nested_expected_type="$(known_nested_field_type "$nested_field_key")"
-    nested_check_path="$(scope_path ".prs[\"${nested_pr_number}\"].${nested_field_key}")"
-    nested_actual_type="$(jq -r "${nested_check_path} | type" "$candidate" 2>/dev/null)"
-    if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
-      echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-      exit 4
-    fi
-  done
-
-  # Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
-  # PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
-  # per-path tracking never sees a specific nested-field path to check — but
-  # the embedded object can still carry a malformed known field (e.g.
-  # `last_cron_action` as a bare string) that the top-level `.prs` object-type
-  # check alone can't catch. For every PR written as a whole entry, check
-  # EVERY known nested key present in the FINAL entry (absent keys are type
-  # "null" and are skipped — a whole-entry write simply omitting a known field
-  # is not corruption, same as any other unset nested field).
-  if [[ -n "$WHOLE_ENTRY_PRS" ]]; then
-    load_field_types
-    known_nested_keys="$(printf '%s\n' "$FIELD_TYPES_NESTED" | cut -d= -f1)"
-    for whole_entry_pr in $WHOLE_ENTRY_PRS; do
-      while IFS= read -r whole_entry_key; do
-        [[ -z "$whole_entry_key" ]] && continue
-        whole_entry_expected_type="$(known_nested_field_type "$whole_entry_key")"
-        whole_entry_check_path="$(scope_path ".prs[\"${whole_entry_pr}\"].${whole_entry_key}")"
-        whole_entry_actual_type="$(jq -r "${whole_entry_check_path} | type" "$candidate" 2>/dev/null)"
-        if [[ "$whole_entry_actual_type" != "null" && "$whole_entry_actual_type" != "$whole_entry_expected_type" ]]; then
-          echo "session-state.sh: refusing to write — field '$whole_entry_check_path' would become type '$whole_entry_actual_type' but must be '$whole_entry_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
-          exit 4
-        fi
-      done <<<"$known_nested_keys"
-    done
-  fi
 
   # Per-repo scope contract (issue #638): `.prs` kept its object-typed
   # guarantee when it moved down a level, so check the shape of every repo
@@ -949,6 +1044,71 @@ enforce_field_type_contract() {
     bad_actual="${bad_scope##*$'\x1f'}"
     echo "session-state.sh: refusing to write — field '$bad_path' would become type '$bad_actual' but must be 'object' (see issue #638); $STATE_FILE left unmodified" >&2
     exit 4
+  fi
+
+  # The per-PR checks run LAST, after #638's scope check has established that
+  # every `.repos[*].prs` in the candidate is an object. That ordering is what
+  # lets the scans below treat a jq evaluation failure as a genuine surprise
+  # and fail closed, instead of having to swallow the "Cannot index <type>"
+  # error a malformed `.prs` would otherwise produce here (issue #1340).
+
+  # Field-type contract, per-PR nested fields (issue #640): same principle as
+  # the top-level loop above, extended to reach fields nested under a specific
+  # `.prs["<N>"]` entry — e.g. PR #542's `last_cron_action` holding a bare
+  # string where every consumer (infer-pr.sh, wrap, babysit-pr) expects an
+  # object. Checked against the FINAL value at the concrete path recorded by
+  # the caller, so sub-path writes (e.g. `.prs["287"].babysit.active=...`) are
+  # covered by checking the whole `babysit` object's final type, not just the
+  # raw written value.
+  while IFS= read -r nested_record; do
+    [[ -z "$nested_record" ]] && continue
+    nested_field_key="${nested_record%%$'\x1f'*}"
+    nested_check_path="${nested_record#*$'\x1f'}"
+    nested_expected_type="$(known_nested_field_type "$nested_field_key")"
+    nested_actual_type="$(jq -r "${nested_check_path} | type" "$candidate" 2>/dev/null)"
+    if [[ "$nested_actual_type" != "$nested_expected_type" ]]; then
+      echo "session-state.sh: refusing to write — field '$nested_check_path' would become type '$nested_actual_type' but must be '$nested_expected_type' (see issue #640); $STATE_FILE left unmodified" >&2
+      exit 4
+    fi
+  done <<<"$TOUCHED_NESTED_CHECKS"
+
+  # Field-type contract, whole-PR-entry writes (issue #640, CodeAnt finding on
+  # PR #654): a write like `.prs["999"]={...}` replaces the whole entry, so the
+  # per-path tracking never sees a specific nested-field path to check — but
+  # the embedded object can still carry a malformed known field (e.g.
+  # `last_cron_action` as a bare string) that the top-level `.prs` object-type
+  # check alone can't catch. Scan every known nested key PRESENT in the final
+  # entry; an omitted key is not corruption, an explicitly-null one is
+  # (issue #1340, gap 1 — `offences` decides that with `has(...)`).
+  #
+  # Whole-`.prs`-map writes (issue #1340, gap 3) get the identical scan over
+  # every entry of the replacement map: `.prs={...}` carries no PR-number
+  # selector, so nothing else in this function would ever look inside it.
+  # Skipped entirely when the schema did not load, which is what keeps the
+  # documented "type guard disabled for this run" degradation honest.
+  if [[ -n "$TOUCHED_NESTED_CHECKS$WHOLE_ENTRY_PATHS$WHOLE_MAP_PATHS" ]]; then
+    load_field_types
+  fi
+  if [[ "$FIELD_TYPES_NESTED_JSON" != "{}" ]]; then
+    while IFS= read -r scan_target; do
+      [[ -z "$scan_target" ]] && continue
+      run_pr_entry_scan "$candidate" "$scan_target" \
+        "[ offences(${scan_target}; \$__types) | . + {ent: null} ]" "entry"
+    done <<<"$WHOLE_ENTRY_PATHS"
+
+    # A map write replaces every entry at once, so the same offence generator
+    # runs over `to_entries[]` and the offending entry's key is carried through
+    # to the message — no caller-supplied PR key is ever interpolated into a
+    # jq filter. A non-object map is left to #638's check above, which owns
+    # that message.
+    while IFS= read -r scan_target; do
+      [[ -z "$scan_target" ]] && continue
+      run_pr_entry_scan "$candidate" "$scan_target" \
+        "[ (${scan_target}) as \$m
+           | select((\$m | type) == \"object\")
+           | (\$m | to_entries[]) as \$e
+           | offences(\$e.value; \$__types) | . + {ent: \$e.key} ]" "map"
+    done <<<"$WHOLE_MAP_PATHS"
   fi
 }
 
@@ -1413,34 +1573,19 @@ if [[ "$MODE" == "cas" ]]; then
 
   # Classify the CAS target the way --set classifies each of its touched
   # paths, so enforce_field_type_contract() below checks the same things
-  # (issue #1283). Two views of the same write, exactly as in --set:
-  #   CAS_PATH        — what the caller asked for, e.g. `.prs["287"].babysit`
-  #   SCOPED_CAS_PATH — where it lands, e.g. `.repos["org/x"].prs["287"]...`
-  # The TOP-LEVEL check uses the scoped path, because that is the shape of the
-  # final document; the per-PR helpers use the original path, because they
-  # match on a leading `.prs` and would return empty for every scoped path,
-  # silently disabling #640's nested guard here.
+  # (issue #1283). Both checks read the SCOPED path, because that is the shape
+  # of the final document and therefore also the concrete check path
+  # (issue #1340 — classifying the caller's spelling instead is what let a
+  # fully-spelled `.repos[...]` target slip past #640's nested guard).
   TOUCHED_KNOWN_FIELDS=""
   TOUCHED_NESTED_CHECKS=""
-  WHOLE_ENTRY_PRS=""
+  WHOLE_ENTRY_PATHS=""
+  WHOLE_MAP_PATHS=""
   cas_top_level_key="$(top_level_key_of "$SCOPED_CAS_PATH")"
   if [[ -n "$(known_field_type "$cas_top_level_key")" ]]; then
     TOUCHED_KNOWN_FIELDS="$cas_top_level_key"
   fi
-  cas_nested_key="$(pr_nested_key_of "$CAS_PATH")"
-  if [[ -n "$cas_nested_key" ]] && [[ -n "$(known_nested_field_type "$cas_nested_key")" ]]; then
-    cas_pr_number="$(pr_number_of "$CAS_PATH")"
-    # Digits-only, same as --set: $cas_pr_number is interpolated into the jq
-    # filter string built for the nested check path, and requiring that shape
-    # keeps the interpolation injection-safe without full jq-string escaping.
-    if [[ "$cas_pr_number" =~ ^[0-9]+$ ]]; then
-      TOUCHED_NESTED_CHECKS="${cas_pr_number}:${cas_nested_key}"
-    fi
-  fi
-  cas_whole_entry_pr="$(pr_whole_entry_write_number_of "$CAS_PATH")"
-  if [[ "$cas_whole_entry_pr" =~ ^[0-9]+$ ]]; then
-    WHOLE_ENTRY_PRS="$cas_whole_entry_pr"
-  fi
+  pr_record_write_target "$SCOPED_CAS_PATH"
 
   # Build jq --argjson or --arg for the expected value (same JSON-or-string
   # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
@@ -1569,17 +1714,16 @@ JQ_FILTER=""
 JQ_ARGS=()
 TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
-WHOLE_ENTRY_PRS=""
+WHOLE_ENTRY_PATHS=""
+WHOLE_MAP_PATHS=""
 for i in "${!SET_PATHS[@]}"; do
   # Two views of the same write (issues #638 + #640):
   #   orig_path — what the caller asked for, e.g. `.prs["287"].babysit`
   #   path      — where it actually lands, e.g. `.repos["org/x"].prs["287"].babysit`
-  # The assignment and the TOP-LEVEL type check use `path`, because that is
-  # the shape of the final document. The per-PR classification helpers below
-  # use `orig_path`: they match on a leading `.prs`, and handing them the
-  # scoped path would make every lookup return empty — silently disabling
-  # #640's nested guard the moment #638 moved the data. Their concrete jq
-  # check paths are scoped back at the point of use.
+  # Every classification below reads `path`: it is the shape of the final
+  # document, so it is also the concrete check path. Classifying `orig_path`
+  # instead is what made a fully-spelled `.repos[...]` write invisible to
+  # #640's nested guard (issue #1340, gap 2).
   orig_path="${SET_PATHS[$i]}"
   path="$(scope_path "$orig_path")"
   value="${SET_VALUES[$i]}"
@@ -1614,39 +1758,22 @@ for i in "${!SET_PATHS[@]}"; do
       *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $set_top_level_key" ;;
     esac
   fi
-  # Same tracking for per-PR nested fields (issue #640): a touched path whose
-  # top-level key is "prs" and whose immediate post-PR-number segment is a
-  # known nested field (e.g. `.prs["287"].last_cron_action` or a deeper
-  # subpath like `.prs["287"].babysit.active`) is recorded as a "<PR>:<key>"
-  # pair so the post-write loop below can check that specific PR entry's
-  # field, not every PR in the file.
-  set_nested_key="$(pr_nested_key_of "$orig_path")"
-  if [[ -n "$set_nested_key" ]] && [[ -n "$(known_nested_field_type "$set_nested_key")" ]]; then
-    set_pr_number="$(pr_number_of "$orig_path")"
-    # PR numbers are always plain digits (GitHub PR numbers). Requiring that
-    # shape here — before $set_pr_number gets interpolated into the jq
-    # filter string built for nested_check_path below — keeps that
-    # interpolation injection-safe without needing full jq-string escaping.
-    if [[ "$set_pr_number" =~ ^[0-9]+$ ]]; then
-      nested_pair="${set_pr_number}:${set_nested_key}"
-      case " $TOUCHED_NESTED_CHECKS " in
-        *" $nested_pair "*) ;;
-        *) TOUCHED_NESTED_CHECKS="$TOUCHED_NESTED_CHECKS $nested_pair" ;;
-      esac
-    fi
-  fi
-  # Track whole-PR-entry writes (issue #640, CodeAnt finding on PR #654):
-  # `--set '.prs["999"]={...}'` replaces the entire entry in one shot, so no
-  # single nested-field path is touched above — but the embedded object can
-  # still carry a malformed known field. Record the PR number so the
-  # post-write loop below can scan every known nested key in that entry.
-  set_whole_entry_pr="$(pr_whole_entry_write_number_of "$orig_path")"
-  if [[ "$set_whole_entry_pr" =~ ^[0-9]+$ ]]; then
-    case " $WHOLE_ENTRY_PRS " in
-      *" $set_whole_entry_pr "*) ;;
-      *) WHOLE_ENTRY_PRS="$WHOLE_ENTRY_PRS $set_whole_entry_pr" ;;
-    esac
-  fi
+  # Same tracking for the per-PR map (issues #640, #1340). One classification
+  # covers all three shapes a write can take against it, recorded as the
+  # CONCRETE path so the post-write checks address the final document
+  # directly — no PR number is interpolated into a jq filter any more:
+  #   nested — `.prs["287"].last_cron_action`, or a deeper subpath like
+  #            `.prs["287"].babysit.active`; recorded as a
+  #            "<key><US><check path>" record so the loop checks that one
+  #            entry's field, not every PR in the file
+  #   entry  — `.prs["999"]={...}` replaces the entry in one shot, so no
+  #            single nested-field path is touched, but the embedded object
+  #            can still carry a malformed known field
+  #   map    — `.prs={...}` replaces the whole map, so not even a PR-number
+  #            selector exists to classify on
+  # Recorded through the same helper --cas uses, so neither write path can
+  # classify a target the other would not.
+  pr_record_write_target "$path"
 done
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
