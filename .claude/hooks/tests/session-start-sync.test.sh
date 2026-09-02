@@ -211,4 +211,80 @@ ok = d.get("restart_recommended") is None and d.get("sync_failure") is not None
 sys.exit(0 if ok else 1)
 PY
 
+# --- 12. A startup that SKIPPED the sync region must not clear the marker ---
+# At login, launchd's RunAtLoad tick and a new session overlap. If the hook
+# loses the config-sync lock it skips the worktree and symlink refresh — so this
+# session is running the OLD definitions — and must not then delete the restart
+# marker the scheduled job just wrote. Doing so left the user on stale agents,
+# rules and skills with neither the context notice nor the statusline badge.
+SKIP_HOME="$(mktemp -d)"
+skip_cleanup() { rm -rf "$TMP_HOME" "$MARKER_HOME" "$SKIP_HOME"; }
+trap skip_cleanup EXIT
+mkdir -p "$SKIP_HOME/.claude/skills-worktree/.claude/skills" "$SKIP_HOME/.claude/logs"
+: > "$SKIP_HOME/.claude/skills-worktree/.git"
+cat > "$SKIP_HOME/.claude/sync-restart-recommended.json" <<'JSON'
+{
+  "restart_recommended": {
+    "reason": "config sync updated agents",
+    "categories": ["agents"],
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "at": "2026-09-01T00:00:00Z"
+  }
+}
+JSON
+
+# Hold the config-sync lock the way state-lock.sh would, naming THIS test
+# process as the owner so the stale-lock breaker sees a live pid and declines
+# to steal it. Without a valid owner file the lock is breakable and the hook
+# would sail through, testing nothing.
+SKIP_LOCK="$SKIP_HOME/.claude/logs/claude-config-sync-state.json.lock"
+mkdir -p "$SKIP_LOCK"
+{ printf 'pid=%s\n' "$$"
+  printf 'host=%s\n' "${HOSTNAME:-$(hostname)}"
+  printf 'epoch=%s\n' "$(date +%s)"
+  printf 'started=%s\n' "$(date -u +%FT%TZ)"
+  printf 'cmd=%s\n' "concurrent-scheduled-sync"
+  printf 'token=%s\n' "test-token"
+} > "$SKIP_LOCK/owner"
+
+# The lock must be RELEASED partway through the run, not held for the whole of
+# it. Holding it throughout makes even the buggy code look correct: the clear
+# block takes the same lock, so a still-held lock blocks the deletion for the
+# wrong reason and the test passes vacuously (verified — it did).
+#
+# The real login race is: the scheduled sync holds the lock while the hook tries
+# to sync (hook skips), then the scheduled sync FINISHES — writing the marker
+# and releasing — and only then does the hook reach its clear, which now
+# succeeds. Releasing after ~2s lands inside that window: past the 1s
+# sync-region timeout, inside the 5s clear timeout.
+( sleep 2; rm -rf "$SKIP_LOCK" ) &
+_skip_releaser=$!
+
+skip_out=$(printf '{"source":"startup"}' \
+  | HOME="$SKIP_HOME" CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT=1 bash "$HOOK" 2>/dev/null || true)
+wait "$_skip_releaser" 2>/dev/null || true
+
+# Control: the run must actually have taken the skip path, or the assertion
+# below would pass for the wrong reason.
+SKIP_OUT="$skip_out" python3 - <<'PY' || fail "the hook did not take the lock-contention skip path; got: $skip_out"
+import json, os, sys
+try:
+    ctx = json.loads(os.environ["SKIP_OUT"])["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if "holds the lock" in ctx else 1)
+PY
+
+python3 - "$SKIP_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup that skipped the sync region cleared the restart marker — the session is on stale definitions with no signal"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
+rm -rf "$SKIP_LOCK"
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

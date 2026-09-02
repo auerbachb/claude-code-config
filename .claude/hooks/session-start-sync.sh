@@ -209,7 +209,22 @@ if [[ -f "$_marker_file" ]]; then
     _marker_notice="$_marker_text"
   fi
 
-  if [[ "$session_source" == "startup" ]]; then
+  # `startup` alone is NOT sufficient to clear. The restart portion may only be
+  # retired by a startup that actually ran the sync region, because only then is
+  # "this session already loaded the current definitions" true.
+  #
+  # At login the two paths overlap: launchd fires the scheduled sync at
+  # RunAtLoad while a new session starts. The hook can lose the lock, skip the
+  # worktree and symlink refresh, and then — having loaded the OLD definitions —
+  # delete the marker the scheduled job wrote for changes it just landed. The
+  # user would be left on stale agents, rules and skills with neither the
+  # context notice nor the statusline badge to say so.
+  #
+  # Skipping the clear is the safe direction and matches the posture stated
+  # above for a failed clear-lock: the marker survives to the next startup, a
+  # duplicate reminder rather than a lost one. The notice for THIS session was
+  # already captured above, so nothing is suppressed by declining to clear.
+  if [[ "$session_source" == "startup" && -z "$_skip_notice" ]]; then
     _clear_locked=0
     if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
       _clear_locked=1
