@@ -244,6 +244,78 @@ local path   # zsh-special-name-ok — this block documents the broken form
 ```
 MD
 
+# --- attribute-style fence info strings -------------------------------------
+# Quarto/R Markdown write ```{bash}; Pandoc writes ```{.bash}. Both are shell
+# fences, so neither may slip past the scanner unscanned.
+expect "Quarto-style {bash} fence is scanned" 1 "zsh-special name 'path'" <<'MD'
+```{bash}
+local path
+```
+MD
+
+expect "Pandoc-style {.bash} fence is scanned" 1 "zsh-special name 'path'" <<'MD'
+```{.bash}
+local path
+```
+MD
+
+expect "Pandoc classes after the language are scanned" 1 "zsh-special name 'path'" <<'MD'
+```{.sh .numberLines}
+local path
+```
+MD
+
+expect "attribute fence for another language is still skipped" 0 "zsh-special-name-lint: OK" <<'MD'
+```{.python}
+path = "/tmp/x"
+```
+MD
+
+# --- backslash line continuations -------------------------------------------
+# One command split across physical lines must be judged as one command: the
+# continuation of a *command* carries arguments (no assignment), while the
+# continuation of a *declaration* still declares.
+expect "continued argument is not a command-position assignment" 0 "zsh-special-name-lint: OK" <<'MD'
+```bash
+some_command \
+  path=value
+```
+MD
+
+expect "continued declaration is still reported" 1 "zsh-special name 'path'" <<'MD'
+```bash
+local name="$1" \
+      path candidate
+```
+MD
+
+expect "opt-out marker on either continued line suppresses the command" 0 "zsh-special-name-lint: OK" <<'MD'
+```bash
+local name="$1" \
+      path candidate   # zsh-special-name-ok — documents the broken form
+```
+MD
+
+# --- read builtin flag arguments --------------------------------------------
+# `-p` takes a prompt, not a variable name; `-a` really does name an array.
+expect "read -p prompt word is not a bound name" 0 "zsh-special-name-lint: OK" <<'MD'
+```bash
+read -p path value
+```
+MD
+
+expect "read -rp still binds its trailing NAME" 1 "zsh-special name 'path'" <<'MD'
+```bash
+read -rp prompt path
+```
+MD
+
+expect "read -a array name is still reported" 1 "zsh-special name 'path'" <<'MD'
+```bash
+read -a path
+```
+MD
+
 # --- canaries ---------------------------------------------------------------
 canary_dir="${TMP_ROOT}/canary-nofences"
 mkdir -p "$canary_dir"

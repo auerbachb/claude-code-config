@@ -227,7 +227,16 @@ function scan_segment(file, lineno, seg, raw,   n, i, toks, tok, name, started) 
   if (i <= n && toks[i] == "read") {
     for (i++; i <= n; i++) {
       tok = toks[i]
-      if (tok == "" || tok ~ /^-/) continue
+      if (tok == "") continue
+      if (tok ~ /^-/) {
+        # -p/-d/-n/-N/-t/-u/-i take a following word that is a prompt,
+        # delimiter, count, timeout, fd, or initial text -- NOT a variable
+        # name, so `read -p path value` binds only `value`. The word is
+        # separate only when the letter ends the token (`-n1` carries its
+        # own value). `-a NAME` really does bind NAME, so it is not skipped.
+        if (tok ~ /^-[A-Za-z]*[pdnNtui]$/) i++
+        continue
+      }
       name = tok; sub(/=.*$/, "", name)
       report(file, lineno, name, raw)
     }
@@ -253,7 +262,7 @@ function scan_segment(file, lineno, seg, raw,   n, i, toks, tok, name, started) 
 
 BEGIN { FS = "\n"; findings = 0; fences = 0 }
 
-FNR == 1 { in_fence = 0; fence_tok = ""; fence_len = 0; shellish = 0 }
+FNR == 1 { in_fence = 0; fence_tok = ""; fence_len = 0; shellish = 0; pending = "" }
 
 {
   line = $0
@@ -266,30 +275,51 @@ FNR == 1 { in_fence = 0; fence_tok = ""; fence_len = 0; shellish = 0 }
     len = length(marker)
     rest = trim(substr(line, RSTART + RLENGTH))
     if (!in_fence) {
-      in_fence = 1; fence_tok = tok; fence_len = len
+      in_fence = 1; fence_tok = tok; fence_len = len; pending = ""
       info = tolower(rest)
       sub(/[[:space:]].*$/, "", info)
-      sub(/^\{+/, "", info); sub(/\}+$/, "", info)
+      # Attribute-style info strings carry the language as a class: Quarto and
+      # R Markdown write `{bash}`, Pandoc writes `{.bash}` (and `{.bash
+      # .numberLines}`, already truncated to its first word above). Peel the
+      # braces and the class dot so those fences are scanned, not skipped --
+      # dropping a leading dot cannot widen the allow-list, since `.python`
+      # only becomes `python`, which is still not shellish.
+      sub(/^\{+/, "", info); sub(/\}+$/, "", info); sub(/^\.+/, "", info)
       shellish = (info == "" || info ~ /^(bash|sh|shell|zsh|console|shellsession)$/)
       if (shellish) fences++
       next
     } else if (tok == fence_tok && len >= fence_len && rest == "") {
-      in_fence = 0; shellish = 0
+      in_fence = 0; shellish = 0; pending = ""
       next
     }
   }
 
-  if (!in_fence || !shellish) next
-  if (line ~ /zsh-special-name-ok/) next
+  if (!in_fence || !shellish) { pending = ""; next }
 
   code = decode(line)
+  if (pending == "") { pending_lineno = FNR; pending_raw = line; pending_ok = 0 }
+  if (line ~ /zsh-special-name-ok/) pending_ok = 1
+
+  # A trailing backslash continues one command across physical lines, and
+  # judging each line alone gets both halves wrong: `some_cmd \` + `path=value`
+  # is an ARGUMENT (no assignment at all), while `local name="$1" \` +
+  # `path candidate` IS a declaration. Join first, then scan the whole command
+  # once -- reported against the line the command starts on.
+  if (code ~ /\\[[:space:]]*$/) {
+    sub(/\\[[:space:]]*$/, " ", code)
+    pending = pending code
+    next
+  }
+  code = pending code
+  pending = ""
+  if (pending_ok) next
   if (code ~ /^[[:space:]]*$/) next
 
   # split on command separators; each piece has its own command position
   gsub(/&&|\|\|/, "\001", code)
   gsub(/[;|&]/, "\001", code)
   m = split(code, segs, /\001/)
-  for (s = 1; s <= m; s++) scan_segment(FILENAME, FNR, segs[s], line)
+  for (s = 1; s <= m; s++) scan_segment(FILENAME, pending_lineno, segs[s], pending_raw)
 }
 
 END { printf "FENCES\t%d\n", fences }
