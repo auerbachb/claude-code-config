@@ -785,6 +785,25 @@ reject_text "$PAUSE_RESUME_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_t
   'the confirmed-stop path must CAS the task-ID slot, not blind-set it over a successor'
 require_text "$PAUSE_RESUME_SKILL" 'Confirming the stop does not make the write unconditional' \
   'pause-resume must state why a confirmed stop still writes the slot under a CAS'
+# BOTH files own a confirmed-stop release, and fixing one is how the other keeps the blind form.
+reject_text "$PAUSE_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
+  '/pause Step 2 confirmed-stop release must CAS the slot, not blind-set it over a successor'
+require_text "$PAUSE_SKILL" 'proves the **Monitor** is gone, not that the slot is still this step' \
+  '/pause must state why a confirmed stop still writes the task-ID slot under a CAS'
+
+# .leave gets the identity guard wherever it is written, not only where .window gets its CAS.
+# /leave-by 8.6, 9 and 11 all require a matching declared_at; the pause-resume retirement is the
+# same claim from the other side, and without it a re-declaration is deactivated while its own
+# .window survives the CAS - a deadline that declines every launch and a Monitor whose --checkin
+# exits silently on leave.active.
+require_text "$PAUSE_RESUME_SKILL" 'RESUMED_DECLARED_AT' \
+  'the pause-resume retirement must capture the declaration identity it retires against'
+require_text "$PAUSE_RESUME_SKILL" '"$HOLDER_AT" = "$RESUMED_DECLARED_AT"' \
+  'the pause-resume retirement must guard .leave on the identity, not only .window on the CAS'
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
+  'RESUMED_DECLARED_AT=$("$SESSION_STATE_SH"' \
+  '"$HOLDER_AT" = "$RESUMED_DECLARED_AT"' \
+  'the identity must be captured before it is re-read to authorize the retirement'
 
 # The generation publish fills a slot Step 5 left null, so --expect null is what stops a slower
 # overlapping flow from landing on a LIVE token. The holder re-read cannot cover this: it detects

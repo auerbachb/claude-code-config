@@ -362,6 +362,10 @@ RESUMED_DEADLINE_RC=0
 # /pm --window cannot swap the window between the judgment and the write.
 RESUMED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || RESUMED_DEADLINE_RC=$?
 RESUMED_DEADLINE_EPOCH=$(printf '%s' "$RESUMED_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
+# The declaration identity, captured with the window: the retirement below guards `.leave` on it,
+# the same way /leave-by Steps 8.6, 9 and 11 do. Captured here, before anything is stopped.
+RESUMED_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || RESUMED_DECLARED_AT=""
 ```
 
 **Two reads would make the CAS win against a window this step never judged** — the verdict taken on
@@ -503,10 +507,21 @@ With the gate passed **and the deadline spent**:
   validated**, never blind:
 
   ```bash
-  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-    --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  # RESUMED_DECLARED_AT was captured with RESUMED_WINDOW at the top of this step.
+  HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+  if [ -n "$RESUMED_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RESUMED_DECLARED_AT" ]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+  fi
   ```
+
+  **`.leave` needs the identity guard too, not just `.window` the CAS.** `/leave-by` Steps 8.6, 9
+  and 11 all require a matching `declared_at` before touching `.leave`, and this retirement is the
+  same claim made from the other side. Without it, a re-declaration landing between this step's
+  snapshot and the write is deactivated while its own `.window` survives the CAS — leaving a
+  deadline that declines every launch and a Monitor whose `--checkin` exits silently on
+  `leave.active`, which is the worst of both records. A mismatch retires nothing.
 
   `.window` is shared with `/pm` planning deadlines, and this block only ever established that the
   *leave* record is spent. Between the read at the top of this block and the write here, a
