@@ -154,7 +154,13 @@ if [[ -z "$REVIEWER" ]]; then
   # the fail-fast signal for malformed session state.
   RESOLVED_EXIT=0
   RESOLVED=$(run_script reviewer-of.sh {{PR_NUMBER}}) || RESOLVED_EXIT=$?
-  if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
+  if [[ "$RESOLVED_EXIT" -eq 127 ]]; then
+    # run_script could not resolve the helper at all. Nothing was reported about
+    # this PR's reviewer, so falling through would run merge-gate.sh WITHOUT
+    # --reviewer and silently gate against a guessed path. Block instead.
+    echo "reviewer-of.sh unavailable (exit 127) — cannot resolve the reviewer; blocking merge prep." >&2
+    REVIEWER_ERROR="reviewer-of.sh unavailable (exit 127): helper not found on any candidate path."
+  elif [[ "$RESOLVED_EXIT" -eq 5 ]]; then
     echo "reviewer-of.sh exit 5: session-state malformed — blocking merge prep. Repair or remove ~/.claude/session-state.json and retry." >&2
     REVIEWER_ERROR="reviewer-of.sh exit 5: session-state malformed — blocking merge prep."
   else
@@ -187,18 +193,26 @@ Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
 
 ### `BEHIND` is not an automatic block (issue #1563)
 
-A `merge_state` of **`BEHIND`** is **not on its own a blocker.** `CLAUDE.md`
-"PR MERGE AUTHORIZATION" and `.claude/rules/cr-merge-gate.md` Step 1d both make
-a *verified clean* `BEHIND` an auto-merge rather than a hard stop (issue #754):
-it clears via `admin-merge.sh --auto-plain --ac-verified`, which modifies no
-branch protection and needs no user turn. Rebasing a clean `BEHIND` is the
-treadmill that carve-out exists to avoid, and it throws away the bot approval
-that just satisfied the rest of the gate.
+A `merge_state` of **`BEHIND`** is **not on its own a blocker.** A *verified
+clean* `BEHIND` is an auto-merge, not a hard stop — canonical in
+`.claude/rules/cr-merge-gate.md` Step 1d and `CLAUDE.md` "PR MERGE
+AUTHORIZATION" (issue #754). Read the policy there; this section defines only
+the Phase-C decision tree that consumes it.
 
 *Filter* the `BEHIND` entry out of `missing[]` — the same `startswith`
 predicate `/wrap` uses, so the two cannot drift — and classify on what remains.
 Filtering the entry out by prefix is not the same as *detecting* the state by
 substring: detection stays on `.merge_state`.
+
+One other entry has to come out with it. A **pre-tick `ac-gate` failure is a
+`missing[]` CI line**, so filtering `BEHIND` alone would leave `REMAINDER`
+non-empty on exactly the PRs this section exists to admit, routing every one of
+them to a rebase and making Step 2a unreachable. Because this path is
+**AC-first**, drop the failing-CI line **only** when `ci_status.blocking[]` is
+non-empty and *every* blocking check is `ac-gate`. Key that test on the
+structured `blocking[]` names, never on the prose: an empty `blocking[]` proves
+nothing and must never license dropping a CI line, and a real failure sitting
+alongside `ac-gate` must survive.
 
 ```bash
 # printf, not echo: zsh's echo mangles JSON on the way into jq.
@@ -207,8 +221,17 @@ if printf '%s' "$GATE_JSON" | jq -e '.merge_state == "BEHIND"' >/dev/null; then
   IS_BEHIND=1
 fi
 REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
-  [ (.missing // [])[] | select(startswith("branch is BEHIND base") | not) ]')
+  ([ (.ci_status.blocking // [])[] | .name ]) as $blocking
+  # Non-empty AND all-ac-gate. An empty blocking[] is unverifiable, not a pass.
+  | (($blocking | length) > 0 and ($blocking | all(. == "ac-gate"))) as $ac_gate_only
+  | [ (.missing // [])[]
+      | select((startswith("branch is BEHIND base")) | not)
+      | select(($ac_gate_only and (startswith("CI has") and contains("failing check-run"))) | not) ]')
 ```
+
+Only the *failing*-CI line is dropped. An `incomplete` CI line means checks are
+still running and stays in `REMAINDER`, as does every unresolved-thread or
+review entry.
 
 - **`IS_BEHIND == 0`** → you are not on this branch at all; fall back to the
   "Exit `1` otherwise" bullet above and report `missing` verbatim.
@@ -218,8 +241,9 @@ REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
   **`/fixpr`** (rebase + force-push from a guard-clean worktree) until
   **`merge_state`** is no longer **`BEHIND`**, then re-runs Phase C. **This is
   unchanged behavior.**
-- **`REMAINDER` empty** (`BEHIND` is the only entry) → **clean-`BEHIND`
-  candidate.** Probe it, then continue to Step 2 — do **not** report blocked yet:
+- **`REMAINDER` empty** (`BEHIND`, optionally plus an all-`ac-gate` failing-CI
+  line, was everything) → **clean-`BEHIND` candidate.** Probe it, then continue
+  to Step 2 — do **not** report blocked yet:
 
   ```bash
   # `|| CB_EXIT=$?`, not a bare assignment + `CB_EXIT=$?`: exit 1 is the EXPECTED
@@ -233,26 +257,40 @@ REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
   fi
   ```
 
-  Read the **JSON**, never `$?` after a pipe. **`CB_EXIT == 127`** means
-  `run_script` could not resolve `clean-behind-check.sh`, so nothing was
-  reported about this `BEHIND` at all: that is neither "clean" nor "not clean".
-  Set `OUTCOME: blocked`, name the unavailable helper, and stop — never fall
-  back to treating the `BEHIND` as unclean and routing to `/fixpr`, which would
-  buy a rebase on evidence you do not have. On `CB_EXIT == 1`, a
-  `reasons_not_safe` entry that is the unchecked-Test-Plan-checkbox count,
-  and/or a sole `residual_blockers` entry naming the failing `ac-gate`
-  check-run, mean **"waiting on Step 2"** — this path is **AC-first**, and
-  Step 2 is what clears both. Any *other* residual blocker is a genuinely
-  non-clean `BEHIND`: `OUTCOME: blocked`, report `reasons_not_safe`, and the
-  parent runs `/fixpr` as above. `churn.advisory` is context, never a gate.
+  Read the **JSON**, never `$?` after a pipe. **This same status table governs
+  both this probe and the Step 2a re-probe** — fail closed, and treat only a
+  validated `0` as authorization:
+
+  | `CB_EXIT` | Meaning | Phase C action |
+  |---|---|---|
+  | `0` | `safe_to_offer: true` | Clean. Carry into Step 2 (here) / Step 3 (re-probe). |
+  | `1` | `safe_to_offer: false`; `reasons_not_safe` explains | Interpret per the AC-first paragraph below. |
+  | `2`/`3`/`4` | usage error / PR not found or not open / `gh`-network-jq-helper error | `OUTCOME: blocked`, report the JSON or stderr message. Never a rebase signal. |
+  | `127` | `run_script` could not resolve `clean-behind-check.sh` | `OUTCOME: blocked`, name the unavailable helper, stop. |
+
+  Every nonzero-but-not-`1` exit — `127` included — means nothing was reported
+  about this `BEHIND` at all: that is neither "clean" nor "not clean". Never
+  fall back to treating it as unclean and routing to `/fixpr`, which would buy
+  a rebase on evidence you do not have.
+
+  On `CB_EXIT == 1`, a `reasons_not_safe` entry that is the
+  unchecked-Test-Plan-checkbox count, and/or a sole `residual_blockers` entry
+  naming the failing `ac-gate` check-run, mean **"waiting on Step 2"** — this
+  path is **AC-first**, and Step 2 is what clears both. Any *other* residual
+  blocker is a genuinely non-clean `BEHIND`: `OUTCOME: blocked`, report
+  `reasons_not_safe`, and the parent runs `/fixpr` as above. `churn.advisory`
+  is context, never a gate.
 
 ## Step 2: Verify Acceptance Criteria
 
 1. Extract Test Plan checkboxes via the shared helper:
 
    ```bash
-   ITEMS=$(run_script ac-checkboxes.sh {{PR_NUMBER}} --extract)
-   AC_EXIT=$?
+   # `|| AC_EXIT=$?`, not a bare assignment + `AC_EXIT=$?`: exit 1 (missing Test
+   # Plan / no checkbox items) is an EXPECTED result that Phase C must report as
+   # blocked, and under `set -e` a bare assignment aborts before the status is read.
+   AC_EXIT=0
+   ITEMS=$(run_script ac-checkboxes.sh {{PR_NUMBER}} --extract) || AC_EXIT=$?
    ```
 
    Interpret the helper's output and exit codes exactly as documented by
@@ -266,12 +304,12 @@ REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
 3. Tick passing items by zero-based index, or use `--all-pass` if every unchecked item passed. Follow `run_script ac-checkboxes.sh --help` and capture the helper exit code — any nonzero result leaves AC unverified and blocks Phase C:
 
    ```bash
+   # Same `|| VAR=$?` form, and for the same reason as --extract above.
+   TICK_EXIT=0
    # Example: indexes 0, 2, 3 passed
-   run_script ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3"
-   TICK_EXIT=$?
+   run_script ac-checkboxes.sh {{PR_NUMBER}} --tick "0,2,3" || TICK_EXIT=$?
    # Or: every unchecked item passed
-   run_script ac-checkboxes.sh {{PR_NUMBER}} --all-pass
-   TICK_EXIT=$?
+   run_script ac-checkboxes.sh {{PR_NUMBER}} --all-pass || TICK_EXIT=$?
    ```
 
 4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
@@ -286,7 +324,11 @@ overlap, so run them in this order and wait once.
    `opened`/`synchronize`/`reopened`, so a PR-body edit never re-fires it — a red
    `ac-gate` on an unticked PR is by design and stays red until you rerun it. The
    id `merge-gate.sh` reports in `ci_status.blocking[].id` is a **job** id, not a
-   run id:
+   run id — for a **GitHub Actions**-backed check-run the check-run id and the
+   Actions job id are the same number, which is why `--job` accepts it directly.
+   (That equivalence is Actions-specific; a check-run from a non-Actions app has
+   no Actions job behind it. The `select(.name == "ac-gate")` below keeps this on
+   an Actions job.)
 
    ```bash
    AC_GATE_JOB_ID=$(printf '%s' "$GATE_JSON" | jq -r '
@@ -294,11 +336,18 @@ overlap, so run them in this order and wait once.
    if [[ -z "$AC_GATE_JOB_ID" ]]; then
      echo "No blocking ac-gate job in GATE_JSON — nothing to rerun; re-read the check-runs on HEAD before assuming it is green." >&2
    else
-     gh run rerun --job "$AC_GATE_JOB_ID"
+     # Guard the rerun: a rejected rerun (stale id, permissions, GitHub error)
+     # must surface as a blocked outcome, not vanish into the bounded wait below.
+     RERUN_EXIT=0
+     gh run rerun --job "$AC_GATE_JOB_ID" || RERUN_EXIT=$?
      # or resolve the run first:
      #   gh api repos/{{OWNER}}/{{REPO}}/actions/jobs/"$AC_GATE_JOB_ID" --jq .run_id
    fi
    ```
+
+   A nonzero `RERUN_EXIT` means `ac-gate` was never re-fired, so waiting on it
+   would burn the whole deadline for nothing: `OUTCOME: blocked`, reporting the
+   `gh` error and the job id, without entering the wait.
 
    An empty `AC_GATE_JOB_ID` is not a green light — it only means the gate JSON
    listed no blocking `ac-gate` job. Confirm the check-run's real conclusion on
@@ -324,11 +373,12 @@ overlap, so run them in this order and wait once.
    completes with a **failing** conclusion is a real AC failure: `OUTCOME:
    blocked` per Step 2 item 4, not a rerun loop.
 
-3. **Re-probe.** Run `clean-behind-check.sh` again (same invocation as Step 1).
-   Exit `0` / `safe_to_offer: true` is the authorization you carry into Step 3.
-   Still exit `1` once AC is ticked and `ac-gate` is green → the `BEHIND` is not
-   clean: `OUTCOME: blocked`, report `reasons_not_safe`, and the parent runs
-   `/fixpr`.
+3. **Re-probe.** Run `clean-behind-check.sh` again — same invocation *and the
+   same `CB_EXIT` status table* as Step 1, so `2`/`3`/`4`/`127` block here too
+   rather than being read as an unclean `BEHIND`. Exit `0` / `safe_to_offer:
+   true` is the authorization you carry into Step 3. Still exit `1` once AC is
+   ticked and `ac-gate` is green → the `BEHIND` is not clean: `OUTCOME:
+   blocked`, report `reasons_not_safe`, and the parent runs `/fixpr`.
 
 ## Step 3: Execute the Canonical `/wrap` Flow
 
