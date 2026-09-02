@@ -10,6 +10,12 @@
 hook_stdin=$(cat)
 session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 
+# Whether the config-sync lock had to be WAITED for. Set at the acquire below
+# and read by the restart-marker clear near the end: waiting is unambiguous
+# evidence that another sync was in flight during this startup, and so that
+# changes may have landed after this session loaded its definitions.
+_lock_contended=0
+
 # --- Sync skills worktree ---
 skills_wt="$HOME/.claude/skills-worktree"
 _hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
@@ -41,8 +47,21 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # Short bound: this hook is registered with timeout 30, and a real critical
   # section is milliseconds. A scheduled sync that genuinely holds the lock for
   # longer has already done this hook's work.
+  # Sampled either side of the acquire to tell "took it immediately" from "had
+  # to wait for someone". An uncontended acquire is sub-second, so a delta of 0
+  # is a reliable "nobody else was syncing"; any wait at all means another sync
+  # was in flight during this startup. Consumed by the restart-marker clear
+  # near the end of this file. An unusable clock reads as CONTENDED, which only
+  # ever costs a duplicate reminder.
+  _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
   if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-10}" 2>/dev/null; then
     _lock_held=1
+  fi
+  _lock_t1="$(date -u +%s 2>/dev/null)" || _lock_t1=""
+  if [[ "$_lock_t0" =~ ^[0-9]+$ && "$_lock_t1" =~ ^[0-9]+$ ]]; then
+    (( _lock_t1 > _lock_t0 )) && _lock_contended=1
+  else
+    _lock_contended=1
   fi
 fi
 
@@ -224,7 +243,21 @@ if [[ -f "$_marker_file" ]]; then
   # above for a failed clear-lock: the marker survives to the next startup, a
   # duplicate reminder rather than a lost one. The notice for THIS session was
   # already captured above, so nothing is suppressed by declining to clear.
-  if [[ "$session_source" == "startup" && -z "$_skip_notice" ]]; then
+  # Second condition, independent of the skip: the lock must have been
+  # UNCONTENDED. "Startup already loaded the current definitions" only holds
+  # for changes that landed before it started. A hook that waits out the lock
+  # timeout and then acquires it HAS run the sync region — so the skip guard
+  # above passes — yet whoever held the lock may have finished, written the
+  # marker and released during that wait, describing changes this session does
+  # not have.
+  #
+  # Contention is the right signal, not a timestamp comparison: both `at` and
+  # any clock we could sample here have one-second resolution, so a sync and a
+  # session start in the SAME second are indistinguishable — and that same
+  # second is exactly the race. Waiting at all, by contrast, is unambiguous
+  # evidence that another sync was in flight during this startup. An
+  # uncontended acquire is sub-second, so a zero-second delta is reliable.
+  if [[ "$session_source" == "startup" && -z "$_skip_notice" && "$_lock_contended" == 0 ]]; then
     _clear_locked=0
     if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
       _clear_locked=1

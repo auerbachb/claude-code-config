@@ -233,6 +233,77 @@ fi
 source "$LOCK_LIB"
 
 # ---------------------------------------------------------------------------
+# Bounded git — the locked region must never outlive the lock's own staleness
+# window.
+#
+# state-lock.sh breaks a lock on AGE ALONE, with no liveness check: its
+# _state_lock_is_stale returns "stale" once the lock is older than STALE_AGE
+# (120s by default), and its header states the tradeoff outright — "Holder
+# alive but wedged >STALE_AGE: the lock IS broken." An unbounded `git fetch`
+# over a slow or hanging network therefore lets a perfectly healthy holder be
+# dispossessed mid-run: a session-start hook or the next tick breaks the lock,
+# resets and publishes against the same worktree concurrently, and this run's
+# later commit_json is refused by state_lock_assert_held — so the restart
+# marker it owed never lands at all.
+#
+# Bounding the git calls to comfortably less than STALE_AGE removes the race by
+# construction: the region either finishes inside the window or fails loudly
+# with a diagnostic, and a failure that records itself is strictly better than a
+# silent loss of the mutex.
+BOUNDED_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+GIT_BOUND_AVAILABLE=0
+if [[ -f "$BOUNDED_LIB" ]]; then
+  # shellcheck source=lib/bounded-run.sh
+  source "$BOUNDED_LIB" && GIT_BOUND_AVAILABLE=1
+fi
+
+_stale_age="${CLAUDE_STATE_LOCK_STALE_AGE:-120}"
+[[ "$_stale_age" =~ ^[1-9][0-9]*$ ]] || _stale_age=120
+# Two thirds of the window: enough headroom that the publish, hook registration
+# and state commit still finish inside it after a worst-case fetch.
+_default_git_bound=$(( _stale_age * 2 / 3 ))
+(( _default_git_bound > 0 )) || _default_git_bound=80
+if (( GIT_BOUND_AVAILABLE == 1 )); then
+  GIT_BOUND_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_GIT_BOUND:-}" "$_default_git_bound")"
+  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/config-sync-out.XXXXXX")"    || CAPTURE=""
+  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/config-sync-err.XXXXXX")" || CAPTURE_ERR=""
+  [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || GIT_BOUND_AVAILABLE=0
+  # record_failure exits 1 from wherever it is called, so the captures are
+  # reaped from a trap rather than a line at the end that a failure path skips.
+  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
+fi
+
+# Run one git call under the bound. GIT_OUT / GIT_ERR mirror the `$( )` capture
+# they replace; GIT_TIMED_OUT says whether the bound cut the call short.
+# NEVER call this inside `$( )` — bounded-run.sh's contract, because a subshell
+# discards BOUNDED_TIMED_OUT and the capture handover.
+#
+# The helper supplies `-C "$SKILLS_WT"` ITSELF rather than taking it from the
+# caller. That keeps the scope guarantee structural — there is no spelling of a
+# git_sync call that can reach the root repo checkout — and it keeps every git
+# invocation in this file literally scoped, which the scope guard in
+# claude-config-sync.test.sh Test 6 checks line by line.
+GIT_OUT=""
+GIT_ERR=""
+GIT_TIMED_OUT=0
+git_sync() { # git_sync <git subcommand and args…>  (always -C the worktree)
+  local rc=0
+  GIT_TIMED_OUT=0
+  if (( GIT_BOUND_AVAILABLE == 0 )); then
+    # Degraded, and said out loud at the call site rather than pretending the
+    # bound is in force.
+    GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>/dev/null)" || rc=$?
+    GIT_ERR=""
+    return "$rc"
+  fi
+  run_bounded "$GIT_BOUND_SECS" git -C "$SKILLS_WT" "$@" || rc=$?
+  GIT_OUT="$(cat "$CAPTURE" 2>/dev/null)" || GIT_OUT=""
+  GIT_ERR="$(cat "$CAPTURE_ERR" 2>/dev/null)" || GIT_ERR=""
+  [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]] && GIT_TIMED_OUT=1
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
 # State helpers — all writes happen while the lock is held.
 # ---------------------------------------------------------------------------
 read_state() {
@@ -466,11 +537,25 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
   log info "bootstrap complete (HEAD ${NEW_SHA:-unknown})"
 else
   OLD_SHA="$(git -C "$SKILLS_WT" rev-parse HEAD 2>/dev/null)" || OLD_SHA=""
-  if ! fetch_err="$(git -C "$SKILLS_WT" fetch origin main --quiet 2>&1)"; then
-    record_failure "skills worktree fetch failed: $(printf '%s' "$fetch_err" | tr '\n' ' ')"
+  if (( GIT_BOUND_AVAILABLE == 0 )); then
+    warn "bounded-run.sh unavailable — the fetch below runs unbounded and could outlive the ${_stale_age}s lock staleness window"
   fi
-  if ! reset_err="$(git -C "$SKILLS_WT" reset --hard origin/main --quiet 2>&1)"; then
-    record_failure "skills worktree reset failed: $(printf '%s' "$reset_err" | tr '\n' ' ')"
+  # The two calls that can block on the network or a stalled filesystem, and so
+  # the two that could carry the locked region past STALE_AGE. A tripped bound
+  # is a recorded failure, never a silently surrendered lock.
+  if ! git_sync fetch origin main --quiet; then
+    if (( GIT_TIMED_OUT == 1 )); then
+      record_failure "skills worktree fetch exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+    else
+      record_failure "skills worktree fetch failed: $(printf '%s' "${GIT_ERR:-$GIT_OUT}" | tr '\n' ' ')"
+    fi
+  fi
+  if ! git_sync reset --hard origin/main --quiet; then
+    if (( GIT_TIMED_OUT == 1 )); then
+      record_failure "skills worktree reset exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+    else
+      record_failure "skills worktree reset failed: $(printf '%s' "${GIT_ERR:-$GIT_OUT}" | tr '\n' ' ')"
+    fi
   fi
   NEW_SHA="$(git -C "$SKILLS_WT" rev-parse HEAD 2>/dev/null)" || NEW_SHA=""
   if [[ -n "$OLD_SHA" && -n "$NEW_SHA" && "$OLD_SHA" != "$NEW_SHA" ]]; then

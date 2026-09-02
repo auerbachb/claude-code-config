@@ -287,4 +287,67 @@ PY
 
 rm -rf "$SKIP_LOCK"
 
+# --- 13. A startup that WAITED for the lock must not clear the marker ------
+# The skip guard in case 12 is not sufficient on its own. A hook that waits out
+# some of the lock timeout and then successfully acquires it HAS run the sync
+# region — so that guard passes — yet whoever held the lock may have finished,
+# written the marker and released during the wait, describing changes this
+# session does not have. The clear is therefore also gated on the acquire being
+# uncontended.
+FRESH_HOME="$(mktemp -d)"
+fresh_cleanup() { rm -rf "$TMP_HOME" "$MARKER_HOME" "$SKIP_HOME" "$FRESH_HOME"; }
+trap fresh_cleanup EXIT
+mkdir -p "$FRESH_HOME/.claude/skills-worktree/.claude/skills" "$FRESH_HOME/.claude/logs"
+: > "$FRESH_HOME/.claude/skills-worktree/.git"
+cat > "$FRESH_HOME/.claude/sync-restart-recommended.json" <<'JSON'
+{
+  "restart_recommended": {
+    "reason": "config sync updated agents",
+    "categories": ["agents"],
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "at": "2026-09-01T00:00:00Z"
+  }
+}
+JSON
+
+# Hold the lock, then release it partway through the DEFAULT 10s wait so the
+# hook waits, acquires, and runs the region — the exact shape case 12 does not
+# cover. `at` is deliberately old here: the guard under test is contention, not
+# the timestamp, so an old marker proves the contention check is what fires.
+FRESH_LOCK="$FRESH_HOME/.claude/logs/claude-config-sync-state.json.lock"
+mkdir -p "$FRESH_LOCK"
+{ printf 'pid=%s\n' "$$"
+  printf 'host=%s\n' "${HOSTNAME:-$(hostname)}"
+  printf 'epoch=%s\n' "$(date +%s)"
+  printf 'started=%s\n' "$(date -u +%FT%TZ)"
+  printf 'cmd=%s\n' "concurrent-scheduled-sync"
+  printf 'token=%s\n' "test-token"
+} > "$FRESH_LOCK/owner"
+( sleep 2; rm -rf "$FRESH_LOCK" ) &
+_fresh_releaser=$!
+
+fresh_out=$(printf '{"source":"startup"}' | HOME="$FRESH_HOME" bash "$HOOK" 2>/dev/null || true)
+wait "$_fresh_releaser" 2>/dev/null || true
+
+# Control: this run must NOT have taken the skip path. If it did, case 12's
+# guard is what kept the marker and the contention check went untested.
+FRESH_OUT="$fresh_out" python3 - <<'PY' || fail "case 13 took the lock-skip path; it must acquire the lock after waiting"
+import json, os, sys
+try:
+    ctx = json.loads(os.environ["FRESH_OUT"])["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(0)
+sys.exit(1 if ("holds the lock" in ctx or "state-lock.sh not found" in ctx) else 0)
+PY
+
+python3 - "$FRESH_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup that waited for the lock cleared the marker — the session may be on stale definitions with no signal"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

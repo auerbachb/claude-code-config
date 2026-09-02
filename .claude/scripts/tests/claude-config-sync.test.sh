@@ -695,6 +695,63 @@ test_12_new_skill_links_recommend_restart_without_sha_move() {
   rm -rf "$tmp"
 }
 
+# ── Test 13: the fetch inside the lock is bounded ───────────────────────────
+#
+# state-lock.sh breaks a lock on AGE ALONE — its own header says "Holder alive
+# but wedged >STALE_AGE: the lock IS broken" — so an unbounded `git fetch` over
+# a hanging network lets a healthy holder be dispossessed mid-run: another
+# process resets and publishes against the same worktree, and this run's later
+# commit_json is refused by state_lock_assert_held, so the restart marker it
+# owed never lands. The git calls are therefore bounded to well under the
+# staleness window, and a tripped bound is a RECORDED failure.
+
+test_13_fetch_is_bounded_inside_the_lock() {
+  section "Test 13: a hanging fetch trips its bound instead of losing the lock"
+
+  local tmp home stub real_git out started elapsed
+  tmp="$(make_fixture)"
+  home="$tmp/home"
+
+  real_git="$(command -v git)"
+  assert "(setup) a real git was found to forward to" "[ -n '$real_git' ]"
+
+  # A git that hangs ONLY on `fetch` and forwards every other subcommand to the
+  # real binary by ABSOLUTE path. Resolving the real git inside the stub (via
+  # command -v / PATH) would find the stub itself and recurse.
+  stub="$tmp/stub"
+  mkdir -p "$stub"
+  {
+    printf '#!/bin/sh\n'
+    printf 'for a in "$@"; do\n'
+    printf '  if [ "$a" = "fetch" ]; then sleep 120; exit 0; fi\n'
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$real_git"
+  } > "$stub/git"
+  chmod +x "$stub/git"
+
+  started="$(date +%s)"
+  out="$(HOME="$home" PATH="$stub:$PATH" CLAUDE_CONFIG_SYNC_GIT_BOUND=2 \
+         bash "$SYNC" --json 2>/dev/null)" || true
+  elapsed=$(( $(date +%s) - started ))
+
+  assert "the run returned instead of hanging on the fetch" "[ $elapsed -lt 60 ]"
+  assert "it reports a failed outcome" \
+    "[ \"\$(printf '%s' \"\$out\" | jq -r .outcome)\" = 'failed' ]"
+  assert "and names the bound it exceeded, not a generic git error" \
+    "printf '%s' \"\$out\" | grep -q 'exceeded its 2s bound'"
+  assert "the failure is durable in the log" \
+    "grep -q 'exceeded its 2s bound' '$home/.claude/logs/claude-config-sync.log'"
+
+  # Control: the same fixture with the real git succeeds, so the assertions
+  # above are keyed to the hanging stub and not to a broken fixture.
+  local ok_out
+  ok_out="$(HOME="$home" bash "$SYNC" --json 2>/dev/null)" || true
+  assert "(control) the same fixture succeeds with a working git" \
+    "[ \"\$(printf '%s' \"\$ok_out\" | jq -r .outcome)\" = 'ok' ]"
+
+  rm -rf "$tmp"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -713,6 +770,7 @@ test_9_state_commit_failure_is_reported
 test_10_legacy_hooks_dir_reaches_both_automated_paths
 test_11_root_repo_lookup_survives_sigpipe
 test_12_new_skill_links_recommend_restart_without_sha_move
+test_13_fetch_is_bounded_inside_the_lock
 test_4_failure_and_recovery
 test_5_lock_overlap
 test_6_root_repo_untouched
