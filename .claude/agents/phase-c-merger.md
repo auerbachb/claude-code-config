@@ -275,11 +275,13 @@ review entry.
 
   On `CB_EXIT == 1`, a `reasons_not_safe` entry that is the
   unchecked-Test-Plan-checkbox count, and/or a sole `residual_blockers` entry
-  naming the failing `ac-gate` check-run, mean **"waiting on Step 2"** — this
-  path is **AC-first**, and Step 2 is what clears both. Any *other* residual
-  blocker is a genuinely non-clean `BEHIND`: `OUTCOME: blocked`, report
-  `reasons_not_safe`, and the parent runs `/fixpr` as above. `churn.advisory`
-  is context, never a gate.
+  naming the `ac-gate` check-run — whether it is **failing** *or* still
+  **incomplete**, since a reran `ac-gate` sits queued for a while — mean
+  **"waiting on Step 2"**. This path is **AC-first**, and Step 2/2a is what
+  clears both; an `ac-gate` that has not finished is not evidence about the
+  `BEHIND` either way. Any *other* residual blocker is a genuinely non-clean
+  `BEHIND`: `OUTCOME: blocked`, report `reasons_not_safe`, and the parent runs
+  `/fixpr` as above. `churn.advisory` is context, never a gate.
 
 ## Step 2: Verify Acceptance Criteria
 
@@ -362,23 +364,41 @@ overlap, so run them in this order and wait once.
    body write. The next gate read therefore returns `merge_state: "UNKNOWN"` with
    the `BEHIND` entry **gone from `missing[]`**. That is not a new blocker and
    never a reason to rebase — poll `gh pr view {{PR_NUMBER}} --json
-   mergeStateStatus` until it is no longer `UNKNOWN` (~30–60s), then continue.
+   mergeStateStatus` until it is no longer `UNKNOWN` (~30–60s).
+
+   **Do not advance to item 3 on the mergeability signal alone.** The gate to
+   proceed is a **conjunction**, and the reran `ac-gate` is normally the slower
+   half — it has to queue and check out, so mergeability routinely settles
+   first. Proceed only when **both** hold:
+
+   1. the `ac-gate` check-run on HEAD has reached a **terminal** `status:
+      "completed"` (any conclusion), **and**
+   2. `mergeStateStatus` is no longer `UNKNOWN`.
+
+   Advancing on (2) alone hands item 3 a still-queued `ac-gate`, which
+   `clean-behind-check.sh` reports as an *incomplete*-CI residual — read as a
+   non-clean `BEHIND`, that would trigger exactly the rebase this section
+   exists to prevent.
 
    **Both waits are bounded.** Give the pair a single deadline of **10 minutes**
-   from the rerun. If `ac-gate` has not reached `conclusion: success` **or**
-   `mergeStateStatus` is still `UNKNOWN` at the deadline, stop: `OUTCOME:
-   blocked`, naming which of the two did not settle plus the job's URL and
-   conclusion. Do **not** run the Step 3 probe and do **not** route to `/fixpr` —
-   an unsettled wait is not evidence the `BEHIND` is unclean. An `ac-gate` that
-   completes with a **failing** conclusion is a real AC failure: `OUTCOME:
-   blocked` per Step 2 item 4, not a rerun loop.
+   from the rerun. This deadline is the *only* way to leave the wait early; it is
+   a stop condition, never a licence to proceed with a condition unmet. If
+   `ac-gate` has not completed **or** `mergeStateStatus` is still `UNKNOWN` at
+   the deadline, stop: `OUTCOME: blocked`, naming which of the two did not settle
+   plus the job's URL and status. Do **not** run the Step 3 probe and do **not**
+   route to `/fixpr` — an unsettled wait is not evidence the `BEHIND` is unclean.
+   An `ac-gate` that completes with a **failing** conclusion is a real AC
+   failure: `OUTCOME: blocked` per Step 2 item 4, not a rerun loop.
 
 3. **Re-probe.** Run `clean-behind-check.sh` again — same invocation *and the
    same `CB_EXIT` status table* as Step 1, so `2`/`3`/`4`/`127` block here too
    rather than being read as an unclean `BEHIND`. Exit `0` / `safe_to_offer:
-   true` is the authorization you carry into Step 3. Still exit `1` once AC is
-   ticked and `ac-gate` is green → the `BEHIND` is not clean: `OUTCOME:
-   blocked`, report `reasons_not_safe`, and the parent runs `/fixpr`.
+   true` is the authorization you carry into Step 3. A **still-incomplete**
+   `ac-gate` in `residual_blockers` here means item 2's gate was left early —
+   go back and finish the wait; it is not an unclean `BEHIND`. Exit `1` once AC
+   is ticked and `ac-gate` has completed **green** → the `BEHIND` genuinely is
+   not clean: `OUTCOME: blocked`, report `reasons_not_safe`, and the parent runs
+   `/fixpr`.
 
 ## Step 3: Execute the Canonical `/wrap` Flow
 
