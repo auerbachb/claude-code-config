@@ -543,13 +543,24 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 Run the shared merge-gate verifier (implements CR 1 explicit APPROVED on current HEAD / BugBot 1-clean / Greptile severity + CI + BEHIND checks):
 
 ```bash
+# CLEAN_BEHIND is state derived from THIS evaluation only. Clear it on entry —
+# before the gate runs, ahead of every branch below, including exit 0 — because
+# /go-on re-enters Step 8 (the rebase branch re-runs the gate, and Step 7 loops
+# back through Step 6). A value left over from an earlier pass would re-enter
+# Step 9a on a PR that is no longer BEHIND, where the re-probe returns exit 1
+# ("mergeStateStatus is …, not BEHIND"), item 3 reads that as "genuinely not
+# clean", and the branch is rebased and force-pushed a second time for nothing.
+# Resetting inside the BEHIND bullet alone is NOT enough: the gate-exit-0 path
+# never reaches that bullet.
+CLEAN_BEHIND=0
+
 GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")
 GATE_EXIT=$?
 ```
 
 Branch on the exit code:
 
-- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification).
+- `0` → `[DONE]` — Merge gate satisfied. Proceed to Step 9 (AC verification). `CLEAN_BEHIND` stays `0` here, so Step 9a correctly `[SKIP]`s: nothing about this pass is a clean-`BEHIND` follow-through.
 - `1` → `[ACTION]` — Gate not met. Parse `missing` from the JSON output and act accordingly:
   - CR path with **"need 1 explicit CR APPROVED review on HEAD"**: if the current SHA is still within the 12-minute CR polling window, return to **Step 6** and keep polling — do NOT re-trigger yet. Only after the 12-minute timeout, and only within the 2-trigger-per-hour budget, post `@coderabbitai full review` once and return to **Step 6**.
   - CR path with **"CR approval on HEAD ... retracted by later CHANGES_REQUESTED"**: CR retracted approval. Return to **Step 7** to process the findings. Re-trigger only after fixes are pushed (the new SHA invalidates prior reviews regardless).
@@ -581,36 +592,41 @@ Branch on the exit code:
     RESOLVED_EXIT=0
     RESOLVED=$("$REVIEWER_OF_SH" "$PR_NUM") || RESOLVED_EXIT=$?
     if [[ "$RESOLVED_EXIT" -eq 5 ]]; then
-      # Malformed session-state — same fail-fast as Step 5, never a fallthrough:
-      # a guessed path here is what buys the unearned rebase.
-      echo "reviewer-of.sh exit 5: session-state malformed — blocking." >&2
-      # → [BLOCKED]
+      # Malformed session-state — STOP HERE, do not probe. Exit 5 is Step 5's
+      # documented fail-fast, and omitting --reviewer would not be a safe
+      # degradation: it lets merge-gate.sh fall through to a live-history guess
+      # that can mis-route an already-escalated PR back to CR, mark a clean
+      # BEHIND as unclean, and prescribe the rebase this step exists to prevent.
+      # Report [BLOCKED] and leave CLEAN_BEHIND at 0; repair or remove
+      # ~/.claude/session-state.json and re-run /go-on.
+      echo "reviewer-of.sh exit 5: session-state malformed — blocking, not probing." >&2
+      # → [BLOCKED]: skip the probe entirely.
     else
       case "$RESOLVED" in
         cr|bugbot|greptile) CB_REVIEWER="$RESOLVED" ;;
         *) CB_REVIEWER="" ;;   # `unknown` and anything else → omit the flag
       esac
-    fi
 
-    # `|| CB_EXIT=$?`, not a bare assignment: exit 1 is the EXPECTED pre-tick
-    # result here, and under `set -e` a bare assignment would abort the block
-    # before the status was ever captured.
-    CB_EXIT=0
-    if [[ -n "$CB_REVIEWER" ]]; then
-      CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM" --reviewer "$CB_REVIEWER") || CB_EXIT=$?
-    else
-      CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM") || CB_EXIT=$?
+      # Reached ONLY when the resolution above did not block. `|| CB_EXIT=$?`,
+      # not a bare assignment: exit 1 is the EXPECTED pre-tick result here, and
+      # under `set -e` a bare assignment would abort the block before the status
+      # was ever captured.
+      CB_EXIT=0
+      if [[ -n "$CB_REVIEWER" ]]; then
+        CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM" --reviewer "$CB_REVIEWER") || CB_EXIT=$?
+      else
+        CB_JSON=$("$CLEAN_BEHIND_SH" "$PR_NUM") || CB_EXIT=$?
+      fi
     fi
     ```
 
-    Read the JSON, never `$?` after a pipe. **`CLEAN_BEHIND` is re-derived on every
-    Step 8 evaluation, never carried forward:** set `CLEAN_BEHIND=0` before branching,
-    so only the two clean outcomes below can raise it. `/go-on` loops back here
-    (the rebase branch re-runs the gate, and a `0` then routes to Step 9), so a flag
-    left at `1` from an earlier pass would re-enter Step 9a on a PR that is no longer
-    `BEHIND` at all — where the re-probe returns exit `1` ("mergeStateStatus is …,
-    not BEHIND"), item 3 reads that as "genuinely not clean", and the branch gets
-    rebased a second time for nothing.
+    An omitted `--reviewer` is safe **only** on the non-blocking branch, where
+    `reviewer-of.sh` returned a usable answer that simply was not one of the
+    three enum values (`unknown` — no bot has reviewed yet). It is never a
+    substitute for a resolution that failed.
+
+    Read the JSON, never `$?` after a pipe. `CLEAN_BEHIND` was already cleared at
+    Step 8 entry, so only the two clean outcomes below can raise it:
 
     - `0` (`safe_to_offer: true`) → `[ACTION]` — **verified clean `BEHIND`.** No snapshot, no rebase, no force-push. Set `CLEAN_BEHIND=1` and continue to **Step 9**: this path is **AC-first**, Step 9a finishes the verification, and Step 10 hands the merge to `/wrap`.
     - `1` whose `reasons_not_safe` / `residual_blockers` are **only** the unchecked-Test-Plan-checkbox count and/or a sole `ac-gate` check-run — **failing *or* still incomplete** — → `[ACTION]` — **clean-`BEHIND` candidate**, i.e. "waiting on Step 9", not a blocker. `clean-behind-check.sh` counts unticked boxes as `reasons_not_safe`, so a pre-tick exit `1` is bookkeeping rather than a real blocker. Treat exactly as `0`: set `CLEAN_BEHIND=1`, continue to Step 9.
@@ -618,7 +634,7 @@ Branch on the exit code:
     - `2`/`3`/`4` → `[BLOCKED]` — usage error / PR not found or not open / `gh`-network-jq error. Surface the JSON or stderr. Nothing was reported *about this `BEHIND`*, so it is neither clean nor unclean — **never** read a non-`1` failure as a rebase signal, which would buy a rebase on evidence you do not have.
 
     `churn.advisory` is context, never a gate.
-  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate.
+  - **"CI has N failing check-run(s)"** or **"CI has N incomplete check-run(s)"**: fix CI or wait for incomplete runs, then re-run the gate — **except when the BEHIND bullet above already claimed this pass.** The ordinary pre-tick candidate is a `missing[]` of exactly `BEHIND` + a sole failing-or-incomplete `ac-gate`, so both bullets match the same JSON; the BEHIND bullet wins and this one is `[SKIP]`ped for that `ac-gate` entry. Following this bullet instead would re-enter Step 8 after Step 9's body PATCH, and that read returns `merge_state: "UNKNOWN"` with the `BEHIND` entry **gone from `missing[]`** — so the probe never fires, `CLEAN_BEHIND` stays `0`, Step 9a `[SKIP]`s, and the clean-`BEHIND` path is lost silently. Precedence, concretely: if `missing[]` contains a `BEHIND` entry, resolve the BEHIND bullet first and act on its verdict; only CI entries **other than** that sole pre-tick `ac-gate` (or any CI entry on a pass with no `BEHIND`) belong to this bullet.
 - `3` → `[BLOCKED]` — PR not found (closed or merged).
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface the message to the user.
 
@@ -634,7 +650,23 @@ AC_EXIT=$?
 ```
 
 Branch on exit code:
-- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index with `"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed). On a clean-`BEHIND` candidate (`CLEAN_BEHIND=1`), record `TICK_AT=$(date -u +%FT%TZ)` immediately after that command returns — Step 9a item 1 needs it to tell a pre-tick `ac-gate` run from a post-tick one.
+- `0` → `$ITEMS` is a JSON array of `{index, checked, text}`. For each item with `checked == false`, read the relevant source files and verify the criterion. Tick passing items by index with `"$AC_CHECKBOXES_SH" "$PR_NUM" --tick "0,2,3"` (or `--all-pass` if every unchecked item passed). On a clean-`BEHIND` candidate (`CLEAN_BEHIND=1`), establish `TICK_AT` **on every path through this step, including the one where nothing needs ticking** — Step 9a item 1 compares it against the `ac-gate` run's `started_at`, and an unset baseline makes that comparison meaningless. A candidate can arrive here already fully ticked (Step 8 admits a `missing[]` of `BEHIND` + a sole `ac-gate` with every box already checked), in which case the tick command never runs:
+
+  ```bash
+  if [[ -n "$TICKED_ANY" ]]; then
+    # A --tick/--all-pass actually ran: the body reached its final state now.
+    TICK_AT=$(date -u +%FT%TZ)
+  else
+    # Nothing to tick — the body was already final before this step. Use the
+    # PR's updatedAt as a conservative upper bound on the last body write: a
+    # body edit always bumps it, so a run started after it definitely read the
+    # final body. (Other events bump it too, which only makes the baseline
+    # later — erring toward "pre-tick suspect", the safe direction.)
+    TICK_AT=$(gh pr view "$PR_NUM" --json updatedAt --jq .updatedAt)
+  fi
+  ```
+
+  If neither can be established, do **not** guess: treat every failing `ac-gate` as pre-tick-suspect and take item 1's single-rerun path, which is bounded and cannot loop.
 - `1` → `[BLOCKED]` — PR body is missing a Test Plan section. Every PR must include one (per CLAUDE.md). The PR is NOT merge-ready until the body is fixed — report this to the user and do not continue to the merge decision.
 - `3` → `[BLOCKED]` — PR not found.
 - `2`/`4` → `[BLOCKED]` — script or gh error; surface stderr to user.
@@ -650,7 +682,7 @@ Branch on exit code:
 
 1. **Re-run the `ac-gate` check — but only if it is terminal and failing.** `ac-gate.yml` triggers on `opened`/`synchronize`/`reopened`, so a PR-body edit never re-fires it — a red `ac-gate` on an unticked PR is by design and stays red until rerun. Read the `ac-gate` check-run's **current** status on HEAD first and branch on it; `merge-gate.sh` reports only *failing* checks in `ci_status.blocking[]`, so an absent id means "not failing", never "green":
    - **`completed` + failing** → rerun it. The id in `ci_status.blocking[].id` is a **job** id: `gh run rerun --job "$AC_GATE_JOB_ID"`. A rejected rerun (stale id, permissions, GitHub error) means `ac-gate` was never re-fired, so waiting would burn the whole deadline for nothing → `[BLOCKED]`, reporting the `gh` error and the job id, without entering the wait. The rerun publishes a **new** job id on the same run, so poll that one (or re-read the check-run by name from the HEAD SHA); the old id stays `failure` forever, so polling it would never terminate.
-   - **`queued` / `in_progress`** (the Step 8 candidate shape admits this) → **do not rerun *yet*.** GitHub rejects a rerun of a run that is still going, and an in-flight job only publishes another id to chase. But do **not** record this run as authoritative either: by this step's own premise it was fired by the last `synchronize`, i.e. **before** Step 9's tick, and whether its body read lands before or after the PATCH is a race. So wait it out under item 2's deadline, then judge it by **when it started, not by its conclusion** — capture the tick time first (`TICK_AT=$(date -u +%FT%TZ)` immediately after `--tick`/`--all-pass` returns) and compare against the check-run's `started_at`:
+   - **`queued` / `in_progress`** (the Step 8 candidate shape admits this) → **do not rerun *yet*.** GitHub rejects a rerun of a run that is still going, and an in-flight job only publishes another id to chase. But do **not** record this run as authoritative either: by this step's own premise it was fired by the last `synchronize`, i.e. **before** Step 9's tick, and whether its body read lands before or after the PATCH is a race. So wait it out under item 2's deadline, then judge it by **when it started, not by its conclusion** — compare the check-run's `started_at` against `TICK_AT`, the body's final-state baseline that Step 9 establishes on every path (post-`--tick`/`--all-pass` clock reading, or the PR's `updatedAt` when nothing needed ticking):
      - `started_at` **after** `TICK_AT` → the run definitively read the ticked body; its conclusion is authoritative (green → item 2's mergeability wait; failing → a real AC failure, back to Step 9).
      - `started_at` **at or before** `TICK_AT` → pre-tick-suspect. A green conclusion is still trustworthy (it passed on a body that was *less* complete). A **failing** one is not evidence of anything — it is the by-design pre-tick red — so once the run is terminal, rerun it **once** via the `completed` + failing branch above and wait again on the new job id. One rerun only: a second failing conclusion from a run started after `TICK_AT` is a real AC failure.
    - **`completed` + green** → nothing to rerun, but do **not** skip item 2: the body PATCH still invalidated mergeability, and that has to settle before the re-probe.
