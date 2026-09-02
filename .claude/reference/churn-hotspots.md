@@ -137,8 +137,6 @@ Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `is
 
 **`grep -c` is not a safe counter.** On an empty file it prints `0` *and* exits 1, so a `|| echo 0` fallback emits `"0\n0"` and breaks the downstream `jq --argjson`. Counters use `wc -l | tr -d '[:space:]'` and pass through an `as_number` coercion before any jq call, so a malformed counter can never abort the emit.
 
-## Related
-
 ## Output fields (JSON envelope)
 
 | Field | Type | Description |
