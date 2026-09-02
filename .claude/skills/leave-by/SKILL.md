@@ -71,8 +71,13 @@ A direct invocation carrying `--generation` without `--checkin` is invalid — i
 treat the rest as a declaration.
 
 **A declaration made while one is already armed is a RE-declaration, and must pass through Step 9
-before Step 1.** Read `.repos["$REPO_KEY"].leave.winddown_task_id` as the first act of declare mode;
-non-null means a live wake exists. Step 5 rewrites the whole `.leave` object with a null identity
+before Step 1.** Read **both** `.repos["$REPO_KEY"].leave.winddown_task_id` **and**
+`.repos["$REPO_KEY"].leave.active` as the first act of declare mode; a non-null task ID **or**
+`active: true` means a declaration is still live. The task ID alone is not the sentinel: Step 8.5
+nulls it before delegating to `/pause`, so between the check-in and Step 8.6's retirement — exactly
+the runway where Step 9's countermand clause applies — a task-ID-only test reads "nothing armed",
+skips Step 9, and lets Steps 1–7 arm a successor that the in-flight `/pause` then retires out from
+under (issue #1525). `active` stays true across that whole window, so the pair covers it. Step 5 rewrites the whole `.leave` object with a null identity
 pair, so entering it first **discards the only record of that task ID** — the Monitor keeps running,
 nothing can name it, and it fires a wind-down against a deadline the user has just replaced. The ID
 exists nowhere else. Step 9 nulls the generation and stops the task; only then does the re-run of
@@ -417,6 +422,10 @@ re-implement any part of it:
 REMAINING_MIN=$(( ( DEADLINE_EPOCH - $(date -u +%s) + 59 ) / 60 ))
 (( REMAINING_MIN < 0 )) && REMAINING_MIN=0
 (( REMAINING_MIN > 1440 )) && REMAINING_MIN=1440   # /pause's own --window bound
+# Identity of the declaration being wound down, read BEFORE /pause runs. The retirement
+# below compares against it so a re-declaration during the runway is not clobbered.
+RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || RETIRE_DECLARED_AT=""
 ```
 
 Then `/pause --window ${REMAINING_MIN}m`. That single call is the whole wind-down: it closes both
@@ -435,13 +444,33 @@ actually parked — while also erasing the record Step 11 needs to finish the jo
 An incomplete shutdown is the case the declaration is *most* needed for, not least.
 
 When `/pause` reports a complete shutdown, retire the declaration in **one** write —
-`leave.active=false` **and** `.window=null`:
+`leave.active=false` **and** `.window=null` — but **only while the declaration being wound down is
+still the current one.** Capture `.leave.declared_at` before invoking `/pause` and re-read it here;
+a re-declaration during the runway (Step 9's countermand clause) rewrites the whole `.leave` object
+in Step 5, so a changed `declared_at` means a **successor** now owns it:
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].leave.active=false" \
-  --set ".repos[\"$REPO_KEY\"].window=null"
+# RETIRE_DECLARED_AT was read before the 8.6 /pause call
+HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+if [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].leave.active=false" \
+    --set ".repos[\"$REPO_KEY\"].window=null"
+else
+  : # successor owns .leave, or the identity was unreadable — retire nothing, report below
+fi
 ```
+
+**A mismatch retires nothing and says nothing about the leave time** — the same posture Step 6's
+`PUBLISH_RC == 7` bullet takes for the same reason. Retiring there would set `active=false` and null
+the **new** `.window`, wiping the deadline the user just moved to and leaving the board parked
+against a plan nobody cancelled (issue #1525). The successor owns that line.
+
+**An empty `RETIRE_DECLARED_AT` or an unreadable re-read is a mismatch, not a match** — the
+`-n` test is what keeps two failed reads from comparing equal as `""` and retiring a declaration
+this step can no longer identify. That fails closed the same way `INCOMPLETE SHUTDOWN` does: say so
+in one line naming the unreadable identity, retire nothing, and let Step 11 finish it on the next
+session start, which is exactly the record Step 11 needs left intact.
 
 **Clearing the window is not optional bookkeeping.** A spent `deadline_epoch` left armed sits in the
 past forever, so `remaining` is permanently negative and Step 10's gate declines **every** pipeline

@@ -368,7 +368,15 @@ this block. The live wake stays live and nameable, and `/leave-by` Step 11 can s
 
 With the gate passed and the deadline read **and validated**, disarm: same shape as the block above,
 over `.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
-`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved). Then
+`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), **binding the
+value** so the release CAS below can name exactly the ID this step was holding:
+
+```bash
+OLD_WINDDOWN_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_task_id" 2>/dev/null) \
+  || OLD_WINDDOWN_TASK_RC=$?
+```
+
+Then
 **invalidate the generation before stopping the task** — the order `/leave-by` Step 9 mandates and
 `/pause` Step 2 repeats, for the same reason: a `TaskStop` cannot retract a `--checkin` the Monitor
 has already emitted, and a queued one still passes Step 8.1 here, starting a `/pause` inside a
@@ -384,6 +392,23 @@ Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was 
 ```bash
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"
 ```
+
+**On an unconfirmed stop, release the slot anyway — under a CAS, and without claiming the stop.**
+The generation is already null, so that Monitor's every event is inert; what the dead ID does still
+do is **squat the slot** the re-arm below must win with `--expect null`. Left there, Step 6's CAS
+returns `7`, and its exit-7 bullet — written for a *live successor* owning `.leave` — then
+`TaskStop`s the Monitor this step just created and leaves the leave time silently un-armed: the old
+wake inert, the new one stopped, the check-in never firing (issue #1525). Release exactly what you
+hold, never a slot someone else has taken since:
+
+```bash
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
+  --expect "$OLD_WINDDOWN_TASK_ID"   # exit 7 = already replaced, nothing to do
+```
+
+This releases the slot without asserting the Monitor stopped: **still report the un-stopped task ID**
+so a human can end it, and still leave its `monitors_stopped` entry `stopped: false`. Releasing the
+slot and claiming the stop are different claims, and only the first is true here.
 
 **Then branch on the deadline, not on the pause** — using the value already read and validated
 above:
@@ -438,9 +463,19 @@ With the gate passed **and the deadline spent**:
   refuse all work through a different one. Mark the `owner: "leave_winddown"` entry in
   `monitors_stopped` `rearmed: true` — for this owner "resolved" means disarmed, not restarted —
   and say it in one line: `leave time cleared — re-declare with /leave-by if it still applies`.
-- **Unreadable, or an unconfirmed `TaskStop`** → keep `active=true` and the ID, leave the entry
-  `rearmed: false`, and report it. Never claim a Monitor stopped when the stop was not confirmed,
-  and never print the cleared line for a leave time that is still armed.
+- **An unconfirmed `TaskStop`** → the deadline is still **spent**, so retire it exactly as above —
+  `leave.active=false` **and** `.repos["$REPO_KEY"].window=null` — but **retain
+  `winddown_task_id`**, leave the entry `rearmed: false`, and name the un-stopped ID in the report.
+  A stop that was not confirmed says nothing about whether the deadline passed, and the two must not
+  be conflated: holding `.window` open here re-creates the precise failure the bullet above exists
+  to prevent — a past `deadline_epoch` sitting in the past forever while `/subagent` Step 7 declines
+  every pipeline in this repo, from a resume that had just reopened the launch gates (issue #1525).
+  The Monitor is inert either way (its generation was nulled above), so nothing is left to fire.
+  Never claim a Monitor stopped when the stop was not confirmed — retaining and naming the ID is how
+  that promise is kept, not by leaving a spent deadline armed.
+- **Unreadable** → keep `active=true`, the ID, and `.window` exactly as found, leave the entry
+  `rearmed: false`, and report it. Here the deadline genuinely is not known to be spent, so there is
+  nothing to retire and no cleared line to print.
 
 For each entry in `monitors_stopped` where `stopped: true` and `rearmed` is not
 already `true`, delegate to the appropriate re-arm skill — never reimplement
