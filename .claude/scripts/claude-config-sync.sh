@@ -527,8 +527,33 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
   if [[ -z "$repo_root" || ! -f "$repo_root/setup-skills-worktree.sh" ]]; then
     record_failure "cannot bootstrap: setup-skills-worktree.sh not found from $SCRIPT_DIR"
   fi
-  if ! bootstrap_out="$(bash "$repo_root/setup-skills-worktree.sh" 2>&1)"; then
-    record_failure "setup-skills-worktree.sh failed: $(printf '%s' "$bootstrap_out" | tail -5 | tr '\n' ' ')"
+  # Bounded for the same reason the fetch/reset below are (and it is the larger
+  # exposure of the two): setup-skills-worktree.sh clones and fetches over the
+  # network while THIS run holds the lock. Left unbounded, a hung fetch carries
+  # the locked region past STALE_AGE, at which point another sync treats this
+  # lock as stale and starts mutating the same worktree concurrently. A tripped
+  # bound is a recorded failure, never a silently surrendered lock.
+  #
+  # run_bounded is called at statement level, never inside `$( )` — a subshell
+  # would discard BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh's
+  # contract, same as git_sync).
+  if (( GIT_BOUND_AVAILABLE == 0 )); then
+    warn "bounded-run.sh unavailable — the bootstrap below runs unbounded and could outlive the ${_stale_age}s lock staleness window"
+    if ! bootstrap_out="$(bash "$repo_root/setup-skills-worktree.sh" 2>&1)"; then
+      record_failure "setup-skills-worktree.sh failed: $(printf '%s' "$bootstrap_out" | tail -5 | tr '\n' ' ')"
+    fi
+  else
+    _bootstrap_rc=0
+    run_bounded "$GIT_BOUND_SECS" bash "$repo_root/setup-skills-worktree.sh" || _bootstrap_rc=$?
+    bootstrap_out="$(cat "$CAPTURE" 2>/dev/null)" || bootstrap_out=""
+    _bootstrap_err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bootstrap_err=""
+    if (( _bootstrap_rc != 0 )); then
+      if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+        record_failure "setup-skills-worktree.sh exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+      else
+        record_failure "setup-skills-worktree.sh failed: $(printf '%s' "${_bootstrap_err:-$bootstrap_out}" | tail -5 | tr '\n' ' ')"
+      fi
+    fi
   fi
   BOOTSTRAPPED="true"
   HEAD_CHANGED="true"

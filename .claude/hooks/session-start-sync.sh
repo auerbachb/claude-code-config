@@ -47,18 +47,33 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # Short bound: this hook is registered with timeout 30, and a real critical
   # section is milliseconds. A scheduled sync that genuinely holds the lock for
   # longer has already done this hook's work.
-  # Sampled either side of the acquire to tell "took it immediately" from "had
-  # to wait for someone". An uncontended acquire is sub-second, so a delta of 0
-  # is a reliable "nobody else was syncing"; any wait at all means another sync
-  # was in flight during this startup. Consumed by the restart-marker clear
-  # near the end of this file. An unusable clock reads as CONTENDED, which only
-  # ever costs a duplicate reminder.
+  # Contention is detected two ways, OR-ed, because neither alone is sound.
+  #
+  #   1. Structural: does the lock directory already exist as we walk up to it?
+  #      state-lock.sh's lock for a given base is "${base}.lock" (documented in
+  #      its header). Present => somebody else holds it right now.
+  #   2. Timing: whole-second stamps either side of the acquire.
+  #
+  # The timing check ALONE is not enough: `date +%s` has one-second resolution,
+  # so a real wait shorter than a second reads as a delta of 0 and would be
+  # misreported as uncontended — which would clear the restart marker for
+  # definitions this session never loaded (the failure that matters, since it
+  # silently withholds the restart reminder). The structural check catches
+  # exactly that sub-second window. The timing check still earns its keep for a
+  # lock taken after our test but before our acquire.
+  #
+  # Both are biased toward reporting CONTENDED, whose only cost is a duplicate
+  # reminder. An unusable clock reads as CONTENDED for the same reason.
+  _lock_contended_pre=0
+  [[ -d "${_sync_lock_base}.lock" ]] && _lock_contended_pre=1
   _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
   if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-10}" 2>/dev/null; then
     _lock_held=1
   fi
   _lock_t1="$(date -u +%s 2>/dev/null)" || _lock_t1=""
-  if [[ "$_lock_t0" =~ ^[0-9]+$ && "$_lock_t1" =~ ^[0-9]+$ ]]; then
+  if (( _lock_contended_pre == 1 )); then
+    _lock_contended=1
+  elif [[ "$_lock_t0" =~ ^[0-9]+$ && "$_lock_t1" =~ ^[0-9]+$ ]]; then
     (( _lock_t1 > _lock_t0 )) && _lock_contended=1
   else
     _lock_contended=1
@@ -107,13 +122,21 @@ _root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1
 # ~/.claude/. Run both publishes every session so new, renamed, and removed
 # definitions propagate without a manual setup-skills-worktree.sh run on
 # existing installs (agents: issue #1197; skills/CLAUDE.md/rules: issue #1524).
-# Run whenever the worktree is present AND the reset did not fail:
+# Run whenever the worktree is present AND neither the reset nor the bootstrap
+# failed:
 #   - Fetch failure leaves the worktree in its last-good state — safe to publish.
 #   - Reset failure may leave the worktree in a partially-updated state; the
 #     publish scripts interpret absent worktree files as authoritative removals,
 #     so publishing from a partial reset could prune valid installed links.
+#   - Setup (bootstrap) failure is the same hazard arriving by a different name.
+#     setup-skills-worktree.sh can fail PART WAY: `git worktree add` succeeds,
+#     so `$skills_wt/.git` exists and the -d/-f test above passes, but the
+#     checkout never completed — an all-but-empty worktree that the publishers
+#     would read as "every definition was deleted upstream" and prune. Matching
+#     only "reset failed" let that case through, because the recorded string is
+#     "skills worktree setup failed: …".
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
-   ! [[ "$errors" == *"reset failed"* ]]; then
+   ! [[ "$errors" == *"reset failed"* || "$errors" == *"setup failed"* ]]; then
   # Both publishers separate their streams on purpose: stdout is one line per
   # CHANGE, stderr carries standing advisories (a user-owned symlink left alone,
   # a legacy link not yet on main). Capture them apart so an advisory is never

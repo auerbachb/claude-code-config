@@ -73,10 +73,16 @@ if [[ -d "$SKILLS_WORKTREE" ]]; then
   if [[ -x "$REPO_ROOT_HELPER" ]]; then
     wt_root="$("$REPO_ROOT_HELPER" "$SKILLS_WORKTREE" 2>/dev/null)" || wt_root=""
   else
-    # Same SIGPIPE reasoning as the lookup above, and here the `|| wt_root=""`
-    # made it worse: a wiped value fails the comparison below and the script
-    # aborts claiming the worktree "belongs to a different repo".
-    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')"
+    # Same SIGPIPE reasoning as the lookup above: the awk deliberately does not
+    # `exit` on first match, so a successful lookup never takes SIGPIPE.
+    # The `|| wt_root=""` is required, not optional. This script runs under
+    # `set -euo pipefail`, and when $SKILLS_WORKTREE exists but is NOT a git
+    # worktree, `git worktree list` exits non-zero; pipefail propagates that
+    # through the pipeline and `set -e` aborts the assignment outright — so the
+    # ownership error below never prints and the user is told nothing at all.
+    # Emptying wt_root instead routes that case into the else branch, which is
+    # what states the problem and how to recover.
+    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')" || wt_root=""
   fi
   if [[ "$wt_root" == "$REPO_ROOT" ]]; then
     echo "Skills worktree already exists at $SKILLS_WORKTREE — updating to latest main."

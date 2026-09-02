@@ -93,7 +93,11 @@ fi
 # reports failure on a SUCCESSFUL match under pipefail (see the note in
 # install-config-sync.sh).
 launchctl_list="$(launchctl list 2>/dev/null || true)"
-if grep -q "$LABEL" <<< "$launchctl_list"; then
+# Whole-label match, for the same reason as the install-side check: the label is
+# the last field of "PID<TAB>Status<TAB>Label", and a substring grep would let an
+# unrelated agent whose label merely contains ours report this teardown as
+# failed. Comparing the field literally also avoids escaping the label's dots.
+if awk -v want="$LABEL" '$NF == want { found = 1 } END { exit !found }' <<< "$launchctl_list"; then
   echo "FAIL: ${LABEL} still appears in launchctl list." >&2
   exit 1
 fi

@@ -147,6 +147,36 @@ SKILLS_DIR="$HOME/.claude/skills"
 WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
 
 # --- Helper: migrate_symlink ---
+# --- Helper: relink_atomic ---
+# Repoint an EXISTING symlink at a new target without ever unlinking it first.
+#
+# `rm "$link"; ln -s "$new" "$link"` leaves a window in which the path does not
+# exist at all. Every managed link here is one a live session reads directly —
+# ~/.claude/CLAUDE.md, ~/.claude/rules, ~/.claude/skills/<name> — so a session
+# starting inside that window loads a config with no rules, or silently misses a
+# skill. Building the replacement at a sibling temp path and renaming it over
+# the old one closes the window: rename(2) is atomic, so a reader sees either
+# the old target or the new one, never nothing. The temp name stays in the
+# link's own directory because rename cannot cross filesystems.
+#
+# The flag matters and is NOT cosmetic. Most links here point at DIRECTORIES,
+# and a bare `mv tmp link` on a symlink-to-directory follows it and drops the
+# temp link INSIDE the target directory instead of replacing the link — silent
+# and wrong. BSD/macOS spells "don't follow" as -h, GNU spells it -T; they are
+# tried in turn rather than probed, since an unrecognized flag is a usage error
+# that changes nothing. If neither is understood we fall back to the original
+# non-atomic replace rather than skipping the update entirely.
+relink_atomic() { # relink_atomic LINK TARGET
+  local link="$1" target="$2" tmp
+  tmp="${link}.tmp.$$-${RANDOM}"
+  ln -s "$target" "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; rm "$link" && ln -s "$target" "$link"; return; }
+  if mv -h "$tmp" "$link" 2>/dev/null || mv -T "$tmp" "$link" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  rm "$link" && ln -s "$target" "$link"
+}
+
 # Manages one symlink, handling all five states:
 #   already-correct target   → no-op (silent)
 #   legacy LEGACY_TARGET     → migrate if NEW_TARGET exists; warn if not
@@ -167,15 +197,13 @@ migrate_symlink() {
     elif [[ -n "$legacy_target" && "$current_target" == "$legacy_target" ]]; then
       if test "$existence_test" "$new_target"; then
         echo "  $label — migrating from root repo to worktree"
-        rm "$link"
-        ln -s "$new_target" "$link"
+        relink_atomic "$link" "$new_target"
       else
         echo "  $label — WARNING: legacy root-repo symlink exists but target not in worktree (not on main yet)" >&2
       fi
     else
       echo "  $label — updating symlink (was: $current_target)"
-      rm "$link"
-      ln -s "$new_target" "$link"
+      relink_atomic "$link" "$new_target"
     fi
   elif [[ -e "$link" ]]; then
     echo "  WARNING: $link is not a symlink — skipping (will not overwrite)" >&2

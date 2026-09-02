@@ -185,9 +185,21 @@ else
   echo "NOTE: plutil not found — skipped validating the rendered plist." >&2
 fi
 
+# Keep whatever is currently installed until the new job is confirmed loaded.
+# The bootout below unloads the running instance unconditionally, so without a
+# copy to fall back on, a failed bootstrap would leave the machine with NO
+# scheduler — strictly worse than before the upgrade was attempted.
+PREV_PLIST=""
+if [[ -f "$INSTALLED_PLIST" ]]; then
+  PREV_PLIST="${INSTALLED_PLIST}.prev.$$"
+  cp -p "$INSTALLED_PLIST" "$PREV_PLIST" 2>/dev/null || PREV_PLIST=""
+fi
+
 if ! mv -f "$RENDERED_PLIST" "$INSTALLED_PLIST"; then
   rm -f "$RENDERED_PLIST"
+  if [[ -n "$PREV_PLIST" ]]; then rm -f "$PREV_PLIST"; fi
   echo "FAIL: could not move the rendered plist into $INSTALLED_PLIST." >&2
+  echo "      Any previously installed job was left untouched and is still loaded." >&2
   exit 1
 fi
 chmod 644 "$INSTALLED_PLIST" 2>/dev/null || true
@@ -199,9 +211,23 @@ launchctl bootout "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 # documented 0/1/2 contract and the diagnosis.
 if ! launchctl bootstrap "$GUI_DOMAIN" "$INSTALLED_PLIST"; then
   echo "FAIL: launchctl bootstrap $GUI_DOMAIN $INSTALLED_PLIST failed — the LaunchAgent was not loaded." >&2
-  echo "      The rendered plist is still at $INSTALLED_PLIST; inspect it, then retry." >&2
+  # The bootout above already unloaded the previous instance, so returning here
+  # without restoring it would take a working installation offline as the cost
+  # of a failed upgrade. Put the old plist back and reload it.
+  if [[ -n "$PREV_PLIST" ]] && mv -f "$PREV_PLIST" "$INSTALLED_PLIST" 2>/dev/null; then
+    if launchctl bootstrap "$GUI_DOMAIN" "$INSTALLED_PLIST" >/dev/null 2>&1; then
+      echo "      Rolled back: the previously installed job was restored and reloaded." >&2
+    else
+      echo "      Restored the previous plist at $INSTALLED_PLIST, but it did not reload." >&2
+      echo "      Reload it with: launchctl bootstrap $GUI_DOMAIN $INSTALLED_PLIST" >&2
+    fi
+  else
+    if [[ -n "$PREV_PLIST" ]]; then rm -f "$PREV_PLIST"; fi
+    echo "      The rendered plist is still at $INSTALLED_PLIST; inspect it, then retry." >&2
+  fi
   exit 1
 fi
+if [[ -n "$PREV_PLIST" ]]; then rm -f "$PREV_PLIST"; fi
 launchctl enable "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 launchctl kickstart -k "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 
@@ -211,7 +237,13 @@ launchctl kickstart -k "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 # — so the verification would announce FAIL exactly when the install worked
 # (repo memory: pipefail-sigpipe-false-failure).
 launchctl_list="$(launchctl list 2>/dev/null || true)"
-if grep -q "$LABEL" <<< "$launchctl_list"; then
+# Matched on the WHOLE label, not as a substring. `launchctl list` prints
+# "PID<TAB>Status<TAB>Label", so the label is the last field; `grep -q "$LABEL"`
+# would also accept a longer label that merely CONTAINS ours — a stray
+# com.user.claude-config-sync-test agent would make a failed install report PASS.
+# awk compares the field literally, which also sidesteps having to escape the
+# dots in the reverse-DNS label as regex metacharacters.
+if awk -v want="$LABEL" '$NF == want { found = 1 } END { exit !found }' <<< "$launchctl_list"; then
   echo "PASS: $LABEL is running (every ${INTERVAL}s, plus once at login)."
   echo "Script:  $SYNC_SCRIPT — $SYNC_SOURCE"
   echo "Log:     $LOG_DIR/claude-config-sync.log"
