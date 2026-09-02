@@ -515,6 +515,18 @@ for anchor in leave-by-publish-generation leave-by-arm-monitor leave-by-arm-stat
     || fail "anchor '$anchor' no longer extracts a bash block (extract_skill_bash rc=$?)"
 done
 
+# A LOST slot is not a failed publish. Both shapes producing PUBLISH_RC 7 — the CAS losing
+# to an ID already there, and the holder re-read returning a different generation — mean a
+# countermand or re-declaration already owns `.leave`. Rolling back there nulls the
+# SUCCESSOR's generation and clears its .window: a live wind-down dies silently and
+# dispatch reopens past the deadline the user just set.
+require_text "$LEAVE_SKILL" '`PUBLISH_RC == 7` — the slot is no longer yours' \
+  'Step 6 must branch a lost slot away from the ordinary publish-failure rollback'
+require_text "$LEAVE_SKILL" '--expect "$WINDDOWN_TASK_ID"' \
+  'a lost slot must release winddown_task_id under CAS, so a dead ID cannot squat the successor'
+reject_text "$LEAVE_SKILL" 'is handled below like any other publish failure' \
+  'the superseded "exit 7 is just another publish failure" wording must not return'
+
 # A still-future checkin_epoch is jitter, not proof of replacement — Step 8.1's
 # generation check is what detects a re-declaration. Exiting on jitter loses the
 # one-shot wind-down entirely.
@@ -534,6 +546,13 @@ require_order .claude/skills/pause/SKILL.md '## Step 2' \
   'leave.winddown_generation=null' \
   'only then `TaskStop` the leave-time wind-down ID' \
   "/pause Step 2 must null the wind-down generation before TaskStop, not after"
+# And the third copy of that rule, at /pause-resume's disarm site — where it was wrong
+# while both siblings above were right. Stopping first leaves a queued `--checkin` that
+# still passes Step 8.1 and starts a `/pause` inside a restore that is still running.
+require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+  'leave.winddown_generation=null' \
+  'Only then `TaskStop` a non-null ID' \
+  "/pause-resume Step 5 must null the wind-down generation before TaskStop, not after"
 
 # The gate that admits the whole block must precede every branch it governs, and the
 # deadline must be validated before anything is stopped.

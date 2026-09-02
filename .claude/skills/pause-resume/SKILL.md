@@ -368,13 +368,21 @@ this block. The live wake stays live and nameable, and `/leave-by` Step 11 can s
 
 With the gate passed and the deadline read **and validated**, disarm: same shape as the block above,
 over `.repos["$REPO_KEY"].leave.winddown_task_id` — read it with its exit code (unreadable → one
-`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved), `TaskStop` a
-non-null ID, and on a confirmed stop clear the pair:
+`DEGRADED:` line, recovery stays active; null or exit 3 → nothing armed, resolved). Then
+**invalidate the generation before stopping the task** — the order `/leave-by` Step 9 mandates and
+`/pause` Step 2 repeats, for the same reason: a `TaskStop` cannot retract a `--checkin` the Monitor
+has already emitted, and a queued one still passes Step 8.1 here, starting a `/pause` inside a
+restore that is still running — the very nesting the re-arm branch below refuses to do inline.
+Nulling the token first makes every queued event inert whatever the stop then does:
 
 ```bash
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
+```
+
+Only then `TaskStop` a non-null ID, and on a confirmed stop clear the ID it was holding:
+
+```bash
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"
 ```
 
 **Then branch on the deadline, not on the pause** — using the value already read and validated

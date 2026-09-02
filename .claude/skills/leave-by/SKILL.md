@@ -288,7 +288,8 @@ resurrecting a wake that has already been torn down: Step 8.5's disarm and Step 
 null this pair, and a plain `--set` arriving afterwards would re-record an identity for a Monitor
 that has already fired or been stopped — leaving `/pause` Step 2 to `TaskStop` a dead ID and report
 a failed stop for a wake nobody armed. `--expect null` writes only into a genuinely empty slot;
-exit `7` is a clean loss, not an I/O error, and is handled below like any other publish failure.
+exit `7` is a clean loss, not an I/O error — and it gets its own bullet below, **not** the ordinary
+publish-failure rollback, because losing the slot means someone else now owns this declaration.
 
 - **Arming failed** (the Monitor call errored or returned no task ID): roll the whole declaration
   back — `--set ".repos[\"$REPO_KEY\"].leave.active=false"`, null the already-published
@@ -296,9 +297,24 @@ exit `7` is a clean loss, not an I/O error, and is handled below like any other 
   `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed would decline
   pipelines all afternoon for a wind-down that will never fire; leaving the generation behind would
   leave a token validating for a Monitor that was never created.
-- **Arming succeeded, publish failed:** `TaskStop` the ID you are holding right now — it exists
+- **Arming succeeded, publish failed with a `PUBLISH_RC` other than `7`:** the slot is still yours
+  and the write genuinely failed. `TaskStop` the ID you are holding right now — it exists
   nowhere else — then roll back as above. If the `TaskStop` also fails, name the task ID in the
   message so a human can stop it; a live Monitor nobody can name is strictly worse than one they can.
+- **`PUBLISH_RC == 7` — the slot is no longer yours, so roll back nothing that is now someone
+  else's.** Both shapes that produce `7` say another holder owns `.leave`: the CAS lost to an ID
+  already sitting there, or the holder re-read returned a different generation. A countermand has
+  already torn this declaration down, and a **re-declaration** (Step 9, then Steps 1–7) has armed a
+  *live* one — so the rollback above would set `active=false`, null the **new** generation and clear
+  the **new** `.window`, killing a wind-down whose Monitor is still ticking and reopening dispatch
+  past the deadline the user just set. Tear down only what is yours: `TaskStop` the ID you hold (a
+  foreign generation already makes its every event inert), then release the ID slot **only if you
+  still hold it** —
+  `--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" --expect "$WINDDOWN_TASK_ID"`, whose own
+  exit `7` means someone already replaced it and nothing is left to do. That release is what stops
+  your dead ID from squatting the slot the successor's `--expect null` CAS must win. Leave
+  `leave.active`, `winddown_generation`, and `.window` exactly as found, and say nothing about the
+  leave time — the holder owns that line; name only an un-stopped task ID.
 
 ## Step 7: Confirm, in one line
 
