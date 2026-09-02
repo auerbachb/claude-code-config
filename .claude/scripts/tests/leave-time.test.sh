@@ -469,8 +469,15 @@ require_text .claude/reference/session-state-schema.json \
   'the schema must state that .leave never carries the deadline'
 
 # Monitor, never CronCreate or a wake-up chain (scheduling-reliability.md).
-require_text "$LEAVE_SKILL" 'persistent: true' \
-  'leave-by must arm its wind-down with a persistent Monitor'
+# Bound to the ARM BLOCK, not to the document. `persistent: true` on its own matches anywhere in
+# the file, so the directive could survive while the Monitor launch it configures was removed or
+# broken - the assertion would still pass over a skill that arms nothing. The Monitor call is a
+# tool invocation with no executable form here, so the binding available is positional: the
+# directive must sit inside Step 6 and after the sleep loop it configures.
+require_order "$LEAVE_SKILL" '## Step 6:' \
+  'while sleep "$WINDDOWN_SLEEP"' \
+  'Pass `persistent: true` and description `leave-time wind-down`' \
+  'the persistent-Monitor directive must sit with the arm block it configures, not float in the file'
 require_text "$LEAVE_SKILL" 'Never `CronCreate`' \
   'leave-by must forbid CronCreate for the wind-down wake'
 require_text "$LEAVE_SKILL" 'never a chain' \
