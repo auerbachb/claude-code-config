@@ -54,9 +54,32 @@ if [[ -n "$_scripts_dir" && -f "$_bounded_lib" ]]; then
   # shellcheck source=../scripts/lib/bounded-run.sh
   source "$_bounded_lib" && _bound_available=1
 fi
-_sync_bound_secs=20
+# Hook budget arithmetic — these three numbers are one constraint, not three
+# independent knobs. This hook is registered with `timeout: 30` in
+# global-settings.json, and the lock-held git region can run TWO bounded calls
+# back to back (fetch, then reset) after waiting out the lock acquire. The
+# worst case must stay under that timeout with room to spare:
+#
+#   lock wait + (2 × git bound) < hook timeout
+#   5         + (2 × 8)         = 21  <  30
+#
+# It did not: a 10s wait plus two 20s bounds is 50s, so a slow fetch — or a
+# login overlap that burns the lock wait — could see the hook killed part-way
+# through `reset --hard`. That leaves a half-updated worktree which a later
+# failed fetch treats as last-good and publishes, pruning valid links.
+#
+# Tightening is safe because a tripped bound is a CLEAN, recorded outcome here
+# (see the failure handling below), and the scheduled launchd job — which has
+# no 30s ceiling and keeps the larger 20s bound — remains the workhorse. This
+# hook is opportunistic: missing a slow fetch costs one stale session, while
+# being killed mid-reset costs a corrupted worktree.
+#
+# The remaining ~9s covers the publishers, hook registration, trust repair and
+# root-repo sync that all run after this region.
+_HOOK_TIMEOUT_SECS=30
+_sync_bound_secs=8
 if (( _bound_available == 1 )); then
-  _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 20)"
+  _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 8)"
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
   CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
   [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
@@ -93,7 +116,9 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   _lock_contended_pre=0
   [[ -d "${_sync_lock_base}.lock" ]] && _lock_contended_pre=1
   _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
-  if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-10}" 2>/dev/null; then
+  # 5, not 10 — see the hook budget arithmetic above: this wait is the first
+  # term of `lock wait + (2 × git bound) < hook timeout`.
+  if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
     _lock_held=1
   fi
   _lock_t1="$(date -u +%s 2>/dev/null)" || _lock_t1=""

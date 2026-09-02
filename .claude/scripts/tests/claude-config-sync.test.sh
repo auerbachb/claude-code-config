@@ -521,6 +521,50 @@ test_15_marker_clear_rechecks_under_the_lock() {
     "grep -q '_lock_contended\" == 0' '$HOOK'"
 }
 
+# ── Test 16: the hook's git bounds fit inside its registered timeout ─────────
+#
+# The lock wait and the two lock-held git calls (fetch, then reset) run back to
+# back inside one SessionStart hook invocation. If their worst case exceeds the
+# registered timeout the hook can be killed part-way through `reset --hard`,
+# leaving a half-updated worktree that a later failed fetch treats as last-good
+# and publishes. The three numbers are one constraint; this pins it.
+
+test_16_hook_git_bounds_fit_the_hook_timeout() {
+  section "Test 16: lock wait + 2 git bounds stay under the hook timeout"
+
+  local manifest registered bound lock_wait worst
+  manifest="$REPO_ROOT/global-settings.json"
+
+  registered="$(jq -r '
+    [ .hooks.SessionStart[]?.hooks[]?
+      | select(.command | test("session-start-sync\\.sh"))
+      | .timeout ] | first // empty
+  ' "$manifest" 2>/dev/null)" || registered=""
+  bound="$(sed -n 's/^_sync_bound_secs=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
+  lock_wait="$(sed -n 's/.*CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-\([0-9][0-9]*\)}.*/\1/p' "$HOOK" | head -1)"
+
+  # Read every term before comparing: a missing value must fail loudly here
+  # rather than making the arithmetic below vacuously true.
+  assert "the manifest registers a timeout for this hook" "[ -n '$registered' ]"
+  assert "the hook declares a git bound" "[ -n '$bound' ]"
+  assert "the hook declares a lock wait" "[ -n '$lock_wait' ]"
+
+  if [[ -n "$registered" && -n "$bound" && -n "$lock_wait" ]]; then
+    worst=$(( lock_wait + 2 * bound ))
+    assert "worst case ${worst}s stays under the registered ${registered}s" \
+      "[ $worst -lt $registered ]"
+    # Not merely under, but with room for the publishers, hook registration,
+    # trust repair and root-repo sync that follow the git region.
+    assert "and leaves at least 5s of headroom for the rest of the hook" \
+      "[ $(( registered - worst )) -ge 5 ]"
+  fi
+
+  assert "the hook records the timeout it is budgeting against" \
+    "grep -q '_HOOK_TIMEOUT_SECS=' '$HOOK'"
+  assert "(control) the budgeted timeout matches the manifest" \
+    "[ \"\$(sed -n 's/^_HOOK_TIMEOUT_SECS=\\([0-9][0-9]*\\)\$/\\1/p' '$HOOK' | head -1)\" = '$registered' ]"
+}
+
 # ── Test 8: a REPOINTED agent symlink is restart-worthy ──────────────────────
 #
 # The restart signal used to snapshot ~/.claude/agents/ with `ls -1`, i.e. names
@@ -835,6 +879,7 @@ test_6_root_repo_untouched
 test_7_path_agreement
 test_14_restart_signal_survives_a_failed_tick
 test_15_marker_clear_rechecks_under_the_lock
+test_16_hook_git_bounds_fit_the_hook_timeout
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

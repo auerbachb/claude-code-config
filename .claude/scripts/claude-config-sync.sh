@@ -559,7 +559,12 @@ record_failure() {
   fi
 
   state_lock_release
-  emit_summary "$consecutive" "false"
+  # Report the same restart state the marker just recorded. Hardcoding "false"
+  # here would make the --json summary contradict the durable marker on exactly
+  # the path the block above exists to cover: a failure after content landed.
+  local failure_restart_flag="false"
+  (( ${#RESTART_CATEGORIES[@]} > 0 )) && failure_restart_flag="true"
+  emit_summary "$consecutive" "$failure_restart_flag"
   exit 1
 }
 
