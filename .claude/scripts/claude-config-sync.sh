@@ -339,28 +339,27 @@ git_sync() { # git_sync <git subcommand and args…>  (always -C the worktree)
   local rc=0
   GIT_TIMED_OUT=0
   if (( GIT_BOUND_AVAILABLE == 0 )); then
-    # Degraded, and said out loud at the call site rather than pretending the
-    # bound is in force.
+    # Refuse rather than run unbounded while holding the lock — the same stance
+    # session-start-sync.sh's _run_locked takes, against the same lock, for the
+    # same reason. Without a bound there is no deadline at all, so a call can
+    # outlive the ${_stale_age}s staleness window; another sync then treats this
+    # LIVE holder's lock as stale and mutates the same worktree concurrently,
+    # while this run's own commit_json is refused by state_lock_assert_held, so
+    # the restart marker it owed never lands. Both halves of the race the bound
+    # exists to prevent.
     #
-    # Still capture stderr: git writes its failure reason there and nothing to
-    # stdout, so discarding it left `${GIT_ERR:-$GIT_OUT}` at the record_failure
-    # call sites resolving to an empty string — a logged failure with no reason,
-    # on precisely the path (bounded-run.sh missing) that most needs diagnosis.
-    # One invocation, not two: fetch and reset have side effects, so re-running
-    # the command to collect the other stream is not an option.
-    local err_tmp=""
-    err_tmp="$(mktemp "${TMPDIR:-/tmp}/config-sync-degraded-err.XXXXXX" 2>/dev/null)" || err_tmp=""
-    if [[ -n "$err_tmp" ]]; then
-      GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>"$err_tmp")" || rc=$?
-      GIT_ERR="$(cat "$err_tmp" 2>/dev/null)" || GIT_ERR=""
-      rm -f "$err_tmp" 2>/dev/null || true
-    else
-      # No temp file available — fold stderr into stdout. Mixing the streams is
-      # worse than separating them, but both beat throwing the reason away.
-      GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>&1)" || rc=$?
-      GIT_ERR=""
-    fi
-    return "$rc"
+    # This branch used to warn and proceed, which left that race open on exactly
+    # the path least able to diagnose it. A missed tick is the cheap failure —
+    # the next tick retries, and the session-start hook covers the interim — so
+    # the trade runs the other way.
+    #
+    # Wording note: no bare "git " token in the message. Test 6's scope guard
+    # greps this file for invocations and reads one in a string as a stray
+    # unscoped call.
+    GIT_TIMED_OUT=1
+    GIT_OUT=""
+    GIT_ERR="declined: bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
+    return 124
   fi
   local region_left
   region_left="$(_git_region_remaining)"
@@ -678,10 +677,11 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
   # would discard BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh's
   # contract, same as git_sync).
   if (( GIT_BOUND_AVAILABLE == 0 )); then
-    warn "bounded-run.sh unavailable — the bootstrap below runs unbounded and could outlive the ${_stale_age}s lock staleness window"
-    if ! bootstrap_out="$(bash "$repo_root/setup-skills-worktree.sh" 2>&1)"; then
-      record_failure "setup-skills-worktree.sh failed: $(printf '%s' "$bootstrap_out" | tail -5 | tr '\n' ' ')"
-    fi
+    # Refused for the same reason as git_sync above, and this is the LARGER
+    # exposure of the two: setup-skills-worktree.sh clones and fetches over the
+    # network while this run holds the lock, so unbounded it is the likeliest
+    # call to carry the locked region past the staleness window.
+    record_failure "cannot bootstrap: bounded-run.sh unavailable — refusing to run setup-skills-worktree.sh unbounded while holding the config-sync lock, which could outlive the ${_stale_age}s staleness window and let a concurrent sync mutate the same worktree"
   else
     _bootstrap_rc=0
     run_bounded "$GIT_BOUND_SECS" bash "$repo_root/setup-skills-worktree.sh" || _bootstrap_rc=$?
@@ -702,9 +702,10 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
   log info "bootstrap complete (HEAD ${NEW_SHA:-unknown})"
 else
   OLD_SHA="$(git -C "$SKILLS_WT" rev-parse HEAD 2>/dev/null)" || OLD_SHA=""
-  if (( GIT_BOUND_AVAILABLE == 0 )); then
-    warn "bounded-run.sh unavailable — the fetch below runs unbounded and could outlive the ${_stale_age}s lock staleness window"
-  fi
+  # No degraded-path warning here any more: git_sync now DECLINES when the bound
+  # is unavailable rather than running unbounded, and records the reason through
+  # the same _git_trip_reason path as any other trip. A warning saying the calls
+  # "run unbounded" would now be untrue.
   # The two calls that can block on the network or a stalled filesystem, and so
   # the two that could carry the locked region past STALE_AGE. A tripped bound
   # is a recorded failure, never a silently surrendered lock.

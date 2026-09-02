@@ -238,8 +238,35 @@ if ! launchctl bootstrap "$GUI_DOMAIN" "$INSTALLED_PLIST"; then
   exit 1
 fi
 if [[ -n "$PREV_PLIST" ]]; then rm -f "$PREV_PLIST"; fi
-launchctl enable "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
-launchctl kickstart -k "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
+# NOT best-effort, unlike the bootout above. `launchctl list` reports a job that
+# is merely BOOTSTRAPPED, whether or not it is enabled — so a swallowed `enable`
+# failure leaves a disabled job that lists, passes the verification below, and
+# never runs. That is the one launchd error this script cannot detect after the
+# fact, which is exactly why it is checked here instead.
+if ! enable_err="$(launchctl enable "$GUI_DOMAIN/$LABEL" 2>&1)"; then
+  echo "FAIL: launchctl enable $GUI_DOMAIN/$LABEL failed — the job is loaded but disabled, so it would never run." >&2
+  # A plain `[[ … ]] && echo` would be the last command of this block on the
+  # empty-stderr path, and under `set -e` its false test would exit the script
+  # right here — dropping the recovery instructions below.
+  if [[ -n "$enable_err" ]]; then echo "      launchctl: $enable_err" >&2; fi
+  # Left loaded on purpose: the job is bootstrapped and one `enable` away from
+  # working, so tearing it down would turn a recoverable state into a reinstall.
+  echo "      The plist remains at $INSTALLED_PLIST. Finish the install with:" >&2
+  echo "        launchctl enable $GUI_DOMAIN/$LABEL" >&2
+  echo "        launchctl kickstart -k $GUI_DOMAIN/$LABEL" >&2
+  exit 1
+fi
+# kickstart only forces the FIRST run to happen NOW; RunAtLoad and the
+# StartInterval below still fire without it. So a failure here is worth saying
+# out loud but is not an install failure — exiting would condemn a scheduler
+# that is loaded, enabled, and will run on its own.
+if ! kickstart_err="$(launchctl kickstart -k "$GUI_DOMAIN/$LABEL" 2>&1)"; then
+  echo "WARN: launchctl kickstart -k $GUI_DOMAIN/$LABEL failed — only the immediate first run" >&2
+  echo "      did not start; the job is loaded and enabled, so it still runs every ${INTERVAL}s and at login." >&2
+  # Same `set -e` hazard as the enable branch, and here it would abort a run
+  # that has already succeeded: this warning is the block's last statement.
+  if [[ -n "$kickstart_err" ]]; then echo "      launchctl: $kickstart_err" >&2; fi
+fi
 
 # Capture first, match from a here-string. `launchctl list | grep -q` looks
 # equivalent but is not: grep exits at the first match, launchctl takes SIGPIPE,

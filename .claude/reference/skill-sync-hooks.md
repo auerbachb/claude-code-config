@@ -23,7 +23,7 @@ The two sides wait for different lengths of time, because they are bounded by di
 | Variable | Read by | Default | Why that default |
 |----------|---------|---------|------------------|
 | `CLAUDE_CONFIG_SYNC_LOCK_TIMEOUT` | `claude-config-sync.sh` | 30s | The scheduled tick can afford to wait for a session-start sync to finish; if it still cannot get in, the next tick is an hour away and costs nothing. |
-| `CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT` | `session-start-sync.sh` | 10s | The hook is registered with `timeout 30` and has a root-repo pull still to do. A scheduled sync holding the lock longer than 10s has already done the hook's work, so waiting further buys nothing. |
+| `CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT` | `session-start-sync.sh` | 5s | The wait is charged against the same `timeout 30` hook budget the lock-held git region must finish inside, so it is capped short to leave that region a usable deadline (the hook reserves the remainder for git and declines calls that cannot complete). A scheduled sync still holding the lock after 5s has already done the hook's work, so waiting longer buys nothing. |
 
 A real critical section is milliseconds; both defaults are sized for the contention tail, not the common case. The marker's read is lock-free — a contended session start still surfaces the restart notice — and only the startup *clear* re-takes the lock, for at most 5s.
 

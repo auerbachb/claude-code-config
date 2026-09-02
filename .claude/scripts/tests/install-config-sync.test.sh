@@ -56,9 +56,17 @@ STUB
   # be tested. Hard-coding the exact label let a substring match pass: a
   # lifecycle script that checked for `com.user.claude-config-sync` as a
   # substring would treat `com.user.claude-config-sync-test` as our job.
+  # LAUNCHCTL_FAIL_CMD makes ONE subcommand fail while the rest still succeed,
+  # which is the only way to reach the enable/kickstart branches: launchd's real
+  # failure here is partial, and a stub that fails everything would exit at
+  # bootstrap instead.
   cat > "$bin/launchctl" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
+if [ -n "${LAUNCHCTL_FAIL_CMD:-}" ] && [ "$1" = "$LAUNCHCTL_FAIL_CMD" ]; then
+  printf 'stub: %s refused\n' "$1" >&2
+  exit 3
+fi
 if [ "$1" = "list" ]; then
   if [ "${LAUNCHCTL_LIST_EMPTY:-0}" != "1" ]; then
     printf -- '-\t0\t%s\n' "${LAUNCHCTL_LIST_LABEL:-com.user.claude-config-sync}"
@@ -419,6 +427,53 @@ test_7_metacharacter_paths_survive_substitution() {
   rm -rf "$root"
 }
 
+# ── Test 9: a failed `enable` is an install failure, a failed kickstart is not ─
+#
+# `launchctl list` reports a job that is merely BOOTSTRAPPED, enabled or not, so
+# the final verification cannot distinguish "loaded and running" from "loaded and
+# permanently disabled". That makes a swallowed `enable` failure a FALSE PASS —
+# the install reports success for a job that will never fire. Pinned here because
+# every other test in this suite passes with both errors discarded.
+#
+# kickstart is the deliberate other half: it only forces the first run to happen
+# immediately, so its failure must NOT fail the install.
+
+test_9_enable_failure_fails_install() {
+  section "Test 9: a refused enable fails the install; a refused kickstart does not"
+
+  local root home out rc
+  root="$(make_env Darwin)"
+  home="$root/home"
+
+  # enable refused — the job is loaded but disabled and would never run.
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+         LAUNCHCTL_FAIL_CMD=enable bash "$INSTALL" 2>&1)" && rc=0 || rc=$?
+
+  assert "install exits 1 when launchctl enable is refused" "[ $rc -eq 1 ]"
+  assert "the install does not report PASS" \
+    "! printf '%s' \"\$out\" | grep -q '^PASS'"
+  assert "the disabled-but-loaded state is named" \
+    "printf '%s' \"\$out\" | grep -q 'loaded but disabled'"
+  assert "launchctl's own error is surfaced" \
+    "printf '%s' \"\$out\" | grep -q 'stub: enable refused'"
+  assert "recovery instructions name the enable command" \
+    "printf '%s' \"\$out\" | grep -q 'launchctl enable '"
+
+  # kickstart refused — the job is loaded AND enabled, so the interval still
+  # fires. A warning, not a failure.
+  : > "$root/launchctl.log"
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+         LAUNCHCTL_FAIL_CMD=kickstart bash "$INSTALL" 2>&1)" && rc=0 || rc=$?
+
+  assert "install still exits 0 when only kickstart is refused" "[ $rc -eq 0 ]"
+  assert "the install still reports PASS" \
+    "printf '%s' \"\$out\" | grep -q '^PASS'"
+  assert "the skipped immediate run is warned about, not swallowed" \
+    "printf '%s' \"\$out\" | grep -q '^WARN: launchctl kickstart'"
+
+  rm -rf "$root"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -434,6 +489,7 @@ test_4_uninstall
 test_5_uninstall_failure_is_loud
 test_6_platform_guard
 test_8_lookalike_label_is_not_our_job
+test_9_enable_failure_fails_install
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

@@ -888,6 +888,101 @@ test_13_fetch_is_bounded_inside_the_lock() {
   rm -rf "$tmp"
 }
 
+# ── Test 17: a missing bound declines the call, never runs it unbounded ─────
+#
+# The two callers of this lock disagreed: the hook REFUSED to run without a
+# bound, the scheduled sync WARNED and proceeded. Same lock, same 120s staleness
+# window, opposite answers — and the permissive one is the path least able to
+# diagnose what follows, since state-lock.sh breaks a lock on AGE ALONE under a
+# live holder: another sync then mutates the same worktree while this run's
+# commit_json is refused by state_lock_assert_held, so the marker never lands.
+#
+# Source-level, like Test 16: the library sits next to the script it serves, so
+# "bounded-run.sh is missing" cannot be staged without relocating the script away
+# from the helpers it resolves relatively.
+#
+# Every downstream grep in a pipe here is deliberately WITHOUT -q and captured
+# into a string tested with -n. `producer | grep -q` returns non-zero on a
+# SUCCESSFUL match under pipefail — the producer takes SIGPIPE — which would
+# invert these assertions (repo memory: pipefail-sigpipe-false-failure).
+
+test_17_missing_bound_declines_instead_of_running_unbounded() {
+  section "Test 17: a missing bound declines the call instead of running it unbounded"
+
+  assert "the sync declines its lock-held calls when the bound is unavailable" \
+    "grep -q 'declined: bounded-run.sh unavailable' '$SYNC'"
+  assert "the hook declines its lock-held calls for the same reason" \
+    "grep -q 'bounded-run.sh unavailable — refusing to run unbounded' '$HOOK'"
+  assert "the sync refuses to bootstrap unbounded as well" \
+    "grep -q 'refusing to run setup-skills-worktree.sh unbounded' '$SYNC'"
+
+  # The regression itself: the old code ANNOUNCED that it was proceeding without
+  # a bound. No caller may say that again, because no caller may do it.
+  assert "neither caller warns that it is proceeding unbounded" \
+    "! grep -qE 'runs unbounded' '$SYNC' '$HOOK'"
+
+  # A decline has to be a RECORDED failure, not a quiet skip: it returns the
+  # same 124 every other bound trip returns, which is what the call sites key
+  # their '…failed' message off.
+  assert "the sync's decline returns the bound-trip status" \
+    "[ -n \"\$(grep -A2 'declined: bounded-run.sh unavailable' '$SYNC' | grep 'return 124')\" ]"
+  assert "the hook's decline returns the bound-trip status" \
+    "[ -n \"\$(grep -A2 'refusing to run unbounded' '$HOOK' | grep 'return 124')\" ]"
+}
+
+# ── Test 18: the hook's bootstrap and steady-state paths are exclusive ──────
+#
+# A successful setup-skills-worktree.sh already leaves the worktree AT
+# origin/main, but the hook then ran fetch and reset anyway — against the same
+# budget the setup had just spent most of. The reset was declined for lack of
+# time, recorded as "reset failed", and the publish guard read that as a
+# partial-tree hazard: a stale-config warning for a tree that had just been
+# built correctly. The two paths must be mutually exclusive, as they already are
+# in claude-config-sync.sh.
+
+test_18_hook_bootstrap_and_steady_state_are_exclusive() {
+  section "Test 18: a successful bootstrap does not then re-fetch on the same budget"
+
+  assert "the hook records that it bootstrapped" \
+    "grep -q '_bootstrapped=1' '$HOOK'"
+  assert "the steady-state fetch/reset is gated on NOT having bootstrapped" \
+    "[ -n \"\$(grep -A1 '_bootstrapped == 0' '$HOOK' | grep 'fetch origin main')\" ]"
+  # The trap this fix could have set: skipping the branch above without also
+  # guarding the else would make a fresh bootstrap report its own new worktree
+  # as missing.
+  assert "the 'not found' fallback is guarded too, so a bootstrap is not reported missing" \
+    "grep -q 'elif (( _bootstrapped == 0 ))' '$HOOK'"
+}
+
+# ── Test 19: the marker clear is anchored to the locked region's exit ───────
+#
+# The clear compared the marker surfaced against the marker present at clear
+# time, which catches a sync landing between the READ and the clear — but not
+# one landing between the lock RELEASE and that read. In that window the NEW
+# marker is what gets surfaced, so surfaced and current agree and the clear
+# deletes a restart signal for definitions this session never loaded. The
+# snapshot has to be taken while the lock is still held.
+
+test_19_marker_clear_is_anchored_at_region_exit() {
+  section "Test 19: the clear compares against the marker held at region exit"
+
+  local snap_line release_line clear_line
+  # Line numbers, not text proximity: the ordering is the whole property, and
+  # `head -1` keeps a single match even if the token recurs.
+  snap_line="$(grep -n '_region_exit_restart=\$(jq' "$HOOK" | head -1 | cut -d: -f1)"
+  release_line="$(grep -n '^  state_lock_release' "$HOOK" | head -1 | cut -d: -f1)"
+  clear_line="$(grep -n '_region_exit_restart" == "\$_surfaced_restart' "$HOOK" | head -1 | cut -d: -f1)"
+
+  assert "a region-exit snapshot of the marker is taken" "[ -n '$snap_line' ]"
+  assert "(setup) the lock release was located" "[ -n '$release_line' ]"
+  # Load-bearing ordering: taken BEFORE the release, or it is merely a second
+  # post-release read and closes nothing.
+  assert "the snapshot is taken while the lock is still held" \
+    "[ '${snap_line:-0}' -lt '${release_line:-0}' ]"
+  assert "the clear requires the marker to still match that snapshot" \
+    "[ -n '$clear_line' ]"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -923,6 +1018,9 @@ test_7_path_agreement
 test_14_restart_signal_survives_a_failed_tick
 test_15_marker_clear_rechecks_under_the_lock
 test_16_hook_git_bounds_fit_the_hook_timeout
+test_17_missing_bound_declines_instead_of_running_unbounded
+test_18_hook_bootstrap_and_steady_state_are_exclusive
+test_19_marker_clear_is_anchored_at_region_exit
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

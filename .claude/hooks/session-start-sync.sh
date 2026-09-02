@@ -262,6 +262,7 @@ _run_locked() { # _run_locked <cap-seconds> <command…>
 # substrings "setup failed" and "reset failed", so a timed-out call must still
 # carry its token or a bound trip would silently re-open the very partial-tree
 # publish that guard exists to block.
+_bootstrapped=0
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
     if ! _run_locked "$_setup_bound_secs" bash "$setup_script"; then
@@ -270,11 +271,24 @@ if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
       else
         errors="skills worktree setup failed: $_bounded_out"
       fi
+    else
+      _bootstrapped=1
     fi
   fi
 fi
 
-if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+# `_bootstrapped` makes the two paths mutually exclusive, matching the if/else
+# claude-config-sync.sh uses for the same choice.
+#
+# A successful setup-skills-worktree.sh has ALREADY put the worktree at
+# origin/main and published the links, so the fetch and reset below would be
+# redundant work — but they draw on the SAME hook budget the setup just spent
+# most of. A slow-but-successful setup therefore left too little for the reset,
+# which was declined and recorded as "reset failed"; the publish guard then read
+# that as a partial-tree hazard and the session got a stale-config warning for a
+# tree that was freshly and correctly built. Not running them is both cheaper
+# and truer.
+if (( _bootstrapped == 0 )) && [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   if ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
       errors="skills worktree fetch failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
@@ -288,7 +302,11 @@ if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
       errors="skills worktree reset failed: $_bounded_out"
     fi
   fi
-elif [[ -z "$errors" ]]; then
+elif (( _bootstrapped == 0 )) && [[ -z "$errors" ]]; then
+  # `_bootstrapped == 0` repeated on purpose. Without it a SUCCESSFUL bootstrap
+  # — which skips the branch above by design — would fall through to this else
+  # and report the worktree it just created as "not found", turning the fix
+  # above into a worse bug than the one it replaced.
   errors="skills worktree not found at $skills_wt"
 fi
 
@@ -404,9 +422,27 @@ fi
 
 fi  # end of config-sync locked region
 
-# Release as soon as the shared region is done — the root-repo sync below is a
-# different resource and must not hold this lock while it pulls.
+# Defined here rather than at its first use below: the snapshot immediately
+# after it has to read the file while this lock is still held.
+_marker_file="$HOME/.claude/sync-restart-recommended.json"
+
+# Snapshot the marker BEFORE releasing, i.e. as the last act of the locked
+# region, so the clear far below can ask "did a sync land after this session
+# finished its own region?" and get a true answer.
+#
+# The comparison the clear already makes — surfaced vs. current — only catches a
+# sync that lands between the READ and the clear. A sync that lands between this
+# RELEASE and that read is invisible to it: the new marker is what gets surfaced,
+# so surfaced and current agree, and the clear deletes a signal describing
+# definitions this session loaded no part of. Anchoring at region exit closes
+# that window, because any sync that published after this point — before or
+# after the read — moves the marker away from this snapshot.
+#
+# Safe when the lock was never held: the clear is already gated on an empty
+# _skip_notice, and a lock this hook did not hold always sets one.
+_region_exit_restart="null"
 if [[ "$_lock_held" == 1 ]]; then
+  _region_exit_restart=$(jq -c '.restart_recommended // null' "$_marker_file" 2>/dev/null) || _region_exit_restart="null"
   state_lock_release
   _lock_held=0
 fi
@@ -427,7 +463,8 @@ fi
 # cleared. resume/clear/compact fire INSIDE a live session that has NOT picked
 # the changes up, so the signal must survive those. The failure portion is never
 # cleared here — only a successful sync tick clears it.
-_marker_file="$HOME/.claude/sync-restart-recommended.json"
+# _marker_file is set above, before the lock release, so the region-exit
+# snapshot could read it under the lock.
 if [[ -f "$_marker_file" ]]; then
   _marker_text=$(jq -r '
     [ (.restart_recommended // empty
@@ -486,7 +523,15 @@ if [[ -f "$_marker_file" ]]; then
   # never loaded. That is the same failure the other two guards exist to
   # prevent, reached by a third route, and it is the likeliest of the three:
   # a failed sync is far more common than a lost lock race.
-  if [[ "$session_source" == "startup" && -z "$_skip_notice" && -z "$errors" && "$_lock_contended" == 0 ]]; then
+  # Fourth condition: the marker must be the one that was already in place when
+  # this session's sync region ended. The contention guard cannot see a sync
+  # that started only AFTER this hook released — both acquires look uncontended
+  # — and the surfaced-vs-current comparison below cannot see one that finished
+  # before the marker was read. The region-exit snapshot covers both: if it
+  # differs from what was surfaced, some sync published after this session did
+  # its work, and the marker describes definitions this session never loaded.
+  if [[ "$session_source" == "startup" && -z "$_skip_notice" && -z "$errors" \
+        && "$_lock_contended" == 0 && "$_region_exit_restart" == "$_surfaced_restart" ]]; then
     _clear_locked=0
     if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
       _clear_locked=1
