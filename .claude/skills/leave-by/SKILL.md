@@ -226,7 +226,9 @@ ARM_RC=0
   2>/dev/null || ARM_RC=$?
 # The window object this declaration just armed, for the Step 6 rollback CAS. Read it back
 # rather than reconstructing it, so the expected value is byte-for-byte what is stored.
-[ "$ARM_RC" -eq 0 ] && { ARM_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) || ARM_WINDOW=""; }
+# ARM_WINDOW_RC is what the rollback branches on: an unreadable snapshot is NOT an absent one.
+ARM_WINDOW_RC=0
+[ "$ARM_RC" -eq 0 ] && { ARM_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ARM_WINDOW_RC=$?; }
 ```
 
 `deadline_epoch` inside `.leave` stays **null on purpose** — the field exists so a reader who looks
@@ -331,20 +333,34 @@ publish-failure rollback, because losing the slot means someone else now owns th
   ```bash
   ROLLBACK_RC=0
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
-    --expect "$WINDDOWN_GENERATION" >/dev/null 2>&1 || ROLLBACK_RC=$?
-  if [ "$ROLLBACK_RC" -eq 0 ]; then      # still ours: finish the rollback
+    --expect "$(printf '%s' "$WINDDOWN_GENERATION" | jq -R .)" >/dev/null 2>&1 || ROLLBACK_RC=$?
+  # ARM_WINDOW is the object written in Step 5, captured before the Monitor call. An
+  # UNREADABLE snapshot (ARM_WINDOW_RC non-zero) rolls back NOTHING — see below.
+  if [ "$ROLLBACK_RC" -eq 0 ] && [ "$ARM_WINDOW_RC" -eq 0 ]; then   # still ours, snapshot known
     "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-    # ARM_WINDOW is the object written in Step 5, captured before the Monitor call.
-    if [ -n "$ARM_WINDOW" ]; then
-      "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-        --expect "$ARM_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
-    fi
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$ARM_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
   fi
   ```
 
   The window clear is CAS-pinned here for the same reason as everywhere else: winning the
   generation CAS proves `.leave` is still this declaration's, and says nothing about the **shared**
   `.window`, which `/pm --window` also writes.
+
+  **An unreadable snapshot rolls back nothing — `.leave` included.** `-n "$ARM_WINDOW"` cannot tell
+  "no window armed" from "the read failed", and taking the rollback half-way on a failed read is the
+  worse of the two: `active=false` lands, the window clear is skipped, and the repo is left with a
+  deadline no Monitor will ever fire against and no active declaration for Step 11 to recover — so
+  every launch declines, indefinitely, and the next session start reads that as the normal retired
+  shape and says nothing. Branch on `ARM_WINDOW_RC`, leave the whole declaration as found, and
+  report; a live declaration whose Monitor is missing is visible and recoverable, which is exactly
+  what Step 5 says state-before-arming buys.
+
+  **Bare-string `--expect` values are JSON-encoded** (`jq -R`) here and at every other string
+  expectation. `session-state.sh` parses `--expect` as JSON and only falls back to a bare string when
+  the parse fails, so an identifier that *happens* to be all digits would be compared as a JSON
+  number against a stored JSON string and lose the CAS every time — silently, and looking guarded.
+  Encoding removes the dependency on a token's spelling.
 
   Then say `Leave time not set — the wind-down could not be scheduled.` Leaving `.window` armed
   would decline pipelines all afternoon for a wind-down that will never fire; leaving the generation
@@ -364,7 +380,7 @@ publish-failure rollback, because losing the slot means someone else now owns th
   past the deadline the user just set. Tear down only what is yours: `TaskStop` the ID you hold (a
   foreign generation already makes its every event inert), then release the ID slot **only if you
   still hold it** —
-  `--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" --expect "$WINDDOWN_TASK_ID"`, whose own
+  `--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" --expect "$(printf '%s' "$WINDDOWN_TASK_ID" | jq -R .)"`, whose own
   exit `7` means someone already replaced it and nothing is left to do. That release is what stops
   your dead ID from squatting the slot the successor's `--expect null` CAS must win. Leave
   `leave.active`, `winddown_generation`, and `.window` exactly as found, and say nothing about the
@@ -395,9 +411,22 @@ that does not match, or `leave.active != true`, is a **stale event**: exit silen
 and printing nothing. A superseded Monitor that narrates is a superseded Monitor that confuses.
 (The inline branch skips this check — it holds no token and has just written the state itself.)
 
-**8.2 — Re-read and validate the deadline.** Read `.window.deadline_epoch` fresh. A live user message
-may have re-declared the time since this Monitor was armed (Step 9); the record on disk is the plan,
-never the value this event was armed with.
+**8.2 — Re-read and validate the deadline.** Read `.window` fresh, **once**, and derive the deadline
+from that object. A live user message may have re-declared the time since this Monitor was armed
+(Step 9); the record on disk is the plan, never the value this event was armed with.
+
+```bash
+VALIDATED_WINDOW_RC=0
+VALIDATED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || VALIDATED_WINDOW_RC=$?
+DEADLINE_EPOCH=$(printf '%s' "$VALIDATED_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
+```
+
+**The object, not just the epoch — and this is the only `.window` read of the check-in.** 8.5 carries
+`VALIDATED_WINDOW` into its retirement CAS rather than fetching `.window` again. `.window` is
+shared, so a second read is a second chance for `/pm --window` to replace the object: the check-in
+would validate one deadline and then `--expect` a *different* object, which makes the CAS **win**
+against a window nobody here ever judged. One read, validated and carried, is what makes the CAS
+mean what it says.
 
 **Validate it before anything downstream uses it**, with Step 11's exit-code table and the same
 `^[1-9][0-9]{0,10}$` numeric test: `0` plus a canonical epoch is the value; `3`, `null`, empty,
@@ -466,23 +495,32 @@ CAS-pinned to the generation this wind-down is running under:
 # and a .window some other writer now owns is not cleared.
 RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
   || RETIRE_DECLARED_AT=""
-# The WHOLE window object, not its deadline_epoch: --expect is compared against the value at
-# the --cas path, and that path is `.window`. Expecting a scalar there can never match.
-RETIRE_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
-  || RETIRE_WINDOW=""
+# RETIRE_WINDOW is the WHOLE window object 8.2 already read and validated — carried here, not
+# re-fetched: --expect is compared against the value at the --cas path, and that path is
+# `.window`. A second --get of a SHARED slot would let /pm --window swap the object between the
+# validation and the CAS, so the CAS would then expect — and clear — a window this wind-down
+# never judged. RETIRE_WINDOW_RC is 8.2's read status; an unreadable snapshot retires nothing.
+RETIRE_WINDOW="$VALIDATED_WINDOW"; RETIRE_WINDOW_RC="$VALIDATED_WINDOW_RC"
 RETIRE_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.winddown_task_id" 2>/dev/null) \
   || RETIRE_TASK_ID=""
 # The generation this wind-down runs under: the token 8.1 validated on the Monitor path, and
-# `null` on the inline CHECKIN_NOW branch, where Step 6 was skipped and the pair is still the
+# ABSENT on the inline CHECKIN_NOW branch, where Step 6 was skipped and the pair is still the
 # null Step 5 wrote. Either way it is what proves `.leave` is still this declaration's.
-WINDDOWN_GENERATION="${CHECKIN_GENERATION:-null}"
+# --expect is parsed as JSON, so a token becomes a JSON string and an absent one expects JSON
+# null — never the bare word, which would compare as the *string* "null" and always lose.
+WINDDOWN_GENERATION="${CHECKIN_GENERATION:-}"
+if [ -n "$WINDDOWN_GENERATION" ]; then
+  EXPECT_GEN=$(printf '%s' "$WINDDOWN_GENERATION" | jq -R .)
+else
+  EXPECT_GEN=null
+fi
 
 DISARM_RC=0
 "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
-  --expect "$WINDDOWN_GENERATION" >/dev/null 2>&1 || DISARM_RC=$?
+  --expect "$EXPECT_GEN" >/dev/null 2>&1 || DISARM_RC=$?
 if [ "$DISARM_RC" -eq 0 ] && [ -n "$RETIRE_TASK_ID" ] && [ "$RETIRE_TASK_ID" != "null" ]; then
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-    --expect "$RETIRE_TASK_ID" >/dev/null 2>&1 || :   # exit 7 = the slot is already a successor's
+    --expect "$(printf '%s' "$RETIRE_TASK_ID" | jq -R .)" >/dev/null 2>&1 || :  # 7 = successor's
 fi
 # retry once on 6 (lock timeout); anything still non-zero is reported, not assumed
 ```
@@ -548,16 +586,17 @@ a re-declaration during the runway (Step 9's countermand clause) rewrites the wh
 in Step 5, so a changed `declared_at` means a **successor** now owns it:
 
 ```bash
-# RETIRE_DECLARED_AT / RETIRE_WINDOW were read at the top of 8.5, before its disarm
+# RETIRE_DECLARED_AT was read at the top of 8.5, before its disarm; RETIRE_WINDOW is 8.2's
+# single validated snapshot. An unreadable snapshot retires NOTHING, `.leave` included.
 HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
-if [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
+if [ "$RETIRE_WINDOW_RC" -ne 0 ]; then
+  : # the window snapshot could not be established — retire nothing, report below
+elif [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
   # .leave is still ours. The shared .window is a separate claim — clear it only under a CAS
-  # on the exact deadline this declaration armed.
+  # on the exact object this check-in validated in 8.2.
   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-  if [ -n "$RETIRE_WINDOW" ]; then
-    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-      --expect "$RETIRE_WINDOW" >/dev/null 2>&1 || :     # exit 7 = another writer owns .window
-  fi
+  "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+    --expect "$RETIRE_WINDOW" >/dev/null 2>&1 || :     # exit 7 = another writer owns .window
 else
   : # successor owns .leave, or the identity was unreadable — retire nothing, report below
 fi
@@ -650,18 +689,34 @@ that looks retired.
   new time and let `/pause-resume` (via `/go-on`) restore whatever the partial wind-down parked.
 - **Cancel** ("never mind, I'm staying") → invalidate the generation, `TaskStop` the recorded task,
   then set `active=false` and clear the armed `.window`, so dispatch stops declining work.
-  **Clear `.window` under the same CAS Step 8.6 uses**, against the whole window object captured
-  before the cancel began — `.window` is shared with `/pm --window`, so a blind `--set` here wipes a
-  planning deadline whenever `/pm` has rewritten the slot since this leave time was armed:
+  **Capture both claims before the `TaskStop`, and write neither blind.** `TaskStop` is an external
+  call the cancel waits on, and a re-declaration can complete inside it — so `declared_at` read
+  afterwards is the *successor's*, and `.window` read afterwards is whatever now sits in a slot
+  `/pm --window` also writes:
 
   ```bash
-  CANCEL_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) || CANCEL_WINDOW=""
-  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-  if [ -n "$CANCEL_WINDOW" ]; then
+  # BEFORE the invalidation and the TaskStop — both are what the cancel is entitled to retire.
+  CANCEL_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+    || CANCEL_DECLARED_AT=""
+  CANCEL_WINDOW_RC=0
+  CANCEL_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || CANCEL_WINDOW_RC=$?
+  # ... invalidate the generation, then TaskStop, then:
+  HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+  if [ "$CANCEL_WINDOW_RC" -eq 0 ] && [ -n "$CANCEL_DECLARED_AT" ] \
+     && [ "$HOLDER_AT" = "$CANCEL_DECLARED_AT" ]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
       --expect "$CANCEL_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
   fi
   ```
+
+  **The identity guard is not optional just because a human asked for the cancel.** What the user
+  cancelled is the declaration that existed when they said it; if a re-declaration completed during
+  the `TaskStop`, an unguarded `active=false` deactivates a leave time the user just set, while its
+  fresh Monitor keeps ticking toward a check-in that 8.1 now rejects — a deadline that is armed for
+  dispatch and dead for wind-down. `.window`'s CAS cannot cover this: it protects the shared slot,
+  and says nothing about who owns `.leave`. A mismatch retires nothing and says nothing about the
+  leave time, exactly as in Step 8.6 and Step 11.
 
   Cancelling **this** leave time is always this step's to do; clearing the **shared** deadline is
   only its to do while the deadline is still the one it armed. **Both
@@ -687,13 +742,12 @@ explicitly — `--session-view` projects neither:
 
 ```bash
 LEAVE_BLOCK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave")               # active, checkin_epoch
-DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch")
-# The judgment reads the scalar; the retirement below CASes on `.window`, so capture the WHOLE
-# object here too — expecting a scalar at an object path can never compare equal.
-RECOVERY_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
-  || RECOVERY_WINDOW=""
-RECOVERY_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
-  || RECOVERY_DECLARED_AT=""
+# ONE .window read. The judgment and the retirement CAS must be the same snapshot, so the
+# deadline is DERIVED from the object rather than fetched by a second --get.
+RECOVERY_WINDOW_RC=0
+RECOVERY_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || RECOVERY_WINDOW_RC=$?
+DEADLINE_EPOCH=$(printf '%s' "$RECOVERY_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
+RECOVERY_DECLARED_AT=$(printf '%s' "$LEAVE_BLOCK" | jq -r '.declared_at // empty' 2>/dev/null)
 ```
 
 **Both reads are required, and the deadline comes from `.window`.** `leave.deadline_epoch` is
@@ -702,6 +756,14 @@ and take the same branch forever. Apply the exit-code table `/pm` Step 3.4 uses 
 the value, `3` means no state file has ever been written, anything else is **unreadable** — retry
 once (exit `6` is a documented retryable lock timeout), then report the read failure and re-arm
 nothing rather than treating it as "no leave time armed".
+
+> **One `.window` snapshot, judged and retired.** Reading `.window.deadline_epoch` for the verdict
+> and `.window` again for the CAS is two reads of a **shared** slot, and `/pm --window` can replace
+> the object between them. The verdict would then be about the *old* deadline while `--expect` holds
+> the *new* object — so the CAS **wins** and clears the planning window that just arrived, which is
+> the exact outcome the CAS exists to prevent, reached through the guard rather than around it. Read
+> the object once and derive `deadline_epoch` from it; a snapshot that goes stale between the read
+> and the write loses the CAS, which is the correct and safe outcome.
 
 **Check `leave.active` before judging the pair.** `active: false` with `.window` null is the
 **normal retired shape** — Step 8.6 and `/pause-resume` both write exactly that on a completed or
@@ -729,10 +791,14 @@ With `leave.active == true` and both epochs readable:
 licence to write the shared slot blind:
 
 ```bash
-HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
-if [ -n "$RECOVERY_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RECOVERY_DECLARED_AT" ]; then
-  "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-  if [ -n "$RECOVERY_WINDOW" ]; then
+# An UNREADABLE .window snapshot is not an absent one: retire nothing at all, so `.leave`
+# survives for the next recovery instead of going false with `.window` left armed.
+if [ "$RECOVERY_WINDOW_RC" -ne 0 ]; then
+  : # report the read failure in one line; retire nothing
+else
+  HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+  if [ -n "$RECOVERY_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RECOVERY_DECLARED_AT" ]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
       --expect "$RECOVERY_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
   fi
@@ -746,6 +812,15 @@ in the gap. Clearing that is how a recovery retires somebody else's deadline on 
 the failure the blind clear actually produces; declining to clear it strands only a deadline that no
 longer exists. The `.leave.active=false` write stays unconditional once the identity matches, the
 same deliberate split as Step 8.6: the declaration *is* spent, while `.window` is shared.
+
+**An unreadable snapshot retires nothing — not even `.leave`.** A failed `.window` read is the one
+case where the split above must not be taken half-way: setting `active=false` while the window clear
+is skipped produces `active: false` with `.window` still armed, which Step 11 reads on the *next*
+session as the **normal retired shape** and passes over in silence, so the spent deadline declines
+every pipeline in the repo with no record left that anything is wrong. Retiring nothing keeps
+`leave.active == true`, which is the shape the next recovery will actually look at. `-n` on the
+snapshot cannot express this — an empty string means both "no window armed" and "the read failed",
+and only the exit code separates them.
 
 **And the identity re-read is why the clear is not blind about `.leave` either.** Recovery can be
 re-entered after a compaction, with live user turns in between — a re-declaration landing there

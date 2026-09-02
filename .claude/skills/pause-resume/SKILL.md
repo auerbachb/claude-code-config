@@ -350,18 +350,23 @@ coffee-break `/pause` → `/pause-resume` on a PM planning board would arm a pha
 check-in and later `/pause` a board that never declared a leave time.
 
 **Then read and validate the deadline, still before stopping anything.** Read
-`.repos["$REPO_KEY"].window.deadline_epoch` (the leave block never carries it — `/leave-by` Step 5)
-with Step 11's exit-code table and numeric test, **binding it** so the retirement CAS below can pin
-its write to the exact value the spent-verdict was reached on:
+`.repos["$REPO_KEY"].window` **once** (the leave block never carries the deadline — `/leave-by`
+Step 5) with Step 11's exit-code table and numeric test, **binding the object** so the retirement
+CAS below can pin its write to the exact snapshot the spent-verdict was reached on:
 
 ```bash
-RESUMED_DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
-  || RESUMED_DEADLINE_RC=$?
-# Separately, the WHOLE window object — that is what the retirement CAS below compares against,
-# because --expect is matched at the --cas path and that path is `.window`, not a scalar under it.
-RESUMED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
-  || RESUMED_WINDOW=""
+RESUMED_DEADLINE_RC=0
+# ONE read of the shared slot, binding the WHOLE window object — that is what the CAS below
+# because --expect is matched at the --cas path and that path is `.window`, not a scalar under
+# it — and the verdict is DERIVED from that same object rather than fetched separately, so
+# /pm --window cannot swap the window between the judgment and the write.
+RESUMED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || RESUMED_DEADLINE_RC=$?
+RESUMED_DEADLINE_EPOCH=$(printf '%s' "$RESUMED_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
 ```
+
+**Two reads would make the CAS win against a window this step never judged** — the verdict taken on
+the old `deadline_epoch`, the `--expect` holding the object that replaced it. One read, derived and
+carried, is what makes exit `7` mean "someone else owns this slot" instead of "you cleared theirs".
  Validating *after* the `TaskStop` is what strands a
 declaration: the stop clears the identity pair, the deadline then reads unreadable, and the
 inconsistent-record branch preserves `leave.active` while re-arming nothing — an active leave time
@@ -424,7 +429,7 @@ hold, never a slot someone else has taken since:
 
 ```bash
 "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --expect "$OLD_WINDDOWN_TASK_ID"   # exit 7 = already replaced, nothing to do
+  --expect "$(printf '%s' "$OLD_WINDDOWN_TASK_ID" | jq -R .)"   # exit 7 = replaced, nothing to do
 ```
 
 This releases the slot without asserting the Monitor stopped: **still report the un-stopped task ID**

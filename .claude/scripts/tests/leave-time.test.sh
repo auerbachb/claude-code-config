@@ -84,6 +84,8 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 LEAVE_SKILL=".claude/skills/leave-by/SKILL.md"
+PAUSE_SKILL=".claude/skills/pause/SKILL.md"
+PAUSE_RESUME_SKILL=".claude/skills/pause-resume/SKILL.md"
 SUBAGENT_SKILL=".claude/skills/subagent/SKILL.md"
 
 # ---------------------------------------------------------------------------
@@ -490,7 +492,7 @@ require_text "$LEAVE_SKILL" 'exit silently, writing nothing' \
 # by sub-step heading: the contract is that the pair is nulled BEFORE the /pause call, and a
 # heading string goes on matching after the two are reordered underneath it.
 require_order "$LEAVE_SKILL" '## Step 8:' \
-  '--expect "$WINDDOWN_GENERATION"' \
+  '--expect "$EXPECT_GEN"' \
   '/pause --window ${REMAINING_MIN}m' \
   'leave-by must null the identity pair before invoking /pause'
 # A spent deadline left armed declines every future launch in the repo. The clear is now
@@ -498,11 +500,11 @@ require_order "$LEAVE_SKILL" '## Step 8:' \
 # shared with `/pm --window` — the intent is unchanged, the write is just no longer blind.
 require_text "$LEAVE_SKILL" '--cas ".repos[\"$REPO_KEY\"].window=null"' \
   'a completed wind-down must clear the armed window, not just leave.active'
-require_text .claude/skills/pause-resume/SKILL.md '.repos["$REPO_KEY"].window=null' \
+require_text "$PAUSE_RESUME_SKILL" '.repos["$REPO_KEY"].window=null' \
   '/pause-resume must clear the armed window when it retires a leave time'
 # The window is SHARED with /pm --window: clearing it on a null task ID alone would
 # wipe a PM planning deadline no leave time ever touched.
-require_text .claude/skills/pause-resume/SKILL.md 'skip this entire block' \
+require_text "$PAUSE_RESUME_SKILL" 'skip this entire block' \
   '/pause-resume must gate the window clear on leave.active, not on a null task ID'
 require_text "$LEAVE_SKILL" '/pause --window ${REMAINING_MIN}m' \
   'the wind-down must delegate to /pause with the remaining minutes as its window'
@@ -510,19 +512,19 @@ require_text "$LEAVE_SKILL" 'hard flow-wide ceiling, not a target' \
   'the declared time must be documented as a hard ceiling (issue #1482), never best-effort'
 
 # Teardown on both sides of a manual pause.
-require_text .claude/skills/pause/SKILL.md 'leave.winddown_task_id' \
+require_text "$PAUSE_SKILL" 'leave.winddown_task_id' \
   '/pause Step 2 must stop the leave-time wind-down Monitor by its recorded ID'
-require_text .claude/skills/pause/SKILL.md 'owner: "leave_winddown"' \
+require_text "$PAUSE_SKILL" 'owner: "leave_winddown"' \
   '/pause must record the wind-down stop under its own owner in monitors_stopped'
-require_text .claude/skills/pause-resume/SKILL.md 'leave.winddown_task_id=null' \
+require_text "$PAUSE_RESUME_SKILL" 'leave.winddown_task_id=null' \
   '/pause-resume must clear the wind-down identity pair'
-require_text .claude/skills/pause-resume/SKILL.md 'branch on the deadline, not on the pause' \
+require_text "$PAUSE_RESUME_SKILL" 'branch on the deadline, not on the pause' \
   '/pause-resume must decide the wind-down on the deadline, not on the fact of a pause'
-require_text .claude/skills/pause-resume/SKILL.md 'Deadline still in the future' \
+require_text "$PAUSE_RESUME_SKILL" 'Deadline still in the future' \
   'a still-future leave time must be re-armed, not cancelled by an unrelated pause'
-require_text .claude/skills/pause-resume/SKILL.md 'never re-arm' \
+require_text "$PAUSE_RESUME_SKILL" 'never re-arm' \
   '/pause-resume must not re-arm a wind-down whose deadline is already spent'
-require_text .claude/skills/pause-resume/SKILL.md 'on both resolved paths' \
+require_text "$PAUSE_RESUME_SKILL" 'on both resolved paths' \
   '/pause-resume must clear leave.active on the already-null path too, not only after a TaskStop'
 
 # The identity must be committed before the Monitor can emit anything against it: the
@@ -548,7 +550,7 @@ done
 # dispatch reopens past the deadline the user just set.
 require_text "$LEAVE_SKILL" '`PUBLISH_RC == 7` — the slot is no longer yours' \
   'Step 6 must branch a lost slot away from the ordinary publish-failure rollback'
-require_text "$LEAVE_SKILL" '--expect "$WINDDOWN_TASK_ID"' \
+require_text "$LEAVE_SKILL" 'leave.winddown_task_id=null" --expect "$(printf' \
   'a lost slot must release winddown_task_id under CAS, so a dead ID cannot squat the successor'
 reject_text "$LEAVE_SKILL" 'is handled below like any other publish failure' \
   'the superseded "exit 7 is just another publish failure" wording must not return'
@@ -568,29 +570,29 @@ require_text "$LEAVE_SKILL" 'Retire only on a complete shutdown' \
   'an incomplete /pause must not retire the leave declaration'
 
 # Same ordering property as Step 9, at /pause's own teardown site.
-require_order .claude/skills/pause/SKILL.md '## Step 2' \
+require_order "$PAUSE_SKILL" '## Step 2' \
   'leave.winddown_generation=null' \
   'only then `TaskStop` the leave-time wind-down ID' \
   "/pause Step 2 must null the wind-down generation before TaskStop, not after"
 # And the third copy of that rule, at /pause-resume's disarm site — where it was wrong
 # while both siblings above were right. Stopping first leaves a queued `--checkin` that
 # still passes Step 8.1 and starts a `/pause` inside a restore that is still running.
-require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
   'leave.winddown_generation=null' \
   'Only then `TaskStop` a non-null ID' \
   "/pause-resume Step 5 must null the wind-down generation before TaskStop, not after"
 
 # The gate that admits the whole block must precede every branch it governs, and the
 # deadline must be validated before anything is stopped.
-require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
   'Gate first: `leave.active` must be `true`' \
   'Deadline still in the future' \
   '/pause-resume must gate on leave.active BEFORE the deadline branches, not after'
-require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
   'still before stopping anything' \
   'TaskStop` a' \
   '/pause-resume must validate the deadline before stopping the wind-down Monitor'
-require_text .claude/skills/pause-resume/SKILL.md 'and it is delivered the same way every other check-in is' \
+require_text "$PAUSE_RESUME_SKILL" 'and it is delivered the same way every other check-in is' \
   'a resume past a fired check-in must deliver the overdue check-in, not silently skip it'
 
 # A re-declaration must pass through Step 9 BEFORE Step 5 rewrites .leave: Step 5 replaces
@@ -619,15 +621,15 @@ require_text "$LEAVE_SKILL" 'is a mismatch, not a match' \
 
 # A failed TaskStop leaves a dead ID squatting the slot the re-arm must win with --expect null.
 # Step 6 exit-7 then stops the Monitor this step just created; releasing the slot prevents it.
-require_text .claude/skills/pause-resume/SKILL.md 'release the slot anyway' \
+require_text "$PAUSE_RESUME_SKILL" 'release the slot anyway' \
   'a failed stop must still release the ID slot, or the re-arm CAS loses to a dead ID'
-require_text .claude/skills/pause-resume/SKILL.md 'holding `.window` open here re-creates the precise failure' \
+require_text "$PAUSE_RESUME_SKILL" 'holding `.window` open here re-creates the precise failure' \
   'a spent deadline must be retired on an unconfirmed stop, not left arming every decline'
 
 # Releasing the slot and retaining the un-stopped ID are both required, and they cannot both
 # live in leave.winddown_task_id — the release empties it. Name the surviving record, or a
 # later branch reports an un-stopped Monitor as stopped.
-require_text .claude/skills/pause-resume/SKILL.md 'Where the un-stopped ID lives after this' \
+require_text "$PAUSE_RESUME_SKILL" 'Where the un-stopped ID lives after this' \
   'the skill must name where an un-stopped ID survives once the slot is released'
 
 # A FAILED holder re-read proves nothing about ownership, so it must not take the exit-7
@@ -648,10 +650,10 @@ require_text "$LEAVE_SKILL" 'roll back only what is still yours' \
   'arm-failure rollback must be identity-guarded, not blind'
 require_text "$LEAVE_SKILL" '`.window` is shared; `.leave` is not' \
   'the retirement must treat the shared window as a separate claim from the leave record'
-require_text .claude/skills/pause-resume/SKILL.md 'exit 7 = another writer owns .window' \
+require_text "$PAUSE_RESUME_SKILL" 'exit 7 = another writer owns .window' \
   'the pause-resume retirement must CAS the window clear, not write it blind'
 # The window CAS is only meaningful if it pins the value the verdict was reached on.
-require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_DEADLINE_EPOCH' \
+require_text "$PAUSE_RESUME_SKILL" 'RESUMED_DEADLINE_EPOCH' \
   'the resumed deadline must be bound so the retirement CAS can pin its write to it'
 
 # An ordering rule is only a safety property if the earlier write actually landed. Both
@@ -668,12 +670,12 @@ require_text "$LEAVE_SKILL" 'A failed invalidation is a STOP' \
 # "declines every pipeline in this repo" failure, reintroduced by the guard meant to prevent it.
 require_text "$LEAVE_SKILL" 'the expected value must be the **whole window object**' \
   'the retirement CAS must expect the whole window object, not a scalar under it'
-require_text .claude/skills/pause-resume/SKILL.md 'the WHOLE window object' \
+require_text "$PAUSE_RESUME_SKILL" 'the WHOLE window object' \
   'the pause-resume retirement CAS must expect the whole window object, not a scalar under it'
 # And the captures must actually bind the object, not the scalar the prose warns against.
 require_text "$LEAVE_SKILL" 'RETIRE_WINDOW=' \
   'leave-by must bind the whole window object for its retirement CAS'
-require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_WINDOW=' \
+require_text "$PAUSE_RESUME_SKILL" 'RESUMED_WINDOW=' \
   'pause-resume must bind the whole window object for its retirement CAS'
 
 # EVERY .window clear is CAS-pinned, not just the two retirements. Cancel and the arm-failure
@@ -690,34 +692,110 @@ require_text "$LEAVE_SKILL" 'ARM_WINDOW=' \
 # guard passing. Prose cannot hold this contract; only the positions can.
 require_order "$LEAVE_SKILL" '## Step 8:' \
   'RETIRE_DECLARED_AT=$("$SESSION_STATE_SH"' \
-  '--expect "$WINDDOWN_GENERATION"' \
+  '--expect "$EXPECT_GEN"' \
   'Step 8.5 must capture the retirement identity BEFORE its disarm, not after it in 8.6'
 # And the disarm itself is CAS-pinned. A blind null lands on whatever occupies the slot, so a
 # re-declaration that has already re-armed loses its winddown_task_id and its live Monitor
 # becomes one nobody can name or stop.
 reject_text "$LEAVE_SKILL" '--set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
   'the 8.5 disarm must CAS the identity pair, never blind-set it over a successor'
-require_text "$LEAVE_SKILL" '--expect "$WINDDOWN_GENERATION"' \
+require_text "$LEAVE_SKILL" '--expect "$EXPECT_GEN"' \
   'the 8.5 disarm must prove ownership through the generation CAS before nulling the pair'
 require_text "$LEAVE_SKILL" '`DISARM_RC` non-zero and not `7`' \
   'Step 8.5 must separate an I/O disarm failure from a CAS loss'
 require_text "$LEAVE_SKILL" 'a successor owns `.leave`.** Do **not** wind down' \
   'a lost disarm CAS must stop the wind-down, not park the board against a replaced deadline'
 
+# ONE .window snapshot, judged and retired. Reading .window.deadline_epoch for the verdict and
+# .window again for the CAS is two reads of a SHARED slot: /pm --window can replace the object
+# between them, and the CAS then WINS against a window this flow never judged - the exact
+# outcome the CAS exists to prevent, reached through the guard rather than around it. The
+# scalar sub-path read is what makes that possible, so its absence is the contract.
+reject_text "$LEAVE_SKILL" '--get ".repos[\"$REPO_KEY\"].window.deadline_epoch"' \
+  'leave-by must derive deadline_epoch from the one .window snapshot it retires against'
+reject_text "$PAUSE_RESUME_SKILL" '--get ".repos[\"$REPO_KEY\"].window.deadline_epoch"' \
+  'pause-resume must derive deadline_epoch from the one .window snapshot it retires against'
+require_text "$LEAVE_SKILL" "jq -r '.deadline_epoch // empty'" \
+  'leave-by must derive the deadline from the captured window object'
+require_text "$PAUSE_RESUME_SKILL" "jq -r '.deadline_epoch // empty'" \
+  'pause-resume must derive the deadline from the captured window object'
+require_text "$LEAVE_SKILL" 'RETIRE_WINDOW="$VALIDATED_WINDOW"' \
+  'the 8.6 retirement must carry 8.2 validated snapshot, not re-read the shared slot'
+
+# UNREADABLE is not ABSENT. `-n "$WINDOW"` conflates "no window armed" with "the read failed",
+# and taking a retirement half-way on a failed read is the worse branch: active=false lands,
+# the window clear is skipped, and the next session reads active:false + armed .window as the
+# NORMAL RETIRED SHAPE and passes over it in silence - a spent deadline declining every
+# pipeline in the repo with no record that anything went wrong. Only the exit code separates
+# the two, so every window snapshot must carry one.
+reject_text "$LEAVE_SKILL" 'if [ -n "$ARM_WINDOW" ]' \
+  'the arm-failure rollback must branch on the read status, not on an empty snapshot string'
+require_text "$LEAVE_SKILL" 'ARM_WINDOW_RC' \
+  'the arm-failure rollback must distinguish an unreadable window from an absent one'
+require_text "$LEAVE_SKILL" 'RECOVERY_WINDOW_RC' \
+  'Step 11 must distinguish an unreadable window from an absent one'
+require_text "$LEAVE_SKILL" 'RETIRE_WINDOW_RC' \
+  'the 8.6 retirement must distinguish an unreadable window from an absent one'
+require_text "$LEAVE_SKILL" 'CANCEL_WINDOW_RC' \
+  'the cancel path must distinguish an unreadable window from an absent one'
+require_text "$LEAVE_SKILL" 'An unreadable snapshot rolls back nothing' \
+  'the rollback must say why a failed read retires nothing rather than half the declaration'
+
+# --expect is parsed as JSON and only falls back to a bare string when the parse FAILS, so an
+# identifier that happens to be all digits is compared as a JSON number against a stored JSON
+# string and loses every time - silently, while looking guarded. Verified against the real
+# session-state.sh: bare non-numeric expect -> rc 0 and cleared; bare all-digit expect -> rc 7
+# and still armed. Encoding removes the dependency on how a token happens to be spelled.
+reject_text "$LEAVE_SKILL" '--expect "$WINDDOWN_GENERATION"' \
+  'string --expect values must be JSON-encoded, not passed bare'
+reject_text "$LEAVE_SKILL" '--expect "$WINDDOWN_TASK_ID"' \
+  'string --expect values must be JSON-encoded, not passed bare'
+reject_text "$PAUSE_RESUME_SKILL" '--expect "$OLD_WINDDOWN_TASK_ID"' \
+  'string --expect values must be JSON-encoded, not passed bare'
+require_text "$LEAVE_SKILL" 'EXPECT_GEN=null' \
+  'an absent generation must expect JSON null, never the string "null"'
+require_text "$LEAVE_SKILL" 'jq -R .)"' \
+  'leave-by must JSON-encode its string --expect values'
+
+# The cancel path waits on an EXTERNAL TaskStop, so a re-declaration can complete inside it.
+# Both claims must be captured before that call, and .leave.active guarded by the identity -
+# the .window CAS protects the shared slot and says nothing about who owns .leave.
+require_text "$LEAVE_SKILL" 'CANCEL_DECLARED_AT' \
+  'the cancel must capture the declaration identity before the TaskStop it waits on'
+require_text "$LEAVE_SKILL" 'The identity guard is not optional just because a human asked' \
+  'the cancel must state why a user-initiated cancel still needs the identity guard'
+require_order "$LEAVE_SKILL" '## Step 9:' \
+  'CANCEL_DECLARED_AT=$("$SESSION_STATE_SH"' \
+  '"$HOLDER_AT" = "$CANCEL_DECLARED_AT"' \
+  'the cancel must capture the identity before re-reading it to authorize the clear'
+
 # All THREE copies of the invalidate-then-stop ordering must read the exit code and fail closed.
 # Fixing only /leave-by Step 9 leaves the two siblings stopping tasks on an open queue window.
-require_text .claude/skills/pause/SKILL.md 'INVALIDATE_RC' \
+require_text "$PAUSE_SKILL" 'INVALIDATE_RC' \
   '/pause Step 2 must check the generation invalidation before stopping the task'
-require_text .claude/skills/pause-resume/SKILL.md 'fail closed — the same contract as `/leave-by` Step 9' \
+require_text "$PAUSE_RESUME_SKILL" 'fail closed — the same contract as `/leave-by` Step 9' \
   '/pause-resume Step 5 must fail closed on a failed generation invalidation'
+# ...and the ORDER those two exit-code guards protect is positional, so assert the positions.
+# Naming INVALIDATE_RC against the leave-time stop, not against the prose describing it: a
+# sentence saying "invalidate first" survives the two statements being swapped underneath it.
+# Bare `TaskStop` is not usable as a marker here - it occurs several times in each section,
+# and require_order treats that ambiguity as a failure.
+require_order "$PAUSE_SKILL" '## Step 2' \
+  'INVALIDATE_RC=0; "$SESSION_STATE_SH"' \
+  'only then `TaskStop` the leave-time wind-down ID' \
+  '/pause Step 2 must invalidate the generation BEFORE stopping the wind-down task'
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
+  'INVALIDATE_RC=0' \
+  'Only then `TaskStop` a non-null ID' \
+  '/pause-resume Step 5 must invalidate the generation BEFORE stopping the wind-down task'
 
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
-require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
   'stops here — before the disarm, not after it' \
   'TaskStop` a' \
   '/pause-resume must skip the disarm entirely on an unreadable deadline, not merely read first'
-require_text .claude/skills/pause-resume/SKILL.md 'stop nothing, and skip the rest of' \
+require_text "$PAUSE_RESUME_SKILL" 'stop nothing, and skip the rest of' \
   'an inconsistent deadline must leave the wind-down identity intact and nameable'
 
 # Step 11's table must be TOTAL over the four epoch orderings. A missing row is not a
@@ -744,7 +822,7 @@ reject_text "$LEAVE_SKILL" 'Clear `.leave.active` and the armed `.window`; say s
 # The .leave half needs the identity re-read too: recovery re-entered after a compaction can have
 # live user turns behind it, and a re-declaration landing there gets retired by a blind write.
 require_order "$LEAVE_SKILL" '## Step 11:' \
-  'RECOVERY_DECLARED_AT=$("$SESSION_STATE_SH"' \
+  'RECOVERY_DECLARED_AT=$(printf' \
   '"$HOLDER_AT" = "$RECOVERY_DECLARED_AT"' \
   'Step 11 must capture the declaration identity before re-reading it to authorize the clear'
 
@@ -786,7 +864,7 @@ require_order "$LEAVE_SKILL" '## Step 11:' \
 # An overdue check-in is delivered as an armed event, never by calling Step 8 inline with
 # a nulled pair: 8.1 would validate against the generation just cleared and exit silently,
 # and from /pause-resume it would also nest a /pause inside the running restore.
-require_text .claude/skills/pause-resume/SKILL.md 'Never invoke Step 8 inline from here' \
+require_text "$PAUSE_RESUME_SKILL" 'Never invoke Step 8 inline from here' \
   '/pause-resume must deliver an overdue check-in as an armed event, not a nested Step 8'
 require_text "$LEAVE_SKILL" 'Do **not** call Step 8 with the pair still null' \
   'Step 11 must not run Step 8 against a nulled generation'
