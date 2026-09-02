@@ -75,6 +75,10 @@ PLIST_DEST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 STATE_FILE="$HOME/.claude/logs/claude-config-sync-state.json"
 LOG_FILE="$HOME/.claude/logs/claude-config-sync.log"
 EVENTS_FILE="$HOME/.claude/logs/claude-config-sync-events.jsonl"
+# Written by launchd from the plist's StandardOutPath / StandardErrorPath keys.
+# Keep these in step with com.user.claude-config-sync.plist.
+LAUNCHD_OUT_LOG="$HOME/.claude/logs/config-sync-stdout.log"
+LAUNCHD_ERR_LOG="$HOME/.claude/logs/config-sync-stderr.log"
 MARKER_FILE="$HOME/.claude/sync-restart-recommended.json"
 
 echo "Unloading ${LABEL}..."
@@ -86,7 +90,12 @@ rm -f "$PLIST_DEST"
 
 if [[ "$remove_state" == true ]]; then
   echo "Removing sync state, logs and marker..."
-  rm -f "$STATE_FILE" "$LOG_FILE" "$EVENTS_FILE" "$MARKER_FILE"
+  # LAUNCHD_OUT_LOG / LAUNCHD_ERR_LOG are written by launchd itself, from the
+  # StandardOutPath and StandardErrorPath keys in the plist — not by the sync
+  # script — so they are easy to miss here. Leaving them behind contradicts the
+  # "logs" this flag promises to remove.
+  rm -f "$STATE_FILE" "$LOG_FILE" "$EVENTS_FILE" "$MARKER_FILE" \
+        "$LAUNCHD_OUT_LOG" "$LAUNCHD_ERR_LOG"
 fi
 
 # Capture first, match from a here-string — a `launchctl list | grep -q` pipeline

@@ -472,6 +472,55 @@ test_7_path_agreement() {
     "grep -q 'state_lock_release' '$HOOK'"
 }
 
+# ── Test 14: a failed tick still reports the restart that landed ─────────────
+#
+# record_failure exits the run. The fast-forward has already been written to the
+# worktree by then, so the NEXT tick sees an unchanged HEAD and an empty diff —
+# meaning a restart signal dropped here can never be recovered. The categories
+# are therefore collected at the fast-forward and re-emitted by record_failure.
+
+test_14_restart_signal_survives_a_failed_tick() {
+  section "Test 14: a failed tick preserves the restart signal for landed content"
+
+  # The collection must happen at the fast-forward, NOT in Step 5 — Step 5 sits
+  # after the publishers, which are exactly what record_failure aborts on.
+  assert "the categories are collected in a named helper" \
+    "grep -q 'collect_head_change_categories()' '$SYNC'"
+  assert "the helper is invoked at the fast-forward" \
+    "awk '/HEAD_CHANGED=\"true\"/,/^  else\$/' '$SYNC' | grep -q 'collect_head_change_categories'"
+  assert "record_failure re-emits restart_recommended" \
+    "awk '/^record_failure\\(\\)/,/^}/' '$SYNC' | grep -q 'restart_recommended'"
+  assert "record_failure only does so when categories exist" \
+    "awk '/^record_failure\\(\\)/,/^}/' '$SYNC' | grep -qF 'if (( \${#RESTART_CATEGORIES[@]} > 0 )); then'"
+
+  # Negative control: Step 5 must no longer carry the diff itself, or the fix
+  # would be a duplicate rather than a move.
+  assert "(control) Step 5 no longer runs the diff" \
+    "! awk '/Step 5 — change detection/,/De-duplicate while preserving order/' '$SYNC' | grep -q 'diff --name-only'"
+}
+
+# ── Test 15: the marker clear re-checks under the lock ───────────────────────
+#
+# The hook releases the sync lock, then re-acquires it to clear the marker. A
+# scheduled tick can complete entirely inside that gap, so both acquires look
+# uncontended while the marker now describes changes this session never loaded.
+
+test_15_marker_clear_rechecks_under_the_lock() {
+  section "Test 15: the hook clears only the restart_recommended it surfaced"
+
+  assert "the hook records what it surfaced" \
+    "grep -q '_surfaced_restart' '$HOOK'"
+  assert "the hook re-reads the marker under the clear lock" \
+    "grep -q '_current_restart' '$HOOK'"
+  assert "a mismatch skips the clear" \
+    "grep -q '_current_restart\" != \"\$_surfaced_restart' '$HOOK'"
+
+  # Negative control: the pre-existing contention guard must still be there —
+  # the re-check supplements it, it does not replace it.
+  assert "(control) the uncontended-acquire guard survives" \
+    "grep -q '_lock_contended\" == 0' '$HOOK'"
+}
+
 # ── Test 8: a REPOINTED agent symlink is restart-worthy ──────────────────────
 #
 # The restart signal used to snapshot ~/.claude/agents/ with `ls -1`, i.e. names
@@ -764,6 +813,15 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
+# jq is as load-bearing as git here: most assertions parse the JSON summary or
+# the marker with it, and `assert` routes all output to /dev/null. Without this
+# gate a machine missing jq reports dozens of unrelated ✗ lines instead of the
+# one fact that explains them.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "SKIP-FAIL: jq is required for this suite" >&2
+  exit 1
+fi
+
 test_1_stale_machine
 test_8_agent_repoint_recommends_restart
 test_9_state_commit_failure_is_reported
@@ -775,6 +833,8 @@ test_4_failure_and_recovery
 test_5_lock_overlap
 test_6_root_repo_untouched
 test_7_path_agreement
+test_14_restart_signal_survives_a_failed_tick
+test_15_marker_clear_rechecks_under_the_lock
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

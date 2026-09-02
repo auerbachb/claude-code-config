@@ -334,6 +334,15 @@ if [[ -f "$_marker_file" ]]; then
     _marker_notice="$_marker_text"
   fi
 
+  # Remember the exact restart_recommended this session surfaced. The clear
+  # below runs after the sync lock has been released and re-acquired, and a
+  # scheduled tick can complete entirely inside that gap — landing new links and
+  # writing a NEW marker. Both acquires still look uncontended, so the
+  # contention guard below cannot see it, and the clear would delete a signal
+  # for definitions this session never loaded. Comparing the object identifies
+  # that case: a marker written in the gap does not match what was surfaced.
+  _surfaced_restart=$(jq -c '.restart_recommended // null' "$_marker_file" 2>/dev/null) || _surfaced_restart="null"
+
   # `startup` alone is NOT sufficient to clear. The restart portion may only be
   # retired by a startup that actually ran the sync region, because only then is
   # "this session already loaded the current definitions" true.
@@ -369,7 +378,17 @@ if [[ -f "$_marker_file" ]]; then
       _clear_locked=1
     fi
     if [[ "$_clear_locked" == 1 ]]; then
-      _cleared=$(jq -c 'del(.restart_recommended)' "$_marker_file" 2>/dev/null) || _cleared=""
+      # Re-read under the lock and clear ONLY the restart_recommended this
+      # session actually surfaced. If a sync completed in the gap since the
+      # first release, the marker now describes changes this session never
+      # loaded; leaving it is the same safe direction taken for a failed
+      # clear-lock — a duplicate reminder next startup, never a lost one.
+      _current_restart=$(jq -c '.restart_recommended // null' "$_marker_file" 2>/dev/null) || _current_restart="null"
+      if [[ "$_current_restart" != "$_surfaced_restart" ]]; then
+        _cleared=""
+      else
+        _cleared=$(jq -c 'del(.restart_recommended)' "$_marker_file" 2>/dev/null) || _cleared=""
+      fi
       if [[ -n "$_cleared" ]]; then
         if [[ "$(jq -r 'if (.sync_failure // null) == null then "empty" else "keep" end' <<<"$_cleared" 2>/dev/null)" == "empty" ]]; then
           rm -f "$_marker_file" 2>/dev/null || true

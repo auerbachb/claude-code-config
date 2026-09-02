@@ -31,7 +31,7 @@ A real critical section is milliseconds; both defaults are sized for the content
 
 | Portion | Written when | Cleared when |
 |---------|--------------|--------------|
-| `restart_recommended` | a landed sync changed `.claude/agents/`, `.claude/rules/`, `.claude/skills/` or `CLAUDE.md`, published a new agent symlink, or bootstrapped the worktree | `session-start-sync.sh` sees `source == "startup"` — a genuinely new session has already loaded the change |
+| `restart_recommended` | a landed sync changed `.claude/agents/`, `.claude/rules/`, `.claude/skills/` or `CLAUDE.md`, published a new agent symlink, or bootstrapped the worktree | `session-start-sync.sh` sees `source == "startup"` **and** it actually ran the sync region **and** its lock acquire was uncontended **and** the marker still holds the same `restart_recommended` it surfaced — only then has this session demonstrably loaded the change. Any other combination leaves the signal for the next startup: a duplicate reminder, never a lost one |
 | `sync_failure` | the consecutive-failure streak reaches `CONFIG_SYNC_FAILURE_THRESHOLD` (default 3), carrying how long it has been failing | the next successful tick |
 
 Both surface twice: in the session's context via `session-start-sync.sh`'s `additionalContext`, and as a statusline badge (`↻ restart`, `⚠ sync failing`) for the human between sessions. Run detail lands in `~/.claude/logs/claude-config-sync.log`; failure and recovery events in `~/.claude/logs/claude-config-sync-events.jsonl`. When neither portion applies the marker file is removed, so a healthy machine shows nothing.

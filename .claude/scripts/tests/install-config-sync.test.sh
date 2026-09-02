@@ -52,12 +52,16 @@ make_env() {
 printf '%s\n' "$platform"
 STUB
 
+  # LAUNCHCTL_LIST_LABEL makes the emitted label configurable so a LOOKALIKE can
+  # be tested. Hard-coding the exact label let a substring match pass: a
+  # lifecycle script that checked for `com.user.claude-config-sync` as a
+  # substring would treat `com.user.claude-config-sync-test` as our job.
   cat > "$bin/launchctl" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
 if [ "$1" = "list" ]; then
   if [ "${LAUNCHCTL_LIST_EMPTY:-0}" != "1" ]; then
-    printf -- '-\t0\tcom.user.claude-config-sync\n'
+    printf -- '-\t0\t%s\n' "${LAUNCHCTL_LIST_LABEL:-com.user.claude-config-sync}"
   fi
 fi
 exit 0
@@ -134,8 +138,11 @@ test_1_install_renders_plist() {
   fi
 
   # launchd wiring: bootout (idempotent) → bootstrap → enable → kickstart.
+  # Order is the property under test, not mere presence: a bootout that ran
+  # AFTER bootstrap would unload the job it just installed, and a presence-only
+  # grep passes either way. Compare the first recorded verb.
   assert "launchctl bootout ran first (idempotent reinstall)" \
-    "grep -q '^bootout ' '$root/launchctl.log'"
+    "[ \"\$(awk 'NR==1{print \$1}' '$root/launchctl.log')\" = 'bootout' ]"
   assert "launchctl bootstrap ran" "grep -q '^bootstrap ' '$root/launchctl.log'"
   assert "launchctl enable ran" "grep -q '^enable ' '$root/launchctl.log'"
   assert "launchctl kickstart ran" "grep -q '^kickstart ' '$root/launchctl.log'"
@@ -284,6 +291,46 @@ test_5_uninstall_failure_is_loud() {
   rm -rf "$root"
 }
 
+# ── Test 8: a lookalike label is not our job ────────────────────────────────
+#
+# Both lifecycle scripts compare the final `launchctl list` field literally
+# (awk '$NF == want'). This pins that: with ONLY a lookalike listed, install
+# must report its verification failure and uninstall must treat the job as
+# absent. A regression to a substring match makes both read the lookalike as
+# ours, and every other test in this suite would still pass.
+
+test_8_lookalike_label_is_not_our_job() {
+  section "Test 8: a lookalike LaunchAgent label is never mistaken for ours"
+
+  local root home out rc lookalike
+  root="$(make_env Darwin)"
+  home="$root/home"
+  lookalike="${LABEL}-test"
+
+  # Install while launchctl lists ONLY the lookalike. Verification looks for
+  # our exact label, does not find it, and must say so.
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+        LAUNCHCTL_LIST_LABEL="$lookalike" bash "$INSTALL" 2>&1)"
+  rc=$?
+
+  assert "the stub really emitted the lookalike, not our label" \
+    "printf '%s' \"\$lookalike\" | grep -q -- '-test\$'"
+  assert "install does not report success on a lookalike-only listing" \
+    "[ $rc -ne 0 ] || ! printf '%s' \"\$out\" | grep -q 'verified'"
+
+  # Uninstall with only the lookalike listed: our job is absent, so the
+  # still-listed failure path (test 5) must NOT fire.
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+        LAUNCHCTL_LIST_LABEL="$lookalike" bash "$UNINSTALL" 2>&1)"
+  rc=$?
+
+  assert "uninstall exits 0 — the lookalike is not our job" "[ $rc -eq 0 ]"
+  assert "uninstall does not claim our job is still listed" \
+    "! printf '%s' \"\$out\" | grep -q 'still appears in launchctl list'"
+
+  rm -rf "$root"
+}
+
 # ── Test 6: non-Darwin platform guard ───────────────────────────────────────
 
 test_6_platform_guard() {
@@ -386,6 +433,7 @@ test_3_interval_option
 test_4_uninstall
 test_5_uninstall_failure_is_loud
 test_6_platform_guard
+test_8_lookalike_label_is_not_our_job
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

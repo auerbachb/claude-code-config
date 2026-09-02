@@ -192,7 +192,17 @@ fi
 PREV_PLIST=""
 if [[ -f "$INSTALLED_PLIST" ]]; then
   PREV_PLIST="${INSTALLED_PLIST}.prev.$$"
-  cp -p "$INSTALLED_PLIST" "$PREV_PLIST" 2>/dev/null || PREV_PLIST=""
+  # Abort rather than continue with no fallback. Swallowing this failure would
+  # walk straight into the very outcome the copy exists to prevent: the bootout
+  # below unloads the running job unconditionally, so a failed bootstrap after a
+  # failed backup leaves the machine with NO scheduler and nothing to restore.
+  # Stopping here costs an un-upgraded install; continuing risks no install.
+  if ! cp -p "$INSTALLED_PLIST" "$PREV_PLIST" 2>/dev/null; then
+    rm -f "$PREV_PLIST" "$RENDERED_PLIST" 2>/dev/null || true
+    echo "FAIL: could not back up the installed plist to $PREV_PLIST." >&2
+    echo "      Nothing was changed — the existing job is still installed and loaded." >&2
+    exit 1
+  fi
 fi
 
 if ! mv -f "$RENDERED_PLIST" "$INSTALLED_PLIST"; then

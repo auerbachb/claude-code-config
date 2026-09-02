@@ -292,8 +292,25 @@ git_sync() { # git_sync <git subcommand and args…>  (always -C the worktree)
   if (( GIT_BOUND_AVAILABLE == 0 )); then
     # Degraded, and said out loud at the call site rather than pretending the
     # bound is in force.
-    GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>/dev/null)" || rc=$?
-    GIT_ERR=""
+    #
+    # Still capture stderr: git writes its failure reason there and nothing to
+    # stdout, so discarding it left `${GIT_ERR:-$GIT_OUT}` at the record_failure
+    # call sites resolving to an empty string — a logged failure with no reason,
+    # on precisely the path (bounded-run.sh missing) that most needs diagnosis.
+    # One invocation, not two: fetch and reset have side effects, so re-running
+    # the command to collect the other stream is not an option.
+    local err_tmp=""
+    err_tmp="$(mktemp "${TMPDIR:-/tmp}/config-sync-degraded-err.XXXXXX" 2>/dev/null)" || err_tmp=""
+    if [[ -n "$err_tmp" ]]; then
+      GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>"$err_tmp")" || rc=$?
+      GIT_ERR="$(cat "$err_tmp" 2>/dev/null)" || GIT_ERR=""
+      rm -f "$err_tmp" 2>/dev/null || true
+    else
+      # No temp file available — fold stderr into stdout. Mixing the streams is
+      # worse than separating them, but both beat throwing the reason away.
+      GIT_OUT="$(git -C "$SKILLS_WT" "$@" 2>&1)" || rc=$?
+      GIT_ERR=""
+    fi
     return "$rc"
   fi
   run_bounded "$GIT_BOUND_SECS" git -C "$SKILLS_WT" "$@" || rc=$?
@@ -435,6 +452,25 @@ elapsed_days() {
 
 # record_failure <message> — bump the streak, extend the marker past the
 # threshold, and exit 1.
+# Derive the restart categories from what the fast-forward actually brought in.
+# Called at the fast-forward rather than in Step 5 so the categories survive a
+# record_failure between the two — see the call site for why that matters.
+collect_head_change_categories() {
+  local changed_paths
+  [[ "$HEAD_CHANGED" == "true" && -n "$OLD_SHA" && -n "$NEW_SHA" ]] || return 0
+  changed_paths="$(git -C "$SKILLS_WT" diff --name-only "$OLD_SHA" "$NEW_SHA" 2>/dev/null)" || changed_paths=""
+  if [[ -z "$changed_paths" ]]; then
+    warn "could not diff $OLD_SHA..$NEW_SHA — restart categories may be incomplete"
+    return 0
+  fi
+  # Here-strings, never `printf … | grep -q` — see the SIGPIPE note above.
+  grep -q '^\.claude/agents/' <<< "$changed_paths" && RESTART_CATEGORIES+=("agents")
+  grep -q '^\.claude/rules/'  <<< "$changed_paths" && RESTART_CATEGORIES+=("rules")
+  grep -q '^\.claude/skills/' <<< "$changed_paths" && RESTART_CATEGORIES+=("skills")
+  grep -q '^CLAUDE\.md$'      <<< "$changed_paths" && RESTART_CATEGORIES+=("claude-md")
+  return 0
+}
+
 record_failure() {
   local message="$1" state consecutive first_failure days marker new_marker new_state
   ERROR_MESSAGE="$message"
@@ -475,6 +511,34 @@ record_failure() {
 
   append_event "$(jq -cn --arg at "$NOW_ISO" --arg err "$message" --argjson streak "$consecutive" \
     '{at: $at, event: "failure", consecutive_failures: $streak, error: $err}')"
+
+  # Preserve the restart signal for content that ALREADY landed. This function
+  # exits the run, so without this the categories collected at the fast-forward
+  # die here — and they cannot be recovered later, because the next tick sees an
+  # unchanged HEAD and an empty diff. The failure is real and reported, but the
+  # user still has to restart to pick up the definitions that did land.
+  if (( ${#RESTART_CATEGORIES[@]} > 0 )); then
+    local fail_categories_json fail_marker fail_new_marker
+    fail_categories_json="$(json_array "${RESTART_CATEGORIES[@]+"${RESTART_CATEGORIES[@]}"}")" \
+      || fail_categories_json=""
+    if [[ -n "$fail_categories_json" ]]; then
+      fail_marker="$(read_marker)"
+      fail_new_marker="$(printf '%s' "$fail_marker" | jq \
+        --arg now "$NOW_ISO" \
+        --arg sha "$NEW_SHA" \
+        --argjson categories "$fail_categories_json" \
+        '. + {restart_recommended: {
+                reason: ("config sync updated " + ($categories | join(", "))),
+                categories: $categories, head_sha: $sha, at: $now}}' 2>/dev/null)" \
+        || fail_new_marker=""
+      if [[ -n "$fail_new_marker" ]]; then
+        write_marker "$fail_new_marker" || true
+        log info "restart recommended (${RESTART_CATEGORIES[*]}) despite this failure — signal in $MARKER_FILE"
+      else
+        warn "could not preserve the restart signal across this failure"
+      fi
+    fi
+  fi
 
   if (( consecutive >= FAILURE_THRESHOLD )); then
     days="$(elapsed_days "$first_failure")"
@@ -586,6 +650,13 @@ else
   if [[ -n "$OLD_SHA" && -n "$NEW_SHA" && "$OLD_SHA" != "$NEW_SHA" ]]; then
     HEAD_CHANGED="true"
     log info "worktree fast-forwarded ${OLD_SHA:0:8} -> ${NEW_SHA:0:8}"
+    # Collected HERE, immediately after the content lands, and not down in
+    # Step 5. record_failure exits the run, so any failure between this point
+    # and Step 5 — a publisher, the trust repair — used to discard these
+    # categories permanently: the fast-forward has already been written to the
+    # worktree, so the NEXT tick sees an unchanged HEAD, an empty diff, and
+    # never emits a restart signal for content that did land.
+    collect_head_change_categories
   else
     log info "worktree already at ${NEW_SHA:0:8}"
   fi
@@ -825,19 +896,12 @@ fi
 
 # ---------------------------------------------------------------------------
 # Step 5 — change detection across the fast-forward.
+#
+# The diff-derived categories are collected up at the fast-forward itself (see
+# collect_head_change_categories, called there) rather than here, so a later
+# record_failure cannot lose them. What remains at this point are the
+# publisher-derived categories accumulated above.
 # ---------------------------------------------------------------------------
-if [[ "$HEAD_CHANGED" == "true" && -n "$OLD_SHA" && -n "$NEW_SHA" ]]; then
-  changed_paths="$(git -C "$SKILLS_WT" diff --name-only "$OLD_SHA" "$NEW_SHA" 2>/dev/null)" || changed_paths=""
-  if [[ -z "$changed_paths" ]]; then
-    warn "could not diff $OLD_SHA..$NEW_SHA — restart categories may be incomplete"
-  else
-    # Here-strings, never `printf … | grep -q` — see the SIGPIPE note above.
-    grep -q '^\.claude/agents/' <<< "$changed_paths" && RESTART_CATEGORIES+=("agents")
-    grep -q '^\.claude/rules/'  <<< "$changed_paths" && RESTART_CATEGORIES+=("rules")
-    grep -q '^\.claude/skills/' <<< "$changed_paths" && RESTART_CATEGORIES+=("skills")
-    grep -q '^CLAUDE\.md$'      <<< "$changed_paths" && RESTART_CATEGORIES+=("claude-md")
-  fi
-fi
 
 # De-duplicate while preserving order.
 DEDUPED=()
