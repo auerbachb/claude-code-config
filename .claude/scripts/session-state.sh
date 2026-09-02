@@ -492,7 +492,15 @@ load_field_types() {
   nested="$(jq -r '._field_types.pr_nested // {} | to_entries[] | "\(.key)=\(.value)"' "$SCHEMA_FILE" 2>/dev/null)" || nested=""
   FIELD_TYPES_TOP="$top"
   FIELD_TYPES_NESTED="$nested"
-  FIELD_TYPES_NESTED_JSON="$(jq -c '._field_types.pr_nested // {}' "$SCHEMA_FILE" 2>/dev/null)" || FIELD_TYPES_NESTED_JSON="{}"
+  # `objects` rather than a bare `// {}`: a pr_nested that PARSES but is not an
+  # object (a string, an array) is a malformed contract, not a usable one, and
+  # caching it verbatim would feed a scalar to `to_entries` inside the entry
+  # scan. That scan fails closed by design, so the malformed schema would refuse
+  # unrelated, legitimate writes instead of degrading (CodeAnt, PR #1573).
+  # FIELD_TYPES_NESTED above already degrades on the same input for free — its
+  # `to_entries` runs jq-side and trips the `|| nested=""` fallback — so this
+  # keeps the two caches agreeing on what "unusable contract" means.
+  FIELD_TYPES_NESTED_JSON="$(jq -c '(._field_types.pr_nested | objects) // {}' "$SCHEMA_FILE" 2>/dev/null)" || FIELD_TYPES_NESTED_JSON="{}"
   [[ -n "$FIELD_TYPES_NESTED_JSON" ]] || FIELD_TYPES_NESTED_JSON="{}"
 }
 
@@ -815,6 +823,13 @@ path_take_segment() {
 #   PR_PATH_KEY    — for "nested", the segment immediately after the PR-number
 #                    selector; the known-nested-field candidate (empty when
 #                    that segment is a numeric index)
+#   PR_PATH_TAIL_OPAQUE — for "nested", 1 when that segment could not be
+#                    tokenized at all: a valid jq spelling this tokenizer does
+#                    not model (`."reviewer"`, a key with an escaped quote).
+#                    The field name is then unknowable, so callers scan the
+#                    whole entry instead of skipping the check outright
+#                    (CodeAnt, PR #1573). Distinct from the numeric-index case,
+#                    where tokenizing SUCCEEDS and there is genuinely no field.
 #
 # Accepts a leading `.prs` (the legacy/--raw-path top level) as well as
 # `.repos["<key>"].prs` (the scoped shape since issue #638). A whole-repo-scope
@@ -823,9 +838,10 @@ path_take_segment() {
 PR_PATH_KIND=""
 PR_PATH_PREFIX=""
 PR_PATH_KEY=""
+PR_PATH_TAIL_OPAQUE=0
 pr_path_classify() {
   local rest="$1" prefix=""
-  PR_PATH_KIND=""; PR_PATH_PREFIX=""; PR_PATH_KEY=""
+  PR_PATH_KIND=""; PR_PATH_PREFIX=""; PR_PATH_KEY=""; PR_PATH_TAIL_OPAQUE=0
 
   path_take_segment "$rest" || return 0
   if [[ "$SEG_KEY" == "repos" ]]; then
@@ -863,6 +879,8 @@ pr_path_classify() {
   PR_PATH_PREFIX="$prefix"
   if path_take_segment "$rest"; then
     PR_PATH_KEY="$SEG_KEY"
+  else
+    PR_PATH_TAIL_OPAQUE=1
   fi
   return 0
 }
@@ -899,6 +917,17 @@ def render($prefix; $statefile):
 PR_ENTRY_SCAN_JQ_EOF
 )"
 
+# Append $2 to the NEWLINE-separated list variable named by $1, unless it is
+# already present. Indirect read plus `printf -v` rather than a nameref, so this
+# stays bash 3.2 compatible like the rest of the script.
+pr_list_add_unique() {
+  local list_name="$1" value="$2" current="${!1}"
+  case $'\n'"$current"$'\n' in
+    *$'\n'"$value"$'\n'*) return 0 ;;
+  esac
+  printf -v "$list_name" '%s' "${current}${current:+$'\n'}${value}"
+}
+
 # Record one concrete write path in the three per-PR lists (deduped). Shared by
 # --set, once per assignment, and --cas, once for its single target, so the two
 # write paths cannot classify differently — the issue #1283 lesson applied to
@@ -906,29 +935,29 @@ PR_ENTRY_SCAN_JQ_EOF
 # separated: they hold concrete jq paths, and a --raw-path repo key is caller
 # text that may contain a space.
 pr_record_write_target() {
-  local record
   pr_path_classify "$1"
   case "$PR_PATH_KIND" in
     nested)
-      [[ -n "$PR_PATH_KEY" ]] || return 0
-      [[ -n "$(known_nested_field_type "$PR_PATH_KEY")" ]] || return 0
-      record="${PR_PATH_KEY}"$'\x1f'"${PR_PATH_PREFIX}.${PR_PATH_KEY}"
-      case $'\n'"$TOUCHED_NESTED_CHECKS"$'\n' in
-        *$'\n'"$record"$'\n'*) ;;
-        *) TOUCHED_NESTED_CHECKS="${TOUCHED_NESTED_CHECKS}${TOUCHED_NESTED_CHECKS:+$'\n'}${record}" ;;
-      esac
+      if [[ -n "$PR_PATH_KEY" ]]; then
+        [[ -n "$(known_nested_field_type "$PR_PATH_KEY")" ]] || return 0
+        pr_list_add_unique TOUCHED_NESTED_CHECKS \
+          "${PR_PATH_KEY}"$'\x1f'"${PR_PATH_PREFIX}.${PR_PATH_KEY}"
+      elif [[ "$PR_PATH_TAIL_OPAQUE" -eq 1 ]]; then
+        # The write lands inside a known PR entry but names its field in a
+        # spelling this tokenizer cannot decompose, so the single-path check has
+        # no path to check. Scanning the resulting ENTRY covers it instead:
+        # PR_PATH_PREFIX is exactly that entry, the scan validates every known
+        # field present in it, and it can only reject a genuinely wrong-typed
+        # value — so this adds coverage without refusing anything the
+        # equivalent whole-entry write would not already refuse.
+        pr_list_add_unique WHOLE_ENTRY_PATHS "$PR_PATH_PREFIX"
+      fi
       ;;
     entry)
-      case $'\n'"$WHOLE_ENTRY_PATHS"$'\n' in
-        *$'\n'"$PR_PATH_PREFIX"$'\n'*) ;;
-        *) WHOLE_ENTRY_PATHS="${WHOLE_ENTRY_PATHS}${WHOLE_ENTRY_PATHS:+$'\n'}${PR_PATH_PREFIX}" ;;
-      esac
+      pr_list_add_unique WHOLE_ENTRY_PATHS "$PR_PATH_PREFIX"
       ;;
     map)
-      case $'\n'"$WHOLE_MAP_PATHS"$'\n' in
-        *$'\n'"$PR_PATH_PREFIX"$'\n'*) ;;
-        *) WHOLE_MAP_PATHS="${WHOLE_MAP_PATHS}${WHOLE_MAP_PATHS:+$'\n'}${PR_PATH_PREFIX}" ;;
-      esac
+      pr_list_add_unique WHOLE_MAP_PATHS "$PR_PATH_PREFIX"
       ;;
   esac
   return 0

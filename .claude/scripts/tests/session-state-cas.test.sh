@@ -321,6 +321,28 @@ check_eq "gap 3: a well-formed whole-map --cas still wins" "0" "$?"
 check_eq "gap 3: the replacement is applied wholesale" '{"9":{"phase":"C","digest_streak":2}}' \
   "$(jq -c '.repos["test/repo"].prs' "$STATE_FILE")"
 
+# Opaque nested tail (CodeAnt, PR #1573) — `."key"` is valid jq that
+# path_take_segment() cannot decompose, so the single-path check had no path to
+# check and the write committed. --set and --cas share pr_record_write_target(),
+# so the entry-scan fallback has to reach both; pinned here per #1283.
+reset_state
+run --repo test/repo --set '.prs["1"].phase=A'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+G4_OUT=$(run --repo test/repo \
+  --cas '.prs["1"]."last_cron_action"="bad"' \
+  --expect null 2>&1); G4_RC=$?
+check_eq "opaque tail: dot-quoted nested --cas rejected (exit 4)" "4" "$G4_RC"
+check_eq "opaque tail: error names the field via the entry scan" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$G4_OUT")"
+check_eq "opaque tail: state file byte-unchanged after the rejected --cas" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# The well-typed value in the same spelling must still win its CAS.
+run --repo test/repo --cas '.prs["1"]."last_cron_action"={"type":"delete"}' --expect null
+check_eq "opaque tail: a well-typed dot-quoted --cas still wins" "0" "$?"
+check_eq "opaque tail: the well-typed --cas was applied as given" '{"type":"delete"}' \
+  "$(jq -c '.repos["test/repo"].prs["1"].last_cron_action' "$STATE_FILE")"
+
 # ---------------------------------------------------------------------------
 echo
 echo "== Field-type contract: untyped fields stay unvalidated under --cas =="

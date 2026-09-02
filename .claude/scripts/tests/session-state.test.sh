@@ -637,6 +637,113 @@ OUT=$(run --repo test/repo --set '.prs["1"].last_cron_action=null' 2>&1); RC=$?
 check_eq "control: single-path write of null to a known field rejected" "4" "$RC"
 
 echo
+echo "== Write-time guard: a nested tail this tokenizer cannot decompose (CodeAnt, PR #1573) =="
+# FAILS-WITHOUT-FIX: `.prs["1"]."last_cron_action"` is valid jq and really does
+# write the field, but `."key"` is a spelling path_take_segment() does not
+# model. PR_PATH_KEY came back empty, pr_record_write_target() skipped the write
+# outright, and the malformed value committed (exit 0) — the guard bypassed by
+# nothing more than an alternate spelling. The classifier now marks that tail
+# opaque and falls back to scanning the whole entry, which knows every known
+# field regardless of how the write named it.
+seed_prs
+BEFORE_DOC="$(cat "$STATE_FILE")"
+OUT=$(run --repo test/repo --set '.prs["1"]."last_cron_action"="bad"' 2>&1); RC=$?
+check_eq "opaque tail: dot-quoted nested write rejected (exit 4)" "4" "$RC"
+check_eq "opaque tail: error names the field via the entry scan" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].last_cron_action' would become type 'string' but must be 'object'" <<<"$OUT")"
+check_eq "opaque tail: state file byte-unchanged after the rejected write" "$BEFORE_DOC" \
+  "$(cat "$STATE_FILE")"
+
+# The fallback adds coverage; it must not refuse the same spelling when the
+# value is well-typed.
+seed_prs
+run --repo test/repo --set '.prs["1"]."last_cron_action"={"type":"delete"}'
+check_eq "opaque tail: a well-typed dot-quoted write is still accepted" "0" "$?"
+check_eq "opaque tail: the well-typed write applied as given" '{"type":"delete"}' \
+  "$(jq -c '.repos["test/repo"].prs["1"].last_cron_action' "$STATE_FILE")"
+
+# ...and a field outside the contract stays unvalidated, as on every other path.
+seed_prs
+run --repo test/repo --set '.prs["1"]."reviewer"=cr'
+check_eq "opaque tail: an unknown nested field stays unvalidated" "0" "$?"
+
+# The same hole on the --raw-path spelling.
+seed_prs
+OUT=$(run --raw-path --set '.repos["test/repo"].prs["1"]."digest_streak"=nope' 2>&1); RC=$?
+check_eq "opaque tail: --raw-path dot-quoted nested write rejected (exit 4)" "4" "$RC"
+check_eq "opaque tail: --raw-path error names the field and both types" "1" \
+  "$(grep -c "field '.repos\[\"test/repo\"\].prs\[\"1\"\].digest_streak' would become type 'string' but must be 'number'" <<<"$OUT")"
+
+# A numeric-index tail is the OTHER empty-PR_PATH_KEY case and must stay
+# distinct: tokenizing succeeds, there is genuinely no field name, and jq itself
+# rejects indexing an object with a number (exit 5, not the guard's 4).
+seed_prs
+RC=0; run --repo test/repo --set '.prs["1"][0]=x' >/dev/null 2>&1 || RC=$?
+check_eq "opaque tail: a numeric-index tail is not treated as opaque (jq's exit 5)" "5" "$RC"
+
+echo
+echo "== Field-type contract: a malformed pr_nested degrades, it does not refuse (CodeAnt, PR #1573) =="
+# FAILS-WITHOUT-FIX: `_field_types.pr_nested` set to something that PARSES but
+# is not an object (a string, an array) was cached verbatim and handed to
+# `to_entries` inside the entry scan. That scan fails closed by design, so a
+# malformed schema turned every whole-entry / whole-map write into a refusal
+# instead of the documented "type guard disabled for this run" degradation
+# (issue #640) that a missing or unparseable schema already gets.
+#
+# Sandboxed because SCHEMA_FILE is resolved relative to the script, so the only
+# way to vary the schema is to copy the tree.
+SB="$TMP_HOME/malformed-schema"
+mkdir -p "$SB/scripts/lib" "$SB/reference" "$SB/home/.claude"
+cp "$SCRIPT" "$REPO_ROOT/.claude/scripts/state-lock.sh" "$SB/scripts/"
+cp -R "$REPO_ROOT/.claude/scripts/lib/." "$SB/scripts/lib/"
+cp "$REPO_ROOT/.claude/reference/session-state-schema.json" "$SB/schema.orig"
+SB_SCHEMA="$SB/reference/session-state-schema.json"
+
+# $1 installs the schema: "" pristine, "ABSENT" removed, anything else a jq
+# mutation of the pristine copy. Remaining args go to session-state.sh.
+sb_run() {
+  local mutate="$1"; shift
+  case "$mutate" in
+    ABSENT) rm -f "$SB_SCHEMA" ;;
+    "")     cp "$SB/schema.orig" "$SB_SCHEMA" ;;
+    *)      jq "$mutate" "$SB/schema.orig" > "$SB_SCHEMA" ;;
+  esac
+  printf '%s\n' "$SEEDED_PRS" > "$SB/home/.claude/session-state.json"
+  HOME="$SB/home" bash "$SB/scripts/session-state.sh" "$@" >/dev/null 2>&1
+}
+
+SB_MALFORMED='.prs["999"]={"phase":"B","last_cron_action":"bad"}'
+SB_CLEAN='.prs["999"]={"phase":"B","reviewer":"cr"}'
+
+# Negative control FIRST: with the real schema the sandbox must still enforce.
+# Without this every "accepted" assertion below could pass vacuously — a broken
+# sandbox accepts everything and looks exactly like a working degradation.
+sb_run "" --repo test/repo --set "$SB_MALFORMED"
+check_eq "schema tri-state: pristine schema still REJECTS a malformed entry" "4" "$?"
+sb_run "" --repo test/repo --set "$SB_CLEAN"
+check_eq "schema tri-state: pristine schema accepts a clean entry" "0" "$?"
+
+# A missing schema is the documented degradation, and stays unchanged.
+sb_run ABSENT --repo test/repo --set "$SB_CLEAN"
+check_eq "schema tri-state: absent schema accepts (guard disabled)" "0" "$?"
+
+# A malformed-but-parseable pr_nested must degrade the same way, not refuse.
+sb_run '._field_types.pr_nested = "oops"' --repo test/repo --set "$SB_CLEAN"
+check_eq "schema tri-state: string pr_nested accepts a clean entry (was exit 4)" "0" "$?"
+sb_run '._field_types.pr_nested = ["a","b"]' --repo test/repo --set "$SB_CLEAN"
+check_eq "schema tri-state: array pr_nested accepts a clean entry (was exit 4)" "0" "$?"
+
+# Degraded means disabled, not half-enforcing: with no usable contract the scan
+# cannot judge the malformed entry either, and must not pretend otherwise.
+sb_run '._field_types.pr_nested = "oops"' --repo test/repo --set "$SB_MALFORMED"
+check_eq "schema tri-state: string pr_nested disables the entry scan outright" "0" "$?"
+
+# The whole-map write takes the other scan and must degrade identically.
+sb_run '._field_types.pr_nested = "oops"' --repo test/repo \
+  --set '.prs={"999":{"last_cron_action":"bad"}}'
+check_eq "schema tri-state: string pr_nested degrades the whole-map scan too" "0" "$?"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"
