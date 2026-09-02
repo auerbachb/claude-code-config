@@ -91,7 +91,9 @@ When a zero-conflict hotspot issue is closed, or an owner explicitly reaffirms a
 
 ## Enumeration: git first, gh as fallback
 
-**git path (primary).** `git log --no-merges --name-only` over the window. Squash-merged PRs carry GitHub's appended `(#N)` marker in the subject. Zero API calls, no rate limit, and it works in a fresh clone — a clone has the full history even with no session state.
+**Both backends enumerate NUL-delimited, end to end** (issue #1554). A path may carry any byte except NUL and `/` — a newline included — so NUL is the only separator a filename cannot forge. git emits `git log -z --name-status -M` tokens; the gh path pipes the raw `pulls/{N}/files` JSON through `jq`, which emits the same `status NUL filename NUL` pairs; and both spool files carry NUL-terminated rows, so nothing between the source and the report can split a path in half. Framing and the pre-fix failure modes: [Delimiters](#delimiters-why-nul-and-nothing-else) below.
+
+**git path (primary).** `git log --no-merges --name-status -z -M` over the window. Squash-merged PRs carry GitHub's appended `(#N)` marker in the subject. Zero API calls, no rate limit, and it works in a fresh clone — a clone has the full history even with no session state.
 
 **The scan is scoped to an explicit ref, never to the invoking checkout's `HEAD`** (issue #861). `/wrap` calls this from a feature-branch worktree, and that `HEAD` is wrong in both directions at once: it **misses** every squash commit merged to the default branch since the branch forked (including the one `/wrap` just created — Step 2.5 syncs the *root repo's* main, not the invoking worktree), and it **adds** unsquashed local commits that will never exist on the default branch. Measured on this repo from two real feature-branch worktrees over one 14-day window: one scan missed 7 merged PRs and 5 hotspots; the other invented a phantom PR that inflated 13 files by one PR each and manufactured 2 hotspots outright.
 
@@ -130,6 +132,29 @@ Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `is
 **An open match beats a closed one for the same path.** That preference is not cosmetic — it is what terminates the loop. When `/wrap` re-files a closed hotspot, the new open issue becomes the chosen match on the following run, so the next wrap comments instead of filing again. Picking whichever the search returned first would leave the closed one winning at random and the loop half-alive.
 
 **A capped lookup counts as a failed one.** When the search hits `ISSUE_LOOKUP_CAP` (200), a matching issue may sit beyond the cap, so "no match" no longer proves "no issue". Setting only `truncated` would leave callers — which gate filing on `existing_lookup_failed` — free to file a duplicate for a hotspot that already has a ticket. Both flags are set. **`--state all` enlarges the candidate set**, so this guard matters more than it did, not less — closed issues alone can now fill the cap. The cap stays at 200 rather than being raised: the count-based guard already fails safe, and raising it trades a known-safe bound for tuning nobody has evidence for.
+
+## Delimiters: why NUL, and nothing else
+
+The detector once used a newline as its record separator on both backends. A filename may legally contain one, and each backend then failed differently on the same input (issue #1554):
+
+- **gh — a miscount.** The record stream came from `gh api --jq '… | join("<TAB>")'` and the per-PR total came from `wc -l`. One embedded-newline filename made a 2-file PR count as **3**, which drove the `--sweep-threshold` classification off the wrong number. Measured against the pre-fix script: a 2-file payload at `--sweep-threshold 3` was classified as a sweep and scored nothing.
+- **git — a disappearance.** git C-quotes such a path onto a single line (`"src/two\nlines.ts"`) even with `core.quotePath=false`, so the count was right — but the *escaped* string was then handed to `git cat-file -e`, which cannot find a file by that literal name, and the path was dropped as `missing_count`. Same measurement: the file was simply absent from the report.
+
+So neither backend told the truth and the two disagreed about identical history, which is what the parity scenario now pins.
+
+**git framing (`-z`, measured on git 2.50.1).** A `tformat` commit header is NUL-terminated; exactly one LF then precedes that commit's first status token; thereafter fields alternate `status NUL path NUL`, or `R100 NUL old NUL new NUL` for a rename/copy. The parser strips that LF only in the status state — a diff status can never begin with a newline, while a path can, so the strip is positional and cannot touch a filename. `%s` is the subject *line*, so a header token never contains a newline of its own.
+
+**`core.quotePath=false` is now redundant, and deliberately kept.** `-z` emits paths verbatim even with quoting on (verified). Keeping the setting costs nothing and means a future edit that drops `-z` fails the embedded-newline test loudly instead of quietly regressing non-ASCII paths as well.
+
+**Status and path live in parallel arrays, not one `status<TAB>path` string.** That is a requirement, not tidiness: `-z` hands over verbatim paths, so a filename containing a TAB now reaches the buffer, and `${row##*<TAB>}` would silently return its last fragment as the path. Separate array slots leave no delimiter to be forged.
+
+**The NUL literal is spelled `[0] | implode`, not a `\u0000` escape.** `jq --raw-output0` reads better but arrived in jq 1.7, and this script claims no jq floor (CI runs ubuntu-latest *and* macos-latest). `implode` works everywhere jq does.
+
+**The gh stream is spooled to a file, never captured.** Command substitution strips NUL bytes — precisely the byte carrying the record boundary — so `files=$(gh api …)` cannot hold this stream. jq also runs *outside* `gh` (no `--jq`): gh's writer newline-terminates every result, and a newline is exactly what must not delimit records here.
+
+**Spool rows put the path last.** `TOUCH_TSV` rows are `pr <TAB> merged_at <TAB> file`; `CREATION_TSV` rows are `pr <TAB> file`. The reader rejoins every field past the last fixed one, so a TAB inside a filename survives as well as a newline does. The `--json` schema and the six documented TSV columns are unchanged — jq's `@tsv` already escapes `\n`, `\t`, `\r` and `\\` — so `churn-hotspot-wrap-plan.sh` needed no change.
+
+**Behaviour on ordinary history is unchanged.** Verified against this repo's live 14-day window (135 merged PRs): the rewritten detector reproduces the pre-fix run's counters and its full 64-hotspot list exactly.
 
 ## Implementation notes worth keeping
 

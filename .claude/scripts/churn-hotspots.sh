@@ -154,7 +154,21 @@
 #   belongs in --exclude, not baked in here.
 #
 # ENUMERATION:
-#   git path (primary) — `git log --no-merges --name-only` over the window,
+#   DELIMITER — NUL, END TO END, ON BOTH BACKENDS (issue #1554). A filename may
+#     contain any byte except NUL and `/`, a NEWLINE included, so NUL is the only
+#     separator a path cannot forge. The gh path used to count newline-delimited
+#     LINES, so one embedded-newline filename made a 2-file PR count as 3 and
+#     drove the --sweep-threshold classification off the wrong number. The git
+#     path did not miscount (git C-quotes such a path onto a single line) but
+#     reported the ESCAPED path, which then failed the existence check and
+#     vanished into `missing_count` — so neither backend told the truth, and the
+#     two disagreed about identical history. Now git emits `-z --name-status`
+#     tokens (`status NUL path NUL`, or `R100 NUL old NUL new NUL` for a
+#     rename/copy) after a NUL-terminated `tformat` header, and the gh path pipes
+#     `pulls/{N}/files` JSON through jq to emit the same `status NUL filename NUL`
+#     pairs. Both spool files carry NUL-terminated rows for the same reason: a
+#     path is never split in half anywhere between the source and the report.
+#   git path (primary) — `git log --no-merges --name-status -z` over the window,
 #     scoped to an EXPLICIT ref, never to the invoking checkout's `HEAD`. The
 #     ref is resolved in order: --ref, `origin/HEAD` (honours a default branch
 #     not named `main`), then `origin/main`, `origin/master`, `main`, `master`.
@@ -285,11 +299,13 @@ SWEEP_THRESHOLD=20
 INCLUDE_CREATION=0
 ISSUE_LOOKUP_CAP=200
 
-# A literal tab, built with printf rather than ANSI-C quoting. `--name-status`
-# separates the diff status from the path with a tab, and under bash 3.2 (macOS)
-# `${line#$'\t'}` can silently fail to strip even where the matching `case`
-# pattern succeeds — the same trap the @@C@@ sentinels below exist to avoid.
-TAB_CHAR=$(printf '\t')
+# A literal newline, built with printf rather than ANSI-C quoting. `git log -z`
+# puts exactly one LF between a commit header and that commit's first
+# name-status token, and under bash 3.2 (macOS) `${token#$'\n'}` can silently
+# fail to strip even where the matching `case` pattern succeeds — the same trap
+# the @@C@@ sentinels below exist to avoid. Command substitution eats trailing
+# newlines, so the value is built with a sentinel that is then removed.
+NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
 
 DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
 
@@ -591,11 +607,19 @@ file_present() {  # $1 path -> 0 when the file exists at the scan target
 }
 
 # ---- enumeration ------------------------------------------------------------
-# Both paths produce the same TSV stream on stdout: pr <TAB> merged_at <TAB> file
+# Both paths produce the same spool: pr <TAB> merged_at <TAB> file, NUL-terminated
+# per row. The row TERMINATOR is NUL rather than a newline because `file` is a
+# verbatim path that may contain a newline (see ENUMERATION above); `file` is the
+# LAST field for the same reason a tab cannot delimit it — the reader rejoins
+# every field past the second, so an embedded tab survives too.
 TOUCH_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
 SEEN_PRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
 CREATION_TSV=$(mktemp) || { err "could not create a temp file"; exit 3; }
-cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV"; }
+# The gh backend's NUL stream lands here rather than in a variable: command
+# substitution silently strips NUL bytes, which is exactly the byte carrying the
+# record boundary.
+GH_FILES=$(mktemp) || { err "could not create a temp file"; exit 3; }
+cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES"; }
 trap cleanup EXIT
 
 # is_creation_status — 0 when git's diff status marks the path as newly created.
@@ -630,15 +654,29 @@ is_creation_status_gh() {  # $1 GitHub file status
 # therefore buffered and flushed at the next commit header and once at EOF.
 # These are globals rather than locals so the flush is an ordinary function
 # instead of a call that silently depends on bash's dynamic scope.
+#
+# Status and path live in PARALLEL arrays rather than in one `status<TAB>path`
+# string. That is required, not tidiness: `-z` hands over verbatim paths, so a
+# filename containing a tab now reaches this buffer and `${row##*<TAB>}` would
+# silently return its last tab-separated fragment as the path. Separate slots
+# leave no delimiter to be forged.
 CUR_PR=""
 CUR_DATE=""
-CUR_ROWS=()
+CUR_ROW_STATUS=()
+CUR_ROW_FILE=()
+
+# The gh backend's per-PR equivalent. Global for the same reason and because a
+# `local` array declared inside the PR loop would be re-created per iteration
+# under bash 3.2 without the parallel-slot guarantee being obvious.
+GH_ROW_STATUS=()
+GH_ROW_FILE=()
 
 flush_commit() {
-  local total=${#CUR_ROWS[@]}
-  local is_sweep=0 row status file
+  local total=${#CUR_ROW_FILE[@]}
+  local is_sweep=0 idx status file
   if [ "$total" -eq 0 ] || [ -z "$CUR_PR" ]; then
-    CUR_ROWS=()
+    CUR_ROW_STATUS=()
+    CUR_ROW_FILE=()
     return 0
   fi
 
@@ -656,21 +694,11 @@ flush_commit() {
   # window was — immune to the sweep and creation filters.
   printf '%s\n' "$CUR_PR" >> "$SEEN_PRS"
 
-  for row in ${CUR_ROWS[@]+"${CUR_ROWS[@]}"}; do
-    # `--name-status` rows are `status<TAB>path`, or `R100<TAB>old<TAB>new` for
-    # a rename/copy — the path is always the last tab-separated field. A row
-    # with no tab at all degrades to "unknown status, whole line is the path",
-    # which counts the touch rather than silently dropping it.
-    case "$row" in
-      *"$TAB_CHAR"*)
-        status="${row%%"$TAB_CHAR"*}"
-        file="${row##*"$TAB_CHAR"}"
-        ;;
-      *)
-        status=""
-        file="$row"
-        ;;
-    esac
+  idx=0
+  while [ "$idx" -lt "$total" ]; do
+    status="${CUR_ROW_STATUS[$idx]}"
+    file="${CUR_ROW_FILE[$idx]}"
+    idx=$((idx + 1))
     [ -n "$file" ] || continue
 
     if is_excluded "$file"; then
@@ -685,7 +713,7 @@ flush_commit() {
     # Record the creation fact BEFORE either drop, so `created_in_window` stays
     # true even for a file born inside a sweep.
     if is_creation_status "$status"; then
-      printf '%s\t%s\n' "$file" "$CUR_PR" >> "$CREATION_TSV"
+      printf '%s\t%s\000' "$CUR_PR" "$file" >> "$CREATION_TSV"
     fi
 
     if [ "$is_sweep" -eq 1 ]; then
@@ -697,25 +725,37 @@ flush_commit() {
       continue
     fi
 
-    printf '%s\t%s\t%s\n' "$CUR_PR" "$CUR_DATE" "$file" >> "$TOUCH_TSV"
+    printf '%s\t%s\t%s\000' "$CUR_PR" "$CUR_DATE" "$file" >> "$TOUCH_TSV"
   done
 
-  CUR_ROWS=()
+  CUR_ROW_STATUS=()
+  CUR_ROW_FILE=()
 }
 
 enumerate_git() {
-  local line rest commit_date subject pr
-  # `@@C@@date@@S@@subject` marks a commit header; every other non-empty line is
-  # a `status<TAB>path` row. Plain ASCII sentinels, not control bytes: under
-  # bash 3.2 (macOS) `${line#$'\x01'}` silently fails to strip even where the
+  # `token` is initialised because the loop guard reads it after a FAILED read
+  # (the `|| [ -n "$token" ]` that keeps an unterminated final record), and an
+  # unset variable would abort under `set -u` on a repo with no in-window log.
+  local token="" rest commit_date subject pr
+  local expect_path=0 skip_source=0 pending_status=""
+  # `@@C@@date@@S@@subject` marks a commit header; every other token is one
+  # `-z --name-status` field. Plain ASCII sentinels, not control bytes: under
+  # bash 3.2 (macOS) `${token#$'\x01'}` silently fails to strip even where the
   # matching `case` pattern succeeds, which leaked the byte into every
   # timestamp. Nothing here relies on ANSI-C quoting.
-  CUR_PR=""; CUR_DATE=""; CUR_ROWS=()
-  while IFS= read -r line; do
-    case "$line" in
+  #
+  # `-z` framing, measured rather than assumed (git 2.50.1): a `tformat` header
+  # is NUL-terminated, then ONE LF precedes that commit's first status token,
+  # then fields alternate `status NUL path NUL` — `R100 NUL old NUL new NUL` for
+  # a rename/copy. `%s` is the subject LINE, so a header token can never contain
+  # a newline of its own.
+  CUR_PR=""; CUR_DATE=""; CUR_ROW_STATUS=(); CUR_ROW_FILE=()
+  while IFS= read -r -d '' token || [ -n "$token" ]; do
+    case "$token" in
       '@@C@@'*)
         flush_commit
-        rest="${line#@@C@@}"
+        expect_path=0; skip_source=0; pending_status=""
+        rest="${token#@@C@@}"
         commit_date="${rest%%@@S@@*}"
         subject="${rest#*@@S@@}"
         # ONLY a TRAILING (#N) marker is a PR number — that is the suffix GitHub
@@ -727,14 +767,50 @@ enumerate_git() {
         [ -n "$pr" ] && GIT_MARKED_COMMITS=$((GIT_MARKED_COMMITS + 1))
         CUR_PR="$pr"
         CUR_DATE="$commit_date"
+        continue
         ;;
-      '')
+    esac
+
+    # Buffer only PR-attributed commits — an unmarked commit contributes
+    # nothing regardless of how many paths it touched. Skipping its fields
+    # wholesale is safe: the next header resynchronises the state machine.
+    [ -n "${CUR_PR:-}" ] || continue
+
+    if [ "$expect_path" -eq 1 ]; then
+      if [ "$skip_source" -eq 1 ]; then
+        # A rename/copy names two paths; the SOURCE arrives first and the
+        # DESTINATION — the path this detector scores, matching the pre-`-z`
+        # "last tab-separated field" rule — arrives next.
+        skip_source=0
+        continue
+      fi
+      CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]="$pending_status"
+      CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+      expect_path=0; pending_status=""
+      continue
+    fi
+
+    # Status state. Strip the single LF `-z` places after a commit header —
+    # positional, so it can never touch a path: a diff status never starts with
+    # a newline, and a path is only ever read in the branch above.
+    case "$token" in
+      "$NL_CHAR"*) token="${token#"$NL_CHAR"}" ;;
+    esac
+    [ -n "$token" ] || continue
+
+    case "$token" in
+      A|B|C|D|M|T|U|X|R|C[0-9]*|R[0-9]*)
+        pending_status="$token"
+        expect_path=1
+        case "$token" in R*|C*) skip_source=1 ;; *) skip_source=0 ;; esac
         ;;
       *)
-        # Buffer only PR-attributed commits — an unmarked commit contributes
-        # nothing regardless of how many paths it touched.
-        [ -n "${CUR_PR:-}" ] || continue
-        CUR_ROWS[${#CUR_ROWS[@]}]="$line"
+        # Not a diff status: the stream desynchronised on an unexpected payload.
+        # Count the touch under an unknown status rather than dropping it — the
+        # same degradation the newline reader applied to a row with no status
+        # column — and resynchronise at the next header.
+        CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]=""
+        CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
         ;;
     esac
   # `-M` pins rename detection ON regardless of the ambient `diff.renames`
@@ -743,8 +819,13 @@ enumerate_git() {
   # result that silently varied with the caller's git config, and a regression
   # against the `--name-only` behaviour this replaced (which always printed the
   # destination as an ordinary touch).
-  done < <(git -c core.quotePath=false log --no-merges --since="$SINCE" --name-status -M \
-             --pretty=format:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
+  #
+  # `core.quotePath=false` is now REDUNDANT — `-z` emits paths verbatim even
+  # with quoting on (verified) — and is kept deliberately: it costs nothing, and
+  # it means a future edit dropping `-z` fails the embedded-newline test loudly
+  # instead of quietly mangling non-ASCII paths as well.
+  done < <(git -c core.quotePath=false log -z --no-merges --since="$SINCE" --name-status -M \
+             --pretty=tformat:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
   flush_commit
 }
 
@@ -780,43 +861,63 @@ enumerate_gh() {
     '[.[] | select(.mergedAt != null and (.mergedAt[0:10]) >= $since)]
      | .[] | "\(.number)\t\(.mergedAt)"' 2>/dev/null)
 
-  local pr merged_at files
+  local pr merged_at
   while IFS=$'\t' read -r pr merged_at; do
     [ -n "$pr" ] || continue
-    # `status<TAB>filename` per file. The filter is per-element, so it composes
-    # correctly with --paginate (which runs --jq once per PAGE); the PR's total
-    # file count is taken from the concatenated result below, in the shell.
-    files=$(gh api "repos/${owner_repo}/pulls/${pr}/files" --paginate \
-              --jq '.[] | [(.status // ""), .filename] | join("\u0009")' 2>/dev/null) || {
+    # `status NUL filename NUL` per file, spooled to a file rather than
+    # captured: command substitution strips NUL bytes, and NUL is the byte
+    # carrying the record boundary. jq runs OUTSIDE gh (no `--jq`) because gh's
+    # writer newline-terminates every result, and a newline is precisely what
+    # must not delimit records here. The filter stays per-element, so it still
+    # composes with --paginate's concatenated per-page arrays. `[0] | implode`
+    # is the NUL literal: `--raw-output0` reads better but does not exist on
+    # jq 1.6, and this script claims no jq floor.
+    if ! gh api "repos/${owner_repo}/pulls/${pr}/files" --paginate 2>/dev/null \
+         | jq -j 'def z: [0] | implode;
+                  .[] | ((.status // "") + z + (.filename // "") + z)' \
+             > "$GH_FILES" 2>/dev/null; then
       err "gh api pulls/${pr}/files failed — skipping PR #${pr}"
       continue
-    }
-    printf '%s\n' "$pr" >> "$SEEN_PRS"
-    local file status row pr_file_total=0 pr_is_sweep=0
-    # The gh path has no per-commit granularity, so the sweep unit is the PR's
-    # whole file list. On a squash-merge repo that is the same thing.
-    if [ -n "$files" ]; then
-      pr_file_total=$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d '[:space:]')
-      case "$pr_file_total" in ''|*[!0-9]*) pr_file_total=0 ;; esac
     fi
+    printf '%s\n' "$pr" >> "$SEEN_PRS"
+    # `token` is initialised for the same reason as in enumerate_git: an empty
+    # payload (a PR with no files) leaves the loop guard reading it unset.
+    local file status token="" idx pr_file_total=0 pr_is_sweep=0
+    local expect_path=0 pending_status=""
+    GH_ROW_STATUS=(); GH_ROW_FILE=()
+    while IFS= read -r -d '' token || [ -n "$token" ]; do
+      if [ "$expect_path" -eq 1 ]; then
+        GH_ROW_STATUS[${#GH_ROW_STATUS[@]}]="$pending_status"
+        GH_ROW_FILE[${#GH_ROW_FILE[@]}]="$token"
+        expect_path=0; pending_status=""
+      else
+        pending_status="$token"; expect_path=1
+      fi
+    done < "$GH_FILES"
+    if [ "$expect_path" -eq 1 ] && [ -n "$pending_status" ]; then
+      # An odd trailing token means the stream ended mid-pair. Count it as a
+      # path under an unknown status rather than dropping the touch, matching
+      # the git backend's desynchronisation degradation.
+      GH_ROW_STATUS[${#GH_ROW_STATUS[@]}]=""
+      GH_ROW_FILE[${#GH_ROW_FILE[@]}]="$pending_status"
+    fi
+    # The gh path has no per-commit granularity, so the sweep unit is the PR's
+    # whole file list. On a squash-merge repo that is the same thing. The total
+    # is a RECORD count, never a line count: one filename carrying an embedded
+    # newline used to read as two files and drove this classification off the
+    # wrong number (issue #1554).
+    pr_file_total=${#GH_ROW_FILE[@]}
     if [ "$SWEEP_THRESHOLD" -gt 0 ] && [ "$pr_file_total" -ge "$SWEEP_THRESHOLD" ]; then
       pr_is_sweep=1
       SWEEP_COMMIT_COUNT=$((SWEEP_COMMIT_COUNT + 1))
     fi
-    while IFS= read -r row; do
-      [ -n "$row" ] || continue
-      # A fixture or payload with no status column degrades to "unknown status,
-      # whole line is the filename" — the touch still counts.
-      case "$row" in
-        *"$TAB_CHAR"*)
-          status="${row%%"$TAB_CHAR"*}"
-          file="${row##*"$TAB_CHAR"}"
-          ;;
-        *)
-          status=""
-          file="$row"
-          ;;
-      esac
+    idx=0
+    while [ "$idx" -lt "$pr_file_total" ]; do
+      # A payload with no `status` key degrades to an empty status — the touch
+      # still counts, exactly as a row with no status column did before.
+      status="${GH_ROW_STATUS[$idx]}"
+      file="${GH_ROW_FILE[$idx]}"
+      idx=$((idx + 1))
       [ -n "$file" ] || continue
       if is_excluded "$file"; then
         EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
@@ -835,7 +936,7 @@ enumerate_gh() {
       # Record the creation fact BEFORE either drop, so `created_in_window`
       # stays true even for a file born inside a sweep.
       if is_creation_status_gh "$status"; then
-        printf '%s\t%s\n' "$file" "$pr" >> "$CREATION_TSV"
+        printf '%s\t%s\000' "$pr" "$file" >> "$CREATION_TSV"
       fi
       if [ "$pr_is_sweep" -eq 1 ]; then
         SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
@@ -845,8 +946,8 @@ enumerate_gh() {
         CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
         continue
       fi
-      printf '%s\t%s\t%s\n' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"
-    done <<< "$files"
+      printf '%s\t%s\t%s\000' "$pr" "$merged_at" "$file" >> "$TOUCH_TSV"
+    done
   done <<< "$in_window"
   return 0
 }
@@ -940,10 +1041,14 @@ fi
 # than a by-product of the filter. Log order is newest-first, so reversing
 # before from_entries (which keeps the LAST occurrence of a key) reports the
 # most recent creation for a path created more than once in the window.
-CREATION_MAP=$(jq -Rs -c '
-  split("\n")
+#
+# Rows are `pr <TAB> path`, NUL-terminated: the PR comes first so the path stays
+# the LAST field and every field past it can be rejoined, which is what keeps a
+# tab or a newline inside a filename from silently truncating the key.
+CREATION_MAP=$(jq -Rs -c 'def z: [0] | implode;
+  split(z)
   | map(select(length > 0) | split("\t") | select(length >= 2)
-        | {key: .[0], value: (.[1] | tonumber? // .[1])})
+        | {key: (.[1:] | join("\t")), value: (.[0] | tonumber? // .[0])})
   | reverse | from_entries' < "$CREATION_TSV" 2>/dev/null) || CREATION_MAP=""
 case "$CREATION_MAP" in ''|null) CREATION_MAP='{}' ;; esac
 
@@ -954,8 +1059,10 @@ HOTSPOTS=$(jq -Rs -c \
   --argjson threshold "$THRESHOLD" \
   --argjson weight "$CONFLICT_WEIGHT" \
   --argjson min_prs "$MIN_PRS" '
-  split("\n")
-  | map(select(length > 0) | split("\t") | {pr: .[0], merged_at: .[1], file: .[2]})
+  def z: [0] | implode;
+  split(z)
+  | map(select(length > 0) | split("\t")
+        | {pr: .[0], merged_at: .[1], file: (.[2:] | join("\t"))})
   | group_by(.file)
   | map(
       (.[0].file) as $f
