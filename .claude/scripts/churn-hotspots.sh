@@ -109,9 +109,11 @@
 #      14 files were created inside their own scan window, so each mechanically
 #      started at score 1-2 and reached the reporting threshold on one sweep
 #      plus one real touch. The creating commit is now excluded (git path: diff
-#      status `A`; gh path: `"status": "added"`), reported as
-#      `creation_skipped_count`. A rename DESTINATION is not a creation —
-#      renames already read as two paths, and mass renames are caught by rule 2.
+#      status `A` or `C`; gh path: `"status"` of `added` or `copied`), reported
+#      as `creation_skipped_count`. A copy destination is a birth on both paths
+#      so the two backends cannot disagree about the same history. A rename
+#      DESTINATION is not a creation — renames already read as two paths, and
+#      mass renames are caught by rule 2.
 #      `--include-creation` restores the old behaviour.
 #
 #   2. REPO-WIDE SWEEPS ARE NOT FILE-LOCAL CHURN. One 72-file mechanical sweep
@@ -605,6 +607,23 @@ is_creation_status() {  # $1 status token
   case "$1" in A|C*) return 0 ;; *) return 1 ;; esac
 }
 
+# is_creation_status_gh — the gh path's counterpart, kept as its own function so
+# the two enumeration backends cannot drift apart silently. GitHub's
+# `pulls/{N}/files` names a birth `added` and — per its documented schema — a
+# copy destination `copied`; both are paths that did not exist before, which is
+# what `is_creation_status` reads `A`/`C` as above. `renamed` deliberately does
+# NOT count, matching `R` there.
+#
+# GitHub does not run copy detection today, so `copied` is unobserved in
+# practice (16 merged PRs sampled: only added/modified/renamed). It is honoured
+# anyway: it is a documented value of a third-party API, and without it a
+# `copied` row would score on the gh path while the git path drops the same
+# birth, so `--source git` and `--source gh` would disagree about identical
+# history. Found in review of PR #1550.
+is_creation_status_gh() {  # $1 GitHub file status
+  case "$1" in added|copied) return 0 ;; *) return 1 ;; esac
+}
+
 # ---- per-commit buffer (git path) -------------------------------------------
 # A commit's sweep classification depends on how many paths it touched IN TOTAL,
 # and that is not known until its last path row has been read. Rows are
@@ -815,14 +834,14 @@ enumerate_gh() {
       fi
       # Record the creation fact BEFORE either drop, so `created_in_window`
       # stays true even for a file born inside a sweep.
-      if [ "$status" = "added" ]; then
+      if is_creation_status_gh "$status"; then
         printf '%s\t%s\n' "$file" "$pr" >> "$CREATION_TSV"
       fi
       if [ "$pr_is_sweep" -eq 1 ]; then
         SWEEP_SKIPPED_COUNT=$((SWEEP_SKIPPED_COUNT + 1))
         continue
       fi
-      if [ "$INCLUDE_CREATION" -eq 0 ] && [ "$status" = "added" ]; then
+      if [ "$INCLUDE_CREATION" -eq 0 ] && is_creation_status_gh "$status"; then
         CREATION_SKIPPED_COUNT=$((CREATION_SKIPPED_COUNT + 1))
         continue
       fi

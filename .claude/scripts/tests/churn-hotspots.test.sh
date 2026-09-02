@@ -1030,6 +1030,54 @@ for renames in false true; do
 done
 
 # =============================================================================
+# Scenario 25 — a copy destination is a creation on the gh path too
+#
+# The git path reads `C` as a birth (is_creation_status), so a gh path that
+# only honoured `"added"` would SCORE a copied file the git path DROPS, and the
+# two backends would disagree about identical history. GitHub does not run copy
+# detection today, so `"copied"` is unobserved in practice — but it is a
+# documented value of its file schema, and the parity must not depend on that.
+# Found in review of PR #1550.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+R25=$(new_repo_on r25 main)
+# The gh path checks the working tree for existence, so the path must be on
+# disk. An unmarked commit keeps the git-path attribution tests unaffected.
+commit_touch "$R25" "2026-02-01T00:00:00" "add stub fixture files" src/Copied.ts
+
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1701,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":1702,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1703,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+printf 'copied\tsrc/Copied.ts\n'   > "$TMP/files_1701.txt"
+printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1702.txt"
+printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1703.txt"
+
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25a: a \"copied\" birth is not scored as churn on the gh path" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | (.pr_numbers | index(1701)) == null'
+check_jq "25b: the copied birth is reported and labelled like an \"added\" one" "$OUT" \
+  '.creation_skipped_count == 1
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1702,1703] and .created_in_window == true
+          and .creation_pr == 1701)'
+
+# NEGATIVE CONTROL — without it, 25a/25b could pass on a fixture that never
+# reached the creation branch at all. --include-creation must restore the touch.
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --include-creation --json
+check_jq "25c: NEGATIVE CONTROL — --include-creation restores the copied touch" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | .pr_numbers == [1701,1702,1703]'
+
+# A "renamed" destination is NOT a creation — the same guard must not overreach.
+printf 'renamed\tsrc/Copied.ts\n' > "$TMP/files_1701.txt"
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25d: a \"renamed\" destination is still a touch, not a creation" "$OUT" \
+  '.creation_skipped_count == 0
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1701,1702,1703] and .created_in_window == false)'
+
+# =============================================================================
 echo
 echo "churn-hotspots.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
