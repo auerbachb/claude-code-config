@@ -1134,6 +1134,36 @@ test_23_bootstrap_bound_is_clamped_to_the_region() {
     "! grep -q 'run_bounded \"\$GIT_BOUND_SECS\"' '$SYNC'"
 }
 
+# ── Test 24: the hook's clear re-asserts the lock before mutating ───────────
+#
+# Test 21 closed this in the sync's write_marker. The hook's clear had the same
+# shape: acquire, then a raw `rm`/`mv` with no re-assert. state-lock.sh breaks a
+# lock on AGE ALONE, so acquiring it is not proof of still holding it a few lines
+# later — and a dispossessed hook could delete or overwrite a marker the new
+# owner had just written, which is the exact loss this clear path is guarded
+# against everywhere else.
+
+test_24_hook_clear_reasserts_the_lock() {
+  section "Test 24: the hook re-asserts ownership before touching the marker"
+
+  assert "the clear re-asserts the lock" \
+    "grep -q 'state_lock_assert_held' '$HOOK'"
+  # Ordering is the property: the assert must sit between the clear-lock acquire
+  # and the mutation, or it proves nothing.
+  local acquire_line assert_line rm_line
+  acquire_line="$(grep -n 'state_lock_acquire \"\$_sync_lock_base\" 5' "$HOOK" | head -1 | cut -d: -f1)"
+  assert_line="$(grep -n '! state_lock_assert_held' "$HOOK" | head -1 | cut -d: -f1)"
+  rm_line="$(grep -n 'rm -f \"\$_marker_file\"' "$HOOK" | head -1 | cut -d: -f1)"
+  assert "(setup) acquire, assert and removal were all located" \
+    "[ -n '$acquire_line' ] && [ -n '$assert_line' ] && [ -n '$rm_line' ]"
+  assert "the assert comes after the clear-lock acquire" \
+    "[ '${assert_line:-0}' -gt '${acquire_line:-0}' ]"
+  assert "and before the marker is removed" \
+    "[ '${assert_line:-0}' -lt '${rm_line:-0}' ]"
+  assert "a lost lock leaves the marker alone rather than mutating it" \
+    "grep -q 'Lock lost mid-clear' '$HOOK'"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1176,6 +1206,7 @@ test_20_missing_skills_publisher_is_an_error_in_both_writers
 test_21_marker_removal_is_lock_checked
 test_22_publisher_miss_blocks_the_clear_regardless_of_severity
 test_23_bootstrap_bound_is_clamped_to_the_region
+test_24_hook_clear_reasserts_the_lock
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

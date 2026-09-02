@@ -356,8 +356,32 @@ else
       # A real directory here is a pre-worktree COPY of the skill. Replacing it
       # is the documented migration (see .claude/rules/skill-symlinks.md); the
       # name guard above keeps the removal inside ~/.claude/skills/.
+      #
+      # Move ASIDE, link, then delete — not `rm -rf` then `ln -s`. The old order
+      # destroyed the working configuration BEFORE its replacement existed: a
+      # session reading ~/.claude/skills/<name> in that window found nothing, and
+      # an `ln` that failed left the skill gone for good with nothing to restore.
+      # rename(2) cannot swap a directory for a symlink atomically, so the window
+      # cannot be closed outright; what it CAN stop being is destructive, which is
+      # the half that loses data.
       echo "  $skill_name — replacing directory copy with symlink"
-      rm -rf "$link"
+      dircopy_aside="${link}.pre-symlink.$$"
+      if ! mv "$link" "$dircopy_aside" 2>/dev/null; then
+        echo "  WARNING: $skill_name — could not move the directory copy aside; left as-is" >&2
+        continue
+      fi
+      if ln -s "$target" "$link" 2>/dev/null; then
+        rm -rf "$dircopy_aside"
+        echo "  $skill_name — symlinked"
+        continue
+      fi
+      # Put it back rather than leaving the user with neither.
+      if mv "$dircopy_aside" "$link" 2>/dev/null; then
+        echo "  WARNING: $skill_name — could not create the symlink; the directory copy was restored" >&2
+      else
+        echo "  WARNING: $skill_name — could not create the symlink and could not restore the copy; it is at $dircopy_aside" >&2
+      fi
+      continue
     elif [[ -e "$link" ]]; then
       echo "  WARNING: $link is not a symlink or directory — skipping (will not overwrite)" >&2
       continue

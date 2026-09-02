@@ -605,6 +605,82 @@ test_17_regression_repoint_never_creates_a_dangling_link() {
   cleanup "$tmp_home"
 }
 
+# ── Test 18: the directory-copy migration is never destructive ───────────────
+#
+# The migration used to `rm -rf` the copy and THEN `ln -s`. That destroyed the
+# working configuration before its replacement existed: a session reading
+# ~/.claude/skills/<name> in the window found nothing, and an `ln` that failed
+# left the skill gone with nothing to restore. rename(2) cannot swap a directory
+# for a symlink atomically, so the window cannot be closed — but the ORDER can
+# stop being destructive, which is the half that loses data.
+
+test_18_directory_copy_migration_is_not_destructive() {
+  section "Test 18: replacing a directory copy never destroys it before linking"
+
+  local tmp_home fake_wt output exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+
+  # A pre-worktree COPY of alpha: a real directory where the symlink belongs.
+  mkdir -p "$tmp_home/.claude/skills/alpha"
+  printf '# stale copy\n' > "$tmp_home/.claude/skills/alpha/SKILL.md"
+
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1)"
+  exit_code=$?
+
+  assert "publish exits 0" "[ $exit_code -eq 0 ]"
+  assert "the copy was replaced by a symlink" \
+    "[ -L '$tmp_home/.claude/skills/alpha' ]"
+  assert "pointing at the worktree skill" \
+    "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
+  assert "the migration was reported" \
+    "printf '%s' \"\$output\" | grep -q 'replacing directory copy'"
+  # No move-aside temp may survive a successful run, or the migration trades a
+  # data-loss window for a litter of orphaned copies.
+  assert "no move-aside temporary was left behind" \
+    "[ -z \"\$(find '$tmp_home/.claude/skills' -maxdepth 1 -name 'alpha.pre-symlink.*' 2>/dev/null)\" ]"
+  # The ordering itself: the copy must be moved aside, never removed first.
+  assert "the source moves the copy aside instead of removing it first" \
+    "[ -n \"\$(grep -A2 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'mv ')\" ]"
+  assert "(control) no rm precedes the link in that branch" \
+    "[ -z \"\$(grep -A2 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'rm -rf \"\$link\"')\" ]"
+
+  cleanup "$tmp_home"
+}
+
+# ── Test 19: setup completes its independent legs before failing ─────────────
+#
+# setup-skills-worktree.sh runs under `set -e`, so a publisher failure aborted it
+# on the spot — leaving no agent links and no registered hooks, which are
+# independent of the skills leg. Completing them and THEN exiting non-zero is
+# strictly better than abandoning them, provided the run still reports failure.
+
+test_19_setup_continues_past_publisher_failure_then_fails() {
+  section "Test 19: a publisher failure does not abandon setup's other legs"
+
+  local setup="$REPO_ROOT/setup-skills-worktree.sh"
+  assert "(setup) the script was located" "[ -f '$setup' ]"
+  assert "the publisher failure is captured, not left to set -e" \
+    "grep -q 'SETUP_EXIT=1' '$setup'"
+  assert "and it says the remaining legs still run" \
+    "grep -q 'Continuing with the agent publish and hook registration' '$setup'"
+  assert "the run still exits non-zero at the end" \
+    "grep -q 'exit \"\$SETUP_EXIT\"' '$setup'"
+  # Control: a failed run must NOT print the success banner, or a caller keying
+  # off output rather than status would read it as a completed setup. Checked by
+  # line number, since the two lines are further apart than a grep window.
+  local err_line exit_line done_line
+  err_line="$(grep -n 'Finished WITH ERRORS' "$setup" | head -1 | cut -d: -f1)"
+  exit_line="$(grep -n 'exit "\$SETUP_EXIT"' "$setup" | head -1 | cut -d: -f1)"
+  done_line="$(grep -n '^echo "Done. Skills worktree' "$setup" | head -1 | cut -d: -f1)"
+  assert "(setup) all three banner lines were located" \
+    "[ -n '$err_line' ] && [ -n '$exit_line' ] && [ -n '$done_line' ]"
+  assert "the failure banner precedes the non-zero exit" \
+    "[ '${err_line:-0}' -lt '${exit_line:-0}' ]"
+  assert "(control) the success banner sits after that exit, so it cannot run" \
+    "[ '${done_line:-0}' -gt '${exit_line:-0}' ]"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -629,6 +705,8 @@ test_14_regression_setup_repo_root_is_cwd_independent
 test_15_regression_relative_legacy_link_preserved
 test_16_regression_unremovable_stale_link_exits_1
 test_17_regression_repoint_never_creates_a_dangling_link
+test_18_directory_copy_migration_is_not_destructive
+test_19_setup_continues_past_publisher_failure_then_fails
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

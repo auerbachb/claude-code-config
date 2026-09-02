@@ -124,7 +124,19 @@ fi
 # SKILLS_PUBLISH_SCRIPT is resolved and existence-checked in the Step 0
 # preflight above, so this call site only has to invoke it.
 echo "Symlinking skills, CLAUDE.md and rules from worktree..."
-bash "$SKILLS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"
+# Captured rather than left to `set -e`. The worktree already exists by this
+# point, and the legs that follow — the agent publish, hook registration — are
+# INDEPENDENT of this one. Aborting here left a machine with a half-published
+# skills leg, no agent links and no registered hooks, which is strictly worse
+# than the same failure with those legs completed. The status is carried to the
+# end so the run still exits non-zero and says what was incomplete.
+SETUP_EXIT=0
+if ! bash "$SKILLS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"; then
+  SETUP_EXIT=1
+  echo "  WARNING: publish-skill-symlinks.sh failed — skill/CLAUDE.md/rules links may be incomplete." >&2
+  echo "           Continuing with the agent publish and hook registration, which do not depend on it;" >&2
+  echo "           this script will exit non-zero at the end." >&2
+fi
 
 # --- Step 5b: Publish phase-agent definitions to user scope (issue #1189) ---
 #
@@ -194,6 +206,17 @@ else
 fi
 
 echo ""
+if (( SETUP_EXIT != 0 )); then
+  # The remaining legs ran, so say what DID complete — but the run is not a
+  # success and must not report itself as one, or a caller (the scheduled sync,
+  # the session-start hook) would publish from a tree it believes is fully set up.
+  echo "Finished WITH ERRORS. Skills worktree: $SKILLS_WORKTREE" >&2
+  echo "The skill/CLAUDE.md/rules publish failed; agent links and hook registration were still attempted." >&2
+  echo "Re-run this script, or .claude/scripts/publish-skill-symlinks.sh, once the cause is fixed." >&2
+  echo "" >&2
+  echo "Inspect with: ls -la $SKILLS_DIR" >&2
+  exit "$SETUP_EXIT"
+fi
 echo "Done. Skills worktree: $SKILLS_WORKTREE"
 echo "Symlinks in:           $SKILLS_DIR"
 echo ""

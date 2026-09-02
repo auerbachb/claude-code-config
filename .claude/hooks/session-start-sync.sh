@@ -602,7 +602,17 @@ if [[ -f "$_marker_file" ]]; then
         _cleared=$(jq -c 'del(.restart_recommended)' "$_marker_file" 2>/dev/null) || _cleared=""
       fi
       if [[ -n "$_cleared" ]]; then
-        if [[ "$(jq -r 'if (.sync_failure // null) == null then "empty" else "keep" end' <<<"$_cleared" 2>/dev/null)" == "empty" ]]; then
+        # Ownership re-asserted immediately before mutating, exactly as the
+        # sync's write_marker does for its own removal. state-lock.sh breaks a
+        # lock on AGE ALONE, so having acquired it a few lines up is not proof of
+        # still holding it here — and without this check a dispossessed hook
+        # could delete or overwrite a marker the new owner had just written,
+        # which is the one loss this whole clear path is guarded to avoid.
+        if [[ "$_lock_available" == 1 ]] && ! state_lock_assert_held 2>/dev/null; then
+          : # Lock lost mid-clear. Leave the marker alone — a duplicate reminder
+            # next startup is the safe direction, and the same one every other
+            # guard here takes.
+        elif [[ "$(jq -r 'if (.sync_failure // null) == null then "empty" else "keep" end' <<<"$_cleared" 2>/dev/null)" == "empty" ]]; then
           rm -f "$_marker_file" 2>/dev/null || true
         else
           _marker_tmp="${_marker_file}.tmp.$$"
@@ -625,7 +635,16 @@ fi
 # Re-check skills worktree availability independently — fetch/reset errors above
 # don't block this pull, and the root repo path is derived from the worktree.
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
-  root_repo=$(git -C "$skills_wt" worktree list 2>/dev/null | head -1 | awk '{print $1}')
+  # Same delegation as _root_repo above, for the same two reasons: repo-root.sh
+  # owns this lookup and bounds its git calls, and dropping the `| head -1 |`
+  # pipeline removes the SIGPIPE shape that reports a SUCCESSFUL lookup as a
+  # failure under pipefail. This one runs outside the lock, so only the second
+  # reason bites here — but leaving one spelling of the lookup behind is how the
+  # next reader concludes the two are meant to differ.
+  root_repo=""
+  if [[ -f "$_repo_root_helper" ]]; then
+    root_repo="$(bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
+  fi
   if [[ -n "$root_repo" && -e "$root_repo/.git" ]]; then
     # Only pull if on main branch (don't disrupt feature branches).
     # Delegate the actual sync to main-sync.sh: exit 0 = updated/up-to-date,
