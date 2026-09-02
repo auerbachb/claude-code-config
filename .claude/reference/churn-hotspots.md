@@ -31,6 +31,24 @@ hotspot  ⇔  score >= threshold  AND  distinct_pr_count >= 2
 
 This signal is honestly weak, and the script's header says so. `conflict_streak` is a resettable per-watcher streak rather than a lifetime total, and `/fixpr` and `/merge-conflict` keep their conflict detail on transient stdout — nothing persists it. It under-reports more often than not. That is acceptable because it is a *bonus* term: absent conflict data, the score degrades exactly to the PR count, which is the primary signal. Making it load-bearing would have meant new writers in two conflict-resolution skills — scope the ticket explicitly did not ask for.
 
+## Creation commits and repo-wide sweeps score 0 (issue #1547)
+
+A three-round triage of the 39 flagged files closed **37** of them as by-design. `conflict_rounds` was **0** on all 39 — the conflict signal never false-alarmed once; the raw touch count did, 37 times. Two shapes supplied most of that inflation, and both are now filtered.
+
+**1. A file's own creation is not churn.** 7 of round 3's 14 files were created inside their own scan window, so the birth commit counted toward the score: a brand-new file mechanically started at 1–2 and reached the reporting threshold on one sweep plus one real touch. The creating commit is now excluded — diff status `A` on the git path, `"status": "added"` on the gh path. A rename *destination* is not treated as a creation: renames already read as two unrelated paths here, and the mass renames that motivated this are caught by rule 2 anyway. `--include-creation` restores the old behaviour.
+
+**2. A repo-wide mechanical sweep is not file-local churn.** One 72-file sweep (PR #1458, a `script-usage.log` redirection-order fix applied identically everywhere) and two 39-file rename sweeps (PRs #1313, #1320) supplied the majority of events across dozens of flagged files, with zero relationship to any of those files' concerns. A commit touching **>= `--sweep-threshold` paths (default 20)** now contributes nothing.
+
+The sweep count is the commit's **raw** path total, taken *before* the exclusion and existence filters — a 72-file sweep is still a sweep after 60 of its paths were deleted or excluded. The unit differs per enumeration path: a **commit** on the git path, the **whole PR file list** on the gh path, which has no per-commit granularity. For a squash-merge repo those are the same thing.
+
+**Both rules drop the touch EVENT; neither re-weights the score.** That is not a stylistic choice. `churn-hotspot-wrap-plan.sh` validates the envelope with `score == pr_count + conflict_weight × conflict_rounds` plus `floor == .` on every count, and `/wrap` Step 3.10a files nothing when that assertion fails. A *fractional* sweep weight would break the consumer contract outright, so the AC's "0 or fractionally" is implemented at 0 — which, expressed as a dropped event, needs no consumer change at all. A PR still counts for a file whenever some *other* commit of that PR touched it non-mechanically, which is exactly what weighting the sweep commit 0 means.
+
+Only in-window commits are scanned, so a file created *before* the window is untouched by rule 1 — the #1415 shape, where the creation PR aged out of the window on its own.
+
+**The creation fact is reported, not merely spent.** Each hotspot carries `created_in_window` and `creation_pr`, recorded whether or not the creation touch scored. A file born in the window that still crosses the threshold on its other PRs can then be read for what it is instead of looking like a long-standing magnet.
+
+**Measured effect** on the `--since 2026-08-15` window (133 merged PRs, `origin/main`): **111 hotspots → 64**. 87 creation touches and 295 sweep touches across 10 sweep commits were dropped. Of the 53 files with an already-closed by-design hotspot issue that the old detector still flagged, **24 stopped being flagged**. The rest are catalogs, registries, and central contracts whose churn is genuinely file-local and by design — those were never mechanical inflation, and the consumer's closed/zero-conflict suppression is what handles them.
+
 ## Calibration — read this before tuning
 
 The default threshold of 3 over 14 days is sensitive, and how many files clear it scales with repo activity. Measured on this repo over one 14-day window covering **103 merged PRs**:
@@ -119,8 +137,6 @@ Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `is
 
 **`grep -c` is not a safe counter.** On an empty file it prints `0` *and* exits 1, so a `|| echo 0` fallback emits `"0\n0"` and breaks the downstream `jq --argjson`. Counters use `wc -l | tr -d '[:space:]'` and pass through an `as_number` coercion before any jq call, so a malformed counter can never abort the emit.
 
-## Related
-
 ## Output fields (JSON envelope)
 
 | Field | Type | Description |
@@ -136,12 +152,19 @@ Hotspots are keyed by **file path**, which has an exact answer, so the fuzzy `is
 | `scanned_pr_count` | number | Distinct merged PRs seen in the window |
 | `excluded_count` | number | Paths dropped by the exclusion list |
 | `missing_count` | number | Paths dropped because the file does not exist at the scanned ref or in the working tree (issue #1118) |
+| `sweep_threshold` | number | Path count at or above which a commit/PR is a sweep (default 20; 0 disables) — issue #1547 |
+| `include_creation` | boolean | True when `--include-creation` re-enabled scoring of creation commits |
+| `creation_skipped_count` | number | Touches dropped because the commit created that path |
+| `sweep_commit_count` | number | Commits (git path) or PRs (gh path) classified as sweeps |
+| `sweep_skipped_count` | number | Touches dropped because their commit was a sweep |
 | `truncated` | boolean | True when `--top` or the issue-lookup cap clipped output |
 | `existing_lookup_failed` | boolean | True when the issue lookup was incomplete or errored |
 | `total_hotspot_count` | number | Full pre-truncation hotspot count |
 | `hotspots` | array | Scored hotspot entries (see fields below) |
 
-Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
+Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `created_in_window`, `creation_pr`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
+
+A path dropped by exclusion is counted only as `excluded_count`, never also as swept — the filters are applied in order (exclusion, existence, sweep, creation) and each touch is counted exactly once.
 
 ## Related
 
@@ -149,3 +172,4 @@ Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `c
 - Issue #671 — the prior rebase-treadmill incident, hand-noticed.
 - Issue #681 — `hook-scripts.yml` de-hotspotting, the change this detector would have flagged.
 - Issue #1118 — false-positive for deleted file; added existence filter and `missing_count`.
+- Issue #1547 — creation commits and repo-wide sweeps inflated every score; both now weighted 0. Evidence: the 37 by-design closures from triage rounds 1–3, notably Issues #1341, #1408, and #1415.

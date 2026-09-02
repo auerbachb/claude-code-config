@@ -85,12 +85,55 @@ new_repo() {  # $1 dir name -> echoes path
   printf '%s' "$dir"
 }
 
+# Every path a fixture touches is born in a PR-UNMARKED seed commit unless the
+# scenario deliberately creates it in-window. Creation commits no longer score
+# (issue #1547), so letting the first in-window PR create the file would
+# silently turn every unrelated scenario into a test of the creation rule.
+#
+# The seed date sits INSIDE the window (before every fixture commit date) even
+# though the seed is conceptually "before" the history. A pre-window date would
+# be correct only if every seed landed at the root: `git log --since` STOPS
+# walking a linear history at the first commit older than the cutoff, so a seed
+# emitted lazily in the middle of a fixture's history would hide every commit
+# beneath it. An unmarked commit contributes nothing either way, so an in-window
+# seed is invisible to the detector without truncating the log.
+SEED_DATE="2026-01-15T00:00:00"
+
+seed_missing() {  # $1 repo, $2... files
+  local repo="$1"; shift
+  local f any=0
+  for f in "$@"; do
+    if [ ! -e "$repo/$f" ]; then
+      mkdir -p "$repo/$(dirname "$f")"
+      printf 'seed\n' > "$repo/$f"
+      git -C "$repo" add "$f"
+      any=1
+    fi
+  done
+  [ "$any" -eq 1 ] || return 0
+  GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" \
+    git -C "$repo" commit -q -m "seed fixture paths"
+}
+
 commit_touch() {  # $1 repo, $2 date, $3 subject, $4... files
+  local repo="$1" date="$2" subject="$3"; shift 3
+  local f
+  seed_missing "$repo" "$@"
+  for f in "$@"; do
+    mkdir -p "$repo/$(dirname "$f")"
+    echo "change $date" >> "$repo/$f"
+    git -C "$repo" add "$f"
+  done
+  GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" \
+    git -C "$repo" commit -q -m "$subject"
+}
+
+commit_create() {  # $1 repo, $2 date, $3 subject, $4... files — create IN-window
   local repo="$1" date="$2" subject="$3"; shift 3
   local f
   for f in "$@"; do
     mkdir -p "$repo/$(dirname "$f")"
-    echo "change $date" >> "$repo/$f"
+    printf 'created %s\n' "$date" > "$repo/$f"
     git -C "$repo" add "$f"
   done
   GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" \
@@ -470,9 +513,11 @@ check_jq "11h: exactly the three in-window PRs are counted" "$OUT" \
 # the offset from the comparison entirely.
 R11B=$(new_repo r11b)
 commit_touch "$R11B" "2026-03-01T18:00:00" "boundary marker commit" src/Anchor.ts
+# Capture the anchor by SHA immediately — a relative HEAD~1 would name whichever
+# bookkeeping commit the fixture helpers happen to create next.
+REF_SHA=$(git -C "$R11B" rev-parse HEAD)
 # The gh stub reports src/Ref.ts; the working-tree existence check requires it.
 commit_touch "$R11B" "2026-03-01T18:01:00" "add stub fixture file" src/Ref.ts
-REF_SHA=$(git -C "$R11B" rev-parse HEAD~1)
 cat > "$TMP/pr_list.json" <<'EOF'
 [{"number":821,"mergedAt":"2026-03-01T12:00:00Z"},
  {"number":822,"mergedAt":"2026-03-01T20:00:00Z"},
@@ -733,6 +778,304 @@ check_jq "19d: missing_count is incremented for the dropped file" "$OUT" \
   '.missing_count > 0'
 check_jq "19e: missing_count is a top-level field on all exit paths" "$OUT" \
   'has("missing_count")'
+
+# =============================================================================
+# Scenario 20 — a file's own creation commit does not score (issue #1547 AC 1)
+#
+# 7 of one triage round's 14 flagged files were created inside their own scan
+# window, so each mechanically started at score 1-2 and reached the reporting
+# threshold on one sweep plus one real touch.
+#
+# Every assertion below is paired with a NEGATIVE CONTROL (`--include-creation`)
+# reproducing the pre-fix behaviour on the same history, so a rule that silently
+# stopped running could not pass this scenario.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+R20=$(new_repo_on r20 main)
+# src/Old.tsx is born OUTSIDE PR attribution; the other two are born in-window.
+commit_touch  "$R20" "2026-02-01T00:00:00" "seed the pre-existing file" src/Old.tsx
+commit_create "$R20" "2026-02-02T00:00:00" "feat(#10): add both (#1001)" src/Born.tsx src/BornBusy.tsx
+commit_touch  "$R20" "2026-02-03T00:00:00" "fix(#11): edit (#1002)" src/Born.tsx src/BornBusy.tsx src/Old.tsx
+commit_touch  "$R20" "2026-02-04T00:00:00" "fix(#12): edit (#1003)" src/Born.tsx src/BornBusy.tsx src/Old.tsx
+commit_touch  "$R20" "2026-02-05T00:00:00" "fix(#13): edit (#1004)" src/BornBusy.tsx src/Old.tsx
+
+run_in "$R20" --since "$WINDOW_START" --json
+check_jq "20a: a file whose 3rd touch was its own creation drops below threshold" "$OUT" \
+  '.hotspots | map(.file) | index("src/Born.tsx") == null'
+check_jq "20b: the creation PR is absent from a file that still qualifies" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .pr_numbers == [1002,1003,1004] and .pr_count == 3 and .score == 3'
+check_jq "20c: creation_skipped_count reports the dropped touches" "$OUT" \
+  '.creation_skipped_count == 2'
+check_jq "20d: an excluded creation is still LABELLED, not just spent" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .created_in_window == true and .creation_pr == 1001'
+check_jq "20e: a file born outside the window is not labelled as created" "$OUT" \
+  '.hotspots[] | select(.file=="src/Old.tsx") | .created_in_window == false and .creation_pr == null'
+check_jq "20f: a pre-existing file keeps every one of its PRs" "$OUT" \
+  '.hotspots[] | select(.file=="src/Old.tsx") | .pr_numbers == [1002,1003,1004]'
+check_jq "20g: the filter settings are reported in the envelope" "$OUT" \
+  '.sweep_threshold == 20 and .include_creation == false'
+
+# NEGATIVE CONTROL — the same history scores the creation commit again under
+# --include-creation, which is exactly the pre-fix result. Without this, a rule
+# that never fired would pass 20a by accident.
+run_in "$R20" --since "$WINDOW_START" --include-creation --json
+check_jq "20h: NEGATIVE CONTROL — --include-creation restores the pre-fix hotspot" "$OUT" \
+  '.hotspots[] | select(.file=="src/Born.tsx") | .pr_numbers == [1001,1002,1003] and .score == 3'
+check_jq "20i: NEGATIVE CONTROL — nothing is counted as a skipped creation" "$OUT" \
+  '.creation_skipped_count == 0 and .include_creation == true'
+check_jq "20j: the creation LABEL is independent of whether the touch scored" "$OUT" \
+  '.hotspots[] | select(.file=="src/BornBusy.tsx") | .created_in_window == true and .creation_pr == 1001'
+
+# The TSV contract is unchanged — six columns, no new fields leaking in.
+run_in "$R20" --since "$WINDOW_START"
+check_eq "20k: TSV still carries exactly the six documented columns" "6" \
+  "$(printf '%s' "$OUT" | head -1 | awk -F'\t' '{print NF}')"
+
+# =============================================================================
+# Scenario 21 — repo-wide mechanical sweeps score 0 (issue #1547 AC 2)
+#
+# The measured shape from Issue #1341: a creation, two 39-file rename sweeps
+# that touched one hardcoded line, and two real edits. Pre-fix that read as
+# score 5; only two of the five touches were about this file at all.
+# =============================================================================
+sweep_paths() {  # $1 count, $2 prefix -> space-separated paths (word-split at the call site)
+  local n="$1" prefix="$2" i=1 out=""
+  while [ "$i" -le "$n" ]; do out="$out ${prefix}${i}.ts"; i=$((i + 1)); done
+  printf '%s' "$out"
+}
+
+R21=$(new_repo_on r21 main)
+commit_create "$R21" "2026-02-01T00:00:00" "feat(#20): create the suite (#1201)" src/Roster.ts
+commit_touch  "$R21" "2026-02-02T00:00:00" "chore(#21): roster line (#1202)" src/Roster.ts
+# Both sweeps touch the SAME 39 paths, as the real rename sweeps did.
+commit_touch  "$R21" "2026-02-03T00:00:00" "refactor(#22): rename sweep (#1203)" \
+  src/Roster.ts $(sweep_paths 38 src/sweep_a)
+commit_touch  "$R21" "2026-02-04T00:00:00" "refactor(#23): rename sweep (#1204)" \
+  src/Roster.ts $(sweep_paths 38 src/sweep_a)
+commit_touch  "$R21" "2026-02-05T00:00:00" "fix(#24): delete the static list (#1205)" src/Roster.ts
+
+run_in "$R21" --since "$WINDOW_START" --json
+check_eq "21a: creation + two sweeps + two real edits no longer crosses threshold 3" "1" "$RC"
+check_jq "21b: sweep commits are counted, not hidden" "$OUT" \
+  '.sweep_commit_count == 2 and .sweep_skipped_count == 78'
+check_jq "21c: the envelope survives the clean exit path with the new fields" "$OUT" \
+  'has("sweep_threshold") and has("include_creation") and has("creation_skipped_count")
+   and has("sweep_commit_count") and has("sweep_skipped_count")'
+
+run_in "$R21" --since "$WINDOW_START" --threshold 2 --json
+check_jq "21d: exactly the two non-mechanical PRs survive" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1205] and .pr_count == 2 and .score == 2'
+
+# NEGATIVE CONTROL 1 — both rules off reproduces the pre-fix score of 5 on the
+# identical history.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 0 --include-creation --json
+check_jq "21e: NEGATIVE CONTROL — both rules off restores the pre-fix score of 5" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1201,1202,1203,1204,1205] and .score == 5'
+check_jq "21f: NEGATIVE CONTROL — no commit is classified as a sweep at threshold 0" "$OUT" \
+  '.sweep_commit_count == 0 and .sweep_skipped_count == 0 and .sweep_threshold == 0'
+
+# NEGATIVE CONTROL 2 — the SAME 39-file commits count again once the threshold
+# is above them, so the rule keys on the file count and not on anything
+# incidental to these fixtures. Creation stays excluded, isolating the rules.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 40 --json
+check_jq "21g: NEGATIVE CONTROL — the same commits count when below the threshold" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1203,1204,1205] and .score == 4'
+
+# The two rules are independent: sweeps off, creation still excluded.
+run_in "$R21" --since "$WINDOW_START" --sweep-threshold 0 --json
+check_jq "21h: the two rules are independent of one another" "$OUT" \
+  '.hotspots[] | select(.file=="src/Roster.ts") | .pr_numbers == [1202,1203,1204,1205]'
+
+# The >= boundary, measured from both sides on one history.
+R21B=$(new_repo_on r21b main)
+commit_touch "$R21B" "2026-02-01T00:00:00" "seed" src/Edge.ts
+commit_touch "$R21B" "2026-02-02T00:00:00" "sweep of exactly 20 (#1301)" \
+  src/Edge.ts $(sweep_paths 19 src/twenty_)
+commit_touch "$R21B" "2026-02-03T00:00:00" "sweep of exactly 19 (#1302)" \
+  src/Edge.ts $(sweep_paths 18 src/nineteen_)
+commit_touch "$R21B" "2026-02-04T00:00:00" "ordinary edit (#1303)" src/Edge.ts
+
+run_in "$R21B" --since "$WINDOW_START" --threshold 2 --json
+check_jq "21i: 20 files is a sweep and 19 is not — the >= boundary from both sides" "$OUT" \
+  '.hotspots[] | select(.file=="src/Edge.ts") | .pr_numbers == [1302,1303]'
+check_jq "21j: exactly one commit was classified as a sweep" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 20'
+
+# Sweep size is the commit's RAW path count, taken before the exclusion list —
+# a 20-file sweep stays a sweep when one of its paths is an excluded lockfile.
+R21C=$(new_repo_on r21c main)
+commit_touch "$R21C" "2026-02-01T00:00:00" "seed" src/Raw.ts
+commit_touch "$R21C" "2026-02-02T00:00:00" "sweep with a lockfile (#1311)" \
+  src/Raw.ts package-lock.json $(sweep_paths 18 src/raw_)
+commit_touch "$R21C" "2026-02-03T00:00:00" "ordinary (#1312)" src/Raw.ts
+commit_touch "$R21C" "2026-02-04T00:00:00" "ordinary (#1313)" src/Raw.ts
+
+run_in "$R21C" --since "$WINDOW_START" --threshold 2 --json
+# 20 raw paths, only 19 of which survive the exclusion list — the commit is
+# still a sweep, and the excluded lockfile is counted as excluded rather than
+# swept, so the two filters never double-count the same path.
+check_jq "21k: sweep size counts raw paths, before the exclusion list" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 19 and .excluded_count == 1
+   and (.hotspots[] | select(.file=="src/Raw.ts") | .pr_numbers == [1312,1313])'
+
+(cd "$R21" && bash "$SCRIPT" --sweep-threshold abc >/dev/null 2>&1)
+check_eq "21l: a non-numeric --sweep-threshold exits 2" "2" "$?"
+
+# =============================================================================
+# Scenario 22 — both rules apply on the gh enumeration path
+#
+# The gh path has no per-commit granularity, so the sweep unit is the PR's whole
+# file list, and creation comes from the API's own `"status": "added"`.
+# =============================================================================
+R22=$(new_repo_on r22 main)
+# The gh path checks the working tree for existence, so the paths must be on
+# disk. An unmarked commit keeps the git-path attribution tests unaffected.
+commit_touch "$R22" "2026-02-01T00:00:00" "add stub fixture files" \
+  src/GhBorn.ts $(sweep_paths 19 src/ghsweep_)
+
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1401,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":1402,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1403,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+printf 'added\tsrc/GhBorn.ts\n'    > "$TMP/files_1401.txt"
+printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1402.txt"
+printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1403.txt"
+
+printf '[]\n' > "$TMP/issue_list.json"
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "22a: an \"added\" file on the gh path is not scored as churn" "$OUT" \
+  '.hotspots[] | select(.file=="src/GhBorn.ts") | (.pr_numbers | index(1401)) == null'
+check_jq "22b: the gh path reports the skipped creation and labels it" "$OUT" \
+  '.creation_skipped_count == 1
+   and (.hotspots[] | select(.file=="src/GhBorn.ts")
+        | .pr_numbers == [1402,1403] and .created_in_window == true and .creation_pr == 1401)'
+
+# NEGATIVE CONTROL — the same fixtures score the creation under --include-creation.
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --include-creation --json
+check_jq "22c: NEGATIVE CONTROL — --include-creation restores the gh creation touch" "$OUT" \
+  '.hotspots[] | select(.file=="src/GhBorn.ts") | .pr_numbers == [1401,1402,1403]'
+
+# A 20-file PR is a sweep on the gh path too.
+{
+  printf 'modified\tsrc/GhBorn.ts\n'
+  i=1; while [ "$i" -le 19 ]; do printf 'modified\tsrc/ghsweep_%s.ts\n' "$i"; i=$((i + 1)); done
+} > "$TMP/files_1403.txt"
+run_in "$R22" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_eq "22d: a 20-file PR is a sweep, dropping the file below threshold 2" "1" "$RC"
+check_jq "22e: the sweep PR is counted on the gh path" "$OUT" \
+  '.sweep_commit_count == 1 and .sweep_skipped_count == 20'
+
+# Scenario 11's fixtures are bare filenames with no status column — that path is
+# still enumerated rather than silently dropped (verified by 11a-11i above).
+printf 'modified\tsrc/GhBorn.ts\n' > "$TMP/files_1403.txt"
+
+# =============================================================================
+# Scenario 23 — a file with recorded conflict cost is still flagged
+#
+# Issue #1547's AC requires the tuned detector to keep flagging anything with
+# conflict_rounds > 0. No file in the live 2026-08-15 window has any, so the
+# path is pinned here instead of resting on a vacuous live check.
+# =============================================================================
+cat > "$HOME/.claude/session-state.json" <<'EOF'
+{"schema_version":1,"repos":{"testowner/testrepo":{"prs":{
+  "1502":{"babysit":{"conflict_streak":2}}
+}}}}
+EOF
+R23=$(new_repo_on r23 main)
+commit_create "$R23" "2026-02-01T00:00:00" "feat(#30): create (#1501)" src/Costly.ts
+commit_touch  "$R23" "2026-02-02T00:00:00" "fix(#31): conflicted work (#1502)" src/Costly.ts
+commit_touch  "$R23" "2026-02-03T00:00:00" "sweep (#1503)" src/Costly.ts $(sweep_paths 25 src/c23_)
+commit_touch  "$R23" "2026-02-04T00:00:00" "fix(#32): real edit (#1504)" src/Costly.ts
+
+printf '[]\n' > "$TMP/issue_list.json"
+run_in "$R23" --since "$WINDOW_START" --repo testowner/testrepo --json
+check_eq "23a: a file with conflict cost is still reported after both filters" "0" "$RC"
+check_jq "23b: the creation and the sweep are gone, the conflict weight remains" "$OUT" \
+  '.hotspots[] | select(.file=="src/Costly.ts")
+   | .pr_numbers == [1502,1504] and .pr_count == 2
+     and .conflict_rounds == 2 and .conflict_prs == [1502] and .score == 6'
+check_jq "23c: the score formula the consumer asserts still holds exactly" "$OUT" \
+  '. as $d | all(.hotspots[]; .score == (.pr_count + ($d.conflict_weight * .conflict_rounds))
+                              and (.score | floor) == .score
+                              and (.pr_numbers | length) == .pr_count)'
+rm -f "$HOME/.claude/session-state.json"
+
+# =============================================================================
+# Scenario 24 — a rename destination is a touch, not a creation, whatever the
+# ambient `diff.renames` setting says
+#
+# `--name-status` reports a rename as `R100 old new` only while rename
+# detection is on. With `diff.renames = false` the same commit reports
+# `D old` + `A new`, so the destination would be dropped as a CREATION — a
+# result that varied with the caller's git config and regressed the
+# `--name-only` behaviour, which always printed the destination as a touch.
+# The detector pins `-M`, so both configs agree.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+for renames in false true; do
+  R24=$(new_repo_on "r24_$renames" main)
+  git -C "$R24" config diff.renames "$renames"
+  commit_touch "$R24" "2026-02-01T00:00:00" "seed" src/Before.ts
+  git -C "$R24" mv src/Before.ts src/After.ts
+  GIT_AUTHOR_DATE="2026-02-02T00:00:00" GIT_COMMITTER_DATE="2026-02-02T00:00:00" \
+    git -C "$R24" commit -q -m "refactor(#40): rename it (#1601)"
+  commit_touch "$R24" "2026-02-03T00:00:00" "fix(#41): edit (#1602)" src/After.ts
+  commit_touch "$R24" "2026-02-04T00:00:00" "fix(#42): edit (#1603)" src/After.ts
+
+  run_in "$R24" --since "$WINDOW_START" --json
+  check_jq "24 (diff.renames=$renames): the rename destination counts as a touch, not a creation" "$OUT" \
+    '.hotspots[] | select(.file=="src/After.ts")
+     | .pr_numbers == [1601,1602,1603] and .created_in_window == false'
+done
+
+# =============================================================================
+# Scenario 25 — a copy destination is a creation on the gh path too
+#
+# The git path reads `C` as a birth (is_creation_status), so a gh path that
+# only honoured `"added"` would SCORE a copied file the git path DROPS, and the
+# two backends would disagree about identical history. GitHub does not run copy
+# detection today, so `"copied"` is unobserved in practice — but it is a
+# documented value of its file schema, and the parity must not depend on that.
+# Found in review of PR #1550.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+R25=$(new_repo_on r25 main)
+# The gh path checks the working tree for existence, so the path must be on
+# disk. An unmarked commit keeps the git-path attribution tests unaffected.
+commit_touch "$R25" "2026-02-01T00:00:00" "add stub fixture files" src/Copied.ts
+
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":1701,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":1702,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":1703,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+printf 'copied\tsrc/Copied.ts\n'   > "$TMP/files_1701.txt"
+printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1702.txt"
+printf 'modified\tsrc/Copied.ts\n' > "$TMP/files_1703.txt"
+
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25a: a \"copied\" birth is not scored as churn on the gh path" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | (.pr_numbers | index(1701)) == null'
+check_jq "25b: the copied birth is reported and labelled like an \"added\" one" "$OUT" \
+  '.creation_skipped_count == 1
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1702,1703] and .created_in_window == true
+          and .creation_pr == 1701)'
+
+# NEGATIVE CONTROL — without it, 25a/25b could pass on a fixture that never
+# reached the creation branch at all. --include-creation must restore the touch.
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --include-creation --json
+check_jq "25c: NEGATIVE CONTROL — --include-creation restores the copied touch" "$OUT" \
+  '.hotspots[] | select(.file=="src/Copied.ts") | .pr_numbers == [1701,1702,1703]'
+
+# A "renamed" destination is NOT a creation — the same guard must not overreach.
+printf 'renamed\tsrc/Copied.ts\n' > "$TMP/files_1701.txt"
+run_in "$R25" --since "$WINDOW_START" --source gh --threshold 2 --json
+check_jq "25d: a \"renamed\" destination is still a touch, not a creation" "$OUT" \
+  '.creation_skipped_count == 0
+   and (.hotspots[] | select(.file=="src/Copied.ts")
+        | .pr_numbers == [1701,1702,1703] and .created_in_window == false)'
 
 # =============================================================================
 echo
