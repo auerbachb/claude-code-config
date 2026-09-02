@@ -49,12 +49,12 @@ resolve_script() {
 
 run_script() {            # run_script <name> [args...]
   local name="$1"; shift
-  local path
-  if ! path=$(resolve_script "$name"); then
+  local script_path       # NOT `path`: zsh ties lowercase `path` to `PATH` (#1556)
+  if ! script_path=$(resolve_script "$name"); then
     echo "ERROR: $name not found (checked ~/.claude/skills-worktree/.claude/scripts/, ~/.claude/scripts/, .claude/scripts/)" >&2
     return 127
   fi
-  "$path" "$@"
+  "$script_path" "$@"
 }
 ```
 

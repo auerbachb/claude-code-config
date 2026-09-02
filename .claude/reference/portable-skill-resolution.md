@@ -114,6 +114,24 @@ emptiness test, never a bare `$(resolve_script foo.sh)` under `set -e`.
 the current one). It stays in the list because it is a documented install
 location and costs one `-x` test; its absence is not a defect.
 
+### Why the resolved path is held in `script_path`, never `path` (issue #1556)
+
+The variable that `run_script()` holds the resolved path in is named
+`script_path` deliberately — do not "tidy" it back to `path`. The Bash tool an
+agent runs is the session's shell, zsh on macOS, and in zsh lowercase `path` is
+a special array **tied** to the scalar `PATH`. `local path; path=/tmp/x` leaves
+`typeset -aT PATH path=( /tmp/x )` — PATH is gone for the rest of that function
+body, which is precisely where `"$path" "$@"` runs. Every `run_script` call then
+fails with `env: bash: No such file or directory`, a message that reads like a
+missing helper rather than a destroyed PATH (it was misread exactly that way
+when the bug was found). The same text is harmless under bash, so no `.sh` file
+in this repo is affected and none needs renaming.
+
+Enforced by `.github/scripts/zsh-special-name-lint.sh`, which rejects
+assignments to zsh-special names inside shell-fenced Markdown blocks. The other
+names it covers (`cdpath`, `fpath`, `status`, `argv`, …) and their measured
+failure modes are documented in that script's header.
+
 ### The RESOLVE block (canonical — reproduce verbatim)
 
 Subagent spawn prompts cannot run a shell function defined in a skill file, so
