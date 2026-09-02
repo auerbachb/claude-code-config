@@ -777,6 +777,21 @@ require_text "$LEAVE_SKILL" 'CANCEL_WINDOW_RC' \
 require_text "$LEAVE_SKILL" 'An unreadable snapshot rolls back nothing' \
   'the rollback must say why a failed read retires nothing rather than half the declaration'
 
+# EVERY .leave write carries the declared_at guard, at all five sites. A CAS win proves .leave was
+# ours at THAT lock hold; the write that follows is a second one, and a re-declaration landing
+# between them is deactivated while its own Monitor keeps running. Same guard, same reason:
+# 8.6 retirement, Step 9 cancel, Step 11 retirement, Step 11 pair-null, Step 6 rollback.
+require_text "$LEAVE_SKILL" '"$HOLDER_AT" = "$ARM_DECLARED_AT"' \
+  'the arm-failure rollback must re-read the identity before deactivating the declaration'
+require_text "$LEAVE_SKILL" 'ARM_DECLARED_AT="$NOW_ISO"' \
+  'the rollback identity must be bound to what Step 5 actually stored as declared_at'
+require_text "$LEAVE_SKILL" 'the pair belongs to the declaration recovery read' \
+  'Step 11 must guard the pair-null on the identity, not null a successor live Monitor'
+require_order "$LEAVE_SKILL" '## Step 11:' \
+  'null the pair before' \
+  '"$REARM_HOLDER_AT" = "$RECOVERY_DECLARED_AT"' \
+  'the Step 11 pair-null instruction must be followed by the identity guard that bounds it'
+
 # --expect is parsed as JSON and only falls back to a bare string when the parse FAILS, so an
 # identifier that happens to be all digits is compared as a JSON number against a stored JSON
 # string and loses every time - silently, while looking guarded. Verified against the real

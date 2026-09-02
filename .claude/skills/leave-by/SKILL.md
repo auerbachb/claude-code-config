@@ -250,6 +250,9 @@ ARM_RC=0
 # ARM_WINDOW_RC is what the rollback branches on: an unreadable snapshot is NOT an absent one.
 ARM_WINDOW_RC=0
 [ "$ARM_RC" -eq 0 ] && { ARM_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ARM_WINDOW_RC=$?; }
+# The identity this declaration just wrote — NOW_ISO is what Step 5 stored as declared_at, and
+# the rollback re-reads it to prove `.leave` is still ours before deactivating anything.
+ARM_DECLARED_AT="$NOW_ISO"
 ```
 
 `deadline_epoch` inside `.leave` stays **null on purpose** — the field exists so a reader who looks
@@ -366,9 +369,13 @@ publish-failure rollback, because losing the slot means someone else now owns th
   ROLLBACK_RC=0
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" \
     --expect "$(printf '%s' "$WINDDOWN_GENERATION" | jq -R .)" >/dev/null 2>&1 || ROLLBACK_RC=$?
-  # ARM_WINDOW is the object written in Step 5, captured before the Monitor call. An
-  # UNREADABLE snapshot (ARM_WINDOW_RC non-zero) rolls back NOTHING — see below.
-  if [ "$ROLLBACK_RC" -eq 0 ] && [ "$ARM_WINDOW_RC" -eq 0 ]; then   # still ours, snapshot known
+  # ARM_WINDOW / ARM_DECLARED_AT are the objects written in Step 5, captured before the Monitor
+  # call. An UNREADABLE snapshot (ARM_WINDOW_RC non-zero) rolls back NOTHING — see below.
+  # The generation CAS and this write are two lock holds, so re-read the identity: winning the
+  # CAS proved `.leave` was ours at that instant, not that it still is.
+  HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
+  if [ "$ROLLBACK_RC" -eq 0 ] && [ "$ARM_WINDOW_RC" -eq 0 ] \
+     && [ -n "$ARM_DECLARED_AT" ] && [ "$HOLDER_AT" = "$ARM_DECLARED_AT" ]; then
     "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
       --expect "$ARM_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
@@ -874,3 +881,22 @@ now rejects. An unreadable re-read is a mismatch, not a match, for the same reas
 Recovery re-arms at most one Monitor. If `winddown_task_id` is non-null on entry, the previous
 session recorded a wake that no longer exists — treat the stored ID as dead, null the pair before
 arming, and never `TaskStop` an ID from a session that has ended.
+
+**But null it only while the pair is still the dead session's**, under the same
+`RECOVERY_DECLARED_AT` guard the retirement above uses:
+
+```bash
+REARM_HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
+  || REARM_HOLDER_AT=""
+if [ -n "$RECOVERY_DECLARED_AT" ] && [ "$REARM_HOLDER_AT" = "$RECOVERY_DECLARED_AT" ]; then
+  : # the pair belongs to the declaration recovery read — safe to null before re-arming
+else
+  : # a successor owns `.leave`; re-arm nothing and null nothing — it has its own live Monitor
+fi
+```
+
+"The previous session recorded a wake that no longer exists" is true only of the record recovery
+actually read. Recovery re-enters after a compaction with live user turns behind it, so a
+re-declaration can already own that pair — and nulling it there wipes the only name of a **running**
+Monitor, which then cannot be stopped, while recovery arms a second one against the same deadline.
+The guard is the same one, for the same reason, at the third site that writes `.leave`.
