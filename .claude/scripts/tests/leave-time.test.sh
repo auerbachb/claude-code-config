@@ -618,6 +618,23 @@ require_text .claude/skills/pause-resume/SKILL.md 'release the slot anyway' \
 require_text .claude/skills/pause-resume/SKILL.md 'holding `.window` open here re-creates the precise failure' \
   'a spent deadline must be retired on an unconfirmed stop, not left arming every decline'
 
+# Releasing the slot and retaining the un-stopped ID are both required, and they cannot both
+# live in leave.winddown_task_id — the release empties it. Name the surviving record, or a
+# later branch reports an un-stopped Monitor as stopped.
+require_text .claude/skills/pause-resume/SKILL.md 'Where the un-stopped ID lives after this' \
+  'the skill must name where an un-stopped ID survives once the slot is released'
+
+# A FAILED holder re-read proves nothing about ownership, so it must not take the exit-7
+# lost-slot path — that path stops the new Monitor and stays silent, leaving the leave time
+# looking armed with no wake behind it.
+require_text "$LEAVE_SKILL" 'unreadable re-read is not a lost slot' \
+  'an unreadable holder re-read must not be treated as a lost slot'
+
+# Step 11 recovery carries no new time, so the live-user source gate must exempt it or the
+# rule silently deletes every leave time across a restart or compaction.
+require_text "$LEAVE_SKILL" 'recovery may **re-arm what is already persisted**' \
+  'the source gate must exempt Step 11 recovery, and bound that exemption to re-arming'
+
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
 require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \

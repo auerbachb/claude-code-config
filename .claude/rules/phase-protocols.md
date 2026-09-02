@@ -9,7 +9,7 @@
 Immediately before any A→A, A→B, B→B, B→C, or queued-pipeline launch, re-read
 all three stop controls. Launch only when every read succeeds and returns an
 explicit clear value: repo `refill.paused` false/null,
-`execution-pause.sh --status --session "$CLAUDE_SESSION_ID"` reporting
+`execution-pause.sh --status --session "${CLAUDE_SESSION_ID:-default}"` reporting
 `inactive`, and the armed-deadline gate (`/subagent` Step 7's
 `subagent-step7-deadline-decline` block) returning `LAUNCH_DECLINED=false`. A
 successor is a launch like any other: omitting the deadline here is how an

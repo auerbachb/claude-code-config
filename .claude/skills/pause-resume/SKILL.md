@@ -410,6 +410,13 @@ This releases the slot without asserting the Monitor stopped: **still report the
 so a human can end it, and still leave its `monitors_stopped` entry `stopped: false`. Releasing the
 slot and claiming the stop are different claims, and only the first is true here.
 
+**Where the un-stopped ID lives after this.** Releasing the slot empties
+`leave.winddown_task_id`, so that field is no longer the record of an un-stopped Monitor and no
+later branch may claim it is. The durable copy is the `owner: "leave_winddown"` entry in
+`monitors_stopped`, which carries the ID alongside `stopped: false` and outlives this step; the
+in-memory copy is `OLD_WINDDOWN_TASK_ID`, which is what the report prints. Both branches below that
+mention an un-stopped ID mean **those** two, never the released slot.
+
 **Then branch on the deadline, not on the pause** — using the value already read and validated
 above:
 
@@ -464,8 +471,11 @@ With the gate passed **and the deadline spent**:
   `monitors_stopped` `rearmed: true` — for this owner "resolved" means disarmed, not restarted —
   and say it in one line: `leave time cleared — re-declare with /leave-by if it still applies`.
 - **An unconfirmed `TaskStop`** → the deadline is still **spent**, so retire it exactly as above —
-  `leave.active=false` **and** `.repos["$REPO_KEY"].window=null` — but **retain
-  `winddown_task_id`**, leave the entry `rearmed: false`, and name the un-stopped ID in the report.
+  `leave.active=false` **and** `.repos["$REPO_KEY"].window=null` — leave the entry `rearmed: false`
+  and `stopped: false`, and name the un-stopped ID from `OLD_WINDDOWN_TASK_ID` and the
+  `monitors_stopped` entry in the report. **Do not look for it in `leave.winddown_task_id`:** the
+  release CAS above already emptied that slot, so treating the field as the surviving record would
+  report an un-stopped Monitor as stopped.
   A stop that was not confirmed says nothing about whether the deadline passed, and the two must not
   be conflated: holding `.window` open here re-creates the precise failure the bullet above exists
   to prevent — a past `deadline_epoch` sitting in the past forever while `/subagent` Step 7 declines
