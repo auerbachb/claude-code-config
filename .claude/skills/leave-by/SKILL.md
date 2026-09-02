@@ -475,8 +475,10 @@ REMAINING_MIN=$(( ( DEADLINE_EPOCH - $(date -u +%s) + 59 ) / 60 ))
 # .window some other writer now owns is not cleared.
 RETIRE_DECLARED_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) \
   || RETIRE_DECLARED_AT=""
-RETIRE_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
-  || RETIRE_DEADLINE=""
+# The WHOLE window object, not its deadline_epoch: --expect is compared against the value at
+# the --cas path, and that path is `.window`. Expecting a scalar there can never match.
+RETIRE_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
+  || RETIRE_WINDOW=""
 ```
 
 Then `/pause --window ${REMAINING_MIN}m`. That single call is the whole wind-down: it closes both
@@ -501,15 +503,15 @@ a re-declaration during the runway (Step 9's countermand clause) rewrites the wh
 in Step 5, so a changed `declared_at` means a **successor** now owns it:
 
 ```bash
-# RETIRE_DECLARED_AT / RETIRE_DEADLINE were read before the 8.6 /pause call
+# RETIRE_DECLARED_AT / RETIRE_WINDOW were read before the 8.6 /pause call
 HOLDER_AT=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.declared_at" 2>/dev/null) || HOLDER_AT=""
 if [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; then
   # .leave is still ours. The shared .window is a separate claim — clear it only under a CAS
   # on the exact deadline this declaration armed.
   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
-  if [ -n "$RETIRE_DEADLINE" ]; then
+  if [ -n "$RETIRE_WINDOW" ]; then
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-      --expect "$RETIRE_DEADLINE" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+      --expect "$RETIRE_WINDOW" >/dev/null 2>&1 || :     # exit 7 = another writer owns .window
   fi
 else
   : # successor owns .leave, or the identity was unreadable — retire nothing, report below
@@ -520,8 +522,16 @@ fi
 matching `declared_at` proves only that *this leave declaration* is still current — not that the
 deadline sitting there is still the one it armed. Clearing it unconditionally is how a wind-down
 retires somebody else's planning deadline on its way out. The `--cas … --expect
-"$RETIRE_DEADLINE"` narrows the write to exactly the value 8.6 was winding down; its exit `7` means
+"$RETIRE_WINDOW"` narrows the write to exactly the window 8.6 was winding down; its exit `7` means
 the window moved on and is no longer this declaration's to clear.
+
+> **`--expect` is compared against the value at the `--cas` path.** The path here is `.window`, so
+> the expected value must be the **whole window object** captured before `/pause`, never its
+> `deadline_epoch`. Expecting a scalar at an object path can never compare equal, so the CAS would
+> lose every time and the spent deadline would stay armed forever — reintroducing exactly the
+> "declines every pipeline in this repo" failure this clear exists to prevent, while looking
+> guarded. `session-state.sh` parses `--expect` as JSON and compares with jq `==`, so the captured
+> object round-trips on deep equality.
 
 > **Two writes, deliberately.** `leave.active=false` is unconditional once `.leave` is ours — the
 > declaration *is* spent — while `.window` is conditional. Collapsing them into one call would

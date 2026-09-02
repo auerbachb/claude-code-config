@@ -656,6 +656,20 @@ require_text "$LEAVE_SKILL" 'the disarm is the whole point of this sub-step' \
 require_text "$LEAVE_SKILL" 'A failed invalidation is a STOP' \
   'Step 9 must not TaskStop or re-declare when the generation invalidation failed'
 
+# --expect is matched at the --cas PATH. Both window clears CAS on `.window`, so the expected
+# value must be the whole object; expecting deadline_epoch there can never compare equal, so the
+# CAS loses every time and the spent deadline stays armed while LOOKING guarded — the same
+# "declines every pipeline in this repo" failure, reintroduced by the guard meant to prevent it.
+require_text "$LEAVE_SKILL" 'the expected value must be the **whole window object**' \
+  'the retirement CAS must expect the whole window object, not a scalar under it'
+require_text .claude/skills/pause-resume/SKILL.md 'the WHOLE window object' \
+  'the pause-resume retirement CAS must expect the whole window object, not a scalar under it'
+# And the captures must actually bind the object, not the scalar the prose warns against.
+require_text "$LEAVE_SKILL" 'RETIRE_WINDOW=' \
+  'leave-by must bind the whole window object for its retirement CAS'
+require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_WINDOW=' \
+  'pause-resume must bind the whole window object for its retirement CAS'
+
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
 require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \

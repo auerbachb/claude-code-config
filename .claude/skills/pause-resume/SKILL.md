@@ -357,6 +357,10 @@ its write to the exact value the spent-verdict was reached on:
 ```bash
 RESUMED_DEADLINE_EPOCH=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
   || RESUMED_DEADLINE_RC=$?
+# Separately, the WHOLE window object — that is what the retirement CAS below compares against,
+# because --expect is matched at the --cas path and that path is `.window`, not a scalar under it.
+RESUMED_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window" 2>/dev/null) \
+  || RESUMED_WINDOW=""
 ```
  Validating *after* the `TaskStop` is what strands a
 declaration: the stop clears the identity pair, the deadline then reads unreadable, and the
@@ -477,7 +481,7 @@ With the gate passed **and the deadline spent**:
   ```bash
   "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
   "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
-    --expect "$RESUMED_DEADLINE_EPOCH" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
+    --expect "$RESUMED_WINDOW" >/dev/null 2>&1 || :   # exit 7 = another writer owns .window
   ```
 
   `.window` is shared with `/pm` planning deadlines, and this block only ever established that the
