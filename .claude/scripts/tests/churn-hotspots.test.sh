@@ -1286,6 +1286,240 @@ check_jq "27f: NEGATIVE CONTROL — git — real subjects still yield their PR n
   '.scanned_pr_count == 2 and ([.hotspots[].pr_numbers[]] | unique) == [1901,1902]'
 
 # =============================================================================
+# Scenario 28 — lint-enforced catalog files are exempt, not silenced (issue #1571)
+#
+# AC 1  a documented exemption mechanism keeps by-design churners out of scoring
+# AC 2  an entry that names no enforcing lint is REJECTED
+# AC 3  exempt files raise no hotspot flag, but are reported on a distinct
+#       "exempt (catalog)" line — never silently omitted
+# AC 4  scoring for non-exempt files is unchanged
+#
+# The exemption file is a HERMETIC fixture, so the suite never depends on the
+# repo's real .claude/reference/churn-hotspot-exemptions.json.
+#
+# Fixture churn, chosen so every claim is a measurement rather than a
+# coincidence: the exempt README and the non-exempt control carry IDENTICAL
+# churn (3 PRs each), and tests.md is touched once — below BOTH reporting floors
+# — so "still reported" cannot be explained by it having qualified anyway.
+# =============================================================================
+printf '[]\n' > "$TMP/issue_list.json"
+
+EXEMPT_FIXTURE="$TMP/exemptions-28.json"
+cat > "$EXEMPT_FIXTURE" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    ".claude/scripts/README.md": {
+      "lint": "scripts-catalog-lint.sh",
+      "reason": "the index must link every category doc exactly once"
+    },
+    ".claude/scripts/docs/tests.md": {
+      "lint": "scripts-catalog-lint.sh",
+      "reason": "one catalog row per test suite is enforced"
+    }
+  }
+}
+JSON
+
+R28=$(new_repo_on r28 main)
+commit_touch "$R28" "2026-02-01T00:00:00" "one (#2801)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-02T00:00:00" "two (#2802)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-03T00:00:00" "three (#2803)" .claude/scripts/README.md src/Control.ts
+commit_touch "$R28" "2026-02-04T00:00:00" "catalog row (#2804)" .claude/scripts/docs/tests.md
+
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_eq "28a: exit 0 — the non-exempt control still crosses the threshold" "0" "$RC"
+# `length == 1` first: "README is absent" is vacuously true of an empty list, so
+# the set size is what makes the absence a measurement (the scenario 27 lesson).
+check_jq "28b: an exempt file with qualifying churn raises NO hotspot flag" "$OUT" \
+  '(.hotspots | length) == 1
+   and ([.hotspots[].file] | index(".claude/scripts/README.md")) == null'
+check_jq "28c: it is reported in exemptions[] with its real score, not dropped" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/README.md")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2801,2802,2803]'
+check_jq "28d: the entry names the enforcing lint and why it forces the edit" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/README.md")
+   | .lint == "scripts-catalog-lint.sh" and (.reason | test("category doc"))'
+# EQUAL-CHURN CONTROL — same 3 PRs, same score, not on the list, still flagged.
+check_jq "28e: EQUAL-CHURN CONTROL — a non-exempt file with identical churn flags" "$OUT" \
+  '.hotspots[] | select(.file=="src/Control.ts")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2801,2802,2803]'
+check_jq "28f: a file touched BELOW both floors is still reported, never omitted" "$OUT" \
+  '.exemptions[] | select(.file==".claude/scripts/docs/tests.md")
+   | .pr_count == 1 and .score == 1 and .pr_numbers == [2804]'
+check_jq "28g: the envelope reports the count and the file the policy came from" "$OUT" \
+  '.exempt_count == 2 and (.exemptions | length) == 2
+   and (.exemptions_file | endswith("exemptions-28.json"))'
+# The consumer asserts total_hotspot_count == (hotspots | length); reclassifying
+# a file out of hotspots[] must move BOTH or churn-hotspot-wrap-plan.sh rejects
+# the envelope and /wrap silently files nothing.
+check_jq "28h: total_hotspot_count tracks the partitioned list, not the raw one" "$OUT" \
+  '.total_hotspot_count == 1 and .total_hotspot_count == (.hotspots | length)'
+
+# The distinct TSV line: marker, path, counts, and the enforcing lint.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE"
+check_eq "28i: one exempt line per touched exempt file" "2" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+check_eq "28j: the exempt line names the enforcing lint" "scripts-catalog-lint.sh" \
+  "$(awk -F'\t' '$1 == "# exempt (catalog)" && $2 == ".claude/scripts/README.md" { print $6 }' <<<"$OUT")"
+check_eq "28k: the exempt line carries its own six columns" "6" \
+  "$(awk -F'\t' '$1 == "# exempt (catalog)" { print NF; exit }' <<<"$OUT")"
+# Hotspot rows come FIRST and keep the six documented columns, so a column
+# parser reading them cannot pick up an exempt line by accident.
+check_eq "28l: the first row is still an ordinary six-column hotspot row" \
+  "src/Control.ts	3	0	3	2801,2802,2803	-" "$(head -1 <<<"$OUT")"
+
+# NEGATIVE CONTROL 1 — --no-exemptions on the SAME history and the SAME fixture.
+# Without this, 28b would also pass if the detector had simply stopped reporting
+# that file at all.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --no-exemptions --json
+check_jq "28m: NEGATIVE CONTROL — the exempt file flags as an ordinary hotspot" "$OUT" \
+  '(.hotspots | length) == 2
+   and (.hotspots[] | select(.file==".claude/scripts/README.md") | .score == 3)'
+check_jq "28n: NEGATIVE CONTROL — the feature reports itself as off, not silent" "$OUT" \
+  '.exempt_count == 0 and (.exemptions | length) == 0 and .exemptions_file == null'
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --no-exemptions
+check_eq "28o: NEGATIVE CONTROL — no exempt line is rendered" "0" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+
+# AC 4 REGRESSION — the control file's score and PR count must be IDENTICAL with
+# the feature active and with it disabled. Comparing the two runs directly is
+# what pins "non-exempt scoring is unchanged" to a measurement.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+CONTROL_ON=$(printf '%s' "$OUT" | jq -c '.hotspots[] | select(.file=="src/Control.ts")')
+run_in "$R28" --since "$WINDOW_START" --no-exemptions --json
+CONTROL_OFF=$(printf '%s' "$OUT" | jq -c '.hotspots[] | select(.file=="src/Control.ts")')
+check_eq "28p: AC4 — the non-exempt control scores identically either way" \
+  "$CONTROL_ON" "$CONTROL_OFF"
+check_eq "28q: AC4 — and that comparison was not two empty strings" "false" \
+  "$([ -z "$CONTROL_ON" ] && echo true || echo false)"
+
+# NEGATIVE CONTROL 2 — exemption cannot be claimed without a stated reason.
+# An arbitrary file listing only a lint is REJECTED, and the message names it.
+BAD_EXEMPT="$TMP/exemptions-28-noreason.json"
+cat > "$BAD_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "scripts-catalog-lint.sh"}
+  }
+}
+JSON
+ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$BAD_EXEMPT" --json) 2>&1 >/dev/null )
+BAD_RC=$?
+check_eq "28r: NEGATIVE CONTROL — a reasonless entry exits 3" "3" "$BAD_RC"
+check_eq "28s: NEGATIVE CONTROL — the error names the offending path" "yes" \
+  "$(case "$ERR_OUT" in *"src/Control.ts"*) echo yes ;; *) echo no ;; esac)"
+# Rejection is what must happen — NOT a quiet fall-through that scores the file
+# as if the entry had been valid.
+check_eq "28t: NEGATIVE CONTROL — a rejected file is never silently exempted" "" \
+  "$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$BAD_EXEMPT") 2>/dev/null )"
+
+# ...and the OTHER half of the same requirement. Both fields are required, so
+# testing only the missing-`reason` case would leave the `lint` half of the
+# validator unproven — enforced only while it happened to work.
+NOLINT_EXEMPT="$TMP/exemptions-28-nolint.json"
+cat > "$NOLINT_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"reason": "it changes a lot and that is annoying"}
+  }
+}
+JSON
+ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$NOLINT_EXEMPT" --json) 2>&1 >/dev/null )
+BAD_RC=$?
+check_eq "28aa: NEGATIVE CONTROL — an entry naming no enforcing lint exits 3" "3" "$BAD_RC"
+check_eq "28ab: NEGATIVE CONTROL — that error names the offending path too" "yes" \
+  "$(case "$ERR_OUT" in *"src/Control.ts"*) echo yes ;; *) echo no ;; esac)"
+
+# A key-presence check would pass this one: both fields are PRESENT, and both
+# are blank. Requiring non-empty values is what stops an exemption from being
+# claimed with an empty gesture at a lint.
+BLANK_EXEMPT="$TMP/exemptions-28-blank.json"
+cat > "$BLANK_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "   ", "reason": ""}
+  }
+}
+JSON
+run_in "$R28" --since "$WINDOW_START" --exemptions "$BLANK_EXEMPT" --json
+check_eq "28ac: NEGATIVE CONTROL — present-but-blank lint/reason is rejected" "3" "$RC"
+
+# POSITIVE CONTROL for the validator itself: the same shape WITH both fields
+# populated is accepted, so 28r/28aa/28ac measure the missing values rather
+# than a validator that rejects everything.
+GOOD_EXEMPT="$TMP/exemptions-28-good.json"
+cat > "$GOOD_EXEMPT" <<'JSON'
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "exemptions": {
+    "src/Control.ts": {"lint": "some-catalog-lint.sh", "reason": "one row per entry is enforced"}
+  }
+}
+JSON
+run_in "$R28" --since "$WINDOW_START" --exemptions "$GOOD_EXEMPT" --json
+check_jq "28ad: POSITIVE CONTROL — the same entry with both fields is accepted" "$OUT" \
+  '.exempt_count == 1 and (.exemptions[0].file == "src/Control.ts")
+   and ([.hotspots[].file] | index("src/Control.ts")) == null'
+
+# An EXPLICIT --exemptions naming a missing file is an environment error: a run
+# that silently scored without the policy the caller named would be the same
+# measuring-the-wrong-thing failure --ref refuses.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$TMP/does-not-exist.json" --json
+check_eq "28u: an explicit --exemptions that is unreadable exits 3" "3" "$RC"
+
+# An EMPTY explicit value is the same promise broken more quietly: it survives
+# the "requires a value" check (the argument IS present), then reads as unset
+# downstream and silently selects the DEFAULT policy. Rejected at parse time,
+# both spellings, because that is the last point the distinction exists.
+run_in "$R28" --since "$WINDOW_START" --exemptions '' --json
+check_eq "28ae: an explicit empty --exemptions exits 2 rather than falling back" "2" "$RC"
+run_in "$R28" --since "$WINDOW_START" --exemptions= --json
+check_eq "28af: the --exemptions= spelling is rejected the same way" "2" "$RC"
+EMPTY_ERR=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions '' --json) 2>&1 >/dev/null )
+check_eq "28ag: and the rejection says the value must be non-empty" "yes" \
+  "$(case "$EMPTY_ERR" in *"non-empty"*) echo yes ;; *) echo no ;; esac)"
+# NEGATIVE CONTROL — the guard rejects the EMPTY value, not the flag itself:
+# the same invocation with a real file still runs and still applies THAT file.
+# Without this, 28ae/28af would pass just as well if --exemptions were broken
+# outright, or if the default policy had quietly been selected anyway.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$GOOD_EXEMPT" --json
+check_eq "28ah: NEGATIVE CONTROL — a non-empty --exemptions still runs" "0" "$RC"
+check_jq "28ai: NEGATIVE CONTROL — and applies that file, not the default" "$OUT" \
+  '.exempt_count == 1 and (.exemptions_file | endswith("exemptions-28-good.json"))'
+
+# Only-exempt output on the CLEAN exit path — the one place a suppressed file
+# would otherwise vanish entirely.
+R28B=$(new_repo_on r28b main)
+commit_touch "$R28B" "2026-02-01T00:00:00" "one (#2811)" .claude/scripts/README.md
+commit_touch "$R28B" "2026-02-02T00:00:00" "two (#2812)" .claude/scripts/README.md
+commit_touch "$R28B" "2026-02-03T00:00:00" "three (#2813)" .claude/scripts/README.md
+
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_eq "28v: a window whose only churner is exempt exits 1 (clean)" "1" "$RC"
+check_jq "28w: and the exempt file is STILL reported on that clean path" "$OUT" \
+  '(.hotspots | length) == 0 and .total_hotspot_count == 0 and .exempt_count == 1
+   and (.exemptions[0].file == ".claude/scripts/README.md")
+   and (.exemptions[0].pr_numbers == [2811,2812,2813])'
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE"
+check_eq "28x: the exempt TSV line survives the clean exit path too" "1" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+# NEGATIVE CONTROL — the same history IS a hotspot with the feature off, so 28v
+# measures the exemption rather than a fixture that never qualified.
+run_in "$R28B" --since "$WINDOW_START" --no-exemptions --json
+check_eq "28y: NEGATIVE CONTROL — the same history exits 0 with the feature off" "0" "$RC"
+
+# Exclusion still wins over exemption: an excluded path never reaches
+# aggregation, so it cannot reappear on the exempt line.
+run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" \
+  --exclude '.claude/scripts/README.md' --json
+check_jq "28z: an excluded path is excluded, not re-surfaced as exempt" "$OUT" \
+  '.exempt_count == 0 and (.hotspots | length) == 0 and .excluded_count == 3'
+
+# =============================================================================
 echo
 echo "churn-hotspots.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -22,7 +22,8 @@
 #                     [--conflict-weight N] [--exclude <glob,glob>]
 #                     [--no-default-excludes] [--source auto|git|gh]
 #                     [--ref <ref>] [--fetch] [--pr-cap N] [--top N]
-#                     [--sweep-threshold N] [--include-creation] [--json]
+#                     [--sweep-threshold N] [--include-creation]
+#                     [--exemptions FILE] [--no-exemptions] [--json]
 #   churn-hotspots.sh --help
 #
 #   --since <date|ref>   Window start. A date (YYYY-MM-DD) is used as-is; any
@@ -62,6 +63,18 @@
 #                        and score sweeps like ordinary touches.
 #   --include-creation   Count the commit that CREATED a file toward its score.
 #                        OFF by default: a file's birth is not churn.
+#   --exemptions FILE    Catalog-exemption list (see CATALOG EXEMPTIONS below).
+#                        Defaults to .claude/reference/churn-hotspot-exemptions.json
+#                        beside this script; an absent DEFAULT leaves the feature
+#                        inactive, an unreadable or invalid EXPLICIT file exits 3,
+#                        and an EMPTY value exits 2 rather than quietly falling
+#                        back to the default the caller did not ask for.
+#   --no-exemptions      Disable the exemption list entirely. Previously exempt
+#                        files score and flag as ordinary hotspots — the
+#                        negative control for the feature. It WINS over
+#                        --exemptions (and the file is then never read); the
+#                        envelope reports `exemptions_file: null`, so the
+#                        disabled state is observable rather than silent.
 #   --json               Emit a single JSON object. Default emits TSV rows.
 #
 # SCORING (the documented weight — issue #755 AC 2):
@@ -150,8 +163,45 @@
 #   package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock,
 #   go.sum, CHANGELOG.md — generated or append-only files that churn by design
 #   and are never refactor candidates. The list is deliberately universal;
-#   repo-specific by-design churn (an index or catalog file every change edits)
-#   belongs in --exclude, not baked in here.
+#   repo-specific by-design churn is handled by CATALOG EXEMPTIONS below, and
+#   --exclude remains for per-invocation and generated files.
+#
+# CATALOG EXEMPTIONS (issue #1571):
+#   Some files churn because a LINT requires it: a catalog or index whose CI
+#   check fails unless a row is edited every time a script or test is added or
+#   renamed. No refactor can retire that flag, so re-reporting the file forever
+#   is pure noise — and noise is how a real hotspot eventually gets skimmed past.
+#
+#   Exempt paths are read from a persisted, reason-validated JSON file
+#   (`.claude/reference/churn-hotspot-exemptions.json` by default):
+#
+#     {"schema": "churn-hotspot-exemptions/v1",
+#      "exemptions": {"<path>": {"lint": "<enforcing lint>", "reason": "<why>"}}}
+#
+#   BOTH `lint` and `reason` are REQUIRED and must be non-empty strings. An
+#   entry that states no enforcing lint is rejected with exit 3 naming the
+#   offending path, so exemption can never be claimed by an arbitrary file on
+#   assertion alone.
+#
+#   EXEMPT IS NOT EXCLUDED. An excluded path is dropped at the touch event and
+#   never scored. An exempt path is scored exactly like any other file and then
+#   RECLASSIFIED at aggregation: it leaves `hotspots[]` for `exemptions[]`,
+#   keeping its real pr_count / pr_numbers / score, so history stays complete
+#   and the file is reported rather than hidden. Every exempt path touched in
+#   the window appears there regardless of threshold — the reporting floor
+#   (`score >= threshold AND pr_count >= 2`) governs hotspots only.
+#
+#   Because exempt files are absent from `hotspots[]`, the /wrap consumer
+#   (`churn-hotspot-wrap-plan.sh`) produces no comment, file, growth, unknown,
+#   or suppressed entry for them, and the wrap sweep stops asking the same
+#   keep-or-reopen question every run. No consumer change was needed.
+#
+#   The exit-code contract keys on `hotspots[]` ALONE: a run whose only reported
+#   paths are exempt is clean (exit 1). The existing-issue lookup is skipped for
+#   exempt paths — they are never filed, so there is nothing to dedupe against.
+#
+#   Exclusion still wins over exemption: an excluded path never reaches
+#   aggregation, so it can never appear on the exempt line.
 #
 # ENUMERATION:
 #   DELIMITER — NUL, END TO END, ON BOTH BACKENDS (issue #1554). A filename may
@@ -227,6 +277,12 @@
 #   state could not be read, or "-" when there is no match. The suffix is there
 #   so a person scanning the TSV cannot read a closed-issue hotspot as already
 #   handled.)
+#   Then, AFTER the hotspot rows, one line per touched exempt file —
+#     # exempt (catalog) <TAB> path <TAB> pr_count <TAB> score <TAB> pr_numbers <TAB> lint
+#   The leading `#` marks the line so a column parser can tell it from a hotspot
+#   row (`grep -v '^#'` drops them); hotspot rows come first, so a caller reading
+#   the top N rows is unaffected. These lines are the "never silently omitted"
+#   guarantee — an exempt file is suppressed as a FLAG, never as a fact.
 #   --json: a single object with `repo`, `since`, `threshold`, `conflict_weight`,
 #   `min_prs`, `source`, `scan_ref`, `scan_ref_source` (one of `explicit`,
 #   `origin-head`, `candidate`, `head-fallback`, or `n/a` on the gh path),
@@ -237,6 +293,10 @@
 #   classified as sweeps), `sweep_skipped_count` (touches dropped as sweeps),
 #   `truncated`,
 #   `existing_lookup_failed`, `total_hotspot_count` (before any --top bound),
+#   `exemptions_file` (the resolved exemption file, or null when the feature is
+#   off or no file was found), `exempt_count`, `exemptions[]` (each: the same
+#   scored fields as a hotspot minus the issue-lookup pair, plus `lint` and
+#   `reason` from the entry — never bounded by --top or the threshold),
 #   and `hotspots[]` (each: `file`, `pr_count`,
 #   `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`,
 #   `last_merged_at`, `created_in_window`, `creation_pr`,
@@ -252,7 +312,9 @@
 #   1  Clean — no file crossed the threshold
 #   2  Usage error (unknown flag, missing or invalid value)
 #   3  Environment error (missing dependency, not a git repo, no window,
-#      unresolvable --ref, or a --ref the chosen enumeration path cannot honour)
+#      unresolvable --ref, a --ref the chosen enumeration path cannot honour,
+#      or an unreadable/invalid exemption file — including an entry that names
+#      no enforcing lint)
 #   4  gh/API error during enumeration
 #
 # EXAMPLES:
@@ -298,6 +360,14 @@ AS_JSON=0
 SWEEP_THRESHOLD=20
 INCLUDE_CREATION=0
 ISSUE_LOOKUP_CAP=200
+EXEMPTIONS_FILE=""
+NO_EXEMPTIONS=0
+
+# Resolved beside this script, exactly as churn-hotspot-wrap-plan.sh resolves
+# its baseline file. That coupling is deliberate: the exemption policy travels
+# with the checkout whose detector is running, so a caller can never score
+# against one checkout while classifying against another's policy.
+DEFAULT_EXEMPTIONS="$SCRIPT_DIR/../reference/churn-hotspot-exemptions.json"
 
 # A literal newline, built with printf rather than ANSI-C quoting. `git log -z`
 # puts exactly one LF between a commit header and that commit's first
@@ -335,6 +405,17 @@ while [ $# -gt 0 ]; do
     --sweep-threshold=*)  SWEEP_THRESHOLD="${1#*=}" ;;
     --sweep-threshold)    shift; [ $# -gt 0 ] || { err "--sweep-threshold requires a value"; exit 2; }; SWEEP_THRESHOLD="$1" ;;
     --include-creation)   INCLUDE_CREATION=1 ;;
+    # An EMPTY value is rejected HERE, at parse time, because it is the one
+    # place the distinction still exists: downstream, "--exemptions ''" and
+    # "no --exemptions at all" are both an empty EXEMPTIONS_FILE, so the
+    # explicit-file branch below would fall through to the DEFAULT policy and
+    # silently score against a file the caller never named.
+    --exemptions=*)       EXEMPTIONS_FILE="${1#*=}"
+                          [ -n "$EXEMPTIONS_FILE" ] || { err "--exemptions requires a non-empty value"; exit 2; } ;;
+    --exemptions)         shift; [ $# -gt 0 ] || { err "--exemptions requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--exemptions requires a non-empty value"; exit 2; }
+                          EXEMPTIONS_FILE="$1" ;;
+    --no-exemptions)      NO_EXEMPTIONS=1 ;;
     --json)               AS_JSON=1 ;;
     --help|-h)            print_help; exit 0 ;;
     *)                    err "unknown argument: $1"; exit 2 ;;
@@ -352,6 +433,86 @@ case "$SOURCE_MODE" in auto|git|gh) ;; *) err "--source must be one of: auto, gi
 
 command -v jq >/dev/null 2>&1 || { err "jq is required but not installed"; exit 3; }
 command -v git >/dev/null 2>&1 || { err "git is required but not installed"; exit 3; }
+
+# ---- catalog exemptions: load and validate (issue #1571) --------------------
+# Resolved and validated up front, before any enumeration, so a malformed policy
+# file fails on its own terms rather than after a full scan. EXEMPT_MAP is the
+# only product used downstream; EXEMPTIONS_PATH is reported so a reader can see
+# which policy the run applied (empty => reported as null => feature inactive).
+EXEMPT_MAP='{}'
+EXEMPTIONS_JSON='[]'
+EXEMPTIONS_PATH=""
+
+if [ "$NO_EXEMPTIONS" -eq 0 ]; then
+  if [ -n "$EXEMPTIONS_FILE" ]; then
+    # An EXPLICIT --exemptions is a promise about what the run applied, so an
+    # unreadable file is a hard error — silently scoring without the policy the
+    # caller named is the same failure mode --ref refuses.
+    [ -r "$EXEMPTIONS_FILE" ] || { err "--exemptions '$EXEMPTIONS_FILE' is not readable"; exit 3; }
+    EXEMPTIONS_PATH="$EXEMPTIONS_FILE"
+  elif [ -r "$DEFAULT_EXEMPTIONS" ]; then
+    # The DEFAULT is best-effort: a checkout carrying no exemption file simply
+    # runs with the feature inactive, which is what keeps this script working in
+    # a fresh clone and in repos that never adopt the mechanism.
+    EXEMPTIONS_PATH="$DEFAULT_EXEMPTIONS"
+  fi
+fi
+
+if [ -n "$EXEMPTIONS_PATH" ]; then
+  if ! jq -e '
+        .schema == "churn-hotspot-exemptions/v1"
+        and ((.exemptions | type) == "object")
+        and (all(.exemptions | keys_unsorted[]; test("\\S")))
+      ' "$EXEMPTIONS_PATH" >/dev/null 2>&1; then
+    err "exemption file is not a valid churn-hotspot-exemptions/v1 document: $EXEMPTIONS_PATH"
+    exit 3
+  fi
+
+  # AC: an entry without a stated reason is REJECTED. Both fields are required
+  # and must carry a non-blank value, so "exempt because I say so" cannot pass:
+  # `lint` names the enforcing lint/workflow, `reason` says why it forces the
+  # edit. The offending paths are named — a rejection nobody can act on is only
+  # marginally better than the noise this feature removes.
+  # `$v` normalises a non-object entry to {} BEFORE any field is read, so the
+  # filter never indexes an array or a scalar. Every clause is then safe on its
+  # own, without relying on `or` short-circuiting to keep a later clause from
+  # erroring — the whole program aborting would degrade this rejection into a
+  # silent pass.
+  INVALID_EXEMPTIONS=$(jq -r '
+    [ .exemptions | to_entries[]
+      | . as $e
+      | (if ($e.value | type) == "object" then $e.value else {} end) as $v
+      | select(
+          (($v.lint | type) != "string")
+          or ((($v.lint // "") | tostring | test("\\S")) | not)
+          or (($v.reason | type) != "string")
+          or ((($v.reason // "") | tostring | test("\\S")) | not)
+        )
+      | $e.key ]
+    | join(", ")' "$EXEMPTIONS_PATH" 2>/dev/null)
+  # FAIL CLOSED. A `|| INVALID_EXEMPTIONS=""` fallback here would turn every
+  # validator crash into a clean pass — the reason-requirement would then be
+  # enforced only while it happened to work.
+  EXEMPT_JQ_RC=$?
+  if [ "$EXEMPT_JQ_RC" -ne 0 ]; then
+    err "could not validate exemption entries in $EXEMPTIONS_PATH (jq exited $EXEMPT_JQ_RC)"
+    exit 3
+  fi
+  if [ -n "$INVALID_EXEMPTIONS" ]; then
+    err "exemption entries must name the enforcing lint — non-empty \"lint\" and \"reason\" are both required. Offending path(s) in $EXEMPTIONS_PATH: $INVALID_EXEMPTIONS"
+    exit 3
+  fi
+
+  EXEMPT_MAP=$(jq -c '.exemptions' "$EXEMPTIONS_PATH" 2>/dev/null)
+  EXEMPT_JQ_RC=$?
+  case "$EXEMPT_MAP" in ''|null) EXEMPT_MAP='{}' ;; esac
+  if [ "$EXEMPT_JQ_RC" -ne 0 ]; then
+    # Same reasoning: a validated file that then reads back as nothing would
+    # silently drop every exemption and re-flag the files this exists to quiet.
+    err "could not read exemptions from $EXEMPTIONS_PATH (jq exited $EXEMPT_JQ_RC)"
+    exit 3
+  fi
+fi
 
 # ---- emit helpers -----------------------------------------------------------
 # Every exit path emits valid (possibly empty) output before returning.
@@ -380,6 +541,17 @@ as_number() {  # $1 variable name
 
 emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
   local hotspots="$1" rc="$2"
+  # Exemptions ride a global rather than a third positional argument so EVERY
+  # existing early-exit call site reports them without being rewritten — the
+  # "no hotspots crossed the threshold" path (exit 1) is precisely the one where
+  # a touched exempt file would otherwise vanish.
+  local exemptions="${EXEMPTIONS_JSON:-[]}"
+  case "$exemptions" in ''|null) exemptions='[]' ;; esac
+  # Derived, never tracked separately: a count that can disagree with the array
+  # it describes is a field that will eventually lie.
+  local exempt_count
+  exempt_count=$(printf '%s' "$exemptions" | jq 'length' 2>/dev/null) || exempt_count=0
+  case "$exempt_count" in ''|*[!0-9]*) exempt_count=0 ;; esac
   as_number SCANNED_PR_COUNT
   as_number EXCLUDED_COUNT
   as_number MISSING_COUNT
@@ -410,6 +582,9 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
       --argjson lookup_failed "$LOOKUP_FAILED" \
       --argjson total "$TOTAL_HOTSPOT_COUNT" \
       --argjson hotspots "$hotspots" \
+      --arg exemptions_file "$EXEMPTIONS_PATH" \
+      --argjson exemptions "$exemptions" \
+      --argjson exempt_count "$exempt_count" \
       '{repo:$repo, since:$since, source:$source,
         scan_ref:$scan_ref, scan_ref_source:$scan_ref_source, threshold:$threshold,
         conflict_weight:$conflict_weight, min_prs:$min_prs,
@@ -418,7 +593,10 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
         creation_skipped_count:$creation_skipped,
         sweep_commit_count:$sweep_commits, sweep_skipped_count:$sweep_skipped,
         truncated:$truncated, existing_lookup_failed:$lookup_failed,
-        total_hotspot_count:$total, hotspots:$hotspots}'
+        total_hotspot_count:$total,
+        exemptions_file:(if $exemptions_file == "" then null else $exemptions_file end),
+        exempt_count:$exempt_count, exemptions:$exemptions,
+        hotspots:$hotspots}'
   else
     printf '%s' "$hotspots" | jq -r '.[] | [
       .file, (.pr_count|tostring), (.conflict_rounds|tostring), (.score|tostring),
@@ -429,6 +607,15 @@ emit_and_exit() {  # $1 hotspots JSON array, $2 exit code
        else ((.existing_hotspot_issue|tostring)
              + " (" + (.existing_hotspot_issue_state // "unknown") + ")") end)
     ] | @tsv'
+    # Exempt files are reported, never dropped — but AFTER the hotspot rows and
+    # behind a `#` marker, so a column parser reading hotspot rows cannot mistake
+    # one for the other and a caller taking the top N rows is unaffected.
+    if [ "$exempt_count" -gt 0 ]; then
+      printf '%s' "$exemptions" | jq -r '.[] | [
+        "# exempt (catalog)", .file, (.pr_count|tostring), (.score|tostring),
+        (.pr_numbers|map(tostring)|join(",")), (.lint // "")
+      ] | @tsv'
+    fi
   fi
   exit "$rc"
 }
@@ -1064,9 +1251,10 @@ CREATION_MAP=$(jq -Rs -c 'def z: [0] | implode;
 case "$CREATION_MAP" in ''|null) CREATION_MAP='{}' ;; esac
 
 # ---- aggregate --------------------------------------------------------------
-HOTSPOTS=$(jq -Rs -c \
+AGGREGATED=$(jq -Rs -c \
   --argjson conflicts "$CONFLICT_MAP" \
   --argjson creations "$CREATION_MAP" \
+  --argjson exempt "$EXEMPT_MAP" \
   --argjson threshold "$THRESHOLD" \
   --argjson weight "$CONFLICT_WEIGHT" \
   --argjson min_prs "$MIN_PRS" '
@@ -1094,11 +1282,31 @@ HOTSPOTS=$(jq -Rs -c \
           creation_pr: ($creations[$f] // null)
         }
     )
-  | map(select(.pr_count >= $min_prs and .score >= $threshold))
-  | sort_by(-.score, -.pr_count, .file)
-' < "$TOUCH_TSV" 2>/dev/null) || HOTSPOTS=""
+  # Partition, do not pre-filter (issue #1571). Exempt files are scored by the
+  # identical formula above and only then reclassified, so their history stays
+  # complete and the non-exempt hotspot rule below is byte-for-byte the rule it
+  # was. `in($exempt)` — never `$exempt | has(.file)`, which would look up the
+  # literal key "file" on the map instead of the path.
+  | {
+      hotspots: ( map(select((.file | in($exempt)) | not))
+                  | map(select(.pr_count >= $min_prs and .score >= $threshold))
+                  | sort_by(-.score, -.pr_count, .file) ),
+      # No threshold here on purpose: a touched exempt file is reported however
+      # small its score, because the promise is "never silently omitted".
+      exemptions: ( map(select(.file | in($exempt)))
+                    | map(. as $e
+                          | $e + {lint:   $exempt[$e.file].lint,
+                                  reason: $exempt[$e.file].reason})
+                    | sort_by(-.score, -.pr_count, .file) )
+    }
+' < "$TOUCH_TSV" 2>/dev/null) || AGGREGATED=""
 
+case "$AGGREGATED" in ''|null) AGGREGATED='{"hotspots":[],"exemptions":[]}' ;; esac
+
+HOTSPOTS=$(printf '%s' "$AGGREGATED" | jq -c '.hotspots' 2>/dev/null) || HOTSPOTS=""
 case "$HOTSPOTS" in ''|null) HOTSPOTS='[]' ;; esac
+EXEMPTIONS_JSON=$(printf '%s' "$AGGREGATED" | jq -c '.exemptions' 2>/dev/null) || EXEMPTIONS_JSON=""
+case "$EXEMPTIONS_JSON" in ''|null) EXEMPTIONS_JSON='[]' ;; esac
 
 TOTAL_HOTSPOT_COUNT=$(printf '%s' "$HOTSPOTS" | jq 'length' 2>/dev/null || echo 0)
 if [ "$TOTAL_HOTSPOT_COUNT" -eq 0 ]; then

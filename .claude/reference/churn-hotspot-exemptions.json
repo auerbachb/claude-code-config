@@ -1,0 +1,21 @@
+{
+  "schema": "churn-hotspot-exemptions/v1",
+  "source": {
+    "issue": 1571,
+    "as_of": "2026-09-02",
+    "provenance": "lint-enforced-catalog",
+    "note": "Files here churn because a CI lint requires the edit, so no refactor can retire their hotspot flag. Both `lint` and `reason` are REQUIRED and non-empty: `lint` names the enforcing check, `reason` says why that check forces a row edit. An entry stating no enforcing lint is rejected by churn-hotspots.sh with exit 3, so exemption cannot be claimed on assertion alone. Exempt files are still scored and still reported — on the detector's `exempt (catalog)` line and in `exemptions[]` — they are simply absent from `hotspots[]`, so /wrap raises no needs-decision item for them. Mechanism: .claude/reference/churn-hotspots.md."
+  },
+  "exemptions": {
+    ".claude/scripts/README.md": {
+      "lint": ".github/scripts/scripts-catalog-lint.sh (run via .github/scripts/run-doc-lints.sh in .github/workflows/rule-lint.yml)",
+      "reason": "The scripts catalog index. Lint rules 3 and 5 require the index to link every doc under .claude/scripts/docs/ exactly once and to hold no per-script rows itself, so adding or renaming a category doc forces an index edit and CI fails without it. Issue #898 split the per-script rows out of this file; what remains is a lint-enforced index whose residual churn is structural, not a refactor signal.",
+      "as_of": "2026-09-02"
+    },
+    ".claude/scripts/docs/tests.md": {
+      "lint": ".github/scripts/scripts-catalog-lint.sh (run via .github/scripts/run-doc-lints.sh in .github/workflows/rule-lint.yml)",
+      "reason": "The tests category doc. Lint rule 1 enforces a bijection between .claude/scripts/tests/*.test.sh and the catalog rows, so every test suite added or renamed requires exactly one row edit here or CI fails. Also a recurring merge-conflict surface for concurrent PRs (PR #1543, 2026-09-01).",
+      "as_of": "2026-09-02"
+    }
+  }
+}
