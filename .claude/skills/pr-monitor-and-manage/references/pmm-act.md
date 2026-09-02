@@ -230,7 +230,9 @@ IN_FLIGHT_SETS=()
 # would silently overwrite every earlier PR's lock.
 for N in $SPAWNED_PR_NUMS; do
   N_HEAD_SHA=$(jq -r '.head_sha' <<<"${GATE_BY_PR[$N]}")   # that PR's own tick-scoped $GATE
-  ISSUE_N=$("$PR_ISSUE_REF_SH" "$N" 2>/dev/null || echo null)
+  # --first: one primary issue per agent entry. Default mode is set-valued
+  # (issue #1492) and a two-line value would break the `jq --argjson` below.
+  ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null || echo null)
   AGENT_ID="pmm-fix-$N"
   ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
     --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \

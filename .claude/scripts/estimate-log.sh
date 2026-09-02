@@ -478,7 +478,12 @@ build_row() {
   if [[ -n "$pr_issue_ref_sh" ]]; then
     # Pass GH_REPO so pr-issue-ref.sh resolves against the correct repository
     # even when estimate-log.sh is run from a different git checkout.
-    issue_num=$(GH_REPO="$repo" "$pr_issue_ref_sh" "$pr_num" 2>/dev/null || true)
+    #
+    # --first is required (issue #1492): default mode is set-valued, and a PR
+    # closing two issues would return two lines. The `=~ ^[0-9]+$` guard below
+    # would then reject it and skip the estimate lookup with no message at all —
+    # a silent degradation. One estimate belongs to one primary issue.
+    issue_num=$(GH_REPO="$repo" "$pr_issue_ref_sh" --first "$pr_num" 2>/dev/null || true)
   fi
 
   # Fetch issue body if we have an issue number

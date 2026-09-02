@@ -97,6 +97,40 @@ printf 'Closes other-org/other-repo#99\nCloses #42\n' > "$TMP/pr_body/107.txt"
 # PR 108 — cross-repo ref to the CURRENT repo (should be included like a bare #N)
 printf 'Closes auerbachb/claude-code-config#55\n' > "$TMP/pr_body/108.txt"
 
+# PR 109 — issue #1492 VARIANT 1, verbatim shape of live PR #1489: a prose
+# closing reference EARLIER in the body than the canonical trailing trailer.
+# Pre-fix `head -1` returned 1356, so /wrap released an unrelated closed issue
+# and left #1407's claim held. Tier 1 (standalone) must win outright.
+printf 'Dedup note\n\nDedup scored this 0.85 against closed #1356, and that was reviewed before filing this PR.\n\nCloses #1407\n' \
+  > "$TMP/pr_body/109.txt"
+
+# PR 110 — issue #1492 VARIANT 2, verbatim shape of live PR #1546: TWO canonical
+# trailers, both standalone. GitHub closed both; pre-fix `head -1` returned only
+# 1531 and stranded #1541's claim. "Prefer the last reference" would merely
+# strand the other one — the output has to be set-valued.
+printf 'Two nits batched into one PR.\n\nCloses #1531\nCloses #1541\n' \
+  > "$TMP/pr_body/110.txt"
+
+# PR 111 — standalone grammar boundary: a Markdown bullet trailer and a trailer
+# with trailing punctuation both count as tier 1; a mid-sentence `fixes #700`
+# is tier 2 and must therefore lose.
+printf 'This also fixes #700 in passing.\n\n- Closes #801\nResolves #802.\n' \
+  > "$TMP/pr_body/111.txt"
+
+# PR 112 — CRLF body (what GitHub stores when a body is edited in the web UI).
+# An unstripped CR breaks the tier-1 end-of-line anchor, silently demoting a
+# real trailer to prose and handing the prose reference the win.
+printf 'Some prose closed #66 here.\r\n\r\nCloses #55\r\n' > "$TMP/pr_body/112.txt"
+
+# PR 113 — word-boundary guard across the tier-2 scan resume. `closed` here is
+# preceded by a digit, so the documented `enclosed #56` guard must reject it;
+# only `fixes #1` is a legal match. See Test 19.
+printf 'edge fixes #1closed #56 tail\n' > "$TMP/pr_body/113.txt"
+
+# PR 114 — control for PR 113: two genuinely separated embedded refs on ONE
+# line, so a resume that swallowed the rest of the line would show up here.
+printf 'This fixes #10 and also resolves #20 today.\n' > "$TMP/pr_body/114.txt"
+
 # ---------------------------------------------------------------------------
 # gh stub — serves pr body files for `pr view N ...` calls
 # ---------------------------------------------------------------------------
@@ -149,10 +183,18 @@ OUT="$(bash "$SCRIPT" 101 2>/dev/null)"
 check_eq "Test1: default mode extracts single bare #N" "42" "$OUT"
 
 # ---------------------------------------------------------------------------
-# Test 2: default mode — first match only when multiple references
+# Test 2: default mode — no standalone trailer, so every embedded reference is
+# returned (deliberate contract change, issue #1492).
+#
+# This body is `Fixes #10. Also resolves #20` — both references sit in prose, so
+# tier 1 is empty and the tier-2 fallback emits both. It previously returned
+# just "10"; that `head -1` is the exact mechanism that stranded issue claims on
+# live PRs #1489 and #1546, and GitHub closes both #10 and #20 for this body.
 # ---------------------------------------------------------------------------
 OUT="$(bash "$SCRIPT" 102 2>/dev/null)"
-check_eq "Test2: default mode returns first match only" "10" "$OUT"
+check_eq "Test2: default mode returns every embedded ref when no trailer exists" "$(printf '10\n20')" "$OUT"
+OUT="$(bash "$SCRIPT" --first 102 2>/dev/null)"
+check_eq "Test2b: --first narrows the same body to one primary" "10" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Test 3: default mode — cross-repo form NOT matched (bare #N only)
@@ -310,6 +352,121 @@ fi
 # ---------------------------------------------------------------------------
 OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 108 2>/dev/null)"
 check_eq "Test14: same-repo cross-ref included in --all" "55" "$OUT"
+
+# ---------------------------------------------------------------------------
+# Tests 15-18 — issue #1492: the selector must be tiered AND set-valued.
+#
+# NEGATIVE CONTROL. `legacy_pick` is a frozen copy of the pre-fix selector — the
+# exact `head -1` one-liner that shipped before this fix. Asserting what IT
+# returns on each fixture proves the fixture actually discriminates: a fixture
+# both implementations agree on pins nothing. Freezing the old logic here rather
+# than reading it back from `origin/main` keeps the control meaningful after this
+# fix merges, at which point origin/main would contain the NEW selector and a
+# git-based control would silently invert.
+# ---------------------------------------------------------------------------
+legacy_pick() {
+  printf '%s\n' "$1" \
+    | grep -oiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*#[0-9]+' \
+    | head -1 | grep -oE '[0-9]+' | head -1 || true
+}
+
+# --- Test 15: VARIANT 1 (live PR #1489) — trailer beats earlier prose ---------
+BODY109="$(cat "$TMP/pr_body/109.txt")"
+check_eq "Test15a: NEGATIVE CONTROL — pre-fix selector picks the prose ref (the bug)" \
+  "1356" "$(legacy_pick "$BODY109")"
+OUT="$(bash "$SCRIPT" 109 2>/dev/null)"
+check_eq "Test15b: default mode returns ONLY the standalone trailer" "1407" "$OUT"
+LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
+[[ "$LINE_COUNT" -eq 1 ]] && pass "Test15c: variant-1 body yields exactly 1 line" \
+  || fail "Test15c: expected 1 line, got $LINE_COUNT"
+if printf '%s\n' "$OUT" | grep -Fxq -- "1356"; then
+  fail "Test15d: prose ref #1356 must not appear in default output"
+else
+  pass "Test15d: prose ref #1356 correctly excluded by the standalone tier"
+fi
+check_eq "Test15e: --first agrees with default on a single-trailer body" \
+  "1407" "$(bash "$SCRIPT" --first 109 2>/dev/null)"
+# --all is deliberately UNCHANGED: no tier filtering, so both refs still appear.
+OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 109 2>/dev/null)"
+check_line_present "Test15f: --all still reports the prose ref (unfiltered by design)" "1356" "$OUT"
+check_line_present "Test15g: --all still reports the trailer ref" "1407" "$OUT"
+
+# --- Test 16: VARIANT 2 (live PR #1546) — both trailers returned --------------
+BODY110="$(cat "$TMP/pr_body/110.txt")"
+check_eq "Test16a: NEGATIVE CONTROL — pre-fix selector returns only the first trailer (the bug)" \
+  "1531" "$(legacy_pick "$BODY110")"
+OUT="$(bash "$SCRIPT" 110 2>/dev/null)"
+check_eq "Test16b: default mode returns BOTH trailers in document order" \
+  "$(printf '1531\n1541')" "$OUT"
+LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
+[[ "$LINE_COUNT" -eq 2 ]] && pass "Test16c: variant-2 body yields exactly 2 lines" \
+  || fail "Test16c: expected 2 lines, got $LINE_COUNT"
+# "Prefer the last reference" was one of the directions proposed on the issue;
+# it would return 1541 alone and strand #1531 instead. Pin that it did not happen.
+check_line_present "Test16d: the FIRST trailer is not dropped (rules out prefer-last)" "1531" "$OUT"
+check_eq "Test16e: --first yields one primary from a two-trailer body" \
+  "1531" "$(bash "$SCRIPT" --first 110 2>/dev/null)"
+
+# --- Test 17: standalone grammar — bullets and trailing punctuation -----------
+BODY111="$(cat "$TMP/pr_body/111.txt")"
+check_eq "Test17a: NEGATIVE CONTROL — pre-fix selector picks the mid-sentence ref" \
+  "700" "$(legacy_pick "$BODY111")"
+OUT="$(bash "$SCRIPT" 111 2>/dev/null)"
+check_eq "Test17b: bullet trailer and punctuated trailer both count as standalone" \
+  "$(printf '801\n802')" "$OUT"
+if printf '%s\n' "$OUT" | grep -Fxq -- "700"; then
+  fail "Test17c: mid-sentence 'fixes #700' must lose to the standalone trailers"
+else
+  pass "Test17c: mid-sentence 'fixes #700' correctly excluded"
+fi
+
+# --- Test 18: CRLF bodies, and --first/--all mutual exclusion -----------------
+BODY112="$(cat "$TMP/pr_body/112.txt")"
+check_eq "Test18a: NEGATIVE CONTROL — pre-fix selector picks the prose ref on a CRLF body" \
+  "66" "$(legacy_pick "$BODY112")"
+check_eq "Test18b: CRLF trailer still recognised as standalone" \
+  "55" "$(bash "$SCRIPT" 112 2>/dev/null)"
+
+RC=0
+bash "$SCRIPT" --first --all 101 >/dev/null 2>&1 || RC=$?
+[[ "$RC" -eq 2 ]] && pass "Test18c: --first with --all is a usage error (exit 2)" \
+  || fail "Test18c: expected exit 2 for --first --all, got $RC"
+MSG="$(bash "$SCRIPT" --first --all 101 2>&1 >/dev/null || true)"
+check_contains "Test18d: message names the conflict" "mutually exclusive" "$MSG"
+
+RC=0
+bash "$SCRIPT" --first 105 2>/dev/null || RC=$?
+[[ "$RC" -eq 1 ]] && pass "Test18e: --first exits 1 when no reference found" \
+  || fail "Test18e: expected exit 1, got $RC"
+
+# ---------------------------------------------------------------------------
+# Test 19 — the word-boundary guard must survive the tier-2 SCAN RESUME.
+#
+# Tier 2 walks each line with a loop, re-matching on the remainder after every
+# hit. If the remainder is taken from RSTART+RLENGTH, the `^` alternative in
+# the pattern matches at the start of that remainder and manufactures a word
+# boundary the line never contained — so `fixes #1closed #56` would report 56,
+# even though the character before `closed` is a digit and the documented
+# `enclosed #56` guard rejects exactly that. Issue #1492 requires the guard to
+# be preserved, so the pre-fix selector is the oracle here: it and the new
+# selector must AGREE, and Test19a proves the fixture is not vacuous by pinning
+# that the number the guard excludes is a real number appearing in the line.
+# ---------------------------------------------------------------------------
+BODY113="$(cat "$TMP/pr_body/113.txt")"
+check_eq "Test19a: NEGATIVE CONTROL — pre-fix selector yields only the boundary-legal ref" \
+  "1" "$(legacy_pick "$BODY113")"
+OUT="$(bash "$SCRIPT" 113 2>/dev/null)"
+check_eq "Test19b: scan-resume does not manufacture a word boundary" "1" "$OUT"
+if printf '%s\n' "$OUT" | grep -Fxq -- "56"; then
+  fail "Test19c: '#1closed #56' must not match — the char before 'closed' is alnum"
+else
+  pass "Test19c: digit-adjacent keyword correctly rejected after scan resume"
+fi
+# Control: a genuine boundary on the same line shape still yields BOTH refs, so
+# Test19b is not passing merely because the resume dropped everything after the
+# first hit.
+check_eq "Test19d: genuinely separated refs on one line still both match" \
+  "$(printf '10\n20')" "$(bash "$SCRIPT" 114 2>/dev/null)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

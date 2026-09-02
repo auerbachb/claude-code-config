@@ -12,7 +12,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [polling-state-gate.sh](../polling-state-gate.sh) | CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle |
 | [pr-preflight.sh](../pr-preflight.sh) | Flip a draft PR to ready and trigger the four AI reviewers when absent |
 | [pr-authorship.sh](../pr-authorship.sh) | Hard authorship gate — verify the authenticated user authored a PR before any automated write |
-| [pr-issue-ref.sh](../pr-issue-ref.sh) | Extract the linked issue number from a PR body via GitHub's issue-closing keywords |
+| [pr-issue-ref.sh](../pr-issue-ref.sh) | Extract every linked issue number from a PR body via GitHub's issue-closing keywords (one per line; `--first` for a single primary) |
 | [reviewer-of.sh](../reviewer-of.sh) | Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history |
 | [reviewer-activity.sh](../reviewer-activity.sh) | Detect whether each AI reviewer has posted activity on a specific pushed SHA |
 

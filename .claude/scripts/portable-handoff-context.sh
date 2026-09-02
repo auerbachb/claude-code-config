@@ -196,7 +196,10 @@ if git -C "$WORKING_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       [[ -n "$pr_base" ]] && base_branch="$pr_base"
       linkage_status="pull request resolved from current branch"
       if [[ -x "$SCRIPT_DIR/pr-issue-ref.sh" ]]; then
-        issue_number=$(cd "$checkout_path" && "$SCRIPT_DIR/pr-issue-ref.sh" "$pr_number" 2>/dev/null) || issue_rc=$?
+        # --first (issue #1492): default mode is set-valued, and issue_number is
+        # interpolated into a single issue URL below — a two-line value would
+        # build a URL with a newline in it.
+        issue_number=$(cd "$checkout_path" && "$SCRIPT_DIR/pr-issue-ref.sh" --first "$pr_number" 2>/dev/null) || issue_rc=$?
         issue_rc="${issue_rc:-0}"
         if [[ -n "$issue_number" && "$repo_identity" != "$unknown" ]]; then
           issue_url="https://github.com/${repo_identity}/issues/${issue_number}"
