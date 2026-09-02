@@ -134,24 +134,40 @@ expect "well-formed catalog passes" 0 \
 
 # --- 1. coverage ----------------------------------------------------------
 expect "new script with no row fails" 1 \
-  "'delta\.sh' exists in .* but has no row" \
+  "'\\.claude/scripts/delta\\.sh' exists but has no row" \
   bash -c 'printf "#!/usr/bin/env bash\n" > .claude/scripts/delta.sh'
 
 expect "new test with no row fails" 1 \
-  "'delta\.test\.sh' exists in .* but has no row" \
+  "'\\.claude/scripts/tests/delta\\.test\\.sh' exists but has no row" \
   bash -c 'printf "#!/usr/bin/env bash\n" > .claude/scripts/tests/delta.test.sh'
 
 expect "deleted row for an existing script fails" 1 \
-  "'gamma\.sh' exists in .* but has no row" \
+  "'\\.claude/scripts/gamma\\.sh' exists but has no row" \
   drop_line '^| \[gamma\.sh\]' .claude/scripts/docs/tools.md
 
 expect "row naming an out-of-scope file fails" 1 \
-  "documents 'helper\.sh' but no such script or test is in scope" \
+  "documents '\\.claude/scripts/lib/helper\\.sh' but no such script or test is in scope" \
   bash -c 'printf "%s\n" "| [helper.sh](../lib/helper.sh) | Out of scope |" >> .claude/scripts/docs/tools.md'
 
 expect "duplicate row across two docs fails" 1 \
-  "'alpha\.sh' has more than one row" \
+  "'\\.claude/scripts/alpha\\.sh' has more than one row" \
   bash -c 'printf "%s\n" "| [alpha.sh](../alpha.sh) | Dupe |" >> .claude/scripts/docs/tests.md'
+
+# --- 1b. entry identity is the path, not the basename (issue #1452) --------
+# The two in-scope globs overlap on exactly one shape: a *.test.sh that exists
+# both at the top level and under tests/. Keyed on basenames those two files
+# are one entry, and both cases below come out wrong. Verified against the
+# pre-fix script: the first exits 1 with two spurious errors, and the second
+# reports a bare 'alpha.test.sh' that never says which file it means.
+expect "same-basename pair documented at both paths passes" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  bash -c 'printf "#!/usr/bin/env bash\n" > .claude/scripts/alpha.test.sh
+           printf "%s\n" "| [alpha.test.sh](../alpha.test.sh) | Top-level namesake |" \
+             >> .claude/scripts/docs/tools.md'
+
+expect "same-basename pair with one row names the undocumented path" 1 \
+  "'\\.claude/scripts/alpha\\.test\\.sh' exists but has no row" \
+  bash -c 'printf "#!/usr/bin/env bash\n" > .claude/scripts/alpha.test.sh'
 
 # --- 2. link integrity ----------------------------------------------------
 expect "dead link fails" 1 \
@@ -172,16 +188,16 @@ expect "row linking to a same-named out-of-scope file fails" 1 \
 
 # --- 3. index <-> docs bijection ------------------------------------------
 expect "doc missing from the index fails" 1 \
-  'docs/tests\.md exists but the index does not link it' \
+  '\.claude/scripts/docs/tests\.md exists but the index does not link it' \
   drop_line '(docs/tests\.md)' .claude/scripts/README.md
 
 expect "index link to a deleted doc fails" 1 \
-  'the index links docs/tools\.md but no such file exists' \
+  'the index links \.claude/scripts/docs/tools\.md but no such file exists' \
   rm -f .claude/scripts/docs/tools.md
 
 # sort -u would collapse the repeat and call the set comparison a bijection.
 expect "duplicate category row in the index fails" 1 \
-  'the index links docs/tools\.md more than once' \
+  'the index links \.claude/scripts/docs/tools\.md more than once' \
   bash -c 'printf "%s\n" "| [Tools again](docs/tools.md) | Duplicate category row |" \
              >> .claude/scripts/README.md'
 
@@ -230,6 +246,14 @@ expect "per-script row in the index fails" 1 \
   'index table may only link into' \
   bash -c 'printf "%s\n" "| [alpha.sh](../alpha.sh) | Should not be here |" >> .claude/scripts/README.md'
 
+# Checks 3 and 5 have to agree on what "links into docs/" means. This target
+# carries the docs/ prefix but points outside docs/, so a textual prefix test
+# in check 5 would wave it through while check 3 correctly declines to count it
+# as a category link — leaving the row unclaimed by either check.
+expect "index row escaping docs/ through .. fails" 1 \
+  'index table may only link into' \
+  bash -c 'printf "%s\n" "| [Sneaky](docs/../tools.md) | Escapes docs/ |" >> .claude/scripts/README.md'
+
 # --- out-of-scope files must NOT require rows -----------------------------
 # These pin the scope boundary. Without them a future tightening of the
 # inventory glob would demand catalog rows for helper libraries and test
@@ -274,6 +298,43 @@ else
   echo "FAIL — unknown arg: expected exit 2, got ${got}"
   failures=$((failures + 1))
 fi
+
+# --- normalize_relpath contract -------------------------------------------
+# The path keying above is only as sound as the normalizer under it, and the
+# lint itself exercises just two target shapes. These pin the rest of the
+# contract, including the two forms that would corrupt a key silently: a
+# segment holding a glob character (an unquoted IFS split would expand it
+# against the cwd) and a '..' that escapes the base (droppable only when the
+# path is absolute).
+errors=0  # lint-common.sh's caller contract; unused by these cases.
+# shellcheck source=.github/scripts/lib/lint-common.sh
+source "${REPO_ROOT}/.github/scripts/lib/lint-common.sh"
+
+normalize_case() {
+  local base="$1" target="$2" want="$3" got
+  got=$(normalize_relpath "$base" "$target")
+  if [[ "$got" == "$want" ]]; then
+    echo "ok   — normalize_relpath '${base}' '${target}' -> ${want}"
+  else
+    echo "FAIL — normalize_relpath '${base}' '${target}': expected '${want}', got '${got}'"
+    failures=$((failures + 1))
+  fi
+}
+
+normalize_case ".claude/scripts/docs" "../foo.sh"           ".claude/scripts/foo.sh"
+normalize_case ".claude/scripts/docs" "../tests/foo.test.sh" ".claude/scripts/tests/foo.test.sh"
+normalize_case ".claude/scripts"      "docs/../foo.sh"       ".claude/scripts/foo.sh"
+normalize_case ".claude/scripts"      "./docs/./tools.md"    ".claude/scripts/docs/tools.md"
+normalize_case ".claude/scripts/docs" "..//..///x.sh"        ".claude/x.sh"
+normalize_case ".claude/scripts/docs" "../tools.md/"         ".claude/scripts/tools.md"
+normalize_case ""                     ".claude/scripts/a.sh" ".claude/scripts/a.sh"
+normalize_case "."                    "foo.sh"               "foo.sh"
+normalize_case "a/b"                  "c/*/d.sh"             "a/b/c/*/d.sh"
+normalize_case "a/b"                  "../../../../up.sh"    "../../up.sh"
+normalize_case "a/b"                  "../.."                "."
+normalize_case "a/b"                  "/abs/path.sh"         "/abs/path.sh"
+normalize_case "/tmp/x"               "../y.sh"              "/tmp/y.sh"
+normalize_case "/"                    "../../etc"            "/etc"
 
 # --- real repo ------------------------------------------------------------
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then

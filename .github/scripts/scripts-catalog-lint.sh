@@ -25,6 +25,15 @@
 # helper libraries and jq programs, not invocable scripts), tests/lib/,
 # tests/fixtures/, and non-script files such as the launchd .plist.
 #
+# Entry identity is a normalized repo-root-relative path, never a basename
+# (issue #1452). Both in-scope globs can produce the same basename — a
+# top-level foo.test.sh and tests/foo.test.sh — and under basename keying that
+# pair collapsed into one entry: a correctly documented pair was rejected as a
+# duplicate *and* as missing, while a genuinely missing row named a bare
+# filename that did not say which of the two files it meant. The coverage set
+# is therefore built from each row's link target, resolved against docs/, and
+# the index<->docs bijection is keyed the same way.
+#
 # Companion to skill-catalog-lint.sh and reference-catalog-lint.sh, which
 # enforce the same index-alignment invariant for .claude/skills/ and
 # .claude/reference/. Paths are repo-root-relative, so run it from the repo
@@ -42,6 +51,13 @@ TESTS_DIR=".claude/scripts/tests"
 DOCS_DIR=".claude/scripts/docs"
 
 errors=0
+
+# Sourced after errors=0, per lint-common.sh's caller contract. Provides
+# normalize_relpath, which is what lets every set below be keyed on a
+# normalized repo-root-relative path instead of a bare filename (issue #1452).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/lint-common.sh
+source "$SCRIPT_DIR/lib/lint-common.sh"
 
 usage() {
   cat <<'EOF'
@@ -131,13 +147,21 @@ has_backlink() {
 # --- inventory ------------------------------------------------------------
 # -maxdepth 1 on two named directories: bounded, and it never walks the rest
 # of .claude/ (where untracked paths can stall a recursive find).
+#
+# find prints "$SCRIPTS_DIR/name" verbatim, and both directory variables are
+# already repo-root-relative and free of . and .. segments, so the paths are
+# normalized as they stand. They still go through normalize_relpath so the
+# inventory is keyed by the exact same function as the documented set — a
+# second spelling of "normalized" here is how the two sides drift apart.
 inscope=$(find "$SCRIPTS_DIR" -maxdepth 1 -type f \
-            \( -name '*.sh' -o -name '*.py' \) -exec basename {} \; \
+            \( -name '*.sh' -o -name '*.py' \) \
+          | while IFS= read -r f; do normalize_relpath "" "$f"; done \
           | LC_ALL=C sort)
 
 if [[ -d "$TESTS_DIR" ]]; then
   test_files=$(find "$TESTS_DIR" -maxdepth 1 -type f -name '*.test.sh' \
-                 -exec basename {} \; | LC_ALL=C sort)
+               | while IFS= read -r f; do normalize_relpath "" "$f"; done \
+               | LC_ALL=C sort)
   inscope=$(printf '%s\n%s\n' "$inscope" "$test_files" | grep . | LC_ALL=C sort)
 fi
 
@@ -164,7 +188,20 @@ for doc in "${doc_files[@]}"; do
   done <<< "$rows"
 done
 
-documented_all=$(printf '%s' "$all_rows" | awk -F'\037' 'NF { print $2 }' | LC_ALL=C sort)
+# The coverage set is built from each row's link *target*, resolved against
+# docs/, not from the link text. The text is a bare filename by contract, so it
+# cannot distinguish a top-level foo.test.sh from tests/foo.test.sh; the target
+# can, and check 2 below independently holds the target to ../<name> or
+# ../tests/<name>. A row whose target is bogus therefore lands in this set as a
+# path that does not exist, and is reported as a phantom entry as well as a
+# broken link — two symptoms of the one defect, not a double count of it.
+documented_all=$(printf '%s' "$all_rows" \
+  | while IFS=$'\037' read -r doc name target; do
+      if [[ -n "${target:-}" ]]; then
+        normalize_relpath "$DOCS_DIR" "$target"
+      fi
+    done \
+  | LC_ALL=C sort)
 documented=$(printf '%s\n' "$documented_all" | grep . | LC_ALL=C sort -u || true)
 
 if [[ -z "$documented" ]]; then
@@ -179,7 +216,7 @@ phantom=$(comm -13 <(printf '%s\n' "$inscope") <(printf '%s\n' "$documented") ||
 if [[ -n "$undocumented" ]]; then
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    echo "::error file=${INDEX}::'${f}' exists in ${SCRIPTS_DIR}/ but has no row in any ${DOCS_DIR}/ category doc"
+    echo "::error file=${INDEX}::'${f}' exists but has no row in any ${DOCS_DIR}/ category doc"
     errors=$((errors + 1))
   done <<< "$undocumented"
 fi
@@ -226,13 +263,28 @@ while IFS=$'\037' read -r doc name target; do
 done <<< "$all_rows"
 
 # --- 3. Index <-> docs bijection ------------------------------------------
+# Both sides of this bijection are repo-root-relative doc paths, the same form
+# the coverage sets use. Membership is decided on the *normalized* target
+# rather than a literal "docs/" prefix on the raw text: a row written
+# docs/../foo.sh starts with the prefix but does not point into docs/, and
+# under the textual test it entered this set as "../foo.sh" — a key matching
+# nothing on either side.
 index_rows=$(entry_rows "$INDEX" || true)
 docs_linked_all=$(printf '%s\n' "$index_rows" \
-  | awk -F'\037' 'NF > 1 && $2 ~ /^docs\// { sub(/^docs\//, "", $2); print $2 }' \
+  | while IFS=$'\037' read -r name target; do
+      if [[ -n "${target:-}" ]]; then
+        resolved=$(normalize_relpath "$SCRIPTS_DIR" "$target")
+        case "$resolved" in
+          "${DOCS_DIR}/"*) printf '%s\n' "$resolved" ;;
+        esac
+      fi
+    done \
   | LC_ALL=C sort)
 docs_linked=$(printf '%s\n' "$docs_linked_all" | grep . | LC_ALL=C sort -u || true)
 
-docs_present=$(printf '%s\n' "${doc_files[@]}" | xargs -n1 basename | LC_ALL=C sort -u)
+docs_present=$(printf '%s\n' "${doc_files[@]}" \
+  | while IFS= read -r d; do normalize_relpath "" "$d"; done \
+  | LC_ALL=C sort -u)
 
 # A doc linked twice survives the sort -u below, so the set comparison alone
 # would call a duplicated category row a bijection. Count before dedup.
@@ -241,7 +293,7 @@ linked_unique=$(printf '%s\n' "$docs_linked" | grep -c . || true)
 if (( linked_count != linked_unique )); then
   printf '%s\n' "$docs_linked_all" | uniq -d | while IFS= read -r dupe; do
     [[ -z "$dupe" ]] && continue
-    echo "::error file=${INDEX}::the index links docs/${dupe} more than once — each category doc gets exactly one index row"
+    echo "::error file=${INDEX}::the index links ${dupe} more than once — each category doc gets exactly one index row"
   done
   errors=$((errors + linked_count - linked_unique))
 fi
@@ -256,7 +308,7 @@ else
   if [[ -n "$unlisted" ]]; then
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
-      echo "::error file=${INDEX}::${DOCS_DIR}/${d} exists but the index does not link it"
+      echo "::error file=${INDEX}::${d} exists but the index does not link it"
       errors=$((errors + 1))
     done <<< "$unlisted"
   fi
@@ -264,7 +316,7 @@ else
   if [[ -n "$dangling" ]]; then
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
-      echo "::error file=${INDEX}::the index links docs/${d} but no such file exists"
+      echo "::error file=${INDEX}::the index links ${d} but no such file exists"
       errors=$((errors + 1))
     done <<< "$dangling"
   fi
@@ -282,10 +334,16 @@ done
 # Every row in the index must link into docs/. A row pointing at ../foo.sh (or
 # anywhere else) means a per-script entry crept back into the shared file,
 # which is exactly the collision this split removed.
+#
+# Membership is tested on the normalized target, matching check 3. A literal
+# "docs/" prefix on the raw text is not the same question: docs/../foo.sh
+# carries the prefix while pointing outside docs/, and would satisfy a textual
+# test while check 3 correctly declined to count it as a docs link — leaving
+# the row unclaimed by either check.
 while IFS=$'\037' read -r name target; do
   [[ -z "${name:-}" ]] && continue
-  case "$target" in
-    docs/*) ;;
+  case "$(normalize_relpath "$SCRIPTS_DIR" "$target")" in
+    "${DOCS_DIR}/"*) ;;
     *)
       echo "::error file=${INDEX}::row '${name}' links to '${target}' — the index table may only link into ${DOCS_DIR}/; per-script rows belong in a category doc"
       errors=$((errors + 1))
