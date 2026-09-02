@@ -472,6 +472,126 @@ test_7_path_agreement() {
     "grep -q 'state_lock_release' '$HOOK'"
 }
 
+# ── Test 8: a REPOINTED agent symlink is restart-worthy ──────────────────────
+#
+# The restart signal used to snapshot ~/.claude/agents/ with `ls -1`, i.e. names
+# only. Repointing an existing link at a different source file leaves the name
+# set byte-identical while changing which definition a session would load, so
+# the one case the worktree indirection exists for produced no signal at all.
+# The snapshot now records "name -> target".
+
+test_8_agent_repoint_recommends_restart() {
+  section "Test 8: repointing an agent symlink recommends a restart"
+
+  local tmp home wt marker names_before names_after
+  tmp="$(make_fixture)"
+  home="$tmp/home"
+  wt="$home/.claude/skills-worktree"
+  marker="$home/.claude/sync-restart-recommended.json"
+
+  # A managed link (inside the worktree agents dir, so the publisher owns it)
+  # aimed at a stale filename. The publisher will repoint it to the canonical
+  # target; the NAME stays phase-a-fixer.md throughout.
+  mkdir -p "$home/.claude/agents"
+  ln -s "$wt/.claude/agents/phase-a-fixer.md.old" \
+        "$home/.claude/agents/phase-a-fixer.md"
+  names_before="$(ls -1 "$home/.claude/agents" | sort)"
+
+  run_sync "$home" >/dev/null
+
+  names_after="$(ls -1 "$home/.claude/agents" | sort)"
+
+  assert "(setup) the agent NAME set is unchanged across the run" \
+    "[ \"$names_before\" = \"$names_after\" ]"
+  assert "(setup) but the link was actually repointed" \
+    "[ \"\$(readlink '$home/.claude/agents/phase-a-fixer.md')\" = '$wt/.claude/agents/phase-a-fixer.md' ]"
+  assert "a marker was written" "[ -f '$marker' ]"
+  assert "and it names the agents category despite the identical name set" \
+    "jq -e '.restart_recommended.categories | index(\"agents\")' '$marker'"
+
+  rm -rf "$tmp"
+}
+
+# ── Test 9: a failed durable-state commit is reported, never swallowed ───────
+#
+# Both commit sites used `|| true`. On the failure path that silently discarded
+# the bumped streak, so a machine whose state file is unwritable could fail
+# forever without consecutive_failures ever reaching FAILURE_THRESHOLD — the
+# repeated-failure badge, the only in-session symptom, would never appear.
+
+test_9_state_commit_failure_is_reported() {
+  section "Test 9: an uncommittable state file is reported, not swallowed"
+
+  local tmp home logs state out
+  tmp="$(make_fixture)"
+  home="$tmp/home"
+  logs="$home/.claude/logs"
+  state="$logs/claude-config-sync-state.json"
+
+  # First run creates the log/state files normally.
+  run_sync "$home" >/dev/null
+  assert "(setup) the state file exists after a healthy run" \
+    "[ -f '$state' ]"
+
+  # Fault injection has to break the COMMIT and nothing else. Making the
+  # directory read-only is not usable: state-lock.sh puts its lockdir at
+  # "${STATE_FILE}.lock" in that same directory, so the run would abort at lock
+  # acquisition and never reach the code under test. Marking just the state file
+  # immutable leaves the lock, the temp file and the log untouched while making
+  # commit_json's rename fail with EPERM — precisely one broken step.
+  if [[ "$(uname -s)" == "Darwin" ]] && chflags uchg "$state" 2>/dev/null; then
+    out="$(HOME="$home" bash "$SYNC" 2>&1)"
+    chflags nouchg "$state" 2>/dev/null
+
+    assert "the run names the CONSEQUENCE, not just the failed write" \
+      "printf '%s' \"\$out\" | grep -q 'state not persisted'"
+    assert "the degradation is also recorded as a durable event" \
+      "grep -q 'state_commit_failed' '$logs/claude-config-sync-events.jsonl'"
+    assert "(control) the next healthy run says no such thing" \
+      "out2=\$(HOME='$home' bash '$SYNC' 2>&1); ! printf '%s' \"\$out2\" | grep -q 'state not persisted'"
+  else
+    # Non-Darwin (or a filesystem without user flags): the runtime injection is
+    # unavailable, so assert the wiring instead of silently claiming a pass.
+    assert "(source) the success path reports an uncommitted state" \
+      "grep -q 'success state not persisted' '$SYNC'"
+    assert "(source) the failure path reports an uncommitted streak" \
+      "grep -q 'failure streak not persisted' '$SYNC'"
+    assert "(source) both paths record a state_commit_failed event" \
+      "[ \"\$(grep -c 'state_commit_failed' '$SYNC')\" -eq 2 ]"
+  fi
+
+  assert "neither commit site still swallows the result with || true" \
+    "! grep -q 'commit_json \"\$new_state\" \"\$STATE_FILE\" || true' '$SYNC'"
+
+  rm -rf "$tmp"
+}
+
+# ── Test 10: the legacy hooks root reaches BOTH automated registrars ─────────
+#
+# register-hooks.py only migrates or prunes a settings.json hook entry whose
+# current path sits inside a managed root. MANAGED_LEGACY_HOOKS_DIR is what adds
+# the pre-worktree root-repo hooks directory to that set. install-time set it;
+# the two automated paths did not, so neither could ever finish the migration
+# they exist to perform.
+
+test_10_legacy_hooks_dir_reaches_both_automated_paths() {
+  section "Test 10: MANAGED_LEGACY_HOOKS_DIR is passed by every registrar"
+
+  local hook="$REPO_ROOT/.claude/hooks/session-start-sync.sh"
+  local setup="$REPO_ROOT/setup-skills-worktree.sh"
+
+  assert "(control) install-time still sets it" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$setup'"
+  assert "the scheduled sync sets it too" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$SYNC'"
+  assert "the session-start hook sets it too" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=' '$hook'"
+  assert "the scheduled sync derives it from the resolved root repo" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$ROOT_REPO_HINT/.claude/hooks\"' '$SYNC'"
+  assert "the hook derives it from the resolved root repo" \
+    "grep -q 'MANAGED_LEGACY_HOOKS_DIR=\"\$_root_repo/.claude/hooks\"' '$hook'"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -485,6 +605,9 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 test_1_stale_machine
+test_8_agent_repoint_recommends_restart
+test_9_state_commit_failure_is_reported
+test_10_legacy_hooks_dir_reaches_both_automated_paths
 test_4_failure_and_recovery
 test_5_lock_overlap
 test_6_root_repo_untouched

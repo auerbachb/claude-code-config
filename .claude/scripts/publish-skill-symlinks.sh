@@ -106,6 +106,29 @@ _normpath() {
   python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" "$1" 2>/dev/null
 }
 
+# One-time probe distinguishing the two reasons _normpath can fail, which need
+# opposite postures:
+#
+#   TOOL MISSING  — python3 absent or broken. Affects every path equally, so it
+#                   says nothing about any individual path. Normalizing neither
+#                   side is self-consistent (both stay raw) and preserves the
+#                   plain prefix comparison the callers below rely on.
+#   PATH REJECTED — python3 works but choked on this one argument. That IS a
+#                   statement about the path, and the safe answer is "not ours".
+#
+# Without this split, a python3-less machine classified EVERY managed symlink as
+# user-owned: normalize_arg kept the raw prefix while skill_owned_by_setup hard
+# -failed, so the publish silently degraded to a no-op on existing links, the
+# prune loop stopped pruning, and each link drew a "leaving user-owned symlink
+# alone" advisory that was simply untrue. The probe uses a literal already
+# -normal path, so a working python3 always returns it unchanged.
+_NORMPATH_OK=1
+if [[ "$(_normpath /tmp)" != "/tmp" ]]; then
+  _NORMPATH_OK=0
+  echo "  WARNING: python3 unavailable — symlink targets cannot be normalized;" >&2
+  echo "           falling back to raw path comparison for this run." >&2
+fi
+
 # Arguments are normalized the SAME way symlink targets are below. A prefix
 # built from ".../skills-worktree/" or ".../a//b" would never match a normalized
 # target, so every managed link would be misread as user-owned and the publish
@@ -174,18 +197,30 @@ migrate_symlink() {
 # The target is normalized before the prefix check so that traversal sequences
 # (e.g. ~/.claude/skills-worktree/../../../etc) cannot cause a path outside the
 # managed directories to be misidentified as setup-owned.
-# Posture on failure differs from normalize_arg above, deliberately: an
-# un-normalizable TARGET returns 1, i.e. "not ours", so the link is left alone.
-# Declining to touch something we cannot classify is the safe error here.
+# Posture on failure differs from normalize_arg above, deliberately: when the
+# normalizer IS available and rejects this particular TARGET, return 1 — "not
+# ours" — so the link is left alone. Declining to touch something we cannot
+# classify is the safe error there.
+#
+# That posture applies ONLY to a per-path rejection. When _NORMPATH_OK is 0 the
+# normalizer is missing outright (see the probe above): every path is equally
+# un-normalizable, the prefixes built by normalize_arg are equally raw, and
+# refusing to classify would disable the whole publish rather than protect
+# anything. Compare raw against raw in that case.
 skill_owned_by_setup() {
   local raw_target="$1"
-  local target
+  local candidate target
   if [[ "$raw_target" == /* ]]; then
-    target="$(_normpath "$raw_target")" || return 1
+    candidate="$raw_target"
   else
     # Relative symlinks are rare (all setup-created links are absolute) but resolve
     # them against SKILLS_DIR — the parent directory of every skill symlink.
-    target="$(_normpath "$SKILLS_DIR/$raw_target")" || return 1
+    candidate="$SKILLS_DIR/$raw_target"
+  fi
+  if (( _NORMPATH_OK == 1 )); then
+    target="$(_normpath "$candidate")" || return 1
+  else
+    target="$candidate"
   fi
   [[ "$target" == "$WORKTREE_SKILLS/"* ]] && return 0
   [[ -n "$REPO_ROOT" && "$target" == "$REPO_ROOT/.claude/skills/"* ]] && return 0

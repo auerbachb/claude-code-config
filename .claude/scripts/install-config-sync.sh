@@ -131,8 +131,14 @@ fi
 
 mkdir -p "$LOG_DIR" "$LAUNCH_AGENTS_DIR"
 
+# Escapes every character that is special on the RIGHT side of the `#`-delimited
+# substitutions below: `&` (the whole-match backreference), `#` (the delimiter
+# itself), and `\` (which would otherwise start an escape — `\1`, `\n`, or a
+# swallowed delimiter). All three are handled in ONE pass by a single bracket
+# expression, so there is no ordering hazard: sed rewrites each matched
+# character once and never re-scans what the replacement emitted.
 escape_sed_replacement() {
-  printf '%s' "$1" | sed 's/[&#]/\\&/g'
+  printf '%s' "$1" | sed 's/[\\&#]/\\&/g'
 }
 
 xml_escape() {

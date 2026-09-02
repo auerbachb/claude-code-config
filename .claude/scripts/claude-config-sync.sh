@@ -386,7 +386,18 @@ record_failure() {
           consecutive_failures: $streak, first_failure_at: $first, last_error: $err}' 2>/dev/null)" \
     || new_state=""
   if [[ -n "$new_state" ]]; then
-    commit_json "$new_state" "$STATE_FILE" || true
+    # Never `|| true`. commit_json warns about the CAUSE; this names the
+    # CONSEQUENCE, which is the part that matters and is otherwise invisible:
+    # the bumped streak did not reach disk, so the next tick re-reads the old
+    # count and bumps to the same number again. A persistently unwritable state
+    # file therefore pins consecutive_failures below FAILURE_THRESHOLD forever
+    # and the repeated-failure badge — the only in-session signal that this job
+    # is broken — never fires, however long the job has been failing.
+    if ! commit_json "$new_state" "$STATE_FILE"; then
+      warn "failure streak not persisted (now $consecutive) — the repeated-failure signal in $MARKER_FILE may never fire while $STATE_FILE stays unwritable"
+      append_event "$(jq -cn --arg at "$NOW_ISO" --arg file "$STATE_FILE" \
+        '{at: $at, event: "state_commit_failed", file: $file, phase: "failure"}')"
+    fi
   else
     warn "could not build the failure state document"
   fi
@@ -513,7 +524,25 @@ one_line() { printf '%s' "$1" | tr '\n' ';'; }
 AGENTS_LINK_DIR="$HOME/.claude/agents"
 agents_dir_existed=true
 [[ -d "$AGENTS_LINK_DIR" ]] || agents_dir_existed=false
-agents_before="$(ls -1 "$AGENTS_LINK_DIR" 2>/dev/null | sort)" || agents_before=""
+
+# Snapshot each entry as "name -> target", not the bare name. A legacy-migration
+# repoint — ~/.claude/agents/foo.md moving from the root repo to the worktree —
+# leaves the NAME set identical while changing which file the definition is
+# read from, and the two can differ whenever the root repo sits on a feature
+# branch. That is precisely a change a live session cannot pick up, so a
+# name-only comparison would stay silent on the one case the worktree
+# indirection exists to handle. Non-symlink entries readlink to the empty
+# string, which compares fine and needs no special case.
+snapshot_agent_links() {
+  local entry name
+  [[ -d "$AGENTS_LINK_DIR" ]] || return 0
+  for entry in "$AGENTS_LINK_DIR"/*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    name="$(basename "$entry")"
+    printf '%s -> %s\n' "$name" "$(readlink "$entry" 2>/dev/null)"
+  done | sort
+}
+agents_before="$(snapshot_agent_links)" || agents_before=""
 
 publish_skills="$(resolve_helper publish-skill-symlinks.sh)" || publish_skills=""
 if [[ -n "$publish_skills" ]]; then
@@ -541,9 +570,10 @@ else
 fi
 
 # Any change to the published agent set — a new definition linked, one pruned,
-# or the directory created for the first time — is a change a live session
-# cannot pick up: Claude Code registers agent types at session start.
-agents_after="$(ls -1 "$AGENTS_LINK_DIR" 2>/dev/null | sort)" || agents_after=""
+# one repointed at a different source file, or the directory created for the
+# first time — is a change a live session cannot pick up: Claude Code registers
+# agent types at session start.
+agents_after="$(snapshot_agent_links)" || agents_after=""
 agents_dir_exists=false
 [[ -d "$AGENTS_LINK_DIR" ]] && agents_dir_exists=true
 # The directory's EXISTENCE only counts as a change when it actually flipped.
@@ -585,7 +615,21 @@ done
 register_hooks="$(resolve_helper register-hooks.py hooks)" || register_hooks=""
 if [[ -n "$register_hooks" ]]; then
   if command -v python3 >/dev/null 2>&1; then
-    if ! hooks_out="$(python3 "$register_hooks" "$SKILLS_WT" 2>&1)"; then
+    # MANAGED_LEGACY_HOOKS_DIR mirrors setup-skills-worktree.sh Step 6 and the
+    # session-start hook: it names the pre-worktree root-repo hooks directory as
+    # a second managed root. register-hooks.py repoints or prunes a settings.json
+    # entry only when the path it currently names lives inside a managed root —
+    # anything else is the user's own hook. Without it this scheduled tick could
+    # never finish the legacy migration, so a machine whose only sync is this
+    # LaunchAgent would keep stale root-repo hook paths indefinitely.
+    hooks_rc=0
+    if [[ -n "$ROOT_REPO_HINT" ]]; then
+      hooks_out="$(MANAGED_LEGACY_HOOKS_DIR="$ROOT_REPO_HINT/.claude/hooks" \
+                   python3 "$register_hooks" "$SKILLS_WT" 2>&1)" || hooks_rc=$?
+    else
+      hooks_out="$(python3 "$register_hooks" "$SKILLS_WT" 2>&1)" || hooks_rc=$?
+    fi
+    if (( hooks_rc != 0 )); then
       warn "register-hooks.py reported errors: $(printf '%s' "$hooks_out" | tail -3 | tr '\n' ' ')"
     else
       log info "hooks and statusLine registered"
@@ -652,7 +696,15 @@ new_state="$(printf '%s' "$state" | jq \
         consecutive_failures: 0, first_failure_at: null, last_error: null,
         last_head_sha: $sha}' 2>/dev/null)" || new_state=""
 if [[ -n "$new_state" ]]; then
-  commit_json "$new_state" "$STATE_FILE" || true
+  # Same reasoning as the failure path: report the consequence, not just the
+  # cause. A success that fails to commit leaves the PREVIOUS failure streak on
+  # disk, so a recovered job keeps looking broken and can still trip the
+  # repeated-failure badge on a later tick.
+  if ! commit_json "$new_state" "$STATE_FILE"; then
+    warn "success state not persisted — a stale failure streak may survive in $STATE_FILE and misreport this job as failing"
+    append_event "$(jq -cn --arg at "$NOW_ISO" --arg file "$STATE_FILE" \
+      '{at: $at, event: "state_commit_failed", file: $file, phase: "success"}')"
+  fi
 else
   warn "could not build the success state document"
 fi

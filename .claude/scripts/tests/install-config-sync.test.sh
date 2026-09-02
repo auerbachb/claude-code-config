@@ -320,6 +320,58 @@ test_6_platform_guard() {
   rm -rf "$root"
 }
 
+# ── Test 7: metacharacter paths survive the sed substitution ────────────────
+#
+# The placeholder substitutions are `#`-delimited, so the replacement text must
+# escape `#` (the delimiter), `&` (the whole-match backreference) AND `\` (which
+# starts an escape). The escaper covered the first two only, so a HOME
+# containing a backslash had it silently DROPPED — `a\b` rendered as `ab`, and
+# launchd was handed a plist pointing at a directory that does not exist.
+
+test_7_metacharacter_paths_survive_substitution() {
+  section "Test 7: paths carrying \\ # & survive placeholder substitution"
+
+  local root home plist rc expected
+  root="$(make_env Darwin)"
+  # Every character the replacement side treats as special, in one directory
+  # name. Legal on APFS, and the whole point is that the installer must not
+  # silently mangle it. Deliberately NO apostrophe: assert() eval's its
+  # condition, and the paths below are interpolated inside single quotes there.
+  home="$root/home/back\\slash hash#tag amp&sand"
+  mkdir -p "$home/.claude"
+  plist="$home/Library/LaunchAgents/${LABEL}.plist"
+
+  PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+    bash "$INSTALL" >/dev/null 2>&1
+  rc=$?
+
+  assert "install exits 0 with metacharacters in HOME" "[ $rc -eq 0 ]"
+  assert "the plist was written" "[ -f '$plist' ]"
+  assert "no placeholder survives substitution" \
+    "! grep -qE '__(SHELL|SCRIPT_PATH|HOME)__' '$plist'"
+  # The load-bearing assertion: the path is reproduced character for character,
+  # modulo the ONE transformation the plist legitimately applies — `&` becomes
+  # the XML entity. `\` and `#` must survive untouched. Pre-fix the backslash
+  # vanished (a\b rendered as ab), so this fails on the old escaper.
+  expected="${home//&/&amp;}/.claude/logs/config-sync-stdout.log"
+  assert "the backslash- and hash-bearing HOME survives verbatim in the log paths" \
+    "grep -Fq \"\$expected\" '$plist'"
+  # Control, evaluated HERE rather than inside assert's eval: interpolating a
+  # backslash-bearing path into an eval'd string is its own quoting hazard, and
+  # a control that fails for the wrong reason proves nothing.
+  local has_backslash=no
+  case "$home" in *\\*) has_backslash=yes ;; esac
+  assert "(control) the raw path really did contain a backslash to lose" \
+    "[ '$has_backslash' = 'yes' ]"
+  assert "the directory the plist names actually exists" \
+    "[ -d '$home/.claude/logs' ]"
+  if command -v plutil >/dev/null 2>&1; then
+    assert "the rendered plist is still valid XML" "plutil -lint '$plist'"
+  fi
+
+  rm -rf "$root"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -328,6 +380,7 @@ echo -e "${BOLD}║  install/uninstall-config-sync.sh test suite (issue #1524)  
 echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 
 test_1_install_renders_plist
+test_7_metacharacter_paths_survive_substitution
 test_2_prefers_worktree_copy
 test_3_interval_option
 test_4_uninstall

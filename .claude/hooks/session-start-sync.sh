@@ -76,6 +76,12 @@ elif [[ -z "$errors" ]]; then
   errors="skills worktree not found at $skills_wt"
 fi
 
+# The root repo backing the skills worktree. Hoisted above the publish block
+# because the hook-registration block further down needs it too — see the
+# MANAGED_LEGACY_HOOKS_DIR note there. Empty when the worktree is absent or git
+# cannot read it; every consumer treats empty as "no legacy root known".
+_root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""
+
 # --- Publish skill and agent symlinks on the steady-state path ---
 # git reset --hard above updates worktree contents (including .claude/skills/
 # and .claude/agents/) but never creates the per-entry symlinks under
@@ -89,8 +95,6 @@ fi
 #     so publishing from a partial reset could prune valid installed links.
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
    ! [[ "$errors" == *"reset failed"* ]]; then
-  _root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""
-
   # Both publishers separate their streams on purpose: stdout is one line per
   # CHANGE, stderr carries standing advisories (a user-owned symlink left alone,
   # a legacy link not yet on main). Capture them apart so an advisory is never
@@ -141,8 +145,25 @@ fi
 if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   register_script="${_hook_dir}/register-hooks.py"
   if [[ -f "$register_script" ]]; then
-    if ! err=$(python3 "$register_script" "$skills_wt" 2>&1); then
-      errors="${errors:+$errors; }hook sync failed: $err"
+    # MANAGED_LEGACY_HOOKS_DIR names the pre-worktree root-repo hooks directory
+    # as a SECOND managed root, exactly as setup-skills-worktree.sh Step 6 does.
+    # register-hooks.py only migrates a settings.json entry to the canonical
+    # worktree path, or prunes a decommissioned one, when the path it currently
+    # points at sits inside a managed root; everything else is treated as the
+    # user's own hook and left untouched. Omitting the variable here therefore
+    # made this session-start path — and the scheduled sync in
+    # claude-config-sync.sh — permanently unable to finish the migration that
+    # install-time performs, which is the opposite of this hook's purpose
+    # (keeping existing installs current without a manual setup re-run).
+    # Unset when the root repo could not be resolved: an empty value is dropped
+    # by register-hooks.py, but not exporting it at all is the honest spelling.
+    if [[ -n "$_root_repo" ]]; then
+      err=$(MANAGED_LEGACY_HOOKS_DIR="$_root_repo/.claude/hooks" \
+              python3 "$register_script" "$skills_wt" 2>&1) || \
+        errors="${errors:+$errors; }hook sync failed: $err"
+    else
+      err=$(python3 "$register_script" "$skills_wt" 2>&1) || \
+        errors="${errors:+$errors; }hook sync failed: $err"
     fi
   else
     errors="${errors:+$errors; }hook sync helper missing: $register_script"

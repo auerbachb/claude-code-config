@@ -360,6 +360,116 @@ test_11_regression_setup_delegates() {
     "grep -q 'publish-skill-symlinks' '$hook'"
 }
 
+# ── Test 12: regression — a broken python3 must not disable the publish ──────
+#
+# _normpath shells out to python3. Before the fix, normalize_arg fell back to
+# the RAW argument while skill_owned_by_setup hard-failed to "not ours", so on
+# a machine without a usable python3 every managed symlink was misclassified as
+# user-owned: no repoint, no prune, and a "leaving user-owned symlink alone"
+# advisory per link that was flatly untrue. Both sides must now agree.
+
+test_12_regression_normpath_unavailable() {
+  section "Test 12: regression — a broken python3 does not disable the publish"
+
+  local tmp_home fake_wt legacy_root stub_dir output exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+
+  # A legacy root-repo checkout holding the same skill, plus a link pointing at
+  # it — the exact state the migration leg exists to repair.
+  legacy_root="$tmp_home/legacy-repo"
+  mkdir -p "$legacy_root/.claude/skills/alpha" "$tmp_home/.claude/skills"
+  printf '# alpha (legacy copy)\n' > "$legacy_root/.claude/skills/alpha/SKILL.md"
+  ln -s "$legacy_root/.claude/skills/alpha" "$tmp_home/.claude/skills/alpha"
+
+  # Stub python3 as present-but-broken. It exits non-zero without printing, the
+  # same shape as a missing interpreter from _normpath's point of view. It does
+  # NOT forward to a real python3 — a stub that falls through would silently
+  # test nothing.
+  stub_dir="$tmp_home/stub-bin"
+  mkdir -p "$stub_dir"
+  printf '#!/bin/sh\nexit 1\n' > "$stub_dir/python3"
+  chmod +x "$stub_dir/python3"
+
+  output="$(HOME="$tmp_home" PATH="$stub_dir:$PATH" \
+    bash "$PUBLISH_SCRIPT" "$fake_wt" "$legacy_root" 2>&1)"
+  exit_code=$?
+
+  assert "publish still exits 0 with a broken python3" "[ $exit_code -eq 0 ]"
+  assert "the degradation is announced once, not silently absorbed" \
+    "printf '%s' \"\$output\" | grep -q 'python3 unavailable'"
+  assert "the legacy link was NOT misread as user-owned" \
+    "! printf '%s' \"\$output\" | grep -q 'alpha — leaving user-owned'"
+  assert "the legacy link was migrated into the worktree" \
+    "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
+  assert "beta was still published" \
+    "[ -L '$tmp_home/.claude/skills/beta' ]"
+
+  # Control: with a WORKING python3 the same run emits no degradation notice,
+  # so the assertion above is keyed to the stub and not to something the
+  # publisher prints unconditionally.
+  rm -f "$tmp_home/.claude/skills/alpha" "$tmp_home/.claude/skills/beta"
+  ln -s "$legacy_root/.claude/skills/alpha" "$tmp_home/.claude/skills/alpha"
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" "$legacy_root" 2>&1)"
+  assert "(control) a working python3 prints no degradation notice" \
+    "! printf '%s' \"\$output\" | grep -q 'python3 unavailable'"
+  assert "(control) and it migrates the legacy link just the same" \
+    "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
+
+  cleanup "$tmp_home"
+}
+
+# ── Test 13: regression — setup preflights the publisher before mutating ─────
+
+test_13_regression_setup_preflight() {
+  section "Test 13: regression — setup checks for the publisher before Step 1"
+
+  local setup="$REPO_ROOT/setup-skills-worktree.sh"
+  local guard_line create_line
+  # The existence guard must sit ABOVE the worktree-creating `worktree add`, so
+  # a checkout missing the publisher fails without leaving a half-built install.
+  guard_line="$(grep -n 'publish-skill-symlinks.sh not found' "$setup" | head -1 | cut -d: -f1)"
+  create_line="$(grep -n 'worktree add' "$setup" | head -1 | cut -d: -f1)"
+
+  assert "setup carries a missing-publisher guard" "[ -n '$guard_line' ]"
+  assert "(control) setup still creates the worktree somewhere" "[ -n '$create_line' ]"
+  assert "the guard precedes worktree creation" "[ '$guard_line' -lt '$create_line' ]"
+  assert "the guard states that nothing was changed" \
+    "grep -q 'Nothing has been changed' '$setup'"
+}
+
+# ── Test 14: regression — setup resolves the repo root without a usable cwd ──
+#
+# setup-skills-worktree.sh is invoked BY ABSOLUTE PATH from claude-config-sync.sh
+# on the bootstrap path. That runs under launchd with cwd `/`, so a repo-root
+# lookup anchored to the working directory finds no repository and the script
+# aborts with "Could not find the root repo" — failing exactly the fresh-machine
+# bootstrap it exists to perform. Both lookups must anchor to SCRIPT_DIR.
+
+test_14_regression_setup_repo_root_is_cwd_independent() {
+  section "Test 14: setup resolves the repo root independently of cwd"
+
+  # Source-level assertions by necessity: the behavioural check would mean
+  # running setup-skills-worktree.sh for real, and that script fetches and
+  # resets ~/.claude/skills-worktree and adds a worktree to the developer's
+  # actual repo. A test must never do that. These pin the two exact call sites
+  # the fix changed, and the control below fails if either regresses to an
+  # unanchored form.
+  local setup="$REPO_ROOT/setup-skills-worktree.sh"
+  local anchored_helper anchored_fallback
+  anchored_helper="$(grep -c 'REPO_ROOT_HELPER" "\$SCRIPT_DIR"' "$setup")"
+  anchored_fallback="$(grep -c 'git -C "\$SCRIPT_DIR" worktree list' "$setup")"
+
+  assert "the helper call passes SCRIPT_DIR as its anchor" \
+    "[ '$anchored_helper' -ge 1 ]"
+  assert "the inline fallback anchors with git -C SCRIPT_DIR" \
+    "[ '$anchored_fallback' -ge 1 ]"
+  assert "(control) no unanchored root lookup survives anywhere in the script" \
+    "! grep -q 'REPO_ROOT=\"\$(git worktree list' '$setup'"
+  assert "the cwd-independence reason is recorded next to the lookup" \
+    "grep -q 'never from the' '$setup'"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -378,6 +488,9 @@ test_8_non_symlink_preserved
 test_9_directory_copy_replaced
 test_10_trailing_slash_argument
 test_11_regression_setup_delegates
+test_12_regression_normpath_unavailable
+test_13_regression_setup_preflight
+test_14_regression_setup_repo_root_is_cwd_independent
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

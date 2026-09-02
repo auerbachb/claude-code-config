@@ -21,13 +21,18 @@ SKILLS_DIR="$HOME/.claude/skills"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_HELPER="$SCRIPT_DIR/.claude/scripts/repo-root.sh"
 
-# Find the repo root (works from anywhere inside the repo or a worktree).
+# Find the repo root. Both spellings resolve from SCRIPT_DIR, never from the
+# caller's cwd: this script is invoked by absolute path from contexts that have
+# no meaningful working directory — the claude-config-sync LaunchAgent runs with
+# cwd `/`, where an unanchored `git worktree list` finds no repository and the
+# script would abort with "Could not find the root repo" on precisely the
+# fresh-machine bootstrap it exists to perform.
 # Prefer the shared helper; fall back to the inline one-liner when the helper
 # file isn't on disk yet (e.g., this script was copied into a bare clone).
 if [[ -x "$REPO_ROOT_HELPER" ]]; then
-  REPO_ROOT="$("$REPO_ROOT_HELPER" 2>/dev/null)" || true
+  REPO_ROOT="$("$REPO_ROOT_HELPER" "$SCRIPT_DIR" 2>/dev/null)" || true
 else
-  REPO_ROOT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
+  REPO_ROOT="$(git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
 fi
 
 if [[ -z "$REPO_ROOT" || ! -d "$REPO_ROOT/.git" ]]; then
@@ -36,6 +41,27 @@ if [[ -z "$REPO_ROOT" || ! -d "$REPO_ROOT/.git" ]]; then
 fi
 
 echo "Root repo: $REPO_ROOT"
+
+# --- Step 0: Preflight — the symlink publisher must exist BEFORE we mutate ---
+#
+# Publishing the skill / CLAUDE.md / rules symlinks is this script's core job
+# (Steps 2-5 below), and since issue #1524 that work lives in a separate
+# publisher. A missing publisher is therefore fatal, not skippable: completing
+# "setup" with a worktree and no symlinks would report success while leaving
+# ~/.claude/ unconfigured.
+#
+# The check runs HERE, before Step 1, rather than at the call site: failing
+# after the worktree is created leaves a half-finished install behind. Resolved
+# from SCRIPT_DIR, not REPO_ROOT — the publisher that ships beside THIS script
+# is the one the user invoked; the main checkout may sit on a branch that
+# predates it. REPO_ROOT is still passed as the legacy-migration argument,
+# which is all it is for.
+SKILLS_PUBLISH_SCRIPT="$SCRIPT_DIR/.claude/scripts/publish-skill-symlinks.sh"
+if [[ ! -f "$SKILLS_PUBLISH_SCRIPT" ]]; then
+  echo "ERROR: publish-skill-symlinks.sh not found at $SKILLS_PUBLISH_SCRIPT" >&2
+  echo "       Nothing has been changed. Re-run from a complete checkout." >&2
+  exit 1
+fi
 
 # --- Step 1: Create the skills worktree ---
 
@@ -78,17 +104,9 @@ fi
 # this whole bootstrap. This mirrors the Step 5b delegation to
 # publish-agent-symlinks.sh below.
 
-# Resolved from SCRIPT_DIR, not REPO_ROOT — the same way REPO_ROOT_HELPER above
-# is. The publisher that ships beside THIS script is the one the user invoked;
-# the main checkout may sit on a branch that predates it. REPO_ROOT is still
-# passed as the legacy-migration argument, which is all it is for.
-SKILLS_PUBLISH_SCRIPT="$SCRIPT_DIR/.claude/scripts/publish-skill-symlinks.sh"
-
+# SKILLS_PUBLISH_SCRIPT is resolved and existence-checked in the Step 0
+# preflight above, so this call site only has to invoke it.
 echo "Symlinking skills, CLAUDE.md and rules from worktree..."
-if [[ ! -f "$SKILLS_PUBLISH_SCRIPT" ]]; then
-  echo "ERROR: publish-skill-symlinks.sh not found at $SKILLS_PUBLISH_SCRIPT" >&2
-  exit 1
-fi
 bash "$SKILLS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"
 
 # --- Step 5b: Publish phase-agent definitions to user scope (issue #1189) ---
