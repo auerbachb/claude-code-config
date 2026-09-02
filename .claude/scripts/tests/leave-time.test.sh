@@ -887,6 +887,19 @@ require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
   'INVALIDATE_RC=0' \
   'Only then `TaskStop` a non-null ID' \
   '/pause-resume Step 5 must invalidate the generation BEFORE stopping the wind-down task'
+# ...and an EXECUTABLE spine underneath those two, both endpoints being real statements.
+# `TaskStop` is a tool call with no executable form in a skill file, so the sequence can only be
+# pinned through the state writes that bracket it: the invalidation before the stop, and the
+# release that runs only after it. Prose endpoints catch a sentence moved past the block; these
+# catch the block moved past everything downstream of the stop, which prose endpoints cannot.
+require_order "$PAUSE_SKILL" '## Step 2' \
+  'INVALIDATE_RC=0; "$SESSION_STATE_SH"' \
+  '--cas ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null"' \
+  '/pause Step 2 must invalidate before the post-stop release, on executable endpoints'
+require_order "$PAUSE_RESUME_SKILL" '## Step 5' \
+  'INVALIDATE_RC=0' \
+  '--expect "$RESUMED_WINDOW"' \
+  '/pause-resume Step 5 must invalidate before the post-stop retirement, on executable endpoints'
 
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
