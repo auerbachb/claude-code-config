@@ -1471,6 +1471,26 @@ check_jq "28ad: POSITIVE CONTROL — the same entry with both fields is accepted
 run_in "$R28" --since "$WINDOW_START" --exemptions "$TMP/does-not-exist.json" --json
 check_eq "28u: an explicit --exemptions that is unreadable exits 3" "3" "$RC"
 
+# An EMPTY explicit value is the same promise broken more quietly: it survives
+# the "requires a value" check (the argument IS present), then reads as unset
+# downstream and silently selects the DEFAULT policy. Rejected at parse time,
+# both spellings, because that is the last point the distinction exists.
+run_in "$R28" --since "$WINDOW_START" --exemptions '' --json
+check_eq "28ae: an explicit empty --exemptions exits 2 rather than falling back" "2" "$RC"
+run_in "$R28" --since "$WINDOW_START" --exemptions= --json
+check_eq "28af: the --exemptions= spelling is rejected the same way" "2" "$RC"
+EMPTY_ERR=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions '' --json) 2>&1 >/dev/null )
+check_eq "28ag: and the rejection says the value must be non-empty" "yes" \
+  "$(case "$EMPTY_ERR" in *"non-empty"*) echo yes ;; *) echo no ;; esac)"
+# NEGATIVE CONTROL — the guard rejects the EMPTY value, not the flag itself:
+# the same invocation with a real file still runs and still applies THAT file.
+# Without this, 28ae/28af would pass just as well if --exemptions were broken
+# outright, or if the default policy had quietly been selected anyway.
+run_in "$R28" --since "$WINDOW_START" --exemptions "$GOOD_EXEMPT" --json
+check_eq "28ah: NEGATIVE CONTROL — a non-empty --exemptions still runs" "0" "$RC"
+check_jq "28ai: NEGATIVE CONTROL — and applies that file, not the default" "$OUT" \
+  '.exempt_count == 1 and (.exemptions_file | endswith("exemptions-28-good.json"))'
+
 # Only-exempt output on the CLEAN exit path — the one place a suppressed file
 # would otherwise vanish entirely.
 R28B=$(new_repo_on r28b main)

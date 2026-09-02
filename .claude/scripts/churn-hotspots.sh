@@ -66,7 +66,9 @@
 #   --exemptions FILE    Catalog-exemption list (see CATALOG EXEMPTIONS below).
 #                        Defaults to .claude/reference/churn-hotspot-exemptions.json
 #                        beside this script; an absent DEFAULT leaves the feature
-#                        inactive, an unreadable or invalid EXPLICIT file exits 3.
+#                        inactive, an unreadable or invalid EXPLICIT file exits 3,
+#                        and an EMPTY value exits 2 rather than quietly falling
+#                        back to the default the caller did not ask for.
 #   --no-exemptions      Disable the exemption list entirely. Previously exempt
 #                        files score and flag as ordinary hotspots — the
 #                        negative control for the feature. It WINS over
@@ -403,8 +405,16 @@ while [ $# -gt 0 ]; do
     --sweep-threshold=*)  SWEEP_THRESHOLD="${1#*=}" ;;
     --sweep-threshold)    shift; [ $# -gt 0 ] || { err "--sweep-threshold requires a value"; exit 2; }; SWEEP_THRESHOLD="$1" ;;
     --include-creation)   INCLUDE_CREATION=1 ;;
-    --exemptions=*)       EXEMPTIONS_FILE="${1#*=}" ;;
-    --exemptions)         shift; [ $# -gt 0 ] || { err "--exemptions requires a value"; exit 2; }; EXEMPTIONS_FILE="$1" ;;
+    # An EMPTY value is rejected HERE, at parse time, because it is the one
+    # place the distinction still exists: downstream, "--exemptions ''" and
+    # "no --exemptions at all" are both an empty EXEMPTIONS_FILE, so the
+    # explicit-file branch below would fall through to the DEFAULT policy and
+    # silently score against a file the caller never named.
+    --exemptions=*)       EXEMPTIONS_FILE="${1#*=}"
+                          [ -n "$EXEMPTIONS_FILE" ] || { err "--exemptions requires a non-empty value"; exit 2; } ;;
+    --exemptions)         shift; [ $# -gt 0 ] || { err "--exemptions requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--exemptions requires a non-empty value"; exit 2; }
+                          EXEMPTIONS_FILE="$1" ;;
     --no-exemptions)      NO_EXEMPTIONS=1 ;;
     --json)               AS_JSON=1 ;;
     --help|-h)            print_help; exit 0 ;;

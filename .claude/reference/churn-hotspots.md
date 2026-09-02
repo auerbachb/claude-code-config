@@ -149,6 +149,8 @@ Three different things now keep a file quiet, and conflating them is how one of 
 
 **`--no-exemptions` is the negative control**, and it wins over `--exemptions` (the file is then not read at all). The disabled state is never silent: `exemptions_file` reports `null`.
 
+**An explicit `--exemptions` is a promise about which policy the run applied**, so every way of breaking it is refused rather than downgraded: an unreadable or invalid file **exits 3**, and an *empty* value (`--exemptions ''` or `--exemptions=`) **exits 2** at parse time. The empty case needs its own guard because it is the one that fails quietly — the argument is present, so the "requires a value" check passes, but downstream an empty value is indistinguishable from never having passed the flag, and the run would silently score against the **default** catalog the caller did not name.
+
 **Possible follow-up, deliberately out of scope.** Auto-generating the catalog rows from the directory contents would remove both the churn *and* the recurring merge-conflict surface — a base-commit overlap in the tests catalog forced a rebase on PR #1543 on 2026-09-01. That is a larger change to the lint contract itself and is noted here rather than attempted.
 
 ## The dedup key
