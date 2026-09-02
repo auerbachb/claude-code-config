@@ -37,6 +37,32 @@ _skip_notice=""     # why the config-sync region was skipped this session, if it
 # the two spellings to each other.
 _sync_lock_base="$HOME/.claude/logs/claude-config-sync-state.json"
 _lock_lib="${_scripts_dir}/state-lock.sh"
+# --- Bounded-run setup (MUST precede state_lock_acquire) ---
+# Ordering is load-bearing, not stylistic. state_lock_acquire installs an EXIT
+# trap that runs state_lock_release, and it CHAINS onto whatever EXIT trap the
+# caller already has. Installing the capture-cleanup trap after the acquire
+# would REPLACE that chained trap with temp-file cleanup alone, so an abort or
+# a hook timeout while the lock is held would leave
+# claude-config-sync-state.json.lock behind for the full staleness window.
+# claude-config-sync.sh sets its trap before its own acquire for this reason;
+# the hook now matches it. The capture files are created here even though they
+# are only used inside the lock-held branch below — that is the price of
+# getting the trap in before the acquire, and two empty temp files are cheap.
+_bounded_lib="${_scripts_dir}/lib/bounded-run.sh"
+_bound_available=0
+if [[ -n "$_scripts_dir" && -f "$_bounded_lib" ]]; then
+  # shellcheck source=../scripts/lib/bounded-run.sh
+  source "$_bounded_lib" && _bound_available=1
+fi
+_sync_bound_secs=20
+if (( _bound_available == 1 )); then
+  _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 20)"
+  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
+  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
+  [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
+  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
+fi
+
 _lock_held=0
 _lock_available=0
 if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
@@ -103,21 +129,10 @@ else
 # The bound is deliberately tighter than the scheduled job's: this hook is
 # registered with timeout 30, so any bound above that could never be reached.
 # A tripped bound is a recorded error, never a silently surrendered lock.
-_bounded_lib="${_scripts_dir}/lib/bounded-run.sh"
-_bound_available=0
-if [[ -n "$_scripts_dir" && -f "$_bounded_lib" ]]; then
-  # shellcheck source=../scripts/lib/bounded-run.sh
-  source "$_bounded_lib" && _bound_available=1
-fi
-_sync_bound_secs=20
-if (( _bound_available == 1 )); then
-  _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 20)"
-  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
-  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
-  [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
-  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
-fi
-
+#
+# The lib is sourced and its capture files + EXIT trap are installed ABOVE, on
+# purpose, BEFORE state_lock_acquire — see the note there.
+#
 # Run one lock-held command under the bound, mirroring claude-config-sync.sh's
 # git_sync. Called at statement level ONLY, never inside `$( )`: a subshell
 # discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).

@@ -289,7 +289,16 @@ else
         continue
       fi
       echo "  $skill_name — updating symlink (was: $current_target)"
-      rm "$link"
+      # Atomic, for the same reason migrate_symlink is: this is the RECURRING
+      # path — every scheduled tick and every session start reaches it for any
+      # managed skill whose target string changed — so an unlink-then-create
+      # window here is one a live session can actually land in. The
+      # directory-copy branch below cannot use relink_atomic (rename cannot
+      # replace a directory with a symlink) but that is a one-time migration,
+      # not a path steady-state machines revisit.
+      relink_atomic "$link" "$target"
+      echo "  $skill_name — symlinked"
+      continue
     elif [[ -d "$link" ]]; then
       # A real directory here is a pre-worktree COPY of the skill. Replacing it
       # is the documented migration (see .claude/rules/skill-symlinks.md); the
