@@ -751,6 +751,32 @@ enumerate_git() {
   # a newline of its own.
   CUR_PR=""; CUR_DATE=""; CUR_ROW_STATUS=(); CUR_ROW_FILE=()
   while IFS= read -r -d '' token || [ -n "$token" ]; do
+    # POSITION decides what a token is, never its bytes — so the path branch
+    # runs FIRST, ahead of the header test. A path may legally begin with
+    # `@@C@@`, and testing content before position would let such a filename
+    # spoof a commit header: `flush_commit` would fire mid-record, the path
+    # would be dropped, and every later token in that commit would shift by one.
+    # The pre-`-z` reader got this immunity for free (a status column always sat
+    # in front of the path on the same line); `-z` removes that prefix, so the
+    # ordering here is what carries the guarantee. Framing is tracked even for
+    # an UNMARKED commit — only the recording below is skipped — so its paths
+    # cannot spoof a header either.
+    if [ "$expect_path" -eq 1 ]; then
+      if [ "$skip_source" -eq 1 ]; then
+        # A rename/copy names two paths; the SOURCE arrives first and the
+        # DESTINATION — the path this detector scores, matching the pre-`-z`
+        # "last tab-separated field" rule — arrives next, so keep expecting one.
+        skip_source=0
+        continue
+      fi
+      if [ -n "${CUR_PR:-}" ]; then
+        CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]="$pending_status"
+        CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+      fi
+      expect_path=0; pending_status=""
+      continue
+    fi
+
     case "$token" in
       '@@C@@'*)
         flush_commit
@@ -771,25 +797,6 @@ enumerate_git() {
         ;;
     esac
 
-    # Buffer only PR-attributed commits — an unmarked commit contributes
-    # nothing regardless of how many paths it touched. Skipping its fields
-    # wholesale is safe: the next header resynchronises the state machine.
-    [ -n "${CUR_PR:-}" ] || continue
-
-    if [ "$expect_path" -eq 1 ]; then
-      if [ "$skip_source" -eq 1 ]; then
-        # A rename/copy names two paths; the SOURCE arrives first and the
-        # DESTINATION — the path this detector scores, matching the pre-`-z`
-        # "last tab-separated field" rule — arrives next.
-        skip_source=0
-        continue
-      fi
-      CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]="$pending_status"
-      CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
-      expect_path=0; pending_status=""
-      continue
-    fi
-
     # Status state. Strip the single LF `-z` places after a commit header —
     # positional, so it can never touch a path: a diff status never starts with
     # a newline, and a path is only ever read in the branch above.
@@ -808,9 +815,13 @@ enumerate_git() {
         # Not a diff status: the stream desynchronised on an unexpected payload.
         # Count the touch under an unknown status rather than dropping it — the
         # same degradation the newline reader applied to a row with no status
-        # column — and resynchronise at the next header.
-        CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]=""
-        CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+        # column — and resynchronise at the next header. Buffer only
+        # PR-attributed commits: an unmarked commit contributes nothing
+        # regardless of how many paths it touched.
+        if [ -n "${CUR_PR:-}" ]; then
+          CUR_ROW_STATUS[${#CUR_ROW_STATUS[@]}]=""
+          CUR_ROW_FILE[${#CUR_ROW_FILE[@]}]="$token"
+        fi
         ;;
     esac
   # `-M` pins rename detection ON regardless of the ambient `diff.renames`

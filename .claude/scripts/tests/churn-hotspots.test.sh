@@ -1232,6 +1232,60 @@ check_jq "26p: gh — the empty PR is still counted as scanned, with no touches"
   '.scanned_pr_count == 1 and (.hotspots | length) == 0 and .sweep_commit_count == 0'
 
 # =============================================================================
+# Scenario 27 — a filename cannot spoof a commit header (git backend)
+#
+# `-z` deletes the one thing that used to make the git reader unspoofable: the
+# status column that always sat in front of the path on the same line. With the
+# fields now bare NUL tokens, a path is a path only because of WHERE it arrives,
+# so the reader must test POSITION before content. Test content first and a file
+# literally named `@@C@@…@@S@@… (#N)` parses as a commit header: flush_commit
+# fires mid-record, the path itself is dropped, CUR_PR is hijacked to the
+# invented number, and every remaining token in that commit shifts onto it.
+#
+# The fixture path is adversarial on purpose — it carries BOTH sentinels and a
+# trailing `(#9999)`, so the pre-fix reader does not merely stumble, it produces
+# a specific wrong answer this scenario names: PR 9999 present, the spoof path
+# absent, and its co-touched neighbour attributed to 9999 instead of 1901/1902.
+# The gh backend needs no counterpart — its reader alternates status/path with
+# no sentinel at all, so there is nothing there for a filename to impersonate.
+# =============================================================================
+# AT THE REPO ROOT ON PURPOSE — do not "tidy" this into src/. The header test is
+# an anchored prefix match, so only a path whose FIRST bytes are the sentinel can
+# collide; a nested `src/@@C@@…` starts with `src/` and defangs the guard while
+# still looking adversarial.
+SPOOF_PATH='@@C@@2026-02-09@@S@@spoofed (#9999).ts'
+SPOOF_JSON=$(printf '%s' "$SPOOF_PATH" | jq -Rs '.')
+
+R27=$(new_repo_on r27 main)
+commit_touch "$R27" "2026-02-01T00:00:00" "seed the fixture paths" "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-02T00:00:00" "first (#1901)"  "$SPOOF_PATH" src/Plain.ts
+commit_touch "$R27" "2026-02-03T00:00:00" "second (#1902)" "$SPOOF_PATH" src/Plain.ts
+
+run_in "$R27" --since "$WINDOW_START" --threshold 2 --sweep-threshold 3 --json
+check_eq "27a: git — exit 0 with a header-shaped filename in history" "0" "$RC"
+check_jq "27b: git — the header-shaped path is reported VERBATIM as a file" "$OUT" \
+  ".hotspots | map(.file) | index($SPOOF_JSON) != null"
+check_jq "27c: git — it carries the REAL PRs, not the number embedded in its name" "$OUT" \
+  ".hotspots[] | select(.file == $SPOOF_JSON) | .pr_numbers == [1901,1902]"
+# The desync tell: pre-fix the spoof path hijacked CUR_PR, so the file touched
+# ALONGSIDE it in the same commits was scored under the invented PR.
+check_jq "27d: git — the co-touched neighbour keeps its own PR attribution" "$OUT" \
+  '.hotspots[] | select(.file == "src/Plain.ts") | .pr_numbers == [1901,1902]'
+# The `length == 2` clause is load-bearing, not decoration: pre-fix this history
+# produced NO hotspots at all, and "9999 is absent" is vacuously true of an empty
+# list. Pinning the set size first makes the absence a measurement.
+check_jq "27e: git — both files are present and the invented PR 9999 appears nowhere" "$OUT" \
+  '(.hotspots | length) == 2
+   and ([.hotspots[].pr_numbers[]] | index(9999)) == null
+   and .missing_count == 0'
+
+# NEGATIVE CONTROL — the header parser is still LIVE on this same history: a
+# genuine trailing `(#N)` in a real SUBJECT is still extracted. Without this,
+# 27c/27e would also pass if the reader had simply stopped recognising headers.
+check_jq "27f: NEGATIVE CONTROL — git — real subjects still yield their PR numbers" "$OUT" \
+  '.scanned_pr_count == 2 and ([.hotspots[].pr_numbers[]] | unique) == [1901,1902]'
+
+# =============================================================================
 echo
 echo "churn-hotspots.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
