@@ -312,9 +312,26 @@ fi
 
 # The root repo backing the skills worktree. Hoisted above the publish block
 # because the hook-registration block further down needs it too — see the
-# MANAGED_LEGACY_HOOKS_DIR note there. Empty when the worktree is absent or git
-# cannot read it; every consumer treats empty as "no legacy root known".
-_root_repo=$(git -C "$skills_wt" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //') || _root_repo=""
+# MANAGED_LEGACY_HOOKS_DIR note there. Empty when the worktree is absent or the
+# lookup fails; every consumer treats empty as "no legacy root known".
+#
+# Resolved through repo-root.sh, which centralizes this "first `worktree `
+# stanza" lookup and — the reason it matters here — bounds its own git calls via
+# lib/bounded-run.sh. The raw listing this replaced ran UNBOUNDED inside the
+# locked region, beside calls this hook already declines rather than run
+# unbounded; bounding those while leaving this one uncapped defends nothing.
+# Dropping the `| head -1 | sed` pipeline also removes the SIGPIPE hazard that
+# shape carries under pipefail, where an early-exiting consumer makes a
+# SUCCESSFUL lookup report failure.
+#
+# No `|| _root_repo=""` on the assignment: it is pre-initialized empty, so the
+# fallback would buy nothing while being the very shape that discards a correct
+# path printed by a command that happened to return non-zero.
+_root_repo=""
+_repo_root_helper="${_scripts_dir}/repo-root.sh"
+if [[ -f "$_repo_root_helper" ]]; then
+  _root_repo="$(bash "$_repo_root_helper" "$skills_wt" 2>/dev/null)"
+fi
 
 # --- Publish skill and agent symlinks on the steady-state path ---
 # git reset --hard above updates worktree contents (including .claude/skills/
@@ -365,11 +382,26 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
   _skills_publish_script="${_scripts_dir}/publish-skill-symlinks.sh"
   if [[ -f "$_skills_publish_script" ]]; then
     _publish_one "$_skills_publish_script" "skill"
+  else
+    # A MISSING publisher refreshes exactly as few links as a failing one, so it
+    # is recorded the same way — the rule claude-config-sync.sh states at its own
+    # missing-publisher branch. Skipping silently was worse here than there: it
+    # left `errors` empty, so the marker clear below saw a clean run and deleted
+    # the restart signal while every skill, CLAUDE.md and rules link stayed
+    # stale. The wording keeps the "publish failed" shape the other publish
+    # failures use.
+    errors="${errors:+$errors; }skill symlink publish failed: $_skills_publish_script not found — skill/CLAUDE.md/rules links not refreshed"
   fi
 
   _agents_publish_script="${_scripts_dir}/publish-agent-symlinks.sh"
   if [[ -f "$_agents_publish_script" ]]; then
     _publish_one "$_agents_publish_script" "agent"
+  else
+    # A notice, NOT an error — deliberately asymmetric with the skills publisher
+    # above, and asymmetric in the same direction claude-config-sync.sh chose:
+    # it record_failure's a missing skills publisher but only warns for agents.
+    _agents_notices="${_agents_notices:+$_agents_notices
+}publish-agent-symlinks.sh not found — agent links not refreshed"
   fi
 
   [[ -n "$_publish_err_file" ]] && rm -f "$_publish_err_file" 2>/dev/null

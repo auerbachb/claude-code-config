@@ -744,26 +744,31 @@ test_11_root_repo_lookup_survives_sigpipe() {
 
   # A producer shaped like `git worktree list --porcelain` on a long-lived
   # machine: the main worktree first, then thousands of registered worktrees.
-  local producer captured rc
+  # Used only by the negative control below, which keeps the hazard executable.
+  local producer
   producer='printf "worktree /Users/me/repo\nHEAD abc\n\n"; for i in $(seq 1 20000); do printf "worktree /Users/me/repo/.claude/worktrees/wt-%s\nHEAD def\n\n" "$i"; done'
 
-  # The expression under test, lifted from the script rather than retyped, so a
-  # future edit that reintroduces `exit` fails this test instead of passing a
-  # stale copy.
-  local expr
-  expr="$(grep -o "awk '/\^worktree /{if (!seen++).*}'" "$SYNC" | head -1)"
-  assert "the awk expression was found in the script" "[ -n \"\$expr\" ]"
-  assert "and it does NOT early-exit" \
-    "case \"\$expr\" in *exit*) false ;; *) : ;; esac"
+  # The lookup no longer parses that stream inline: it delegates to repo-root.sh,
+  # which owns this pattern AND bounds its git calls via lib/bounded-run.sh —
+  # required here because the lookup runs while the config-sync lock is held, so
+  # an unbounded call could carry the locked region past STALE_AGE.
+  assert "the root-repo lookup goes through repo-root.sh" \
+    "grep -q 'resolve_helper repo-root.sh' '$SYNC'"
+  assert "the hook resolves it through the same helper" \
+    "grep -q 'repo-root.sh' '$HOOK'"
 
-  captured="$(bash -c "set -o pipefail; { $producer; } | $expr")"
-  rc=$?
-  assert "the pipeline succeeds despite a huge producer" "[ $rc -eq 0 ]"
-  assert "and it yields the main worktree path" \
-    "[ \"\$captured\" = '/Users/me/repo' ]"
+  # The structural reason SIGPIPE can no longer bite: there is no pipeline left
+  # on either assignment. This is the assertion that must fail if someone
+  # reintroduces an inline `git worktree list | …` here.
+  assert "the sync's hint is not built from a pipeline" \
+    "! grep -qE '^[^#]*ROOT_REPO_HINT=.*\\|' '$SYNC'"
+  assert "the hook's root-repo is not built from a pipeline" \
+    "! grep -qE '^[^#]*_root_repo=.*\\|' '$HOOK'"
+  assert "no inline worktree listing remains in either writer" \
+    "! grep -qE '^[^#]*worktree list --porcelain' '$SYNC' '$HOOK'"
 
-  # Negative control: the pre-fix expression really does fail this way, so the
-  # assertions above are testing the hazard rather than a tautology.
+  # The hazard itself, kept as executable documentation: this is what an inline
+  # early-exiting consumer does under pipefail, and why the shape is banned.
   local old_rc=0
   bash -c "set -o pipefail; { $producer; } | awk '/^worktree /{sub(/^worktree /, \"\"); print; exit}' >/dev/null" || old_rc=$?
   assert "(control) the pre-fix early-exit expression DOES report failure" \
@@ -983,6 +988,35 @@ test_19_marker_clear_is_anchored_at_region_exit() {
     "[ -n '$clear_line' ]"
 }
 
+# ── Test 20: a missing skills publisher is an error in BOTH writers ─────────
+#
+# The sync already treats a missing publish-skill-symlinks.sh as a hard failure
+# — it refreshes exactly as few links as a failing one. The hook skipped it
+# silently, which was worse there than it would have been in the sync: `errors`
+# stayed empty, so the marker clear read the run as clean and deleted the
+# restart signal while every skill, CLAUDE.md and rules link was still stale.
+#
+# The agent publisher is deliberately NOT symmetrical — a notice in both — so
+# this test pins the asymmetry too. Symmetry here would be the easy wrong fix.
+
+test_20_missing_skills_publisher_is_an_error_in_both_writers() {
+  section "Test 20: a missing skills publisher is recorded, not skipped"
+
+  assert "the sync records a missing skills publisher as a failure" \
+    "grep -q 'publish-skill-symlinks.sh not found' '$SYNC'"
+  assert "the hook records one too, instead of skipping silently" \
+    "grep -q 'skill symlink publish failed: .* not found' '$HOOK'"
+  # The consequence that made the hook's silence worse than the sync's would
+  # have been: an empty `errors` lets the clear delete the marker.
+  assert "the hook's message uses the publish-failure shape the clear keys off" \
+    "[ -n \"\$(grep 'not found — skill/CLAUDE.md/rules links not refreshed' '$HOOK' | grep 'errors=')\" ]"
+
+  assert "the agent publisher stays a warning in the sync" \
+    "[ -n \"\$(grep -A1 'publish-agent-symlinks.sh not found' '$SYNC' | grep -v record_failure)\" ]"
+  assert "and a notice, not an error, in the hook" \
+    "[ -z \"\$(grep 'publish-agent-symlinks.sh not found' '$HOOK' | grep 'errors=')\" ]"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1021,6 +1055,7 @@ test_16_hook_git_bounds_fit_the_hook_timeout
 test_17_missing_bound_declines_instead_of_running_unbounded
 test_18_hook_bootstrap_and_steady_state_are_exclusive
 test_19_marker_clear_is_anchored_at_region_exit
+test_20_missing_skills_publisher_is_an_error_in_both_writers
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

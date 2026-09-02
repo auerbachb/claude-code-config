@@ -743,20 +743,40 @@ fi
 # Step 2 — publish symlinks. Links are the whole point of the pass, so a
 # publisher failure is a hard failure.
 # ---------------------------------------------------------------------------
-# The awk deliberately does NOT `exit` after the first match, and there is no
-# `|| ROOT_REPO_HINT=""` fallback. This file runs under `set -o pipefail`: an
-# early-exiting consumer closes the pipe while `git worktree list` is still
-# writing, git dies of SIGPIPE, and the PIPELINE reports failure even though the
-# correct path already reached stdout — so the fallback would erase a perfectly
-# good answer. It is load-bearing twice over: an empty hint drops
-# MANAGED_LEGACY_HOOKS_DIR below and the publishers' legacy-migration argument,
-# silently disabling both migrations on exactly the long-lived machines that
-# have enough worktrees to trigger the race. Consuming the whole stream costs
-# nothing here and removes the failure mode outright. A genuine git failure
-# still yields an empty string, which every consumer already treats as "no
-# legacy root known".
-ROOT_REPO_HINT="$(git -C "$SKILLS_WT" worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')"
+# Resolved through repo-root.sh rather than a hand-rolled listing. That script
+# exists to centralize exactly this "first `worktree ` stanza" lookup, and —
+# the reason it matters HERE — it bounds its own git calls through
+# lib/bounded-run.sh. The raw listing this replaced ran UNBOUNDED while this run
+# holds the config-sync lock, which is the same hazard the fetch/reset bounds
+# above exist to remove: a lock broken on age alone under a live holder, another
+# sync mutating the same worktree, and this run's commit_json refused so the
+# marker never lands. Bounding fetch and reset while leaving a lock-held git
+# call beside them unbounded defends nothing.
+#
+# The SIGPIPE lesson that shaped the previous spelling is preserved by having no
+# pipeline at all. It was: under `set -o pipefail` an early-exiting consumer
+# (`head -1`) closes the pipe while git is still writing, git dies of SIGPIPE,
+# and the pipeline reports failure even though the correct path already reached
+# stdout — so a `|| ROOT_REPO_HINT=""` fallback would erase a good answer. That
+# mattered twice over, because an empty hint drops MANAGED_LEGACY_HOOKS_DIR
+# below and the publishers' legacy-migration argument, silently disabling both
+# migrations on exactly the long-lived machines with enough worktrees to trigger
+# the race. A single captured command has no pipe to break.
+#
+# An unresolvable helper or a genuine git failure still yields the empty string,
+# which every consumer already treats as "no legacy root known".
+ROOT_REPO_HINT=""
+_root_repo_helper="$(resolve_helper repo-root.sh)" || _root_repo_helper=""
+if [[ -n "$_root_repo_helper" ]]; then
+  # No `|| ROOT_REPO_HINT=""` on the assignment. The variable is pre-initialized
+  # empty above, so the fallback would buy nothing — and it is exactly the shape
+  # that erased a good answer before: a command that printed the correct path but
+  # returned non-zero would have its output thrown away. Failures send their
+  # diagnostics to stderr, so a failed lookup already yields the empty string.
+  ROOT_REPO_HINT="$(bash "$_root_repo_helper" "$SKILLS_WT" 2>/dev/null)"
+else
+  warn "repo-root.sh not found — legacy-root migrations are disabled for this tick"
+fi
 
 # run_publisher <script> — run a publish script with its two streams captured
 # SEPARATELY, because they mean different things: stdout is one line per CHANGE
