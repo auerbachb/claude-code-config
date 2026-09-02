@@ -583,7 +583,20 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
   # alone exceeds the reserve-adjusted window, which is safe ONLY because
   # _bound_for clamps it — so assert the clamp exists rather than the sum.
   assert "each call is clamped to what is left of the budget" \
-    "grep -q '_bound_for()' '$HOOK'"
+    "grep -q '_budget_remaining()' '$HOOK'"
+  # The floor must be applied to the REMAINING BUDGET and the ceiling to the
+  # bound, separately. Clamping first and then testing the floor made any
+  # configured ceiling below the floor decline every call instead of honouring
+  # it — which is how a 2s test bound turned into "declined" rather than a real
+  # 2s run. Both files carry the same shape, so pin both.
+  assert "the hook's budget helper returns the budget, not a clamped bound" \
+    "! awk '/^_budget_remaining\\(\\)/,/^}/' '$HOOK' | grep -q 'remaining > cap'"
+  assert "the sync's budget helper returns the budget, not a clamped bound" \
+    "! awk '/^_git_region_remaining\\(\\)/,/^}/' '$SYNC' | grep -q 'remaining > GIT_BOUND_SECS'"
+  assert "the hook tests the floor against the budget, not the clamped bound" \
+    "grep -q 'budget_left < _HOOK_MIN_BOUND_SECS' '$HOOK'"
+  assert "the sync tests the floor against the budget, not the clamped bound" \
+    "grep -q 'region_left < _GIT_MIN_BOUND_SECS' '$SYNC'"
   assert "the lock wait counts against the same budget" \
     "grep -q '_hook_t0=' '$HOOK'"
   assert "a call with too little budget left is declined, not started" \

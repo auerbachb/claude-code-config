@@ -250,6 +250,15 @@ source "$LOCK_LIB"
 # construction: the region either finishes inside the window or fails loudly
 # with a diagnostic, and a failure that records itself is strictly better than a
 # silent loss of the mutex.
+#
+# It has to be ONE budget across the calls, not a bound per call. There are TWO
+# of them under a single acquire — fetch, then reset — so two independent 2/3
+# bounds came to 160s against a 120s window. A slow-but-successful fetch could
+# leave the reset still running past the point where another sync reads this
+# lock as stale, breaks it, and publishes against the half-updated tree, while
+# this run's own commit_json is then refused by state_lock_assert_held and the
+# marker it owed never lands. Both halves of the race the bound exists to
+# prevent, reached through the bound itself.
 BOUNDED_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
 GIT_BOUND_AVAILABLE=0
 if [[ -f "$BOUNDED_LIB" ]]; then
@@ -259,10 +268,17 @@ fi
 
 _stale_age="${CLAUDE_STATE_LOCK_STALE_AGE:-120}"
 [[ "$_stale_age" =~ ^[1-9][0-9]*$ ]] || _stale_age=120
-# Two thirds of the window: enough headroom that the publish, hook registration
-# and state commit still finish inside it after a worst-case fetch.
-_default_git_bound=$(( _stale_age * 2 / 3 ))
-(( _default_git_bound > 0 )) || _default_git_bound=80
+# Half the window for the git region as a WHOLE — both calls together — leaving
+# the other half for the publish, hook registration, trust repair and state
+# commit that also run under this lock. The per-call value below is a ceiling on
+# any single call; _git_bound_remaining clamps it to what is left of the region.
+_git_region_budget=$(( _stale_age / 2 ))
+(( _git_region_budget > 0 )) || _git_region_budget=60
+_GIT_MIN_BOUND_SECS=5
+# Set at the acquire, so the region is measured from when the lock was taken —
+# which is also when the staleness clock this budget defends against starts.
+_git_region_t0=""
+_default_git_bound="$_git_region_budget"
 if (( GIT_BOUND_AVAILABLE == 1 )); then
   GIT_BOUND_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_GIT_BOUND:-}" "$_default_git_bound")"
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/config-sync-out.XXXXXX")"    || CAPTURE=""
@@ -286,6 +302,39 @@ fi
 GIT_OUT=""
 GIT_ERR=""
 GIT_TIMED_OUT=0
+# The bound actually applied to the last call — the region-clamped value, which
+# is what the failure messages must name rather than the per-call ceiling.
+GIT_LAST_BOUND="${GIT_BOUND_SECS:-0}"
+# Seconds left of the REGION budget — deliberately NOT clamped to the per-call
+# ceiling. The caller applies the floor to this figure and the ceiling
+# separately, because conflating them makes any explicitly configured ceiling
+# below the floor decline every call instead of honouring it. The floor asks
+# "is there room to finish?", which is a question about the region, not about
+# how short the operator chose to make one call.
+#
+# Falls back to the region budget when the clock is unusable: an unreadable
+# clock must not collapse every bound to zero and disable the sync outright.
+_git_region_remaining() {
+  local now elapsed remaining
+  [[ -n "$_git_region_t0" ]] || { printf '%s' "$_git_region_budget"; return 0; }
+  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$_git_region_budget"; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$_git_region_budget"; return 0; }
+  elapsed=$(( now - _git_region_t0 ))
+  remaining=$(( _git_region_budget - elapsed ))
+  (( remaining < 0 )) && remaining=0
+  printf '%s' "$remaining"
+}
+
+# Phrase a trip honestly: a call that ran out of time "exceeded its Ns bound",
+# one that never started was "declined". Both are recorded failures either way.
+_git_trip_reason() {
+  if [[ "${GIT_ERR:-}" == declined:* ]]; then
+    printf '%s' "$GIT_ERR"
+  else
+    printf 'exceeded its %ss bound' "${GIT_LAST_BOUND:-$GIT_BOUND_SECS}"
+  fi
+}
+
 git_sync() { # git_sync <git subcommand and args…>  (always -C the worktree)
   local rc=0
   GIT_TIMED_OUT=0
@@ -313,7 +362,25 @@ git_sync() { # git_sync <git subcommand and args…>  (always -C the worktree)
     fi
     return "$rc"
   fi
-  run_bounded "$GIT_BOUND_SECS" git -C "$SKILLS_WT" "$@" || rc=$?
+  local region_left
+  region_left="$(_git_region_remaining)"
+  # Ceiling and floor applied to different things on purpose — see
+  # _git_region_remaining.
+  GIT_LAST_BOUND="$region_left"
+  (( GIT_LAST_BOUND > GIT_BOUND_SECS )) && GIT_LAST_BOUND="$GIT_BOUND_SECS"
+  if (( region_left < _GIT_MIN_BOUND_SECS )); then
+    # Decline rather than start a call that cannot finish inside the region.
+    # Starting it is what lets the lock go stale under a live holder, and a
+    # recorded failure is strictly better than a silently surrendered mutex.
+    GIT_TIMED_OUT=1
+    GIT_OUT=""
+    # Wording note: no bare "git " token here. Test 6's scope guard greps this
+    # file for git invocations, and a message containing one trips it as a
+    # stray unscoped call.
+    GIT_ERR="declined: only ${region_left}s left of the ${_git_region_budget}s lock-held fetch/reset budget"
+    return 124
+  fi
+  run_bounded "$GIT_LAST_BOUND" git -C "$SKILLS_WT" "$@" || rc=$?
   GIT_OUT="$(cat "$CAPTURE" 2>/dev/null)" || GIT_OUT=""
   GIT_ERR="$(cat "$CAPTURE_ERR" 2>/dev/null)" || GIT_ERR=""
   [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]] && GIT_TIMED_OUT=1
@@ -579,6 +646,10 @@ if ! state_lock_acquire "$STATE_FILE" "$LOCK_TIMEOUT"; then
   exit 0
 fi
 
+# The lock is held from here, so the staleness clock this budget defends
+# against starts here too — measure the git region from the same instant.
+_git_region_t0="$(date -u +%s 2>/dev/null)" || _git_region_t0=""
+
 log info "config sync starting (worktree: $SKILLS_WT)"
 
 # ---------------------------------------------------------------------------
@@ -618,7 +689,7 @@ if [[ ! -d "$SKILLS_WT/.claude/skills" || ! -e "$SKILLS_WT/.git" ]]; then
     _bootstrap_err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bootstrap_err=""
     if (( _bootstrap_rc != 0 )); then
       if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-        record_failure "setup-skills-worktree.sh exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+        record_failure "setup-skills-worktree.sh $(_git_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
       else
         record_failure "setup-skills-worktree.sh failed: $(printf '%s' "${_bootstrap_err:-$bootstrap_out}" | tail -5 | tr '\n' ' ')"
       fi
@@ -639,14 +710,14 @@ else
   # is a recorded failure, never a silently surrendered lock.
   if ! git_sync fetch origin main --quiet; then
     if (( GIT_TIMED_OUT == 1 )); then
-      record_failure "skills worktree fetch exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+      record_failure "skills worktree fetch $(_git_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
     else
       record_failure "skills worktree fetch failed: $(printf '%s' "${GIT_ERR:-$GIT_OUT}" | tr '\n' ' ')"
     fi
   fi
   if ! git_sync reset --hard origin/main --quiet; then
     if (( GIT_TIMED_OUT == 1 )); then
-      record_failure "skills worktree reset exceeded its ${GIT_BOUND_SECS}s bound — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+      record_failure "skills worktree reset $(_git_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
     else
       record_failure "skills worktree reset failed: $(printf '%s' "${GIT_ERR:-$GIT_OUT}" | tr '\n' ' ')"
     fi

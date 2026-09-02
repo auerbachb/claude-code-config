@@ -179,18 +179,25 @@ else
 # git_sync. Called at statement level ONLY, never inside `$( )`: a subshell
 # discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
 _bounded_out=""
-# Seconds still available for a bounded call, capped at what this call needs.
-# Prints the cap unchanged when the clock is unusable — an unreadable clock must
-# not silently collapse every bound to zero and disable the sync outright.
-_bound_for() { # _bound_for <cap>
-  local cap="$1" now elapsed remaining
-  [[ -n "$_hook_t0" ]] || { printf '%s' "$cap"; return 0; }
-  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$cap"; return 0; }
-  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$cap"; return 0; }
+# Seconds left of the hook's git budget — deliberately NOT clamped to any
+# per-call ceiling. The caller applies the floor to this figure and the ceiling
+# separately: conflating them would make an explicitly configured ceiling below
+# the floor decline every call rather than honouring it. The floor asks "is
+# there room to finish?", a question about the budget, not about how short the
+# operator chose to make one call.
+#
+# Falls back to the full budget when the clock is unusable — an unreadable clock
+# must not silently collapse every bound to zero and disable the sync outright.
+_budget_remaining() {
+  local now elapsed remaining budget
+  budget=$(( _HOOK_TIMEOUT_SECS - _HOOK_GIT_RESERVE_SECS ))
+  (( budget > 0 )) || budget=1
+  [[ -n "$_hook_t0" ]] || { printf '%s' "$budget"; return 0; }
+  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
   elapsed=$(( now - _hook_t0 ))
-  remaining=$(( _HOOK_TIMEOUT_SECS - _HOOK_GIT_RESERVE_SECS - elapsed ))
+  remaining=$(( budget - elapsed ))
   (( remaining < 0 )) && remaining=0
-  (( remaining > cap )) && remaining="$cap"
   printf '%s' "$remaining"
 }
 
@@ -224,8 +231,13 @@ _run_locked() { # _run_locked <cap-seconds> <command…>
     _bounded_out="bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
     return 124
   fi
-  _last_bound="$(_bound_for "$cap")"
-  if (( _last_bound < _HOOK_MIN_BOUND_SECS )); then
+  local budget_left
+  budget_left="$(_budget_remaining)"
+  # Ceiling and floor applied to different things on purpose — see
+  # _budget_remaining.
+  _last_bound="$budget_left"
+  (( _last_bound > cap )) && _last_bound="$cap"
+  if (( budget_left < _HOOK_MIN_BOUND_SECS )); then
     # Declining to start IS the fix. Starting a call that the hook timeout will
     # kill part-way leaves a half-updated worktree and records nothing, which is
     # precisely what the publish guard below cannot defend against.
@@ -236,7 +248,7 @@ _run_locked() { # _run_locked <cap-seconds> <command…>
     # be untrue of a call that never started.
     BOUNDED_TIMED_OUT=1
     _bound_declined=1
-    _bounded_out="only ${_last_bound}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
+    _bounded_out="only ${budget_left}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
     return 124
   fi
   run_bounded "$_last_bound" "$@" || rc=$?
