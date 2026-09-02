@@ -521,18 +521,20 @@ test_15_marker_clear_rechecks_under_the_lock() {
     "grep -q '_lock_contended\" == 0' '$HOOK'"
 }
 
-# ── Test 16: the hook's git bounds fit inside its registered timeout ─────────
+# ── Test 16: the hook's git region is bounded by a deadline ─────────────────
 #
-# The lock wait and the two lock-held git calls (fetch, then reset) run back to
-# back inside one SessionStart hook invocation. If their worst case exceeds the
-# registered timeout the hook can be killed part-way through `reset --hard`,
-# leaving a half-updated worktree that a later failed fetch treats as last-good
-# and publishes. The three numbers are one constraint; this pins it.
+# The number of bounded calls varies by path — steady state runs fetch then
+# reset, a first-time bootstrap runs setup AND THEN both — so no fixed sum of
+# per-call bounds can honour the registered timeout for every path. The region
+# is scheduled against one deadline instead, and a call with too little budget
+# left is declined rather than started and killed. Being killed is the outcome
+# that matters: it leaves a half-updated worktree and records nothing, which is
+# exactly what the publish guard cannot defend against.
 
 test_16_hook_git_bounds_fit_the_hook_timeout() {
-  section "Test 16: lock wait + 2 git bounds stay under the hook timeout"
+  section "Test 16: the hook's git region is scheduled against one deadline"
 
-  local manifest registered bound lock_wait worst
+  local manifest registered budgeted reserve setup_cap sync_cap
   manifest="$REPO_ROOT/global-settings.json"
 
   registered="$(jq -r '
@@ -540,29 +542,42 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
       | select(.command | test("session-start-sync\\.sh"))
       | .timeout ] | first // empty
   ' "$manifest" 2>/dev/null)" || registered=""
-  bound="$(sed -n 's/^_sync_bound_secs=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
-  lock_wait="$(sed -n 's/.*CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-\([0-9][0-9]*\)}.*/\1/p' "$HOOK" | head -1)"
+  budgeted="$(sed -n 's/^_HOOK_TIMEOUT_SECS=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
+  reserve="$(sed -n 's/^_HOOK_GIT_RESERVE_SECS=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
+  setup_cap="$(sed -n 's/^_setup_bound_secs=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
+  sync_cap="$(sed -n 's/^_sync_bound_secs=\([0-9][0-9]*\)$/\1/p' "$HOOK" | head -1)"
 
   # Read every term before comparing: a missing value must fail loudly here
-  # rather than making the arithmetic below vacuously true.
+  # rather than making the comparisons below vacuously true.
   assert "the manifest registers a timeout for this hook" "[ -n '$registered' ]"
-  assert "the hook declares a git bound" "[ -n '$bound' ]"
-  assert "the hook declares a lock wait" "[ -n '$lock_wait' ]"
+  assert "the hook records the timeout it budgets against" "[ -n '$budgeted' ]"
+  assert "the hook reserves time for the work after the git region" "[ -n '$reserve' ]"
+  assert "setup carries its own, larger ceiling" "[ -n '$setup_cap' ]"
+  assert "fetch and reset carry the smaller ceiling" "[ -n '$sync_cap' ]"
 
-  if [[ -n "$registered" && -n "$bound" && -n "$lock_wait" ]]; then
-    worst=$(( lock_wait + 2 * bound ))
-    assert "worst case ${worst}s stays under the registered ${registered}s" \
-      "[ $worst -lt $registered ]"
-    # Not merely under, but with room for the publishers, hook registration,
-    # trust repair and root-repo sync that follow the git region.
-    assert "and leaves at least 5s of headroom for the rest of the hook" \
-      "[ $(( registered - worst )) -ge 5 ]"
-  fi
-
-  assert "the hook records the timeout it is budgeting against" \
-    "grep -q '_HOOK_TIMEOUT_SECS=' '$HOOK'"
   assert "(control) the budgeted timeout matches the manifest" \
-    "[ \"\$(sed -n 's/^_HOOK_TIMEOUT_SECS=\\([0-9][0-9]*\\)\$/\\1/p' '$HOOK' | head -1)\" = '$registered' ]"
+    "[ '$budgeted' = '$registered' ]"
+  assert "the git region ends with the reserve still unspent" \
+    "[ $(( budgeted - reserve )) -lt $registered ]"
+  assert "the reserve leaves real room for the rest of the hook" \
+    "[ '$reserve' -ge 5 ]"
+  assert "setup is allowed more than a single fetch — it does strictly more" \
+    "[ '$setup_cap' -gt '$sync_cap' ]"
+
+  # The deadline, not the per-call ceilings, is what bounds the region. Setup
+  # alone exceeds the reserve-adjusted window, which is safe ONLY because
+  # _bound_for clamps it — so assert the clamp exists rather than the sum.
+  assert "each call is clamped to what is left of the budget" \
+    "grep -q '_bound_for()' '$HOOK'"
+  assert "the lock wait counts against the same budget" \
+    "grep -q '_hook_t0=' '$HOOK'"
+  assert "a call with too little budget left is declined, not started" \
+    "grep -q '_HOOK_MIN_BOUND_SECS' '$HOOK'"
+  assert "the decline is recorded as a bound trip so the publish guard holds" \
+    "awk '/^_run_locked\\(\\)/,/^}/' '$HOOK' | grep -q 'BOUNDED_TIMED_OUT=1'"
+  # (control) no call site may still pass the old single-bound signature.
+  assert "(control) every _run_locked call passes an explicit ceiling" \
+    "! grep -qE '_run_locked (bash|git) ' '$HOOK'"
 }
 
 # ── Test 8: a REPOINTED agent symlink is restart-worthy ──────────────────────

@@ -54,32 +54,45 @@ if [[ -n "$_scripts_dir" && -f "$_bounded_lib" ]]; then
   # shellcheck source=../scripts/lib/bounded-run.sh
   source "$_bounded_lib" && _bound_available=1
 fi
-# Hook budget arithmetic — these three numbers are one constraint, not three
-# independent knobs. This hook is registered with `timeout: 30` in
-# global-settings.json, and the lock-held git region can run TWO bounded calls
-# back to back (fetch, then reset) after waiting out the lock acquire. The
-# worst case must stay under that timeout with room to spare:
+# Hook budget — a DEADLINE, not a set of independent per-call bounds.
 #
-#   lock wait + (2 × git bound) < hook timeout
-#   5         + (2 × 8)         = 21  <  30
+# This hook is registered with `timeout: 30` in global-settings.json. Per-call
+# bounds alone cannot honour that, because the number of bounded calls varies
+# by path: a steady-state pass runs fetch then reset, while a first-time
+# bootstrap runs setup-skills-worktree.sh AND THEN fetch and reset, since a
+# successful setup satisfies the worktree test below. Any fixed arithmetic is
+# therefore wrong for one path or the other — the original 10s wait plus two
+# 20s bounds came to 50s, and simply shrinking the bound to fit two calls still
+# left three calls overrunning, while starving the bootstrap that legitimately
+# needs longer than a fetch.
 #
-# It did not: a 10s wait plus two 20s bounds is 50s, so a slow fetch — or a
-# login overlap that burns the lock wait — could see the hook killed part-way
-# through `reset --hard`. That leaves a half-updated worktree which a later
-# failed fetch treats as last-good and publishes, pruning valid links.
+# Being killed here is the outcome that must not happen: a hook killed part-way
+# through `reset --hard` leaves a half-updated worktree, and the publish guard
+# below only blocks publishing a partial tree when the failure was RECORDED —
+# which a kill never is. So the whole git region is scheduled against one
+# deadline: each call gets whatever is left of the budget, capped at what that
+# particular call should ever need, and a call with too little left is DECLINED
+# rather than started and killed. Declining is recorded, so the guard holds.
 #
-# Tightening is safe because a tripped bound is a CLEAN, recorded outcome here
-# (see the failure handling below), and the scheduled launchd job — which has
-# no 30s ceiling and keeps the larger 20s bound — remains the workhorse. This
-# hook is opportunistic: missing a slow fetch costs one stale session, while
-# being killed mid-reset costs a corrupted worktree.
-#
-# The remaining ~9s covers the publishers, hook registration, trust repair and
-# root-repo sync that all run after this region.
+# The lock wait counts against the same budget, which is what makes a login
+# overlap safe: time burnt waiting shortens the calls instead of overrunning.
 _HOOK_TIMEOUT_SECS=30
+# Reserved for everything after the git region: the publishers, hook
+# registration, trust repair, the marker work and the root-repo sync.
+_HOOK_GIT_RESERVE_SECS=9
+_HOOK_MIN_BOUND_SECS=3
+_hook_t0="$(date -u +%s 2>/dev/null)" || _hook_t0=""
+_last_bound=0
+# Per-call ceilings. Setup gets a larger one because it does strictly more:
+# clone or fetch over the network, `worktree add`, both publishes and hook
+# registration. Bounding it like a single fetch reported healthy first-time
+# bootstraps as "setup failed" and skipped publishing — on exactly the machines
+# with no LaunchAgent, for which this hook is the only setup path.
+_setup_bound_secs=18
 _sync_bound_secs=8
 if (( _bound_available == 1 )); then
   _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 8)"
+  _setup_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_SETUP_BOUND:-}" 18)"
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
   CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
   [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
@@ -162,14 +175,40 @@ else
 # git_sync. Called at statement level ONLY, never inside `$( )`: a subshell
 # discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
 _bounded_out=""
-_run_locked() { # _run_locked <command…>
+# Seconds still available for a bounded call, capped at what this call needs.
+# Prints the cap unchanged when the clock is unusable — an unreadable clock must
+# not silently collapse every bound to zero and disable the sync outright.
+_bound_for() { # _bound_for <cap>
+  local cap="$1" now elapsed remaining
+  [[ -n "$_hook_t0" ]] || { printf '%s' "$cap"; return 0; }
+  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$cap"; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$cap"; return 0; }
+  elapsed=$(( now - _hook_t0 ))
+  remaining=$(( _HOOK_TIMEOUT_SECS - _HOOK_GIT_RESERVE_SECS - elapsed ))
+  (( remaining < 0 )) && remaining=0
+  (( remaining > cap )) && remaining="$cap"
+  printf '%s' "$remaining"
+}
+
+_run_locked() { # _run_locked <cap-seconds> <command…>
+  local cap="$1"; shift
   local rc=0
   BOUNDED_TIMED_OUT=0
   if (( _bound_available == 0 )); then
+    _last_bound="$cap"
     _bounded_out="$("$@" 2>&1)" || rc=$?
     return "$rc"
   fi
-  run_bounded "$_sync_bound_secs" "$@" || rc=$?
+  _last_bound="$(_bound_for "$cap")"
+  if (( _last_bound < _HOOK_MIN_BOUND_SECS )); then
+    # Declining to start IS the fix. Starting a call that the hook timeout will
+    # kill part-way leaves a half-updated worktree and records nothing, which is
+    # precisely what the publish guard below cannot defend against.
+    BOUNDED_TIMED_OUT=1
+    _bounded_out="declined: only ${_last_bound}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
+    return 124
+  fi
+  run_bounded "$_last_bound" "$@" || rc=$?
   _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
   [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
   return "$rc"
@@ -182,9 +221,9 @@ _run_locked() { # _run_locked <command…>
 # publish that guard exists to block.
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
-    if ! _run_locked bash "$setup_script"; then
+    if ! _run_locked "$_setup_bound_secs" bash "$setup_script"; then
       if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-        errors="skills worktree setup failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+        errors="skills worktree setup failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
       else
         errors="skills worktree setup failed: $_bounded_out"
       fi
@@ -193,15 +232,15 @@ if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
 fi
 
 if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
-  if ! _run_locked git -C "$skills_wt" fetch origin main --quiet; then
+  if ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-      errors="skills worktree fetch failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+      errors="skills worktree fetch failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
     else
       errors="skills worktree fetch failed: $_bounded_out"
     fi
-  elif ! _run_locked git -C "$skills_wt" reset --hard origin/main --quiet; then
+  elif ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" reset --hard origin/main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-      errors="skills worktree reset failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+      errors="skills worktree reset failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
     else
       errors="skills worktree reset failed: $_bounded_out"
     fi
