@@ -275,17 +275,32 @@ test_1_stale_machine() {
   rm -f "$home/.claude/skills/alpha"
   run_sync "$home" >/dev/null
 
-  section "Test 3b: session start on 'startup' surfaces the marker and clears it"
+  section "Test 3b: a startup whose own sync failed surfaces the marker but keeps it"
 
+  # This fixture's worktree is a plain CLONE, not a git worktree of this repo,
+  # so the hook's sync region reports a setup error — which makes it exactly the
+  # case that matters here. Clearing requires four things (see the hook's clear
+  # guard): source == startup, the region ran, the region SUCCEEDED, and the
+  # marker still holds what this session surfaced. A startup that ran and failed
+  # has not demonstrably loaded the current definitions, so the reminder has to
+  # survive: a duplicate next startup, never a lost one.
   local hook_out
   hook_out="$(printf '{"source":"startup"}' | HOME="$home" bash "$HOOK" 2>/dev/null)"
 
   assert "hook surfaced the restart notice" \
     "printf '%s' \"\$hook_out\" | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'RESTART RECOMMENDED'"
-  assert "restart portion cleared after a true startup" \
-    "[ ! -f '$home/.claude/sync-restart-recommended.json' ] || jq -e '(.restart_recommended // null) == null' '$home/.claude/sync-restart-recommended.json'"
-  assert "statusline no longer shows the restart badge" \
-    "! printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'restart'"
+  # (setup) the premise — without a reported error the assertions below would be
+  # testing the success path by accident.
+  assert "(setup) this startup's sync region did report an error" \
+    "printf '%s' \"\$hook_out\" | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'Config sync encountered errors'"
+  assert "restart portion survives a startup whose sync failed" \
+    "jq -e '(.restart_recommended // null) != null' '$home/.claude/sync-restart-recommended.json'"
+  assert "statusline still shows the restart badge" \
+    "printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'restart'"
+  # Surfacing and clearing are independent: the notice was delivered above even
+  # though the marker stays, so nothing is suppressed by declining to clear.
+  assert "the failure portion was not invented by the clear path" \
+    "jq -e '(.sync_failure // null) == null' '$home/.claude/sync-restart-recommended.json'"
 
   rm -rf "$tmp"
 }

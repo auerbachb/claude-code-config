@@ -199,11 +199,82 @@ except Exception:
 sys.exit(0 if "RESTART RECOMMENDED" in ctx else 1)
 PY
 
-python3 - "$MARKER_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "startup did not clear the restart portion, or wrongly cleared the failure portion"
+# This fixture's fetch fails on purpose (see above), and a startup whose own
+# sync region FAILED has not demonstrably loaded the current definitions — so
+# the restart portion must survive here. Clearing it was the bug: the guard now
+# requires success as well as `source == startup`, an un-skipped region and an
+# unchanged marker.
+python3 - "$MARKER_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup whose sync region failed wrongly cleared the restart portion"
 import json, os, sys
 path = sys.argv[1]
 if not os.path.exists(path):
-    # Both portions gone is only correct when there was no failure portion.
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+ok = d.get("restart_recommended") is not None and d.get("sync_failure") is not None
+sys.exit(0 if ok else 1)
+PY
+
+# --- 11b. A startup whose sync SUCCEEDED does clear the restart portion ---
+# The case above proves the guard blocks a failed startup; without this one the
+# suite could pass with a guard that never clears at all. Needs a worktree the
+# fetch and reset actually succeed against, so build a real local origin.
+OK_HOME="$(mktemp -d)"
+ok_cleanup() { rm -rf "$TMP_HOME" "$MARKER_HOME" "$OK_HOME"; }
+trap ok_cleanup EXIT
+OK_ORIGIN="$OK_HOME/origin"
+mkdir -p "$OK_ORIGIN/.claude/skills/alpha" "$OK_HOME/.claude/logs"
+printf '# alpha\n' > "$OK_ORIGIN/.claude/skills/alpha/SKILL.md"
+printf '# CLAUDE\n' > "$OK_ORIGIN/CLAUDE.md"
+git init -q "$OK_ORIGIN" >/dev/null 2>&1
+git -C "$OK_ORIGIN" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+git -C "$OK_ORIGIN" add -A >/dev/null 2>&1
+git -C "$OK_ORIGIN" -c user.email=t@e.invalid -c user.name=T -c commit.gpgsign=false \
+  commit -q -m "seed" >/dev/null 2>&1
+# A real git WORKTREE, not a clone: the hook's bootstrap branch tests for a
+# `.git` FILE, which is what a worktree has and a clone does not — a clone would
+# send this fixture down the setup path and error, defeating the point. Detached
+# so it does not contend for `main`, which the intermediate clone has checked
+# out; the worktree inherits that clone's `origin`, so fetch and reset resolve.
+git clone -q "$OK_ORIGIN" "$OK_HOME/repo" >/dev/null 2>&1
+git -C "$OK_HOME/repo" worktree add -q --detach "$OK_HOME/.claude/skills-worktree" main >/dev/null 2>&1
+
+cat > "$OK_HOME/.claude/sync-restart-recommended.json" <<'JSON'
+{
+  "restart_recommended": {
+    "reason": "config sync updated agents, rules",
+    "categories": ["agents", "rules"],
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "at": "2026-09-01T00:00:00Z"
+  },
+  "sync_failure": {
+    "message": "config sync has been failing for 2 day(s) — 5 consecutive failures",
+    "consecutive_failures": 5,
+    "first_failure_at": "2026-08-30T00:00:00Z",
+    "at": "2026-09-01T00:00:00Z"
+  }
+}
+JSON
+
+ok_out=$(printf '{"source":"startup"}' | HOME="$OK_HOME" bash "$HOOK" 2>/dev/null || true)
+# Assert the premise before the conclusion: if this run also errored, the check
+# below would pass for the wrong reason — by never reaching the clear at all.
+OK_OUT="$ok_out" python3 - <<'PY' || fail "the success fixture still reported a sync error, so the clear path was not exercised; got: $ok_out"
+import json, os, sys
+text = os.environ.get("OK_OUT", "").strip()
+if not text:
+    sys.exit(0)
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(0)
+sys.exit(1 if "Config sync encountered errors" in ctx else 0)
+PY
+
+python3 - "$OK_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup whose sync succeeded did not clear the restart portion, or wrongly cleared the failure portion"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
     sys.exit(1)
 with open(path) as f:
     d = json.load(f)

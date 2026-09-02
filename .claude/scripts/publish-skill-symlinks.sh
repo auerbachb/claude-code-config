@@ -253,6 +253,16 @@ skill_owned_by_setup() {
   if (( _NORMPATH_OK == 1 )); then
     target="$(_normpath "$candidate")" || return 1
   else
+    # Raw comparison cannot resolve `..`, so a target that merely STARTS with a
+    # managed prefix and then climbs back out —
+    # "$WORKTREE_SKILLS/../../elsewhere/foo" — would be claimed as ours and then
+    # repointed or pruned, breaking the one guarantee this predicate makes about
+    # a user's personal skill. Refusing to classify a traversing path closes that
+    # without needing the normalizer: "not ours" leaves the link untouched, which
+    # is the safe answer here and matches the per-path posture documented above.
+    case "$candidate" in
+      */../*|*/..) return 1 ;;
+    esac
     target="$candidate"
   fi
   [[ "$target" == "$WORKTREE_SKILLS/"* ]] && return 0

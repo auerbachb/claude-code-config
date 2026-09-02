@@ -83,6 +83,7 @@ _HOOK_GIT_RESERVE_SECS=9
 _HOOK_MIN_BOUND_SECS=3
 _hook_t0="$(date -u +%s 2>/dev/null)" || _hook_t0=""
 _last_bound=0
+_bound_declined=0
 # Per-call ceilings. Setup gets a larger one because it does strictly more:
 # clone or fetch over the network, `worktree add`, both publishes and hook
 # registration. Bounding it like a single fetch reported healthy first-time
@@ -129,8 +130,11 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   _lock_contended_pre=0
   [[ -d "${_sync_lock_base}.lock" ]] && _lock_contended_pre=1
   _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
-  # 5, not 10 — see the hook budget arithmetic above: this wait is the first
-  # term of `lock wait + (2 × git bound) < hook timeout`.
+  # 5, not 10. This wait is spent inside the same budget as the git calls below
+  # (see the deadline block above), so a long wait does not overrun the hook —
+  # it shortens those calls. Capping it anyway keeps a contended login from
+  # spending the whole budget queueing for work the other holder is already
+  # doing.
   if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
     _lock_held=1
   fi
@@ -190,22 +194,49 @@ _bound_for() { # _bound_for <cap>
   printf '%s' "$remaining"
 }
 
+# Phrase a bound trip honestly: a call that ran out of time "exceeded" its
+# bound, one that never started was "declined". Both must still carry the
+# caller's "…failed" token, which is what the publish guard keys off.
+_bound_trip_reason() {
+  if (( _bound_declined == 1 )); then
+    printf 'declined: %s' "$_bounded_out"
+  else
+    printf 'exceeded its %ss bound' "$_last_bound"
+  fi
+}
+
 _run_locked() { # _run_locked <cap-seconds> <command…>
   local cap="$1"; shift
   local rc=0
   BOUNDED_TIMED_OUT=0
+  _bound_declined=0
   if (( _bound_available == 0 )); then
-    _last_bound="$cap"
-    _bounded_out="$("$@" 2>&1)" || rc=$?
-    return "$rc"
+    # Refuse rather than run unbounded while holding the lock. Without a bound
+    # there is no deadline, so this call can outlive both the 30s hook timeout
+    # and the lock staleness window — at which point another sync treats the
+    # lock as stale and starts mutating the same worktree concurrently, which is
+    # the race the lock exists to prevent. Declining costs one opportunistic
+    # session refresh; the scheduled LaunchAgent, which has no 30s ceiling, still
+    # does the work.
+    _last_bound=0
+    BOUNDED_TIMED_OUT=1
+    _bound_declined=1
+    _bounded_out="bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
+    return 124
   fi
   _last_bound="$(_bound_for "$cap")"
   if (( _last_bound < _HOOK_MIN_BOUND_SECS )); then
     # Declining to start IS the fix. Starting a call that the hook timeout will
     # kill part-way leaves a half-updated worktree and records nothing, which is
     # precisely what the publish guard below cannot defend against.
+    #
+    # BOUNDED_TIMED_OUT is set because every caller keys its "…failed" token off
+    # it, and that token is what the publish guard reads — but _bound_declined
+    # distinguishes the two for the message, since "exceeded its Ns bound" would
+    # be untrue of a call that never started.
     BOUNDED_TIMED_OUT=1
-    _bounded_out="declined: only ${_last_bound}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
+    _bound_declined=1
+    _bounded_out="only ${_last_bound}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
     return 124
   fi
   run_bounded "$_last_bound" "$@" || rc=$?
@@ -223,7 +254,7 @@ if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
     if ! _run_locked "$_setup_bound_secs" bash "$setup_script"; then
       if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-        errors="skills worktree setup failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
+        errors="skills worktree setup failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
       else
         errors="skills worktree setup failed: $_bounded_out"
       fi
@@ -234,13 +265,13 @@ fi
 if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   if ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-      errors="skills worktree fetch failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
+      errors="skills worktree fetch failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
     else
       errors="skills worktree fetch failed: $_bounded_out"
     fi
   elif ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" reset --hard origin/main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
-      errors="skills worktree reset failed: exceeded its ${_last_bound}s bound — aborted before the lock staleness window could dispossess this run"
+      errors="skills worktree reset failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
     else
       errors="skills worktree reset failed: $_bounded_out"
     fi
@@ -436,7 +467,14 @@ if [[ -f "$_marker_file" ]]; then
   # second is exactly the race. Waiting at all, by contrast, is unambiguous
   # evidence that another sync was in flight during this startup. An
   # uncontended acquire is sub-second, so a zero-second delta is reliable.
-  if [[ "$session_source" == "startup" && -z "$_skip_notice" && "$_lock_contended" == 0 ]]; then
+  # Third condition: the sync region must have SUCCEEDED. The skip guard only
+  # asks whether the region ran, so a region that ran and failed — a tripped
+  # bound, a failed reset, a setup that could not complete — still passed it,
+  # and this session would delete the marker while sitting on definitions it
+  # never loaded. That is the same failure the other two guards exist to
+  # prevent, reached by a third route, and it is the likeliest of the three:
+  # a failed sync is far more common than a lost lock race.
+  if [[ "$session_source" == "startup" && -z "$_skip_notice" && -z "$errors" && "$_lock_contended" == 0 ]]; then
     _clear_locked=0
     if [[ "$_lock_available" == 1 ]] && state_lock_acquire "$_sync_lock_base" 5 2>/dev/null; then
       _clear_locked=1

@@ -60,8 +60,13 @@ echo "Root repo: $REPO_ROOT"
 # predates it. REPO_ROOT is still passed as the legacy-migration argument,
 # which is all it is for.
 SKILLS_PUBLISH_SCRIPT="$SCRIPT_DIR/.claude/scripts/publish-skill-symlinks.sh"
-if [[ ! -f "$SKILLS_PUBLISH_SCRIPT" ]]; then
-  echo "ERROR: publish-skill-symlinks.sh not found at $SKILLS_PUBLISH_SCRIPT" >&2
+# -r as well as -f: the whole point of this preflight is to fail BEFORE Step 1
+# mutates the worktree, and an unreadable publisher fails just as surely as a
+# missing one — only later, after the mutation, which is what it exists to
+# prevent. (It is invoked via `bash "$script"`, so readable, not executable, is
+# the requirement.)
+if [[ ! -f "$SKILLS_PUBLISH_SCRIPT" || ! -r "$SKILLS_PUBLISH_SCRIPT" ]]; then
+  echo "ERROR: publish-skill-symlinks.sh not found or not readable at $SKILLS_PUBLISH_SCRIPT" >&2
   echo "       Nothing has been changed. Re-run from a complete checkout." >&2
   exit 1
 fi

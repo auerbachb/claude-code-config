@@ -780,7 +780,12 @@ if [[ -n "$publish_skills" ]]; then
   [[ -n "$PUBLISH_STDOUT" ]] && log info "skills publish: $(one_line "$PUBLISH_STDOUT")"
   [[ -n "$PUBLISH_STDERR" ]] && warn "skills publish advisory: $(one_line "$PUBLISH_STDERR")"
 else
-  warn "publish-skill-symlinks.sh not found — skill/CLAUDE.md/rules links not refreshed"
+  # A hard failure, not a warning. Step 2 states the rule — "links are the whole
+  # point of the pass, so a publisher failure is a hard failure" — and a MISSING
+  # publisher refreshes exactly as few links as a failing one. Warning here let
+  # the run report outcome ok and clear the failure streak while CLAUDE.md,
+  # rules and every skill link stayed stale or absent.
+  record_failure "publish-skill-symlinks.sh not found — skill/CLAUDE.md/rules links not refreshed"
 fi
 
 # Compare immediately after the publish that owns these three legs, so the
@@ -976,7 +981,16 @@ new_marker="$(printf '%s' "$marker" | jq \
   ' 2>/dev/null)" || new_marker=""
 
 if [[ -n "$new_marker" ]]; then
-  write_marker "$new_marker" || true
+  # Not `|| true`. This write carries BOTH directions of the signal: it clears a
+  # stale sync_failure badge and adds a newly earned restart_recommended. A
+  # silent failure therefore either leaves the user staring at a failure badge
+  # for a job that has recovered, or withholds the restart reminder for changes
+  # that just landed — while the run reports outcome ok either way.
+  if ! write_marker "$new_marker"; then
+    warn "marker not persisted — a stale badge may survive, or a newly earned restart signal be lost, in $MARKER_FILE"
+    append_event "$(jq -cn --arg at "$NOW_ISO" --arg file "$MARKER_FILE" \
+      '{at: $at, event: "marker_commit_failed", file: $file, phase: "success"}')"
+  fi
   if [[ "$RESTART_FLAG" == "true" ]]; then
     log info "restart recommended (${RESTART_CATEGORIES[*]}) — signal in $MARKER_FILE"
   fi
