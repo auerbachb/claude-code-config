@@ -119,7 +119,7 @@ run_lead() {
     # knob is asserting the knob is ABSENT; inheriting an ambient value there
     # does not just fail the run, it silently converts those cases into coverage
     # of a different branch. Unset before applying the caller's assignments.
-    unset CLAUDE_LEAVE_LEAD_TIME_MIN STUB_CONFIG_RC
+    unset CLAUDE_LEAVE_LEAD_TIME_MIN LEAD_FLAG STUB_CONFIG_RC
     export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
@@ -135,7 +135,7 @@ run_lead_stderr() {
   printf '%s\n' "$budget" >"$TMP/budget.txt"
   (
     set -euo pipefail
-    unset CLAUDE_LEAVE_LEAD_TIME_MIN STUB_CONFIG_RC   # same clean slate as run_lead
+    unset CLAUDE_LEAVE_LEAD_TIME_MIN LEAD_FLAG STUB_CONFIG_RC   # same clean slate as run_lead
     export STUB_BUDGET_FILE="$TMP/budget.txt" STUB_CONFIG_ARGS_FILE="$STUB_CONFIG_ARGS"
     PM_CONFIG_GET="$STUB_CONFIG"
     # shellcheck disable=SC2163
@@ -270,7 +270,36 @@ if [ -n "$LEAD_BLOCK" ]; then
       "pm-config-get.sh must be called as '--section Budget' ($CFG_BAD call(s) differed: $(sort -u "$STUB_CONFIG_ARGS" | paste -sd'|' -))"
   fi
 
-  ok_group 'lead-time cascade: env > pm-config.md > 30, out-of-range rejected not clamped'
+  # --lead is the DOCUMENTED winning source, so it is the one whose absence from coverage
+  # matters most. It also has to live in the executable block: while it sat in prose beside
+  # the fence, the cascade that ran computed a lead time the winning source never reached,
+  # and no test of the block could have noticed.
+  OUT=$(run_lead '' 'LEAD_FLAG=45')
+  [ "$OUT" = "45 flag" ] || fail "--lead must be honoured (got: $OUT)"
+
+  OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 60' 'LEAD_FLAG=45' 'CLAUDE_LEAVE_LEAD_TIME_MIN=90')
+  [ "$OUT" = "45 flag" ] || fail "--lead must win over BOTH env and pm-config.md (got: $OUT)"
+
+  # Rejection stops the cascade at the default; it must not promote the next source down,
+  # or a typo'd flag silently resolves to a value the user never chose on this invocation.
+  OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 60' 'LEAD_FLAG=2' 'CLAUDE_LEAVE_LEAD_TIME_MIN=90')
+  [ "$OUT" = "30 flag_rejected" ] || fail "a below-range --lead must fall back to 30, not to env/config (got: $OUT)"
+
+  OUT=$(run_lead 'LEAVE_LEAD_TIME_MIN = 60' 'LEAD_FLAG=600')
+  [ "$OUT" = "30 flag_rejected" ] || fail "an above-range --lead must fall back to 30, never clamp (got: $OUT)"
+
+  # Set-but-empty is a misconfiguration to report, not an absent knob to skip — the same
+  # +x-not-:- distinction the env branch is built on.
+  OUT=$(run_lead '' 'LEAD_FLAG=')
+  [ "$OUT" = "30 flag_rejected" ] || fail "an empty --lead must be rejected, not treated as absent (got: $OUT)"
+
+  ERR=$(run_lead_stderr '' 'LEAD_FLAG=600')
+  case "$ERR" in
+    *"rejected --lead"*) : ;;
+    *) fail "a rejected --lead must say so on stderr (got: $ERR)" ;;
+  esac
+
+  ok_group 'lead-time cascade: --lead > env > pm-config.md > 30, out-of-range rejected not clamped'
 fi
 
 # ---------------------------------------------------------------------------

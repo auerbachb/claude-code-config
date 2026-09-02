@@ -131,9 +131,24 @@ Cascade — env override, then `pm-config.md`, then the code default — matchin
 ```bash
 LEAD_MIN=30
 LEAD_SOURCE="default"
+# `--lead Nm` on the invocation, bound by the argument parse as LEAD_FLAG. It is the
+# HIGHEST-precedence source, so it is tested first — and it lives in this block rather than
+# in prose beside it, or the executable cascade would compute a lead time the documented
+# winning source never reaches.
 # `+x`, not `:-`: a variable SET to the empty string is a misconfiguration to report,
 # not an absent knob to skip. `:-` cannot tell the two apart.
-if [[ -n "${CLAUDE_LEAVE_LEAD_TIME_MIN+x}" ]]; then
+if [[ -n "${LEAD_FLAG+x}" ]]; then
+  if [[ "$LEAD_FLAG" =~ ^[0-9]+$ ]] && (( 10#$LEAD_FLAG >= 5 )) && (( 10#$LEAD_FLAG <= 240 )); then
+    LEAD_MIN=$((10#$LEAD_FLAG)); LEAD_SOURCE="flag"
+  else
+    echo "leave-by: rejected --lead '$LEAD_FLAG' — using 30" >&2
+    # Same contract as the env branch below: an explicit-but-invalid override falls back to
+    # the DEFAULT, never onward to env or config. A typo'd flag must not silently resolve to
+    # some other configured value the user never asked for on this invocation.
+    LEAD_SOURCE="flag_rejected"
+  fi
+fi
+if [[ "$LEAD_SOURCE" == "default" && -n "${CLAUDE_LEAVE_LEAD_TIME_MIN+x}" ]]; then
   if [[ "$CLAUDE_LEAVE_LEAD_TIME_MIN" =~ ^[0-9]+$ ]] && (( 10#$CLAUDE_LEAVE_LEAD_TIME_MIN >= 5 )) \
      && (( 10#$CLAUDE_LEAVE_LEAD_TIME_MIN <= 240 )); then
     LEAD_MIN=$((10#$CLAUDE_LEAVE_LEAD_TIME_MIN)); LEAD_SOURCE="env"
@@ -173,10 +188,16 @@ if [[ "$LEAD_SOURCE" == "default" && -n "$PM_CONFIG_GET" ]]; then
 fi
 ```
 
-An explicit `--lead Nm` on the invocation wins over all three; validate it against the same
-`[5, 240]` range and reject out-of-range values with the same one-line message rather than
-silently clamping. **An out-of-range value is never accepted**: a 2-minute lead is a wind-down that
-cannot finish, and a 10-hour lead is a check-in that fires before the work does.
+**The full precedence is `--lead` > env > `pm-config.md` > 30**, and all four live in the block
+above so the cascade that runs is the cascade that is documented. The argument parse binds
+`--lead Nm` as `LEAD_FLAG` (digits only, the `m` suffix stripped); leaving it unset is how an
+invocation without the flag is expressed, which is why the test is `+x` rather than a non-empty
+check. Every source is validated against the same `[5, 240]` range and rejects out-of-range values
+with a one-line message rather than silently clamping. **An out-of-range value is never accepted**:
+a 2-minute lead is a wind-down that cannot finish, and a 10-hour lead is a check-in that fires
+before the work does. **A rejected override falls back to the default, never to the next source
+down** — `flag_rejected` and `env_rejected` both stop the cascade, so a typo cannot resolve into
+some other configured value the user never chose on this invocation.
 
 ## Step 3: Parse the window
 
