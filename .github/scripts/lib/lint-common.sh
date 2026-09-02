@@ -27,6 +27,22 @@
 #     directory glob is the authoritative publication source. Returns 1 when
 #     the skills directory is absent or contains no skill directories.
 #
+#   normalize_relpath BASE TARGET
+#     Joins BASE and TARGET and prints the result with '.' and '..' segments
+#     collapsed, so two spellings of one location compare equal. Purely
+#     LEXICAL: it never touches the filesystem, so it does not resolve
+#     symlinks and does not care whether the path exists. Callers that need
+#     existence must test it themselves.
+#
+#     TARGET wins when absolute; BASE is ignored for an empty or "." base.
+#     A relative result keeps leading '..' segments that escape BASE
+#     ('..' cannot be cancelled by a parent that is not in the string); an
+#     absolute result drops them, matching '/..' == '/'. A path that collapses
+#     to nothing prints '.'.
+#
+#     Deliberately not `realpath --relative-to`: that flag is GNU-only and the
+#     macOS runners have no equivalent.
+#
 # CALLER RESPONSIBILITY
 #   Each sourcing script must declare `errors=0` before sourcing this file so
 #   that require_file and require_pattern can increment it.
@@ -76,4 +92,74 @@ published_skills() {
   done
   (( ${#names[@]} > 0 )) || return 1
   printf '%s\n' "${names[@]}" | LC_ALL=C sort
+}
+
+# normalize_relpath BASE TARGET
+# Lexical only — see the CONTRACT header. Splits with parameter expansion
+# rather than an unquoted IFS='/' expansion: the latter would glob a segment
+# containing '*' against the cwd. The stack is indexed by an explicit counter
+# because bash 3.2 (the macOS system bash) leaves a hole behind `unset arr[i]`,
+# which would shift every later index.
+normalize_relpath() {
+  local base="${1-}" target="${2-}"
+  local joined rest seg out=""
+  local absolute=0 n=0 i
+  local -a stack=()
+
+  if [[ "$target" == /* ]]; then
+    joined="$target"
+  elif [[ -z "$base" || "$base" == "." ]]; then
+    joined="$target"
+  else
+    joined="${base%/}/${target}"
+  fi
+
+  if [[ "$joined" == /* ]]; then
+    absolute=1
+  fi
+
+  rest="$joined"
+  while [[ -n "$rest" ]]; do
+    seg="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then
+      rest="${rest#*/}"
+    else
+      rest=""
+    fi
+    case "$seg" in
+      '' | '.')
+        # An empty segment is a repeated or trailing slash, not a directory.
+        ;;
+      '..')
+        if (( n > 0 )) && [[ "${stack[n-1]}" != ".." ]]; then
+          n=$((n - 1))
+        elif (( absolute )); then
+          : # '/..' is '/' — a parent of the root does not exist.
+        else
+          stack[n]=".."
+          n=$((n + 1))
+        fi
+        ;;
+      *)
+        stack[n]="$seg"
+        n=$((n + 1))
+        ;;
+    esac
+  done
+
+  for (( i = 0; i < n; i++ )); do
+    if [[ -z "$out" ]]; then
+      out="${stack[i]}"
+    else
+      out="${out}/${stack[i]}"
+    fi
+  done
+
+  if (( absolute )); then
+    printf '%s\n' "/${out}"
+  elif [[ -z "$out" ]]; then
+    printf '%s\n' "."
+  else
+    printf '%s\n' "$out"
+  fi
 }
