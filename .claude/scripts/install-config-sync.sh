@@ -249,6 +249,15 @@ if awk -v want="$LABEL" '$NF == want { found = 1 } END { exit !found }' <<< "$la
   echo "Log:     $LOG_DIR/claude-config-sync.log"
   echo "Verify with: launchctl list | grep claude-config-sync"
 else
+  # Reached only when bootstrap SUCCEEDED but the listing did not show the job,
+  # so the agent may well be loaded and running — this is a failed verification,
+  # not a failed install, and tearing down a possibly-working scheduler because
+  # a listing query disagreed would be the worse trade. Say what state the
+  # machine is actually in and how to finish either way.
   echo "FAIL: $LABEL did not appear in launchctl list after install." >&2
+  echo "      launchctl bootstrap reported success, so the job may still be loaded;" >&2
+  echo "      the plist remains at $INSTALLED_PLIST." >&2
+  echo "      Check with:  launchctl list | grep claude-config-sync" >&2
+  echo "      Remove with: $SCRIPT_DIR/uninstall-config-sync.sh" >&2
   exit 1
 fi

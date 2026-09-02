@@ -244,7 +244,15 @@ fi
 # Inside the config-sync lock: claude-config-sync.sh runs the same registration
 # on its schedule, and two concurrent writers of ~/.claude/settings.json is
 # exactly the interleaving the lock exists to prevent.
-if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+#
+# Gated on the same setup/reset failures as the publish block above, and for the
+# same reason: register-hooks.py prunes a settings.json entry whose target is
+# missing from a managed root, so running it against a half-built worktree would
+# read "not checked out yet" as "decommissioned" and strip a live hook
+# registration. A failed fetch is still fine here — it leaves the worktree at
+# its last-good checkout.
+if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
+   ! [[ "$errors" == *"reset failed"* || "$errors" == *"setup failed"* ]]; then
   register_script="${_hook_dir}/register-hooks.py"
   if [[ -f "$register_script" ]]; then
     # MANAGED_LEGACY_HOOKS_DIR names the pre-worktree root-repo hooks directory
