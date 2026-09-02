@@ -91,20 +91,80 @@ if [[ "$_lock_held" != 1 ]]; then
   fi
 else
 
-# Bootstrap missing skills worktree if setup script is available
+# --- Bound the lock-held setup/fetch/reset ---
+# Everything below runs while HOLDING the config-sync lock, and state-lock.sh
+# breaks a holder by age alone once it passes STALE_AGE (default 120s) — at
+# which point a second sync starts mutating the same worktree and the same
+# ~/.claude links this run is rewriting. claude-config-sync.sh bounds exactly
+# these calls for that reason; the hook has to as well rather than leaning on
+# the hook's registered timeout, which is configured outside this file and so
+# is invisible (and unenforced) here.
+#
+# The bound is deliberately tighter than the scheduled job's: this hook is
+# registered with timeout 30, so any bound above that could never be reached.
+# A tripped bound is a recorded error, never a silently surrendered lock.
+_bounded_lib="${_scripts_dir}/lib/bounded-run.sh"
+_bound_available=0
+if [[ -n "$_scripts_dir" && -f "$_bounded_lib" ]]; then
+  # shellcheck source=../scripts/lib/bounded-run.sh
+  source "$_bounded_lib" && _bound_available=1
+fi
+_sync_bound_secs=20
+if (( _bound_available == 1 )); then
+  _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 20)"
+  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
+  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
+  [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
+  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
+fi
+
+# Run one lock-held command under the bound, mirroring claude-config-sync.sh's
+# git_sync. Called at statement level ONLY, never inside `$( )`: a subshell
+# discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
+_bounded_out=""
+_run_locked() { # _run_locked <command…>
+  local rc=0
+  BOUNDED_TIMED_OUT=0
+  if (( _bound_available == 0 )); then
+    _bounded_out="$("$@" 2>&1)" || rc=$?
+    return "$rc"
+  fi
+  run_bounded "$_sync_bound_secs" "$@" || rc=$?
+  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
+  [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
+  return "$rc"
+}
+
+# Bootstrap missing skills worktree if setup script is available.
+# NOTE on the message wording below: the publish guard further down keys off the
+# substrings "setup failed" and "reset failed", so a timed-out call must still
+# carry its token or a bound trip would silently re-open the very partial-tree
+# publish that guard exists to block.
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
-    if ! err=$(bash "$setup_script" 2>&1); then
-      errors="skills worktree setup failed: $err"
+    if ! _run_locked bash "$setup_script"; then
+      if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+        errors="skills worktree setup failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+      else
+        errors="skills worktree setup failed: $_bounded_out"
+      fi
     fi
   fi
 fi
 
 if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
-  if ! err=$(git -C "$skills_wt" fetch origin main --quiet 2>&1); then
-    errors="skills worktree fetch failed: $err"
-  elif ! err=$(git -C "$skills_wt" reset --hard origin/main --quiet 2>&1); then
-    errors="skills worktree reset failed: $err"
+  if ! _run_locked git -C "$skills_wt" fetch origin main --quiet; then
+    if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+      errors="skills worktree fetch failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+    else
+      errors="skills worktree fetch failed: $_bounded_out"
+    fi
+  elif ! _run_locked git -C "$skills_wt" reset --hard origin/main --quiet; then
+    if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+      errors="skills worktree reset failed: exceeded its ${_sync_bound_secs}s bound — aborted before the lock staleness window could dispossess this run"
+    else
+      errors="skills worktree reset failed: $_bounded_out"
+    fi
   fi
 elif [[ -z "$errors" ]]; then
   errors="skills worktree not found at $skills_wt"
