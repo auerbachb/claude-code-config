@@ -256,6 +256,31 @@ marker_field() {
   ' "$1" 2>/dev/null || true
 }
 
+# settled_marker_key <file> — the marker's key, re-read a bounded number of
+# times while it is absent. An EXISTING marker can be legitimately keyless for a
+# moment: the `noclobber` fallback in publish_marker below creates the file
+# EMPTY and only then writes the record, so a racer reading inside that window
+# sees nothing where a perfectly good key is about to appear. Treating that
+# snapshot as malformed would overwrite the winner and leave the two callers on
+# DIFFERENT keys — the split this file exists to prevent. Waiting the window out
+# costs nothing on the common paths (a well-formed marker returns on the first
+# read, and a marker that does not exist at all never sleeps) and the wait is
+# bounded, so a genuinely corrupt marker still falls through to the re-mint.
+settled_marker_key() {
+  local k="" i=0
+  while : ; do
+    k="$(marker_key "$1")"
+    case "$k" in fallback-[0-9a-f]*) break ;; esac
+    [ -e "$1" ] || break
+    [ "$i" -lt 5 ] || break
+    i=$((i + 1))
+    # A `sleep` that cannot do fractions must not abort the resolve; losing the
+    # pause only degrades this to the previous read-once behaviour.
+    sleep 0.05 2>/dev/null || true
+  done
+  printf '%s' "$k"
+}
+
 # marker_record <key> — the marker body for $key under the current identity.
 marker_record() {
   printf '%s\n' "$1"
@@ -330,7 +355,11 @@ publish_marker() {
     return 0
   fi
   if [ -r "$MARKER" ]; then
-    won="$(marker_key "$MARKER")"
+    # settled_marker_key, not marker_key: reaching here means the marker already
+    # existed, and the noclobber branch above publishes it EMPTY-then-written.
+    # Reading once could catch that window and send us down the re-mint arm,
+    # destroying the winner's marker and keeping our own key.
+    won="$(settled_marker_key "$MARKER")"
   fi
   case "$won" in
     fallback-[0-9a-f]*)
@@ -408,6 +437,7 @@ CANDIDATE_LIST=""
 CANDIDATE_KEYS=""
 CANDIDATE_KEY_COUNT=0
 PRESERVED_ANCHOR=""
+REWRITE_MARKER=1
 
 RAW_SID="${CLAUDE_SESSION_ID:-}"
 if [ -n "$RAW_SID" ]; then
@@ -460,6 +490,7 @@ if [ -z "$SESSION_KEY" ]; then
 
   if [ -n "$SESSION_KEY" ]; then
     KEY_SOURCE="marker"
+    REWRITE_MARKER=1
     # An invocation that cannot derive an anchor must never ERASE the one this
     # marker already records — that would silently cost the conversation its
     # drift recovery, and the loss would only surface at the next drift. A
@@ -469,12 +500,23 @@ if [ -z "$SESSION_KEY" ]; then
       PRESERVED_ANCHOR="$(marker_field "$MARKER" anchor)"
       if [ -n "$PRESERVED_ANCHOR" ]; then
         STABLE_ANCHOR="$PRESERVED_ANCHOR"
+        # …and it must not write that anchor BACK either. We learned it from
+        # this very marker, so re-recording it carries no new information — only
+        # an epoch bump. The write is not free: write_marker is an unlocked
+        # read-modify-write, so a concurrent invocation that recorded a NEWER
+        # anchor between our read and our write would be silently reverted to
+        # the old one, and the next ancestor drift would find no marker under
+        # the true anchor and mint the sibling log this change exists to
+        # prevent. With nothing of our own to record, the safe write is none.
+        REWRITE_MARKER=0
       fi
     fi
     # Record the anchor and a fresh epoch on the marker we just used. This is
-    # the only path that upgrades a pre-#1572 one-line marker, so an
-    # already-running conversation becomes drift-recoverable from here on.
-    write_marker
+    # the only path that upgrades a pre-#1572 one-line marker — which records no
+    # anchor at all, so the preserve branch above cannot fire and the write
+    # always runs there — and an already-running conversation becomes
+    # drift-recoverable from here on.
+    [ "$REWRITE_MARKER" -eq 0 ] || write_marker
   else
     # Exact miss. Before minting, look for THIS conversation's existing log:
     # an ancestor chain that changed mid-conversation lands here, and minting

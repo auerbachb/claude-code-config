@@ -660,11 +660,16 @@ KEEP_MARKER="$(ls "$(marker_dir "$H_G6")"/imk-* 2>/dev/null | head -n 1)"
 # A sentinel epoch, so "the anchor survived" cannot pass just because the
 # anchor-less run never touched the marker at all.
 printf 'epoch=SENTINEL\n' >> "$KEEP_MARKER"
-resolve_key "$H_G6" "claude=4004|start=TK" "" >/dev/null   # same identity, no anchor
-if grep -q '^anchor=conv-keep$' "$KEEP_MARKER" && ! grep -q '^epoch=SENTINEL$' "$KEEP_MARKER"; then
-  ok "G16: an anchor-less invocation rewrites the marker yet preserves the anchor already recorded"
+# Resolving again with the same identity must return the SAME key: that is the
+# anti-vacuity guard here — it proves the anchor-less run really did read and use
+# this marker, so "the anchor survived" cannot pass on a resolver that quietly
+# stopped resolving at all. Whether the marker was REWRITTEN is asserted in
+# group H, where leaving it alone is the point.
+KEEP_AGAIN="$(resolve_key "$H_G6" "claude=4004|start=TK" "")"   # same identity, no anchor
+if [[ "$KEEP_AGAIN" == "$KEEP_KEY" ]] && grep -q '^anchor=conv-keep$' "$KEEP_MARKER"; then
+  ok "G16: an anchor-less invocation resolves the same key and preserves the anchor already recorded"
 else
-  fail "G16: the recorded anchor was erased or the marker was never rewritten (content: $(cat "$KEEP_MARKER"))"
+  fail "G16: the recorded anchor was erased or the key moved ('$KEEP_KEY' -> '$KEEP_AGAIN', content: $(cat "$KEEP_MARKER"))"
 fi
 KEEP_DRIFT="$(resolve_key "$H_G6" "claude=4005|start=TL" "conv-keep")"
 if [[ "$KEEP_DRIFT" == "$KEEP_KEY" ]]; then
@@ -694,6 +699,83 @@ if [[ $LN_SECOND_RC -ne 0 && "$LN_WINNER" == "fallback-aaaaaaaaaaaaaaaaaaaa" && 
 else
   fail "G15 (negative control): publish primitives misbehaved (second-ln rc=$LN_SECOND_RC winner='$LN_WINNER' window='$NC_WINDOW')"
 fi
+
+# =============================================================================
+# TEST H — the two unlocked-write races CodeAnt flagged on PR #1575. Both are
+#          narrow, and both end in the SAME failure the rest of this file exists
+#          to prevent: one conversation on two logs.
+#            H1:    an anchor-less run must not write the marker at all, so it
+#                   cannot revert an anchor a concurrent run just recorded.
+#            H2-H3: a marker caught mid-write must be waited out and adopted,
+#                   never mistaken for corruption and overwritten.
+# =============================================================================
+# A SENTINEL line, not a byte-compare of the untouched record: pre-fix,
+# write_marker rewrote the marker with the same key, ident and anchor and only a
+# fresh epoch, so two runs inside one second produced IDENTICAL content and a
+# plain before/after compare passed vacuously against the very code it was meant
+# to catch. Replacing the file wipes the sentinel; leaving it alone keeps it.
+H_H1="$(make_home h1)"
+H1_KEY="$(resolve_key "$H_H1" "claude=7001|start=TH" "conv-h1")"
+H1_MARKER="$(ls "$(marker_dir "$H_H1")"/imk-* 2>/dev/null | head -n 1)"
+printf 'sentinel=H1\n' >> "$H1_MARKER"
+H1_AGAIN="$(resolve_key "$H_H1" "claude=7001|start=TH" "")"   # anchor-less, same identity
+if [[ "$H1_AGAIN" == "$H1_KEY" ]] && grep -q '^sentinel=H1$' "$H1_MARKER"; then
+  ok "H1: an anchor-less invocation resolves the marker WITHOUT rewriting it (so it cannot revert a concurrent anchor update)"
+else
+  fail "H1: the anchor-less invocation rewrote the marker ('$H1_KEY' -> '$H1_AGAIN'; content: $(cat "$H1_MARKER"))"
+fi
+
+# G17 already covers the other half — that drift recovery still WORKS after an
+# anchor-less run — so it is not restated here.
+
+# The publish window. A `noclobber` publish creates the marker EMPTY and writes
+# after, so a racer can read a keyless marker that is about to be perfectly good.
+# Reading once sent that racer down the re-mint arm, destroying the winner's
+# marker and keeping its own key.
+#
+# Driven by a `sleep` shim rather than a real background writer: the winner's
+# record appears IF AND ONLY IF the resolver actually paused to re-read. That
+# makes the test deterministic under any load AND makes it impossible to pass on
+# a read-once resolver — a timed background write could satisfy neither.
+H_H4="$(make_home h4)"
+H4_KEY="$(resolve_key "$H_H4" "claude=7004|start=TN" "conv-h4")"
+H4_MARKER="$(ls "$(marker_dir "$H_H4")"/imk-* 2>/dev/null | head -n 1)"
+H4_WINNER="fallback-cccccccccccccccccccc"
+SHIM_DIR="$TMP_DIR/shim-h4"
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_DIR/sleep" <<EOF
+#!/usr/bin/env bash
+# Stands in for the instant a racing publisher completes its noclobber write.
+if [ ! -s "$H4_MARKER" ]; then
+  printf '%s\nident=winner\nanchor=conv-h4\nepoch=9999\n' "$H4_WINNER" > "$H4_MARKER"
+fi
+exit 0
+EOF
+chmod +x "$SHIM_DIR/sleep"
+: > "$H4_MARKER"                       # the create half of a noclobber publish
+H4_RESOLVED="$( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID
+  export HOME="$H_H4" ISSUE_MAKER_CONV_ID="claude=7004|start=TN" \
+         ISSUE_MAKER_STABLE_ANCHOR="conv-h4" PATH="$SHIM_DIR:$PATH"
+  "$H_H4/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null )"
+if [[ "$H4_RESOLVED" == "$H4_WINNER" ]]; then
+  ok "H2: a marker caught mid-write is re-read and ADOPTED, not overwritten"
+else
+  fail "H2: the in-flight marker was overwritten ('$H4_RESOLVED' instead of '$H4_WINNER'; first key was '$H4_KEY')"
+fi
+
+# CONTROL — the wait is BOUNDED. A marker that never completes must still fall
+# through to a well-formed re-mint rather than blocking the resolve forever.
+H_H5="$(make_home h5)"
+H5_KEY="$(resolve_key "$H_H5" "claude=7005|start=TO" "conv-h5")"
+H5_MARKER="$(ls "$(marker_dir "$H_H5")"/imk-* 2>/dev/null | head -n 1)"
+: > "$H5_MARKER"
+H5_RESOLVED="$(resolve_key "$H_H5" "claude=7005|start=TO" "conv-h5")"
+case "$H5_RESOLVED" in
+  fallback-[0-9a-f]*)
+    ok "H3 (control): a marker that never completes still falls through to a well-formed re-mint" ;;
+  *)
+    fail "H3 (control): permanently-empty marker did not re-mint (got '$H5_RESOLVED'; first key was '$H5_KEY')" ;;
+esac
 
 # =============================================================================
 echo
