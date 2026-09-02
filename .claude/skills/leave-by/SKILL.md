@@ -449,10 +449,19 @@ message arriving mid-wind-down lands.
 Step 2 does not find a task ID for a Monitor that has already fired and record a failed stop:
 
 ```bash
+DISARM_RC=0
 "$SESSION_STATE_SH" \
   --set ".repos[\"$REPO_KEY\"].leave.winddown_task_id=null" \
-  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
+  --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" || DISARM_RC=$?
+# retry once on 6 (lock timeout); anything still non-zero is reported, not assumed
 ```
+
+**Read that exit code — the disarm is the whole point of this sub-step.** An unchecked `--set`
+that silently failed leaves exactly the state 8.5 exists to prevent: `/pause` Step 2 finds a task
+ID for a Monitor that has already fired, `TaskStop`s a dead wake, and reports a failed stop nobody
+can explain. **Still delegate to `/pause`** — the deadline is real and the wind-down matters more
+than the bookkeeping — but on a non-zero `DISARM_RC` after the retry, say so in one line so the
+spurious failed-stop entry in `/pause`'s Step 8 report has a cause attached to it.
 
 **8.6 — Wind down through `/pause`.** Compute the runway and invoke the real command — do not
 re-implement any part of it:
@@ -560,9 +569,21 @@ closes that window: every queued event now fails validation and exits silently, 
 does afterwards.
 
 ```bash
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null"
-# ... only now TaskStop the recorded winddown_task_id
+INVALIDATE_RC=0
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.winddown_generation=null" || INVALIDATE_RC=$?
+# retry once on 6 (lock timeout)
+# ... only now TaskStop the recorded winddown_task_id — and only when INVALIDATE_RC is 0
 ```
+
+**A failed invalidation is a STOP, not a step to push past.** The ordering above is only a safety
+property if the null actually lands: the whole reason it precedes the `TaskStop` is that a queued
+`--checkin` stays valid until the token is gone. If the write failed, that window is still open, so
+`TaskStop`-ing and re-declaring would leave a queued event able to pass Step 8.1 and wind the
+thread down against the deadline the user just replaced — the exact failure this order prevents.
+On a non-zero `INVALIDATE_RC` after the retry: **do not stop the task and do not proceed with the
+re-declaration or cancel.** Report it in one line naming the task ID and the unwritten generation,
+and leave `.leave` as found — an unchanged record the user can act on beats a half-torn-down one
+that looks retired.
 
 - **A new time** ("actually I have until 8") → invalidate the generation as above, `TaskStop` the
   recorded `winddown_task_id`, then re-run this skill end to end: recompute, rewrite `.window` and

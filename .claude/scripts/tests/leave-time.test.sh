@@ -648,6 +648,14 @@ require_text .claude/skills/pause-resume/SKILL.md 'exit 7 = another writer owns 
 require_text .claude/skills/pause-resume/SKILL.md 'RESUMED_DEADLINE_EPOCH' \
   'the resumed deadline must be bound so the retirement CAS can pin its write to it'
 
+# An ordering rule is only a safety property if the earlier write actually landed. Both
+# invalidations that other steps depend on must read their exit code, and the Step 9 one is
+# fail-closed: a queued --checkin stays valid until the token is really gone.
+require_text "$LEAVE_SKILL" 'the disarm is the whole point of this sub-step' \
+  'Step 8.5 must check the disarm exit code rather than assuming the write landed'
+require_text "$LEAVE_SKILL" 'A failed invalidation is a STOP' \
+  'Step 9 must not TaskStop or re-declare when the generation invalidation failed'
+
 # Reading the deadline early is not enough — the disarm must not run when validation fails,
 # or the inconsistent-record branch preserves leave.active with nothing left to recover.
 require_order .claude/skills/pause-resume/SKILL.md '## Step 5' \
