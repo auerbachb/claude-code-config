@@ -53,6 +53,14 @@
 #
 #   - {start ET} / {projected end ET} — ET wall-clock, `%-I:%M %p` (e.g.
 #     `12:18 PM`). No "ET" suffix: the table's column headers carry the zone.
+#   - CONTRACT: the FIRST cell is INDEPENDENT OF --bound-min — that argument
+#     moves cells 2 and 3 only. It is not a pure function of --started-at:
+#     --now still decides whether the start is in the future (in which case the
+#     whole line is suppressed, see below), and the rendered zone depends on
+#     whether ET resolves. /board relies on the bound-independence to format a
+#     merged row's two clocks (start, delivered) without hand-rolling a `date`
+#     call that would bypass the tzdata guard below (#1529), so keep cell 1
+#     bound-independent.
 #   - On track: projected end = start + bound; third cell = remaining duration.
 #   - Over the bound: projected end = start + pace-scaled revised total, floored
 #     at `--now` so it is NEVER a clock time in the past; third cell is the

@@ -175,7 +175,7 @@ included. It replaces the bulleted-list shape, not just augments it.
 |--------|-------|
 | **Issue** | `#N` |
 | **Scope** | Short description, truncated to 40 chars (`cut -c1-40`) so each row stays one line |
-| **Status** | `queued` for a not-yet-launched row; otherwise the phase — `Phase A`, `Phase B`, `Phase C` |
+| **Status** | `queued` for a not-yet-launched row; `merged` for one that has landed; otherwise the phase — `Phase A`, `Phase B`, `Phase C` |
 | **Est** | `Est: {lo}–{hi} min · plan on {bound}` from `estimate-resolve.sh`, or `unestimated` |
 | **Start (ET)** | Wall-clock launch time, e.g. `12:18 PM` |
 | **Projected end (ET)** | On-track: start + planning bound. Over the bound: the pace-scaled revised finish |
@@ -189,6 +189,14 @@ to show run order and the estimate.
 bound, the row switches to the revised finish plus the overrun marker, keeping the
 same on-track / running-slow semantics the readout above already has.
 
+**Completed rows carry `merged` in Status, and an actual rather than a projection.**
+A row whose PR has landed keeps its recorded Start, shows the delivered clock time in
+`Projected end`, and carries `—` in `Remaining` because nothing remains. The `merged`
+status is what marks that middle cell as a fact instead of a forecast: a landed PR
+must never read as a future-tense claim, and re-labelling the column per row would
+give one table two column meanings. Delivered time is the PR's own `mergedAt`, read
+back like every other timestamp here and never taken from the render-time clock.
+
 ### Example
 
 ```markdown
@@ -198,6 +206,7 @@ same on-track / running-slow semantics the readout above already has.
 |-------|-------|--------|-----|-----------|--------------------|-----------|
 | #1512 | Universal dispatch + progress table | Phase B | Est: 90–180 min · plan on 180 | 12:18 PM | 3:18 PM | 1.4 h |
 | #1489 | Rebuild the escalation retry window | Phase A | Est: 45–90 min · plan on 90 | 12:41 PM | 2:03 PM | +22 min over plan |
+| #1480 | Key catalog entries on normalized path | merged | Est: 15–30 min · plan on 30 | 12:18 PM | 12:44 PM | — |
 | #1504 | Re-anchor the scripts README gate | queued | Est: 15–30 min · plan on 30 | — | — | — |
 ```
 
@@ -267,6 +276,7 @@ after a context compaction, which is precisely what the recorded value prevents.
 | `/subagent` launch (Step 7) | Immediately after the batch is filed/queued — the whole round, launched rows and queued rows alike |
 | `/subagent` heartbeat (Step 8 item 6) | Re-render every tick: Start unchanged, Remaining recomputed, queued rows flipping to started as they launch |
 | `/subagent` on-demand | Same table when the user asks "how far along?" |
+| `/board` | The same table on demand, in any orchestration thread — the named command for the question `/subagent`'s on-demand answer handles in prose (issue #1581). **Partial for a non-dispatching thread:** round membership is not durable, so a `/board` run from a thread that did not dispatch the round renders no queued rows and reports its delivered count as approximate (the timestamp fallback misses anything that merged before the earliest running start, and can absorb a late merge from an earlier round), saying so both times. Running rows rebuild fully from durable state, with merge state read live per PR (`gh pr view --json state,mergedAt`) — the one field the board does not take from disk |
 | `/pm`, `/pr-monitor-and-manage` | May adopt this shape in a follow-up; their column sets diverge today, so the format lives here rather than in any one skill |
 | `/leave-by` check-in | At `deadline − lead`, unprompted — this table plus the `By {H:MM} ET` column above |
 
