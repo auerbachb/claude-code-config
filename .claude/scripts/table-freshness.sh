@@ -287,6 +287,24 @@ if [[ ! "$REPO_KEY" =~ ^[A-Za-z0-9._/-]+$ ]]; then
   die_usage "--repo value is not a plausible repo key: $REPO_KEY"
 fi
 
+# Lowercase it, for the same reason session-state.sh, handoff-state.sh and
+# polling-state-gate.sh do (issue #704). The validator above accepts mixed case
+# because a repo key legitimately has it; the SCOPE KEY must not. `--repo
+# Org/Repo` would otherwise read and write `.repos["Org/Repo"]` while every
+# other consumer — including /board (#1581) sharing this exact record — resolves
+# `.repos["org/repo"]`, so the render would be recorded where nothing looks and
+# the tick would poll a record no render ever writes: a floor firing forever, or
+# never, depending on which side you stand on. `--repo-key` already returns a
+# normalized value; this covers the caller-supplied path.
+NORMALIZER_LIB="${SCRIPT_DIR}/lib/repo-normalizer.sh"
+if [[ -f "$NORMALIZER_LIB" ]]; then
+  # shellcheck source=./lib/repo-normalizer.sh
+  source "$NORMALIZER_LIB"
+else
+  normalize_repo_key() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+fi
+REPO_KEY="$(normalize_repo_key "$REPO_KEY")"
+
 STATE_PATH=".repos[\"${REPO_KEY}\"].table_render[\"${SESSION_ID}\"]"
 
 # The dedupe marker is keyed by REPO **and** session, matching the durable clock
@@ -315,22 +333,41 @@ state_get() {
   printf '%s' "$value"
 }
 
-# Read the recorded render into RENDERED_AT / ACTIVE_RECORDED. Returns 1 when
-# there is no usable record (missing file, absent key, unparseable timestamp).
+# Read the recorded render into RENDERED_AT / ACTIVE_RECORDED / SURFACE_RECORDED.
+# Returns 1 when there is no usable record (missing file, absent key,
+# unparseable timestamp).
+#
+# ONE read of the WHOLE record, not a field at a time. Each state_get is its own
+# process reading the file afresh, so field-by-field reads can straddle a
+# concurrent --note-rendered and combine an old timestamp with the new count —
+# the two values that decide `stale` versus `idle`. Pairing a pre-render
+# timestamp with a post-render `0` reports idle for a board that is an hour old;
+# the reverse keeps an ended round armed. --note-rendered already writes the
+# record as a single atomic --set for this reason; reading it whole is the other
+# half of that guarantee. It is also strictly cheaper: one subprocess per call
+# instead of two or three, on a loop that runs every 60 seconds.
 read_record() {
   RENDERED_AT=""
   ACTIVE_RECORDED=""
+  SURFACE_RECORDED=""
   RENDERED_EPOCH=""
-  RENDERED_AT="$(state_get '.last_rendered_at')" || return 1
+  local record
+  record="$(state_get '')" || return 1
+  [[ -n "$record" ]] || return 1
+
+  RENDERED_AT="$(printf '%s' "$record" | jq -r '.last_rendered_at // empty' 2>/dev/null)"
   [[ -n "$RENDERED_AT" ]] || return 1
   RENDERED_EPOCH="$(iso_to_epoch "$RENDERED_AT")"
   [[ -n "$RENDERED_EPOCH" ]] || return 1
-  ACTIVE_RECORDED="$(state_get '.active_pipelines')" || ACTIVE_RECORDED=""
+
+  ACTIVE_RECORDED="$(printf '%s' "$record" | jq -r '.active_pipelines // empty' 2>/dev/null)"
   [[ "$ACTIVE_RECORDED" =~ ^[0-9]+$ ]] || ACTIVE_RECORDED=""
   # Normalised on the way in as well: this record is shared with /board (#1581)
   # and is a plain JSON file a human can edit, so a leading-zero count can reach
   # us without having passed the --active guard above.
   [[ -n "$ACTIVE_RECORDED" ]] && ACTIVE_RECORDED="$(normalize_count "$ACTIVE_RECORDED")"
+
+  SURFACE_RECORDED="$(printf '%s' "$record" | jq -r '.surface // empty' 2>/dev/null)"
   return 0
 }
 
@@ -436,7 +473,10 @@ case "$MODE" in
       rendered_at="$(jq -nc --arg v "$RENDERED_AT" '$v')"
       age=$(( $(date +%s) - RENDERED_EPOCH ))
       [[ -n "$ACTIVE_RECORDED" ]] && active_json="$ACTIVE_RECORDED"
-      s="$(state_get '.surface')" && surface="$(jq -nc --arg v "$s" '$v')"
+      # From the SAME single read as the two fields above — a separate --get for
+      # surface would reintroduce exactly the straddled-write race read_record
+      # was changed to close, and report a snapshot that never existed on disk.
+      [[ -n "$SURFACE_RECORDED" ]] && surface="$(jq -nc --arg v "$SURFACE_RECORDED" '$v')"
     fi
     emitted=false
     [[ -f "$EMITTED_FILE" ]] && emitted=true

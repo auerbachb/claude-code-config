@@ -64,11 +64,19 @@ backdate() {  # backdate <minutes> [session]
 # squashing the script applies, so `owner/name` cannot walk out of the dir) plus
 # a cksum of the raw key, which is what keeps `org/repo` and `org_repo` apart
 # after the squash.
+# The checksum component is CONDITIONAL in the script (`${REPO_SUM:+-$REPO_SUM}`),
+# which degrades to the slug alone when cksum is absent or prints something
+# non-numeric. Mirror that exactly: hard-coding the separator built
+# `slug--session` here against the script's `slug-session`, so on a host without
+# cksum every marker assertion would have checked a path nothing ever creates —
+# the dedupe tests would fail while the dedupe itself was fine.
 marker_path() {  # marker_path [repo] [session]
   local repo="${1:-$REPO}" sid="${2:-$SID}" sum
-  sum="$(printf '%s' "$repo" | cksum | cut -d' ' -f1)"
-  printf '%s/claude-tablefloor-emitted-%s-%s-%s' \
-    "$CLAUDE_TABLE_FRESHNESS_MARKER_DIR" "${repo//[^[:alnum:]_.-]/_}" "$sum" "$sid"
+  sum="$(printf '%s' "$repo" | cksum 2>/dev/null | cut -d' ' -f1)"
+  [[ "$sum" =~ ^[0-9]+$ ]] || sum=""
+  printf '%s/claude-tablefloor-emitted-%s%s-%s' \
+    "$CLAUDE_TABLE_FRESHNESS_MARKER_DIR" "${repo//[^[:alnum:]_.-]/_}" \
+    "${sum:+-$sum}" "$sid"
 }
 
 # Sets CHECK_OUT (verdict word) and CHECK_RC. Deliberately NOT called through
@@ -415,6 +423,49 @@ STATE_AFTER="$(jq -S -c '.repos' "$HOME/.claude/session-state.json")"
   "$HOME/.claude/session-state.json")" == "1" ]] || \
   fail "a legitimate owner/name must write under its own unmangled key"
 ok "repo keys carrying jq syntax are rejected; legitimate owner/name still works"
+
+# --- 19c. A mixed-case --repo scopes to the LOWERCASE key --------------------
+#          The validator accepts mixed case because repo names legitimately have
+#          it; the scope key must not keep it. session-state.sh, handoff-state.sh
+#          and polling-state-gate.sh all lowercase (issue #704), and /board
+#          (#1581) reads this same record — a `.repos["Org/Repo"]` write lands
+#          where nothing looks, and the armed tick polls a record no render
+#          writes.
+"$SCRIPT" --note-rendered --active 3 --surface cased \
+  --session "$SID" --repo 'MixedOrg/MixedRepo' >/dev/null \
+  || fail "a mixed-case repo key should be accepted"
+[[ "$(jq -r '.repos["mixedorg/mixedrepo"].table_render["'"$SID"'"].active_pipelines' \
+  "$HOME/.claude/session-state.json")" == "3" ]] || \
+  fail "a mixed-case --repo must write under the lowercase scope key"
+[[ "$(jq -r '.repos | has("MixedOrg/MixedRepo")' "$HOME/.claude/session-state.json")" == "false" ]] || \
+  fail "a mixed-case scope key was created — it splits the scope from every other consumer"
+# Round-trip: reading back with the same mixed-case spelling must find it.
+CASED_STATUS="$("$SCRIPT" --status --session "$SID" --repo 'MixedOrg/MixedRepo')"
+[[ "$(printf '%s' "$CASED_STATUS" | jq -r '.active_pipelines')" == "3" ]] || \
+  fail "a mixed-case --repo must read back the record it just wrote, got: $CASED_STATUS"
+ok "a mixed-case --repo scopes to the lowercase key and round-trips"
+
+# --- 19d. The record is read WHOLE, in one read, not field by field ----------
+#          Separate --get calls are separate processes reading the file afresh,
+#          so they can straddle a concurrent --note-rendered and pair an old
+#          timestamp with a new count — the exact two values that decide stale
+#          vs idle. --note-rendered already writes the record as one atomic
+#          --set; reading it whole is the other half of that guarantee.
+#          Behavioural half: every field --status reports comes from that read.
+"$SCRIPT" --note-rendered --active 5 --surface whole-read \
+  --session "$SID" --repo "$REPO" >/dev/null || fail "setup: --note-rendered should succeed"
+WHOLE="$("$SCRIPT" --status --session "$SID" --repo "$REPO")"
+[[ "$(printf '%s' "$WHOLE" | jq -r '.active_pipelines')" == "5" ]] || \
+  fail "--status lost active_pipelines through the single-read path: $WHOLE"
+[[ "$(printf '%s' "$WHOLE" | jq -r '.surface')" == "whole-read" ]] || \
+  fail "--status lost surface through the single-read path: $WHOLE"
+[[ "$(printf '%s' "$WHOLE" | jq -r '.last_rendered_at')" =~ ^[0-9]{4}- ]] || \
+  fail "--status lost last_rendered_at through the single-read path: $WHOLE"
+# Structural half: no per-field state_get survives. One of those reappearing is
+# how the race comes back, and it would not fail any behavioural assertion.
+grep -qE "state_get '\.(last_rendered_at|active_pipelines|surface)'" "$SCRIPT" && \
+  fail "a per-field state_get reintroduces the straddled-read race — read the record whole"
+ok "the render record is read whole in one call, and --status reports every field from it"
 
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
