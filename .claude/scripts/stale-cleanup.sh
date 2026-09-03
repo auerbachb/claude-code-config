@@ -272,9 +272,16 @@
 #              sweep could not classify, which is a finding, not a clean bill
 #              of health. registration_scan "none" is a clean state and does
 #              not. Also includes the orphaned_checkouts/skipped_checkouts
-#              arrays and "checkout_scan" ("ok", or "none" when the scanned
-#              directory does not exist); neither affects the exit code (see
-#              ORPHANED WORKTREE CHECKOUTS above).
+#              arrays and "checkout_scan": "ok"; "none" when the scan directory
+#              is PROVABLY absent; or "unreadable" when it could not be
+#              inspected, resolved, or entered inside the bound — a state that
+#              is deliberately NOT collapsed into "none", since "we could not
+#              look" must never be reported as "there is nothing there".
+#              orphaned_checkouts[] is empty under "unreadable" because nothing
+#              was classified, not because nothing is orphaned; the reason rides
+#              in skipped_checkouts[]. None of these affect the exit code (see
+#              ORPHANED WORKTREE CHECKOUTS above), so callers must read
+#              checkout_scan and orphaned_checkouts REGARDLESS of exit status.
 #   --remove-orphaned-checkouts
 #              Delete the reported orphaned checkouts. THIS DELETES WORKING-TREE
 #              FILES — real source, possibly holding uncommitted edits that
@@ -1245,15 +1252,74 @@ scan_registrations
 # for why the gate is separate and why this class never moves the exit code.
 
 CHECKOUT_DIR=""
-CHECKOUT_SCAN_STATE="ok"       # ok | none
+CHECKOUT_SCAN_STATE="ok"       # ok | none | unreadable
 ORPHANED_CHECKOUTS=()          # path US gitdir_target US reason
 SKIPPED_CHECKOUTS=()           # path US reason
 
 # Canonicalize for comparison, resolving symlinks the way caller_in_worktree
 # does — /tmp vs /private/tmp on macOS is enough to make two spellings of one
 # directory look like two directories.
+#
+# The `cd` runs through run_bounded rather than plainly: this pass calls it on
+# every registered worktree path, and a single stalled mount among them would
+# hang the whole sweep — the exact failure lib/bounded-run.sh exists to prevent
+# (issues #1363, #1404). A plain `cd` here would have been the one unbounded
+# filesystem call left in the sweep.
+#
+# Answer comes back in CANONICAL_PATH. Return 1 means the path could not be
+# resolved inside the bound, and CANONICAL_PATH then holds the input unchanged
+# (the same fallback the plain form had) — callers that gate a deletion on the
+# resolved spelling must treat that as "could not verify", not as an answer.
+# Statement form only, never `$( )`: run_bounded returns its child's stdout
+# through $CAPTURE (see read_bounded_line).
+_canonical_path_probe() { cd -- "$1" 2>/dev/null && pwd -P; }
+CANONICAL_PATH=""
 canonical_path() { # path
-  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+  local rc=0 out=""
+  CANONICAL_PATH="$1"
+  run_bounded "$READ_BOUND_SECS" _canonical_path_probe "$1" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( rc != 0 )); then return 1; fi
+  out="$(head -n 1 "$CAPTURE" 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 1
+  CANONICAL_PATH="$out"
+  return 0
+}
+
+# Is any component of this path a symlink, or uninspectable?
+#
+# `-L` on the final component alone is not enough. The "a present entry whose
+# target may return" argument that guards a dangling final link applies just as
+# well to every parent: with `worktrees -> /Volumes/archive/...` on an unmounted
+# volume, lstat cannot see the final component at all, so `-L "$target"` is
+# FALSE while `test -e` still reports absent — the same quarantine-on-a-
+# detachable-volume case, one level up, landing in "provably absent" and
+# clearing a working tree for deletion.
+#
+# Only a link that does not RESOLVE counts. A resolving one is not a hazard:
+# the lookup genuinely traversed it and genuinely missed, so absence below it is
+# real. Requiring merely "is a symlink" would refuse almost everything on macOS,
+# where /var -> /private/var puts a symlink above every path under $TMPDIR.
+#
+#   0 = a dangling symlink component was found, or the chain could not be
+#       inspected inside the bound. Either way absence is NOT established.
+#   1 = every component was inspected and any symlink among them resolves.
+#
+# Bounded like every other probe here: an lstat on a stalled mount hangs too.
+path_has_dangling_link_component() { # path
+  local p="$1" prev="" l_rc e_rc
+  while [[ -n "$p" && "$p" != "/" && "$p" != "." && "$p" != "$prev" ]]; do
+    l_rc=0
+    run_bounded "$READ_BOUND_SECS" test -L "$p" || l_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 0; fi
+    if (( l_rc == 0 )); then
+      e_rc=0
+      run_bounded "$READ_BOUND_SECS" test -e "$p" || e_rc=$?
+      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( e_rc != 0 )); then return 0; fi
+    fi
+    prev="$p"
+    p="$(dirname -- "$p")"
+  done
+  return 1
 }
 
 # Read a checkout's `.git` file and report the registration path it names.
@@ -1299,16 +1365,55 @@ scan_checkouts() {
   # here also keeps every path this pass reports, compares, and removes in one
   # spelling — /tmp and /private/var are the same directory on macOS, and the
   # `$CHECKOUT_DIR/$name` containment check in remove_checkout is exact.
-  CHECKOUT_DIR="$(canonical_path "${STALE_CLEANUP_CHECKOUT_DIR:-$ROOT/.claude/worktrees}")"
+  local raw_dir="${STALE_CLEANUP_CHECKOUT_DIR:-$ROOT/.claude/worktrees}"
+  local scan_rc=0 root_canon=""
+
+  # Existence is settled BEFORE canonicalizing, because the two failures look
+  # identical from `cd`: a directory that is not there and a directory we were
+  # not allowed to enter both fail. Only the first is "this repo keeps no
+  # worktrees here".
+  path_exists_bounded "$raw_dir" || scan_rc=$?
+  case "$scan_rc" in
+    1) CHECKOUT_SCAN_STATE="none"   # provably absent
+       return ;;
+    0) : ;;
+    *) # Probe stalled (2) or absence was not provable (3) — e.g. an
+       # unsearchable parent, or the macOS TCC block that retired the old
+       # checkout. Reporting "none" here would be a positive claim of absence
+       # drawn from a lookup that never happened, which is the one thing a pass
+       # that deletes working trees must never do.
+       CHECKOUT_SCAN_STATE="unreadable"
+       SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory could not be inspected (existence probe rc=$scan_rc) — nothing was classified; absence not established")
+       return ;;
+  esac
+
+  if ! canonical_path "$raw_dir"; then
+    # The wide-path guard below has to reject what the path RESOLVES to, so an
+    # unresolved path cannot be cleared for this pass at all.
+    CHECKOUT_SCAN_STATE="unreadable"
+    SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory could not be resolved within ${READ_BOUND_SECS}s — nothing was classified; absence not established")
+    return
+  fi
+  CHECKOUT_DIR="$CANONICAL_PATH"
+
   # Applied to the default too, not just the override: `.claude/worktrees`
   # could itself be a symlink. A scan dir this wide would make every top-level
   # directory a candidate for the one flag that deletes working trees, so
   # refuse rather than narrow silently.
-  if [[ "$CHECKOUT_DIR" == "/" || "$CHECKOUT_DIR" == "$(canonical_path "$ROOT")" ]]; then
+  canonical_path "$ROOT" || true
+  root_canon="$CANONICAL_PATH"
+  if [[ "$CHECKOUT_DIR" == "/" || "$CHECKOUT_DIR" == "$root_canon" ]]; then
     usage_error "the orphaned-checkout scan directory must not resolve to / or the repo root itself (resolved: $CHECKOUT_DIR${STALE_CLEANUP_CHECKOUT_DIR:+, from STALE_CLEANUP_CHECKOUT_DIR=$STALE_CLEANUP_CHECKOUT_DIR})"
   fi
-  if [[ ! -d "$CHECKOUT_DIR" ]]; then
-    CHECKOUT_SCAN_STATE="none"   # this repo keeps no worktrees here
+
+  # Present, resolved, and now confirmed enterable. A path that exists but is
+  # not a searchable directory would make the glob below expand to nothing,
+  # which is indistinguishable from an empty directory.
+  local dir_rc=0
+  run_bounded "$READ_BOUND_SECS" test -d "$CHECKOUT_DIR" || dir_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( dir_rc != 0 )); then
+    CHECKOUT_SCAN_STATE="unreadable"
+    SKIPPED_CHECKOUTS+=("${CHECKOUT_DIR}${US}scan directory is not a readable directory — nothing was classified; absence not established")
     return
   fi
 
@@ -1321,7 +1426,8 @@ scan_checkouts() {
     for record in "${WORKTREES[@]}"; do
       IFS="$US" read -r _ wtp _ _ <<<"$record"
       [[ -n "$wtp" ]] || continue
-      registered="${registered}$(canonical_path "$wtp")"$'\n'
+      canonical_path "$wtp" || true
+      registered="${registered}${CANONICAL_PATH}"$'\n'
     done
   fi
 
@@ -1374,12 +1480,19 @@ scan_checkouts() {
     # "could not verify", not "gone". Refused here rather than inside
     # path_exists_bounded, which the registration pass shares and where a
     # missing target legitimately IS the debris being cleaned.
-    if [[ -L "$target" ]]; then
-      SKIPPED_CHECKOUTS+=("${dir}${US}registration $target is a dangling symlink — a present entry whose target may return; absence not established")
+    #
+    # Checked over every component, not just the final one: under a
+    # `worktrees -> /Volumes/archive/...` link on an unmounted volume, lstat
+    # cannot see the final component at all, so a final-component-only `-L`
+    # reads FALSE and hands the checkout to removal — the same detachable-
+    # volume case, one level up.
+    if path_has_dangling_link_component "$target"; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}registration $target is or sits under a dangling symlink — a present entry whose target may return; absence not established")
       continue
     fi
 
-    canon="$(canonical_path "$dir")"
+    canonical_path "$dir" || true
+    canon="$CANONICAL_PATH"
     if [[ -n "$registered" ]] && grep -Fxq "$canon" <<<"$registered"; then
       SKIPPED_CHECKOUTS+=("${dir}${US}still listed by 'git worktree list' despite a missing gitdir target — repair with 'git worktree repair', never remove")
       continue

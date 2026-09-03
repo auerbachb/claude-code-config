@@ -1210,6 +1210,58 @@ OUT="$(cd "$REPO_D" && "$SUT" --check --json 2>/dev/null)"
 check_json "T19: checkout_scan is none where .claude/worktrees does not exist" "$OUT" \
   '.checkout_scan == "none" and (.orphaned_checkouts | length) == 0'
 
+# --- a dangling symlink ABOVE the registration is refused too -----------------
+# `-L` on the final component alone misses this: under a `wt-link -> <gone>`
+# parent, lstat cannot see the final component at all, so the final-component
+# test reads FALSE while `test -e` still reports absent — "provably absent",
+# and the working tree gets deleted. The target returns when the volume does.
+CO_ANC="$REPO_H/.claude/worktrees/anc-dangling-co"
+mkdir -p "$CO_ANC"
+ln -s "$TMP/volume-that-is-not-mounted" "$REPO_H/.git/wt-link"
+printf 'gitdir: %s\n' "$REPO_H/.git/wt-link/some-id" > "$CO_ANC/.git"
+# Control in the same run — a RESOLVING symlink ancestor must still classify.
+# Without it these assertions would also pass against a script that refused
+# every path with any symlink above it, which on macOS ($TMPDIR under
+# /var -> /private/var) would be very nearly every path there is.
+CO_ANC_OK="$REPO_H/.claude/worktrees/anc-resolving-co"
+mkdir -p "$CO_ANC_OK" "$TMP/live-reg-dir"
+ln -s "$TMP/live-reg-dir" "$REPO_H/.git/wt-link-live"
+printf 'gitdir: %s\n' "$REPO_H/.git/wt-link-live/never-existed" > "$CO_ANC_OK/.git"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: a dangling symlink ANCESTOR is skipped, not classified orphaned" "$OUT" \
+  '(.skipped_checkouts | any((.path | endswith("/anc-dangling-co"))
+                             and (.reason | contains("dangling symlink"))))
+   and (.orphaned_checkouts | any(.path | endswith("/anc-dangling-co")) | not)'
+check_json "T19: control — a RESOLVING symlink ancestor still classifies" "$OUT" \
+  '.orphaned_checkouts | any(.path | endswith("/anc-resolving-co"))'
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: the removal flag leaves the dangling-ancestor checkout alone" "present" \
+  "$([[ -d "$CO_ANC" ]] && echo present || echo gone)"
+check_eq "T19: control — the resolving-ancestor one was removed in that same run" "gone" \
+  "$([[ -e "$CO_ANC_OK" ]] && echo present || echo gone)"
+rm -rf "$CO_ANC" "$REPO_H/.git/wt-link" "$REPO_H/.git/wt-link-live" "$TMP/live-reg-dir"
+
+# --- an unreadable scan dir is "unreadable", never "none" ---------------------
+# `-d` is false for BOTH "not there" and "there but unreadable". Collapsing the
+# second into "none" would report a positive claim of absence — "this repo keeps
+# no worktrees here" — drawn from a lookup that never happened. That is the
+# macOS TCC shape that retired the old checkout in the first place.
+mkdir -p "$TMP/vaultCO/worktrees"
+chmod 000 "$TMP/vaultCO"
+OUT="$(cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$TMP/vaultCO/worktrees" "$SUT" --check --json 2>/dev/null)"
+check_json "T19: an unreadable scan dir reports checkout_scan unreadable, not none" "$OUT" \
+  '.checkout_scan == "unreadable" and (.orphaned_checkouts | length) == 0'
+check_json "T19: and says why, with absence-not-established named" "$OUT" \
+  '.skipped_checkouts | any(.reason | contains("absence not established"))'
+# Positive control: the SAME directory reports a clean scan once it is readable
+# again. Without it the assertions above would also pass against a script that
+# reported "unreadable" for every override, or every run.
+chmod 755 "$TMP/vaultCO"
+OUT="$(cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$TMP/vaultCO/worktrees" "$SUT" --check --json 2>/dev/null)"
+check_json "T19: control — the same dir reports ok once readable" "$OUT" \
+  '.checkout_scan == "ok"'
+rm -rf "$TMP/vaultCO"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
