@@ -259,8 +259,26 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
         echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); ${#_ds_missing[@]} not recorded." >&2
         echo "[DISMISS-STALE] WARN: the reviews ARE dismissed on GitHub, so re-running this script will NOT record them — they no longer match its CHANGES_REQUESTED filter. Record them directly once the handoff exists:" >&2
         for _ds_m in ${_ds_missing[@]+"${_ds_missing[@]}"}; do
-          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
+          # The printed command keeps --require-existing: the advice is "once the
+          # handoff exists", so the flag is transparent when it does and stops
+          # the recovery step from itself recreating a hollow record when the
+          # deletion was the permanent, post-merge kind (issue #1603).
+          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --require-existing --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
         done
+        # The scope printed above is the one the append was using — correct for a
+        # plain deletion, but WRONG for the other cause this same warning names.
+        # A concurrent handoff-migrate.sh run moves a flat record to its scoped
+        # path: the flat file is then gone for good, so a --legacy-flat recovery
+        # command re-targets the deleted file and, with --require-existing, exits
+        # 3 without recording anything (CodeAnt, PR #1606). We cannot tell the two
+        # causes apart from here, so name the substitution instead of guessing.
+        if [[ "${_ds_or_flag[0]}" == "--legacy-flat" ]]; then
+          if [[ -n "$_ds_owner_repo" ]]; then
+            echo "[DISMISS-STALE] WARN: those commands target the legacy flat path. If the cause was a MIGRATION rather than a deletion, that path is gone — re-run them with '--owner-repo $_ds_owner_repo' in place of '--legacy-flat'." >&2
+          else
+            echo "[DISMISS-STALE] WARN: those commands target the legacy flat path. If the cause was a MIGRATION rather than a deletion, that path is gone — re-run them with '--owner-repo <owner>/<repo>' (the migrated scope) in place of '--legacy-flat'." >&2
+          fi
+        fi
         break
       elif [[ "$_ds_append_rc" -ne 0 ]]; then
         echo "[DISMISS-STALE] ERROR: failed to update handoff file for review_id=$id" >&2

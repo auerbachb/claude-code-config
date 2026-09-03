@@ -212,6 +212,16 @@ Confirm before exiting that `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --
 returns the JSON you just wrote — that is the assertion, and it is checked against
 the resolved scoped path directly.
 
+**This `--create` is the record's creation, so it does NOT take `--require-existing`.**
+Every write you make AFTER it — any `--set` or `--append` correcting or extending the
+record you just wrote — must pass `--require-existing` (issue #1603), because Phase C
+merges and the parent then deletes this record; without the flag a late write seeds a
+fresh one from `{}` and leaves a hollow, plausible-looking file — one key, null
+`phase_completed` — that later readers mistake for "Phase A never finished".
+exit 3 = the handoff is gone, which after a merge is the correct state — do NOT
+recreate it; check `gh pr view {{PR_NUMBER}} --json state` and, if MERGED, record the
+outcome in the exit report only.
+
 A repo-wide `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'` is
 useful context but proves nothing on its own: PR numbers are per-repo, so records
 for the same number in other repos are expected, and a legacy flat record may

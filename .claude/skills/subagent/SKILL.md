@@ -950,10 +950,10 @@ If missing, reconstruct state from GitHub API.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
-10. Update the handoff file. Pass `--owner-repo {owner}/{repo}` on **every** call — without it `handoff-state.sh` derives a scope from the worktree's origin (issue #1366), which is the right repo only by luck; when it is not, Phase C reads `{owner}/{repo}` and stays on Phase A's stale `reviewer`/`head_sha`:
+10. Update the handoff file. Pass `--owner-repo {owner}/{repo}` on **every** call — without it `handoff-state.sh` derives a scope from the worktree's origin (issue #1366), which is the right repo only by luck; when it is not, Phase C reads `{owner}/{repo}` and stays on Phase A's stale `reviewer`/`head_sha`. `--require-existing` makes these calls update-only (issue #1603): after Phase C merges, the parent deletes this record, and a late write without the flag would seed a hollow one-key file from `{}` that later readers mistake for "Phase A never finished". exit 3 = the handoff is gone, which after a merge is the correct state — do NOT recreate it; check `gh pr view {PR_NUMBER} --json state` and, if MERGED, record the outcome in the exit report only:
     ```bash
     # HANDOFF_STATE_SH: resolve handoff-state.sh per RESOLVE (same candidate order as Phase A).
-    OR=(--owner-repo {owner}/{repo})
+    OR=(--owner-repo {owner}/{repo} --require-existing)
     "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" '.phase_completed="B"'
     "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" ".head_sha=$NEW_HEAD_SHA"   # only if you pushed
     "$HANDOFF_STATE_SH" "${OR[@]}" --set    "{PR_NUMBER}" ".reviewer=$REVIEWER"       # if escalation changed it
@@ -962,7 +962,7 @@ If missing, reconstruct state from GitHub API.
     "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "threads_resolved" "$thread_id"
     "$HANDOFF_STATE_SH" "${OR[@]}" --append "{PR_NUMBER}" "files_changed"    "$filename"
     ```
-    Then verify: `--get` shows `phase_completed: "B"` with your SHA, and `find ~/.claude/handoffs -name 'pr-{PR_NUMBER}-handoff.json'` returns exactly ONE path — the `{owner}/{repo}` one. A second match means a call lost its `--owner-repo` and derived a different scope (issue #1366); checking only for a flat file no longer catches that.
+    Then verify: `--get` shows `phase_completed: "B"` with your SHA, and `find ~/.claude/handoffs -name 'pr-{PR_NUMBER}-handoff.json'` returns exactly ONE path — the `{owner}/{repo}` one. A second match means a call lost its `--owner-repo` and derived a different scope (issue #1366); checking only for a flat file no longer catches that. If the writes exited 3, ZERO matches is expected — verify with `gh pr view {PR_NUMBER} --json state` instead of recreating the record.
 11. Print Structured Exit Report:
     ```
     EXIT_REPORT

@@ -730,10 +730,47 @@ ensure_session() {
     # --legacy-flat rather than omitting the scope: omission now derives or
     # refuses (issue #1366), and either outcome would move this write off the
     # very file the branch above chose.
+    # --require-existing (issue #1603): this branch decided the record exists
+    # OUTSIDE the lock, so between that test and this write a merge's Phase C
+    # cleanup can delete it. Without the flag --set would then seed a fresh
+    # record from `{}` holding only head_sha — a plausible-looking file with a
+    # null phase_completed that reads as "Phase A never completed". The flag
+    # re-tests presence under the lock and exits 3 having written nothing.
     local set_or_flag=(--legacy-flat)
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
-    if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
-      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
+    local set_rc=0
+    "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --require-existing \
+      --set "$PR_NUMBER" ".head_sha=$head_sha" || set_rc=$?
+    if [[ "$set_rc" -eq 3 ]]; then
+      # Exit 3 means the record was gone when the helper re-tested it under the
+      # lock. That has TWO causes, and they need opposite handling. A merge's
+      # Phase C cleanup DELETES it — refusing is the point. But a concurrent
+      # handoff-migrate.sh MOVES a flat record to its scoped path: the record
+      # still exists, this branch merely chose a name that no longer resolves,
+      # and failing the whole --ensure-session over a rename would strand
+      # polling on a handoff that is sitting right there (CodeAnt, PR #1606).
+      #
+      # Only the flat branch can be fooled this way — the scoped path is
+      # migration's destination, never its source — so retry once against the
+      # migrated record before concluding deletion. A retry that itself exits 3
+      # means the record really is gone and falls through to the refusal.
+      local migrated_rc=1
+      if [[ "${set_or_flag[0]}" == "--legacy-flat" && -n "$owner_repo" ]]; then
+        local scoped_path
+        scoped_path="$("$HANDOFF_HELPER" --owner-repo "$owner_repo" --path "$PR_NUMBER" 2>/dev/null || true)"
+        if [[ -n "$scoped_path" && "$scoped_path" != "$flat_path" && -f "$scoped_path" ]]; then
+          echo "polling-state-gate.sh: notice: flat handoff $flat_path was migrated to $scoped_path while refreshing head_sha; retrying against the migrated record" >&2
+          migrated_rc=0
+          "$HANDOFF_HELPER" --owner-repo "$owner_repo" --require-existing \
+            --set "$PR_NUMBER" ".head_sha=$head_sha" || migrated_rc=$?
+        fi
+      fi
+      if [[ "$migrated_rc" -ne 0 ]]; then
+        echo "polling-state-gate.sh: handoff for PR #$PR_NUMBER was deleted while refreshing head_sha (--require-existing); not recreating it — confirm the PR state before polling again" >&2
+        exit 4
+      fi
+    elif [[ "$set_rc" -ne 0 ]]; then
+      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER (exit $set_rc)" >&2
       exit 4
     fi
   fi

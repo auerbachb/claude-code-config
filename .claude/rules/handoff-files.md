@@ -25,7 +25,7 @@ Mechanism + migration: `.claude/reference/state-file-contracts.md`. Canonical co
 - **Naming:** `{owner}/{repo}/pr-{N}-handoff.json`. **`--owner-repo <owner>/<repo>` on every call** — resolution as well as creation (`handoff-state.sh --owner-repo <owner>/<repo> --path <N>`).
 - **Scope resolution:** omitting it no longer means flat — it derives from `$CLAUDE_SESSION_REPO`, else the cwd's `origin`, and **exits 2 having written nothing** when neither resolves. The legacy flat path needs an explicit `--legacy-flat` (or `CLAUDE_HANDOFF_FLAT_OK=1`), only where intended (`/wrap` cleanup sweeps, migration tooling); an explicit `--owner-repo` overrides that variable. Why: `.claude/reference/handoff-missing-owner-repo-decision.md`.
 - **One file per PR per repo at any time** — two repos at the same PR number occupy different paths.
-- **Lifecycle:** A creates → B updates → C reads → **parent** deletes after `OUTCOME: merged` is confirmed by GitHub (`phase-protocols.md`).
+- **Lifecycle:** A creates → B updates → C reads → **parent** deletes after `OUTCOME: merged` is confirmed by GitHub (`phase-protocols.md`) — so every update of an expected-existing record passes `--require-existing`; only creation may seed one.
 
 ### Phase Operations
 

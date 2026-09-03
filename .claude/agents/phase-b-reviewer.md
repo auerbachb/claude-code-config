@@ -334,7 +334,15 @@ PR="{{PR_NUMBER}}"
 # by luck, and silently the wrong one when it is not. Phase C resolves
 # {{OWNER}}/{{REPO}} and would go on using Phase A's record — wrong reviewer, wrong
 # head_sha, missing arrays (issue #1302).
-OR=(--owner-repo {{OWNER}}/{{REPO}})
+#
+# --require-existing makes every call below UPDATE-ONLY (issue #1603). Phase C
+# merges and the parent then DELETES this record; a late write without the flag
+# seeds a fresh one from `{}` and leaves a hollow, plausible-looking file — one
+# key, null phase_completed — that later readers mistake for "Phase A never
+# finished". exit 3 = the handoff is gone, which after a merge is the correct
+# state — do NOT recreate it; check `gh pr view {{PR_NUMBER}} --json state` and,
+# if MERGED, record the outcome in the exit report only.
+OR=(--owner-repo {{OWNER}}/{{REPO}} --require-existing)
 
 # Scalar updates (--set):
 "$HANDOFF_STATE_SH" "${OR[@]}" --set "$PR" '.phase_completed="B"'
@@ -350,7 +358,7 @@ dismissed_json='{"id":"<comment-id>","reason":"<why>"}'
 "$HANDOFF_STATE_SH" "${OR[@]}" --append "$PR" "findings_dismissed" "$dismissed_json"
 ```
 
-**Verify before you exit:** `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get "$PR" | jq -r '.phase_completed, .head_sha'` must show `B` and the SHA you just pushed, **and** `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'` must return exactly ONE path — the `{{OWNER}}/{{REPO}}` one. A second match means a call lost its `--owner-repo` and derived a different scope, so your updates are split across two records (issue #1366). Checking only for a *flat* file no longer detects this: since #1366 a lost flag produces a sibling scoped file, not a flat one.
+**Verify before you exit:** `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --get "$PR" | jq -r '.phase_completed, .head_sha'` must show `B` and the SHA you just pushed, **and** `find ~/.claude/handoffs -name 'pr-{{PR_NUMBER}}-handoff.json'` must return exactly ONE path — the `{{OWNER}}/{{REPO}}` one. A second match means a call lost its `--owner-repo` and derived a different scope, so your updates are split across two records (issue #1366). Checking only for a *flat* file no longer detects this: since #1366 a lost flag produces a sibling scoped file, not a flat one. If the writes above exited 3 instead, ZERO matches is the expected result and the verification is `gh pr view {{PR_NUMBER}} --json state` — do not recreate the record to make this check pass.
 
 Deduplication rules enforced by `handoff-state.sh`: `string[]` fields by exact value;
 `findings_dismissed` by `.id`. Unknown fields are always preserved (forward compatibility).
