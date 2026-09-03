@@ -30,12 +30,15 @@ resolution is deliberately not special-cased here: the freshness record in Step 
 to land on the same key the armed floor watch polls, and a `/board` that resolved its
 repo differently from `/subagent` would write a record nothing reads.
 
-**One row class is not durable, and `/board` says so rather than implying it.**
-Running and completed rows reconstruct fully from state. **Queued** rows do not:
-nothing on disk records which issues are waiting (Step 3), so a thread that did not
-dispatch the round — or one whose queue a compaction took — prints none and names
-that gap in Step 4's summary line. The board is then honest but partial, never
-silently short a row. Making queued membership durable is a change to the
+**Round membership is not durable, and `/board` says so rather than implying it.**
+**Running** rows reconstruct fully from state. **Queued** rows do not: nothing on
+disk records which issues are waiting (Step 3), so a thread that did not dispatch the
+round — or one whose queue a compaction took — prints none and names that gap in
+Step 4's summary line. **Completed** rows inherit the same gap from the other end:
+the dispatching thread knows exactly which merged pipelines were its round, while a
+non-dispatching thread can only bound them by timestamp and so calls its delivered
+count approximate. The board is then honest but partial, never silently short a
+row. Both gaps have one root — no durable round key — and one fix: a change to the
 dispatcher's write path rather than to this reader, so it is a follow-up, not
 something to paper over here.
 
@@ -154,8 +157,28 @@ and Issue cell (Step 4), and its freshness record (Step 5). One board spanning t
 scope, and a single `REPO_KEY` applied across it is wrong in three different places
 at once.
 
+**`--all-repos` also changes the shape `.prs` is read at, and Step 3 depends on it.**
+Default `--session-view` **lifts** the invoking repo's `prs` to the top level, so
+`.prs["<N>"]` addresses it. `--all-repos` does not lift anything: it emits
+`.repos["<key>"].prs` per repo and no top-level `.prs` at all. A Step 3 that keeps
+reading `.prs["<N>"]` therefore matches nothing under `--all-repos` and silently
+loses the phase of every pipeline waiting on review — the rows most worth boarding.
+Read the per-mode path, and read the per-repo agent list beside it:
+
+```bash
+# Default mode: PRS_PATH='.prs'        AGENTS='.active_agents'
+# --all-repos:  PRS_PATH=".repos[\"$RK\"].prs"
+#               AGENTS='.active_agents' PLUS ".repos[\"$RK\"].active_agents"
+```
+
+Top-level `.active_agents` is session-wide and present in **both** modes; each repo
+block carries its own `active_agents` as well, so a cross-repo board reads the union
+of the two for that repo's rows. Neither list is a substitute for the other.
+
 **Start times are read, never derived.** Per pipeline, in order:
-`.prs["<N>"].pipeline_started_at`, then `.pipelines["<issue>"].started_at`.
+`<PRS_PATH>["<N>"].pipeline_started_at` — the same per-mode path above, so a
+cross-repo board does not lose every recorded start to a `.prs` that is not there —
+then that repo's `pipelines["<issue>"].started_at`.
 `gh pr view <N> --repo "<that pipeline's key>" --json createdAt` is a
 **last-resort** fallback for pipelines that predate the record — never a refresh of
 one that exists, and never unqualified: an unqualified lookup resolves the number
@@ -173,26 +196,70 @@ ever dispatched, across sessions. Rendering all of it would print a history, not
 board. Three row classes make up the round:
 
 - **Running** — the pipeline has a live phase: an `active_agents` entry for its issue
-  or PR, or a `.prs["<N>"]` entry with a recorded `phase` whose PR is still open.
-  That is exactly the set the orchestration loops already treat as in flight.
-  `Status` is the phase: `Phase A`, `Phase B`, `Phase C`.
+  or PR, or a `prs["<N>"]` entry with a recorded `phase` — read at the per-mode path
+  above — **and**, in either case, no closed PR. `Status` is the phase: `Phase A`,
+  `Phase B`, `Phase C`.
+
+  **The open-state qualifier applies to the agent list too, not only to `prs`.**
+  `active_agents` is cleaned up by the parent after Phase C
+  (`phase-protocols.md`), so a crash, a compaction, or an interrupted transition
+  leaves entries behind; `/pause` already treats the list as possibly stale. An
+  unqualified agent entry therefore renders a landed pipeline as `Phase C` — and
+  since Step 3 reads `state,mergedAt` live for every PR in the round anyway, the
+  same read settles it at no extra cost. A pipeline whose PR is **merged** is a
+  completed row, never a running one; one whose PR is **closed unmerged** is
+  neither, and drops off the board. Without that qualifier the same pipeline can
+  render twice — once as `Phase C`, once as `merged` — or, worse, set the round
+  bound below from a start that is no longer in flight.
+
+  A pipeline with **no PR yet** is the one case the agent list decides alone: a
+  Phase A row has an `active_agents` entry and nothing to look up, so it stays
+  running. Absence of a PR is not a closed PR.
 - **Queued** — issues filed or accepted for this round that have not launched.
   **No durable field records them** (the same reason `table-freshness.sh` takes its
   active count as an argument), so these come from the dispatching thread's own
   queue. A thread that did not dispatch the round has no queue to read and prints
   none; say so in Step 4's summary line rather than implying the round has none.
-- **Completed this round** — a `.pipelines` entry whose PR is merged, **and** whose
-  `started_at` or `mergedAt` falls at or after the earliest `started_at` among the
-  **running** rows. Both halves of that test matter: a pipeline dispatched with the
-  round but launched before the slowest survivor is caught by `started_at`, and one
-  dispatched earlier that landed during this round is caught by `mergedAt`.
-  The bound reads running rows only because **queued rows have no `started_at`** —
-  that is what their em-dash clocks mean. So a **queued-only round** (nothing
-  running yet) has no lower bound and therefore **no completed rows**: render its
-  queued rows and say in Step 4's summary line that deliveries are not computed
-  without a started row to bound them. Widening the window to "everything merged"
-  to fill that gap would print the repo's history under a round's heading, and
-  inventing a round-start timestamp is a write to the dispatcher, not a read here.
+- **Completed this round** — a `.pipelines` entry whose PR is merged **and** which
+  belongs to this round. Membership has a durable answer and an approximate one, and
+  the board uses whichever it actually has:
+
+  **When this thread dispatched the round, membership is not a guess.** The
+  dispatching thread holds the round's issue list — the same list Step 4's queued
+  rows come from. Completed rows are then simply *those members whose PR is merged*:
+  no timestamp bound, no inference. This is the common case, because the thread that
+  renders the board on every heartbeat is the thread that dispatched it.
+
+  **Otherwise, fall back to a timestamp bound: `mergedAt` at or after the earliest
+  `started_at` among the running rows.** Note this is a test on `mergedAt` alone.
+  Adding an `or started_at >= bound` half admits nothing further — a merged pipeline
+  with `started_at >= bound` necessarily has `mergedAt > started_at >= bound`, so the
+  `mergedAt` half already caught it — and stating the pair implies a reach the bound
+  does not have.
+
+  **The fallback is approximate in both directions — label it, do not launder it.**
+  It **misses** a member that both started *and* merged before the earliest running
+  start: that pipeline sits entirely below the bound and cannot be recovered from
+  `started_at`/`mergedAt` alone. Not a corner case — it is ordinary sequential
+  dispatch, where one pipeline lands and its successor launches on the freed slot, so
+  the predecessor finished before the survivor began. It equally **over-includes** a
+  pipeline from an *earlier* round that sat in review and happened to merge after the
+  bound: `mergedAt` cannot tell a late landing from a current one. So a
+  non-dispatching thread calls its delivered count **approximate** in Step 4's
+  summary line — not a lower bound, which would claim a floor the test does not have
+  — the same way it names the queued gap. Widening the window to "everything merged"
+  would print the repo's history under a round's heading, and inventing a round-start
+  timestamp is a write to the dispatcher, not a read here — the same follow-up that
+  would make queued membership durable settles both ends.
+
+  **A queued-only round is the dispatching thread's case, and it needs no bound.**
+  Only that thread can see a queue at all, and for it membership is the list itself,
+  so its completed rows are exact whether or not anything is running. The timestamp
+  fallback never meets this case: a non-dispatching thread with nothing running sees
+  no queue and no running row, which is not a round at all but the no-round path
+  below. The bound reads running rows only because **queued rows have no
+  `started_at`** — that is what their em-dash clocks mean.
+
   Merge state is read live and **always `--repo`-qualified**:
   `gh pr view <N> --repo "$REPO_KEY" --json state,mergedAt` per PR in the round —
   under `--all-repos`, the key of the repo whose block that pipeline came from.
@@ -266,7 +333,35 @@ Per row:
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
   `—` in `Remaining` (`time-estimates.md` §"Running now Table"). They never reach
-  `overrun-check.sh`'s projection cells; the branch below is what keeps them out.
+  `overrun-check.sh`'s **projection** cells; the branch below is what keeps them out.
+  Both of their clocks are still **formatted** by that script, because it is the only
+  ET formatter in this repo that is safe to call (below).
+
+**Formatting a merged row's two clocks — never with a hand-rolled `date`.** Both
+values arrive as ISO-8601: `STARTED_AT` from Step 2 and `mergedAt` from Step 3's live
+read. `overrun-check.sh --readout-cells` prints its **first** cell as the ET
+wall-clock of whatever `--started-at` it was given, in the table's `%-I:%M %p` form,
+and that cell is a pure function of `--started-at` — `--bound-min` moves only cells 2
+and 3. So one call per instant, first cell taken, is the conversion:
+
+```bash
+et_clock() {  # ISO-8601 -> "12:18 PM", or empty if it will not parse
+  [[ -n "$OVERRUN_CHECK_SH" && -n "$1" ]] || return 0
+  "$OVERRUN_CHECK_SH" --readout-cells --bound-min 1 --started-at "$1" 2>/dev/null \
+    | cut -f1
+}
+STARTED_AT_ET=$(et_clock "$STARTED_AT")
+MERGED_AT_ET=$(et_clock "$MERGED_AT")
+```
+
+`--bound-min 1` is a placeholder, not a claim about the row: only cell 1 is read, and
+cell 1 does not depend on it. Reaching for `TZ='America/New_York' date` directly
+instead is the one thing to avoid — on a host without tzdata that call does not fail,
+it silently returns UTC, printing a four- or five-hour error as a plausible clock
+(issue #1529). `overrun-check.sh` probes the resolved offset before trusting the zone
+and falls back to an explicitly labelled UTC string; that guard is the reason these
+two cells route through it rather than around it. It prints nothing when a timestamp
+will not parse, which is exactly the empty the guards below already handle.
 
 ```bash
 BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' | grep -E '^[0-9]+$' || true)
@@ -289,8 +384,8 @@ if [[ "$ROW_STATUS" == merged ]]; then
   # Guarded, not assigned outright: a pipeline that predates the start record has
   # no STARTED_AT_ET, and an unguarded assignment would blank the cell instead of
   # leaving the `—` that every other unknown clock renders.
-  [[ -n "$STARTED_AT_ET" ]] && CELL_START="$STARTED_AT_ET"  # Step 2, `%-I:%M %p` ET
-  [[ -n "$MERGED_AT_ET" ]] && CELL_END="$MERGED_AT_ET"      # Step 3, same format
+  [[ -n "$STARTED_AT_ET" ]] && CELL_START="$STARTED_AT_ET"  # et_clock "$STARTED_AT"
+  [[ -n "$MERGED_AT_ET" ]] && CELL_END="$MERGED_AT_ET"      # et_clock "$MERGED_AT"
   CELL_REMAINING="—"
 elif [[ -n "$CELLS" ]]; then
   CELL_START=$(printf '%s' "$CELLS" | cut -f1)
@@ -302,11 +397,16 @@ fi
 ### One summary line after the table
 
 Prose, not new columns — the same place `/subagent` reports blockers. Cover what the
-rows cannot say for themselves: anything **blocked** (`.prs["<N>"].blocker`), and a
-count of what is running, queued, and delivered this round. Two absences get named
-here rather than left to look like zeroes — a queue this thread cannot see because it
-did not dispatch the round, and deliveries not computed because the round is
-queued-only (Step 3). An unknown must never render as a "none".
+rows cannot say for themselves: anything **blocked** (`blocker`, read at the same
+per-mode `prs` path Step 3 used — `.repos["<key>"].prs["<N>"]` under `--all-repos`), and a
+count of what is running, queued, and delivered this round. On a **non-dispatching**
+thread two of those three are qualified rather than left to look exact — the queue it
+cannot see because it did not dispatch the round, and a delivered count that is
+**approximate**, since the timestamp fallback both misses pipelines that landed
+before the earliest running start and can absorb a late merge from an earlier round
+(Step 3). A dispatching thread qualifies neither: its round membership is its own
+list, so all three counts are exact. An unknown must never render as a "none", and an
+approximate count must not render as a total.
 
 ```text
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
