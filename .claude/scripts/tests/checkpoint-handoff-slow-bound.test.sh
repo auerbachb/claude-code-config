@@ -658,13 +658,13 @@ fi
 # The prose control: the documentation that EXPLAINS the floor names numbers on
 # both sides of it. If the detector matched English, every such doc would trip
 # the guard enforcing it.
-NC5="$SCRATCH/nc-prose.sh"
-cat >"$NC5" <<'FIXTURE'
+NC6="$SCRATCH/nc-prose.sh"
+cat >"$NC6" <<'FIXTURE'
 #!/usr/bin/env bash
 # checkpoint-handoff.test.sh is slow: ~202s loaded. A ~240s alarm reported a
 # phantom hang. Any timeout must be >= 420s.
 FIXTURE
-if [[ -z "$(offenders_in "$NC5" suite-lines)" ]]; then
+if [[ -z "$(offenders_in "$NC6" suite-lines)" ]]; then
   pass "NC6 prose naming 202s/240s is not mistaken for a bound application"
 else
   fail "NC6 detector flagged prose — docs explaining the floor would trip it"
