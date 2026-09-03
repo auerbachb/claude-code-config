@@ -177,14 +177,30 @@ loses the phase of every pipeline waiting on review — the rows most worth boar
 Read the per-mode path, and read the per-repo agent list beside it:
 
 ```bash
-# Default mode: PRS_PATH='.prs'        AGENTS='.active_agents'
+# Default mode: PRS_PATH='.prs'
 # --all-repos:  PRS_PATH=".repos[\"$RK\"].prs"
-#               AGENTS='.active_agents' PLUS ".repos[\"$RK\"].active_agents"
+# BOTH modes:   AGENTS='.active_agents'   <- top level, always
 ```
 
-Top-level `.active_agents` is session-wide and present in **both** modes; each repo
-block carries its own `active_agents` as well, so a cross-repo board reads the union
-of the two for that repo's rows. Neither list is a substitute for the other.
+**`active_agents` is top-level in both modes — do not reach for a per-repo copy.**
+The field-type contract in `session-state-schema.json` lists `active_agents` under
+`top_level`, and that is the list the spawn path writes. Some repo blocks do carry an
+`active_agents` key, but it is scoping drift rather than a contract, so reading it as
+a second source would make the board depend on a field nothing promises to maintain.
+
+**Attribute each agent entry to a repo instead of splitting the list.** Under
+`--all-repos` the risk is real — the same issue number exists in every repo, so an
+unattributed entry can be matched to the wrong one. Two signals settle it, in order:
+
+1. The entry's own `repo` field, when it has one. This is decisive; stop here.
+2. Otherwise, the repo whose `pipelines` or `prs` block contains that issue or PR —
+   **and only when exactly one repo on the board does.** A bare number is not an
+   identity: zero matches means the entry belongs to no row here, and two or more
+   means the number collides across repos and the entry cannot be attributed at all.
+
+Skip the entry in both of those cases. Never fall back to the invoking repo, and
+never let one entry claim a row in more than one repo — a guess that lands on the
+wrong repo renders a phase for a pipeline that is not running.
 
 **A row is keyed by its issue; half its lookups take a PR number. Name the
 crossing.** `pipelines` is **issue-keyed** and carries the PR in `.pr`, written when
@@ -193,9 +209,13 @@ on newer entries — so `.pipelines["<issue>"].pr` is the mapping to use, and in
 `prs` is not a substitute. Per row, then:
 
 ```bash
-# ROW_PIPELINES is the block this row came from: PIPELINES in default mode, that
-# repo's RK_PIPELINES under --all-repos. Naming it per row keeps the lookup correct
-# in both modes and keeps the row bound to its own repo, as Step 2 requires.
+# Three per-row values, carried together from here to Step 5. ROW_REPO is the key of
+# the repo this row came from (Step 1's REPO_KEY in default mode, that block's own
+# key under --all-repos); ROW_PIPELINES is that repo's pipelines block (PIPELINES or
+# its RK_PIPELINES). Naming them per row keeps every lookup bound to the row's own
+# repo, which is what Step 2 requires and what Step 5 records against.
+ROW_REPO="<the key of the repo this row came from>"
+ROW_PIPELINES="<that repo's pipelines block>"
 ROW_ISSUE="<the pipelines key>"                 # Issue cell, estimate-resolve.sh
 ROW_PR=$(printf '%s' "$ROW_PIPELINES" | jq -r --arg i "$ROW_ISSUE" '.[$i].pr // empty')
 ```
@@ -366,7 +386,27 @@ Per row:
   issue number exists in every repo, so a bare `#1512` on a cross-repo board names
   nothing in particular. Single-repo boards keep the plain `#N` the canonical spec
   and every other surface use.
-- **Scope** — `printf '%s' "$ISSUE_SCOPE" | cut -c1-40`, so each row stays one line.
+- **Scope** — the issue title, truncated so each row stays one line. It is **not** in
+  state: `pipelines` entries carry only `started_at` and `pr`, so after a compaction
+  or from a non-dispatching thread the title has to be fetched, and — like every
+  other lookup here — `--repo`-qualified, or a shared issue number answers from the
+  working directory's repo.
+
+  ```bash
+  ISSUE_SCOPE=$(gh issue view "$ROW_ISSUE" --repo "$ROW_REPO" \
+    --json title --jq .title 2>/dev/null) || ISSUE_SCOPE=""
+  # Truncate the RAW title first, then escape — never the reverse. A title carrying
+  # `|` would otherwise open a phantom column and shift every cell after it, and
+  # cutting an already-escaped string can sever a `\|` pair, leaving a trailing `\`
+  # that escapes the column delimiter itself. Backslash is escaped before pipe, or
+  # the escape gets escaped. The escaped result may exceed 40 characters; only the
+  # visible title is bounded, which is what keeps the row on one line.
+  CELL_SCOPE=$(printf '%s' "${ISSUE_SCOPE:-—}" | cut -c1-40 \
+    | sed -e 's/\\/\\\\/g' -e 's/|/\\|/g')
+  ```
+
+  A failed lookup renders `—`, never a blank cell and never the invoking repo's
+  answer for that number.
 - **Est** — `estimate-resolve.sh <N> --repo "<that pipeline's key>"`; `unestimated`
   when it exits 2. `--repo` for the same reason the `gh` calls carry it: the helper
   reads the issue body through `gh`, so an unqualified call reads issue `N` in the
