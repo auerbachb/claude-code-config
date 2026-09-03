@@ -353,6 +353,57 @@ while [[ "$i" -lt "$COUNT" ]]; do
 done
 
 # ---------------------------------------------------------------------------
+echo "== A corrupt legacy slot raises in every reader =="
+# ---------------------------------------------------------------------------
+# The shared predicate above settles what an un-resumed RECORD is. It says
+# nothing about a legacy slot holding a value that is not a record at all, and
+# the three readers disagreed there: /pause-resume's legacy() and the sweep's
+# one() dropped a non-object `.pause` / `.suspend` as though the slot were empty,
+# while /go-on probe B raised. A damaged pre-upgrade singleton therefore read as
+# "nothing parked" in two readers of three — the same silent masking this issue
+# removes, arrived at by a different route. All three must now raise so the
+# caller degrades the source and names it.
+corrupt_slot_guards() { grep -c 'slot is not a record' "$1"; }
+for _reader in \
+  "pause-resume:$PAUSE_RESUME_SKILL" \
+  "go-on probe B:$GO_ON_SKILL" \
+  "ownership sweep:$SWEEP"; do
+  _rname="${_reader%%:*}"; _rpath="${_reader#*:}"
+  check_eq "$_rname raises on a corrupt legacy slot" "1" \
+    "$(corrupt_slot_guards "$_rpath")"
+done
+# Negative control: the probe is a real search, not a phrase that matches
+# anywhere. The pre-fix shape of one() must report 0, or the three checks above
+# would pass without proving a guard exists.
+printf 'def one($b): if ($b | type) == "object" then [$b] else [] end;\n' \
+  > "$TMP_HOME/legacy-probe.txt"
+check_eq "the corrupt-slot probe does not match an unguarded reader" "0" \
+  "$(corrupt_slot_guards "$TMP_HOME/legacy-probe.txt")"
+
+# ---------------------------------------------------------------------------
+echo "== A failed gate clear ends one record, not the command =="
+# ---------------------------------------------------------------------------
+# Steps 3-7 run inside the Step 2 per-record loop, so an `exit` anywhere in the
+# restore sequence abandons every later record and hides it from Step 8 as well.
+# Step 4b used to `exit 1` when the execution gate could not be cleared, which
+# contradicted both the Step 2 prose and the Safety note ("Every `exit` inside
+# the restore sequence is a `continue`"). Pin the gate-failure branch itself.
+STEP4B=$(awk '
+  index($0, "Could not clear the pause execution gate") { grab = 1 }
+  grab                                                  { print }
+  grab && /^fi$/                                        { exit }
+' "$PAUSE_RESUME_SKILL")
+if [[ -z "$STEP4B" ]]; then
+  FAIL=$((FAIL + 1)); echo "FAIL — could not extract the Step 4b gate-failure branch" >&2
+else
+  PASS=$((PASS + 1)); echo "ok   — Step 4b gate-failure branch extracted"
+fi
+check_eq "a failed gate clear continues to the next record" "1" \
+  "$(grep -c '^  continue$' <<<"$STEP4B")"
+check_eq "a failed gate clear never exits the whole command" "0" \
+  "$(grep -c 'exit 1' <<<"$STEP4B")"
+
+# ---------------------------------------------------------------------------
 echo "== Resume receipts are keyed per session =="
 # ---------------------------------------------------------------------------
 reset_state

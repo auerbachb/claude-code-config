@@ -455,7 +455,13 @@ PAUSE_JSON="$(jq -nc \
   --argjson pauses "$(json_or_null "$PAUSES_MAP_JSON")" \
   --argjson legacy_pause "$(json_or_null "$PAUSE_LEGACY_JSON")" \
   --argjson legacy_suspend "$(json_or_null "$SUSPEND_LEGACY_JSON")" '
-  def one($b): if ($b | type) == "object" then [$b] else [] end;
+  # A legacy slot is one record or nothing. A value that is neither is a DAMAGED
+  # singleton, not an empty one — dropping it silently would let this sweep
+  # dispatch work while /pause-resume and /go-on both call that same source
+  # unreadable. Raise; the caller degrades the whole pause source and names it.
+  def one($b): if ($b | type) == "object" then [$b]
+               elif ($b | type) == "null" then []
+               else error("legacy pause slot is not a record") end;
   # ONE un-resumed predicate across every reader (pause-resume Step 1, go-on
   # probe B, here). It must match /pause-resume exactly: a record it would still
   # restore is a record this sweep must still call parked.

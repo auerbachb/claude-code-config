@@ -211,13 +211,20 @@ if [[ -z "$EXPLICIT_MARKER" && -n "$SESSION_STATE_SH" ]]; then
       # returns true for exactly the resumed records it is meant to exclude.
       def unresumed: (.active != false)
                      or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
+      # A legacy slot is one record or nothing. A value that is neither is a
+      # DAMAGED singleton, not an empty one: dropping it silently would report a
+      # pre-upgrade board as "nothing parked", which is the failure this issue
+      # exists to remove. Raise so the caller marks the source unreadable —
+      # matching /go-on probe B and candidate-ownership.sh, which read the same
+      # two slots and must not disagree about what a corrupt one means.
       def legacy($block; $key):
         if ($block | type) == "object"
         then [{ session_id: ($block.session_id // "legacy"),
                 state_key:  $key,
                 state_path: (base + "." + $key),
                 record:     $block }]
-        else [] end;
+        elif ($block | type) == "null" then []
+        else error("legacy " + $key + " slot is not a record") end;
       ( if ($pauses | type) == "object"
         then ($pauses | to_entries
               | map(select((.value | type) == "object")
@@ -502,14 +509,20 @@ Only after Step 1 found state and Step 2 confirmed recovery is still active,
 clear the session execution gate. This ordering keeps a missing or already
 resumed pause as a clean no-op that does not mutate the gate. Clear before any
 Monitor, Agent, Workflow, or background Bash is re-armed; if clearing fails,
-stop without re-arming anything:
+re-arm nothing **for this record** and carry on to the next one:
 
 ```bash
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
 if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
    ! "$EXECUTION_PAUSE_SH" --clear --session "$SESSION_ID"; then
-  echo "Could not clear the pause execution gate; no work was re-armed." >&2
-  exit 1
+  # `continue`, never `exit`: this block runs inside the Step 2 per-record loop,
+  # so exiting here would abandon every later record without re-arming it and
+  # without Step 8 ever naming it — the silent whole-command abort this issue
+  # removes. The gate is session-scoped, so a failure repeats for each record;
+  # each one lands in REMAINING and Step 8 names them all.
+  echo "Could not clear the pause execution gate for $RECORD_SESSION; nothing was re-armed for this record." >&2
+  REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
+  continue
 fi
 ```
 
