@@ -9,6 +9,8 @@
 #   TTL expiry
 #   Emitter allowlist drift: header VALID EMITTERS (printed verbatim by --help)
 #     must match the --emitter case allowlist (Issue #1464)
+#   Emitter call-site coverage: all six canonical emitter SKILL.md files carry an
+#     explicit --reserve call site, not an inherited-by-reference one (#1388)
 #
 # All tests use a temp HOME dir so ~/.claude/session-state.json is not touched.
 
@@ -474,6 +476,65 @@ if [[ $rc_ha -eq 0 && -n "$tid_ha" ]]; then
   ok "--emitter harness-audit is accepted by --reserve"
 else
   fail "--emitter harness-audit should be accepted (rc=$rc_ha, tid='$tid_ha')"
+fi
+
+# ---------------------------------------------------------------------------
+# 38. Every canonical emitter SKILL.md carries an EXPLICIT --reserve call site.
+#     chip-launching.md §Offer Registry requires every spawn_task emitter to
+#     reserve first, but a requirement inherited purely by reference is not
+#     greppable: /harness-audit satisfied it that way for months and the census
+#     silently undercounted whenever it emitted (Issue #1388, found by the
+#     chip-emission audit).  Test 37 pins that the registry ACCEPTS
+#     harness-audit; this pins that the skill actually CALLS it.
+#
+#     The check is PROXIMITY-bounded, not same-line and not file-wide.  The file
+#     is flattened to one whitespace-normalized line, then chip-offer-registry.sh
+#     and --reserve must appear within 120 characters of each other, in either
+#     order.  Each bound is deliberate:
+#       - Same-line was written first and rejected: prose wraps, and re-wrapping
+#         a paragraph would false-fail without any regression having occurred.
+#       - File-wide presence of both tokens was rejected too: an emitter that
+#         merely name-drops the script in unrelated prose would satisfy it.
+#       - Either order is required because emitters genuinely spell the call
+#         three ways: bare `chip-offer-registry.sh --reserve` (pm, prompt,
+#         wave), `--reserve --emitter X` (start-issue, harness-audit), and
+#         `--emitter X ... --reserve` (issue-maker).  Requiring the --emitter
+#         value itself would fail the first three outright, so it is not part
+#         of the assertion.  The widest real gap is issue-maker's ~60 chars, so
+#         120 has headroom without spanning paragraphs.
+#     Fails closed when a SKILL.md is missing rather than skipping the emitter.
+#
+#     Note: `producer | grep -q` is avoided deliberately — under `set -o
+#     pipefail` grep exits at the first match, the producer takes SIGPIPE, and
+#     the pipeline reports failure ON A SUCCESSFUL MATCH.  Capture first, match
+#     from a here-string.
+# ---------------------------------------------------------------------------
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SKILLS_DIR="$REPO_ROOT/.claude/skills"
+CANONICAL_EMITTERS=(pm prompt wave issue-maker start-issue harness-audit)
+missing_reserve=()
+missing_file=()
+for emitter in "${CANONICAL_EMITTERS[@]}"; do
+  skill_md="$SKILLS_DIR/$emitter/SKILL.md"
+  if [[ ! -f "$skill_md" ]]; then
+    missing_file+=("$emitter")
+    continue
+  fi
+  # Flatten to one line so a wrapped call site still matches, then require the
+  # two tokens within a bounded window of each other (either order).
+  skill_flat="$(tr '\n' ' ' < "$skill_md" 2>/dev/null | tr -s '[:space:]' ' ')"
+  if [[ -z "$skill_flat" ]] || ! grep -qE \
+      'chip-offer-registry\.sh.{0,120}--reserve|--reserve.{0,120}chip-offer-registry\.sh' \
+      <<<"$skill_flat"; then
+    missing_reserve+=("$emitter")
+  fi
+done
+if (( ${#missing_file[@]} > 0 )); then
+  fail "canonical emitter SKILL.md not found: ${missing_file[*]} (expected under $SKILLS_DIR)"
+elif (( ${#missing_reserve[@]} > 0 )); then
+  fail "emitters without an explicit chip-offer-registry.sh --reserve call site: ${missing_reserve[*]}"
+else
+  ok "all ${#CANONICAL_EMITTERS[@]} canonical emitters carry an explicit --reserve call site"
 fi
 
 # ---------------------------------------------------------------------------

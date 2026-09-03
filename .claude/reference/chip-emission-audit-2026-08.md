@@ -38,7 +38,7 @@ records the one row that moved.
 | 3 | `/start-issue` Step 7 | Yes | Same gate; in-thread adoption is the documented default, chip is one of three terminal shapes | Yes — explicit `--reserve --emitter start-issue` |
 | 4 | `/issue-maker` Step 9c | On request only | Capture-mode invariant; the default session ending is an **in-thread inline-run offer**, not a chip | Yes — explicit `--reserve --emitter issue-maker` |
 | 5 | `/wave` Step 7.1 | Yes | Same gate, applied per issue after the independent-set filter; inline rows never degrade to chips (#1229) | Yes — explicit `--reserve` call site |
-| 6 | `/harness-audit` Step 5 | Yes | Month-watermark lock; delegates wholly to `chip-launching.md` | **By reference only** — see the gap note below |
+| 6 | `/harness-audit` Step 5 | Yes | Month-watermark lock; delegates wholly to `chip-launching.md` | **By reference only** at audit time — since closed by [#1388](https://github.com/auerbachb/claude-code-config/issues/1388), which added the explicit `--reserve --emitter harness-audit` call site; see the gap note below |
 | 7 | `/wrap` Phase 3 (per-PR follow-ups + full-session sweep) | **No** | Files every novel candidate via `gh issue create`, unconditionally and without asking (#633, #851). The skill contains no chip, `spawn_task`, or `dismiss_task` text at all. | N/A |
 | 8 | `pm-worker` agent | **No** | Issue management only; the agent definition contains no chip, `spawn_task`, or `dismiss_task` text. | N/A |
 | 9 | **Ad-hoc `spawn_task`** — any thread calling the tool outside paths 1–6 | Yes | **None.** `chip-spawn.md` bound the payload *format*; nothing bound the *decision to emit*. | No — the registry validates `--emitter` against the six canonical names only, so an ad-hoc chip cannot register even in principle |
@@ -75,6 +75,14 @@ Three forces made path 9 the path of least resistance:
 
 ## Secondary finding — `/harness-audit` registration is by-reference only
 
+> **Resolved by [#1388](https://github.com/auerbachb/claude-code-config/issues/1388).**
+> `/harness-audit` Step 5 now carries an explicit `--reserve --emitter
+> harness-audit` call site in its own §Registry reservation subsection, plus
+> `--retract --task-id "$REG_TID"` on a failed `spawn_task`. All six canonical
+> emitters are greppable; `chip-offer-registry.test.sh` pins that as a
+> regression guard. **This section is kept as the record of what was found** —
+> the finding below describes the state at audit time, not an open gap.
+
 `chip-launching.md` §Offer Registry states that **every** emitter calling
 `spawn_task` must call `chip-offer-registry.sh --reserve` first, and the registry
 accepts `harness-audit` as a valid `--emitter` value. But `/harness-audit` Step 5
@@ -84,6 +92,12 @@ documentation-shape gap, not a correctness bug — the contract does reach it, a
 unlike path 9 this emitter *can* register — and it is out of scope for Issue
 #1367, which is about ungated *ad-hoc* chips. Noted here so the next audit does
 not have to rediscover it.
+
+**What the fix had to add beyond the finding.** Step 5 has *two* `spawn_task`
+sites, not one: the tick path's offer step and the on-demand path's
+model-mismatch branch. Closing only the tick path would have left the emitter
+half-registered, so the reservation is stated once in a subsection both paths
+point at.
 
 ## What Issue #1367 changed
 
