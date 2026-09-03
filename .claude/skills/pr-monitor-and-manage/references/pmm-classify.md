@@ -58,6 +58,78 @@ HUMAN_CR=$(jq -r '.human_changes_requested | join(",")' <<<"$GATE")
 STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE")
 ```
 
+### Reviewer engagement scan (display only — issue #1582)
+
+The all-open-PRs reviewer-coverage matrix the retired `/monitor` skill used to render. It answers one question the gate does not: which of the four AI reviewers has not shown up on **this** HEAD. It is computed here, rendered in Step 4, and read by nothing else — no verdict, no dispatch, no trigger depends on it.
+
+Run the shared state helper **once** per PR; it already aggregates the three comment endpoints plus check-runs and commit statuses from a single HEAD-SHA pull. Do **not** re-issue per-PR REST loops for this.
+
+```bash
+BUNDLE=$("$PR_STATE_SH" --pr "$N" 2>/dev/null) || BUNDLE=""
+```
+
+HEAD scoping is the point: a reviewer that only ran on an older commit must read ❌ so the gap is visible after a push. Check-runs and commit statuses in the bundle are already HEAD-pulled; reviews and inline comments are filtered on `commit_id == head_sha`; conversation comments carry no `commit_id`, so they count only when the body names the HEAD SHA (full or short).
+
+```bash
+engagement_matrix() {  # $1 = pr-state.sh bundle JSON ("" or unparseable → all "?")
+  local bundle="$1"
+  if [[ -z "$bundle" ]]; then
+    printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?","graphite":"?"}'
+    return 0
+  fi
+  jq -c '
+    def reviewers: [
+      {key:"coderabbit", login:"coderabbitai[bot]", needles:["coderabbit"]},
+      {key:"codeant",    login:"codeant-ai[bot]",   needles:["codeant"]},
+      {key:"bugbot",     login:"cursor[bot]",       needles:["cursor","bugbot"]},
+      {key:"graphite",   login:"graphite-app[bot]", needles:["graphite"]}
+    ];
+    # Pure-acknowledgment comments that must NOT count as engagement.
+    def is_ack($body):
+      ($body // "") as $b
+      | ($b == "")
+        or ($b | test("actions performed"; "i"))
+        or ($b | test("full review triggered"; "i"))
+        or ($b | test("actionable comments posted:\\s*0\\b"; "i"))
+        or ($b | test("no actionable comments were generated"; "i"))
+        or ($b | test("rate limit"; "i"));
+    . as $b
+    | (.pr.head_sha // "") as $head
+    | ($head[0:7]) as $short
+    | reviewers
+    | map(. as $r
+        | {
+            has_review:
+              ([$b.comments.reviews[]?
+                 | select(.user.login == $r.login and (.commit_id == $head))] | length > 0),
+            has_check:
+              (([$b.check_runs.all[]?
+                 | (.name // "" | ascii_downcase) as $n
+                 | select(any($r.needles[]; . as $needle | $n | contains($needle)))] | length > 0)
+               or ($r.key == "coderabbit" and ($b.bot_statuses.CodeRabbit != null))),
+            has_finding_comment:
+              (([$b.comments.inline[]?
+                 | select(.user.login == $r.login
+                          and ((.commit_id // .original_commit_id // "") == $head)
+                          and (is_ack(.body) | not))] | length > 0)
+               or ($head != "" and ([$b.comments.conversation[]?
+                 | select(.user.login == $r.login
+                          and (is_ack(.body) | not)
+                          and (((.body // "") | contains($head)) or ((.body // "") | contains($short))))] | length > 0)))
+          }
+        | . + {key: $r.key, engaged: (.has_review or .has_check or .has_finding_comment)}
+      )
+    | { coderabbit: (map(select(.key=="coderabbit"))[0].engaged),
+        codeant:    (map(select(.key=="codeant"))[0].engaged),
+        bugbot:     (map(select(.key=="bugbot"))[0].engaged),
+        graphite:   (map(select(.key=="graphite"))[0].engaged) }
+  ' <<<"$bundle" 2>/dev/null \
+    || printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?","graphite":"?"}'
+}
+```
+
+Store the result per PR (`ENGAGEMENT_BY_PR[$N]`) for Step 4. A missing `PR_STATE_SH`, a non-zero call, or a bundle `jq` cannot parse yields the all-`?` row and the tick continues — matching the soft-fail posture of the `UNRESOLVED` GraphQL fetch. Never let this scan abort a tick: it is the one piece of the table that carries no merge authority.
+
 ### Decision tree rationale (per row)
 
 Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infer `BEHIND` from `BLOCKED`** — `BLOCKED` also covers missing checks/reviews, not just behind-base. Only the literal `BEHIND` triggers a rebase.
@@ -238,6 +310,30 @@ Print the **full table** (below the lead line) when ANY of:
 - **Subagent** — per-PR agent state for fix work: `—` (not spawned / no fix dispatch this tick), `dispatched (merge-conflict)` (conflict-resolution fixer spawned this tick — transitions to `spawned`/`working`/`complete`/`failed` as the subagent runs), `spawned`, `working`, `complete`, `failed`, `deferred(foreign-agent)` (Step 5d/5e deferral gate closed because a foreign Phase A entry blocks this PR), `foreign-agent-stale` (Step 5e staleness timeout fired on a silent foreign entry — gate treated as drained). Populated from `active_agents` + Step 2.5 outcomes (PMM-owned only) + Step 5e foreign-drain polling. Merge-ready `/wrap` dispatches show `—` (wrap is parent-inline, not a subagent).
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
+
+Each PR's four engagement cells are part of `ROW_TUPLE_SORTED`, so a reviewer arriving on or dropping off HEAD is a display change like any other — it feeds (b)'s digest half and never on its own forces a print.
+
+### Reviewer engagement block
+
+Printed on every tick that prints the table, directly beneath it (and beneath the merge-sequence annotation when there is one). One row per PR in the same order as the table; ✅ = engaged on the current HEAD SHA, ❌ = missing, `?` = the bundle was unavailable for that PR.
+
+| PR | CodeRabbit | CodeAnt | BugBot | Graphite |
+|----|------------|---------|--------|----------|
+| #476 | ✅ | ❌ | ✅ | ❌ |
+| #479 | ❌ | ❌ | ✅ | ❌ |
+
+Under it, one line per PR that is missing at least one reviewer, naming the missing ones — omit the line entirely for a fully covered PR, and omit the whole block when the fleet is empty:
+
+```text
+Gaps: PR #476 — missing: CodeAnt, Graphite
+Gaps: PR #479 — missing: CodeRabbit, CodeAnt, Graphite
+```
+
+When every PR is fully covered, replace the gap lines with a single `Reviewer engagement: all PRs covered on HEAD.`
+
+**Graphite caveat.** A ❌ in the Graphite column may reflect the known app-level outage rather than a fresh per-PR gap — diagnostic method and current status in `.claude/reference/codeant-graphite-supplemental.md`. Say so once when Graphite is the only missing reviewer across the fleet; do not repeat it per row.
+
+**Authority boundary.** The block is display-only. It proposes nothing and posts nothing: reviewer triggers are issued solely by Step 5.0's `pr-preflight.sh` (CR account hourly budget + per-PR 2-explicit-triggers/hour cap, fail-closed), and Step 2's `READ_ONLY_FLEET` guard already suppresses every dispatch when the fleet is not the authenticated user's. A gap on a PR you did not author is therefore reported and never acted on.
 
 ### Merge-sequence annotation
 

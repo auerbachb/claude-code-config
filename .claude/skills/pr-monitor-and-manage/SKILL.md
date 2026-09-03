@@ -43,6 +43,7 @@ PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
 REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
+PR_STATE_SH=$(resolve_script pr-state.sh || true)
 ```
 
 These bindings are in scope for every step of the tick, including the `references/pmm-*.md` procedures. Read reference docs (`merge-sequencing.md`, `release-cadence.md`) through the matching `.claude/reference/` candidate order.
@@ -51,7 +52,7 @@ These bindings are in scope for every step of the tick, including the `reference
 
 - `SESSION_STATE_SH` or `MERGE_GATE_SH` empty → **required, and fatal for the tick**. Print `ERROR: <name> not found (checked all three paths) — PR fleet management unavailable` and exit without acting. Every verdict this skill reaches is a merge decision; a fleet manager that cannot read the gate or persist a hard block must not guess, and must not act on a guess.
 - `MERGE_SEQUENCE_SH` empty → **optional**. Print `DEGRADED: merge-sequence.sh not found (checked all three paths) — overlap-aware sequencing unavailable, merging one PR per tick` and serialize merges rather than sequencing them.
-- `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution), then continue with that one capability off.
+- `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH`, `PR_STATE_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution, reviewer-engagement matrix), then continue with that one capability off. An empty `PR_STATE_SH` renders every engagement cell as `?` — the tick still runs.
 
 ---
 
@@ -296,6 +297,21 @@ STALE_BOT_CR=$(jq -r '.stale_bot_changes_requested_count // 0' <<<"$GATE")
 UNRESOLVED=$(gh api graphql ... --jq '[...select(.isResolved==false)]|length' 2>/dev/null || echo "?")
 ```
 
+### Reviewer engagement scan (per PR — display only, issue #1582)
+
+In the same per-PR pass, call `pr-state.sh` **once** and derive which of the four AI reviewers has actually engaged **on the current HEAD SHA**: CodeRabbit (`coderabbitai[bot]`), CodeAnt (`codeant-ai[bot]`), BugBot (`cursor[bot]`), Graphite (`graphite-app[bot]`). A reviewer counts as engaged when it produced a review object on HEAD, a check-run matching its name, or a **finding-bearing** comment on HEAD — pure acknowledgments ("Actions performed", "Full review triggered", "actionable comments posted: 0", "no actionable comments were generated", rate-limit notices) never count.
+
+```bash
+ENGAGEMENT_JSON='{}'   # plain init every tick — never a ${VAR:-{}} default (see Step 3 note)
+# per PR:
+BUNDLE=$("$PR_STATE_SH" --pr "$N" 2>/dev/null) || BUNDLE=""
+ENGAGEMENT_BY_PR[$N]=$(engagement_matrix "$BUNDLE")   # {"coderabbit":…} or all-`?` on failure
+```
+
+Missing `PR_STATE_SH`, a failed call, or an unparseable bundle renders that PR's four cells as `?` and the tick continues — the same soft-fail posture as the `UNRESOLVED` fetch above. **This scan never gates a verdict or a dispatch:** it is display data for Step 4, and the only trigger path stays Step 5.0's `pr-preflight.sh`.
+
+Full `is_ack` predicate, the HEAD-scoping rules, and the `engagement_matrix` jq: `references/pmm-classify.md` "Reviewer engagement scan".
+
 ### Decision tree (per PR — first match wins → assign `VERDICT`)
 
 Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infer `BEHIND` from `BLOCKED`.**
@@ -345,7 +361,7 @@ Refine `wrap` → `held(#A)` / `batch(#A)` / `merge` from `SEQ`'s per-PR action.
 A heartbeat prints **every tick**, **before** Step 5. Compute two digests (Step 6 reuses and persists them):
 
 - `FLEET_TUPLE_SORTED` — `(number, head_sha, merge_state, review_decision, ci_failing_count, unresolved_threads)` per PR, sorted by PR number. Drives backoff and quiet-tick detection.
-- `ROW_TUPLE_SORTED` — everything the table *displays* per PR. Catches display-only changes the state tuple misses.
+- `ROW_TUPLE_SORTED` — everything the table *displays* per PR, **including that PR's four engagement cells**, so a reviewer appearing or dropping off HEAD is itself a display change. Catches display-only changes the state tuple misses.
 
 ```bash
 DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
@@ -361,6 +377,12 @@ Print the **full table** when any of: (a) first tick / post-resume (digests are 
 **Quiet tick** (none of a–e): one line: `[$TS] PMM tick — N PR(s) (author:x) — no change (#N1 #N2; hard-blocked: #N3 human-CR; queued (cap): #N4)`.
 
 Table columns: Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent. Full column definitions and merge-sequence annotation: `references/pmm-classify.md`.
+
+**Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot | Graphite`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
+
+> **Display-only.** The block changes no verdict and gates no dispatch. Triggers are still posted **only** by Step 5.0's `pr-preflight.sh`, which enforces the CodeRabbit account hourly budget and the per-PR 2-explicit-triggers/hour cap; and Step 2's `READ_ONLY_FLEET` authorship guard (fail-closed) still blocks every dispatch on a PR you did not author, so nothing here can post a trigger on someone else's PR. A ❌ under Graphite may reflect a known outage rather than a fresh gap — `.claude/reference/codeant-graphite-supplemental.md`.
+
+Exact block format and the gap-line wording: `references/pmm-classify.md` "Reviewer engagement block".
 
 ---
 

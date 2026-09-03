@@ -67,7 +67,7 @@ shape at identical cost, with the same single-source guarantee. Setup lives in
 ## Resolution shapes
 
 Copy these verbatim. `resolve_script()` is already in use in `/wrap`, `/fixpr`,
-`/subagent`, `/monitor`, `/end`, `/pause`, and the phase agents; the ordering is fixed —
+`/subagent`, `/pr-monitor-and-manage`, `/end`, `/pause`, and the phase agents; the ordering is fixed —
 skills-worktree (canonical, pinned to `main`), then `$HOME/.claude/scripts/`
 (documented install location), then repo-relative (developing the skill itself).
 

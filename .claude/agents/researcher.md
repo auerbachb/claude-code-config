@@ -100,6 +100,6 @@ Prefer `general-purpose` when the task may reasonably need to write a file (e.g.
 
 ## Skill-First Note
 
-You cannot invoke skills — `Skill` is not in your `tools`. If your findings suggest an existing skill covers likely follow-up work (e.g. `/status`, `/monitor`, `/recap`), name it in RECOMMENDATIONS instead of describing a bespoke procedure; the parent decides whether to invoke it.
+You cannot invoke skills — `Skill` is not in your `tools`. If your findings suggest an existing skill covers likely follow-up work (e.g. `/status`, `/fixpr`, `/recap`), name it in RECOMMENDATIONS instead of describing a bespoke procedure; the parent decides whether to invoke it.
 
 Autonomy and general skill-first rules are inherited from `.claude/rules/skill-first.md` and `.claude/rules/subagent-orchestration.md` via the harness. Research is always autonomous — make the call and report what you found; do not summarize the question back before starting.
