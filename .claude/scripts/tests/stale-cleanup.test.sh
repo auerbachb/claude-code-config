@@ -570,8 +570,19 @@ check_eq "T13: no call site wraps read_bounded_line in a command substitution" 0
 # that clears the cause. On bash 3.2 (macOS system bash) `set -u` makes
 # "${WORKTREES[@]}" an `unbound variable` abort on an empty array, so the
 # degraded run died before emitting anything at all.
-check_eq "T14: the classification loop carries an empty-array guard" 1 \
-  "$(grep -cF "if (( \${#WORKTREES[@]} > 0 )); then" "$SUT" || true)"
+#
+# Asserted as "every iteration is guarded" rather than "there is exactly one
+# guard": WORKTREES grew a second, correctly guarded consumer in issue #1417
+# (the orphaned-checkout scan), which a fixed count of 1 would have failed for
+# doing the right thing. Comparing the two counts keeps the invariant — no
+# unguarded loop — and strengthens it as consumers are added. The control below
+# keeps the comparison from passing vacuously at 0 == 0.
+WT_GUARD_COUNT="$(grep -cF "if (( \${#WORKTREES[@]} > 0 )); then" "$SUT" || true)"
+WT_LOOP_COUNT="$(grep -cF "for record in \"\${WORKTREES[@]}\"" "$SUT" || true)"
+check_eq "T14: control — there is at least one WORKTREES iteration to guard" "yes" \
+  "$([[ "$WT_LOOP_COUNT" -ge 1 ]] && echo yes || echo no)"
+check_eq "T14: every WORKTREES iteration carries an empty-array guard" \
+  "$WT_LOOP_COUNT" "$WT_GUARD_COUNT"
 
 # The abort only reproduces on bash < 4.4, so the runtime half runs only where
 # such a bash exists (macOS) and is skipped elsewhere, e.g. CI on bash 5.
@@ -993,6 +1004,211 @@ else
   fail "T18c: control — the open-PR branch was deleted despite an open PR"
 fi
 pkill -f "$GIT_STUB/stub-sleeper" >/dev/null 2>&1 || true
+
+# ---- T19: orphaned worktree checkouts (issue #1417) --------------------------
+# The inverse of T9's class: a checkout on disk whose registration is gone.
+# repoH holds two checkouts under .claude/worktrees/ — one whose registration is
+# moved aside (the shape the 2026-08-26 incident left 59 of) and one left
+# registered as the negative control.
+#
+# Both are created off a FRESH tip, for the same reason T9's live worktree is:
+# on an old tip the pre-existing stale-worktree pass would remove the registered
+# control under --apply, and "the control survived" would then pass or fail for
+# a reason unrelated to this class.
+REPO_H="$TMP/repoH"
+mkdir -p "$REPO_H"
+git -C "$REPO_H" init -q
+echo "e" > "$REPO_H/README.md"
+git -C "$REPO_H" add README.md
+commit_old "$REPO_H" "repoH base"
+echo "fresh" >> "$REPO_H/README.md"
+git -C "$REPO_H" commit -q -am "repoH fresh tip"
+mkdir -p "$REPO_H/.claude/worktrees"
+CO_ORPHAN="$REPO_H/.claude/worktrees/orphan-co"
+CO_LIVE="$REPO_H/.claude/worktrees/registered-co"
+git -C "$REPO_H" worktree add "$CO_ORPHAN" -b issue-400-h-orphan >/dev/null 2>&1
+git -C "$REPO_H" worktree add "$CO_LIVE" -b issue-401-h-registered >/dev/null 2>&1
+# Carry a file that exists nowhere else, so "the working tree was deleted" is
+# observable as more than the directory's absence.
+echo "work in progress" > "$CO_ORPHAN/NOTES.md"
+# Move the registration aside rather than deleting it — this is exactly what the
+# incident's quarantine did, and it leaves the checkout's .git gitdir dangling.
+mv "$REPO_H/.git/worktrees/orphan-co" "$TMP/quarantined-orphan-co"
+
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+RC=$?
+# The exit code is the contract under test as much as the report is: this class
+# is report-only, and plain --apply can never clear it, so it must NOT raise
+# exit 1 the way every other reported class does.
+check_eq "T19: an orphaned checkout alone does NOT change the exit code" 0 "$RC"
+check_json "T19: the orphaned checkout is reported" "$OUT" \
+  '.orphaned_checkouts | any((.path | endswith("/orphan-co"))
+                             and (.gitdir | endswith("/.git/worktrees/orphan-co"))
+                             and (.reason | contains("registration missing")))'
+check_json "T19: checkout_scan is ok" "$OUT" '.checkout_scan == "ok"'
+# Negative control — a registered worktree in the same scanned directory is
+# never this class, and is not parked in the skipped list either.
+check_json "T19: registered checkout appears in neither checkout list (negative control)" "$OUT" \
+  '(.orphaned_checkouts | any(.path | endswith("/registered-co")) | not)
+   and (.skipped_checkouts | any(.path | endswith("/registered-co")) | not)'
+check_json "T19: the pre-existing classes are unaffected" "$OUT" \
+  '.worktree_enumeration == "ok" and .registration_scan == "ok" and .ref_scan == "ok"
+   and (.orphaned_registrations | length) == 0'
+
+OUT="$(cd "$REPO_H" && "$SUT" --check 2>/dev/null)"
+check_contains "T19: text output carries the report-only section" \
+  "Orphaned worktree checkouts (report-only" "$OUT"
+check_contains "T19: text output names the checkout" "orphan-co" "$OUT"
+
+# --- plain --apply must never delete a working tree ---------------------------
+OUT="$(cd "$REPO_H" && "$SUT" --apply 2>&1)"
+RC=$?
+check_eq "T19: plain --apply exits 0" 0 "$RC"
+check_eq "T19: plain --apply leaves the orphaned checkout on disk" "present" \
+  "$([[ -d "$CO_ORPHAN" ]] && echo present || echo gone)"
+check_eq "T19: and leaves its uncommitted file intact" "present" \
+  "$([[ -f "$CO_ORPHAN/NOTES.md" ]] && echo present || echo gone)"
+check_contains "T19: plain --apply says why it removed nothing" \
+  "were NOT removed" "$OUT"
+
+# --- the flag without --apply is a usage error --------------------------------
+( cd "$REPO_H" && "$SUT" --check --remove-orphaned-checkouts >/dev/null 2>&1 )
+check_eq "T19: --remove-orphaned-checkouts without --apply exits 3" 3 "$?"
+( cd "$REPO_H" && "$SUT" --remove-orphaned-checkouts >/dev/null 2>&1 )
+check_eq "T19: and exits 3 in the default (check) mode too" 3 "$?"
+check_eq "T19: neither usage error deleted anything" "present" \
+  "$([[ -d "$CO_ORPHAN" ]] && echo present || echo gone)"
+
+# --- the explicit gate does remove it, and only it ----------------------------
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+RC=$?
+check_eq "T19: --apply --remove-orphaned-checkouts exits 0" 0 "$RC"
+check_contains "T19: the removal is reported per item" \
+  "removed: orphaned checkout" "$OUT"
+if [[ "$OUT" == *"failed:"* ]]; then
+  fail "T19: no failure lines on the clean removal run"
+else
+  pass "T19: no failure lines on the clean removal run"
+fi
+check_eq "T19: the orphaned checkout is gone" "gone" \
+  "$([[ -e "$CO_ORPHAN" ]] && echo present || echo gone)"
+check_eq "T19: the REGISTERED checkout survives the removal run (negative control)" "present" \
+  "$([[ -d "$CO_LIVE" ]] && echo present || echo gone)"
+# The quarantined registration is the operator's recovery material — the flag
+# deletes checkouts, never the bookkeeping that was moved aside.
+check_eq "T19: the moved-aside registration is untouched" "present" \
+  "$([[ -d "$TMP/quarantined-orphan-co" ]] && echo present || echo gone)"
+
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+RC=$?
+check_eq "T19: a swept repoH is clean (exit 0)" 0 "$RC"
+check_json "T19: nothing is left in the orphaned-checkout list" "$OUT" \
+  '(.orphaned_checkouts | length) == 0 and .checkout_scan == "ok"'
+
+# --- a symlinked .git is never this class -------------------------------------
+# `-f` follows symlinks, so a `.git` swapped for a link to an arbitrary file
+# carrying a `gitdir:` line would otherwise classify — and then be deleted by
+# the removal flag. The link here points at a dangling target, which is exactly
+# the content that would classify if the symlink check were missing.
+CO_SYMLINK="$REPO_H/.claude/worktrees/symlinked-co"
+mkdir -p "$CO_SYMLINK"
+printf 'gitdir: %s\n' "$TMP/definitely-not-here" > "$TMP/planted-gitdir"
+ln -s "$TMP/planted-gitdir" "$CO_SYMLINK/.git"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: a symlinked .git is skipped, never classified orphaned" "$OUT" \
+  '(.skipped_checkouts | any((.path | endswith("/symlinked-co"))
+                             and (.reason | contains("symlink"))))
+   and (.orphaned_checkouts | any(.path | endswith("/symlinked-co")) | not)'
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: the removal flag leaves the symlinked-.git directory alone" "present" \
+  "$([[ -d "$CO_SYMLINK" ]] && echo present || echo gone)"
+check_eq "T19: and does not follow the link to delete its target" "present" \
+  "$([[ -f "$TMP/planted-gitdir" ]] && echo present || echo gone)"
+
+# --- the flag is documented where operators look for it ------------------------
+# The header block IS the --help output, so a flag that deletes working trees
+# must be discoverable there and must say so.
+HELP_OUT="$("$SUT" --help 2>&1)"
+check_contains "T19: --help documents the removal flag" \
+  "--remove-orphaned-checkouts" "$HELP_OUT"
+check_contains "T19: --help says the flag deletes working-tree files" \
+  "DELETES WORKING-TREE" "$HELP_OUT"
+check_contains "T19: --help documents the report-only class" \
+  "ORPHANED WORKTREE CHECKOUTS" "$HELP_OUT"
+
+# --- a DANGLING registration symlink is not proven absence ---------------------
+# `test -e` follows symlinks, so a link whose target is missing reads as
+# "provably absent" — and the 2026-08-26 mitigation moved registrations aside,
+# so a link into a quarantine on an unmounted volume dangles exactly like this.
+# Deleting the working tree on that basis is the data loss this class exists to
+# avoid.
+CO_DANGLE="$REPO_H/.claude/worktrees/dangling-co"
+mkdir -p "$CO_DANGLE"
+ln -s "$TMP/quarantine-that-is-not-mounted" "$REPO_H/.git/worktrees/dangling-reg"
+printf 'gitdir: %s\n' "$REPO_H/.git/worktrees/dangling-reg" > "$CO_DANGLE/.git"
+# Control in the same run — a plainly missing target still classifies, so the
+# assertion below pins the dangling-link discriminator, not "nothing classifies".
+CO_PLAIN="$REPO_H/.claude/worktrees/plain-missing-co"
+mkdir -p "$CO_PLAIN"
+printf 'gitdir: %s\n' "$REPO_H/.git/worktrees/never-existed" > "$CO_PLAIN/.git"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: a dangling registration symlink is skipped, not classified orphaned" "$OUT" \
+  '(.skipped_checkouts | any((.path | endswith("/dangling-co"))
+                             and (.reason | contains("dangling symlink"))))
+   and (.orphaned_checkouts | any(.path | endswith("/dangling-co")) | not)'
+check_json "T19: control — a plainly missing target in the same run does classify" "$OUT" \
+  '.orphaned_checkouts | any(.path | endswith("/plain-missing-co"))'
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: the removal flag leaves the dangling-symlink checkout alone" "present" \
+  "$([[ -d "$CO_DANGLE" ]] && echo present || echo gone)"
+check_eq "T19: control — the plainly-missing one was removed in that same run" "gone" \
+  "$([[ -e "$CO_PLAIN" ]] && echo present || echo gone)"
+rm -rf "$CO_DANGLE" "$REPO_H/.git/worktrees/dangling-reg"
+
+# --- an oversized .git is refused, not truncated -------------------------------
+# The read that decides this class feeds a working-tree deletion, so a `.git`
+# too large to be one is rejected rather than read whole and truncated — a
+# truncated `gitdir:` path names a registration that does not exist, which is
+# precisely the shape that classifies a checkout as orphaned.
+CO_FAT="$REPO_H/.claude/worktrees/fat-co"
+mkdir -p "$CO_FAT"
+{ printf 'gitdir: %s' "$TMP/definitely-not-here"; head -c 8192 /dev/zero | tr '\0' 'x'; } > "$CO_FAT/.git"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: an oversized .git is skipped, never classified orphaned" "$OUT" \
+  '(.skipped_checkouts | any((.path | endswith("/fat-co"))
+                             and (.reason | contains("gitdir target"))))
+   and (.orphaned_checkouts | any(.path | endswith("/fat-co")) | not)'
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: and the removal flag leaves it alone" "present" \
+  "$([[ -d "$CO_FAT" ]] && echo present || echo gone)"
+# Control — the same content UNDER the cap classifies, so the assertions above
+# are pinning the size gate rather than the dangling target.
+CO_THIN="$REPO_H/.claude/worktrees/thin-co"
+mkdir -p "$CO_THIN"
+printf 'gitdir: %s\n' "$TMP/definitely-not-here" > "$CO_THIN/.git"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: control — the same dangling target under the cap does classify" "$OUT" \
+  '.orphaned_checkouts | any(.path | endswith("/thin-co"))'
+rm -rf "$CO_FAT" "$CO_THIN"
+
+# --- the scan dir is resolved before the wide-path guard ----------------------
+# A symlink pointing at the repo root sails past a literal comparison, and a
+# scan dir that wide would offer every top-level directory to a flag that
+# deletes working trees. The guard must reject what the path RESOLVES to.
+ln -s "$REPO_H" "$TMP/link-to-repoH"
+( cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$TMP/link-to-repoH" "$SUT" --check >/dev/null 2>&1 )
+check_eq "T19: a scan dir symlinked to the repo root is refused (exit 3)" 3 "$?"
+( cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$REPO_H" "$SUT" --check >/dev/null 2>&1 )
+check_eq "T19: and so is the repo root named directly" 3 "$?"
+# Control — without it the two assertions above would also pass against a
+# script that rejected every override, or every run.
+( cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$REPO_H/.claude/worktrees" "$SUT" --check >/dev/null 2>&1 )
+check_eq "T19: control — an ordinary override is accepted (exit 0)" 0 "$?"
+
+# --- a repo with no checkout directory reports "none", not a finding ----------
+OUT="$(cd "$REPO_D" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: checkout_scan is none where .claude/worktrees does not exist" "$OUT" \
+  '.checkout_scan == "none" and (.orphaned_checkouts | length) == 0'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
