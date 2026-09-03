@@ -55,7 +55,16 @@ CTRL_DIR=""
 cleanup() {
   if [[ -n "$CTRL_DIR" ]]; then
     git -C "$REPO_ROOT" worktree remove --force "$CTRL_DIR" >/dev/null 2>&1
-    git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1
+    # `git worktree prune` takes no path — it is repository-wide, and this repo
+    # routinely runs a dozen concurrent agent worktrees whose branch locks a
+    # stray prune would release. `remove` above already drops our admin entry on
+    # the normal path, so only reach for prune when it did not: that keeps the
+    # safety net for a control directory that vanished under us without firing a
+    # repo-wide sweep on every green run.
+    if git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
+         | grep -qxF "worktree $CTRL_DIR"; then
+      git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1
+    fi
   fi
   rm -rf "$TMP_HOME" "$STUB_DIR" ${CTRL_ROOT:+"$CTRL_ROOT"}
 }
@@ -81,6 +90,16 @@ require_text() {
     PASS=$((PASS + 1)); echo "ok   — $desc"
   else
     FAIL=$((FAIL + 1)); echo "FAIL — $desc (no match for /$pattern/ in $(basename "$file"))"
+  fi
+}
+# Presence-only assertions cannot pin a value that must STOP being written; the
+# #1595 deadlock is exactly that shape (the resume path restamping `-1`).
+refute_text() {
+  local desc="$1" file="$2" pattern="$3"
+  if grep -Eq -- "$pattern" "$file"; then
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc (unexpected match for /$pattern/ in $(basename "$file"))"
+  else
+    PASS=$((PASS + 1)); echo "ok   — $desc"
   fi
 }
 
@@ -475,8 +494,25 @@ require_text "pause teardown retires the probe bound to the sentinel" "$PAUSE" \
 require_text "pause teardown does NOT null the probe bound" "$PAUSE" \
   '\*\*`-1`, not `null`\*\*'
 require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registry covers both wake shapes'
-require_text "pause-resume retires the probe bound to the sentinel"  "$PAUSE_RESUME" \
+# #1595: /pause writes `-1` because there the park is meant to stand, but
+# /pause-resume is the RESUME path and must retire the park outright. 2D.1(b+)
+# and 2D.5 stay parked on a `preemptive` cause with a `0`/`-1` bound *regardless
+# of parked_until* and stop recovery before 2D.2's init write — the only other
+# place the park is cleared — so a sentinel restamped here deadlocks the very
+# manual-resume escape hatch those branches name in their own message.
+refute_text  "pause-resume never restamps the -1 sentinel" "$PAUSE_RESUME" \
   'day\.limit_probe_fires_remaining=-1'
+require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" \
+  'day\.limit_probe_fires_remaining=null'
+require_text "pause-resume clears limit_cause"      "$PAUSE_RESUME" 'day\.limit_cause=null'
+require_text "pause-resume clears parked_until"     "$PAUSE_RESUME" 'day\.parked_until=null'
+require_text "pause-resume states why it retires"   "$PAUSE_RESUME" 'never restamp the .-1. sentinel'
+# The no-armed-wake branch matters on its own: /pause already nulled the task id,
+# so only this path can lift the park it left standing.
+require_text "pause-resume retires a park with no armed wake" "$PAUSE_RESUME" \
+  'cleared standing usage-limit park'
+require_text "pause-resume fails closed on an unreadable park" "$PAUSE_RESUME" \
+  'could not read day\.parked_until'
 require_text "generation check is unchanged"        "$PAUSE_RESUME" 'day\.limit_resume_generation'
 
 require_text "schema documents limit_cause"    "$SCHEMA" 'limit_cause'

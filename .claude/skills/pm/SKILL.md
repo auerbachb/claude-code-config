@@ -1197,7 +1197,7 @@ invoked the command or estimating quota. Write `parked_until` and
 
 **On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended.
 
-**Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race.
+**Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race. **That same step retires the park** — the six fields above, one write — and has to (#1595): 2D.1(b+) and 2D.5 stay parked on a `preemptive` cause with a `0`/`-1` bound *regardless of* `parked_until` and stop recovery before 2D.2's init write, which is the only other place the park is cleared. A resume that merely restamped the sentinel could therefore never lift the park those branches tell the user to lift exactly this way.
 
 ### 2D.7: Usage-horizon pre-emptive park (#1428)
 
