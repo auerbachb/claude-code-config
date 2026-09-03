@@ -545,6 +545,22 @@ ANC_BRACKET_RC=0
 run --raw-path --cas '.repos["k"].claim="mine"' --expect null --set '.repos={}' || ANC_BRACKET_RC=$?
 check_eq "ancestor detection spans a [ segment boundary" "2" "$ANC_BRACKET_RC"
 
+# Equivalent spellings must not evade the guard: `.outer`, `.["outer"]` and
+# `."outer"` are one path, so a raw-text prefix test would catch only the first.
+reset_state
+ANC_BRACKETFORM_RC=0
+run --raw-path --cas '.outer.claim="mine"' --expect null --set '.["outer"]={"wiped":true}' || ANC_BRACKETFORM_RC=$?
+check_eq "ancestor spelled .[\"outer\"] is still rejected" "2" "$ANC_BRACKETFORM_RC"
+reset_state
+ANC_QUOTEFORM_RC=0
+run --raw-path --cas '.outer.claim="mine"' --expect null --set '."outer"={"wiped":true}' || ANC_QUOTEFORM_RC=$?
+check_eq "ancestor spelled .\"outer\" is still rejected" "2" "$ANC_QUOTEFORM_RC"
+# ...and the CAS side may be spelled differently too.
+reset_state
+ANC_CASFORM_RC=0
+run --raw-path --cas '.["outer"]["claim"]="mine"' --expect null --set '.outer={"wiped":true}' || ANC_CASFORM_RC=$?
+check_eq "ancestor detected when the CAS path uses bracket form" "2" "$ANC_CASFORM_RC"
+
 # Negative control: a shared textual prefix that is NOT a segment boundary must
 # still be accepted, or the guard above would be rejecting unrelated siblings.
 reset_state

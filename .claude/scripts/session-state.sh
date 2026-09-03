@@ -1443,10 +1443,26 @@ fi
 # DESCENDANT of the CAS path is fine too — it refines the claim rather than
 # dropping it. Only a strict ancestor is contradictory, so only it is rejected.
 if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
+  # Compare CANONICAL paths, not raw text. `.outer`, `.["outer"]` and `."outer"`
+  # are one path, so a textual prefix test would catch only the first spelling
+  # and wave the others through into exactly the silent erase this guard exists
+  # to stop. jq is the normalizer — `path()` renders any accessor expression as
+  # a segment array — so there is no hand-rolled jq-path parser here.
+  _cas_norm="$(jq -cn "path($CAS_PATH)" 2>/dev/null)" || _cas_norm=""
   for _sp in "${SET_PATHS[@]}"; do
-    # Strict prefix ending on a path-segment boundary: `.a.b` is an ancestor of
-    # `.a.b.c` and of `.a.b["k"]`, but `.a.bb` is an ancestor of neither.
-    if [[ "$CAS_PATH" == "$_sp"?* ]]; then
+    _sp_norm="$(jq -cn "path($_sp)" 2>/dev/null)" || _sp_norm=""
+    if [[ -n "$_cas_norm" && -n "$_sp_norm" ]]; then
+      # Strict ancestor: the companion is a PROPER prefix of the CAS path.
+      # Equal paths are excluded by the length test, preserving the documented
+      # exact-path precedence; a descendant fails it too, and is legal.
+      if jq -e -n --argjson a "$_sp_norm" --argjson b "$_cas_norm" \
+           '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
+        die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
+      fi
+    elif [[ "$CAS_PATH" == "$_sp"?* ]]; then
+      # jq could not render one side as a path (e.g. a multi-output expression).
+      # Fall back to the textual boundary test rather than skipping the check: a
+      # guard that silently opts out on a shape it cannot parse is not a guard.
       _rest="${CAS_PATH#"$_sp"}"
       if [[ "$_rest" == .* || "$_rest" == \[* ]]; then
         die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
