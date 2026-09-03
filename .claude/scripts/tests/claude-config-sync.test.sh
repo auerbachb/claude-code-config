@@ -987,8 +987,11 @@ test_18_hook_bootstrap_and_steady_state_are_exclusive() {
 
   assert "the hook records that it bootstrapped" \
     "grep -q '_bootstrapped=1' '$HOOK'"
+  # -A3, not -A1: the gate line is followed by the _old_head capture (the
+  # resume-path restart signal reads HEAD either side of the fast-forward)
+  # before the fetch itself.
   assert "the steady-state fetch/reset is gated on NOT having bootstrapped" \
-    "[ -n \"\$(grep -A1 '_bootstrapped == 0' '$HOOK' | grep 'fetch origin main')\" ]"
+    "[ -n \"\$(grep -A3 '_bootstrapped == 0' '$HOOK' | grep 'fetch origin main')\" ]"
   # The trap this fix could have set: skipping the branch above without also
   # guarding the else would make a fresh bootstrap report its own new worktree
   # as missing.
@@ -1164,7 +1167,10 @@ test_24_hook_clear_reasserts_the_lock() {
   # and the mutation, or it proves nothing.
   local acquire_line assert_line rm_line
   acquire_line="$(grep -n 'state_lock_acquire \"\$_sync_lock_base\" 5' "$HOOK" | head -1 | cut -d: -f1)"
-  assert_line="$(grep -n '! state_lock_assert_held' "$HOOK" | head -1 | cut -d: -f1)"
+  # The first assert_held AFTER the clear-lock acquire — the file now carries an
+  # earlier one (the resume-path restart write guards its own mutation the same
+  # way), so a file-global first match would name the wrong site.
+  assert_line="$(awk -v a="${acquire_line:-0}" 'NR > (a+0) && /! state_lock_assert_held/ { print NR; exit }' "$HOOK")"
   rm_line="$(grep -n 'rm -f \"\$_marker_file\"' "$HOOK" | head -1 | cut -d: -f1)"
   assert "(setup) acquire, assert and removal were all located" \
     "[ -n '$acquire_line' ] && [ -n '$assert_line' ] && [ -n '$rm_line' ]"
