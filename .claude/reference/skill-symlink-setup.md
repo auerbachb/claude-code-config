@@ -49,6 +49,23 @@ Chained deliberately. If the fetch or reset fails, or the skill is not present i
 
 Create `~/.claude/skills/` first with `mkdir -p` if it does not exist.
 
+## Removing a retired skill's symlink
+
+The mirror image of the install. Only after the deletion has reached `main`:
+
+```bash
+git -C "$HOME/.claude/skills-worktree" fetch origin main --quiet \
+  && git -C "$HOME/.claude/skills-worktree" reset --hard origin/main --quiet \
+  && [[ ! -e "$HOME/.claude/skills-worktree/.claude/skills/<name>" ]] \
+  && rm -f "$HOME/.claude/skills/<name>"
+```
+
+Chained for the same reason the install is: the `[[ ! -e ]]` guard confirms the skill is genuinely gone from the refreshed worktree before the link is removed. Run against an unsynced worktree — or a branch where the deletion has not landed — it declines rather than unlinking a skill that still exists.
+
+`rm` on the symlink itself never touches the worktree contents: `~/.claude/skills/<name>` is a link, and removing it deletes the link, not its target. Do not use `rm -r`, which would follow into a directory if the entry turned out to be a copy rather than a symlink.
+
+Ordering matters. Removing the link **before** the deletion merges leaves the publishers free to re-create it on the next session start or scheduled tick, since the skill is still present on `main`. Merge first, sync, then unlink.
+
 ## Installing the phase-agent symlinks
 
 `setup-skills-worktree.sh` Step 5b delegates to `publish-agent-symlinks.sh`, which publishes `.claude/agents/*.md` into
