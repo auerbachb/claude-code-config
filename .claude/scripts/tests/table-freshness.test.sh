@@ -354,6 +354,25 @@ for HUGE in 99999999999999999999 18446744073709551616 9223372036854775808; do
 done
 # Positive control: a LONG-but-sane override is still honored, so the bound
 # rejects overflow rather than any large number.
+# A zero-padded but perfectly VALID override must be honored, not mangled.
+# `0180` is an invalid octal literal to Bash, so `(( raw <= FLOOR_MARGIN_S ))`
+# errors; an erroring `(( ))` returns non-zero, which the guard reads as "fine",
+# and the raw string escapes as if validated — after which TRIP_S fails the same
+# way on every call, for an override the user wrote correctly.
+PADDED_FLOOR="$(CLAUDE_TABLE_FLOOR_S=0180 "$SCRIPT" --floor-seconds 2>/dev/null)"
+[[ "$PADDED_FLOOR" == "180" ]] || \
+  fail "a zero-padded override 0180 should be honored as 180, got '$PADDED_FLOOR'"
+PADDED_STATUS="$(CLAUDE_TABLE_FLOOR_S=0180 "$SCRIPT" --status --session "$SID" --repo "$REPO" 2>/dev/null)"
+PADDED_TRIP="$(printf '%s' "$PADDED_STATUS" | jq -r '.trip_s')"
+[[ "$PADDED_TRIP" == "60" ]] || \
+  fail "a zero-padded override must reach the derived arithmetic intact (trip 180-120=60), got '$PADDED_TRIP'"
+PADDED_ERR="$(CLAUDE_TABLE_FLOOR_S=0180 "$SCRIPT" --floor-seconds 2>&1 >/dev/null)"
+[[ -z "$PADDED_ERR" ]] || \
+  fail "a valid zero-padded override should not warn, got: '$PADDED_ERR'"
+# Still rejected when the padding hides a value at or below the margin.
+PADDED_LOW="$(CLAUDE_TABLE_FLOOR_S=0060 "$SCRIPT" --floor-seconds 2>/dev/null)"
+[[ "$PADDED_LOW" == "3600" ]] || \
+  fail "0060 normalises to 60, at/below the margin, and should fall back; got '$PADDED_LOW'"
 SANE_BIG="$(CLAUDE_TABLE_FLOOR_S=999999999 "$SCRIPT" --floor-seconds 2>/dev/null)"
 [[ "$SANE_BIG" == "999999999" ]] || \
   fail "a 9-digit override should still be honored, got '$SANE_BIG'"

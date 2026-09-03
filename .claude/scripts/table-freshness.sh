@@ -147,24 +147,35 @@ resolve_floor() {
     printf '%s' "$FLOOR_S_DEFAULT"
     return
   fi
-  # The digit-count bound is checked BEFORE any arithmetic, and that order is the
-  # point. `^[0-9]+$` admits a value of any length, but every use of the floor —
-  # the `<=` just below, `TRIP_S = FLOOR_S - FLOOR_MARGIN_S`, and the age
-  # comparisons — is 64-bit Bash arithmetic, which WRAPS rather than erroring.
-  # A wrapped floor is not merely a strange number: it can come out negative, and
-  # a negative TRIP_S makes `age >= TRIP_S` true forever, so the floor fires on
-  # every single tick. Validating with arithmetic that has already overflowed
-  # cannot catch that — the check would be reading the corrupted value.
-  # FLOOR_MAX_DIGITS=9 allows up to ~31 years, far past any real floor and far
-  # short of the 19 digits where wrapping begins.
-  local FLOOR_MAX_DIGITS=9
-  if [[ ! "$raw" =~ ^[0-9]+$ ]] || (( ${#raw} > FLOOR_MAX_DIGITS )) || (( raw <= FLOOR_MARGIN_S )); then
+  # Normalise BEFORE any arithmetic touches the value, and reject on digit count
+  # rather than magnitude. Both halves of that matter, and each was a real bug:
+  #
+  #   LEADING ZERO   `0180` is not 180 to Bash — it is an octal literal, and an
+  #                  invalid one, so `(( raw <= FLOOR_MARGIN_S ))` ERRORS. An
+  #                  erroring `(( ))` returns non-zero, the guard reads that as
+  #                  "the value is fine", and the raw string is returned as
+  #                  though validated. `TRIP_S` then fails the same way on every
+  #                  single call, for an override the user wrote correctly.
+  #   OVERFLOW       `^[0-9]+$` admits any length, and every use of the floor is
+  #                  64-bit arithmetic that WRAPS. A wrapped floor can come out
+  #                  negative, and a negative TRIP_S makes `age >= TRIP_S` true
+  #                  forever — the floor fires on every tick. Arithmetic that has
+  #                  already overflowed cannot detect its own overflow.
+  #
+  # normalize_count handles both (strip leading zeros textually; reject beyond
+  # MAX_INT_DIGITS), which is the same treatment the pipeline count gets — one
+  # rule for every integer this script accepts, rather than two that drift.
+  local norm=""
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    norm="$(normalize_count "$raw")" || norm=""
+  fi
+  if [[ -z "$norm" ]] || (( norm <= FLOOR_MARGIN_S )); then
     printf 'table-freshness.sh: ignoring invalid CLAUDE_TABLE_FLOOR_S=%s (need integer > %s, at most %s digits); using %s\n' \
-      "$raw" "$FLOOR_MARGIN_S" "$FLOOR_MAX_DIGITS" "$FLOOR_S_DEFAULT" >&2
+      "$raw" "$FLOOR_MARGIN_S" "$MAX_INT_DIGITS" "$FLOOR_S_DEFAULT" >&2
     printf '%s' "$FLOOR_S_DEFAULT"
     return
   fi
-  printf '%s' "$raw"
+  printf '%s' "$norm"
 }
 
 # ISO-8601 UTC -> epoch seconds. BSD/macOS syntax first, GNU second — the same
@@ -194,7 +205,7 @@ iso_to_epoch() {
 # would also silently wrap a count wider than 64 bits, turning an absurd input
 # into a plausible wrong number instead of leaving it intact.
 #
-# A count longer than COUNT_MAX_DIGITS is rejected outright (empty result) rather
+# A count longer than MAX_INT_DIGITS is rejected outright (empty result) rather
 # than normalised. `^[0-9]+$` admits any length, and every consumer is 64-bit
 # Bash arithmetic that WRAPS: `(( ACTIVE_RECORDED > 0 ))` on a wrapped-negative
 # value exits the tick silently, and `(( ACTIVE == 0 ))` on a value that wraps to
@@ -202,11 +213,11 @@ iso_to_epoch() {
 # floor for active work, which is the failure this whole file is built to avoid.
 # Nine digits allows 999,999,999 concurrent pipelines — absurd headroom, and ten
 # orders of magnitude short of where wrapping starts.
-COUNT_MAX_DIGITS=9
+MAX_INT_DIGITS=9
 normalize_count() {
   local v="$1"
   while [[ "$v" == 0?* ]]; do v="${v#0}"; done
-  (( ${#v} > COUNT_MAX_DIGITS )) && { printf ''; return 1; }
+  (( ${#v} > MAX_INT_DIGITS )) && { printf ''; return 1; }
   printf '%s' "$v"
 }
 
@@ -238,7 +249,7 @@ while (( $# > 0 )); do
       (( $# >= 2 )) || die_usage "--active requires a count"
       [[ "$2" =~ ^[0-9]+$ ]] || die_usage "--active must be a non-negative integer, got: $2"
       ACTIVE="$(normalize_count "$2")" \
-        || die_usage "--active is too large to be a pipeline count (max $COUNT_MAX_DIGITS digits), got: $2"
+        || die_usage "--active is too large to be a pipeline count (max $MAX_INT_DIGITS digits), got: $2"
       shift
       ;;
     --surface)
