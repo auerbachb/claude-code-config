@@ -219,20 +219,28 @@ read. Matching it on issue number alone would print a phase here for work runnin
 somewhere else, and that row would then seed the round bound and the freshness record
 too.
 
-So attribute **only** by a repo-scoped identity, in this order:
+So attribute **only** by a repo-scoped identity — a field that names a repo, or a
+number that is unique across the board — in this order:
 
-1. The entry's `.owner_repo`, when present. That is the field the projection honours,
-   and entries do not otherwise carry a repo. Decisive; stop here.
-2. Otherwise its `.pr`, appearing in that repo's own `prs` — **and only when exactly
-   one repo on the board tracks that PR number.** A collision means the number is
-   ambiguous across the board, which is the same reason the scoped projection drops
-   an entry whose PR another real repo also tracks.
+1. The entry's **`.owner_repo`**, when present. This is the field the scoped
+   projection filters on, so honouring it keeps this reader aligned with that rule.
+   Nothing writes it today; the projection's own comment anticipates a later change
+   that stamps it at the write sites, and reading it now costs nothing.
+2. The entry's **`.repo`**, when present. This is what the spawn path actually writes
+   — it holds the full `owner/name` key, so an exact match is as sound an identity as
+   `.owner_repo` would be. **This is the branch that carries Phase A**, whose entries
+   have no `.pr` to fall back to.
+3. Otherwise its **`.pr`**, appearing in that repo's own `prs` — **and only when
+   exactly one repo on the board tracks that PR number.** A collision means the
+   number is ambiguous, which is the same reason the scoped projection drops an entry
+   whose PR another real repo also tracks.
 
 There is no issue-number fallback, and adding one would undo the fix: an issue number
 is not an identity, so the same number in two repos' `pipelines` would let one entry
-mark both repos' rows live. An entry matching neither signal stays **unattributed** —
-visible in the list, attached to no row, and therefore unable to move a phase, a
-round bound, or a freshness record.
+mark both repos' rows live. A repo **key** is different in kind — it names the repo
+outright, with nothing to collide with. An entry matching none of the three stays
+**unattributed** — visible in the list, attached to no row, and therefore unable to
+move a phase, a round bound, or a freshness record.
 
 **A row is keyed by its issue; half its lookups take a PR number. Name the
 crossing.** `pipelines` is **issue-keyed** and carries the PR in `.pr`, written when
@@ -315,7 +323,10 @@ board. Three row classes make up the round:
     phase, counts in the running total, and sets the round bound.
   - **An `active_agents` entry attributed to it by Step 2's rule →
     `Phase A (unconfirmed)`, a rendered row that is a round member but not a
-    confirmed running one.** Attribution proves the entry is *ours*; it does not
+    confirmed running one.** In practice this is Step 2's `.repo` branch: a Phase A
+    entry has no `.pr` to match on, so the repo key it carries is the whole of its
+    identity, and dropping that branch is what would make a live Phase-A-only round
+    render as no round at all. Attribution proves the entry is *ours*; it does not
     prove the agent is *alive*, because that list goes stale after a crash, a
     compaction, or an interrupted transition and a pre-PR row has no PR state to
     catch it. So the row shows with its recorded Start, and the status says exactly
