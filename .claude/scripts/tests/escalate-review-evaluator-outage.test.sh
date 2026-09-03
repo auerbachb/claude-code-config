@@ -242,24 +242,36 @@ echo "== Scenario (f2): the inclusive boundary EXECUTED at runtime, not grepped 
 # error. That removes the systematic term (this runner's fixture-write and
 # execution cost) in one correction, at any speed, with no window to outgrow.
 #
-# The residual is the +-1 s truncation jitter: frac(now) is fresh per probe, so a
-# re-aimed shot still lands one second off whenever the fraction crosses an
-# integer. That term is bounded and independent per attempt, which is what the
-# retries absorb — they are not a longer sweep.
+# The residual is the +-1 s truncation jitter: frac(now) is a fresh draw per
+# probe, so a re-aimed shot still lands one second off whenever that fraction
+# crosses an integer. Measured on this suite, the observed age at a fixed target
+# is 3600 or 3601 in a 17/13 split over 30 probes — the per-probe cost is
+# sub-second and stable, so a re-aimed attempt lands with p ~ 0.5.
+#
+# WHY THE ATTEMPT BUDGET IS GENEROUS (CodeAnt, this PR — second round). Those
+# draws are INDEPENDENT, not an oscillation, so the miss probability decays
+# geometrically rather than persisting: ~0.5^(n-1) here, and each probe costs a
+# fraction of a second. The budget is therefore set well past the measured need
+# instead of at the edge of it, which also covers a loaded runner whose per-probe
+# cost is noisier than the one measured here. A tight budget is the failure this
+# is avoiding; a loose one costs nothing, because a landing exits immediately.
 #
 # IT CANNOT PASS BY NOT RUNNING. BOUNDARY_AGE stays empty unless a probe reports
 # exactly the cap, and the first check below compares against it, so exhausting
-# the attempts FAILS rather than skipping.
+# the attempts FAILS rather than skipping — and prints what it saw, so a genuine
+# failure is diagnosable instead of merely red.
 break_evaluator_missing
 BOUNDARY_AGE=""; BOUNDARY_OUT=""; BOUNDARY_RC=""
 BOUNDARY_TARGET="$CAP_SECONDS"
-for (( attempt = 1; attempt <= 12; attempt++ )); do
+BOUNDARY_SEEN=""
+for (( attempt = 1; attempt <= 40; attempt++ )); do
   outage_fixture "$BOUNDARY_TARGET"
   OUT=$(run_script 2>"$TMP/f2-stderr.txt"); RC=$?
   REPORTED="$(sed -n 's/.*DEGRADED:.*(age \([0-9]\{1,\}\)s.*/\1/p' "$TMP/f2-stderr.txt" | head -1)"
   # No age at all means the run never reached the cap branch — re-aiming on a
   # missing measurement would loop pointlessly, so stop and let the check fail.
   [[ "$REPORTED" =~ ^[0-9]+$ ]] || break
+  BOUNDARY_SEEN="$BOUNDARY_SEEN $BOUNDARY_TARGET->$REPORTED"
   if [[ "$REPORTED" -eq "$CAP_SECONDS" ]]; then
     BOUNDARY_AGE="$REPORTED"; BOUNDARY_OUT="$OUT"; BOUNDARY_RC="$RC"
     cp "$TMP/f2-stderr.txt" "$TMP/f2-boundary-stderr.txt"
@@ -267,6 +279,7 @@ for (( attempt = 1; attempt <= 12; attempt++ )); do
   fi
   BOUNDARY_TARGET=$(( BOUNDARY_TARGET - (REPORTED - CAP_SECONDS) ))
 done
+[[ -n "$BOUNDARY_AGE" ]] || echo "(f2) no probe reported age ${CAP_SECONDS}; target->observed was:${BOUNDARY_SEEN:-" (none)"}" >&2
 check_eq "(f2) a probe landed on exactly the cap" "$CAP_SECONDS" "$BOUNDARY_AGE"
 check_eq "(f2) exit 0" 0 "$BOUNDARY_RC"
 # THE DISCRIMINATOR: a `-lt` implementation emits trigger_greptile right here,
