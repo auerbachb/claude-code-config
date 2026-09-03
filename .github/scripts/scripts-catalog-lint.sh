@@ -107,6 +107,15 @@ fi
 # Shared awk prelude for reading a catalog document. Provides trim() and drops
 # every line inside a fenced code block: a table row or a back-link shown inside
 # a fence documents the format, so neither may count as catalog content.
+#
+# Every variable the prelude sets is named fence_* on purpose. The prelude runs
+# in the same awk namespace as the program appended to it and as any -v the
+# caller passes, so a plainly-named scratch variable here silently overwrites
+# the caller's. That is not hypothetical: `fence_tok` was once `marker`, which
+# clobbered has_order_marker's -v marker on the first fence line and made the
+# detector wrong in both directions — a marker below a fenced block stopped
+# opting its doc in, and an unmarked doc holding a fence plus a later inline
+# ``` started opting in. Keep new scratch names prefixed.
 AWK_DOC_PRELUDE='
   function trim(s) {
     gsub(/^[[:space:]]+/, "", s)
@@ -114,9 +123,9 @@ AWK_DOC_PRELUDE='
     return s
   }
   /^[[:space:]]*(```|~~~)/ {
-    marker = ($0 ~ /^[[:space:]]*```/) ? "```" : "~~~"
-    if (!in_fence) { in_fence = 1; fence = marker }
-    else if (marker == fence) { in_fence = 0; fence = "" }
+    fence_tok = ($0 ~ /^[[:space:]]*```/) ? "```" : "~~~"
+    if (!in_fence) { in_fence = 1; fence = fence_tok }
+    else if (fence_tok == fence) { in_fence = 0; fence = "" }
     next
   }
   in_fence { next }

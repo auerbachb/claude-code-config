@@ -265,6 +265,20 @@ ORDERED_MARKER='<!-- catalog-lint: ordered -->'
 # for the reason the back-link check already applies to fenced links.
 FENCED_MARKER=$(printf '%s\n%s\n%s' '```markdown' "$ORDERED_MARKER" '```')
 
+# A doc that shows a fenced example and *then* carries the real marker. The
+# lint promises position-independence ("a marker anywhere in the doc counts"),
+# so closing a fence must not stop the reader from seeing what follows it.
+FENCE_THEN_MARKER=$(printf '%s\n%s\n%s\n\n%s' \
+  '```markdown' '| [example.sh](../example.sh) | Shown, not counted |' '```' \
+  "$ORDERED_MARKER")
+
+# The same doc without the marker, but quoting the fence delimiter inline
+# afterwards. Nothing here opts the doc in, and an inline ``` is not a fence —
+# it does not start the line.
+FENCE_THEN_INLINE=$(printf '%s\n%s\n%s\n\n%s' \
+  '```markdown' '| [example.sh](../example.sh) | Shown, not counted |' '```' \
+  'Quote the delimiter as ``` when writing about fences.')
+
 ROW_ALPHA='| [alpha.sh](../alpha.sh) | First |'
 ROW_BETA='| [beta.py](../beta.py) | Second |'
 ROW_GAMMA='| [gamma.sh](../gamma.sh) | Third |'
@@ -327,6 +341,22 @@ expect "unmarked doc with displaced rows passes" 0 \
 expect "marker inside a code fence does not opt the doc in" 0 \
   'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
   write_doc .claude/scripts/docs/tools.md Tools "$FENCED_MARKER" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+# The fence skip must not blind the reader to what comes after the fence. Both
+# cases below failed before the prelude stopped naming its scratch variable
+# `marker`: it overwrote has_order_marker's -v marker on the first fence line,
+# so afterwards the detector searched for a literal ``` instead of the marker.
+# Position-independence and the fenced-example rule are the two halves of the
+# documented contract, and each one broke in a different direction.
+expect "marker below a fenced block still opts the doc in" 1 \
+  "row 'beta\.py' is out of order.*it follows 'gamma\.sh'" \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCE_THEN_MARKER" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+expect "a fence plus a later inline delimiter does not opt the doc in" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCE_THEN_INLINE" \
     "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
 
 # Ordering is keyed on the link text a reader scans, not on the path key
@@ -439,8 +469,52 @@ normalize_case "/"                    "../../etc"            "/etc"
 # its own it cannot tell an enforced tests.md from an unmarked one — a green
 # check that never ran. Assert the marker is where the decision put it, and
 # nowhere else: the 12 sibling docs stay unmarked by design (issue #1544).
-marked_docs=$(grep -lF -- '<!-- catalog-lint: ordered -->' \
-  "${REPO_ROOT}"/.claude/scripts/docs/*.md || true)
+#
+# Read the marker the way the lint does — outside any fence. A plain grep is
+# wrong in both directions here: it would call a sibling that merely documents
+# the marker inside a fence opted in and redden CI on a correct tree, and it
+# would go on reporting tests.md as marked if that marker ever moved inside a
+# fence, leaving the ordering unenforced behind this very assertion.
+effective_marker_docs() {
+  local doc
+  for doc in "$@"; do
+    # Fence skip mirrors AWK_DOC_PRELUDE; the probes below pin the two apart.
+    if awk -v marker="$ORDERED_MARKER" '
+      /^[[:space:]]*(```|~~~)/ {
+        fence_tok = ($0 ~ /^[[:space:]]*```/) ? "```" : "~~~"
+        if (!in_fence) { in_fence = 1; fence = fence_tok }
+        else if (fence_tok == fence) { in_fence = 0; fence = "" }
+        next
+      }
+      in_fence { next }
+      index($0, marker) > 0 { found = 1 }
+      END { if (found) exit 0; exit 1 }
+    ' "$doc"; then
+      printf '%s\n' "$doc"
+    fi
+  done
+}
+
+# The reader above is a second copy of semantics the lint owns, so pin it
+# against the same three shapes the fixture cases pin the lint against. Without
+# these it could rot back into a plain grep without anything going red.
+marker_probe="${TMP_ROOT}/marker-probe.md"
+probe_marker() {
+  local name="$1" body="$2" want="$3" got
+  printf '%s\n' "$body" > "$marker_probe"
+  got=$(effective_marker_docs "$marker_probe")
+  if [[ "$got" == "$want" ]]; then
+    echo "ok   — marker reader: ${name}"
+  else
+    echo "FAIL — marker reader: ${name}: expected '${want:-<none>}', got '${got:-<none>}'"
+    failures=$((failures + 1))
+  fi
+}
+probe_marker "a bare marker opts in"                "$ORDERED_MARKER"    "$marker_probe"
+probe_marker "a fenced marker does not"             "$FENCED_MARKER"     ""
+probe_marker "a marker below a fence still opts in" "$FENCE_THEN_MARKER" "$marker_probe"
+
+marked_docs=$(effective_marker_docs "${REPO_ROOT}"/.claude/scripts/docs/*.md)
 if [[ "$marked_docs" == "${REPO_ROOT}/.claude/scripts/docs/tests.md" ]]; then
   echo "ok   — tests.md is the only category doc opted in to row ordering"
 else
