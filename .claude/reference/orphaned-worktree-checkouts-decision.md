@@ -140,7 +140,43 @@ hitting, *a probe that cannot distinguish "absent" from "unreadable"*.
   directory, mirroring what `read_checkout_gitdir` already did for a checkout's
   `.git`.
 
-Both are pinned by T21 in `stale-cleanup.test.sh`, whose assertions were
+### 4b. The guard that blocked the removal it was added to protect
+
+BugBot flagged a third one, and this is the most important of the three because
+it is a **regression introduced by this PR**, not a pre-existing hole: the new
+whole-path dangling-link walk in `registration_is_live` ran *before*
+`path_exists_bounded` and refused on a **stalled** probe as well as an observed
+dangling link.
+
+Those are not the same thing here. A readable `gitdir` naming a still-stalled
+worktree path is the *targeted-removal* case — the scan classifies it
+"unreadable — prunable with warning", and `path_exists_bounded` deliberately
+lets a stalled probe through as rc 2, "the very symptom being cleaned". By
+refusing first, the new guard left exactly those entries in place for the
+`git worktree prune` that follows to hang on: the 2026-08-26 incident this
+script was written for.
+
+`path_has_dangling_link_component` now reports the stalled way of returning 0
+out-of-band in `DANGLING_PROBE_INCONCLUSIVE`, the same shape (and for the same
+reason) as `BOUNDED_OVERFLOW`: callers asking *"does absence hold?"* still want
+the two merged, and the caller asking *"may I remove this?"* must not. Only an
+observed dangling component refuses at the pre-`rm` gate; a stalled walk falls
+through to the probe, which reaches the same stall and answers on its own terms.
+`checkout_still_orphaned` needed no change — it removes only on proven absence
+(rc 1), so a stall stops it there regardless, which is the deliberate asymmetry
+already documented above it.
+
+**Coverage, stated honestly:** the observed-dangling half is pinned by T20's
+mid-run ancestor break and T19's checkout equivalent, both of which still pass
+and would fail if the refusal had simply been dropped. The *stalled* half has no
+test, because this suite has no way to stall an `lstat`: its stall harness is a
+FIFO `gitdir` (`mkfifo`), which blocks the read and returns before the walk is
+ever reached, `test` is a shell builtin so no PATH stub intercepts it, and
+`normalize_bound` rejects a zero bound. That gap is why the regression reached
+review in the first place, and it is recorded here rather than papered over with
+a test that would pass without the fix.
+
+Both of the §4a fixes are pinned by T21 in `stale-cleanup.test.sh`, whose assertions were
 confirmed to fail against the pre-fix script while its two positive controls
 (the genuinely-gone relative registration, the targeted bait) kept passing. T21's
 `--apply` case runs in a repo carrying only *targeted* candidates, so no

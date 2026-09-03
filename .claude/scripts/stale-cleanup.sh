@@ -699,17 +699,30 @@ path_exists_bounded() { # path
 #       inspected inside the bound. Either way absence is NOT established.
 #   1 = every component was inspected and any symlink among them resolves.
 #
+# Those two ways of returning 0 are NOT interchangeable for every caller, so the
+# stalled one is also reported out-of-band in DANGLING_PROBE_INCONCLUSIVE (#1597
+# review). A caller deciding whether absence holds wants them merged — neither
+# establishes it. A caller deciding whether to REMOVE does not: a stalled lstat
+# is the debris this script exists to clear, and treating it as an observed
+# dangling link is what let the pre-`rm` gate refuse the very entries the scan
+# had classified for targeted removal. Same out-flag shape as BOUNDED_OVERFLOW,
+# and for the same reason — "could not read" must stay distinguishable from
+# "read, and here is what it says".
+#
 # Bounded like every other probe here: an lstat on a stalled mount hangs too.
+DANGLING_PROBE_INCONCLUSIVE=0
 path_has_dangling_link_component() { # path
   local p="$1" prev="" l_rc e_rc
+  DANGLING_PROBE_INCONCLUSIVE=0
   while [[ -n "$p" && "$p" != "/" && "$p" != "." && "$p" != "$prev" ]]; do
     l_rc=0
     run_bounded "$READ_BOUND_SECS" test -L "$p" || l_rc=$?
-    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 0; fi
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then DANGLING_PROBE_INCONCLUSIVE=1; return 0; fi
     if (( l_rc == 0 )); then
       e_rc=0
       run_bounded "$READ_BOUND_SECS" test -e "$p" || e_rc=$?
-      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( e_rc != 0 )); then return 0; fi
+      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then DANGLING_PROBE_INCONCLUSIVE=1; return 0; fi
+      if (( e_rc != 0 )); then return 0; fi
     fi
     prev="$p"
     p="$(dirname -- "$p")"
@@ -1917,7 +1930,19 @@ registration_is_live() { # registration path
   # start-up and this gate runs immediately before the rm, so a dangling
   # ancestor appearing in that window is precisely the state change this
   # re-check exists to catch, and `test -e` below still reports absent for it.
-  if path_has_dangling_link_component "$wt"; then return 3; fi
+  #
+  # Only an OBSERVED dangling component refuses. A walk that merely stalled
+  # returns 0 too, and reading that as a refusal broke the targeted-removal case
+  # this script was written for (#1597 review): a readable `gitdir` naming a
+  # still-stalled worktree path is classified "unreadable — prunable with
+  # warning" by the scan, and `path_exists_bounded` below deliberately lets that
+  # through as rc 2 — "the very symptom being cleaned". Pre-empting it here left
+  # exactly those entries in place for the `git worktree prune` that follows to
+  # hang on. So a stalled walk falls through to the probe, which reaches the
+  # same stall and answers 2 on its own terms.
+  if path_has_dangling_link_component "$wt" && (( DANGLING_PROBE_INCONCLUSIVE == 0 )); then
+    return 3
+  fi
   path_exists_bounded "$wt" || probe_rc=$?
   # Fail closed, unlike the classification pass: this gate stands immediately
   # before an rm, so "exists" (0) and "cannot establish absence" (3) both stop
