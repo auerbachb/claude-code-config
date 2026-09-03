@@ -148,8 +148,19 @@ probe_suite() { # suite_path, tag
   # iteration count calibrated for the fast path would silently become a
   # 10-minute ceiling there. Counting ticks to bound wall-clock time is the
   # same mistake this whole suite exists to prevent.
+  # BOTH tokens, not just the marker. The stub writes the marker BEFORE exec-ing
+  # the real mktemp, so on a suite whose banner sits after that first `mktemp -d`
+  # returns — which is exactly the mutated copy NC5 builds — stopping at the
+  # marker can read and kill before the banner is ever written. The banner then
+  # looks absent and NC5 fails, most often when mktemp is slow: the same load
+  # this suite exists to tolerate. The ordering in the file is truthful whenever
+  # it is read; the only requirement is not to stop reading too early.
+  #
+  # Every bail-out below still applies, so a suite that genuinely never prints
+  # one of the two ends the wait on process exit or the ceiling and is reported
+  # by the both-observations guard rather than waited on forever.
   wait_start="$(date -u +%s 2>/dev/null || true)"
-  while ! grep -qF "$FIXTURE_MARKER" "$out" 2>/dev/null; do
+  while ! { grep -qF "$FIXTURE_MARKER" "$out" 2>/dev/null && grep -q 'SLOW SUITE' "$out" 2>/dev/null; }; do
     kill -0 "$pid" 2>/dev/null || break
     wait_now="$(date -u +%s 2>/dev/null || true)"
     # An unreadable clock must not mean "wait forever"; stop and let the
@@ -668,6 +679,31 @@ if [[ -z "$(offenders_in "$NC6" suite-lines)" ]]; then
   pass "NC6 prose naming 202s/240s is not mistaken for a bound application"
 else
   fail "NC6 detector flagged prose — docs explaining the floor would trip it"
+fi
+
+# The probe's own race, made deterministic (NC7). A suite that emits the banner
+# only after a SLOW first fixture act is the shape NC5 constructs, and a probe
+# that stopped at the fixture marker would read and kill before the banner was
+# written — reporting "no ordering observed" on a suite that does emit one. The
+# sleep turns a load-dependent race into a fixed delay, so this fails reliably
+# rather than occasionally if the wait ever stops requiring both tokens again.
+NC7="$SCRATCH/nc-slow-banner.sh"
+cat >"$NC7" <<'FIXTURE'
+#!/usr/bin/env bash
+d="$(mktemp -d)"
+sleep 2
+echo "nc7 fixture: SLOW SUITE — banner emitted after the first fixture act"
+sleep 5
+FIXTURE
+probe_suite "$NC7" slow-banner
+if [[ "$PROBE_BANNER_LINE" =~ ^[0-9]+$ && "$PROBE_MARKER_LINE" =~ ^[0-9]+$ ]]; then
+  if ! banner_precedes_fixtures; then
+    pass "NC7 a banner emitted after a slow fixture act is still observed, and ordered after it"
+  else
+    fail "NC7 read the banner as preceding fixture work that provably ran first"
+  fi
+else
+  fail "NC7 probe returned before the banner was written (banner: '${PROBE_BANNER_LINE:-none}', fixture: '${PROBE_MARKER_LINE:-none}') — the wait stops too early, so NC5 can fail under load"
 fi
 
 echo
