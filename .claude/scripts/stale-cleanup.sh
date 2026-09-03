@@ -1572,6 +1572,11 @@ emit_text() {
     echo
     echo "WARNING: ref enumeration $REF_SCAN_STATE — branches were NOT classified in this run."
   fi
+  if [[ "$CHECKOUT_SCAN_STATE" == "unreadable" ]]; then
+    echo
+    echo "WARNING: the orphaned-checkout scan directory could not be read — checkouts were NOT classified in this run."
+    echo "         'Orphaned worktree checkouts: none' above means nothing was classified, not that nothing is orphaned."
+  fi
   local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} + ${#SKIPPED_REGISTRATIONS[@]} + ${#SKIPPED_CHECKOUTS[@]} ))
   if (( skipped_total > 0 )); then
     echo
@@ -1970,6 +1975,12 @@ checkout_still_orphaned() { # checkout dir
   # is the gate standing immediately before the rm: `test -e` follows links, so
   # a link whose target is missing would otherwise read as proven absence.
   if [[ -L "$CHECKOUT_GITDIR" ]]; then return 1; fi
+  # Over every component, exactly like the scan. Parity matters most HERE: the
+  # scan runs at start-up and this gate runs immediately before the rm, so a
+  # dangling ancestor link appearing in that window is precisely the state
+  # change this re-check exists to catch. Without it the final-component test
+  # above reads false while `test -e` reports absent, and the working tree goes.
+  if path_has_dangling_link_component "$CHECKOUT_GITDIR"; then return 1; fi
   (( probe_rc == 1 ))
 }
 

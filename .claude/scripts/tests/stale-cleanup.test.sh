@@ -1241,6 +1241,53 @@ check_eq "T19: control — the resolving-ancestor one was removed in that same r
   "$([[ -e "$CO_ANC_OK" ]] && echo present || echo gone)"
 rm -rf "$CO_ANC" "$REPO_H/.git/wt-link" "$REPO_H/.git/wt-link-live" "$TMP/live-reg-dir"
 
+# --- the pre-rm re-check refuses a dangling ANCESTOR too ----------------------
+# The scan runs at start-up; the rm runs at the very end. A dangling ancestor
+# appearing in THAT WINDOW is the state change this re-check exists to catch, so
+# it must apply the same whole-path rule as the scan and not merely the
+# final-component test — otherwise the working tree is deleted.
+#
+# Breaking the link between the two runs would prove nothing: the scan would
+# then refuse it on its own and the re-check would never be consulted (that
+# version of this test passed with the fix reverted). So the link is broken
+# from INSIDE the window, by a git stub that fires on the `worktree prune` the
+# apply phase runs before it reaches any checkout.
+RACE_STUB="$TMP/race-stub"; mkdir -p "$RACE_STUB"
+mkdir -p "$TMP/race-reg-dir"
+cat > "$RACE_STUB/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == "prune" ]]; then rm -rf "$TMP/race-reg-dir"; fi
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$RACE_STUB/git"
+# Bait so the apply phase actually reaches `worktree prune`: a registration
+# whose worktree is gone is pruned, and that call sits between the two.
+git -C "$REPO_H" worktree add "$TMP/prune-bait" -b issue-402-h-prunebait >/dev/null 2>&1
+rm -rf "$TMP/prune-bait"
+CO_RACE="$REPO_H/.claude/worktrees/race-co"
+mkdir -p "$CO_RACE"
+ln -s "$TMP/race-reg-dir" "$REPO_H/.git/wt-race"
+printf 'gitdir: %s\n' "$REPO_H/.git/wt-race/never-existed" > "$CO_RACE/.git"
+echo "only copy" > "$CO_RACE/unique.txt"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: the race checkout classifies while its ancestor link resolves" "$OUT" \
+  '.orphaned_checkouts | any(.path | endswith("/race-co"))'
+OUT="$(cd "$REPO_H" && PATH="$RACE_STUB:$PATH" "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: the ancestor link really was broken mid-run" "gone" \
+  "$([[ -e "$TMP/race-reg-dir" ]] && echo present || echo gone)"
+check_eq "T19: the pre-rm re-check spares a checkout whose ancestor dangled mid-run" "present" \
+  "$([[ -f "$CO_RACE/unique.txt" ]] && echo present || echo gone)"
+# Positive control: with the ancestor intact for the whole run, that SAME
+# checkout IS removed — so the assertion above pins the mid-run refusal rather
+# than a re-check that had simply stopped removing anything.
+mkdir -p "$TMP/race-reg-dir"
+OUT="$(cd "$REPO_H" && "$SUT" --apply --remove-orphaned-checkouts 2>&1)"
+check_eq "T19: control — an un-broken ancestor lets that same checkout be removed" "gone" \
+  "$([[ -e "$CO_RACE" ]] && echo present || echo gone)"
+rm -rf "$CO_RACE" "$REPO_H/.git/wt-race" "$TMP/race-reg-dir" "$RACE_STUB"
+
 # --- an unreadable scan dir is "unreadable", never "none" ---------------------
 # `-d` is false for BOTH "not there" and "there but unreadable". Collapsing the
 # second into "none" would report a positive claim of absence — "this repo keeps
