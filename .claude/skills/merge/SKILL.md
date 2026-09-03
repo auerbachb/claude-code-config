@@ -35,7 +35,7 @@ MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
 - Use **/merge** for a quick mid-session merge when you'll continue working in the same session. It handles AC verification, CI check, and squash-merge — nothing else.
 - Use **/wrap** for end-of-session cleanup. /wrap is a superset: runs the same merge flow PLUS detects follow-up issues, extracts session lessons, and syncs root `main`.
 - If you're done for the session, use /wrap. If you're merging and immediately starting the next issue, use /merge.
-- Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case because it can run from the active worktree and leaves stale worktree/branch cleanup to `/pm-update`.
+- Note: /merge aborts if invoked from inside a worktree (see Step 1) — use /wrap in that case because it can run from the active worktree and leaves stale worktree/branch cleanup to `/pm-clean`.
 
 ## Steps
 
@@ -59,7 +59,7 @@ If the PR is already merged or closed, stop and tell the user.
 
 ```bash
 if [ "$(git rev-parse --git-common-dir)" != "$(git rev-parse --git-dir)" ]; then
-  echo "Running inside a worktree. Use /wrap instead — it merges safely from the worktree and leaves cleanup to /pm-update."
+  echo "Running inside a worktree. Use /wrap instead — it merges safely from the worktree and leaves cleanup to /pm-clean."
   exit 1
 fi
 ```

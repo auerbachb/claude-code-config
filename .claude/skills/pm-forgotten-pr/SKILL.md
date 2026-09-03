@@ -71,7 +71,7 @@ CI/conflict state is **not** a close signal — a red or conflicted PR is surfac
 For every `close`-classified PR, present the PR and its rationale and **ask for explicit confirmation** before touching anything (recommend → confirm → apply, mirroring `/pm-clean`). Declining leaves the PR open.
 
 - On confirmation: `gh pr close <N> --comment "<rationale>"`.
-- **Separately** — a second, independent gate, never bundled with the close confirmation — offer to delete the PR's head branch. When confirmed, delete `<headRefName>` honoring `stale-cleanup.sh`'s branch-deletion safety rules (never a protected name — `main`/`master`/`develop`; never a branch checked out in a worktree), skipping with a one-line note if any check fails. Do **not** reimplement those safety checks — treat `stale-cleanup.sh` as their source of truth; its out-of-band sweep (via `/pm-update`) also reaps the branch later once it ages past the stale threshold.
+- **Separately** — a second, independent gate, never bundled with the close confirmation — offer to delete the PR's head branch. When confirmed, delete `<headRefName>` honoring `stale-cleanup.sh`'s branch-deletion safety rules (never a protected name — `main`/`master`/`develop`; never a branch checked out in a worktree), skipping with a one-line note if any check fails. Do **not** reimplement those safety checks — treat `stale-cleanup.sh` as their source of truth; its out-of-band sweep (via `/pm-clean`) also reaps the branch later once it ages past the stale threshold.
 
 ## Step 4: Merge flow (confirmation-gated, delegated to `/wrap`)
 

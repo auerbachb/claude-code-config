@@ -4,10 +4,10 @@
 # PURPOSE
 #   Replaces the self-cleanup that /wrap used to do (worktree removal + branch
 #   deletion in the running session). Runs out-of-band so the active session
-#   never deletes itself. Two skills consume this script as the single source of
-#   truth for stale worktree/branch detection and safety — /pm-update (Step 8)
-#   and /pm-clean (workspace sweep) — so their results can never diverge (issue
-#   #618). Detects five classes of stale state on the target repo's root:
+#   never deletes itself. /pm-clean (workspace sweep) is the sole skill caller,
+#   and this script is the single source of truth for stale worktree/branch
+#   detection and safety, so no second implementation can diverge from it
+#   (issue #618). Detects five classes of stale state on the target repo's root:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
@@ -152,7 +152,7 @@
 #   an orphaned checkout, so letting the class raise exit 1 would pin the
 #   status high forever and invert that meaning for every caller. The class is
 #   surfaced where its consumers actually read — the text report and the
-#   `orphaned_checkouts` JSON array (/pm-clean, /pm-update). Removal FAILURES
+#   `orphaned_checkouts` JSON array (/pm-clean). Removal FAILURES
 #   under the flag do count, exactly like every other deletion: exit 2.
 #
 #   Fail-closed asymmetry against class 4, deliberate and worth stating: for a

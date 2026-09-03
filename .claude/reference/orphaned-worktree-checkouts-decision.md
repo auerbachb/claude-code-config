@@ -50,7 +50,7 @@ Two consequences worth knowing before reading a sweep:
 - **This class does not move the exit code.** Exit 1 means "incomplete — re-run
   me"; plain `--apply` can never clear an orphaned checkout, so letting the
   class raise it would pin the status high forever and invert that meaning for
-  `/pm-clean` and `/pm-update`. Removal *failures* under the flag do count
+  `/pm-clean`. Removal *failures* under the flag do count
   (exit 2), like every other deletion.
 - **It fails closed, unlike the registration class.** There, a stalled metadata
   probe keeps an entry a removal candidate, because a stalled read *is* the
@@ -69,7 +69,7 @@ completes, and `/wrap` deliberately leaves the running worktree in place for
 out-of-band cleanup. No autonomous deletion is added to the harness itself.
 
 The new report class is the **backstop**: it makes any future leak visible in
-the new home, in the same sweep `/pm-clean` and `/pm-update` already run, so
+the new home, in the same sweep `/pm-clean` already runs, so
 the next accumulation is caught as a finding rather than discovered as a
 60-directory pile after an incident.
 

@@ -15,10 +15,12 @@ Not auto-loaded.
 `.claude/scripts/stale-cleanup.sh` was touched by 5 distinct merged PRs since
 2026-08-15: #1386, #1414, #1433, #1467, #1481.
 
-The file is a 1,472-line worktree/branch/registration staleness sweeper. Two
-skills consume it — `/pm-update` (Step 8) and `/pm-clean` (workspace sweep) —
-as the single source of truth for stale-state detection, so their results can
-never diverge (Issue #618).
+The file is a 1,472-line worktree/branch/registration staleness sweeper.
+`/pm-clean` (workspace sweep) is its sole documented caller, and the script is
+the single source of truth for stale-state detection, so no second
+implementation can diverge from it (Issue #618). *(A second PM-tier caller
+existed when this decision was written; it was retired under Issue #1585 — see
+`skill-prune-audit-2026-07.md`.)*
 
 ## Evidence recovery — local history is NOT shallow
 
