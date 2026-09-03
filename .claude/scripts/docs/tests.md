@@ -3,6 +3,15 @@
 All tests live in `tests/` and run offline (no network required). Run from the repo root:
 `bash .claude/scripts/tests/<name>.test.sh`
 
+Rows are kept in `LC_ALL=C sort` order — byte order, not dictionary order, so
+`overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
+0x2D, `.` is 0x2E). The marker below opts this doc into the ordering check in
+`.github/scripts/scripts-catalog-lint.sh` (#1544). The sibling category docs
+group their rows by workflow role instead, carry no marker, and are not checked
+for order.
+
+<!-- catalog-lint: ordered -->
+
 | Test | What it covers |
 |------|----------------|
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
@@ -65,8 +74,8 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [merge-gate-sut-override.test.sh](../tests/merge-gate-sut-override.test.sh) | Tests the `SUT` / `EVAL_SUT` / `MERGE_GATE` override contract for the `merge-gate-*` family — defaults, environment overrides, refusal of a mistyped path, and that no assignment is re-hardcoded |
 | [merge-sequence.test.sh](../tests/merge-sequence.test.sh) | Tests for `merge-sequence.sh` |
 | [model-fleet.test.sh](../tests/model-fleet.test.sh) | Tests for `model-fleet.sh` |
-| [overrun-check.test.sh](../tests/overrun-check.test.sh) | Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now |
 | [overrun-check-tzdata.test.sh](../tests/overrun-check-tzdata.test.sh) | Tests `overrun-check.sh`'s ET clock on a system where `America/New_York` does not resolve (#1529) — a PATH-shim `date` reproduces glibc-without-tzdata (zone falls back to UTC, `date` still exits 0); asserts cell mode and the breach alert render a **labelled** UTC value rather than an unlabelled 12-hour UTC clock under an `(ET)` header, with a negative control pinning unchanged Eastern output and a fidelity control proving the shim reproduces the bug |
+| [overrun-check.test.sh](../tests/overrun-check.test.sh) | Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |

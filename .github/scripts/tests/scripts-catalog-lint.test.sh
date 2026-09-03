@@ -254,6 +254,134 @@ expect "index row escaping docs/ through .. fails" 1 \
   'index table may only link into' \
   bash -c 'printf "%s\n" "| [Sneaky](docs/../tools.md) | Escapes docs/ |" >> .claude/scripts/README.md'
 
+# --- 6. row ordering, per-doc opt-in (issue #1544) ------------------------
+# The check reads only docs carrying the marker, so both halves need pinning:
+# that a marked doc is genuinely checked, and that an unmarked one is not.
+# Without the second half the check could quietly grow into a repo-wide rule
+# and redden CI on the 12 sibling docs that group rows by role on purpose.
+
+ORDERED_MARKER='<!-- catalog-lint: ordered -->'
+# The same marker shown as an example of the format. It must not opt a doc in,
+# for the reason the back-link check already applies to fenced links.
+FENCED_MARKER=$(printf '%s\n%s\n%s' '```markdown' "$ORDERED_MARKER" '```')
+
+# A doc that shows a fenced example and *then* carries the real marker. The
+# lint promises position-independence ("a marker anywhere in the doc counts"),
+# so closing a fence must not stop the reader from seeing what follows it.
+FENCE_THEN_MARKER=$(printf '%s\n%s\n%s\n\n%s' \
+  '```markdown' '| [example.sh](../example.sh) | Shown, not counted |' '```' \
+  "$ORDERED_MARKER")
+
+# The same doc without the marker, but quoting the fence delimiter inline
+# afterwards. Nothing here opts the doc in, and an inline ``` is not a fence —
+# it does not start the line.
+FENCE_THEN_INLINE=$(printf '%s\n%s\n%s\n\n%s' \
+  '```markdown' '| [example.sh](../example.sh) | Shown, not counted |' '```' \
+  'Quote the delimiter as ``` when writing about fences.')
+
+ROW_ALPHA='| [alpha.sh](../alpha.sh) | First |'
+ROW_BETA='| [beta.py](../beta.py) | Second |'
+ROW_GAMMA='| [gamma.sh](../gamma.sh) | Third |'
+ROW_ALPHA_TWO='| [alpha-two.sh](../alpha-two.sh) | Prefix namesake |'
+ROW_TEST_NESTED='| [alpha.test.sh](../tests/alpha.test.sh) | Covers alpha |'
+ROW_TEST_TOPLEVEL='| [alpha.test.sh](../alpha.test.sh) | Top-level namesake |'
+
+# write_doc <path> <title> <marker-or-empty> <row>...
+# Rewrites a category doc with the given rows in the given order, so a case
+# states the order it is testing rather than patching the fixture into shape.
+write_doc() {
+  # Not `local path=` — zsh ties path/PATH, and a sourced copy would blow away
+  # PATH for everything after it (issue #1556).
+  local doc_path="$1" title="$2" marker="$3" row
+  shift 3
+  {
+    printf '# %s\n\n' "$title"
+    printf 'Category prose.\n\n'
+    if [[ -n "$marker" ]]; then printf '%s\n\n' "$marker"; fi
+    printf '| Entry | Purpose |\n|-------|---------|\n'
+    for row in "$@"; do printf '%s\n' "$row"; done
+    printf '\n---\n\n[back to the index](../README.md)\n'
+  } > "$doc_path"
+}
+
+# The namesake pair of issue #1452: one file at the top level, one under
+# tests/, identical link text. Rendered, the two rows are indistinguishable,
+# so the ordering check has to treat them as a tie.
+write_namesake_tests_doc() {
+  printf '#!/usr/bin/env bash\n' > .claude/scripts/alpha.test.sh
+  write_doc .claude/scripts/docs/tests.md Tests "$ORDERED_MARKER" "$@"
+}
+
+# A name that is a prefix of another, separated by a byte that sorts below the
+# extension dot — the shape that drifted into the real tests.md.
+write_prefix_pair_tools_doc() {
+  printf '#!/usr/bin/env bash\n' > .claude/scripts/alpha-two.sh
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" "$@"
+}
+
+expect "marked doc in sort order passes" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" \
+    "$ROW_ALPHA" "$ROW_BETA" "$ROW_GAMMA"
+
+# The negative control. Without it every case above passes on a check that
+# never fires.
+expect "marked doc with a displaced row fails and names the row" 1 \
+  "row 'beta\.py' is out of order.*it follows 'gamma\.sh'" \
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" \
+    "$ROW_ALPHA" "$ROW_GAMMA" "$ROW_BETA"
+
+# The 12 role-grouped siblings in the real repo, in miniature: rows in no
+# particular order, no marker, and nothing for the lint to say about it.
+expect "unmarked doc with displaced rows passes" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+expect "marker inside a code fence does not opt the doc in" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCED_MARKER" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+# The fence skip must not blind the reader to what comes after the fence. Both
+# cases below failed before the prelude stopped naming its scratch variable
+# `marker`: it overwrote has_order_marker's -v marker on the first fence line,
+# so afterwards the detector searched for a literal ``` instead of the marker.
+# Position-independence and the fenced-example rule are the two halves of the
+# documented contract, and each one broke in a different direction.
+expect "marker below a fenced block still opts the doc in" 1 \
+  "row 'beta\.py' is out of order.*it follows 'gamma\.sh'" \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCE_THEN_MARKER" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+expect "a fence plus a later inline delimiter does not opt the doc in" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCE_THEN_INLINE" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+# Ordering is keyed on the link text a reader scans, not on the path key
+# checks 1 and 3 use, so the namesake pair compares equal and both orders are
+# legal. Pinning both is what stops a later switch to a path key from
+# reddening a doc no reader could have written differently.
+expect "marked doc allows a same-link-text pair, nested first" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_namesake_tests_doc "$ROW_TEST_NESTED" "$ROW_TEST_TOPLEVEL"
+
+expect "marked doc allows a same-link-text pair, top level first" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_namesake_tests_doc "$ROW_TEST_TOPLEVEL" "$ROW_TEST_NESTED"
+
+# Byte order, not dictionary order: '-' (0x2D) sorts before '.' (0x2E). This
+# is the shape that drifted into the real tests.md between PR #1539 and this
+# change, and the one a reader is most likely to "correct" back.
+expect "marked doc enforces byte order, not dictionary order" 1 \
+  "row 'alpha-two\.sh' is out of order.*it follows 'alpha\.sh'" \
+  write_prefix_pair_tools_doc "$ROW_ALPHA" "$ROW_ALPHA_TWO" "$ROW_BETA" "$ROW_GAMMA"
+
+expect "marked doc passes with the byte-order pair the right way round" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_prefix_pair_tools_doc "$ROW_ALPHA_TWO" "$ROW_ALPHA" "$ROW_BETA" "$ROW_GAMMA"
+
 # --- out-of-scope files must NOT require rows -----------------------------
 # These pin the scope boundary. Without them a future tightening of the
 # inventory glob would demand catalog rows for helper libraries and test
@@ -335,6 +463,65 @@ normalize_case "a/b"                  "../.."                "."
 normalize_case "a/b"                  "/abs/path.sh"         "/abs/path.sh"
 normalize_case "/tmp/x"               "../y.sh"              "/tmp/y.sh"
 normalize_case "/"                    "../../etc"            "/etc"
+
+# --- real repo: the row-ordering opt-in is actually in effect --------------
+# The sanity run below passes whether or not any doc carries the marker, so on
+# its own it cannot tell an enforced tests.md from an unmarked one — a green
+# check that never ran. Assert the marker is where the decision put it, and
+# nowhere else: the 12 sibling docs stay unmarked by design (issue #1544).
+#
+# Read the marker the way the lint does — outside any fence. A plain grep is
+# wrong in both directions here: it would call a sibling that merely documents
+# the marker inside a fence opted in and redden CI on a correct tree, and it
+# would go on reporting tests.md as marked if that marker ever moved inside a
+# fence, leaving the ordering unenforced behind this very assertion.
+effective_marker_docs() {
+  local doc
+  for doc in "$@"; do
+    # Fence skip mirrors AWK_DOC_PRELUDE; the probes below pin the two apart.
+    if awk -v marker="$ORDERED_MARKER" '
+      /^[[:space:]]*(```|~~~)/ {
+        fence_tok = ($0 ~ /^[[:space:]]*```/) ? "```" : "~~~"
+        if (!in_fence) { in_fence = 1; fence = fence_tok }
+        else if (fence_tok == fence) { in_fence = 0; fence = "" }
+        next
+      }
+      in_fence { next }
+      index($0, marker) > 0 { found = 1 }
+      END { if (found) exit 0; exit 1 }
+    ' "$doc"; then
+      printf '%s\n' "$doc"
+    fi
+  done
+}
+
+# The reader above is a second copy of semantics the lint owns, so pin it
+# against the same three shapes the fixture cases pin the lint against. Without
+# these it could rot back into a plain grep without anything going red.
+marker_probe="${TMP_ROOT}/marker-probe.md"
+probe_marker() {
+  local name="$1" body="$2" want="$3" got
+  printf '%s\n' "$body" > "$marker_probe"
+  got=$(effective_marker_docs "$marker_probe")
+  if [[ "$got" == "$want" ]]; then
+    echo "ok   — marker reader: ${name}"
+  else
+    echo "FAIL — marker reader: ${name}: expected '${want:-<none>}', got '${got:-<none>}'"
+    failures=$((failures + 1))
+  fi
+}
+probe_marker "a bare marker opts in"                "$ORDERED_MARKER"    "$marker_probe"
+probe_marker "a fenced marker does not"             "$FENCED_MARKER"     ""
+probe_marker "a marker below a fence still opts in" "$FENCE_THEN_MARKER" "$marker_probe"
+
+marked_docs=$(effective_marker_docs "${REPO_ROOT}"/.claude/scripts/docs/*.md)
+if [[ "$marked_docs" == "${REPO_ROOT}/.claude/scripts/docs/tests.md" ]]; then
+  echo "ok   — tests.md is the only category doc opted in to row ordering"
+else
+  echo "FAIL — expected only .claude/scripts/docs/tests.md to carry the ordering marker"
+  echo "       got: ${marked_docs:-<none>}"
+  failures=$((failures + 1))
+fi
 
 # --- real repo ------------------------------------------------------------
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
