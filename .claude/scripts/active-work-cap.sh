@@ -196,18 +196,60 @@
 #   feedback_guard_must_fail_closed.md). jq stderr is left unredirected so a
 #   malformed chip log is visible rather than looking like "no chips".
 #
+# CLIENT REQUIREMENTS — gh 2.72.0 for an EXACT count (#1335)
+#   `closingIssuesReferences` reached `gh pr list --json` in gh 2.72.0 (the
+#   ticket's "2.49" predates the field by about a year — provenance at
+#   GH_MIN_CLOSING_REFS below). It is
+#   the field that keeps a clicked chip from being counted twice alongside the
+#   PR it became, and it has exactly one consumer (chips_covered_by_prs), where
+#   it is only ever SUBTRACTED — the open-PR count itself needs `number` alone.
+#
+#   On an older client gh rejects the field CLIENT-SIDE, before any network
+#   call. That used to reach die_read and exit 5, and since /pm Step 0 reads a
+#   non-zero exit as FREE=0, a stale gh froze chip offers repo-wide with no
+#   hint that the remedy was a client upgrade. So the gap now DEGRADES, loudly:
+#
+#     - Detection is on the observed error, never on a parsed version string —
+#       a version-parse bug must not be able to freeze a working gh. The
+#       version is read only to make the remedy line actionable.
+#     - The retry drops the field for `body` and reconstructs the references
+#       from GitHub closing keywords (the predicate /pm 1B.2 already uses),
+#       keeping cross-repo references only when their slug is this repo.
+#     - A DEGRADED line goes to stderr once per run, and --json reports
+#       `closing_refs_source: "body-keywords"`.
+#     - Residual error runs the safe way in every shape measured. A reference
+#       the keywords cannot see (linked through the GitHub UI, no keyword in
+#       the body) subtracts one chip fewer, so ACTIVE reads HIGH and FREE LOW
+#       — the over-counting direction the header already calls safe. The parse
+#       never adopts another repo's reference.
+#       It is not a proof of one-directionality: the strip below removes fenced
+#       blocks, inline spans and HTML comments, but NOT four-space-indented
+#       code blocks or <pre>/<code> HTML, so a closing keyword quoted in one of
+#       those would still be read as a reference and would over-subtract. No
+#       instance appears in the 60-PR sample this was measured against, and the
+#       three stripped forms are the ones that did appear; the remaining shapes
+#       are a known, bounded gap rather than an impossibility.
+#
+#   Every OTHER gh failure — rate limit, auth, network, a different missing
+#   field, or a second unknown-field error on the retry — still exits 5.
+#
 # OUTPUT
 #   stdout: mode-dependent (plain line, JSON object, or a single integer).
 #           --json fields: cap, active, free, open_prs, live_chips,
-#           inline_pipelines, registry_baseline, cap_source, and
-#           offered_issue_nums (sorted int array of issue numbers that make up
-#           the offered-work term — explains a FREE=0 reading, AC#3 #1285).
+#           inline_pipelines, registry_baseline, cap_source,
+#           closing_refs_source ("api", or "body-keywords" on the degraded
+#           old-gh path — CLIENT REQUIREMENTS above), and offered_issue_nums
+#           (sorted int array of issue numbers that make up the offered-work
+#           term — explains a FREE=0 reading, AC#3 #1285).
 #   stderr: one-line diagnostics — fallback warnings and read failures.
 #
 # EXIT STATUS
-#   0  Success.
+#   0  Success. Includes the degraded old-gh count, which is a real census
+#      (CLIENT REQUIREMENTS above) and says so on stderr and in --json.
 #   2  Usage error (unknown flag, missing flag value, conflicting modes).
-#   5  A count source could not be read. Nothing is printed on stdout.
+#   5  A count source could not be read. Nothing is printed on stdout. A gh
+#      too old for closingIssuesReferences is NOT one of these — that gap
+#      degrades to the body-keyword fallback instead.
 
 set -uo pipefail
 
@@ -369,6 +411,207 @@ OPEN_PR_JSON=""
 # them with the open set restores the exclusion after merge.
 MERGED_PR_JSON="[]"
 
+# ------------------------------------------ old-gh capability fallback ------
+#
+# gh gained `closingIssuesReferences` in 2.72.0, via cli/cli PR #10544 (merged
+# 2025-04-29). Issue #1335 proposed 2.49.0; that is wrong by about a year — the
+# field did not exist in ANY gh surface until the 2025 merge — so the number
+# here is deliberately not the one the ticket names. The remedy line says
+# "upgrade to the latest gh" alongside the minimum, so the advice still lands
+# even if the exact first release is off by one.
+#
+# On an older client BOTH list calls below used to fail into die_read and the
+# whole census exited 5 — and /pm Step 0 reads a non-zero exit as FREE=0, so a
+# stale gh silently froze chip offers repo-wide with no hint the remedy was a
+# client upgrade (#1335).
+#
+# The field has exactly one consumer, chips_covered_by_prs(), and it is only
+# ever SUBTRACTED. The open-PR count itself needs `number` alone. So the gap
+# costs accuracy in the subtraction, never the census — which is why degrading
+# is right here and a hard exit was not.
+GH_MIN_CLOSING_REFS="2.72.0"
+
+# Set on the first recognized capability gap so the DEGRADED line prints once
+# even though both call sites degrade, and so --json can name the source.
+CLOSING_REFS_SOURCE="api"
+
+# GitHub closing keywords, matched exactly as /pm 1B.2 matches them: close /
+# closes / closed, fix / fixes / fixed, resolve / resolves / resolved, case
+# insensitive, then a separator, then a reference in one of the three forms
+# `#N`, `<owner>/<repo>#N`, or an issue URL. Capture 1 is the URL slug,
+# capture 2 the shorthand slug, capture 3 the issue number.
+#
+# The separator is REQUIRED — a colon, or at least one space or tab — and can
+# never be a newline. Both bounds run the same way. `Closes#5` with nothing
+# between is not a form GitHub documents, and no instance appears in 60 real
+# merged PRs here, so there is no evidence it links; matching it anyway would
+# SUBTRACT a chip that no PR covers. Likewise a newline: GitHub does not link
+# across one. Where the reading is uncertain the tighter rule is the safe one,
+# because missing a reference over-counts (fewer offers) while inventing one
+# under-counts (more offers) — the failure this whole script exists to prevent.
+#
+# Case-insensitivity rides an inline `(?i)` rather than a `scan($re; "i")`
+# flags argument: two-argument `scan` is not available on every jq this repo
+# has to run under, and `backlog-staleness.sh` already matches these same
+# keywords the inline way. Portability is the whole point of this code path —
+# it exists for machines whose tooling is behind — so it must not answer one
+# version gap by opening another.
+CLOSING_KEYWORD_RE='(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(?:[ \t]*:[ \t]*|[ \t]+)(?:https?://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/issues/|([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#|#)([0-9]+)'
+
+# True when gh rejected the field itself. gh validates --json field names
+# CLIENT-SIDE, before any network call, printing
+#
+#   Unknown JSON field: "closingIssuesReferences"
+#   Available fields:
+#     ...
+#
+# and exiting non-zero — so the failed call cost nothing and the retry below is
+# free. The match is anchored to the START of a line and must name the field on
+# that SAME line: a modern gh rejecting some OTHER field lists
+# closingIssuesReferences among its available ones, and an unanchored search
+# would read that catalogue as the gap and silently degrade a healthy client.
+is_unknown_closing_refs_field() {
+  local lowered line
+  lowered="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  while IFS= read -r line; do
+    case "$line" in
+      "unknown json field"*"closingissuesreferences"*) return 0 ;;
+    esac
+  done <<<"$lowered"
+  return 1
+}
+
+# Best-effort client version, for the remedy line only. Never a gate: the
+# fallback triggers on the observed error, so a version-parse miss cannot
+# freeze a working gh, and an unreadable version costs only a vaguer message.
+gh_version_string() {
+  local out rc=0
+  out="$(gh --version 2>/dev/null)" || rc=$?
+  local v=""
+  if (( rc == 0 )); then
+    v="$(printf '%s\n' "$out" \
+         | awk 'NR==1 { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit } }')"
+  fi
+  printf '%s' "${v:-unknown}"
+}
+
+warn_closing_refs_degraded() {
+  [[ "$CLOSING_REFS_SOURCE" == "api" ]] || return 0
+  CLOSING_REFS_SOURCE="body-keywords"
+  local v; v="$(gh_version_string)"
+  warn "DEGRADED: gh $v does not support the closingIssuesReferences field on gh pr list --json (added in gh $GH_MIN_CLOSING_REFS) — falling back to GitHub closing keywords parsed from PR bodies. A reference the fallback cannot see (one linked through the GitHub UI with no keyword in the body) leaves that chip counted, so ACTIVE may read HIGH and FREE LOW. Restore exact counting by upgrading gh to $GH_MIN_CLOSING_REFS or later, latest preferred: brew upgrade gh, or https://cli.github.com"
+}
+
+# Synthesize closingIssuesReferences from PR bodies so every consumer keeps
+# seeing the same shape the API field produced. Cross-repo references are kept
+# only when their slug is the repo being counted: another repo's issue 5 must
+# never subtract this repo's chip for issue 5.
+#
+# Fenced code blocks, inline code spans, and HTML comments are removed first,
+# because GitHub does not link a closing keyword inside any of them and neither
+# may we. This is not a nicety: measured against the API field over 60 real
+# merged PRs on this repo, it is the whole difference between 59/60 and 60/60.
+# The one PR that differed was itself ABOUT closing-keyword parsing, so its
+# body quoted `closed #1356`, `Closes #1531`, `Fixes #10` and six more as code
+# spans — nine phantom references against the one real trailer. Every one of
+# them would have SUBTRACTED a chip, and over-subtraction is the under-counting
+# direction that widens offers, so this strip is what keeps the fallback error
+# one-directional.
+# $1 = `gh pr list --json ...,body` output, $2 = target repo slug
+synthesize_closing_refs() {
+  jq -c --arg slug "$2" --arg re "$CLOSING_KEYWORD_RE" '
+    def strip_uncounted:
+      # Terminated comments first, then an UNTERMINATED one to end of body.
+      # GitHub treats an unclosed <!-- as running to the end of the document
+      # and links nothing inside it; matching only the terminated form would
+      # leave a trailing keyword visible and SUBTRACT a chip that is not there.
+      gsub("<!--(.*?-->|.*)"; " "; "m")
+      | split("\n")
+      | reduce .[] as $line ({fence: null, kept: []};
+          # The run is captured HOMOGENEOUS and at least three long by the
+          # pattern itself, so anything trailing it lands in `rest` as an info
+          # string. Capturing [`~]+ and rejecting mixed runs afterwards instead
+          # would read ```~ as ordinary prose and scan the block it opens.
+          ( ($line | capture("^[ \t]*(?<f>`{3,}|~{3,})(?<rest>.*)$")) // null ) as $delim
+          | if .fence == null then
+              if $delim == null then .kept += [$line] else .fence = $delim.f end
+            else
+              # A fence closes only on the SAME character, a run at least as
+              # long, and nothing but whitespace after it. Toggling on any
+              # ``` would let a shorter delimiter QUOTED INSIDE a longer fence
+              # end the block early and expose the rest of it to the scan.
+              if $delim != null
+                 and ($delim.f[0:1] == .fence[0:1])
+                 and (($delim.f | length) >= (.fence | length))
+                 and ($delim.rest | test("^[ \t]*$"))
+              then .fence = null else . end
+            end)
+      | .kept | join("\n")
+      # Runs of backticks on both sides, so a double-backtick span (the way a
+      # span containing a backtick is written) is removed whole rather than
+      # having its two delimiters eaten as an empty span and its contents left
+      # exposed. An UNPAIRED backtick matches nothing and leaves the text
+      # visible, which is right: GitHub does not read it as code either.
+      #
+      # `\n` stays excluded from the middle. Without it a stray backtick late
+      # in one line pairs with one lines later and swallows everything between,
+      # trailer included — measured: it silently ate the real `Closes #1564`
+      # from PR #1569 and took the 60-PR API comparison back to 59/60.
+      | gsub("`+[^`\n]*`+"; " ");
+    def refs($s):
+      [ ((.body // "") | strip_uncounted)
+        | scan($re)
+        | select((((.[0] // .[1]) // "")) as $r
+                 | $r == "" or ($r | ascii_downcase) == ($s | ascii_downcase))
+        | { number: (.[2] | tonumber) } ];
+    [ .[] | . as $pr | ($pr | del(.body)) + { closingIssuesReferences: ($pr | refs($slug)) } ]
+  ' <<<"$1" 2>&1
+}
+
+# One `gh pr list` fetch with the closing-issue references attached, degrading
+# to the body fallback on an old client. Sets _PR_LIST_OUT (the JSON array on
+# success, the error text on failure) and returns gh/jq status so the CALLER
+# can die_read — die_read inside a command substitution would exit only the
+# subshell and leave the parent counting an empty string as zero.
+# $1 = --state value, $2 = extra fields ("" for none), $3 = --limit value
+_PR_LIST_OUT=""
+pr_list_with_closing_refs() {
+  local state="$1" extra="$2" limit="$3"
+  local out rc=0
+  out="$(gh pr list --state "$state" --author "@me" --limit "$limit" \
+         --json "number${extra:+,$extra},closingIssuesReferences" \
+         ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
+  if (( rc == 0 )); then
+    _PR_LIST_OUT="$out"
+    return 0
+  fi
+  if ! is_unknown_closing_refs_field "$out"; then
+    # A real read failure — rate limit, auth, network, a different missing
+    # field. Exit 5 keeps its meaning; only the one recognized, recoverable
+    # capability gap degrades.
+    _PR_LIST_OUT="$out"
+    return "$rc"
+  fi
+
+  warn_closing_refs_degraded
+  local dout drc=0
+  dout="$(gh pr list --state "$state" --author "@me" --limit "$limit" \
+          --json "number${extra:+,$extra},body" \
+          ${REPO:+--repo "$REPO"} 2>&1)" || drc=$?
+  if (( drc != 0 )); then
+    _PR_LIST_OUT="closing-keyword fallback fetch also failed: $dout"
+    return "$drc"
+  fi
+  local syn src=0
+  syn="$(synthesize_closing_refs "$dout" "$REPO")" || src=$?
+  if (( src != 0 )); then
+    _PR_LIST_OUT="could not parse closing keywords out of PR bodies: $syn"
+    return "$src"
+  fi
+  _PR_LIST_OUT="$syn"
+  return 0
+}
+
 # `--limit 100` cannot affect the answer, despite looking like the same
 # truncation bug fixed in open_among. FREE is max(0, CAP - ACTIVE) and CAP_MAX
 # is 10, so any repo with enough open PRs to hit the limit is already an order
@@ -377,8 +620,8 @@ MERGED_PR_JSON="[]"
 # subtracts fewer chips — the over-counting, safe direction.
 fetch_open_prs() {
   local out rc=0
-  out="$(gh pr list --state open --author "@me" --limit 100 \
-         --json number,closingIssuesReferences ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
+  pr_list_with_closing_refs open "" 100 || rc=$?
+  out="$_PR_LIST_OUT"
   if [[ $rc -ne 0 ]]; then
     die_read "gh pr list (open, author=@me${REPO:+, repo=$REPO}) failed: $out"
   fi
@@ -427,8 +670,8 @@ fetch_merged_prs() {
   local fetch_limit=$(( limit * 3 ))
   [[ fetch_limit -gt 150 ]] && fetch_limit=150
   local out rc=0
-  out="$(gh pr list --state merged --author "@me" --limit "$fetch_limit" \
-         --json number,mergedAt,closingIssuesReferences ${REPO:+--repo "$REPO"} 2>&1)" || rc=$?
+  pr_list_with_closing_refs merged mergedAt "$fetch_limit" || rc=$?
+  out="$_PR_LIST_OUT"
   if [[ $rc -ne 0 ]]; then
     die_read "gh pr list (merged, author=@me${REPO:+, repo=$REPO}) failed: $out"
   fi
@@ -1316,11 +1559,13 @@ case "$MODE" in
       --argjson pipelines "$PIPELINES" \
       --argjson reg_chip_count "$REG_CHIP_COUNT" \
       --arg cap_source "$CAP_SOURCE" \
+      --arg closing_refs_source "$CLOSING_REFS_SOURCE" \
       --argjson offered_issue_nums "$OFFERED_ISSUE_NUMS_JSON" \
       '{cap: $cap, active: $active, free: $free,
         open_prs: $open_prs, live_chips: $chips, inline_pipelines: $pipelines,
         registry_baseline: $reg_chip_count,
         cap_source: $cap_source,
+        closing_refs_source: $closing_refs_source,
         offered_issue_nums: $offered_issue_nums}'
     ;;
   *)
