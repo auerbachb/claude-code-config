@@ -293,12 +293,21 @@ second_bounds() { # file → one integer per bound application, normalised to se
             if (tok[j] == "-k" || tok[j] == "--kill-after" || tok[j] == "-s" || tok[j] == "--signal") j++
             j++
           }
-          if (j <= n) { bt = tok[j]; s = dur2sec(bt) }
+          if (j <= n) bt = tok[j]
         }
-        else if (w ~ /^g?timeout=/)  { bt = substr(w, index(w, "=") + 1); s = dur2sec(bt) }
-        else if (w == "run_bounded") { if (i + 1 <= n) { bt = tok[i + 1]; s = dur2sec(bt) } }
-        else if (w == "--timeout")   { if (i + 1 <= n) { bt = tok[i + 1]; s = dur2sec(bt) } }
-        else if (w ~ /^--timeout=/)  { bt = substr(w, index(w, "=") + 1); s = dur2sec(bt) }
+        else if (w ~ /^g?timeout=/)  bt = substr(w, index(w, "=") + 1)
+        else if (w == "run_bounded") { if (i + 1 <= n) bt = tok[i + 1] }
+        else if (w == "--timeout")   { if (i + 1 <= n) bt = tok[i + 1] }
+        else if (w ~ /^--timeout=/)  bt = substr(w, index(w, "=") + 1)
+        # Quotes are not part of a duration. Parsed with them still attached, a
+        # quoted literal such as "240" (double- or single-quoted) failed the
+        # numeric pattern AND carried no `$` to mark it unverifiable, so it was
+        # neither measured nor reported — the exact silent miss this guard exists
+        # to close. A duration never legitimately contains a quote, so stripping
+        # both kinds is safe, and "$BOUND" still reduces to $BOUND and stays
+        # unverifiable. The single quote is written \047 because this awk program
+        # is itself inside a single-quoted shell string.
+        if (bt != "") { gsub(/["\047]/, "", bt); s = dur2sec(bt) }
         if (s >= 0) print s
         # A bound whose duration is a shell variable cannot be shown to clear the
         # floor, and dropping it silently is the one failure this guard must not
@@ -636,6 +645,40 @@ if [[ -z "$(offenders_in "$NC4K" suite-lines)" ]]; then
   pass "NC4k a command merely ending in timeout (my_timeout) is not a bound"
 else
   fail "NC4k attributed a bound to my_timeout — basename match is too loose"
+fi
+
+# Quoted durations. These were the worst shape available: a quoted literal parses
+# as neither a number nor a variable, so it was measured by nothing and reported
+# by nothing. Both quote kinds, and the run_bounded spelling too.
+NC4L="$SCRATCH/nc-quoted-duration.sh"
+while IFS= read -r bound; do
+  cat >"$NC4L" <<FIXTURE
+#!/usr/bin/env bash
+$bound bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+  if [[ -n "$(offenders_in "$NC4L" suite-lines)" ]]; then
+    pass "NC4l a quoted sub-floor duration ($bound) is detected"
+  else
+    fail "NC4l missed a quoted sub-floor bound ($bound) — measured by nothing, reported by nothing"
+  fi
+done <<'BOUNDS'
+timeout "240"
+timeout '4m'
+run_bounded "240"
+gtimeout '240'
+BOUNDS
+
+# ...and stripping the quotes must still MEASURE rather than blanket-flag: a
+# quoted bound at or above the floor is compliant and must stay unreported.
+NC4M="$SCRATCH/nc-quoted-compliant.sh"
+cat >"$NC4M" <<'FIXTURE'
+#!/usr/bin/env bash
+timeout "600" bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+if [[ -z "$(offenders_in "$NC4M" suite-lines)" ]]; then
+  pass "NC4m a quoted bound at or above the floor (600) is still compliant"
+else
+  fail "NC4m flagged a compliant quoted bound — quote stripping blanket-reports instead of measuring"
 fi
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
