@@ -34,7 +34,7 @@ Follow-up to #416 skill-usage telemetry. Audit date: 2026-07-02.
 | lessons | `phase-c-merger.md`, `cr-merge-gate.md`, `wrap/SKILL.md` — removed 2026-07-16 (#582); see addendum |
 | merge | phase A/B/C agents, orchestration rules |
 | pm + pm-* suite | `pm-worker.md`, cross-skill refs, `stale-cleanup.sh`, README |
-| pr-review-help | `subagent-orchestration.md`, `pm-config.md` |
+| ~~pr-review-help~~ *(retired — #1583)* | *Historical, as of this audit:* `subagent-orchestration.md`, `pm-config.md`. Retired 2026-09; the executive lens survives as `/recap --executive` and both references are gone. |
 | prioritize *(retired)* | *Historical, as of this audit:* `issue-maker/SKILL.md`, reference docs. Folded into `/pm` and retired (#583) — those references now point at `/pm`. |
 | standup | `workday.sh`, ~~`pm-okr/SKILL.md`~~ *(that skill was retired — #1585; see addendum)* |
 | subagent | phase A/B/C agents, orchestration rules |

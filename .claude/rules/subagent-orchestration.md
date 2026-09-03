@@ -31,7 +31,7 @@ Any spawn that does NOT use a `.claude/agents/` definition — built-in Explore/
 | Phase B (`phase-b-reviewer`) | `opus` |
 | Phase C (`phase-c-merger`) | `sonnet` |
 | `pm-worker` | `sonnet` |
-| Read-only review agents (e.g., `/pr-review-help`) | `sonnet` |
+| Read-only review agents (e.g., `/recap`) | `sonnet` |
 
 Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family name). Fable is **never a spawn default** — reserve for interactive step-ups. An explicit `model` overrides frontmatter; escalate to `opus` if a Sonnet-tier agent underperforms. Alias resolution: `.claude/agents/README.md`.
 

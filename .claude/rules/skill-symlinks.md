@@ -31,6 +31,10 @@ Verify `$HOME/.claude/skills-worktree/.claude/skills` exists; if missing, run `s
 2. Commit and ensure it reaches `main` (via PR merge)
 3. **Only then** update the worktree (`fetch` + `reset --hard origin/main`) and `ln -s` the skill into `~/.claude/skills/`
 
+## After Retiring a Skill
+
+Same three steps, mirrored: delete it in the repo, land that on `main`, then sync the worktree and `rm ~/.claude/skills/<name>`. Skipping the last step leaves a dangling symlink that fails at load time.
+
 ## Verifying Existing Symlinks
 
 `ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules` — every entry must resolve to `~/.claude/skills-worktree/...`. Regular files warn but are never overwritten; root-repo-targeted symlinks need migrating. Exact commands for step 3, the session-start guard, and migration: `.claude/reference/skill-symlink-setup.md`.

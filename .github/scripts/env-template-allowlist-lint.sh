@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lint env-template allowlist conformance across agent prompts and canonical rule (issue #877).
 #
-# Six agent/skill prompt surfaces embed the .env template-exception clause.
+# Five agent prompt surfaces embed the .env template-exception clause.
 # This lint ensures they all say the same thing as the canonical allow-list
 # (example|sample|template) enforced at runtime by:
 #   .claude/hooks/env-guard.py  TEMPLATE_SUFFIXES = frozenset({'example','sample','template'})
@@ -32,14 +32,14 @@ PROSE_TOKEN='.env.{example,sample,template}'
 # technically redundant; it is kept for clarity.
 DRIFTED_TOKENS=('|dist|tpl>' '|dist>' '|tpl>' '.env.dist' '.env.tpl')
 
-# All six drifted prompt surfaces (Phase 1 narrowed all of these).
+# All five drifted prompt surfaces (Phase 1 narrowed all of these). A sixth,
+# `.claude/skills/pr-review-help/SKILL.md`, was dropped with that skill (#1583).
 PROMPT_SURFACES=(
   '.claude/agents/phase-a-fixer.md'
   '.claude/agents/phase-b-reviewer.md'
   '.claude/agents/phase-c-merger.md'
   '.claude/agents/pm-worker.md'
   '.claude/agents/README.md'
-  '.claude/skills/pr-review-help/SKILL.md'
 )
 
 # Canonical rule file (uses brace form, not angle-bracket form).

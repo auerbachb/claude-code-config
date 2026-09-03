@@ -5,7 +5,6 @@
 #   1) @codeant-ai review
 #   2) @cursor review
 #   3) @graphite-app re-review
-# Optional 4th: /pr-review-help (see pm-config.md).
 #
 # Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
 # above has produced zero engagement since 2026-05-08 — external GitHub App
@@ -35,7 +34,7 @@ COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 help() {
-  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 PR_NUM=""
@@ -77,7 +76,6 @@ done
 THRESHOLD_SCORE=100
 FIRST_CR_ROUND=3
 CADENCE_ROUNDS=2
-ENABLE_PR_REVIEW_HELP=0
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 PM_CFG=""
@@ -112,10 +110,6 @@ if [[ -n "$PM_CFG" ]]; then
   if [[ -n "$v" ]]; then
     if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]]; then CADENCE_ROUNDS="$v"
     else echo "maybe-trigger-ai-review.sh: pm-config CADENCE_ROUNDS='$v' is not a non-negative integer" >&2; exit 4; fi
-  fi
-  v="$(parse_pm_kv ENABLE_PR_REVIEW_HELP)"
-  if [[ "$v" =~ ^(1|true|yes|on)$ ]]; then
-    ENABLE_PR_REVIEW_HELP=1
   fi
 fi
 
@@ -202,7 +196,7 @@ steps_incomplete() {
   local st
   st="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // null" 2>/dev/null || echo null)"
   [[ -n "$st" && "$st" != "null" ]] || return 1
-  jq -e --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '
+  jq -e --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '
     . as $st
     | $st != null
       and ($st.head_sha == $h)
@@ -211,7 +205,6 @@ steps_incomplete() {
         ($st.codeant | not)
         or ($st.cursor | not)
         or ($st.graphite | not)
-        or ($need_help == 1 and ($st.pr_help | not))
       )
   ' <<<"$st" >/dev/null 2>&1
 }
@@ -266,7 +259,6 @@ if (( DRY_RUN )); then
       --argjson threshold "$THRESHOLD_SCORE" \
       --argjson first_round "$FIRST_CR_ROUND" \
       --argjson cadence "$CADENCE_ROUNDS" \
-      --argjson pr_help "$ENABLE_PR_REVIEW_HELP" \
       --arg head "$HEAD_SHA" \
       '{
         status: $status,
@@ -275,13 +267,10 @@ if (( DRY_RUN )); then
         threshold: $threshold,
         first_cr_round: $first_round,
         cadence_rounds: $cadence,
-        would_post_pr_review_help: ($pr_help == 1),
         head_sha: $head
       }'
   else
-    echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite)$(
-      if (( ENABLE_PR_REVIEW_HELP )); then echo ' + /pr-review-help'; fi
-    ) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
   exit 0
 fi
@@ -295,23 +284,26 @@ fi
 INIT_STEPS="$(jq -cn \
   --arg h "$HEAD_SHA" \
   --argjson r "$CR_ROUNDS" \
-  --argjson need_help "$ENABLE_PR_REVIEW_HELP" \
   '{
     head_sha: $h,
     cr_rounds: $r,
-    needs_pr_help: ($need_help == 1),
     codeant: false,
     cursor: false,
-    graphite: false,
-    pr_help: false
+    graphite: false
   }')"
 
 if [[ -f "$STATE_FILE" ]]; then
   EXISTING="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // empty" 2>/dev/null || true)"
   if [[ -n "$EXISTING" && "$EXISTING" != "null" && "$EXISTING" != "" ]]; then
-    MATCH="$(jq -n --argjson ex "$EXISTING" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '$ex | select(.head_sha == $h and .cr_rounds == $r)' 2>/dev/null || true)"
+    # -c so the reused record stays single-line: INIT_STEPS is interpolated into
+    # a jq path assignment below, which a pretty-printed value would break.
+    MATCH="$(jq -cn --argjson ex "$EXISTING" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '$ex | select(.head_sha == $h and .cr_rounds == $r)' 2>/dev/null || true)"
     if [[ -n "$MATCH" && "$MATCH" != "null" ]]; then
-      INIT_STEPS="$(jq -cn --argjson ex "$EXISTING" --argjson need_help "$ENABLE_PR_REVIEW_HELP" '$ex | .needs_pr_help = ($need_help == 1)')"
+      # Resume the in-flight record as-is. A record written before #1583 may
+      # still carry the retired `needs_pr_help`/`pr_help` keys; no reader
+      # consults them any more, and rewriting a partially-posted record to drop
+      # them would buy nothing.
+      INIT_STEPS="$MATCH"
     fi
   fi
 fi
@@ -373,9 +365,6 @@ if bugbot_refused_head; then
   fi
 elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
-if (( ENABLE_PR_REVIEW_HELP )); then
-  if ! post_one pr_help "/pr-review-help #$PR_NUM"; then echo "maybe-trigger-ai-review.sh: failed posting /pr-review-help" >&2; exit 5; fi
-fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! "$STATE_HELPER" \
@@ -393,8 +382,7 @@ if (( JSON_OUT )); then
     --argjson cr_rounds "$CR_ROUNDS" \
     --argjson score "$SCORE" \
     --arg head "$HEAD_SHA" \
-    --argjson pr_help "$ENABLE_PR_REVIEW_HELP" \
-    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, posted_pr_review_help: ($pr_help == 1)}'
+    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head}'
 else
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE)"
 fi
