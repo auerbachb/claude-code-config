@@ -266,19 +266,29 @@ second_bounds() { # file → one integer per bound application, normalised to se
         w = tok[i]
         sub(/^[^A-Za-z0-9_-]+/, "", w)   # strip leading ( ; && " etc
         s = -1
+        bt = ""
         if (w == "timeout" || w == "gtimeout") {
           j = i + 1
           while (j <= n && substr(tok[j], 1, 1) == "-") {
             if (tok[j] == "-k" || tok[j] == "--kill-after" || tok[j] == "-s" || tok[j] == "--signal") j++
             j++
           }
-          if (j <= n) s = dur2sec(tok[j])
+          if (j <= n) { bt = tok[j]; s = dur2sec(bt) }
         }
-        else if (w ~ /^g?timeout=/)  s = dur2sec(substr(w, index(w, "=") + 1))
-        else if (w == "run_bounded") { if (i + 1 <= n) s = dur2sec(tok[i + 1]) }
-        else if (w == "--timeout")   { if (i + 1 <= n) s = dur2sec(tok[i + 1]) }
-        else if (w ~ /^--timeout=/)  s = dur2sec(substr(w, index(w, "=") + 1))
+        else if (w ~ /^g?timeout=/)  { bt = substr(w, index(w, "=") + 1); s = dur2sec(bt) }
+        else if (w == "run_bounded") { if (i + 1 <= n) { bt = tok[i + 1]; s = dur2sec(bt) } }
+        else if (w == "--timeout")   { if (i + 1 <= n) { bt = tok[i + 1]; s = dur2sec(bt) } }
+        else if (w ~ /^--timeout=/)  { bt = substr(w, index(w, "=") + 1); s = dur2sec(bt) }
         if (s >= 0) print s
+        # A bound whose duration is a shell variable cannot be shown to clear the
+        # floor, and dropping it silently is the one failure this guard must not
+        # have: `run_bounded "$BOUND"` is the dominant idiom in this repo, so the
+        # hole would sit exactly where a real bound would be written. Reported as
+        # unverifiable, matching how the chain-readability check treats a link it
+        # cannot read. The `$` test is what keeps prose out: `Any timeout must be
+        # >= 420s.` also fails to parse as a duration, and flagging every
+        # unparseable word would make the docs that explain the floor trip it.
+        else if (bt ~ /\$/) print "U:" bt
       }
     }
   ' "$1" 2>/dev/null || true
@@ -321,7 +331,12 @@ offenders_in() { # file, scope → offending descriptions, one per line
   fi
   while IFS= read -r v; do
     [[ -n "$v" ]] || continue
-    (( v < FLOOR_SECS )) && printf '%s: %ss bound\n' "$file" "$v"
+    if [[ "$v" == U:* ]]; then
+      printf '%s: unverifiable bound %s (shell variable — cannot be shown >= %ss)\n' \
+        "$file" "${v#U:}" "$FLOOR_SECS"
+    elif (( v < FLOOR_SECS )); then
+      printf '%s: %ss bound\n' "$file" "$v"
+    fi
   done <<<"$(second_bounds "$target")"
   while IFS= read -r v; do
     [[ -n "$v" ]] || continue
@@ -539,6 +554,39 @@ FIXTURE
     fail "NC4g missed a 240s bound applied via a '$kw' suite-path declaration"
   fi
 done
+
+# A bound whose DURATION is a variable. Its value is unknowable from the file, so
+# the only two options are report it or drop it; dropping it is a silent miss on
+# the repo-dominant `run_bounded "$BOUND"` form, which is the failure this guard
+# exists to prevent. Each spelling is asserted separately — a quoted "$B" and a
+# bare ${B} reach the tokeniser differently.
+NC4H="$SCRATCH/nc-variable-bound.sh"
+for bound in 'run_bounded "$BOUND"' 'timeout "$BOUND"' 'timeout ${BOUND}' 'run_bounded $BOUND'; do
+  cat >"$NC4H" <<FIXTURE
+#!/usr/bin/env bash
+$bound bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+  if [[ "$(offenders_in "$NC4H" suite-lines)" == *"unverifiable bound"* ]]; then
+    pass "NC4h a variable bound ($bound) is reported as unverifiable, not dropped"
+  else
+    fail "NC4h silently dropped a variable bound ($bound) — a sub-floor value would pass unseen"
+  fi
+done
+
+# ...and the discriminator has to be the variable, not "did not parse as a
+# duration". Prose fails to parse too, and flagging it would trip every doc that
+# explains the floor. This is NC6 from the other side: same unparseable token,
+# opposite verdict, so a widened detector cannot quietly swallow the prose case.
+NC4I="$SCRATCH/nc-unparseable-prose.sh"
+cat >"$NC4I" <<'FIXTURE'
+#!/usr/bin/env bash
+# checkpoint-handoff.test.sh: any timeout must be >= 420s, never a 240s alarm.
+FIXTURE
+if [[ -z "$(offenders_in "$NC4I" suite-lines)" ]]; then
+  pass "NC4i an unparseable NON-variable token (prose) is still not a bound"
+else
+  fail "NC4i flagged prose as an unverifiable bound — docs explaining the floor would trip it"
+fi
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
 # its first `mktemp -d` — the exact drift the first-line check cannot see, since
