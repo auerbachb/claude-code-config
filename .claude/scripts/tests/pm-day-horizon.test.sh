@@ -523,6 +523,14 @@ require_text "pause-resume leaves a weekly park standing"     "$PAUSE_RESUME" \
   'park left standing'
 require_text "pause-resume fails closed on an unreadable kind" "$PAUSE_RESUME" \
   'could not read day\.limit_kind'
+# A NULL kind is not a weekly cap: 2D.7 Step 1 writes parked_until and the `-1`
+# sentinel while limit_kind only arrives with Step 3, so an incomplete claim
+# reaches the retire branch with kind unset. Gating on "not rolling_window"
+# alone would strand exactly the half-written park the retirement exists for.
+require_text "weekly stand-down requires a NON-NULL kind" "$PAUSE_RESUME" \
+  '\-n "\$PARK_KIND".*!= "null".*!= "rolling_window"'
+require_text "pause-resume names the incomplete-claim case" "$PAUSE_RESUME" \
+  'incomplete claim'
 require_text "generation check is unchanged"        "$PAUSE_RESUME" 'day\.limit_resume_generation'
 
 require_text "schema documents limit_cause"    "$SCHEMA" 'limit_cause'

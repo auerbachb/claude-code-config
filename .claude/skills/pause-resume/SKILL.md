@@ -401,9 +401,17 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
       PARK_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind" 2>/dev/null) || KIND_RC=$?
       if [[ "$KIND_RC" -ne 0 && "$KIND_RC" -ne 3 ]]; then
         echo "(DEGRADED: could not read day.limit_kind (rc=$KIND_RC) — park left standing, recovery remains active)"
-      elif [[ "$PARK_KIND" != "rolling_window" ]]; then
-        echo "(usage-limit park left standing: limit_kind=${PARK_KIND:-unset} is not rolling_window — resume when the window reopens)"
+      elif [[ -n "$PARK_KIND" && "$PARK_KIND" != "null" && "$PARK_KIND" != "rolling_window" ]]; then
+        # A genuine weekly cap. Every *complete* park writes limit_kind in the
+        # same atomic write as parked_until, so a NON-NULL kind that is not
+        # rolling_window is a real weekly park and must outlast this resume.
+        echo "(usage-limit park left standing: limit_kind=$PARK_KIND is not rolling_window — resume when the window reopens)"
       elif retire_limit_park; then
+        # rolling_window, or a NULL kind. Null is not a weekly cap: it is 2D.7's
+        # incomplete claim — Step 1 writes parked_until and the `-1` sentinel,
+        # and limit_kind only arrives with Step 3 — which is precisely the
+        # half-written park this retirement exists to clear. Reading null as
+        # weekly would strand the one shape the escape hatch is for (#1595).
         LIMIT_WAKE_RESOLVED=true
         echo "(cleared standing usage-limit park)"
       else
