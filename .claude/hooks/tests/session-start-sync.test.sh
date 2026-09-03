@@ -441,4 +441,57 @@ with open(path) as f:
 sys.exit(0 if d.get("restart_recommended") is not None else 1)
 PY
 
+# --- 14. resume-source fast-forward writes the restart signal (BugBot High, PR #1553) ---
+# A resumed session keeps the definitions it loaded at its original start. When
+# the hook's own fast-forward brings in new content on resume/compact/clear,
+# nothing else will ever signal it: the scheduled job only reports changes its
+# own run made, and its next tick sees an unchanged HEAD. The hook must write
+# restart_recommended itself — and a startup control must NOT trip this path.
+R14="$(mktemp -d)"
+R14_HOME="$R14/home"; mkdir -p "$R14_HOME/.claude/logs"
+R14_UP="$R14/upstream"
+git init -q -b main "$R14_UP"
+mkdir -p "$R14_UP/.claude/skills/alpha"
+printf '# one\n' > "$R14_UP/.claude/skills/alpha/SKILL.md"
+git -C "$R14_UP" add -A >/dev/null 2>&1
+git -C "$R14_UP" -c user.email=t@t -c user.name=t commit -qm one
+# A real skills-worktree is a `git worktree` (its .git is a FILE); a plain clone
+# has a .git DIRECTORY and trips the hook's bootstrap branch instead.
+git clone -q "$R14_UP" "$R14/base"
+git -C "$R14/base" worktree add -q --detach "$R14_HOME/.claude/skills-worktree" main
+printf '# two\n' > "$R14_UP/.claude/skills/alpha/SKILL.md"
+git -C "$R14_UP" add -A >/dev/null 2>&1
+git -C "$R14_UP" -c user.email=t@t -c user.name=t commit -qm two
+printf '{"source":"resume"}' | HOME="$R14_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume-source fast-forward left no restart signal — the resumed session runs stale definitions with no reminder (BugBot High, PR #1553)"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+rr = d.get("restart_recommended") or {}
+sys.exit(0 if "skills" in (rr.get("categories") or []) else 1)
+PY
+# Control: the same fast-forward on a STARTUP source must not leave a restart
+# signal — a fresh session already loaded what it just fetched.
+R14B_HOME="$R14/home-b"; mkdir -p "$R14B_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-b"
+git -C "$R14/base-b" worktree add -q --detach "$R14B_HOME/.claude/skills-worktree" main
+git -C "$R14B_HOME/.claude/skills-worktree" reset -q --hard HEAD~1
+printf '{"source":"startup"}' | HOME="$R14B_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14B_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup-source fast-forward wrote a restart signal — a fresh session already loaded what it fetched"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(1 if d.get("restart_recommended") is not None else 0)
+PY
+rm -rf "$R14"
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

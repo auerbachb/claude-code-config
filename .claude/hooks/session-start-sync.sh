@@ -308,7 +308,14 @@ fi
 # that as a partial-tree hazard and the session got a stale-config warning for a
 # tree that was freshly and correctly built. Not running them is both cheaper
 # and truer.
+# HEAD either side of the fast-forward. Local rev-parse, instant and unbounded
+# on purpose — it reads one ref, and a failure just leaves the resume-path
+# restart write below with nothing to compare (safe: no signal is written on
+# unknown SHAs, and the scheduled job's own diff still covers its runs).
+_old_head=""
+_new_head=""
 if (( _bootstrapped == 0 )) && [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+  _old_head="$(git -C "$skills_wt" rev-parse HEAD 2>/dev/null)" || _old_head=""
   if ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
       errors="skills worktree fetch failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
@@ -328,6 +335,9 @@ elif (( _bootstrapped == 0 )) && [[ -z "$errors" ]]; then
   # and report the worktree it just created as "not found", turning the fix
   # above into a worse bug than the one it replaced.
   errors="skills worktree not found at $skills_wt"
+fi
+if [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
+  _new_head="$(git -C "$skills_wt" rev-parse HEAD 2>/dev/null)" || _new_head=""
 fi
 
 # The root repo backing the skills worktree. Hoisted above the publish block
@@ -508,6 +518,61 @@ _marker_file="$HOME/.claude/sync-restart-recommended.json"
 #
 # Safe when the lock was never held: the clear is already gated on an empty
 # _skip_notice, and a lock this hook did not hold always sets one.
+# --- Resume-path restart signal (BugBot High, PR #1553) ---
+# On a NON-startup source (resume/compact/clear), this session keeps the
+# definitions it loaded at its original start: the fast-forward + publish above
+# just made the on-disk links newer than what is running, and nothing else will
+# ever say so — the scheduled job only signals changes ITS OWN run made, and a
+# later tick sees an unchanged HEAD and stays silent. Write the restart signal
+# here, while still holding the lock, so the reminder survives to the next
+# startup. Categories mirror claude-config-sync.sh's
+# collect_head_change_categories; existing categories are unioned in, never
+# replaced (a live session may owe restarts to more than one sync).
+if [[ "$session_source" != "startup" && "$_lock_held" == 1 && -z "$errors" \
+      && -n "$_old_head" && -n "$_new_head" && "$_old_head" != "$_new_head" ]]; then
+  _resume_changed="$(git -C "$skills_wt" diff --name-only "$_old_head" "$_new_head" 2>/dev/null)" || _resume_changed=""
+  _resume_cats=""
+  grep -q '^\.claude/agents/' <<< "$_resume_changed" && _resume_cats="agents"
+  grep -q '^\.claude/rules/'  <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }rules"
+  grep -q '^\.claude/skills/' <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }skills"
+  grep -q '^CLAUDE\.md$'      <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }claude-md"
+  if [[ -n "$_resume_cats" ]]; then
+    _resume_marker="$(cat "$_marker_file" 2>/dev/null)" || _resume_marker=""
+    [[ -n "$_resume_marker" ]] || _resume_marker="{}"
+    # shellcheck disable=SC2086 — word-splitting $_resume_cats is the point.
+    _resume_cats_json="$(printf '%s\n' $_resume_cats | jq -R . | jq -sc .)" || _resume_cats_json=""
+    _resume_new=""
+    if [[ -n "$_resume_cats_json" ]]; then
+      _resume_new="$(jq -c \
+        --arg now "$(date -u +%FT%TZ)" \
+        --arg sha "$_new_head" \
+        --argjson cats "$_resume_cats_json" \
+        '. + {restart_recommended: {
+               categories: (((.restart_recommended.categories // []) + $cats) | unique),
+               head_sha: $sha, at: $now}}
+         | .restart_recommended.reason =
+             ("config sync updated " + (.restart_recommended.categories | join(", ")))' \
+        <<<"$_resume_marker" 2>/dev/null)" || _resume_new=""
+    fi
+    if [[ -n "$_resume_new" ]]; then
+      # Ownership re-asserted before mutating, exactly as the clear path below
+      # does: state-lock.sh breaks a holder on age alone, and a dispossessed
+      # hook must not overwrite a marker the new owner just wrote.
+      if [[ "$_lock_available" == 1 ]] && ! state_lock_assert_held 2>/dev/null; then
+        : # dispossessed — leave the marker to its new owner
+      else
+        _marker_tmp="${_marker_file}.tmp.$$"
+        if printf '%s\n' "$_resume_new" > "$_marker_tmp" 2>/dev/null; then
+          chmod 600 "$_marker_tmp" 2>/dev/null || true
+          mv -f "$_marker_tmp" "$_marker_file" 2>/dev/null || rm -f "$_marker_tmp" 2>/dev/null || true
+        else
+          rm -f "$_marker_tmp" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+fi
+
 _region_exit_restart="null"
 if [[ "$_lock_held" == 1 ]]; then
   _region_exit_restart=$(jq -c '.restart_recommended // null' "$_marker_file" 2>/dev/null) || _region_exit_restart="null"

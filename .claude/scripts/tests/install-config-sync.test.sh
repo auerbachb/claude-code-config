@@ -493,6 +493,24 @@ test_9b_uninstall_fails_closed_when_list_unverifiable() {
     "! grep -q 'launchctl list 2>/dev/null || true' '$UNINSTALL'"
   assert "an unverifiable listing is a loud failure" \
     "grep -q 'could not verify the unload' '$UNINSTALL'"
+
+  # Behavioral (CR 3920136612): actually fail the stub's `list` subcommand and
+  # prove the control flow — exit 1 with the could-not-verify message, never a
+  # PASS printed over an unverified unload.
+  local root home out rc
+  root="$(make_env Darwin)"
+  home="$root/home"
+  PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+    bash "$INSTALL" >/dev/null 2>&1
+  rc=0
+  out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
+        LAUNCHCTL_FAIL_CMD=list bash "$UNINSTALL" 2>&1)" || rc=$?
+  assert "uninstall exits 1 when 'launchctl list' itself fails" "[ $rc -eq 1 ]"
+  assert "and reports the unverifiable unload" \
+    "printf '%s' \"\$out\" | grep -q 'could not verify the unload'"
+  assert "(control) no PASS was printed on the unverified path" \
+    "! printf '%s' \"\$out\" | grep -q 'PASS:'"
+  rm -rf "$root"
 }
 
 test_10_unreadable_worktree_script_falls_back() {
