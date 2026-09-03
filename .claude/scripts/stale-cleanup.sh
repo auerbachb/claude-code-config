@@ -1374,7 +1374,16 @@ scan_checkouts() {
   # worktrees here".
   path_exists_bounded "$raw_dir" || scan_rc=$?
   case "$scan_rc" in
-    1) CHECKOUT_SCAN_STATE="none"   # provably absent
+    1) # `test -e` follows links, so a DANGLING scan directory lands here too.
+       # The name is still a present entry whose target may return — the same
+       # detachable-volume argument this pass already applies to gitdir targets
+       # — so it is "could not look", not "there is nothing there".
+       if path_has_dangling_link_component "$raw_dir"; then
+         CHECKOUT_SCAN_STATE="unreadable"
+         SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory is or sits under a dangling symlink — a present entry whose target may return; absence not established")
+         return
+       fi
+       CHECKOUT_SCAN_STATE="none"   # provably absent
        return ;;
     0) : ;;
     *) # Probe stalled (2) or absence was not provable (3) — e.g. an
@@ -1431,13 +1440,26 @@ scan_checkouts() {
     done
   fi
 
-  local dir target probe_rc canon
+  local dir target probe_rc canon dir_rc
   for dir in "$CHECKOUT_DIR"/*; do
-    [[ -d "$dir" ]] || continue
+    # `-L` FIRST, before anything that follows links — the same order
+    # read_checkout_gitdir uses on `.git`, and for the same reason. `-d`
+    # traverses, so testing it first walks a link into a stalled or evicted
+    # volume (the hang this sweep exists to avoid) and silently DROPS a
+    # dangling directory symlink, whose `-d` is false, instead of recording it.
     if [[ -L "$dir" ]]; then
       SKIPPED_CHECKOUTS+=("${dir}${US}symlink — never classified as a checkout, never removed")
       continue
     fi
+    # Bounded: a directory entry can still be a mountpoint, and this one runs
+    # before every guard that decides whether a working tree may be deleted.
+    dir_rc=0
+    run_bounded "$READ_BOUND_SECS" test -d "$dir" || dir_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}could not be inspected within ${READ_BOUND_SECS}s — absence not established")
+      continue
+    fi
+    (( dir_rc == 0 )) || continue
     if caller_in_worktree "$dir"; then
       SKIPPED_CHECKOUTS+=("${dir}${US}caller's current worktree")
       continue

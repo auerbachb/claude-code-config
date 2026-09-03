@@ -1288,6 +1288,39 @@ check_eq "T19: control — an un-broken ancestor lets that same checkout be remo
   "$([[ -e "$CO_RACE" ]] && echo present || echo gone)"
 rm -rf "$CO_RACE" "$REPO_H/.git/wt-race" "$TMP/race-reg-dir" "$RACE_STUB"
 
+# --- a dangling ENTRY symlink is recorded, not silently dropped ---------------
+# `-d` follows links, so testing it before `-L` both traverses into whatever the
+# link points at — a stalled volume hangs the sweep — and drops a DANGLING
+# directory symlink entirely, since its `-d` is false. It must be reported.
+ln -s "$TMP/entry-target-not-mounted" "$REPO_H/.claude/worktrees/dangling-entry"
+ln -s "$TMP/entry-target-live" "$REPO_H/.claude/worktrees/live-entry"
+mkdir -p "$TMP/entry-target-live"
+OUT="$(cd "$REPO_H" && "$SUT" --check --json 2>/dev/null)"
+check_json "T19: a dangling entry symlink is recorded as skipped, not dropped" "$OUT" \
+  '.skipped_checkouts | any((.path | endswith("/dangling-entry")) and (.reason | contains("symlink")))'
+# Control — a RESOLVING entry symlink is still refused as a symlink (and was
+# already, so this pins that the reorder did not stop recording either kind).
+check_json "T19: control — a resolving entry symlink is still skipped as a symlink" "$OUT" \
+  '.skipped_checkouts | any((.path | endswith("/live-entry")) and (.reason | contains("symlink")))'
+check_json "T19: control — neither entry symlink is ever classified orphaned" "$OUT" \
+  '.orphaned_checkouts | any((.path | endswith("-entry"))) | not'
+rm -rf "$REPO_H/.claude/worktrees/dangling-entry" "$REPO_H/.claude/worktrees/live-entry" "$TMP/entry-target-live"
+
+# --- a dangling SCAN dir is "unreadable", not "none" --------------------------
+# `test -e` follows links, so a dangling scan directory probes as proven
+# absence. But the name is a present entry whose target may return — the same
+# detachable-volume case this pass refuses for gitdir targets.
+ln -s "$TMP/scan-dir-not-mounted" "$TMP/dangling-scan"
+OUT="$(cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$TMP/dangling-scan" "$SUT" --check --json 2>/dev/null)"
+check_json "T19: a dangling scan dir reports unreadable, not none" "$OUT" \
+  '.checkout_scan == "unreadable"'
+# Control — a plainly absent scan dir (no link involved) still reports none, so
+# the assertion above pins the dangling-link case and not "never says none".
+OUT="$(cd "$REPO_H" && STALE_CLEANUP_CHECKOUT_DIR="$TMP/plainly-absent-scan" "$SUT" --check --json 2>/dev/null)"
+check_json "T19: control — a plainly absent scan dir still reports none" "$OUT" \
+  '.checkout_scan == "none"'
+rm -f "$TMP/dangling-scan"
+
 # --- an unreadable scan dir is "unreadable", never "none" ---------------------
 # `-d` is false for BOTH "not there" and "there but unreadable". Collapsing the
 # second into "none" would report a positive claim of absence — "this repo keeps
