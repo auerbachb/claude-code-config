@@ -559,11 +559,23 @@ fi
 #     declined in review round 2).  The fence requirement is therefore scoped to
 #     the one emitter that actually ships a fence.
 #
-#     Only lines that could actually invoke the registry are considered: fence
-#     delimiters, comment lines, and pure output statements (echo/printf) are
-#     each replaced by a separator wider than the match window, so a window can
-#     never span two blocks, and a commented-out or merely echoed invocation
-#     cannot stand in for a real one (CodeAnt review, PR #1615).
+#     Only lines that could actually invoke the registry are considered.  Shell
+#     fences alone open a scanned region (a ```text block naming the flags is not
+#     a call); every other fence marker closes it.  Inside, comment lines and
+#     pure output statements (echo/printf) are dropped.  Each dropped line and
+#     fence marker is replaced by a separator wider than the match window, so a
+#     window can never span two blocks and a dropped line cannot join its
+#     neighbours into a false one.
+#
+#     Two conditions must then hold together: a command expression must sit near
+#     --reserve, and --emitter harness-audit must sit near it too.  The command
+#     expression is matched name-agnostically -- the literal script name OR any
+#     "$VAR" command -- deliberately NOT pinned to "$REGISTRY".  Pinning the
+#     current spelling would false-fail a rename, and would also fail if the
+#     snippet ever switched to the literal script name, which is the direction
+#     this guard should welcome.  What it does reject is a bare flag string
+#     assignment with no command in front of it.
+#     (CodeAnt and CodeRabbit reviews, PR #1615.)
 # ---------------------------------------------------------------------------
 HA_SKILL_MD="$SKILLS_DIR/harness-audit/SKILL.md"
 if [[ ! -f "$HA_SKILL_MD" ]]; then
@@ -571,20 +583,23 @@ if [[ ! -f "$HA_SKILL_MD" ]]; then
 else
   ha_sep="$(printf '%*s' 130 '' | tr ' ' '#')"
   ha_fenced="$(awk -v sep="$ha_sep" '
-      /^[[:space:]]*```/                      { in_fence = !in_fence; printf "%s ", sep; next }
-      !in_fence                               { next }
-      /^[[:space:]]*#/                        { printf "%s ", sep; next }
-      /^[[:space:]]*(echo|printf)[[:space:]]/ { printf "%s ", sep; next }
-                                              { print }
+      /^[[:space:]]*```(bash|sh|shell)[[:space:]]*$/ { in_fence = 1; printf "%s ", sep; next }
+      /^[[:space:]]*```/                             { in_fence = 0; printf "%s ", sep; next }
+      !in_fence                                      { next }
+      /^[[:space:]]*#/                               { printf "%s ", sep; next }
+      /^[[:space:]]*(echo|printf)[[:space:]]/        { printf "%s ", sep; next }
+                                                     { print }
     ' "$HA_SKILL_MD" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+  ha_cmd_re='(chip-offer-registry\.sh|"\$[A-Za-z_][A-Za-z0-9_]*").{0,160}--reserve'
+  ha_flag_re='--emitter harness-audit.{0,120}--reserve|--reserve.{0,120}--emitter harness-audit'
   if [[ -z "$ha_fenced" ]]; then
-    fail "harness-audit SKILL.md: no fenced code blocks found to check"
-  elif ! grep -qE -- \
-      '--emitter harness-audit.{0,120}--reserve|--reserve.{0,120}--emitter harness-audit' \
-      <<<"$ha_fenced"; then
-    fail "harness-audit: --reserve invocation missing from every fenced block (test 38 still passes on the prose mandate alone, so it cannot catch this)"
+    fail "harness-audit SKILL.md: no shell-fenced lines found to check"
+  elif ! grep -qE -- "$ha_cmd_re" <<<"$ha_fenced"; then
+    fail "harness-audit: --reserve appears in a shell fence but with no command expression in front of it (a bare flag string is not an invocation)"
+  elif ! grep -qE -- "$ha_flag_re" <<<"$ha_fenced"; then
+    fail "harness-audit: --reserve invocation missing from every shell fence (test 38 still passes on the prose mandate alone, so it cannot catch this)"
   else
-    ok "harness-audit ships a runnable --reserve invocation inside a fenced block"
+    ok "harness-audit ships a runnable --reserve invocation inside a shell fence"
   fi
 fi
 
