@@ -533,7 +533,29 @@ case "$MODE" in
     # No record means the thread has not rendered a table for this session yet.
     # There is nothing to measure from — and, critically, nothing that proves a
     # round is active, so an idle thread stays silent (the AC-4 exemption).
-    read_record || exit 0
+    # `read_record` returns 1 for two very different situations, and the tick
+    # must stay silent for both — but only one of them is normal.
+    #
+    #   NO RECORD      the thread has not rendered a table for this session yet.
+    #                  Nothing proves a round is active, so an idle thread stays
+    #                  quiet (the AC-4 exemption). Correct, and common.
+    #   UNREADABLE     the state file is missing, unparseable, or unreadable.
+    #                  Nothing can be measured either, so the tick still cannot
+    #                  fire — there is no timestamp to compute an age from — but
+    #                  this is a FAULT, and exiting with the same silence as the
+    #                  idle case is what made it invisible.
+    #
+    # So the exit is unchanged and the diagnosis is not: an unreadable state
+    # file now says so on stderr. That is the whole available fix — "fail closed"
+    # cannot mean "fire" here, because firing needs a render timestamp we do not
+    # have. What it can mean is that the floor's absence stops being silent.
+    if ! read_record; then
+      if ! "$SESSION_STATE_SH" --get '.' >/dev/null 2>&1; then
+        printf 'table-freshness.sh: session state is unreadable — the table-freshness floor cannot measure anything for %s; re-render the "Running now" table on every heartbeat until this clears\n' \
+          "$SESSION_ID" >&2
+      fi
+      exit 0
+    fi
     # A count of 0 is the round-end terminal board and legitimately disarms the
     # floor. A MISSING or malformed count is a different thing entirely, and
     # treating the two alike was a silent suppression: --note-rendered always
@@ -555,24 +577,33 @@ case "$MODE" in
     AGE="$(record_age)"
     (( AGE >= TRIP_S )) || exit 0
 
-    # Never write THROUGH a symlink, and check for one BEFORE the dedupe read
-    # below rather than only before the write: `-f` follows links, so a marker
-    # symlinked at a regular file would be READ for that comparison, and a target
-    # whose contents happened to match would suppress the floor line outright.
-    # Discarding it first makes both the read and the write see a real file.
+    # The marker is never OPENED at its own path — not for the read, and not for
+    # the write. The default marker directory is /tmp, a deliberate choice
+    # matching bgwork-ceiling.sh (whose heartbeat file must live at a hook-fixed
+    # path), and in a world-writable directory any not-yet-taken name can be
+    # pre-created by another local process as a symlink.
     #
-    # The default marker directory is /tmp — a
-    # deliberate choice, matching bgwork-ceiling.sh, whose heartbeat file must
-    # live at a hook-fixed path — and in a world-writable directory any name not
-    # yet taken can be pre-created by another local process as a symlink. Without
-    # this, the redirect would land an ISO timestamp in whatever that link points
-    # at. The filename already carries a cksum of the repo AND session (session
-    # ids are UUIDs), so guessing it is not easy; that is a cost to the attacker,
-    # not a defense. Removing a non-regular file first is the defense, and it is
-    # free. This does NOT reopen the marker-directory decision recorded in the PR
-    # body: the fix is the same in /tmp or anywhere else.
+    # A check-then-open cannot fix that on its own: whatever `[[ -L ]]` decides,
+    # the link can be restored before the next command runs, so the redirect
+    # would still land an ISO timestamp in whatever it points at. Both sides are
+    # therefore built so the race has nothing to win:
+    #
+    #   READ   guarded by `! -L` as well as `-f`, so a link is never followed for
+    #          the dedupe comparison. Losing that race costs at most one extra
+    #          floor line, never a suppressed one — the safe direction.
+    #   WRITE  goes to a fresh temp file in the same directory and is moved onto
+    #          the marker with `mv -f`. Rename REPLACES the path itself, so it
+    #          overwrites a symlink instead of writing through it, whenever the
+    #          link appears. There is no window, because the marker path is never
+    #          a redirect target.
+    #
+    # The filename already carries a cksum of the repo AND session (session ids
+    # are UUIDs), so the path is hard to guess — but that is a cost to an
+    # attacker, not a defense, and it is not counted as one. None of this
+    # reopens the marker-directory decision recorded in the PR body: the same
+    # code is correct in /tmp or anywhere else.
     if [[ -L "$EMITTED_FILE" || ( -e "$EMITTED_FILE" && ! -f "$EMITTED_FILE" ) ]]; then
-      printf 'table-freshness.sh: marker path %s is a symlink or non-regular file — removing it rather than writing through it\n' \
+      printf 'table-freshness.sh: marker path %s is a symlink or non-regular file — replacing it rather than writing through it\n' \
         "$EMITTED_FILE" >&2
       rm -f "$EMITTED_FILE" 2>/dev/null || true
     fi
@@ -580,12 +611,20 @@ case "$MODE" in
     # Dedupe on the recorded render timestamp: one floor line per stale stretch,
     # not one per poll. When the thread re-renders, --note-rendered rewrites the
     # timestamp and clears this marker, so the next hour is reportable again.
-    if [[ -f "$EMITTED_FILE" ]]; then
+    if [[ -f "$EMITTED_FILE" && ! -L "$EMITTED_FILE" ]]; then
       emitted="$(cat "$EMITTED_FILE" 2>/dev/null)"
       [[ "$emitted" == "$RENDERED_AT" ]] && exit 0
     fi
-    printf '%s' "$RENDERED_AT" > "$EMITTED_FILE" 2>/dev/null || \
+    EMITTED_TMP="${EMITTED_FILE}.tmp.$$"
+    if printf '%s' "$RENDERED_AT" > "$EMITTED_TMP" 2>/dev/null; then
+      mv -f "$EMITTED_TMP" "$EMITTED_FILE" 2>/dev/null || {
+        printf 'table-freshness.sh: cannot install %s — floor line may repeat\n' "$EMITTED_FILE" >&2
+        rm -f "$EMITTED_TMP" 2>/dev/null || true
+      }
+    else
       printf 'table-freshness.sh: cannot write %s — floor line may repeat\n' "$EMITTED_FILE" >&2
+      rm -f "$EMITTED_TMP" 2>/dev/null || true
+    fi
 
     # The count is printed as %s, not %d, so the unusable-count path above can
     # say "unknown" instead of forcing a fabricated number into the message.

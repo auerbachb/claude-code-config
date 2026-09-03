@@ -636,6 +636,53 @@ SYM_OUT="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
 "$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
 ok "a pre-created marker symlink is discarded, not written through"
 
+# --- 19k. The marker write goes through a rename, not a redirect -------------
+#          19i covers the link that is present when the tick starts; the guard
+#          removes it. This covers the one planted AFTER that check, which a
+#          check-then-open cannot handle at all.
+#
+#          Asserted STRUCTURALLY, and deliberately so. Winning that race inside
+#          the suite would mean interleaving a second process between two
+#          adjacent statements — not reproducible, and a flaky security test is
+#          worse than an honest structural one. (Checked: a behavioural version
+#          of this passed with the redirect restored, because 19i's guard had
+#          already removed the link — it was asserting the guard, not the write.)
+grep -qE 'mv -f "\$EMITTED_TMP" "\$EMITTED_FILE"' "$SCRIPT" || \
+  fail "the marker write must rename a temp file onto the path, not redirect onto it"
+grep -qE '> *"\$EMITTED_FILE"' "$SCRIPT" && \
+  fail "something still redirects straight onto the marker path — a planted symlink would be followed"
+# Behavioural half that IS deterministic: no temp file may survive the write.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+backdate 90
+"$SCRIPT" --tick --session "$SID" --repo "$REPO" >/dev/null 2>&1
+LEFTOVER="$(find "$CLAUDE_TABLE_FRESHNESS_MARKER_DIR" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$LEFTOVER" == "0" ]] || fail "the atomic write left $LEFTOVER temp file(s) behind"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "the marker write renames a temp file onto the path and leaves no temp behind"
+
+# --- 19l. An unreadable state file is DIAGNOSED, not silently idle -----------
+#          read_record returns 1 both when no record exists (normal, and the
+#          idle exemption) and when the state file cannot be read (a fault).
+#          The tick still cannot fire — there is no timestamp to measure — but
+#          the fault must stop looking like an idle thread.
+UNREADABLE_HOME="$TMP_DIR/unreadable-home"
+mkdir -p "$UNREADABLE_HOME/.claude"
+printf '%s' 'this is not json{{{' > "$UNREADABLE_HOME/.claude/session-state.json"
+BROKEN_ERR="$(HOME="$UNREADABLE_HOME" "$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+BROKEN_OUT="$(HOME="$UNREADABLE_HOME" "$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ -z "$BROKEN_OUT" ]] || fail "the tick must stay silent on stdout with no measurable record, got: '$BROKEN_OUT'"
+[[ "$BROKEN_ERR" == *"unreadable"* ]] || \
+  fail "an unreadable state file must be named on stderr, got: '$BROKEN_ERR'"
+# Positive control: a state file with NO record for this session is the normal
+# idle case and must stay completely silent, on both streams.
+EMPTY_HOME="$TMP_DIR/empty-home"
+mkdir -p "$EMPTY_HOME/.claude"
+printf '%s' '{"schema_version":2}' > "$EMPTY_HOME/.claude/session-state.json"
+QUIET_ERR="$(HOME="$EMPTY_HOME" "$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+[[ -z "$QUIET_ERR" ]] || \
+  fail "a session with no record yet must stay silent, not warn — got: '$QUIET_ERR'"
+ok "an unreadable state file is diagnosed on stderr; a merely absent record stays silent"
+
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
 #         record with the marker gone, which is exactly the combination that
