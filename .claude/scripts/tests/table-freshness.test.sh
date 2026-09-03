@@ -564,6 +564,53 @@ UUIDISH="0b9c1d2e-3f40-5a61-8b72-9c0d1e2f3a4b"
   fail "a UUID-shaped session id must key the record verbatim, not a mangled form"
 ok "session ids that sanitise alike keep separate clocks; ordinary ids key verbatim"
 
+# --- 19h. A record with a usable timestamp but NO usable count fails closed ---
+#          `--note-rendered` always writes active_pipelines (it is required), so
+#          a record with a timestamp and no count is corrupted or hand-edited.
+#          Treating that like a legitimate 0 withheld an overdue floor line on
+#          the strength of a field that was not there to read.
+"$SCRIPT" --note-rendered --active 3 --session "$SID" --repo "$REPO" >/dev/null
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].active_pipelines=\"bogus\"" \
+  >/dev/null || fail "could not plant a malformed count"
+backdate 90
+TICK_BAD="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ "$TICK_BAD" == *"TABLE FLOOR"* ]] || \
+  fail "a malformed active_pipelines silently suppressed the floor, got: '$TICK_BAD'"
+[[ "$TICK_BAD" == *"unknown number"* ]] || \
+  fail "the floor line should say the count is unknown rather than invent one, got: $TICK_BAD"
+BAD_ERR="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+[[ "$BAD_ERR" == *"no usable active_pipelines"* ]] || \
+  fail "an unusable count must be named on stderr, got: '$BAD_ERR'"
+# Positive control: a genuine 0 still disarms, so this did not turn the idle
+# exemption into an always-on pulse.
+"$SCRIPT" --note-rendered --active 0 --session "$SID" --repo "$REPO" >/dev/null
+backdate 90
+ZERO_TICK="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ -z "$ZERO_TICK" ]] || fail "an explicit 0 must still disarm the floor, got: '$ZERO_TICK'"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "a record with no usable count fires with 'unknown', while a real 0 still disarms"
+
+# --- 19i. The dedupe marker is never followed through a symlink ---------------
+#          The default marker dir is /tmp (deliberately, matching
+#          bgwork-ceiling.sh). In a world-writable directory a name not yet
+#          taken can be pre-created as a symlink, and the tick would otherwise
+#          write an ISO timestamp into whatever it points at — or READ it, since
+#          -f follows links, and suppress the line on a chance content match.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+backdate 90
+VICTIM="$TMP_DIR/symlink-victim"
+printf 'ORIGINAL' > "$VICTIM"
+rm -f "$(marker_path)"
+ln -s "$VICTIM" "$(marker_path)" || fail "could not stage the marker symlink"
+SYM_OUT="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ "$SYM_OUT" == *"TABLE FLOOR"* ]] || \
+  fail "a symlinked marker suppressed the floor line, got: '$SYM_OUT'"
+[[ "$(cat "$VICTIM")" == "ORIGINAL" ]] || \
+  fail "the tick wrote THROUGH the symlink into $VICTIM: $(cat "$VICTIM")"
+[[ ! -L "$(marker_path)" ]] || fail "the symlinked marker was left in place"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "a pre-created marker symlink is discarded, not written through"
+
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
 #         record with the marker gone, which is exactly the combination that

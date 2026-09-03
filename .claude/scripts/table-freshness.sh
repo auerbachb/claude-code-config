@@ -518,12 +518,48 @@ case "$MODE" in
     # There is nothing to measure from — and, critically, nothing that proves a
     # round is active, so an idle thread stays silent (the AC-4 exemption).
     read_record || exit 0
-    # active_pipelines == 0 is the round-end terminal board: floor disarmed.
-    [[ -n "$ACTIVE_RECORDED" ]] || exit 0
-    (( ACTIVE_RECORDED > 0 )) || exit 0
+    # A count of 0 is the round-end terminal board and legitimately disarms the
+    # floor. A MISSING or malformed count is a different thing entirely, and
+    # treating the two alike was a silent suppression: --note-rendered always
+    # writes active_pipelines (it is a required argument), so a record that has
+    # a usable timestamp but no usable count has been corrupted or hand-edited.
+    # Exiting quietly there withholds an overdue floor line on the strength of a
+    # field that is not there to be read. Same rule as the future-dated clock
+    # above: an unusable record fails CLOSED and says why. The dedupe marker
+    # still bounds it to one line per stale stretch, not one per poll.
+    if [[ -z "$ACTIVE_RECORDED" ]]; then
+      printf 'table-freshness.sh: render record for %s has no usable active_pipelines — treating the round as active rather than suppressing the floor\n' \
+        "$SESSION_ID" >&2
+      ACTIVE_RECORDED_MISSING=1
+    else
+      ACTIVE_RECORDED_MISSING=0
+      (( ACTIVE_RECORDED > 0 )) || exit 0
+    fi
 
     AGE="$(record_age)"
     (( AGE >= TRIP_S )) || exit 0
+
+    # Never write THROUGH a symlink, and check for one BEFORE the dedupe read
+    # below rather than only before the write: `-f` follows links, so a marker
+    # symlinked at a regular file would be READ for that comparison, and a target
+    # whose contents happened to match would suppress the floor line outright.
+    # Discarding it first makes both the read and the write see a real file.
+    #
+    # The default marker directory is /tmp — a
+    # deliberate choice, matching bgwork-ceiling.sh, whose heartbeat file must
+    # live at a hook-fixed path — and in a world-writable directory any name not
+    # yet taken can be pre-created by another local process as a symlink. Without
+    # this, the redirect would land an ISO timestamp in whatever that link points
+    # at. The filename already carries a cksum of the repo AND session (session
+    # ids are UUIDs), so guessing it is not easy; that is a cost to the attacker,
+    # not a defense. Removing a non-regular file first is the defense, and it is
+    # free. This does NOT reopen the marker-directory decision recorded in the PR
+    # body: the fix is the same in /tmp or anywhere else.
+    if [[ -L "$EMITTED_FILE" || ( -e "$EMITTED_FILE" && ! -f "$EMITTED_FILE" ) ]]; then
+      printf 'table-freshness.sh: marker path %s is a symlink or non-regular file — removing it rather than writing through it\n' \
+        "$EMITTED_FILE" >&2
+      rm -f "$EMITTED_FILE" 2>/dev/null || true
+    fi
 
     # Dedupe on the recorded render timestamp: one floor line per stale stretch,
     # not one per poll. When the thread re-renders, --note-rendered rewrites the
@@ -535,8 +571,11 @@ case "$MODE" in
     printf '%s' "$RENDERED_AT" > "$EMITTED_FILE" 2>/dev/null || \
       printf 'table-freshness.sh: cannot write %s — floor line may repeat\n' "$EMITTED_FILE" >&2
 
-    printf 'TABLE FLOOR: the "Running now" table is %dm old with %d pipeline(s) running or queued. Re-render the full table NOW (time-estimates.md §"Running now Table") — a one-liner does not satisfy this floor — then record it with `table-freshness.sh --note-rendered --active <N>`.\n' \
-      "$(( AGE / 60 ))" "$ACTIVE_RECORDED"
+    # The count is printed as %s, not %d, so the unusable-count path above can
+    # say "unknown" instead of forcing a fabricated number into the message.
+    printf 'TABLE FLOOR: the "Running now" table is %dm old with %s pipeline(s) running or queued. Re-render the full table NOW (time-estimates.md §"Running now Table") — a one-liner does not satisfy this floor — then record it with `table-freshness.sh --note-rendered --active <N>`.\n' \
+      "$(( AGE / 60 ))" \
+      "$( (( ACTIVE_RECORDED_MISSING )) && printf 'an unknown number of' || printf '%d' "$ACTIVE_RECORDED" )"
     ;;
 
   arm-command)
