@@ -134,7 +134,7 @@ if [ "${#lints[@]}" -gt 0 ]; then
   while IFS= read -r _line; do
     _sorted+=("$_line")
   done < <(printf '%s\n' "${lints[@]}" | LC_ALL=C sort -u)
-  lints=("${_sorted[@]}")
+  lints=(${_sorted[@]+"${_sorted[@]}"})
   unset _sorted _line
 fi
 

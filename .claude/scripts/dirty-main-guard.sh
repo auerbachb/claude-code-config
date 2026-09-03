@@ -444,7 +444,7 @@ if [[ "$MODE" == "check" ]]; then
   (( AHEAD > 0 )) && parts+=("$AHEAD unpushed commit(s) on main")
   # Join with " + " — Bash 3.2 compatible (no ${arr[*]/#/sep} tricks).
   joined=""
-  for p in "${parts[@]}"; do
+  for p in ${parts[@]+"${parts[@]}"}; do
     if [[ -z "$joined" ]]; then
       joined="$p"
     else

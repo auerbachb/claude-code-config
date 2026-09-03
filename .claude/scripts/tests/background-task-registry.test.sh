@@ -98,7 +98,7 @@ for n in $(seq 1 12); do
   run --register --session race --task-id "agent-$n" --type agent --name "race-$n" &
   pids+=("$!")
 done
-for pid in "${pids[@]}"; do wait "$pid"; done
+for pid in ${pids[@]+"${pids[@]}"}; do wait "$pid"; done
 [[ "$(run --count --session race --live)" == 12 ]] || fail "concurrent registrations lost updates"
 ok "locked concurrent registrations preserve every runtime identity"
 

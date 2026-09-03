@@ -129,7 +129,7 @@ state_set() {
     sub="$1"; val="$2"; shift 2
     args+=(--set ".repos[\"$repo\"].release.$sub=$val")
   done
-  STATE_WRITE_ERR="$("$STATE_SH" --raw-path "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  STATE_WRITE_ERR="$("$STATE_SH" --raw-path ${args[@]+"${args[@]}"} 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -eq 0 ]; then
     STATE_WRITE_ERR=""
   else
