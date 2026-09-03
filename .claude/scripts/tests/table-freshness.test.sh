@@ -754,6 +754,28 @@ QUIET_ERR="$(HOME="$EMPTY_HOME" "$SCRIPT" --tick --session "$SID" --repo "$REPO"
   fail "a session with no record yet must stay silent, not warn — got: '$QUIET_ERR'"
 ok "an unreadable state file is diagnosed on stderr; a merely absent record stays silent"
 
+# --- 19o. A record that EXISTS but has an unusable timestamp is diagnosed -----
+#          Distinct from both neighbours: the state file reads fine and a record
+#          is present, but last_rendered_at will not parse. Freshness silently
+#          stops being measured for the rest of the session, and the previous
+#          two guards do not cover it — one checks the file, the other the count.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].last_rendered_at=\"not-a-timestamp\"" \
+  >/dev/null || fail "could not plant a corrupted timestamp"
+CORRUPT_ERR="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+CORRUPT_OUT="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ "$CORRUPT_ERR" == *"no usable last_rendered_at"* ]] || \
+  fail "a corrupted timestamp must be diagnosed on stderr, got: '$CORRUPT_ERR'"
+[[ -z "$CORRUPT_OUT" ]] || \
+  fail "the tick cannot fire without a timestamp; stdout must stay empty, got: '$CORRUPT_OUT'"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+# Positive control, again: with the record GONE this must be silent on both
+# streams, so the new branch fires only for a present-but-broken record.
+GONE_ERR="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+[[ -z "$GONE_ERR" ]] || \
+  fail "a cleared record must stay silent, not warn about a missing timestamp — got: '$GONE_ERR'"
+ok "a present-but-unparseable render record is diagnosed; a cleared one stays silent"
+
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
 #         record with the marker gone, which is exactly the combination that

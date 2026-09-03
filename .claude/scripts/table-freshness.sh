@@ -560,9 +560,17 @@ case "$MODE" in
     # file now says so on stderr. That is the whole available fix — "fail closed"
     # cannot mean "fire" here, because firing needs a render timestamp we do not
     # have. What it can mean is that the floor's absence stops being silent.
+    # Three cases, not two — and only the first is normal. A record that EXISTS
+    # but cannot be used (a corrupted or unparseable last_rendered_at) is not an
+    # absent one: something wrote a render here and the clock is now unreadable,
+    # so freshness silently stops being measured for the rest of the session.
+    # That is a fault, and it must not share the idle case's silence.
     if ! read_record; then
       if ! "$SESSION_STATE_SH" --get '.' >/dev/null 2>&1; then
         printf 'table-freshness.sh: session state is unreadable — the table-freshness floor cannot measure anything for %s; re-render the "Running now" table on every heartbeat until this clears\n' \
+          "$SESSION_ID" >&2
+      elif [[ -n "$(state_get '' 2>/dev/null)" ]]; then
+        printf 'table-freshness.sh: render record for %s exists but has no usable last_rendered_at — the floor cannot measure freshness; re-render the "Running now" table on every heartbeat and re-record it\n' \
           "$SESSION_ID" >&2
       fi
       exit 0
