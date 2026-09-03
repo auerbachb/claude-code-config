@@ -756,6 +756,27 @@ REVIEWER=$(resolve_reviewer)
 # degradation on the bugbot path: if the evaluator is absent or returns bad JSON,
 # REVIEW_EVIDENCE stays '{}' and CR_PATH_APPROVED_ON_HEAD remains false — the
 # normal BugBot gate runs unchanged. Only the cr path is hard-fatal on failure.
+#
+# THAT HARD FAILURE DIVERGES FROM escalate-review.sh ON PURPOSE (issue #1465;
+# recorded decision 2026-09-02). Both scripts call this one evaluator, and on the
+# same outage this one aborts while the other keeps emitting a verdict. The split
+# follows the question each answers:
+#
+#   here — "may this merge?" Refusing to answer is SAFE. die_local() renders no
+#     merge decision at all, the reason lands in `missing[]`, and a human or
+#     agent sees it at merge time. Nothing merges on a verdict nobody produced.
+#   escalate-review.sh — "who reviews this next?", polled every 60 s. Refusing
+#     there routes NOBODY, and its callers treat an unrecognised STATUS as fatal,
+#     so it degrades to its cheapest verdict (polling_cr) for a bounded hour
+#     instead of aborting, then resumes normal escalation so a permanent outage
+#     cannot strand the PR.
+#
+# So neither script treats a tooling fault as a review verdict; they just have
+# different cheapest-safe answers. Keep both halves in step — silently making
+# this one degrade, or that one abort, re-opens the money path #1465 closed (a
+# broken local script authorising a paid Greptile review) or the stall the
+# escalation gate exists to prevent. The suppression window lives in
+# escalate-review.sh as EVALUATOR_OUTAGE_CAP_SECONDS.
 REVIEW_EVIDENCE='{}'
 if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"

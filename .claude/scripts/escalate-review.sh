@@ -18,7 +18,9 @@
 #                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
 #                             while a CodeRabbit `Review limit reached` banner's own
-#                             stated retry window is still open (issue #1199)
+#                             stated retry window is still open (issue #1199), and
+#                             while review-substance.sh is unusable and the PR is
+#                             inside the evaluator-outage cap (issue #1465)
 #     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
 #                             (no footprint on HEAD and no fresh `@cursor review`
 #                             trigger comment). Make BugBot the sticky reviewer;
@@ -177,6 +179,14 @@ HEAD_COMMIT_TS=""
 # can only ever be withheld by a broken evaluator, never granted.
 SUBSTANCE_JSON='{}'
 SUBSTANCE_OK=false
+# TOOLING FAULT, distinct from a negative verdict (issue #1465). SUBSTANCE_OK
+# alone cannot carry this: it is also false when the evaluator was never asked
+# (no approval on HEAD), which is an ordinary state and must escalate normally.
+# Set at the two OUTAGE sites below and nowhere else — in particular NOT at the
+# "no reviewer holds BOTH" branch further down, which is the evaluator answering,
+# nor at the freshness-filter failure, which the recorded decision does not scope
+# in. Read only by the evaluator-outage cap after AGE_SECONDS.
+EVALUATOR_UNUSABLE=false
 if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
   HEAD_COMMIT_TS="$(gh api "repos/$OWNER/$REPO/git/commits/$HEAD_SHA" 2>/dev/null | jq -r '.committer.date // ""' 2>/dev/null || echo "")"
   if [[ -z "$HEAD_COMMIT_TS" ]]; then
@@ -193,6 +203,7 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
     # already fetched reviews plus both comment endpoints.
     REVIEW_SUBSTANCE_SH="$(dirname "$0")/review-substance.sh"
     if [[ ! -x "$REVIEW_SUBSTANCE_SH" ]]; then
+      EVALUATOR_UNUSABLE=true
       echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
     else
       SUBSTANCE_RAW="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
@@ -215,6 +226,7 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
         # die_local()s on the same condition: claiming gate_met here would stop
         # escalation on a PR whose gate is simultaneously refusing to pass,
         # leaving it stalled with no reviewer working on it.
+        EVALUATOR_UNUSABLE=true
         echo "escalate-review.sh: review-substance.sh produced no usable JSON — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
       fi
     fi
@@ -493,6 +505,72 @@ if [[ "$FORCE_PUSH_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}
     AGE_SECONDS="$FORCE_PUSH_AGE"
   fi
 fi
+
+# --- BEGIN evaluator-outage cap (issue #1465) ---
+# EVALUATOR-OUTAGE CAP (issue #1465). Recorded decision, 2026-09-02: option 3,
+# bounded suppression, plus option 4's documentation of the asymmetry.
+#
+# THE ASYMMETRY IS DELIBERATE — this is the router half; merge-gate.sh carries
+# the matching note at its own review-substance.sh sites. The two scripts call
+# the SAME evaluator and answer different questions, so they fail differently on
+# the same outage:
+#
+#   merge-gate.sh asks "may this merge?" — die_local(), refuse to answer. Safe:
+#     the refusal reaches a human or an agent at merge time, and nothing merges
+#     on a verdict nobody produced.
+#   escalate-review.sh asks "who reviews this next?" — polled every 60 s. It may
+#     NOT refuse: every caller's `case` treats an unrecognised STATUS as fatal
+#     (`*)` -> exit 1), and an aborted router routes nobody, which is exactly the
+#     stall this file exists to prevent. So it degrades to its CHEAPEST verdict
+#     instead of aborting, and does so for a bounded time.
+#
+# WHAT WENT WRONG WITHOUT IT: an unusable evaluator forces PRIMARY_REVIEW_MET
+# false above, which is indistinguishable here from "no reviewer has approved".
+# A sustained outage therefore walked the whole chain and authorised a PAID
+# Greptile review that no reviewer had actually withheld — a tooling fault
+# spending money (CodeAnt, PR #1463).
+#
+# THE CAP IS A CAP, not a Greptile-only brake. `emit()` exits, so inside the
+# window `switch_bugbot`, `budget_exhausted` and `trigger_greptile` are all
+# unreachable. Suppressing switch_bugbot as well is the point, not collateral:
+# BugBot is the highest per-review cost in the stack (bugbot.md) AND switching is
+# STICKY and one-way — a PR that falls to BugBot never returns to the CR path
+# (cr-merge-gate.md Step 1). Making a permanent ownership change on the strength
+# of a broken local script is the same class of harm as the paid trigger.
+# `gate_met` is already unreachable (the outage forced PRIMARY_REVIEW_MET false),
+# so the cap is total rather than partial.
+#
+# ACCEPTED, BOUNDED COST: inside the window the free never-invited
+# `@cursor review` route (issue #935) and the `bugbot_installed` cache are
+# deferred — by at most EVALUATOR_OUTAGE_CAP_SECONDS, and only when the evaluator
+# is genuinely broken. Past the cap this guard does nothing and the cascade below
+# runs unchanged, so a PERMANENT outage can never strand the PR; the existing
+# brakes (BugBot arming, the CR retry window, `greptile-budget.sh --check` plus
+# the caller's mandatory `--consume`) still gate paid spend on that resumed path.
+#
+# NEITHER SIDE IS SILENT. The two outage sites above already say what broke; the
+# lines here say what it COST — suppression while it holds, resumption when it
+# lapses — so a per-cycle grep for `DEGRADED:` sees the whole outage, not half of
+# it. Fixing the evaluator is what ends either message.
+#
+# The BEGIN/END markers are load-bearing, and they enclose this comment as well
+# as the code: tests/escalate-review-evaluator-outage.test.sh strips exactly this
+# block to reconstruct pre-change behaviour for its negative control, and what
+# survives has to be a file that neither runs nor documents the feature. Hermetic
+# on purpose — CI checks out shallow, and origin/main carries the fix once this
+# merges, so a git-ref control would skip in the one environment it protects and
+# silently invert in the other. The flag assignments deliberately stay OUTSIDE
+# the markers: nothing else reads EVALUATOR_UNUSABLE (the test asserts that), so
+# the strip isolates this guard rather than the flag that feeds it.
+EVALUATOR_OUTAGE_CAP_SECONDS=3600
+if [[ "$EVALUATOR_UNUSABLE" == "true" ]]; then
+  if [[ "$AGE_SECONDS" -le "$EVALUATOR_OUTAGE_CAP_SECONDS" ]]; then
+    echo "escalate-review.sh: DEGRADED: review-substance.sh unavailable — paid escalation suppressed; capping the verdict at polling_cr while the PR is inside the ${EVALUATOR_OUTAGE_CAP_SECONDS}s outage window (age ${AGE_SECONDS}s, issue #1465)" >&2
+    emit "polling_cr"
+  fi
+  echo "escalate-review.sh: DEGRADED: review-substance.sh unavailable — outage window of ${EVALUATOR_OUTAGE_CAP_SECONDS}s exceeded (age ${AGE_SECONDS}s); resuming normal escalation so a permanent outage cannot strand this PR (issue #1465)" >&2
+fi
+# --- END evaluator-outage cap (issue #1465) ---
 
 # DELIBERATELY NOT WIDENED with the banner parsers below (issue #1364). This is
 # the windowless commit-status/check-run shape (b) from cr-rate-limits.md, and it
