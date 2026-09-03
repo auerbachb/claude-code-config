@@ -168,7 +168,12 @@ fi
 # file"; every other non-zero — an unresolved helper included — is UNREADABLE and
 # must not let probe B report `absent` or a lane continue.
 PAUSES_RAW=""
-PAUSES_STATE=unreadable           # unreadable | absent | present
+# PAUSES_STATE tracks whether the READS succeeded — it is NOT probe B's verdict
+# and has no consumer outside this block. `present` means "the read returned",
+# never "something is parked": an empty or all-resumed map reads `present` and
+# yields `[]`, which is probe B **absent**. The verdict is PAUSE_UNRESUMED, and
+# only its two empties (`[]` vs `""`) separate absent from unreadable.
+PAUSES_STATE=unreadable           # read status only: unreadable | absent | present
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   PAUSES_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)
   READ_RC=$?
