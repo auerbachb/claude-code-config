@@ -559,8 +559,11 @@ fi
 #     declined in review round 2).  The fence requirement is therefore scoped to
 #     the one emitter that actually ships a fence.
 #
-#     Fenced blocks are joined with a separator wider than the match window, so a
-#     window can never span two blocks and manufacture a false pass.
+#     Only lines that could actually invoke the registry are considered: fence
+#     delimiters, comment lines, and pure output statements (echo/printf) are
+#     each replaced by a separator wider than the match window, so a window can
+#     never span two blocks, and a commented-out or merely echoed invocation
+#     cannot stand in for a real one (CodeAnt review, PR #1615).
 # ---------------------------------------------------------------------------
 HA_SKILL_MD="$SKILLS_DIR/harness-audit/SKILL.md"
 if [[ ! -f "$HA_SKILL_MD" ]]; then
@@ -568,8 +571,11 @@ if [[ ! -f "$HA_SKILL_MD" ]]; then
 else
   ha_sep="$(printf '%*s' 130 '' | tr ' ' '#')"
   ha_fenced="$(awk -v sep="$ha_sep" '
-      /^[[:space:]]*```/ { in_fence = !in_fence; printf "%s ", sep; next }
-      in_fence           { print }
+      /^[[:space:]]*```/                      { in_fence = !in_fence; printf "%s ", sep; next }
+      !in_fence                               { next }
+      /^[[:space:]]*#/                        { printf "%s ", sep; next }
+      /^[[:space:]]*(echo|printf)[[:space:]]/ { printf "%s ", sep; next }
+                                              { print }
     ' "$HA_SKILL_MD" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
   if [[ -z "$ha_fenced" ]]; then
     fail "harness-audit SKILL.md: no fenced code blocks found to check"
