@@ -467,6 +467,50 @@ grep -qE "state_get '\.(last_rendered_at|active_pipelines|surface)'" "$SCRIPT" &
   fail "a per-field state_get reintroduces the straddled-read race — read the record whole"
 ok "the render record is read whole in one call, and --status reports every field from it"
 
+# --- 19e. A FUTURE-dated render fails closed, it does not suppress the floor --
+#          `now - rendered` goes negative, and every comparison is `age >= TRIP`,
+#          so a negative age reads as maximally fresh: --check says fresh and
+#          --tick stays silent until the wall clock catches up, which for a
+#          skewed clock or an edited record could be hours. The floor failing
+#          silent is the one direction it must never fail.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+FUTURE="$(TZ=UTC date -j -v+120M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d '120 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].last_rendered_at=$FUTURE" \
+  >/dev/null || fail "could not plant a future-dated render"
+run_check --active 2; V="$CHECK_OUT"
+[[ "$V" == "stale" && "$CHECK_RC" -eq 1 ]] || \
+  fail "a future-dated render must fail closed to 'stale'/1, got '$V'/$CHECK_RC"
+TICK_FUTURE="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ "$TICK_FUTURE" == *"TABLE FLOOR"* ]] || \
+  fail "a future-dated render silently suppressed the tick, got: '$TICK_FUTURE'"
+FUTURE_ERR="$("$SCRIPT" --check --active 2 --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+[[ "$FUTURE_ERR" == *"FUTURE"* ]] || \
+  fail "clock skew must be named on stderr so it is diagnosable, got: '$FUTURE_ERR'"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "a future-dated render fails closed and names the skew, instead of muting the floor"
+
+# --- 19f. An EXPLICITLY empty --session / --repo is a usage error ------------
+#          Omitting either legitimately defaults. Passing an empty one means the
+#          caller's own variable was empty — a shell variable that did not
+#          survive a compaction or a fresh process — and silently substituting
+#          `default` or the cwd repo writes the render to one record while the
+#          armed watch polls another. Both calls succeed, so the mismatch is
+#          invisible and the floor fires forever, or never.
+for MODE_ARGS in "--status" "--check" "--note-rendered --active 1"; do
+  # shellcheck disable=SC2086
+  "$SCRIPT" $MODE_ARGS --session "" --repo "$REPO" >/dev/null 2>&1
+  [[ $? -eq 2 ]] || fail "$MODE_ARGS with an empty --session should exit 2"
+  # shellcheck disable=SC2086
+  "$SCRIPT" $MODE_ARGS --session "$SID" --repo "" >/dev/null 2>&1
+  [[ $? -eq 2 ]] || fail "$MODE_ARGS with an empty --repo should exit 2"
+done
+# Positive control: OMITTING them still defaults, so this is a guard on the
+# explicit-empty case only and not a blanket requirement.
+"$SCRIPT" --status >/dev/null 2>&1
+[[ $? -ne 2 ]] || fail "omitting --session/--repo must still default, not error"
+ok "an explicitly empty --session or --repo is rejected; omitting them still defaults"
+
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
 #         record with the marker gone, which is exactly the combination that

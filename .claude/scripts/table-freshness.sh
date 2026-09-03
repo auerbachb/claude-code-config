@@ -223,13 +223,24 @@ while (( $# > 0 )); do
       SURFACE="$2"
       shift
       ;;
+    # An EXPLICIT empty value is a usage error for both of these, not a request
+    # to fall back. Omitting the flag legitimately defaults (session from the
+    # environment, repo from --repo-key); passing `--session ""` means the
+    # caller's own variable was empty — typically a shell variable that did not
+    # survive a compaction or a fresh process — and silently substituting
+    # `default` or the cwd repo is how the render gets written to one record
+    # while the armed watch polls another. That mismatch is invisible: both
+    # sides succeed, and the floor simply fires forever, or never. The two flags
+    # whose whole purpose is to pin the record must refuse to guess.
     --session)
       (( $# >= 2 )) || die_usage "--session requires an argument"
+      [[ -n "$2" ]] || die_usage "--session was given an empty value; omit the flag to default, or pass the real session id"
       SESSION_ID="$2"
       shift
       ;;
     --repo)
       (( $# >= 2 )) || die_usage "--repo requires an argument"
+      [[ -n "$2" ]] || die_usage "--repo was given an empty value; omit the flag to resolve from the checkout, or pass the real owner/name"
       REPO_KEY="$2"
       shift
       ;;
@@ -333,6 +344,34 @@ state_get() {
   printf '%s' "$value"
 }
 
+# Age of the recorded render in seconds, floored at the trip point when the
+# record is dated in the FUTURE.
+#
+# A future timestamp makes `now - rendered` negative, and every comparison here
+# is `age >= TRIP_S`, so a negative age reads as maximally fresh: --check says
+# `fresh` and --tick stays silent, suppressing the floor until the wall clock
+# catches up — which for a badly skewed clock or a hand-edited record could be
+# hours or never. That is the floor failing silently in the one direction it
+# must not, and it fails that way for a record that is self-evidently unusable.
+#
+# So a negative age is treated as a TRIPPED one, not clamped to zero. This
+# follows the rule the rest of the file already states — an unusable clock fails
+# closed, because rendering a table that was not strictly due is harmless while
+# skipping one that was is the whole failure mode. The stderr line names the
+# skew so it is diagnosable rather than merely surprising.
+record_age() {
+  local now age
+  now="$(date +%s)"
+  age=$(( now - RENDERED_EPOCH ))
+  if (( age < 0 )); then
+    printf 'table-freshness.sh: recorded render is %ss in the FUTURE (%s) — clock skew or an edited record; treating the board as stale rather than suppressing the floor\n' \
+      "$(( -age ))" "$RENDERED_AT" >&2
+    printf '%s' "$TRIP_S"
+    return
+  fi
+  printf '%s' "$age"
+}
+
 # Read the recorded render into RENDERED_AT / ACTIVE_RECORDED / SURFACE_RECORDED.
 # Returns 1 when there is no usable record (missing file, absent key,
 # unparseable timestamp).
@@ -420,7 +459,7 @@ case "$MODE" in
       printf 'idle\n'
       exit 0
     fi
-    AGE=$(( $(date +%s) - RENDERED_EPOCH ))
+    AGE="$(record_age)"
     if (( AGE >= TRIP_S )); then
       printf 'stale\n'
       exit 1
@@ -438,7 +477,7 @@ case "$MODE" in
     [[ -n "$ACTIVE_RECORDED" ]] || exit 0
     (( ACTIVE_RECORDED > 0 )) || exit 0
 
-    AGE=$(( $(date +%s) - RENDERED_EPOCH ))
+    AGE="$(record_age)"
     (( AGE >= TRIP_S )) || exit 0
 
     # Dedupe on the recorded render timestamp: one floor line per stale stretch,

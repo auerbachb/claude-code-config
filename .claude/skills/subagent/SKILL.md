@@ -769,6 +769,17 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # --repo/--session are the SAME pair 7.3 armed the watch with — never left to
    # the cwd or to an env var re-read here.
    TABLE_VERDICT=""
+   # RE-DERIVE both, every time — do not assume 7.3's shell variables are still
+   # set. Each of these blocks runs in a fresh process, and a context compaction
+   # (the very thing the durable clock exists to survive) wipes the thread's
+   # memory of them. An empty $TF_SESSION or $REPO_KEY reaching the flags is the
+   # mismatched-clock failure the spec names: the render is recorded against one
+   # record while the armed watch polls another, both calls succeed, and the
+   # floor then fires forever or never. The script now rejects an explicitly
+   # empty --session/--repo rather than substituting a default, so this is a
+   # loud failure instead of a silent one — but re-deriving is what avoids it.
+   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+   TF_SESSION="${CLAUDE_SESSION_ID:-default}"
    if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
      TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
        --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)
@@ -800,6 +811,8 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    ```
 
    **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it.
+
+   One residual case re-deriving cannot fix: if `CLAUDE_SESSION_ID` was set when 7.3 armed the watch but is unset now, the watch polls the real id while these calls resolve `default`, and the floor fires against a board you are faithfully re-rendering. The tell is a `TABLE FLOOR` line that keeps arriving right after you rendered. Confirm with `"$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION"`: an `age_s` that keeps growing across renders means you are writing a different record than the watch reads. Re-arm with the session the renders actually use rather than editing state by hand.
 
    **When the round ends, record the terminal board.** This is a real call, not a
    note — the round's own completion is one of the teardown sites the spec names
