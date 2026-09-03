@@ -282,6 +282,73 @@ check_eq "liveness indeterminate" "indeterminate" "$(field 201 '.liveness')"
 check_eq "still surfaced, never adopted" "skip" "$(field 201 '.action')"
 check_eq "verdict owned_live" "owned_live" "$(field 201 '.verdict')"
 
+# FAILS WITHOUT FIX: revert candidate-ownership.sh to the single
+# `.repos[<key>].pause` read and #202's state drops to `active`, its parked
+# evidence disappears, and its owner label loses the marker — /pause writes only
+# `.pauses[<session>]` since issue #1576, so the sweep would be blind to every
+# board parked after that change while still passing scenario (2) above on the
+# legacy singleton. That is the shape a restructure uses to disable a guard
+# silently: the suite stays green because the OLD fixture still matches.
+# (`#202 owned` still passes in that control — the fresh claim alone marks it
+# owned — so the state/evidence/marker assertions are the ones carrying the proof.)
+echo "-- (2c) session-keyed .pauses records are read, and a resumed sibling masks nothing (issue #1576) --"
+# #203 gets NO claim and NO PR: the resumed record is then the ONLY thing that
+# could mark it owned, so its verdict isolates the active/resumed filter.
+export FAKE_CLAIM_202="claimed:threadK:alice"
+seed_pr 901 202 "issue-202-keyed"
+seed_state ".pauses={\
+\"sessKeyed\":{\"active\":true,\"session_id\":\"sessKeyed\",\"paused_at\":\"2026-09-02T21:56:40Z\",\
+\"parked\":[{\"kind\":\"pr\",\"ref\":901,\"branch\":\"issue-202-keyed\",\"stopped_at\":\"awaiting review\",\"next_move\":\"poll\"}],\
+\"marker_path\":\"$HOME/.claude/handoffs/pause-keyed.md\"},\
+\"sessResumed\":{\"active\":false,\"session_id\":\"sessResumed\",\"paused_at\":\"2026-09-02T21:58:01Z\",\
+\"resumed_at\":\"2026-09-02T23:48:12Z\",\
+\"parked\":[{\"kind\":\"branch\",\"ref\":null,\"branch\":\"issue-203-resumed\",\"stopped_at\":\"parked\",\"next_move\":\"poll\"}],\
+\"monitors_stopped\":[{\"owner\":\"babysit\",\"task_id\":\"t2\",\"stopped\":true,\"rearmed\":true}],\
+\"marker_path\":\"$HOME/.claude/handoffs/pause-resumed.md\"},\
+\"sessPartial\":{\"active\":false,\"session_id\":\"sessPartial\",\"paused_at\":\"2026-09-02T22:10:00Z\",\
+\"parked\":[{\"kind\":\"branch\",\"ref\":null,\"branch\":\"issue-204-partial\",\"stopped_at\":\"parked\",\"next_move\":\"poll\"}],\
+\"monitors_stopped\":[{\"owner\":\"babysit\",\"task_id\":\"t3\",\"stopped\":true,\"rearmed\":false}],\
+\"marker_path\":\"$HOME/.claude/handoffs/pause-partial.md\"}}"
+sweep 202 203 204
+check_eq "#202 owned from a keyed record" "true" "$(field 202 '.owned')"
+check_eq "#202 state paused" "paused" "$(field 202 '.state')"
+check_contains "#202 parked evidence named" "parked by /pause" "$(field 202 '.evidence | join("|")')"
+check_contains "#202 carries its OWN record's marker, not a repo-wide one" \
+  "pause-keyed.md" "$(field 202 '.owner_label')"
+check_eq "#203 resumed record is not parked work" "false" "$(field 203 '.owned')"
+check_eq "#203 dispatches" "dispatch" "$(field 203 '.action')"
+# A record closed with a re-arm still outstanding is PARTIALLY restored, and
+# /pause-resume re-selects it. This sweep must agree, or it hands out work the
+# resume command is still going to pick up — the duplicate-implementation shape.
+check_eq "#204 partially restored record is still parked work" "true" "$(field 204 '.owned')"
+check_eq "#204 is not dispatched" "skip" "$(field 204 '.action')"
+check_eq "#202 no degradation" "0" "$(field 202 '.degraded | length')"
+
+# The legacy singleton seeded in scenario (2) is still present and still read:
+# `.pauses` did not replace it as a source, it joined it (union, not else-branch).
+sweep 201
+check_eq "#201 legacy singleton still owned alongside the keyed map" "true" "$(field 201 '.owned')"
+
+echo "-- (2d) a malformed parked field degrades loudly, never reads as 'nothing parked' --"
+# `(.parked // [])[]?` would swallow the type error and return no matches, which
+# is indistinguishable from a record that parked nothing. The sweep's contract is
+# that an unreadable source is NAMED; only an absent field is legitimately empty.
+seed_state ".pauses={\"sessBad\":{\"active\":true,\"session_id\":\"sessBad\",\
+\"paused_at\":\"2026-09-02T22:20:00Z\",\"parked\":\"not-an-array\"}}"
+sweep 205
+check_contains "the malformed record is named" "malformed" "$(field 205 '.degraded | join("|")')"
+check_eq "and the sweep still answers for the candidate" "dispatch" "$(field 205 '.action')"
+
+echo "-- (2e) a pauses value that is not a map is unreadable, and legacy records survive it --"
+# `if type == "object" then ... else [] end` would turn a corrupt map into an
+# empty list and report a clean "nothing parked" over however many boards it
+# holds. Drop only that source, name it, and keep reading the legacy slot —
+# which scenario (2) seeded for #201.
+"$STUB_SCRIPTS/session-state.sh" --set ".repos[\"$REPO_KEY\"].pauses=[\"not-a-map\"]" >/dev/null
+sweep 201 205
+check_contains "the corrupt map is named" "pauses" "$(field 205 '.degraded | join("|")')"
+check_eq "#201 still owned from the legacy slot" "true" "$(field 201 '.owned')"
+
 ############################################################################
 scenario "(3) dead/archived owner with surviving branch + handoff — adopt from the PR"
 export FAKE_CLAIM_301="stale:threadDead:alice"

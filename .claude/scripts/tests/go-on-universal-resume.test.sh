@@ -44,7 +44,9 @@ has "$END_RESUME" '^name: end-resume$'
 # --- /go-on classifies every known stoppage class ---------------------------
 has "$GO_ON" '^## Step 0: Classify the stoppage'
 has "$GO_ON" 'execution_pauses'                  # planned-stop gate probe
-has "$GO_ON" '\.repos\[.*\]\.pause'              # parked /pause record probe
+has "$GO_ON" '\.repos\[.*\]\.pauses'             # parked /pause records probe (#1576)
+has "$GO_ON" '\.repos\[.*\]\.pause`? / `?\.suspend|legacy singletons'  # legacy union members
+has "$GO_ON" 'union'                             # probe B reads a set, not a slot
 has "$GO_ON" 'portable-handoff-<owner>-<repo>'   # /end canonical note probe
 has "$GO_ON" 'handoff_reason == "token_exhaustion"'
 has "$GO_ON" 'unplanned'
@@ -203,10 +205,39 @@ python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$SCHEMA" \
 python3 - "$SCHEMA" <<'PY' || exit 1
 import json, sys
 repo = json.load(open(sys.argv[1]))["repos"]["org/repo"]
-receipt = repo.get("resume")
-assert isinstance(receipt, dict), "repos[].resume is not documented as an object"
-for field in ("class", "evidence_digest", "at", "session_id", "dispatched_to"):
-    assert field in receipt, f"resume receipt is missing {field}"
+FIELDS = ("class", "evidence_digest", "at", "session_id", "dispatched_to")
+
+# Issue #1576: receipts are keyed per session. The legacy singleton stays
+# documented as a READ-ONLY fallback, so both shapes must be present.
+resumes = repo.get("resumes")
+assert isinstance(resumes, dict) and resumes, \
+    "repos[].resumes is not documented as a session-keyed map"
+for key, receipt in resumes.items():
+    assert isinstance(receipt, dict), f"resumes[{key}] is not an object"
+    for field in FIELDS:
+        assert field in receipt, f"resumes[{key}] is missing {field}"
+    assert receipt.get("session_id") == key, \
+        f"resumes[{key}] must be self-describing (session_id != key)"
+
+legacy = repo.get("resume")
+assert isinstance(legacy, dict), "legacy repos[].resume must stay documented"
+for field in FIELDS:
+    assert field in legacy, f"legacy resume receipt is missing {field}"
+assert "LEGACY READ-ONLY" in repo["_resume_comment"], \
+    "the singleton resume slot must be annotated as legacy read-only"
+
+# The pause side is keyed the same way, with the same legacy annotation.
+pauses = repo.get("pauses")
+assert isinstance(pauses, dict) and pauses, \
+    "repos[].pauses is not documented as a session-keyed map"
+for key, record in pauses.items():
+    assert record.get("session_id") == key, \
+        f"pauses[{key}] must be self-describing (session_id != key)"
+    assert "active" in record and "paused_at" in record and "marker_path" in record, \
+        f"pauses[{key}] is missing a required pause-board field"
+assert isinstance(repo.get("pause"), dict), "legacy repos[].pause must stay documented"
+assert "LEGACY READ-ONLY" in repo["_pause_comment"], \
+    "the singleton pause slot must be annotated as legacy read-only"
 PY
 
 # --- Behavioral: the documented newest-wins filter, run on real fixtures ----
@@ -268,5 +299,67 @@ for empty_fixture in '{}' 'null' "$ALL_CLEARED"; do
   [[ "$EMPTY_OUT" == '{}' ]] \
     || fail "an empty-but-valid gate map must yield {} (got: $EMPTY_OUT)"
 done
+
+# --- Probe B unions the legacy singletons IN ITS EXECUTABLE BLOCK ------------
+# Issue #1576. Probe B's prose has always called the legacy `.pause`/`.suspend`
+# slots union members, but the block that computes PAUSE_UNRESUMED once read
+# `.pauses` alone and left the union to a following sentence. An agent running
+# the block as written reported probe B `absent` while a pre-upgrade board was
+# still parked and `/pause-resume` would still restore it — the same masking bug
+# this issue exists to remove, one level up. Extract the real program and run it.
+grep -q 'REPO_KEY\\"\].\$LEGACY_SLOT' "$GO_ON" \
+  || fail "probe B no longer reads the legacy slots in its executable block"
+
+PROBE_B=$(awk '
+  index($0, "--arg lsusp")               { flag = 1; next }
+  flag                                   { print }
+  flag && index($0, "| sort_by(.paused_at") { exit }
+' "$GO_ON")
+[[ -n "$PROBE_B" ]] || fail "could not extract the probe B union program from go-on"
+# Strip the trailing shell tail (`' 2>/dev/null) \`). The program is single-quoted
+# in the skill, so it cannot itself contain an apostrophe.
+PROBE_B="${PROBE_B%\'*}"
+
+probe_b() {  # probe_b <keyed> <legacy-pause> <legacy-suspend>
+  jq -c -n --arg keyed "$1" --arg lpause "$2" --arg lsusp "$3" "$PROBE_B"
+}
+
+KEYED_ONE='{"s1":{"active":true,"paused_at":"2026-09-01T10:00:00Z"}}'
+LEGACY_P='{"active":true,"paused_at":"2026-09-02T10:00:00Z"}'
+LEGACY_S='{"active":true,"suspended_at":"2026-08-30T10:00:00Z"}'
+
+# THE REGRESSION: a legacy board stays selected even though `.pauses` is
+# non-empty. An else-branch keyed on an empty map would drop it here.
+UNION=$(probe_b "$KEYED_ONE" "$LEGACY_P" "$LEGACY_S") \
+  || fail "probe B raised on a valid keyed+legacy union"
+[[ "$(jq -r 'length' <<<"$UNION")" == 3 ]] \
+  || fail "probe B dropped legacy records from a non-empty .pauses map (got: $UNION)"
+# Newest first, across both spellings of the timestamp.
+[[ "$(jq -r '[.[] | .paused_at // .suspended_at] | join(",")' <<<"$UNION")" \
+   == "2026-09-02T10:00:00Z,2026-09-01T10:00:00Z,2026-08-30T10:00:00Z" ]] \
+  || fail "probe B did not sort the union newest-first (got: $UNION)"
+
+# A legacy-only board (nothing keyed yet) is still found.
+[[ "$(probe_b '{}' "$LEGACY_P" 'null' | jq -r 'length')" == 1 ]] \
+  || fail "probe B reported a legacy-only parked board as absent"
+
+# A genuinely resumed legacy record is not selected — `.active != false`, never
+# `.active // true`, which reads false as empty and never fires.
+[[ "$(probe_b '{}' '{"active":false}' 'null' | jq -r 'length')" == 0 ]] \
+  || fail "probe B selected a legacy record that was already resumed"
+# ...but a closed record with re-arms still pending stays selected.
+[[ "$(probe_b '{}' '{"active":false,"monitors_stopped":[{"rearmed":false}]}' 'null' \
+      | jq -r 'length')" == 1 ]] \
+  || fail "probe B dropped a partially-restored legacy record"
+
+# A corrupt legacy slot raises, so the caller marks probe B unreadable rather
+# than reading a damaged board as "nothing parked".
+if probe_b '{}' '123' 'null' >/dev/null 2>&1; then
+  fail "a corrupt legacy slot must raise, not read as an empty slot"
+fi
+# Control: the same invocation shape succeeds on valid input, so the negative
+# case above is failing on the fixture rather than on the invocation.
+probe_b '{}' 'null' 'null' >/dev/null 2>&1 \
+  || fail "probe B rejected an all-empty union — the negative case proves nothing"
 
 echo "OK: /go-on universal resume contract tests passed"

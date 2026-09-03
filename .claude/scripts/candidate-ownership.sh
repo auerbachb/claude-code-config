@@ -390,6 +390,9 @@ ss_get() { # ss_get <jq-path> <degrade-label> -> SS_VALUE, rc 0 on a usable read
 }
 
 PAUSE_JSON=""
+PAUSES_MAP_JSON=""
+PAUSE_LEGACY_JSON=""
+SUSPEND_LEGACY_JSON=""
 BG_TASKS_JSON=""
 EXEC_PAUSES_JSON=""
 PMM_ACTIVE=""
@@ -398,8 +401,30 @@ if [[ -z "$SESSION_STATE_SH" ]]; then
   batch_degrade "session-state.sh: not found (parked, background-task, and fleet evidence unavailable)"
 else
   if [[ -n "$REPO_KEY" ]]; then
-    ss_get ".repos[\"$REPO_KEY\"].pause" "pause" || true
-    PAUSE_JSON="$SS_VALUE"
+    # Pause records are keyed per session at .pauses[<session>] (issue #1576).
+    # The pre-#1576 singleton `.pause` and the pre-#1310 `.suspend` slot are read
+    # alongside it as UNION members, not as a fallback that fires only when the
+    # map is empty: an else-branch would make a board parked before either rename
+    # invisible the moment any session wrote a keyed record — the same masking
+    # bug #1576 removed one level up.
+    ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses" || true
+    PAUSES_MAP_JSON="$SS_VALUE"
+    ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)" || true
+    PAUSE_LEGACY_JSON="$SS_VALUE"
+    ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)" || true
+    SUSPEND_LEGACY_JSON="$SS_VALUE"
+    # A `pauses` value that is neither absent nor a map of records is CORRUPT,
+    # not empty — a single malformed VALUE included, which the `select` in the
+    # union build would otherwise drop silently. Drop only that source and NAME
+    # it, so the legacy slots still contribute and the sweep never reads a
+    # damaged board as "nothing parked".
+    if [[ -n "$PAUSES_MAP_JSON" && "$PAUSES_MAP_JSON" != "null" ]] && \
+       ! printf '%s' "$PAUSES_MAP_JSON" | \
+         jq -e 'type == "object" and (to_entries | all(.value | type == "object"))' \
+           >/dev/null 2>&1; then
+      batch_degrade "pauses: not an object, or holds a malformed record (those parked records were not consulted)"
+      PAUSES_MAP_JSON=""
+    fi
     ss_get ".repos[\"$REPO_KEY\"].background_tasks" "background_tasks" || true
     BG_TASKS_JSON="$SS_VALUE"
     # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>];
@@ -422,7 +447,44 @@ json_or_null() { # a `--get` on a missing path prints "null"; normalize both
   [[ -z "$v" || "$v" == "null" ]] && { printf 'null'; return; }
   if printf '%s' "$v" | jq -e . >/dev/null 2>&1; then printf '%s' "$v"; else printf 'null'; fi
 }
-PAUSE_JSON="$(json_or_null "$PAUSE_JSON")"
+# PAUSE_JSON is an ARRAY of un-resumed pause records (issue #1576), never one
+# block: a repo can hold several, and a sibling's `active: false` is not evidence
+# that nothing else is parked. Records that are already resumed are dropped here,
+# so downstream code no longer re-checks `.active` per block.
+PAUSE_JSON="$(jq -nc \
+  --argjson pauses "$(json_or_null "$PAUSES_MAP_JSON")" \
+  --argjson legacy_pause "$(json_or_null "$PAUSE_LEGACY_JSON")" \
+  --argjson legacy_suspend "$(json_or_null "$SUSPEND_LEGACY_JSON")" '
+  # A legacy slot is one record or nothing. A value that is neither is a DAMAGED
+  # singleton, not an empty one — dropping it silently would let this sweep
+  # dispatch work while /pause-resume and /go-on both call that same source
+  # unreadable. Raise; the caller degrades the whole pause source and names it.
+  def one($b): if ($b | type) == "object" then [$b]
+               elif ($b | type) == "null" then []
+               else error("legacy pause slot is not a record") end;
+  # ONE un-resumed predicate across every reader (pause-resume Step 1, go-on
+  # probe B, here). It must match /pause-resume exactly: a record it would still
+  # restore is a record this sweep must still call parked.
+  #   - NOT `.active // true`: jq treats false as empty, so that expression
+  #     returns true for exactly the resumed records it should exclude.
+  #   - A record closed with re-arms still outstanding is PARTIALLY restored;
+  #     /pause-resume re-selects it, so it is parked work here too.
+  #   - A malformed array must not throw and lose the whole selection.
+  #   - A missing `active` counts as active — this sweep fails toward surfacing.
+  def pend($a): ($a | if type == "array"
+                      then map(select((type != "object") or ((.rearmed // false) != true))) | length
+                      else 0 end);
+  def unresumed: (.active != false)
+                 or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
+  ( if ($pauses | type) == "object"
+    then ($pauses | to_entries | map(select((.value | type) == "object") | .value))
+    else [] end )
+  + one($legacy_pause) + one($legacy_suspend)
+  | map(select(unresumed))' 2>/dev/null)" || PAUSE_JSON=""
+[[ -n "$PAUSE_JSON" ]] || {
+  PAUSE_JSON="null"
+  batch_degrade "pause records: could not be combined (parked-unit evidence not consulted)"
+}
 BG_TASKS_JSON="$(json_or_null "$BG_TASKS_JSON")"
 EXEC_PAUSES_JSON="$(json_or_null "$EXEC_PAUSES_JSON")"
 PMM_JSON="$(json_or_null "$PMM_JSON")"
@@ -800,39 +862,53 @@ for ISSUE in "${CANDIDATES[@]}"; do
   # An open PR with no handoff still resumes — at the review lane, not Phase A.
   [[ -n "$LINKED_PR" && -z "$ADOPT_PHASE" ]] && ADOPT_PHASE="b"
 
-  # -- parked units in the repo's pause block ------------------------------------
-  if [[ "$PAUSE_JSON" != "null" ]]; then
-    PAUSE_ACTIVE="$(printf '%s' "$PAUSE_JSON" | jq -r '.active // false' 2>/dev/null || printf 'false')"
-    if [[ "$PAUSE_ACTIVE" == "true" ]]; then
+  # -- parked units across every un-resumed pause record --------------------------
+  # PAUSE_JSON is already filtered to active records, so scan all of them: a match
+  # in ANY session's board owns this issue. The matched record supplies its own
+  # marker path — a repo-wide marker would name the wrong session's artifact.
+  if [[ "$PAUSE_JSON" != "null" && "$PAUSE_JSON" != "[]" ]]; then
       PARK_RC=0
-      PARK_HIT="$(printf '%s' "$PAUSE_JSON" | jq -r --arg n "$ISSUE" --arg pr "$LINKED_PR" '
-        [ (.parked // [])[]?
+      PARK_COMBINED="$(printf '%s' "$PAUSE_JSON" | jq -r --arg n "$ISSUE" --arg pr "$LINKED_PR" '
+        [ .[]?
+          | . as $rec
+          # `(.parked // [])[]?` would swallow a malformed `parked` and read it
+          # as "nothing parked". Validate the type and raise instead, so PARK_RC
+          # goes non-zero and the record is NAMED as degraded — an absent field
+          # is still legitimately empty.
+          | (if ($rec.parked | type) == "array" then $rec.parked[]
+             elif $rec.parked == null then empty
+             else error("parked is not an array") end)
           | select(
               ((.ref // "") | tostring) == $pr and $pr != ""
               or ((.branch // "") | test("issue-" + $n + "(\\D|$)"))
               or ((.issue // "") | tostring) == $n
               or ((.stopped_at // "") | test("#" + $n + "\\b"))
-              or ((.next_move // "") | test("#" + $n + "\\b")) ) ]
+              or ((.next_move // "") | test("#" + $n + "\\b")) )
+          | { unit: ((.kind // "unit") + " " + ((.ref // "?") | tostring)
+                     + " — " + (.stopped_at // "parked")),
+              marker: ($rec.marker_path // "") } ]
         | if length == 0 then "" else
-            ((.[0].kind // "unit") + " " + ((.[0].ref // "?") | tostring)
-             + " — " + (.[0].stopped_at // "parked"))
+            (.[0].unit + "\u001f" + .[0].marker)
           end' 2>/dev/null)" || PARK_RC=$?
       # An empty result is a legitimate no-match; a non-zero jq is a malformed
-      # pause block, which must be named rather than read as "nothing parked".
+      # pause record, which must be named rather than read as "nothing parked".
       if (( PARK_RC != 0 )); then
-        add_degraded "pause block is malformed (jq rc=$PARK_RC) — parked-unit evidence not consulted for #$ISSUE"
-        PARK_HIT=""
+        add_degraded "pause records are malformed (jq rc=$PARK_RC) — parked-unit evidence not consulted for #$ISSUE"
+        PARK_COMBINED=""
       fi
+      # Split on US rather than reading with IFS: a tab/IFS read collapses an
+      # empty trailing field and shifts the rest, which is exactly the shape an
+      # absent marker_path produces.
+      PARK_HIT="${PARK_COMBINED%%$'\x1f'*}"
       if [[ -n "$PARK_HIT" ]]; then
+        MARKER_PATH="${PARK_COMBINED#*$'\x1f'}"
         OWNED=1
         RESUMABLE=1
         note_state paused
         add_evidence "parked by /pause: $PARK_HIT"
-        MARKER_PATH="$(printf '%s' "$PAUSE_JSON" | jq -r '.marker_path // ""' 2>/dev/null || true)"
         note_title "paused thread${MARKER_PATH:+ ($(basename "$MARKER_PATH"))}"
         [[ -z "$ADOPT_FROM" && -n "$LINKED_PR" ]] && { ADOPT_FROM="pr"; ADOPT_PR="$LINKED_PR"; }
       fi
-    fi
   fi
 
   # -- background-task registry ---------------------------------------------------

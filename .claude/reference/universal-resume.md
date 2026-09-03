@@ -25,10 +25,19 @@ front door that routes into them.
 | Probe | Class | Source | Written by |
 |---|---|---|---|
 | A | `pause` / `end` | `.repos[k].execution_pauses[*]` with `active: true`, `cleared_at: null` — carries `command` and `at` | `execution-pause.sh --activate` (`/end` Step 1, `/pause` Step 1) |
-| B | `pause` | `.repos[k].pause.active == true` (legacy `.suspend`); fallback `~/.claude/handoffs/pause-*.md` / `suspend-*.md` | `/pause` Step 7 |
+| B | `pause` | **any** un-resumed record in the union of `.repos[k].pauses[*]` and the legacy singletons `.pause` / `.suspend`; fallback `~/.claude/handoffs/pause-*.md` / `suspend-*.md` | `/pause` Step 7 |
 | C | `end` | `~/.claude/handoffs/portable-handoff-<owner>-<repo>-*.md`, excluding `*-checkpoint.md` | `portable-handoff-publish.sh` (`/end` Step 6) |
 | D | `token_exhaustion` | `.repos[k].prs[*].handoff_reason == "token_exhaustion"` | Token/turn exhaustion protocol (`subagent-orchestration.md`) |
 | E | `unplanned` | Live registry entries, `.repos[k].prs`, scoped handoff files, `*-checkpoint.md`, in-progress rebase, dirty/unpushed feature branch, open PR | Ordinary work, plus `checkpoint-handoff.sh` |
+
+**Probe B reads a set, not a slot (issue #1576).** Pause records are keyed per
+session, so a repo routinely holds several. Probe B is `present` when *any*
+record in the union is un-resumed, and `record_at` is the newest such record's
+`paused_at`. A sibling record with `active: false` says only that that session's
+board was restored — reading one slot and stopping is what let a later `/pause`
+hide an earlier one, and a resumed sibling then suppress the survivor. The
+legacy singletons are members of the same union, never an else-branch that fires
+only when the map is empty.
 
 **`refill.paused` never discriminates.** Both `/end` and `/pause` write
 `{paused: true, reason: "full_stop"}`, so it corroborates that *a* planned stop
@@ -104,8 +113,24 @@ the delegated command, which performs the clear inside its own contract
 
 ## Idempotency — the resume receipt
 
-`.repos[k].resume` records the last dispatch: `{class, evidence_digest, at,
-session_id, dispatched_to}`. The digest is `class|record_at|pr|head_sha|branch`.
+`.repos[k].resumes[<session-id>]` records **that session's** last dispatch:
+`{class, evidence_digest, at, session_id, dispatched_to}`. The digest is
+`class|record_at|pr|head_sha|branch`, where a pause-class `record_at` is the
+newest **un-resumed** record's `paused_at`.
+
+**Keyed per session, for the same reason the pause records are (issue #1576).**
+As a repo singleton, `.repos[k].resume` held only whichever session dispatched
+last. A sibling's receipt could then match another session's digest and produce
+an "already resumed" verdict while that session's own board was still parked —
+the receipt masking exactly the work it was meant to avoid duplicating. A
+session now reads only its own key. The legacy singleton `.resume` stays
+readable, but only when its `session_id` matches the reading session or is
+absent; an unconditional legacy read would be the same mask in a different slot.
+
+Because `record_at` names the newest **un-resumed** record, a genuinely restored
+board drops out of the union and changes the digest, while a still-parked one
+keeps producing evidence. The verdict rests on the records; the receipt only
+suppresses a repeat of the same evidence by the same session.
 
 A second `/go-on` with an unchanged digest reports `nothing to resume`, naming
 when and how the stoppage was already resumed, and writes nothing. Anything that
@@ -114,7 +139,7 @@ the next run resumes normally; `--again` forces a pass when the digest is
 unchanged but a fresh poll is wanted.
 
 The receipt is a backstop, not the only guard. The underlying records are
-self-clearing: `/pause-resume` Step 7 sets `pause.active=false`, both resume
+self-clearing: `/pause-resume` Step 7 sets that record's `active=false`, both resume
 commands clear the execution gate, and the registry moves entries
 `stopped -> rearming -> rearmed` under a lock. The receipt covers the lanes those
 records do not close — most importantly `unplanned`, where nothing marks the
@@ -160,7 +185,7 @@ Unclassifiable cases, all report-only:
 | B and C both present, A absent/unreadable | Two planned stops, no comparable timestamps |
 | This session's gate `active`, no class readable | Launches are blocked and nothing says which command closes them |
 | A probe could not be read | Its class cannot be ruled out |
-| `pause.active == true` but `/pause-resume` finds no state or marker | The record and its restore path disagree |
+| A union record is `active: true` but `/pause-resume` finds no state or marker | The record and its restore path disagree; name the record's session key |
 | A marker `/pause` published as not auto-discoverable (`_unknown` repo key) | Only the explicit `/pause-resume --marker <path>` form can select it; `/go-on` takes no `--marker` |
 | Several token-exhaustion entries, none matching this branch's PR | No basis to pick one; name them all |
 

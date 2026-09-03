@@ -128,7 +128,41 @@
         "winddown_task_id": "c7kp1nxsr",
         "winddown_generation": "leave-20260822T190000Z-41977-18234"
       },
-      "_pause_comment": "Laptop-close wind-down state for this repo (issues #1249 and #1310), written by `/pause` Step 7a and read by `/pause-resume` Step 1. One block per repo. Like `refill` and `day`, this block is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it with an explicit `--get .repos[\"<key>\"].pause` or an armed pause reports as absent. `active` is true from the moment /pause writes the block until /pause-resume Step 7 sets it false after a successful restore; a block whose session died before resume is still active. `landed` lists PRs driven to merged during the wind-down. `parked` lists every other in-flight unit (kind: pr | subagent | branch) with its stopping point, next move, and boundary status. `monitors_stopped` records each Monitor /pause Step 2 stopped (or attempted), keyed by owner (babysit | pmm | day | day_limit_wake | leave_winddown) and the task's identity pair; `stopped: false` means the TaskStop was not confirmed and the Monitor may still be live. `day_limit_wake` is the owner for the usage-limit auto-wake Monitor armed by 2D.6; pause-resume Step 5 sets its `rearmed` result true only after confirming that Monitor is absent or successfully disarmed, so an unreadable or failed stop keeps recovery active. `leave_winddown` is the owner for the declared-leave-time wind-down Monitor armed by `/leave-by` (issue #1525), torn down by the same identity-pair rules; pause-resume settles it on the DEADLINE, not on the pause — a `.window.deadline_epoch` still in the future is re-armed with a fresh generation and the leave time stays live (a coffee-break pause must not silently cancel a 7 PM wind-down), while a spent deadline is retired and never re-armed, since resuming past a leave time is the user saying it no longer applies. `refill_paused` mirrors whether the Step 1 refill write succeeded. `marker_path` is the human-readable fallback file for /pause-resume when session-state.json is unreadable. `resumed_at` is set by /pause-resume Step 7. Readers also fall back to legacy `.suspend` records and `suspend-*.md` markers created before issue #1310. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
+      "_pauses_comment": "Session-keyed laptop-close wind-down records for this repo (issue #1576), written by `/pause` Step 7b and read by `/pause-resume` Step 1. Keys are Claude session IDs, sanitized with the same `[^[:alnum:]_.-] -> _` rule `/pause` Step 7a applies to the marker filename — a key built one way by the writer and another way by a reader would not match. This map mirrors `execution_pauses` and REPLACES the repo-singleton `pause` block below, which two concurrent `/pause` runs silently clobbered: the later write replaced the earlier session's board outright, and the earlier board survived only as its marker file. Each value carries every field the singleton block carried plus an explicit `session_id` so a record read out of the map is self-describing. Like `refill`, `day`, and the legacy `pause`, this map is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].pauses`. `/pause-resume` enumerates the UNION of un-resumed records here and the legacy singleton `pause`/`suspend` slots, newest-first by `paused_at`; the legacy slots are a union member, not an else-branch, because an else-branch would make a pre-upgrade un-resumed board unreachable the moment any session wrote a keyed record. A sibling record with `active: false` is never proof that nothing else is parked. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
+      "pauses": {
+        "session-example": {
+          "active": true,
+          "session_id": "session-example",
+          "paused_at": "2026-08-22T22:10:00Z",
+          "window_minutes": 15,
+          "window_expired": false,
+          "landed": [
+            {"pr": 1250, "issue": 1249, "at": "2026-08-22T22:14:00Z"}
+          ],
+          "parked": [
+            {
+              "kind": "pr",
+              "ref": 1251,
+              "branch": "issue-1251-some-feature",
+              "head_sha": "abc1234",
+              "stopped_at": "fixes committed and pushed; awaiting CodeRabbit review",
+              "next_move": "poll for CodeRabbit review and process findings",
+              "waiting_on": "reviewer",
+              "boundary": "pushed"
+            }
+          ],
+          "monitors_stopped": [
+            {"owner": "babysit", "ref": 1251, "task_id": "abc123", "generation": "20260822T221000Z-12345-6789", "stopped": true}
+          ],
+          "background_tasks_stopped": [
+            {"task_id": "agent-runtime-id", "type": "agent", "status": "stopped", "output_file": "/tmp/agent-runtime-id.output", "recovery_path": "/Users/user/repos/my-project/.claude/worktrees/issue-1308"}
+          ],
+          "refill_paused": true,
+          "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-session-example-X7pQ2a.md",
+          "resumed_at": null
+        }
+      },
+      "_pause_comment": "LEGACY READ-ONLY as of issue #1576 — superseded by the session-keyed `pauses` map above, which no longer clobbers a concurrent session's board. No writer creates this slot any more; `/pause-resume` Step 1 and `/go-on` probe B still READ it (as a union member alongside `pauses`, not as a fallback that fires only when the map is empty) so a session parked before the upgrade stays recoverable, and a restore closes the legacy record in place. Original contract, unchanged for readers: laptop-close wind-down state for this repo (issues #1249 and #1310), written by `/pause` Step 7a and read by `/pause-resume` Step 1. One block per repo. Like `refill` and `day`, this block is INVISIBLE to session-state.sh --session-view, which lifts only .prs and .root_repo out of the repo block before deleting .repos — read it with an explicit `--get .repos[\"<key>\"].pause` or an armed pause reports as absent. `active` is true from the moment /pause writes the block until /pause-resume Step 7 sets it false after a successful restore; a block whose session died before resume is still active. `landed` lists PRs driven to merged during the wind-down. `parked` lists every other in-flight unit (kind: pr | subagent | branch) with its stopping point, next move, and boundary status. `monitors_stopped` records each Monitor /pause Step 2 stopped (or attempted), keyed by owner (babysit | pmm | day | day_limit_wake | leave_winddown) and the task's identity pair; `stopped: false` means the TaskStop was not confirmed and the Monitor may still be live. `day_limit_wake` is the owner for the usage-limit auto-wake Monitor armed by 2D.6; pause-resume Step 5 sets its `rearmed` result true only after confirming that Monitor is absent or successfully disarmed, so an unreadable or failed stop keeps recovery active. `leave_winddown` is the owner for the declared-leave-time wind-down Monitor armed by `/leave-by` (issue #1525), torn down by the same identity-pair rules; pause-resume settles it on the DEADLINE, not on the pause — a `.window.deadline_epoch` still in the future is re-armed with a fresh generation and the leave time stays live (a coffee-break pause must not silently cancel a 7 PM wind-down), while a spent deadline is retired and never re-armed, since resuming past a leave time is the user saying it no longer applies. `refill_paused` mirrors whether the Step 1 refill write succeeded. `marker_path` is the human-readable fallback file for /pause-resume when session-state.json is unreadable. `resumed_at` is set by /pause-resume Step 7. Readers also fall back to legacy `.suspend` records and `suspend-*.md` markers created before issue #1310. Mechanism and state-shape detail: .claude/reference/pause-state.md.",
       "pause": {
         "active": true,
         "paused_at": "2026-08-22T22:10:00Z",
@@ -159,7 +193,17 @@
         "marker_path": "~/.claude/handoffs/pause-20260822T221000Z-9-auerbachb-18-claude-code-config-default-X7pQ2a.md",
         "resumed_at": null
       },
-      "_resume_comment": "Resume receipt for this repo (issue #1397), written by `/go-on` Step 0.5 after a successful dispatch and read by its next invocation. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].resume`. `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed; `dispatched_to` names the command or lane that ran. A later `/go-on` whose digest matches reports `nothing to resume` and writes nothing, so a back-to-back run cannot re-arm the same work or duplicate a Monitor; `--again` forces a fresh pass. A `none` verdict writes NO receipt — nothing-to-resume is a read-only verdict. Ladder and degradation contract: .claude/reference/universal-resume.md.",
+      "_resumes_comment": "Session-keyed `/go-on` resume receipts for this repo (issue #1576), written by Step 0.5 after a successful dispatch and read by that same session's next invocation. Keys are Claude session IDs under the same sanitization rule as `pauses`. This map mirrors `execution_pauses` and REPLACES the repo-singleton `resume` block below: as a singleton, one session's receipt was the only one recorded, so a sibling's 'already resumed' verdict could suppress a dispatch while that session's own pause record was still un-resumed — silent data loss with no error anywhere. A session reads ONLY its own receipt here. The legacy singleton `resume` is consulted only when its `session_id` matches the reading session or is absent; an unconditional legacy read would be the same cross-session mask in a different slot. Fields are unchanged: `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed, where a pause-class `record_at` is the newest UN-RESUMED record's `paused_at`; `dispatched_to` names the command or lane that ran. Like `refill`, `day`, and `pauses`, this map is INVISIBLE to session-state.sh --session-view. A `none` verdict writes NO receipt. Ladder and degradation contract: .claude/reference/universal-resume.md.",
+      "resumes": {
+        "session-example": {
+          "class": "pause",
+          "evidence_digest": "pause|2026-08-22T22:10:00Z|1251|abc1234|issue-1251-some-feature",
+          "at": "2026-08-23T09:02:00Z",
+          "session_id": "session-example",
+          "dispatched_to": "/pause-resume"
+        }
+      },
+      "_resume_comment": "LEGACY READ-ONLY as of issue #1576 — superseded by the session-keyed `resumes` map above. No writer creates this slot any more; `/go-on` Step 0.5 still reads it, but ONLY when its `session_id` matches the reading session or is absent, so a sibling's receipt can never mask this session's un-resumed pause. Original contract, unchanged for that reader: resume receipt for this repo (issue #1397), written by `/go-on` Step 0.5 after a successful dispatch and read by its next invocation. Like `refill`, `day`, and `pause`, this block is INVISIBLE to session-state.sh --session-view — read it with an explicit `--get .repos[\"<key>\"].resume`. `class` is the stoppage `/go-on` classified (pause | end | token_exhaustion | unplanned); `evidence_digest` is `class|record_at|pr|head_sha|branch` for the evidence that was resumed; `dispatched_to` names the command or lane that ran. A later `/go-on` whose digest matches reports `nothing to resume` and writes nothing, so a back-to-back run cannot re-arm the same work or duplicate a Monitor; `--again` forces a fresh pass. A `none` verdict writes NO receipt — nothing-to-resume is a read-only verdict. Ladder and degradation contract: .claude/reference/universal-resume.md.",
       "resume": {
         "class": "pause",
         "evidence_digest": "pause|2026-08-22T22:10:00Z|1251|abc1234|issue-1251-some-feature",

@@ -94,32 +94,188 @@ if [[ -n "$CALLER_GENERATION" ]]; then
 fi
 ```
 
-## Step 1: Read pause state
+## Step 1: Enumerate every un-resumed pause record
 
-Try the state file first; fall back to the newest repo-matching marker if it fails. The marker filename includes the repo key (set by `/pause` Step 7a) — validate it before choosing so a marker from another repo cannot be mistaken for this one's state:
+**Selection is a set, not a slot (issue #1576).** Pause records are keyed per
+session at `.repos[<key>].pauses[<session-id>]`, so a repo can hold several
+un-resumed boards at once — two sessions pausing minutes apart is the ordinary
+case, not an error. Read **all** of them, and treat the legacy singleton slots
+as members of that same set rather than as an else-branch that fires only when
+the map is empty. A sibling record with `active: false` is never proof that
+nothing else is parked: that inference is precisely what dropped an earlier
+session's board silently.
+
+Order of precedence:
+
+1. **`--marker <path>` short-circuits selection entirely** — an explicitly named
+   marker is the user overriding discovery, so it is honoured before any state
+   read. It is the only way to reach a marker `/pause` published as not
+   auto-discoverable (`_unknown` repo key).
+2. **The union of state records** — every `active != false` entry in
+   `.pauses[*]`, plus the legacy singleton `.pause` and `.suspend` blocks when
+   they are themselves un-resumed. Newest first by `paused_at` (legacy
+   `suspended_at`).
+3. **The marker glob** — only when the union held **no records at all**. An
+   empty *selection* is not the same as an empty *union*: records that exist and
+   are all already resumed are a finished repo, and markers are retained after a
+   restore, so globbing there would rediscover a completed board and restore it
+   twice. `RECORDS_TOTAL` keeps the two cases apart.
 
 ```bash
-PAUSE_STATE=""
+PAUSE_RECORDS='[]'
+RECORDS_TOTAL=0
+# Set when a corrupt `pauses` source was discarded. RECORDS_TOTAL is counted
+# AFTER that discard, so it cannot by itself distinguish "no records existed"
+# from "records existed and we threw the source away" — and only the first of
+# those may reach the marker glob.
+PAUSES_DISCARDED=false
 USE_MARKER=false
 MARKER_PATH=""
 STATE_KEY="pause"
+STATE_UNREADABLE=false
+# jq refuses an empty --argjson; normalize an absent read to null.
+_json_or_null() { [[ -n "$1" && "$1" != "null" ]] && printf '%s' "$1" || printf 'null'; }
+# "Could not look" is never "nothing there". Exit 3 is the one unambiguous
+# absent — no state file has ever been written; every other non-zero is an
+# UNREADABLE source, which must be carried into the verdict rather than
+# collapsed into the same "" an absent path produces.
+# Sets SLOT_VALUE rather than printing: a `$(...)` capture runs the function in
+# a SUBSHELL, where the STATE_UNREADABLE it sets would be discarded along with
+# it — an unreadable state file would then degrade to a silent "nothing parked",
+# which is the single failure this degradation contract exists to prevent.
+SLOT_VALUE=""
+_read_slot() { # _read_slot <jq-path> <label> -> SLOT_VALUE
+  local _rc=0
+  SLOT_VALUE=""
+  SLOT_VALUE=$("$SESSION_STATE_SH" --get "$1" 2>/dev/null) || _rc=$?
+  case "$_rc" in
+    0) ;;
+    3) SLOT_VALUE="" ;;
+    *) SLOT_VALUE=""
+       STATE_UNREADABLE=true
+       echo "DEGRADED: could not read $2 (session-state.sh rc=$_rc) — parked work there was not consulted" >&2 ;;
+  esac
+}
+
+# Resolve the repo key even on the --marker path: it is what validates that an
+# explicitly named marker belongs to this repo.
+REPO_KEY=""
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+fi
+
+# No explicit marker, and we cannot even address the state: that is an
+# unreadable source, not an empty one. Without this the later no-op path would
+# print "No parked session found" on a missing helper or an unresolvable repo.
+if [[ -z "$EXPLICIT_MARKER" ]] && [[ -z "$SESSION_STATE_SH" || -z "$REPO_KEY" ]]; then
+  STATE_UNREADABLE=true
+  echo "DEGRADED: ${SESSION_STATE_SH:+repo identity}${SESSION_STATE_SH:-session-state.sh} unresolved — pause records were not consulted" >&2
+fi
+
+if [[ -z "$EXPLICIT_MARKER" && -n "$SESSION_STATE_SH" ]]; then
   if [[ -n "$REPO_KEY" ]]; then
-    PAUSE_STATE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pause" 2>/dev/null || echo "")
-    if [[ -z "$PAUSE_STATE" || "$PAUSE_STATE" == "null" ]]; then
-      PAUSE_STATE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].suspend" 2>/dev/null || echo "")
-      if [[ -n "$PAUSE_STATE" && "$PAUSE_STATE" != "null" ]]; then
-        STATE_KEY="suspend"
-        echo "(using legacy pre-Issue-1310 suspend state; new pauses use .pause)"
-      fi
+    _read_slot ".repos[\"$REPO_KEY\"].pauses" "the pauses map";        PAUSES_MAP="$SLOT_VALUE"
+    _read_slot ".repos[\"$REPO_KEY\"].pause" "the legacy pause slot";   LEGACY_PAUSE="$SLOT_VALUE"
+    _read_slot ".repos[\"$REPO_KEY\"].suspend" "the legacy suspend slot"; LEGACY_SUSPEND="$SLOT_VALUE"
+    # A `pauses` value that is neither absent nor a map of records is CORRUPT,
+    # not empty — and that applies to a single malformed VALUE inside an
+    # otherwise-valid map just as much as to the map itself. The union build
+    # below drops non-object values with `select`, which would silently swallow
+    # a damaged board and report a clean no-op over it. Check both levels, mark
+    # the source unreadable, and drop only it — the legacy slots still
+    # contribute their records, and an explicit --marker still recovers.
+    if [[ -n "$PAUSES_MAP" && "$PAUSES_MAP" != "null" ]] && \
+       ! jq -e 'type == "object" and (to_entries | all(.value | type == "object"))' \
+            >/dev/null 2>&1 <<<"$PAUSES_MAP"; then
+      STATE_UNREADABLE=true
+      PAUSES_DISCARDED=true
+      PAUSES_MAP=""
+      echo "DEGRADED: the pauses map is not an object, or holds a malformed record — its records were not consulted" >&2
     fi
+    # Build one selection list. `tojson` quotes each path segment, so a session
+    # key never breaks out of the jq path it is spliced into.
+    PAUSE_RECORDS=$(jq -nc \
+      --arg repo_key "$REPO_KEY" \
+      --argjson pauses "$(_json_or_null "$PAUSES_MAP")" \
+      --argjson legacy_pause "$(_json_or_null "$LEGACY_PAUSE")" \
+      --argjson legacy_suspend "$(_json_or_null "$LEGACY_SUSPEND")" '
+      def base: ".repos[" + ($repo_key | tojson) + "]";
+      # A malformed array must not throw and lose the whole selection.
+      def pend($a): ($a | if type == "array"
+                          then map(select((type != "object") or ((.rearmed // false) != true))) | length
+                          else 0 end);
+      # Un-resumed = still active, OR closed but with re-arms outstanding, which
+      # is the partially-restored record Step 2 has always retried. A missing or
+      # unparseable `active` counts as active.
+      # NOT `.active // true`: jq treats false as empty, so that expression
+      # returns true for exactly the resumed records it is meant to exclude.
+      def unresumed: (.active != false)
+                     or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
+      # A legacy slot is one record or nothing. A value that is neither is a
+      # DAMAGED singleton, not an empty one: dropping it silently would report a
+      # pre-upgrade board as "nothing parked", which is the failure this issue
+      # exists to remove. Raise so the caller marks the source unreadable —
+      # matching /go-on probe B and candidate-ownership.sh, which read the same
+      # two slots and must not disagree about what a corrupt one means.
+      def legacy($block; $key):
+        if ($block | type) == "object"
+        then [{ session_id: ($block.session_id // "legacy"),
+                state_key:  $key,
+                state_path: (base + "." + $key),
+                record:     $block }]
+        elif ($block | type) == "null" then []
+        else error("legacy " + $key + " slot is not a record") end;
+      ( if ($pauses | type) == "object"
+        then ($pauses | to_entries
+              | map(select((.value | type) == "object")
+                    | { session_id: .key,
+                        state_key:  "pauses",
+                        state_path: (base + ".pauses[" + (.key | tojson) + "]"),
+                        record:     .value }))
+        else [] end )
+      + legacy($legacy_pause; "pause")
+      + legacy($legacy_suspend; "suspend")
+      | map(select(.record | unresumed))
+      | sort_by(.record.paused_at // .record.suspended_at // "")
+      | reverse') || { PAUSE_RECORDS='[]'; STATE_UNREADABLE=true
+          echo "DEGRADED: pause records could not be combined — none were consulted" >&2; }
+    # How many records EXISTED, before the un-resumed filter. `RECORD_COUNT == 0`
+    # is ambiguous on its own: it means "nothing is parked" only when there were
+    # no records at all. When records existed and were all already resumed, the
+    # marker glob must NOT run — markers are retained after a restore, so it
+    # would rediscover a completed board and restore it a second time.
+    RECORDS_TOTAL=$(jq -n \
+      --argjson pauses "$(_json_or_null "$PAUSES_MAP")" \
+      --argjson legacy_pause "$(_json_or_null "$LEGACY_PAUSE")" \
+      --argjson legacy_suspend "$(_json_or_null "$LEGACY_SUSPEND")" '
+      (if ($pauses | type) == "object"
+       then ($pauses | to_entries | map(select((.value | type) == "object")) | length)
+       else 0 end)
+      + (if ($legacy_pause | type) == "object" then 1 else 0 end)
+      + (if ($legacy_suspend | type) == "object" then 1 else 0 end)') || RECORDS_TOTAL=0
+    LEGACY_SELECTED=$(jq -r '[.[] | select(.state_key == "suspend")] | length' <<<"$PAUSE_RECORDS")
+    [[ "$LEGACY_SELECTED" -eq 0 ]] || \
+      echo "(including legacy pre-Issue-1310 suspend state; new pauses use .pauses[<session>])"
   fi
 fi
 
-# Fall back to the newest marker file if state was not readable.
+RECORD_COUNT=$(jq -r 'length' <<<"$PAUSE_RECORDS" 2>/dev/null || echo 0)
+[[ "$RECORD_COUNT" -le 1 ]] || \
+  echo "Found $RECORD_COUNT un-resumed pause records for $REPO_KEY — restoring each, newest first."
+
+# Records existed and every one of them is already resumed. That is a finished
+# repo, not an unreadable one: say so and stop BEFORE the marker glob, which
+# would otherwise rediscover the retained marker of a board already restored and
+# restore it again. `--marker` never reaches here — it skips the enumeration, so
+# RECORDS_TOTAL is 0 and an explicitly named board is always honoured.
+if [[ "$RECORD_COUNT" -eq 0 && "$RECORDS_TOTAL" -gt 0 && "$STATE_UNREADABLE" == false ]]; then
+  echo "All $RECORDS_TOTAL pause record(s) for $REPO_KEY are already resumed. Run /pause to park a new session."
+  exit 0
+fi
+
+# Fall back to the newest marker file only when NO record existed to select from.
 # Validate the repo key embedded in the filename before using a candidate.
-if [[ -z "$PAUSE_STATE" || "$PAUSE_STATE" == "null" ]]; then
+if [[ "$RECORD_COUNT" -eq 0 ]]; then
   if [[ -n "$EXPLICIT_MARKER" ]]; then
     [[ -r "$EXPLICIT_MARKER" ]] || \
       { echo "Explicit pause marker is unreadable: $EXPLICIT_MARKER" >&2; exit 1; }
@@ -136,13 +292,20 @@ if [[ -z "$PAUSE_STATE" || "$PAUSE_STATE" == "null" ]]; then
     fi
     MARKER_PATH="$EXPLICIT_MARKER"
   fi
-  if [[ -z "$MARKER_PATH" && -z "${REPO_KEY:-}" ]]; then
+  if [[ -z "$MARKER_PATH" && -z "${REPO_KEY:-}" && "$STATE_UNREADABLE" == false ]]; then
     # Without a repo key we cannot safely distinguish our own markers from
     # another repo's — the pattern *--* would match anything. Fail closed.
     echo "No parked session found — nothing to resume."
     exit 0
   fi
-  if [[ -z "$MARKER_PATH" ]]; then
+  # Automatic glob ONLY when the union held no records at all. `RECORD_COUNT`
+  # alone is not enough: records that exist but were filtered — all resumed, or
+  # dropped because a corrupt `pauses` map made that source unreadable — leave
+  # RECORDS_TOTAL positive, and their markers are retained after a restore. A
+  # glob there rediscovers a finished board and restores it a second time.
+  # An EXPLICIT --marker is unaffected: it skips the enumeration entirely, so
+  # RECORDS_TOTAL is 0 and it sets MARKER_PATH above.
+  if [[ -z "$MARKER_PATH" && "$RECORDS_TOTAL" -eq 0 && "$PAUSES_DISCARDED" == false ]]; then
     REPO_OWNER="${REPO_KEY%%/*}"
     REPO_NAME="${REPO_KEY#*/}"
     REPO_KEY_SAFE="${#REPO_OWNER}-${REPO_OWNER}-${#REPO_NAME}-${REPO_NAME}"
@@ -169,6 +332,13 @@ if [[ -z "$PAUSE_STATE" || "$PAUSE_STATE" == "null" ]]; then
   if [[ -n "$MARKER_PATH" ]]; then
     echo "(reading from marker file — session-state.json was not readable; using $MARKER_PATH)"
     USE_MARKER=true
+    # The Step 2 loop iterates PAUSE_RECORDS, so the marker board needs an entry
+    # or Steps 3-7 never run for it. `state_path` is empty by design: there is no
+    # state record to write back to, and Steps 5 and 7 skip their completion
+    # writes on an empty path rather than inventing one.
+    PAUSE_RECORDS=$(jq -nc --arg sk "$STATE_KEY" --arg mp "$MARKER_PATH" \
+      '[{session_id:"marker", state_key:$sk, state_path:"", record:{marker_path:$mp}}]')
+    RECORD_COUNT=1
     # Parse key fields from the human-readable marker. The marker's sections
     # mirror the pause state block; extract what is available.
     PAUSE_STATE=$(awk '
@@ -183,34 +353,81 @@ if [[ -z "$PAUSE_STATE" || "$PAUSE_STATE" == "null" ]]; then
   fi
 fi
 
-# If neither source has state, this is a clean no-op
-if [[ -z "$PAUSE_STATE" && "$USE_MARKER" == false ]]; then
+# No records AND no marker. Which of the two verdicts applies depends on whether
+# any source was UNREADABLE: "nothing is parked" is a claim, and it may only be
+# made when every source was actually read.
+if [[ "$RECORD_COUNT" -eq 0 && "$USE_MARKER" == false && "$STATE_UNREADABLE" == true ]]; then
+  echo "Pause state could not be read and no marker was found — parked work may exist." >&2
+  echo "Resolve the state file, or point at a board directly: /pause-resume --marker <path>" >&2
+  exit 1
+fi
+if [[ "$RECORD_COUNT" -eq 0 && "$USE_MARKER" == false ]]; then
   echo "No parked session found — nothing to resume."
   exit 0
 fi
 ```
 
-**Reading from `session-state.json` is the primary path.** When that path is available, all later steps can use `jq` to parse `$PAUSE_STATE` as JSON. When the marker fallback is active (`USE_MARKER=true`), later steps read the marker file directly from `$MARKER_PATH` — they cannot assume `$PAUSE_STATE` is valid JSON, and should extract what they can from the human-readable sections.
+**Reading from `session-state.json` is the primary path.** When that path is available, all later steps can use `jq` to parse each record as JSON. When the marker fallback is active (`USE_MARKER=true`), later steps read the marker file directly from `$MARKER_PATH` — they cannot assume `$PAUSE_STATE` is valid JSON, and should extract what they can from the human-readable sections.
 
-**The `pause` block is invisible to `--session-view`** (that projection lifts only `.prs` and `.root_repo`). Always read it with an explicit `--get .repos["<key>"].pause` — never via `--session-view`.
+**`.pauses` is invisible to `--session-view`** (that projection lifts only `.prs` and `.root_repo`). Always read it with an explicit `--get .repos["<key>"].pauses` — never via `--session-view`. The same holds for the legacy `.pause` and `.suspend` slots.
 
-The legacy `.suspend` read and `suspend-*.md` glob above are compatibility
-inputs only. They preserve resumability for sessions parked before Issue #1310;
-new `/pause` runs never write those names. `STATE_KEY` remembers which JSON
-record was loaded so Step 7 closes that same record safely.
+**Each selection entry carries its own write-back address.** `state_path` is the
+exact jq path of the record — `.repos[<key>].pauses[<session>]` for a keyed
+record, `.repos[<key>].pause` or `.repos[<key>].suspend` for a legacy one — and
+`state_key` names which shape it is. Steps 5 and 7 write through that stored
+path rather than re-deriving one, so a legacy restore closes the legacy record
+in place and a keyed restore touches only its own session's entry. Rebuilding
+the path from `$STATE_KEY` alone cannot address a keyed record, and rebuilding
+it from the current session's ID would close the wrong session's board.
+
+The legacy `.pause` / `.suspend` reads and the `suspend-*.md` glob are
+compatibility inputs only; new `/pause` runs never write those names. They are
+**union members, not a fallback branch**: reading them only when `.pauses` is
+empty would make an un-resumed pre-upgrade board unreachable the moment any
+session wrote a keyed record — the same masking bug one level up.
 
 New marker auto-discovery requires the exact `Repository: \`owner/repo\`` field;
 the injective filename match is an index, not repository-identity authority.
 An `_unknown` marker is resumable only through the explicit `--marker` path
 printed by `/pause`.
 
-## Step 2: Check if already resumed
+## Step 2: Restore each selected record, newest first
 
-For a JSON state read, check the `active` flag. For a marker-only read, the marker's existence implies an incomplete restore (a fully-resumed session writes `active: false` in the state file, which masks the state before this step runs):
+Steps 3–7 form the restore sequence for **one** record. Run them once per entry
+in `$PAUSE_RECORDS`, newest first, binding that entry's fields first:
+
+```bash
+RESTORED=0
+REMAINING='[]'
+REFILL_CLEAR_PENDING=false   # repo-wide; Step 6 only marks it, Step 8 writes it
+for _i in $(jq -r 'keys_unsorted[]' <<<"$PAUSE_RECORDS"); do
+  ENTRY=$(jq -c ".[$_i]" <<<"$PAUSE_RECORDS")
+  PAUSE_STATE=$(jq -c '.record'     <<<"$ENTRY")
+  STATE_PATH=$( jq -r '.state_path' <<<"$ENTRY")
+  STATE_KEY=$(  jq -r '.state_key'  <<<"$ENTRY")
+  RECORD_SESSION=$(jq -r '.session_id' <<<"$ENTRY")
+  # ... Steps 3-7 for this record ...
+done
+```
+
+**The verdict below is per record, never per repo.** A record that is fully
+resumed is skipped and the loop continues to the next one; it is never read as
+"this repo has nothing parked". That inference is the bug this command was
+rebuilt to remove — a sibling session's resumed record used to end the whole
+command, leaving another session's board parked with no error printed anywhere.
+
+**A record that fails mid-restore does not abort the others.** Report it, add it
+to `REMAINING`, and carry on to the next record; Step 8 names everything left.
+
+For a JSON state read, check the record's `active` flag. For a marker-only read, the marker's existence implies an incomplete restore (a fully-resumed session writes `active: false` in the state file, which masks the state before this step runs):
 
 ```bash
 if [[ "$USE_MARKER" == false ]]; then
-  ACTIVE=$(jq -r '.active // true' <<<"$PAUSE_STATE" 2>/dev/null || echo "true")
+  # `.active // true` would answer "true" for a resumed record — jq's // treats
+  # false as empty — so the idempotent guard below would never fire. Compare
+  # against false explicitly; anything else, missing included, is active.
+  ACTIVE=$(jq -r 'if .active == false then "false" else "true" end' \
+    <<<"$PAUSE_STATE" 2>/dev/null || echo "true")
   if [[ "$ACTIVE" == "false" ]]; then
     # Check whether any re-arms were incomplete (added in Step 7)
     if ! PENDING_REARMS=$(jq -er '
@@ -225,27 +442,34 @@ if [[ "$USE_MARKER" == false ]]; then
       PENDING_REARMS=-1
     fi
     if [[ "$PENDING_REARMS" -lt 0 ]]; then
-      exit 1
+      # Unreadable, not empty: leave this record alone and report it, but keep
+      # restoring the other sessions' boards.
+      REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
+      continue
     fi
     if [[ "$PENDING_REARMS" -gt 0 ]]; then
-      echo "Pause session was partially resumed ($PENDING_REARMS re-arm(s) still pending). Continuing restore..."
+      echo "Record $RECORD_SESSION was partially resumed ($PENDING_REARMS re-arm(s) still pending). Continuing restore..."
     else
-      echo "Pause state exists but is already marked resumed (active: false). Run /pause again to park a new session."
-      exit 0
+      echo "Record $RECORD_SESSION is already marked resumed (active: false) — skipping."
+      continue
     fi
   fi
 fi
 ```
 
-Idempotent on a fully-resumed session. On a partially-resumed session (some re-arms failed), the step continues so Step 5 can retry the incomplete entries.
+Idempotent on a fully-resumed record. On a partially-resumed record (some re-arms failed), the step continues so Step 5 can retry the incomplete entries. `continue` — never `exit` — is what keeps a skipped or unreadable record from ending the command while another session's board is still parked.
+
+When every selected record is skipped as already resumed, say so once at the
+end and name the count, rather than printing the pre-#1576 line that claimed the
+whole repo had nothing parked.
 
 ## Step 3: Re-read GitHub for each parked PR
 
-Before printing the board, re-read GitHub for each PR listed in `.pause.parked`. A state that moved since pause (a review that landed, a merge that completed after the `/wrap` window, CI that finished) is reported as it is **now**, not as it was parked.
+Before printing the board, re-read GitHub for each PR listed in this record's `parked` array. A state that moved since pause (a review that landed, a merge that completed after the `/wrap` window, CI that finished) is reported as it is **now**, not as it was parked.
 
 For each parked PR, run `gh pr view <N> --json state,mergeStateStatus,mergeable,reviewDecision` and update the parked entry's display. A PR whose `state: MERGED` is reported as landed (with a note that it merged after the window) rather than parked. A PR whose CI finished running is reported with its updated status.
 
-This re-read is display-only: it does not change the persisted `pause` block. The block is a historical record of the parking point.
+This re-read is display-only: it does not change the persisted record. The record is a historical record of the parking point.
 
 ## Step 4: Print the board
 
@@ -286,14 +510,37 @@ Only after Step 1 found state and Step 2 confirmed recovery is still active,
 clear the session execution gate. This ordering keeps a missing or already
 resumed pause as a clean no-op that does not mutate the gate. Clear before any
 Monitor, Agent, Workflow, or background Bash is re-armed; if clearing fails,
-stop without re-arming anything:
+re-arm nothing **for this record** and carry on to the next one:
 
 ```bash
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
-if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
-   ! "$EXECUTION_PAUSE_SH" --clear --session "$SESSION_ID"; then
-  echo "Could not clear the pause execution gate; no work was re-armed." >&2
-  exit 1
+# The gate is SESSION-scoped, and this record may belong to ANOTHER session
+# (issue #1576). Clearing only the current session leaves the parked session
+# launch-blocked after its board was restored, and /go-on probe A keeps reading
+# that live gate as a pause. Clear the record's own gate, and this session's as
+# well when they differ — an unarmed gate clears as a no-op. `marker` and
+# `legacy` are placeholder ids for records that never carried a session, so only
+# this session's gate exists to clear for them.
+GATE_TARGETS="$SESSION_ID"
+case "$RECORD_SESSION" in
+  ""|marker|legacy|"$SESSION_ID") : ;;
+  *) GATE_TARGETS="$RECORD_SESSION $SESSION_ID" ;;
+esac
+GATE_CLEARED=true
+for GATE_SESSION in $GATE_TARGETS; do
+  if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
+     ! "$EXECUTION_PAUSE_SH" --clear --session "$GATE_SESSION"; then
+    GATE_CLEARED=false
+  fi
+done
+if [[ "$GATE_CLEARED" != true ]]; then
+  # `continue`, never `exit`: this block runs inside the Step 2 per-record loop,
+  # so exiting here would abandon every later record without re-arming it and
+  # without Step 8 ever naming it — the silent whole-command abort this issue
+  # removes. Each failed record lands in REMAINING and Step 8 names them all.
+  echo "Could not clear the pause execution gate for $RECORD_SESSION; nothing was re-armed for this record." >&2
+  REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
+  continue
 fi
 ```
 
@@ -726,24 +973,31 @@ before inspection or launch and the same rollback/finalize transitions. Set
 `resume_error` naming the missing path/action. Persist both updated arrays with
 `session-state.sh --set`; never mutate the state file directly.
 
-After those writes succeed, set
-`STATE_PATH=".repos[\"$REPO_KEY\"].$STATE_KEY"` and re-read that exact block
-into `PAUSE_STATE`. This matters for a legacy restore: reading `.pause` after
-updating `.suspend` would evaluate stale or absent arrays. A failed refresh is
-a partial restore: keep `active=true`, report the read failure, and do not run
-Step 7's completion write. Step 7 must evaluate the freshly persisted arrays,
-never the pre-rearm snapshot captured at command start.
+Write both arrays under **this record's own `$STATE_PATH`**, bound by the Step 2
+loop — never a path rebuilt from `$REPO_KEY` and `$STATE_KEY`, which cannot
+address a keyed record, and never one built from the *current* session's ID,
+which would close a different session's board.
 
-## Step 6: Clear the refill pause (--resume-refill only)
+After those writes succeed, re-read that exact path into `PAUSE_STATE`. This
+matters for a legacy restore — reading `.pauses[…]` after updating `.suspend`
+would evaluate stale or absent arrays — and for a multi-record restore, where
+each record must be re-read from its own address. A failed refresh is a partial
+restore: keep `active=true`, report the read failure, add the record to
+`REMAINING`, and do not run Step 7's completion write for it. Step 7 must
+evaluate the freshly persisted arrays, never the pre-rearm snapshot captured at
+command start.
 
-When `--resume-refill` was supplied:
+## Step 6: Note the refill pause for clearing (--resume-refill only)
+
+`refill` is **repo-wide**, not per record, so the write must not happen here.
+Steps 3-7 run once per selected record, and clearing it after the first record
+lets the pipeline start new work while sibling boards are still parked — Step 5
+may already have re-armed PMM by then. Record the intent inside the loop and
+perform the single write in Step 8, once every record has been attempted:
 
 ```bash
-if [[ "$RESUME_REFILL" == true && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].refill={\"paused\":false,\"reason\":null,\"scope\":null,\"at\":null}" \
-    && echo "Refill pause cleared — pipeline will refill on the next tick." \
-    || echo "Could not clear the refill pause (session-state.sh --set failed) — lift it manually."
+if [[ "$RESUME_REFILL" == true ]]; then
+  REFILL_CLEAR_PENDING=true
 fi
 ```
 
@@ -755,12 +1009,28 @@ Only set `active=false` after **all** required re-arms in Step 5 have been confi
 
 ```bash
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  STATE_PATH=".repos[\"$REPO_KEY\"].$STATE_KEY"
+  # $STATE_PATH is this record's own address, bound by the Step 2 loop. It is
+  # empty on the marker-only path, where there is no state record to close.
+  # An empty $STATE_PATH gates the WRITES below — never this whole block, which
+  # once left the marker record out of BOTH columns: RESTORED stayed 0 and
+  # nothing was added to $REMAINING, so Step 8 reported `Restored 0 of 1` and
+  # then named nothing.
   ALL_REARMED=true
   # Check both specialized Monitors and the general stopped-task inventory.
   # An entry with missing recovery metadata remains pending by design.
   PENDING=-1
-  if PENDING_RESULT=$(jq -er '
+  if [[ -z "$STATE_PATH" ]]; then
+    # MARKER PATH — pending is UNKNOWN here, never zero. The Step 2 loop binds
+    # $PAUSE_STATE from the entry's `record`, which on this path is the stub
+    # {marker_path}: the marker is human-readable prose and was never parsed into
+    # monitors_stopped / background_tasks_stopped. Those absent arrays would
+    # compute as 0 pending and report a restore as complete over a board whose
+    # Monitors and parked units were never touched — a success claim made
+    # exactly when state was unreadable, which is the one situation the marker
+    # path exists for. Leave PENDING at -1 so this lands in $REMAINING and
+    # Step 8 names it with its marker path.
+    echo "Marker restore of $RECORD_SESSION cannot be confirmed: the marker carries no re-arm inventory." >&2
+  elif PENDING_RESULT=$(jq -er '
     ((.monitors_stopped // [])
       | map(select((.rearmed // false) != true))
       | length)
@@ -775,18 +1045,37 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   [[ "$PENDING" -ne 0 ]] && ALL_REARMED=false
 
   NOW=$(date -u +%FT%TZ)
-  if [[ "$ALL_REARMED" == true ]]; then
-    "$SESSION_STATE_SH" \
-      --set "$STATE_PATH.active=false" \
-      --set "$STATE_PATH.resumed_at=\"$NOW\""
-  else
-    # Keep active=true; update resumed_at to record the attempt
-    "$SESSION_STATE_SH" \
-      --set "$STATE_PATH.resumed_at=\"$NOW\""
-    if [[ "$PENDING" -lt 0 ]]; then
-      echo "Partial restore: recovery state could not be verified. Run /pause-resume again to retry."
+  # `-n "$STATE_PATH"` is part of the success condition, not just a write guard:
+  # a board with no state record to close is never counted as restored.
+  if [[ "$ALL_REARMED" == true && -n "$STATE_PATH" ]]; then
+    # A failed completion write leaves the record active — correct, and the next
+    # invocation re-selects it. What must not happen is counting it as restored
+    # or dropping it from the accounting: the board would then be reported as
+    # done while its state still says parked.
+    if "$SESSION_STATE_SH" \
+         --set "$STATE_PATH.active=false" \
+         --set "$STATE_PATH.resumed_at=\"$NOW\""; then
+      RESTORED=$((RESTORED + 1))
     else
-      echo "Partial restore: $PENDING re-arm(s) still pending. Run /pause-resume again to retry."
+      REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
+      echo "Could not close the pause record for $RECORD_SESSION (state write failed) — it stays active." >&2
+    fi
+  else
+    # Keep active=true; update resumed_at to record the attempt. On the
+    # marker-only path there is no record to stamp — an empty $STATE_PATH would
+    # address the document root, so skip the write and still account for the
+    # record below.
+    if [[ -n "$STATE_PATH" ]]; then
+      "$SESSION_STATE_SH" \
+        --set "$STATE_PATH.resumed_at=\"$NOW\""
+    fi
+    REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
+    if [[ -z "$STATE_PATH" ]]; then
+      echo "Marker restore of $RECORD_SESSION is unconfirmed: re-arms could not be verified from the marker, so it is not counted as restored. Re-run once the state file is readable, or check the board by hand."
+    elif [[ "$PENDING" -lt 0 ]]; then
+      echo "Partial restore of $RECORD_SESSION: recovery state could not be verified. Run /pause-resume again to retry."
+    else
+      echo "Partial restore of $RECORD_SESSION: $PENDING re-arm(s) still pending. Run /pause-resume again to retry."
     fi
   fi
 fi
@@ -794,9 +1083,57 @@ fi
 
 The `active=false` write is the idempotent guard from Step 2. The record is kept for history; landed and parked history remains, while both stopped arrays retain their per-entry recovery result.
 
+**Only this record is closed.** `$STATE_PATH` addresses one map entry, and
+`--set` preserves its siblings, so closing one session's board leaves every
+other un-resumed record exactly as it was — still `active: true`, still selected
+by the next Step 1 enumeration.
+
+## Step 8: Account for every selected record
+
+The loop ends here. Nothing may be dropped silently — a record that was skipped,
+failed, or was left partially restored is named, with its marker path, so the
+user can act on it:
+
+```bash
+# The repo-wide refill clear Step 6 deferred, performed ONCE now that every
+# record has been attempted — never mid-loop, where it would let new pipeline
+# work start while sibling boards were still parked.
+if [[ "$REFILL_CLEAR_PENDING" == true && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].refill={\"paused\":false,\"reason\":null,\"scope\":null,\"at\":null}" \
+    && echo "Refill pause cleared — pipeline will refill on the next tick." \
+    || echo "Could not clear the refill pause (session-state.sh --set failed) — lift it manually."
+fi
+
+LEFT=$(jq -r 'length' <<<"$REMAINING")
+echo "Restored $RESTORED of $RECORD_COUNT parked record(s)."
+if [[ "$LEFT" -gt 0 ]]; then
+  jq -r '.[] | "  still parked: session \(.session_id) — marker: \(.record.marker_path // "none")"' \
+    <<<"$REMAINING"
+  echo "  Re-run /pause-resume to retry, or /pause-resume --marker <path> for a specific board."
+fi
+# An unreadable source is reported whatever RECORD_COUNT was. Restoring the
+# records that WERE readable is right; reporting success afterwards is not,
+# because the boards behind the failed read were never enumerated and the marker
+# glob — which only runs when nothing at all was selected — never looked for them.
+if [[ "$STATE_UNREADABLE" == true ]]; then
+  echo "Some pause sources could not be read; parked work may remain undiscovered." >&2
+  echo "  Fix the state file and re-run, or /pause-resume --marker <path> per board." >&2
+fi
+if [[ "$LEFT" -gt 0 || "$STATE_UNREADABLE" == true ]]; then
+  exit 1
+fi
+```
+
+A record left in `REMAINING` keeps `active: true`, so the next invocation
+re-selects it. That is the whole point of per-record accounting: the command may
+partially succeed, but it may never report success over a board it did not
+restore — or over one it never managed to look for.
+
 ## Safety
 
 - **Never auto-clear the refill pause.** It stays paused until the user supplies `--resume-refill` or explicitly says "resume refilling" in chat. A pause that auto-cleared the pause on resume would defeat the purpose of pausing in the first place.
 - **Re-read GitHub before printing**, not after. The board should reflect current state, not stale parking-point state, because the user is deciding what to work on next.
-- **Fail closed on the no-state check.** An unreadable state file and an absent marker produce a clean no-op with a clear message, not an attempt to resume phantom state.
+- **Fail closed on the no-state check, and distinguish the two closures.** An *absent* record set with no marker is a clean no-op — nothing to resume, exit 0. An *unreadable* source with no marker is not: it exits non-zero naming what could not be read, because "nothing is parked" is a claim that may only be made when every source was actually read. Collapsing a failed read into the same empty value an absent path returns is how a full board reports as no board at all.
+- **One record's state is never evidence about another's** (issue #1576). A resumed record, a skipped record, and a record that failed mid-restore each end that record only — never the command. Every `exit` inside the restore sequence is a `continue`, and Step 8 accounts for what is left. The failure this replaces was silent: a sibling's `active: false` ended the whole run, and another session's parked board — stopped Monitors, unlaunched units — was simply never restored, with no error printed anywhere.
 - **Delegation, not reimplementation.** The re-arm steps delegate to the existing companion skills (`/babysit-pr`, `/pr-monitor-and-manage-wake`, `/pm day resume`) rather than reimplementing their logic. Those skills own their own Monitor-arming contracts and generation tracking; reimplementing them here creates a second code path with a high risk of divergence.
