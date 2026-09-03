@@ -381,6 +381,39 @@ check_eq "the corrupt-slot probe does not match an unguarded reader" "0" \
   "$(corrupt_slot_guards "$TMP_HOME/legacy-probe.txt")"
 
 # ---------------------------------------------------------------------------
+echo "== A marker restore is never counted as restored =="
+# ---------------------------------------------------------------------------
+# The marker path exists for when session-state.json is UNREADABLE, so it is the
+# one path that must never claim success. Its selection entry carries the stub
+# record {marker_path} — the marker is prose and is never parsed into
+# monitors_stopped / background_tasks_stopped — and the Step 2 loop binds
+# $PAUSE_STATE from that stub. Counting its absent arrays as zero pending made
+# Step 7 report a completed restore over a board whose Monitors and parked units
+# were never touched, violating the Safety note's "may never report success over
+# a board it did not restore". Pin that the marker path is excluded from the
+# success branch and that pending stays UNKNOWN there.
+STEP7=$(awk '
+  index($0, "ALL_REARMED=true") { grab = 1 }
+  grab                          { print }
+  grab && /^fi$/                { exit }
+' "$PAUSE_RESUME_SKILL")
+if [[ -z "$STEP7" ]]; then
+  FAIL=$((FAIL + 1)); echo "FAIL — could not extract Step 7 from the skill" >&2
+else
+  PASS=$((PASS + 1)); echo "ok   — Step 7 extracted"
+fi
+# The success branch requires a real write-back address, so an empty
+# $STATE_PATH can never reach RESTORED.
+check_eq "the restored branch requires a state path" "1" \
+  "$(grep -c 'ALL_REARMED" == true && -n "\$STATE_PATH"' <<<"$STEP7")"
+# ...and the marker path must not compute a pending count from the stub record.
+check_eq "the marker path leaves pending unknown" "1" \
+  "$(grep -c 'cannot be confirmed: the marker carries no re-arm inventory' <<<"$STEP7")"
+# No RESTORED increment may sit in a branch reachable with an empty state path.
+check_eq "RESTORED is incremented on exactly one path" "1" \
+  "$(grep -c 'RESTORED=\$((RESTORED + 1))' <<<"$STEP7")"
+
+# ---------------------------------------------------------------------------
 echo "== A failed gate clear ends one record, not the command =="
 # ---------------------------------------------------------------------------
 # Steps 3-7 run inside the Step 2 per-record loop, so an `exit` anywhere in the
