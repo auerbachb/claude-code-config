@@ -14,9 +14,37 @@
 # That is the whole point of the feature, and it is the assertion most likely to
 # rot if either filename convention drifts.
 #
+# RUNTIME — THIS SUITE IS SLOW, AND SILENCE IS NOT A HANG (issue #1505)
+#   Every case builds throwaway git repositories from scratch (`git init`, a
+#   `mktemp -d` harness copy, real commits), so the cost is fixture
+#   construction, not waiting: nothing here depends on wall-clock timing or a
+#   sleep. That cost scales with whatever else the machine is doing. Measured
+#   on this repo, 90/90 passing every time: ~71s idle; ~156s with four copies
+#   running concurrently (2.2x, on the same laptop, same commit); ~202s on
+#   2026-08-31 under concurrent subagents. It climbs with concurrency, and the
+#   fleet routinely runs more than four things at once.
+#
+#   ANY bound applied to this suite must therefore be >= 420s. A tighter one
+#   does not detect a hang, it manufactures one: a ~240s alarm on a loaded
+#   machine is what produced the phantom "HANGS (>240s)" report that parked
+#   real work in the 2026-08-27 session (the fixes were held for a hang that
+#   did not exist, and merged unchanged as rounds 3-5 of PR #1423).
+#
+#   Nothing in this repository bounds the suite today — the discovery runner
+#   invokes it as a plain `bash`, and no CI job sets `timeout-minutes`. The
+#   420s floor binds whoever adds the first bound, in a runner or in an ad-hoc
+#   invocation. checkpoint-handoff-slow-bound.test.sh enforces that floor and
+#   the banner below.
+#
 # Requires git and jq. Run from repo root:
 #   bash .claude/scripts/tests/checkpoint-handoff.test.sh
 set -uo pipefail
+
+# Announced BEFORE the fixture building starts, not after: this line exists to
+# explain the silence that follows, so it has to precede the work that causes
+# it. Kept on one line and carrying the numeric floor because a reader watching
+# a bare terminal is exactly who misreads this suite.
+echo "checkpoint-handoff.test.sh: SLOW SUITE — expect ~1-4 min depending on machine load (builds many throwaway git repos); silence is not a hang. Any bound must be >= 420s."
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SUT="$REPO_ROOT/.claude/hooks/checkpoint-handoff.sh"
