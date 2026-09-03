@@ -120,6 +120,17 @@ scope. It only disables the Step 5 record, which Step 5 reports.
 ## Step 2: Gather round state, read-only
 
 ```bash
+# `--get` prints the literal string `null` and exits 0 for an absent path, so a
+# bare `-n "$VALUE"` guard is TRUE on a miss and every fallback behind it is dead
+# code. Normalise once, here, and read every value through this — the sibling
+# render sites do the same.
+sget() {  # sget <jq-path> -> value, or empty when absent/unreadable
+  local v
+  v=$("$SESSION_STATE_SH" --get "$1" 2>/dev/null) || return 0
+  [[ "$v" == "null" ]] && return 0
+  printf '%s' "$v"
+}
+
 # .prs and active_agents. A missing or unparseable file is "no round state", never
 # an error — Step 4's one-line message is the correct output for it.
 STATE=$("$SESSION_STATE_SH" --session-view 2>/dev/null) || STATE=""
@@ -129,7 +140,7 @@ STATE=$("$SESSION_STATE_SH" --session-view 2>/dev/null) || STATE=""
 # address it by its full path. Never `--get .` — that leaks every repo.
 PIPELINES=""
 if [[ -n "$REPO_KEY" ]]; then
-  PIPELINES=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines" 2>/dev/null) || PIPELINES=""
+  PIPELINES=$(sget ".repos[\"$REPO_KEY\"].pipelines")
 fi
 ```
 
@@ -144,7 +155,7 @@ STATE=$("$SESSION_STATE_SH" --session-view --all-repos 2>/dev/null) || STATE=""
 # board. Never `--get .`.
 BOARD_REPOS=$(printf '%s' "$STATE" | jq -r '.repos // {} | keys[]' 2>/dev/null)
 for RK in $BOARD_REPOS; do
-  RK_PIPELINES=$("$SESSION_STATE_SH" --get ".repos[\"$RK\"].pipelines" 2>/dev/null) || RK_PIPELINES=""
+  RK_PIPELINES=$(sget ".repos[\"$RK\"].pipelines")
   # Accumulate (RK, RK_PIPELINES) pairs; `_unknown` carries no usable repo for the
   # `gh` and estimate lookups below, so skip it rather than guessing one.
 done
@@ -175,11 +186,33 @@ Top-level `.active_agents` is session-wide and present in **both** modes; each r
 block carries its own `active_agents` as well, so a cross-repo board reads the union
 of the two for that repo's rows. Neither list is a substitute for the other.
 
+**A row is keyed by its issue; half its lookups take a PR number. Name the
+crossing.** `pipelines` is **issue-keyed** and carries the PR in `.pr`, written when
+Phase A completes. `prs` is **PR-keyed**, and its `issue` back-reference exists only
+on newer entries — so `.pipelines["<issue>"].pr` is the mapping to use, and inverting
+`prs` is not a substitute. Per row, then:
+
+```bash
+# ROW_PIPELINES is the block this row came from: PIPELINES in default mode, that
+# repo's RK_PIPELINES under --all-repos. Naming it per row keeps the lookup correct
+# in both modes and keeps the row bound to its own repo, as Step 2 requires.
+ROW_ISSUE="<the pipelines key>"                 # Issue cell, estimate-resolve.sh
+ROW_PR=$(printf '%s' "$ROW_PIPELINES" | jq -r --arg i "$ROW_ISSUE" '.[$i].pr // empty')
+```
+
+Everything PR-numbered — `gh pr view` for merge state, the `prs["<N>"]` phase read —
+takes `ROW_PR`; everything issue-numbered — the `Issue` cell, `estimate-resolve.sh`,
+which reads the **issue** body — takes `ROW_ISSUE`. Passing one where the other
+belongs does not error: it resolves to a real but unrelated GitHub object and answers
+confidently about it. A pipeline with **no `.pr` yet** has not reached Phase A
+completion, so there is no merge state to read and it is a running row by definition.
+
 **Start times are read, never derived.** Per pipeline, in order:
-`<PRS_PATH>["<N>"].pipeline_started_at` — the same per-mode path above, so a
+`<PRS_PATH>["<ROW_PR>"].pipeline_started_at` — the same per-mode path above, so a
 cross-repo board does not lose every recorded start to a `.prs` that is not there —
-then that repo's `pipelines["<issue>"].started_at`.
-`gh pr view <N> --repo "<that pipeline's key>" --json createdAt` is a
+then that repo's `pipelines["<ROW_ISSUE>"].started_at`. Read both through `sget`, so
+an absent first value falls through instead of returning the string `null`.
+`gh pr view <ROW_PR> --repo "<that pipeline's key>" --json createdAt` is a
 **last-resort** fallback for pipelines that predate the record — never a refresh of
 one that exists, and never unqualified: an unqualified lookup resolves the number
 against the working directory's repo, so the one path that exists to recover a
@@ -231,7 +264,13 @@ board. Three row classes make up the round:
   renders the board on every heartbeat is the thread that dispatched it.
 
   **Otherwise, fall back to a timestamp bound: `mergedAt` at or after the earliest
-  `started_at` among the running rows.** Note this is a test on `mergedAt` alone.
+  `started_at` among the running rows *of that pipeline's own repo*.** Under
+  `--all-repos` the bound is per repo, like every other repo-scoped value in Step 2:
+  a single board-wide bound lets one repo with a running row define a round for every
+  other repo on the board, so an idle repo's historical merges that happen to postdate
+  that start are rendered as delivered this round. A repo with no running row of its
+  own has no bound and therefore no completed rows, whatever its neighbours are doing.
+  Note this is a test on `mergedAt` alone.
   Adding an `or started_at >= bound` half admits nothing further — a merged pipeline
   with `started_at >= bound` necessarily has `mergedAt > started_at >= bound`, so the
   `mergedAt` half already caught it — and stating the pair implies a reach the bound
@@ -269,7 +308,11 @@ board. Three row classes make up the round:
 
 **If there is no running and no queued row, there is no current round** — the lower
 bound above is undefined, so completed rows are not computed at all and Step 4 prints
-its one-line message. A landed round's terminal board is `/subagent`'s to print at
+its one-line message. Under `--all-repos` that gate is **per repo** for the same
+reason the bound is: a repo contributing neither a running nor a queued row
+contributes no completed rows either, rather than borrowing another repo's round to
+justify printing its history. When no repo on the board has one, the board as a whole
+takes the no-round line. A landed round's terminal board is `/subagent`'s to print at
 round end; `/board` does not resurrect one from history.
 
 Row order is execution order: running rows by `started_at` ascending, then queued
@@ -330,6 +373,8 @@ Per row:
   working directory's repo.
 - **Clock columns, started rows** — `overrun-check.sh --readout-cells --bound-min M
   --started-at ISO`, using the start read in Step 2. Never re-implement the time math.
+  An **unestimated** started row has no `M`, so it gets no projection — but it keeps
+  its recorded Start, which is a fact rather than a forecast.
 - **Queued rows** — `—` in all three clock columns.
 - **Completed rows** — `merged`, with the delivered clock time in `Projected end` and
   `—` in `Remaining` (`time-estimates.md` §"Running now Table"). They never reach
@@ -337,12 +382,15 @@ Per row:
   Both of their clocks are still **formatted** by that script, because it is the only
   ET formatter in this repo that is safe to call (below).
 
-**Formatting a merged row's two clocks — never with a hand-rolled `date`.** Both
-values arrive as ISO-8601: `STARTED_AT` from Step 2 and `mergedAt` from Step 3's live
-read. `overrun-check.sh --readout-cells` prints its **first** cell as the ET
+**Formatting a bare instant — never with a hand-rolled `date`.** Both of a merged
+row's clocks arrive as ISO-8601 (`STARTED_AT` from Step 2, `mergedAt` from Step 3's
+live read), and so does the Start of a running row the projection helper could not
+compute. `overrun-check.sh --readout-cells` prints its **first** cell as the ET
 wall-clock of whatever `--started-at` it was given, in the table's `%-I:%M %p` form,
 and that cell is a pure function of `--started-at` — `--bound-min` moves only cells 2
-and 3. So one call per instant, first cell taken, is the conversion:
+and 3. So one call per instant, first cell taken, is the conversion. Compute
+`STARTED_AT_ET` for **every** row, not only merged ones; the branches below decide
+which of them use it:
 
 ```bash
 et_clock() {  # ISO-8601 -> "12:18 PM", or empty if it will not parse
@@ -391,6 +439,13 @@ elif [[ -n "$CELLS" ]]; then
   CELL_START=$(printf '%s' "$CELLS" | cut -f1)
   CELL_END=$(printf '%s' "$CELLS" | cut -f2)
   CELL_REMAINING=$(printf '%s' "$CELLS" | cut -f3)
+elif [[ -n "$STARTED_AT_ET" ]]; then
+  # A running row with no bound: `Est` is `unestimated`, so BOUND_MIN is empty and
+  # the projection above never ran. Projected end and Remaining are genuinely
+  # unknowable without a bound — but Start is not a projection, it is the recorded
+  # launch time, and it is already in state. Keep it for the same reason the merged
+  # branch does: an unestimated row loses its forecast, not its history.
+  CELL_START="$STARTED_AT_ET"
 fi
 ```
 
