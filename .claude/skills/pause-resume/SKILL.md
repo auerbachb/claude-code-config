@@ -976,10 +976,14 @@ Without `--resume-refill`, the pause stands and Step 4 has already stated plainl
 Only set `active=false` after **all** required re-arms in Step 5 have been confirmed (`rearmed: true`). If any required re-arm is still pending, keep `active=true` so the next invocation's Step 2 detects the incomplete restore and retries:
 
 ```bash
-if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$STATE_PATH" ]]; then
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   # $STATE_PATH is this record's own address, bound by the Step 2 loop. It is
   # empty on the marker-only path, where there is no state record to close;
   # the marker itself stays on disk and the run reports as a marker restore.
+  # An empty $STATE_PATH gates only the WRITES below — never this whole block.
+  # Skipping the block left RESTORED at 0 and added nothing to $REMAINING, so a
+  # clean marker restore reported `Restored 0 of 1` and appeared in neither
+  # column, which reads as a failure and invites a needless re-run.
   ALL_REARMED=true
   # Check both specialized Monitors and the general stopped-task inventory.
   # An entry with missing recovery metadata remains pending by design.
@@ -1004,7 +1008,13 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$STATE_PATH" ]]; then
     # invocation re-selects it. What must not happen is counting it as restored
     # or dropping it from the accounting: the board would then be reported as
     # done while its state still says parked.
-    if "$SESSION_STATE_SH" \
+    if [[ -z "$STATE_PATH" ]]; then
+      # Marker-only restore: there is no state record to close, so there is no
+      # write to fail. The restore itself succeeded and is counted; the marker
+      # stays on disk for a targeted re-run.
+      RESTORED=$((RESTORED + 1))
+      echo "Marker restore complete for $RECORD_SESSION — no state record to close; the marker file is retained."
+    elif "$SESSION_STATE_SH" \
          --set "$STATE_PATH.active=false" \
          --set "$STATE_PATH.resumed_at=\"$NOW\""; then
       RESTORED=$((RESTORED + 1))
@@ -1013,9 +1023,14 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" && -n "$STATE_PATH" ]]; then
       echo "Could not close the pause record for $RECORD_SESSION (state write failed) — it stays active." >&2
     fi
   else
-    # Keep active=true; update resumed_at to record the attempt
-    "$SESSION_STATE_SH" \
-      --set "$STATE_PATH.resumed_at=\"$NOW\""
+    # Keep active=true; update resumed_at to record the attempt. On the
+    # marker-only path there is no record to stamp — an empty $STATE_PATH would
+    # address the document root, so skip the write and still account for the
+    # record below.
+    if [[ -n "$STATE_PATH" ]]; then
+      "$SESSION_STATE_SH" \
+        --set "$STATE_PATH.resumed_at=\"$NOW\""
+    fi
     REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
     if [[ "$PENDING" -lt 0 ]]; then
       echo "Partial restore of $RECORD_SESSION: recovery state could not be verified. Run /pause-resume again to retry."

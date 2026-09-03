@@ -177,27 +177,63 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   else PAUSES_STATE=unreadable; PAUSES_RAW=""
   fi
 fi
-PAUSE_UNRESUMED=$(jq -c '
+# Both legacy singletons are read UNCONDITIONALLY, on the same tri-state rule.
+# They are union members, never an else-branch taken only when `.pauses` is
+# empty: gating the legacy read on an empty map is this very bug one level up —
+# a pre-upgrade board becomes unreachable the moment any keyed record exists.
+LEGACY_PAUSE_RAW=""
+LEGACY_SUSPEND_RAW=""
+if [[ "$PAUSES_STATE" != unreadable && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  for LEGACY_SLOT in pause suspend; do
+    SLOT_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].$LEGACY_SLOT" 2>/dev/null)
+    SLOT_RC=$?
+    if (( SLOT_RC == 3 )); then SLOT_RAW=""          # no state file — the absence probe A already saw
+    elif (( SLOT_RC != 0 )); then PAUSES_STATE=unreadable; break
+    fi
+    if [[ "$LEGACY_SLOT" == pause ]]; then LEGACY_PAUSE_RAW="$SLOT_RAW"
+    else LEGACY_SUSPEND_RAW="$SLOT_RAW"; fi
+  done
+fi
+PAUSE_UNRESUMED=$(jq -c -n \
+  --arg keyed  "${PAUSES_RAW:-null}" \
+  --arg lpause "${LEGACY_PAUSE_RAW:-null}" \
+  --arg lsusp  "${LEGACY_SUSPEND_RAW:-null}" '
   def pend($a): ($a | if type == "array"
                       then map(select((type != "object") or ((.rearmed // false) != true))) | length
                       else 0 end);
   def unresumed: (.active != false)
                  or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
+  # An empty read is "nothing there"; anything else must parse, and a parse
+  # failure raises so the caller marks probe B unreadable.
+  def parse: if . == "" then null else fromjson end;
   # A value that is neither null nor a map of records is CORRUPT, not empty —
   # a single malformed VALUE included, which the select below would otherwise
   # drop silently. Raise so the caller marks probe B unreadable rather than
   # reading a damaged board as "nothing parked".
-  if type != "object" and type != "null" then error("pauses is not a map")
-  elif type == "object" and ((to_entries | all(.value | type == "object")) | not)
-    then error("pauses holds a malformed record")
-  else . end
-  | [ (if type == "object" then to_entries | map(.value) else [] end)[]
-      | select((type == "object") and unresumed) ]' <<<"${PAUSES_RAW:-null}" 2>/dev/null) \
+  def keyed_records:
+    (if type != "object" and type != "null" then error("pauses is not a map")
+     elif type == "object" and ((to_entries | all(.value | type == "object")) | not)
+       then error("pauses holds a malformed record")
+     else . end)
+    | if type == "object" then to_entries | map(.value) else [] end;
+  # A legacy slot holds ONE record, not a map. Same corruption rule: a non-object
+  # non-null value raises rather than being read as an empty slot.
+  def legacy_record:
+    if type == "null" then []
+    elif type == "object" then [.]
+    else error("legacy pause slot is not a record") end;
+  [ ($keyed  | parse | keyed_records)[],
+    ($lpause | parse | legacy_record)[],
+    ($lsusp  | parse | legacy_record)[] ]
+  | map(select((type == "object") and unresumed))
+  # Newest first, on either spelling of the timestamp (legacy: `suspended_at`).
+  | sort_by(.paused_at // .suspended_at // "") | reverse' 2>/dev/null) \
   || { PAUSE_UNRESUMED=""; PAUSES_STATE=unreadable; }
 [[ "$PAUSES_STATE" == unreadable ]] && PAUSE_UNRESUMED=""
 ```
 
-then append each legacy slot that is itself un-resumed, and sort the union by `paused_at` descending. The two empties are distinct and must stay so: `PAUSE_UNRESUMED` holding `[]` means every read succeeded and nothing is parked — `absent`; holding `""` means a read or the parse failed — `unreadable`, never `absent` (§Degradation). A `.pauses` value that is neither null nor a map is corrupt, so it raises rather than collapsing to `[]`.
+The union above is the whole of probe B — the legacy slots are read and sorted in
+that same program, not left to a follow-up step. The two empties are distinct and must stay so: `PAUSE_UNRESUMED` holding `[]` means every read succeeded and nothing is parked — `absent`; holding `""` means a read or the parse failed — `unreadable`, never `absent` (§Degradation). A `.pauses` value that is neither null nor a map is corrupt, so it raises rather than collapsing to `[]`.
 
 If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or `suspend-*.md` is a pause **candidate** — `/pause-resume` Step 1 owns marker selection and fails closed with `No parked session found` when the marker belongs to another repo, so a false candidate costs a no-op, never a wrong restore.
 

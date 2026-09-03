@@ -300,4 +300,66 @@ for empty_fixture in '{}' 'null' "$ALL_CLEARED"; do
     || fail "an empty-but-valid gate map must yield {} (got: $EMPTY_OUT)"
 done
 
+# --- Probe B unions the legacy singletons IN ITS EXECUTABLE BLOCK ------------
+# Issue #1576. Probe B's prose has always called the legacy `.pause`/`.suspend`
+# slots union members, but the block that computes PAUSE_UNRESUMED once read
+# `.pauses` alone and left the union to a following sentence. An agent running
+# the block as written reported probe B `absent` while a pre-upgrade board was
+# still parked and `/pause-resume` would still restore it — the same masking bug
+# this issue exists to remove, one level up. Extract the real program and run it.
+grep -q 'REPO_KEY\\"\].\$LEGACY_SLOT' "$GO_ON" \
+  || fail "probe B no longer reads the legacy slots in its executable block"
+
+PROBE_B=$(awk '
+  index($0, "--arg lsusp")               { flag = 1; next }
+  flag                                   { print }
+  flag && index($0, "| sort_by(.paused_at") { exit }
+' "$GO_ON")
+[[ -n "$PROBE_B" ]] || fail "could not extract the probe B union program from go-on"
+# Strip the trailing shell tail (`' 2>/dev/null) \`). The program is single-quoted
+# in the skill, so it cannot itself contain an apostrophe.
+PROBE_B="${PROBE_B%\'*}"
+
+probe_b() {  # probe_b <keyed> <legacy-pause> <legacy-suspend>
+  jq -c -n --arg keyed "$1" --arg lpause "$2" --arg lsusp "$3" "$PROBE_B"
+}
+
+KEYED_ONE='{"s1":{"active":true,"paused_at":"2026-09-01T10:00:00Z"}}'
+LEGACY_P='{"active":true,"paused_at":"2026-09-02T10:00:00Z"}'
+LEGACY_S='{"active":true,"suspended_at":"2026-08-30T10:00:00Z"}'
+
+# THE REGRESSION: a legacy board stays selected even though `.pauses` is
+# non-empty. An else-branch keyed on an empty map would drop it here.
+UNION=$(probe_b "$KEYED_ONE" "$LEGACY_P" "$LEGACY_S") \
+  || fail "probe B raised on a valid keyed+legacy union"
+[[ "$(jq -r 'length' <<<"$UNION")" == 3 ]] \
+  || fail "probe B dropped legacy records from a non-empty .pauses map (got: $UNION)"
+# Newest first, across both spellings of the timestamp.
+[[ "$(jq -r '[.[] | .paused_at // .suspended_at] | join(",")' <<<"$UNION")" \
+   == "2026-09-02T10:00:00Z,2026-09-01T10:00:00Z,2026-08-30T10:00:00Z" ]] \
+  || fail "probe B did not sort the union newest-first (got: $UNION)"
+
+# A legacy-only board (nothing keyed yet) is still found.
+[[ "$(probe_b '{}' "$LEGACY_P" 'null' | jq -r 'length')" == 1 ]] \
+  || fail "probe B reported a legacy-only parked board as absent"
+
+# A genuinely resumed legacy record is not selected — `.active != false`, never
+# `.active // true`, which reads false as empty and never fires.
+[[ "$(probe_b '{}' '{"active":false}' 'null' | jq -r 'length')" == 0 ]] \
+  || fail "probe B selected a legacy record that was already resumed"
+# ...but a closed record with re-arms still pending stays selected.
+[[ "$(probe_b '{}' '{"active":false,"monitors_stopped":[{"rearmed":false}]}' 'null' \
+      | jq -r 'length')" == 1 ]] \
+  || fail "probe B dropped a partially-restored legacy record"
+
+# A corrupt legacy slot raises, so the caller marks probe B unreadable rather
+# than reading a damaged board as "nothing parked".
+if probe_b '{}' '123' 'null' >/dev/null 2>&1; then
+  fail "a corrupt legacy slot must raise, not read as an empty slot"
+fi
+# Control: the same invocation shape succeeds on valid input, so the negative
+# case above is failing on the fixture rather than on the invocation.
+probe_b '{}' 'null' 'null' >/dev/null 2>&1 \
+  || fail "probe B rejected an all-empty union — the negative case proves nothing"
+
 echo "OK: /go-on universal resume contract tests passed"
