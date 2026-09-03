@@ -31,6 +31,7 @@ SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -44,6 +45,7 @@ OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
+- `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
 
@@ -613,6 +615,34 @@ fi
 
 **Degraded mode:** when `ESTIMATE_RESOLVE_SH` or `OVERRUN_CHECK_SH` did not resolve (Step 0), still print the table — with `unestimated` in Est and `—` in the clock columns. The Step 0 `DEGRADED:` line already told the user why; silently dropping the table would hide the round's run order too.
 
+### 7.3: Start the table-freshness clock, and arm the hourly floor
+
+**Immediately after printing the table, record the render**, then arm the floor watch in this same step — the mechanism is specified once in `.claude/reference/time-estimates.md` §"Table freshness — the hourly floor", and this step only calls it.
+
+```bash
+# ACTIVE_COUNT = pipelines running OR queued in this round — every row in the
+# table just printed except the ones already in a terminal state. It is what
+# scopes the floor to active rounds: 0 records a terminal board and disarms it.
+# --repo and --session are passed EXPLICITLY, and the SAME pair goes into the
+# armed watch below. Left to their defaults, the repo resolves from the cwd and
+# the session from an env var read at each call — so one later call made from a
+# different directory, or after that var changed, reads and writes a DIFFERENT
+# record than the tick polls: a floor firing forever against a board the thread
+# is faithfully re-rendering. Resolve both ONCE here and reuse them.
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+if [[ -z "$REPO_KEY" ]]; then
+  echo 'DEGRADED: repo key unresolved — table-freshness floor not armed'
+elif [[ -n "$TABLE_FRESHNESS_SH" ]]; then
+  "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+    --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch || true
+fi
+```
+
+Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`. Skip the arm entirely when `REPO_KEY` is empty — the `DEGRADED:` line above already said why, and a watch armed on `_unknown` polls a record no render will ever write. It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
+
+**A `--note-rendered` that fails is not fatal.** It exits non-zero and says why on stderr; the round proceeds. The cost is a floor that cannot fire, so if it fails repeatedly, re-render the table on every heartbeat rather than trusting the clock.
+
 ## Step 8: Enter Monitor Mode
 
 Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
@@ -709,6 +739,32 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    ```
 
    **When the user asks "how far along?" or an equivalent progress question:** answer with this same table, recomputed for freshness — one shape whether one pipeline is running or five. Column set and cell semantics: `time-estimates.md` §"Running now Table".
+
+   **Table-freshness gate — a stale board is never answered with a one-liner.** Silence-by-default lets most ticks emit nothing, and a genuine liveness ping may be a single line. Neither is allowed to let the last full board age past an hour while work is running. So before emitting ANY liveness/heartbeat/status output on this tick, ask the clock:
+
+   ```bash
+   # ACTIVE_COUNT = pipelines running OR queued right now (same count as 7.3).
+   # --repo/--session are the SAME pair 7.3 armed the watch with — never left to
+   # the cwd or to an env var re-read here.
+   TABLE_VERDICT=""
+   if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+     TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)
+   fi
+   # `stale` (exit 1) -> THIS message carries the full re-rendered table, not a
+   # one-liner. `fresh`/`idle`/`unrecorded` -> a one-liner is still fine.
+   # Helper unresolved (empty verdict) -> render the table; see Step 0.
+   ```
+
+   **After emitting any table** — this heartbeat's, the on-demand answer above, or a floor-prompted render — record it, so the next hour is measured from this render and the floor re-arms:
+
+   ```bash
+   [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]] && \
+     "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-heartbeat || true
+   ```
+
+   **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it. **When the round ends**, record the terminal board with `--active 0` — that is what disarms the floor and buys the idle thread its silence.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:

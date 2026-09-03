@@ -42,6 +42,7 @@ WINDOW_PLAN_SH=$(resolve_script window-plan.sh)         || WINDOW_PLAN_SH=""
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh)        || PM_CONFIG_GET=""
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh) || ESTIMATE_RESOLVE_SH=""
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh)     || OVERRUN_CHECK_SH=""
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 
 REPO_KEY=""
 [[ -n "$SESSION_STATE_SH" ]] && { REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; }
@@ -53,6 +54,10 @@ REPO_KEY=""
   persisted is a promise nothing will keep; refusing is the honest failure.
 - `pm-config-get.sh` unresolved → **degraded**: `DEGRADED: pm-config-get.sh not found (checked all
   three paths) — lead time falls back to 30 min`, then continue.
+- `table-freshness.sh` unresolved → **degraded**: `DEGRADED: table-freshness.sh not found (checked all
+  three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every
+  heartbeat instead`, then continue. Same wording and same direction as `/subagent` Step 0: the check-in
+  still prints (Step 8.3), it just goes unrecorded, and failing toward more table renders is correct.
 - `estimate-resolve.sh` / `overrun-check.sh` unresolved → **degraded**: the check-in table loses its
   Est and clock columns (`unestimated` / `—`), and every started row's verdict falls to `parks`
   (Step 8). Say so in one line; never skip the check-in.
@@ -538,6 +543,17 @@ own `Projected end` cell shows a later clock time. **Every other case is `parks`
 (nothing started, and the launch gate is about to close), an unestimated row, an overrun row whose
 revised finish will not resolve, and any row whose `started_at` or bound could not be read. Fail
 closed: claiming a pipeline lands by 7:00 when nothing proves it does is the one wrong answer here.
+
+**This check-in is a table render like any other**, so record it: resolve `table-freshness.sh` per
+RESOLVE and run `--note-rendered --active <running + queued> --repo "$REPO_KEY" --session
+"${CLAUDE_SESSION_ID:-default}" --surface leave-by-checkin` right after printing. The added column
+changes the table's shape, not its identity — skipping the call would let the hourly floor fire on a
+board the user is looking at (`time-estimates.md` §"Table freshness — the hourly floor"). **Pass
+`--repo` and `--session` explicitly**, the same pair `/subagent` Step 7.3 armed the watch with: left to
+their defaults the repo resolves from the cwd and the session from an env var read at call time, so a
+check-in fired from a different directory would write a record the armed watch never polls. An empty
+`REPO_KEY`, or an unresolved helper, prints the matching `DEGRADED:` line and continues; the check-in
+itself never waits on it.
 
 **8.4 — Post without waiting.** The check-in is a notification, not a question. Print it and
 continue in the same turn; do not call `AskUserQuestion` and do not pause for a reply. A live user

@@ -273,3 +273,73 @@ after a context compaction, which is precisely what the recorded value prevents.
 Ad-hoc orchestration threads — a feedback round that files issues then dispatches
 agents — emit the same shape by reading this section; the table is venue-independent
 by construction.
+
+### Table freshness — the hourly floor (issue #1580)
+
+The silence ceiling (`bgwork-ceiling.sh`) bounds how long a thread can go without
+**saying** anything while background work runs. It measures *messages*, so a bare
+"still running, nothing new" one-liner satisfies it — and a thread can stay
+technically live for hours while the last full board the user saw goes stale. The
+user plans testing rounds around that board.
+
+**These are two complementary bounds, not one.** Message-freshness is the ceiling's
+job; **table**-freshness is the floor's. A future consolidation that keeps only one
+drops a guarantee — say so before merging them.
+
+**The guarantee:** while at least one pipeline is running or queued, a full "Running
+now" table is never more than an hour old, whatever mix of one-liners, notifications
+and merge lines the thread emits in between.
+
+Three rules, all owned by `table-freshness.sh` — it holds the floor number and the
+stale/fresh arithmetic, so no caller re-derives either:
+
+1. **Record every render.** Every site that emits the table — dispatch, heartbeat,
+   on-demand, `/leave-by` check-in, `/board` — calls
+   `table-freshness.sh --note-rendered --active <N>` immediately after printing it,
+   where `N` is the number of pipelines running **or queued** at that moment. The
+   timestamp goes to durable session state
+   (`.repos["<key>"].table_render["<session>"]`), so a context compaction cannot
+   reset the clock: the freshness check reads the file, never the thread's memory.
+2. **A stale status message carries the table.** Before emitting any
+   liveness/heartbeat/status output, run `table-freshness.sh --check --active <N>`.
+   Exit 1 (`stale`) means **this message must include the full re-rendered table**,
+   not a one-liner. Exit 0 (`fresh`, `idle`, `unrecorded`) leaves the one-liner
+   available. Pass `--active` whenever the count is known — with no recorded render
+   it is what makes the verdict fail closed rather than guess.
+3. **A hard floor fires unprompted.** Arm `table-freshness.sh --arm-command` as a
+   **persistent `Monitor`** in the same step as the round's first dispatch — the same
+   primitive and the same reasoning as the ceiling watch (`scheduling-reliability.md`;
+   never `CronCreate`, never chained one-shot wake-ups). The tick prints one line when
+   the hour elapses with work still active, deduped per recorded render, so a thread
+   re-rendering on its own cadence never sees a floor message at all.
+
+**Idle threads are exempt, explicitly.** When nothing is running or queued, the
+round-end summary is the terminal board and the thread stays quiet. The exemption is
+mechanical, not a matter of judgment: the round-end render is recorded with
+`--active 0`, which disarms the floor until the next dispatch. There is deliberately
+**no always-on hourly pulse** — that would fight the stable-state backoff design in
+`scheduling-reliability.md`, which exists to make a quiet thread quieter.
+
+**Teardown is by data, not by killing the watch.** Every flow that ends a round —
+the round's own completion, `/pause`, `/end`, a `/leave-by` wind-down — records the
+terminal board (`--note-rendered --active 0`) or calls `--clear`. That is what
+disarms the floor, and it is deliberately independent of the Monitor's fate: the
+tick reads `active_pipelines` and exits silently at `0`, so a watch whose `TaskStop`
+failed, or that no step held an ID for, goes quiet anyway. A teardown that only
+stopped the task would leave the opposite failure — a stale `active_pipelines > 0`
+waiting to fire the moment anything re-armed.
+
+**Every call names the same repo and session.** Pass `--repo <owner/name>` and
+`--session <id>` explicitly on `--note-rendered`, `--check`, and `--arm-command`
+alike, resolving both **once** and reusing them. Left out, the repo derives from the
+current working directory and the session from an environment variable read at each
+call — so one call made from a different directory, or after that variable changed,
+reads and writes a different record than the armed watch polls, which is a floor
+firing forever against a board the thread is faithfully re-rendering. An unresolved
+repo key arms nothing: report it in one `DEGRADED:` line rather than arming a watch
+on `_unknown`, which no render would ever reach.
+
+Because the rules hang off the table spec rather than off any one skill, a venue that
+adopts the table (issue #1527) inherits the freshness guarantee by adopting this
+section — nothing to restate. Full contract: `table-freshness.sh --help`; field
+contract: `.claude/reference/session-state-schema.json`.

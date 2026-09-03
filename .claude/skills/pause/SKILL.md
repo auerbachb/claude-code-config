@@ -318,6 +318,10 @@ Enumerate Monitors in this order and record the result of each stop:
 
 **A failed `TaskStop` is recorded as `stopped: false` and reported in Step 8.** Never claim a Monitor was stopped when the stop itself was not confirmed. Stopped Monitors are recorded in the `monitors_stopped` array of the pause state block (Step 7).
 
+**Disarm the table-freshness floor by DATA, not by the stop.** A paused round is not an active one, so the hourly floor (`.claude/reference/time-estimates.md` §"Table freshness — the hourly floor") must go quiet here. Resolve `table-freshness.sh` per RESOLVE and run `--clear --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}"` — or record the terminal board with `--note-rendered --active 0 --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}"`, which does the same job while leaving a readable last render. Both flags are named explicitly, the same pair the watch was armed with: a disarm that addressed a different repo or session would clear a record nothing polls and leave the live one armed. Do this **whether or not** its watch was stopped: the tick reads `active_pipelines` and exits silently at `0`, so clearing the record silences even a watch whose `TaskStop` failed or that no step owned an ID for. Skipping it is what leaves `TABLE FLOOR` lines arriving into a paused session.
+
+Two ways this can degrade, and both stay quiet rather than guessing: an **unresolved helper** → one `DEGRADED:` line, then continue. An **empty `REPO_KEY`** (Step 0 resolved neither remote nor state) → **skip the call entirely** and say so — `DEGRADED: repo key unresolved — table-freshness floor not disarmed` — then continue. Skipping is what makes that a report rather than a lie: calling with an empty key lets the script fall back to the cwd and clear `_unknown`, a no-op that looks like a successful disarm while the real record keeps the floor armed. The pause itself never waits on either.
+
 After the specialized Monitor teardown above, follow
 `background-task-shutdown.md` for every registry entry in this session. Give
 productive agents, workflows, and background commands the remaining bounded
