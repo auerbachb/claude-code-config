@@ -899,6 +899,28 @@ else fail "  and it still prints a recovery command (found none — did the mess
 dsb_advice_bad="$(printf '%s\n' "$dsb_advice" | grep -v -- '--require-existing' || true)"
 check "  whose printed command also carries --require-existing" "" "$dsb_advice_bad"
 
+# That printed command inherits the scope the append was using. On the
+# --legacy-flat branch the warning names TWO causes, and for the migration one
+# the flat path is gone for good: following the advice verbatim re-targets the
+# deleted file and, with --require-existing, records nothing (CodeAnt, PR #1606).
+# So the exit-3 branch must also name the scoped substitution.
+dsb_migration_note="$(grep -c -- 'in place of .--legacy-flat' "$DSB" || true)"
+if [[ "$dsb_migration_note" -ge 1 ]]; then
+  ok "  and names the --owner-repo substitution for the migration cause"
+else
+  fail "  and names the --owner-repo substitution for the migration cause (found none)"
+fi
+# Both arms — a known owner/repo is spelled out, an unknown one is a placeholder.
+dsb_note_concrete="$(grep -c -- "owner-repo \$_ds_owner_repo' in place of" "$DSB" || true)"
+dsb_note_placeholder="$(grep -c -- "owner-repo <owner>/<repo>' (the migrated scope)" "$DSB" || true)"
+check "  concrete arm names the resolved owner/repo" "1" "$dsb_note_concrete"
+check "  placeholder arm covers an unknown owner/repo" "1" "$dsb_note_placeholder"
+# Negative control: the predicate must actually fail on a file without the note.
+dsb_stripped="${TMP_DIR}/dsb-no-migration-note.sh"
+grep -v -- 'in place of .--legacy-flat' "$DSB" > "$dsb_stripped"
+dsb_neg="$(grep -c -- 'in place of .--legacy-flat' "$dsb_stripped" || true)"
+check "  negative control: predicate flags a stripped migration note" "0" "$dsb_neg"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
