@@ -56,9 +56,19 @@ Note the two shapes. `rules` is a single **directory** symlink; `skills` and `ag
 | `~/.claude/skills/<name>` | `~/.claude/skills-worktree/.claude/skills/<name>` |
 | `~/.claude/agents/<name>.md` | `~/.claude/skills-worktree/.claude/agents/<name>.md` |
 
-**Keeping it fresh:** The `session-start-sync.sh` hook runs once per session (on the first tool call) and syncs the skills worktree to `origin/main`. The `post-merge-pull.sh` hook syncs after merges. Both ensure skills, rules, and `CLAUDE.md` stay current across all repos.
+**Keeping it fresh:** three mechanisms, in order of how much they cover.
 
-**Initial setup:** `setup-skills-worktree.sh` creates the worktree, symlinks all skills and agent definitions, and registers hooks in `~/.claude/settings.json`. `setup.sh` calls it during installation, then separately merges non-hook settings from `global-settings.json` and verifies the final result. Re-run either script to fix broken symlinks or stale hook paths.
+1. **Scheduled, per machine (primary).** `.claude/scripts/claude-config-sync.sh` is one idempotent freshen pass: fast-forward the worktree, publish every symlink (`publish-skill-symlinks.sh` + `publish-agent-symlinks.sh`), verify the links resolve, re-run `register-hooks.py` and `repair-trust-all.sh`. `install-config-sync.sh` registers it as a macOS launchd LaunchAgent — `RunAtLoad` at login, `StartInterval` hourly, with launchd coalescing the runs missed during sleep. It is opt-in per machine and removed by `uninstall-config-sync.sh`. Without it, freshness depends on someone opening a session there: pulling the checkout forward never creates links for skills or agents merged elsewhere.
+2. **Session start (backstop).** `session-start-sync.sh` does the same worktree sync, symlink publish and hook registration at every session start, and additionally pulls the root repo's `main` when it is checked out.
+3. **After merges.** `post-merge-pull.sh` syncs the worktree and refreshes the `CLAUDE.md` and `rules` symlinks.
+
+**Scope boundary (1 and 2 differ here):** the scheduled job never pulls, resets, or checks out the **root repo**. Its scope is the skills worktree and the `~/.claude` links only; root `main` hygiene stays a session-start concern behind `dirty-main-guard.sh`.
+
+**Concurrency:** the scheduled job and the session-start hook do the same work, so both hold one `state-lock.sh` mutex on `~/.claude/logs/claude-config-sync-state.json`. The second arrival skips its region cleanly instead of racing a `git reset --hard` against a symlink publish.
+
+**Restart signal:** some changes — a new agent definition, changed rules — cannot be picked up by a session that is already running, and no scheduler may restart one. Instead the sync writes `~/.claude/sync-restart-recommended.json`, surfaced both in the next session's context (`session-start-sync.sh`) and as a statusline badge (`↻ restart`). The restart portion clears on a true session `startup`; a separate `⚠ sync failing` portion appears once the job's failure streak crosses its threshold and clears on the next successful tick. Mechanism: [`.claude/reference/skill-sync-hooks.md`](.claude/reference/skill-sync-hooks.md).
+
+**Initial setup:** `setup-skills-worktree.sh` creates the worktree, then delegates the symlink legs to `publish-skill-symlinks.sh` (skills, `CLAUDE.md`, `rules`) and `publish-agent-symlinks.sh` (agents) and registers hooks in `~/.claude/settings.json`. `setup.sh` calls it during installation, then separately merges non-hook settings from `global-settings.json` and verifies the final result. Re-run either script to fix broken symlinks or stale hook paths. The launchd installer is deliberately **not** part of `setup.sh` — a machine gets the scheduler when its owner asks for it.
 
 ---
 
@@ -97,6 +107,8 @@ Sat Aug 1 09:37 PM ET · issue-779-statusline · 2 agents · 1 watcher
 ```
 
 Counts come from `~/.claude/session-state.json` through `session-state.sh --session-view`, so they are scoped to the invoking repo. There is no network call and no `gh` — it renders on a timer, so it only reads local state, and it always exits 0 so a transient read failure shortens the line instead of breaking the render.
+
+Two further segments appear only while `~/.claude/sync-restart-recommended.json` carries the matching portion (issue #1524): `↻ restart` after a scheduled config sync landed changes a live session cannot pick up, and `⚠ sync failing` while that job's failure streak is past its threshold. The status line is the between-sessions half of that signal — a machine sitting idle with a stale config has no session to deliver a notice into.
 
 **Deployment mirrors hooks.** The entry lives in `global-settings.json` with the same `/path/to/claude-code-config/...` placeholder, and `register-hooks.py` resolves it to the skills worktree — at install time via `setup-skills-worktree.sh` Step 6b (`--statusline-only`), and at session start via `session-start-sync.sh`, so it lands without a `setup.sh` re-run. A `statusLine` pointing at your own script is never touched, and `padding` / `refreshInterval` survive path repairs. `refreshInterval` is in **seconds** (the harness clamps it to ≥ 1).
 

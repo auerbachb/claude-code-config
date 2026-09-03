@@ -40,7 +40,7 @@
 #   manual run from a terminal returns immediately instead of blocking on `cat`.
 #
 # Output (stdout, exactly one line):
-#   <ET time> · <branch> [· N agents] [· M watchers]
+#   <ET time> · <branch> [· N agents] [· M watchers] [· ⚠ sync failing] [· ↻ restart]
 #
 #   e.g. "Sat Aug 1 09:37 PM ET · issue-779-statusline · 2 agents · 1 watcher"
 #
@@ -49,6 +49,10 @@
 #     branch, or "(no repo)" when the directory is not a git working tree
 #   - the agent and watcher segments are omitted entirely at zero, and are
 #     singularized at one ("1 agent", "1 watcher")
+#   - the sync badges appear only while ~/.claude/sync-restart-recommended.json
+#     carries the matching portion (issue #1524): "↻ restart" while a scheduled
+#     config sync has landed changes a live session cannot pick up, "⚠ sync
+#     failing" while the job's failure streak is past its threshold
 #
 # Counts come from ~/.claude/session-state.json via `session-state.sh
 # --session-view`:
@@ -217,7 +221,33 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Emit one line
+# 5. Config-sync signal badge (issue #1524)
+# --------------------------------------------------------------------------
+# claude-config-sync.sh writes ~/.claude/sync-restart-recommended.json when a
+# scheduled sync lands changes a live session cannot pick up, or when the job has
+# been failing repeatedly. The status line is the between-sessions surface for
+# both: session-start-sync.sh delivers them into a session's context, but a
+# machine sitting idle with a stale config has no session to deliver into.
+#
+# One cheap local read, no network — same contract as the rest of this script.
+# The marker path is defined canonically in claude-config-sync.sh; the three
+# spellings of it are held together by
+# .claude/scripts/tests/claude-config-sync.test.sh.
+SYNC_MARKER="${HOME:-}/.claude/sync-restart-recommended.json"
+SYNC_SEGMENTS=()
+if [[ -n "${HOME:-}" && -r "$SYNC_MARKER" ]]; then
+  while IFS= read -r _badge; do
+    [[ -n "$_badge" ]] || continue
+    SYNC_SEGMENTS+=("$_badge")
+  done < <(jq -r '
+    [ (if (.sync_failure // null) != null then "⚠ sync failing" else empty end),
+      (if (.restart_recommended // null) != null then "↻ restart" else empty end)
+    ] | .[]
+  ' "$SYNC_MARKER" 2>/dev/null)
+fi
+
+# --------------------------------------------------------------------------
+# 6. Emit one line
 # --------------------------------------------------------------------------
 pluralize() { # count singular-noun -> "N noun" / "N nouns"
   if [[ "$1" -eq 1 ]]; then
@@ -230,6 +260,7 @@ pluralize() { # count singular-noun -> "N noun" / "N nouns"
 SEGMENTS=("$ET_TIME" "$BRANCH")
 [[ "$AGENTS" -gt 0 ]] && SEGMENTS+=("$(pluralize "$AGENTS" agent)")
 [[ "$WATCHERS" -gt 0 ]] && SEGMENTS+=("$(pluralize "$WATCHERS" watcher)")
+SEGMENTS+=("${SYNC_SEGMENTS[@]+"${SYNC_SEGMENTS[@]}"}")
 
 LINE="${SEGMENTS[0]}"
 for ((i = 1; i < ${#SEGMENTS[@]}; i++)); do

@@ -21,13 +21,21 @@ SKILLS_DIR="$HOME/.claude/skills"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_HELPER="$SCRIPT_DIR/.claude/scripts/repo-root.sh"
 
-# Find the repo root (works from anywhere inside the repo or a worktree).
+# Find the repo root. Both spellings resolve from SCRIPT_DIR, never from the
+# caller's cwd: this script is invoked by absolute path from contexts that have
+# no meaningful working directory — the claude-config-sync LaunchAgent runs with
+# cwd `/`, where an unanchored `git worktree list` finds no repository and the
+# script would abort with "Could not find the root repo" on precisely the
+# fresh-machine bootstrap it exists to perform.
 # Prefer the shared helper; fall back to the inline one-liner when the helper
 # file isn't on disk yet (e.g., this script was copied into a bare clone).
 if [[ -x "$REPO_ROOT_HELPER" ]]; then
-  REPO_ROOT="$("$REPO_ROOT_HELPER" 2>/dev/null)" || true
+  REPO_ROOT="$("$REPO_ROOT_HELPER" "$SCRIPT_DIR" 2>/dev/null)" || true
 else
-  REPO_ROOT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || true
+  # No `exit` in the awk: under `set -o pipefail` an early-exiting consumer
+  # SIGPIPEs `git worktree list` mid-write, so the pipeline reports failure with
+  # the right answer already on stdout. Consuming the whole stream avoids it.
+  REPO_ROOT="$(git -C "$SCRIPT_DIR" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')" || true
 fi
 
 if [[ -z "$REPO_ROOT" || ! -d "$REPO_ROOT/.git" ]]; then
@@ -37,53 +45,31 @@ fi
 
 echo "Root repo: $REPO_ROOT"
 
-# --- Shared helper: migrate_symlink ---
-# Manages one symlink, handling all five states in one place so Steps 4 and 5
-# do not each carry a hand-rolled copy of the same state machine.
+# --- Step 0: Preflight — the symlink publisher must exist BEFORE we mutate ---
 #
-# Usage: migrate_symlink LINK NEW_TARGET LEGACY_TARGET LABEL EXISTENCE_TEST
-#   LINK            Path of the symlink to manage (e.g. ~/.claude/CLAUDE.md)
-#   NEW_TARGET      Where the symlink should point after this call
-#   LEGACY_TARGET   Old root-repo target that triggers a "migrating" message
-#   LABEL           Human-readable name used in echo output
-#   EXISTENCE_TEST  test(1) flag for the target: -f for files, -d for dirs
+# Publishing the skill / CLAUDE.md / rules symlinks is this script's core job
+# (Steps 2-5 below), and since issue #1524 that work lives in a separate
+# publisher. A missing publisher is therefore fatal, not skippable: completing
+# "setup" with a worktree and no symlinks would report success while leaving
+# ~/.claude/ unconfigured.
 #
-# States handled:
-#   already-correct target   → no-op
-#   legacy LEGACY_TARGET     → migrate if NEW_TARGET exists; warn if not
-#   any other symlink target → repoint to NEW_TARGET
-#   non-symlink regular file → warn, never overwrite
-#   missing                  → create if NEW_TARGET passes EXISTENCE_TEST
-migrate_symlink() {
-  local link="$1" new_target="$2" legacy_target="$3" label="$4" existence_test="$5"
-
-  if [[ -L "$link" ]]; then
-    local current_target
-    current_target="$(readlink "$link")"
-    if [[ "$current_target" == "$new_target" ]]; then
-      echo "  $label — already correct"
-    elif [[ "$current_target" == "$legacy_target" ]]; then
-      if test "$existence_test" "$new_target"; then
-        echo "  $label — migrating from root repo to worktree"
-        rm "$link"
-        ln -s "$new_target" "$link"
-      else
-        echo "  $label — WARNING: exists in root repo but not in worktree (skill may not be on main yet)"
-      fi
-    else
-      echo "  $label — symlink points elsewhere ($current_target), updating to worktree"
-      rm "$link"
-      ln -s "$new_target" "$link"
-    fi
-  elif [[ -e "$link" ]]; then
-    echo "  WARNING: $link is not a symlink — skipping (will not overwrite)"
-  else
-    if test "$existence_test" "$new_target"; then
-      echo "  $label — creating symlink to worktree"
-      ln -s "$new_target" "$link"
-    fi
-  fi
-}
+# The check runs HERE, before Step 1, rather than at the call site: failing
+# after the worktree is created leaves a half-finished install behind. Resolved
+# from SCRIPT_DIR, not REPO_ROOT — the publisher that ships beside THIS script
+# is the one the user invoked; the main checkout may sit on a branch that
+# predates it. REPO_ROOT is still passed as the legacy-migration argument,
+# which is all it is for.
+SKILLS_PUBLISH_SCRIPT="$SCRIPT_DIR/.claude/scripts/publish-skill-symlinks.sh"
+# -r as well as -f: the whole point of this preflight is to fail BEFORE Step 1
+# mutates the worktree, and an unreadable publisher fails just as surely as a
+# missing one — only later, after the mutation, which is what it exists to
+# prevent. (It is invoked via `bash "$script"`, so readable, not executable, is
+# the requirement.)
+if [[ ! -f "$SKILLS_PUBLISH_SCRIPT" || ! -r "$SKILLS_PUBLISH_SCRIPT" ]]; then
+  echo "ERROR: publish-skill-symlinks.sh not found or not readable at $SKILLS_PUBLISH_SCRIPT" >&2
+  echo "       Nothing has been changed. Re-run from a complete checkout." >&2
+  exit 1
+fi
 
 # --- Step 1: Create the skills worktree ---
 
@@ -92,7 +78,16 @@ if [[ -d "$SKILLS_WORKTREE" ]]; then
   if [[ -x "$REPO_ROOT_HELPER" ]]; then
     wt_root="$("$REPO_ROOT_HELPER" "$SKILLS_WORKTREE" 2>/dev/null)" || wt_root=""
   else
-    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')" || wt_root=""
+    # Same SIGPIPE reasoning as the lookup above: the awk deliberately does not
+    # `exit` on first match, so a successful lookup never takes SIGPIPE.
+    # The `|| wt_root=""` is required, not optional. This script runs under
+    # `set -euo pipefail`, and when $SKILLS_WORKTREE exists but is NOT a git
+    # worktree, `git worktree list` exits non-zero; pipefail propagates that
+    # through the pipeline and `set -e` aborts the assignment outright — so the
+    # ownership error below never prints and the user is told nothing at all.
+    # Emptying wt_root instead routes that case into the else branch, which is
+    # what states the problem and how to recover.
+    wt_root="$(git -C "$SKILLS_WORKTREE" worktree list --porcelain 2>/dev/null | awk '/^worktree /{if (!seen++) {sub(/^worktree /, ""); print}}')" || wt_root=""
   fi
   if [[ "$wt_root" == "$REPO_ROOT" ]]; then
     echo "Skills worktree already exists at $SKILLS_WORKTREE — updating to latest main."
@@ -117,132 +112,31 @@ else
   echo "Skills worktree created."
 fi
 
-# --- Step 2: Ensure ~/.claude/skills/ exists ---
-
-mkdir -p "$SKILLS_DIR"
-
-# --- Step 3: Symlink all skills from the worktree ---
-
-WORKTREE_SKILLS="$SKILLS_WORKTREE/.claude/skills"
-
-# --- Helper: skill_owned_by_setup ---
-# Returns true (exit 0) when the symlink target is one this script manages —
-# i.e., it points into the skills worktree or into the legacy root-repo skills
-# directory that is being migrated away from. Used by both the publish and prune
-# loops to leave user-owned personal skills untouched (mirrors the identical
-# predicate in publish-agent-symlinks.sh for the agents leg).
+# --- Steps 2-5: Publish skill, CLAUDE.md and rules symlinks ---
 #
-# The target is normalized before the prefix check so that traversal sequences
-# (e.g. ~/.claude/skills-worktree/../../../etc) cannot cause a path outside the
-# managed directories to be misidentified as setup-owned.
-skill_owned_by_setup() {
-  local raw_target="$1"
-  local target
-  # Normalize the path — resolve any ../ sequences — without requiring it to exist.
-  if [[ "$raw_target" == /* ]]; then
-    target="$(python3 -c "import os,sys; print(os.path.normpath(sys.argv[1]))" \
-              "$raw_target" 2>/dev/null)" || return 1
-  else
-    # Relative symlinks are rare (all setup-created links are absolute) but resolve
-    # them against SKILLS_DIR — the parent directory of every skill symlink.
-    target="$(python3 -c "import os,sys; print(os.path.normpath(os.path.join(sys.argv[1],sys.argv[2])))" \
-              "$SKILLS_DIR" "$raw_target" 2>/dev/null)" || return 1
-  fi
-  [[ "$target" == "$WORKTREE_SKILLS/"* ]] && return 0
-  [[ "$target" == "$REPO_ROOT/.claude/skills/"* ]] && return 0
-  return 1
-}
+# The symlink state machine (publish, prune, legacy-migrate) and the
+# CLAUDE.md / rules legs live in .claude/scripts/publish-skill-symlinks.sh
+# (issue #1524) so that the scheduled claude-config-sync.sh tick and the
+# session-start hook can run the same idempotent publish without re-running
+# this whole bootstrap. This mirrors the Step 5b delegation to
+# publish-agent-symlinks.sh below.
 
-if [[ ! -d "$WORKTREE_SKILLS" ]]; then
-  echo "WARNING: No .claude/skills/ directory in the worktree. Skipping skill symlinks."
-else
-
-echo "Symlinking skills from worktree..."
-
-for skill_dir in "$WORKTREE_SKILLS"/*/; do
-  # Skip if glob didn't match anything
-  [[ -d "$skill_dir" ]] || continue
-
-  skill_name="$(basename "$skill_dir")"
-  target="$WORKTREE_SKILLS/$skill_name"
-  link="$SKILLS_DIR/$skill_name"
-
-  if [[ -L "$link" ]]; then
-    current_target="$(readlink "$link")"
-    if [[ "$current_target" == "$target" ]]; then
-      echo "  $skill_name — already correct"
-      continue
-    fi
-    # If the link points somewhere we do not manage, it is a user-owned personal
-    # skill. Leave it alone rather than silently repointing it.
-    if ! skill_owned_by_setup "$current_target"; then
-      echo "  $skill_name — leaving user-owned symlink alone (-> $current_target)"
-      continue
-    fi
-    echo "  $skill_name — updating symlink (was: $current_target)"
-    rm "$link"
-  elif [[ -d "$link" ]]; then
-    echo "  $skill_name — replacing directory copy with symlink"
-    rm -rf "$link"
-  fi
-
-  ln -s "$target" "$link"
-  echo "  $skill_name — symlinked"
-done
-
-# --- Step 3b: Remove orphaned skill symlinks (skill renamed or removed on main) ---
-# Use "$SKILLS_DIR"/* (not */) so dangling symlinks are included — a broken link is
-# not a directory, so */-style globs skip it.
-# Only prune setup-managed links; user-owned personal skills are left in place.
-for link in "$SKILLS_DIR"/*; do
-  [[ -e "$link" || -L "$link" ]] || continue
-  [[ -L "$link" ]] || continue
-  skill_name="$(basename "$link")"
-  current_target="$(readlink "$link")"
-  # Skip user-owned symlinks — they point outside what setup manages.
-  if ! skill_owned_by_setup "$current_target"; then
-    echo "  $skill_name — leaving user-owned symlink alone (-> $current_target)"
-    continue
-  fi
-  # Skip legacy root-repo links: Step 4 handles them via migrate_symlink, which
-  # preserves the link and warns when the worktree target does not yet exist
-  # (skill not on main). Pruning here would remove the link before Step 4 runs.
-  if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
-    continue
-  fi
-  if [[ ! -d "$WORKTREE_SKILLS/$skill_name" ]]; then
-    echo "  $skill_name — removing stale symlink (no matching skill in worktree)"
-    rm "$link"
-  fi
-done
-
-# --- Step 4: Remove stale symlinks pointing to the old root repo location ---
-
-for link in "$SKILLS_DIR"/*; do
-  [[ -e "$link" || -L "$link" ]] || continue
-  [[ -L "$link" ]] || continue
-  skill_name="$(basename "$link")"
-  current_target="$(readlink "$link")"
-
-  # If it points to the root repo's .claude/skills/ (old approach), migrate it.
-  # migrate_symlink handles the migrate-if-target-exists / warn-if-not branches.
-  if [[ "$current_target" == "$REPO_ROOT/.claude/skills/$skill_name" ]]; then
-    migrate_symlink "$link" "$WORKTREE_SKILLS/$skill_name" \
-      "$REPO_ROOT/.claude/skills/$skill_name" "$skill_name" -d
-  fi
-done
-
-fi  # end of skills directory check
-
-# --- Step 5: Migrate CLAUDE.md and rules symlinks to skills worktree ---
-
-CLAUDE_MD_LINK="$HOME/.claude/CLAUDE.md"
-CLAUDE_MD_TARGET="$SKILLS_WORKTREE/CLAUDE.md"
-RULES_LINK="$HOME/.claude/rules"
-RULES_TARGET="$SKILLS_WORKTREE/.claude/rules"
-
-migrate_symlink "$CLAUDE_MD_LINK" "$CLAUDE_MD_TARGET" "$REPO_ROOT/CLAUDE.md" "CLAUDE.md" -f
-migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules" -d
+# SKILLS_PUBLISH_SCRIPT is resolved and existence-checked in the Step 0
+# preflight above, so this call site only has to invoke it.
+echo "Symlinking skills, CLAUDE.md and rules from worktree..."
+# Captured rather than left to `set -e`. The worktree already exists by this
+# point, and the legs that follow — the agent publish, hook registration — are
+# INDEPENDENT of this one. Aborting here left a machine with a half-published
+# skills leg, no agent links and no registered hooks, which is strictly worse
+# than the same failure with those legs completed. The status is carried to the
+# end so the run still exits non-zero and says what was incomplete.
+SETUP_EXIT=0
+if ! bash "$SKILLS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"; then
+  SETUP_EXIT=1
+  echo "  WARNING: publish-skill-symlinks.sh failed — skill/CLAUDE.md/rules links may be incomplete." >&2
+  echo "           Continuing with the agent publish and hook registration, which do not depend on it;" >&2
+  echo "           this script will exit non-zero at the end." >&2
+fi
 
 # --- Step 5b: Publish phase-agent definitions to user scope (issue #1189) ---
 #
@@ -252,8 +146,8 @@ migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules"
 # `subagent_type: "phase-a-fixer"` fails everywhere else and the PM skills lose
 # their inline pipelines with no visible error.
 #
-# Topology note: this mirrors Step 3 (skills) — a REAL directory holding one
-# symlink per file — and deliberately NOT Step 5 (rules), which points a single
+# Topology note: this mirrors the SKILLS leg — a REAL directory holding one
+# symlink per file — and deliberately NOT the RULES leg, which points a single
 # directory symlink at the worktree. The Claude Code docs state that
 # .claude/rules/ resolves symlinks; they are silent on symlink-following for
 # agents/. A real directory needs no such guarantee, and per-file symlinks keep
@@ -264,7 +158,7 @@ migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$REPO_ROOT/.claude/rules" "rules"
 # keeping existing installs in sync without a manual re-run of this script.
 
 WORKTREE_AGENTS="$SKILLS_WORKTREE/.claude/agents"
-AGENTS_PUBLISH_SCRIPT="$REPO_ROOT/.claude/scripts/publish-agent-symlinks.sh"
+AGENTS_PUBLISH_SCRIPT="$SCRIPT_DIR/.claude/scripts/publish-agent-symlinks.sh"
 
 echo ""
 if [[ ! -d "$WORKTREE_AGENTS" ]]; then
@@ -312,6 +206,17 @@ else
 fi
 
 echo ""
+if (( SETUP_EXIT != 0 )); then
+  # The remaining legs ran, so say what DID complete — but the run is not a
+  # success and must not report itself as one, or a caller (the scheduled sync,
+  # the session-start hook) would publish from a tree it believes is fully set up.
+  echo "Finished WITH ERRORS. Skills worktree: $SKILLS_WORKTREE" >&2
+  echo "The skill/CLAUDE.md/rules publish failed; agent links and hook registration were still attempted." >&2
+  echo "Re-run this script, or .claude/scripts/publish-skill-symlinks.sh, once the cause is fixed." >&2
+  echo "" >&2
+  echo "Inspect with: ls -la $SKILLS_DIR" >&2
+  exit "$SETUP_EXIT"
+fi
 echo "Done. Skills worktree: $SKILLS_WORKTREE"
 echo "Symlinks in:           $SKILLS_DIR"
 echo ""

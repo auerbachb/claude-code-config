@@ -30,6 +30,7 @@ for order.
 | [churn-hotspot-wrap-plan.test.sh](../tests/churn-hotspot-wrap-plan.test.sh) | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
 | [churn-hotspots.test.sh](../tests/churn-hotspots.test.sh) | Tests for `churn-hotspots.sh` |
 | [ci-status.test.sh](../tests/ci-status.test.sh) | Tests for `ci-status.sh` |
+| [claude-config-sync.test.sh](../tests/claude-config-sync.test.sh) | Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard |
 | [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
 | [cr-plan.test.sh](../tests/cr-plan.test.sh) | Tests for `cr-plan.sh` |
@@ -54,6 +55,7 @@ for order.
 | [handoff-state.test.sh](../tests/handoff-state.test.sh) | Tests for `handoff-state.sh` |
 | [help-output.test.sh](../tests/help-output.test.sh) | `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0 |
 | [infer-pr.test.sh](../tests/infer-pr.test.sh) | Tests for `infer-pr.sh` |
+| [install-config-sync.test.sh](../tests/install-config-sync.test.sh) | Tests `install-config-sync.sh` / `uninstall-config-sync.sh` against `launchctl` and `uname` stubs — plist rendering, worktree-copy preference, `--interval` validation, teardown, and the non-Darwin guard |
 | [issue-claim.test.sh](../tests/issue-claim.test.sh) | Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next |
 | [issue-dedup.test.sh](../tests/issue-dedup.test.sh) | Tests for `issue-dedup.sh` |
 | [issue-maker-log-scoping.test.sh](../tests/issue-maker-log-scoping.test.sh) | Regression tests for the `/issue-maker` session log colliding across concurrent conversations |
@@ -91,6 +93,7 @@ for order.
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
+| [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, and the `setup-skills-worktree.sh` delegation guard |
 | [reference-catalog-lint.test.sh](../tests/reference-catalog-lint.test.sh) | Tests that `reference-catalog-lint.sh` fails on every drift class it claims to catch |
 | [release-decide.test.sh](../tests/release-decide.test.sh) | Tests for `release-decide.sh` |
 | [release-policy.test.sh](../tests/release-policy.test.sh) | Tests for `release-policy.sh` |
