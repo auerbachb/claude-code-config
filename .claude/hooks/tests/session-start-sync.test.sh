@@ -441,6 +441,17 @@ with open(path) as f:
 sys.exit(0 if d.get("restart_recommended") is not None else 1)
 PY
 
+# --- 13b. root-repo helper is resolved above the lock branch (BugBot High, PR #1553) ---
+# The root-repo sync runs on the lock-skip path too; a helper assigned only
+# inside the locked region is unset there, producing a false "root repo could
+# not be resolved" error and a skipped main pull on every login overlap.
+helper_line="$(grep -n '^_repo_root_helper=' "$HOOK" | head -1 | cut -d: -f1)"
+lock_line="$(grep -n 'state_lock_acquire "$_sync_lock_base" 0' "$HOOK" | head -1 | cut -d: -f1)"
+[ -n "$helper_line" ] && [ -n "$lock_line" ] \
+  || fail "could not locate the repo-root helper assignment / lock acquire in the hook"
+[ "$helper_line" -lt "$lock_line" ] \
+  || fail "_repo_root_helper is assigned after the lock branch — unset on the lock-skip path, so a contended login falsely fails the root-repo sync"
+
 # --- 14. resume-source fast-forward writes the restart signal (BugBot High, PR #1553) ---
 # A resumed session keeps the definitions it loaded at its original start. When
 # the hook's own fast-forward brings in new content on resume/compact/clear,

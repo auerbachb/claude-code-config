@@ -20,6 +20,12 @@ _lock_contended=0
 skills_wt="$HOME/.claude/skills-worktree"
 _hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 _scripts_dir="$(cd "$_hook_dir/../scripts" 2>/dev/null && pwd)"
+# Assigned HERE, above the lock branch, on purpose: the root-repo sync near the
+# bottom runs on the lock-skip path too (a contended login is exactly the
+# overlap this hook tolerates), and an assignment left inside the locked region
+# leaves this unset there — a false "root repo could not be resolved" error and
+# a skipped main pull on every login overlap.
+_repo_root_helper="${_scripts_dir}/repo-root.sh"
 setup_script="$(cd "$_hook_dir/../.." 2>/dev/null && pwd)/setup-skills-worktree.sh"
 errors=""
 _agents_notices=""
@@ -358,7 +364,8 @@ fi
 # fallback would buy nothing while being the very shape that discards a correct
 # path printed by a command that happened to return non-zero.
 _root_repo=""
-_repo_root_helper="${_scripts_dir}/repo-root.sh"
+# _repo_root_helper is assigned at the top of the file, above the lock branch —
+# the root-repo sync below the region needs it on the lock-skip path too.
 if [[ -f "$_repo_root_helper" ]]; then
   # Bounded to fit this hook's own arithmetic: repo-root.sh defaults to 10s
   # PER git call and may run two, which alone exceeds the 9s post-region
