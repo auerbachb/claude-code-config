@@ -52,6 +52,13 @@
 #     - Skip `locked` registrations unless --include-locked is passed, and even
 #       then only when the worktree directory is gone or its metadata is
 #       unreadable (a lock on a live worktree is always honoured).
+#     - Skip a registration ENTRY that is itself a symlink, dangling or not.
+#     - Skip an entry whose `gitdir` is a symlink or exceeds 4 KiB: that is not
+#       one of these files, so nothing about the entry can be established.
+#     - Skip an entry whose worktree path is, or sits UNDER, a dangling
+#       symlink. `test -e` follows links, so such a path reads as provably
+#       absent — but the name is a present entry whose target may return, and
+#       one dangling ancestor covers every entry beneath it.
 #   Worktree checkouts:
 #     - Never removed at all without --remove-orphaned-checkouts, which plain
 #       --apply does NOT imply.
@@ -186,9 +193,12 @@
 #   bounds exist for, and forking twice per probe per entry to wrap them
 #   would still leave the parent's own glob unbounded. What does get bounded
 #   is everything that comes *out* of a registration and is therefore
-#   arbitrary: the `gitdir` and `locked` contents (read_bounded_line) and the
-#   worktree path they name, which may sit on the evicted volume
-#   (path_exists_bounded). Resolving the common dir is bounded for the same
+#   arbitrary: the `gitdir` and `locked` contents (read_bounded_line, capped at
+#   4 KiB since issue #1592 — a file past that is not one of these and is
+#   refused rather than copied whole into a shell variable by the pass that
+#   decides whether to delete the entry) and the worktree path they name, which
+#   may sit on the evicted volume (path_exists_bounded, and the whole-path
+#   dangling-link walk that qualifies it). Resolving the common dir is bounded for the same
 #   reason — it is a git call — and degrades to registration_scan
 #   "unavailable" rather than proceeding on an unverified path.
 #
@@ -335,8 +345,10 @@
 #      succeeded — see output), including a deletion killed at its bound and
 #      a failed --remove-orphaned-checkouts removal.
 #      Takes precedence over 1. A registration the re-check declined to remove
-#      because its worktree reappeared is NOT a failure and does not reach this
-#      code.
+#      — because its worktree reappeared, or because absence could not be
+#      re-established (anomalous `gitdir`, or a worktree path that is or sits
+#      under a dangling symlink) — is NOT a failure and does not reach this
+#      code. Neither is a registration entry declined for being a symlink.
 #   3  Usage error.
 #   4  Environment error (cannot resolve repo, gh missing, lib/bounded-run.sh
 #      missing, etc.).
@@ -499,9 +511,16 @@ BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/stale-cleanup-err.XXXXXX"
 # an unbound-variable error under `set -u` on macOS's bash 3.2.
 trap 'rm -f "$CAPTURE" "$CAPTURE_ERR" "$WT_LIST_FILE" "$REF_LIST_FILE" "$GH_TMPERR" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}' EXIT
 
-# read_bounded_line's out-parameter. See that function for why the answer comes
-# back through a global instead of stdout.
+# read_bounded_line's out-parameters. See that function for why the answer comes
+# back through globals instead of stdout.
 BOUNDED_LINE=""
+# 1 when the last capped read found the file PRESENT but over its cap, as
+# distinct from not reading at all. Both return 1, and for the checkout pass
+# that distinction never mattered — it refuses either way. The registration
+# pass needs it: there, "metadata did not read" is the ordinary orphan state
+# and IS a removal candidate, while "this file is far too large to be one of
+# these" is an anomaly that must never clear an entry for deletion (#1592).
+BOUNDED_OVERFLOW=0
 
 # Run one git call against $ROOT under the git bound. Returns git's real exit
 # status, or 124 with BOUNDED_TIMED_OUT=1 on expiry — the CALLER decides between
@@ -569,6 +588,7 @@ worktree_dirty_state() { # worktree path
 read_bounded_line() { # path [max_bytes]
   local rc=0 cap="${2:-}" got=0
   BOUNDED_LINE=""
+  BOUNDED_OVERFLOW=0
   if [[ -n "$cap" ]]; then
     run_bounded "$READ_BOUND_SECS" head -c "$(( cap + 1 ))" "$1" || rc=$?
   else
@@ -578,8 +598,10 @@ read_bounded_line() { # path [max_bytes]
   if [[ -n "$cap" ]]; then
     got="$(wc -c < "$CAPTURE" 2>/dev/null || echo 0)"
     # Arithmetic context tolerates wc's leading whitespace. Over the cap means
-    # the content did not fit, so nothing here is trustworthy — fail closed.
-    if (( got > cap )); then return 1; fi
+    # the content did not fit, so nothing here is trustworthy — fail closed,
+    # flagging WHY so a caller that treats an unreadable file as ordinary
+    # debris can tell this apart from one.
+    if (( got > cap )); then BOUNDED_OVERFLOW=1; return 1; fi
   fi
   # This substitution is safe where the one around run_bounded was not: the
   # handover has already happened in the parent, and $CAPTURE is our own temp
@@ -595,20 +617,39 @@ read_bounded_line() { # path [max_bytes]
 # ancestor that does exist is a directory we can search — walk up to it, since
 # the whole parent tree being gone is an ordinary orphan, not an anomaly. The
 # walk runs inside one bounded child so it stays under the same bound.
+#
+# The walk CLIMBS; testing the immediate parent alone was not enough (#1597).
+# A parent that itself sits behind an unsearchable directory is unreadable for
+# the same reason its child was, so `test -e` on it is false too — and reading
+# that as "the parent is gone, so absence holds" hands a live worktree two or
+# more levels under a mode-000 ancestor to the deletion path. Only a component
+# that actually answers ends the walk, which is what the paragraph above always
+# claimed and what the caller's own "nearest existing parent" skip message
+# promises. Reaching `/` means nothing along the way refused us: ordinary
+# orphan, absence holds.
+#
+#   0 = absence is established
+#   1 = not established (an ancestor exists but refuses search, or the walk did
+#       not finish inside the bound) — the caller must not treat this as missing
 path_absence_provable() { # path
-  local parent rc=0
-  parent="$(dirname -- "$1")"
-  run_bounded "$READ_BOUND_SECS" test -x "$parent" || rc=$?
+  local rc=0
+  run_bounded "$READ_BOUND_SECS" sh -c '
+    p=$(dirname -- "$1")
+    prev=
+    while [ -n "$p" ] && [ "$p" != "$prev" ]; do
+      # Searchable: the lookup below it really happened and really missed.
+      [ -x "$p" ] && exit 0
+      # Present but refusing search — the case we must not read as "missing".
+      [ -e "$p" ] && exit 1
+      # Neither: this level is unreadable too, so it settles nothing. Climb.
+      [ "$p" = "/" ] && exit 0
+      prev=$p
+      p=$(dirname -- "$p")
+    done
+    exit 0
+  ' _ "$1" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
-  # A searchable parent means the lookup really happened and really missed.
   if (( rc == 0 )); then return 0; fi
-  # Otherwise the parent is either absent — in which case the child cannot
-  # exist either, so absence still holds — or present but refusing search,
-  # which is the case we must not mistake for "missing".
-  rc=0
-  run_bounded "$READ_BOUND_SECS" test -e "$parent" || rc=$?
-  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
-  if (( rc != 0 )); then return 0; fi
   return 1
 }
 
@@ -629,6 +670,63 @@ path_exists_bounded() { # path
   rc=0
   path_absence_provable "$1" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( rc != 0 )); then return 3; fi
+  return 1
+}
+
+# Is any component of this path a symlink, or uninspectable?
+#
+# The companion to path_exists_bounded, and the reason both passes need one:
+# `test -e` FOLLOWS symlinks, so a dangling link probes as "provably absent"
+# even though the name is a present entry somebody put there, whose target can
+# come back. Defined here, beside the probe it qualifies, because BOTH deletion
+# paths gate on it — the registration pass (#1592) runs long before the
+# checkout pass that first needed it (#1417).
+#
+# `-L` on the final component alone is not enough. The "a present entry whose
+# target may return" argument that guards a dangling final link applies just as
+# well to every parent: with `worktrees -> /Volumes/archive/...` on an unmounted
+# volume, lstat cannot see the final component at all, so `-L "$target"` is
+# FALSE while `test -e` still reports absent — the same quarantine-on-a-
+# detachable-volume case, one level up, landing in "provably absent" and
+# clearing a working tree, or a whole shelf of registrations, for deletion.
+#
+# Only a link that does not RESOLVE counts. A resolving one is not a hazard:
+# the lookup genuinely traversed it and genuinely missed, so absence below it is
+# real. Requiring merely "is a symlink" would refuse almost everything on macOS,
+# where /var -> /private/var puts a symlink above every path under $TMPDIR.
+#
+#   0 = a dangling symlink component was found, or the chain could not be
+#       inspected inside the bound. Either way absence is NOT established.
+#   1 = every component was inspected and any symlink among them resolves.
+#
+# Those two ways of returning 0 are NOT interchangeable for every caller, so the
+# stalled one is also reported out-of-band in DANGLING_PROBE_INCONCLUSIVE (#1597
+# review). A caller deciding whether absence holds wants them merged — neither
+# establishes it. A caller deciding whether to REMOVE does not: a stalled lstat
+# is the debris this script exists to clear, and treating it as an observed
+# dangling link is what let the pre-`rm` gate refuse the very entries the scan
+# had classified for targeted removal. Same out-flag shape as BOUNDED_OVERFLOW,
+# and for the same reason — "could not read" must stay distinguishable from
+# "read, and here is what it says".
+#
+# Bounded like every other probe here: an lstat on a stalled mount hangs too.
+DANGLING_PROBE_INCONCLUSIVE=0
+path_has_dangling_link_component() { # path
+  local p="$1" prev="" l_rc e_rc
+  DANGLING_PROBE_INCONCLUSIVE=0
+  while [[ -n "$p" && "$p" != "/" && "$p" != "." && "$p" != "$prev" ]]; do
+    l_rc=0
+    run_bounded "$READ_BOUND_SECS" test -L "$p" || l_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then DANGLING_PROBE_INCONCLUSIVE=1; return 0; fi
+    if (( l_rc == 0 )); then
+      e_rc=0
+      run_bounded "$READ_BOUND_SECS" test -e "$p" || e_rc=$?
+      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then DANGLING_PROBE_INCONCLUSIVE=1; return 0; fi
+      if (( e_rc != 0 )); then return 0; fi
+    fi
+    prev="$p"
+    p="$(dirname -- "$p")"
+  done
   return 1
 }
 
@@ -1150,6 +1248,62 @@ resolve_caller_reg_id() {
   return 0
 }
 
+# A registration's `gitdir` holds one absolute path and `locked` one short
+# reason line — both a few dozen bytes as git writes them. 4 KiB is the same
+# headroom read_checkout_gitdir allows a checkout's `.git`, and anything past it
+# is not one of these files.
+REG_META_MAX_BYTES=4096
+
+# Read a registration's `gitdir` file and report the worktree path it names.
+# The registration-pass counterpart of read_checkout_gitdir, capped and
+# symlink-refusing for the same reasons (#1592): this content is what decides
+# whether an entry is an orphan, and that verdict ends in an `rm -rf`.
+#
+# Answer comes back in REGISTRATION_WORKTREE. Statement form only, never `$( )`
+# — see read_bounded_line.
+#
+#   0 = read; REGISTRATION_WORKTREE holds the worktree path it names
+#   1 = did not read inside the bound, or held nothing. This is the ordinary
+#       unreadable-metadata orphan — precisely what stalls `git worktree list`
+#       — and it stays a removal candidate, exactly as before.
+#   2 = ANOMALOUS: `gitdir` is a symlink, or is far too large to be one of
+#       these files. Neither is debris this pass cleans, and neither is a shape
+#       we can vouch for, so it is never classified and never removed. Kept
+#       distinct from 1 on purpose: collapsing it there would hand an entry we
+#       cannot read for an unexplained reason straight to the deletion path.
+REGISTRATION_WORKTREE=""
+read_registration_gitdir() { # registration path
+  local line=""
+  REGISTRATION_WORKTREE=""
+  # Refused BEFORE the read, which follows links: git writes `gitdir` as a
+  # plain file, and we cannot vouch for what a link planted here points at.
+  # Same order, and same argument, as read_checkout_gitdir's `.git` test.
+  [[ -L "$1/gitdir" ]] && return 2
+  if ! read_bounded_line "$1/gitdir" "$REG_META_MAX_BYTES"; then
+    if (( BOUNDED_OVERFLOW == 1 )); then return 2; fi
+    return 1
+  fi
+  line="$BOUNDED_LINE"
+  [[ -n "$line" ]] || return 1
+  # git writes an absolute path by default, but `worktree add --relative-paths`
+  # (git >= 2.48) writes one relative to THIS registration directory. Anchor it
+  # here, exactly as read_checkout_gitdir anchors a checkout's (#1597): left
+  # relative, the path is probed against whatever cwd the caller happened to
+  # have, so a live `--relative-paths` worktree reads as absent and its
+  # registration goes to the deletion path — and the same content classifies
+  # differently from one invocation to the next. Anchoring also keeps content
+  # we cannot vouch for inside the registry instead of resolving it against an
+  # unrelated tree.
+  case "$line" in
+    /*) ;;
+    *) line="$1/$line" ;;
+  esac
+  # `gitdir` holds the path of the worktree's own .git file.
+  REGISTRATION_WORKTREE="${line%/.git}"
+  [[ -n "$REGISTRATION_WORKTREE" ]] || return 1
+  return 0
+}
+
 # Each entry: id US reg_path US worktree_path US reason US method
 #   method: prune    — `git worktree prune` can and should remove it
 #           targeted — git would hang or refuse; remove the directory directly
@@ -1169,14 +1323,33 @@ scan_registrations() {
   fi
   resolve_caller_reg_id || true
 
-  local reg id locked_marker=0 lock_reason="" gitdir_line="" wt="" reason="" method=""
+  local reg id locked_marker=0 lock_reason="" wt="" reason="" method=""
+  local gd_rc=0 probe_rc=0
   for reg in "$WORKTREE_REG_DIR"/*; do
-    [[ -d "$reg" ]] || continue
     id="${reg##*/}"
     if [[ -n "$CALLER_REG_ID" && "$id" == "$CALLER_REG_ID" ]]; then
       SKIPPED_REGISTRATIONS+=("${id}${US}caller's own worktree registration")
       continue
     fi
+    # `-L` FIRST, before anything that follows links — the same order
+    # scan_checkouts uses on its entries (#1592). `-d` traverses, so testing it
+    # first both walks a link into a stalled or evicted volume and silently
+    # DROPS a dangling registration symlink, whose `-d` is false, instead of
+    # recording it. A RESOLVING one is no better off classified: it is exactly
+    # what remove_registration refuses at the rm as "not a plain directory", so
+    # classifying it here only to hard-fail there — raising exit 2 on a sweep
+    # that removed everything it could — is worse than declining it now.
+    if [[ -L "$reg" ]]; then
+      SKIPPED_REGISTRATIONS+=("${id}${US}registration entry is a symlink — never classified, never removed")
+      continue
+    fi
+    # Left UNBOUNDED on purpose, unlike the matching test in scan_checkouts:
+    # BOUNDED READS above records why these particular stat probes need no
+    # wrapper — they hit the local repo's own .git, whose metadata is never
+    # `dataless`, and forking twice per entry would still leave the enclosing
+    # glob unbounded. scan_checkouts bounds its own because those entries are
+    # arbitrary working trees that really can sit on a stalled mount.
+    [[ -d "$reg" ]] || continue
 
     # Presence of `locked` is pure metadata — no content read, so it cannot
     # stall. The reason text is a bounded read and may legitimately be empty.
@@ -1184,25 +1357,53 @@ scan_registrations() {
     lock_reason=""
     if [[ -f "$reg/locked" ]]; then
       locked_marker=1
-      # Called as a statement, never inside `$(...)` — see read_bounded_line.
-      read_bounded_line "$reg/locked" 2>/dev/null || true
-      lock_reason="$BOUNDED_LINE"
+      # Never READ through a symlinked marker (#1597 review). The cap below
+      # bounds how much of a file reaches stdout; it does not bound WHICH file,
+      # and read_bounded_line follows links. This text is echoed into the report
+      # and into --json, so `locked -> ~/.ssh/id_rsa` would publish that file's
+      # first line. Refused here rather than in read_bounded_line, which has
+      # legitimate callers that do resolve links, and matching the `-L` refusal
+      # read_registration_gitdir already applies to `gitdir` for the same
+      # can-not-vouch-for-it reason.
+      #
+      # Deliberately narrower than that one: `gitdir` returns rc 2 and declines
+      # the entry, because its CONTENT decides whether the entry is an orphan.
+      # This marker's PRESENCE is what gates the skip and its text is only ever
+      # displayed, so the entry stays locked and merely goes unnamed. The `-f`
+      # test still gates the marker, so a dangling `locked` link continues to
+      # read as "not locked" exactly as before — that case is unchanged.
+      if [[ -L "$reg/locked" ]]; then
+        lock_reason="reason not shown — the locked marker is a symlink and was not read through"
+      else
+        # Called as a statement, never inside `$(...)` — see read_bounded_line.
+        # Capped like `gitdir` (#1592): an implausibly large `locked` would be
+        # copied whole into a temp file and then a shell variable on its way to
+        # stdout. On overflow BOUNDED_LINE is empty and the reason simply goes
+        # unnamed — again, never a removal decision.
+        read_bounded_line "$reg/locked" "$REG_META_MAX_BYTES" 2>/dev/null || true
+        lock_reason="$BOUNDED_LINE"
+      fi
     fi
 
     reason=""
     method=""
-    gitdir_line=""
-    if read_bounded_line "$reg/gitdir"; then gitdir_line="$BOUNDED_LINE"; fi
-    if [[ -z "$gitdir_line" ]]; then
+    wt=""
+    gd_rc=0
+    read_registration_gitdir "$reg" || gd_rc=$?
+    if (( gd_rc == 2 )); then
+      # Anomalous metadata is not the unreadable-orphan state below: we cannot
+      # say what this entry is, so we do not offer it for deletion.
+      SKIPPED_REGISTRATIONS+=("${id}${US}gitdir metadata is a symlink or larger than ${REG_META_MAX_BYTES} bytes — not one of these files; absence not established, leaving the registration alone")
+      continue
+    fi
+    if (( gd_rc != 0 )); then
       # We cannot prove the worktree is gone — only that git cannot read this
       # entry either, which is precisely what stalls `git worktree list`.
       reason="unreadable — prunable with warning (metadata did not read within ${READ_BOUND_SECS}s)"
       method="targeted"
-      wt=""
     else
-      # `gitdir` holds the path of the worktree's own .git file.
-      wt="${gitdir_line%/.git}"
-      local probe_rc=0
+      wt="$REGISTRATION_WORKTREE"
+      probe_rc=0
       path_exists_bounded "$wt" || probe_rc=$?
       if (( probe_rc == 0 )); then
         continue   # live entry — never reported, never touched
@@ -1217,6 +1418,36 @@ scan_registrations() {
         SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt could not be inspected (its nearest existing parent is not searchable) — absence not established, leaving the registration alone")
         continue
       else
+        # probe_rc == 1, "provably absent" — but `test -e` FOLLOWS symlinks, so
+        # a dangling link lands here too, and a link is a present entry
+        # somebody put there. Checked over every component, not just the leaf
+        # (#1592): a `worktrees -> /Volumes/archive/...` ancestor on an
+        # unmounted volume reads as absent for EVERY entry beneath it, so a
+        # leaf-only test would clear a whole shelf of live registrations at
+        # once. Refused here rather than inside path_exists_bounded, which the
+        # checkout pass shares and where a missing target legitimately IS the
+        # debris being cleaned.
+        #
+        # Scope, shared with the "parent not searchable" skip above and with it
+        # predating this change: `git worktree prune` is all-or-nothing across
+        # the registry, so a run that prunes for some OTHER entry still applies
+        # git's own rule — a bare stat, which follows symlinks — to this one.
+        # What this script owns is what it reports and what it deletes itself,
+        # and on that path registration_is_live closes the same hole
+        # immediately before the rm.
+        # Either way the entry is left alone — but say WHICH, because the two
+        # ask different things of an operator (#1597 review). A dangling link is
+        # something to look at; a walk that stalled inside the bound is the
+        # unreadable-metadata case, and reporting it as an ordinary symlink skip
+        # would describe a path state this run never established.
+        if path_has_dangling_link_component "$wt"; then
+          if (( DANGLING_PROBE_INCONCLUSIVE == 1 )); then
+            SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt could not be inspected (a symlink probe along it did not finish within ${READ_BOUND_SECS}s) — absence not established, leaving the registration alone")
+          else
+            SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt is or sits under a dangling symlink — a present entry whose target may return; absence not established, leaving the registration alone")
+          fi
+          continue
+        fi
         reason="worktree directory missing ($wt)"
         method="prune"
       fi
@@ -1283,43 +1514,6 @@ canonical_path() { # path
   [[ -n "$out" ]] || return 1
   CANONICAL_PATH="$out"
   return 0
-}
-
-# Is any component of this path a symlink, or uninspectable?
-#
-# `-L` on the final component alone is not enough. The "a present entry whose
-# target may return" argument that guards a dangling final link applies just as
-# well to every parent: with `worktrees -> /Volumes/archive/...` on an unmounted
-# volume, lstat cannot see the final component at all, so `-L "$target"` is
-# FALSE while `test -e` still reports absent — the same quarantine-on-a-
-# detachable-volume case, one level up, landing in "provably absent" and
-# clearing a working tree for deletion.
-#
-# Only a link that does not RESOLVE counts. A resolving one is not a hazard:
-# the lookup genuinely traversed it and genuinely missed, so absence below it is
-# real. Requiring merely "is a symlink" would refuse almost everything on macOS,
-# where /var -> /private/var puts a symlink above every path under $TMPDIR.
-#
-#   0 = a dangling symlink component was found, or the chain could not be
-#       inspected inside the bound. Either way absence is NOT established.
-#   1 = every component was inspected and any symlink among them resolves.
-#
-# Bounded like every other probe here: an lstat on a stalled mount hangs too.
-path_has_dangling_link_component() { # path
-  local p="$1" prev="" l_rc e_rc
-  while [[ -n "$p" && "$p" != "/" && "$p" != "." && "$p" != "$prev" ]]; do
-    l_rc=0
-    run_bounded "$READ_BOUND_SECS" test -L "$p" || l_rc=$?
-    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 0; fi
-    if (( l_rc == 0 )); then
-      e_rc=0
-      run_bounded "$READ_BOUND_SECS" test -e "$p" || e_rc=$?
-      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( e_rc != 0 )); then return 0; fi
-    fi
-    prev="$p"
-    p="$(dirname -- "$p")"
-  done
-  return 1
 }
 
 # Read a checkout's `.git` file and report the registration path it names.
@@ -1741,13 +1935,22 @@ echo
 # is trusted: a gitdir that reads AND names a path that exists. An unreadable
 # gitdir and a still-missing worktree both answer "not live", because those are
 # exactly the states that made the entry an orphan in the first place.
+#
+#   0 = live — the worktree is back, or was never provably gone
+#   1 = not live — the orphan state that permits removal
+#   3 = neither (#1592). The entry's own metadata is anomalous, or its worktree
+#       path is (or sits under) a dangling symlink. Not "live", but absence is
+#       not established either, so the removal must not proceed. Distinct from
+#       0 only so the caller can say which of the two it is; the post-`prune`
+#       reporting caller that reads this as a boolean sees "not reappeared" for
+#       it, which is what that branch already reported for these entries.
 registration_is_live() { # registration path
-  local gitdir_line="" wt="" probe_rc=0
+  local wt="" probe_rc=0 gd_rc=0
   # Statement form, not `$(...)` — see read_bounded_line.
-  read_bounded_line "$1/gitdir" || return 1
-  gitdir_line="$BOUNDED_LINE"
-  [[ -n "$gitdir_line" ]] || return 1
-  wt="${gitdir_line%/.git}"
+  read_registration_gitdir "$1" || gd_rc=$?
+  if (( gd_rc == 2 )); then return 3; fi
+  if (( gd_rc != 0 )); then return 1; fi
+  wt="$REGISTRATION_WORKTREE"
   path_exists_bounded "$wt" || probe_rc=$?
   # Fail closed, unlike the classification pass: this gate stands immediately
   # before an rm, so "exists" (0) and "cannot establish absence" (3) both stop
@@ -1755,16 +1958,51 @@ registration_is_live() { # registration path
   # being cleaned — let the removal through.
   case "$probe_rc" in
     0|3) return 0 ;;
-    *)   return 1 ;;
+    2)   return 1 ;;
   esac
+  # probe_rc == 1, provably absent — but `test -e` FOLLOWS symlinks, so the same
+  # whole-path dangling-link refusal the scan applies runs here too, over every
+  # component rather than the leaf.
+  #
+  # Ordered probe-then-walk, matching scan_registrations and
+  # checkout_still_orphaned (#1597 review). The walk was first, which left a
+  # wider window than necessary: a component that RESOLVED during the walk and
+  # dangled before the probe was read as proven absence and removed. Running the
+  # walk last puts it as close to the `rm` as this script can get, so a link that
+  # dangles late is still caught — which is what this re-check exists for, the
+  # scan having run at start-up. The window is narrowed, not closed: any
+  # check-then-act in shell has one, and no atomic "verify and remove" primitive
+  # is available. What is at stake on losing the race is the registration
+  # directory, not the worktree, and `git worktree repair <path>` restores it.
+  #
+  # Only an OBSERVED dangling component refuses. A walk that merely stalled
+  # returns 0 too, and reading that as a refusal broke the targeted-removal case
+  # this script was written for (#1597 review): a readable `gitdir` naming a
+  # still-stalled worktree path is classified "unreadable — prunable with
+  # warning" by the scan, and rc 2 above deliberately lets that through as "the
+  # very symptom being cleaned". A stall here, after the probe already proved
+  # absence, is that same symptom and stays removable.
+  if path_has_dangling_link_component "$wt" && (( DANGLING_PROBE_INCONCLUSIVE == 0 )); then
+    return 3
+  fi
+  return 1
 }
 
 # Returns 0 removed, 1 failed, 2 skipped by the re-check (not a failure).
 remove_registration() { # id, registration path
-  local id="$1" target="$2" rc=0
+  local id="$1" target="$2" rc=0 live_rc=0
   # Path guards: only a single-segment id directly beneath the resolved
   # <git-common-dir>/worktrees, a real directory, never a symlink. Anything
   # else is refused rather than removed.
+  #
+  # The checkout path's "must not resolve to / or the repo root" width guard
+  # has no analogue here (#1592 audit). $WORKTREE_REG_DIR is git's own answer
+  # for <git-common-dir>/worktrees — never operator-supplied the way
+  # STALE_CLEANUP_CHECKOUT_DIR is, and always at least one segment below the
+  # common dir, so it cannot resolve to `/`. $target is the enumerating glob's
+  # own spelling of "$WORKTREE_REG_DIR/$id", so the containment test below
+  # compares two strings built from the same value and no alternative spelling
+  # can slip past it; what it clears for removal is two segments below that.
   case "$id" in
     ''|.|..|*/*)
       echo "failed: worktree registration '$id' — refusing to remove: not a single-segment entry name"
@@ -1787,8 +2025,16 @@ remove_registration() { # id, registration path
   # .claude/reference/worktree-registration-quarantine-20260826.md. `git
   # worktree prune` re-reads the registry itself and so needs no equivalent;
   # this is the path that bypasses git, so it re-validates for itself.
-  if registration_is_live "$target"; then
+  registration_is_live "$target" || live_rc=$?
+  if (( live_rc == 0 )); then
     echo "skipped: worktree registration $id — its worktree reappeared after the scan; not removing"
+    return 2
+  fi
+  if (( live_rc == 3 )); then
+    # Neither live nor provably gone. Declined the same way — a skip, not a
+    # failure — because refusing to delete something we cannot vouch for is the
+    # guard working, exactly as remove_checkout treats its own re-check (#1592).
+    echo "skipped: worktree registration $id — absence could not be re-established after the scan (its gitdir metadata is anomalous, or its worktree path is or sits under a dangling symlink); not removing"
     return 2
   fi
   run_bounded "$READ_BOUND_SECS" rm -rf -- "$target" || rc=$?

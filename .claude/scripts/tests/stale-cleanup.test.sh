@@ -34,8 +34,20 @@ git config --global init.defaultBranch main
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { PASS=$((PASS + 1)); echo "ok   — $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
+# Announced, never counted as a pass: an assertion the environment cannot host
+# must not read as one that held. Only for a stated environmental precondition.
+skip() { SKIP=$((SKIP + 1)); echo "SKIP — $1"; }
+
+# `chmod 000` does not restrict uid 0, so the unsearchable-ancestor assertions
+# below cannot be staged as root: the probe simply succeeds and the entry reads
+# live, which is a different path from the one under test. Detected rather than
+# assumed — a container image that runs as root would otherwise report a green
+# suite that never exercised it.
+CAN_STAGE_UNSEARCHABLE=1
+if [[ "$(id -u 2>/dev/null || echo 0)" -eq 0 ]]; then CAN_STAGE_UNSEARCHABLE=0; fi
 
 check_json() {
   # $1 desc, $2 json, $3 jq boolean expr — passes when the expr is truthy.
@@ -445,8 +457,8 @@ check_json "T11: the same repo enumerates cleanly once cleared" \
 # delete a live worktree's registration, so the probe has to fail closed.
 # Skipped when running as root, which bypasses directory permissions entirely
 # and would make the fixture assert the opposite of what it is built to show.
-if [[ "$(id -u)" -eq 0 ]]; then
-  echo "skip — T12: unsearchable-parent probe (running as root; permissions do not apply)"
+if (( CAN_STAGE_UNSEARCHABLE == 0 )); then
+  skip "T12: unsearchable-parent probe (running as root; permissions do not apply)"
 else
   REPO_F="$TMP/repoF"
   mkdir -p "$REPO_F"
@@ -1342,8 +1354,386 @@ check_json "T19: control — the same dir reports ok once readable" "$OUT" \
   '.checkout_scan == "ok"'
 rm -rf "$TMP/vaultCO"
 
+# ---- T20: the registration removal path's own guards (issue #1592) -----------
+# PR #1591 hardened the orphaned-CHECKOUT removal path against four classes of
+# defect. remove_registration is the sibling that deletes registration metadata,
+# and it runs in the same directory shapes. These pin the three classes that
+# turned out to apply to it. (The fourth — the checkout scan dir's
+# "/-or-repo-root" width guard — has no analogue: $WORKTREE_REG_DIR is git's own
+# <git-common-dir>/worktrees, never operator-supplied, and remove_registration
+# only ever clears one segment beneath it.)
+#
+# repoI holds one registration per shape plus a live one, all created off a
+# FRESH tip for the reason T9's live worktree is: on an old tip the pre-existing
+# stale-worktree pass would remove the controls and the assertions would pass or
+# fail for an unrelated reason.
+REPO_I="$TMP/repoI"
+mkdir -p "$REPO_I"
+git -C "$REPO_I" init -q
+echo "i" > "$REPO_I/README.md"
+git -C "$REPO_I" add README.md
+commit_old "$REPO_I" "repoI base"
+echo "fresh" >> "$REPO_I/README.md"
+git -C "$REPO_I" commit -q -am "repoI fresh tip"
+REG_I="$REPO_I/.git/worktrees"
+
+# Build a registration whose worktree is gone, then point its `gitdir` wherever
+# the case needs. A registration's `gitdir` holds the bare path of the
+# worktree's own .git file — no "gitdir:" prefix, unlike a checkout's .git.
+make_reg() { # repo, id, gitdir contents (optional; default leaves git's own)
+  git -C "$1" worktree add "$TMP/$2" -b "issue-500-$2" >/dev/null 2>&1
+  rm -rf "${TMP:?}/$2"
+  if [[ $# -ge 3 ]]; then printf '%s\n' "$3" > "$1/.git/worktrees/$2/gitdir"; fi
+}
+
+git -C "$REPO_I" worktree add "$TMP/wtI-live" -b issue-500-live >/dev/null 2>&1
+make_reg "$REPO_I" wtI-plainmissing
+make_reg "$REPO_I" wtI-thin "$TMP/definitely-not-here/.git"
+
+# --- a worktree path that is a DANGLING SYMLINK is not proven absence --------
+# `test -e` follows symlinks, so a link whose target is missing reads as
+# "provably absent" and the registration is pruned — but the name is a present
+# entry whose target can come back, which is exactly what the 2026-08-26
+# quarantine-onto-a-detachable-volume shape looks like.
+make_reg "$REPO_I" wtI-dangleleaf "$TMP/wtI-leaf-link/.git"
+ln -s "$TMP/leaf-target-not-mounted" "$TMP/wtI-leaf-link"
+
+# --- and so is a dangling symlink ABOVE it ------------------------------------
+# `-L` on the final component alone misses this: under a dangling parent, lstat
+# cannot see the leaf at all, so the leaf test reads FALSE while `test -e` still
+# reports absent. One such ancestor covers EVERY registration beneath it, so a
+# leaf-only test would clear a whole shelf of live entries in one sweep.
+make_reg "$REPO_I" wtI-ancdangle "$TMP/anc-link-dead/wtI-ancdangle/.git"
+ln -s "$TMP/anc-volume-not-mounted" "$TMP/anc-link-dead"
+# Control in the same run — a RESOLVING symlink ancestor must still classify.
+# Without it these assertions would also pass against a build that refused every
+# path with any symlink above it, which on macOS ($TMPDIR under /var ->
+# /private/var) is very nearly every path there is.
+mkdir -p "$TMP/anc-live-dir"
+make_reg "$REPO_I" wtI-ancok "$TMP/anc-link-live/wtI-ancok/.git"
+ln -s "$TMP/anc-live-dir" "$TMP/anc-link-live"
+
+# --- an oversized or symlinked `gitdir` is refused, not read whole -----------
+# This read decides whether an entry is an orphan, and that verdict ends in an
+# `rm -rf`. Uncapped, a planted `gitdir` is copied whole into a temp file and
+# then a shell variable by the pass that makes that decision; followed, a link
+# hands the same decision to a file we cannot vouch for.
+make_reg "$REPO_I" wtI-fat
+{ printf '%s' "$TMP/definitely-not-here/.git"; head -c 8192 /dev/zero | tr '\0' 'x'; } > "$REG_I/wtI-fat/gitdir"
+make_reg "$REPO_I" wtI-symgitdir
+printf '%s\n' "$TMP/definitely-not-here/.git" > "$TMP/planted-gitdir"
+rm -f "$REG_I/wtI-symgitdir/gitdir"
+ln -s "$TMP/planted-gitdir" "$REG_I/wtI-symgitdir/gitdir"
+
+# --- a symlinked registration ENTRY is recorded, never classified ------------
+# `-d` follows links, so testing it before `-L` traverses into whatever the link
+# points at — a stalled volume hangs the sweep — and silently DROPS a dangling
+# entry, whose `-d` is false. A resolving one is worse than dropped: it used to
+# classify here and then hard-fail inside remove_registration as "not a plain
+# directory", raising exit 2 on a sweep that had done nothing wrong.
+ln -s "$TMP/reg-entry-not-mounted" "$REG_I/wtI-dangling-entry"
+mkdir -p "$TMP/reg-entry-live-dir"
+ln -s "$TMP/reg-entry-live-dir" "$REG_I/wtI-live-entry"
+
+# --- an oversized `locked` reason never reaches the report -------------------
+make_reg "$REPO_I" wtI-fatlock "$TMP/definitely-not-here/.git"
+head -c 8192 /dev/zero | tr '\0' 'y' > "$REG_I/wtI-fatlock/locked"
+make_reg "$REPO_I" wtI-thinlock "$TMP/definitely-not-here/.git"
+printf 'claude agent wtI-thinlock (pid 4242)\n' > "$REG_I/wtI-thinlock/locked"
+
+OUT="$(cd "$REPO_I" && "$SUT" --check --json 2>/dev/null)"
+check_json "T20: the registration scan still completed" "$OUT" \
+  '.registration_scan == "ok"'
+check_json "T20: control — a plainly missing worktree still classifies" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtI-plainmissing" and .method == "prune")'
+check_json "T20: control — the live registration is in neither list" "$OUT" \
+  '(.orphaned_registrations | any(.id == "wtI-live") | not)
+   and (.skipped_registrations | any(.id == "wtI-live") | not)'
+check_json "T20: a dangling worktree symlink is skipped, not classified orphaned" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtI-dangleleaf" and (.reason | contains("dangling symlink"))))
+   and (.orphaned_registrations | any(.id == "wtI-dangleleaf") | not)'
+check_json "T20: a dangling symlink ANCESTOR is skipped too" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtI-ancdangle" and (.reason | contains("dangling symlink"))))
+   and (.orphaned_registrations | any(.id == "wtI-ancdangle") | not)'
+check_json "T20: control — a RESOLVING symlink ancestor still classifies" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtI-ancok")'
+check_json "T20: an oversized gitdir is skipped, never the unreadable-orphan class" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtI-fat" and (.reason | contains("not one of these files"))))
+   and (.orphaned_registrations | any(.id == "wtI-fat") | not)'
+check_json "T20: control — the same gitdir contents under the cap classify" "$OUT" \
+  '.orphaned_registrations | any(.id == "wtI-thin")'
+check_json "T20: a symlinked gitdir is skipped, never classified" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtI-symgitdir" and (.reason | contains("symlink"))))
+   and (.orphaned_registrations | any(.id == "wtI-symgitdir") | not)'
+check_json "T20: a dangling registration entry symlink is recorded, not dropped" "$OUT" \
+  '.skipped_registrations | any(.id == "wtI-dangling-entry" and (.reason | contains("symlink")))'
+check_json "T20: control — a resolving entry symlink is skipped as a symlink too" "$OUT" \
+  '(.skipped_registrations | any(.id == "wtI-live-entry" and (.reason | contains("symlink"))))
+   and (.orphaned_registrations | any(.id == "wtI-live-entry") | not)'
+check_json "T20: an oversized locked reason is dropped, not echoed into the report" "$OUT" \
+  '.skipped_registrations | any(.id == "wtI-fatlock" and (.reason | contains("locked"))
+                                and ((.reason | contains("yyyy")) | not))'
+check_json "T20: control — a normal locked reason is still named" "$OUT" \
+  '.skipped_registrations | any(.id == "wtI-thinlock" and (.reason | contains("pid 4242")))'
+
+# --apply must clear the two controls and leave every refused shape alone —
+# and refusing something is not a deletion failure, so the run stays clean.
+OUT="$(cd "$REPO_I" && "$SUT" --apply --include-locked 2>&1)"
+RC=$?
+check_eq "T20: --apply exits 0 — a refusal is not a failure" 0 "$RC"
+if [[ "$OUT" == *"failed:"* ]]; then
+  fail "T20: no failure lines — a symlinked entry is declined, not hard-failed"
+else
+  pass "T20: no failure lines — a symlinked entry is declined, not hard-failed"
+fi
+check_eq "T20: control — the plainly missing registration was removed" "gone" \
+  "$([[ -e "$REG_I/wtI-plainmissing" ]] && echo present || echo gone)"
+check_eq "T20: control — the resolving-ancestor registration was removed" "gone" \
+  "$([[ -e "$REG_I/wtI-ancok" ]] && echo present || echo gone)"
+check_eq "T20: the live registration survives --apply --include-locked" "present" \
+  "$([[ -e "$REG_I/wtI-live" ]] && echo present || echo gone)"
+
+# --- and --apply removes none of the refused shapes ---------------------------
+# In their own repo, because `git worktree prune` is all-or-nothing across the
+# registry: a run that prunes for some OTHER entry applies git's rule — a bare
+# stat that follows symlinks — to every entry, refused or not. That boundary is
+# git's and predates this change (the "parent not searchable" skip has always
+# shared it); what this script owns is what it REPORTS and what it deletes
+# itself. repoK therefore holds only refused shapes plus one entry that routes
+# to the targeted path, so nothing hands the registry to prune.
+REPO_K="$TMP/repoK"
+mkdir -p "$REPO_K"
+git -C "$REPO_K" init -q
+echo "k" > "$REPO_K/README.md"
+git -C "$REPO_K" add README.md
+commit_old "$REPO_K" "repoK base"
+echo "fresh" >> "$REPO_K/README.md"
+git -C "$REPO_K" commit -q -am "repoK fresh tip"
+REG_K="$REPO_K/.git/worktrees"
+make_reg "$REPO_K" wtK-dangleleaf "$TMP/wtK-leaf-link/.git"
+ln -s "$TMP/leaf-target-not-mounted" "$TMP/wtK-leaf-link"
+make_reg "$REPO_K" wtK-ancdangle "$TMP/anc-link-dead/wtK-ancdangle/.git"
+make_reg "$REPO_K" wtK-fat
+{ printf '%s' "$TMP/definitely-not-here/.git"; head -c 8192 /dev/zero | tr '\0' 'x'; } > "$REG_K/wtK-fat/gitdir"
+make_reg "$REPO_K" wtK-symgitdir
+rm -f "$REG_K/wtK-symgitdir/gitdir"
+ln -s "$TMP/planted-gitdir" "$REG_K/wtK-symgitdir/gitdir"
+ln -s "$TMP/reg-entry-live-dir" "$REG_K/wtK-live-entry"
+# Positive control: the one entry that DOES route to targeted removal, so the
+# assertions below pin the refusals rather than an apply phase that never ran.
+make_reg "$REPO_K" wtK-bait
+printf 'claude agent wtK-bait (pid 4242)\n' > "$REG_K/wtK-bait/locked"
+
+OUT="$(cd "$REPO_K" && "$SUT" --apply --include-locked 2>&1)"
+RC=$?
+check_eq "T20: repoK --apply exits 0" 0 "$RC"
+check_eq "T20: control — the targeted bait was removed, so the phase really ran" "gone" \
+  "$([[ -e "$REG_K/wtK-bait" ]] && echo present || echo gone)"
+for kept in wtK-dangleleaf wtK-ancdangle wtK-fat wtK-symgitdir wtK-live-entry; do
+  check_eq "T20: --apply left $kept in place" "present" \
+    "$([[ -e "$REG_K/$kept" ]] && echo present || echo gone)"
+done
+
+# --- the pre-rm re-check catches an ancestor that dangles MID-RUN ------------
+# The scan runs at start-up; the rm runs at the very end. An ancestor going
+# dangling in THAT WINDOW is the state change this gate exists to catch, so it
+# must apply the same whole-path rule as the scan.
+#
+# Breaking the link between two runs would prove nothing: the scan would refuse
+# it on its own and the gate would never be consulted. So the link is broken
+# from INSIDE the window, by an `rm` stub that fires on an EARLIER targeted
+# removal in the same apply phase. `locked` + --include-locked is the one route
+# that sends an entry with a READABLE gitdir to remove_registration rather than
+# to `git worktree prune` (T9 documents that reachability), so both entries
+# carry the marker, and the bait's id sorts first.
+REPO_J="$TMP/repoJ"
+mkdir -p "$REPO_J"
+git -C "$REPO_J" init -q
+echo "j" > "$REPO_J/README.md"
+git -C "$REPO_J" add README.md
+commit_old "$REPO_J" "repoJ base"
+echo "fresh" >> "$REPO_J/README.md"
+git -C "$REPO_J" commit -q -am "repoJ fresh tip"
+REG_J="$REPO_J/.git/worktrees"
+mkdir -p "$TMP/race-anc-real"
+ln -s "$TMP/race-anc-real" "$TMP/race-anc-link"
+for rid in aaa-bait zzz-race; do
+  git -C "$REPO_J" worktree add "$TMP/$rid" -b "issue-501-$rid" >/dev/null 2>&1
+  rm -rf "${TMP:?}/$rid"
+  printf 'claude agent %s (pid 4242)\n' "$rid" > "$REG_J/$rid/locked"
+done
+printf '%s\n' "$TMP/race-anc-link/zzz-race/.git" > "$REG_J/zzz-race/gitdir"
+
+RM_STUB="$TMP/rm-stub"; mkdir -p "$RM_STUB"
+cat > "$RM_STUB/rm" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    *aaa-bait) /bin/rm -rf "$TMP/race-anc-real" ;;
+  esac
+done
+exec /bin/rm "\$@"
+EOF
+chmod +x "$RM_STUB/rm"
+
+OUT="$(cd "$REPO_J" && "$SUT" --check --json --include-locked 2>/dev/null)"
+check_json "T20: the race registration classifies while its ancestor resolves" "$OUT" \
+  '.orphaned_registrations | any(.id == "zzz-race" and .method == "targeted")'
+OUT="$(cd "$REPO_J" && PATH="$RM_STUB:$PATH" "$SUT" --apply --include-locked 2>&1)"
+check_eq "T20: the bait really was removed, so the stub ran mid-phase" "gone" \
+  "$([[ -e "$REG_J/aaa-bait" ]] && echo present || echo gone)"
+check_eq "T20: and the ancestor link really was broken mid-run" "gone" \
+  "$([[ -e "$TMP/race-anc-real" ]] && echo present || echo gone)"
+check_eq "T20: the pre-rm gate spares a registration whose ancestor dangled mid-run" "present" \
+  "$([[ -e "$REG_J/zzz-race" ]] && echo present || echo gone)"
+check_contains "T20: and says absence could not be re-established" \
+  "absence could not be re-established" "$OUT"
+# Positive control: with the ancestor intact for the whole run, that SAME entry
+# IS removed — so the assertion above pins the mid-run refusal rather than a
+# gate that had simply stopped removing anything.
+mkdir -p "$TMP/race-anc-real"
+OUT="$(cd "$REPO_J" && "$SUT" --apply --include-locked 2>&1)"
+check_eq "T20: control — an un-broken ancestor lets that same registration go" "gone" \
+  "$([[ -e "$REG_J/zzz-race" ]] && echo present || echo gone)"
+rm -rf "$RM_STUB" "$TMP/race-anc-link" "$TMP/race-anc-real"
+
+# ---------------------------------------------------------------------------
+# T21 (#1597, GitHub review round): the two remaining routes by which the
+# registration pass could hand a LIVE worktree's entry to the deletion path.
+# Both are "absence" that was never actually established — the same class the
+# dangling-link guard above closes, reached without any symlink involved.
+# ---------------------------------------------------------------------------
+REPO_L="$TMP/repoL"
+mkdir -p "$REPO_L"
+git -C "$REPO_L" init -q
+echo "l" > "$REPO_L/README.md"
+git -C "$REPO_L" add README.md
+commit_old "$REPO_L" "repoL base"
+echo "fresh" >> "$REPO_L/README.md"
+git -C "$REPO_L" commit -q -am "repoL fresh tip"
+REG_L="$REPO_L/.git/worktrees"
+
+# (a) A live worktree whose GRANDparent refuses search. `test -e` reports no
+# errno, so it is false on the worktree AND on its parent — testing the
+# immediate parent alone read that second false as "the parent is gone, so
+# absence holds" and queued a live entry for removal. Only climbing to the
+# nearest ancestor that actually answers catches it.
+mkdir -p "$TMP/anc000/mid"
+git -C "$REPO_L" worktree add "$TMP/anc000/mid/wt-deep" -b issue-1597-deep >/dev/null 2>&1
+
+# (b) A live worktree registered with a RELATIVE gitdir — the shape
+# `git worktree add --relative-paths` (git >= 2.48) writes. Left unanchored it
+# was probed against the caller's cwd, so a live worktree read as absent.
+git -C "$REPO_L" worktree add "$TMP/wt-rel" -b issue-1597-rel >/dev/null 2>&1
+printf '../../../../wt-rel/.git\n' > "$REG_L/wt-rel/gitdir"
+
+# Control for (b): the identical relative shape naming a worktree that really
+# is gone. Pins the anchoring rather than a pass that stopped classifying.
+git -C "$REPO_L" worktree add "$TMP/wt-relgone" -b issue-1597-relgone >/dev/null 2>&1
+rm -rf "${TMP:?}/wt-relgone"
+printf '../../../../wt-relgone/.git\n' > "$REG_L/wt-relgone/gitdir"
+
+chmod 000 "$TMP/anc000"
+OUT="$(cd "$REPO_L" && "$SUT" --check --json 2>/dev/null)"
+chmod 755 "$TMP/anc000"
+
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_json "T21: a live worktree behind an unsearchable grandparent is not an orphan" \
+    "$OUT" '.orphaned_registrations | all(.id != "wt-deep")'
+  check_json "T21: it is recorded as skipped, absence not established" \
+    "$OUT" '.skipped_registrations | any(.id == "wt-deep" and (.reason | test("not searchable")))'
+else
+  skip "T21: unsearchable-grandparent classification (running as root; chmod 000 does not restrict uid 0)"
+fi
+check_json "T21: a live worktree with a relative gitdir is not an orphan" \
+  "$OUT" '.orphaned_registrations | all(.id != "wt-rel")'
+check_json "T21: control — the same relative shape, genuinely gone, still classifies" \
+  "$OUT" '.orphaned_registrations | any(.id == "wt-relgone")'
+
+# --apply, in a repo scoped AROUND the `git worktree prune` boundary. Pruning is
+# all-or-nothing across the registry (see the scan_registrations note), so a run
+# that prunes for some other entry applies git's own bare stat to these too and
+# takes the unsearchable-grandparent entry with it — the pre-existing boundary
+# this change does not move, shared with the "parent not searchable" skip. What
+# this script owns is what IT classifies and what IT removes, so repoM carries
+# only a targeted (locked) orphan: the apply phase runs, no prune is issued, and
+# the live entry survives on this script's own decision. Same scoping as repoK.
+REPO_M="$TMP/repoM"
+mkdir -p "$REPO_M"
+git -C "$REPO_M" init -q
+echo "m" > "$REPO_M/README.md"
+git -C "$REPO_M" add README.md
+commit_old "$REPO_M" "repoM base"
+echo "fresh" >> "$REPO_M/README.md"
+git -C "$REPO_M" commit -q -am "repoM fresh tip"
+REG_M="$REPO_M/.git/worktrees"
+mkdir -p "$TMP/anc000b/mid"
+git -C "$REPO_M" worktree add "$TMP/anc000b/mid/wt-deep2" -b issue-1597-deep2 >/dev/null 2>&1
+git -C "$REPO_M" worktree add "$TMP/m-bait" -b issue-1597-mbait >/dev/null 2>&1
+rm -rf "${TMP:?}/m-bait"
+printf 'claude agent m-bait (pid 4242)\n' > "$REG_M/m-bait/locked"
+
+chmod 000 "$TMP/anc000b"
+OUT="$(cd "$REPO_M" && "$SUT" --check --json --include-locked 2>/dev/null)"
+# Every candidate here is targeted, so no `git worktree prune` is issued at all
+# — whatever survives --apply below survives on this script's own decision.
+check_json "T21: repoM issues no prune, so nothing else can clear an entry" \
+  "$OUT" '.orphaned_registrations | length > 0 and all(.[]; .method == "targeted")'
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_json "T21: repoM skips the unsearchable-grandparent entry at classification" \
+    "$OUT" '.skipped_registrations | any(.id == "wt-deep2")'
+else
+  skip "T21: repoM unsearchable-grandparent classification (running as root)"
+fi
+OUT="$(cd "$REPO_M" && "$SUT" --apply --include-locked 2>&1)"
+chmod 755 "$TMP/anc000b"
+
+check_eq "T21: control — the targeted bait was removed, so the apply phase ran" "gone" \
+  "$([[ -e "$REG_M/m-bait" ]] && echo present || echo gone)"
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_eq "T21: --apply leaves the unsearchable-grandparent registration in place" "present" \
+    "$([[ -e "$REG_M/wt-deep2" ]] && echo present || echo gone)"
+else
+  skip "T21: unsearchable-grandparent survives --apply (running as root)"
+fi
+
+# ---- T22 (#1597 review): a symlinked `locked` marker is never read through ---
+# The cap bounds how MUCH of a file reaches stdout, not WHICH file. The lock
+# reason is echoed into the report and into --json, so a marker pointed at an
+# arbitrary file would publish its first line.
+REPO_N="$TMP/repoN"
+mkdir -p "$REPO_N"
+git -C "$REPO_N" init -q
+echo "n" > "$REPO_N/README.md"
+git -C "$REPO_N" add README.md
+commit_old "$REPO_N" "repoN base"
+REG_N="$REPO_N/.git/worktrees"
+printf 'TOPSECRET-CANARY-DO-NOT-PUBLISH\nsecond line\n' > "$TMP/n-secret"
+git -C "$REPO_N" worktree add "$TMP/wtN-symlock" -b issue-1597-symlock >/dev/null 2>&1
+rm -rf "${TMP:?}/wtN-symlock"
+ln -s "$TMP/n-secret" "$REG_N/wtN-symlock/locked"
+# Control: an ordinary locked marker whose reason SHOULD still be named.
+git -C "$REPO_N" worktree add "$TMP/wtN-plainlock" -b issue-1597-plainlock >/dev/null 2>&1
+rm -rf "${TMP:?}/wtN-plainlock"
+printf 'claude agent plainlock (pid 4242)\n' > "$REG_N/wtN-plainlock/locked"
+
+OUT="$(cd "$REPO_N" && "$SUT" --check --json 2>/dev/null)"
+check_json "T22: a symlinked locked marker never leaks the target's contents" \
+  "$OUT" '[.. | strings] | any(test("TOPSECRET-CANARY")) | not'
+check_json "T22: the entry is still reported as locked, reason withheld" \
+  "$OUT" '.skipped_registrations | any(.id == "wtN-symlock" and (.reason | test("symlink and was not read through")))'
+check_json "T22: control — a plain locked marker's reason is still named" \
+  "$OUT" '.skipped_registrations | any(.id == "wtN-plainlock" and (.reason | test("plainlock")))'
+OUT_TEXT="$(cd "$REPO_N" && "$SUT" --check 2>&1)"
+check_contains "T22: the text report withholds it too" "no-canary" \
+  "$(printf '%s' "$OUT_TEXT" | grep -q 'TOPSECRET-CANARY' && echo leaked || echo no-canary)"
+
 echo ""
-echo "Results: $PASS passed, $FAIL failed"
+if (( SKIP > 0 )); then
+  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped (environment could not host them — see SKIP lines)"
+else
+  echo "Results: $PASS passed, $FAIL failed"
+fi
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
