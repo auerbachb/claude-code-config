@@ -458,14 +458,33 @@ grep -q 'Teardown is by data' "$SPEC" || \
   fail "the spec must state that teardown disarms by data, not by stopping the watch"
 # Each wiring site must name the helper AND name its repo — an omitted --repo
 # resolves from the cwd and can write a record the armed watch never polls.
-for SKILL_PATH in subagent leave-by pause; do
+for SKILL_PATH in subagent leave-by pause end; do
   SKILL_FILE="$REPO_ROOT/.claude/skills/$SKILL_PATH/SKILL.md"
   grep -q 'table-freshness' "$SKILL_FILE" || \
     fail "/$SKILL_PATH must wire the freshness clock (render, resolve, or teardown)"
   grep -qE 'REPO_KEY|--repo' "$SKILL_FILE" || \
     fail "/$SKILL_PATH calls table-freshness.sh without naming a repo"
 done
-ok "the floor is defined once against the canonical table spec and wired into /subagent, /leave-by, /pause"
+
+# The list above was hand-written once and immediately drifted: the spec's
+# teardown sentence named /end while the loop checked only three skills, so /end
+# shipped with no teardown at all and nothing failed (caught in review on PR
+# #1589). Derive the requirement from the spec instead of trusting the list —
+# every flow the teardown sentence names must actually be wired.
+TEARDOWN_LINE="$(grep -A2 'Teardown is by data' "$SPEC" | tr '\n' ' ')"
+[[ -n "$TEARDOWN_LINE" ]] || fail "could not read the spec's teardown sentence"
+NAMED_FLOWS="$(printf '%s' "$TEARDOWN_LINE" | grep -oE '`/[a-z][a-z-]*`' | tr -d '`/' | sort -u)"
+[[ -n "$NAMED_FLOWS" ]] || \
+  fail "the teardown sentence names no flows — it must name the ones that disarm the floor"
+while read -r FLOW; do
+  [[ -n "$FLOW" ]] || continue
+  # Only flows that exist as skills are checkable; the spec also names prose
+  # phrases like "the round's own completion", which have no SKILL.md.
+  [[ -f "$REPO_ROOT/.claude/skills/$FLOW/SKILL.md" ]] || continue
+  grep -q 'table-freshness' "$REPO_ROOT/.claude/skills/$FLOW/SKILL.md" || \
+    fail "the spec's teardown sentence names /$FLOW, but /$FLOW never calls table-freshness.sh"
+done <<< "$NAMED_FLOWS"
+ok "the floor is specified once and every flow the spec names for teardown is wired"
 
 echo
 echo "All table-freshness.sh tests passed."

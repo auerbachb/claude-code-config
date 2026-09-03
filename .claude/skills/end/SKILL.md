@@ -37,6 +37,7 @@ EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 HANDOFF_CONTEXT_SH=$(resolve_script portable-handoff-context.sh) || HANDOFF_CONTEXT_SH=""
 HANDOFF_PUBLISH_SH=$(resolve_script portable-handoff-publish.sh) || HANDOFF_PUBLISH_SH=""
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 
 # The collector is a document, not a script, so resolve it the same way but
 # test for readability rather than the executable bit.
@@ -156,6 +157,32 @@ resume hours or days later should not depend on remembering that this stop was a
 `/end` (Issue #1397). The portable document rendered in Steps 4–6 is a different
 audience and keeps `/end-resume` alone in its `Resume command:` field, which
 `portable-handoff-lint.sh` restricts to that one command.
+
+**Disarm the table-freshness floor by DATA, not by the stop.** An ended round is
+not an active one, so the hourly floor (`.claude/reference/time-estimates.md`
+§"Table freshness — the hourly floor") must go quiet here, exactly as it does in
+`/pause`. Run `"$TABLE_FRESHNESS_SH" --clear --repo "$REPO_KEY" --session
+"${CLAUDE_SESSION_ID:-default}"` — or record the terminal board with
+`--note-rendered --active 0` and the same two flags, which does the same job while
+leaving a readable last render. Name both flags explicitly, the same pair the watch
+was armed with: a disarm addressing a different repo or session clears a record
+nothing polls and leaves the live one armed.
+
+Do this **whether or not** the watch was stopped above. That independence is the
+whole point: the tick reads `active_pipelines` and exits silently at `0`, so
+clearing the record silences even a watch whose `TaskStop` failed or that no step
+owned an ID for. Stopping the task alone leaves the opposite failure — a stale
+`active_pipelines > 0` sitting in durable state, waiting to fire `TABLE FLOOR`
+lines into the next session the moment anything re-arms.
+
+Two degradations, both quiet rather than guessing: an **unresolved helper**
+(`TABLE_FRESHNESS_SH` empty) → one `DEGRADED: table-freshness.sh not found (checked
+all three paths) — hourly table-freshness floor not disarmed` line, then continue.
+An **empty `REPO_KEY`** → **skip the call entirely** and say so — `DEGRADED: repo
+key unresolved — table-freshness floor not disarmed`. Skipping is what makes that a
+report rather than a lie: calling with an empty key lets the script fall back to the
+cwd and clear `_unknown`, a no-op that reads as a successful disarm while the real
+record keeps the floor armed. Neither degradation blocks the stop.
 
 Do not print successful completion while any owned task is still live or either
 audit is unreadable. Report `INCOMPLETE SHUTDOWN` and keep the gates closed.
