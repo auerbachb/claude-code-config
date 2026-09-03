@@ -123,6 +123,17 @@ chmod +x "$STUB_BIN/mktemp"
 # PROBE_BANNER_LINE and PROBE_MARKER_LINE. Written as a function so the
 # ordering assertion can be run against a deliberately broken copy too — a
 # check that only ever sees correct input is a check nobody has tested.
+# Re-anchors an elapsed-time baseline when the wall clock has stepped backward.
+# Sets BASELINE rather than echoing so the wait loop does not fork per pass.
+# A separate function so the behaviour is asserted directly (NC8) instead of
+# requiring a fake `date` on the parent shell to observe it.
+BASELINE=""
+reanchor_baseline() { # start, now → sets BASELINE
+  BASELINE="$1"
+  (( $2 < $1 )) && BASELINE="$2"
+  return 0
+}
+
 probe_suite() { # suite_path, tag
   local suite="$1" tag="$2" out tmpdir pid wait_start wait_now
   out="$SCRATCH/probe-$tag.out"
@@ -168,6 +179,13 @@ probe_suite() { # suite_path, tag
     case "${wait_start}:${wait_now}" in
       *[!0-9:]*|:*|*:) break ;;
     esac
+    # `date` is a wall clock, so an NTP step can move it BACKWARD mid-wait and
+    # push the elapsed figure below the ceiling again, extending a wait that was
+    # supposed to be bounded. Re-anchoring on a backward step keeps the ceiling
+    # meaningful: the wait then lasts at most WAIT_CEILING from the last step
+    # rather than growing by however far the clock jumped.
+    reanchor_baseline "$wait_start" "$wait_now"
+    wait_start="$BASELINE"
     (( wait_now - wait_start >= WAIT_CEILING )) && break
     sleep 0.1 2>/dev/null || sleep 1
   done
@@ -715,6 +733,26 @@ if [[ -z "$(offenders_in "$NC4P" suite-lines)" ]]; then
   pass "NC4p a continuation bound on an unrelated suite is not attributed to this one"
 else
   fail "NC4p joining dragged another suite bound onto this one"
+fi
+
+# The wait ceiling depends on a wall clock, which an NTP step can move backward
+# mid-wait, pushing elapsed back under the ceiling and extending a bounded wait.
+# Asserted on the same function the loop calls, so this is the real behaviour
+# rather than a restatement of it. Forward motion must NOT re-anchor, or the
+# ceiling would never be reached at all.
+NC8_FAILURES=0
+check_baseline() { # start, now, expected, label
+  reanchor_baseline "$1" "$2"
+  [[ "$BASELINE" == "$3" ]] || { NC8_FAILURES=$((NC8_FAILURES + 1)); echo "     ($4: got $BASELINE, want $3)"; }
+}
+check_baseline 1000 1005 1000 "forward motion keeps the baseline"
+check_baseline 1000 1000 1000 "a still clock keeps the baseline"
+check_baseline 1000 940  940  "a backward step re-anchors"
+check_baseline 1000 0    0    "a step to epoch re-anchors"
+if (( NC8_FAILURES == 0 )); then
+  pass "NC8 the elapsed baseline re-anchors on a backward clock step and holds otherwise"
+else
+  fail "NC8 baseline handling wrong in $NC8_FAILURES case(s) — the wait ceiling can be extended or defeated"
 fi
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
