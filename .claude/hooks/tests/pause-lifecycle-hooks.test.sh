@@ -29,10 +29,24 @@ scope_hash() {
     printf '%s\0%s' "$repo" "$sid" | shasum -a 256 | awk '{print $1}'
   fi
 }
+# Octal permission bits of $1 on stdout; returns non-zero and prints NOTHING
+# when they cannot be determined (issue #930).
+#
+# A `stat -c %a … || stat -f %Lp …` chain is not a valid try-both. GNU reads
+# `-f` as --file-system and the format string as a FILE operand, so it prints a
+# filesystem block for the real operand AND exits non-zero — the `||` fires as
+# well and the substitution ends up holding both outputs as one non-numeric
+# blob. Exit status alone therefore cannot say which spelling answered, so each
+# form is tried in isolation and the result has to look like octal mode bits
+# before it is trusted: "could not determine" must never read as a pass.
 mode_of() {
-  local mode=""
-  mode="$(stat -c %a "$1" 2>/dev/null)" || mode="$(stat -f %Lp "$1" 2>/dev/null)"
-  printf '%s' "$mode"
+  local target="$1" bits
+  bits="$(stat -c '%a' "$target" 2>/dev/null)" || bits=""
+  if [[ ! "$bits" =~ ^[0-7]+$ ]]; then
+    bits="$(stat -f '%Lp' "$target" 2>/dev/null)" || bits=""
+  fi
+  [[ "$bits" =~ ^[0-7]+$ ]] || return 1
+  printf '%s' "$bits"
 }
 
 gate() {
@@ -185,11 +199,58 @@ env -u CLAUDE_EXECUTION_PAUSE_MARKER_DIR HOME="$PRIVATE_HOME" \
   --command pause --window-minutes 5
 PRIVATE_DIR="$PRIVATE_HOME/.claude/execution-pause-markers"
 PRIVATE_MARKER="$PRIVATE_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" "$PRIVATE_SESSION")"
-[[ "$(mode_of "$PRIVATE_DIR")" == 700 ]] || fail "default marker directory is not private"
-[[ "$(mode_of "$PRIVATE_MARKER")" == 600 ]] || fail "default marker file is not owner-only"
+PRIVATE_DIR_MODE="$(mode_of "$PRIVATE_DIR")" || PRIVATE_DIR_MODE='<undeterminable>'
+PRIVATE_MARKER_MODE="$(mode_of "$PRIVATE_MARKER")" || PRIVATE_MARKER_MODE='<undeterminable>'
+[[ "$PRIVATE_DIR_MODE" == 700 ]] || \
+  fail "default marker directory is not private (mode: $PRIVATE_DIR_MODE)"
+[[ "$PRIVATE_MARKER_MODE" == 600 ]] || \
+  fail "default marker file is not owner-only (mode: $PRIVATE_MARKER_MODE)"
+ok "default pause markers live in an owner-private directory"
+
+# An undeterminable mode must be refused, not asserted against (issue #930).
+# What proves the shim below is actually reached is the negative control, not
+# the guard assertion: a guard that never ran reports success just as loudly as
+# one that worked. Both PATH overrides are command prefixes inside command
+# substitutions, so the shim is scoped to those two lookups and the suite's own
+# PATH is untouched. A shim the guard somehow missed still fails closed — real
+# `stat` answers 600 with status 0, which is what the guard assertion rejects.
+STAT_SHIM_BIN="$TMP/stat-shim"
+mkdir -p "$STAT_SHIM_BIN"
+# A GNU-flavoured stat: `-f` is --file-system, so it reads the format string as
+# a FILE operand, dumps a filesystem block for the real one and exits non-zero.
+# The `-c` arm stands in for a coreutils variant that cannot resolve the field
+# and emits GNU's own `?` placeholder while still exiting 0.
+# shellcheck disable=SC2016 # Generate a stub that expands these at runtime.
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "${1:-}" in' \
+  '  -c) printf "?\n"; exit 0 ;;' \
+  '  -f) printf "  File: \"%s\"\n  ID: 0 Namelen: 255 Type: ext2/ext3\n" "${3:-}"; exit 1 ;;' \
+  'esac' \
+  'exit 1' > "$STAT_SHIM_BIN/stat"
+chmod +x "$STAT_SHIM_BIN/stat"
+set +e
+# Negative control: the unguarded chain this helper replaced reports success and
+# hands back the shim's non-numeric output as if it were a file mode. Without
+# this the guard assertion below could pass because the shim never ran.
+# shellcheck disable=SC2016 # The chain under test expands in the child shell.
+legacy_mode="$(PATH="$STAT_SHIM_BIN:$PATH" bash -c \
+  'm="$(stat -c %a "$1" 2>/dev/null)" || m="$(stat -f %Lp "$1" 2>/dev/null)"; printf "%s" "$m"' \
+  _ "$PRIVATE_MARKER")"
+legacy_rc=$?
+guarded_mode="$(PATH="$STAT_SHIM_BIN:$PATH" mode_of "$PRIVATE_MARKER")"
+guarded_rc=$?
+set -e
+[[ "$legacy_rc" == 0 && -n "$legacy_mode" && ! "$legacy_mode" =~ ^[0-7]+$ ]] || \
+  fail "negative control did not reproduce the unguarded chain accepting a non-numeric mode (rc=$legacy_rc, value: $legacy_mode)"
+[[ "$guarded_rc" != 0 ]] || fail "mode_of accepted an undeterminable mode (value: $guarded_mode)"
+[[ -z "$guarded_mode" ]] || fail "mode_of printed a fabricated mode on failure: $guarded_mode"
+ok "an undeterminable file mode is refused rather than asserted against"
+
+# Teardown is deferred to here on purpose: the block above stats a marker that
+# really exists, so its refusal is about undeterminable output and not a
+# missing operand.
 env -u CLAUDE_EXECUTION_PAUSE_MARKER_DIR HOME="$PRIVATE_HOME" \
   "$PAUSE" --repo "$REPO" --clear --session "$PRIVATE_SESSION"
-ok "default pause markers live in an owner-private directory"
 
 # A partial installation must still honor positive pause evidence even when the
 # helper disappeared after activation.
