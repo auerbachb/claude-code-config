@@ -551,7 +551,14 @@ _marker_file="$HOME/.claude/sync-restart-recommended.json"
 # startup. Categories mirror claude-config-sync.sh's
 # collect_head_change_categories; existing categories are unioned in, never
 # replaced (a live session may owe restarts to more than one sync).
-if [[ "$session_source" != "startup" && "$_lock_held" == 1 && -z "$errors" ]]; then
+# Deliberately NOT gated on an empty $errors: each leg below carries its own
+# success evidence (leg 1 fires only when HEAD actually moved — a failed fetch
+# or declined reset leaves old==new; leg 2 only on _bootstrapped=1; leg 3 only
+# on a publisher that exited 0 and reported changes), and a LATER unrelated
+# failure — a hook-registration error, a root-sync error — must not suppress a
+# signal whose work already landed. The scheduled job cannot recover it: its
+# next tick sees a stable HEAD and the links already in place.
+if [[ "$session_source" != "startup" && "$_lock_held" == 1 ]]; then
   _resume_cats=""
   # Leg 1: the fast-forward moved HEAD — categories from the content diff.
   if [[ -n "$_old_head" && -n "$_new_head" && "$_old_head" != "$_new_head" ]]; then

@@ -553,6 +553,25 @@ except Exception:
     sys.exit(1)
 sys.exit(1 if d.get("restart_recommended") is not None else 0)
 PY
+# Error-independence leg: a resume whose FETCH fails but whose publish still
+# lands link changes must still write the signal — a later unrelated error must
+# not suppress work that already landed (the scheduled job can never recover
+# it: its next tick sees a stable HEAD and the links already in place).
+R14E_HOME="$R14/home-e"; mkdir -p "$R14E_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-e"
+git -C "$R14/base-e" worktree add -q --detach "$R14E_HOME/.claude/skills-worktree" main
+git -C "$R14E_HOME/.claude/skills-worktree" remote set-url origin "$R14/nonexistent-upstream"
+printf '{"source":"resume"}' | HOME="$R14E_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14E_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume with a failed fetch but a landed publish left no restart signal — a later unrelated error suppressed landed work (BugBot High, PR #1553)"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+rr = d.get("restart_recommended") or {}
+sys.exit(0 if "skills" in (rr.get("categories") or []) else 1)
+PY
 rm -rf "$R14"
 
 echo "OK: session-start-sync.sh SessionStart migration tests passed"
