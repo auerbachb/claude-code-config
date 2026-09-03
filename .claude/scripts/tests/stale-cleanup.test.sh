@@ -1695,6 +1695,37 @@ else
   skip "T21: unsearchable-grandparent survives --apply (running as root)"
 fi
 
+# ---- T22 (#1597 review): a symlinked `locked` marker is never read through ---
+# The cap bounds how MUCH of a file reaches stdout, not WHICH file. The lock
+# reason is echoed into the report and into --json, so a marker pointed at an
+# arbitrary file would publish its first line.
+REPO_N="$TMP/repoN"
+mkdir -p "$REPO_N"
+git -C "$REPO_N" init -q
+echo "n" > "$REPO_N/README.md"
+git -C "$REPO_N" add README.md
+commit_old "$REPO_N" "repoN base"
+REG_N="$REPO_N/.git/worktrees"
+printf 'TOPSECRET-CANARY-DO-NOT-PUBLISH\nsecond line\n' > "$TMP/n-secret"
+git -C "$REPO_N" worktree add "$TMP/wtN-symlock" -b issue-1597-symlock >/dev/null 2>&1
+rm -rf "${TMP:?}/wtN-symlock"
+ln -s "$TMP/n-secret" "$REG_N/wtN-symlock/locked"
+# Control: an ordinary locked marker whose reason SHOULD still be named.
+git -C "$REPO_N" worktree add "$TMP/wtN-plainlock" -b issue-1597-plainlock >/dev/null 2>&1
+rm -rf "${TMP:?}/wtN-plainlock"
+printf 'claude agent plainlock (pid 4242)\n' > "$REG_N/wtN-plainlock/locked"
+
+OUT="$(cd "$REPO_N" && "$SUT" --check --json 2>/dev/null)"
+check_json "T22: a symlinked locked marker never leaks the target's contents" \
+  "$OUT" '[.. | strings] | any(test("TOPSECRET-CANARY")) | not'
+check_json "T22: the entry is still reported as locked, reason withheld" \
+  "$OUT" '.skipped_registrations | any(.id == "wtN-symlock" and (.reason | test("symlink and was not read through")))'
+check_json "T22: control — a plain locked marker's reason is still named" \
+  "$OUT" '.skipped_registrations | any(.id == "wtN-plainlock" and (.reason | test("plainlock")))'
+OUT_TEXT="$(cd "$REPO_N" && "$SUT" --check 2>&1)"
+check_contains "T22: the text report withholds it too" "no-canary" \
+  "$(printf '%s' "$OUT_TEXT" | grep -q 'TOPSECRET-CANARY' && echo leaked || echo no-canary)"
+
 echo ""
 if (( SKIP > 0 )); then
   echo "Results: $PASS passed, $FAIL failed, $SKIP skipped (environment could not host them — see SKIP lines)"

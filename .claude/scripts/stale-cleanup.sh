@@ -1357,15 +1357,32 @@ scan_registrations() {
     lock_reason=""
     if [[ -f "$reg/locked" ]]; then
       locked_marker=1
-      # Called as a statement, never inside `$(...)` — see read_bounded_line.
-      # Capped like `gitdir` (#1592): this text is echoed into the report and
-      # into --json, so an implausibly large `locked` would be copied whole
-      # into a temp file and then a shell variable on its way to stdout. On
-      # overflow BOUNDED_LINE is empty and the reason simply goes unnamed —
-      # the marker's PRESENCE is what gates the skip, never its text, so this
-      # can never change a removal decision.
-      read_bounded_line "$reg/locked" "$REG_META_MAX_BYTES" 2>/dev/null || true
-      lock_reason="$BOUNDED_LINE"
+      # Never READ through a symlinked marker (#1597 review). The cap below
+      # bounds how much of a file reaches stdout; it does not bound WHICH file,
+      # and read_bounded_line follows links. This text is echoed into the report
+      # and into --json, so `locked -> ~/.ssh/id_rsa` would publish that file's
+      # first line. Refused here rather than in read_bounded_line, which has
+      # legitimate callers that do resolve links, and matching the `-L` refusal
+      # read_registration_gitdir already applies to `gitdir` for the same
+      # can-not-vouch-for-it reason.
+      #
+      # Deliberately narrower than that one: `gitdir` returns rc 2 and declines
+      # the entry, because its CONTENT decides whether the entry is an orphan.
+      # This marker's PRESENCE is what gates the skip and its text is only ever
+      # displayed, so the entry stays locked and merely goes unnamed. The `-f`
+      # test still gates the marker, so a dangling `locked` link continues to
+      # read as "not locked" exactly as before — that case is unchanged.
+      if [[ -L "$reg/locked" ]]; then
+        lock_reason="reason not shown — the locked marker is a symlink and was not read through"
+      else
+        # Called as a statement, never inside `$(...)` — see read_bounded_line.
+        # Capped like `gitdir` (#1592): an implausibly large `locked` would be
+        # copied whole into a temp file and then a shell variable on its way to
+        # stdout. On overflow BOUNDED_LINE is empty and the reason simply goes
+        # unnamed — again, never a removal decision.
+        read_bounded_line "$reg/locked" "$REG_META_MAX_BYTES" 2>/dev/null || true
+        lock_reason="$BOUNDED_LINE"
+      fi
     fi
 
     reason=""

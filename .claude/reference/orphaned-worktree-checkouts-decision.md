@@ -94,6 +94,22 @@ Two narrower sub-cases were also judged not applicable:
   `--include-locked` opt-in, never the absence determination — a malformed
   marker cannot make a live worktree look absent — so it is not a
   deletion-path guard.
+
+  **Corrected in review (#1597).** That verdict was right about the deletion
+  decision and wrong to stop there: it asked only "can this change what we
+  delete?", and never asked "can this change what we *print*?". CodeAnt found
+  the second one. The lock reason is echoed into the report and into `--json`,
+  and `read_bounded_line` follows links, so `locked -> ~/.ssh/id_rsa` published
+  that file's first line. The cap bounds how *much* of a file reaches stdout,
+  never *which* file. The read is now refused through a symlink, deliberately
+  more narrowly than the `gitdir` refusal beside it: `gitdir`'s content decides
+  whether an entry is an orphan, so it returns rc 2 and declines the entry,
+  whereas this marker's *presence* gates the skip and its text is only ever
+  displayed — so the entry stays locked and the reason simply goes unnamed. The
+  `-f` test still gates the marker, so the dangling-link case above is
+  unchanged. Pinned by T22, with a canary target, a `--json` assertion, a text-
+  report assertion, and a control that a plain marker's reason is still named;
+  all three leak assertions fail against the pre-fix script.
 - **Exit-code semantics.** Unchanged. The new refusals are *skips*
   (`remove_registration` rc 2), the non-failure the live re-check already used,
   matching `remove_checkout`'s decline.
