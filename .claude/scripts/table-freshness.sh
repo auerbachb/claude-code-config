@@ -163,11 +163,39 @@ iso_to_epoch() {
     || date -d "$1" '+%s' 2>/dev/null
 }
 
+# Strip leading zeros from an already-digit-validated count: "007" -> "7",
+# "000" -> "0". A zero-padded count passes the `^[0-9]+$` guards below, and jq
+# is lenient enough to store it correctly (`--argjson active 010` records 10),
+# which is exactly what makes this dangerous: the RECORD is right and the SHELL
+# is wrong, so the two disagree silently.
+#
+#   `(( 010 > 0 ))`  reads octal — the value becomes 8, not 10.
+#   `(( 08 > 0 ))`   is a hard "value too great for base" error, and an erroring
+#                    `(( ))` returns NON-ZERO. In --tick that lands on
+#                    `(( ACTIVE_RECORDED > 0 )) || exit 0`, so the tick exits
+#                    silently and the hourly floor never fires at all.
+#   `printf '%d' 010` reads octal too (prints 8), and `printf '%d' 08` prints 0
+#                    after an "invalid octal number" warning — so the floor line
+#                    would report a count that contradicts the stored record.
+#
+# Normalising once, at each point a count is admitted, removes all three.
+# Done textually rather than with `$(( 10#$v ))` on purpose: the arithmetic form
+# would also silently wrap a count wider than 64 bits, turning an absurd input
+# into a plausible wrong number instead of leaving it intact.
+normalize_count() {
+  local v="$1"
+  while [[ "$v" == 0?* ]]; do v="${v#0}"; done
+  printf '%s' "$v"
+}
+
 # POSIX single-quote a value for --arm-command. That output is shell TEXT handed
 # to the Monitor tool, so an unquoted argument is interpreted, not passed: a
-# script path containing a space would split into two words, and a repo key from
-# --repo carrying shell syntax would run as syntax. `printf %q` is avoided
-# because it can emit bash-only `$'…'` forms.
+# script path containing a space would split into two words. The session id is
+# sanitised and the repo key is validated as a plausible owner/name before it
+# reaches here, so the script path is the one interpolated value that can still
+# legitimately carry a space — quoting all three anyway keeps this the single
+# place that has to be right. `printf %q` is avoided because it can emit
+# bash-only `$'…'` forms.
 shq() {
   printf "'%s'" "${1//\'/\'\\\'\'}"
 }
@@ -187,7 +215,7 @@ while (( $# > 0 )); do
     --active)
       (( $# >= 2 )) || die_usage "--active requires a count"
       [[ "$2" =~ ^[0-9]+$ ]] || die_usage "--active must be a non-negative integer, got: $2"
-      ACTIVE="$2"
+      ACTIVE="$(normalize_count "$2")"
       shift
       ;;
     --surface)
@@ -245,6 +273,20 @@ if [[ -z "$REPO_KEY" ]]; then
 fi
 REPO_KEY="${REPO_KEY:-_unknown}"
 
+# REPO_KEY is interpolated into the jq path below, so it gets the SAME guard
+# session-state.sh applies to its own --repo (`is_valid_repo_key`): reject
+# quotes, brackets and backslashes outright rather than try to escape them —
+# no legitimate owner/name contains one. Without this, a --repo value carrying
+# `"` or `]` closes the path's string early and the rest is read as jq syntax:
+# the write lands under a different key, or the path stops parsing and every
+# freshness call fails. SESSION_ID is sanitised just above for this same reason;
+# the repo key reaching the path unchecked was the gap. Rejecting (not
+# squashing) is what keeps the `/` in `owner/name` intact, so the state path
+# stays byte-identical to the one /board (#1581) reads.
+if [[ ! "$REPO_KEY" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  die_usage "--repo value is not a plausible repo key: $REPO_KEY"
+fi
+
 STATE_PATH=".repos[\"${REPO_KEY}\"].table_render[\"${SESSION_ID}\"]"
 
 # The dedupe marker is keyed by REPO **and** session, matching the durable clock
@@ -285,6 +327,10 @@ read_record() {
   [[ -n "$RENDERED_EPOCH" ]] || return 1
   ACTIVE_RECORDED="$(state_get '.active_pipelines')" || ACTIVE_RECORDED=""
   [[ "$ACTIVE_RECORDED" =~ ^[0-9]+$ ]] || ACTIVE_RECORDED=""
+  # Normalised on the way in as well: this record is shared with /board (#1581)
+  # and is a plain JSON file a human can edit, so a leading-zero count can reach
+  # us without having passed the --active guard above.
+  [[ -n "$ACTIVE_RECORDED" ]] && ACTIVE_RECORDED="$(normalize_count "$ACTIVE_RECORDED")"
   return 0
 }
 

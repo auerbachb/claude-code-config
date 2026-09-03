@@ -226,24 +226,33 @@ ARM=$("$SCRIPT" --arm-command --session "$SID" --repo "$REPO")
 ok "--arm-command emits a persistent Monitor loop carrying session and repo"
 
 # --- 16b. The emitted command is SHELL TEXT, so every interpolated value must
-#          be quoted. Prove it by RUNNING the generated tick against a repo key
-#          carrying shell syntax: unquoted, the `;` would execute as a command
-#          separator. Substring assertions alone cannot catch that. ------------
-EVIL_REPO="org/pwn; touch $TMP_DIR/pwned"
-EVIL_ARM=$("$SCRIPT" --arm-command --session "$SID" --repo "$EVIL_REPO")
+#          be quoted. The session id is sanitised and the repo key is now
+#          rejected unless it is a plausible owner/name (19b), which leaves the
+#          SCRIPT PATH as the one interpolated value that can still legitimately
+#          carry a space or worse — an install under "Application Support", a
+#          worktree directory named after a branch. Prove the quoting by RUNNING
+#          the generated tick from a directory whose name carries a `;`:
+#          unquoted, it executes as a command separator. Substring assertions
+#          alone cannot catch that. ------------------------------------------
+# The payload is slash-free (a directory NAME, not a path) and the eval below
+# runs with cwd = $TMP_DIR, so a `touch` that escapes lands at $TMP_DIR/pwned.
+EVIL_DIR="$TMP_DIR/dir; touch pwned"
+# A symlink, not a copy: the script resolves session-state.sh as its own
+# sibling, and `pwd` keeps the logical (symlinked) path, so SCRIPT_PATH picks up
+# the hostile directory name while every dependency still resolves.
+ln -s "$(dirname "$SCRIPT")" "$EVIL_DIR" || fail "could not stage the hostile script dir"
+EVIL_ARM=$("$EVIL_DIR/table-freshness.sh" --arm-command --session "$SID" --repo "$REPO")
 # Strip the loop wrapper down to the single tick invocation and run it once.
 EVIL_TICK=${EVIL_ARM#while true; do }
 EVIL_TICK=${EVIL_TICK%%; sleep *}
-eval "$EVIL_TICK" >/dev/null 2>&1
+( cd "$TMP_DIR" && eval "$EVIL_TICK" ) >/dev/null 2>&1
 [[ ! -e "$TMP_DIR/pwned" ]] || \
-  fail "--arm-command interpolated an unquoted repo key — the injected command ran"
+  fail "--arm-command interpolated an unquoted script path — the injected command ran"
 # Positive control: the same eval must actually have invoked the script, or the
 # assertion above passes vacuously for a command that simply failed to run.
-"$SCRIPT" --note-rendered --active 1 --session "$SID" --repo "$EVIL_REPO" \
-  || fail "the evil-repo key should still be a usable (quoted) repo key"
-EVIL_STATUS=$(eval "${EVIL_TICK/--tick/--status}" 2>/dev/null)
-[[ "$(printf '%s' "$EVIL_STATUS" | jq -r '.repo')" == "$EVIL_REPO" ]] || \
-  fail "the generated command must pass the repo key through intact, got: $EVIL_STATUS"
+EVIL_STATUS=$(cd "$TMP_DIR" && eval "${EVIL_TICK/--tick/--status}" 2>/dev/null)
+[[ "$(printf '%s' "$EVIL_STATUS" | jq -r '.repo')" == "$REPO" ]] || \
+  fail "the generated command must run and pass its values through, got: $EVIL_STATUS"
 ok "--arm-command shell-quotes every value it interpolates"
 
 # --- 16c. One session watching TWO repos keeps two dedupe markers. Sharing one
@@ -331,6 +340,81 @@ ok "the floor override is honored, and an invalid one warns and falls back"
 "$SCRIPT" >/dev/null 2>&1
 [[ $? -eq 2 ]] || fail "no mode should exit 2"
 ok "usage errors exit 2"
+
+# --- 19a. Zero-padded counts are normalised, not passed through ---------------
+#          A padded count passes ^[0-9]+$ AND is stored correctly by jq
+#          (--argjson 010 records 10). That is what makes it dangerous: the
+#          record is right and the shell is wrong, so they disagree silently.
+#          Assert on the two places the shell reads the count, because the
+#          stored value alone cannot show the bug.
+
+# (a) "010" is octal EIGHT to `(( ))` and to `printf %d`, while the record says
+#     ten — the floor line would quietly report a count the record contradicts.
+#     Planted straight into the record: routing it through --active would prove
+#     nothing, because jq normalises "010" to 10 on the way in whether or not
+#     this script does, so only a padded value already ON DISK reaches the
+#     shell's octal reading.
+"$SCRIPT" --note-rendered --active 10 --session "$SID" --repo "$REPO" >/dev/null \
+  || fail "setup: --note-rendered should succeed"
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].active_pipelines=\"010\"" \
+  >/dev/null || fail "could not plant a zero-padded recorded count"
+backdate 90
+TICK_TEN="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1)"
+[[ "$TICK_TEN" == *"10 pipeline(s)"* ]] || \
+  fail "the floor line must report ten, not printf's octal eight, got: $TICK_TEN"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+
+# (b) "08"/"09" are a HARD arithmetic error, and an erroring (( )) returns
+#     non-zero — which in --tick lands on `(( ACTIVE_RECORDED > 0 )) || exit 0`
+#     and silently disarms the floor. A missed hourly table, not just noise.
+#     Planted directly into the record: it is shared with /board (#1581) and is
+#     a hand-editable JSON file, so it can arrive without passing --active.
+"$SCRIPT" --note-rendered --active 8 --session "$SID" --repo "$REPO" >/dev/null \
+  || fail "setup: --note-rendered should succeed"
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].active_pipelines=\"08\"" \
+  >/dev/null || fail "could not plant a zero-padded recorded count"
+backdate 90
+TICK_PADDED="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1)"
+[[ "$TICK_PADDED" == *"TABLE FLOOR"* ]] || \
+  fail "a padded recorded count silently disarmed the floor, got: '$TICK_PADDED'"
+[[ "$TICK_PADDED" == *"8 pipeline(s)"* ]] || \
+  fail "the floor line must report 8, not printf's octal reading, got: $TICK_PADDED"
+[[ "$TICK_PADDED" != *"value too great"* && "$TICK_PADDED" != *"invalid octal"* ]] || \
+  fail "a padded recorded count leaked a shell octal error: $TICK_PADDED"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+
+# (c) The same padding must not upset --check's own arithmetic.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+CHECK_ERR="$("$SCRIPT" --check --active 09 --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
+[[ -z "$CHECK_ERR" ]] || fail "--check --active 09 should be silent on stderr, got: $CHECK_ERR"
+ok "zero-padded counts are normalised at every entry point (arg and record)"
+
+# --- 19b. A repo key carrying jq syntax is REJECTED, never interpolated -------
+#          REPO_KEY lands inside .repos["<key>"] in a jq path string. A `"` or
+#          `]` closes that string early and the remainder parses as jq: the
+#          write is redirected to another key, or the path stops parsing and
+#          every freshness call fails. Rejecting (never squashing) is what keeps
+#          the `/` in owner/name, so the path /board reads stays byte-identical.
+STATE_BEFORE="$(jq -S -c '.repos' "$HOME/.claude/session-state.json")"
+for BAD_REPO in 'org/repo"]|.x' 'org/repo"' 'org/re]po' 'org/re\po' 'org/re po'; do
+  "$SCRIPT" --status --session "$SID" --repo "$BAD_REPO" >/dev/null 2>&1
+  [[ $? -eq 2 ]] || fail "repo key '$BAD_REPO' should exit 2"
+  "$SCRIPT" --note-rendered --active 1 --session "$SID" --repo "$BAD_REPO" >/dev/null 2>&1
+  [[ $? -eq 2 ]] || fail "--note-rendered with repo key '$BAD_REPO' should exit 2"
+done
+# The rejection has to be what stopped the write — prove no key was created.
+STATE_AFTER="$(jq -S -c '.repos' "$HOME/.claude/session-state.json")"
+[[ "$STATE_BEFORE" == "$STATE_AFTER" ]] || \
+  fail "a rejected repo key still altered state: $STATE_BEFORE -> $STATE_AFTER"
+
+# Positive control: the assertions above pass vacuously if EVERY --repo is
+# rejected. A legitimate owner/name — slash, dot, dash, underscore — must work.
+"$SCRIPT" --note-rendered --active 1 --session "$SID" --repo 'my-org/my_repo.js' \
+  >/dev/null || fail "a legitimate owner/name must still be accepted"
+[[ "$(jq -r '.repos["my-org/my_repo.js"].table_render["'"$SID"'"].active_pipelines' \
+  "$HOME/.claude/session-state.json")" == "1" ]] || \
+  fail "a legitimate owner/name must write under its own unmangled key"
+ok "repo keys carrying jq syntax are rejected; legitimate owner/name still works"
 
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
