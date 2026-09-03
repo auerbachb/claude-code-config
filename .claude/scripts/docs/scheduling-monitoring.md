@@ -7,6 +7,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | Script | Purpose |
 |--------|---------|
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
+| [table-freshness.sh](../table-freshness.sh) | Hourly floor on "Running now" table freshness during active rounds — the complementary bound to the silence ceiling; mechanism in `.claude/reference/time-estimates.md` §"Table freshness" |
 | [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
 | [statusline.sh](../statusline.sh) | Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0 |
 | [install-silence-watchdog.sh](../install-silence-watchdog.sh) | Install the macOS launchd watchdog that monitors Claude heartbeat files |

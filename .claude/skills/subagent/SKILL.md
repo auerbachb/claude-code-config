@@ -31,6 +31,7 @@ SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -44,6 +45,7 @@ OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
+- `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
 
@@ -613,6 +615,73 @@ fi
 
 **Degraded mode:** when `ESTIMATE_RESOLVE_SH` or `OVERRUN_CHECK_SH` did not resolve (Step 0), still print the table — with `unestimated` in Est and `—` in the clock columns. The Step 0 `DEGRADED:` line already told the user why; silently dropping the table would hide the round's run order too.
 
+### 7.3: Start the table-freshness clock, and arm the hourly floor
+
+**Immediately after printing the table, record the render**, then arm the floor watch in this same step — the mechanism is specified once in `.claude/reference/time-estimates.md` §"Table freshness — the hourly floor", and this step only calls it.
+
+```bash
+# ACTIVE_COUNT = pipelines running OR queued in this round — every row in the
+# table just printed except the ones already in a terminal state. It is what
+# scopes the floor to active rounds: 0 records a terminal board and disarms it.
+# --repo and --session are passed EXPLICITLY, and the SAME pair goes into the
+# armed watch below. Left to their defaults, the repo resolves from the cwd and
+# the session from an env var read at each call — so one later call made from a
+# different directory, or after that var changed, reads and writes a DIFFERENT
+# record than the tick polls: a floor firing forever against a board the thread
+# is faithfully re-rendering. Resolve both ONCE here and reuse them.
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+
+# ACTIVE_COUNT is CALLER-DECLARED, and YOU assign it right here: the number of
+# rows in the table just printed that are running or queued, excluding any
+# already in a terminal state. Nothing can derive it for you — no durable field
+# tracks queued issues and `.repos[...].pipelines` is append-only — which is
+# exactly why the floor takes it as an argument. Substitute the integer below;
+# leaving the placeholder unsubstituted is caught by the guard that follows.
+ACTIVE_COUNT=<running + queued rows in the table above>
+
+# CLOCK_RECORDED is the single gate on the arm below. Arming is only ever
+# correct when a record was actually WRITTEN — a watch polling a record that
+# does not exist is silent forever while looking armed, which is the exact
+# no-op these guards exist to prevent. Every failure path below therefore sets
+# it false, not just the ones that skip the call.
+CLOCK_RECORDED=false
+if [[ -z "$REPO_KEY" ]]; then
+  echo 'DEGRADED: repo key unresolved — table-freshness floor not armed'
+elif [[ -z "$TABLE_FRESHNESS_SH" ]]; then
+  : # Step 0 already printed the DEGRADED line for an unresolved helper.
+elif [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+  # Never let this one pass quietly. An unset or non-numeric count is rejected
+  # by table-freshness.sh, so the clock is never written.
+  echo 'DEGRADED: ACTIVE_COUNT is not an integer — table-freshness floor not armed; re-render the "Running now" table on every heartbeat instead'
+elif "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch; then
+  CLOCK_RECORDED=true
+else
+  echo 'DEGRADED: table-freshness clock not recorded — re-render the "Running now" table on every heartbeat instead'
+fi
+```
+
+**Do not swallow a failed `--note-rendered` with `|| true`.** It is the one
+failure that is invisible from the outside: the arm still succeeds, so the
+thread believes the hourly guarantee is live while the tick reads an absent
+record and exits silently every minute. Reporting it is what turns a silent
+non-guarantee into a known degraded mode with a stated fallback.
+
+Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`.
+
+**`CLOCK_RECORDED` is the whole condition — not just a non-empty `REPO_KEY`.** Every way the record fails to be written ends the same: the tick polls a record that does not exist and exits silently every minute, so the floor *looks* armed and guarantees nothing. An unresolved repo key is only one of those ways; an unset count and a `--note-rendered` that exited non-zero are the others, and gating on the repo key alone would arm the watch for both. When it is false the `DEGRADED:` line above already said which one happened, and the stated fallback — re-render the table on every heartbeat — is what replaces the guarantee.
+
+It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
+
+**A `--note-rendered` that fails is not fatal.** It exits non-zero and says why on stderr; the round proceeds. The cost is a floor that cannot fire, so if it fails repeatedly, re-render the table on every heartbeat rather than trusting the clock.
+
 ## Step 8: Enter Monitor Mode
 
 Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is now orchestration.
@@ -643,6 +712,12 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # (no window required). Per-PR — accumulate one row per PR, not one string.
    # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
    # Resolve STARTED_AT from the value RECORDED AT SPAWN (Step 7.1) — never re-derive
    # it. PR-keyed copy first (Phase A Completion mirrors it there), then the
    # issue-keyed record, which is the one that exists before the PR does and the one
@@ -709,6 +784,92 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    ```
 
    **When the user asks "how far along?" or an equivalent progress question:** answer with this same table, recomputed for freshness — one shape whether one pipeline is running or five. Column set and cell semantics: `time-estimates.md` §"Running now Table".
+
+   **Table-freshness gate — a stale board is never answered with a one-liner.** Silence-by-default lets most ticks emit nothing, and a genuine liveness ping may be a single line. Neither is allowed to let the last full board age past an hour while work is running. So before emitting ANY liveness/heartbeat/status output on this tick, ask the clock:
+
+   ```bash
+   # ACTIVE_COUNT = pipelines running OR queued right now (same count as 7.3).
+   # --repo/--session are the SAME pair 7.3 armed the watch with — never left to
+   # the cwd or to an env var re-read here.
+   TABLE_VERDICT=""
+   # RE-DERIVE both, every time — do not assume 7.3's shell variables are still
+   # set. Each of these blocks runs in a fresh process, and a context compaction
+   # (the very thing the durable clock exists to survive) wipes the thread's
+   # memory of them. An empty $TF_SESSION or $REPO_KEY reaching the flags is the
+   # mismatched-clock failure the spec names: the render is recorded against one
+   # record while the armed watch polls another, both calls succeed, and the
+   # floor then fires forever or never. The script now rejects an explicitly
+   # empty --session/--repo rather than substituting a default, so this is a
+   # loud failure instead of a silent one — but re-deriving is what avoids it.
+   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+   TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+   # ACTIVE_COUNT is re-derived here for the SAME reason as the two above, and
+   # leaving it out of that list was an easy miss: it is a plain shell variable
+   # from 7.3, so it is gone in this process too. An empty --active is a usage
+   # error, which costs the verdict AND the record — the heartbeat then cannot
+   # tell whether the table is stale, and a table it did print goes unrecorded.
+   # Count it from the CURRENT board, not the dispatch round: pipelines finish.
+   ACTIVE_COUNT=<running + queued pipelines right now>
+   if [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+     echo 'DEGRADED: ACTIVE_COUNT is not an integer — table freshness cannot be checked or recorded this heartbeat; re-render the "Running now" table'
+     REPO_KEY=""   # forces the two calls below to be skipped, not called blank
+   fi
+   if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+     TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)
+   fi
+   # `stale` (exit 1) -> THIS message carries the full re-rendered table, not a
+   # one-liner. `fresh`/`idle`/`unrecorded` -> a one-liner is still fine.
+   # Helper unresolved (empty verdict) -> render the table; see Step 0.
+   ```
+
+   **After emitting a full table** — this heartbeat's, the on-demand answer above, or a floor-prompted render — record it, so the next hour is measured from this render and the floor re-arms:
+
+   ```bash
+   # GATED on a table having ACTUALLY been emitted in THIS message. A permitted
+   # one-liner must never reach this call: stamping last_rendered_at without a
+   # table restarts the hour and hides a board that has already gone stale,
+   # which is precisely the failure the floor exists to prevent. Recording a
+   # render that did not happen is worse than recording nothing.
+   # TABLE_EMITTED is yours to set: true only when this message carried the full
+   # "Running now" table; false for every one-liner, including the `fresh`,
+   # `idle`, and `unrecorded` verdicts above that permit one.
+   # ACTIVE_COUNT is re-counted from the table just printed, the same way 7.3
+   # defines it — a stale count from the dispatch round would disarm the floor
+   # early (0) or keep it armed past the round's end.
+   if [[ "${TABLE_EMITTED:-false}" == true && -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+     "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-heartbeat \
+       || echo 'DEGRADED: table-freshness clock not recorded — re-render the table every heartbeat'
+   fi
+   ```
+
+   **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it.
+
+   One residual case re-deriving cannot fix: if `CLAUDE_SESSION_ID` was set when 7.3 armed the watch but is unset now, the watch polls the real id while these calls resolve `default`, and the floor fires against a board you are faithfully re-rendering. The tell is a `TABLE FLOOR` line that keeps arriving right after you rendered. Confirm with `"$TABLE_FRESHNESS_SH" --status --repo "$REPO_KEY" --session "$TF_SESSION"`: an `age_s` that keeps growing across renders means you are writing a different record than the watch reads. Re-arm with the session the renders actually use rather than editing state by hand.
+
+   **When the round ends, record the terminal board.** This is a real call, not a
+   note — the round's own completion is one of the teardown sites the spec names
+   (`.claude/reference/time-estimates.md` §"Teardown is by data"), and it is the
+   one reached most often. Emit the final board, then:
+
+   ```bash
+   # --active 0 IS the disarm: the tick reads active_pipelines and exits silently
+   # at zero, so this survives a Monitor whose TaskStop failed or that no step
+   # held an ID for. Skipping it leaves a positive count in durable state that
+   # fires TABLE FLOOR lines at an idle thread until something clears it.
+   if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+     "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
+       || echo 'DEGRADED: terminal board not recorded — floor may fire at an idle thread'
+   fi
+   ```
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:

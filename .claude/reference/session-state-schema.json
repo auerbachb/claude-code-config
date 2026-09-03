@@ -200,6 +200,14 @@
           "pr": 1513
         }
       },
+      "_table_render_comment": "Table-freshness clock for this repo (issue #1580), keyed by CLAUDE SESSION id because two orchestration threads working one repo each render their own board and must not reset each other's hour. Written by `table-freshness.sh --note-rendered --active <N>` at EVERY site that emits the \"Running now\" table — `/subagent` Step 7.2 (dispatch), Step 8 item 6 (heartbeat) and its on-demand answer, `/leave-by`'s check-in, and `/board` (issue #1581), which shares this exact field rather than keeping a second clock. Three fields: `last_rendered_at` (ISO-8601 UTC, stamped at write time), `active_pipelines` (count of pipelines running OR queued at that render), and `surface` (free-text label of the emitting site, for diagnosis only). On disk is the whole point — a context compaction wipes the thread's memory of when it last rendered, and both the >60-minute status-message rule and the hourly Monitor floor read this record rather than the conversation. `active_pipelines: 0` is the round-end terminal board and DISARMS the floor: an idle thread emits no hourly pulse (that exemption is mechanical, not a judgment call, and it is what keeps the floor from fighting the stable-state backoff). Never re-derive the timestamp — it is stamped once per render and read back verbatim. Like `refill`, `day`, `pause`, and `pipelines`, this block is INVISIBLE to session-state.sh --session-view, so address it by its full `.repos[\"<key>\"].table_render[...]` path, and do NOT add --raw-path (per-INVOCATION, not per---set — it would strand any `.prs[...]` write batched into the same call at the top level). The floor number and the stale/fresh arithmetic live in table-freshness.sh, never in a caller. Mechanism: .claude/reference/time-estimates.md §\"Table freshness — the hourly floor\".",
+      "table_render": {
+        "session-example": {
+          "last_rendered_at": "2026-09-02T18:40:00Z",
+          "active_pipelines": 2,
+          "surface": "subagent-heartbeat"
+        }
+      },
       "prs": {
         "618": {
           "root_repo": "/Users/user/repos/my-project",

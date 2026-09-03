@@ -113,6 +113,7 @@ for order.
 | [stale-cleanup.test.sh](../tests/stale-cleanup.test.sh) | Tests for `stale-cleanup.sh` |
 | [state-lock.test.sh](../tests/state-lock.test.sh) | Tests for `state-lock.sh` |
 | [statusline.test.sh](../tests/statusline.test.sh) | Tests for `statusline.sh` |
+| [table-freshness.test.sh](../tests/table-freshness.test.sh) | Tests for `table-freshness.sh` — the four `--check` verdicts, the tick's firing case with a negative control on each silent one, durability across a simulated compaction, and per-session clock isolation |
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |

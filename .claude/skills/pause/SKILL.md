@@ -58,6 +58,7 @@ AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh)     || AC_CHECKBOXES_SH=""
 PR_STATE_SH=$(resolve_script pr-state.sh)               || PR_STATE_SH=""
 LOCAL_REVIEW_SH=$(resolve_script local-review.sh)       || LOCAL_REVIEW_SH=""
 CLEAN_BEHIND_SH=$(resolve_script clean-behind-check.sh) || CLEAN_BEHIND_SH=""
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 EXECUTION_PAUSE_SH=$(resolve_script execution-pause.sh) || EXECUTION_PAUSE_SH=""
 TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_SH=""
 
@@ -66,6 +67,12 @@ TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_
 REPO_KEY=""
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+  # `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+  # cannot resolve a repo. Normalise that sentinel to empty so the fallback
+  # below actually runs and the `-z` guards downstream actually fire —
+  # otherwise teardown clears `_unknown`, a scope nothing polls, and reads as a
+  # successful disarm while the live record keeps the floor armed.
+  [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 fi
 if [[ -z "$REPO_KEY" ]]; then
   REMOTE=$(git remote get-url origin 2>/dev/null) || REMOTE=""
@@ -317,6 +324,10 @@ Enumerate Monitors in this order and record the result of each stop:
    c. On failure: keep the ID, record `stopped: false`, and name the task ID in the Step 8 report.
 
 **A failed `TaskStop` is recorded as `stopped: false` and reported in Step 8.** Never claim a Monitor was stopped when the stop itself was not confirmed. Stopped Monitors are recorded in the `monitors_stopped` array of the pause state block (Step 7).
+
+**Disarm the table-freshness floor by DATA, not by the stop.** A paused round is not an active one, so the hourly floor (`.claude/reference/time-estimates.md` §"Table freshness — the hourly floor") must go quiet here. Use `$TABLE_FRESHNESS_SH`, already resolved in Step 0 alongside every other helper — an inline "resolve it here" is how this call comes to be skipped when the helper is missing, since there is then no Step 0 `DEGRADED:` line to say the floor is unavailable. Run `"$TABLE_FRESHNESS_SH" --clear --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}"` — or record the terminal board with `--note-rendered --active 0 --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}"`, which does the same job while leaving a readable last render. Both flags are named explicitly, the same pair the watch was armed with: a disarm that addressed a different repo or session would clear a record nothing polls and leave the live one armed. Do this **whether or not** its watch was stopped: the tick reads `active_pipelines` and exits silently at `0`, so clearing the record silences even a watch whose `TaskStop` failed or that no step owned an ID for. Skipping it is what leaves `TABLE FLOOR` lines arriving into a paused session.
+
+Two ways this can degrade, and both stay quiet rather than guessing: an **unresolved helper** → one `DEGRADED:` line, then continue. An **empty `REPO_KEY`** (Step 0 resolved neither remote nor state) → **skip the call entirely** and say so — `DEGRADED: repo key unresolved — table-freshness floor not disarmed` — then continue. Skipping is what makes that a report rather than a lie: calling with an empty key lets the script fall back to the cwd and clear `_unknown`, a no-op that looks like a successful disarm while the real record keeps the floor armed. The pause itself never waits on either.
 
 After the specialized Monitor teardown above, follow
 `background-task-shutdown.md` for every registry entry in this session. Give
