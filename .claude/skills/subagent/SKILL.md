@@ -640,18 +640,25 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 # leaving the placeholder unsubstituted is caught by the guard that follows.
 ACTIVE_COUNT=<running + queued rows in the table above>
 
+# CLOCK_RECORDED is the single gate on the arm below. Arming is only ever
+# correct when a record was actually WRITTEN — a watch polling a record that
+# does not exist is silent forever while looking armed, which is the exact
+# no-op these guards exist to prevent. Every failure path below therefore sets
+# it false, not just the ones that skip the call.
+CLOCK_RECORDED=false
 if [[ -z "$REPO_KEY" ]]; then
   echo 'DEGRADED: repo key unresolved — table-freshness floor not armed'
+elif [[ -z "$TABLE_FRESHNESS_SH" ]]; then
+  : # Step 0 already printed the DEGRADED line for an unresolved helper.
 elif [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
   # Never let this one pass quietly. An unset or non-numeric count is rejected
-  # by table-freshness.sh, so the clock is never written; the watch armed below
-  # then polls a record that does not exist and stays silent FOREVER — the floor
-  # looks armed and guarantees nothing.
+  # by table-freshness.sh, so the clock is never written.
   echo 'DEGRADED: ACTIVE_COUNT is not an integer — table-freshness floor not armed; re-render the "Running now" table on every heartbeat instead'
-elif [[ -n "$TABLE_FRESHNESS_SH" ]]; then
-  "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
-    --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch \
-    || echo 'DEGRADED: table-freshness clock not recorded — re-render the "Running now" table on every heartbeat instead'
+elif "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch; then
+  CLOCK_RECORDED=true
+else
+  echo 'DEGRADED: table-freshness clock not recorded — re-render the "Running now" table on every heartbeat instead'
 fi
 ```
 
@@ -661,7 +668,11 @@ thread believes the hourly guarantee is live while the tick reads an absent
 record and exits silently every minute. Reporting it is what turns a silent
 non-guarantee into a known degraded mode with a stated fallback.
 
-Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`. Skip the arm entirely when `REPO_KEY` is empty — the `DEGRADED:` line above already said why, and a watch armed on `_unknown` polls a record no render will ever write. It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
+Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): **only when `CLOCK_RECORDED` is true**, run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`.
+
+**`CLOCK_RECORDED` is the whole condition — not just a non-empty `REPO_KEY`.** Every way the record fails to be written ends the same: the tick polls a record that does not exist and exits silently every minute, so the floor *looks* armed and guarantees nothing. An unresolved repo key is only one of those ways; an unset count and a `--note-rendered` that exited non-zero are the others, and gating on the repo key alone would arm the watch for both. When it is false the `DEGRADED:` line above already said which one happened, and the stated fallback — re-render the table on every heartbeat — is what replaces the guarantee.
+
+It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
 
 **A `--note-rendered` that fails is not fatal.** It exits non-zero and says why on stderr; the round proceeds. The cost is a floor that cannot fire, so if it fails repeatedly, re-render the table on every heartbeat rather than trusting the clock.
 

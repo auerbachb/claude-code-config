@@ -646,6 +646,14 @@ grep -qE -- '--surface +[a-z-]+ *\|\| *true' "$SUBAGENT" && \
 grep -q 'TABLE_EMITTED' "$SUBAGENT" || \
   fail "/subagent records a render without gating on a table having been emitted"
 
+# (b2) The arm must be gated on the record having been WRITTEN, not merely on a
+#      non-empty repo key. Guarding the call but not the arm leaves every other
+#      failure path — unset count, non-zero --note-rendered — arming a watch over
+#      a record that does not exist: silent forever, and looking armed. This is
+#      the gap the first version of guard (a) left behind.
+grep -q 'CLOCK_RECORDED' "$SUBAGENT" || \
+  fail "/subagent arms the floor without gating on the clock actually being recorded"
+
 # (d) Round completion is a teardown site the spec names, and it needs a real
 #     call — prose alone is what let (a)-(c) ship.
 grep -qE '\-\-note-rendered --active 0' "$SUBAGENT" || \
