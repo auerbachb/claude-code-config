@@ -72,3 +72,35 @@ The new report class is the **backstop**: it makes any future leak visible in
 the new home, in the same sweep `/pm-clean` and `/pm-update` already run, so
 the next accumulation is caught as a finding rather than discovered as a
 60-directory pile after an incident.
+
+## 4. Registration-path audit — issue #1592
+
+The four guard classes above were written for the checkout-removal path. Issue
+#1592 audited `remove_registration`, its pre-`rm` re-check `registration_is_live`,
+and the `scan_registrations` classification that feeds them against the same
+four. Outcome:
+
+| Guard class | Verdict for the registration path |
+|-------------|-----------------------------------|
+| Symlink-following via `-f` / `test -e` | **Partly present, rest applied.** `remove_registration` already refused a symlinked `$target`. Added: `-L` before the `-d` on each registry entry (a dangling entry symlink used to be dropped silently, and a resolving one used to classify and then hard-fail at the `rm` as "not a plain directory", raising exit 2 on a sweep that had done nothing wrong), and a `-L` refusal on `$reg/gitdir` before the read that follows it. The `-d` itself stays **unbounded**: `stale-cleanup.sh`'s BOUNDED READS header records why these stat probes need no wrapper (local `.git` metadata is never `dataless`, and the enclosing glob would stay unbounded anyway); `scan_checkouts` bounds its own because those entries are arbitrary working trees. |
+| Size-capped reads | **Applied.** `$reg/gitdir` and `$reg/locked` are capped at 4 KiB, the same headroom a checkout's `.git` gets. `read_bounded_line` gained a `BOUNDED_OVERFLOW` out-flag so "present but over the cap" is distinguishable from "did not read" — the registration pass needs that split, because *unreadable metadata is itself a removal candidate* there and an unexplained oversized file must not inherit that. |
+| Dangling link components, ancestors included | **Applied**, at the scan and again in `registration_is_live`. A `worktrees -> /Volumes/<unmounted>/…` ancestor reads as absent for **every** entry beneath it, so a leaf-only `-L` would clear a whole shelf of live registrations in one sweep. |
+| Unresolved base dirs / the `/`-or-repo-root width guard | **Not applicable.** `STALE_CLEANUP_CHECKOUT_DIR` is operator-supplied and may be spelled through a symlink; `$WORKTREE_REG_DIR` is git's own `<git-common-dir>/worktrees`, always at least one segment below the common dir (so never `/`), and `$target` is the enumerating glob's own spelling of `"$WORKTREE_REG_DIR/$id"` — the containment test compares two strings built from the same value, and clears something two segments below it. An unresolvable common dir already degrades to `REG_SCAN_STATE=unavailable` with nothing classified, and an empty `$WORKTREE_REG_DIR` is already refused inside `remove_registration`. |
+
+Two narrower sub-cases were also judged not applicable:
+
+- **`$reg/locked` as a symlink.** `[[ -f "$reg/locked" ]]` follows links, so a
+  dangling `locked` link reads as "not locked". That marker gates only the
+  `--include-locked` opt-in, never the absence determination — a malformed
+  marker cannot make a live worktree look absent — so it is not a
+  deletion-path guard.
+- **Exit-code semantics.** Unchanged. The new refusals are *skips*
+  (`remove_registration` rc 2), the non-failure the live re-check already used,
+  matching `remove_checkout`'s decline.
+
+**Known boundary, shared with the pre-existing "parent not searchable" skip:**
+`git worktree prune` is all-or-nothing across the registry, so a run that
+prunes for some *other* entry still applies git's own rule — a bare stat, which
+follows symlinks — to a refused one. What this script owns is what it reports
+and what it deletes itself; `registration_is_live` closes the hole on that
+path. Narrowing git's prune is out of scope and would block legitimate cleanup.
