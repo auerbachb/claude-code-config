@@ -265,9 +265,18 @@ second_bounds() { # file → one integer per bound application, normalised to se
       for (i = 1; i <= n; i++) {
         w = tok[i]
         sub(/^[^A-Za-z0-9_-]+/, "", w)   # strip leading ( ; && " etc
+        # Compared on the BASENAME: `/usr/bin/timeout 240` and
+        # `/opt/homebrew/bin/gtimeout 240` are bounds like any other, and this
+        # repo tells its agents to invoke CLIs by absolute path precisely because
+        # a minimal PATH makes a bare name unreliable — so the path-qualified
+        # form is the one likely to be written here. Only a trailing component
+        # named exactly timeout/gtimeout counts, so `my_timeout 240` (no slash,
+        # different command) still does not match.
+        b = w
+        sub(/^.*\//, "", b)
         s = -1
         bt = ""
-        if (w == "timeout" || w == "gtimeout") {
+        if (b == "timeout" || b == "gtimeout") {
           j = i + 1
           while (j <= n && substr(tok[j], 1, 1) == "-") {
             if (tok[j] == "-k" || tok[j] == "--kill-after" || tok[j] == "-s" || tok[j] == "--signal") j++
@@ -586,6 +595,36 @@ if [[ -z "$(offenders_in "$NC4I" suite-lines)" ]]; then
   pass "NC4i an unparseable NON-variable token (prose) is still not a bound"
 else
   fail "NC4i flagged prose as an unverifiable bound — docs explaining the floor would trip it"
+fi
+
+# Path-qualified bounds. CONTRIBUTING tells agents to invoke CLIs by absolute
+# path because a minimal PATH makes a bare name unreliable, and gtimeout is a
+# Homebrew binary, so the path-qualified spelling is the likely one here.
+NC4J="$SCRATCH/nc-path-qualified.sh"
+for cmd in /usr/bin/timeout /opt/homebrew/bin/gtimeout ./bin/timeout; do
+  cat >"$NC4J" <<FIXTURE
+#!/usr/bin/env bash
+$cmd 240 bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+  if [[ -n "$(offenders_in "$NC4J" suite-lines)" ]]; then
+    pass "NC4j a path-qualified bound ($cmd 240) is detected"
+  else
+    fail "NC4j missed a 240s bound written as $cmd — a real bound escaped T3"
+  fi
+done
+
+# ...matching the basename must not turn every name ENDING in timeout into one.
+# `my_timeout` is a different command, and flagging it would attribute a bound to
+# code that never applied one.
+NC4K="$SCRATCH/nc-basename-lookalike.sh"
+cat >"$NC4K" <<'FIXTURE'
+#!/usr/bin/env bash
+my_timeout 240 bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+if [[ -z "$(offenders_in "$NC4K" suite-lines)" ]]; then
+  pass "NC4k a command merely ending in timeout (my_timeout) is not a bound"
+else
+  fail "NC4k attributed a bound to my_timeout — basename match is too loose"
 fi
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
