@@ -1682,6 +1682,8 @@ check_json "T21: repoM issues no prune, so nothing else can clear an entry" \
 if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
   check_json "T21: repoM skips the unsearchable-grandparent entry at classification" \
     "$OUT" '.skipped_registrations | any(.id == "wt-deep2")'
+else
+  skip "T21: repoM unsearchable-grandparent classification (running as root)"
 fi
 OUT="$(cd "$REPO_M" && "$SUT" --apply --include-locked 2>&1)"
 chmod 755 "$TMP/anc000b"
