@@ -20,6 +20,16 @@ fi
 
 LOG="$1"; shift
 FILTER="$1"; shift
+
+# A missing log is the loudest symptom of a session key that moved mid-batch
+# (issue #1572): jq would fail here anyway, but naming the path turns "the write
+# failed" into "the write went to a log that does not exist". Exit code
+# unchanged — 1, the same non-zero every other write failure returns.
+if [ ! -f "$LOG" ]; then
+  echo "WARN: failed to update session log ($FILTER) — no such log file: $LOG" >&2
+  exit 1
+fi
+
 NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 TMP=$(mktemp)
 

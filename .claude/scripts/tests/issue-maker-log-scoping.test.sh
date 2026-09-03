@@ -77,13 +77,50 @@ make_home() {
 # run_block — execute production bash with the harness environment the skill
 # sees. CLAUDE_SESSION_ID is deliberately unset: that IS the precondition of
 # the incident.
+#
+# The real conversation's CLAUDE_CODE_*_SESSION_ID DO reach a Bash tool subshell
+# (that is exactly why resolve-log.sh can use them as a stable anchor), so they
+# are unset here too — otherwise every fabricated conversation in this suite
+# would inherit ONE ambient anchor. `anchor` is the explicit per-test override.
 run_block() {
-  local home="$1" conv="$2" body="$3"
+  local home="$1" conv="$2" body="$3" anchor="${4:-}"
   local f="$TMP_DIR/block-$$-$RANDOM.sh"
   printf '%s\n' "$body" > "$f"
-  ( unset CLAUDE_SESSION_ID
+  ( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID \
+          ISSUE_MAKER_STABLE_ANCHOR
     export HOME="$home" ISSUE_MAKER_CONV_ID="$conv"
+    if [[ -n "$anchor" ]]; then export ISSUE_MAKER_STABLE_ANCHOR="$anchor"; fi
     bash "$f" )
+}
+
+# resolve_key — call resolve-log.sh directly for the key alone. `mode` picks
+# what is captured: "key" -> stdout, "err" -> stderr.
+resolve_key() { # resolve_key <home> <conv> <anchor> [mode]
+  local home="$1" conv="$2" anchor="$3" mode="${4:-key}"
+  ( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID \
+          ISSUE_MAKER_STABLE_ANCHOR
+    export HOME="$home" ISSUE_MAKER_CONV_ID="$conv"
+    if [[ -n "$anchor" ]]; then export ISSUE_MAKER_STABLE_ANCHOR="$anchor"; fi
+    if [[ "$mode" == "err" ]]; then
+      # No --key here: that mode prints the key and exits before the notes, so
+      # asking for stderr means asking for the full path-resolving run.
+      "$home/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null
+    else
+      "$home/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null
+    fi )
+}
+
+marker_dir() { printf '%s' "$1/.claude/handoffs/.issue-maker-keys"; }
+
+# distinct_marker_keys — every distinct key recorded across <home>'s markers.
+# Adoption must never grow this set; minting always does.
+distinct_marker_keys() {
+  local d f; d="$(marker_dir "$1")"
+  [[ -d "$d" ]] || return 0
+  for f in "$d"/imk-*; do
+    [[ -f "$f" ]] || continue
+    head -n 1 "$f"
+  done | LC_ALL=C sort -u
 }
 
 seed_log() {   # seed_log <path> <target_repo> <json-issues-array>
@@ -468,6 +505,329 @@ if printf '%s' "$STDERR_OK" | grep -q 'could not read session_id'; then
   fail "F5: a valid log with no session_id wrongly warned (stderr: $STDERR_OK)"
 else
   ok "F5: a valid log with no session_id stays quiet — the new warning is read-failure only"
+fi
+
+# =============================================================================
+# TEST G — issue #1572: ONE conversation must not fragment across TWO logs when
+#          its `claude` ancestor changes mid-conversation (sleep/wake, harness
+#          reconnect). The mirror image of #1369, so every positive assertion
+#          here is paired with the control that reproduces the fragmentation.
+# =============================================================================
+H_G="$(make_home g)"
+G_ANCHOR="conv-alpha"
+G_KEY_1="$(resolve_key "$H_G" "claude=8001|start=Mon Sep  1 22:29:54 2026" "$G_ANCHOR")"
+# The ancestor walk now lands on a different `claude` process — a new pid AND a
+# new start time, exactly what the overnight sleep produced.
+G_KEY_2="$(resolve_key "$H_G" "claude=9002|start=Tue Sep  2 08:04:11 2026" "$G_ANCHOR")"
+
+if [[ -n "$G_KEY_1" && "$G_KEY_1" == "$G_KEY_2" ]]; then
+  ok "G1: a drifted ancestor identity resolves the ORIGINAL key, not a sibling log"
+else
+  fail "G1: key drifted mid-conversation ('$G_KEY_1' -> '$G_KEY_2')"
+fi
+
+# A third, still-different identity — so this exercises the adoption path again
+# rather than the pointer marker G_KEY_2 just published.
+G_ERR="$(resolve_key "$H_G" "claude=9003|start=Tue Sep  2 09:15:00 2026" "$G_ANCHOR" err)"
+if printf '%s' "$G_ERR" | grep -q "kept its ORIGINAL key '$G_KEY_1'"; then
+  ok "G2: adoption after drift is announced on stderr, naming the retained key"
+else
+  fail "G2: no drift note emitted (stderr: $G_ERR)"
+fi
+
+if [[ "$(distinct_marker_keys "$H_G" | wc -l | tr -d ' ')" == "1" ]]; then
+  ok "G3: three drifted identities left exactly ONE key across all markers (nothing minted)"
+else
+  fail "G3: adoption minted a sibling key ($(distinct_marker_keys "$H_G" | tr '\n' ' '))"
+fi
+
+# NEGATIVE CONTROL — the same drift with NO anchor available. This is the
+# pre-#1572 code path, and it must still fragment: without it G1 could pass on a
+# resolver that had simply stopped distinguishing identities at all.
+H_G_NC="$(make_home g-nc)"
+NC_KEY_1="$(resolve_key "$H_G_NC" "claude=8001|start=Mon Sep  1 22:29:54 2026" "")"
+NC_KEY_2="$(resolve_key "$H_G_NC" "claude=9002|start=Tue Sep  2 08:04:11 2026" "")"
+if [[ -n "$NC_KEY_1" && -n "$NC_KEY_2" && "$NC_KEY_1" != "$NC_KEY_2" ]]; then
+  ok "G4 (negative control): with no derivable anchor the SAME drift DOES fragment (the #1572 bug)"
+else
+  fail "G4 (negative control): drift did not reproduce ('$NC_KEY_1' vs '$NC_KEY_2')"
+fi
+
+# #1369 must not regress: two genuinely different conversations still separate.
+H_G2="$(make_home g2)"
+SEP_1="$(resolve_key "$H_G2" "claude=1001|start=T1" "conv-one")"
+SEP_2="$(resolve_key "$H_G2" "claude=2002|start=T2" "conv-two")"
+if [[ -n "$SEP_1" && -n "$SEP_2" && "$SEP_1" != "$SEP_2" ]]; then
+  ok "G5: distinct anchors keep distinct conversations on distinct logs (#1369 holds)"
+else
+  fail "G5: two conversations merged onto one log ('$SEP_1' / '$SEP_2')"
+fi
+
+# A simulated identity must never borrow the AMBIENT conversation's anchor —
+# otherwise the harness ids leaking into any subshell would merge every
+# fabricated conversation onto one log.
+H_G3="$(make_home g3)"
+amb_key() {
+  ( unset CLAUDE_SESSION_ID
+    export HOME="$H_G3" ISSUE_MAKER_CONV_ID="$1"
+    export CLAUDE_CODE_HOST_SESSION_ID="local_ambient-host-id"
+    export CLAUDE_CODE_SESSION_ID="ambient-session-id"
+    unset ISSUE_MAKER_STABLE_ANCHOR
+    "$H_G3/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null )
+}
+AMB_1="$(amb_key "claude=3001|start=T3")"
+AMB_2="$(amb_key "claude=4001|start=T4")"
+if [[ -n "$AMB_1" && -n "$AMB_2" && "$AMB_1" != "$AMB_2" ]]; then
+  ok "G6: an overridden identity ignores the ambient harness anchor (simulated conversations stay separate)"
+else
+  fail "G6: ambient anchor merged two overridden identities ('$AMB_1' / '$AMB_2')"
+fi
+
+# Ambiguity: two markers claim one anchor with DIFFERENT keys. Pick
+# deterministically, name both on stderr, and mint nothing.
+H_G4="$(make_home g4)"
+MD_G4="$(marker_dir "$H_G4")"
+mkdir -p "$MD_G4"
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\nident=old-a\nanchor=conv-amb\nepoch=1000\n' > "$MD_G4/imk-older"
+printf 'fallback-bbbbbbbbbbbbbbbbbbbb\nident=old-b\nanchor=conv-amb\nepoch=2000\n' > "$MD_G4/imk-newer"
+AMBIG_KEY="$(resolve_key "$H_G4" "claude=6001|start=T6" "conv-amb")"
+AMBIG_ERR="$(resolve_key "$H_G4" "claude=6002|start=T7" "conv-amb" err)"
+
+if [[ "$AMBIG_KEY" == "fallback-bbbbbbbbbbbbbbbbbbbb" ]]; then
+  ok "G7: ambiguous candidates resolve deterministically to the newest recorded epoch"
+else
+  fail "G7: ambiguity resolved to '$AMBIG_KEY' instead of the newest-epoch key"
+fi
+if printf '%s' "$AMBIG_ERR" | grep -q 'imk-older' && printf '%s' "$AMBIG_ERR" | grep -q 'imk-newer' \
+   && printf '%s' "$AMBIG_ERR" | grep -q 'DIFFERENT keys'; then
+  ok "G8: the ambiguity WARN names every candidate marker rather than picking silently"
+else
+  fail "G8: ambiguity was not warned about by name (stderr: $AMBIG_ERR)"
+fi
+if [[ "$(distinct_marker_keys "$H_G4" | wc -l | tr -d ' ')" == "2" ]]; then
+  ok "G9: no THIRD key was minted while candidates existed"
+else
+  fail "G9: a new key was minted despite candidates ($(distinct_marker_keys "$H_G4" | tr '\n' ' '))"
+fi
+
+# A pre-#1572 one-line marker must still be readable, and must gain an anchor on
+# its next hit — that migration is the only thing that makes an ALREADY-running
+# conversation drift-recoverable.
+H_G5="$(make_home g5)"
+LEG_KEY="$(resolve_key "$H_G5" "claude=5005|start=TL" "conv-legacy")"
+LEG_MARKER="$(ls "$(marker_dir "$H_G5")"/imk-* 2>/dev/null | head -n 1)"
+printf '%s\n' "$LEG_KEY" > "$LEG_MARKER"   # downgrade to the pre-#1572 format
+LEG_AGAIN="$(resolve_key "$H_G5" "claude=5005|start=TL" "conv-legacy")"
+if [[ "$LEG_AGAIN" == "$LEG_KEY" ]]; then
+  ok "G10: a legacy single-line marker is still read as this conversation's key"
+else
+  fail "G10: legacy marker not honoured ('$LEG_KEY' -> '$LEG_AGAIN')"
+fi
+if grep -q '^anchor=conv-legacy$' "$LEG_MARKER"; then
+  ok "G11: the legacy marker is migrated in place to carry the anchor"
+else
+  fail "G11: legacy marker was not migrated (content: $(cat "$LEG_MARKER"))"
+fi
+LEG_DRIFT="$(resolve_key "$H_G5" "claude=5006|start=TM" "conv-legacy")"
+if [[ "$LEG_DRIFT" == "$LEG_KEY" ]]; then
+  ok "G12: a conversation that started pre-#1572 survives its first drift after migration"
+else
+  fail "G12: post-migration drift still fragmented ('$LEG_KEY' -> '$LEG_DRIFT')"
+fi
+
+# set-log.sh stays loud on a missing path — the failure that made the original
+# #1572 fragmentation visible at all.
+MISSING_LOG="$TMP_DIR/no-such-session-log.json"
+SETLOG_ERR="$("$SET_LOG" "$MISSING_LOG" '.mode = $v' --arg v rapid-fire 2>&1 >/dev/null)"
+SETLOG_RC=$?
+if [[ $SETLOG_RC -ne 0 ]] && printf '%s' "$SETLOG_ERR" | grep -q "$MISSING_LOG"; then
+  ok "G13: set-log.sh on a missing path exits non-zero and names the path"
+else
+  fail "G13: set-log.sh missing-path failure was quiet (rc=$SETLOG_RC stderr: $SETLOG_ERR)"
+fi
+if [[ ! -e "$MISSING_LOG" ]]; then
+  ok "G14: the failed set-log write created nothing"
+else
+  fail "G14: set-log.sh created the missing log instead of failing"
+fi
+
+# An invocation that cannot derive an anchor must not ERASE the one already
+# recorded: the cost would be invisible until the NEXT drift, which is precisely
+# when the recovery is needed.
+H_G6="$(make_home g6)"
+KEEP_KEY="$(resolve_key "$H_G6" "claude=4004|start=TK" "conv-keep")"
+KEEP_MARKER="$(ls "$(marker_dir "$H_G6")"/imk-* 2>/dev/null | head -n 1)"
+# A sentinel epoch, so "the anchor survived" cannot pass just because the
+# anchor-less run never touched the marker at all.
+printf 'epoch=SENTINEL\n' >> "$KEEP_MARKER"
+# Resolving again with the same identity must return the SAME key: that is the
+# anti-vacuity guard here — it proves the anchor-less run really did read and use
+# this marker, so "the anchor survived" cannot pass on a resolver that quietly
+# stopped resolving at all. Whether the marker was REWRITTEN is asserted in
+# group H, where leaving it alone is the point.
+KEEP_AGAIN="$(resolve_key "$H_G6" "claude=4004|start=TK" "")"   # same identity, no anchor
+if [[ "$KEEP_AGAIN" == "$KEEP_KEY" ]] && grep -q '^anchor=conv-keep$' "$KEEP_MARKER"; then
+  ok "G16: an anchor-less invocation resolves the same key and preserves the anchor already recorded"
+else
+  fail "G16: the recorded anchor was erased or the key moved ('$KEEP_KEY' -> '$KEEP_AGAIN', content: $(cat "$KEEP_MARKER"))"
+fi
+KEEP_DRIFT="$(resolve_key "$H_G6" "claude=4005|start=TL" "conv-keep")"
+if [[ "$KEEP_DRIFT" == "$KEEP_KEY" ]]; then
+  ok "G17: drift recovery still works after an anchor-less invocation"
+else
+  fail "G17: anchor-less invocation cost the conversation its drift recovery ('$KEEP_KEY' -> '$KEEP_DRIFT')"
+fi
+
+# NEGATIVE CONTROL for the publish primitive, now that a marker is a MULTI-LINE
+# record. A `noclobber` redirect wins the race but creates an EMPTY file and
+# writes after, so a loser reading in that window sees no key and re-mints its
+# own — one conversation on two logs again. Linking an already-written temp file
+# both refuses an existing target and is complete from the instant it appears.
+LN_DIR="$TMP_DIR/publish-primitive"
+mkdir -p "$LN_DIR"
+LN_TARGET="$LN_DIR/marker"
+printf 'fallback-aaaaaaaaaaaaaaaaaaaa\nanchor=x\n' > "$LN_DIR/staged-a"
+printf 'fallback-bbbbbbbbbbbbbbbbbbbb\nanchor=x\n' > "$LN_DIR/staged-b"
+ln "$LN_DIR/staged-a" "$LN_TARGET" 2>/dev/null
+LN_SECOND_RC=0
+ln "$LN_DIR/staged-b" "$LN_TARGET" 2>/dev/null || LN_SECOND_RC=$?
+LN_WINNER="$(head -n 1 "$LN_TARGET")"
+: > "$LN_DIR/created-then-written"          # the create half of a noclobber publish
+NC_WINDOW="$(head -n 1 "$LN_DIR/created-then-written")"
+if [[ $LN_SECOND_RC -ne 0 && "$LN_WINNER" == "fallback-aaaaaaaaaaaaaaaaaaaa" && -z "$NC_WINDOW" ]]; then
+  ok "G15 (negative control): the link publish refuses an existing marker AND lands complete, where create-then-write is observably keyless first"
+else
+  fail "G15 (negative control): publish primitives misbehaved (second-ln rc=$LN_SECOND_RC winner='$LN_WINNER' window='$NC_WINDOW')"
+fi
+
+# =============================================================================
+# TEST H — the two unlocked-write races CodeAnt flagged on PR #1575. Both are
+#          narrow, and both end in the SAME failure the rest of this file exists
+#          to prevent: one conversation on two logs.
+#            H1:    an anchor-less run must not write the marker at all, so it
+#                   cannot revert an anchor a concurrent run just recorded.
+#            H2-H3: a marker caught mid-write must be waited out and adopted,
+#                   never mistaken for corruption and overwritten.
+# =============================================================================
+# A SENTINEL line, not a byte-compare of the untouched record: pre-fix,
+# write_marker rewrote the marker with the same key, ident and anchor and only a
+# fresh epoch, so two runs inside one second produced IDENTICAL content and a
+# plain before/after compare passed vacuously against the very code it was meant
+# to catch. Replacing the file wipes the sentinel; leaving it alone keeps it.
+H_H1="$(make_home h1)"
+H1_KEY="$(resolve_key "$H_H1" "claude=7001|start=TH" "conv-h1")"
+H1_MARKER="$(ls "$(marker_dir "$H_H1")"/imk-* 2>/dev/null | head -n 1)"
+printf 'sentinel=H1\n' >> "$H1_MARKER"
+H1_AGAIN="$(resolve_key "$H_H1" "claude=7001|start=TH" "")"   # anchor-less, same identity
+if [[ "$H1_AGAIN" == "$H1_KEY" ]] && grep -q '^sentinel=H1$' "$H1_MARKER"; then
+  ok "H1: an anchor-less invocation resolves the marker WITHOUT rewriting it (so it cannot revert a concurrent anchor update)"
+else
+  fail "H1: the anchor-less invocation rewrote the marker ('$H1_KEY' -> '$H1_AGAIN'; content: $(cat "$H1_MARKER"))"
+fi
+
+# G17 already covers the other half — that drift recovery still WORKS after an
+# anchor-less run — so it is not restated here.
+
+# The publish window. A `noclobber` publish creates the marker EMPTY and writes
+# after, so a racer can read a keyless marker that is about to be perfectly good.
+# Reading once sent that racer down the re-mint arm, destroying the winner's
+# marker and keeping its own key.
+#
+# Driven by a `sleep` shim rather than a real background writer: the winner's
+# record appears IF AND ONLY IF the resolver actually paused to re-read. That
+# makes the test deterministic under any load AND makes it impossible to pass on
+# a read-once resolver — a timed background write could satisfy neither.
+H_H4="$(make_home h4)"
+H4_KEY="$(resolve_key "$H_H4" "claude=7004|start=TN" "conv-h4")"
+H4_MARKER="$(ls "$(marker_dir "$H_H4")"/imk-* 2>/dev/null | head -n 1)"
+H4_WINNER="fallback-cccccccccccccccccccc"
+SHIM_DIR="$TMP_DIR/shim-h4"
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_DIR/sleep" <<EOF
+#!/usr/bin/env bash
+# Stands in for the instant a racing publisher completes its noclobber write.
+if [ ! -s "$H4_MARKER" ]; then
+  printf '%s\nident=winner\nanchor=conv-h4\nepoch=9999\n' "$H4_WINNER" > "$H4_MARKER"
+fi
+exit 0
+EOF
+chmod +x "$SHIM_DIR/sleep"
+: > "$H4_MARKER"                       # the create half of a noclobber publish
+H4_RESOLVED="$( unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_HOST_SESSION_ID
+  export HOME="$H_H4" ISSUE_MAKER_CONV_ID="claude=7004|start=TN" \
+         ISSUE_MAKER_STABLE_ANCHOR="conv-h4" PATH="$SHIM_DIR:$PATH"
+  "$H_H4/.claude/skills/issue-maker/scripts/resolve-log.sh" --key 2>/dev/null )"
+if [[ "$H4_RESOLVED" == "$H4_WINNER" ]]; then
+  ok "H2: a marker caught mid-write is re-read and ADOPTED, not overwritten"
+else
+  fail "H2: the in-flight marker was overwritten ('$H4_RESOLVED' instead of '$H4_WINNER'; first key was '$H4_KEY')"
+fi
+
+# CONTROL — the wait is BOUNDED. A marker that never completes must still fall
+# through to a well-formed re-mint rather than blocking the resolve forever.
+H_H5="$(make_home h5)"
+H5_KEY="$(resolve_key "$H_H5" "claude=7005|start=TO" "conv-h5")"
+H5_MARKER="$(ls "$(marker_dir "$H_H5")"/imk-* 2>/dev/null | head -n 1)"
+: > "$H5_MARKER"
+H5_RESOLVED="$(resolve_key "$H_H5" "claude=7005|start=TO" "conv-h5")"
+case "$H5_RESOLVED" in
+  fallback-[0-9a-f]*)
+    ok "H3 (control): a marker that never completes still falls through to a well-formed re-mint" ;;
+  *)
+    fail "H3 (control): permanently-empty marker did not re-mint (got '$H5_RESOLVED'; first key was '$H5_KEY')" ;;
+esac
+
+# =============================================================================
+# TEST I — the anchor-form RATCHET (BugBot, PR #1575). The marker stores the
+#          anchor as a tagged string, and both the adoption scan and the
+#          exact-hit rewrite treat it as one literal. A call that derives only
+#          the weaker `sid=` form must therefore never overwrite a recorded
+#          `host=` one: the write itself looks harmless, and the sibling log
+#          only appears at the NEXT drift, when the scan for `host=…` misses.
+# =============================================================================
+# Anchors are supplied through the tier-1 override, which is the only anchor a
+# FABRICATED identity can carry (a simulated conversation deliberately ignores
+# the ambient harness ids). The ratchet reads the FORM, so `host=`/`sid=`
+# strings exercise exactly the ranked pair regardless of where they came from.
+H_I1="$(make_home i1)"
+I1_KEY="$(resolve_key "$H_I1" "claude=8001|start=TI" "host=conv-i1")"
+I1_MARKER="$(ls "$(marker_dir "$H_I1")"/imk-* 2>/dev/null | head -n 1)"
+I1_AGAIN="$(resolve_key "$H_I1" "claude=8001|start=TI" "sid=conv-i1")"   # same identity, weaker form
+I1_ANCHOR="$(sed -n 's/^anchor=//p' "$I1_MARKER" | tail -n 1)"
+if [[ "$I1_AGAIN" == "$I1_KEY" ]] && [[ "$I1_ANCHOR" == "host=conv-i1" ]]; then
+  ok "I1: a sid=-only call resolves the marker without DOWNGRADING its recorded host= anchor"
+else
+  fail "I1: the weaker anchor overwrote the stronger one (key '$I1_KEY' -> '$I1_AGAIN'; anchor now '$I1_ANCHOR', wanted 'host=conv-i1')"
+fi
+
+# The ratchet must be DIRECTIONAL, not a blanket "never rewrite": an upgrade
+# still has to land, or a conversation that gains its host id never records it
+# and the drift recovery it exists for cannot fire. Without this control, I1
+# would also pass against a resolver that simply stopped writing.
+H_I2="$(make_home i2)"
+I2_KEY="$(resolve_key "$H_I2" "claude=8002|start=TJ" "sid=conv-i2")"
+I2_MARKER="$(ls "$(marker_dir "$H_I2")"/imk-* 2>/dev/null | head -n 1)"
+I2_AGAIN="$(resolve_key "$H_I2" "claude=8002|start=TJ" "host=conv-i2")"  # same identity, stronger form
+I2_ANCHOR="$(sed -n 's/^anchor=//p' "$I2_MARKER" | tail -n 1)"
+if [[ "$I2_AGAIN" == "$I2_KEY" ]] && [[ "$I2_ANCHOR" == "host=conv-i2" ]]; then
+  ok "I2 (control): the reverse direction still UPGRADES a recorded sid= anchor to host="
+else
+  fail "I2 (control): the upgrade did not land (key '$I2_KEY' -> '$I2_AGAIN'; anchor now '$I2_ANCHOR', wanted 'host=conv-i2')"
+fi
+
+# And the ratchet must not have frozen a LEGACY one-line marker, whose anchor is
+# empty and unranked: that migration write is what lets an already-running
+# conversation survive its first drift at all.
+H_I3="$(make_home i3)"
+I3_KEY="$(resolve_key "$H_I3" "claude=8003|start=TK" "sid=conv-i3")"
+I3_MARKER="$(ls "$(marker_dir "$H_I3")"/imk-* 2>/dev/null | head -n 1)"
+printf '%s\n' "$I3_KEY" > "$I3_MARKER"          # rewind to the pre-#1572 format
+I3_AGAIN="$(resolve_key "$H_I3" "claude=8003|start=TK" "sid=conv-i3")"
+I3_ANCHOR="$(sed -n 's/^anchor=//p' "$I3_MARKER" | tail -n 1)"
+if [[ "$I3_AGAIN" == "$I3_KEY" ]] && [[ "$I3_ANCHOR" == "sid=conv-i3" ]]; then
+  ok "I3 (control): a legacy anchor-less marker still migrates — an unranked anchor is never treated as stronger"
+else
+  fail "I3 (control): the legacy marker did not migrate (key '$I3_KEY' -> '$I3_AGAIN'; anchor now '$I3_ANCHOR', wanted 'sid=conv-i3')"
 fi
 
 # =============================================================================

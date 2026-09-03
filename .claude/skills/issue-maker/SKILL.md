@@ -100,6 +100,8 @@ BATCH_TIER="Light"
 
 `resolve-log.sh` writes any note or warning to **stderr** — surface those to the user rather than swallowing them. A `WARN:` naming a `session_id` mismatch means another conversation is already writing to this path: stop and start a fresh capture thread instead of filing into it.
 
+**Drift recovery (issue #1572).** The `claude` process that identifies a conversation can change underneath it — an overnight sleep/wake or a harness reconnect is enough — and the pre-#1572 resolver answered that by minting a *second* key, stranding the batch on a new empty log. `resolve-log.sh` now records a conversation-stable anchor in each marker, so a drifted invocation resolves back to the **original** log and says so (`NOTE: … kept its ORIGINAL key …`). When several markers claim one anchor with different keys it `WARN`s, names every candidate, picks the newest deterministically, and mints nothing — surface that warning and inspect the losing logs before any batch-wide write.
+
 **If `$LOG` exists (compaction recovery / re-invocation):** read it and lead with a recap before accepting new input — this is the first action after a compaction.
 
 ```bash
