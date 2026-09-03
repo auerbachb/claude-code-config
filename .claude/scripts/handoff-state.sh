@@ -143,6 +143,7 @@
 #      rm failure under --delete, or a REQUIRED sibling library missing at
 #      startup (see DEPENDENCIES — that one fails before anything is read).
 #   6  Lock timeout (STATE_LOCK_EXIT_TIMEOUT from state-lock.sh).
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   jq, mktemp, mv, rm (POSIX), plus THREE required sibling libraries. Each is
@@ -249,7 +250,8 @@ HANDOFF_ARRAY_FIELDS="findings_fixed findings_dismissed threads_replied threads_
 # than a hardcoded line range so adding a header section can never silently
 # truncate the usage text (issue #1302 added one).
 print_usage() {
-  awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 if [[ $# -eq 0 ]]; then

@@ -69,6 +69,7 @@
 #   4  Usage error (missing/invalid mode, unknown flag, malformed argument)
 #   5  Write failed (log append, jq failure, session-state.sh refusal)
 #   6  Lock timeout (CLAUDE_STATE_LOCK_TIMEOUT; nothing written)
+#   70  --help header extraction produced no output (internal defect).
 #
 #   `clear` is the ONLY code a caller may read as permission. Every degraded
 #   input lands on 3, which is a distinct code precisely so `unknown` can never
@@ -182,7 +183,8 @@ EXIT_WRITE=5
 EXIT_LOCK=6
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

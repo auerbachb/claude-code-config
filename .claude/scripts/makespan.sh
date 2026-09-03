@@ -50,6 +50,7 @@
 #   1  all issues unestimated (used Standard fallback for all)
 #   2  usage error
 #   4  jq missing
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   - jq >= 1.5
@@ -97,7 +98,8 @@ while [[ $# -gt 0 ]]; do
       [[ $# -lt 2 ]] && { printf 'makespan.sh: --now requires an argument\n' >&2; exit 2; }
       NOW_OVERRIDE="$2"; shift 2 ;;
     --help|-h)
-      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0 ;;
     *)
       printf 'makespan.sh: unknown argument: %s\n' "$1" >&2

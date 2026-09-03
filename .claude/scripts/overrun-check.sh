@@ -114,7 +114,8 @@ while [[ $# -gt 0 ]]; do
     --readout)          READOUT_MODE=true; shift ;;
     --readout-cells)    CELLS_MODE=true; shift ;;
     --help|-h)
-      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0 ;;
     *) printf 'overrun-check.sh: unknown flag: %s\n' "$1" >&2; exit 3 ;;
   esac
@@ -175,18 +176,83 @@ format_duration_min() {
 }
 
 # ---------------------------------------------------------------------------
+# Does America/New_York actually resolve? (issue #1529)
+#
+# Exit status is NOT a reliable tell. On glibc with missing tzdata,
+# `TZ='America/New_York'` does not fail — libc silently falls back to UTC and
+# `date` exits 0, so a UTC time renders in 12-hour form under an "(ET)" column
+# header or with an " ET" suffix: a four- or five-hour error that reads as a
+# plausible clock. PR #1522's own cross-platform verification hit exactly this
+# in a container with no tzdata installed.
+#
+# Probe the resolved OFFSET instead. Eastern is UTC-5 (EST) or UTC-4 (EDT) and
+# is never +0000, so anything else means the zone did not resolve and we must
+# fall through to the explicitly labelled UTC branch. Matching the two expected
+# Eastern offsets rather than merely "not +0000" also catches a TZ that
+# resolved to some unrelated zone.
+#
+# Memoised: cell mode formats two clocks and the breach path up to two more.
+# ---------------------------------------------------------------------------
+ET_ZONE_STATE=""   # "" = not yet probed, "yes" = resolves, "no" = fell back
+et_zone_available() {
+  if [[ -z "$ET_ZONE_STATE" ]]; then
+    local off
+    off=$(TZ='America/New_York' date +%z 2>/dev/null) || off=""
+    if [[ "$off" == "-0500" || "$off" == "-0400" ]]; then
+      ET_ZONE_STATE="yes"
+    else
+      ET_ZONE_STATE="no"
+    fi
+  fi
+  [[ "$ET_ZONE_STATE" == "yes" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Explicitly labelled UTC formatter — the honest fallback for every ET site.
+# GNU (`-u -d @`) then BSD (`-u -r`). The old chain carried only the GNU form,
+# which was unreachable on macOS because the BSD ET branch always won; now that
+# the guard above can route a macOS run here, the BSD form has to exist.
+#
+# GNU is tried FIRST deliberately, and the order is load-bearing: GNU `date -r`
+# takes a FILE and prints its mtime, so a BSD-first chain on a GNU host prints
+# the mtime of whatever file happens to be named for the epoch (a `1788402843`
+# in the cwd) as if it were the clock — silently, exit 0. That is the same
+# wrong-time-without-a-marker class this script exists to eliminate (#1529), so
+# it cannot ride in the fallback that is supposed to be the honest one.
+# Measured both ways: GNU always satisfies `-d @`, so it never reaches `-r`;
+# BSD rejects `-d` with "illegal option" (status 1, zero bytes on stdout), so it
+# falls through to `-r` unchanged. Pinned by overrun-check-tzdata.test.sh.
+# ---------------------------------------------------------------------------
+format_utc_clock() {
+  local epoch="$1"
+  date -u -d "@$epoch" +'%H:%M UTC' 2>/dev/null \
+    || date -u -r "$epoch" +'%H:%M UTC' 2>/dev/null \
+    || printf '(unknown)'
+}
+
+# ---------------------------------------------------------------------------
 # ET wall-clock formatter (epoch -> "12:18 PM"), same BSD-then-GNU fallback
-# chain the breach alert uses below. No " ET" suffix — cell mode's column
-# headers carry the zone; the breach alert appends its own.
+# chain the breach alert uses below, now behind the resolve guard.
+#
+# $2 is an optional suffix: cell mode passes none (its column headers carry the
+# zone), the breach alert passes " ET". One formatter for all three sites, so
+# the guard lives in exactly one place.
+#
 # Never returns empty: a blank cell means "not started" in the table, so a
-# formatting failure must be visible as "(unknown)" rather than mimic it.
+# formatting failure must be visible as "(unknown)" rather than mimic it. The
+# self-labelling UTC branch is preserved deliberately — the CodeAnt finding
+# declined in PR #1522 targeted that branch, which is honest; the silent case
+# was the ET branch being reached without checking that ET had resolved.
 # ---------------------------------------------------------------------------
 format_et_clock() {
-  local epoch="$1"
-  TZ='America/New_York' date -j -f '%s' "$epoch" +'%-I:%M %p' 2>/dev/null \
-    || TZ='America/New_York' date -d "@$epoch" +'%-I:%M %p' 2>/dev/null \
-    || date -u -d "@$epoch" +'%H:%M UTC' 2>/dev/null \
-    || printf '(unknown)'
+  local epoch="$1" suffix="${2:-}"
+  if et_zone_available; then
+    TZ='America/New_York' date -j -f '%s' "$epoch" +"%-I:%M %p${suffix}" 2>/dev/null \
+      || TZ='America/New_York' date -d "@$epoch" +"%-I:%M %p${suffix}" 2>/dev/null \
+      || format_utc_clock "$epoch"
+  else
+    format_utc_clock "$epoch"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -378,10 +444,9 @@ fi
 REVISED_EXTRA_MIN=30  # conservative: assume ~30 min more to complete
 REVISED_FINISH_EPOCH=$(( NOW_EPOCH + REVISED_EXTRA_MIN * 60 ))
 
-REVISED_FINISH_ET=$(TZ='America/New_York' date -j -f '%s' "$REVISED_FINISH_EPOCH" +'%-I:%M %p ET' 2>/dev/null \
-  || TZ='America/New_York' date -d "@$REVISED_FINISH_EPOCH" +'%-I:%M %p ET' 2>/dev/null \
-  || date -u -d "@$REVISED_FINISH_EPOCH" +'%H:%M UTC' 2>/dev/null \
-  || printf '(unknown)')
+# " ET" is spelled into the alert text, so the resolve guard matters most here:
+# without it a no-tzdata host prints a UTC clock labelled "ET" (issue #1529).
+REVISED_FINISH_ET=$(format_et_clock "$REVISED_FINISH_EPOCH" ' ET')
 
 ALERT_LINE="⚠ PR #${PR_NUMBER} overrun: ${ELAPSED_STR} elapsed vs ${BOUND_MIN} min plan · revised finish ~${REVISED_FINISH_ET}"
 
@@ -391,9 +456,11 @@ ALERT_LINE="⚠ PR #${PR_NUMBER} overrun: ${ELAPSED_STR} elapsed vs ${BOUND_MIN}
 CUT_LINE=""
 if [[ -n "$WINDOW_DEADLINE" && "$WINDOW_DEADLINE" =~ ^[0-9]+$ ]]; then
   if (( REVISED_FINISH_EPOCH > WINDOW_DEADLINE )); then
-    WINDOW_END_ET=$(TZ='America/New_York' date -j -f '%s' "$WINDOW_DEADLINE" +'%-I:%M %p ET' 2>/dev/null \
-      || TZ='America/New_York' date -d "@$WINDOW_DEADLINE" +'%-I:%M %p ET' 2>/dev/null \
-      || printf '(window end)')
+    # Same guard; this site also gains the labelled-UTC branch it never had.
+    # Its distinct "(window end)" sentinel is preserved for the total-failure
+    # case, so the cut suggestion's wording is unchanged.
+    WINDOW_END_ET=$(format_et_clock "$WINDOW_DEADLINE" ' ET')
+    [[ "$WINDOW_END_ET" == "(unknown)" ]] && WINDOW_END_ET='(window end)'
 
     # Build cut suggestion: name the overrunning PR as the candidate to drop
     if [[ -n "$WINDOW_ISSUES" ]]; then

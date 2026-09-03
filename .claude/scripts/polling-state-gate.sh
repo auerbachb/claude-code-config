@@ -167,7 +167,8 @@ ALLOW_NONAUTHOR=0
 # old `sed -n '2,40p'` truncated mid-Modes the moment the header grew, so a newly
 # documented flag could be invisible to --help (issue #854).
 usage() {
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 while [[ $# -gt 0 ]]; do

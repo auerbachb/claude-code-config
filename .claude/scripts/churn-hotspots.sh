@@ -316,6 +316,7 @@
 #      or an unreadable/invalid exemption file — including an entry that names
 #      no enforcing lint)
 #   4  gh/API error during enumeration
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES:
 #   .claude/scripts/churn-hotspots.sh --json
@@ -334,7 +335,8 @@ print_help() {
   # Self-terminating: print the contiguous comment header and stop at the first
   # line that is not one. A hardcoded end line silently truncates help the next
   # time the header grows.
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

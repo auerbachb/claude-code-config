@@ -76,6 +76,7 @@
 #      this code. NOT determinate: nothing was learned about the directory, so
 #      a caller must not fall back to another git call or to $PWD on this
 #      code (issue #1403).
+#   70  --help header extraction produced no output (internal defect).
 #
 #      ONE exception, and it is deliberate: the teardown `rm` in the EXIT trap
 #      runs AFTER the answer has been resolved and printed, so a failure there
@@ -172,7 +173,8 @@ fi
 # AT its terminator, so the previous `/^# EXAMPLES$/` anchor emitted the EXAMPLES
 # heading and swallowed every example under it (issue #1475).
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 TARGET=""

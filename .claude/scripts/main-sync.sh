@@ -76,6 +76,7 @@
 #   2  Failed — checkout main, fetch, rev-list, pull, or reset failed.
 #   3  Usage error (unknown flag, missing --repo value, bad path).
 #   4  Aborted — --reset refused because local main has unpushed commits.
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   # Default: operate on the current working directory's repo.
@@ -104,7 +105,8 @@ to_one_line() {
 print_help() {
   # Print the header block (lines 2..first blank line), stripping leading "# ".
   # Matches the pattern used by repo-root.sh / off-peak-minute.sh / workday.sh.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

@@ -44,6 +44,7 @@
 #   3  Usage error (missing/invalid mode, unknown flag)
 #   5  Write failed (jq parse error, mv failed, disk full)
 #   6  Lock timeout (CLAUDE_STATE_LOCK_TIMEOUT; nothing written)
+#   70  --help header extraction produced no output (internal defect).
 #
 # AUTHORITATIVE PROBE (Probe 1 only — see budget-source-probe.md)
 #   Reads ~/.claude/usage-limit-events.jsonl (written by usage-limit-record.sh
@@ -86,7 +87,8 @@ fi
 # --- helpers ---
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

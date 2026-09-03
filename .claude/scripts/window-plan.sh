@@ -44,6 +44,7 @@
 #   2  usage error (missing --window or conflicting flags)
 #   3  unrecognized window format
 #   4  system date error
+#   70  --help header extraction produced no output (internal defect).
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
@@ -65,7 +66,8 @@ while [[ $# -gt 0 ]]; do
     --now)        shift; NOW_OVERRIDE="${1:-}"; [[ $# -gt 0 ]] && shift ;;
     --now=*)      NOW_OVERRIDE="${1#--now=}"; shift ;;
     --help|-h)
-      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0 ;;
     *) printf 'window-plan.sh: unknown flag: %s\n' "$1" >&2; exit 2 ;;
   esac
