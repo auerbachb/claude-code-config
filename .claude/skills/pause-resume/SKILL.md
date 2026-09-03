@@ -399,6 +399,7 @@ in `$PAUSE_RECORDS`, newest first, binding that entry's fields first:
 ```bash
 RESTORED=0
 REMAINING='[]'
+REFILL_CLEAR_PENDING=false   # repo-wide; Step 6 only marks it, Step 8 writes it
 for _i in $(jq -r 'keys_unsorted[]' <<<"$PAUSE_RECORDS"); do
   ENTRY=$(jq -c ".[$_i]" <<<"$PAUSE_RECORDS")
   PAUSE_STATE=$(jq -c '.record'     <<<"$ENTRY")
@@ -513,13 +514,30 @@ re-arm nothing **for this record** and carry on to the next one:
 
 ```bash
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
-if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
-   ! "$EXECUTION_PAUSE_SH" --clear --session "$SESSION_ID"; then
+# The gate is SESSION-scoped, and this record may belong to ANOTHER session
+# (issue #1576). Clearing only the current session leaves the parked session
+# launch-blocked after its board was restored, and /go-on probe A keeps reading
+# that live gate as a pause. Clear the record's own gate, and this session's as
+# well when they differ — an unarmed gate clears as a no-op. `marker` and
+# `legacy` are placeholder ids for records that never carried a session, so only
+# this session's gate exists to clear for them.
+GATE_TARGETS="$SESSION_ID"
+case "$RECORD_SESSION" in
+  ""|marker|legacy|"$SESSION_ID") : ;;
+  *) GATE_TARGETS="$RECORD_SESSION $SESSION_ID" ;;
+esac
+GATE_CLEARED=true
+for GATE_SESSION in $GATE_TARGETS; do
+  if [[ -z "$EXECUTION_PAUSE_SH" ]] || \
+     ! "$EXECUTION_PAUSE_SH" --clear --session "$GATE_SESSION"; then
+    GATE_CLEARED=false
+  fi
+done
+if [[ "$GATE_CLEARED" != true ]]; then
   # `continue`, never `exit`: this block runs inside the Step 2 per-record loop,
   # so exiting here would abandon every later record without re-arming it and
   # without Step 8 ever naming it — the silent whole-command abort this issue
-  # removes. The gate is session-scoped, so a failure repeats for each record;
-  # each one lands in REMAINING and Step 8 names them all.
+  # removes. Each failed record lands in REMAINING and Step 8 names them all.
   echo "Could not clear the pause execution gate for $RECORD_SESSION; nothing was re-armed for this record." >&2
   REMAINING=$(jq -c --argjson e "$ENTRY" '. + [$e]' <<<"$REMAINING")
   continue
@@ -969,16 +987,17 @@ restore: keep `active=true`, report the read failure, add the record to
 evaluate the freshly persisted arrays, never the pre-rearm snapshot captured at
 command start.
 
-## Step 6: Clear the refill pause (--resume-refill only)
+## Step 6: Note the refill pause for clearing (--resume-refill only)
 
-When `--resume-refill` was supplied:
+`refill` is **repo-wide**, not per record, so the write must not happen here.
+Steps 3-7 run once per selected record, and clearing it after the first record
+lets the pipeline start new work while sibling boards are still parked — Step 5
+may already have re-armed PMM by then. Record the intent inside the loop and
+perform the single write in Step 8, once every record has been attempted:
 
 ```bash
-if [[ "$RESUME_REFILL" == true && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].refill={\"paused\":false,\"reason\":null,\"scope\":null,\"at\":null}" \
-    && echo "Refill pause cleared — pipeline will refill on the next tick." \
-    || echo "Could not clear the refill pause (session-state.sh --set failed) — lift it manually."
+if [[ "$RESUME_REFILL" == true ]]; then
+  REFILL_CLEAR_PENDING=true
 fi
 ```
 
@@ -1076,6 +1095,16 @@ failed, or was left partially restored is named, with its marker path, so the
 user can act on it:
 
 ```bash
+# The repo-wide refill clear Step 6 deferred, performed ONCE now that every
+# record has been attempted — never mid-loop, where it would let new pipeline
+# work start while sibling boards were still parked.
+if [[ "$REFILL_CLEAR_PENDING" == true && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].refill={\"paused\":false,\"reason\":null,\"scope\":null,\"at\":null}" \
+    && echo "Refill pause cleared — pipeline will refill on the next tick." \
+    || echo "Could not clear the refill pause (session-state.sh --set failed) — lift it manually."
+fi
+
 LEFT=$(jq -r 'length' <<<"$REMAINING")
 echo "Restored $RESTORED of $RECORD_COUNT parked record(s)."
 if [[ "$LEFT" -gt 0 ]]; then

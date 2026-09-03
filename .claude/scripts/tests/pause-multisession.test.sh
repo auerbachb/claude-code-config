@@ -436,6 +436,39 @@ check_eq "a failed gate clear continues to the next record" "1" \
 check_eq "a failed gate clear never exits the whole command" "0" \
   "$(grep -c 'exit 1' <<<"$STEP4B")"
 
+# The gate is session-scoped, so restoring ANOTHER session's board must clear
+# that session's gate too. Clearing only the current session left the parked
+# session launch-blocked after its board was restored, with /go-on probe A still
+# reading the live gate as a pause.
+check_eq "the gate clear targets the record's own session" "1" \
+  "$(grep -c 'GATE_TARGETS="\$RECORD_SESSION \$SESSION_ID"' "$PAUSE_RESUME_SKILL")"
+check_eq "placeholder session ids are not cleared as sessions" "1" \
+  "$(grep -c '""|marker|legacy|"\$SESSION_ID") : ;;' "$PAUSE_RESUME_SKILL")"
+
+# ---------------------------------------------------------------------------
+echo "== The repo-wide refill clear happens once, after the loop =="
+# ---------------------------------------------------------------------------
+# `refill` is repo-wide but Step 6 runs inside the per-record loop, so writing it
+# there cleared the pause after the FIRST record — new pipeline work could start
+# while sibling boards were still being restored, and Step 5 may already have
+# re-armed PMM. Step 6 now only marks intent; Step 8 performs the single write.
+check_eq "Step 6 only marks the refill intent" "1" \
+  "$(grep -c 'REFILL_CLEAR_PENDING=true' "$PAUSE_RESUME_SKILL")"
+check_eq "the refill flag is initialized before the loop" "1" \
+  "$(grep -c 'REFILL_CLEAR_PENDING=false' "$PAUSE_RESUME_SKILL")"
+# Exactly one refill write, and it must sit after the loop (Step 8), guarded by
+# the pending flag rather than by RESUME_REFILL directly.
+check_eq "exactly one refill write remains" "1" \
+  "$(grep -c 'refill={\\"paused\\":false' "$PAUSE_RESUME_SKILL")"
+REFILL_WRITE_LINE=$(grep -n 'refill={\\"paused\\":false' "$PAUSE_RESUME_SKILL" | cut -d: -f1)
+STEP8_LINE=$(grep -n '^## Step 8:' "$PAUSE_RESUME_SKILL" | cut -d: -f1)
+if [[ -n "$REFILL_WRITE_LINE" && -n "$STEP8_LINE" && "$REFILL_WRITE_LINE" -gt "$STEP8_LINE" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — the refill write sits after the per-record loop"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — the refill write is still inside the per-record loop (line ${REFILL_WRITE_LINE:-none}, Step 8 at ${STEP8_LINE:-none})" >&2
+fi
+
 # ---------------------------------------------------------------------------
 echo "== Resume receipts are keyed per session =="
 # ---------------------------------------------------------------------------
