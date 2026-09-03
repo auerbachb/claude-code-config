@@ -500,9 +500,14 @@ test_10_unreadable_worktree_script_falls_back() {
     return 0
   fi
 
+  local rc=0
   out="$(PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
-        bash "$INSTALL" 2>&1)" || true
+        bash "$INSTALL" 2>&1)" || rc=$?
 
+  # The fallback is only a fallback if it WORKS: an installer that picks the
+  # local checkout and then fails would still print the expected text, so the
+  # text asserts below would pass vacuously without this.
+  assert "the fallback install succeeds (exit 0)" "[ $rc -eq 0 ]"
   assert "the install did not select the unreadable worktree copy" \
     "! printf '%s' \"\$out\" | grep -q 'skills worktree (pinned to main)'"
   assert "it fell back to this checkout and said so" \

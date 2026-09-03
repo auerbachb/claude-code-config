@@ -636,14 +636,23 @@ test_18_directory_copy_migration_is_not_destructive() {
   assert "the migration was reported" \
     "printf '%s' \"\$output\" | grep -q 'replacing directory copy'"
   # No move-aside temp may survive a successful run, or the migration trades a
-  # data-loss window for a litter of orphaned copies.
-  assert "no move-aside temporary was left behind" \
+  # data-loss window for a litter of orphaned copies. The aside now lives
+  # OUTSIDE the skills dir (a leftover inside it would be read by the skill
+  # loader as a bogus '<name>.pre-symlink.<pid>' skill), so check both the old
+  # in-dir name stays absent AND the new hidden sibling is cleaned up.
+  assert "no move-aside temporary was left behind in the skills dir" \
     "[ -z \"\$(find '$tmp_home/.claude/skills' -maxdepth 1 -name 'alpha.pre-symlink.*' 2>/dev/null)\" ]"
+  assert "and none at the outside-the-skills-dir location either" \
+    "[ -z \"\$(find '$tmp_home/.claude' -maxdepth 1 -name '.skills-migration-aside.*' 2>/dev/null)\" ]"
+  # The aside destination must NOT be inside the skills dir at all.
+  assert "the aside path is outside the skills dir" \
+    "[ -z \"\$(grep 'dircopy_aside=' '$PUBLISH_SCRIPT' | grep '\\\${link}')\" ]"
   # The ordering itself: the copy must be moved aside, never removed first.
+  # (-A12 spans the explanatory comment block between the message and the mv.)
   assert "the source moves the copy aside instead of removing it first" \
-    "[ -n \"\$(grep -A2 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'mv ')\" ]"
+    "[ -n \"\$(grep -A12 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'if ! mv \"\$link\"')\" ]"
   assert "(control) no rm precedes the link in that branch" \
-    "[ -z \"\$(grep -A2 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'rm -rf \"\$link\"')\" ]"
+    "[ -z \"\$(grep -A12 'replacing directory copy with symlink' '$PUBLISH_SCRIPT' | grep 'rm -rf \"\$link\"')\" ]"
 
   cleanup "$tmp_home"
 }

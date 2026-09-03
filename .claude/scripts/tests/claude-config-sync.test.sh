@@ -1048,8 +1048,14 @@ test_20_missing_skills_publisher_is_an_error_in_both_writers() {
   assert "the hook's message uses the publish-failure shape the clear keys off" \
     "[ -n \"\$(grep 'not found — skill/CLAUDE.md/rules links not refreshed' '$HOOK' | grep 'errors=')\" ]"
 
+  # Two asserts, not one: the old single grep was vacuous — `grep -A1` emits
+  # the matched warn line itself, which never contains record_failure, so the
+  # `grep -v` pipeline was always non-empty. Assert presence first, then that
+  # the LINE AFTER the warn is not a record_failure call.
+  assert "the sync has the agent-publisher warning at all" \
+    "grep -q 'publish-agent-symlinks.sh not found' '$SYNC'"
   assert "the agent publisher stays a warning in the sync" \
-    "[ -n \"\$(grep -A1 'publish-agent-symlinks.sh not found' '$SYNC' | grep -v record_failure)\" ]"
+    "[ -z \"\$(grep -A1 'publish-agent-symlinks.sh not found' '$SYNC' | sed -n '2p' | grep 'record_failure')\" ]"
   assert "and a notice, not an error, in the hook" \
     "[ -z \"\$(grep 'publish-agent-symlinks.sh not found' '$HOOK' | grep 'errors=')\" ]"
 }

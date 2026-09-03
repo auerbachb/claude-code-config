@@ -365,7 +365,12 @@ else
       # cannot be closed outright; what it CAN stop being is destructive, which is
       # the half that loses data.
       echo "  $skill_name — replacing directory copy with symlink"
-      dircopy_aside="${link}.pre-symlink.$$"
+      # The aside copy lives OUTSIDE ~/.claude/skills/ (hidden, one level up):
+      # a leftover inside the skills dir — the restore-failure path below can
+      # leave one forever — is a real directory containing SKILL.md, which the
+      # skill loader would read as a bogus '<name>.pre-symlink.<pid>' skill.
+      # Same filesystem (~/.claude), so both mv calls stay atomic renames.
+      dircopy_aside="${SKILLS_DIR%/}/../.skills-migration-aside.$$.${skill_name}"
       if ! mv "$link" "$dircopy_aside" 2>/dev/null; then
         echo "  WARNING: $skill_name — could not move the directory copy aside; left as-is" >&2
         continue
