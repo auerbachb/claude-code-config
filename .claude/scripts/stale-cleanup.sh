@@ -1971,15 +1971,18 @@ checkout_still_orphaned() { # checkout dir
   local probe_rc=0
   read_checkout_gitdir "$1" || return 1
   path_exists_bounded "$CHECKOUT_GITDIR" || probe_rc=$?
-  # Same dangling-symlink refusal the scan applies, repeated here because this
-  # is the gate standing immediately before the rm: `test -e` follows links, so
-  # a link whose target is missing would otherwise read as proven absence.
-  if [[ -L "$CHECKOUT_GITDIR" ]]; then return 1; fi
-  # Over every component, exactly like the scan. Parity matters most HERE: the
-  # scan runs at start-up and this gate runs immediately before the rm, so a
-  # dangling ancestor link appearing in that window is precisely the state
-  # change this re-check exists to catch. Without it the final-component test
-  # above reads false while `test -e` reports absent, and the working tree goes.
+  # The same whole-path dangling-link refusal the scan applies — every
+  # component, not just the leaf. Parity matters most HERE: the scan runs at
+  # start-up and this gate runs immediately before the rm, so a dangling
+  # ancestor appearing in that window is precisely the state change this
+  # re-check exists to catch, and a leaf-only test reads false for it while
+  # `test -e` still reports absent.
+  #
+  # This single call replaces a standalone `[[ -L "$CHECKOUT_GITDIR" ]]`: the
+  # walk starts at the path itself, so the leaf is still covered, and the plain
+  # form was the one unbounded lstat left on the deletion path. A leaf link that
+  # RESOLVES needs no refusal here — `test -e` follows it, so probe_rc is 0 and
+  # the check below already declines.
   if path_has_dangling_link_component "$CHECKOUT_GITDIR"; then return 1; fi
   (( probe_rc == 1 ))
 }
