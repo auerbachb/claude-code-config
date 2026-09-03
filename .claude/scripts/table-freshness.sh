@@ -147,9 +147,20 @@ resolve_floor() {
     printf '%s' "$FLOOR_S_DEFAULT"
     return
   fi
-  if [[ ! "$raw" =~ ^[0-9]+$ ]] || (( raw <= FLOOR_MARGIN_S )); then
-    printf 'table-freshness.sh: ignoring invalid CLAUDE_TABLE_FLOOR_S=%s (need integer > %s); using %s\n' \
-      "$raw" "$FLOOR_MARGIN_S" "$FLOOR_S_DEFAULT" >&2
+  # The digit-count bound is checked BEFORE any arithmetic, and that order is the
+  # point. `^[0-9]+$` admits a value of any length, but every use of the floor —
+  # the `<=` just below, `TRIP_S = FLOOR_S - FLOOR_MARGIN_S`, and the age
+  # comparisons — is 64-bit Bash arithmetic, which WRAPS rather than erroring.
+  # A wrapped floor is not merely a strange number: it can come out negative, and
+  # a negative TRIP_S makes `age >= TRIP_S` true forever, so the floor fires on
+  # every single tick. Validating with arithmetic that has already overflowed
+  # cannot catch that — the check would be reading the corrupted value.
+  # FLOOR_MAX_DIGITS=9 allows up to ~31 years, far past any real floor and far
+  # short of the 19 digits where wrapping begins.
+  local FLOOR_MAX_DIGITS=9
+  if [[ ! "$raw" =~ ^[0-9]+$ ]] || (( ${#raw} > FLOOR_MAX_DIGITS )) || (( raw <= FLOOR_MARGIN_S )); then
+    printf 'table-freshness.sh: ignoring invalid CLAUDE_TABLE_FLOOR_S=%s (need integer > %s, at most %s digits); using %s\n' \
+      "$raw" "$FLOOR_MARGIN_S" "$FLOOR_MAX_DIGITS" "$FLOOR_S_DEFAULT" >&2
     printf '%s' "$FLOOR_S_DEFAULT"
     return
   fi

@@ -338,7 +338,26 @@ BAD_OUT="$(CLAUDE_TABLE_FLOOR_S=notanumber "$SCRIPT" --floor-seconds 2>/dev/null
 TOO_SMALL="$(CLAUDE_TABLE_FLOOR_S=60 "$SCRIPT" --floor-seconds 2>/dev/null)"
 [[ "$TOO_SMALL" == "3600" ]] || \
   fail "an override at or below the margin should fall back to 3600, got '$TOO_SMALL'"
-ok "the floor override is honored, and an invalid one warns and falls back"
+# An override long enough to WRAP 64-bit arithmetic must be rejected on its
+# digit count, before any arithmetic touches it. `^[0-9]+$` admits any length,
+# and a wrapped floor can come out negative — which makes TRIP_S negative, and
+# `age >= TRIP_S` true forever, so the floor fires on every tick. Validating
+# with arithmetic that has already overflowed cannot catch that.
+for HUGE in 99999999999999999999 18446744073709551616 9223372036854775808; do
+  HUGE_OUT="$(CLAUDE_TABLE_FLOOR_S="$HUGE" "$SCRIPT" --floor-seconds 2>/dev/null)"
+  [[ "$HUGE_OUT" == "3600" ]] || \
+    fail "an overflowing override ($HUGE) should fall back to 3600, got '$HUGE_OUT'"
+  HUGE_STATUS="$(CLAUDE_TABLE_FLOOR_S="$HUGE" "$SCRIPT" --status --session "$SID" --repo "$REPO" 2>/dev/null)"
+  HUGE_TRIP="$(printf '%s' "$HUGE_STATUS" | jq -r '.trip_s')"
+  (( HUGE_TRIP > 0 )) || \
+    fail "an overflowing override ($HUGE) produced trip_s=$HUGE_TRIP — a non-positive trip fires the floor every tick"
+done
+# Positive control: a LONG-but-sane override is still honored, so the bound
+# rejects overflow rather than any large number.
+SANE_BIG="$(CLAUDE_TABLE_FLOOR_S=999999999 "$SCRIPT" --floor-seconds 2>/dev/null)"
+[[ "$SANE_BIG" == "999999999" ]] || \
+  fail "a 9-digit override should still be honored, got '$SANE_BIG'"
+ok "the floor override is honored, and an invalid or overflowing one warns and falls back"
 
 # --- 19. Usage errors ---------------------------------------------------------
 "$SCRIPT" --note-rendered --session "$SID" --repo "$REPO" >/dev/null 2>&1
