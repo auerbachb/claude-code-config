@@ -1453,29 +1453,34 @@ if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
   # `.repos["<key>"].…`, so a relative companion and a fully-spelled claim (or
   # the reverse) look unrelated before scoping and nest after it. Comparing the
   # raw spellings would miss exactly that pair.
+  # Canonicalize to exactly ONE path array, or refuse. `[path(expr)]` collects
+  # every location the expression names: a single accessor yields one, `.a[]`
+  # fails to render at all, and `.a,.b` yields two. Anything but one is not a
+  # single assignable location, which --cas and a composed --set both already
+  # require — the compare binds one value and the pipeline assigns one target.
+  # Refusing here (rather than degrading to a weaker textual test) is what keeps
+  # the guard from having a soft edge an unrenderable path could slip through.
+  _norm_path() {
+    local expr="$1" collected
+    collected="$(jq -cn "[path($expr)]" 2>/dev/null)" || return 1
+    [[ "$(jq -r 'length' <<<"$collected" 2>/dev/null)" == "1" ]] || return 1
+    jq -c '.[0]' <<<"$collected" 2>/dev/null || return 1
+  }
   _cas_scoped="$(scope_path "$CAS_PATH")"
-  _cas_norm="$(jq -cn "path($_cas_scoped)" 2>/dev/null)" || _cas_norm=""
+  if ! _cas_norm="$(_norm_path "$_cas_scoped")"; then
+    die_usage "--cas path '$CAS_PATH' does not name exactly one assignable location; --cas requires a single concrete path (issue #1445)"
+  fi
   for _sp in "${SET_PATHS[@]}"; do
     _sp_scoped="$(scope_path "$_sp")"
-    _sp_norm="$(jq -cn "path($_sp_scoped)" 2>/dev/null)" || _sp_norm=""
-    if [[ -n "$_cas_norm" && -n "$_sp_norm" ]]; then
-      # Strict ancestor: the companion is a PROPER prefix of the CAS path.
-      # Equal paths are excluded by the length test, preserving the documented
-      # exact-path precedence; a descendant fails it too, and is legal.
-      if jq -e -n --argjson a "$_sp_norm" --argjson b "$_cas_norm" \
-           '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
-        die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
-      fi
-    elif [[ "$_cas_scoped" == "$_sp_scoped"?* ]]; then
-      # jq could not render one side as a path (e.g. a multi-output expression).
-      # Fall back to the textual boundary test rather than skipping the check: a
-      # guard that silently opts out on a shape it cannot parse is not a guard.
-      # Still on the SCOPED spellings, so the fallback cannot reopen the gap the
-      # scoping above closes.
-      _rest="${_cas_scoped#"$_sp_scoped"}"
-      if [[ "$_rest" == .* || "$_rest" == \[* ]]; then
-        die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
-      fi
+    if ! _sp_norm="$(_norm_path "$_sp_scoped")"; then
+      die_usage "--set path '$_sp' does not name exactly one assignable location; a --set composed with --cas requires a single concrete path (issue #1445)"
+    fi
+    # Strict ancestor: the companion is a PROPER prefix of the CAS path.
+    # Equal paths are excluded by the length test, preserving the documented
+    # exact-path precedence; a descendant fails it too, and is legal.
+    if jq -e -n --argjson a "$_sp_norm" --argjson b "$_cas_norm" \
+         '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
+      die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
     fi
   done
 fi

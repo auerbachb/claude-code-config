@@ -571,6 +571,29 @@ ANC_SCOPED_RC=0
 run --cas ".repos[\"$SCOPED_KEY\"].prs.claim=\"mine\"" --expect null --set '.prs={}' >/dev/null 2>&1 || ANC_SCOPED_RC=$?
 check_eq "ancestor detected after scoping rewrites a legacy .prs companion" "2" "$ANC_SCOPED_RC"
 
+# A path that does not name exactly ONE assignable location is refused outright
+# rather than degrading to a weaker check: `.a[]` renders no path and `.a,.b`
+# renders two, and neither is something --cas can compare or the pipeline can
+# assign. Refusing is what keeps the guard from having a soft edge.
+reset_state
+MULTI_SET_RC=0
+run --raw-path --cas '.outer.claim="mine"' --expect null --set '.outer[]=1' >/dev/null 2>&1 || MULTI_SET_RC=$?
+check_eq "a multi-output --set path composed with --cas exits 2" "2" "$MULTI_SET_RC"
+reset_state
+COMMA_SET_RC=0
+run --raw-path --cas '.outer.claim="mine"' --expect null --set '.outer,.other=1' >/dev/null 2>&1 || COMMA_SET_RC=$?
+check_eq "a two-output --set path composed with --cas exits 2" "2" "$COMMA_SET_RC"
+reset_state
+MULTI_CAS_RC=0
+run --raw-path --cas '.outer[]="mine"' --expect null --set '.other=1' >/dev/null 2>&1 || MULTI_CAS_RC=$?
+check_eq "a multi-output --cas path exits 2" "2" "$MULTI_CAS_RC"
+# Optional-form accessors are single locations and must stay accepted — the
+# scoping code documents `.prs?[...]` as a legal spelling.
+reset_state
+OPTFORM_RC=0
+run --raw-path --cas '.outer?.claim="mine"' --expect null --set '.other=1' || OPTFORM_RC=$?
+check_eq "an optional-form CAS path is still accepted" "0" "$OPTFORM_RC"
+
 # Negative control: a shared textual prefix that is NOT a segment boundary must
 # still be accepted, or the guard above would be rejecting unrelated siblings.
 reset_state
