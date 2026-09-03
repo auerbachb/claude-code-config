@@ -514,7 +514,7 @@ echo "== (l): PREMISE — the helper under test is the one production will run =
 # the change correct — that job belongs to the helper's own suite plus (k)'s
 # contract coverage, which is the interchangeability argument this file already
 # makes above.
-ACK_HELPER_DRIFT='.claude/scripts/bugbot-refused-head.sh 40516261c50fbd305105b9bb8adf573c3f8339c8 9efc1676dcbd5e839322241fa12d66f9a4cf31e5 — issue #1517: validate norm_ts output before comparing, so a malformed non-empty timestamp can no longer suppress a required nudge. BEHAVIOURAL, not neutral. Scenarios (a)-(j) all feed well-formed timestamps and describe both copies unchanged; the delta is pinned by maybe-trigger-bugbot-suppression.test.sh.'
+ACK_HELPER_DRIFT='.claude/scripts/bugbot-refused-head.sh 9efc1676dcbd5e839322241fa12d66f9a4cf31e5 8aef69445a445ec7c87e80f77eafed2ca9e68a60 — issue #1528: the --help extraction now stops at the first NON-COMMENT line (it previously stopped at the first blank line) and exits 70 with a stderr diagnostic when it yields nothing, instead of printing nothing and exiting 0. Confined entirely to the `--help|-h` arm: no other code path is touched, and scenarios (a)-(j) never invoke --help, so they describe both copies unchanged. Header output was verified byte-identical to the base copy before adoption; the guard itself is pinned by help-output.test.sh Part 4.'
 BASE_REF=""
 for cand in origin/main main; do
   if git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi
