@@ -11,6 +11,8 @@
 #     must match the --emitter case allowlist (Issue #1464)
 #   Emitter call-site coverage: all six canonical emitter SKILL.md files carry an
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
+#   Runnable-invocation pin: /harness-audit ships its reservation as an executable
+#     snippet, so that snippet must survive deletion detection on its own
 #
 # All tests use a temp HOME dir so ~/.claude/session-state.json is not touched.
 
@@ -535,6 +537,49 @@ elif (( ${#missing_reserve[@]} > 0 )); then
   fail "emitters without an explicit chip-offer-registry.sh --reserve call site: ${missing_reserve[*]}"
 else
   ok "all ${#CANONICAL_EMITTERS[@]} canonical emitters carry an explicit --reserve call site"
+fi
+
+# ---------------------------------------------------------------------------
+# 39. /harness-audit's reservation must exist as a RUNNABLE invocation, not only
+#     as a mandate sentence.
+#
+#     Test 38 asks a narrower question than its name suggests: does the skill
+#     name the reserve command anywhere in its own text?  For five emitters that
+#     IS the call site — a SKILL.md instruction is what gets executed.
+#     /harness-audit is the exception: it states the mandate in prose AND ships a
+#     runnable snippet, and test 38 sees only the prose, because the snippet
+#     spells the command as "$REGISTRY" rather than the literal script name.
+#     Measured on this tree: deleting the snippet leaves test 38 green, and the
+#     snippet alone does not satisfy test 38 at all (CodeAnt review, PR #1615).
+#     So 38 cannot detect the executable call site disappearing.
+#
+#     Test 38 is deliberately NOT tightened to require a fenced call for every
+#     emitter: five of the six state the call in prose only, so a file-wide fence
+#     rule would fail them (measured — the reason the same requirement was
+#     declined in review round 2).  The fence requirement is therefore scoped to
+#     the one emitter that actually ships a fence.
+#
+#     Fenced blocks are joined with a separator wider than the match window, so a
+#     window can never span two blocks and manufacture a false pass.
+# ---------------------------------------------------------------------------
+HA_SKILL_MD="$SKILLS_DIR/harness-audit/SKILL.md"
+if [[ ! -f "$HA_SKILL_MD" ]]; then
+  fail "harness-audit SKILL.md not found at $HA_SKILL_MD"
+else
+  ha_sep="$(printf '%*s' 130 '' | tr ' ' '#')"
+  ha_fenced="$(awk -v sep="$ha_sep" '
+      /^[[:space:]]*```/ { in_fence = !in_fence; printf "%s ", sep; next }
+      in_fence           { print }
+    ' "$HA_SKILL_MD" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+  if [[ -z "$ha_fenced" ]]; then
+    fail "harness-audit SKILL.md: no fenced code blocks found to check"
+  elif ! grep -qE -- \
+      '--emitter harness-audit.{0,120}--reserve|--reserve.{0,120}--emitter harness-audit' \
+      <<<"$ha_fenced"; then
+    fail "harness-audit: --reserve invocation missing from every fenced block (test 38 still passes on the prose mandate alone, so it cannot catch this)"
+  else
+    ok "harness-audit ships a runnable --reserve invocation inside a fenced block"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
