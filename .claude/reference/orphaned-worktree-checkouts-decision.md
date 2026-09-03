@@ -104,3 +104,46 @@ prunes for some *other* entry still applies git's own rule — a bare stat, whic
 follows symlinks — to a refused one. What this script owns is what it reports
 and what it deletes itself; `registration_is_live` closes the hole on that
 path. Narrowing git's prune is out of scope and would block legitimate cleanup.
+
+### 4a. Two more "absence" holes, found in review
+
+CodeAnt's review of PR #1597 flagged two further routes to the same outcome the
+guard classes exist to prevent — a **live** worktree's registration reaching the
+deletion path — neither involving a symlink. Both were verified reachable and
+fixed on the branch; the pattern in both is the one the table above keeps
+hitting, *a probe that cannot distinguish "absent" from "unreadable"*.
+
+- **An unsearchable ancestor more than one level up.** `path_absence_provable`
+  tested the immediate parent only. `test -e` reports no errno, so it is false
+  on a worktree behind a mode-000 ancestor *and* false on that worktree's
+  parent — and the second false was read as "the parent is gone, so absence
+  holds". A live worktree two or more levels under an unsearchable directory
+  was therefore classified as an orphan. The probe now climbs to the nearest
+  ancestor that actually answers, which is what its own header and the caller's
+  "nearest existing parent" skip message already claimed. The one-level case was
+  always caught; only the deeper one was not.
+
+  Worth recording, because CodeAnt's *stated* mechanism was different and does
+  not hold: it read the bug as `test -L` errors being taken for "not a symlink"
+  in `path_has_dangling_link_component`. `test` cannot report that distinction —
+  it returns 1 for EACCES and ENOENT alike (verified on both the bash builtin and
+  `/bin/test`), so there is no error status to branch on and hardening that
+  function would have changed nothing. The finding's *conclusion* was correct and
+  the root cause sat one call earlier, in a helper this PR had not touched.
+
+- **A relative `gitdir` left unanchored.** `read_registration_gitdir` used a
+  relative registration `gitdir` as-is, so it was probed against whatever
+  directory the caller happened to be in. That is not a hypothetical shape:
+  `git worktree add --relative-paths` (git ≥ 2.48) writes exactly it, and such a
+  registration read as absent — a live worktree queued for removal, with the
+  verdict depending on the invoking cwd. Now anchored to the registration
+  directory, mirroring what `read_checkout_gitdir` already did for a checkout's
+  `.git`.
+
+Both are pinned by T21 in `stale-cleanup.test.sh`, whose assertions were
+confirmed to fail against the pre-fix script while its two positive controls
+(the genuinely-gone relative registration, the targeted bait) kept passing. T21's
+`--apply` case runs in a repo carrying only *targeted* candidates, so no
+`git worktree prune` is issued and the survival it asserts is this script's own
+decision rather than git's — the same scoping repoK uses around the boundary
+described just above.

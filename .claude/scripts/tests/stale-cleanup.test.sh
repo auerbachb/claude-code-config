@@ -1585,6 +1585,94 @@ check_eq "T20: control — an un-broken ancestor lets that same registration go"
   "$([[ -e "$REG_J/zzz-race" ]] && echo present || echo gone)"
 rm -rf "$RM_STUB" "$TMP/race-anc-link" "$TMP/race-anc-real"
 
+# ---------------------------------------------------------------------------
+# T21 (#1597, GitHub review round): the two remaining routes by which the
+# registration pass could hand a LIVE worktree's entry to the deletion path.
+# Both are "absence" that was never actually established — the same class the
+# dangling-link guard above closes, reached without any symlink involved.
+# ---------------------------------------------------------------------------
+REPO_L="$TMP/repoL"
+mkdir -p "$REPO_L"
+git -C "$REPO_L" init -q
+echo "l" > "$REPO_L/README.md"
+git -C "$REPO_L" add README.md
+commit_old "$REPO_L" "repoL base"
+echo "fresh" >> "$REPO_L/README.md"
+git -C "$REPO_L" commit -q -am "repoL fresh tip"
+REG_L="$REPO_L/.git/worktrees"
+
+# (a) A live worktree whose GRANDparent refuses search. `test -e` reports no
+# errno, so it is false on the worktree AND on its parent — testing the
+# immediate parent alone read that second false as "the parent is gone, so
+# absence holds" and queued a live entry for removal. Only climbing to the
+# nearest ancestor that actually answers catches it.
+mkdir -p "$TMP/anc000/mid"
+git -C "$REPO_L" worktree add "$TMP/anc000/mid/wt-deep" -b issue-1597-deep >/dev/null 2>&1
+
+# (b) A live worktree registered with a RELATIVE gitdir — the shape
+# `git worktree add --relative-paths` (git >= 2.48) writes. Left unanchored it
+# was probed against the caller's cwd, so a live worktree read as absent.
+git -C "$REPO_L" worktree add "$TMP/wt-rel" -b issue-1597-rel >/dev/null 2>&1
+printf '../../../../wt-rel/.git\n' > "$REG_L/wt-rel/gitdir"
+
+# Control for (b): the identical relative shape naming a worktree that really
+# is gone. Pins the anchoring rather than a pass that stopped classifying.
+git -C "$REPO_L" worktree add "$TMP/wt-relgone" -b issue-1597-relgone >/dev/null 2>&1
+rm -rf "${TMP:?}/wt-relgone"
+printf '../../../../wt-relgone/.git\n' > "$REG_L/wt-relgone/gitdir"
+
+chmod 000 "$TMP/anc000"
+OUT="$(cd "$REPO_L" && "$SUT" --check --json 2>/dev/null)"
+chmod 755 "$TMP/anc000"
+
+check_json "T21: a live worktree behind an unsearchable grandparent is not an orphan" \
+  "$OUT" '.orphaned_registrations | all(.id != "wt-deep")'
+check_json "T21: it is recorded as skipped, absence not established" \
+  "$OUT" '.skipped_registrations | any(.id == "wt-deep" and (.reason | test("not searchable")))'
+check_json "T21: a live worktree with a relative gitdir is not an orphan" \
+  "$OUT" '.orphaned_registrations | all(.id != "wt-rel")'
+check_json "T21: control — the same relative shape, genuinely gone, still classifies" \
+  "$OUT" '.orphaned_registrations | any(.id == "wt-relgone")'
+
+# --apply, in a repo scoped AROUND the `git worktree prune` boundary. Pruning is
+# all-or-nothing across the registry (see the scan_registrations note), so a run
+# that prunes for some other entry applies git's own bare stat to these too and
+# takes the unsearchable-grandparent entry with it — the pre-existing boundary
+# this change does not move, shared with the "parent not searchable" skip. What
+# this script owns is what IT classifies and what IT removes, so repoM carries
+# only a targeted (locked) orphan: the apply phase runs, no prune is issued, and
+# the live entry survives on this script's own decision. Same scoping as repoK.
+REPO_M="$TMP/repoM"
+mkdir -p "$REPO_M"
+git -C "$REPO_M" init -q
+echo "m" > "$REPO_M/README.md"
+git -C "$REPO_M" add README.md
+commit_old "$REPO_M" "repoM base"
+echo "fresh" >> "$REPO_M/README.md"
+git -C "$REPO_M" commit -q -am "repoM fresh tip"
+REG_M="$REPO_M/.git/worktrees"
+mkdir -p "$TMP/anc000b/mid"
+git -C "$REPO_M" worktree add "$TMP/anc000b/mid/wt-deep2" -b issue-1597-deep2 >/dev/null 2>&1
+git -C "$REPO_M" worktree add "$TMP/m-bait" -b issue-1597-mbait >/dev/null 2>&1
+rm -rf "${TMP:?}/m-bait"
+printf 'claude agent m-bait (pid 4242)\n' > "$REG_M/m-bait/locked"
+
+chmod 000 "$TMP/anc000b"
+OUT="$(cd "$REPO_M" && "$SUT" --check --json --include-locked 2>/dev/null)"
+# Every candidate here is targeted, so no `git worktree prune` is issued at all
+# — whatever survives --apply below survives on this script's own decision.
+check_json "T21: repoM issues no prune, so nothing else can clear an entry" \
+  "$OUT" '.orphaned_registrations | length > 0 and all(.[]; .method == "targeted")'
+check_json "T21: repoM skips the unsearchable-grandparent entry at classification" \
+  "$OUT" '.skipped_registrations | any(.id == "wt-deep2")'
+OUT="$(cd "$REPO_M" && "$SUT" --apply --include-locked 2>&1)"
+chmod 755 "$TMP/anc000b"
+
+check_eq "T21: control — the targeted bait was removed, so the apply phase ran" "gone" \
+  "$([[ -e "$REG_M/m-bait" ]] && echo present || echo gone)"
+check_eq "T21: --apply leaves the unsearchable-grandparent registration in place" "present" \
+  "$([[ -e "$REG_M/wt-deep2" ]] && echo present || echo gone)"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then

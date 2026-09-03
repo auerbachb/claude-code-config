@@ -617,20 +617,39 @@ read_bounded_line() { # path [max_bytes]
 # ancestor that does exist is a directory we can search — walk up to it, since
 # the whole parent tree being gone is an ordinary orphan, not an anomaly. The
 # walk runs inside one bounded child so it stays under the same bound.
+#
+# The walk CLIMBS; testing the immediate parent alone was not enough (#1597).
+# A parent that itself sits behind an unsearchable directory is unreadable for
+# the same reason its child was, so `test -e` on it is false too — and reading
+# that as "the parent is gone, so absence holds" hands a live worktree two or
+# more levels under a mode-000 ancestor to the deletion path. Only a component
+# that actually answers ends the walk, which is what the paragraph above always
+# claimed and what the caller's own "nearest existing parent" skip message
+# promises. Reaching `/` means nothing along the way refused us: ordinary
+# orphan, absence holds.
+#
+#   0 = absence is established
+#   1 = not established (an ancestor exists but refuses search, or the walk did
+#       not finish inside the bound) — the caller must not treat this as missing
 path_absence_provable() { # path
-  local parent rc=0
-  parent="$(dirname -- "$1")"
-  run_bounded "$READ_BOUND_SECS" test -x "$parent" || rc=$?
+  local rc=0
+  run_bounded "$READ_BOUND_SECS" sh -c '
+    p=$(dirname -- "$1")
+    prev=
+    while [ -n "$p" ] && [ "$p" != "$prev" ]; do
+      # Searchable: the lookup below it really happened and really missed.
+      [ -x "$p" ] && exit 0
+      # Present but refusing search — the case we must not read as "missing".
+      [ -e "$p" ] && exit 1
+      # Neither: this level is unreadable too, so it settles nothing. Climb.
+      [ "$p" = "/" ] && exit 0
+      prev=$p
+      p=$(dirname -- "$p")
+    done
+    exit 0
+  ' _ "$1" || rc=$?
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
-  # A searchable parent means the lookup really happened and really missed.
   if (( rc == 0 )); then return 0; fi
-  # Otherwise the parent is either absent — in which case the child cannot
-  # exist either, so absence still holds — or present but refusing search,
-  # which is the case we must not mistake for "missing".
-  rc=0
-  run_bounded "$READ_BOUND_SECS" test -e "$parent" || rc=$?
-  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 1; fi
-  if (( rc != 0 )); then return 0; fi
   return 1
 }
 
@@ -1253,6 +1272,19 @@ read_registration_gitdir() { # registration path
   fi
   line="$BOUNDED_LINE"
   [[ -n "$line" ]] || return 1
+  # git writes an absolute path by default, but `worktree add --relative-paths`
+  # (git >= 2.48) writes one relative to THIS registration directory. Anchor it
+  # here, exactly as read_checkout_gitdir anchors a checkout's (#1597): left
+  # relative, the path is probed against whatever cwd the caller happened to
+  # have, so a live `--relative-paths` worktree reads as absent and its
+  # registration goes to the deletion path — and the same content classifies
+  # differently from one invocation to the next. Anchoring also keeps content
+  # we cannot vouch for inside the registry instead of resolving it against an
+  # unrelated tree.
+  case "$line" in
+    /*) ;;
+    *) line="$1/$line" ;;
+  esac
   # `gitdir` holds the path of the worktree's own .git file.
   REGISTRATION_WORKTREE="${line%/.git}"
   [[ -n "$REGISTRATION_WORKTREE" ]] || return 1
