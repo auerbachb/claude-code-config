@@ -188,19 +188,37 @@ The field-type contract in `session-state-schema.json` lists `active_agents` und
 `active_agents` key, but it is scoping drift rather than a contract, so reading it as
 a second source would make the board depend on a field nothing promises to maintain.
 
-**Attribute each agent entry to a repo instead of splitting the list.** Under
-`--all-repos` the risk is real — the same issue number exists in every repo, so an
-unattributed entry can be matched to the wrong one. Two signals settle it, in order:
+**The agent list never introduces a row — it only says whether an existing row is
+live.** Rows come from the repo's own `pipelines` block, which is repo-scoped by
+construction: `/subagent` writes `pipelines["<issue>"].started_at` at spawn, before
+Phase A has a PR, so every genuine row of this repo is already there. `active_agents`
+is then consulted only to answer "is this row live, and in which phase" for an issue
+that repo already claims. Inverting that — letting an agent entry create a row —
+is what admits another repo's work.
 
-1. The entry's own `repo` field, when it has one. This is decisive; stop here.
-2. Otherwise, the repo whose `pipelines` or `prs` block contains that issue or PR —
-   **and only when exactly one repo on the board does.** A bare number is not an
-   identity: zero matches means the entry belongs to no row here, and two or more
-   means the number collides across repos and the entry cannot be attributed at all.
+That matters because a scoped `--session-view` is **not** repo-pure. Its attribution
+rule (issue #687, in `session-state.sh`) is: honour `.owner_repo` when present, else
+**keep an entry that has no `.pr`**, else drop it if that PR belongs to another repo.
+The middle branch is deliberate — an unattributable entry is kept rather than hidden —
+so another repo's **Phase A** agent, which has no `.pr` yet, is still in the list you
+read. Matching it on issue number alone would print a phase here for work running
+somewhere else, and that row would then seed the round bound and the freshness record
+too.
 
-Skip the entry in both of those cases. Never fall back to the invoking repo, and
-never let one entry claim a row in more than one repo — a guess that lands on the
-wrong repo renders a phase for a pipeline that is not running.
+So attribute **only** by a repo-scoped identity, in this order:
+
+1. The entry's `.owner_repo`, when present. That is the field the projection honours,
+   and entries do not otherwise carry a repo. Decisive; stop here.
+2. Otherwise its `.pr`, appearing in that repo's own `prs` — **and only when exactly
+   one repo on the board tracks that PR number.** A collision means the number is
+   ambiguous across the board, which is the same reason the scoped projection drops
+   an entry whose PR another real repo also tracks.
+
+There is no issue-number fallback, and adding one would undo the fix: an issue number
+is not an identity, so the same number in two repos' `pipelines` would let one entry
+mark both repos' rows live. An entry matching neither signal stays **unattributed** —
+visible in the list, attached to no row, and therefore unable to move a phase, a
+round bound, or a freshness record.
 
 **A row is keyed by its issue; half its lookups take a PR number. Name the
 crossing.** `pipelines` is **issue-keyed** and carries the PR in `.pr`, written when
@@ -248,10 +266,14 @@ the recorded value prevents (`time-estimates.md` §"Start times come from state"
 ever dispatched, across sessions. Rendering all of it would print a history, not a
 board. Three row classes make up the round:
 
-- **Running** — the pipeline has a live phase: an `active_agents` entry for its issue
-  or PR, or a `prs["<N>"]` entry with a recorded `phase` — read at the per-mode path
-  above — **and**, in either case, no closed PR. `Status` is the phase: `Phase A`,
-  `Phase B`, `Phase C`.
+- **Running** — a `pipelines` entry of **this repo** that also has a live phase, from
+  any one of three sources: an `active_agents` entry attributed to it by Step 2's
+  rule, a `prs["<N>"]` entry with a recorded `phase` — read at the per-mode path
+  above — or, on the dispatching thread only, a **live agent handle it is holding**
+  for a pre-PR row (the sub-bullet below). In every case the PR must not be closed.
+  Candidacy comes from `pipelines`, liveness from those three; none of them promotes
+  an issue this repo never dispatched. `Status` is the phase: `Phase A`, `Phase B`,
+  `Phase C`.
 
   **The open-state qualifier applies to the agent list too, not only to `prs`.**
   `active_agents` is cleaned up by the parent after Phase C
@@ -265,9 +287,25 @@ board. Three row classes make up the round:
   render twice — once as `Phase C`, once as `merged` — or, worse, set the round
   bound below from a start that is no longer in flight.
 
-  A pipeline with **no PR yet** is the one case the agent list decides alone: a
-  Phase A row has an `active_agents` entry and nothing to look up, so it stays
-  running. Absence of a PR is not a closed PR.
+  **A pipeline with no PR yet — a Phase A row — is decided by whether its agent
+  entry is attributable**, which is where the two rules meet. Its `pipelines` entry
+  proves this repo dispatched it; liveness comes from an `active_agents` entry with
+  no `.pr`, and Step 2 decides whether that entry is this repo's. Absence of a PR is
+  not a closed PR, but it is not proof of life either. So:
+
+  - **`.owner_repo` matches this repo → `Phase A`, normally.** The entry is
+    attributed, nothing is inferred, and its `started_at` counts toward the round
+    bound like any other running row.
+  - **No `.owner_repo` and no matching `.pr` → the entry is unattributed**, so it
+    cannot supply liveness. The dispatching thread may still render `Phase A`, but
+    on the strength of **holding the running agent** — it dispatched this pipeline
+    and the handle is live in front of it — never on round-list membership alone.
+    Membership says the pipeline is ours; it does not say the agent survived. Absent
+    that live handle, and on every non-dispatching thread, no phase is asserted: the
+    row is named in Step 4's summary line as a pre-PR pipeline of unconfirmed
+    liveness, is excluded from the running count, and does not set the round bound.
+    Reaching for an issue-number match here is the one thing that would reintroduce
+    another repo's work as this repo's row.
 - **Queued** — issues filed or accepted for this round that have not launched.
   **No durable field records them** (the same reason `table-freshness.sh` takes its
   active count as an argument), so these come from the dispatching thread's own
@@ -495,13 +533,21 @@ Prose, not new columns — the same place `/subagent` reports blockers. Cover wh
 rows cannot say for themselves: anything **blocked** (`blocker`, read at the same
 per-mode `prs` path Step 3 used — `.repos["<key>"].prs["<N>"]` under `--all-repos`), and a
 count of what is running, queued, and delivered this round. On a **non-dispatching**
-thread two of those three are qualified rather than left to look exact — the queue it
-cannot see because it did not dispatch the round, and a delivered count that is
-**approximate**, since the timestamp fallback both misses pipelines that landed
-before the earliest running start and can absorb a late merge from an earlier round
-(Step 3). A dispatching thread qualifies neither: its round membership is its own
-list, so all three counts are exact. An unknown must never render as a "none", and an
-approximate count must not render as a total.
+thread each carries its own qualification, and they are not the same one:
+
+- **Running is exact** for every row whose liveness was established — an agent entry
+  attributed by `.owner_repo` or PR, or a `prs` entry with a phase. It is only
+  **incomplete** by the pre-PR rows whose liveness could not be confirmed (Step 3),
+  which are named here by issue rather than given a phase and are not counted in it.
+- **Queued is unknown**, not zero: this thread did not dispatch the round and has no
+  queue to read.
+- **Delivered is approximate**, since the timestamp fallback both misses pipelines
+  that landed before the earliest running start and can absorb a late merge from an
+  earlier round.
+
+A dispatching thread qualifies none of them: its round membership is its own list and
+it holds its own agents, so all three counts are exact. An unknown must never render
+as a "none", and neither an approximate nor an incomplete count as a total.
 
 ```text
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
