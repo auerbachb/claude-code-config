@@ -561,6 +561,16 @@ ANC_CASFORM_RC=0
 run --raw-path --cas '.["outer"]["claim"]="mine"' --expect null --set '.outer={"wiped":true}' || ANC_CASFORM_RC=$?
 check_eq "ancestor detected when the CAS path uses bracket form" "2" "$ANC_CASFORM_RC"
 
+# The pipeline assigns through scope_path(), so the guard must compare SCOPED
+# spellings: a legacy `.prs` companion becomes `.repos["<key>"].prs`, which nests
+# under a fully-spelled claim that looked unrelated before scoping. Run without
+# --raw-path so scoping actually applies.
+reset_state
+SCOPED_KEY=$(run --repo-key 2>/dev/null)
+ANC_SCOPED_RC=0
+run --cas ".repos[\"$SCOPED_KEY\"].prs.claim=\"mine\"" --expect null --set '.prs={}' >/dev/null 2>&1 || ANC_SCOPED_RC=$?
+check_eq "ancestor detected after scoping rewrites a legacy .prs companion" "2" "$ANC_SCOPED_RC"
+
 # Negative control: a shared textual prefix that is NOT a segment boundary must
 # still be accepted, or the guard above would be rejecting unrelated siblings.
 reset_state

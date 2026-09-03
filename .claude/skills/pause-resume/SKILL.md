@@ -389,11 +389,26 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
       # Fail closed, exactly as the task-id read above does: an unreadable
       # parked_until can hide a standing park.
       echo "(DEGRADED: could not read day.parked_until (rc=$PARK_RC) — recovery remains active)"
-    elif retire_limit_park; then
-      LIMIT_WAKE_RESOLVED=true
-      echo "(cleared standing usage-limit park)"
     else
-      echo "(DEGRADED: standing park record could not be cleared — recovery remains active)"
+      # Only a rolling-window park may be retired here. A weekly-cap park never
+      # arms a wake, so it reaches this branch too — but it is not the `-1`
+      # deadlock this clause exists for, and the account is still capped until
+      # the window reopens. Lifting it would let the day loop re-arm into a cap
+      # that is genuinely still in force, which is why /pm sends weekly parks to
+      # manual resume in the first place. Unreadable kind fails closed the same
+      # way (#1595).
+      KIND_RC=0
+      PARK_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind" 2>/dev/null) || KIND_RC=$?
+      if [[ "$KIND_RC" -ne 0 && "$KIND_RC" -ne 3 ]]; then
+        echo "(DEGRADED: could not read day.limit_kind (rc=$KIND_RC) — park left standing, recovery remains active)"
+      elif [[ "$PARK_KIND" != "rolling_window" ]]; then
+        echo "(usage-limit park left standing: limit_kind=${PARK_KIND:-unset} is not rolling_window — resume when the window reopens)"
+      elif retire_limit_park; then
+        LIMIT_WAKE_RESOLVED=true
+        echo "(cleared standing usage-limit park)"
+      else
+        echo "(DEGRADED: standing park record could not be cleared — recovery remains active)"
+      fi
     fi
   fi
 fi

@@ -1448,9 +1448,16 @@ if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
   # and wave the others through into exactly the silent erase this guard exists
   # to stop. jq is the normalizer — `path()` renders any accessor expression as
   # a segment array — so there is no hand-rolled jq-path parser here.
-  _cas_norm="$(jq -cn "path($CAS_PATH)" 2>/dev/null)" || _cas_norm=""
+  # Compare what the pipeline will actually ASSIGN, which is the scoped path:
+  # `scope_path` rewrites a legacy `.prs` / `.root_repo` companion into
+  # `.repos["<key>"].…`, so a relative companion and a fully-spelled claim (or
+  # the reverse) look unrelated before scoping and nest after it. Comparing the
+  # raw spellings would miss exactly that pair.
+  _cas_scoped="$(scope_path "$CAS_PATH")"
+  _cas_norm="$(jq -cn "path($_cas_scoped)" 2>/dev/null)" || _cas_norm=""
   for _sp in "${SET_PATHS[@]}"; do
-    _sp_norm="$(jq -cn "path($_sp)" 2>/dev/null)" || _sp_norm=""
+    _sp_scoped="$(scope_path "$_sp")"
+    _sp_norm="$(jq -cn "path($_sp_scoped)" 2>/dev/null)" || _sp_norm=""
     if [[ -n "$_cas_norm" && -n "$_sp_norm" ]]; then
       # Strict ancestor: the companion is a PROPER prefix of the CAS path.
       # Equal paths are excluded by the length test, preserving the documented
@@ -1459,11 +1466,13 @@ if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
            '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
         die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
       fi
-    elif [[ "$CAS_PATH" == "$_sp"?* ]]; then
+    elif [[ "$_cas_scoped" == "$_sp_scoped"?* ]]; then
       # jq could not render one side as a path (e.g. a multi-output expression).
       # Fall back to the textual boundary test rather than skipping the check: a
       # guard that silently opts out on a shape it cannot parse is not a guard.
-      _rest="${CAS_PATH#"$_sp"}"
+      # Still on the SCOPED spellings, so the fallback cannot reopen the gap the
+      # scoping above closes.
+      _rest="${_cas_scoped#"$_sp_scoped"}"
       if [[ "$_rest" == .* || "$_rest" == \[* ]]; then
         die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
       fi

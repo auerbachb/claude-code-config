@@ -513,6 +513,16 @@ require_text "pause-resume retires a park with no armed wake" "$PAUSE_RESUME" \
   'cleared standing usage-limit park'
 require_text "pause-resume fails closed on an unreadable park" "$PAUSE_RESUME" \
   'could not read day\.parked_until'
+# A weekly-cap park never arms a wake, so it reaches the no-armed-wake branch
+# too — but it is not the -1 deadlock that branch exists for, and the account is
+# still capped. Retiring it would re-arm the day loop into a live cap, which is
+# exactly what /pm sends weekly parks to manual resume to avoid.
+require_text "pause-resume retires only rolling_window parks" "$PAUSE_RESUME" \
+  'PARK_KIND.*!=.*rolling_window|!= "rolling_window"'
+require_text "pause-resume leaves a weekly park standing"     "$PAUSE_RESUME" \
+  'park left standing'
+require_text "pause-resume fails closed on an unreadable kind" "$PAUSE_RESUME" \
+  'could not read day\.limit_kind'
 require_text "generation check is unchanged"        "$PAUSE_RESUME" 'day\.limit_resume_generation'
 
 require_text "schema documents limit_cause"    "$SCHEMA" 'limit_cause'
