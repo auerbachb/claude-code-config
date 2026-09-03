@@ -254,6 +254,104 @@ expect "index row escaping docs/ through .. fails" 1 \
   'index table may only link into' \
   bash -c 'printf "%s\n" "| [Sneaky](docs/../tools.md) | Escapes docs/ |" >> .claude/scripts/README.md'
 
+# --- 6. row ordering, per-doc opt-in (issue #1544) ------------------------
+# The check reads only docs carrying the marker, so both halves need pinning:
+# that a marked doc is genuinely checked, and that an unmarked one is not.
+# Without the second half the check could quietly grow into a repo-wide rule
+# and redden CI on the 12 sibling docs that group rows by role on purpose.
+
+ORDERED_MARKER='<!-- catalog-lint: ordered -->'
+# The same marker shown as an example of the format. It must not opt a doc in,
+# for the reason the back-link check already applies to fenced links.
+FENCED_MARKER=$(printf '%s\n%s\n%s' '```markdown' "$ORDERED_MARKER" '```')
+
+ROW_ALPHA='| [alpha.sh](../alpha.sh) | First |'
+ROW_BETA='| [beta.py](../beta.py) | Second |'
+ROW_GAMMA='| [gamma.sh](../gamma.sh) | Third |'
+ROW_ALPHA_TWO='| [alpha-two.sh](../alpha-two.sh) | Prefix namesake |'
+ROW_TEST_NESTED='| [alpha.test.sh](../tests/alpha.test.sh) | Covers alpha |'
+ROW_TEST_TOPLEVEL='| [alpha.test.sh](../alpha.test.sh) | Top-level namesake |'
+
+# write_doc <path> <title> <marker-or-empty> <row>...
+# Rewrites a category doc with the given rows in the given order, so a case
+# states the order it is testing rather than patching the fixture into shape.
+write_doc() {
+  # Not `local path=` — zsh ties path/PATH, and a sourced copy would blow away
+  # PATH for everything after it (issue #1556).
+  local doc_path="$1" title="$2" marker="$3" row
+  shift 3
+  {
+    printf '# %s\n\n' "$title"
+    printf 'Category prose.\n\n'
+    if [[ -n "$marker" ]]; then printf '%s\n\n' "$marker"; fi
+    printf '| Entry | Purpose |\n|-------|---------|\n'
+    for row in "$@"; do printf '%s\n' "$row"; done
+    printf '\n---\n\n[back to the index](../README.md)\n'
+  } > "$doc_path"
+}
+
+# The namesake pair of issue #1452: one file at the top level, one under
+# tests/, identical link text. Rendered, the two rows are indistinguishable,
+# so the ordering check has to treat them as a tie.
+write_namesake_tests_doc() {
+  printf '#!/usr/bin/env bash\n' > .claude/scripts/alpha.test.sh
+  write_doc .claude/scripts/docs/tests.md Tests "$ORDERED_MARKER" "$@"
+}
+
+# A name that is a prefix of another, separated by a byte that sorts below the
+# extension dot — the shape that drifted into the real tests.md.
+write_prefix_pair_tools_doc() {
+  printf '#!/usr/bin/env bash\n' > .claude/scripts/alpha-two.sh
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" "$@"
+}
+
+expect "marked doc in sort order passes" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" \
+    "$ROW_ALPHA" "$ROW_BETA" "$ROW_GAMMA"
+
+# The negative control. Without it every case above passes on a check that
+# never fires.
+expect "marked doc with a displaced row fails and names the row" 1 \
+  "row 'beta\.py' is out of order.*it follows 'gamma\.sh'" \
+  write_doc .claude/scripts/docs/tools.md Tools "$ORDERED_MARKER" \
+    "$ROW_ALPHA" "$ROW_GAMMA" "$ROW_BETA"
+
+# The 12 role-grouped siblings in the real repo, in miniature: rows in no
+# particular order, no marker, and nothing for the lint to say about it.
+expect "unmarked doc with displaced rows passes" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+expect "marker inside a code fence does not opt the doc in" 0 \
+  'scripts-catalog-lint: OK \(4 entries across 2 category docs\)' \
+  write_doc .claude/scripts/docs/tools.md Tools "$FENCED_MARKER" \
+    "$ROW_GAMMA" "$ROW_BETA" "$ROW_ALPHA"
+
+# Ordering is keyed on the link text a reader scans, not on the path key
+# checks 1 and 3 use, so the namesake pair compares equal and both orders are
+# legal. Pinning both is what stops a later switch to a path key from
+# reddening a doc no reader could have written differently.
+expect "marked doc allows a same-link-text pair, nested first" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_namesake_tests_doc "$ROW_TEST_NESTED" "$ROW_TEST_TOPLEVEL"
+
+expect "marked doc allows a same-link-text pair, top level first" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_namesake_tests_doc "$ROW_TEST_TOPLEVEL" "$ROW_TEST_NESTED"
+
+# Byte order, not dictionary order: '-' (0x2D) sorts before '.' (0x2E). This
+# is the shape that drifted into the real tests.md between PR #1539 and this
+# change, and the one a reader is most likely to "correct" back.
+expect "marked doc enforces byte order, not dictionary order" 1 \
+  "row 'alpha-two\.sh' is out of order.*it follows 'alpha\.sh'" \
+  write_prefix_pair_tools_doc "$ROW_ALPHA" "$ROW_ALPHA_TWO" "$ROW_BETA" "$ROW_GAMMA"
+
+expect "marked doc passes with the byte-order pair the right way round" 0 \
+  'scripts-catalog-lint: OK \(5 entries across 2 category docs\)' \
+  write_prefix_pair_tools_doc "$ROW_ALPHA_TWO" "$ROW_ALPHA" "$ROW_BETA" "$ROW_GAMMA"
+
 # --- out-of-scope files must NOT require rows -----------------------------
 # These pin the scope boundary. Without them a future tightening of the
 # inventory glob would demand catalog rows for helper libraries and test
@@ -335,6 +433,21 @@ normalize_case "a/b"                  "../.."                "."
 normalize_case "a/b"                  "/abs/path.sh"         "/abs/path.sh"
 normalize_case "/tmp/x"               "../y.sh"              "/tmp/y.sh"
 normalize_case "/"                    "../../etc"            "/etc"
+
+# --- real repo: the row-ordering opt-in is actually in effect --------------
+# The sanity run below passes whether or not any doc carries the marker, so on
+# its own it cannot tell an enforced tests.md from an unmarked one — a green
+# check that never ran. Assert the marker is where the decision put it, and
+# nowhere else: the 12 sibling docs stay unmarked by design (issue #1544).
+marked_docs=$(grep -lF -- '<!-- catalog-lint: ordered -->' \
+  "${REPO_ROOT}"/.claude/scripts/docs/*.md || true)
+if [[ "$marked_docs" == "${REPO_ROOT}/.claude/scripts/docs/tests.md" ]]; then
+  echo "ok   — tests.md is the only category doc opted in to row ordering"
+else
+  echo "FAIL — expected only .claude/scripts/docs/tests.md to carry the ordering marker"
+  echo "       got: ${marked_docs:-<none>}"
+  failures=$((failures + 1))
+fi
 
 # --- real repo ------------------------------------------------------------
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then

@@ -19,6 +19,16 @@
 #      fenced code block — a link shown as an example is not navigation.
 #   5. The index itself holds no per-script rows — its table links only into
 #      docs/, so per-script rows have exactly one home.
+#   6. A category doc that opts in by carrying the marker
+#      <!-- catalog-lint: ordered --> lists its rows in LC_ALL=C sort order.
+#      Opt-in, not repo-wide: the other category docs group rows by workflow
+#      role on purpose — pr-state-polling.md leads with pr-state.sh before its
+#      helpers, utilities.md keeps the portable-handoff-* family together — so
+#      a blanket ordering rule would be wrong against them, and a one-doc rule
+#      hard-coded here would make a convention official for one doc of
+#      thirteen. The marker lets a doc whose order is genuinely alphabetical
+#      say so and have it enforced, and leaves every other doc untouched
+#      (issue #1544).
 #
 # In scope: .claude/scripts/*.sh, .claude/scripts/*.py (top level only) and
 # .claude/scripts/tests/*.test.sh. Deliberately OUT of scope: lib/ (sourced
@@ -142,6 +152,47 @@ has_backlink() {
     index($0, "](../README.md)") > 0 { found = 1 }
     END { if (found) exit 0; exit 1 }
   ' "$1"
+}
+
+# The row-ordering opt-in marker (check 6). Defined once and read by the
+# detector, the error message, and the docs that carry it, so the string the
+# lint looks for and the string it tells you to write cannot drift apart.
+ORDER_MARKER='<!-- catalog-lint: ordered -->'
+
+# True when the doc opts in to row ordering — marker present outside any code
+# fence. Same fence skip as the back-link, for the same reason: a marker shown
+# inside a fenced block documents the format, and must not quietly opt that doc
+# in. Position is not constrained beyond that; a marker anywhere in the doc
+# counts, so a marker written below the table opts the doc in rather than
+# silently doing nothing.
+has_order_marker() {
+  awk -v marker="$ORDER_MARKER" "$AWK_DOC_PRELUDE"'
+    index($0, marker) > 0 { found = 1 }
+    END { if (found) exit 0; exit 1 }
+  ' "$1"
+}
+
+# Emit "previous<US>offending" for every adjacent pair of rows that is out of
+# LC_ALL=C order. A list is sorted exactly when no adjacent pair is inverted,
+# so checking pairs is the same test as comparing the list against its sort —
+# and it names the row that has to move instead of printing a diff.
+#
+# The key is the link *text*: the filename a reader scans down the table, so
+# the lint enforces the order the eye checks. That is deliberately not the
+# path key checks 1 and 3 use — two rows whose link text is identical (the
+# top-level/tests/ namesake pair of issue #1452) compare equal here and may
+# appear in either order, because nothing visible in the rendered doc tells a
+# reader which is which.
+#
+# The awk deliberately does not exit early. Under `set -o pipefail` an early
+# exit closes the pipe, entry_rows takes SIGPIPE, and a clean read of a doc
+# reports as a failed pipeline.
+row_order_violations() {
+  entry_rows "$1" | LC_ALL=C awk -F$'\037' '
+    $1 == "" { next }
+    prev != "" && $1 < prev { printf "%s\037%s\n", prev, $1 }
+    { prev = $1 }
+  '
 }
 
 # --- inventory ------------------------------------------------------------
@@ -350,6 +401,21 @@ while IFS=$'\037' read -r name target; do
       ;;
   esac
 done <<< "$index_rows"
+
+# --- 6. Row ordering, per-doc opt-in (issue #1544) ------------------------
+# Only docs carrying ORDER_MARKER are examined; every other doc passes this
+# check without being read for order at all. That is the whole point of the
+# marker — see the header block for why a repo-wide rule would be wrong here.
+for doc in "${doc_files[@]}"; do
+  has_order_marker "$doc" || continue
+  violations=$(row_order_violations "$doc" || true)
+  [[ -z "$violations" ]] && continue
+  while IFS=$'\037' read -r previous offending; do
+    [[ -z "${offending:-}" ]] && continue
+    echo "::error file=${doc}::row '${offending}' is out of order — it follows '${previous}', and this doc carries ${ORDER_MARKER}, so its rows must be in LC_ALL=C sort order"
+    errors=$((errors + 1))
+  done <<< "$violations"
+done
 
 if (( errors > 0 )); then
   echo "scripts-catalog-lint: ${errors} error(s) found"
