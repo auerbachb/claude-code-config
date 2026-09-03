@@ -590,6 +590,31 @@ ZERO_TICK="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
 "$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
 ok "a record with no usable count fires with 'unknown', while a real 0 still disarms"
 
+# --- 19j. A count long enough to WRAP is rejected, not wrapped ---------------
+#          `^[0-9]+$` admits any length and every consumer is 64-bit arithmetic.
+#          A persisted count that wraps negative makes `(( ACTIVE_RECORDED > 0 ))`
+#          false and exits --tick silently; an --active that wraps to exactly
+#          zero reports `idle` for a round that is running. Both suppress the
+#          floor for active work.
+"$SCRIPT" --note-rendered --active 18446744073709551616 --session "$SID" --repo "$REPO" \
+  >/dev/null 2>&1
+[[ $? -eq 2 ]] || fail "an --active that wraps 64-bit arithmetic should exit 2"
+"$SCRIPT" --check --active 18446744073709551616 --session "$SID" --repo "$REPO" >/dev/null 2>&1
+[[ $? -eq 2 ]] || fail "--check with a wrapping --active should exit 2, not report idle"
+# Persisted side: an over-long recorded count must fire, not exit silently.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].active_pipelines=\"99999999999999999999\"" \
+  >/dev/null || fail "could not plant an over-long recorded count"
+backdate 90
+TICK_HUGE="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>/dev/null)"
+[[ "$TICK_HUGE" == *"TABLE FLOOR"* ]] || \
+  fail "an over-long recorded count silently suppressed the floor, got: '$TICK_HUGE'"
+# Positive control: a 9-digit count is still a legitimate count.
+"$SCRIPT" --note-rendered --active 999999999 --session "$SID" --repo "$REPO" >/dev/null \
+  || fail "a 9-digit --active should still be accepted"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "counts long enough to wrap are rejected at both entry points; 9 digits still works"
+
 # --- 19i. The dedupe marker is never followed through a symlink ---------------
 #          The default marker dir is /tmp (deliberately, matching
 #          bgwork-ceiling.sh). In a world-writable directory a name not yet

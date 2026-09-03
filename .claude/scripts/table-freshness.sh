@@ -193,9 +193,20 @@ iso_to_epoch() {
 # Done textually rather than with `$(( 10#$v ))` on purpose: the arithmetic form
 # would also silently wrap a count wider than 64 bits, turning an absurd input
 # into a plausible wrong number instead of leaving it intact.
+#
+# A count longer than COUNT_MAX_DIGITS is rejected outright (empty result) rather
+# than normalised. `^[0-9]+$` admits any length, and every consumer is 64-bit
+# Bash arithmetic that WRAPS: `(( ACTIVE_RECORDED > 0 ))` on a wrapped-negative
+# value exits the tick silently, and `(( ACTIVE == 0 ))` on a value that wraps to
+# exactly zero reports `idle` for a round that is running. Both suppress the
+# floor for active work, which is the failure this whole file is built to avoid.
+# Nine digits allows 999,999,999 concurrent pipelines — absurd headroom, and ten
+# orders of magnitude short of where wrapping starts.
+COUNT_MAX_DIGITS=9
 normalize_count() {
   local v="$1"
   while [[ "$v" == 0?* ]]; do v="${v#0}"; done
+  (( ${#v} > COUNT_MAX_DIGITS )) && { printf ''; return 1; }
   printf '%s' "$v"
 }
 
@@ -226,7 +237,8 @@ while (( $# > 0 )); do
     --active)
       (( $# >= 2 )) || die_usage "--active requires a count"
       [[ "$2" =~ ^[0-9]+$ ]] || die_usage "--active must be a non-negative integer, got: $2"
-      ACTIVE="$(normalize_count "$2")"
+      ACTIVE="$(normalize_count "$2")" \
+        || die_usage "--active is too large to be a pipeline count (max $COUNT_MAX_DIGITS digits), got: $2"
       shift
       ;;
     --surface)
@@ -436,7 +448,11 @@ read_record() {
   # Normalised on the way in as well: this record is shared with /board (#1581)
   # and is a plain JSON file a human can edit, so a leading-zero count can reach
   # us without having passed the --active guard above.
-  [[ -n "$ACTIVE_RECORDED" ]] && ACTIVE_RECORDED="$(normalize_count "$ACTIVE_RECORDED")"
+  # An over-long persisted count is emptied, not carried through — which routes
+  # it to the "no usable active_pipelines" path in --tick, so it fires with a
+  # diagnostic instead of wrapping into a silent `exit 0`.
+  [[ -n "$ACTIVE_RECORDED" ]] && \
+    { ACTIVE_RECORDED="$(normalize_count "$ACTIVE_RECORDED")" || ACTIVE_RECORDED=""; }
 
   SURFACE_RECORDED="$(printf '%s' "$record" | jq -r '.surface // empty' 2>/dev/null)"
   return 0
