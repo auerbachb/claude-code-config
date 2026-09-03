@@ -98,6 +98,19 @@ bash .github/scripts/run-hook-tests.sh        # all bash suites
 bash .github/scripts/run-python-tests.sh      # all Python suites
 ```
 
+**Runtime budget — one suite is slow on purpose (issue #1505).** Suites are otherwise
+quick, but [`checkpoint-handoff.test.sh`](.claude/scripts/tests/checkpoint-handoff.test.sh)
+builds a throwaway git repository per case: ~71s idle, ~156s with four copies running
+concurrently, ~202s under concurrent subagents — and it climbs from there. It announces
+this on its first line of output, because silence from it is fixture construction, not a
+hang.
+
+Neither the runner nor CI bounds any suite today. **If you add a bound — in a runner, a CI
+job, or an ad-hoc invocation — keep it ≥420s for that suite.** A tighter bound does not
+detect a hang, it manufactures one: a ~240s alarm on a loaded machine is what produced a
+phantom hang report that parked real, already-correct work. The floor is enforced by
+[`checkpoint-handoff-slow-bound.test.sh`](.claude/scripts/tests/checkpoint-handoff-slow-bound.test.sh).
+
 **Compact mode (`--json`)** — both runners also emit the one-line result contract from
 [`compact-result-contract.md`](.claude/reference/compact-result-contract.md) instead of every
 suite's raw output, which is what CI uses and what an agent should read:
