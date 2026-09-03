@@ -524,6 +524,35 @@ except Exception:
 rr = d.get("restart_recommended") or {}
 sys.exit(0 if "skills" in (rr.get("categories") or []) else 1)
 PY
+# Phantom control: a user-owned AGENT link makes the agents publisher print its
+# standing advisory on stdout. With links already settled and nothing changed,
+# a resume must NOT raise a restart signal off that advisory.
+printf '# beta agent\n' > "$R14_UP/.claude/agents-placeholder" 2>/dev/null || true
+mkdir -p "$R14_UP/.claude/agents"
+printf '# beta\n' > "$R14_UP/.claude/agents/beta.md"
+git -C "$R14_UP" add -A >/dev/null 2>&1
+git -C "$R14_UP" -c user.email=t@t -c user.name=t commit -qm three
+R14D_HOME="$R14/home-d"; mkdir -p "$R14D_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-d"
+git -C "$R14/base-d" worktree add -q --detach "$R14D_HOME/.claude/skills-worktree" main
+# First run (startup) settles every link and writes no signal by design.
+printf '{"source":"startup"}' | HOME="$R14D_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+# Plant a personal agent link, then resume with nothing else changed.
+mkdir -p "$R14D_HOME/.claude/agents"
+ln -sf /tmp/does-not-matter "$R14D_HOME/.claude/agents/gamma.md" 2>/dev/null || true
+printf '{"source":"resume"}' | HOME="$R14D_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14D_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a settled resume with only a user-owned agent link raised a phantom restart signal (BugBot d377f4b1, PR #1553)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(1 if d.get("restart_recommended") is not None else 0)
+PY
 rm -rf "$R14"
 
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

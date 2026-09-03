@@ -405,12 +405,14 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
   _publish_err_file=$(mktemp "${TMPDIR:-/tmp}/session-start-publish.XXXXXX" 2>/dev/null) || _publish_err_file=""
 
   # Categories whose links a publisher actually CHANGED this run, for the
-  # resume-path restart write below. Publishers print one stdout line per
-  # change and nothing otherwise, so stdout-with-separated-stderr is a change
-  # signal; in the mixed-stream fallback (no err file) warnings would pollute
-  # it, so that case conservatively counts nothing — an advisory must never
-  # become a phantom restart signal.
+  # resume-path restart write below. Detection is a WHITELIST of the
+  # publishers' change verbs, not "any stdout": the agents publisher prints
+  # its standing user-owned-symlink advisory (and a restart note) on stdout,
+  # so a personal agent link would otherwise raise a phantom restart on every
+  # resume. Counted only in the separated-stderr case; the mixed-stream
+  # fallback counts nothing — an advisory must never become a phantom signal.
   _links_changed_cats=""
+  _publish_change_verbs='— (creating|updating symlink|symlinked|migrating|replacing directory copy|removing stale)'
   _publish_one() { # _publish_one <script> <label>
     local script="$1" label="$2" out="" err="" rc=0
     if [[ -n "$_publish_err_file" ]]; then
@@ -423,7 +425,8 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
       errors="${errors:+$errors; }${label} symlink publish failed: ${err:-$out}"
       return 0
     fi
-    if [[ -n "$_publish_err_file" && -n "$out" ]]; then
+    if [[ -n "$_publish_err_file" && -n "$out" ]] \
+        && grep -Eq "$_publish_change_verbs" <<< "$out"; then
       case "$label" in
         skill) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills" ;;
         agent) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }agents" ;;
