@@ -531,6 +531,18 @@ case "$MODE" in
       printf 'idle\n'
       exit 0
     fi
+    # An unusable count with no --active to override it must fail CLOSED here,
+    # exactly as --tick does for the same record. Falling through to the age
+    # comparison could answer `fresh` and license a one-liner, while the armed
+    # tick reads that same record as active and demands a table — two halves of
+    # one mechanism disagreeing about one record, which is worse than either
+    # verdict alone. The caller has no way to notice, so it must not happen.
+    if [[ -z "$ACTIVE" && ! "$EFFECTIVE_ACTIVE" =~ ^[0-9]+$ ]]; then
+      printf 'table-freshness.sh: render record for %s has no usable active_pipelines and no --active was given — reporting stale rather than guessing fresh\n' \
+        "$SESSION_ID" >&2
+      printf 'stale\n'
+      exit 1
+    fi
     AGE="$(record_age)"
     if (( AGE >= TRIP_S )); then
       printf 'stale\n'

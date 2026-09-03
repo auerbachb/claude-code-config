@@ -306,6 +306,37 @@ background commands, and Monitors use the recorded recovery path and owning
 skill, then mark the old entry `rearmed`. A missing recovery path is reported
 as pending, not guessed. Preserve the stopped entry for audit history.
 
+**Re-arm the table-freshness floor when a round resumes.** `/pause` disarms it by DATA (it clears the render record) and the shutdown stops its persistent Monitor — so both halves are gone after a pause. `/subagent` arms that watch **once per session**, on the reasoning that it stays alive for the rest of the round; a resumed round breaks that assumption, and nothing else re-arms it. Left out, the unprompted hourly pulse is simply absent for the remainder of the round: `--check` still answers correctly when a heartbeat asks, but the floor stops volunteering, which is the whole guarantee.
+
+Do this only when a round is actually being resumed (at least one pipeline re-armed above), and only with a resolved repo key:
+
+```bash
+# `--repo-key` prints `_unknown` and exits 0 when it cannot resolve a repo, so
+# an emptiness test alone never fires — normalise the sentinel first, or the
+# watch gets armed on a scope no render will ever write to.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
+if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+  # Record the board this resume just printed (Step 4), then re-arm. Recording
+  # first matters: arming over an absent record gives a watch that polls
+  # nothing and stays silent forever while looking armed.
+  ACTIVE_COUNT=<pipelines re-armed above, running + queued>
+  if [[ "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]] && (( ACTIVE_COUNT > 0 )); then
+    if "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+         --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}" \
+         --surface pause-resume; then
+      # Hand `--arm-command` output to the Monitor tool with persistent: true.
+      "$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" \
+        --session "${CLAUDE_SESSION_ID:-default}"
+    else
+      echo 'DEGRADED: table-freshness clock not recorded on resume — floor not re-armed; re-render the "Running now" table on every heartbeat'
+    fi
+  fi
+fi
+```
+
+Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
+
 **Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too — clearing `limit_probe_fires_remaining` with the pair is what stops a later recovery re-arming a probe for a park the user has already resumed past. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
 
 ```bash

@@ -116,9 +116,20 @@ if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
 else
   EXECUTION_GATE_PERSISTED=0
 fi
-if [[ -n "$SESSION_STATE_SH" ]] && \
-   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) && \
-   [[ -n "$REPO_KEY" ]]; then
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so testing emptiness alone is dead code. Normalising
+# that sentinel here is what makes every `-n "$REPO_KEY"` guard below — the
+# refill pause AND the table-freshness disarm in Step 2 — actually fire. Without
+# it, `/end` run from another checkout (which it is explicitly designed to
+# support) clears `_unknown`: a scope nothing polls, reading as a successful
+# teardown while the live record keeps the floor armed.
+if [[ -n "$SESSION_STATE_SH" ]]; then
+  REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+  [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+else
+  REPO_KEY=""
+fi
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   NOW=$(date -u +%FT%TZ)
   "$SESSION_STATE_SH" \
     --set ".repos[\"$REPO_KEY\"].refill={\"paused\":true,\"reason\":\"full_stop\",\"scope\":null,\"at\":\"$NOW\"}" \

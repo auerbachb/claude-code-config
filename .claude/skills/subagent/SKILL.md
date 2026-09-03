@@ -630,6 +630,12 @@ fi
 # record than the tick polls: a floor firing forever against a board the thread
 # is faithfully re-rendering. Resolve both ONCE here and reuse them.
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 
 # ACTIVE_COUNT is CALLER-DECLARED, and YOU assign it right here: the number of
@@ -706,6 +712,12 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # (no window required). Per-PR — accumulate one row per PR, not one string.
    # Read window deadline and batch issues from session-state (/pm Step 0b/1B.5)
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
    # Resolve STARTED_AT from the value RECORDED AT SPAWN (Step 7.1) — never re-derive
    # it. PR-keyed copy first (Phase A Completion mirrors it there), then the
    # issue-keyed record, which is the one that exists before the PR does and the one
@@ -790,6 +802,12 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # empty --session/--repo rather than substituting a default, so this is a
    # loud failure instead of a silent one — but re-deriving is what avoids it.
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+# cannot resolve a repo, so an emptiness test alone is dead code. Normalise
+# that sentinel to empty here, once, so every `-n "$REPO_KEY"` guard below
+# actually fires — otherwise the floor arms on `_unknown`, a scope no render
+# ever writes to, and the watch is silent forever while looking armed.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
    TF_SESSION="${CLAUDE_SESSION_ID:-default}"
    # ACTIVE_COUNT is re-derived here for the SAME reason as the two above, and
    # leaving it out of that list was an easy miss: it is a plain shell variable

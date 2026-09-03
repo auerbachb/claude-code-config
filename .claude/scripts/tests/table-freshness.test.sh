@@ -776,6 +776,26 @@ GONE_ERR="$("$SCRIPT" --tick --session "$SID" --repo "$REPO" 2>&1 >/dev/null)"
   fail "a cleared record must stay silent, not warn about a missing timestamp — got: '$GONE_ERR'"
 ok "a present-but-unparseable render record is diagnosed; a cleared one stays silent"
 
+# --- 19p. --check and --tick must AGREE about the same record ----------------
+#          With no --active and an unusable recorded count, --check used to skip
+#          the idle test and fall through to the age comparison, so it could
+#          answer `fresh` and license a one-liner while the armed tick read that
+#          same record as active and demanded a table. Two halves of one
+#          mechanism disagreeing, with no way for the caller to notice.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+"$STATE_SH" --set ".repos[\"$REPO\"].table_render[\"$SID\"].active_pipelines=\"garbage\"" \
+  >/dev/null || fail "could not plant an unusable count"
+run_check; V="$CHECK_OUT"
+[[ "$V" == "stale" && "$CHECK_RC" -eq 1 ]] || \
+  fail "--check with an unusable recorded count and no --active must fail closed to 'stale'/1, got '$V'/$CHECK_RC"
+# And an explicit --active still overrides it, in both directions.
+run_check --active 0; V="$CHECK_OUT"
+[[ "$V" == "idle" ]] || fail "--active 0 must still override an unusable record, got '$V'"
+run_check --active 3; V="$CHECK_OUT"
+[[ "$V" == "fresh" ]] || fail "--active 3 on a just-written record should be 'fresh', got '$V'"
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+ok "--check fails closed on an unusable count, matching --tick, and --active still overrides"
+
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
 #         record with the marker gone, which is exactly the combination that
@@ -906,6 +926,43 @@ grep -qE '\-\-note-rendered --active 0' "$SUBAGENT" || \
 grep -qE '^TABLE_FRESHNESS_SH=\$\(resolve_script table-freshness\.sh\)' "$PAUSE" || \
   fail "/pause must resolve table-freshness.sh in Step 0, not inline at the call site"
 ok "each wiring site assigns its count, gates its render, reports failures, and tears down"
+
+# --- 23. The unresolved-repo guards must actually be able to fire ------------
+#         `session-state.sh --repo-key` NEVER returns empty: it prints
+#         `_unknown` and exits 0 when it cannot resolve a repo. Every
+#         `[[ -z "$REPO_KEY" ]]` / `-n "$REPO_KEY"` guard written against
+#         emptiness alone is therefore dead code — and these guards exist to
+#         stop exactly the thing that then happens: /subagent arms a watch on
+#         `_unknown` (a scope no render ever writes), and /pause and /end
+#         "disarm" `_unknown` while the live record stays armed. Verified
+#         against the real helper rather than assumed.
+REPO_KEY_OUT="$(cd "$TMP_DIR" && "$STATE_SH" --repo-key 2>/dev/null)"
+[[ "$REPO_KEY_OUT" == "_unknown" ]] || \
+  fail "test premise changed: --repo-key outside a repo returned '$REPO_KEY_OUT', not '_unknown'"
+# Match the NORMALISATION STATEMENT, not the word: every one of these files
+# also discusses `_unknown` in prose, so grepping the bare token passes even
+# with the assignment deleted. (Checked: it did.)
+for SKILL_PATH in subagent pause end pause-resume; do
+  SKILL_FILE="$REPO_ROOT/.claude/skills/$SKILL_PATH/SKILL.md"
+  grep -q 'table-freshness' "$SKILL_FILE" || continue
+  grep -qE '\[\[ *"\$REPO_KEY" *== *"_unknown" *\]\] *&& *REPO_KEY=""' "$SKILL_FILE" || \
+    fail "/$SKILL_PATH guards the freshness floor on an empty REPO_KEY, which --repo-key never returns — normalise '_unknown' to empty first"
+done
+ok "every freshness wiring site normalises the '_unknown' sentinel its guards depend on"
+
+# --- 24. A resumed round re-arms the floor -----------------------------------
+#         /pause disarms by data AND the shutdown stops the Monitor, so both
+#         halves are gone. /subagent arms "once per session" on the assumption
+#         the watch outlives the round; a resume breaks that, and nothing else
+#         re-arms it — the unprompted hourly pulse would be gone for good.
+RESUME_FILE="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
+grep -q 'table-freshness' "$RESUME_FILE" || \
+  fail "/pause-resume never re-arms the freshness floor that /pause disarmed"
+grep -q -- '--arm-command' "$RESUME_FILE" || \
+  fail "/pause-resume must re-arm the watch, not merely re-record the clock"
+grep -q -- '--note-rendered' "$RESUME_FILE" || \
+  fail "/pause-resume must record a clock before arming — arming over an absent record polls nothing"
+ok "/pause-resume records the board and re-arms the floor a pause tore down"
 
 echo
 echo "All table-freshness.sh tests passed."

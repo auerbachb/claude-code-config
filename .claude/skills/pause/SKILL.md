@@ -67,6 +67,12 @@ TASK_REGISTRY_SH=$(resolve_script background-task-registry.sh) || TASK_REGISTRY_
 REPO_KEY=""
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+  # `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when it
+  # cannot resolve a repo. Normalise that sentinel to empty so the fallback
+  # below actually runs and the `-z` guards downstream actually fire —
+  # otherwise teardown clears `_unknown`, a scope nothing polls, and reads as a
+  # successful disarm while the live record keeps the floor armed.
+  [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 fi
 if [[ -z "$REPO_KEY" ]]; then
   REMOTE=$(git remote get-url origin 2>/dev/null) || REMOTE=""
