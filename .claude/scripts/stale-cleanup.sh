@@ -7,13 +7,16 @@
 #   never deletes itself. Two skills consume this script as the single source of
 #   truth for stale worktree/branch detection and safety — /pm-update (Step 8)
 #   and /pm-clean (workspace sweep) — so their results can never diverge (issue
-#   #618). Detects four classes of stale state on the target repo's root:
+#   #618). Detects five classes of stale state on the target repo's root:
 #     1. Local worktrees whose HEAD commit is older than STALE_DAYS.
 #     2. Local branches whose tip commit is older than STALE_DAYS.
 #     3. Remote branches (refs/remotes/origin/*) whose tip commit is older
 #        than STALE_DAYS.
 #     4. Orphaned worktree *registrations* — `<git-common-dir>/worktrees/<id>`
 #        entries with no live worktree behind them (issue #1402).
+#     5. Orphaned worktree *checkouts* — directories under `.claude/worktrees/`
+#        whose `.git` gitdir target is gone: the inverse of class 4, and
+#        REPORT-ONLY unless --remove-orphaned-checkouts is passed (issue #1417).
 #
 #   TARGET REPO RESOLUTION (invoking-repo scope — issues #687/#697): the swept
 #   repo is resolved from the CALLER's current directory (or an explicit
@@ -49,6 +52,14 @@
 #     - Skip `locked` registrations unless --include-locked is passed, and even
 #       then only when the worktree directory is gone or its metadata is
 #       unreadable (a lock on a live worktree is always honoured).
+#   Worktree checkouts:
+#     - Never removed at all without --remove-orphaned-checkouts, which plain
+#       --apply does NOT imply.
+#     - Skip anything whose `.git` gitdir target could not be PROVEN missing —
+#       an unreadable `.git`, a stalled probe, or a non-searchable parent all
+#       skip. Only proven absence classifies.
+#     - Skip the caller's own worktree, symlinks, and any path git still
+#       reports in `git worktree list`.
 #
 # ORPHANED WORKTREE REGISTRATIONS (issue #1402)
 #   Every linked worktree has a registration directory at
@@ -91,6 +102,57 @@
 #   worktree it creates, so abandoned agent worktrees leave *locked* orphans
 #   that `git worktree prune` will not touch. They are reported as skipped and
 #   cleared only with the explicit --include-locked opt-in.
+#
+# ORPHANED WORKTREE CHECKOUTS (issue #1417)
+#   The inverse of class 4: a checkout directory on disk whose registration is
+#   gone. Class 4 is bookkeeping with no worktree; this is a worktree with no
+#   bookkeeping. The 2026-08-26 incident left both — 59 checkouts under
+#   `.claude/worktrees/` against 11 registrations — and the same repair
+#   (`git worktree repair <path>`) is what makes one usable by git again.
+#
+#   Classification (staleness-independent, exactly like class 4):
+#     orphaned  — the entry is a directory holding a `.git` FILE whose
+#                 `gitdir:` line reads and names a path PROVEN absent.
+#     skipped   — every other outcome that is not plainly "live": a `.git`
+#                 that did not read or carried no `gitdir:` prefix, a stalled
+#                 existence probe, a non-searchable parent, a symlinked entry
+#                 or a symlinked `.git` (both `-d` and `-f` follow links, so
+#                 each is refused explicitly, and again at the pre-rm
+#                 re-check), the caller's own worktree, or a path git lists.
+#     ignored   — a `.git` DIRECTORY (a nested standalone clone, not a linked
+#                 checkout) or no `.git` at all. Neither is this class, and
+#                 neither is reported: `.claude/worktrees/` is an ordinary
+#                 directory that may hold ordinary things.
+#
+#   Enumeration deliberately does NOT include dot-prefixed entries — the same
+#   plain glob the registration pass uses. Neither git nor this harness ever
+#   names one that way (ids are `issue-*`, `agent-*`, or a worktree basename),
+#   and the omission fails safe: an entry never scanned is never reported and
+#   never removed. Widening the glob would widen what a working-tree deletion
+#   can reach, which is the wrong direction for this class.
+#
+#   WHY REMOVAL HAS ITS OWN FLAG. Everything else --apply deletes is
+#   recreatable from the repo: a registration is a few KB of bookkeeping, a
+#   branch is a ref. An orphaned checkout is a working tree — real source
+#   files, possibly carrying uncommitted edits that exist nowhere else, and
+#   unreadable by `git status` until repaired. Letting --apply gain that reach
+#   would silently widen a flag whose entire contract is "deletes git
+#   bookkeeping". So removal requires --remove-orphaned-checkouts *in
+#   addition to* --apply, and that flag removes nothing else.
+#
+#   WHY THIS CLASS DOES NOT AFFECT THE EXIT CODE. Exit 1 in this script means
+#   "incomplete — re-run me" (see EXIT STATUS). Plain --apply can never clear
+#   an orphaned checkout, so letting the class raise exit 1 would pin the
+#   status high forever and invert that meaning for every caller. The class is
+#   surfaced where its consumers actually read — the text report and the
+#   `orphaned_checkouts` JSON array (/pm-clean, /pm-update). Removal FAILURES
+#   under the flag do count, exactly like every other deletion: exit 2.
+#
+#   Fail-closed asymmetry against class 4, deliberate and worth stating: for a
+#   registration, a stalled metadata probe is itself the symptom being cleaned,
+#   so it stays a removal candidate. Here it does not. "Could not verify" must
+#   never authorize deleting source, so both the classification pass and the
+#   pre-rm re-check treat anything short of proven absence as a skip.
 #
 # BOUNDED READS (NON-NEGOTIABLE)
 #   EVERY git call this script makes, and every *content* read that can touch a
@@ -172,6 +234,13 @@
 #       and N seconds. Worst case is this bound times the registration count,
 #       which is why it is much tighter than the git bound. A non-numeric or
 #       zero value falls back to the default rather than disabling the bound.
+#   STALE_CLEANUP_CHECKOUT_DIR — env var, default `<root>/.claude/worktrees`.
+#       The directory scanned for orphaned checkouts (class 5). Repos whose
+#       worktree parent differs point this at theirs; the default is the
+#       location issue #1417 measured. The path is RESOLVED first (symlinks
+#       and all), and a value resolving to `/` or to the repo root itself is
+#       refused (exit 3) — a scan dir that wide would make every top-level
+#       directory a candidate for a flag that deletes working trees.
 #
 # USAGE
 #   stale-cleanup.sh --check                    # dry-run (default)
@@ -179,6 +248,8 @@
 #   stale-cleanup.sh --check --json             # machine-readable output
 #   stale-cleanup.sh --check --root <path>      # sweep a specific repo
 #   stale-cleanup.sh --apply --include-locked   # also clear locked orphans
+#   stale-cleanup.sh --apply --remove-orphaned-checkouts   # also delete
+#                                               # orphaned working trees
 #   stale-cleanup.sh --help | -h
 #
 #   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
@@ -200,7 +271,26 @@
 #              than ref_scan "ok" each make --check exit 1 on their own: the
 #              sweep could not classify, which is a finding, not a clean bill
 #              of health. registration_scan "none" is a clean state and does
-#              not.
+#              not. Also includes the orphaned_checkouts/skipped_checkouts
+#              arrays and "checkout_scan": "ok"; "none" when the scan directory
+#              is PROVABLY absent; or "unreadable" when it could not be
+#              inspected, resolved, or entered inside the bound — a state that
+#              is deliberately NOT collapsed into "none", since "we could not
+#              look" must never be reported as "there is nothing there".
+#              orphaned_checkouts[] is empty under "unreadable" because nothing
+#              was classified, not because nothing is orphaned; the reason rides
+#              in skipped_checkouts[]. None of these affect the exit code (see
+#              ORPHANED WORKTREE CHECKOUTS above), so callers must read
+#              checkout_scan and orphaned_checkouts REGARDLESS of exit status.
+#   --remove-orphaned-checkouts
+#              Delete the reported orphaned checkouts. THIS DELETES WORKING-TREE
+#              FILES — real source, possibly holding uncommitted edits that
+#              exist nowhere else — which is why it is a separate gate and not
+#              part of --apply, whose other deletions only ever remove git
+#              bookkeeping. Requires --apply; passing it in --check mode is a
+#              usage error, since --check never deletes anything. Removes
+#              nothing but directories classified as orphaned checkouts, and
+#              re-verifies each one is still orphaned immediately before the rm.
 #   --include-locked
 #              Also clear orphaned registrations carrying a `locked` marker.
 #              Only ever applies when the worktree directory is gone or its
@@ -223,6 +313,8 @@
 #     origin/<branch> (last commit <YYYY-MM-DD>)
 #   Orphaned worktree registrations:
 #     <id> — <reason>
+#   Orphaned worktree checkouts (report-only):
+#     <path> — <reason>
 #   Skipped (with reason):
 #     <name> — <reason>
 #
@@ -236,9 +328,12 @@
 #      either mode, a worktree enumeration, ref enumeration, or registration
 #      scan that did not finish inside its bound. An --apply that skipped a
 #      whole category is reported here rather than as success: a caller that
-#      reads 0 as "done" would otherwise never re-run it.
+#      reads 0 as "done" would otherwise never re-run it. Orphaned CHECKOUTS
+#      are the one reported class that never reaches this code — see ORPHANED
+#      WORKTREE CHECKOUTS above for why.
 #   2  --apply hit one or more deletion failures (other items may have
-#      succeeded — see output), including a deletion killed at its bound.
+#      succeeded — see output), including a deletion killed at its bound and
+#      a failed --remove-orphaned-checkouts removal.
 #      Takes precedence over 1. A registration the re-check declined to remove
 #      because its worktree reappeared is NOT a failure and does not reach this
 #      code.
@@ -270,6 +365,7 @@ JSON=0
 MODE_SET=0
 ROOT_OVERRIDE=""
 INCLUDE_LOCKED=0
+REMOVE_ORPHANED_CHECKOUTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -290,6 +386,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-locked)
       INCLUDE_LOCKED=1
+      shift
+      ;;
+    --remove-orphaned-checkouts)
+      REMOVE_ORPHANED_CHECKOUTS=1
       shift
       ;;
     --root)
@@ -323,6 +423,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# The one flag that can delete source is never usable in the mode that promises
+# to delete nothing. Silently ignoring it in --check would teach the habit of
+# passing it everywhere, which is exactly how it ends up on the run that means
+# it; refusing loudly keeps the gate deliberate.
+if (( REMOVE_ORPHANED_CHECKOUTS == 1 )) && [[ "$MODE" != "apply" ]]; then
+  usage_error "--remove-orphaned-checkouts requires --apply (it deletes working-tree files, and --check never deletes anything)"
+fi
 
 STALE_DAYS="${STALE_DAYS:-7}"
 if ! [[ "$STALE_DAYS" =~ ^[0-9]+$ ]] || (( STALE_DAYS < 1 )); then
@@ -449,11 +557,30 @@ worktree_dirty_state() { # worktree path
 # files an unkillable orphan still holds open — precisely the contamination the
 # handover exists to prevent. `read_bounded_line` is the only run_bounded
 # wrapper that ever returned data, so it was the only one exposed to this.
-read_bounded_line() { # path
-  local rc=0
+#
+# An optional byte cap (issue #1417) refuses a file that is implausibly large
+# for the one short line these metadata files hold, rather than copying it
+# whole into $CAPTURE and then into a shell variable. It reads cap+1 bytes so
+# an overflow is DETECTED rather than silently truncated: a truncated
+# `gitdir:` path would name a registration that does not exist, which is
+# exactly the shape that classifies a live checkout as orphaned. Omitting the
+# cap keeps the original unlimited behaviour, which is what the registration
+# pass still uses.
+read_bounded_line() { # path [max_bytes]
+  local rc=0 cap="${2:-}" got=0
   BOUNDED_LINE=""
-  run_bounded "$READ_BOUND_SECS" cat "$1" || rc=$?
+  if [[ -n "$cap" ]]; then
+    run_bounded "$READ_BOUND_SECS" head -c "$(( cap + 1 ))" "$1" || rc=$?
+  else
+    run_bounded "$READ_BOUND_SECS" cat "$1" || rc=$?
+  fi
   if (( rc != 0 )); then return 1; fi
+  if [[ -n "$cap" ]]; then
+    got="$(wc -c < "$CAPTURE" 2>/dev/null || echo 0)"
+    # Arithmetic context tolerates wc's leading whitespace. Over the cap means
+    # the content did not fit, so nothing here is trustworthy — fail closed.
+    if (( got > cap )); then return 1; fi
+  fi
   # This substitution is safe where the one around run_bounded was not: the
   # handover has already happened in the parent, and $CAPTURE is our own temp
   # file, never the possibly-wedged path being probed.
@@ -1113,6 +1240,292 @@ scan_registrations() {
 
 scan_registrations
 
+# --- Orphaned worktree checkouts (issue #1417) -------------------------------
+# The inverse of the pass above: a checkout on disk whose registration is gone.
+# Enumerated by listing the checkout directory — a readdir against the local
+# repo, which never blocks, for the same reason the registration glob does not
+# (see BOUNDED READS). Everything that comes OUT of an entry and is therefore
+# arbitrary — the `.git` file's content and the path it names — is bounded.
+#
+# This pass classifies only; removal lives behind --remove-orphaned-checkouts,
+# well after --apply's other deletions. See ORPHANED WORKTREE CHECKOUTS above
+# for why the gate is separate and why this class never moves the exit code.
+
+CHECKOUT_DIR=""
+CHECKOUT_SCAN_STATE="ok"       # ok | none | unreadable
+ORPHANED_CHECKOUTS=()          # path US gitdir_target US reason
+SKIPPED_CHECKOUTS=()           # path US reason
+
+# Canonicalize for comparison, resolving symlinks the way caller_in_worktree
+# does — /tmp vs /private/tmp on macOS is enough to make two spellings of one
+# directory look like two directories.
+#
+# The `cd` runs through run_bounded rather than plainly: this pass calls it on
+# every registered worktree path, and a single stalled mount among them would
+# hang the whole sweep — the exact failure lib/bounded-run.sh exists to prevent
+# (issues #1363, #1404). A plain `cd` here would have been the one unbounded
+# filesystem call left in the sweep.
+#
+# Answer comes back in CANONICAL_PATH. Return 1 means the path could not be
+# resolved inside the bound, and CANONICAL_PATH then holds the input unchanged
+# (the same fallback the plain form had) — callers that gate a deletion on the
+# resolved spelling must treat that as "could not verify", not as an answer.
+# Statement form only, never `$( )`: run_bounded returns its child's stdout
+# through $CAPTURE (see read_bounded_line).
+_canonical_path_probe() { cd -- "$1" 2>/dev/null && pwd -P; }
+CANONICAL_PATH=""
+canonical_path() { # path
+  local rc=0 out=""
+  CANONICAL_PATH="$1"
+  run_bounded "$READ_BOUND_SECS" _canonical_path_probe "$1" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( rc != 0 )); then return 1; fi
+  out="$(head -n 1 "$CAPTURE" 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 1
+  CANONICAL_PATH="$out"
+  return 0
+}
+
+# Is any component of this path a symlink, or uninspectable?
+#
+# `-L` on the final component alone is not enough. The "a present entry whose
+# target may return" argument that guards a dangling final link applies just as
+# well to every parent: with `worktrees -> /Volumes/archive/...` on an unmounted
+# volume, lstat cannot see the final component at all, so `-L "$target"` is
+# FALSE while `test -e` still reports absent — the same quarantine-on-a-
+# detachable-volume case, one level up, landing in "provably absent" and
+# clearing a working tree for deletion.
+#
+# Only a link that does not RESOLVE counts. A resolving one is not a hazard:
+# the lookup genuinely traversed it and genuinely missed, so absence below it is
+# real. Requiring merely "is a symlink" would refuse almost everything on macOS,
+# where /var -> /private/var puts a symlink above every path under $TMPDIR.
+#
+#   0 = a dangling symlink component was found, or the chain could not be
+#       inspected inside the bound. Either way absence is NOT established.
+#   1 = every component was inspected and any symlink among them resolves.
+#
+# Bounded like every other probe here: an lstat on a stalled mount hangs too.
+path_has_dangling_link_component() { # path
+  local p="$1" prev="" l_rc e_rc
+  while [[ -n "$p" && "$p" != "/" && "$p" != "." && "$p" != "$prev" ]]; do
+    l_rc=0
+    run_bounded "$READ_BOUND_SECS" test -L "$p" || l_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then return 0; fi
+    if (( l_rc == 0 )); then
+      e_rc=0
+      run_bounded "$READ_BOUND_SECS" test -e "$p" || e_rc=$?
+      if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( e_rc != 0 )); then return 0; fi
+    fi
+    prev="$p"
+    p="$(dirname -- "$p")"
+  done
+  return 1
+}
+
+# Read a checkout's `.git` file and report the registration path it names.
+# Answer comes back in CHECKOUT_GITDIR; return 1 means the file did not read
+# inside the bound, carried no `gitdir:` line, or is a symlink — none of which
+# is ever classified. Statement form only, never `$( )` — see read_bounded_line.
+CHECKOUT_GITDIR=""
+read_checkout_gitdir() { # checkout dir
+  local line=""
+  CHECKOUT_GITDIR=""
+  # A symlinked `.git` is refused HERE rather than only at the scan, so the
+  # pre-rm re-check inherits the refusal: `-f` follows symlinks, so without
+  # this a `.git` swapped for a link to an arbitrary file would read as an
+  # ordinary checkout. We cannot vouch for what such a link points at, and
+  # this path gates deleting a working tree.
+  [[ -L "$1/.git" ]] && return 1
+  # Capped: a worktree's `.git` is a single ~100-byte line, so 4 KiB is ample
+  # headroom, and anything past it is not one of these files. Uncapped, a
+  # planted `.git` would be copied whole into a temp file and a shell variable
+  # by a pass that then decides whether to delete a working tree.
+  read_bounded_line "$1/.git" 4096 || return 1
+  line="$BOUNDED_LINE"
+  case "$line" in
+    "gitdir: "*) line="${line#gitdir: }" ;;
+    *) return 1 ;;
+  esac
+  [[ -n "$line" ]] || return 1
+  # git writes an absolute path by default, but `worktree add --relative-paths`
+  # (git >= 2.48) writes one relative to the checkout itself.
+  case "$line" in
+    /*) ;;
+    *) line="$1/$line" ;;
+  esac
+  CHECKOUT_GITDIR="$line"
+  return 0
+}
+
+scan_checkouts() {
+  # Resolved BEFORE the wide-path guard below, and kept in resolved form: the
+  # guard has to reject what the path RESOLVES to, not how it was spelled. A
+  # symlink pointing at `/` sails straight past a literal "/" comparison and
+  # would hand every top-level directory to remove_checkout. Canonicalizing
+  # here also keeps every path this pass reports, compares, and removes in one
+  # spelling — /tmp and /private/var are the same directory on macOS, and the
+  # `$CHECKOUT_DIR/$name` containment check in remove_checkout is exact.
+  local raw_dir="${STALE_CLEANUP_CHECKOUT_DIR:-$ROOT/.claude/worktrees}"
+  local scan_rc=0 root_canon=""
+
+  # Existence is settled BEFORE canonicalizing, because the two failures look
+  # identical from `cd`: a directory that is not there and a directory we were
+  # not allowed to enter both fail. Only the first is "this repo keeps no
+  # worktrees here".
+  path_exists_bounded "$raw_dir" || scan_rc=$?
+  case "$scan_rc" in
+    1) # `test -e` follows links, so a DANGLING scan directory lands here too.
+       # The name is still a present entry whose target may return — the same
+       # detachable-volume argument this pass already applies to gitdir targets
+       # — so it is "could not look", not "there is nothing there".
+       if path_has_dangling_link_component "$raw_dir"; then
+         CHECKOUT_SCAN_STATE="unreadable"
+         SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory is or sits under a dangling symlink — a present entry whose target may return; absence not established")
+         return
+       fi
+       CHECKOUT_SCAN_STATE="none"   # provably absent
+       return ;;
+    0) : ;;
+    *) # Probe stalled (2) or absence was not provable (3) — e.g. an
+       # unsearchable parent, or the macOS TCC block that retired the old
+       # checkout. Reporting "none" here would be a positive claim of absence
+       # drawn from a lookup that never happened, which is the one thing a pass
+       # that deletes working trees must never do.
+       CHECKOUT_SCAN_STATE="unreadable"
+       SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory could not be inspected (existence probe rc=$scan_rc) — nothing was classified; absence not established")
+       return ;;
+  esac
+
+  if ! canonical_path "$raw_dir"; then
+    # The wide-path guard below has to reject what the path RESOLVES to, so an
+    # unresolved path cannot be cleared for this pass at all.
+    CHECKOUT_SCAN_STATE="unreadable"
+    SKIPPED_CHECKOUTS+=("${raw_dir}${US}scan directory could not be resolved within ${READ_BOUND_SECS}s — nothing was classified; absence not established")
+    return
+  fi
+  CHECKOUT_DIR="$CANONICAL_PATH"
+
+  # Applied to the default too, not just the override: `.claude/worktrees`
+  # could itself be a symlink. A scan dir this wide would make every top-level
+  # directory a candidate for the one flag that deletes working trees, so
+  # refuse rather than narrow silently.
+  canonical_path "$ROOT" || true
+  root_canon="$CANONICAL_PATH"
+  if [[ "$CHECKOUT_DIR" == "/" || "$CHECKOUT_DIR" == "$root_canon" ]]; then
+    usage_error "the orphaned-checkout scan directory must not resolve to / or the repo root itself (resolved: $CHECKOUT_DIR${STALE_CLEANUP_CHECKOUT_DIR:+, from STALE_CLEANUP_CHECKOUT_DIR=$STALE_CLEANUP_CHECKOUT_DIR})"
+  fi
+
+  # Present, resolved, and now confirmed enterable. A path that exists but is
+  # not a searchable directory would make the glob below expand to nothing,
+  # which is indistinguishable from an empty directory.
+  local dir_rc=0
+  run_bounded "$READ_BOUND_SECS" test -d "$CHECKOUT_DIR" || dir_rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]] || (( dir_rc != 0 )); then
+    CHECKOUT_SCAN_STATE="unreadable"
+    SKIPPED_CHECKOUTS+=("${CHECKOUT_DIR}${US}scan directory is not a readable directory — nothing was classified; absence not established")
+    return
+  fi
+
+  # Paths git still reports. Belt-and-braces only: a registered worktree's
+  # gitdir target exists, so the probe below already declines it. This can
+  # only ever REMOVE a candidate, never add one — and it is empty when the
+  # enumeration degraded, which the probe then covers on its own.
+  local registered="" record wtp
+  if (( ${#WORKTREES[@]} > 0 )); then
+    for record in "${WORKTREES[@]}"; do
+      IFS="$US" read -r _ wtp _ _ <<<"$record"
+      [[ -n "$wtp" ]] || continue
+      canonical_path "$wtp" || true
+      registered="${registered}${CANONICAL_PATH}"$'\n'
+    done
+  fi
+
+  local dir target probe_rc canon dir_rc
+  for dir in "$CHECKOUT_DIR"/*; do
+    # `-L` FIRST, before anything that follows links — the same order
+    # read_checkout_gitdir uses on `.git`, and for the same reason. `-d`
+    # traverses, so testing it first walks a link into a stalled or evicted
+    # volume (the hang this sweep exists to avoid) and silently DROPS a
+    # dangling directory symlink, whose `-d` is false, instead of recording it.
+    if [[ -L "$dir" ]]; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}symlink — never classified as a checkout, never removed")
+      continue
+    fi
+    # Bounded: a directory entry can still be a mountpoint, and this one runs
+    # before every guard that decides whether a working tree may be deleted.
+    dir_rc=0
+    run_bounded "$READ_BOUND_SECS" test -d "$dir" || dir_rc=$?
+    if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}could not be inspected within ${READ_BOUND_SECS}s — absence not established")
+      continue
+    fi
+    (( dir_rc == 0 )) || continue
+    if caller_in_worktree "$dir"; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}caller's current worktree")
+      continue
+    fi
+    # Probed BEFORE the -d/-f tests, which both follow symlinks: a `.git`
+    # symlink would otherwise read as an ordinary checkout file. Reported
+    # rather than skipped silently — it is anomalous enough to want seen.
+    if [[ -L "$dir/.git" ]]; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}.git is a symlink — never classified as a checkout, never removed")
+      continue
+    fi
+    # A `.git` DIRECTORY is a nested standalone clone; no `.git` at all is not
+    # a checkout. Neither is this class, and this directory may legitimately
+    # hold either, so neither is reported.
+    [[ -d "$dir/.git" ]] && continue
+    [[ -f "$dir/.git" ]] || continue
+
+    if ! read_checkout_gitdir "$dir"; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}.git yielded no gitdir target within ${READ_BOUND_SECS}s — cannot establish that its registration is missing")
+      continue
+    fi
+    target="$CHECKOUT_GITDIR"
+
+    probe_rc=0
+    path_exists_bounded "$target" || probe_rc=$?
+    if (( probe_rc == 0 )); then
+      continue   # registration present — an ordinary linked checkout
+    elif (( probe_rc == 2 )); then
+      SKIPPED_CHECKOUTS+=("${dir}${US}existence probe on $target did not finish within ${READ_BOUND_SECS}s — absence not established")
+      continue
+    elif (( probe_rc == 3 )); then
+      SKIPPED_CHECKOUTS+=("${dir}${US}registration path $target could not be inspected (its nearest existing parent is not searchable) — absence not established")
+      continue
+    fi
+    # probe_rc == 1, "provably absent" — but `test -e` FOLLOWS symlinks, so a
+    # dangling link lands here too, and a link is a present entry somebody put
+    # there. The 2026-08-26 mitigation moved registrations aside; a link into a
+    # quarantine on an unmounted volume dangles exactly like this, and its
+    # target can come back. For a pass that deletes working trees that reads as
+    # "could not verify", not "gone". Refused here rather than inside
+    # path_exists_bounded, which the registration pass shares and where a
+    # missing target legitimately IS the debris being cleaned.
+    #
+    # Checked over every component, not just the final one: under a
+    # `worktrees -> /Volumes/archive/...` link on an unmounted volume, lstat
+    # cannot see the final component at all, so a final-component-only `-L`
+    # reads FALSE and hands the checkout to removal — the same detachable-
+    # volume case, one level up.
+    if path_has_dangling_link_component "$target"; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}registration $target is or sits under a dangling symlink — a present entry whose target may return; absence not established")
+      continue
+    fi
+
+    canonical_path "$dir" || true
+    canon="$CANONICAL_PATH"
+    if [[ -n "$registered" ]] && grep -Fxq "$canon" <<<"$registered"; then
+      SKIPPED_CHECKOUTS+=("${dir}${US}still listed by 'git worktree list' despite a missing gitdir target — repair with 'git worktree repair', never remove")
+      continue
+    fi
+
+    ORPHANED_CHECKOUTS+=("${dir}${US}${target}${US}registration missing ($target) — repair with 'git worktree repair' or remove with --remove-orphaned-checkouts")
+  done
+}
+
+scan_checkouts
+
 ts_to_date() {
   # Portable across BSD/GNU date: read a unix ts on stdin, emit YYYY-MM-DD.
   local ts="$1"
@@ -1159,6 +1572,15 @@ emit_text() {
       printf '  %s — %s [%s]\n' "$rid" "$rreason" "$rmethod"
     done
   fi
+  if (( ${#ORPHANED_CHECKOUTS[@]} == 0 )); then
+    echo "Orphaned worktree checkouts: none"
+  else
+    echo "Orphaned worktree checkouts (report-only — needs --remove-orphaned-checkouts):"
+    for entry in "${ORPHANED_CHECKOUTS[@]}"; do
+      IFS="$US" read -r cpath _ creason <<<"$entry"
+      printf '  %s — %s\n' "$cpath" "$creason"
+    done
+  fi
   if [[ "$WORKTREE_ENUM_STATE" != "ok" ]]; then
     echo
     echo "WARNING: worktree enumeration $WORKTREE_ENUM_STATE — worktrees and local branches were NOT classified in this run."
@@ -1172,7 +1594,12 @@ emit_text() {
     echo
     echo "WARNING: ref enumeration $REF_SCAN_STATE — branches were NOT classified in this run."
   fi
-  local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} + ${#SKIPPED_REGISTRATIONS[@]} ))
+  if [[ "$CHECKOUT_SCAN_STATE" == "unreadable" ]]; then
+    echo
+    echo "WARNING: the orphaned-checkout scan directory could not be read — checkouts were NOT classified in this run."
+    echo "         'Orphaned worktree checkouts: none' above means nothing was classified, not that nothing is orphaned."
+  fi
+  local skipped_total=$(( ${#SKIPPED_WORKTREES[@]} + ${#SKIPPED_LOCAL_BRANCHES[@]} + ${#SKIPPED_REMOTE_BRANCHES[@]} + ${#SKIPPED_REGISTRATIONS[@]} + ${#SKIPPED_CHECKOUTS[@]} ))
   if (( skipped_total > 0 )); then
     echo
     echo "Skipped (safety):"
@@ -1201,6 +1628,12 @@ emit_text() {
       for entry in "${SKIPPED_REGISTRATIONS[@]}"; do
         IFS="$US" read -r rid reason <<<"$entry"
         printf '  registration %s — %s\n' "$rid" "$reason"
+      done
+    fi
+    if (( ${#SKIPPED_CHECKOUTS[@]} > 0 )); then
+      for entry in "${SKIPPED_CHECKOUTS[@]}"; do
+        IFS="$US" read -r cpath reason <<<"$entry"
+        printf '  checkout %s — %s\n' "$cpath" "$reason"
       done
     fi
   fi
@@ -1243,15 +1676,26 @@ emit_json() {
     sg_json="$(printf '%s\n' "${SKIPPED_REGISTRATIONS[@]}" \
       | jq -Rn --arg D "$US" '[inputs | split($D) | {id:.[0], reason:.[1]}]')"
   fi
+  local oc_json="[]" sc_json="[]"
+  if (( ${#ORPHANED_CHECKOUTS[@]} > 0 )); then
+    oc_json="$(printf '%s\n' "${ORPHANED_CHECKOUTS[@]}" \
+      | jq -Rn --arg D "$US" '[inputs | split($D) | {path:.[0], gitdir:.[1], reason:.[2]}]')"
+  fi
+  if (( ${#SKIPPED_CHECKOUTS[@]} > 0 )); then
+    sc_json="$(printf '%s\n' "${SKIPPED_CHECKOUTS[@]}" \
+      | jq -Rn --arg D "$US" '[inputs | split($D) | {path:.[0], reason:.[1]}]')"
+  fi
   jq -n --argjson wt "$wt_json" --argjson lb "$lb_json" --argjson rb "$rb_json" \
         --argjson sw "$sw_json" --argjson sl "$sl_json" --argjson sr "$sr_json" \
         --argjson or "$or_json" --argjson sg "$sg_json" \
+        --argjson oc "$oc_json" --argjson sc "$sc_json" \
         --arg threshold_days "$STALE_DAYS" \
         --arg threshold_ts "$THRESHOLD" \
         --arg root "$ROOT" \
         --arg enum_state "$WORKTREE_ENUM_STATE" \
         --arg reg_scan "$REG_SCAN_STATE" \
         --arg ref_scan "$REF_SCAN_STATE" \
+        --arg checkout_scan "$CHECKOUT_SCAN_STATE" \
         '{root:$root,
           stale_days:($threshold_days|tonumber),
           threshold_ts:($threshold_ts|tonumber),
@@ -1263,9 +1707,12 @@ emit_json() {
           skipped_remote_branches:$sr,
           orphaned_registrations:$or,
           skipped_registrations:$sg,
+          orphaned_checkouts:$oc,
+          skipped_checkouts:$sc,
           worktree_enumeration:$enum_state,
           registration_scan:$reg_scan,
-          ref_scan:$ref_scan}'
+          ref_scan:$ref_scan,
+          checkout_scan:$checkout_scan}'
 }
 
 if [[ "$MODE" == "check" ]]; then
@@ -1524,6 +1971,110 @@ for entry in "${STALE_REMOTE_BRANCHES[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 done
+fi
+
+# --- Orphaned checkouts: only ever under --remove-orphaned-checkouts ---------
+# Last on purpose. This is the one deletion in the script that destroys working
+# -tree files rather than git bookkeeping, so it runs after every reversible
+# thing has been done and is the last output the operator reads.
+
+# Is this checkout still orphaned RIGHT NOW? Same question scan_checkouts
+# asked, re-asked immediately before the rm — the scan runs before --apply, and
+# operators dry-run --check first, so the gap is human-scale: someone can
+# `git worktree repair` an entry in between.
+#
+# Note the deliberate asymmetry with registration_is_live: there, a probe that
+# stalled kept the entry a removal candidate, because a stalled read WAS the
+# debris being cleaned. Here only PROVEN absence (1) lets the removal through —
+# "exists" (0), a stalled probe (2), and "absence not established" (3) all stop
+# it. Deleting source on a probe we could not complete is not a trade this
+# script makes.
+checkout_still_orphaned() { # checkout dir
+  local probe_rc=0
+  read_checkout_gitdir "$1" || return 1
+  path_exists_bounded "$CHECKOUT_GITDIR" || probe_rc=$?
+  # The same whole-path dangling-link refusal the scan applies — every
+  # component, not just the leaf. Parity matters most HERE: the scan runs at
+  # start-up and this gate runs immediately before the rm, so a dangling
+  # ancestor appearing in that window is precisely the state change this
+  # re-check exists to catch, and a leaf-only test reads false for it while
+  # `test -e` still reports absent.
+  #
+  # This single call replaces a standalone `[[ -L "$CHECKOUT_GITDIR" ]]`: the
+  # walk starts at the path itself, so the leaf is still covered, and the plain
+  # form was the one unbounded lstat left on the deletion path. A leaf link that
+  # RESOLVES needs no refusal here — `test -e` follows it, so probe_rc is 0 and
+  # the check below already declines.
+  if path_has_dangling_link_component "$CHECKOUT_GITDIR"; then return 1; fi
+  (( probe_rc == 1 ))
+}
+
+# Returns 0 removed, 1 failed, 2 skipped by the re-check (not a failure).
+remove_checkout() { # checkout dir
+  local target="$1" name rc=0
+  name="${target##*/}"
+  # Path guards, mirroring remove_registration: only a single-segment name
+  # directly beneath the resolved checkout dir, a real directory, never a
+  # symlink. Anything else is refused rather than removed.
+  case "$name" in
+    ''|.|..|*/*)
+      echo "failed: orphaned checkout '$target' — refusing to remove: not a single-segment entry name"
+      return 1
+      ;;
+  esac
+  if [[ -z "$CHECKOUT_DIR" || "$target" != "$CHECKOUT_DIR/$name" ]]; then
+    echo "failed: orphaned checkout $target — refusing to remove: not directly beneath $CHECKOUT_DIR"
+    return 1
+  fi
+  if [[ -L "$target" || ! -d "$target" ]]; then
+    echo "failed: orphaned checkout $target — refusing to remove: not a plain directory"
+    return 1
+  fi
+  if caller_in_worktree "$target"; then
+    echo "skipped: orphaned checkout $target — the caller is standing inside it"
+    return 2
+  fi
+  if ! checkout_still_orphaned "$target"; then
+    echo "skipped: orphaned checkout $target — no longer provably orphaned (its registration reappeared, or absence could not be re-established); not removing"
+    return 2
+  fi
+  # The git bound, not the read bound the registrations use: a registration is
+  # four small files, a checkout is a whole source tree, and 2s is not a
+  # meaningful wall-clock bound on deleting one.
+  run_bounded "$GIT_BOUND_SECS" rm -rf -- "$target" || rc=$?
+  if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
+    echo "failed: orphaned checkout $target — removal exceeded ${GIT_BOUND_SECS}s and was killed"
+    return 1
+  fi
+  if (( rc != 0 )) || [[ -e "$target" ]]; then
+    echo "failed: orphaned checkout $target — $(head -n 1 "$CAPTURE_ERR" 2>/dev/null || echo "rm exited $rc")"
+    return 1
+  fi
+  return 0
+}
+
+if (( ${#ORPHANED_CHECKOUTS[@]} > 0 )); then
+  if (( REMOVE_ORPHANED_CHECKOUTS == 1 )); then
+    for entry in "${ORPHANED_CHECKOUTS[@]}"; do
+      IFS="$US" read -r cpath _ _ <<<"$entry"
+      CO_RC=0
+      remove_checkout "$cpath" || CO_RC=$?
+      if (( CO_RC == 0 )); then
+        echo "removed: orphaned checkout $cpath (working tree deleted via --remove-orphaned-checkouts)"
+      elif (( CO_RC != 2 )); then
+        # 2 is the re-check declining, which is the guard working — it already
+        # said so, and it is not a failure.
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    done
+  else
+    # Say why nothing happened. Silence here reads as "the sweep handled it".
+    echo
+    echo "note: ${#ORPHANED_CHECKOUTS[@]} orphaned checkout(s) reported above were NOT removed."
+    echo "      Plain --apply never deletes working-tree files. Inspect them first"
+    echo "      (git worktree repair <path> makes one readable again), then pass"
+    echo "      --remove-orphaned-checkouts alongside --apply to delete them."
+  fi
 fi
 
 INCOMPLETE_SWEEP=0
