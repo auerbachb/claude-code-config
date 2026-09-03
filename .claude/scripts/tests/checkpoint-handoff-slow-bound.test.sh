@@ -355,7 +355,13 @@ offenders_in() { # file, scope → offending descriptions, one per line
   [[ -r "$file" ]] || return 0
   if [[ "$scope" == "suite-lines" ]]; then
     target="$SCRATCH/suite-lines.$$"
-    grep -F 'checkpoint-handoff.test.sh' "$file" >"$target" 2>/dev/null || true
+    # Continuations are joined BEFORE filtering. `timeout 240 \` on one line with
+    # the suite path on the next is a single command, and filtering raw lines
+    # keeps only the half that has no bound in it — the bound then goes
+    # unreported, which is the silent miss this guard exists to close.
+    awk '{ while (sub(/\\$/, "")) { if ((getline nxt) > 0) $0 = $0 nxt; else break } print }' \
+      "$file" 2>/dev/null \
+      | grep -F 'checkpoint-handoff.test.sh' >"$target" 2>/dev/null || true
     [[ -s "$target" ]] || return 0
   fi
   while IFS= read -r v; do
@@ -679,6 +685,36 @@ if [[ -z "$(offenders_in "$NC4M" suite-lines)" ]]; then
   pass "NC4m a quoted bound at or above the floor (600) is still compliant"
 else
   fail "NC4m flagged a compliant quoted bound — quote stripping blanket-reports instead of measuring"
+fi
+
+# Continuation lines. A bound and the suite path written across a `\` break are
+# one command, but suite-lines filtering sees two lines and keeps only the half
+# without the bound.
+NC4N="$SCRATCH/nc-continuation.sh"
+printf '#!/usr/bin/env bash\ntimeout 240 \\\n  bash .claude/scripts/tests/checkpoint-handoff.test.sh\n' >"$NC4N"
+if [[ -n "$(offenders_in "$NC4N" suite-lines)" ]]; then
+  pass "NC4n a sub-floor bound split across a continuation line is detected"
+else
+  fail "NC4n missed a 240s bound split across a continuation — the bound and the suite name never share a raw line"
+fi
+
+# ...and joining lines must not manufacture bounds that were never applied: a
+# compliant bound stays compliant, and a tight bound on a DIFFERENT suite must
+# not be dragged onto this one just because the join put them on one line.
+NC4O="$SCRATCH/nc-continuation-compliant.sh"
+printf '#!/usr/bin/env bash\ntimeout 600 \\\n  bash .claude/scripts/tests/checkpoint-handoff.test.sh\n' >"$NC4O"
+if [[ -z "$(offenders_in "$NC4O" suite-lines)" ]]; then
+  pass "NC4o a compliant bound split across a continuation stays compliant"
+else
+  fail "NC4o flagged a 600s continuation bound — joining reports instead of measuring"
+fi
+
+NC4P="$SCRATCH/nc-continuation-other-suite.sh"
+printf '#!/usr/bin/env bash\ntimeout 30 \\\n  bash .claude/scripts/tests/ac-gate.test.sh\n' >"$NC4P"
+if [[ -z "$(offenders_in "$NC4P" suite-lines)" ]]; then
+  pass "NC4p a continuation bound on an unrelated suite is not attributed to this one"
+else
+  fail "NC4p joining dragged another suite bound onto this one"
 fi
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
