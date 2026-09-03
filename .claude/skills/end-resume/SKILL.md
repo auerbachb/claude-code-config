@@ -104,6 +104,46 @@ After a confirmed re-arm, transition the claimed entry to `rearmed` with
 `--from-status rearming`. Re-read the registry and runtime list before
 reporting.
 
+**Re-arm the table-freshness floor when a round resumes.** `/end` disarms it by
+DATA (it clears the render record) and its shutdown stops the persistent
+Monitor, so both halves are gone — and `/subagent` arms that watch **once per
+session**, on the assumption it outlives the round. Nothing else re-arms it, so
+without this a resumed round has no unprompted hourly pulse for the rest of its
+life: `--check` still answers when a heartbeat asks, but the floor stops
+volunteering, which is the whole guarantee. `/pause-resume` Step 5 handles this
+same pair of lost halves; keep the two in step.
+
+Do this only when a round is actually resuming (at least one pipeline re-armed
+above), and only with a resolved repo key:
+
+```bash
+# `--repo-key` prints `_unknown` and exits 0 when it cannot resolve a repo, so
+# an emptiness test alone never fires — normalise the sentinel, or the watch is
+# armed on a scope no render will ever write to.
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
+if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+  # Record the resumed board FIRST, then arm: arming over an absent record
+  # gives a watch that polls nothing and stays silent while looking armed.
+  ACTIVE_COUNT=<pipelines re-armed above, running + queued>
+  if [[ "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]] && (( ACTIVE_COUNT > 0 )); then
+    if "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+         --repo "$REPO_KEY" --session "${CLAUDE_SESSION_ID:-default}" \
+         --surface end-resume; then
+      # Hand `--arm-command` output to the Monitor tool with persistent: true.
+      "$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" \
+        --session "${CLAUDE_SESSION_ID:-default}"
+    else
+      echo 'DEGRADED: table-freshness clock not recorded on resume — floor not re-armed; re-render the "Running now" table on every heartbeat'
+    fi
+  fi
+fi
+```
+
+Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is
+the idle exemption, not a gap.
+
 ## Step 4: Report
 
 ```text

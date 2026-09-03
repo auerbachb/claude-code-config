@@ -942,12 +942,15 @@ REPO_KEY_OUT="$(cd "$TMP_DIR" && "$STATE_SH" --repo-key 2>/dev/null)"
 # Match the NORMALISATION STATEMENT, not the word: every one of these files
 # also discusses `_unknown` in prose, so grepping the bare token passes even
 # with the assignment deleted. (Checked: it did.)
-for SKILL_PATH in subagent pause end pause-resume; do
-  SKILL_FILE="$REPO_ROOT/.claude/skills/$SKILL_PATH/SKILL.md"
-  grep -q 'table-freshness' "$SKILL_FILE" || continue
+# DISCOVERED, not listed. A hand-written list is how /leave-by and /end-resume
+# were missed when the other four sites were fixed — the same drift test 21
+# already had to stop being a list. Every skill that touches table-freshness.sh
+# and resolves a repo key must normalise the sentinel.
+while read -r SKILL_FILE; do
+  grep -q 'REPO_KEY' "$SKILL_FILE" || continue
   grep -qE '\[\[ *"\$REPO_KEY" *== *"_unknown" *\]\] *&& *REPO_KEY=""' "$SKILL_FILE" || \
-    fail "/$SKILL_PATH guards the freshness floor on an empty REPO_KEY, which --repo-key never returns — normalise '_unknown' to empty first"
-done
+    fail "$(basename "$(dirname "$SKILL_FILE")") guards the freshness floor on an empty REPO_KEY, which --repo-key never returns — normalise '_unknown' to empty first"
+done < <(grep -rl 'table-freshness' "$REPO_ROOT/.claude/skills" --include='SKILL.md')
 ok "every freshness wiring site normalises the '_unknown' sentinel its guards depend on"
 
 # --- 24. A resumed round re-arms the floor -----------------------------------
@@ -955,14 +958,20 @@ ok "every freshness wiring site normalises the '_unknown' sentinel its guards de
 #         halves are gone. /subagent arms "once per session" on the assumption
 #         the watch outlives the round; a resume breaks that, and nothing else
 #         re-arms it — the unprompted hourly pulse would be gone for good.
-RESUME_FILE="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
-grep -q 'table-freshness' "$RESUME_FILE" || \
-  fail "/pause-resume never re-arms the freshness floor that /pause disarmed"
-grep -q -- '--arm-command' "$RESUME_FILE" || \
-  fail "/pause-resume must re-arm the watch, not merely re-record the clock"
-grep -q -- '--note-rendered' "$RESUME_FILE" || \
-  fail "/pause-resume must record a clock before arming — arming over an absent record polls nothing"
-ok "/pause-resume records the board and re-arms the floor a pause tore down"
+#         Both stop commands have a resume counterpart, and BOTH tear the floor
+#         down the same way, so both must rebuild it. Checking only the one that
+#         happened to be fixed first is how /end-resume was missed.
+for RESUME_SKILL in pause-resume end-resume; do
+  RESUME_FILE="$REPO_ROOT/.claude/skills/$RESUME_SKILL/SKILL.md"
+  [[ -f "$RESUME_FILE" ]] || fail "expected $RESUME_SKILL to exist"
+  grep -q 'table-freshness' "$RESUME_FILE" || \
+    fail "/$RESUME_SKILL never re-arms the freshness floor its stop command disarmed"
+  grep -q -- '--arm-command' "$RESUME_FILE" || \
+    fail "/$RESUME_SKILL must re-arm the watch, not merely re-record the clock"
+  grep -q -- '--note-rendered' "$RESUME_FILE" || \
+    fail "/$RESUME_SKILL must record a clock before arming — arming over an absent record polls nothing"
+done
+ok "both resume commands record the board and re-arm the floor their stop tore down"
 
 echo
 echo "All table-freshness.sh tests passed."

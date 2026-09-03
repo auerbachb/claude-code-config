@@ -46,6 +46,12 @@ TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh) || TABLE_FRESHNESS_SH=""
 
 REPO_KEY=""
 [[ -n "$SESSION_STATE_SH" ]] && { REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""; }
+# `--repo-key` NEVER returns empty: it prints `_unknown` and exits 0 when no
+# repo resolves, so the empty-REPO_KEY branch below cannot fire without this.
+# Left unnormalised, the check-in's `--note-rendered` writes under `_unknown`
+# while the armed watch polls the real repo — the render is recorded where
+# nothing looks, and the floor fires forever against a board being re-rendered.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 ```
 
 - `session-state.sh` or `window-plan.sh` unresolved, or an empty `REPO_KEY` → **required**. Print
