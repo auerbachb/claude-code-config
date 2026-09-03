@@ -525,6 +525,43 @@ run --raw-path --cas '.claim="from-cas"' --expect null --set '.claim="from-set"'
 check_eq "...and it wins with --cas written first too" "from-set" \
   "$(jq -r '.claim' "$STATE_FILE")"
 
+# An ANCESTOR --set is the one composition whose exit code would lie: assigned
+# after the claim, it replaces the subtree holding it, so the command would exit
+# 0 reporting a won claim that is no longer in the file. Refused at the usage
+# stage instead (exit 2, nothing written).
+reset_state
+ANC_RC=0
+run --raw-path --cas '.outer.claim="mine"' --expect null --set '.outer={"wiped":true}' || ANC_RC=$?
+check_eq "a --set on an ancestor of the CAS path exits 2" "2" "$ANC_RC"
+check_eq "ancestor rejection writes nothing" "absent" \
+  "$(if [[ -e "$STATE_FILE" ]]; then echo present; else echo absent; fi)"
+reset_state
+ANC_ORDER_RC=0
+run --raw-path --set '.outer={"wiped":true}' --cas '.outer.claim="mine"' --expect null || ANC_ORDER_RC=$?
+check_eq "...rejected in the other flag order too" "2" "$ANC_ORDER_RC"
+# Bracket boundary: `.repos` is an ancestor of `.repos["k"].x`.
+reset_state
+ANC_BRACKET_RC=0
+run --raw-path --cas '.repos["k"].claim="mine"' --expect null --set '.repos={}' || ANC_BRACKET_RC=$?
+check_eq "ancestor detection spans a [ segment boundary" "2" "$ANC_BRACKET_RC"
+
+# Negative control: a shared textual prefix that is NOT a segment boundary must
+# still be accepted, or the guard above would be rejecting unrelated siblings.
+reset_state
+SIBLING_RC=0
+run --raw-path --cas '.ab="claimed"' --expect null --set '.abc=1' || SIBLING_RC=$?
+check_eq "a prefix that is not a path boundary is still accepted" "0" "$SIBLING_RC"
+check_eq "prefix control: CAS target survived" "claimed" "$(jq -r '.ab' "$STATE_FILE")"
+
+# A DESCENDANT companion refines the claim rather than dropping it, so it stays
+# legal — the guard must not over-reach into the reverse direction.
+reset_state
+DESC_RC=0
+run --raw-path --cas '.outer={"claim":"mine"}' --expect null --set '.outer.extra=1' || DESC_RC=$?
+check_eq "a --set on a descendant of the CAS path is accepted" "0" "$DESC_RC"
+check_eq "descendant: claim survives alongside the refinement" "mine 1" \
+  "$(jq -r '[.outer.claim, (.outer.extra|tostring)] | join(" ")' "$STATE_FILE")"
+
 # A plain --cas with no composed --set is the normal single-flag case and must
 # stay unaffected by the composition machinery (an empty companion list).
 reset_state

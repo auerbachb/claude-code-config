@@ -92,6 +92,12 @@
 #                      done. The --cas target is assigned FIRST in that
 #                      pipeline, so a --set naming the CAS path wins over the
 #                      compared value regardless of which flag came first.
+#                      A --set naming a strict ANCESTOR of the CAS path is a
+#                      usage error (exit 2): assigned after the claim, it would
+#                      replace the subtree holding it, so the command would exit
+#                      0 reporting a won claim that is no longer in the file. An
+#                      exact-path --set keeps the precedence above, and a
+#                      DESCENDANT --set is allowed — it refines the claim.
 #
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
 #                      print it on stdout (raw via `jq -r`). Exits 3 if the
@@ -1426,6 +1432,27 @@ if [[ "$MODE" != "cas" && "$CAS_EXPECT_SET" -eq 1 ]]; then
 fi
 if [[ "$MODE" == "cas" && "$DRY_RUN" == "1" ]]; then
   die_usage "--dry-run is not supported with --cas (--dry-run is only valid with --migrate)"
+fi
+# A composed --set naming an ANCESTOR of the CAS path is refused (issue #1445).
+# The CAS target is assigned first and companions follow in flag order, so an
+# ancestor write replaces the subtree the claim just landed in — erasing it
+# while the compare still gated the batch and the command still exits 0. That is
+# the one composition whose success code lies: the caller is told it won a claim
+# that is no longer in the file. Naming the CAS path *exactly* stays legal and
+# keeps its documented last-writer-wins precedence, and a companion writing a
+# DESCENDANT of the CAS path is fine too — it refines the claim rather than
+# dropping it. Only a strict ancestor is contradictory, so only it is rejected.
+if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
+  for _sp in "${SET_PATHS[@]}"; do
+    # Strict prefix ending on a path-segment boundary: `.a.b` is an ancestor of
+    # `.a.b.c` and of `.a.b["k"]`, but `.a.bb` is an ancestor of neither.
+    if [[ "$CAS_PATH" == "$_sp"?* ]]; then
+      _rest="${CAS_PATH#"$_sp"}"
+      if [[ "$_rest" == .* || "$_rest" == \[* ]]; then
+        die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
+      fi
+    fi
+  done
 fi
 
 # --- dependency check ---
