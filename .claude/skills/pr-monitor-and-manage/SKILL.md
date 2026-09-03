@@ -122,13 +122,16 @@ Capture an exit code for **each** of the three reads. Never `|| echo` a default 
 
 ```bash
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+# `--repo-key` NEVER returns empty — it prints `_unknown` and exits 0 — so
+# normalise the sentinel first, or the `-z` guard below is dead code.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 ACTIVE_RC=0; TICK_RC=0; EFF_RC=0
 DAY_ACTIVE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.active") || ACTIVE_RC=$?
 DAY_LAST_TICK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.last_tick_at") || TICK_RC=$?
 DAY_EFF_MIN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.cadence_effective_minutes") || EFF_RC=$?
 ```
 
-Each exit code takes the same reading: `0` is the value; `3` means no state file has ever been written, so there is genuinely no day loop; **anything else is unreadable state and refuses the arm** — say the read failed rather than proceeding. Defaulting `DAY_EFF_MIN` to `5` on a failed read is the specific trap: for a loop widened to a 30-minute cadence it shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m`, so a live loop that ticked 20 minutes ago is declared dead and this skill arms straight into a second owner.
+Each exit code takes the same reading: `0` is the value; `3` means no state file has ever been written, so there is genuinely no day loop; **anything else is unreadable state and refuses the arm** — say the read failed rather than proceeding. An **empty `REPO_KEY`** — the normalised `_unknown` — refuses the arm on the same ground: with no resolvable repo scope the three reads address a bucket nothing ever writes, so they return a confident *no live loop* for a repo they never actually consulted. Say the scope would not resolve rather than arming on that answer. Defaulting `DAY_EFF_MIN` to `5` on a failed read is the specific trap: for a loop widened to a 30-minute cadence it shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m`, so a live loop that ticked 20 minutes ago is declared dead and this skill arms straight into a second owner.
 
 With all three readable: `DAY_ACTIVE == true` **and** `DAY_LAST_TICK` inside `max(3 × DAY_EFF_MIN, 15m)` → a day loop is live: refuse to arm and stop, in one line — `A /pm day loop is running for this repo — say "stop" to it first, then /pr-monitor-and-manage.` `false`/`null`, or an `active: true` whose `last_tick_at` is outside the window (its session died — the freshness rule from `/pm` Step 2D.1(b)), mean no live loop: proceed.
 
