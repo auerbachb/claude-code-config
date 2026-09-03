@@ -902,7 +902,10 @@ check_eq "every hard-required sibling library got its own exit-5 check" "3" \
 # what makes that code look documented.
 EXIT_BLOCK="$(printf '%s\n' "$USAGE_TEXT" | awk '/^EXIT CODES$/ { f = 1; next } f && /^[A-Z]/ { exit } f { print }')"
 EXIT_CODES="$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -oE 'exit [0-9]+' | awk '{ print $2 }' | sort -u)"
-check_eq "exit-code discovery found the literal codes (fail-closed)" "5" \
+# 6 literals: 0, 2, 3, 4, 5 and 70 (EX_SOFTWARE — the --help extraction guard
+# added in issue #1528). 6 is documented but reached through
+# STATE_LOCK_EXIT_TIMEOUT rather than a literal, so it is not in this set.
+check_eq "exit-code discovery found the literal codes (fail-closed)" "6" \
   "$(printf '%s\n' "$EXIT_CODES" | grep -c .)"
 UNDOCUMENTED_CODES=""
 while IFS= read -r _code; do

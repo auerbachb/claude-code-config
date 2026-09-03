@@ -37,6 +37,7 @@
 #   0  Match found (state code printed on stdout)
 #   1  No match (nothing printed)
 #   2  Usage error (missing argument, unknown flag)
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   # HHG-adjacent match beats unrelated later state reference.
@@ -63,7 +64,8 @@ print_help() {
   # blank comment line that terminates it). Mirrors the pattern in
   # reply-thread.sh: skip line 1 (shebang), strip the leading "# " or "#",
   # and stop at the first blank line.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 # Emit the "missing <text>" usage error and exit 2. Called both before the

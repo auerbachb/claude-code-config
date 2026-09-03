@@ -21,6 +21,7 @@
 #   2  unestimated
 #   3  usage error
 #   4  gh / jq error
+#   70  --help header extraction produced no output (internal defect).
 #
 # PARSE PATTERN (from time-estimates.md)
 #   ^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$
@@ -53,7 +54,8 @@ while [[ $# -gt 0 ]]; do
     --repo=*)
       REPO="${1#--repo=}"; shift ;;
     --help|-h)
-      awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0 ;;
     -*)
       printf 'Usage: %s <issue_number> [--repo owner/repo]\n' "$(basename "$0")" >&2

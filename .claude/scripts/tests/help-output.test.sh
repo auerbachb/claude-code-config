@@ -425,7 +425,7 @@ FIXTURE_EOF
 # and must emit both section bodies. Without this, a checker that rejected
 # everything would produce a green suite in the two negative controls below.
 make_fixture "$TMP/canonical.sh" \
-  'awk '"'"'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }'"'"' "$0"'
+  'awk '"'"'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }'"'"' "$0"'
 run_help "$TMP/canonical.sh"
 check "control(+): canonical awk form passes the smoke checker" "$(smoke_verdict)" "clean"
 if grep -qF -- "DEPS-BODY-MARKER" "$OUT" && grep -qF -- "PURPOSE-BODY-MARKER" "$OUT"; then
@@ -473,6 +473,217 @@ else
     *) bad "control(-): family-A nested-block form was NOT rejected (verdict: $FAMILY_A_VERDICT)" ;;
   esac
   check "control(-): family-A fixture prints nothing on stdout" "$(wc -c < "$OUT" | tr -d ' ')" "0"
+fi
+
+echo
+echo "=== Part 4 — an extraction that yields nothing must FAIL loudly (issue #1528) ==="
+
+# The portable awk form cannot be defeated by BSD/GNU divergence any more, but it
+# could still yield nothing — a header block deleted, a blank line landing at
+# line 2, an unreadable $0. Every call site used to be `awk …; exit 0`, so that
+# case printed nothing and reported SUCCESS. Relying on `set -e` to catch it is
+# unsound: 20 of the 47 sites do not set it. The guard is therefore explicit at
+# the call site, and this part proves it fires.
+#
+# GUARDED_EXTRACTION is the exact production text, so a drift in the shipped
+# idiom shows up here rather than being re-asserted against a stale copy.
+GUARDED_EXTRACTION='awk '"'"'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }'"'"' "$0" ||
+      { printf '"'"'%s: --help header extraction produced no output\n'"'"' "$0" >&2; exit 70; }'
+
+# make_bodied_fixture <path> <header-block>
+# Writes a fixture carrying the guarded production extraction, with an arbitrary
+# header block spliced in after the shebang.
+make_bodied_fixture() {
+  local path="$1" header="$2"
+  {
+    printf '#!/usr/bin/env bash\n'
+    [ -n "$header" ] && printf '%s\n' "$header"
+    printf '\nset -euo pipefail\ncase "${1:-}" in\n  --help|-h)\n    %s\n    exit 0 ;;\nesac\n' \
+      "$GUARDED_EXTRACTION"
+  } > "$path"
+}
+
+# The shipped idiom must actually be the one under test.
+if grep -qF 'END { exit(n ? 0 : 1) }' "$REPO_ROOT/.claude/scripts/overrun-check.sh"; then
+  ok "the guarded awk form is what production ships"
+else
+  bad "production no longer ships the guarded awk form — Part 4 is testing a stale idiom"
+fi
+
+# Control (positive): a normal header still exits 0 and prints its body. Without
+# this, a guard that rejected everything would look like a passing suite.
+make_bodied_fixture "$TMP/guard-ok.sh" '# fixture.sh — guarded positive control
+#
+# PURPOSE
+#   PURPOSE-BODY-MARKER stands in for real purpose prose.'
+run_help "$TMP/guard-ok.sh"
+check "guard(+): a well-formed header still exits 0" "$RC" "0"
+check "guard(+): and still writes nothing to stderr" "$(wc -c < "$ERRF" | tr -d ' ')" "0"
+if grep -qF -- "PURPOSE-BODY-MARKER" "$OUT"; then
+  ok "guard(+): and still emits the header body"
+else
+  bad "guard(+): the guard suppressed a healthy header body"
+fi
+
+# Case 1 — header deleted, the blank separator remains at line 2. awk hits its
+# terminator immediately and prints nothing.
+make_bodied_fixture "$TMP/guard-blank.sh" ''
+run_help "$TMP/guard-blank.sh"
+check "guard(-): a header deleted down to a blank line 2 exits non-zero" \
+  "$([ "$RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+# 70 = sysexits EX_SOFTWARE, "internal software error". The code is deliberately
+# NOT 1: exit 1 is a documented IN-BAND result for some of these scripts —
+# estimate-resolve.sh returns it for a tier-table fallback — so a caller that
+# ran --help and branched on status could not tell a broken help from a real
+# answer. That ambiguity is the one PR #1549 called out; 70 is unused repo-wide.
+check "guard(-): the status is EX_SOFTWARE (70), never an in-band code" "$RC" "70"
+check "guard(-): stdout is empty, as the broken case is" \
+  "$(wc -c < "$OUT" | tr -d ' ')" "0"
+if grep -qF -- "produced no output" "$ERRF"; then
+  ok "guard(-): the failure is VISIBLE — it names itself on stderr"
+else
+  bad "guard(-): failed silently; stderr was '$(head -1 "$ERRF")'"
+fi
+
+# Case 2 — the END block, asserted directly on the awk program.
+#
+# Deleting a header outright is NOT an empty extraction: awk then simply prints
+# the code that follows, which is a different (and louder) defect. The only
+# shapes that yield nothing are the terminator landing at line 2 — case 1 — and
+# awk reaching EOF having printed nothing, which through `$0` needs a one-line
+# file and so cannot carry a --help arm at all. That case is therefore asserted
+# against the program itself rather than through a fixture that cannot exist.
+AWK_PROG='NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }'
+
+printf '#!/usr/bin/env bash\n' > "$TMP/one-line.sh"
+awk "$AWK_PROG" "$TMP/one-line.sh" >/dev/null 2>&1
+check "END block: EOF with nothing printed exits 1" "$?" "1"
+
+printf '#!/usr/bin/env bash\n\nset -euo pipefail\n' > "$TMP/blank-second.sh"
+awk "$AWK_PROG" "$TMP/blank-second.sh" >/dev/null 2>&1
+check "END block: terminator at line 2 exits 1" "$?" "1"
+
+printf '#!/usr/bin/env bash\n# a real header line\n\nset -euo pipefail\n' > "$TMP/has-header.sh"
+HDR=$(awk "$AWK_PROG" "$TMP/has-header.sh"); HDR_RC=$?
+check "END block: a one-line header exits 0" "$HDR_RC" "0"
+check "END block: …and prints the stripped header" "$HDR" "a real header line"
+
+# Negative control on the guard itself: the PRE-fix shape (no END block, bare
+# `exit 0`) must still report success on the very same broken input. Without
+# this the two cases above could pass against a fixture that was never capable
+# of the bug.
+printf '#!/usr/bin/env bash\n\nset -euo pipefail\ncase "${1:-}" in\n  --help|-h)\n' \
+  > "$TMP/guard-prefix.sh"
+printf '    awk %s "$0"\n    exit 0 ;;\nesac\n' \
+  "'NR == 1 { next } /^\$/ { exit } { sub(/^# ?/, \"\"); print }'" >> "$TMP/guard-prefix.sh"
+run_help "$TMP/guard-prefix.sh"
+check "guard control: the pre-fix shape still exits 0 on the same empty extraction" "$RC" "0"
+check "guard control: …while printing nothing — the exact defect #1528 names" \
+  "$(wc -c < "$OUT" | tr -d ' ')" "0"
+
+# Every production site must carry the guard: a bare `awk …` help line with no
+# `||` follow-up is the regression this whole part exists to prevent.
+UNGUARDED=""
+for f in .claude/scripts/*.sh .claude/hooks/*.sh .github/scripts/*.sh; do
+  [ -f "$f" ] || continue
+  case "$f" in */tests/*) continue ;; esac
+  grep -q "awk 'NR == 1" "$f" || continue
+  # The help line must end in `||`, handing off to the guard on the next line.
+  if ! grep -q "awk 'NR == 1.*END { exit(n ? 0 : 1) }' \"\$0\" ||" "$f"; then
+    UNGUARDED="${UNGUARDED}    $f"$'\n'
+  fi
+done
+if [ -n "$UNGUARDED" ]; then
+  bad "every awk --help site carries the empty-extraction guard; unguarded:"
+  printf '%s' "$UNGUARDED"
+else
+  ok "every awk --help site carries the empty-extraction guard"
+fi
+
+# TERMINATOR INVARIANT.
+#
+# The extraction must stop at the first NON-COMMENT line, never at the first
+# BLANK one. A blank-line terminator is only correct where a blank line
+# separates the header from the code, and four scripts have no such separator:
+# polling-state-gate.sh, run-hook-tests.sh, run-python-tests.sh and
+# summarize-test-run.sh all run their header straight into `set -uo pipefail`.
+# The last three were printing that line — and `shopt -s nullglob` — into their
+# own --help. The comment-run terminator is correct everywhere (verified
+# output-identical across all sites), so it is the single shipped form.
+BLANKTERM=""
+TERM_CHECKED=0
+for f in .claude/scripts/*.sh .claude/hooks/*.sh .github/scripts/*.sh; do
+  [ -f "$f" ] || continue
+  case "$f" in */tests/*) continue ;; esac
+  grep -q "awk 'NR == 1" "$f" || continue
+  TERM_CHECKED=$((TERM_CHECKED + 1))
+  if grep -q "awk 'NR == 1 { next } /\^\$/ { exit }" "$f"; then
+    BLANKTERM="${BLANKTERM}    $f — uses the blank-line terminator; it emits code where no blank separator exists"$'\n'
+  fi
+done
+if [ -n "$BLANKTERM" ]; then
+  bad "every --help extraction stops at the first non-comment line; violations:"
+  printf '%s' "$BLANKTERM"
+else
+  ok "every --help extraction stops at the first non-comment line ($TERM_CHECKED sites)"
+fi
+# Fail closed: the loop must have actually inspected the family.
+if [ "$TERM_CHECKED" -ge 40 ]; then
+  ok "terminator invariant inspected $TERM_CHECKED awk help sites (>= 40)"
+else
+  bad "terminator invariant inspected only $TERM_CHECKED sites — discovery is broken"
+fi
+
+# Behavioural half: the shipped terminator must actually refuse to print code.
+# A fixture whose header runs straight into shell code — no blank separator —
+# must yield only the header. This is the defect the three runners shipped.
+cat > "$TMP/no-separator.sh" <<NOSEP_EOF
+#!/usr/bin/env bash
+# fixture.sh — header running straight into code, no blank separator
+# HEADER-BODY-MARKER is the last line that belongs in --help.
+set -uo pipefail
+shopt -s nullglob
+case "\${1:-}" in
+  --help|-h)
+    $GUARDED_EXTRACTION
+    exit 0 ;;
+esac
+NOSEP_EOF
+run_help "$TMP/no-separator.sh"
+check "no-separator fixture: exits 0" "$RC" "0"
+if grep -qF -- "HEADER-BODY-MARKER" "$OUT"; then
+  ok "no-separator fixture: emits the header"
+else
+  bad "no-separator fixture: dropped the header"
+fi
+if grep -qE 'set -uo pipefail|shopt -s nullglob' "$OUT"; then
+  bad "no-separator fixture: LEAKED shell code into --help"
+else
+  ok "no-separator fixture: never leaks shell code into --help"
+fi
+
+# Negative control: the blank-line terminator on the same fixture DOES leak, so
+# the assertion above is load-bearing rather than vacuous.
+make_bodied_leak() {
+  cat > "$TMP/leaky.sh" <<LEAK_EOF
+#!/usr/bin/env bash
+# fixture.sh — header running straight into code, no blank separator
+# HEADER-BODY-MARKER is the last line that belongs in --help.
+set -uo pipefail
+shopt -s nullglob
+case "\${1:-}" in
+  --help|-h)
+    awk 'NR == 1 { next } /^\$/ { exit } { sub(/^# ?/, ""); print }' "\$0"
+    exit 0 ;;
+esac
+LEAK_EOF
+}
+make_bodied_leak
+run_help "$TMP/leaky.sh"
+if grep -qE 'set -uo pipefail|shopt -s nullglob' "$OUT"; then
+  ok "control(-): the blank-line terminator DOES leak code on that fixture"
+else
+  bad "control(-): the blank-line terminator did not leak — the fixture no longer reproduces the bug"
 fi
 
 echo

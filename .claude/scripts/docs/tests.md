@@ -42,7 +42,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
 | [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |
 | [handoff-state.test.sh](../tests/handoff-state.test.sh) | Tests for `handoff-state.sh` |
-| [help-output.test.sh](../tests/help-output.test.sh) | `--help` contract for every repo script (#1513/#1475) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, with fixtures proving the checker rejects both pre-fix forms |
+| [help-output.test.sh](../tests/help-output.test.sh) | `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0 |
 | [infer-pr.test.sh](../tests/infer-pr.test.sh) | Tests for `infer-pr.sh` |
 | [issue-claim.test.sh](../tests/issue-claim.test.sh) | Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next |
 | [issue-dedup.test.sh](../tests/issue-dedup.test.sh) | Tests for `issue-dedup.sh` |
@@ -65,6 +65,7 @@ All tests live in `tests/` and run offline (no network required). Run from the r
 | [merge-sequence.test.sh](../tests/merge-sequence.test.sh) | Tests for `merge-sequence.sh` |
 | [model-fleet.test.sh](../tests/model-fleet.test.sh) | Tests for `model-fleet.sh` |
 | [overrun-check.test.sh](../tests/overrun-check.test.sh) | Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now |
+| [overrun-check-tzdata.test.sh](../tests/overrun-check-tzdata.test.sh) | Tests `overrun-check.sh`'s ET clock on a system where `America/New_York` does not resolve (#1529) — a PATH-shim `date` reproduces glibc-without-tzdata (zone falls back to UTC, `date` still exits 0); asserts cell mode and the breach alert render a **labelled** UTC value rather than an unlabelled 12-hour UTC clock under an `(ET)` header, with a negative control pinning unchanged Eastern output and a fidelity control proving the shim reproduces the bug |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |

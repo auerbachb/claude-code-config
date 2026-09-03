@@ -149,6 +149,7 @@
 #   2  Usage error.
 #   3  PR not found / closed / inaccessible.
 #   4  gh / network / API error while reading PR state.
+#   70  --help header extraction produced no output (internal defect).
 #
 # SAFETY (safety.md — absolute)
 #   - Never modifies branch protection (no .../branches/.../protection calls).
@@ -177,7 +178,8 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

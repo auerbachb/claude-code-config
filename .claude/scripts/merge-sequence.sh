@@ -112,6 +112,7 @@
 #      resolved. That is deliberately fatal rather than defaulted: a placeholder
 #      would be a STABLE signature across ticks, advancing the stall counter on
 #      an anchor that was never actually observed.
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   gh (authenticated), jq, pr-authorship.sh (resolved next to this script)
@@ -127,7 +128,8 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 print_usage() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 # --------------------------------------------------------------------------

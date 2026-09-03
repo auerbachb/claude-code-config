@@ -33,6 +33,7 @@
 # EXIT STATUS:
 #   0 — no removal recommendations (all clean, or only review flags)
 #   1 — at least one skill is recommended for removal (60+ days unused)
+#   70 — --help header extraction produced no output (internal defect).
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
@@ -41,7 +42,8 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 # Help flag
 # ──────────────────────────────────────────────────────────────────────────────
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
   exit 0
 fi
 

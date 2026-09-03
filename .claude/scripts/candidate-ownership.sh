@@ -101,6 +101,7 @@
 # EXIT STATUS
 #   0  Sweep ran; every candidate carries a verdict (owned or not).
 #   2  Usage error, or a hard dependency (jq) is missing.
+#   70  --help header extraction produced no output (internal defect).
 #
 #   There is deliberately no "something was owned" exit code: a sweep over N
 #   candidates has N answers, and collapsing them into one exit status is how a
@@ -115,7 +116,8 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

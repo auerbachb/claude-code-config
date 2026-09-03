@@ -98,7 +98,10 @@ FORMAT="json"
 PRINT_CMD=0
 BIN_OVERRIDE=""
 
-usage() { awk 'NR == 1 { next } /^$/ { exit } { print }' "$0"; }
+usage() {
+  awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
 
 die() { echo "ERROR: $1" >&2; exit 2; }
 

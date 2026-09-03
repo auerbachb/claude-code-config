@@ -49,6 +49,7 @@
 #   2  Usage error (unknown flag or conflicting options)
 #   3  ccusage not found or environment error (PATH or npx unavailable)
 #   4  ccusage invocation failed (network, auth, or parse error)
+#   70  --help header extraction produced no output (internal defect).
 #
 # CCUSAGE DETECTION (in order):
 #   1. ccusage binary on PATH
@@ -71,7 +72,8 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
   2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

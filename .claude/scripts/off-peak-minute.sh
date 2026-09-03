@@ -45,6 +45,7 @@
 #   0  OK (value printed on stdout)
 #   2  Usage error (missing value, unknown flag, non-numeric N, or
 #      --every-n-min outside [1, 59])
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   # Hourly cron — stable per-repo minute, 7 days a week.
@@ -63,7 +64,8 @@ print_help() {
   # blank comment line). Matches the pattern used by hhg-state.sh /
   # reply-thread.sh: skip line 1 (shebang), strip leading "# " or "#", stop
   # at the first blank line.
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {

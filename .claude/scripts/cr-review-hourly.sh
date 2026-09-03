@@ -48,6 +48,7 @@
 #   6  Lock timeout — another writer held the session-state lock past the
 #      acquisition timeout (default 30s, CLAUDE_STATE_LOCK_TIMEOUT). No write
 #      is performed; the state file is left unmodified.
+#   70  --help header extraction produced no output (internal defect).
 #
 # LOCKING (issue #639)
 #   Every write path serializes on the shared session-state lock implemented in
@@ -70,7 +71,8 @@ BUDGET="${CR_HOURLY_BUDGET:-$DEFAULT_BUDGET}"
 NOW_ISO="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

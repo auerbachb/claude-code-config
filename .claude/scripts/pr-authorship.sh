@@ -48,6 +48,7 @@
 #   3  not_found   — no such PR (404). Authorship is moot; do not act.
 #   4  unknown     — authorship undetermined (gh/network error, empty author, or
 #                    viewer login unresolved). FAIL-CLOSED: treat as not_mine.
+#   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   - gh (authenticated)
@@ -67,7 +68,8 @@ GUARD_REF="the authorship guard (.claude/rules/safety.md)"
 print_help() {
   # Print the leading comment header (everything after the shebang up to the
   # first blank line), stripping the leading "# ".
-  awk 'NR == 1 { next } /^$/ { exit } { print }' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 die_usage() {

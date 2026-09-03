@@ -79,6 +79,7 @@
 #      suffix up to the bound is taken. No path printed.
 #   2  Usage error: a required FLAG is absent (--dir, --month, --series), a flag
 #      value is empty, a flag is unknown, or --month/--series is malformed.
+#   70  --help header extraction produced no output (internal defect).
 #
 # EXAMPLES
 #   .claude/scripts/report-path.sh \
@@ -91,7 +92,8 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
 
 print_help() {
-  awk 'NR == 1 { next } /^$/ { exit } { sub(/^# ?/, ""); print }' "$0"
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 usage_error() {
