@@ -337,7 +337,7 @@ fi
 
 Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
 
-**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too — clearing `limit_probe_fires_remaining` with the pair is what stops a later recovery re-arming a probe for a park the user has already resumed past. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too — retiring `limit_probe_fires_remaining` with the pair is what stops a later recovery re-arming a probe for a park the user has already resumed past. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
 
 ```bash
 LIMIT_WAKE_RESOLVED=false
@@ -351,10 +351,14 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     # Only act when the field is readable and non-null
     # Stop the auto-wake before we re-arm day mode below; a successful stop clears the fields.
     if TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
+      # -1, not null (#1445): the bound field is three-valued, and `null` means
+      # "reset time known — re-arm the sleep-until-reset one-shot". Writing null
+      # after deliberately stopping the wake would tell a later recovery to arm it
+      # again; -1 says "park stands, no bound in force, no known reset" instead.
       if "$SESSION_STATE_SH" \
         --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
         --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
-        --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null"; then
+        --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=-1"; then
         LIMIT_WAKE_RESOLVED=true
         echo "(disarmed usage-limit auto-wake $LIMIT_TASK_ID)"
       else

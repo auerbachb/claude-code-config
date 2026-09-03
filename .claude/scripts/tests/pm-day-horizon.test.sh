@@ -9,10 +9,11 @@
 #   skill and this suite runs the edit. Same principle as
 #   `pmm-wake-step-4a.test.sh` and `pr-state-classify.test.sh`.
 #
-#   Four anchors, four jobs:
+#   Five anchors, five jobs:
 #     pm-day-d2-horizon-branch  D2's tick gate — verdict -> {refill, park, idle}
 #     pm-day-2d7-park-claim     the compare-and-set single-park claim
 #     pm-day-2d7-park-record    the park record, including the cause field
+#     pm-day-2d7-wake-publish   the wake identity pair (armed / lost / failed / stranded)
 #     pm-day-2d7-probe-fire     one bounded probe fire (resume / decrement / stop)
 #
 # WHY (issue #1428)
@@ -47,7 +48,17 @@ source "$TEST_DIR/lib/skill-bash.sh"
 
 TMP_HOME="$(mktemp -d)"
 STUB_DIR="$(mktemp -d)"
-cleanup() { rm -rf "$TMP_HOME" "$STUB_DIR"; }
+# Set by the negative control at the end of the file; removed here so an early
+# exit never leaves a registered worktree behind.
+CTRL_ROOT=""
+CTRL_DIR=""
+cleanup() {
+  if [[ -n "$CTRL_DIR" ]]; then
+    git -C "$REPO_ROOT" worktree remove --force "$CTRL_DIR" >/dev/null 2>&1
+    git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1
+  fi
+  rm -rf "$TMP_HOME" "$STUB_DIR" ${CTRL_ROOT:+"$CTRL_ROOT"}
+}
 trap cleanup EXIT
 export HOME="$TMP_HOME"
 mkdir -p "$HOME/.claude"
@@ -78,7 +89,19 @@ require_text() {
 BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
 BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
 BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
+BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
 BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
+
+# `TaskStop` is a harness tool, not a binary, so the wake-publish block cannot
+# run without a stand-in. Two shapes are needed: one that stops the Monitor
+# (`lost` / `failed`) and one that cannot (`stranded`) — the block's own branch.
+make_taskstop_stub() {   # make_taskstop_stub <exit-code>
+  local rc="$1" stub_path="$STUB_DIR/TaskStop"
+  printf '#!/usr/bin/env bash\nexit %s\n' "$rc" > "$stub_path"
+  chmod +x "$stub_path"
+}
+make_taskstop_stub 0
+export PATH="$STUB_DIR:$PATH"
 
 # A stub standing in for usage-horizon.sh: --check prints the STATUS/REASON pair
 # and exits on the documented code; --observe exits 0 whatever the verdict.
@@ -444,9 +467,16 @@ require_text "non-day threads are out of scope"   "$SKILL" 'Out of scope:.*non-d
 require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
 
 require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'
-require_text "pause teardown clears the probe bound" "$PAUSE" 'day\.limit_probe_fires_remaining=null'
+# -1, not null: the field is three-valued since #1445, and `null` means "reset
+# time known — re-arm the sleep-until-reset one-shot". Writing null after
+# deliberately stopping the wake would order a later recovery to re-arm it.
+require_text "pause teardown retires the probe bound to the sentinel" "$PAUSE" \
+  'day\.limit_probe_fires_remaining=-1'
+require_text "pause teardown does NOT null the probe bound" "$PAUSE" \
+  '\*\*`-1`, not `null`\*\*'
 require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registry covers both wake shapes'
-require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" 'day\.limit_probe_fires_remaining=null'
+require_text "pause-resume retires the probe bound to the sentinel"  "$PAUSE_RESUME" \
+  'day\.limit_probe_fires_remaining=-1'
 require_text "generation check is unchanged"        "$PAUSE_RESUME" 'day\.limit_resume_generation'
 
 require_text "schema documents limit_cause"    "$SCHEMA" 'limit_cause'
@@ -538,29 +568,45 @@ echo "== rc propagation: a failed write is never reported as success (AC 4) =="
 # whether the BLOCK propagates a non-zero rc, and delegating would drag the real
 # script's locking and repo-scope resolution into a question that is neither.
 # session-state.sh's own semantics are covered by its own suite.
+#
+# It understands the composed form (issue #1445): a --cas may arrive with --set
+# writes riding along, and the compare gates all of them. A stub that took only
+# the LAST flag it saw would silently reduce a composed park record to a blind
+# --set of one field and never compare at all — a fault-injection harness that
+# tests a shape the skill no longer emits.
 FAULT_SH="$STUB_DIR/session-state-fault.sh"
 cat > "$FAULT_SH" <<'FAULT'
 #!/usr/bin/env bash
-op=""; arg=""; expect=""
+op=""; cas_arg=""; expect=""; get_arg=""
+SET_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --get) op=get; arg="$2"; shift 2 ;;
-    --set) op=set; arg="$2"; shift 2 ;;
-    --cas) op=cas; arg="$2"; shift 2 ;;
+    --get) op=get; get_arg="$2"; shift 2 ;;
+    --set) SET_ARGS+=("$2"); [ "$op" = cas ] || op=set; shift 2 ;;
+    --cas) op=cas; cas_arg="$2"; shift 2 ;;
     --expect) expect="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 [ "$op" = "${FAULT_ON:-}" ] && exit "${FAULT_RC:-6}"
 [ -f "$STATE_FILE" ] || exit 3
-path="${arg%%=*}"; value="${arg#*=}"
+apply_sets() {   # every --set in one pass, like the real single pipeline
+  local a p v
+  for a in ${SET_ARGS[@]+"${SET_ARGS[@]}"}; do
+    p="${a%%=*}"; v="${a#*=}"
+    jq "$p = $v" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE"
+  done
+}
 case "$op" in
-  get) jq -r "$path" "$STATE_FILE" ;;
-  set) jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+  get) jq -r "$get_arg" "$STATE_FILE" ;;
+  set) apply_sets ;;
   cas)
-    cur=$(jq -c "$path" "$STATE_FILE")
+    cas_path="${cas_arg%%=*}"; cas_value="${cas_arg#*=}"
+    cur=$(jq -c "$cas_path" "$STATE_FILE")
+    # A lost compare writes NOTHING — the composed --set values included.
     [ "$cur" = "$expect" ] || exit 7
-    jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+    jq "$cas_path = $cas_value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE"
+    apply_sets ;;
 esac
 FAULT
 chmod +x "$FAULT_SH"
@@ -596,12 +642,17 @@ check_eq "record: unset NEW_HITS is refused" "PARK_RECORD=error rc=hits" "$RECOR
 check_eq "record: refused write claimed no cause" "null" "$(day_get limit_cause)"
 check_eq "record: refused write left the counter alone" "0" "$(day_get consecutive_limit_hits)"
 
-# A failed metadata write must report the failure, not a written record.
+# A failed record write must report the failure, not a written record. The park
+# record is now ONE composed call, so the fault is injected on that call (`cas`)
+# rather than on a follow-up --set that no longer exists.
 seed_day_state
 RECORD_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
-  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 FAULT_ON=set FAULT_RC=6 \
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 FAULT_ON=cas FAULT_RC=6 \
   bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
-check_eq "record: failed metadata write reports error" "PARK_RECORD=error rc=6" "$RECORD_OUT"
+check_eq "record: failed record write reports error" "PARK_RECORD=error rc=6" "$RECORD_OUT"
+check_eq "record: failed record write claimed no cause" "null" "$(day_get limit_cause)"
+check_eq "record: failed record write wrote no probe bound" "null" \
+  "$(day_get limit_probe_fires_remaining)"
 
 # ---------------------------------------------------------------------------
 echo "== Greptile round: expired-but-unresolved park, and CAS interleaving =="
@@ -646,47 +697,264 @@ assert_bound_precedes_expiry() {
 assert_bound_precedes_expiry "2D.1(b+) qualifies its expiry shortcut" 'the park resolved or never existed'
 assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recovery continue normally'
 
-# P1: the cause CAS and the metadata write are two lock holds. A reactive kill
-# landing between them must not leave 2D.7 arming a second wake over its record.
+# P1: the cause CAS and the metadata write used to be two lock holds, so a
+# reactive kill landing between them could leave a record mixing both paths'
+# fields. Since #1445 they are ONE composed write, so the window is gone — but
+# the outcome it guarded still has to hold.
 seed_day_state
 RECORD_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
   PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
 check_eq "record: uncontended write still reports written" "PARK_RECORD=written" "$RECORD_OUT"
 
-# Simulate the interleave: the stand-in lets the cause CAS win, then flips the
-# cause to "reactive" behind the metadata write, exactly as a kill would.
-STEAL_SH="$STUB_DIR/session-state-steal.sh"
-cat > "$STEAL_SH" <<'STEAL'
-#!/usr/bin/env bash
-op=""; arg=""; expect=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --get) op=get; arg="$2"; shift 2 ;;
-    --set) op=set; arg="$2"; shift 2 ;;
-    --cas) op=cas; arg="$2"; shift 2 ;;
-    --expect) expect="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -f "$STATE_FILE" ] || exit 3
-path="${arg%%=*}"; value="${arg#*=}"
-case "$op" in
-  get) jq -r "$path" "$STATE_FILE" ;;
-  set) jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE"
-       # A reactive kill lands the instant the metadata write completes.
-       jq '.repos["auerbachb/claude-code-config"].day.limit_cause = "reactive"' \
-         "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
-  cas) cur=$(jq -c "$path" "$STATE_FILE"); [ "$cur" = "$expect" ] || exit 7
-       jq "$path = $value" "$STATE_FILE" > "$STATE_FILE.t" && mv "$STATE_FILE.t" "$STATE_FILE" ;;
+# ---------------------------------------------------------------------------
+echo "== Atomic park record + wake identity (issue #1445) =="
+# ---------------------------------------------------------------------------
+# The mid-write steal this section used to simulate is no longer expressible:
+# there is no gap between the cause CAS and the metadata write to land inside.
+# What replaces it is the property that gap made impossible — under genuine
+# contention exactly one path writes, and the surviving record is entirely that
+# path's, never a blend. The two writers below carry DIFFERENT metadata, so a
+# mixed record is detectable rather than merely improbable.
+seed_day_state
+RC_P_FILE="$STUB_DIR/rc_preemptive"; RC_R_FILE="$STUB_DIR/rc_reactive"
+( SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    bash -c "$BLOCK_RECORD" >"$STUB_DIR/out_preemptive" 2>/dev/null
+  tail -1 "$STUB_DIR/out_preemptive" > "$RC_P_FILE" ) &
+( "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" \
+    --expect null \
+    --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"rolling_window\"" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+    --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=99" >/dev/null 2>&1
+  printf 'rc=%s' "$?" > "$RC_R_FILE" ) &
+wait
+RACE_RECORD_OUT="$(cat "$RC_P_FILE")"
+RACE_REACTIVE_RC="$(sed -n 's/^rc=//p' "$RC_R_FILE")"
+# Exactly one of the two may have written; the pre-emptive block reports which
+# side it ended on, and the reactive claim reports 0 (won) or 7 (lost).
+case "$RACE_RECORD_OUT:$RACE_REACTIVE_RC" in
+  "PARK_RECORD=written:7"|"PARK_RECORD=superseded:0")
+    PASS=$((PASS + 1)); echo "ok   — concurrent records: exactly one path won ($RACE_RECORD_OUT / reactive rc=$RACE_REACTIVE_RC)" ;;
+  *)
+    FAIL=$((FAIL + 1)); echo "FAIL — concurrent records: both or neither won ($RACE_RECORD_OUT / reactive rc=$RACE_REACTIVE_RC)" ;;
 esac
-STEAL
-chmod +x "$STEAL_SH"
+# The surviving record must be entirely one writer's. A cause from one path
+# beside the other path's bound or thrash counter is exactly the transiently
+# mixed record #1445 exists to make unreachable.
+RACE_TRIPLE="$(day_get limit_cause)|$(day_get limit_probe_fires_remaining)|$(day_get consecutive_limit_hits)"
+case "$RACE_TRIPLE" in
+  "preemptive|12|1"|"reactive|null|99")
+    PASS=$((PASS + 1)); echo "ok   — concurrent records: the survivor is entirely one path's ($RACE_TRIPLE)" ;;
+  *)
+    FAIL=$((FAIL + 1)); echo "FAIL — concurrent records: mixed or partial record ($RACE_TRIPLE)" ;;
+esac
+
+# The wake identity pair is the same story: id and generation land together or
+# not at all. `WAKE_PUBLISH=lost` is now exercised through the REAL skill block
+# (extracted from the anchor), not only through a proxy CAS on the primitive.
+run_wake() {   # run_wake <task-id> <generation>
+  SESSION_STATE_SH="$SESSION_STATE_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+    WAKE_TASK_ID="$1" WAKE_GENERATION="$2" \
+    bash -c "$BLOCK_WAKE" 2>/dev/null | tail -1
+}
+
+make_taskstop_stub 0
+seed_day_state
+check_eq "wake: publishes on a free slot" "WAKE_PUBLISH=armed" "$(run_wake probe-task probe-gen-1)"
+check_eq "wake: task id written"   "probe-task"  "$(day_get limit_resume_task_id)"
+check_eq "wake: generation written with it" "probe-gen-1" "$(day_get limit_resume_generation)"
+
+# A wake already armed by the reactive path: our publish loses, our Monitor is
+# stopped, and — the atomicity half — our generation never lands beside their id.
+seed_day_state
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=\"limit-gen-1\"" >/dev/null
+check_eq "wake: loses to an armed wake" "WAKE_PUBLISH=lost" "$(run_wake probe-task probe-gen-2)"
+check_eq "wake: the armed identity survives" "reactive-task" "$(day_get limit_resume_task_id)"
+check_eq "wake: the loser's generation was NOT written" "limit-gen-1" \
+  "$(day_get limit_resume_generation)"
+
+# A write failure is not a lost race: the board is parked with no wake at all,
+# which the block must surface rather than report as armed.
+seed_day_state
+check_eq "wake: a failed publish reports failed, not lost" "WAKE_PUBLISH=failed" \
+  "$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+     WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-3 FAULT_ON=cas FAULT_RC=6 \
+     bash -c "$BLOCK_WAKE" 2>/dev/null | tail -1)"
+check_eq "wake: a failed publish wrote no generation" "null" "$(day_get limit_resume_generation)"
+
+# ...and when the orphaned Monitor cannot be stopped, the ID has to be surfaced.
+make_taskstop_stub 1
+seed_day_state
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=\"reactive-task\"" >/dev/null
+check_eq "wake: an unstoppable orphan reports stranded" "WAKE_PUBLISH=stranded" \
+  "$(run_wake probe-task probe-gen-4)"
+make_taskstop_stub 0
+
+# The abort release must be keyed on `limit_cause`, never on the claim's own
+# timestamp. With a KNOWN reset, 2D.7's PARK_EPOCH *is* the vendor reset epoch,
+# and a reactive kill parking off the same signal computes the same instant — so
+# `--expect "<our timestamp>"` matches a park that is not ours and clears a real
+# one while its wake stays armed. The collision is constructed exactly here: both
+# paths carry the identical parked_until.
+COLLIDING_TS="2026-08-28T09:00:00Z"
+jq -n --arg k "$REPO_KEY" --arg ts "$COLLIDING_TS" '{repos: {($k): {day: {
+    parked_until: $ts, limit_kind: "rolling_window", limit_cause: "reactive",
+    limit_probe_fires_remaining: null, limit_resume_task_id: "reactive-task",
+    limit_resume_generation: "limit-gen-1", consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
+RELEASE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect null \
+  --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" >/dev/null 2>&1 || RELEASE_RC=$?
+check_eq "release: loses to a reactive park sharing the same timestamp" "7" "$RELEASE_RC"
+check_eq "release: the reactive park survives" "$COLLIDING_TS" "$(day_get parked_until)"
+check_eq "release: the reactive wake survives"  "reactive-task" "$(day_get limit_resume_task_id)"
+# Non-vacuity: the old timestamp-keyed shape would have cleared that same park,
+# which is the bug the gate change fixes — so it must NOT be what we ship.
+STALE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+  --expect "\"$COLLIDING_TS\"" >/dev/null 2>&1 || STALE_RC=$?
+check_eq "control: the timestamp-keyed release WOULD have cleared it" "0" "$STALE_RC"
+check_eq "control: ...leaving a wake armed over no park" "null" "$(day_get parked_until)"
+# Positive control: an abort with no competing park still clears its own claim.
+seed_day_state
+run_claim >/dev/null
+OWN_RELEASE_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect null \
+  --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" >/dev/null 2>&1 || OWN_RELEASE_RC=$?
+check_eq "release: an uncontended abort clears its own claim" "0" "$OWN_RELEASE_RC"
+check_eq "release: parked_until cleared" "null" "$(day_get parked_until)"
+check_eq "release: the -1 sentinel retired with it" "null" "$(day_get limit_probe_fires_remaining)"
+require_text "the release is keyed on limit_cause, not the timestamp" "$SKILL" \
+  'Gate the release on `limit_cause`, not on your own timestamp'
+
+# ---------------------------------------------------------------------------
+echo "== Three-valued limit_probe_fires_remaining (issue #1445) =="
+# ---------------------------------------------------------------------------
+# `null` used to mean two incompatible things: "reset time known — re-arm the
+# sleep-until-reset one-shot" and "reset unknown, bound not written yet". The
+# claim now stamps `-1` for the second, so the minutes-long window between the
+# claim and the record reads honestly instead of ordering the wrong wake.
+seed_day_state
+run_claim >/dev/null
+check_eq "claim: unknown reset stamps the -1 sentinel" "-1" \
+  "$(day_get limit_probe_fires_remaining)"
 
 seed_day_state
-RECORD_OUT=$(SESSION_STATE_SH="$STEAL_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
-  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
-check_eq "record: a kill landing mid-write stands the park down" "PARK_RECORD=superseded" "$RECORD_OUT"
-check_eq "record: the reactive winner keeps the cause" "reactive" "$(day_get limit_cause)"
+run_claim "$(( $(date -u +%s) + 3600 ))" >/dev/null
+check_eq "claim: known reset keeps null (legacy meaning preserved)" "null" \
+  "$(day_get limit_probe_fires_remaining)"
+
+# The record replaces the sentinel with the real bound, in its own single write.
+seed_day_state
+run_claim >/dev/null
+run_record false >/dev/null
+check_eq "record: the real bound replaces the sentinel" "12" \
+  "$(day_get limit_probe_fires_remaining)"
+
+# A probe fire arriving against the sentinel has no bound to spend: the
+# non-negative-integer guard must reject it rather than treat -1 as a count.
+seed_probe_state -1
+check_eq "probe: the -1 sentinel fails closed, never decrements" "PROBE=fail-closed" \
+  "$(run_probe "$GEN" critical | tail -1)"
+check_eq "probe: the sentinel is left untouched" "-1" "$(day_get limit_probe_fires_remaining)"
+
+# Recovery and teardown must know the third value, or -1 silently falls into the
+# null branch and re-arms the very wake the teardown stopped.
+require_text "2D.1(b+) handles the -1 sentinel"  "$SKILL" 'is the third value'
+require_text "2D.5 handles the -1 sentinel"      "$SKILL" 'zero, .-1., or unreadable'
+require_text "the bound is documented three-valued" "$SKILL" 'bound field is three-valued'
+require_text "schema documents the three-valued bound" "$SCHEMA" 'THREE-VALUED'
+require_text "day-mode doc records the sentinel"  "$DAY_MODE_DOC" 'probe bound is three-valued'
+
+# ---------------------------------------------------------------------------
+echo "== Negative control: the 2D.7 blocks require the composed primitive =="
+# ---------------------------------------------------------------------------
+# Non-vacuity for the whole atomicity section above. Those blocks are only
+# meaningful if they genuinely depend on #1445's composed --cas, so run them
+# against a session-state.sh WITHOUT the composition: they must FAIL there, not
+# quietly succeed by some other route.
+#
+# The control is materialised inside a real detached git worktree rather than a
+# flat copy in a temp dir. session-state.sh resolves state-lock.sh,
+# lib/repo-normalizer.sh and ../reference/session-state-schema.json relative to
+# its OWN location, so a lone copy aborts on a missing sibling and "fails" for
+# the wrong reason — a control that proves nothing about the composition.
+#
+# The composition is removed by re-narrowing the two parser guards, literally
+# (awk index/substr, no regex — the guard text is full of regex metacharacters).
+# The substitution is idempotent: against a tree that never had the composition
+# it is a no-op and the checkout is already the control, so this cannot go
+# vacuous once origin/main carries the fix.
+CTRL_ROOT="$(mktemp -d)"
+CTRL_DIR="$CTRL_ROOT/base"        # must not exist — `git worktree add` creates it
+if git -C "$REPO_ROOT" worktree add --detach --quiet "$CTRL_DIR" HEAD >/dev/null 2>&1; then
+  PASS=$((PASS + 1)); echo "ok   — control worktree created (detached, siblings intact)"
+else
+  # Fail closed: a control that could not be built is not a control that passed.
+  CTRL_DIR=""
+  FAIL=$((FAIL + 1)); echo "FAIL — could not create the control worktree; the atomicity section is unverified"
+fi
+
+if [[ -n "$CTRL_DIR" ]]; then
+  CTRL_SS="$CTRL_DIR/.claude/scripts/session-state.sh"
+  awk '
+  BEGIN {
+    set_new = "if [[ -n \"$MODE\" && \"$MODE\" != \"set\" && \"$MODE\" != \"cas\" ]]; then"
+    set_old = "if [[ -n \"$MODE\" && \"$MODE\" != \"set\" ]]; then"
+    cas_new = "if [[ -n \"$MODE\" && \"$MODE\" != \"cas\" && \"$MODE\" != \"set\" ]]; then"
+    cas_old = "if [[ -n \"$MODE\" && \"$MODE\" != \"cas\" ]]; then"
+  }
+  {
+    i = index($0, set_new)
+    if (i > 0) { print substr($0, 1, i - 1) set_old; next }
+    i = index($0, cas_new)
+    if (i > 0) { print substr($0, 1, i - 1) cas_old; next }
+    print
+  }' "$CTRL_SS" > "$CTRL_SS.stripped" && mv "$CTRL_SS.stripped" "$CTRL_SS"
+  chmod +x "$CTRL_SS"
+
+  if bash -n "$CTRL_SS" 2>/dev/null; then
+    PASS=$((PASS + 1)); echo "ok   — control script still parses after the strip"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — the strip broke the control script (it would fail for the wrong reason)"
+  fi
+
+  # Read the control RUN, not just its verdict: prove the control is a WORKING
+  # script that refuses only the composition, never a broken one that refuses
+  # everything. Both single-flag modes must still behave.
+  CTRL_HOME="$(mktemp -d)"
+  CTRL_SET_RC=0
+  HOME="$CTRL_HOME" bash "$CTRL_SS" --raw-path --set '.probe=ok' >/dev/null 2>&1 || CTRL_SET_RC=$?
+  check_eq "control: a plain --set still works" "0" "$CTRL_SET_RC"
+  CTRL_CAS_RC=0
+  HOME="$CTRL_HOME" bash "$CTRL_SS" --raw-path --cas '.slot="claimed"' --expect null >/dev/null 2>&1 || CTRL_CAS_RC=$?
+  check_eq "control: a plain --cas still works" "0" "$CTRL_CAS_RC"
+  CTRL_COMPOSED_RC=0
+  HOME="$CTRL_HOME" bash "$CTRL_SS" --raw-path --cas '.other="x"' --expect null \
+    --set '.extra=1' >/dev/null 2>&1 || CTRL_COMPOSED_RC=$?
+  check_eq "control: the composition is refused as a usage error (exit 2)" "2" "$CTRL_COMPOSED_RC"
+  rm -rf "$CTRL_HOME"
+
+  # The blocks themselves, against that control. `written` / `armed` here would
+  # mean the sections above pass without the primitive — i.e. prove nothing.
+  seed_day_state
+  CTRL_RECORD_OUT=$(SESSION_STATE_SH="$CTRL_SS" REPO_KEY="$REPO_KEY" \
+    PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+  check_eq "control: the park record cannot be written without composition" \
+    "PARK_RECORD=error rc=2" "$CTRL_RECORD_OUT"
+  check_eq "control: and it claimed no cause" "null" "$(day_get limit_cause)"
+
+  seed_day_state
+  CTRL_WAKE_OUT=$(SESSION_STATE_SH="$CTRL_SS" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
+    WAKE_TASK_ID=probe-task WAKE_GENERATION=probe-gen-ctl \
+    bash -c "$BLOCK_WAKE" 2>/dev/null | tail -1)
+  check_eq "control: the wake identity cannot be published without composition" \
+    "WAKE_PUBLISH=failed" "$CTRL_WAKE_OUT"
+  check_eq "control: and no task id was published" "null" "$(day_get limit_resume_task_id)"
+fi
 
 echo
 echo "passed: $PASS   failed: $FAIL"

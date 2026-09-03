@@ -10,6 +10,9 @@
 #   - --expect null matches a genuinely absent (JSON-null) path
 #   - JSON deep-equality: object/array --expect values compared structurally
 #   - Usage errors: --cas without --expect, --expect without --cas
+#   - Composition (issue #1445): one --cas may carry --set writes; the compare
+#     gates the whole batch, so a win writes all of them and a loss writes none
+#     of them and still exits 7. The remaining exclusivity rules are unchanged.
 #
 # Each regression test includes a FAILS-WITHOUT-FIX comment so reviewers can
 # revert the --cas block in session-state.sh and confirm the test fails.
@@ -59,9 +62,27 @@ check_eq "--cas without --expect exits 2" "2" "$RC"
 run --raw-path --expect null >/dev/null 2>&1; RC=$?
 check_eq "--expect without --cas exits 2" "2" "$RC"
 
-# --cas combined with --set must exit 2
-run --raw-path --cas '.foo=bar' --expect null --set '.x=y' >/dev/null 2>&1; RC=$?
-check_eq "--cas combined with --set exits 2" "2" "$RC"
+# --cas combined with --set is the SUPPORTED composition since issue #1445 (its
+# behaviour is pinned in the composition section at the end of this file). What
+# must still be a usage error is a SECOND --cas, a second --expect, and any other
+# mode paired with either flag — the composition widened one rule, not all of them.
+run --raw-path --cas '.a=1' --expect null --cas '.b=2' >/dev/null 2>&1; RC=$?
+check_eq "a second --cas still exits 2" "2" "$RC"
+
+run --raw-path --cas '.a=1' --expect null --expect null >/dev/null 2>&1; RC=$?
+check_eq "a second --expect still exits 2" "2" "$RC"
+
+run --raw-path --cas '.a=1' --expect null --get '.a' >/dev/null 2>&1; RC=$?
+check_eq "--cas combined with --get still exits 2" "2" "$RC"
+
+run --raw-path --set '.a=1' --get '.a' >/dev/null 2>&1; RC=$?
+check_eq "--set combined with --get still exits 2" "2" "$RC"
+
+run --raw-path --set '.a=1' --migrate >/dev/null 2>&1; RC=$?
+check_eq "--set combined with --migrate still exits 2" "2" "$RC"
+
+run --raw-path --cas '.a=1' --expect null --session-view >/dev/null 2>&1; RC=$?
+check_eq "--cas combined with --session-view still exits 2" "2" "$RC"
 
 # --cas with empty path must exit 2
 run --raw-path --cas '=bar' --expect null >/dev/null 2>&1; RC=$?
@@ -74,6 +95,10 @@ check_eq "--cas with no = exits 2" "2" "$RC"
 # --dry-run combined with --cas must exit 2
 run --raw-path --dry-run --cas '.foo=bar' --expect null >/dev/null 2>&1; RC=$?
 check_eq "--dry-run combined with --cas exits 2" "2" "$RC"
+
+# ...and composing --set onto it does not buy a way past that guard.
+run --raw-path --dry-run --cas '.foo=bar' --expect null --set '.x=y' >/dev/null 2>&1; RC=$?
+check_eq "--dry-run with a composed --cas still exits 2" "2" "$RC"
 
 # ---------------------------------------------------------------------------
 echo
@@ -429,6 +454,150 @@ RACE_FINAL="$(jq -r '.race_slot' "$STATE_FILE")"
 case "$RACE_FINAL" in
   "writer-1"|"writer-2") check_eq "race: winner's value on disk" "1" "1" ;;
   *) check_eq "race: winner's value on disk" "writer-N" "$RACE_FINAL" ;;
+esac
+
+# ---------------------------------------------------------------------------
+echo
+echo "== Composition: one --cas carrying --set writes (issue #1445) =="
+# ---------------------------------------------------------------------------
+# `/pm` 2D.7 needs claim-plus-metadata to be ONE write. This script locks per
+# invocation, so a --cas followed by a separate --set is two lock holds with a
+# race between them; composition moves the --set writes inside the hold the
+# compare already takes. The contract under test: on a match every assignment
+# lands, on a mismatch NONE of them do and the exit code is still 7.
+#
+# FAILS-WITHOUT-FIX for every case below: before #1445 the parser rejected
+# --cas and --set in one invocation with exit 2, so each composed call would
+# return 2 and write nothing — the win cases below would all report 2, and the
+# loss cases would pass vacuously (nothing written for the wrong reason), which
+# is why each loss case also asserts the PRIOR value survived.
+
+reset_state
+run --raw-path --set '.day={"cause":null,"kind":null,"fires":null,"hits":0}'
+COMPOSED_RC=0
+run --raw-path --cas '.day.cause="preemptive"' --expect null \
+  --set '.day.kind=rolling_window' \
+  --set '.day.fires=12' \
+  --set '.day.hits=1' || COMPOSED_RC=$?
+check_eq "composed CAS win exits 0" "0" "$COMPOSED_RC"
+check_eq "composed win: CAS target and every companion landed together" \
+  '{"cause":"preemptive","kind":"rolling_window","fires":12,"hits":1}' \
+  "$(jq -c '.day' "$STATE_FILE")"
+# One invocation is one write, so the timestamp refresh happens once, in the
+# same jq pipeline as the assignments.
+COMPOSED_TS="$(jq -r '.last_updated' "$STATE_FILE")"
+check_eq "composed win: last_updated refreshed by the same write" "1" \
+  "$([[ "$COMPOSED_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
+
+# The all-or-nothing half: a lost compare must leave the companions unwritten.
+BEFORE_DOC="$(cat "$STATE_FILE")"
+MISS_RC=0
+run --raw-path --cas '.day.cause="second-claimant"' --expect null \
+  --set '.day.kind=CLOBBERED' \
+  --set '.day.newfield=should-not-exist' >/dev/null 2>&1 || MISS_RC=$?
+check_eq "composed CAS miss exits 7" "7" "$MISS_RC"
+check_eq "composed miss: state file byte-unchanged" "$BEFORE_DOC" "$(cat "$STATE_FILE")"
+check_eq "composed miss: companion did not overwrite an existing field" "rolling_window" \
+  "$(jq -r '.day.kind' "$STATE_FILE")"
+check_eq "composed miss: companion did not create a new field" "null" \
+  "$(jq -r '.day.newfield' "$STATE_FILE")"
+
+# Flag order is not significant: --cas owns the mode whichever side it arrives on.
+reset_state
+ORDER_RC=0
+run --raw-path --set '.first=1' --cas '.claim="mine"' --expect null --set '.second=2' || ORDER_RC=$?
+check_eq "--set before --cas is accepted (order-independent)" "0" "$ORDER_RC"
+check_eq "order: CAS target written" "mine" "$(jq -r '.claim' "$STATE_FILE")"
+check_eq "order: companions on both sides written" "1 2" \
+  "$(jq -r '[(.first|tostring), (.second|tostring)] | join(" ")' "$STATE_FILE")"
+
+# The CAS target is assigned FIRST in the pipeline, so a --set naming that same
+# path wins over the compared value — in either flag order. Pinned because the
+# header documents it as the resolution rule.
+reset_state
+SAMEPATH_RC=0
+run --raw-path --set '.claim="from-set"' --cas '.claim="from-cas"' --expect null || SAMEPATH_RC=$?
+check_eq "a --set on the CAS path is accepted" "0" "$SAMEPATH_RC"
+check_eq "a --set on the CAS path wins over the compared value" "from-set" \
+  "$(jq -r '.claim' "$STATE_FILE")"
+reset_state
+run --raw-path --cas '.claim="from-cas"' --expect null --set '.claim="from-set"'
+check_eq "...and it wins with --cas written first too" "from-set" \
+  "$(jq -r '.claim' "$STATE_FILE")"
+
+# A plain --cas with no composed --set is the normal single-flag case and must
+# stay unaffected by the composition machinery (an empty companion list).
+reset_state
+NOSETS_RC=0
+run --raw-path --cas '.lonely="claimed"' --expect null || NOSETS_RC=$?
+check_eq "a --cas with no --set companions still exits 0" "0" "$NOSETS_RC"
+check_eq "a --cas with no --set companions still writes" "claimed" \
+  "$(jq -r '.lonely' "$STATE_FILE")"
+
+# The field-type contract reaches every assignment in the batch, not just the
+# CAS target — one wrong-typed companion rejects the WHOLE invocation.
+reset_state
+run --raw-path --set '.active_agents=[]'
+BEFORE_DOC="$(cat "$STATE_FILE")"
+COMP_TYPE_OUT=$(run --raw-path --cas '.slot="claimed"' --expect null \
+  --set '.active_agents=not-an-array' 2>&1); COMP_TYPE_RC=$?
+check_eq "wrong-typed companion rejects the whole composed write (exit 4)" "4" "$COMP_TYPE_RC"
+check_eq "composed type rejection names the companion field" "1" \
+  "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$COMP_TYPE_OUT")"
+check_eq "composed type rejection left the file byte-unchanged" "$BEFORE_DOC" "$(cat "$STATE_FILE")"
+check_eq "composed type rejection did not write the CAS target" "null" \
+  "$(jq -r '.slot // "null"' "$STATE_FILE")"
+
+# ...and the mirror: a wrong-typed CAS target takes its valid companion down too.
+reset_state
+GOOD_ARR='["2026-04-29T22:30:00Z"]'
+run --repo test/repo --set ".prs[\"999\"].cr_explicit_triggers=$GOOD_ARR"
+BEFORE_DOC="$(cat "$STATE_FILE")"
+COMP_T2_RC=0
+run --repo test/repo --cas '.prs["999"].cr_explicit_triggers=2' --expect "$GOOD_ARR" \
+  --set '.prs["999"].phase=B' >/dev/null 2>&1 || COMP_T2_RC=$?
+check_eq "wrong-typed CAS target rejects its valid companion too (exit 4)" "4" "$COMP_T2_RC"
+check_eq "composed target rejection left the file byte-unchanged" "$BEFORE_DOC" "$(cat "$STATE_FILE")"
+check_eq "composed target rejection did not write the valid companion" "null" \
+  "$(jq -r '.repos["test/repo"].prs["999"].phase // "null"' "$STATE_FILE")"
+
+# A composed --set is repo-scoped exactly as a standalone --set is (issue #638):
+# built by the same helper, so it cannot land at the document root instead.
+reset_state
+SCOPE_RC=0
+run --repo test/cas-repo --cas '.prs["7"].phase=A' --expect null \
+  --set '.prs["7"].reviewer=cr' || SCOPE_RC=$?
+check_eq "composed scoped write exits 0" "0" "$SCOPE_RC"
+check_eq "composed companion landed under the repo scope" "cr" \
+  "$(jq -r '.repos["test/cas-repo"].prs["7"].reviewer' "$STATE_FILE")"
+check_eq "composed companion did NOT land at the document root" "null" \
+  "$(jq -r '.prs // "null"' "$STATE_FILE")"
+
+# Under real contention: exactly one composed claimant wins, and the loser's
+# companions are absent — the all-or-nothing property across processes, not
+# just serially. The two writers carry DIFFERENT companion values, so a mixed
+# record (one path's cause beside the other path's metadata) is detectable.
+reset_state
+run --raw-path --set '.rec={"cause":null,"kind":null,"hits":0}'
+CW1="$RACE_DIR/cw1.rc"; CW2="$RACE_DIR/cw2.rc"
+( bash "$SCRIPT" --raw-path --cas '.rec.cause="alpha"' --expect null \
+    --set '.rec.kind=alpha-kind' --set '.rec.hits=1' >/dev/null 2>&1; printf '%s' "$?" > "$CW1" ) &
+( bash "$SCRIPT" --raw-path --cas '.rec.cause="beta"' --expect null \
+    --set '.rec.kind=beta-kind' --set '.rec.hits=99' >/dev/null 2>&1; printf '%s' "$?" > "$CW2" ) &
+wait
+CW1_RC="$(cat "$CW1" 2>/dev/null || printf 'missing')"
+CW2_RC="$(cat "$CW2" 2>/dev/null || printf 'missing')"
+CWINS=0; CLOSSES=0
+[[ "$CW1_RC" == "0" ]] && CWINS=$((CWINS+1)); [[ "$CW1_RC" == "7" ]] && CLOSSES=$((CLOSSES+1))
+[[ "$CW2_RC" == "0" ]] && CWINS=$((CWINS+1)); [[ "$CW2_RC" == "7" ]] && CLOSSES=$((CLOSSES+1))
+check_eq "composed race: exactly one writer wins" "1" "$CWINS"
+check_eq "composed race: exactly one writer gets CAS-loss 7" "1" "$CLOSSES"
+RACE_REC="$(jq -c '.rec' "$STATE_FILE")"
+case "$RACE_REC" in
+  '{"cause":"alpha","kind":"alpha-kind","hits":1}'|'{"cause":"beta","kind":"beta-kind","hits":99}')
+    PASS=$((PASS + 1)); echo "ok   — composed race: the surviving record is entirely one writer's" ;;
+  *)
+    FAIL=$((FAIL + 1)); echo "FAIL — composed race: record mixes both writers or is partial ($RACE_REC)" ;;
 esac
 
 # ---------------------------------------------------------------------------

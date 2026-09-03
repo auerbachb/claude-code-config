@@ -126,12 +126,35 @@ Rejected. The script has 45+ callers depending on a single `session-state.sh <fl
 A split would break all of them and require re-architecting the test suites. The merge-gate.sh
 precedent (PR #1010, 16 churn PRs) also rejected this option for the same reason.
 
+### Option E: Compose `--cas` with `--set` in one invocation (added, issue #1445)
+
+Chosen for #1445, and it does **not** disturb the KEEP verdict above. `/pm` 2D.7 needed its park
+record and its wake identity to each land as a single atomic write; the residual race was purely
+the two-invocation split, since the script already locks per invocation. So one invocation may now
+carry a `--cas` **and** any number of `--set` writes: on a match all of them land in the one
+existing jq pipeline under the one existing lock hold; on a mismatch nothing lands, the
+accompanying `--set` values included, and the exit code is still `7`.
+
+**Why this rather than an N-key CAS.** Repeated `--cas`/`--expect` pairs would change the compare's
+arity, the pairing rules, and every usage error around them. Composition changes none of that: the
+compare stays single-path and single-use, and the write side reuses the `--set` accumulation loop
+verbatim — the two paths were unified behind one `add_write_assignment()` helper in the same PR, so
+a composed `--set` is scoped, type-probed, and classified by the code a standalone `--set` already
+used. This is the #1283 lesson ("there is no second implementation to drift") applied to
+construction as well as to checking. No new locking machinery was added; the extraction question
+Options B–D weigh is untouched.
+
 ## 4. What was explicitly preserved
 
 - CLI contract: `--get`, `--set`, `--session-view`, `--repo-key`, `--migrate`, `--dry-run`,
-  `--all-repos`, `--raw-path`, `--repo <key>` — all flags, all documented modes
+  `--all-repos`, `--raw-path`, `--repo <key>` — all flags, all documented modes. Issue #1445
+  **extended** it (a `--cas` may now be accompanied by `--set` writes, in either flag order)
+  without narrowing it: every single-flag invocation behaves exactly as before, `--cas` is still
+  at most once, `--expect` is still required with and only with `--cas`, and `--dry-run` with
+  `--cas` is still a usage error.
 - Exit codes: 0 (OK), 2 (usage), 3 (missing file on `--get`), 4 (type violation or parse error),
-  5 (write failed), 6 (lock timeout)
+  5 (write failed), 6 (lock timeout), 7 (CAS mismatch) — unchanged by #1445, which only widened
+  what a `7` leaves unwritten and what a `4` can reject
 - Migration-on-write behavior: every `--set` applies the legacy→scoped migration atomically
 - Lock semantics: `state_lock_acquire` before read, held through the atomic mv
 - Field-type contract: schema-driven validation from `session-state-schema.json`

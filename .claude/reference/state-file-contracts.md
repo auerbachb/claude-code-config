@@ -133,6 +133,16 @@ the other (issue #1283 closed that gap; `--cas` previously skipped the check
 entirely). For `--cas` the check runs only after the compare succeeds, so a
 type violation (**4**) stays distinct from a lost race (**7**).
 
+Since issue #1445 one invocation may carry a `--cas` **and** `--set` writes
+together; they land in one jq pipeline under the one lock hold, and the compare
+gates all of them — a mismatch writes nothing, the accompanying `--set` values
+included, and still exits **7**. The two codes stay ordered: the compare runs
+first, so a lost race exits **7** before the companion assignments are built or
+type-checked at all. Once it succeeds, every assignment (the CAS target and each
+composed `--set`) is built by the same `add_write_assignment()` helper, so the
+type contract reaches all of them: one wrong-typed companion rejects the whole
+invocation with **4** and leaves the file unmodified.
+
 The most common way to corrupt a field is passing a raw jq filter as a `--set` value — the string is stored literally instead of being evaluated. Evaluate first, then pass the resulting scalar.
 
 `handoff-state.sh` has no field-type schema, so it cannot run the check above. It does refuse the clearest form of that same mistake (issue #1357): a `--set` value that starts like a jq path expression, carries a jq operator, **and** compiles as a jq program exits **4** with the file unmodified, rather than silently clobbering the field with the expression's source text. A value that misses any one of those three signals is still stored verbatim as a string — prose, SHAs, paths and URLs keep working. A value containing `#` or `;` skips the compile probe outright and stores as a string: either character can carry the value past the probe's terminator and get its tail executed during what is meant to be a compile-only check (a `#` comment swallowing the terminator, or a trailing unterminated `def` absorbing it), so the guard declines to judge those rather than risk running them. `--append` is deliberately outside that guard: its values are array elements and cannot overwrite a prior value. The script header stays the canonical contract.
