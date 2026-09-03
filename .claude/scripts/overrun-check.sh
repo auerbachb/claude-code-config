@@ -209,14 +209,24 @@ et_zone_available() {
 
 # ---------------------------------------------------------------------------
 # Explicitly labelled UTC formatter — the honest fallback for every ET site.
-# BSD (`-u -r`) then GNU (`-u -d @`). The old chain carried only the GNU form,
+# GNU (`-u -d @`) then BSD (`-u -r`). The old chain carried only the GNU form,
 # which was unreachable on macOS because the BSD ET branch always won; now that
 # the guard above can route a macOS run here, the BSD form has to exist.
+#
+# GNU is tried FIRST deliberately, and the order is load-bearing: GNU `date -r`
+# takes a FILE and prints its mtime, so a BSD-first chain on a GNU host prints
+# the mtime of whatever file happens to be named for the epoch (a `1788402843`
+# in the cwd) as if it were the clock — silently, exit 0. That is the same
+# wrong-time-without-a-marker class this script exists to eliminate (#1529), so
+# it cannot ride in the fallback that is supposed to be the honest one.
+# Measured both ways: GNU always satisfies `-d @`, so it never reaches `-r`;
+# BSD rejects `-d` with "illegal option" (status 1, zero bytes on stdout), so it
+# falls through to `-r` unchanged. Pinned by overrun-check-tzdata.test.sh.
 # ---------------------------------------------------------------------------
 format_utc_clock() {
   local epoch="$1"
-  date -u -r "$epoch" +'%H:%M UTC' 2>/dev/null \
-    || date -u -d "@$epoch" +'%H:%M UTC' 2>/dev/null \
+  date -u -d "@$epoch" +'%H:%M UTC' 2>/dev/null \
+    || date -u -r "$epoch" +'%H:%M UTC' 2>/dev/null \
     || printf '(unknown)'
 }
 

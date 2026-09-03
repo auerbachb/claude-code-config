@@ -270,6 +270,83 @@ check_eq "breach alert routes its revised finish through the guarded formatter" 
 check_eq "cut suggestion routes its window clock through the guarded formatter" \
   "1" "$(grep -c 'WINDOW_END_ET=$(format_et_clock' "$OVERRUN")"
 
+# ---------------------------------------------------------------------------
+# format_utc_clock branch ORDER (CodeAnt Major, PR #1579).
+#
+# GNU date reads `-r` as a FILE and prints that file's mtime; only BSD reads it
+# as epoch seconds. A BSD-first chain therefore renders the mtime of any file
+# that happens to be named for the epoch as if it were the clock — silently,
+# exit 0. That is the same unmarked-wrong-time class #1529 exists to remove, so
+# it must not ride inside the fallback whose whole job is to be the honest one.
+#
+# The shim below carries GNU semantics and the decoy file is named for the
+# epoch. The negative control runs FIRST: the old BSD-first chain has to
+# actually reproduce the decoy, otherwise the shim has drifted and the fix
+# proof below would pass vacuously.
+# ---------------------------------------------------------------------------
+GNUBIN="$TMP/gnubin"
+mkdir -p "$GNUBIN"
+cat > "$GNUBIN/date" <<'GNUDATE'
+#!/usr/bin/env bash
+# GNU-coreutils-semantics `date` shim. `-d @EPOCH` formats that epoch; `-r FILE`
+# reports the file (here a fixed sentinel, so any chain that reaches this arm is
+# unmistakable in the output rather than merely off by some hours).
+set -uo pipefail
+real="${SHIM_REAL_DATE:?SHIM_REAL_DATE must be set}"
+mode=""; val=""; fmt=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u) shift ;;
+    -d) mode=d; val="${2:-}"; shift 2 ;;
+    -r) mode=r; val="${2:-}"; shift 2 ;;
+    +*) fmt="${1#+}"; shift ;;
+    *)  shift ;;
+  esac
+done
+case "$mode" in
+  d) [[ "$val" == @* ]] || exit 1
+     "$real" -u -d "@${val#@}" +"$fmt" 2>/dev/null \
+       || "$real" -u -r "${val#@}" +"$fmt" ;;
+  r) [[ -f "$val" ]] || exit 1
+     printf 'DECOY-MTIME\n' ;;
+  *) exit 1 ;;
+esac
+GNUDATE
+chmod +x "$GNUBIN/date"
+
+DECOY_EPOCH=1788404400
+: > "$TMP/$DECOY_EPOCH"
+EXPECT_UTC="$("$REAL_DATE" -u -d "@$DECOY_EPOCH" +'%H:%M UTC' 2>/dev/null \
+  || "$REAL_DATE" -u -r "$DECOY_EPOCH" +'%H:%M UTC')"
+
+run_utc_chain() {  # $1 = shell source defining format_utc_clock
+  ( cd "$TMP" && SHIM_REAL_DATE="$REAL_DATE" PATH="$GNUBIN:$PATH" \
+      bash -c "$1"$'\n'"format_utc_clock $DECOY_EPOCH" )
+}
+
+OLD_UTC_CHAIN='format_utc_clock() {
+  local epoch="$1"
+  date -u -r "$epoch" +"%H:%M UTC" 2>/dev/null \
+    || date -u -d "@$epoch" +"%H:%M UTC" 2>/dev/null \
+    || printf "(unknown)"
+}'
+SHIPPED_UTC_CHAIN="$(sed -n '/^format_utc_clock() {$/,/^}$/p' "$OVERRUN")"
+
+check_eq "negative control: the old BSD-first chain does render the decoy file" \
+  "DECOY-MTIME" "$(run_utc_chain "$OLD_UTC_CHAIN")"
+check_eq "shipped format_utc_clock renders the true epoch, not the decoy file" \
+  "$EXPECT_UTC" "$(run_utc_chain "$SHIPPED_UTC_CHAIN")"
+
+# Structural half: the shipped order must not silently flip back. Both arms are
+# still required — GNU alone would strand macOS, BSD alone strands GNU.
+UTC_GNU_LINE="$(printf '%s\n' "$SHIPPED_UTC_CHAIN" | awk '/-u -d "@/ && !g { g = NR } END { print g + 0 }')"
+UTC_BSD_LINE="$(printf '%s\n' "$SHIPPED_UTC_CHAIN" | awk '/-u -r "/ && !b { b = NR } END { print b + 0 }')"
+if [[ "$UTC_GNU_LINE" -gt 0 && "$UTC_BSD_LINE" -gt 0 && "$UTC_GNU_LINE" -lt "$UTC_BSD_LINE" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — format_utc_clock keeps both arms with the GNU form first"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — format_utc_clock branch order regressed (gnu line '$UTC_GNU_LINE', bsd line '$UTC_BSD_LINE')"
+fi
+
 echo
 if [[ "$SKIPPED" -gt 0 ]]; then
   echo "overrun-check-tzdata.test.sh: $PASS passed, $FAIL failed, $SKIPPED host-dependent control(s) skipped"
