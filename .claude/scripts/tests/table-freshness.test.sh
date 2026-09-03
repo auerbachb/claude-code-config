@@ -486,5 +486,48 @@ while read -r FLOW; do
 done <<< "$NAMED_FLOWS"
 ok "the floor is specified once and every flow the spec names for teardown is wired"
 
+# --- 22. The wiring has to actually work, not merely be present --------------
+#         Four ways a site can name the helper and still guarantee nothing —
+#         all four shipped in this PR's first two pushes and were caught in
+#         review. "grep finds table-freshness" is not the same as "the clock
+#         gets written".
+SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
+PAUSE="$REPO_ROOT/.claude/skills/pause/SKILL.md"
+
+# (a) A count that is USED but never ASSIGNED. table-freshness.sh rejects an
+#     empty --active, so the clock is never written and the armed watch polls a
+#     record that does not exist — silent forever, while looking armed.
+grep -q '\$ACTIVE_COUNT' "$SUBAGENT" || \
+  fail "/subagent should pass a count to --active"
+grep -qE '^ *ACTIVE_COUNT=' "$SUBAGENT" || \
+  fail "/subagent uses \$ACTIVE_COUNT but never assigns it — the clock is never written"
+
+# (b) That failure must not be swallowed. It is invisible from outside: the arm
+#     still succeeds, so the thread believes the guarantee is live.
+#     Matched on the invocation's own trailing `--surface <label> || true`, not
+#     on `--note-rendered` anywhere in the line: the prose below the snippet
+#     names both the flag and `|| true` while telling you not to combine them,
+#     and a looser pattern flags that sentence instead of any real call.
+grep -qE -- '--surface +[a-z-]+ *\|\| *true' "$SUBAGENT" && \
+  fail "/subagent swallows a failed --note-rendered with '|| true' — report it instead"
+
+# (c) The heartbeat record must be GATED on a table actually being emitted. An
+#     ungated call lets a permitted one-liner restamp last_rendered_at, which
+#     restarts the hour and hides an already-stale board.
+grep -q 'TABLE_EMITTED' "$SUBAGENT" || \
+  fail "/subagent records a render without gating on a table having been emitted"
+
+# (d) Round completion is a teardown site the spec names, and it needs a real
+#     call — prose alone is what let (a)-(c) ship.
+grep -qE '\-\-note-rendered --active 0' "$SUBAGENT" || \
+  fail "/subagent never records the terminal board (--active 0) at round end"
+
+# (e) /pause must PRE-resolve the helper in Step 0 like its siblings. Resolving
+#     it inline at the call site means a missing helper produces no DEGRADED
+#     line, and the disarm is simply skipped.
+grep -qE '^TABLE_FRESHNESS_SH=\$\(resolve_script table-freshness\.sh\)' "$PAUSE" || \
+  fail "/pause must resolve table-freshness.sh in Step 0, not inline at the call site"
+ok "each wiring site assigns its count, gates its render, reports failures, and tears down"
+
 echo
 echo "All table-freshness.sh tests passed."

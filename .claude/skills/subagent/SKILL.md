@@ -631,13 +631,35 @@ fi
 # is faithfully re-rendering. Resolve both ONCE here and reuse them.
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+
+# ACTIVE_COUNT is CALLER-DECLARED, and YOU assign it right here: the number of
+# rows in the table just printed that are running or queued, excluding any
+# already in a terminal state. Nothing can derive it for you — no durable field
+# tracks queued issues and `.repos[...].pipelines` is append-only — which is
+# exactly why the floor takes it as an argument. Substitute the integer below;
+# leaving the placeholder unsubstituted is caught by the guard that follows.
+ACTIVE_COUNT=<running + queued rows in the table above>
+
 if [[ -z "$REPO_KEY" ]]; then
   echo 'DEGRADED: repo key unresolved — table-freshness floor not armed'
+elif [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+  # Never let this one pass quietly. An unset or non-numeric count is rejected
+  # by table-freshness.sh, so the clock is never written; the watch armed below
+  # then polls a record that does not exist and stays silent FOREVER — the floor
+  # looks armed and guarantees nothing.
+  echo 'DEGRADED: ACTIVE_COUNT is not an integer — table-freshness floor not armed; re-render the "Running now" table on every heartbeat instead'
 elif [[ -n "$TABLE_FRESHNESS_SH" ]]; then
   "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
-    --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch || true
+    --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch \
+    || echo 'DEGRADED: table-freshness clock not recorded — re-render the "Running now" table on every heartbeat instead'
 fi
 ```
+
+**Do not swallow a failed `--note-rendered` with `|| true`.** It is the one
+failure that is invisible from the outside: the arm still succeeds, so the
+thread believes the hourly guarantee is live while the tick reads an absent
+record and exits silently every minute. Reporting it is what turns a silent
+non-guarantee into a known degraded mode with a stated fallback.
 
 Then arm the floor the same way the silence ceiling is armed (`subagent-orchestration.md` step 7): run `"$TABLE_FRESHNESS_SH" --arm-command --repo "$REPO_KEY" --session "$TF_SESSION"` and hand its output to the `Monitor` tool with `persistent: true`. Skip the arm entirely when `REPO_KEY` is empty — the `DEGRADED:` line above already said why, and a watch armed on `_unknown` polls a record no render will ever write. It is a **second, separate** watch beside `bgwork-ceiling.sh`'s, not a replacement — the ceiling bounds message-freshness, this one bounds table-freshness, and dropping either drops a guarantee. Arm it once per session: the watch is silent while the thread re-renders on its own cadence, so a later round needs no re-arm.
 
@@ -756,15 +778,45 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # Helper unresolved (empty verdict) -> render the table; see Step 0.
    ```
 
-   **After emitting any table** — this heartbeat's, the on-demand answer above, or a floor-prompted render — record it, so the next hour is measured from this render and the floor re-arms:
+   **After emitting a full table** — this heartbeat's, the on-demand answer above, or a floor-prompted render — record it, so the next hour is measured from this render and the floor re-arms:
 
    ```bash
-   [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]] && \
+   # GATED on a table having ACTUALLY been emitted in THIS message. A permitted
+   # one-liner must never reach this call: stamping last_rendered_at without a
+   # table restarts the hour and hides a board that has already gone stale,
+   # which is precisely the failure the floor exists to prevent. Recording a
+   # render that did not happen is worse than recording nothing.
+   # TABLE_EMITTED is yours to set: true only when this message carried the full
+   # "Running now" table; false for every one-liner, including the `fresh`,
+   # `idle`, and `unrecorded` verdicts above that permit one.
+   # ACTIVE_COUNT is re-counted from the table just printed, the same way 7.3
+   # defines it — a stale count from the dispatch round would disarm the floor
+   # early (0) or keep it armed past the round's end.
+   if [[ "${TABLE_EMITTED:-false}" == true && -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
      "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
-       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-heartbeat || true
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-heartbeat \
+       || echo 'DEGRADED: table-freshness clock not recorded — re-render the table every heartbeat'
+   fi
    ```
 
-   **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it. **When the round ends**, record the terminal board with `--active 0` — that is what disarms the floor and buys the idle thread its silence.
+   **A `TABLE FLOOR:` line from the armed watch is an instruction to render**, not a status to acknowledge: re-render the full table in your next message and record it.
+
+   **When the round ends, record the terminal board.** This is a real call, not a
+   note — the round's own completion is one of the teardown sites the spec names
+   (`.claude/reference/time-estimates.md` §"Teardown is by data"), and it is the
+   one reached most often. Emit the final board, then:
+
+   ```bash
+   # --active 0 IS the disarm: the tick reads active_pipelines and exits silently
+   # at zero, so this survives a Monitor whose TaskStop failed or that no step
+   # held an ID for. Skipping it leaves a positive count in durable state that
+   # fires TABLE FLOOR lines at an idle thread until something clears it.
+   if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
+     "$TABLE_FRESHNESS_SH" --note-rendered --active 0 \
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
+       || echo 'DEGRADED: terminal board not recorded — floor may fire at an idle thread'
+   fi
+   ```
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:
