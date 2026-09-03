@@ -1951,24 +1951,6 @@ registration_is_live() { # registration path
   if (( gd_rc == 2 )); then return 3; fi
   if (( gd_rc != 0 )); then return 1; fi
   wt="$REGISTRATION_WORKTREE"
-  # The same whole-path dangling-link refusal the scan applies — every
-  # component, not just the leaf. Parity matters most HERE: the scan runs at
-  # start-up and this gate runs immediately before the rm, so a dangling
-  # ancestor appearing in that window is precisely the state change this
-  # re-check exists to catch, and `test -e` below still reports absent for it.
-  #
-  # Only an OBSERVED dangling component refuses. A walk that merely stalled
-  # returns 0 too, and reading that as a refusal broke the targeted-removal case
-  # this script was written for (#1597 review): a readable `gitdir` naming a
-  # still-stalled worktree path is classified "unreadable — prunable with
-  # warning" by the scan, and `path_exists_bounded` below deliberately lets that
-  # through as rc 2 — "the very symptom being cleaned". Pre-empting it here left
-  # exactly those entries in place for the `git worktree prune` that follows to
-  # hang on. So a stalled walk falls through to the probe, which reaches the
-  # same stall and answers 2 on its own terms.
-  if path_has_dangling_link_component "$wt" && (( DANGLING_PROBE_INCONCLUSIVE == 0 )); then
-    return 3
-  fi
   path_exists_bounded "$wt" || probe_rc=$?
   # Fail closed, unlike the classification pass: this gate stands immediately
   # before an rm, so "exists" (0) and "cannot establish absence" (3) both stop
@@ -1976,8 +1958,34 @@ registration_is_live() { # registration path
   # being cleaned — let the removal through.
   case "$probe_rc" in
     0|3) return 0 ;;
-    *)   return 1 ;;
+    2)   return 1 ;;
   esac
+  # probe_rc == 1, provably absent — but `test -e` FOLLOWS symlinks, so the same
+  # whole-path dangling-link refusal the scan applies runs here too, over every
+  # component rather than the leaf.
+  #
+  # Ordered probe-then-walk, matching scan_registrations and
+  # checkout_still_orphaned (#1597 review). The walk was first, which left a
+  # wider window than necessary: a component that RESOLVED during the walk and
+  # dangled before the probe was read as proven absence and removed. Running the
+  # walk last puts it as close to the `rm` as this script can get, so a link that
+  # dangles late is still caught — which is what this re-check exists for, the
+  # scan having run at start-up. The window is narrowed, not closed: any
+  # check-then-act in shell has one, and no atomic "verify and remove" primitive
+  # is available. What is at stake on losing the race is the registration
+  # directory, not the worktree, and `git worktree repair <path>` restores it.
+  #
+  # Only an OBSERVED dangling component refuses. A walk that merely stalled
+  # returns 0 too, and reading that as a refusal broke the targeted-removal case
+  # this script was written for (#1597 review): a readable `gitdir` naming a
+  # still-stalled worktree path is classified "unreadable — prunable with
+  # warning" by the scan, and rc 2 above deliberately lets that through as "the
+  # very symptom being cleaned". A stall here, after the probe already proved
+  # absence, is that same symptom and stays removable.
+  if path_has_dangling_link_component "$wt" && (( DANGLING_PROBE_INCONCLUSIVE == 0 )); then
+    return 3
+  fi
+  return 1
 }
 
 # Returns 0 removed, 1 failed, 2 skipped by the re-check (not a failure).

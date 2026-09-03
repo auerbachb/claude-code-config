@@ -182,6 +182,15 @@ through to the probe, which reaches the same stall and answers on its own terms.
 (rc 1), so a stall stops it there regardless, which is the deliberate asymmetry
 already documented above it.
 
+A later round moved `registration_is_live` to probe-then-walk, the order its two
+siblings already used. Walking first left a wider window than necessary: a
+component that resolved during the walk and dangled before the probe read as
+proven absence and was removed. With the walk last it sits as close to the `rm`
+as this script can get, which is what the re-check is for. Narrowed, not closed
+— any check-then-act in shell has a window, there is no atomic verify-and-remove
+primitive here, and what is lost on the race is the registration directory, not
+the worktree (`git worktree repair <path>` restores it).
+
 **Coverage, stated honestly:** the observed-dangling half is pinned by T20's
 mid-run ancestor break and T19's checkout equivalent, both of which still pass
 and would fail if the refusal had simply been dropped. The *stalled* half has no
