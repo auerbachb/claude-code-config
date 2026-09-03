@@ -44,7 +44,9 @@ has "$END_RESUME" '^name: end-resume$'
 # --- /go-on classifies every known stoppage class ---------------------------
 has "$GO_ON" '^## Step 0: Classify the stoppage'
 has "$GO_ON" 'execution_pauses'                  # planned-stop gate probe
-has "$GO_ON" '\.repos\[.*\]\.pause'              # parked /pause record probe
+has "$GO_ON" '\.repos\[.*\]\.pauses'             # parked /pause records probe (#1576)
+has "$GO_ON" '\.repos\[.*\]\.pause`? / `?\.suspend|legacy singletons'  # legacy union members
+has "$GO_ON" 'union'                             # probe B reads a set, not a slot
 has "$GO_ON" 'portable-handoff-<owner>-<repo>'   # /end canonical note probe
 has "$GO_ON" 'handoff_reason == "token_exhaustion"'
 has "$GO_ON" 'unplanned'
@@ -203,10 +205,39 @@ python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$SCHEMA" \
 python3 - "$SCHEMA" <<'PY' || exit 1
 import json, sys
 repo = json.load(open(sys.argv[1]))["repos"]["org/repo"]
-receipt = repo.get("resume")
-assert isinstance(receipt, dict), "repos[].resume is not documented as an object"
-for field in ("class", "evidence_digest", "at", "session_id", "dispatched_to"):
-    assert field in receipt, f"resume receipt is missing {field}"
+FIELDS = ("class", "evidence_digest", "at", "session_id", "dispatched_to")
+
+# Issue #1576: receipts are keyed per session. The legacy singleton stays
+# documented as a READ-ONLY fallback, so both shapes must be present.
+resumes = repo.get("resumes")
+assert isinstance(resumes, dict) and resumes, \
+    "repos[].resumes is not documented as a session-keyed map"
+for key, receipt in resumes.items():
+    assert isinstance(receipt, dict), f"resumes[{key}] is not an object"
+    for field in FIELDS:
+        assert field in receipt, f"resumes[{key}] is missing {field}"
+    assert receipt.get("session_id") == key, \
+        f"resumes[{key}] must be self-describing (session_id != key)"
+
+legacy = repo.get("resume")
+assert isinstance(legacy, dict), "legacy repos[].resume must stay documented"
+for field in FIELDS:
+    assert field in legacy, f"legacy resume receipt is missing {field}"
+assert "LEGACY READ-ONLY" in repo["_resume_comment"], \
+    "the singleton resume slot must be annotated as legacy read-only"
+
+# The pause side is keyed the same way, with the same legacy annotation.
+pauses = repo.get("pauses")
+assert isinstance(pauses, dict) and pauses, \
+    "repos[].pauses is not documented as a session-keyed map"
+for key, record in pauses.items():
+    assert record.get("session_id") == key, \
+        f"pauses[{key}] must be self-describing (session_id != key)"
+    assert "active" in record and "paused_at" in record and "marker_path" in record, \
+        f"pauses[{key}] is missing a required pause-board field"
+assert isinstance(repo.get("pause"), dict), "legacy repos[].pause must stay documented"
+assert "LEGACY READ-ONLY" in repo["_pause_comment"], \
+    "the singleton pause slot must be annotated as legacy read-only"
 PY
 
 # --- Behavioral: the documented newest-wins filter, run on real fixtures ----

@@ -1,6 +1,6 @@
 # Pause State — Shape, Triage Rule, and Deadline Semantics
 
-Reference for the `.repos["<owner>/<name>"].pause` block in `session-state.json`. Written by `/pause` Step 7a and read by `/pause-resume` Step 1.
+Reference for the `.repos["<owner>/<name>"].pauses` map in `session-state.json`. Written by `/pause` Step 7b and read by `/pause-resume` Step 1.
 
 ## Why this is in `.claude/reference/` and not a rule file
 
@@ -8,11 +8,16 @@ The `/pause` SKILL.md and `/pause-resume` SKILL.md carry the authoritative contr
 
 ## State shape
 
-`.repos[<repo-key>].pause`, beside `refill` and `day` (repo-scoped, one per repo):
+`.repos[<repo-key>].pauses[<session-id>]`, beside `refill` and `day`. The map is
+repo-scoped; each **record** inside it belongs to one session. Keys are Claude
+session IDs sanitized with `[^[:alnum:]_.-] -> _` — the same rule `/pause`
+Step 7a applies to the marker filename, so the marker and the record name each
+other.
 
 ```json
 {
   "active": true,
+  "session_id": "60aba151-c372-47f9-813b-7af00c2034db",
   "paused_at": "2026-08-22T22:10:00Z",
   "window_minutes": 10,
   "window_expired": false,
@@ -53,19 +58,55 @@ The `/pause` SKILL.md and `/pause-resume` SKILL.md carry the authoritative contr
 }
 ```
 
-**Visibility:** Like `refill` and `day`, this block is **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo` out of the repo block). Read it with an explicit `--get .repos["<key>"].pause`. A caller who uses `--session-view` will see the pause block as absent even when one is armed.
+**Visibility:** Like `refill` and `day`, this map is **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo` out of the repo block). Read it with an explicit `--get .repos["<key>"].pauses`. A caller who uses `--session-view` will see the pause state as absent even when one is armed.
 
-**One block per repo at any time.** A second `/pause` in the same repo replaces the previous block. If the previous session is still parked and not yet resumed, the old block's history is overwritten — `/pause-resume` should be run before running `/pause` again.
+### One record per session, not one block per repo (issue #1576)
+
+Until #1576 this was a repo **singleton** at `.repos[<key>].pause`, and a second
+`/pause` replaced the first outright. That is not a rare case: two sessions
+pausing the same repo 80 seconds apart is ordinary, and it happened — the later
+write replaced the earlier session's board, which then survived only as its
+marker file.
+
+The loss was silent by construction. `/pause-resume` read the singleton slot
+*successfully*, so the marker-glob fallback never fired, and Step 2 acted on
+whatever the slot held: if the surviving record was already resumed, `active:
+false` produced an "already resumed" no-op and the earlier board was never
+restored; if it was not, the first `/pause-resume` restored the *later* board
+and marked the slot resumed, masking the earlier one just the same. Stopped
+Monitors stayed unarmed and parked units stayed unlaunched, with no error
+anywhere.
+
+Keying by session ID — the shape `execution_pauses` already uses — removes the
+overwrite at the source:
+
+- **A second `/pause` in another session creates a distinct record.** Neither
+  board is lost, and running `/pause` again is no longer something to avoid
+  while another session is parked.
+- **`/pause-resume` enumerates every un-resumed record**, newest first by
+  `paused_at`, and restores each independently against its own state path. One
+  record's verdict — resumed, skipped, or failed — ends that record only.
+- **A sibling's `active: false` is never proof that nothing else is parked.**
+  That inference is the bug; the enumeration is what replaces it.
+- **Resume receipts are keyed the same way** (`.repos[<key>].resumes[<session>]`,
+  `universal-resume.md`), so one session's receipt cannot suppress another's
+  dispatch.
 
 ### Legacy state compatibility
 
-Releases before Issue #1310 wrote this same laptop-close state under
-`.repos[<repo-key>].suspend`, used `suspended_at`, and published `suspend-*.md`
-markers. `/pause-resume` reads the new names first, then falls back to those
-legacy names so an already-parked session remains recoverable. `/pause` writes
-only the new `.pause` state and `pause-*.md` marker names. A legacy restore
-updates and closes the legacy block in place; it does not create a partially
-migrated second record.
+Two legacy singleton slots survive as **read-only**: `.repos[<repo-key>].pause`
+(the pre-#1576 shape) and `.repos[<repo-key>].suspend` (pre-#1310, which also
+used `suspended_at` and published `suspend-*.md` markers). `/pause` writes
+neither; it writes only `.pauses[<session-id>]` and `pause-*.md` marker names.
+
+**The legacy slots are union members, not a fallback branch.** `/pause-resume`
+Step 1 reads `.pauses`, `.pause`, and `.suspend` and selects the un-resumed
+records from all three together. Reading the legacy slots *only when the map is
+empty* would look like a reasonable fallback and would reproduce this exact bug
+one level up: a session parked before the upgrade would become unreachable the
+moment any session wrote a keyed record. Each selected record carries its own
+`state_path`, so a legacy restore updates and closes the legacy block in place;
+it does not create a partially migrated second record.
 The resume display normalizes legacy `suspended_at` to the current `paused_at`
 label so old records remain intelligible as well as recoverable.
 When marker fallback selects a legacy `suspend-*.md` file, it also selects the
@@ -139,7 +180,9 @@ When `WINDOW_EXPIRED` is true the marker degrades to a compact form so the marke
 |---|---|---|---|---|
 | `.repos[k].refill` | repo | No | `/end` Step 1, `/pause` Step 1 | `/pm` Step 3.4, `/subagent` Step 7 |
 | `.repos[k].day` | repo | No | `/pm day` Step 2D | `/pm day` tick, `/pause` Step 2 |
-| `.repos[k].pause` | repo | No | `/pause` Step 7a | `/pause-resume` Step 1 |
+| `.repos[k].pauses[<session>]` | repo map, one record per session | No | `/pause` Step 7b | `/pause-resume` Step 1 |
+| `.repos[k].pause`, `.repos[k].suspend` | repo | No | nobody (legacy) | `/pause-resume` Step 1, `/go-on` probe B |
+| `.repos[k].resumes[<session>]` | repo map, one record per session | No | `/go-on` Step 0.5 | `/go-on` Step 0.5 |
 | `.prs[N].babysit` | PR | Yes (via `.prs`) | `/babysit-pr` | `/babysit-pr-stop`, `/pause` Step 2 |
 
 **Writing via `session-state.sh --set` is mandatory.** Never inline `jq … > tmp && mv tmp` — that bypasses the state lock described in `handoff-files.md` and can produce a corrupt write when two writes race.

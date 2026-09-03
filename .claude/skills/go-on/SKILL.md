@@ -88,6 +88,10 @@ TASK_REGISTRY_SH=$(resolve_installed background-task-registry.sh) || TASK_REGIST
 HANDOFF_STATE_SH=$(resolve_installed handoff-state.sh) || HANDOFF_STATE_SH=""
 
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+# Same sanitization /pause Step 7a applies. SESSION_ID is spliced into the jq
+# path of the 0.5 resume receipt, so an unsanitized value would both break that
+# path and fail to match the key /pause wrote.
+SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 REPO_KEY=""
 if [[ -n "$SESSION_STATE_SH" ]]; then
   REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
@@ -153,7 +157,49 @@ if [[ -n "$EXECUTION_PAUSE_SH" ]]; then
 fi
 ```
 
-**B — parked `/pause` record:** `.repos["$REPO_KEY"].pause` (legacy pre-#1310 `.suspend`), classified as pause evidence when `active == true`; its timestamp is `paused_at` (legacy `suspended_at`). If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or `suspend-*.md` is a pause **candidate** — `/pause-resume` Step 1 owns marker selection and fails closed with `No parked session found` when the marker belongs to another repo, so a false candidate costs a no-op, never a wrong restore.
+**B — parked `/pause` record:** the **union** of `.repos["$REPO_KEY"].pauses[*]` (session-keyed, issue #1576) and the legacy singletons `.pause` / `.suspend` (pre-#1310). Probe B is `present` when **any** record in that union is **un-resumed**; `record_at` is the newest such record's `paused_at` (legacy `suspended_at`).
+
+**Un-resumed is the same predicate `/pause-resume` Step 1 selects on**, not `active == true`: a record closed with re-arms still outstanding is *partially* restored, `/pause-resume` re-selects it, and a probe that called it absent would report `nothing to resume` over work that command is still going to pick up. A missing or unparseable `active` counts as active.
+
+**Read the whole map, never one slot.** A sibling session's record with `active: false` says only that *that* session's board was restored — it is never evidence that nothing else is parked, and reading a single slot is what let a later `/pause` hide an earlier one entirely. Read the map and both legacy slots and take the union:
+
+```bash
+# Same tri-state rule probe A applies: exit 3 is the one unambiguous "no state
+# file"; every other non-zero — an unresolved helper included — is UNREADABLE and
+# must not let probe B report `absent` or a lane continue.
+PAUSES_RAW=""
+PAUSES_STATE=unreadable           # unreadable | absent | present
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  PAUSES_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)
+  READ_RC=$?
+  if (( READ_RC == 3 )); then PAUSES_STATE=absent; PAUSES_RAW=""
+  elif (( READ_RC == 0 )); then PAUSES_STATE=present
+  else PAUSES_STATE=unreadable; PAUSES_RAW=""
+  fi
+fi
+PAUSE_UNRESUMED=$(jq -c '
+  def pend($a): ($a | if type == "array"
+                      then map(select((type != "object") or ((.rearmed // false) != true))) | length
+                      else 0 end);
+  def unresumed: (.active != false)
+                 or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
+  # A value that is neither null nor a map of records is CORRUPT, not empty —
+  # a single malformed VALUE included, which the select below would otherwise
+  # drop silently. Raise so the caller marks probe B unreadable rather than
+  # reading a damaged board as "nothing parked".
+  if type != "object" and type != "null" then error("pauses is not a map")
+  elif type == "object" and ((to_entries | all(.value | type == "object")) | not)
+    then error("pauses holds a malformed record")
+  else . end
+  | [ (if type == "object" then to_entries | map(.value) else [] end)[]
+      | select((type == "object") and unresumed) ]' <<<"${PAUSES_RAW:-null}" 2>/dev/null) \
+  || { PAUSE_UNRESUMED=""; PAUSES_STATE=unreadable; }
+[[ "$PAUSES_STATE" == unreadable ]] && PAUSE_UNRESUMED=""
+```
+
+then append each legacy slot that is itself un-resumed, and sort the union by `paused_at` descending. The two empties are distinct and must stay so: `PAUSE_UNRESUMED` holding `[]` means every read succeeded and nothing is parked — `absent`; holding `""` means a read or the parse failed — `unreadable`, never `absent` (§Degradation). A `.pauses` value that is neither null nor a map is corrupt, so it raises rather than collapsing to `[]`.
+
+If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or `suspend-*.md` is a pause **candidate** — `/pause-resume` Step 1 owns marker selection and fails closed with `No parked session found` when the marker belongs to another repo, so a false candidate costs a no-op, never a wrong restore.
 
 **C — `/end` record:** the canonical note for this repo, `~/.claude/handoffs/portable-handoff-<owner>-<repo>-*.md` with the repo key lowercased and `/` replaced by `-`, **excluding** `*-checkpoint.md` (those are automatic checkpoints, which stop nothing — probe E). Corroborating: `refill == {paused: true, reason: "full_stop"}`, which both `/end` and `/pause` write and which therefore never discriminates between them on its own.
 
@@ -179,12 +225,12 @@ fi
 - B and C both present, A `absent` or unreadable — two planned stops that cannot be ordered. Options: `/pause-resume`, `/end-resume`.
 - This session's gate is `active` — or `GATE_LIVE=unreadable` — and no class is readable from A, B, or C.
 - A probe could not be *read* (0.2) and its class cannot be ruled out.
-- A `pause` record says `active: true` but `/pause-resume` reports no state and no marker.
+- A pause record in the probe-B union says `active: true` but `/pause-resume` reports no state and no marker — name the record's session key.
 - More than one token-exhaustion entry (D) and none matches the current branch's PR — name every PR found.
 
 ### 0.5 Resume receipt — never resume the same stoppage twice
 
-Read `.repos["$REPO_KEY"].resume` before dispatching. Build the evidence digest `class|record_at|pr|head_sha|branch`. If it equals the receipt's `evidence_digest` and `--again` was not passed:
+Read **this session's own** receipt at `.repos["$REPO_KEY"].resumes["$SESSION_ID"]` before dispatching, where `$SESSION_ID` is `${CLAUDE_SESSION_ID:-default}` under the same `[^[:alnum:]_.-] -> _` sanitization `/pause` Step 7a applies. Build the evidence digest `class|record_at|pr|head_sha|branch`. If it equals the receipt's `evidence_digest` and `--again` was not passed:
 
 ```
 [DONE] nothing to resume — the <class> stoppage recorded at <record_at> was already
@@ -195,10 +241,52 @@ Read `.repos["$REPO_KEY"].resume` before dispatching. Build the evidence digest 
 `<receipt .at>` is the receipt's `at` field — when the previous resume ran, not when the stoppage was recorded. Arm nothing, launch nothing, write nothing. After a **successful** dispatch (ranks 1–3 only), write the receipt in one call:
 
 ```bash
-"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].resume=$RESUME_JSON"
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].resumes[\"$SESSION_ID\"]=$RESUME_JSON"
 ```
 
 `RESUME_JSON` is `{class, evidence_digest, at, session_id, dispatched_to}`, where `at` is now. Rank 4 writes nothing at all — "nothing to resume" is a read-only verdict.
+
+**Receipts are keyed per session (issue #1576).** As a repo singleton the receipt was a cross-session mask: whichever session dispatched last was the only one recorded, so a sibling's "already resumed" verdict could suppress a dispatch while that session's own pause record was still un-resumed — silent data loss with no error anywhere. `--set` on one map key preserves the others, so concurrent `/go-on` runs never overwrite each other.
+
+**The legacy singleton `.resume` is read only when it is this session's.** Consult `.repos["$REPO_KEY"].resume` only when the map holds no entry for this session **and** the legacy block's `session_id` matches `$SESSION_ID` or is absent. An unconditional legacy read would reinstate exactly the mask this change removes, in a different slot:
+
+```bash
+# Tri-state, like every other stop-state read: only exit 3 is "no state file".
+# An unreadable receipt must not read as "no receipt" — that would re-dispatch a
+# stoppage this session may already have resumed, which is the duplicate the
+# receipt exists to prevent. Report and stop before dispatching.
+read_receipt() { # read_receipt <jq-path> -> RECEIPT_VALUE, RECEIPT_STATE
+  local _rc=0
+  RECEIPT_VALUE=""; RECEIPT_STATE=unreadable
+  RECEIPT_VALUE=$("$SESSION_STATE_SH" --get "$1" 2>/dev/null) || _rc=$?
+  case "$_rc" in
+    0) RECEIPT_STATE=present ;;
+    3) RECEIPT_VALUE=""; RECEIPT_STATE=absent ;;
+    *) RECEIPT_VALUE=""; RECEIPT_STATE=unreadable ;;
+  esac
+}
+read_receipt ".repos[\"$REPO_KEY\"].resumes[\"$SESSION_ID\"]"
+RECEIPT="$RECEIPT_VALUE"
+if [[ "$RECEIPT_STATE" == unreadable ]]; then
+  echo "[BLOCKED] the resume receipt for this session could not be read — not dispatching," >&2
+  echo "          because re-running a stoppage already resumed is what the receipt prevents." >&2
+  exit 1
+fi
+if [[ -z "$RECEIPT" || "$RECEIPT" == "null" ]]; then
+  read_receipt ".repos[\"$REPO_KEY\"].resume"
+  if [[ "$RECEIPT_STATE" == unreadable ]]; then
+    echo "[BLOCKED] the legacy resume receipt could not be read — not dispatching." >&2
+    exit 1
+  fi
+  LEGACY="$RECEIPT_VALUE"
+  if [[ -n "$LEGACY" && "$LEGACY" != "null" ]]; then
+    LEGACY_SESSION=$(jq -r '.session_id // ""' <<<"$LEGACY" 2>/dev/null || echo "")
+    [[ -z "$LEGACY_SESSION" || "$LEGACY_SESSION" == "$SESSION_ID" ]] && RECEIPT="$LEGACY"
+  fi
+fi
+```
+
+**A receipt never outranks a still-parked board.** `record_at` in the digest is the newest **un-resumed** record's timestamp (probe B), so a record that is still parked keeps producing a digest, and a record that was genuinely restored stops appearing in the union and changes the digest. A `nothing to resume` verdict therefore rests on the records themselves, with the receipt only suppressing a repeat of the *same* evidence for the *same* session.
 
 ### 0.6 Dispatch
 

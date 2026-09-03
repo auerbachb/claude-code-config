@@ -6,6 +6,8 @@ END="$ROOT/.claude/skills/end/SKILL.md"
 PAUSE="$ROOT/.claude/skills/pause/SKILL.md"
 END_RESUME="$ROOT/.claude/skills/end-resume/SKILL.md"
 PAUSE_RESUME="$ROOT/.claude/skills/pause-resume/SKILL.md"
+GO_ON="$ROOT/.claude/skills/go-on/SKILL.md"
+SWEEP_SCRIPT="$ROOT/.claude/scripts/candidate-ownership.sh"
 PM="$ROOT/.claude/skills/pm/SKILL.md"
 PHASES="$ROOT/.claude/rules/phase-protocols.md"
 SETTINGS="$ROOT/global-settings.json"
@@ -21,6 +23,13 @@ CHECKPOINT="$ROOT/.claude/hooks/checkpoint-handoff.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 has() { grep -Eq -- "$2" "$1" || fail "$(basename "$1") missing: $2"; }
+# A negative assertion must never pass because the file was absent — an
+# unreadable path makes `grep -q` fail, which reads identically to "not found".
+hasnt() {
+  [[ -r "$1" ]] || fail "$(basename "$1") is unreadable; cannot assert absence of: $2"
+  grep -Eq -- "$2" "$1" && fail "$(basename "$1") must NOT contain: $2"
+  return 0
+}
 
 has "$END" '^name: end$'
 has "$END" 'default: --window 5m'
@@ -48,12 +57,83 @@ has "$PAUSE_SCRIPT" 'chmod 700'
 has "$REGISTRY" 'failed|stop_failed|rearmed'
 has "$PAUSE" 'PAUSE_PERSISTED!=0'
 has "$PAUSE" 'PAUSE_PERSISTED != 0.*INCOMPLETE SHUTDOWN'
-has "$PAUSE" '\.repos\[.*\]\.pause='
+# Issue #1576: /pause writes ONE session-keyed record, never the repo singleton.
+has "$PAUSE" '\.repos\[.*\]\.pauses\[.*SESSION_ID'
+hasnt "$PAUSE" '\.repos\[\\"\$REPO_KEY\\"\]\.pause='
+has "$PAUSE" 'session_id'
+# /pause-resume enumerates the union and keeps --marker as a short-circuit.
+has "$PAUSE_RESUME" '\.repos\[.*\]\.pauses'
+has "$PAUSE_RESUME" 'PAUSE_RECORDS'
+has "$PAUSE_RESUME" 'RECORD_COUNT'
+has "$PAUSE_RESUME" 'union member'
+has "$PAUSE_RESUME" 'short-circuit'
+has "$PAUSE_RESUME" 'state_path'
+# "Could not look" is never "nothing there": an unreadable source may not be
+# collapsed into the empty value an absent path returns.
+has "$PAUSE_RESUME" 'STATE_UNREADABLE'
+has "$PAUSE_RESUME" 'DEGRADED: could not read'
+has "$PAUSE_RESUME" 'parked work may exist'
+# The read helper must SET a variable, never print into a $() subshell that
+# would discard the unreadable flag it set.
+has "$PAUSE_RESUME" 'SLOT_VALUE'
+# An empty SELECTION is not an empty UNION: markers survive a restore, so
+# globbing after "all records already resumed" restores a finished board twice.
+has "$PAUSE_RESUME" 'RECORDS_TOTAL'
+has "$PAUSE_RESUME" 'already resumed\. Run /pause to park a new session'
+# The AUTOMATIC glob is gated on RECORDS_TOTAL, not just RECORD_COUNT: records
+# filtered as resumed — or dropped because a corrupt map made them unreadable —
+# still leave a retained marker the glob would restore a second time.
+has "$PAUSE_RESUME" '\-z "\$MARKER_PATH" && "\$RECORDS_TOTAL" -eq 0 && "\$PAUSES_DISCARDED" == false'
+# RECORDS_TOTAL is counted AFTER a corrupt source is discarded, so it alone
+# cannot tell "no records existed" from "we threw the source away".
+has "$PAUSE_RESUME" 'PAUSES_DISCARDED=true'
+# A scalar inside a recovery array must not abort jq and discard healthy records.
+has "$PAUSE_RESUME" 'type != "object"'
+has "$GO_ON" 'type != "object"'
+# A corrupt `pauses` value is unreadable, not empty — in all three readers.
+has "$PAUSE_RESUME" 'pauses map is not an object, or holds a malformed record'
+has "$GO_ON" 'pauses is not a map'
+has "$GO_ON" 'pauses holds a malformed record'
+has "$SWEEP_SCRIPT" 'pauses: not an object, or holds a malformed record'
+# A malformed VALUE inside an otherwise-valid map is corrupt too — `select`
+# would drop it silently, reporting a clean no-op over a damaged board.
+has "$PAUSE_RESUME" 'all\(\.value \| type == "object"\)'
+has "$GO_ON" 'all\(\.value \| type == "object"\)'
+has "$SWEEP_SCRIPT" 'all\(\.value \| type == "object"\)'
+# The marker fallback must seed a selection entry — the Step 2 loop iterates
+# PAUSE_RECORDS, so a marker board with no entry would never reach Steps 3-7.
+has "$PAUSE_RESUME" 'session_id:"marker"'
+has "$PAUSE_RESUME" 'RECORD_COUNT=1'
+has "$PAUSE_RESUME" '\-n "\$STATE_PATH"'
+# go-on's pauses read is tri-state, like probe A: only exit 3 is absent.
+has "$GO_ON" 'PAUSES_STATE=unreadable'
+has "$GO_ON" 'READ_RC == 3'
+# An unreadable receipt is not "no receipt": dispatching there re-runs a
+# stoppage this session may already have resumed.
+has "$GO_ON" 'RECEIPT_STATE'
+has "$GO_ON" 'resume receipt for this session could not be read'
+has "$GO_ON" 'legacy resume receipt could not be read'
+# The un-resumed predicate: jq's // treats false as empty, so `.active // true`
+# passes every resumed record and the whole enumeration silently no-ops.
+# Match the CODE shape only — `(.active // true)` or `jq -r '.active // true'` —
+# so the skills stay free to name the trap in prose, which they do.
+has "$PAUSE_RESUME" 'active != false'
+hasnt "$PAUSE_RESUME" "[(\"']\.active // true"
+hasnt "$GO_ON" "[(\"']\.active // true"
 has "$PAUSE_RESUME" 'STATE_KEY="suspend"'
 has "$PAUSE_RESUME" 'handoffs/suspend-'
 has "$PAUSE_RESUME" 'MARKER_NAME.*suspend-'
-has "$PAUSE_RESUME" 'STATE_KEY="suspend"'
 has "$PAUSE_RESUME" 'paused_at // \.suspended_at'
+# Legacy singletons stay READ-ONLY inputs on the resume side only.
+has "$PAUSE_RESUME" '\.repos\[.*\]\.suspend'
+# Resume receipts are keyed per session too, and the legacy singleton is only
+# consulted when it belongs to the reading session.
+has "$GO_ON" '\.repos\[.*\]\.resumes\[.*SESSION_ID'
+hasnt "$GO_ON" '\.repos\[\\"\$REPO_KEY\\"\]\.resume='
+has "$GO_ON" 'LEGACY_SESSION'
+# One sanitization rule, applied at every site that builds a session key.
+has "$PAUSE" 'SESSION_ID//\[\^\[:alnum:\]_\.-\]'
+has "$GO_ON" 'SESSION_ID//\[\^\[:alnum:\]_\.-\]'
 
 has "$END_RESUME" 'execution-pause.sh --clear'
 has "$PAUSE_RESUME" 'EXECUTION_PAUSE_SH.*clear --session'

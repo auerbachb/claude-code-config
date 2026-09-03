@@ -541,10 +541,21 @@ Step 8 can report completion.
 
 Two writes, in this order: **first the marker** (so `MARKER_PATH` is known before the JSON is built), **then the `session-state.sh` write** (which embeds the marker path).
 
-New pauses write only `.repos[<key>].pause` state and `pause-*.md` markers.
-`/pause-resume` retains a read-only fallback for `.suspend` state and
-`suspend-*.md` markers created before Issue #1310; `/pause` never creates new
-legacy records.
+New pauses write only `.repos[<key>].pauses[<session-id>]` state and
+`pause-*.md` markers. `/pause-resume` retains read-only support for the
+singleton `.pause` and `.suspend` state slots and `suspend-*.md` markers
+created before Issues #1310 and #1576; `/pause` never creates new legacy
+records.
+
+**The state record is keyed per session (issue #1576).** The old
+`.repos[<key>].pause` slot was a repo singleton, so two sessions pausing the
+same repo minutes apart silently clobbered each other: the later write replaced
+the earlier session's board outright, and that board survived only as its
+marker file. A board with unpushed worktrees or re-arm-required Monitors would
+have been dropped with no error anywhere. Keying by session ID — the shape
+`execution_pauses` already uses — makes each `/pause` its own record, so
+concurrency costs nothing and `/pause-resume` can enumerate every un-resumed
+board.
 
 ### 7a: Write the human-readable marker
 
@@ -564,6 +575,10 @@ if ! mkdir -p "$OUT_DIR"; then
   MARKER_ERROR="mkdir -p $OUT_DIR failed"
 fi
 SESSION_ID="${CLAUDE_SESSION_ID:-default}"
+# One sanitization, two consumers: this same value is the marker filename
+# segment below AND the `.pauses[<session-id>]` state key in Step 7b. Sanitizing
+# it twice, or in only one of the two places, produces a marker and a state
+# record that no longer name each other.
 SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 # A length-prefixed owner/repo encoding is injective; replacing '/' with '-'
@@ -673,7 +688,7 @@ handling applies unchanged — report that no artifact exists rather than
 claiming a fallback that is not there. Degrading the marker is how the bound is
 met; overrunning it is not an available trade.
 
-### 7b: `session-state.sh --set` the `.repos[<key>].pause` block
+### 7b: `session-state.sh --set` the `.repos[<key>].pauses[<session-id>]` record
 
 **Terminal-path move 3** (Step 0) — never skipped for being past the deadline,
 and its shape does not degrade: the state block is the machine record the whole
@@ -686,6 +701,17 @@ string.
 
 **This block is invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`). Like `refill` and `day`, read it with an explicit `--get` or an armed pause reports as absent. Never inline `jq … > tmp && mv tmp` — that bypasses the state lock (`handoff-files.md`).
 
+**Write the record under this session's key, never the singleton slot.** The
+path is `.repos["$REPO_KEY"].pauses["$SESSION_ID"]`, reusing the value Step 7a
+already resolved and sanitized — do not re-derive it from `CLAUDE_SESSION_ID`
+here, or an unsanitized key will disagree with the marker filename. `--set`
+assigns one map entry and preserves its siblings, so a concurrent `/pause` in
+another session writes its own key and neither board is lost. A plain `--set` is
+the right primitive: there is no claim to win, because two sessions never
+contend for one key. `session_id` also goes **inside** the record so a board
+read out of the map identifies itself without its key having to be carried
+alongside.
+
 `WINDDOWN_PERSISTED` is `1` (success) or `0` (failed) — convert it to a JSON boolean before embedding in the state block:
 
 ```bash
@@ -696,6 +722,7 @@ if [[ "$MARKER_PUBLISHED" == true && -n "$SESSION_STATE_SH" && \
   NOW=$(date -u +%FT%TZ)
   PAUSE_JSON=$(jq -n \
   --argjson active true \
+  --arg session_id "$SESSION_ID" \
   --arg paused_at "$NOW" \
   --argjson window_minutes "$WINDOW_MINUTES" \
   --argjson window_expired "$WINDOW_EXPIRED" \
@@ -705,14 +732,15 @@ if [[ "$MARKER_PUBLISHED" == true && -n "$SESSION_STATE_SH" && \
   --argjson background_tasks_stopped "$BACKGROUND_TASKS_STOPPED_JSON" \
   --argjson refill_paused "$REFILL_PAUSED_BOOL" \
   --arg marker_path "$MARKER_PATH" \
-    '{active:$active, paused_at:$paused_at,
+    '{active:$active, session_id:$session_id, paused_at:$paused_at,
     window_minutes:$window_minutes, window_expired:$window_expired,
     landed:$landed, parked:$parked,
     monitors_stopped:$monitors_stopped,
     background_tasks_stopped:$background_tasks_stopped,
     refill_paused:$refill_paused, marker_path:$marker_path,
       resumed_at:null}')
-  if "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].pause=$PAUSE_JSON"; then
+  if "$SESSION_STATE_SH" \
+       --set ".repos[\"$REPO_KEY\"].pauses[\"$SESSION_ID\"]=$PAUSE_JSON"; then
     PAUSE_PERSISTED=0
   fi
 fi
