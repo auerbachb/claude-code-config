@@ -778,6 +778,59 @@ case "$H5_RESOLVED" in
 esac
 
 # =============================================================================
+# TEST I — the anchor-form RATCHET (BugBot, PR #1575). The marker stores the
+#          anchor as a tagged string, and both the adoption scan and the
+#          exact-hit rewrite treat it as one literal. A call that derives only
+#          the weaker `sid=` form must therefore never overwrite a recorded
+#          `host=` one: the write itself looks harmless, and the sibling log
+#          only appears at the NEXT drift, when the scan for `host=…` misses.
+# =============================================================================
+# Anchors are supplied through the tier-1 override, which is the only anchor a
+# FABRICATED identity can carry (a simulated conversation deliberately ignores
+# the ambient harness ids). The ratchet reads the FORM, so `host=`/`sid=`
+# strings exercise exactly the ranked pair regardless of where they came from.
+H_I1="$(make_home i1)"
+I1_KEY="$(resolve_key "$H_I1" "claude=8001|start=TI" "host=conv-i1")"
+I1_MARKER="$(ls "$(marker_dir "$H_I1")"/imk-* 2>/dev/null | head -n 1)"
+I1_AGAIN="$(resolve_key "$H_I1" "claude=8001|start=TI" "sid=conv-i1")"   # same identity, weaker form
+I1_ANCHOR="$(sed -n 's/^anchor=//p' "$I1_MARKER" | tail -n 1)"
+if [[ "$I1_AGAIN" == "$I1_KEY" ]] && [[ "$I1_ANCHOR" == "host=conv-i1" ]]; then
+  ok "I1: a sid=-only call resolves the marker without DOWNGRADING its recorded host= anchor"
+else
+  fail "I1: the weaker anchor overwrote the stronger one (key '$I1_KEY' -> '$I1_AGAIN'; anchor now '$I1_ANCHOR', wanted 'host=conv-i1')"
+fi
+
+# The ratchet must be DIRECTIONAL, not a blanket "never rewrite": an upgrade
+# still has to land, or a conversation that gains its host id never records it
+# and the drift recovery it exists for cannot fire. Without this control, I1
+# would also pass against a resolver that simply stopped writing.
+H_I2="$(make_home i2)"
+I2_KEY="$(resolve_key "$H_I2" "claude=8002|start=TJ" "sid=conv-i2")"
+I2_MARKER="$(ls "$(marker_dir "$H_I2")"/imk-* 2>/dev/null | head -n 1)"
+I2_AGAIN="$(resolve_key "$H_I2" "claude=8002|start=TJ" "host=conv-i2")"  # same identity, stronger form
+I2_ANCHOR="$(sed -n 's/^anchor=//p' "$I2_MARKER" | tail -n 1)"
+if [[ "$I2_AGAIN" == "$I2_KEY" ]] && [[ "$I2_ANCHOR" == "host=conv-i2" ]]; then
+  ok "I2 (control): the reverse direction still UPGRADES a recorded sid= anchor to host="
+else
+  fail "I2 (control): the upgrade did not land (key '$I2_KEY' -> '$I2_AGAIN'; anchor now '$I2_ANCHOR', wanted 'host=conv-i2')"
+fi
+
+# And the ratchet must not have frozen a LEGACY one-line marker, whose anchor is
+# empty and unranked: that migration write is what lets an already-running
+# conversation survive its first drift at all.
+H_I3="$(make_home i3)"
+I3_KEY="$(resolve_key "$H_I3" "claude=8003|start=TK" "sid=conv-i3")"
+I3_MARKER="$(ls "$(marker_dir "$H_I3")"/imk-* 2>/dev/null | head -n 1)"
+printf '%s\n' "$I3_KEY" > "$I3_MARKER"          # rewind to the pre-#1572 format
+I3_AGAIN="$(resolve_key "$H_I3" "claude=8003|start=TK" "sid=conv-i3")"
+I3_ANCHOR="$(sed -n 's/^anchor=//p' "$I3_MARKER" | tail -n 1)"
+if [[ "$I3_AGAIN" == "$I3_KEY" ]] && [[ "$I3_ANCHOR" == "sid=conv-i3" ]]; then
+  ok "I3 (control): a legacy anchor-less marker still migrates — an unranked anchor is never treated as stronger"
+else
+  fail "I3 (control): the legacy marker did not migrate (key '$I3_KEY' -> '$I3_AGAIN'; anchor now '$I3_ANCHOR', wanted 'sid=conv-i3')"
+fi
+
+# =============================================================================
 echo
 echo "issue-maker-log-scoping: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

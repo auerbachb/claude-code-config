@@ -89,6 +89,15 @@
 #   one's anchor, or every fabricated identity in a test would look like the
 #   same conversation.
 #
+#   That precedence is also a RATCHET on the marker: a call holding only a
+#   `sid=` anchor never overwrites a recorded `host=` one. Losing the stronger
+#   id would be an erasure with a delayed fuse — the write looks harmless, and
+#   the sibling log only appears at the NEXT drift, once the scan for `host=…`
+#   finds nothing. The reverse (`sid=` recorded, `host=` in hand) still upgrades.
+#   The ratchet compares the anchor VALUE's prefix, not where it came from, and
+#   ranks nothing else: a legacy marker's empty anchor and an override in any
+#   other shape stay unranked, so the migration path below is untouched.
+#
 #   WHY NOT tty/sess (measured, 2026-09-02): under the desktop entrypoint every
 #   process in the chain reports `tty=??` and `sess=0`, so a tty-derived anchor
 #   would be IDENTICAL for every conversation on the machine — adoption keyed on
@@ -254,6 +263,30 @@ marker_field() {
     index($0, k "=") == 1 { v = substr($0, length(k) + 2) }
     END { if (v != "") printf "%s", v }
   ' "$1" 2>/dev/null || true
+}
+
+# anchor_rank <anchor> — how conversation-stable an anchor FORM is, mirroring
+# the precedence in stable_anchor above. The rank is read off the value's own
+# prefix, never its source: `host=…` outranks `sid=…` whether the harness
+# derived it or `ISSUE_MAKER_STABLE_ANCHOR` supplied it, which is what lets a
+# fabricated identity exercise this ordering at all. Everything else — a legacy
+# marker's empty anchor, an override in any other shape — is deliberately
+# UNRANKED (0), so the comparison can never reorder those or block the
+# legacy-marker migration; it speaks only to the one pair the header orders.
+anchor_rank() {
+  case "$1" in
+    host=?*) printf '2' ;;
+    sid=?*)  printf '1' ;;
+    *)       printf '0' ;;
+  esac
+}
+
+# anchor_outranks <a> <b> — true when a is a strictly more stable form than b.
+anchor_outranks() {
+  local ra="" rb=""
+  ra="$(anchor_rank "$1")"
+  rb="$(anchor_rank "$2")"
+  [ "$ra" -gt "$rb" ]
 }
 
 # settled_marker_key <file> — the marker's key, re-read a bounded number of
@@ -437,6 +470,7 @@ CANDIDATE_LIST=""
 CANDIDATE_KEYS=""
 CANDIDATE_KEY_COUNT=0
 PRESERVED_ANCHOR=""
+RECORDED_ANCHOR=""
 REWRITE_MARKER=1
 
 RAW_SID="${CLAUDE_SESSION_ID:-}"
@@ -508,6 +542,20 @@ if [ -z "$SESSION_KEY" ]; then
         # the old one, and the next ancestor drift would find no marker under
         # the true anchor and mint the sibling log this change exists to
         # prevent. With nothing of our own to record, the safe write is none.
+        REWRITE_MARKER=0
+      fi
+    else
+      # A DOWNGRADE is an erasure too. If this call can only derive the weaker
+      # `sid=` form while the marker already records the stronger `host=` one,
+      # overwriting would throw away the more stable id for good: the next
+      # ancestor drift that CAN see the host id would scan for `host=…`, find
+      # nothing, and mint the sibling log this change exists to prevent. The
+      # marker keeps the most stable anchor anyone has managed to record for the
+      # conversation, and — having nothing of our own to add — we skip the write
+      # entirely, for the same unlocked read-modify-write reason as above.
+      RECORDED_ANCHOR="$(marker_field "$MARKER" anchor)"
+      if anchor_outranks "$RECORDED_ANCHOR" "$STABLE_ANCHOR"; then
+        STABLE_ANCHOR="$RECORDED_ANCHOR"
         REWRITE_MARKER=0
       fi
     fi
