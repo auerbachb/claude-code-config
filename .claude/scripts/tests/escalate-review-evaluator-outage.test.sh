@@ -226,30 +226,46 @@ echo "== Scenario (f2): the inclusive boundary EXECUTED at runtime, not grepped 
 # grep would keep passing. So the boundary is exercised for real here; the two
 # assertions are complementary, not redundant (CodeAnt, this PR).
 #
-# WHY A SWEEP AND NOT A FIXED exactly-3600 FIXTURE. The observed age is
+# WHY NOT A FIXED exactly-3600 FIXTURE. The observed age is
 # `target + frac(now) + elapsed` and can never fall BELOW the target:
 # ts_seconds_ago formats with %S, dropping the fractional second and pushing the
 # fixture timestamp earlier, and iso_age_seconds then floors. A fixed 3600 s
 # fixture therefore reports 3601 whenever that fraction plus the fixture-write
 # time overflows one second — most runs on a loaded runner, which is the flake
-# the header warns about. Sweeping the target DOWNWARD and keeping the run whose
-# own reported age is exactly the cap removes the race without weakening the
-# assertion into a tolerance.
+# the header warns about.
 #
-# IT CANNOT PASS BY NOT RUNNING. BOUNDARY_AGE stays empty if no probe lands, and
-# the first check below compares against it, so a sweep that never reached the
-# boundary FAILS rather than skipping.
+# WHY THE AIM IS MEASURED, NOT SWEPT (CodeAnt, this PR). A fixed sweep encodes a
+# GUESS about how slow the runner is: step through eight seconds and a runner
+# that needs nine never lands, failing the suite for a reason that has nothing to
+# do with the boundary. The overshoot is observable, so it is measured instead —
+# each probe reads the age the script ITSELF reported and re-aims by exactly that
+# error. That removes the systematic term (this runner's fixture-write and
+# execution cost) in one correction, at any speed, with no window to outgrow.
+#
+# The residual is the +-1 s truncation jitter: frac(now) is fresh per probe, so a
+# re-aimed shot still lands one second off whenever the fraction crosses an
+# integer. That term is bounded and independent per attempt, which is what the
+# retries absorb — they are not a longer sweep.
+#
+# IT CANNOT PASS BY NOT RUNNING. BOUNDARY_AGE stays empty unless a probe reports
+# exactly the cap, and the first check below compares against it, so exhausting
+# the attempts FAILS rather than skipping.
 break_evaluator_missing
 BOUNDARY_AGE=""; BOUNDARY_OUT=""; BOUNDARY_RC=""
-for (( k = 0; k <= 8; k++ )); do
-  outage_fixture $(( CAP_SECONDS - k ))
+BOUNDARY_TARGET="$CAP_SECONDS"
+for (( attempt = 1; attempt <= 12; attempt++ )); do
+  outage_fixture "$BOUNDARY_TARGET"
   OUT=$(run_script 2>"$TMP/f2-stderr.txt"); RC=$?
   REPORTED="$(sed -n 's/.*DEGRADED:.*(age \([0-9]\{1,\}\)s.*/\1/p' "$TMP/f2-stderr.txt" | head -1)"
-  if [[ "$REPORTED" == "$CAP_SECONDS" ]]; then
+  # No age at all means the run never reached the cap branch — re-aiming on a
+  # missing measurement would loop pointlessly, so stop and let the check fail.
+  [[ "$REPORTED" =~ ^[0-9]+$ ]] || break
+  if [[ "$REPORTED" -eq "$CAP_SECONDS" ]]; then
     BOUNDARY_AGE="$REPORTED"; BOUNDARY_OUT="$OUT"; BOUNDARY_RC="$RC"
     cp "$TMP/f2-stderr.txt" "$TMP/f2-boundary-stderr.txt"
     break
   fi
+  BOUNDARY_TARGET=$(( BOUNDARY_TARGET - (REPORTED - CAP_SECONDS) ))
 done
 check_eq "(f2) a probe landed on exactly the cap" "$CAP_SECONDS" "$BOUNDARY_AGE"
 check_eq "(f2) exit 0" 0 "$BOUNDARY_RC"
