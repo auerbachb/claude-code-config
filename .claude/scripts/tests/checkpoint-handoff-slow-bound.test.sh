@@ -287,8 +287,16 @@ second_bounds() { # file → one integer per bound application, normalised to se
 # True when the file stores the suite path in a shell variable, which is enough
 # to make every bound in it suspect (see the T3 loop for why this is a file-level
 # heuristic rather than variable resolution).
+#
+# The declaration keywords are part of the pattern, not decoration: anchoring
+# straight to `NAME=` reads `local suite=…/checkpoint-handoff.test.sh` as a
+# non-assignment, leaves the file at suite-lines scope, and lets a later
+# `timeout 240 bash "$suite"` — a line that never names the suite — walk past T3.
+# `local` is the ordinary form here (`offenders_in` above opens with one), so the
+# hole is on the path a real caller would take, not a hypothetical one.
+# The trailing flag group covers `declare -r` / `local -r -i` and friends.
 assigns_suite() { # file
-  grep -Eq '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*checkpoint-handoff\.test\.sh' "$1" 2>/dev/null
+  grep -Eq '^[[:space:]]*((local|export|declare|readonly|typeset)[[:space:]]+(-[-A-Za-z]+[[:space:]]+)*)*[A-Za-z_][A-Za-z0-9_]*=.*checkpoint-handoff\.test\.sh' "$1" 2>/dev/null
 }
 
 minute_bounds() { # file → one integer per `timeout-minutes:` value
@@ -512,6 +520,25 @@ if ! assigns_suite "$NC4F" && [[ -z "$(offenders_in "$NC4F" suite-lines)" ]]; th
 else
   fail "NC4f flagged a bound belonging to a different suite"
 fi
+
+# ...and the indirection control again, with the assignment written the way this
+# repo actually writes one. NC4e uses a bare `suite=`; a detector anchored to
+# `NAME=` passes NC4e while missing every declared form, so the bare case alone
+# cannot prove the escalation works. Each keyword is asserted separately: a loop
+# that stopped early would otherwise report the whole set as covered.
+NC4G="$SCRATCH/nc-indirect-declared.sh"
+for kw in local export declare readonly typeset "declare -r" "local -r"; do
+  cat >"$NC4G" <<FIXTURE
+#!/usr/bin/env bash
+$kw suite=.claude/scripts/tests/checkpoint-handoff.test.sh
+timeout 240 bash "\$suite"
+FIXTURE
+  if assigns_suite "$NC4G" && [[ -n "$(offenders_in "$NC4G" whole-file)" ]]; then
+    pass "NC4g a bound reached through a '$kw' declaration is still detected"
+  else
+    fail "NC4g missed a 240s bound applied via a '$kw' suite-path declaration"
+  fi
+done
 
 # The ordering control (NC5). A real copy of the suite with the banner relocated below
 # its first `mktemp -d` — the exact drift the first-line check cannot see, since
