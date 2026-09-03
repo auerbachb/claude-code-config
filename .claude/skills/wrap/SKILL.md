@@ -8,7 +8,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 `/wrap` accepts an **optional** PR reference as its argument — a full URL, `#N`, `owner/repo#N`, or a bare number `N`. When invoked with no argument it resolves the target PR through the inference cascade in Step 1.1 (current branch → thread context → session-state). An explicit argument bypasses all inference.
 
-`/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-update`, which calls `stale-cleanup.sh`.
+`/wrap` does **not** delete the running worktree or its branch — leaving the thread alive so it can keep working. Stale worktrees and stale local/remote branches are reaped out-of-band by `/pm-clean`, which calls `stale-cleanup.sh`.
 
 ## When to use /wrap vs /merge
 
@@ -25,7 +25,7 @@ Wrap up the current PR and session. This is the "we're done here" command that h
 
 > **Always:** Execute all phases end-to-end; proceed immediately between phases when no blocker exists.
 > **Ask first:** Never — all phases are autonomous once /wrap is invoked.
-> **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions. Delete the running worktree or its branch — that's `/pm-update`'s job, not /wrap's. Modify branch protection — suggest `/admin-merge` for any enforcement_admins bypass; `admin-merge.sh --auto-plain` (no protection change) runs automatically per #754.
+> **Never:** Stop to ask "should I continue?" between phases; insert confirmation prompts for non-blocker transitions. Delete the running worktree or its branch — that's `/pm-clean`'s job, not /wrap's. Modify branch protection — suggest `/admin-merge` for any enforcement_admins bypass; `admin-merge.sh --auto-plain` (no protection change) runs automatically per #754.
 
 ### Follow-up filing is autonomous (issue #633)
 
@@ -357,7 +357,7 @@ fi
 
 The script always exits 0 when called with `--append` (issue AC). The outer `|| LOG_RC=$?` captures unexpected failures; the `WARN:` line surfaces them without blocking the merge path.
 
-Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-update` via `stale-cleanup.sh`.
+Do NOT use `--delete-branch`. The current worktree is still checked out on the feature branch — git refuses to delete a branch held by a worktree. The branch is cleaned up out-of-band by `/pm-clean` via `stale-cleanup.sh`.
 
 ### Step 2.5: Sync root repo main (aggressive reset)
 
@@ -977,4 +977,4 @@ Print a **single short line** naming the reason. Under `--verbose`, also append 
 
 The blocker line is **mandatory on the silent default** — silence must never swallow a stop.
 
-The worktree and feature branch are intentionally left in place, reaped out-of-band by `/pm-update`'s stale-cleanup pass. See `stale-cleanup.sh --help`.
+The worktree and feature branch are intentionally left in place, reaped out-of-band by `/pm-clean`'s stale-cleanup pass. See `stale-cleanup.sh --help`.

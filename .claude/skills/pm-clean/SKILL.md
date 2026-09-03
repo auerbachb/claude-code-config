@@ -7,7 +7,7 @@ argument-hint: "[days] (optional — default 30; applies to issue inactivity and
 `/pm-clean` is the repo's single janitor. It runs two **independent** staleness scans and presents one recommend-then-confirm report:
 
 1. **Open GitHub issues** — solved-by-merged-PR, inactive, superseded, potential duplicates.
-2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `stale-cleanup.sh` (the exact script `/pm-update` Step 8 calls — one implementation, no divergence).
+2. **On-disk workspace** — stale worktrees and stale local/remote branches, via `stale-cleanup.sh` (this skill holds that script's only direct invocation — one implementation, no divergence).
 
 The two scans never gate each other: one finding nothing does **not** suppress the other, and the summary always reports both. Nothing is closed or deleted without explicit confirmation.
 
@@ -48,7 +48,7 @@ Parse `$ARGUMENTS`:
 
 Record two values for the rest of the run: `DAYS` (issue-inactivity threshold) and `WORKTREE_DAYS` (workspace threshold — equal to `DAYS` unless `--worktree-days` overrode it).
 
-> **Threshold note.** Reusing `[days]` means `/pm-clean` defaults the workspace age to 30 days (its issue default), whereas `/pm-update` Step 8 keeps its own `STALE_DAYS=7` default. That is intentional: the two skills share the *implementation* (`stale-cleanup.sh`), not the threshold. Use `--worktree-days 7` for the aggressive sweep.
+> **Threshold note.** Reusing `[days]` means `/pm-clean` defaults the workspace age to 30 days (its issue default), whereas `stale-cleanup.sh` itself defaults to `STALE_DAYS=7`. That is intentional: this skill owns the *threshold* it passes, while the script owns the *implementation*. Use `--worktree-days 7` for the script's own aggressive default.
 
 ## Step 1: Issue staleness scan
 
@@ -76,7 +76,7 @@ Each returned record has `number`, `title`, `category` (`solved-by-pr`|`inactive
 
 ## Step 2: Workspace staleness sweep (worktrees + branches)
 
-This scan delegates **entirely** to `stale-cleanup.sh` — the same script `/pm-update` Step 8 calls (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `stale-cleanup.sh --help` for the full contract.
+This scan delegates **entirely** to `stale-cleanup.sh`, which is the single source of truth for stale worktree/branch detection; this skill holds its only direct invocation (issue #618). **Reuse it as-is: never re-derive worktree/branch detection, thresholds, or safety checks in this skill.** The script's safety contract is the single source of truth — it always skips the main worktree, your current worktree, worktrees with uncommitted tracked changes, open-PR branches, protected branch names, and branches checked out in a worktree. See `stale-cleanup.sh --help` for the full contract.
 
 ### Step 2.1: Run the dry-run pass
 
@@ -89,7 +89,7 @@ WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json
 
 The `|| RC=$?` guard is required: `--check` exits **1** when stale items exist (the normal "found something" case), which would otherwise abort this step under `set -e`.
 
-Branch on `RC` (same contract as `/pm-update` Step 8):
+Branch on `RC` (the script's documented exit contract — `stale-cleanup.sh --help`):
 
 - **`RC == 0`** — no stale items. Record "no stale worktrees or branches" for the Step 3 summary. **Still parse `WORKSPACE_JSON` for `orphaned_checkouts[]` and `checkout_scan`** — that class is exit-code neutral by design (issue #1417), so this is the exit code it reports under when it is the *only* finding. Treating `RC == 0` as "nothing to show" is precisely how the backstop would go unseen.
 - **`RC == 1`** — stale items exist. Parse `WORKSPACE_JSON` and present them in Step 3.
@@ -246,9 +246,9 @@ If the user declines, report: "Workspace cleanup: dry-run only — nothing delet
 ## Rules
 
 - **NEVER auto-close issues.** Always present recommendations and wait for user confirmation.
-- **NEVER delete worktrees or branches without explicit confirmation.** `/pm-clean` NEVER runs `stale-cleanup.sh --apply` on its own — consistent with the "never auto-close" rule and `/pm-update` Step 8. The `--check` dry-run is the user's only chance to spot a false positive before anything is removed.
+- **NEVER delete worktrees or branches without explicit confirmation.** `/pm-clean` NEVER runs `stale-cleanup.sh --apply` on its own — consistent with the "never auto-close" rule above. The `--check` dry-run is the user's only chance to spot a false positive before anything is removed.
 - **The two scans are independent.** One finding nothing must not suppress the other; the summary reports both, always.
-- **Delegate workspace detection — never reimplement it.** `stale-cleanup.sh` is the shared source of truth for worktree/branch staleness and safety (issue #618, mirroring the shared-detection precedent `backlog-staleness.sh` set in #598). `/pm-update` Step 8 calls the same script, and `/pm` reaches it by running this whole `/pm-clean` flow inline (#656); keep them in sync by changing only the script, never by forking its logic into this skill.
+- **Delegate workspace detection — never reimplement it.** `stale-cleanup.sh` is the shared source of truth for worktree/branch staleness and safety (issue #618, mirroring the shared-detection precedent `backlog-staleness.sh` set in #598). This skill holds the only direct invocation of the script, and `/pm` reaches it by running this whole `/pm-clean` flow inline rather than calling the script itself (#656); keep them in sync by changing only the script, never by forking its logic into this skill.
 - **Be conservative with "superseded" and "duplicate" flags.** False positives waste the user's time reviewing issues that shouldn't be closed. Only flag when evidence is clear.
 - **Include rationale for every recommendation.** The user should be able to evaluate each suggestion without reading the full issue or inspecting the worktree.
 - **Handle large backlogs gracefully.** `backlog-staleness.sh` already caps the inactive-candidate deep check at the 50 oldest issues and notes any remainder on stderr — surface that note in the summary when present. Apply the same summarize-the-tail treatment to large workspace result sets.

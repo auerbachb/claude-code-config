@@ -81,7 +81,7 @@ No hosting/deployment infrastructure detected (no Railway, Vercel, Fly.io, Rende
 ## Architecture
 
 - **Entry points:** none — this repo has no application runtime entry point. `setup.sh` and `setup-skills-worktree.sh` are install-time bootstrap scripts only (run once to provision `~/.claude/`), not something invoked at runtime.
-- **Standard directories** (counts as of this scan — re-run `/pm-update` to refresh):
+- **Standard directories** (counts as of this scan — re-run `/pm-handoff` to refresh):
   - `.claude/skills/` — 26 skill definitions (`SKILL.md` per skill)
   - `.claude/rules/` — 17 rule files (workflow policy, auto-loaded into every session)
   - `.claude/scripts/` — 48 helper scripts (bash/python) backing skills and hooks
