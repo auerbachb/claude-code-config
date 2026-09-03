@@ -397,6 +397,13 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
   # mistaken for a change; both still reach the session, labelled.
   _publish_err_file=$(mktemp "${TMPDIR:-/tmp}/session-start-publish.XXXXXX" 2>/dev/null) || _publish_err_file=""
 
+  # Categories whose links a publisher actually CHANGED this run, for the
+  # resume-path restart write below. Publishers print one stdout line per
+  # change and nothing otherwise, so stdout-with-separated-stderr is a change
+  # signal; in the mixed-stream fallback (no err file) warnings would pollute
+  # it, so that case conservatively counts nothing — an advisory must never
+  # become a phantom restart signal.
+  _links_changed_cats=""
   _publish_one() { # _publish_one <script> <label>
     local script="$1" label="$2" out="" err="" rc=0
     if [[ -n "$_publish_err_file" ]]; then
@@ -408,6 +415,12 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     if [[ $rc -ne 0 ]]; then
       errors="${errors:+$errors; }${label} symlink publish failed: ${err:-$out}"
       return 0
+    fi
+    if [[ -n "$_publish_err_file" && -n "$out" ]]; then
+      case "$label" in
+        skill) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills" ;;
+        agent) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }agents" ;;
+      esac
     fi
     [[ -n "$out" ]] && _agents_notices="${_agents_notices:+$_agents_notices
 }$out"
@@ -528,14 +541,27 @@ _marker_file="$HOME/.claude/sync-restart-recommended.json"
 # startup. Categories mirror claude-config-sync.sh's
 # collect_head_change_categories; existing categories are unioned in, never
 # replaced (a live session may owe restarts to more than one sync).
-if [[ "$session_source" != "startup" && "$_lock_held" == 1 && -z "$errors" \
-      && -n "$_old_head" && -n "$_new_head" && "$_old_head" != "$_new_head" ]]; then
-  _resume_changed="$(git -C "$skills_wt" diff --name-only "$_old_head" "$_new_head" 2>/dev/null)" || _resume_changed=""
+if [[ "$session_source" != "startup" && "$_lock_held" == 1 && -z "$errors" ]]; then
   _resume_cats=""
-  grep -q '^\.claude/agents/' <<< "$_resume_changed" && _resume_cats="agents"
-  grep -q '^\.claude/rules/'  <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }rules"
-  grep -q '^\.claude/skills/' <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }skills"
-  grep -q '^CLAUDE\.md$'      <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }claude-md"
+  # Leg 1: the fast-forward moved HEAD — categories from the content diff.
+  if [[ -n "$_old_head" && -n "$_new_head" && "$_old_head" != "$_new_head" ]]; then
+    _resume_changed="$(git -C "$skills_wt" diff --name-only "$_old_head" "$_new_head" 2>/dev/null)" || _resume_changed=""
+    grep -q '^\.claude/agents/' <<< "$_resume_changed" && _resume_cats="agents"
+    grep -q '^\.claude/rules/'  <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }rules"
+    grep -q '^\.claude/skills/' <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }skills"
+    grep -q '^CLAUDE\.md$'      <<< "$_resume_changed" && _resume_cats="${_resume_cats:+$_resume_cats }claude-md"
+  fi
+  # Leg 2: a successful bootstrap built the whole worktree this run — the same
+  # "bootstrap" category claude-config-sync.sh uses for it.
+  if (( _bootstrapped == 1 )); then
+    case " $_resume_cats " in *" bootstrap "*) ;; *) _resume_cats="${_resume_cats:+$_resume_cats }bootstrap";; esac
+  fi
+  # Leg 3: a publish that created or repointed links with an UNCHANGED head —
+  # a later scheduled tick sees a stable HEAD and the links already in place,
+  # so nothing else will ever signal it (same forever-silent shape as leg 1).
+  for _lc in $_links_changed_cats; do
+    case " $_resume_cats " in *" $_lc "*) ;; *) _resume_cats="${_resume_cats:+$_resume_cats }$_lc";; esac
+  done
   if [[ -n "$_resume_cats" ]]; then
     _resume_marker="$(cat "$_marker_file" 2>/dev/null)" || _resume_marker=""
     [[ -n "$_resume_marker" ]] || _resume_marker="{}"

@@ -987,11 +987,12 @@ test_18_hook_bootstrap_and_steady_state_are_exclusive() {
 
   assert "the hook records that it bootstrapped" \
     "grep -q '_bootstrapped=1' '$HOOK'"
-  # -A3, not -A1: the gate line is followed by the _old_head capture (the
-  # resume-path restart signal reads HEAD either side of the fast-forward)
-  # before the fetch itself.
+  # Anchored on the FULL unique gate line (fixed-string), not the bare
+  # '_bootstrapped == 0' token: that token now appears at several sites, and a
+  # pooled -A window could supply the fetch from the wrong match. -A3 spans the
+  # _old_head capture that sits between the gate and the fetch.
   assert "the steady-state fetch/reset is gated on NOT having bootstrapped" \
-    "[ -n \"\$(grep -A3 '_bootstrapped == 0' '$HOOK' | grep 'fetch origin main')\" ]"
+    "[ -n \"\$(grep -A3 -F 'if (( _bootstrapped == 0 )) && [[ -z' '$HOOK' | grep 'fetch origin main')\" ]"
   # The trap this fix could have set: skipping the branch above without also
   # guarding the else would make a fresh bootstrap report its own new worktree
   # as missing.

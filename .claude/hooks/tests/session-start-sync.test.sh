@@ -480,6 +480,10 @@ git clone -q "$R14_UP" "$R14/base-b"
 git -C "$R14/base-b" worktree add -q --detach "$R14B_HOME/.claude/skills-worktree" main
 git -C "$R14B_HOME/.claude/skills-worktree" reset -q --hard HEAD~1
 printf '{"source":"startup"}' | HOME="$R14B_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+# The control is only a control if the startup actually fast-forwarded: a
+# failed fetch would leave the marker absent for the wrong reason.
+[ "$(git -C "$R14B_HOME/.claude/skills-worktree" rev-parse HEAD)" = "$(git -C "$R14_UP" rev-parse main)" ] \
+  || fail "the startup control did not fast-forward — its no-signal result would be vacuous"
 python3 - "$R14B_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup-source fast-forward wrote a restart signal — a fresh session already loaded what it fetched"
 import json, os, sys
 path = sys.argv[1]
@@ -491,6 +495,23 @@ try:
 except Exception:
     sys.exit(1)
 sys.exit(1 if d.get("restart_recommended") is not None else 0)
+PY
+# Link-only leg: a resume whose publish CREATED links with an unchanged HEAD is
+# just as forever-silent (a later tick sees a stable HEAD and the links already
+# in place), so it must write the signal too.
+R14C_HOME="$R14/home-c"; mkdir -p "$R14C_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-c"
+git -C "$R14/base-c" worktree add -q --detach "$R14C_HOME/.claude/skills-worktree" main
+printf '{"source":"resume"}' | HOME="$R14C_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14C_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume whose publish created links on an unchanged HEAD left no restart signal (BugBot Medium, PR #1553)"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+rr = d.get("restart_recommended") or {}
+sys.exit(0 if "skills" in (rr.get("categories") or []) else 1)
 PY
 rm -rf "$R14"
 
