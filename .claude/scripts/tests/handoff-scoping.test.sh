@@ -878,6 +878,34 @@ if [[ -n "$psg_bad" ]]; then
 fi
 check "no unflagged .head_sha refresh remains in polling-state-gate.sh" "" "$psg_bad"
 
+# That refusal must distinguish the flag's two exit-3 causes. Phase C DELETING
+# the record is the case --require-existing exists for; handoff-migrate.sh
+# MOVING a flat record to its scoped path is not — the record still exists, and
+# failing --ensure-session over a rename strands polling on a handoff that is
+# sitting right there (CodeAnt, PR #1606). The flat branch must retry once
+# against the migrated record before concluding deletion.
+check_contains "  exit 3 retries the migrated record before refusing" \
+  'retrying against the migrated record' "$psg_body"
+# The retry has to be scoped (--owner-repo) — retrying --legacy-flat would hit
+# the same vanished path — and still flagged, or it re-seeds what it refused.
+psg_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$PSG")"
+psg_retry="$(printf '%s\n' "$psg_joined" \
+  | grep -cE -- '--owner-repo "\$owner_repo" --require-existing +--set "\$PR_NUMBER" "\.head_sha=' || true)"
+check "  the migrated-record retry is scoped and still flagged" "1" "$psg_retry"
+# Guarded to the flat branch only: the scoped path is migration's destination,
+# never its source, so a scoped exit 3 is always a real deletion.
+check_contains "  the retry is guarded to the --legacy-flat branch" \
+  'set_or_flag\[0\]\}" == "--legacy-flat"' "$psg_body"
+# And a retry that itself fails must still reach the refusal, not fall through
+# to a silent success.
+check_contains "  a failed retry still refuses" \
+  'migrated_rc" -ne 0' "$psg_body"
+# Negative control: the predicates must fail on a copy with the retry stripped.
+psg_stripped="${TMP_DIR}/psg-no-migration-retry.sh"
+grep -v -e 'retrying against the migrated record' -e 'migrated_rc' "$PSG" > "$psg_stripped"
+psg_neg="$(grep -c -e 'retrying against the migrated record' -e 'migrated_rc' "$psg_stripped" || true)"
+check "  negative control: predicates flag a stripped migration retry" "0" "$psg_neg"
+
 # dismiss-stale-bot-changes.sh appends stale_bot_reviews_dismissed under the flag
 # (PR #1423). It also PRINTS a recovery command when that append hits exit 3; the
 # printed command has to carry the flag too, or following the advice recreates
