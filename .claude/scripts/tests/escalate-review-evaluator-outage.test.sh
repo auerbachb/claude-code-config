@@ -22,8 +22,12 @@
 # is CR-rate-limited (so the 720 s CR window never emits) and carries a BugBot
 # usage-limit failure (so neither the BugBot grace window, which needs
 # age < 600 s, nor the never-invited route can emit). 900 s therefore isolates
-# the guard, and the 3540/4000 pair brackets the 3600 s cap without racing the
-# clock the way an exactly-3600 fixture would.
+# the guard, and the 3540/4000 pair brackets the 3600 s cap loosely.
+#
+# The boundary ITSELF is executed in scenario (f2), which lands a run on exactly
+# 3600 s rather than grepping the comparison out of the source. A fixed
+# exactly-3600 fixture really would race the clock — see (f2) for why, and for
+# the sweep that removes the race instead of avoiding the assertion.
 #
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +36,8 @@ source "$TEST_DIR/lib/escalate-review-fixtures.sh"
 
 INSIDE_CAP_AGE=900        # inside the cap, past every other polling_cr source
 NEAR_CAP_AGE=3540         # still inside, 60 s under the cap
+CAP_SECONDS=3600          # the boundary itself — scenario (f2) executes it
+JUST_PAST_CAP_AGE=3601    # the first EXCLUDED second — scenario (f3)
 PAST_CAP_AGE=4000         # past the cap — escalation must resume
 
 check_stderr_has() { # label file needle
@@ -211,6 +217,65 @@ if grep -qF -- '-le "$EVALUATOR_OUTAGE_CAP_SECONDS"' "$ESCALATE_SRC"; then
 else
   check_eq "(f) the cap comparison is inclusive (-le)" "present" "absent"
 fi
+
+############################################################################
+echo "== Scenario (f2): the inclusive boundary EXECUTED at runtime, not grepped =="
+# (f) pins `-le` by reading the source, and a source-text assertion stops meaning
+# anything the moment the comparison is restructured — moved into a helper,
+# renamed, or inverted to a `-gt … && skip`. The behaviour would change and the
+# grep would keep passing. So the boundary is exercised for real here; the two
+# assertions are complementary, not redundant (CodeAnt, this PR).
+#
+# WHY A SWEEP AND NOT A FIXED exactly-3600 FIXTURE. The observed age is
+# `target + frac(now) + elapsed` and can never fall BELOW the target:
+# ts_seconds_ago formats with %S, dropping the fractional second and pushing the
+# fixture timestamp earlier, and iso_age_seconds then floors. A fixed 3600 s
+# fixture therefore reports 3601 whenever that fraction plus the fixture-write
+# time overflows one second — most runs on a loaded runner, which is the flake
+# the header warns about. Sweeping the target DOWNWARD and keeping the run whose
+# own reported age is exactly the cap removes the race without weakening the
+# assertion into a tolerance.
+#
+# IT CANNOT PASS BY NOT RUNNING. BOUNDARY_AGE stays empty if no probe lands, and
+# the first check below compares against it, so a sweep that never reached the
+# boundary FAILS rather than skipping.
+break_evaluator_missing
+BOUNDARY_AGE=""; BOUNDARY_OUT=""; BOUNDARY_RC=""
+for (( k = 0; k <= 8; k++ )); do
+  outage_fixture $(( CAP_SECONDS - k ))
+  OUT=$(run_script 2>"$TMP/f2-stderr.txt"); RC=$?
+  REPORTED="$(sed -n 's/.*DEGRADED:.*(age \([0-9]\{1,\}\)s.*/\1/p' "$TMP/f2-stderr.txt" | head -1)"
+  if [[ "$REPORTED" == "$CAP_SECONDS" ]]; then
+    BOUNDARY_AGE="$REPORTED"; BOUNDARY_OUT="$OUT"; BOUNDARY_RC="$RC"
+    cp "$TMP/f2-stderr.txt" "$TMP/f2-boundary-stderr.txt"
+    break
+  fi
+done
+check_eq "(f2) a probe landed on exactly the cap" "$CAP_SECONDS" "$BOUNDARY_AGE"
+check_eq "(f2) exit 0" 0 "$BOUNDARY_RC"
+# THE DISCRIMINATOR: a `-lt` implementation emits trigger_greptile right here,
+# which is precisely what no other scenario in this file can detect.
+check_eq "(f2) STATUS=polling_cr at exactly the cap" "STATUS=polling_cr" "$BOUNDARY_OUT"
+check_stderr_has "(f2) suppression fired AT the boundary" "$TMP/f2-boundary-stderr.txt" \
+  "paid escalation suppressed"
+check_stderr_lacks "(f2) the boundary is inside the window, not past it" \
+  "$TMP/f2-boundary-stderr.txt" "outage window of 3600s exceeded"
+
+############################################################################
+echo "== Scenario (f3): one second PAST the cap -> escalation resumes =="
+# The other half of the bracket, and this one needs no sweep: drift only ever
+# increases the observed age, so a 3601 s target is >= 3601 by construction.
+# (c) already covers "past the cap" at 4000 s; this pins the FIRST EXCLUDED
+# second, so (f2) and (f3) together fix the boundary at exactly 3600 rather than
+# somewhere in the 3540-4000 gap.
+outage_fixture "$JUST_PAST_CAP_AGE"
+OUT=$(run_script 2>"$TMP/f3-stderr.txt"); RC=$?
+check_eq "(f3) exit 0" 0 "$RC"
+check_eq "(f3) STATUS=trigger_greptile one second past the cap" "STATUS=trigger_greptile" "$OUT"
+check_stderr_has "(f3) resumption announced" "$TMP/f3-stderr.txt" \
+  "outage window of 3600s exceeded"
+check_stderr_lacks "(f3) suppression did NOT fire past the cap" "$TMP/f3-stderr.txt" \
+  "paid escalation suppressed"
 
 ############################################################################
 echo
