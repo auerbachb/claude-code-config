@@ -325,7 +325,12 @@ second_bounds() { # file → one integer per bound application, normalised to se
         # both kinds is safe, and "$BOUND" still reduces to $BOUND and stays
         # unverifiable. The single quote is written \047 because this awk program
         # is itself inside a single-quoted shell string.
-        if (bt != "") { gsub(/["\047]/, "", bt); s = dur2sec(bt) }
+        # Trailing shell punctuation is not part of a duration either: `timeout
+        # 240;` left bt as "240;", which parsed as neither a number nor a
+        # variable and so was measured by nothing and reported by nothing. Only
+        # a TRAILING run is removed, so a leading `$` survives and a variable
+        # bound stays unverifiable rather than becoming a measured value.
+        if (bt != "") { gsub(/["\047]/, "", bt); sub(/[;,()&|]+$/, "", bt); s = dur2sec(bt) }
         if (s >= 0) print s
         # A bound whose duration is a shell variable cannot be shown to clear the
         # floor, and dropping it silently is the one failure this guard must not
@@ -740,6 +745,37 @@ fi
 # Asserted on the same function the loop calls, so this is the real behaviour
 # rather than a restatement of it. Forward motion must NOT re-anchor, or the
 # ceiling would never be reached at all.
+# Trailing shell punctuation on the duration itself.
+NC4Q="$SCRATCH/nc-trailing-punct.sh"
+while IFS= read -r bound; do
+  cat >"$NC4Q" <<FIXTURE
+#!/usr/bin/env bash
+$bound bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+  if [[ -n "$(offenders_in "$NC4Q" suite-lines)" ]]; then
+    pass "NC4q a sub-floor duration carrying trailing punctuation ($bound) is detected"
+  else
+    fail "NC4q missed a sub-floor bound written as $bound — punctuation left it unparseable and unreported"
+  fi
+done <<'BOUNDS'
+timeout 240;
+timeout 240s;
+run_bounded 240;
+BOUNDS
+
+# ...and stripping punctuation must still MEASURE: a compliant bound carrying
+# the same punctuation stays unreported.
+NC4R="$SCRATCH/nc-trailing-punct-compliant.sh"
+cat >"$NC4R" <<'FIXTURE'
+#!/usr/bin/env bash
+timeout 600; bash .claude/scripts/tests/checkpoint-handoff.test.sh
+FIXTURE
+if [[ -z "$(offenders_in "$NC4R" suite-lines)" ]]; then
+  pass "NC4r a compliant bound carrying trailing punctuation (600) stays compliant"
+else
+  fail "NC4r flagged a compliant punctuated bound — stripping reports instead of measuring"
+fi
+
 NC8_FAILURES=0
 check_baseline() { # start, now, expected, label
   reanchor_baseline "$1" "$2"
