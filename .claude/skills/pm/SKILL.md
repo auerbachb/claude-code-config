@@ -73,6 +73,7 @@ MAKESPAN_SH=$(resolve_script makespan.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 WINDOW_PLAN_SH=$(resolve_script window-plan.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
+TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 ```
 
 Read reference docs through the same order — `$HOME/.claude/skills-worktree/.claude/reference/<name>` first, then `$HOME/.claude/reference/`, then `.claude/reference/`. That covers `chip-launching.md`, `pm-output-templates.md`, and `session-state-schema.json`.
@@ -88,6 +89,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
 - `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
+- `TABLE_FRESHNESS_SH` empty → **optional** (day mode only). Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; the D5 heartbeat carries the "Running now" table every tick instead` and treat every tick's verdict as stale. Failing toward *more* table renders is correct: the floor guarantees a board at least hourly, so its absence must never buy the thread permission to emit fewer.
 - `MAKESPAN_SH` / `ESTIMATE_RESOLVE_SH` empty → **optional** (needed only for window batch fitting and estimate display). **If a window is active (`WINDOW_STR` set) and either helper is unavailable, do NOT dispatch the full untrimmed batch — fail closed: print `DEGRADED: <helper> not found — dispatch paused; cannot verify batch fits the requested window` and skip dispatch for this run.** Without an active window, show estimates inline where available and continue normally.
 
 The pipeline ceiling, the autonomy grants, and the monitor-mode rules need no fallback: `.claude/rules/*.md` auto-loads at user scope in every project (`portable-skill-resolution.md`), so they are already in context wherever `/pm` runs.
@@ -1020,9 +1022,33 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 [Sat Aug 22 05:04 PM ET] day tick 7: 3 pipelines (#40 B, #55 A, #61 C), 2 queued · next: 5m — monitoring 3 PR(s) (#87, #88, #90) · slots 3/4: nothing eligible
 ```
 
-For each active pipeline whose issue has a known estimate and start time, append the progress readout (from `time-estimates.md` §"Progress Readout Format") inline after the pipeline's phase label — e.g. `#40 B [Est 90 min · 45 min elapsed · on track — likely done in ~45 min]`. Compute via `overrun-check.sh --readout` (same Step 0 candidate order as `OVERRUN_CHECK_SH`) when available; skip silently if the helper or bound is unavailable. This readout fires on every tick with no window required.
+**A stale board is never answered with a one-liner (issue #1527).** The per-pipeline inline readout this heartbeat used to carry is superseded by the canonical "Running now" table (3.3a): its Remaining column holds the same verdict, for the whole round rather than one pipeline at a time. The table does **not** fire every tick — that would fight silence-by-default — it fires on the freshness trigger `time-estimates.md` §"Table freshness" rule 2 already defines. Before emitting this heartbeat, ask the clock:
 
-No tables, no plan restating, no per-phase narration. The launches D2 reports and the blockers D1 surfaces are the only other routine output; everything else is suppressed (`CLAUDE.md` #3).
+```bash
+# ACTIVE_COUNT = pipelines running OR queued RIGHT NOW, not the dispatch round —
+# pipelines finish. D3 already counted both halves for the digest this tick: the
+# non-terminal rows behind PIPELINES_SORTED, plus QUEUE_LEN. Substitute that sum;
+# the integer guard below catches an unsubstituted placeholder rather than passing
+# an empty --active, which is a usage error that costs the verdict AND the record.
+ACTIVE_COUNT=<running pipelines (D3's PIPELINES_SORTED rows) + QUEUE_LEN>
+# Re-derive REPO_KEY and TF_SESSION here every tick — a compaction (the thing the
+# durable clock exists to survive) wipes the thread's memory of them, and an empty
+# --repo/--session is a loud usage error rather than a silent default.
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# `--repo-key` NEVER returns empty — it prints `_unknown` and exits 0 — so
+# normalise the sentinel once or the `-n` guard below is dead code.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+TABLE_VERDICT=""
+if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+  TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
+    --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)
+fi
+```
+
+`stale` (exit 1) → **this heartbeat carries the full table**: the line above, then the board rendered per 3.3a, whose `/board` Step 5 records the render and re-arms the hour. `fresh` / `idle` / `unrecorded` → the one-liner alone. An unresolved `table-freshness.sh`, or a non-integer `ACTIVE_COUNT`, renders the table: failing toward *more* renders is correct, since the floor exists to guarantee a board at least hourly and its absence must never buy permission to emit fewer. Never record a render that did not happen — a one-liner tick calls nothing.
+
+No plan restating and no per-phase narration. **The canonical "Running now" table is the one sanctioned table here**, on the trigger above; `/pm` renders no other. The launches D2 reports and the blockers D1 surfaces are the only other routine output; everything else is suppressed (`CLAUDE.md` #3).
 
 **Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) the heartbeat above was sent, (3) `last_tick_at`, digests, streaks and cadence are written.
 
@@ -1456,7 +1482,7 @@ This is the core PM behavior. Enter the orchestration loop as soon as Step 1 has
 
 **The selection arrives already made.** 1B.5 hands over the top-ranked batch by default, 1A.4/3.4 hand over refill picks the same way, and an `adjust` from the user replaces the set — there is no separate "which of these?" turn to wait for. **Partition the batch** with the "too big for any subagent" test from `/subagent` Step 4 — the implementation can't be carried across sequential subagent turns, needs interactive human judgment mid-build, or should be split into multiple PRs. This is a judgment call about *resumability and interactivity*, not tier, and not file/AC/dependency counts. Neither sheer size, nor touching `.claude/rules` / `CLAUDE.md` / `.claude/skills`, nor a full inline pipeline makes an issue too big — past-ceiling work queues inline (#776). **The partition is three-way, not two:** the third criterion decomposes rather than routing out (#1193), so only criteria 1 and 2 produce a thread. Then:
 
-- **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; the issue landing in the batch **is** the go-ahead — neither a selection turn nor a "go ahead and run those" is waited on. Invoke `/subagent #{a} #{b} …` with the eligible set; it runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, then **auto-launches Phase C** (full `/wrap`, silent merge). Launch up to the **3–4 concurrent-pipeline** ceiling from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4, which refills on free capacity, not only on a finish). Mark each such issue `Inline` in the Active Work table (3.2). Issues in the set that **overlap on a file** are serialized rather than started together — `/subagent` Step 6.0b owns that; expect a chained issue to start later than a free slot alone would suggest.
+- **Inline-eligible issues (the default — most issues):** run them inline through the `/subagent` A→B→C flow. This is the default action; the issue landing in the batch **is** the go-ahead — neither a selection turn nor a "go ahead and run those" is waited on. Invoke `/subagent #{a} #{b} …` with the eligible set; it runs Phase A then Phase B under Dedicated Monitor Mode, driving each to `merge_ready`, then **auto-launches Phase C** (full `/wrap`, silent merge). Launch up to the **3–4 concurrent-pipeline** ceiling from `subagent-orchestration.md` and queue the rest, starting a queued pipeline as each running one **merges or blocks** — a pipeline parked at `merge_ready` keeps its slot through Phase C (see 3.4, which refills on free capacity, not only on a finish). Mark each such issue `Inline` in the Active Work table (3.2). **The dispatch report for this batch is `/subagent` Step 7.2's "Running now" table** — the canonical shape, covering the whole round in execution order with queued rows carrying `—` clocks; `/pm` adds no second table on that turn and no prose enumeration of the launched set (3.3a). Issues in the set that **overlap on a file** are serialized rather than started together — `/subagent` Step 6.0b owns that; expect a chained issue to start later than a free slot alone would suggest.
 - **Criterion-3 issues — decomposed, never chipped whole (#1193):** an issue that fails the fit bar because it *should be split into multiple PRs* is split here rather than handed out. `/subagent` Step 5.1 files its increment children, links them, writes the tracking checklist into the parent, and queues the chain inline; the parent stays open as the tracking issue and takes no row of its own beyond the parent/children group in 3.2. **Never generate a chip or a prompt block for a criterion-3 parent** — that is the fan-out this rule exists to end. Report the split (one line per child, the rationale once on the head) exactly as Step 5.1 specifies. If the split needs more than 5 children, if a clean split cannot be articulated, or if Step 5.1's dependencies did not resolve, Step 5.1 routes the parent out instead — then and only then it reaches the thread-prompt path below. Its one-line reason is **criterion 3 plus why decomposition was unavailable** ("needs 7 increments, past the 5 cap"), which is the one shape in which criterion 3 is a valid route-to-thread verdict (`chip-launching.md`). A bare "criterion 3" is not: it would be rejected as invalid and the issue would stall, neither routed nor decomposed.
 - **Criterion-1/2 issues (the exception):** hand these out as thread prompts for the user to launch in a separate thread, each with a **one-line reason** naming which criterion fired.
 
@@ -1594,6 +1620,47 @@ Cross-reference with the assignments table:
 - **Dismiss stale chips:** any issue sitting at `Chip offered` that now has an open PR is being worked already — withdraw its chip via `dismiss_task` (see `.claude/reference/chip-launching.md`). Reuse the open-PR result already fetched above and the same closing-keyword predicate — no extra API call. Only clear the tracked `task_id` after the dismiss succeeds.
 
 Also accept user input: "thread for #42 is done", "PR #88 merged", "#55 is blocked".
+
+### 3.3a: The round's progress view — the "Running now" table (issue #1527)
+
+**`/pm`'s progress output for a dispatched round is the canonical "Running now" table** — the column set and cell semantics in `.claude/reference/time-estimates.md` §"Running now Table", covering the whole round in execution order with queued rows carrying `—` in all three clock columns. Never a bulleted list, never a per-pipeline prose readout, and never a second table shape of `/pm`'s own.
+
+**Render it by running `/board`** — execute the complete `.claude/skills/board/SKILL.md` workflow inline, the same "run the full SKILL.md, no shortcuts" idiom Steps 1C, 1D and 2D.4 use for `/pm-clean`, `/pm-forgotten-pr` and `/pm-handoff`. `/board` is the canonical renderer of this table (#1581); re-implementing its Est lookup, clock cells, start resolution or freshness record here would be a second copy free to drift from the first. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"`, render it from that spec directly, and **record it yourself** — `/board` Step 5 is not there to do it, and an unrecorded render leaves the floor firing against a board the user is looking at. Resolve the pair here rather than assuming a caller left them set, and skip the call rather than passing a blank flag: an empty `--repo`/`--session` is a usage error that costs the record, and an unresolved helper would run a bare `--note-rendered`.
+
+```bash
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""   # never empty; normalise the sentinel
+TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+# ACTIVE_COUNT = pipelines running OR queued right now, counted from the table
+# just printed. Gate on a table having ACTUALLY been emitted: stamping the clock
+# without one restarts the hour and hides a board that has already gone stale.
+if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+  "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
+    --repo "$REPO_KEY" --session "$TF_SESSION" --surface pm-board \
+    || echo 'DEGRADED: table-freshness clock not recorded — the floor may fire again shortly'
+else
+  echo 'DEGRADED: this render is not recorded against the table-freshness floor'
+fi
+```
+
+Never drop the table.
+
+**`/pm` is the dispatching thread, so the board renders complete.** `/board` Step 3 draws queued rows from the dispatching thread's own queue and confirms a pre-PR row from a live agent handle — both of which `/pm` holds (3.1's queued-behind-the-ceiling list, and the handles for pipelines `/subagent` launched for this round). Supply them: a board rendered from `/pm` carries its queued rows, shows no `Phase A (unconfirmed)` row for a pipeline it is holding, and qualifies neither its running nor its delivered count. Those qualifications exist for threads that did *not* dispatch the round; adopting them here would understate a round `/pm` can account for exactly.
+
+**Rendering is read-only.** `/board`'s only write is the shared table-render timestamp, which is not a change to any pipeline: it never dispatches, merges, or moves a phase. Looking at the board is never a substitute for D2 / 3.4 refill, and never advances one.
+
+**Start is read back, never re-derived.** `/board` Step 2 owns the order — `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, then `gh pr view <pr> --json createdAt` as a last resort for pipelines that predate the record. `/pm` only ever **reads** that timestamp; the write happens once in `/subagent` Step 7.1, reached transitively through 3.1's inline dispatch. So a pipeline's Start is constant across every tick and every rebuild after a compaction — only Status, Projected end and Remaining recompute. A Start that moves between two renders is a bug, not a refresh.
+
+**When to render:**
+
+| Trigger | Render |
+|---------|--------|
+| Dispatch (3.1 inline batch, 3.4 refill picks) | `/subagent` Step 7.2 prints the launch table for the batch `/pm` handed it — **that is this render.** Do not print a second table on the same turn; report the picks in the one line 3.1/3.4 already specify |
+| Day-mode heartbeat (2D.3 D5) | On the freshness trigger only — see D5 |
+| A progress question — "how far along?", "where is everything?", "status" | This table, recomputed, whatever the count: one shape whether one pipeline is running or five |
+| A `TABLE FLOOR:` line from the armed watch | An instruction to render, not a status to acknowledge — render and let `/board` Step 5 record it |
+
+**The Active Work table (3.2) is a different table and neither replaces the other.** Active Work is the **assignment ledger**: every issue `/pm` is responsible for, including rows that are not pipelines at all — `Chip offered` and `Prompt generated` (awaiting a click or a paste), `Active` (a separate thread's work), `Tracking` parents, `Deferred (cap)` — each keyed by thread and, where one exists, by `task_id`. The canonical Status vocabulary is `queued` / `Phase A|B|C` / `merged`, which has no cell for "awaiting a click" and no column for a chip handle, so the ledger cannot be folded into it. "Running now" is the **round's progress view**: pipelines only, with clocks. Keep both, and keep the boundary — one answers *who is doing what*, the other *when will it land*.
 
 ### 3.4: Keep the pipeline full (capacity refill)
 

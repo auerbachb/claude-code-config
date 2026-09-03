@@ -152,7 +152,7 @@ Simple elapsed/bound ratio — no phase weighting. When elapsed ≤ bound the pi
 |---------|-------------|
 | `/subagent` heartbeat (Step 8.5) | Superseded by the "Running now" table below — the readout's verdict now lives in that table's Remaining column |
 | `/subagent` on-demand | When the user asks "how far along?" — answer with the table below, so single- and multi-pipeline answers share one shape |
-| `/pm day` D5 heartbeat | Per active pipeline alongside the tick summary |
+| `/pm day` D5 heartbeat | Superseded by the "Running now" table below (issue #1527) — the readout's verdict now lives in that table's Remaining column, for the whole round rather than one pipeline at a time |
 | Chip-launched thread | Lead the **first status message** with the readout; repeat whenever the user asks for a progress update |
 
 ---
@@ -277,12 +277,41 @@ after a context compaction, which is precisely what the recorded value prevents.
 | `/subagent` heartbeat (Step 8 item 6) | Re-render every tick: Start unchanged, Remaining recomputed, queued rows flipping to started as they launch |
 | `/subagent` on-demand | Same table when the user asks "how far along?" |
 | `/board` | The same table on demand, in any orchestration thread — the named command for the question `/subagent`'s on-demand answer handles in prose (issue #1581). **Partial for a non-dispatching thread:** round membership is not durable, so a `/board` run from a thread that did not dispatch the round renders no queued rows and reports its delivered count as approximate (the timestamp fallback misses anything that merged before the earliest running start, and can absorb a late merge from an earlier round), saying so both times. Running rows rebuild fully from durable state, with merge state read live per PR (`gh pr view --json state,mergedAt`) — the one field the board does not take from disk |
-| `/pm`, `/pr-monitor-and-manage` | May adopt this shape in a follow-up; their column sets diverge today, so the format lives here rather than in any one skill |
+| `/pm` | **Adopted** (issue #1527). The round's progress view is this table, rendered by running `/board` rather than by a second copy of the mechanics: `/subagent` Step 7.2's launch table serves the dispatch turn, the day-mode D5 heartbeat carries it on the freshness trigger below (one line otherwise), and any progress question answers with it. `/pm` is the dispatching thread, so the board renders **complete** — its own queued rows, no `Phase A (unconfirmed)` row for a pipeline it holds a handle for, and neither count qualified. `/pm`'s Active Work table (3.2) is a separate assignment ledger, not a rival shape: it carries rows that are not pipelines (`Chip offered`, `Prompt generated`, `Active`, `Tracking`, `Deferred (cap)`) and chip handles, for which the Status vocabulary here has no cell |
+| `/pr-monitor-and-manage` | **Documented divergence** for its per-tick fleet table (below), which answers a different question; the round-progress question routes to `/board` and renders this table unaltered (issue #1527) |
 | `/leave-by` check-in | At `deadline − lead`, unprompted — this table plus the `By {H:MM} ET` column above |
 
 Ad-hoc orchestration threads — a feedback round that files issues then dispatches
 agents — emit the same shape by reading this section; the table is venue-independent
 by construction.
+
+### Documented divergence: `/pr-monitor-and-manage` (issue #1527)
+
+One venue keeps its own columns, and this is where that is granted rather than left
+unreconciled. `/pr-monitor-and-manage`'s per-tick fleet table stays
+**Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent**
+(`pr-monitor-and-manage/references/pmm-classify.md` §"Table format"). Three reasons,
+none of which is "the columns happen to differ":
+
+- **It answers a different question.** This table answers *when will this round land*;
+  the fleet table answers *what does each PR need next*. A reader deciding whether to
+  wait needs clocks; a fleet manager deciding what to dispatch needs gate state.
+- **Six of those eight columns are load-bearing, not presentational.** `State`,
+  `Reviews`, `CI`, `Unresolved Threads`, `Verdict` and `Subagent` are read back by
+  PMM's Step 5 dispatch. Replacing them with `Est` and the clock cells would remove
+  the inputs the skill acts on; adding the clock cells beside them makes an
+  eleven-column row that no longer fits a line.
+- **PMM dispatches no round.** It discovers open PRs by author every tick, so it has
+  no execution order to render, no queue, and no `started_at` of its own for a PR it
+  did not launch. Rows would carry em dashes in the columns that justify the shape.
+
+**The divergence is bounded, not a licence.** PMM still owes the canonical table for
+the canonical question: a progress ask, or a `TABLE FLOOR:` line, routes to `/board`,
+which renders this shape unaltered — including its own honesty about a non-dispatching
+thread's missing queued rows and approximate delivered count. And PMM re-derives no
+Start: `/board` Step 2's read-back order is the only source, `createdAt` only for
+pipelines predating the record. A future PMM that dispatches rounds of its own should
+revisit this entry rather than widen it.
 
 ### Table freshness — the hourly floor (issue #1580)
 
