@@ -139,7 +139,7 @@ All 38 commands are invoked as `/command` in a Claude Code session. They are def
 | `/pm-forgotten-pr` | PM | One-shot triage of open PRs idle above a threshold — classify as close or merge, render a Forgotten PRs block, dispatch confirmed merges |
 | `/subagent` | PM | Run Quick/Light issues as Phase A/B/C subagents from a PM thread |
 | `/wave` | PM | Offer the largest dependency- and overlap-free set of backlog issues as click-to-launch chips, capped at the concurrent-pipeline ceiling |
-| `/board` | PM | Render the canonical "Running now" table on demand in any orchestration thread — the current round's phases, recorded starts, projected ends, and remaining time, recomputed live from durable state; changes no pipeline, writing only the shared table-render timestamp |
+| `/board` | PM | Render the canonical "Running now" table on demand in any orchestration thread — the current round's phases, recorded starts, projected ends, and remaining time, recomputed live from durable state. Complete from the dispatching thread; any other thread renders no queued rows at all and labels the delivered count approximate, since round membership is not yet durable. Changes no pipeline, writing only the shared table-render timestamp |
 | `/subagent-dispatch` | PM | Teach the craft of writing independent parallel-agent prompts — decision tree for when to parallelize, context-isolation guidance, and exit-verification steps |
 | `/prompt` | Planning | Classify issue complexity, recommend a Claude 4.7/4.6 model tier, generate copy-paste prompt without the removed `effort` field |
 | `/start-issue` | Planning | End-to-end issue-to-coding setup — plan polling, plan merge, worktree, branch |

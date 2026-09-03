@@ -1,6 +1,6 @@
 ---
 name: board
-description: Render the canonical "Running now" table on demand, in any thread that has dispatched or is monitoring pipelines — the round's running and completed pipelines with their phase, recorded start, projected end and what is left, plus the queued rows the invoking thread knows of, all recomputed live from durable state. Read-only; it never dispatches, merges, or changes a pipeline. Triggers on "/board", "show the board", "where is everything", "what's running right now", "current board".
+description: Render the canonical "Running now" table on demand, in any thread that has dispatched or is monitoring pipelines — the round's running pipelines with their phase, recorded start, projected end and what is left, recomputed live from durable state. Complete from the thread that dispatched the round, which alone holds the queue and can confirm a pre-PR row from its live agent handle; any other thread renders no queued rows at all and reports the delivered count as approximate, because round membership is not yet durable. Read-only; it never dispatches, merges, or changes a pipeline. Triggers on "/board", "show the board", "where is everything", "what's running right now", "current board".
 triggers:
   - board
   - show the board
@@ -112,8 +112,14 @@ REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 ```
 
-An empty `REPO_KEY` does not stop the board — `--session-view` still resolves its own
-scope. It only disables the Step 5 record, which Step 5 reports.
+An empty `REPO_KEY` does not stop the board, but it cannot be left empty either.
+`--session-view` resolves its own scope and stamps it on the view as a top-level
+`.repo`, so Step 2 recovers the effective key from there before reading `pipelines` —
+which is **not** in that view and so needs a key of its own. Without that recovery an
+empty `REPO_KEY` would silently yield no `pipelines`, and since Step 3 draws every
+row from `pipelines`, the board would print "no active round" over perfectly good
+state. Only when both are empty is there genuinely no scope: Step 5's record is then
+skipped and says so.
 
 ---
 
@@ -135,12 +141,20 @@ sget() {  # sget <jq-path> -> value, or empty when absent/unreadable
 # an error — Step 4's one-line message is the correct output for it.
 STATE=$("$SESSION_STATE_SH" --session-view 2>/dev/null) || STATE=""
 
+# Recover the effective key before reading pipelines: --session-view stamps the scope
+# it resolved as a top-level .repo, which is the answer Step 1 could not produce.
+EFFECTIVE_REPO="$REPO_KEY"
+if [[ -z "$EFFECTIVE_REPO" && -n "$STATE" ]]; then
+  EFFECTIVE_REPO=$(printf '%s' "$STATE" | jq -r '.repo // empty' 2>/dev/null)
+  [[ "$EFFECTIVE_REPO" == "_unknown" ]] && EFFECTIVE_REPO=""
+fi
+
 # The per-round launch record. `.repos["<key>"].pipelines` is INVISIBLE to
 # --session-view (which lifts only .prs and .root_repo out of the repo block), so
 # address it by its full path. Never `--get .` — that leaks every repo.
 PIPELINES=""
-if [[ -n "$REPO_KEY" ]]; then
-  PIPELINES=$(sget ".repos[\"$REPO_KEY\"].pipelines")
+if [[ -n "$EFFECTIVE_REPO" ]]; then
+  PIPELINES=$(sget ".repos[\"$EFFECTIVE_REPO\"].pipelines")
 fi
 ```
 
@@ -165,7 +179,7 @@ done
 Carry each pipeline's own repo key alongside it and use *that* key — never the
 invoking repo's — for its `gh` lookups (Step 3), its `estimate-resolve.sh --repo`
 and Issue cell (Step 4), and its freshness record (Step 5). One board spanning three repos is three repos' worth of
-scope, and a single `REPO_KEY` applied across it is wrong in three different places
+scope, and a single `EFFECTIVE_REPO` applied across it is wrong in three different places
 at once.
 
 **`--all-repos` also changes the shape `.prs` is read at, and Step 3 depends on it.**
@@ -228,7 +242,7 @@ on newer entries — so `.pipelines["<issue>"].pr` is the mapping to use, and in
 
 ```bash
 # Three per-row values, carried together from here to Step 5. ROW_REPO is the key of
-# the repo this row came from (Step 1's REPO_KEY in default mode, that block's own
+# the repo this row came from (Step 2's EFFECTIVE_REPO in default mode, that block's own
 # key under --all-repos); ROW_PIPELINES is that repo's pipelines block (PIPELINES or
 # its RK_PIPELINES). Naming them per row keeps every lookup bound to the row's own
 # repo, which is what Step 2 requires and what Step 5 records against.
@@ -243,7 +257,8 @@ takes `ROW_PR`; everything issue-numbered — the `Issue` cell, `estimate-resolv
 which reads the **issue** body — takes `ROW_ISSUE`. Passing one where the other
 belongs does not error: it resolves to a real but unrelated GitHub object and answers
 confidently about it. A pipeline with **no `.pr` yet** has not reached Phase A
-completion, so there is no merge state to read and it is a running row by definition.
+completion, so there is no merge state to read; it is a **pre-PR row**, and Step 3
+decides what may be claimed about it.
 
 **Start times are read, never derived.** Per pipeline, in order:
 `<PRS_PATH>["<ROW_PR>"].pipeline_started_at` — the same per-mode path above, so a
@@ -273,7 +288,8 @@ board. Three row classes make up the round:
   for a pre-PR row (the sub-bullet below). In every case the PR must not be closed.
   Candidacy comes from `pipelines`, liveness from those three; none of them promotes
   an issue this repo never dispatched. `Status` is the phase: `Phase A`, `Phase B`,
-  `Phase C`.
+  `Phase C` — or `Phase A (unconfirmed)` for the pre-PR case below, which is a round
+  member and a rendered row but not a confirmed running one.
 
   **The open-state qualifier applies to the agent list too, not only to `prs`.**
   `active_agents` is cleaned up by the parent after Phase C
@@ -287,25 +303,34 @@ board. Three row classes make up the round:
   render twice — once as `Phase C`, once as `merged` — or, worse, set the round
   bound below from a start that is no longer in flight.
 
-  **A pipeline with no PR yet — a Phase A row — is decided by whether its agent
-  entry is attributable**, which is where the two rules meet. Its `pipelines` entry
-  proves this repo dispatched it; liveness comes from an `active_agents` entry with
-  no `.pr`, and Step 2 decides whether that entry is this repo's. Absence of a PR is
-  not a closed PR, but it is not proof of life either. So:
+  **A pre-PR row has no PR to cross-check, so it renders only on positive evidence.**
+  Its `pipelines` entry proves this repo dispatched it once — nothing more. That
+  entry is append-only and carries no cancellation or completion state, so an
+  abandoned Phase A dispatch from weeks ago looks exactly like one launched a minute
+  ago. Two signals can tell them apart, and only these two:
 
-  - **`.owner_repo` matches this repo → `Phase A`, normally.** The entry is
-    attributed, nothing is inferred, and its `started_at` counts toward the round
-    bound like any other running row.
-  - **No `.owner_repo` and no matching `.pr` → the entry is unattributed**, so it
-    cannot supply liveness. The dispatching thread may still render `Phase A`, but
-    on the strength of **holding the running agent** — it dispatched this pipeline
-    and the handle is live in front of it — never on round-list membership alone.
-    Membership says the pipeline is ours; it does not say the agent survived. Absent
-    that live handle, and on every non-dispatching thread, no phase is asserted: the
-    row is named in Step 4's summary line as a pre-PR pipeline of unconfirmed
-    liveness, is excluded from the running count, and does not set the round bound.
-    Reaching for an issue-number match here is the one thing that would reintroduce
-    another repo's work as this repo's row.
+  - **A live handle → `Phase A`, a full row.** Only the dispatching thread has one:
+    it launched this pipeline and the handle is in front of it. That is the single
+    signal that actually proves the agent is alive, so only it yields a confirmed
+    phase, counts in the running total, and sets the round bound.
+  - **An `active_agents` entry attributed to it by Step 2's rule →
+    `Phase A (unconfirmed)`, a rendered row that is a round member but not a
+    confirmed running one.** Attribution proves the entry is *ours*; it does not
+    prove the agent is *alive*, because that list goes stale after a crash, a
+    compaction, or an interrupted transition and a pre-PR row has no PR state to
+    catch it. So the row shows with its recorded Start, and the status says exactly
+    how much is known. It is excluded from the confirmed running count and does not
+    set the round bound.
+
+  **With neither signal, the pipeline is not a row and not a round member.** It is
+  named instead in Step 4's summary line — and in the no-round line when it is all
+  there is — so the work is never silently dropped, but a long-abandoned dispatch
+  cannot hold a round open forever or keep resetting the freshness floor. That is the
+  case a durable round key would settle; until then, naming it is the honest answer.
+
+  There is no timeout anywhere in this rule, deliberately: staleness would need an age
+  threshold, and a magic constant is what this spec avoids everywhere else. Evidence
+  decides, not elapsed time.
 - **Queued** — issues filed or accepted for this round that have not launched.
   **No durable field records them** (the same reason `table-freshness.sh` takes its
   active count as an argument), so these come from the dispatching thread's own
@@ -358,18 +383,25 @@ board. Three row classes make up the round:
   `started_at`** — that is what their em-dash clocks mean.
 
   Merge state is read live and **always `--repo`-qualified**:
-  `gh pr view <N> --repo "$REPO_KEY" --json state,mergedAt` per PR in the round —
+  `gh pr view <ROW_PR> --repo "$ROW_REPO" --json state,mergedAt` per PR in the round —
   under `--all-repos`, the key of the repo whose block that pipeline came from.
   `/board` runs from any working directory, so a bare `gh pr view <N>` would resolve
   the number against the cwd's repo and confidently answer for a different PR.
   (`state`, never a `merged` field: `--json merged` is not a field on any `gh`.)
 
-**If there is no running and no queued row, there is no current round** — the lower
-bound above is undefined, so completed rows are not computed at all and Step 4 prints
-its one-line message. Under `--all-repos` that gate is **per repo** for the same
-reason the bound is: a repo contributing neither a running nor a queued row
-contributes no completed rows either, rather than borrowing another repo's round to
-justify printing its history. When no repo on the board has one, the board as a whole
+**If there is no running row, no evidenced pre-PR row, and no queued row, there is
+no current round** — the lower bound above is undefined, so completed rows are not
+computed at all and Step 4 prints its one-line message. Evidenced pre-PR rows count
+here even though they are not confirmed running: they are exactly what a Phase-A-only
+round consists of, and excluding them is how a live round renders as "no active
+round". Unevidenced ones do not count — that is what keeps an abandoned dispatch from
+holding a round open — but the no-round line names them rather than implying the
+state is empty. Under `--all-repos` that gate is **per repo** for the same
+reason the bound is: a repo contributing no running row, no evidenced pre-PR row and
+no queued row contributes no completed rows either, rather than borrowing another
+repo's round to justify printing its history. A repo whose only contribution is a
+`Phase A (unconfirmed)` row still has a round of its own and keeps it. When no repo on
+the board has one, the board as a whole
 takes the no-round line. A landed round's terminal board is `/subagent`'s to print at
 round end; `/board` does not resurrect one from history.
 
@@ -386,13 +418,27 @@ pipeline keeps its place in the round as it finishes.
 One plain line, no table, no error:
 
 ```text
-No active round — nothing running or queued in <REPO_KEY>.
+No active round — nothing running or queued in <EFFECTIVE_REPO>.
 ```
 
-Substitute the key resolved in Step 1; never a literal repo name. Drop the scope
-clause entirely — `No active round — nothing running or queued.` — in the two cases
-where naming one repo would be wrong or empty: under `--all-repos`, and whenever
-`REPO_KEY` is empty.
+When `pipelines` holds pre-PR entries that no evidence could confirm (Step 3), say so
+on the same line instead of implying the state is empty — the work exists, its
+liveness does not:
+
+```text
+No active round — nothing running or queued in <EFFECTIVE_REPO>; 2 pre-PR pipeline(s) in
+state could not be confirmed live: #1604, #1607.
+```
+
+Those issue numbers follow the same qualification rule as the `Issue` cell: bare `#N`
+on a single-repo board, `owner/name#N` under `--all-repos`, where a bare number names
+nothing in particular.
+
+Substitute `EFFECTIVE_REPO` from Step 2 — the key actually used to read `pipelines`,
+not Step 1's before recovery — and never a literal repo name. Drop the scope clause
+entirely — `No active round — nothing running or queued.` — in the two cases where
+naming one repo would be wrong or empty: under `--all-repos`, and whenever
+`EFFECTIVE_REPO` is empty.
 
 When Step 2 read nothing at all, keep it to the same single line and stay honest
 about why: `No active round — session state unreadable, treating as no round.`
@@ -404,8 +450,23 @@ same cell semantics as every other surface, per `time-estimates.md`
 §"Running now Table". Do not invent columns and do not reshape it into a list.
 
 ```bash
-TZ='America/New_York' date +'%a %b %-d %I:%M %p ET'
+# Same guard as the clock cells, for the same reason: `TZ='America/New_York' date`
+# does NOT fail on a host without tzdata — libc falls back to UTC and exits 0, so an
+# unguarded call stamps a four- or five-hour error with an "ET" suffix (#1529).
+# Eastern is -0500 or -0400 and never +0000, so probe the resolved offset once and
+# let it name the zone for the whole board.
+if [[ "$(TZ='America/New_York' date +%z 2>/dev/null)" == -0[45]00 ]]; then
+  ZONE="ET"; STAMP=$(TZ='America/New_York' date +'%a %b %-d %I:%M %p ET')
+else
+  ZONE="UTC"; STAMP=$(date -u +'%a %b %-d %H:%M UTC')
+fi
 ```
+
+**`ZONE` labels the two clock columns as well** — `Start (<ZONE>)` and
+`Projected end (<ZONE>)` — because it is the same probe `overrun-check.sh` runs
+internally, so when it says `UTC` the cells fell back too. A UTC-labelled board is
+correct and readable; a board whose header says UTC over columns headed `(ET)` is
+the mislabelling this guard exists to prevent.
 
 ```markdown
 **Running now**
@@ -465,8 +526,11 @@ row's clocks arrive as ISO-8601 (`STARTED_AT` from Step 2, `mergedAt` from Step 
 live read), and so does the Start of a running row the projection helper could not
 compute. `overrun-check.sh --readout-cells` prints its **first** cell as the ET
 wall-clock of whatever `--started-at` it was given, in the table's `%-I:%M %p` form,
-and that cell is a pure function of `--started-at` — `--bound-min` moves only cells 2
-and 3. So one call per instant, first cell taken, is the conversion. Compute
+and that cell is **independent of `--bound-min`**, which moves only cells 2 and 3.
+It is not independent of everything: a start in the future suppresses the whole line,
+and the zone rendered depends on whether ET resolves — both of which are the
+degradations this skill already renders as `—`. So one call per instant, first cell
+taken, is the conversion. Compute
 `STARTED_AT_ET` for **every** row, not only merged ones; the branches below decide
 which of them use it:
 
@@ -535,12 +599,15 @@ per-mode `prs` path Step 3 used — `.repos["<key>"].prs["<N>"]` under `--all-re
 count of what is running, queued, and delivered this round. On a **non-dispatching**
 thread each carries its own qualification, and they are not the same one:
 
-- **Running is exact** for every row whose liveness was established — an agent entry
-  attributed by `.owner_repo` or PR, or a `prs` entry with a phase. It is only
-  **incomplete** by the pre-PR rows whose liveness could not be confirmed (Step 3),
-  which are named here by issue rather than given a phase and are not counted in it.
+- **Running is exact** for every **PR-backed** row whose liveness was established —
+  an attributed agent entry or a `prs` entry with a phase, in either case for a row
+  that has a PR whose open state confirms it. Pre-PR rows are excluded whatever their
+  evidence: an `.owner_repo`-attributed one renders `Phase A (unconfirmed)` and is
+  named here rather than counted, and an unevidenced one is named here by issue with
+  no row at all. Only the dispatching thread's live handle turns a pre-PR row into a
+  counted one (Step 3).
 - **Queued is unknown**, not zero: this thread did not dispatch the round and has no
-  queue to read.
+  queue to read, so it renders no queued rows whatsoever.
 - **Delivered is approximate**, since the timestamp fallback both misses pipelines
   that landed before the earliest running start and can absorb a late merge from an
   earlier round.
@@ -566,16 +633,23 @@ floor to volunteer one.
 The record is keyed **per repo**, so the loop below is the shape in both modes: one
 iteration over the single invoking repo by default, one per repo the board carried
 under `--all-repos`. `ROW_REPO` and `ROW_ACTIVE` are that repo's own key and its own
-running+queued count — never the invoking `REPO_KEY` and never a combined total.
+rendered non-completed count — never the invoking `EFFECTIVE_REPO` and never a combined total.
 
 ```bash
-# ROW_ACTIVE = rows in the table just printed FOR THIS REPO that are running OR
-# queued — completed rows excluded. It is caller-declared because nothing can
-# derive it: .pipelines is append-only and no durable field tracks queued issues.
-# Substitute the integer per repo; the guard below catches an unsubstituted
-# placeholder. Default mode: ROW_REPO is Step 1's REPO_KEY and the loop runs once.
+# ROW_ACTIVE = rows rendered FOR THIS REPO whose liveness is PROVEN: confirmed
+# running rows (PR-backed, or a pre-PR row the dispatching thread holds a handle for)
+# plus queued rows. `Phase A (unconfirmed)` rows are deliberately NOT counted — this
+# number arms or disarms a floor, and an unproven row must do neither. Completed rows
+# are excluded, and so are pipelines named only in the summary line.
+# ROW_UNCONFIRMED = the `Phase A (unconfirmed)` rows rendered for this repo. It is not
+# added to ROW_ACTIVE; it only distinguishes the two ways a 0 can arise (below).
+# Both are caller-declared because nothing can derive them: .pipelines is append-only
+# and no durable field tracks queued issues. Substitute the integers per repo; the
+# guard below catches an unsubstituted placeholder. Default mode: ROW_REPO is Step 2's
+# EFFECTIVE_REPO and the loop runs once.
 for ROW_REPO in <each repo whose rows this board carried>; do
-  ROW_ACTIVE=<running + queued rows for ROW_REPO in the table above>
+  ROW_ACTIVE=<proven-live non-completed rows rendered for ROW_REPO in the table above>
+  ROW_UNCONFIRMED=<`Phase A (unconfirmed)` rows rendered for ROW_REPO>
 
   if [[ -z "$TABLE_FRESHNESS_SH" ]]; then
     : # Step 0 already printed the DEGRADED line for an unresolved helper.
@@ -583,10 +657,20 @@ for ROW_REPO in <each repo whose rows this board carried>; do
     echo 'DEGRADED: repo key unresolved — this board is not recorded against the table-freshness floor'
   elif [[ ! "${ROW_ACTIVE:-}" =~ ^[0-9]+$ ]]; then
     echo "DEGRADED: active count for $ROW_REPO is not an integer — that repo's board is not recorded against the table-freshness floor"
+  elif [[ "$ROW_ACTIVE" -eq 0 && "${ROW_UNCONFIRMED:-0}" -gt 0 ]]; then
+    # ROW_ACTIVE is 0 while ROW_UNCONFIRMED is not: this repo's only non-completed
+    # rows are `Phase A (unconfirmed)` (completed rows may still be on the board).
+    # Neither answer is available: a positive count would ARM the floor on liveness
+    # nothing proved, letting a crashed dispatch hold it open forever, and a 0 would
+    # DISARM a round that may well be running. So record nothing and say which it
+    # was — the floor keeps whatever it already had, the only claim the evidence
+    # supports.
+    echo "DEGRADED: $ROW_REPO has no proven-live rows, only $ROW_UNCONFIRMED unconfirmed pre-PR row(s) — not recorded, since neither arming nor disarming the freshness floor is supported by that evidence"
   elif [[ "$ROW_ACTIVE" -eq 0 ]]; then
-    # A rendered board always has at least one running or queued row (Step 3), so a
-    # zero here is a miscount, not a terminal board — and passing it through would
-    # DISARM a floor whose round is still live. Refuse it loudly instead.
+    # No proven rows AND no unconfirmed ones, yet a table was printed — Step 3 forms
+    # a round only from a running, unconfirmed pre-PR, or queued row, so this is a
+    # miscount rather than a terminal board, and passing it through would DISARM a
+    # floor whose round is still live. Refuse it loudly instead.
     echo "DEGRADED: active count for $ROW_REPO is 0 on a rendered board — rows miscounted; not recorded, since a 0 here would disarm a live floor"
   else
     "$TABLE_FRESHNESS_SH" --note-rendered --active "$ROW_ACTIVE" \
@@ -609,8 +693,10 @@ exact failure the floor exists to prevent. A render that did not happen is worse
 recorded than not recorded.
 
 **`/board` never records a terminal board.** Step 3 forms a round only when something
-is running or queued, so a rendered board always carries at least one such row and
-`ACTIVE_COUNT` is always ≥ 1 — which is why a computed `0` is refused above as a
+is running, an evidenced pre-PR row exists, or something is queued. `ROW_ACTIVE` is
+therefore ≥ 1 on every board except the all-unconfirmed one, which records nothing at
+all rather than guessing — which is why the remaining computed `0` is refused above
+as a
 miscount rather than passed through. The `--active 0` disarm belongs to the flows
 that actually end a round: `/subagent`'s round-end render, `/pause`, and `/end`
 (`time-estimates.md` §"Teardown is by data"). A reader does not end a round by
