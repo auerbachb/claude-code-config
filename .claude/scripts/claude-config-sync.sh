@@ -611,9 +611,11 @@ record_failure() {
         --arg now "$NOW_ISO" \
         --arg sha "$NEW_SHA" \
         --argjson categories "$fail_categories_json" \
-        '. + {restart_recommended: {
-                reason: ("config sync updated " + ($categories | join(", "))),
-                categories: $categories, head_sha: $sha, at: $now}}' 2>/dev/null)" \
+        '(. + {restart_recommended: {
+                categories: (((.restart_recommended.categories // []) + $categories) | unique),
+                head_sha: $sha, at: $now}})
+         | .restart_recommended.reason =
+             ("config sync updated " + (.restart_recommended.categories | join(", ")))' 2>/dev/null)" \
         || fail_new_marker=""
       if [[ -n "$fail_new_marker" ]]; then
         write_marker "$fail_new_marker" || true
@@ -1100,9 +1102,11 @@ new_marker="$(printf '%s' "$marker" | jq \
     # ...and adds (never removes) the restart portion: a live session still has
     # to restart even though this pass succeeded.
     | (if $restart
-       then . + {restart_recommended: {
-              reason: ("config sync updated " + ($categories | join(", "))),
-              categories: $categories, head_sha: $sha, at: $now}}
+       then (. + {restart_recommended: {
+              categories: (((.restart_recommended.categories // []) + $categories) | unique),
+              head_sha: $sha, at: $now}})
+            | .restart_recommended.reason =
+                ("config sync updated " + (.restart_recommended.categories | join(", ")))
        else . end)
     | with_entries(select(.value != null))
   ' 2>/dev/null)" || new_marker=""

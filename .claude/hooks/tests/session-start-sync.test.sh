@@ -572,6 +572,33 @@ except Exception:
 rr = d.get("restart_recommended") or {}
 sys.exit(0 if "skills" in (rr.get("categories") or []) else 1)
 PY
+# CLAUDE.md label mapping: a resume that links CLAUDE.md must record claude-md,
+# not blanket-'skills' — the two marker writers must agree on category names.
+printf '# global claude md\n' > "$R14_UP/CLAUDE.md"
+git -C "$R14_UP" add -A >/dev/null 2>&1
+git -C "$R14_UP" -c user.email=t@t -c user.name=t commit -qm four
+R14F_HOME="$R14/home-f"; mkdir -p "$R14F_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-f"
+git -C "$R14/base-f" worktree add -q --detach "$R14F_HOME/.claude/skills-worktree" main
+printf '{"source":"resume"}' | HOME="$R14F_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+python3 - "$R14F_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume that linked CLAUDE.md did not record the claude-md category (BugBot 7454568b, PR #1553)"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+rr = d.get("restart_recommended") or {}
+sys.exit(0 if "claude-md" in (rr.get("categories") or []) else 1)
+PY
+# Harvest-before-rc ordering: the category harvest must precede the non-zero
+# exit branch, or a publisher that lands links then fails hides them.
+harvest_line="$(grep -n '_publish_change_verbs" <<< "\$out"' "$HOOK" | head -1 | cut -d: -f1)"
+rcbranch_line="$(grep -n 'symlink publish failed: \${err:-\$out}' "$HOOK" | head -1 | cut -d: -f1)"
+[ -n "$harvest_line" ] && [ -n "$rcbranch_line" ] \
+  || fail "could not locate the harvest / rc-branch lines in _publish_one"
+[ "$harvest_line" -lt "$rcbranch_line" ] \
+  || fail "_publish_one branches on rc before harvesting change categories — landed links from a failing publisher are hidden (BugBot, PR #1553)"
 rm -rf "$R14"
 
 echo "OK: session-start-sync.sh SessionStart migration tests passed"

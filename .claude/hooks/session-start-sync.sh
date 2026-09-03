@@ -421,16 +421,29 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     else
       out=$(bash "$script" "$skills_wt" "${_root_repo}" 2>&1) || rc=$?
     fi
-    if [[ $rc -ne 0 ]]; then
-      errors="${errors:+$errors; }${label} symlink publish failed: ${err:-$out}"
-      return 0
-    fi
+    # Harvest change categories BEFORE branching on rc: a publisher can land
+    # links and then exit non-zero (e.g. a failed prune), and those landed
+    # changes still owe the restart signal. The skill publisher also owns the
+    # CLAUDE.md and rules links, and prints their lines under those literal
+    # labels — map them to their own categories so this writer agrees with the
+    # scheduled job's snapshot-derived ones.
     if [[ -n "$_publish_err_file" && -n "$out" ]] \
         && grep -Eq "$_publish_change_verbs" <<< "$out"; then
       case "$label" in
-        skill) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills" ;;
+        skill)
+          _pc_cm="$(grep -E '^  CLAUDE\.md — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_cm=""
+          _pc_ru="$(grep -E '^  rules — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_ru=""
+          _pc_sk="$(grep -Ev '^  (CLAUDE\.md|rules) — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_sk=""
+          [[ -n "$_pc_sk" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills"
+          [[ -n "$_pc_cm" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }claude-md"
+          [[ -n "$_pc_ru" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }rules"
+          ;;
         agent) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }agents" ;;
       esac
+    fi
+    if [[ $rc -ne 0 ]]; then
+      errors="${errors:+$errors; }${label} symlink publish failed: ${err:-$out}"
+      return 0
     fi
     [[ -n "$out" ]] && _agents_notices="${_agents_notices:+$_agents_notices
 }$out"

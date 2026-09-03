@@ -1052,6 +1052,13 @@ test_20_missing_skills_publisher_is_an_error_in_both_writers() {
   assert "the hook's message uses the publish-failure shape the clear keys off" \
     "[ -n \"\$(grep 'not found — skill/CLAUDE.md/rules links not refreshed' '$HOOK' | grep 'errors=')\" ]"
 
+  # Category union (BugBot 8eacd570, PR #1553): both restart_recommended write
+  # sites must UNION into existing categories, never replace them — a later
+  # skills-only tick must not drop an earlier agents/rules signal the user has
+  # not restarted for. The union shape is the behavior; assert both sites carry it.
+  assert "both marker write sites union restart categories instead of replacing" \
+    "[ \"\$(grep -c 'restart_recommended.categories // \\[\\]' '$SYNC')\" -eq 2 ]"
+
   # Readability guard on helper resolution (CodeAnt 3920027124, PR #1553): an
   # unreadable stale worktree copy must not be selected over a readable later
   # candidate — every caller runs `bash "$candidate"`.
