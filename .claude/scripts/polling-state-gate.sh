@@ -730,10 +730,24 @@ ensure_session() {
     # --legacy-flat rather than omitting the scope: omission now derives or
     # refuses (issue #1366), and either outcome would move this write off the
     # very file the branch above chose.
+    # --require-existing (issue #1603): this branch decided the record exists
+    # OUTSIDE the lock, so between that test and this write a merge's Phase C
+    # cleanup can delete it. Without the flag --set would then seed a fresh
+    # record from `{}` holding only head_sha — a plausible-looking file with a
+    # null phase_completed that reads as "Phase A never completed". The flag
+    # re-tests presence under the lock and exits 3 having written nothing.
     local set_or_flag=(--legacy-flat)
     [[ "$handoff_path" != "$flat_path" ]] && [[ -n "$owner_repo" ]] && set_or_flag=(--owner-repo "$owner_repo")
-    if ! "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --set "$PR_NUMBER" ".head_sha=$head_sha"; then
-      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER" >&2
+    local set_rc=0
+    "$HANDOFF_HELPER" ${set_or_flag[@]+"${set_or_flag[@]}"} --require-existing \
+      --set "$PR_NUMBER" ".head_sha=$head_sha" || set_rc=$?
+    if [[ "$set_rc" -eq 3 ]]; then
+      # The record was deleted after this branch chose it — normal right after a
+      # merge. Refusing is the point: do not recreate it here.
+      echo "polling-state-gate.sh: handoff for PR #$PR_NUMBER was deleted while refreshing head_sha (--require-existing); not recreating it — confirm the PR state before polling again" >&2
+      exit 4
+    elif [[ "$set_rc" -ne 0 ]]; then
+      echo "polling-state-gate.sh: handoff-state.sh --set .head_sha failed for PR #$PR_NUMBER (exit $set_rc)" >&2
       exit 4
     fi
   fi

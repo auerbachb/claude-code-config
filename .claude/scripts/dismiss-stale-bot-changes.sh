@@ -259,7 +259,11 @@ if [[ -n "$HANDOFF_FILE" && ${#DISMISSED_IDS[@]} -gt 0 ]]; then
         echo "[DISMISS-STALE] WARN: handoff bookkeeping INCOMPLETE — recorded $_ds_recorded of $_ds_total dismissed review ID(s); ${#_ds_missing[@]} not recorded." >&2
         echo "[DISMISS-STALE] WARN: the reviews ARE dismissed on GitHub, so re-running this script will NOT record them — they no longer match its CHANGES_REQUESTED filter. Record them directly once the handoff exists:" >&2
         for _ds_m in ${_ds_missing[@]+"${_ds_missing[@]}"}; do
-          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
+          # The printed command keeps --require-existing: the advice is "once the
+          # handoff exists", so the flag is transparent when it does and stops
+          # the recovery step from itself recreating a hollow record when the
+          # deletion was the permanent, post-merge kind (issue #1603).
+          echo "[DISMISS-STALE]   handoff-state.sh ${_ds_or_flag[*]} --require-existing --append $PR_NUMBER stale_bot_reviews_dismissed '\"$_ds_m\"'" >&2
         done
         break
       elif [[ "$_ds_append_rc" -ne 0 ]]; then

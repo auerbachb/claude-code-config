@@ -793,6 +793,113 @@ check "trailing --require-existing is rejected" "2" "$req_rc"
 check_contains "  and explains flag placement" "must come BEFORE the mode flag" "$req_err"
 
 # ---------------------------------------------------------------------------
+# 19. Caller-side conformance: update call sites opt into --require-existing
+#     (issue #1603)
+#
+#     Section 18 proves the flag works. This one proves our own callers pass it.
+#     The regression it pins is a real incident: a Phase B agent's final `notes`
+#     write landed moments after Phase C merged and the parent deleted the
+#     record, so the seed-from-`{}` default recreated a one-key file with a null
+#     phase_completed — which reads as "Phase A never completed" to every later
+#     reader. These are the update call sites; a creation (--create) must NOT
+#     carry the flag, and that is asserted too.
+# ---------------------------------------------------------------------------
+echo "=== 19. caller-side conformance: --require-existing on update call sites (issue #1603) ==="
+
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+# Predicate, reused for the real files and for the negative control below.
+# Prints one line per offending OR=() definition; empty output == conformant.
+# `grep || true` because a conformant file legitimately matches nothing, and
+# the caller runs under `set -e`.
+bad_or_arrays() {
+  local file="$1"
+  grep -n 'OR=(--owner-repo' -- "$file" 2>/dev/null | grep -v -- '--require-existing' || true
+}
+
+for _tpl in \
+    "${REPO_ROOT}/.claude/agents/phase-b-reviewer.md" \
+    "${REPO_ROOT}/.claude/skills/subagent/SKILL.md"; do
+  _rel="${_tpl#"$REPO_ROOT"/}"
+  if [[ ! -f "$_tpl" ]]; then
+    fail "$_rel exists"
+    continue
+  fi
+  check "every OR=() in $_rel carries --require-existing" "" "$(bad_or_arrays "$_tpl")"
+  # The array has to exist at all — an empty result would otherwise pass
+  # vacuously if the block were renamed or deleted.
+  _or_count="$(grep -c 'OR=(--owner-repo' -- "$_tpl" || true)"
+  if [[ "${_or_count:-0}" -ge 1 ]]; then ok "  and $_rel still defines one"
+  else fail "  and $_rel still defines one (found none — did the block move?)"; fi
+done
+
+# Negative control: the predicate must actually FAIL on a stripped copy. Without
+# this the two checks above pass just as happily against a grep that matches
+# nothing (memory: guards that pass by not running).
+NEG_TPL="${TMP_DIR}/neg-phase-b.md"
+sed 's/OR=(--owner-repo \(.*\) --require-existing)/OR=(--owner-repo \1)/' \
+  "${REPO_ROOT}/.claude/agents/phase-b-reviewer.md" > "$NEG_TPL"
+neg_out="$(bad_or_arrays "$NEG_TPL")"
+if [[ -n "$neg_out" ]]; then ok "negative control: predicate flags a stripped OR=() array"
+else fail "negative control: predicate did NOT flag a stripped OR=() array"; fi
+
+# Phase A creates the record, so its --create must stay flagless.
+PHASE_A="${REPO_ROOT}/.claude/agents/phase-a-fixer.md"
+# Match the invocation line only — the surrounding prose deliberately names both
+# the flag and --create while explaining why the create does not take it.
+create_lines="$(grep -n -- '^"\$HANDOFF_STATE_SH".*--create' "$PHASE_A" | grep -- '--require-existing' || true)"
+create_all="$(grep -c -- '^"\$HANDOFF_STATE_SH".*--create' "$PHASE_A" || true)"
+if [[ "${create_all:-0}" -ge 1 ]]; then ok "phase-a-fixer.md still shows a --create invocation"
+else fail "phase-a-fixer.md still shows a --create invocation (found none — did Step 6 move?)"; fi
+check "phase-a-fixer.md --create does NOT carry --require-existing" "" "$create_lines"
+
+# Both agent definitions explain what exit 3 means, so an agent that hits it
+# does not "fix" it by recreating the record.
+for _tpl in "$PHASE_A" "${REPO_ROOT}/.claude/agents/phase-b-reviewer.md"; do
+  _rel="${_tpl#"$REPO_ROOT"/}"
+  _body="$(cat "$_tpl")"
+  check_contains "$_rel explains exit 3" 'exit 3 = the handoff is gone' "$_body"
+done
+
+# polling-state-gate.sh refreshes head_sha on a record it tested for OUTSIDE the
+# lock — the same TOCTOU shape.
+PSG="${REPO_ROOT}/.claude/scripts/polling-state-gate.sh"
+psg_body="$(cat "$PSG")"
+check_contains "polling-state-gate.sh head_sha refresh is update-only" \
+  '--require-existing' "$psg_body"
+psg_bad="$(grep -n -- '--set "\$PR_NUMBER" "\.head_sha=' "$PSG" | grep -v -- '--require-existing' || true)"
+# The flag sits on the preceding continuation line, so a same-line grep would be
+# the wrong assertion; what matters is that no --set of .head_sha appears
+# without the flag somewhere in its own invocation. Assert the paired form.
+if [[ -n "$psg_bad" ]]; then
+  # Re-check by joining continuations before deciding.
+  joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$PSG")"
+  psg_bad="$(printf '%s\n' "$joined" | grep -n -- '--set "\$PR_NUMBER" "\.head_sha=' | grep -v -- '--require-existing' || true)"
+fi
+check "no unflagged .head_sha refresh remains in polling-state-gate.sh" "" "$psg_bad"
+
+# dismiss-stale-bot-changes.sh appends stale_bot_reviews_dismissed under the flag
+# (PR #1423). It also PRINTS a recovery command when that append hits exit 3; the
+# printed command has to carry the flag too, or following the advice recreates
+# exactly the hollow record the append refused to write (issue #1603).
+DSB="${REPO_ROOT}/.claude/scripts/dismiss-stale-bot-changes.sh"
+dsb_appends="$(grep -n -- '--append "\$PR_NUMBER" "stale_bot_reviews_dismissed"' "$DSB" || true)"
+if [[ -n "$dsb_appends" ]]; then ok "dismiss-stale-bot-changes.sh still appends stale_bot_reviews_dismissed"
+else fail "dismiss-stale-bot-changes.sh still appends stale_bot_reviews_dismissed (found none)"; fi
+# The flag sits on the line above the --append, so join continuations first.
+dsb_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$DSB")"
+dsb_bad="$(printf '%s\n' "$dsb_joined" \
+  | grep -n -- '--append "\$PR_NUMBER" "stale_bot_reviews_dismissed"' \
+  | grep -v -- '--require-existing' || true)"
+check "the live append carries --require-existing" "" "$dsb_bad"
+
+dsb_advice="$(grep -n -- 'stale_bot_reviews_dismissed .\\"\$_ds_m' "$DSB" || true)"
+if [[ -n "$dsb_advice" ]]; then ok "  and it still prints a recovery command"
+else fail "  and it still prints a recovery command (found none — did the message change?)"; fi
+dsb_advice_bad="$(printf '%s\n' "$dsb_advice" | grep -v -- '--require-existing' || true)"
+check "  whose printed command also carries --require-existing" "" "$dsb_advice_bad"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
