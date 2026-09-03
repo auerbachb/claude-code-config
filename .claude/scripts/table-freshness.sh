@@ -273,11 +273,32 @@ fi
 [[ "$MODE" == "note-rendered" && -z "$ACTIVE" ]] && \
   die_usage "--note-rendered requires --active <N> (running + queued pipelines)"
 
-# Same session-id sanitising the silence hooks apply, so a raw id with slashes
-# or spaces cannot escape the marker directory or split the state key.
+# The session id has TWO destinations with different requirements, and squashing
+# it once for both is what made them collide. `${id//[^[:alnum:]_.-]/_}` maps `/`
+# to `_` while letting `_` through, so sessions `a/b` and `a_b` sanitise to the
+# same string — and then SHARE one clock record, each render resetting the
+# other's hour. That is the same collision the repo component solves with a
+# checksum a few lines below; the session component simply had not been given
+# the same treatment.
+#
+#   SESSION_ID   — raw, for the jq state path. A `/` is perfectly legal inside a
+#                  jq string key, so nothing needs squashing here; only the
+#                  jq-hostile characters are rejected, exactly as REPO_KEY is.
+#                  For an ordinary UUID session id this is byte-identical to the
+#                  old sanitised value, so existing records — including the ones
+#                  /board (#1581) reads — keep their current key.
+#   SESSION_SLUG — sanitised AND checksummed, for the marker FILENAME, where a
+#                  `/` really would escape the directory. Same slug+checksum
+#                  shape as the repo component, for the same reason.
 SESSION_ID="${SESSION_ID:-default}"
-SESSION_ID="${SESSION_ID//[^[:alnum:]_.-]/_}"
-SESSION_ID="${SESSION_ID:-default}"
+if [[ ! "$SESSION_ID" =~ ^[A-Za-z0-9._/@:+-]+$ ]]; then
+  die_usage "--session value contains characters that cannot be used as a state key: $SESSION_ID"
+fi
+SESSION_SLUG="${SESSION_ID//[^[:alnum:]_.-]/_}"
+SESSION_SLUG="${SESSION_SLUG:-default}"
+SESSION_SUM="$(printf '%s' "$SESSION_ID" | cksum 2>/dev/null | cut -d' ' -f1)"
+[[ "$SESSION_SUM" =~ ^[0-9]+$ ]] || SESSION_SUM=""
+SESSION_SLUG="${SESSION_SLUG}${SESSION_SUM:+-$SESSION_SUM}"
 
 if [[ -z "$REPO_KEY" ]]; then
   REPO_KEY="$("$SESSION_STATE_SH" --repo-key 2>/dev/null)" || REPO_KEY=""
@@ -335,7 +356,7 @@ REPO_SLUG="${REPO_KEY//[^[:alnum:]_.-]/_}"
 REPO_SLUG="${REPO_SLUG:-_unknown}"
 REPO_SUM="$(printf '%s' "$REPO_KEY" | cksum 2>/dev/null | cut -d' ' -f1)"
 [[ "$REPO_SUM" =~ ^[0-9]+$ ]] || REPO_SUM=""
-EMITTED_FILE="${MARKER_DIR}/claude-tablefloor-emitted-${REPO_SLUG}${REPO_SUM:+-$REPO_SUM}-${SESSION_ID}"
+EMITTED_FILE="${MARKER_DIR}/claude-tablefloor-emitted-${REPO_SLUG}${REPO_SUM:+-$REPO_SUM}-${SESSION_SLUG}"
 
 state_get() {
   local value
@@ -412,11 +433,24 @@ read_record() {
 
 case "$MODE" in
   note-rendered)
-    NOW_ISO="$(date -u +%FT%TZ)"
     SURFACE_VALUE="${SURFACE:-unspecified}"
     # Every write goes through session-state.sh: it holds the lock, preserves
     # siblings, and writes atomically (handoff-files.md). One atomic --set of
     # the whole record, so a reader never sees a half-updated clock.
+    #
+    # The timestamp is stamped as LATE as possible — immediately before the
+    # record is built, not at the top of the branch — because session-state.sh
+    # takes its lock inside the --set below. Two concurrent renders stamp before
+    # they queue for that lock, so the one that stamped EARLIER can acquire it
+    # LAST and write the older time, nudging the durable clock backward. Stamping
+    # late shrinks that window to a single jq invocation. It does not close it:
+    # closing it needs a read-compare-write under one lock, and the only
+    # primitive for that (--cas) can exhaust its retries and FAIL the write —
+    # trading a clock that is a moment stale for one that was never recorded,
+    # which is the failure that silently disarms the floor. The residual skew is
+    # bounded by the gap between two near-simultaneous renders and always errs
+    # toward reporting the board as OLDER, so it costs at most one extra table.
+    NOW_ISO="$(date -u +%FT%TZ)"
     RECORD="$(jq -nc \
       --arg at "$NOW_ISO" \
       --argjson active "$ACTIVE" \

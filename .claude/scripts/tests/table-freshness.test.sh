@@ -70,13 +70,17 @@ backdate() {  # backdate <minutes> [session]
 # `slug--session` here against the script's `slug-session`, so on a host without
 # cksum every marker assertion would have checked a path nothing ever creates —
 # the dedupe tests would fail while the dedupe itself was fine.
+# The SESSION component is slug+checksum too, for the same reason as the repo
+# one: squashing alone maps `a/b` and `a_b` onto one marker.
 marker_path() {  # marker_path [repo] [session]
-  local repo="${1:-$REPO}" sid="${2:-$SID}" sum
+  local repo="${1:-$REPO}" sid="${2:-$SID}" sum ssum
   sum="$(printf '%s' "$repo" | cksum 2>/dev/null | cut -d' ' -f1)"
   [[ "$sum" =~ ^[0-9]+$ ]] || sum=""
-  printf '%s/claude-tablefloor-emitted-%s%s-%s' \
+  ssum="$(printf '%s' "$sid" | cksum 2>/dev/null | cut -d' ' -f1)"
+  [[ "$ssum" =~ ^[0-9]+$ ]] || ssum=""
+  printf '%s/claude-tablefloor-emitted-%s%s-%s%s' \
     "$CLAUDE_TABLE_FRESHNESS_MARKER_DIR" "${repo//[^[:alnum:]_.-]/_}" \
-    "${sum:+-$sum}" "$sid"
+    "${sum:+-$sum}" "${sid//[^[:alnum:]_.-]/_}" "${ssum:+-$ssum}"
 }
 
 # Sets CHECK_OUT (verdict word) and CHECK_RC. Deliberately NOT called through
@@ -510,6 +514,36 @@ done
 "$SCRIPT" --status >/dev/null 2>&1
 [[ $? -ne 2 ]] || fail "omitting --session/--repo must still default, not error"
 ok "an explicitly empty --session or --repo is rejected; omitting them still defaults"
+
+# --- 19g. Two session ids that SANITISE alike keep separate clocks ------------
+#          Exactly the collision the repo component already solves with a
+#          checksum: `${id//[^[:alnum:]_.-]/_}` maps `/` to `_` while letting `_`
+#          through, so `a/b` and `a_b` squashed to one key and each render reset
+#          the other's hour. The state path now uses the RAW id (a `/` is legal
+#          in a jq string key) and the marker uses slug+checksum.
+S_A="collide/one"
+S_B="collide_one"
+[[ "${S_A//[^[:alnum:]_.-]/_}" == "${S_B//[^[:alnum:]_.-]/_}" ]] || \
+  fail "test setup wrong: these session ids must share a sanitised slug"
+"$SCRIPT" --note-rendered --active 4 --session "$S_A" --repo "$REPO" >/dev/null \
+  || fail "session '$S_A' should be accepted"
+"$SCRIPT" --note-rendered --active 9 --session "$S_B" --repo "$REPO" >/dev/null \
+  || fail "session '$S_B' should be accepted"
+A_COUNT="$("$SCRIPT" --status --session "$S_A" --repo "$REPO" | jq -r '.active_pipelines')"
+B_COUNT="$("$SCRIPT" --status --session "$S_B" --repo "$REPO" | jq -r '.active_pipelines')"
+[[ "$A_COUNT" == "4" && "$B_COUNT" == "9" ]] || \
+  fail "colliding session ids shared one clock: '$S_A'=$A_COUNT '$S_B'=$B_COUNT (want 4 and 9)"
+[[ "$(marker_path "$REPO" "$S_A")" != "$(marker_path "$REPO" "$S_B")" ]] || \
+  fail "colliding session ids share one dedupe marker"
+# An ordinary UUID-shaped id must be UNCHANGED as a state key, or this fix would
+# have moved every existing record — including the ones /board (#1581) reads.
+UUIDISH="0b9c1d2e-3f40-5a61-8b72-9c0d1e2f3a4b"
+"$SCRIPT" --note-rendered --active 1 --session "$UUIDISH" --repo "$REPO" >/dev/null \
+  || fail "a UUID-shaped session id should be accepted"
+[[ "$(jq -r ".repos[\"$REPO\"].table_render | has(\"$UUIDISH\")" \
+  "$HOME/.claude/session-state.json")" == "true" ]] || \
+  fail "a UUID-shaped session id must key the record verbatim, not a mangled form"
+ok "session ids that sanitise alike keep separate clocks; ordinary ids key verbatim"
 
 # --- 20. A state write it cannot perform is REPORTED, never swallowed --------
 #         Both writing modes: --clear that silently fails to clear leaves a stale
