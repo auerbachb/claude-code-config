@@ -57,6 +57,13 @@ need() {
     *) echo "fake gh: expected '$1' in: $*" >&2; exit 96 ;;
   esac
 }
+# Answered in the real banner shape so the version parse is actually exercised
+# rather than always falling through to its unknown-version path (#1335).
+if [[ "${1:-}" == "--version" || "${1:-}" == "version" ]]; then
+  _V="${GH_FAKE_VERSION:-2.98.0}"
+  printf 'gh version %s (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v%s\n' "$_V" "$_V"
+  exit 0
+fi
 case "$1 $2" in
   "repo view")
     [[ -n "${GH_FAKE_SLUG:-}" ]] || { echo "fake gh: GH_FAKE_SLUG unset" >&2; exit 1; }
@@ -66,24 +73,60 @@ case "$1 $2" in
     if [[ "${GH_FAKE_PR_FAIL:-0}" == "1" ]]; then
       echo "fake gh: simulated API failure" >&2; exit 1
     fi
+    # An unknown-field error naming some OTHER field, with
+    # closingIssuesReferences present in the Available list. This is the shape
+    # that tempts a detector into reading its own catalogue as the capability
+    # gap, and it must stay a hard read failure (#1335).
+    if [[ "${GH_FAKE_UNKNOWN_OTHER_FIELD:-0}" == "1" ]]; then
+      printf 'Unknown JSON field: "someOtherField"\nAvailable fields:\n  body\n  closingIssuesReferences\n  mergedAt\n  number\n' >&2
+      exit 1
+    fi
     # Author scoping (#732/#733) and the closing-issue field (double-count fix)
     # are both load-bearing; losing either silently corrupts the count.
     # --state is required; its value (open|merged) governs which fixture to use.
     need "--state"; need "--author"; need "@me"
-    case "$ARGS" in
-      *"closingIssuesReferences"*) ;;
-      *) echo "fake gh: pr list must request closingIssuesReferences: $*" >&2; exit 96 ;;
-    esac
+    # old gh mode (#1335): reject closingIssuesReferences exactly as gh does
+    # — client-side, before any network call, naming the field on the first
+    # line and then listing the fields it DOES know. Reproducing the available
+    # list matters: a detector that searched the whole message unanchored would
+    # match that catalogue on a modern gh and degrade a healthy client.
+    if [[ "${GH_FAKE_NO_CLOSING_REFS:-0}" == "1" ]]; then
+      case "$ARGS" in
+        *"closingIssuesReferences"*)
+          printf 'Unknown JSON field: "closingIssuesReferences"\nAvailable fields:\n  body\n  mergedAt\n  number\n  title\n' >&2
+          exit 1 ;;
+      esac
+      # The degraded retry must ask for body instead — a fake that served the
+      # fixture regardless would certify a fallback that never read one.
+      case "$ARGS" in
+        *"body"*) ;;
+        *) echo "fake gh: degraded pr list must request body: $*" >&2; exit 96 ;;
+      esac
+    else
+      case "$ARGS" in
+        *"closingIssuesReferences"*) ;;
+        *) echo "fake gh: pr list must request closingIssuesReferences: $*" >&2; exit 96 ;;
+      esac
+    fi
     # When set, the PR listing MUST be scoped to this repo. Without this the
     # suite cannot tell a correctly-scoped fetch from one that silently ran
     # against the caller's checkout.
     if [[ -n "${GH_FAKE_REQUIRE_REPO:-}" ]]; then
       need "--repo"; need "$GH_FAKE_REQUIRE_REPO"
     fi
+    # In old gh mode the fixtures carry `body` instead of the API field, so
+    # the suite exercises the keyword parse rather than handing the code the
+    # very structure it is supposed to reconstruct.
+    _OPEN_FIXTURE="${GH_FAKE_PRS:-[]}"
+    _MERGED_FIXTURE="${GH_FAKE_MERGED_PRS:-[]}"
+    if [[ "${GH_FAKE_NO_CLOSING_REFS:-0}" == "1" ]]; then
+      _OPEN_FIXTURE="${GH_FAKE_PRS_BODY:-[]}"
+      _MERGED_FIXTURE="${GH_FAKE_MERGED_PRS_BODY:-[]}"
+    fi
     # Dispatch on the --state value so both `open` and `merged` fetches work
     # (the merged-PR leak fix fetches recently-merged PRs via --state merged).
     case "$ARGS" in
-      *" open "*)   printf '%s\n' "${GH_FAKE_PRS:-[]}" ;;
+      *" open "*)   printf '%s\n' "$_OPEN_FIXTURE" ;;
       *" merged "*)
         # GH_FAKE_FORBID_MERGED=1 marks tests that must NOT invoke gh pr list
         # --state merged (e.g. limit=0 short-circuit). Fail hard so a broken
@@ -106,9 +149,9 @@ case "$1 $2" in
           _FAKE_LIMIT="${BASH_REMATCH[1]}"
         fi
         if [[ -n "$_FAKE_LIMIT" ]]; then
-          printf '%s' "${GH_FAKE_MERGED_PRS:-[]}" | jq --argjson n "$_FAKE_LIMIT" '.[0:$n]'
+          printf '%s' "$_MERGED_FIXTURE" | jq --argjson n "$_FAKE_LIMIT" '.[0:$n]'
         else
-          printf '%s\n' "${GH_FAKE_MERGED_PRS:-[]}"
+          printf '%s\n' "$_MERGED_FIXTURE"
         fi ;;
       *)
         echo "fake gh: pr list --state must be 'open' or 'merged' in: $*" >&2
@@ -1116,5 +1159,362 @@ OFF27=$(printf '%s' "$JSON27" | jq -r '[.offered_issue_nums[] | tostring] | sort
 ok "partial-batch offered_issue_nums: pipeline-covered issue 401 excluded; 402 retained"
 export REG_FAKE_LIST="[]"
 unset CLAUDE_CHIP_OFFER_REGISTRY_SH
+
+# --- 28-35. old gh lacks closingIssuesReferences on `pr list` (#1335) ------
+# The old client rejects the field client-side. That used to reach die_read and
+# exit 5, and /pm Step 0 reads a non-zero exit as FREE=0 — so a stale gh froze
+# chip offers repo-wide with no hint the remedy was a client upgrade. The gap
+# must now degrade to closing keywords parsed from PR bodies, loudly, without
+# ever under-counting.
+
+# Body-carrying fixtures, mirroring set_open_prs / set_merged_prs but writing
+# the closing reference as prose the way a real PR body carries it.
+set_open_prs_body() {  # $1 = count, $2 = body text for the FIRST PR
+  GH_FAKE_PRS_BODY="$(jq -cn --argjson n "$1" --arg b "${2:-}" \
+    '[range($n) | {number: (.+1000), body: (if . == 0 then $b else "" end)}]')"
+  export GH_FAKE_PRS_BODY
+}
+set_merged_prs_body() {  # $1 = count, $2 = body text for the FIRST merged PR
+  GH_FAKE_MERGED_PRS_BODY="$(jq -cn --argjson n "$1" --arg b "${2:-}" \
+    '[range($n) | {number: (.+2000), mergedAt: "2026-08-23T20:00:00Z",
+                   body: (if . == 0 then $b else "" end)}]')"
+  export GH_FAKE_MERGED_PRS_BODY
+}
+
+reset_old_gh_case() {
+  set_cap_config ""
+  set_open_prs 0
+  set_merged_prs 0
+  set_open_prs_body 0
+  set_merged_prs_body 0
+  set_open_issues ""
+  set_pipelines '[]'
+  rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+}
+
+# --- 28. an old gh no longer exits 5 -----------------------------------------
+# The regression itself. Before the fix this run died at fetch_open_prs.
+reset_old_gh_case
+set_open_prs_body 2
+set_merged_prs_body 0
+OUT28=""; RC28=0
+OUT28=$(GH_FAKE_NO_CLOSING_REFS=1 run 2>/dev/null) || RC28=$?
+[[ "$RC28" == "0" ]] \
+  || fail "28: a gh lacking closingIssuesReferences must not fail the census (exit $RC28)"
+[[ "$OUT28" == "CAP=6 ACTIVE=2 FREE=4" ]] \
+  || fail "28: degraded census must still count the 2 open PRs; got '$OUT28'"
+ok "old gh: census succeeds instead of exiting 5, and open PRs still count"
+
+# --- 29. the degradation is LOUD, and says what to do about it ----------------
+ERR29=$(GH_FAKE_NO_CLOSING_REFS=1 GH_FAKE_VERSION=2.48.0 run 2>&1 >/dev/null)
+case "$ERR29" in
+  *"DEGRADED"*) ;;
+  *) fail "29: degraded run must print a DEGRADED line; got '$ERR29'" ;;
+esac
+case "$ERR29" in
+  *"2.72.0"*) ;;
+  *) fail "29: the DEGRADED line must name the minimum gh version; got '$ERR29'" ;;
+esac
+# The DETECTED version too, so the operator can tell which client is stale —
+# and so the version parse is proven to work rather than silently reporting
+# "unknown" on every machine.
+case "$ERR29" in
+  *"gh 2.48.0"*) ;;
+  *) fail "29: the DEGRADED line must name the detected gh version; got '$ERR29'" ;;
+esac
+case "$ERR29" in
+  *"brew upgrade gh"*) ;;
+  *) fail "29: the DEGRADED line must name the remedy; got '$ERR29'" ;;
+esac
+# Both call sites degrade, but the operator should be told once, not twice.
+N29=$(printf '%s\n' "$ERR29" | grep -c "DEGRADED")
+[[ "$N29" == "1" ]] \
+  || fail "29: the DEGRADED line must be printed exactly once per run, got $N29"
+ok "old gh: one DEGRADED line naming the field, the minimum version and the remedy"
+
+# --- 30. the fallback actually subtracts, matching the API path ---------------
+# A chip for issue 501 whose work is already an open PR. On the API path the
+# closingIssuesReferences entry suppresses it; on the degraded path the same
+# suppression has to come out of the body text, or the count would drift.
+reset_old_gh_case
+set_open_issues "501"
+write_chip_log "old-gh-30" "[$(chip_entry 501 "$SLUG" open t-30)]"
+set_open_prs_body 1 "Adds the thing.
+
+Closes #501"
+JSON30=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null) || fail "30: degraded --json failed"
+CH30=$(printf '%s' "$JSON30" | jq -r '.live_chips')
+[[ "$CH30" == "0" ]] \
+  || fail "30: a body saying Closes #501 must suppress the chip for 501 (live_chips=$CH30)"
+# Negative control: the same fixtures with NO closing keyword must keep it.
+set_open_prs_body 1 "Adds the thing. See #501 for background."
+JSON30B=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null) || fail "30: control --json failed"
+CH30B=$(printf '%s' "$JSON30B" | jq -r '.live_chips')
+[[ "$CH30B" == "1" ]] \
+  || fail "30: a bare mention (no keyword) must NOT suppress the chip (live_chips=$CH30B)"
+ok "old gh: body keywords subtract PR-covered chips; a bare mention does not"
+
+# --- 31. cross-repo references never subtract this repo's issue --------------
+# The one way the fallback could UNDER-count: adopting another repo`s
+# `owner/repo#N`. Under-counting widens offers, which is the failure the whole
+# script exists to prevent, so this is the load-bearing case.
+reset_old_gh_case
+set_open_issues "502"
+write_chip_log "old-gh-31" "[$(chip_entry 502 "$SLUG" open t-31)]"
+set_open_prs_body 1 "Closes otherowner/otherrepo#502"
+JSON31=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null) || fail "31: degraded --json failed"
+CH31=$(printf '%s' "$JSON31" | jq -r '.live_chips')
+[[ "$CH31" == "1" ]] \
+  || fail "31: another repo's #502 must not suppress this repo's chip (live_chips=$CH31)"
+# The same-repo shorthand and URL forms, however, must both be honoured.
+set_open_prs_body 1 "Closes $SLUG#502"
+CH31B=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "31: shorthand-form --json failed"
+[[ "$CH31B" == "0" ]] \
+  || fail "31: same-repo shorthand $SLUG#502 must suppress the chip (live_chips=$CH31B)"
+set_open_prs_body 1 "Resolved https://github.com/$SLUG/issues/502"
+CH31C=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "31: URL-form --json failed"
+[[ "$CH31C" == "0" ]] \
+  || fail "31: same-repo issue URL must suppress the chip (live_chips=$CH31C)"
+ok "old gh: cross-repo refs ignored; same-repo shorthand and URL forms honoured"
+
+# --- 32. every keyword family, case-insensitively -----------------------------
+reset_old_gh_case
+set_open_issues "601 602 603 604 605 606 607 608 609"
+write_chip_log "old-gh-32" "[$(chip_entry 601 "$SLUG" open t-32a),$(chip_entry 609 "$SLUG" open t-32b)]"
+set_open_prs_body 1 "close #601 CLOSES #602 Closed #603 fix #604 FIXES #605
+fixed #606 resolve #607 Resolves #608 RESOLVED #609"
+CH32=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "32: keyword-family --json failed"
+[[ "$CH32" == "0" ]] \
+  || fail "32: all nine keyword forms must be recognised (live_chips=$CH32)"
+# And near-misses must not be. `unfixes`/`closely` fail the word boundary, and
+# `Closes#610` fails the required separator — a form GitHub does not document
+# and that no PR in the 60-PR sample uses, so matching it would subtract a chip
+# no PR covers.
+reset_old_gh_case
+set_open_issues "610"
+write_chip_log "old-gh-32c" "[$(chip_entry 610 "$SLUG" open t-32c)]"
+set_open_prs_body 1 "unfixes #610 and closely #610 and Closes#610 and fixed#610"
+CH32B=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "32: near-miss --json failed"
+[[ "$CH32B" == "1" ]] \
+  || fail "32: unfixes/closely/separator-less forms are not references (live_chips=$CH32B)"
+# The separator itself may be a colon, a tab, or spaces around a colon.
+reset_old_gh_case
+set_open_issues "611"
+write_chip_log "old-gh-32d" "[$(chip_entry 611 "$SLUG" open t-32d)]"
+printf -v BODY32 'Closes:\t#611'
+set_open_prs_body 1 "$BODY32"
+CH32C=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "32: separator-variant --json failed"
+[[ "$CH32C" == "0" ]] \
+  || fail "32: a colon-plus-tab separator must still match (live_chips=$CH32C)"
+# A NEWLINE is not a separator. GitHub does not link across one, so matching it
+# would subtract a chip no PR covers — the same under-counting direction as the
+# separator-less form, from a shape that occurs whenever a keyword happens to
+# end a line above an unrelated issue number.
+reset_old_gh_case
+set_open_issues "612"
+write_chip_log "old-gh-32e" "[$(chip_entry 612 "$SLUG" open t-32e)]"
+set_open_prs_body 1 'The word Closes
+#612 begins the next line and is not a reference.'
+CH32D=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "32: newline-separator --json failed"
+[[ "$CH32D" == "1" ]] \
+  || fail "32: a keyword separated from #612 by a newline must not subtract (live_chips=$CH32D)"
+ok "old gh: all nine keyword forms match; boundary, separator and newline misses do not"
+
+# --- 33. --json names the source, on both paths -------------------------------
+reset_old_gh_case
+SRC33=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.closing_refs_source') \
+  || fail "33: degraded --json failed"
+[[ "$SRC33" == "body-keywords" ]] \
+  || fail "33: degraded --json must report closing_refs_source=body-keywords, got '$SRC33'"
+SRC33B=$(run --json | jq -r '.closing_refs_source') || fail "33: normal --json failed"
+[[ "$SRC33B" == "api" ]] \
+  || fail "33: a modern gh must report closing_refs_source=api, got '$SRC33B'"
+ok "--json reports closing_refs_source: body-keywords when degraded, api otherwise"
+
+# --- 34. the merged-PR fetch degrades too ------------------------------------
+# fetch_merged_prs requests mergedAt as well, so its degraded call has to keep
+# that field or the client-side ordering silently loses its key.
+reset_old_gh_case
+set_open_issues "701"
+write_chip_log "old-gh-34" "[$(chip_entry 701 "$SLUG" open t-34)]"
+set_merged_prs_body 1 "Fixes #701"
+CH34=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "34: degraded merged-PR --json failed"
+[[ "$CH34" == "0" ]] \
+  || fail "34: a MERGED PR body closing 701 must suppress the chip (live_chips=$CH34)"
+# The mergedAt ORDERING must survive the degraded round-trip too — test 26's
+# scenario on the fallback path. PR 2001 was created first but merged last, so
+# with limit=1 only the mergedAt sort surfaces it. If synthesis dropped or
+# mangled mergedAt the sort would pick 2002 and the chip would not be excluded,
+# which the fake cannot catch on its own: it asserts the field was REQUESTED,
+# not that it survived into the sorted result.
+reset_old_gh_case
+set_open_issues "702"
+write_chip_log "old-gh-34b" "[$(chip_entry 702 "$SLUG" open t-34b)]"
+# Fixture ORDER is the whole discrimination here. `sort_by` is stable, so with
+# the closing PR listed second a dropped mergedAt would sort to the same answer
+# and this test would pass while proving nothing. Listed FIRST, a null mergedAt
+# leaves input order, and reverse then picks 2002 — the wrong PR — so the
+# assertion below actually fails when the field does not survive synthesis.
+GH_FAKE_MERGED_PRS_BODY="$(jq -cn '[
+  {number:2001, mergedAt:"2026-08-23T20:30:00Z", body:"Closes #702"},
+  {number:2002, mergedAt:"2026-08-22T10:00:00Z", body:"Unrelated work."}
+]')"
+export GH_FAKE_MERGED_PRS_BODY
+CH34B=$(CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT=1 GH_FAKE_NO_CLOSING_REFS=1 \
+        run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "34: degraded merged-PR ordering --json failed"
+[[ "$CH34B" == "0" ]] \
+  || fail "34: mergedAt ordering must survive synthesis; PR 2001 closes 702 (live_chips=$CH34B)"
+ok "old gh: the merged-PR fetch degrades too, and mergedAt ordering survives it"
+
+# --- 35. every other gh failure still exits 5 (fail-closed preserved) ---------
+# The degradation must be narrow. A rate limit, an auth error, or a DIFFERENT
+# missing field are read failures, and a fabricated zero there would uncap the
+# gate outright.
+reset_old_gh_case
+RC35=0
+GH_FAKE_NO_CLOSING_REFS=1 GH_FAKE_PR_FAIL=1 run >/dev/null 2>&1 || RC35=$?
+[[ "$RC35" == "5" ]] \
+  || fail "35: a real gh failure must still exit 5 even in old-gh mode (got $RC35)"
+# An unknown-field error naming some OTHER field is not this capability gap.
+# The catalogue gh prints alongside it LISTS closingIssuesReferences, so a
+# detector that searched the whole message would read its own error text as the
+# gap and degrade a healthy client. Driven through the real script rather than
+# a re-implementation of the matcher: a test that restates the logic it is
+# checking passes whatever the shipped code does.
+RC35B=0
+GH_FAKE_UNKNOWN_OTHER_FIELD=1 run >/dev/null 2>&1 || RC35B=$?
+[[ "$RC35B" == "5" ]] \
+  || fail "35: an unknown-field error for a DIFFERENT field must still exit 5 (got $RC35B)"
+# And it must NOT have been mistaken for the capability gap on the way there.
+ERR35B=$(GH_FAKE_UNKNOWN_OTHER_FIELD=1 run 2>&1 >/dev/null)
+case "$ERR35B" in
+  *"DEGRADED"*) fail "35: another field's unknown-field error must not trigger the fallback" ;;
+esac
+ok "old gh: real failures still exit 5; another field's error is not the gap"
+
+# --- 36. keywords quoted as code or comments are not references ---------------
+# Measured, not hypothetical: over 60 real merged PRs on this repo the keyword
+# parse matched the API field on 59 and disagreed on exactly one — a PR ABOUT
+# closing-keyword parsing, whose body quoted nine keyword examples as code
+# spans. GitHub links none of them, and each phantom reference would have
+# SUBTRACTED a chip. Over-subtraction is the under-counting direction that
+# widens offers, so this is the case that keeps the fallback error
+# one-directional. Stripping code spans, fences and HTML comments took the
+# same 60-PR comparison to 60/60.
+reset_old_gh_case
+set_open_issues "801"
+write_chip_log "old-gh-36" "[$(chip_entry 801 "$SLUG" open t-36)]"
+BODY36='Discussion of the parser.
+
+Inline: the old code treated `Closes #801` as a trailer.
+
+```
+Closes #801
+```
+
+<!-- template hint: Closes #801 -->
+
+Nothing above should count.'
+set_open_prs_body 1 "$BODY36"
+CH36=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "36: code-span --json failed"
+[[ "$CH36" == "1" ]] \
+  || fail "36: keywords inside code spans, fences and HTML comments must not subtract (live_chips=$CH36)"
+# Control: the very same body plus a real trailer DOES subtract, so the strip
+# cannot be passing by simply matching nothing.
+set_open_prs_body 1 "$BODY36
+
+Closes #801"
+CH36B=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "36: trailer-control --json failed"
+[[ "$CH36B" == "0" ]] \
+  || fail "36: a real trailer alongside quoted examples must still subtract (live_chips=$CH36B)"
+# An UNTERMINATED comment runs to the end of the body on GitHub and links
+# nothing inside it. Matching only the terminated form would leave the trailing
+# keyword visible and subtract a chip that is not covered — the under-counting
+# direction, from the one shape a PR template slip actually produces.
+reset_old_gh_case
+set_open_issues "802"
+write_chip_log "old-gh-36c" "[$(chip_entry 802 "$SLUG" open t-36c)]"
+set_open_prs_body 1 'Body text.
+
+<!-- template hint, never closed: Closes #802'
+CH36C=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "36: unterminated-comment --json failed"
+[[ "$CH36C" == "1" ]] \
+  || fail "36: a keyword inside an unterminated HTML comment must not subtract (live_chips=$CH36C)"
+# Control: a trailer BEFORE the unterminated comment is still live text.
+set_open_prs_body 1 'Closes #802
+
+<!-- template hint, never closed: Closes #999'
+CH36D=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "36: pre-comment trailer --json failed"
+[[ "$CH36D" == "0" ]] \
+  || fail "36: a trailer ABOVE an unterminated comment must still subtract (live_chips=$CH36D)"
+ok "old gh: quoted keywords do not subtract; real trailers in the same body do"
+
+# --- 37. fence and span DELIMITER LENGTH is load-bearing ----------------------
+# Three ways a naive strip leaks a quoted reference back into the scan, each
+# measured against the previous implementation of this code:
+#   a. a longer fence quoting a shorter one — toggling on any ``` ends the
+#      block at the INNER delimiter and exposes the rest (leaked 901);
+#   b. a double-backtick span — matching only single backticks eats the two
+#      delimiters as an empty span and leaves the contents bare (leaked 902);
+#   c. the opposite failure: letting a span run across newlines, where a stray
+#      backtick pairs with one lines later and swallows the real trailer in
+#      between (ate a genuine Closes on a real PR, 60-PR parity 60/60 -> 59/60).
+# a and b under-count, which widens offers; c over-counts. Both directions are
+# pinned here because the fix for one is what broke the other.
+reset_old_gh_case
+set_open_issues "901 902 903"
+write_chip_log "old-gh-37" \
+  "[$(chip_entry 901 "$SLUG" open t-37a),$(chip_entry 902 "$SLUG" open t-37b),$(chip_entry 903 "$SLUG" open t-37c)]"
+BODY37='Longer fence quoting a shorter one:
+
+````
+```
+Closes #901
+```
+````
+
+A double-backtick span: ``Closes #902`` and a tilde fence:
+
+~~~
+Closes #903
+~~~
+
+None of the three may count.'
+set_open_prs_body 1 "$BODY37"
+CH37=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "37: delimiter-length --json failed"
+[[ "$CH37" == "3" ]] \
+  || fail "37: nested fences and double-backtick spans must not subtract; all 3 chips must survive (live_chips=$CH37)"
+# c. A stray backtick well before a real trailer must not swallow it. The
+# opening backtick here is unpaired ON ITS LINE, exactly the shape that made a
+# newline-crossing span eat a genuine reference.
+reset_old_gh_case
+set_open_issues "904"
+write_chip_log "old-gh-37c" "[$(chip_entry 904 "$SLUG" open t-37d)]"
+BODY37C='A line with a stray `backtick and no closer on this line.
+
+Some more prose, then `another` paired span.
+
+Closes #904'
+set_open_prs_body 1 "$BODY37C"
+CH37C=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') \
+  || fail "37: cross-line span --json failed"
+[[ "$CH37C" == "0" ]] \
+  || fail "37: a stray backtick must not swallow the real trailer below it (live_chips=$CH37C)"
+ok "old gh: fence/span delimiter length respected, and spans never cross a newline"
+
+reset_old_gh_case
 
 echo "OK: active-work-cap.sh tests passed"

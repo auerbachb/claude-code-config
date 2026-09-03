@@ -159,6 +159,24 @@ Repos whose primary reviewer is BugBot or Greptile have a different budget — B
 
 An absent value is normal and silent. An **unparseable or out-of-range** value warns on stderr and falls back to the default rather than erroring — the `MAX_WAVE` and `CLAUDE_BGWORK_CEILING_S` precedent. A count source that *fails* is different from one that is *empty*: a `gh` failure or a malformed chip log is reported and exits non-zero rather than being counted as zero, because a fabricated zero reads as "nothing active" and would silently uncap the gate (`feedback_fabricated_sentinel_stable_signature.md`, `feedback_guard_must_fail_closed.md`).
 
+## gh client requirement — 2.72.0 for an exact count (#1335)
+
+`closingIssuesReferences` reached `gh pr list --json` in **gh 2.72.0**, via [cli/cli PR #10544](https://github.com/cli/cli/pull/10544) (merged 2025-04-29). Issue #1335 proposed **2.49** and said the field already existed on `gh pr view`; both are wrong — the field did not exist on any `gh` surface until that 2025 merge, roughly a year after 2.49 shipped. The `DEGRADED` line therefore says "upgrade to 2.72.0 or later, latest preferred", so the advice still lands if the exact first release is off by one.
+
+It is the field that stops a clicked chip being counted twice alongside the PR it became, and it feeds exactly one consumer, `chips_covered_by_prs`, where it is only ever *subtracted* — the open-PR count itself needs `number` alone.
+
+Older clients reject the field **client-side, before any network call**. That used to reach `die_read` and exit 5, and since `/pm` Step 0 reads a non-zero exit as `FREE=0`, a stale `gh` froze chip offers repo-wide with no hint the remedy was a client upgrade — observed on `auerbachb/still-point`, 2026-08-26, gh 2.48.0. Because the gap costs accuracy in a subtraction rather than the census itself, it now **degrades instead of failing**:
+
+- **Detected by the observed error, never by a parsed version.** A version-parse bug must not be able to freeze a working `gh`. The version is read only so the remedy line can name the stale client.
+- **The retry swaps the field for `body`** and reconstructs the references from GitHub closing keywords — the same predicate `/pm` 1B.2 uses (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive), across the `#N`, `owner/repo#N`, and issue-URL forms. Cross-repo references are kept only when the slug is the repo being counted.
+- **A separator is required** — a colon, or at least one space or tab, and never a newline. `Closes#5` is not a documented GitHub form and appears nowhere in the 60-PR sample, so there is no evidence it links; matching it would subtract a chip no PR covers. Where the reading is uncertain the tighter rule is the safe one, since a missed reference over-counts while an invented one under-counts.
+- **Fenced code blocks, inline code spans, and HTML comments are stripped first**, because GitHub links no keyword inside them. This is load-bearing rather than cosmetic: over 60 real merged PRs on this repo the parse matched the API field on 59 and disagreed on exactly one — a PR *about* closing-keyword parsing, whose body quoted nine keyword examples as code spans. With the strip, the same comparison is 60/60.
+- **It is loud on two channels.** One `DEGRADED:` line on stderr per run, naming the detected version, the 2.72.0 minimum and the remedy (`brew upgrade gh`); and `--json` reports `closing_refs_source: "body-keywords"`.
+- **Residual error ran the safe way in every shape measured.** A reference the keywords cannot see — linked through the GitHub UI with no keyword in the body — subtracts one chip fewer, so `ACTIVE` reads high and `FREE` low. That is the over-counting direction this file already calls safe, and the parse never adopts another repo's reference.
+- **The known gap.** One-directionality is not proved. The strip removes fenced blocks, inline spans and HTML comments, but **not** four-space-indented code blocks or `<pre>`/`<code>` HTML, so a closing keyword quoted in one of those would still be read as a reference and would over-subtract — the under-counting direction. No instance appears in the 60-PR sample; the three stripped forms are the ones that did. Treat this as a bounded known gap, and if a `body-keywords` census ever reads suspiciously free, look here first.
+
+Every **other** `gh` failure — rate limit, auth, network, a different missing field, or a second unknown-field error on the retry — still exits 5. The degradation is narrow by construction.
+
 ## `--json` output
 
 `active-work-cap.sh --json` emits a single-line JSON object. Relevant fields for diagnosing a `FREE=0` reading:
@@ -172,6 +190,7 @@ An absent value is normal and silent. An **unparseable or out-of-range** value w
 | `offered_issue_nums` | Sorted array of issue numbers that make up the offered-work term (sources 2a + 2b after all narrowings, AC#3 — #1285). Use this to identify which specific issues are holding capacity. |
 | `registry_baseline` | Raw count from the registry before dedup against legacy log |
 | `cap_source` | Which config level resolved the cap |
+| `closing_refs_source` | `api` normally; `body-keywords` when the client is too old for `closingIssuesReferences` and the references were reconstructed from PR bodies (see the gh client requirement above). A `body-keywords` reading means `FREE` may be conservatively low. |
 
 ## Known limits
 
