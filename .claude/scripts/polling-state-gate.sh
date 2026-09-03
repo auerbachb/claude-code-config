@@ -383,6 +383,39 @@ flat_handoff_path() {
   printf '%s' "$p"
 }
 
+# unsearchable_ancestor <path>
+#
+# Echo the ancestor directory that makes <path>'s existence UNKNOWABLE, or
+# return 1 when absence is a real answer.
+#
+# `[[ -f x ]]` is false for two different facts: "x is not there" and "the stat
+# failed", and an unsearchable directory anywhere above x produces the second
+# while looking exactly like the first. Collapsing them is how a present-but-
+# unreachable scoped handoff gets reported as missing and quietly replaced by
+# whatever the flat path holds — the same wrong-record substitution issue #1559
+# fixed one layer up, arriving through a permission error instead of a scope
+# miss. Never let "cannot determine" mean "absent" (memory:
+# portable-stat-and-mkdir-lock-traps).
+#
+# Walks up to the deepest ancestor that can actually be stat'd: that is the
+# first one whose own parent is searchable, so its verdict is trustworthy. If
+# that ancestor is a directory we may not search, everything beneath it is
+# indeterminate; if it is searchable, the child is genuinely absent.
+unsearchable_ancestor() {
+  local p="${1%/*}"
+  while [[ -n "$p" && "$p" != "/" ]]; do
+    if [[ -e "$p" ]]; then
+      if [[ -d "$p" && ! -x "$p" ]]; then
+        printf '%s' "$p"
+        return 0
+      fi
+      return 1
+    fi
+    p="${p%/*}"
+  done
+  return 1
+}
+
 # handoff_scope_candidates <resolved_checkout> [recorded_owner_repo]
 #
 # The owner/repo scopes this PR's handoff may legitimately live under, most
@@ -487,8 +520,14 @@ write_checkpoint_handoff() {
   # flat path is for.
   local or_flag=(--legacy-flat)
   [[ -n "$owner_repo" ]] && or_flag=(--owner-repo "$owner_repo")
+  # "replace" routes to --repair, not --create. --create overwrites
+  # unconditionally, so the caller's corruption verdict would be acted on after
+  # it was formed: a Phase A writer that repairs the record between our read and
+  # this call would have its valid, richer handoff destroyed by a bare polling
+  # checkpoint. --repair re-tests readability inside the same lock that guards
+  # the write and no-ops on a usable record (CodeAnt Major, PR #1598).
   local mode_flag="--init"
-  [[ "$write_mode" == "replace" ]] && mode_flag="--create"
+  [[ "$write_mode" == "replace" ]] && mode_flag="--repair"
   if ! "$HANDOFF_HELPER" ${or_flag[@]+"${or_flag[@]}"} "$mode_flag" "$PR_NUMBER" "$json_body"; then
     echo "polling-state-gate.sh: handoff-state.sh $mode_flag failed for PR #$PR_NUMBER" >&2
     exit 4
@@ -668,9 +707,12 @@ ensure_session() {
     # to be true. The refresh below is a read-modify-write, so on an unparseable
     # file handoff-state.sh --set would fail and leave the loop with no way out.
     # Overwriting is not data loss: a file that cannot be parsed or opened
-    # carries no readable phase record to preserve, and the atomic write goes
-    # through the same advisory lock as every other handoff write, so a
-    # concurrent Phase A writer is serialized rather than raced.
+    # carries no readable phase record to preserve. But that verdict is formed
+    # HERE, outside the lock, so it cannot also authorize the write: being
+    # serialized behind a concurrent Phase A writer is not the same as being
+    # safe from one — losing the race means overwriting the valid handoff it
+    # just wrote. The write therefore goes out as --repair, which re-tests the
+    # file under the lock and no-ops if it has become readable (CodeAnt, #1598).
     #
     # Repair the file the branch above actually selected: an empty scope routes
     # write_checkpoint_handoff to --legacy-flat, so a corrupt flat handoff is
@@ -745,7 +787,7 @@ require_handoff_and_state() {
   owner_repo_for_path="$(state_pr_field owner_repo)"
   [[ "$owner_repo_for_path" == "null" ]] && owner_repo_for_path=""
   local handoff_path="" expected_path="" expected_scope=""
-  local cand cand_path cand_why
+  local cand cand_path cand_why blocked_path="" blocked_dir=""
   while IFS= read -r cand; do
     [[ -n "$cand" ]] || continue
     cand_path=""
@@ -770,10 +812,31 @@ require_handoff_and_state() {
       handoff_path="$cand_path"
       break
     fi
+    # Not found — but distinguish "absent" from "unknowable" before any later
+    # branch is allowed to treat this scope as empty and let the flat path
+    # answer in its place. Recorded, not fatal here: a later candidate may
+    # still hold a readable handoff, and that is a better answer than an error.
+    if [[ -z "$blocked_path" ]]; then
+      if blocked_dir="$(unsearchable_ancestor "$cand_path")"; then
+        blocked_path="$cand_path"
+      else
+        blocked_dir=""
+      fi
+    fi
   done < <(handoff_scope_candidates "$resolved" "$owner_repo_for_path")
   local flat_path
   if ! flat_path="$(flat_handoff_path)"; then
     exit 4
+  fi
+  # An indeterminate scoped path outranks the flat fallback. Falling through
+  # here would validate an unrelated record and announce it as "scoped handoff
+  # not found", which is a false statement about a file that is very likely
+  # sitting right there — exactly the failure mode exit 5 exists to report.
+  # Actionable, because the remedy is a permission fix, not --ensure-session:
+  # --ensure-session cannot repair what it cannot stat either.
+  if [[ -z "$handoff_path" && -n "$blocked_path" ]]; then
+    echo "polling-state-gate.sh: unreadable handoff $blocked_path — directory $blocked_dir is not searchable, so whether that handoff exists cannot be determined; refusing to let $flat_path answer for PR #$PR_NUMBER. Run: chmod u+x '$blocked_dir'" >&2
+    exit "$HANDOFF_UNREADABLE_EXIT"
   fi
   if [[ -z "$handoff_path" && -f "$flat_path" ]]; then
     # Always announced. The old notice was gated on `owner_repo_for_path`, the

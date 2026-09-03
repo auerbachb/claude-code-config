@@ -71,6 +71,15 @@
 #   handoff-state.sh [<scope-flags>] --get    <pr_number>        # lock-free read
 #   handoff-state.sh [<scope-flags>] --create <pr_number> <json> # locked create/overwrite
 #   handoff-state.sh [<scope-flags>] --init   <pr_number> <json> # locked create-if-absent (no-op if exists)
+#   handoff-state.sh [<scope-flags>] --repair <pr_number> <json> # locked replace-if-unusable
+#                               Writes only when the target is absent, or
+#                               present but unreadable / not valid JSON. A
+#                               present, parseable record is left untouched
+#                               (exit 0). The readability test happens under
+#                               the lock, so a concurrent writer that repairs
+#                               the file first is preserved rather than
+#                               overwritten — which a caller-side test before
+#                               --create cannot guarantee (CodeAnt, PR #1598).
 #   handoff-state.sh [<scope-flags>] --set    <pr_number> <jq-path>=<value>
 #   handoff-state.sh [<scope-flags>] --append <pr_number> <field> <value>
 #                               <field> must name one of the schema's array
@@ -341,6 +350,14 @@ case "$1" in
       echo "handoff-state.sh: --init requires <pr_number> <json-body>" >&2; exit 2
     fi
     ;;
+  --repair)
+    MODE="repair"
+    PR_NUMBER="${2:-}"
+    JSON_BODY="${3:-}"
+    if [[ -z "$PR_NUMBER" || -z "$JSON_BODY" ]]; then
+      echo "handoff-state.sh: --repair requires <pr_number> <json-body>" >&2; exit 2
+    fi
+    ;;
   --set)
     MODE="set"
     PR_NUMBER="${2:-}"
@@ -412,7 +429,7 @@ fi
 # rather than discarding them (issue #1366).
 case "$MODE" in
   path|get|delete)  _expected_argc=2 ;;
-  create|init|set)  _expected_argc=3 ;;
+  create|init|repair|set) _expected_argc=3 ;;
   append)           _expected_argc=4 ;;
   *)                _expected_argc=$# ;;
 esac
@@ -521,7 +538,7 @@ fi
 HANDOFF_FILE="$(_resolve_handoff_path "$PR_NUMBER" "$OWNER_REPO")" || exit 2
 
 case "$MODE" in
-  create|init|set|append|delete) MODE_IS_WRITE=1 ;;
+  create|init|repair|set|append|delete) MODE_IS_WRITE=1 ;;
   *)                             MODE_IS_WRITE=0 ;;
 esac
 
@@ -699,6 +716,37 @@ if [[ "$MODE" == "init" ]]; then
   fi
   if [[ -f "$HANDOFF_FILE" ]]; then
     # File already exists — another writer (Phase A/B) got here first; no-op.
+    state_lock_release; exit 0
+  fi
+  _atomic_write "$JSON_BODY"
+  state_lock_release; exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# --repair: replace the handoff ONLY if it is absent or unusable (unreadable,
+# or present but not valid JSON). A usable record is preserved untouched.
+#
+# This exists because the corruption test and the overwrite have to be the same
+# critical section. A caller that reads the file, finds it corrupt, and then
+# calls --create has published its verdict before acting on it: a concurrent
+# Phase A writer can repair the record in that window, and the unconditional
+# --create then destroys a valid, richer handoff (CodeAnt Major, PR #1598).
+# Same reasoning — and same remedy — as --require-existing's under-lock check
+# (CodeAnt, PR #1423) and --init's under-lock existence test (#682).
+#
+# "Unusable" is deliberately the same predicate the caller would have tested,
+# so re-testing here changes only WHERE it runs, never what counts as corrupt.
+# ---------------------------------------------------------------------------
+if [[ "$MODE" == "repair" ]]; then
+  if ! printf '%s\n' "$JSON_BODY" | jq -e . >/dev/null 2>&1; then
+    echo "handoff-state.sh: --repair body is not valid JSON" >&2
+    state_lock_release; exit 4
+  fi
+  if [[ -f "$HANDOFF_FILE" && -r "$HANDOFF_FILE" ]] && jq -e . "$HANDOFF_FILE" >/dev/null 2>&1; then
+    # Readable and parseable — another writer (Phase A/B, or a competing
+    # repair) got here first. Preserve it; report the no-op so a caller that
+    # expected to repair does not read silence as "repaired".
+    echo "handoff-state.sh: --repair on PR #${PR_NUMBER}: $HANDOFF_FILE is readable and valid JSON; left unchanged." >&2
     state_lock_release; exit 0
   fi
   _atomic_write "$JSON_BODY"

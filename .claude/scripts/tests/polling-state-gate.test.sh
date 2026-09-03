@@ -722,5 +722,62 @@ check_eq "no --path capture merges stderr into the resolved path" "0" \
   "$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -cE '[A-Za-z_]+="\$\("\$HANDOFF_HELPER".*--path[^)]*2>&1\)"' || true)"
 
 echo ""
+echo "== K. an unknowable scoped handoff is not the same as an absent one (CodeAnt, PR #1598) =="
+# FAILS-WITHOUT-FIX. Replayed against 8f38791 (this PR's pre-fix HEAD) in a
+# detached worktree, so lib/pr-scope-resolver.sh and lib/repo-normalizer.sh
+# still resolve and the failures are the real ones. On that copy `[[ -f ]]` is
+# false for a scoped handoff whose directory cannot be searched exactly as it is
+# for one that was never written, and the observed result was:
+#
+#   rc=0 — "scoped handoff not found for 'org/a' … falling back to flat …"
+#
+# It passed the gate on the FLAT record while this PR's scoped handoff, holding
+# a different SHA, sat unreadable a directory away — the #1559 wrong-record
+# substitution rebuilt out of a permission error instead of a scope miss, and
+# announced with a sentence that is false about a file that is sitting there.
+#
+# The two "searchable but empty scope" assertions below pass on both copies:
+# they are the positive control proving this check narrows nothing and that
+# plain absence is still reported as a missing handoff.
+#
+# Mode 000 denies nothing to uid 0, so this fixture cannot build its own
+# precondition under a root runner. Announced, not silently skipped.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "skip — unsearchable-scope case: mode 000 does not deny traversal to root"
+else
+  hs_reset; hs_state "$REPO_A" "org/a"
+  write_handoff "org/a" "$PR_HS" "$HS_STALE" >/dev/null
+  write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+  chmod 000 "$HOME/.claude/handoffs/org/a"
+  rc=0; out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)" || rc=$?
+  chmod 755 "$HOME/.claude/handoffs/org/a" 2>/dev/null || true
+  check_eq "an unsearchable scoped directory exits 5, not a flat-file pass" "5" "$rc"
+  check_contains "…and says the directory cannot be searched" "not searchable" "$out"
+  check_contains "…naming the handoff whose existence is unknowable" \
+    "handoffs/org/a/pr-${PR_HS}-handoff.json" "$out"
+  check_eq "…and refuses to let the flat handoff answer in its place" "0" \
+    "$(printf '%s' "$out" | grep -c 'falling back to flat')"
+fi
+
+# A searchable directory with no handoff in it is still a plain absence — the
+# negative control that keeps the check above from swallowing the missing case.
+hs_reset; hs_state "$REPO_A" "org/a"
+mkdir -p "$HOME/.claude/handoffs/org/a"
+rc=0; out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)" || rc=$?
+check_eq "a searchable but empty scope still reports a missing handoff" "5" "$rc"
+check_contains "…as a missing handoff, not a permission problem" "missing handoff" "$out"
+
+# ---- L. the repair branch may never overwrite unconditionally ------------
+# Structural companion to the --repair contract asserted in
+# handoff-state.test.sh. The corruption verdict is formed outside the lock, so
+# --create (unconditional) would let a Phase A handoff written in that window be
+# destroyed by a bare polling checkpoint. Pinned structurally because the race
+# itself cannot be scheduled deterministically here.
+check_eq "the gate repairs via --repair, never --create" "yes" \
+  "$([[ "$(grep -cE 'mode_flag="--repair"' "$SCRIPT" || true)" -ge 1 ]] && echo yes || echo no)"
+check_eq "no --create call survives in the gate" "0" \
+  "$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -cE 'mode_flag="--create"|HANDOFF_HELPER.*--create' || true)"
+
+echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
