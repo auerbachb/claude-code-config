@@ -975,6 +975,79 @@ check_eq "a --set that exits 5 leaves the handoff file byte-identical" "" \
   "$EXIT5_WRITE_VIOLATIONS"
 
 echo
+echo "== --repair: replace-if-unusable, under the lock (CodeAnt Major, PR #1598) =="
+# FAILS-WITHOUT-FIX (partial — replayed against 8f38791, this PR's pre-fix HEAD,
+# in a detached worktree so the sibling libraries still resolve). --repair does
+# not exist there, so it exits 2 and writes nothing. Observed 5 fail / 3 pass:
+#
+#   --repair seeds an absent handoff          FAIL  (got '', nothing written)
+#   --repair on a valid handoff exits 0       FAIL  (got 2, unknown option)
+#   --repair rewrites an unparseable handoff  FAIL  (got '')
+#   --repair rewrites one it cannot read      FAIL  (got 'A', file untouched)
+#   --repair rejects an invalid body -> 4     FAIL  (got 2)
+#   leaves a valid handoff byte-identical     pass  — VACUOUSLY
+#   concurrent Phase A write not clobbered    pass  — VACUOUSLY
+#   invalid body does not touch the target    pass  — VACUOUSLY
+#
+# The three vacuous passes are recorded, not hidden: a script that refuses the
+# flag writes nothing, and "wrote nothing" satisfies every preservation
+# assertion for the wrong reason. They earn their place as forward guards — they
+# fail the day --repair starts overwriting — but only the five above demonstrate
+# the fix, and the preservation contract is what the five make meaningful.
+#
+# The load-bearing case is "valid record is left untouched". polling-state-gate
+# used to decide a handoff was corrupt and then call --create, which overwrites
+# whatever is there by the time the lock is granted; a Phase A writer that
+# repaired the record in that window lost it. The predicate has to be re-tested
+# on the same side of the lock as the write, and these assert exactly that.
+RPR_RICH='{"schema_version":"1.0","pr_number":424242,"phase_completed":"A","findings_fixed":["real work"]}'
+RPR_THIN='{"schema_version":"1.0","pr_number":424242,"phase_completed":"B","findings_fixed":[]}'
+
+# absent -> writes
+rm -f "$HANDOFF_FILE"
+bash "$SCRIPT" --legacy-flat --repair "$PR" "$RPR_THIN" >/dev/null 2>&1
+check_eq "--repair seeds an absent handoff" "B" \
+  "$(jq -r '.phase_completed' "$HANDOFF_FILE" 2>/dev/null)"
+
+# valid -> NO-OP. This is the race the fix closes: the richer record survives.
+printf '%s' "$RPR_RICH" > "$HANDOFF_FILE"
+rpr_before="$(cat "$HANDOFF_FILE")"
+rpr_rc=0
+bash "$SCRIPT" --legacy-flat --repair "$PR" "$RPR_THIN" >/dev/null 2>&1 || rpr_rc=$?
+check_eq "--repair on a valid handoff exits 0" "0" "$rpr_rc"
+check_eq "…and leaves it byte-identical, preserving the richer record" \
+  "$rpr_before" "$(cat "$HANDOFF_FILE")"
+check_eq "…so a concurrent Phase A write is not clobbered" "real work" \
+  "$(jq -r '.findings_fixed[0]' "$HANDOFF_FILE")"
+
+# corrupt -> rewrites
+printf 'not json{' > "$HANDOFF_FILE"
+bash "$SCRIPT" --legacy-flat --repair "$PR" "$RPR_THIN" >/dev/null 2>&1
+check_eq "--repair rewrites an unparseable handoff" "B" \
+  "$(jq -r '.phase_completed' "$HANDOFF_FILE" 2>/dev/null)"
+
+# unreadable -> rewrites. Mode 000 denies nothing to uid 0; announced, never
+# silently skipped, so a case that stops running cannot look like one that passed.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "skip — --repair unreadable case: mode 000 does not deny reads to root"
+else
+  printf '%s' "$RPR_RICH" > "$HANDOFF_FILE"
+  chmod 000 "$HANDOFF_FILE"
+  bash "$SCRIPT" --legacy-flat --repair "$PR" "$RPR_THIN" >/dev/null 2>&1
+  chmod 644 "$HANDOFF_FILE" 2>/dev/null || true
+  check_eq "--repair rewrites a handoff it cannot read" "B" \
+    "$(jq -r '.phase_completed' "$HANDOFF_FILE" 2>/dev/null)"
+fi
+
+# invalid body -> exit 4, target untouched (same contract as --create/--init)
+printf '%s' "$RPR_RICH" > "$HANDOFF_FILE"
+rpr_before="$(cat "$HANDOFF_FILE")"
+rpr_rc=0
+bash "$SCRIPT" --legacy-flat --repair "$PR" 'not json{' >/dev/null 2>&1 || rpr_rc=$?
+check_eq "--repair rejects an invalid body with exit 4" "4" "$rpr_rc"
+check_eq "…without touching the target" "$rpr_before" "$(cat "$HANDOFF_FILE")"
+
+echo
 echo "==================================="
 echo "Results: $PASS passed, $FAIL failed"
 echo "==================================="

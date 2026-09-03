@@ -480,5 +480,304 @@ check_eq "re-enrolment without the override clears the stale true" "false" \
   "$(jq -r --arg pr "$PR_NUM_OWN" '.repos["org/a"].prs[$pr].allow_nonauthor' "$STATE")"
 
 echo ""
+echo "== Handoff resolution: scoped path + missing/unreadable exit (issues #1507, #1559) =="
+# FAILS-WITHOUT-FIX. Every assertion in this block was replayed against
+# origin/main (7c83394) in a DETACHED WORKTREE of the base commit — not a copy
+# of the script in /tmp, which cannot resolve its lib/pr-scope-resolver.sh and
+# lib/repo-normalizer.sh siblings and so fails for the wrong reason. Observed on
+# the pre-change script, in this order:
+#
+#   scoped-only, no recorded owner_repo        rc=4  "missing handoff …/pr-N-handoff.json"   (#1507)
+#   scoped(stale)+flat(fresh), no owner_repo   rc=0  no output at all                        (#1559)
+#   no handoff anywhere                        rc=4  (folded into the generic error code)
+#   unreadable handoff (mode 000)              rc=2  raw "jq: error: Could not open file …"
+#   handoff that is not valid JSON             rc=5  raw "jq: parse error: …"
+#   --root-repo override from a foreign cwd    rc=4  "missing handoff …"
+#   flat-only with no recorded owner_repo      rc=0  silent (no fallback notice)
+#   cross-repo mismatch                        rc=4  but as "missing handoff", not the mismatch
+#
+# Note the fourth and fifth rows: an unreadable handoff exited 2 — this script's
+# documented *usage* code — and invalid JSON exited 5 by coincidence, because
+# that is jq's own status for a parse error. So the invalid-JSON case is pinned
+# on its MESSAGE, not its code: asserting the code alone would pass vacuously
+# against the pre-change script.
+#
+# Positive controls (pass on both copies, so the harness itself is sound):
+# "scoped + recorded owner_repo" and "flat-only + recorded owner_repo".
+
+PR_HS="99507"
+HS_SHA="a1b2c3d4"
+HS_STALE="0000dead"
+hs_state() { # <repo> [owner_repo]  — register PR_HS in <repo>'s own scope
+  ( cd "$1" && "$PSG_STATE_HELPER" \
+      --set ".root_repo=\"$1\"" \
+      --set ".prs[\"$PR_HS\"].root_repo=\"$1\"" \
+      --set ".prs[\"$PR_HS\"].head_sha=\"$HS_SHA\"" \
+      --set ".prs[\"$PR_HS\"].reviewer=\"cr\"" ) >/dev/null
+  if [[ -n "${2:-}" ]]; then
+    ( cd "$1" && "$PSG_STATE_HELPER" --set ".prs[\"$PR_HS\"].owner_repo=\"$2\"" ) >/dev/null
+  fi
+}
+hs_reset() { # forget every handoff and every registration for PR_HS
+  chmod -R u+rwX "$HOME/.claude/handoffs" 2>/dev/null || true
+  rm -f "$HOME/.claude/handoffs/pr-${PR_HS}-handoff.json" \
+        "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json" \
+        "$HOME/.claude/handoffs/org/b/pr-${PR_HS}-handoff.json"
+  # `.repos` and a scope's `.prs` are both normalized before del(): jq errors on
+  # `del` against null, and a filter that dies here would leave the previous
+  # fixture's registration in place — every later assertion would then be
+  # measuring the wrong state while still looking like it ran.
+  tmpstate="$(mktemp)"
+  if jq --arg pr "$PR_HS" \
+      '.repos = ((.repos // {}) | with_entries(.value.prs = ((.value.prs // {}) | del(.[$pr]))))' \
+      "$STATE" > "$tmpstate" && mv "$tmpstate" "$STATE"; then
+    :
+  else
+    rm -f "$tmpstate"
+    FAIL=$((FAIL + 1)); echo "FAIL — hs_reset could not rewrite $STATE (fixture state is unreliable)"
+  fi
+}
+
+# ---- A. #1507: the scoped handoff is found with NO per-PR owner_repo -------
+# The field the pre-change script read is exactly the one that is absent here;
+# scope now also comes from $CLAUDE_SESSION_REPO / the resolved checkout.
+hs_reset; hs_state "$REPO_A"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "scoped-only handoff resolves with no recorded owner_repo" "0" "$rc"
+check_eq "…and reports no missing handoff" "0" "$(printf '%s' "$out" | grep -c 'missing handoff')"
+
+# ---- B. #1559: a stale flat file no longer answers for a scoped handoff ----
+# Both files exist; only the flat one agrees with session-state. The pre-change
+# script validated it and exited 0 in silence. The scoped handoff is this PR's
+# record, so the SHA disagreement must surface instead.
+hs_reset; hs_state "$REPO_A"
+write_handoff "org/a" "$PR_HS" "$HS_STALE" >/dev/null
+write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "stale flat file no longer passes in place of the scoped handoff" "4" "$rc"
+check_contains "refusal names the scoped handoff that was read" \
+  "handoffs/org/a/pr-${PR_HS}-handoff.json" "$out"
+check_contains "refusal names the disagreeing SHAs" "$HS_STALE" "$out"
+
+# ---- C. #1559: missing handoff exits 5, not 4 and never 0 -----------------
+hs_reset; hs_state "$REPO_A" "org/a"
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "no handoff anywhere exits with the distinct code 5" "5" "$rc"
+check_contains "missing-handoff message names the scoped path it expected" \
+  "handoffs/org/a/pr-${PR_HS}-handoff.json" "$out"
+
+# ---- D. #1559: an unreadable handoff is exit 5, not a raw jq failure ------
+# Mode 000 denies nothing to uid 0, so under a root test runner this fixture
+# cannot construct its own precondition. Announced rather than silently
+# skipped: a case that quietly stops running is indistinguishable from one that
+# passes.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "skip — unreadable-handoff case: mode 000 does not deny reads to root"
+else
+  hs_reset; hs_state "$REPO_A" "org/a"
+  write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+  chmod 000 "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json"
+  out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+  chmod 644 "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json"
+  check_eq "unreadable handoff exits 5" "5" "$rc"
+  check_contains "unreadable handoff says so in the gate's own voice" "unreadable handoff" "$out"
+  check_eq "…and does not leak jq's own error" "0" "$(printf '%s' "$out" | grep -c '^jq:')"
+fi
+
+# ---- E. #1559: a corrupt handoff is exit 5 with a message, not jq's ------
+# Pinned on the message: jq's parse-error status is also 5, so the code alone
+# cannot tell the fix from the pre-change abort.
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+printf 'not json{' > "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json"
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "handoff that is not valid JSON exits 5" "5" "$rc"
+check_contains "corrupt handoff is reported by the gate, naming the file" \
+  "not valid JSON" "$out"
+check_eq "…and does not leak jq's own parse error" "0" "$(printf '%s' "$out" | grep -c '^jq:')"
+
+# ---- F. legacy flat handoffs are still honored (AC: fallback preserved) ---
+# Two shapes: with a recorded owner_repo (a positive control — passes on both
+# copies) and without one, where the pre-change script also passed but printed
+# nothing, because the fallback notice was gated on the missing field.
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "flat-only handoff still resolves with a recorded owner_repo" "0" "$rc"
+check_contains "flat fallback announces itself" "falling back to flat" "$out"
+
+hs_reset; hs_state "$REPO_A"
+write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "flat-only handoff still resolves with no recorded owner_repo" "0" "$rc"
+check_contains "flat fallback announces itself even with no recorded scope" \
+  "falling back to flat" "$out"
+
+# ---- G. positive control: the ordinary scoped case is untouched -----------
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "scoped handoff + recorded owner_repo still passes" "0" "$rc"
+check_eq "…silently" "" "$out"
+
+# ---- H. --root-repo override is not regressed ----------------------------
+# cwd is repo B; the gate operates on repo A. Scope must follow the RESOLVED
+# checkout, not the cwd — the memory note about this script's worktree/root_repo
+# false refusals is the reason this path gets its own assertion.
+hs_reset; hs_state "$REPO_A"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_B" && "$SCRIPT" "$PR_HS" --verify-state --root-repo "$REPO_A" 2>&1)"; rc=$?
+check_eq "--root-repo resolves the target repo's scoped handoff from a foreign cwd" "0" "$rc"
+check_eq "…and reports no missing handoff" "0" "$(printf '%s' "$out" | grep -c 'missing handoff')"
+
+# ---- I. a genuine cross-repo mismatch still refuses, and now says why -----
+# The pre-change script also exited 4 here, but as "missing handoff" — it never
+# reached the mismatch check, so the diagnosis named the wrong problem.
+hs_reset; hs_state "$REPO_A" "org/b"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "cross-repo mismatch is still refused" "4" "$rc"
+check_contains "refusal is the mismatch, not a missing file" "refuse to poll from the wrong repo" "$out"
+
+# ---- I2. a helper NOTE on stderr must not become part of the path --------
+# handoff-state.sh prints a note on a successful --path call when
+# CLAUDE_HANDOFF_FLAT_OK=1 is exported alongside an explicit --owner-repo —
+# which /wrap does around its flat-layout sweeps. Capturing that call as `2>&1`
+# splices the note into the resolved path, so the scoped file stops matching
+# and the flat fallback answers again: the #1559 defect, rebuilt out of a
+# stream merge. (CodeRabbit CLI, this PR.)
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+out="$(cd "$REPO_A" && CLAUDE_HANDOFF_FLAT_OK=1 "$SCRIPT" "$PR_HS" --verify-state 2>&1)"; rc=$?
+check_eq "a stderr note from handoff-state.sh does not corrupt the resolved path" "0" "$rc"
+check_eq "…so the scoped handoff still answers, not the flat fallback" "0" \
+  "$(printf '%s' "$out" | grep -c 'falling back to flat')"
+
+# ---- I3. the remedy exit 5 advertises actually works ---------------------
+# Exit 5 tells the caller to run --ensure-session. Before this PR that advice
+# was a dead end for a handoff that exists but cannot be parsed: the refresh
+# branch is a read-modify-write, so handoff-state.sh --set failed on the
+# unparseable file and the loop had no way out. Each exit-5 shape is now
+# followed by the advertised command and re-checked. (CodeRabbit CLI, this PR.)
+HS_STUB_BIN="$TMP/bin-hs"
+write_polling_gh_stub "$HS_STUB_BIN"
+_HS_STUB_PR_JSON="$(jq -nc --arg sha "$HS_SHA" --argjson pr "$PR_HS" \
+  '{headRefOid:$sha, state:"OPEN", number:$pr, headRefName:"feature",
+    url:"https://github.com/org/a/pull/99507", mergeStateStatus:"CLEAN",
+    mergeable:"MERGEABLE", reviewDecision:"", author:{login:"testuser", type:"User"}}')"
+hs_ensure() { # run the advertised remedy in repo A
+  ( cd "$REPO_A" && PATH="$HS_STUB_BIN:$PATH" \
+      STUB_PR_JSON="$_HS_STUB_PR_JSON" STUB_OWNER_REPO="org/a" STUB_PR_AUTHOR="testuser" \
+      "$SCRIPT" "$PR_HS" --ensure-session ) >/dev/null 2>&1
+}
+
+# missing everywhere -> --ensure-session writes the checkpoint, gate then passes
+hs_reset; hs_state "$REPO_A" "org/a"
+rc=0; out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)" || rc=$?
+check_eq "exit-5 precondition: missing handoff" "5" "$rc"
+hs_ensure; ensure_rc=$?
+check_eq "--ensure-session recovers from a missing handoff" "0" "$ensure_rc"
+rc=0; (cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state >/dev/null 2>&1) || rc=$?
+check_eq "…and the gate then passes" "0" "$rc"
+
+# corrupt JSON -> --ensure-session re-creates it rather than failing the RMW
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "org/a" "$PR_HS" "$HS_SHA" >/dev/null
+printf 'not json{' > "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json"
+rc=0; (cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state >/dev/null 2>&1) || rc=$?
+check_eq "exit-5 precondition: corrupt handoff" "5" "$rc"
+hs_ensure; ensure_rc=$?
+check_eq "--ensure-session repairs a corrupt handoff" "0" "$ensure_rc"
+check_eq "…leaving valid JSON on disk" "0" \
+  "$(jq -e . "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json" >/dev/null 2>&1; echo $?)"
+rc=0; (cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state >/dev/null 2>&1) || rc=$?
+check_eq "…and the gate then passes" "0" "$rc"
+
+# a corrupt FLAT handoff is repaired in place, not shadowed by a new scoped one
+hs_reset; hs_state "$REPO_A" "org/a"
+write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+printf 'not json{' > "$HOME/.claude/handoffs/pr-${PR_HS}-handoff.json"
+hs_ensure >/dev/null 2>&1
+check_eq "corrupt flat handoff is repaired at the flat path" "0" \
+  "$(jq -e . "$HOME/.claude/handoffs/pr-${PR_HS}-handoff.json" >/dev/null 2>&1; echo $?)"
+check_eq "…and no scoped duplicate is created beside it" "0" \
+  "$([[ -f "$HOME/.claude/handoffs/org/a/pr-${PR_HS}-handoff.json" ]] && echo 1 || echo 0)"
+
+# ---- J. the flat path itself comes from handoff-state.sh -----------------
+# AC (#1559): no hardcoded flat path anywhere in the gate. Both literals are
+# gone, so the only remaining source of a flat path is the helper's own
+# --legacy-flat resolution.
+# Comments are stripped first: the header and the note standing where
+# HANDOFF_DIR used to be both spell the flat path out on purpose, and a check
+# that counted those would fail for documenting the very thing it enforces.
+check_eq "gate holds no hardcoded flat handoff path in code" "0" \
+  "$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -cE 'handoffs/pr-|HANDOFF_DIR' || true)"
+check_eq "gate resolves the flat path through handoff-state.sh --legacy-flat" "yes" \
+  "$([[ "$(grep -cE '"\$HANDOFF_HELPER" --legacy-flat --path' "$SCRIPT" || true)" -ge 1 ]] && echo yes || echo no)"
+# Companion to I2, expressed structurally: no --path capture may merge stderr
+# into the value it assigns. The diagnostic re-read uses `2>&1 >/dev/null`,
+# which captures stderr ONLY and is therefore not matched here.
+check_eq "no --path capture merges stderr into the resolved path" "0" \
+  "$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -cE '[A-Za-z_]+="\$\("\$HANDOFF_HELPER".*--path[^)]*2>&1\)"' || true)"
+
+echo ""
+echo "== K. an unknowable scoped handoff is not the same as an absent one (CodeAnt, PR #1598) =="
+# FAILS-WITHOUT-FIX. Replayed against 8f38791 (this PR's pre-fix HEAD) in a
+# detached worktree, so lib/pr-scope-resolver.sh and lib/repo-normalizer.sh
+# still resolve and the failures are the real ones. On that copy `[[ -f ]]` is
+# false for a scoped handoff whose directory cannot be searched exactly as it is
+# for one that was never written, and the observed result was:
+#
+#   rc=0 — "scoped handoff not found for 'org/a' … falling back to flat …"
+#
+# It passed the gate on the FLAT record while this PR's scoped handoff, holding
+# a different SHA, sat unreadable a directory away — the #1559 wrong-record
+# substitution rebuilt out of a permission error instead of a scope miss, and
+# announced with a sentence that is false about a file that is sitting there.
+#
+# The two "searchable but empty scope" assertions below pass on both copies:
+# they are the positive control proving this check narrows nothing and that
+# plain absence is still reported as a missing handoff.
+#
+# Mode 000 denies nothing to uid 0, so this fixture cannot build its own
+# precondition under a root runner. Announced, not silently skipped.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "skip — unsearchable-scope case: mode 000 does not deny traversal to root"
+else
+  hs_reset; hs_state "$REPO_A" "org/a"
+  write_handoff "org/a" "$PR_HS" "$HS_STALE" >/dev/null
+  write_handoff "" "$PR_HS" "$HS_SHA" >/dev/null
+  chmod 000 "$HOME/.claude/handoffs/org/a"
+  rc=0; out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)" || rc=$?
+  chmod 755 "$HOME/.claude/handoffs/org/a" 2>/dev/null || true
+  check_eq "an unsearchable scoped directory exits 5, not a flat-file pass" "5" "$rc"
+  check_contains "…and says the directory cannot be searched" "not searchable" "$out"
+  check_contains "…naming the handoff whose existence is unknowable" \
+    "handoffs/org/a/pr-${PR_HS}-handoff.json" "$out"
+  check_eq "…and refuses to let the flat handoff answer in its place" "0" \
+    "$(printf '%s' "$out" | grep -c 'falling back to flat')"
+fi
+
+# A searchable directory with no handoff in it is still a plain absence — the
+# negative control that keeps the check above from swallowing the missing case.
+hs_reset; hs_state "$REPO_A" "org/a"
+mkdir -p "$HOME/.claude/handoffs/org/a"
+rc=0; out="$(cd "$REPO_A" && "$SCRIPT" "$PR_HS" --verify-state 2>&1)" || rc=$?
+check_eq "a searchable but empty scope still reports a missing handoff" "5" "$rc"
+check_contains "…as a missing handoff, not a permission problem" "missing handoff" "$out"
+
+# ---- L. the repair branch may never overwrite unconditionally ------------
+# Structural companion to the --repair contract asserted in
+# handoff-state.test.sh. The corruption verdict is formed outside the lock, so
+# --create (unconditional) would let a Phase A handoff written in that window be
+# destroyed by a bare polling checkpoint. Pinned structurally because the race
+# itself cannot be scheduled deterministically here.
+check_eq "the gate repairs via --repair, never --create" "yes" \
+  "$([[ "$(grep -cE 'mode_flag="--repair"' "$SCRIPT" || true)" -ge 1 ]] && echo yes || echo no)"
+check_eq "no --create call survives in the gate" "0" \
+  "$(grep -vE '^[[:space:]]*#' "$SCRIPT" | grep -cE 'mode_flag="--create"|HANDOFF_HELPER.*--create' || true)"
+
+echo ""
 echo "polling-state-gate.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
