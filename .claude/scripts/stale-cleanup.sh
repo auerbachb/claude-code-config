@@ -1418,8 +1418,17 @@ scan_registrations() {
         # What this script owns is what it reports and what it deletes itself,
         # and on that path registration_is_live closes the same hole
         # immediately before the rm.
+        # Either way the entry is left alone — but say WHICH, because the two
+        # ask different things of an operator (#1597 review). A dangling link is
+        # something to look at; a walk that stalled inside the bound is the
+        # unreadable-metadata case, and reporting it as an ordinary symlink skip
+        # would describe a path state this run never established.
         if path_has_dangling_link_component "$wt"; then
-          SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt is or sits under a dangling symlink — a present entry whose target may return; absence not established, leaving the registration alone")
+          if (( DANGLING_PROBE_INCONCLUSIVE == 1 )); then
+            SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt could not be inspected (a symlink probe along it did not finish within ${READ_BOUND_SECS}s) — absence not established, leaving the registration alone")
+          else
+            SKIPPED_REGISTRATIONS+=("${id}${US}worktree path $wt is or sits under a dangling symlink — a present entry whose target may return; absence not established, leaving the registration alone")
+          fi
           continue
         fi
         reason="worktree directory missing ($wt)"

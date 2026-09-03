@@ -75,10 +75,10 @@ the next accumulation is caught as a finding rather than discovered as a
 
 ## 4. Registration-path audit — issue #1592
 
-The four guard classes above were written for the checkout-removal path. Issue
-#1592 audited `remove_registration`, its pre-`rm` re-check `registration_is_live`,
-and the `scan_registrations` classification that feeds them against the same
-four. Outcome:
+The four guard classes above were written for the checkout-removal path.
+Issue #1592 audited `remove_registration`, its pre-`rm` re-check
+`registration_is_live`, and the `scan_registrations` classification that feeds
+them against the same four. Outcome:
 
 | Guard class | Verdict for the registration path |
 |-------------|-----------------------------------|

@@ -34,8 +34,20 @@ git config --global init.defaultBranch main
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { PASS=$((PASS + 1)); echo "ok   — $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
+# Announced, never counted as a pass: an assertion the environment cannot host
+# must not read as one that held. Only for a stated environmental precondition.
+skip() { SKIP=$((SKIP + 1)); echo "SKIP — $1"; }
+
+# `chmod 000` does not restrict uid 0, so the unsearchable-ancestor assertions
+# below cannot be staged as root: the probe simply succeeds and the entry reads
+# live, which is a different path from the one under test. Detected rather than
+# assumed — a container image that runs as root would otherwise report a green
+# suite that never exercised it.
+CAN_STAGE_UNSEARCHABLE=1
+if [[ "$(id -u 2>/dev/null || echo 0)" -eq 0 ]]; then CAN_STAGE_UNSEARCHABLE=0; fi
 
 check_json() {
   # $1 desc, $2 json, $3 jq boolean expr — passes when the expr is truthy.
@@ -445,8 +457,8 @@ check_json "T11: the same repo enumerates cleanly once cleared" \
 # delete a live worktree's registration, so the probe has to fail closed.
 # Skipped when running as root, which bypasses directory permissions entirely
 # and would make the fixture assert the opposite of what it is built to show.
-if [[ "$(id -u)" -eq 0 ]]; then
-  echo "skip — T12: unsearchable-parent probe (running as root; permissions do not apply)"
+if (( CAN_STAGE_UNSEARCHABLE == 0 )); then
+  skip "T12: unsearchable-parent probe (running as root; permissions do not apply)"
 else
   REPO_F="$TMP/repoF"
   mkdir -p "$REPO_F"
@@ -1625,10 +1637,14 @@ chmod 000 "$TMP/anc000"
 OUT="$(cd "$REPO_L" && "$SUT" --check --json 2>/dev/null)"
 chmod 755 "$TMP/anc000"
 
-check_json "T21: a live worktree behind an unsearchable grandparent is not an orphan" \
-  "$OUT" '.orphaned_registrations | all(.id != "wt-deep")'
-check_json "T21: it is recorded as skipped, absence not established" \
-  "$OUT" '.skipped_registrations | any(.id == "wt-deep" and (.reason | test("not searchable")))'
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_json "T21: a live worktree behind an unsearchable grandparent is not an orphan" \
+    "$OUT" '.orphaned_registrations | all(.id != "wt-deep")'
+  check_json "T21: it is recorded as skipped, absence not established" \
+    "$OUT" '.skipped_registrations | any(.id == "wt-deep" and (.reason | test("not searchable")))'
+else
+  skip "T21: unsearchable-grandparent classification (running as root; chmod 000 does not restrict uid 0)"
+fi
 check_json "T21: a live worktree with a relative gitdir is not an orphan" \
   "$OUT" '.orphaned_registrations | all(.id != "wt-rel")'
 check_json "T21: control — the same relative shape, genuinely gone, still classifies" \
@@ -1663,18 +1679,28 @@ OUT="$(cd "$REPO_M" && "$SUT" --check --json --include-locked 2>/dev/null)"
 # — whatever survives --apply below survives on this script's own decision.
 check_json "T21: repoM issues no prune, so nothing else can clear an entry" \
   "$OUT" '.orphaned_registrations | length > 0 and all(.[]; .method == "targeted")'
-check_json "T21: repoM skips the unsearchable-grandparent entry at classification" \
-  "$OUT" '.skipped_registrations | any(.id == "wt-deep2")'
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_json "T21: repoM skips the unsearchable-grandparent entry at classification" \
+    "$OUT" '.skipped_registrations | any(.id == "wt-deep2")'
+fi
 OUT="$(cd "$REPO_M" && "$SUT" --apply --include-locked 2>&1)"
 chmod 755 "$TMP/anc000b"
 
 check_eq "T21: control — the targeted bait was removed, so the apply phase ran" "gone" \
   "$([[ -e "$REG_M/m-bait" ]] && echo present || echo gone)"
-check_eq "T21: --apply leaves the unsearchable-grandparent registration in place" "present" \
-  "$([[ -e "$REG_M/wt-deep2" ]] && echo present || echo gone)"
+if (( CAN_STAGE_UNSEARCHABLE == 1 )); then
+  check_eq "T21: --apply leaves the unsearchable-grandparent registration in place" "present" \
+    "$([[ -e "$REG_M/wt-deep2" ]] && echo present || echo gone)"
+else
+  skip "T21: unsearchable-grandparent survives --apply (running as root)"
+fi
 
 echo ""
-echo "Results: $PASS passed, $FAIL failed"
+if (( SKIP > 0 )); then
+  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped (environment could not host them — see SKIP lines)"
+else
+  echo "Results: $PASS passed, $FAIL failed"
+fi
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
