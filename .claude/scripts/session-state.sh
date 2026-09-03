@@ -16,7 +16,7 @@
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
-#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value>
+#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
@@ -74,6 +74,30 @@
 #                      Use this instead of a separate --get + --set pair for
 #                      any claim that must be atomic: the gap between two
 #                      invocations is a race window; --cas eliminates it.
+#
+#                      COMPOSITION (issue #1445): one --cas may be combined
+#                      with any number of --set flags in the SAME invocation.
+#                      The compare gates the whole batch — on a match the CAS
+#                      target and every --set path are assigned in one jq
+#                      pipeline under the one lock hold; on a mismatch NOTHING
+#                      is written, the accompanying --set values included, and
+#                      the exit code is still 7. That is what makes a claim
+#                      plus its metadata a single atomic write instead of a
+#                      CAS followed by a second, separately-locked --set whose
+#                      gap another writer can land inside. --cas is still at
+#                      most once per invocation, and still requires --expect.
+#                      Repeated --set flags apply in flag order, so naming one
+#                      path twice resolves last-writer-wins inside the one
+#                      pipeline — exactly what repeated --set flags have always
+#                      done. The --cas target is assigned FIRST in that
+#                      pipeline, so a --set naming the CAS path wins over the
+#                      compared value regardless of which flag came first.
+#                      A --set naming a strict ANCESTOR of the CAS path is a
+#                      usage error (exit 2): assigned after the claim, it would
+#                      replace the subtree holding it, so the command would exit
+#                      0 reporting a won claim that is no longer in the file. An
+#                      exact-path --set keeps the precedence above, and a
+#                      DESCENDANT --set is allowed — it refines the claim.
 #
 #   --get <jq-path>    Read the value at <jq-path> from the state file and
 #                      print it on stdout (raw via `jq -r`). Exits 3 if the
@@ -147,7 +171,10 @@
 #                        • A bare string — anything that fails JSON parsing is
 #                          treated as a literal string.
 #                      Multiple --set flags accumulate into ONE atomic jq
-#                      pipeline → ONE temp-file → ONE mv. If the state file is
+#                      pipeline → ONE temp-file → ONE mv, and they accumulate
+#                      into a --cas invocation's single pipeline the same way
+#                      when the two are combined (issue #1445 — see --cas
+#                      COMPOSITION). If the state file is
 #                      missing, it is initialized with `{}` and the writes are
 #                      applied to that fresh object (exit 0, NOT 3).
 #                      Auto-updates `.last_updated` to the current ISO 8601
@@ -174,7 +201,9 @@
 #      write is ABANDONED and the state file is left unmodified; this script
 #      never falls back to writing unserialized.
 #   7  CAS mismatch (--cas only) — the current value at the given path does
-#      not match the --expect value. The state file is left unmodified. This
+#      not match the --expect value. The state file is left unmodified —
+#      including every --set composed into the same invocation, which is the
+#      all-or-nothing half of the composition contract (issue #1445). This
 #      code is distinct from all I/O or locking failures so callers can
 #      differentiate a lost race from a broken environment.
 #   8  HOME unset — ~/.claude/session-state.json cannot be resolved, so no
@@ -190,7 +219,10 @@
 # LOCKING (issue #639)
 #   --set and --cas take an exclusive advisory lock around the ENTIRE
 #   read-modify-write cycle — read, compare (--cas), jq pipeline, type-contract
-#   check, and the final mv — not just the mv. Without it, two writers could
+#   check, and the final mv — not just the mv. A --cas composed with --set
+#   writes (issue #1445) is ONE such cycle, not two: the composition adds no
+#   lock, it just puts more assignments inside the hold the compare already
+#   takes. Without it, two writers could
 #   each read the same document, each apply their own change, and each write
 #   back, silently losing one of the two changes (last writer wins, no error).
 #
@@ -262,6 +294,11 @@
 #   compare has succeeded and before the commit (issue #1283), so the two
 #   write paths accept and reject exactly the same values. Both call
 #   enforce_field_type_contract(); there is no second implementation to drift.
+#   Both also build their assignments through add_write_assignment(), so a
+#   --set composed into a --cas is scoped, type-probed, and classified by the
+#   same code that handles a standalone --set — and a wrong-typed companion
+#   therefore rejects the WHOLE invocation (exit 4, nothing written), exactly
+#   as a wrong-typed value in a multi---set batch already did (issue #1445).
 #
 #   --get on a known top-level field whose *stored* value doesn't match the
 #   contract (state corrupted before this guard existed, or written by
@@ -280,7 +317,8 @@
 #
 # ATOMICITY
 #   The state file is read into a temp file (or seeded as `{}` if missing),
-#   piped through a jq pipeline that builds all --set assignments + the
+#   piped through a jq pipeline that builds all --set assignments (plus the
+#   --cas target when one is given) + the
 #   `.last_updated` refresh, written to `${STATE_FILE}.tmp.$$`, and then
 #   atomically renamed via `mv`. `mv` within the same filesystem is atomic
 #   on POSIX. Sibling fields outside the assigned paths are preserved
@@ -364,6 +402,15 @@
 #   # Update the claim only if it still matches exactly (safe release pattern):
 #   session-state.sh --raw-path --cas '.repos["org/repo"].release.in_flight=null' \
 #     --expect '{"claim":"mine"}'
+#
+#   # Claim a slot AND record its metadata in one atomic write (issue #1445).
+#   # On a lost race nothing lands — not the cause, not the kind, not the
+#   # bound — and the exit code is still 7, so the caller stands down on one
+#   # signal instead of reasoning about a half-written record:
+#   session-state.sh --raw-path \
+#     --cas '.repos["org/repo"].day.limit_cause="preemptive"' --expect null \
+#     --set '.repos["org/repo"].day.limit_kind=rolling_window' \
+#     --set '.repos["org/repo"].day.limit_probe_fires_remaining=12'
 
 set -euo pipefail
 # Usage telemetry. `script-usage-report.sh` derives adherence ratios from this
@@ -1141,6 +1188,78 @@ enforce_field_type_contract() {
   fi
 }
 
+# Accumulate ONE assignment into the shared write pipeline and register its
+# field-type-contract targets. Called once per --set, and once for the --cas
+# target, so a --set composed into a --cas invocation (issue #1445) is built by
+# exactly the code a standalone --set is built by — the issue #1283 lesson
+# ("there is no second implementation to drift") applied to construction as
+# well as to checking.
+#
+#   $1 the caller-spelled jq path
+#   $2 the raw value text (interpreted JSON-or-string here, see the probe below)
+#   $3 the jq variable name to bind the value to — MUST be unique per call
+#
+# Appends to JQ_FILTER / JQ_ARGS and to the four touched-field records the
+# caller later hands enforce_field_type_contract(). Globals rather than return
+# values: bash 3.2 has no namerefs, and the accumulation is inherently spread
+# across five variables.
+add_write_assignment() {
+  local orig_path="$1" raw_value="$2" varname="$3"
+  local scoped_path assign_key
+  # Two views of the same write (issues #638 + #640):
+  #   orig_path   — what the caller asked for, e.g. `.prs["287"].babysit`
+  #   scoped_path — where it lands, e.g. `.repos["org/x"].prs["287"].babysit`
+  # Every classification below reads scoped_path: it is the shape of the final
+  # document, so it is also the concrete check path. Classifying the caller's
+  # spelling instead is what made a fully-spelled `.repos[...]` write invisible
+  # to #640's nested guard (issue #1340, gap 2).
+  scoped_path="$(scope_path "$orig_path")"
+  # Try to parse as JSON; fall back to string. Probe with `--argjson` itself —
+  # the exact operation the JSON branch performs — so the probe can never accept
+  # a value the write then rejects.
+  #
+  # NOT `jq -e .`: `-e` exits non-zero on null/false even when parse succeeds, so
+  # legitimate JSON values null and false would be silently coerced to the strings
+  # "null" and "false" ("false" being truthy in jq — issue #853).
+  #
+  # NOT `jq empty`: it accepts zero-value stdin — empty AND whitespace-only
+  # ("", " ", "\t") — while `--argjson` rejects all three, so those values would
+  # pass the probe and then hard-fail the write instead of storing as strings.
+  if jq -n --argjson "$varname" "$raw_value" 'empty' >/dev/null 2>&1; then
+    JQ_ARGS+=(--argjson "$varname" "$raw_value")
+  else
+    JQ_ARGS+=(--arg "$varname" "$raw_value")
+  fi
+  if [[ -z "$JQ_FILTER" ]]; then
+    JQ_FILTER="$scoped_path = \$$varname"
+  else
+    JQ_FILTER="$JQ_FILTER | $scoped_path = \$$varname"
+  fi
+  # Track known-typed fields touched by this batch (deduped) for the post-write
+  # field-type contract check below — see FIELD-TYPE CONTRACT.
+  assign_key="$(top_level_key_of "$scoped_path")"
+  if [[ -n "$(known_field_type "$assign_key")" ]]; then
+    case " $TOUCHED_KNOWN_FIELDS " in
+      *" $assign_key "*) ;;
+      *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $assign_key" ;;
+    esac
+  fi
+  # Same tracking for the per-PR map (issues #640, #1340). One classification
+  # covers all three shapes a write can take against it, recorded as the
+  # CONCRETE path so the post-write checks address the final document
+  # directly — no PR number is interpolated into a jq filter any more:
+  #   nested — `.prs["287"].last_cron_action`, or a deeper subpath like
+  #            `.prs["287"].babysit.active`; recorded as a
+  #            "<key><US><check path>" record so the loop checks that one
+  #            entry's field, not every PR in the file
+  #   entry  — `.prs["999"]={...}` replaces the entry in one shot, so no
+  #            single nested-field path is touched, but the embedded object
+  #            can still carry a malformed known field
+  #   map    — `.prs={...}` replaces the whole map, so not even a PR-number
+  #            selector exists to classify on
+  pr_record_write_target "$scoped_path"
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
@@ -1223,13 +1342,18 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --set)
-      if [[ -n "$MODE" && "$MODE" != "set" ]]; then
+      # --set composes with --cas (issue #1445): one invocation may carry a
+      # single --cas plus any number of --set writes, applied together under
+      # the one lock hold. Every other mode stays mutually exclusive.
+      if [[ -n "$MODE" && "$MODE" != "set" && "$MODE" != "cas" ]]; then
         die_usage "--set cannot be combined with --$MODE"
       fi
       if [[ $# -lt 2 ]]; then
         die_usage "--set requires <jq-path>=<value>"
       fi
-      MODE="set"
+      # --cas owns the mode whenever both are present, in either order: the
+      # compare is what gates the whole write, so the CAS block runs the batch.
+      [[ "$MODE" == "cas" ]] || MODE="set"
       local_arg="$2"
       # Split on the FIRST `=` only — values may contain `=` (e.g., a JSON
       # string with `=` inside it).
@@ -1247,7 +1371,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --cas)
-      if [[ -n "$MODE" && "$MODE" != "cas" ]]; then
+      # See the --set branch: these two compose (issue #1445). --cas itself is
+      # still at most once — the composition adds --set writes to one compare,
+      # it does not make the compare N-ary.
+      if [[ -n "$MODE" && "$MODE" != "cas" && "$MODE" != "set" ]]; then
         die_usage "--cas cannot be combined with --$MODE"
       fi
       if [[ $# -lt 2 ]]; then
@@ -1305,6 +1432,57 @@ if [[ "$MODE" != "cas" && "$CAS_EXPECT_SET" -eq 1 ]]; then
 fi
 if [[ "$MODE" == "cas" && "$DRY_RUN" == "1" ]]; then
   die_usage "--dry-run is not supported with --cas (--dry-run is only valid with --migrate)"
+fi
+# A composed --set naming an ANCESTOR of the CAS path is refused (issue #1445).
+# The CAS target is assigned first and companions follow in flag order, so an
+# ancestor write replaces the subtree the claim just landed in — erasing it
+# while the compare still gated the batch and the command still exits 0. That is
+# the one composition whose success code lies: the caller is told it won a claim
+# that is no longer in the file. Naming the CAS path *exactly* stays legal and
+# keeps its documented last-writer-wins precedence, and a companion writing a
+# DESCENDANT of the CAS path is fine too — it refines the claim rather than
+# dropping it. Only a strict ancestor is contradictory, so only it is rejected.
+if [[ "$MODE" == "cas" && "${#SET_PATHS[@]}" -gt 0 ]]; then
+  # Compare CANONICAL paths, not raw text. `.outer`, `.["outer"]` and `."outer"`
+  # are one path, so a textual prefix test would catch only the first spelling
+  # and wave the others through into exactly the silent erase this guard exists
+  # to stop. jq is the normalizer — `path()` renders any accessor expression as
+  # a segment array — so there is no hand-rolled jq-path parser here.
+  # Compare what the pipeline will actually ASSIGN, which is the scoped path:
+  # `scope_path` rewrites a legacy `.prs` / `.root_repo` companion into
+  # `.repos["<key>"].…`, so a relative companion and a fully-spelled claim (or
+  # the reverse) look unrelated before scoping and nest after it. Comparing the
+  # raw spellings would miss exactly that pair.
+  # Canonicalize to exactly ONE path array, or refuse. `[path(expr)]` collects
+  # every location the expression names: a single accessor yields one, `.a[]`
+  # fails to render at all, and `.a,.b` yields two. Anything but one is not a
+  # single assignable location, which --cas and a composed --set both already
+  # require — the compare binds one value and the pipeline assigns one target.
+  # Refusing here (rather than degrading to a weaker textual test) is what keeps
+  # the guard from having a soft edge an unrenderable path could slip through.
+  _norm_path() {
+    local expr="$1" collected
+    collected="$(jq -cn "[path($expr)]" 2>/dev/null)" || return 1
+    [[ "$(jq -r 'length' <<<"$collected" 2>/dev/null)" == "1" ]] || return 1
+    jq -c '.[0]' <<<"$collected" 2>/dev/null || return 1
+  }
+  _cas_scoped="$(scope_path "$CAS_PATH")"
+  if ! _cas_norm="$(_norm_path "$_cas_scoped")"; then
+    die_usage "--cas path '$CAS_PATH' does not name exactly one assignable location; --cas requires a single concrete path (issue #1445)"
+  fi
+  for _sp in "${SET_PATHS[@]}"; do
+    _sp_scoped="$(scope_path "$_sp")"
+    if ! _sp_norm="$(_norm_path "$_sp_scoped")"; then
+      die_usage "--set path '$_sp' does not name exactly one assignable location; a --set composed with --cas requires a single concrete path (issue #1445)"
+    fi
+    # Strict ancestor: the companion is a PROPER prefix of the CAS path.
+    # Equal paths are excluded by the length test, preserving the documented
+    # exact-path precedence; a descendant fails it too, and is legal.
+    if jq -e -n --argjson a "$_sp_norm" --argjson b "$_cas_norm" \
+         '($a | length) < ($b | length) and ($b[0:($a | length)] == $a)' >/dev/null 2>&1; then
+      die_usage "--set path '$_sp' is an ancestor of the --cas path '$CAS_PATH'; it would overwrite the compare-and-swap target in the same pipeline (issue #1445)"
+    fi
+  done
 fi
 
 # --- dependency check ---
@@ -1600,22 +1778,6 @@ if [[ "$MODE" == "cas" ]]; then
   CAS_PATHMAP="$(migrate_jq_args "$input_file")"
   SCOPED_CAS_PATH="$(scope_path "$CAS_PATH")"
 
-  # Classify the CAS target the way --set classifies each of its touched
-  # paths, so enforce_field_type_contract() below checks the same things
-  # (issue #1283). Both checks read the SCOPED path, because that is the shape
-  # of the final document and therefore also the concrete check path
-  # (issue #1340 — classifying the caller's spelling instead is what let a
-  # fully-spelled `.repos[...]` target slip past #640's nested guard).
-  TOUCHED_KNOWN_FIELDS=""
-  TOUCHED_NESTED_CHECKS=""
-  WHOLE_ENTRY_PATHS=""
-  WHOLE_MAP_PATHS=""
-  cas_top_level_key="$(top_level_key_of "$SCOPED_CAS_PATH")"
-  if [[ -n "$(known_field_type "$cas_top_level_key")" ]]; then
-    TOUCHED_KNOWN_FIELDS="$cas_top_level_key"
-  fi
-  pr_record_write_target "$SCOPED_CAS_PATH"
-
   # Build jq --argjson or --arg for the expected value (same JSON-or-string
   # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
   # from the argjson branch — issue #853).
@@ -1643,22 +1805,42 @@ if [[ "$MODE" == "cas" ]]; then
 
   if [[ "$CAS_COMPARE_RESULT" != "match" ]]; then
     # CAS mismatch — exit 7 so callers can distinguish a lost race from an
-    # I/O or locking failure. State file is left unmodified.
+    # I/O or locking failure. State file is left unmodified, and so is every
+    # --set composed into this invocation: the compare gates the whole batch
+    # (issue #1445), which is what lets a caller treat one exit code as
+    # "somebody else owns this record" instead of inspecting a half-write.
     exit 7
   fi
 
-  # Match: apply the write (same pipeline as --set).
-  CAS_LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  CAS_WRITE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY"
-                  --arg __last_updated "$CAS_LAST_UPDATED")
-  if jq -n --argjson __casnew "$CAS_VALUE" 'empty' >/dev/null 2>&1; then
-    CAS_WRITE_ARGS+=(--argjson __casnew "$CAS_VALUE")
-  else
-    CAS_WRITE_ARGS+=(--arg __casnew "$CAS_VALUE")
+  # Match: apply the write. The CAS target and every composed --set accumulate
+  # into ONE jq pipeline through the same builder --set uses, so composition
+  # cannot drift from a standalone --set in scoping, type-probing, or
+  # classification (issue #1445), and the whole batch commits under the lock
+  # hold this block already owns — no second lock, no second mv.
+  JQ_FILTER=""
+  JQ_ARGS=()
+  TOUCHED_KNOWN_FIELDS=""
+  TOUCHED_NESTED_CHECKS=""
+  WHOLE_ENTRY_PATHS=""
+  WHOLE_MAP_PATHS=""
+  add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
+  # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
+  # with no composed writes — unlike the --set block below, which cannot be
+  # reached with zero assignments. Index expansion of an empty array is fine on
+  # bash 3.2 under `set -u`, but the count check says so out loud rather than
+  # resting on it.
+  if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
+    for i in "${!SET_PATHS[@]}"; do
+      add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
+    done
   fi
 
-  CAS_JQ_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH = \$__casnew | .last_updated = \$__last_updated"
-  if ! jq "${CAS_WRITE_ARGS[@]}" "$CAS_JQ_FILTER" "$input_file" > "$CAS_OUT_TMP" 2>"$CAS_ERR"; then
+  CAS_LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  JQ_ARGS+=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY"
+            --arg __last_updated "$CAS_LAST_UPDATED")
+
+  CAS_JQ_FILTER="$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $JQ_FILTER | .last_updated = \$__last_updated"
+  if ! jq "${JQ_ARGS[@]}" "$CAS_JQ_FILTER" "$input_file" > "$CAS_OUT_TMP" 2>"$CAS_ERR"; then
     echo "session-state.sh: jq failed writing $STATE_FILE: $(cat "$CAS_ERR")" >&2
     exit 5
   fi
@@ -1736,9 +1918,10 @@ JQ_ERR="$(mktemp)"
 trap "state_lock_release; rm -f '$OUT_TMP' '$JQ_ERR' ${SEEDED_TMP:+'$SEEDED_TMP'} 2>/dev/null" EXIT
 
 # Build the jq pipeline. Each --set becomes one assignment in the pipeline,
-# bound to a unique --argjson or --arg variable. The final stage refreshes
-# `.last_updated`. All assignments + the timestamp run in a single jq
-# invocation → single atomic write.
+# bound to a unique --argjson or --arg variable, through the same builder the
+# --cas path uses for its target and its composed --set writes (issue #1445).
+# The final stage refreshes `.last_updated`. All assignments + the timestamp
+# run in a single jq invocation → single atomic write.
 JQ_FILTER=""
 JQ_ARGS=()
 TOUCHED_KNOWN_FIELDS=""
@@ -1746,63 +1929,7 @@ TOUCHED_NESTED_CHECKS=""
 WHOLE_ENTRY_PATHS=""
 WHOLE_MAP_PATHS=""
 for i in "${!SET_PATHS[@]}"; do
-  # Two views of the same write (issues #638 + #640):
-  #   orig_path — what the caller asked for, e.g. `.prs["287"].babysit`
-  #   path      — where it actually lands, e.g. `.repos["org/x"].prs["287"].babysit`
-  # Every classification below reads `path`: it is the shape of the final
-  # document, so it is also the concrete check path. Classifying `orig_path`
-  # instead is what made a fully-spelled `.repos[...]` write invisible to
-  # #640's nested guard (issue #1340, gap 2).
-  orig_path="${SET_PATHS[$i]}"
-  path="$(scope_path "$orig_path")"
-  value="${SET_VALUES[$i]}"
-  varname="v$i"
-  # Try to parse as JSON; fall back to string. Probe with `--argjson` itself —
-  # the exact operation the JSON branch performs — so the probe can never accept
-  # a value the write then rejects.
-  #
-  # NOT `jq -e .`: `-e` exits non-zero on null/false even when parse succeeds, so
-  # legitimate JSON values null and false would be silently coerced to the strings
-  # "null" and "false" ("false" being truthy in jq — issue #853).
-  #
-  # NOT `jq empty`: it accepts zero-value stdin — empty AND whitespace-only
-  # ("", " ", "\t") — while `--argjson` rejects all three, so those values would
-  # pass the probe and then hard-fail the write instead of storing as strings.
-  if jq -n --argjson "$varname" "$value" 'empty' >/dev/null 2>&1; then
-    JQ_ARGS+=(--argjson "$varname" "$value")
-  else
-    JQ_ARGS+=(--arg "$varname" "$value")
-  fi
-  if [[ -z "$JQ_FILTER" ]]; then
-    JQ_FILTER="$path = \$$varname"
-  else
-    JQ_FILTER="$JQ_FILTER | $path = \$$varname"
-  fi
-  # Track known-typed fields touched by this batch (deduped) for the
-  # post-write field-type contract check below — see FIELD-TYPE CONTRACT.
-  set_top_level_key="$(top_level_key_of "$path")"
-  if [[ -n "$(known_field_type "$set_top_level_key")" ]]; then
-    case " $TOUCHED_KNOWN_FIELDS " in
-      *" $set_top_level_key "*) ;;
-      *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS $set_top_level_key" ;;
-    esac
-  fi
-  # Same tracking for the per-PR map (issues #640, #1340). One classification
-  # covers all three shapes a write can take against it, recorded as the
-  # CONCRETE path so the post-write checks address the final document
-  # directly — no PR number is interpolated into a jq filter any more:
-  #   nested — `.prs["287"].last_cron_action`, or a deeper subpath like
-  #            `.prs["287"].babysit.active`; recorded as a
-  #            "<key><US><check path>" record so the loop checks that one
-  #            entry's field, not every PR in the file
-  #   entry  — `.prs["999"]={...}` replaces the entry in one shot, so no
-  #            single nested-field path is touched, but the embedded object
-  #            can still carry a malformed known field
-  #   map    — `.prs={...}` replaces the whole map, so not even a PR-number
-  #            selector exists to classify on
-  # Recorded through the same helper --cas uses, so neither write path can
-  # classify a target the other would not.
-  pr_record_write_target "$path"
+  add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
 done
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the

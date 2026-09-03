@@ -337,10 +337,23 @@ fi
 
 Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
 
-**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too — clearing `limit_probe_fires_remaining` with the pair is what stops a later recovery re-arming a probe for a park the user has already resumed past. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind` and the bound in one write. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
 
 ```bash
 LIMIT_WAKE_RESOLVED=false
+# Retiring the park is one atomic write (#1595). This is the resume path, so the
+# park is over: leaving `limit_cause`/`limit_probe_fires_remaining` behind is what
+# makes /pm 2D.1(b+) and 2D.5 stay parked *regardless of parked_until* and stop
+# recovery before 2D.2's init write ever clears it.
+retire_limit_park() {
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
+    --set ".repos[\"$REPO_KEY\"].day.parked_until=null"
+}
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   LIMIT_TASK_RC=0
   LIMIT_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id" 2>/dev/null) || LIMIT_TASK_RC=$?
@@ -351,10 +364,7 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     # Only act when the field is readable and non-null
     # Stop the auto-wake before we re-arm day mode below; a successful stop clears the fields.
     if TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
-      if "$SESSION_STATE_SH" \
-        --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
-        --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
-        --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null"; then
+      if retire_limit_park; then
         LIMIT_WAKE_RESOLVED=true
         echo "(disarmed usage-limit auto-wake $LIMIT_TASK_ID)"
       else
@@ -363,9 +373,51 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     else
       echo "(WARNING: could not stop usage-limit auto-wake $LIMIT_TASK_ID — recovery remains active)"
     fi
-  else
-    # Missing/null means there is no armed auto-wake to disarm.
+  elif [[ "$LIMIT_TASK_RC" -eq 3 ]]; then
+    # No state file has ever been written: no wake, and no park to retire.
     LIMIT_WAKE_RESOLVED=true
+  else
+    # No armed wake, but a park record can still stand: /pause stops the wake and
+    # stamps `-1` without clearing the park, and 2D.7's abort/error release can
+    # leave the same shape. Retire it here or this resume cannot lift the park it
+    # is the documented escape hatch for (#1595).
+    PARK_RC=0
+    PARKED_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.parked_until" 2>/dev/null) || PARK_RC=$?
+    if [[ "$PARK_RC" -eq 3 ]] || { [[ "$PARK_RC" -eq 0 ]] && [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == "null" ]]; }; then
+      LIMIT_WAKE_RESOLVED=true          # nothing armed and no park recorded
+    elif [[ "$PARK_RC" -ne 0 ]]; then
+      # Fail closed, exactly as the task-id read above does: an unreadable
+      # parked_until can hide a standing park.
+      echo "(DEGRADED: could not read day.parked_until (rc=$PARK_RC) — recovery remains active)"
+    else
+      # Only a rolling-window park may be retired here. A weekly-cap park never
+      # arms a wake, so it reaches this branch too — but it is not the `-1`
+      # deadlock this clause exists for, and the account is still capped until
+      # the window reopens. Lifting it would let the day loop re-arm into a cap
+      # that is genuinely still in force, which is why /pm sends weekly parks to
+      # manual resume in the first place. Unreadable kind fails closed the same
+      # way (#1595).
+      KIND_RC=0
+      PARK_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind" 2>/dev/null) || KIND_RC=$?
+      if [[ "$KIND_RC" -ne 0 && "$KIND_RC" -ne 3 ]]; then
+        echo "(DEGRADED: could not read day.limit_kind (rc=$KIND_RC) — park left standing, recovery remains active)"
+      elif [[ -n "$PARK_KIND" && "$PARK_KIND" != "null" && "$PARK_KIND" != "rolling_window" ]]; then
+        # A genuine weekly cap. Every *complete* park writes limit_kind in the
+        # same atomic write as parked_until, so a NON-NULL kind that is not
+        # rolling_window is a real weekly park and must outlast this resume.
+        echo "(usage-limit park left standing: limit_kind=$PARK_KIND is not rolling_window — resume when the window reopens)"
+      elif retire_limit_park; then
+        # rolling_window, or a NULL kind. Null is not a weekly cap: it is 2D.7's
+        # incomplete claim — Step 1 writes parked_until and the `-1` sentinel,
+        # and limit_kind only arrives with Step 3 — which is precisely the
+        # half-written park this retirement exists to clear. Reading null as
+        # weekly would strand the one shape the escape hatch is for (#1595).
+        LIMIT_WAKE_RESOLVED=true
+        echo "(cleared standing usage-limit park)"
+      else
+        echo "(DEGRADED: standing park record could not be cleared — recovery remains active)"
+      fi
+    fi
   fi
 fi
 ```
