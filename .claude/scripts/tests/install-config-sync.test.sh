@@ -481,6 +481,20 @@ test_9_enable_failure_fails_install() {
 # in the install output to say why. `-f` alone accepted that file; `-r` is what
 # makes the check match how the path is actually used.
 
+test_9b_uninstall_fails_closed_when_list_unverifiable() {
+  section "Test 9b: uninstall fails closed when 'launchctl list' itself fails"
+
+  # Static regression (CodeAnt 3920024445, PR #1553): the verify step used
+  # `launchctl list 2>/dev/null || true`, so a failed launchctl read became an
+  # empty listing and the uninstall printed PASS without verifying anything.
+  assert "uninstall captures launchctl list's own exit status" \
+    "grep -q 'launchctl_rc=' '$UNINSTALL'"
+  assert "and no longer swallows a failed listing as empty" \
+    "! grep -q 'launchctl list 2>/dev/null || true' '$UNINSTALL'"
+  assert "an unverifiable listing is a loud failure" \
+    "grep -q 'could not verify the unload' '$UNINSTALL'"
+}
+
 test_10_unreadable_worktree_script_falls_back() {
   section "Test 10: an unreadable worktree script is not chosen for the plist"
 
@@ -533,6 +547,7 @@ test_5_uninstall_failure_is_loud
 test_6_platform_guard
 test_8_lookalike_label_is_not_our_job
 test_9_enable_failure_fails_install
+test_9b_uninstall_fails_closed_when_list_unverifiable
 test_10_unreadable_worktree_script_falls_back
 
 echo ""

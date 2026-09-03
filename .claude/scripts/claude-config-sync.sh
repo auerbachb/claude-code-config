@@ -213,7 +213,11 @@ resolve_helper() {
     "$SCRIPT_DIR/../$subdir/$name" \
     "$SCRIPT_DIR/$name"
   do
-    if [[ -f "$candidate" ]]; then
+    # -r as well as -f: every caller runs `bash "$candidate"`, which needs read
+    # access. Without it, an unreadable stale worktree copy would be selected
+    # and fail, shadowing a perfectly good later candidate (the same rule the
+    # installer applies to its worktree-vs-local choice).
+    if [[ -f "$candidate" && -r "$candidate" ]]; then
       printf '%s' "$candidate"
       return 0
     fi

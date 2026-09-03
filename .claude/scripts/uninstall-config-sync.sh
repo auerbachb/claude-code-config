@@ -100,8 +100,15 @@ fi
 
 # Capture first, match from a here-string — a `launchctl list | grep -q` pipeline
 # reports failure on a SUCCESSFUL match under pipefail (see the note in
-# install-config-sync.sh).
-launchctl_list="$(launchctl list 2>/dev/null || true)"
+# install-config-sync.sh). Capture the command's OWN status too: swallowing a
+# failed `launchctl list` as an empty listing would print PASS below without
+# having verified anything — fail closed instead.
+launchctl_rc=0
+launchctl_list="$(launchctl list 2>/dev/null)" || launchctl_rc=$?
+if (( launchctl_rc != 0 )); then
+  echo "FAIL: could not verify the unload — 'launchctl list' itself failed (rc=$launchctl_rc). The plist is removed, but ${LABEL} may still be loaded; check with: launchctl list" >&2
+  exit 1
+fi
 # Whole-label match, for the same reason as the install-side check: the label is
 # the last field of "PID<TAB>Status<TAB>Label", and a substring grep would let an
 # unrelated agent whose label merely contains ours report this teardown as
