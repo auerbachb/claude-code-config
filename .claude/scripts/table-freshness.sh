@@ -626,22 +626,34 @@ case "$MODE" in
       emitted="$(cat "$EMITTED_FILE" 2>/dev/null)"
       [[ "$emitted" == "$RENDERED_AT" ]] && exit 0
     fi
-    EMITTED_TMP="${EMITTED_FILE}.tmp.$$"
-    if printf '%s' "$RENDERED_AT" > "$EMITTED_TMP" 2>/dev/null; then
+    # PRINT FIRST, then claim the stretch. Installing the marker before the line
+    # is emitted means a process that dies in between leaves a marker matching a
+    # line nobody ever saw — and every later poll matches it and stays silent, so
+    # that stale stretch never warns at all. Ordering it this way can at worst
+    # repeat a line (if the write fails after printing), which is the direction
+    # this whole mechanism is built to fail in.
+    #
+    # The count is printed as %s, not %d, so the unusable-count path above can
+    # say "unknown" instead of forcing a fabricated number into the message.
+    printf 'TABLE FLOOR: the "Running now" table is %dm old with %s pipeline(s) running or queued. Re-render the full table NOW (time-estimates.md §"Running now Table") — a one-liner does not satisfy this floor — then record it with `table-freshness.sh --note-rendered --active <N>`.\n' \
+      "$(( AGE / 60 ))" \
+      "$( (( ACTIVE_RECORDED_MISSING )) && printf 'an unknown number of' || printf '%d' "$ACTIVE_RECORDED" )"
+
+    # `mktemp`, not "$EMITTED_FILE.tmp.$$". A pid-suffixed name in a
+    # world-writable directory is just as predictable as the marker itself, so
+    # redirecting into it reopens exactly the capture the rename was added to
+    # close — one step to the left. mktemp creates with O_EXCL and an
+    # unpredictable name, so there is nothing to pre-create.
+    EMITTED_TMP="$(mktemp "${MARKER_DIR}/claude-tablefloor-tmp.XXXXXX" 2>/dev/null)"
+    if [[ -n "$EMITTED_TMP" ]] && printf '%s' "$RENDERED_AT" > "$EMITTED_TMP" 2>/dev/null; then
       mv -f "$EMITTED_TMP" "$EMITTED_FILE" 2>/dev/null || {
         printf 'table-freshness.sh: cannot install %s — floor line may repeat\n' "$EMITTED_FILE" >&2
         rm -f "$EMITTED_TMP" 2>/dev/null || true
       }
     else
       printf 'table-freshness.sh: cannot write %s — floor line may repeat\n' "$EMITTED_FILE" >&2
-      rm -f "$EMITTED_TMP" 2>/dev/null || true
+      [[ -n "$EMITTED_TMP" ]] && { rm -f "$EMITTED_TMP" 2>/dev/null || true; }
     fi
-
-    # The count is printed as %s, not %d, so the unusable-count path above can
-    # say "unknown" instead of forcing a fabricated number into the message.
-    printf 'TABLE FLOOR: the "Running now" table is %dm old with %s pipeline(s) running or queued. Re-render the full table NOW (time-estimates.md §"Running now Table") — a one-liner does not satisfy this floor — then record it with `table-freshness.sh --note-rendered --active <N>`.\n' \
-      "$(( AGE / 60 ))" \
-      "$( (( ACTIVE_RECORDED_MISSING )) && printf 'an unknown number of' || printf '%d' "$ACTIVE_RECORDED" )"
     ;;
 
   arm-command)
@@ -688,15 +700,21 @@ case "$MODE" in
     ;;
 
   clear)
-    rm -f "$EMITTED_FILE" 2>/dev/null || true
-    # Report a clear that did not clear. Swallowing this leaves a stale record
-    # behind with the marker gone — the one combination that makes the floor
-    # re-fire on a board nobody is looking at, and it would do so silently.
+    # RECORD FIRST, marker second. The comment below already names "a stale
+    # record with the marker gone" as the one combination that re-fires the
+    # floor at a board nobody is watching — and removing the marker first is
+    # precisely how a failed state write produces it. Dropping the record first
+    # means a failure leaves record AND marker intact, which is simply the
+    # un-cleared state: the floor stays as it was, and the error says so.
     if ! "$SESSION_STATE_SH" --set "${STATE_PATH}=null" >/dev/null 2>&1; then
       printf 'table-freshness.sh: cannot clear %s — stale render record left in place\n' \
         "$STATE_PATH" >&2
       exit 5
     fi
+    # Only now that the record is gone: with no record, the tick exits before it
+    # ever consults the marker, so removing it here can no longer strand an
+    # armed record behind a missing marker.
+    rm -f "$EMITTED_FILE" 2>/dev/null || true
     ;;
 
   *)

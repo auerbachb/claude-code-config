@@ -791,6 +791,17 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    # loud failure instead of a silent one — but re-deriving is what avoids it.
    REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
    TF_SESSION="${CLAUDE_SESSION_ID:-default}"
+   # ACTIVE_COUNT is re-derived here for the SAME reason as the two above, and
+   # leaving it out of that list was an easy miss: it is a plain shell variable
+   # from 7.3, so it is gone in this process too. An empty --active is a usage
+   # error, which costs the verdict AND the record — the heartbeat then cannot
+   # tell whether the table is stale, and a table it did print goes unrecorded.
+   # Count it from the CURRENT board, not the dispatch round: pipelines finish.
+   ACTIVE_COUNT=<running + queued pipelines right now>
+   if [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+     echo 'DEGRADED: ACTIVE_COUNT is not an integer — table freshness cannot be checked or recorded this heartbeat; re-render the "Running now" table'
+     REPO_KEY=""   # forces the two calls below to be skipped, not called blank
+   fi
    if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" ]]; then
      TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
        --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)

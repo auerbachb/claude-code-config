@@ -679,6 +679,58 @@ LEFTOVER="$(find "$CLAUDE_TABLE_FRESHNESS_MARKER_DIR" -name '*.tmp.*' 2>/dev/nul
 "$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
 ok "the marker write renames a temp file onto the path and leaves no temp behind"
 
+# --- 19m. Ordering: the floor line is PRINTED before the marker claims it -----
+#          Installing the marker first means a process that dies in between
+#          leaves a marker matching a line nobody saw — and every later poll
+#          matches it and stays silent, so that stale stretch never warns.
+#          Asserted structurally: the printf must precede the marker install.
+TICK_BODY="$(sed -n '/^  tick)/,/^  arm-command)/p' "$SCRIPT")"
+PRINT_AT="$(printf '%s\n' "$TICK_BODY" | grep -n 'TABLE FLOOR:' | head -1 | cut -d: -f1)"
+MARK_AT="$(printf '%s\n' "$TICK_BODY" | grep -n 'EMITTED_TMP=' | head -1 | cut -d: -f1)"
+[[ -n "$PRINT_AT" && -n "$MARK_AT" ]] || fail "could not locate the tick's print and marker steps"
+(( PRINT_AT < MARK_AT )) || \
+  fail "the tick installs its dedupe marker (line $MARK_AT) before printing (line $PRINT_AT) — a crash between them loses the stretch"
+
+# The temp path must not be predictable either: a pid suffix in a world-writable
+# dir is as guessable as the marker, so redirecting into it reopens the capture
+# the rename closed, one step to the left.
+grep -q 'EMITTED_TMP="${EMITTED_FILE}.tmp.\$\$"' "$SCRIPT" && \
+  fail "the temp marker path is pid-predictable — use mktemp"
+grep -q 'EMITTED_TMP="$(mktemp' "$SCRIPT" || \
+  fail "the temp marker must be created with mktemp (O_EXCL, unpredictable name)"
+ok "the tick prints before claiming the stretch, and its temp file is unpredictable"
+
+# --- 19n. --clear drops the RECORD before the marker -------------------------
+#          Removing the marker first means a failed state write leaves an armed
+#          record with no marker — the one combination that re-fires the floor
+#          at a board nobody is watching, which is what --clear exists to stop.
+CLEAR_BODY="$(sed -n '/^  clear)/,/^  \*)/p' "$SCRIPT")"
+STATE_AT="$(printf '%s\n' "$CLEAR_BODY" | grep -n 'SESSION_STATE_SH.*--set' | head -1 | cut -d: -f1)"
+RM_AT="$(printf '%s\n' "$CLEAR_BODY" | grep -n 'rm -f "\$EMITTED_FILE"' | head -1 | cut -d: -f1)"
+[[ -n "$STATE_AT" && -n "$RM_AT" ]] || fail "could not locate --clear's two steps"
+(( STATE_AT < RM_AT )) || \
+  fail "--clear removes the marker (line $RM_AT) before dropping the record (line $STATE_AT) — a failed write strands an armed record"
+# Behavioural: a --clear that CANNOT write must leave the marker in place, so
+# the floor stays exactly as it was rather than becoming re-armed-and-unmarked.
+"$SCRIPT" --note-rendered --active 2 --session "$SID" --repo "$REPO" >/dev/null
+backdate 90
+"$SCRIPT" --tick --session "$SID" --repo "$REPO" >/dev/null 2>&1
+[[ -f "$(marker_path)" ]] || fail "setup: the tick should have written a marker"
+chmod a-w "$HOME/.claude" 2>/dev/null
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+CLEAR_RC=$?
+chmod u+w "$HOME/.claude" 2>/dev/null
+if [[ "$CLEAR_RC" -eq 5 ]]; then
+  [[ -f "$(marker_path)" ]] || \
+    fail "a --clear that could not drop the record still removed the marker — the floor is now re-armed and unmarked"
+  ok "--clear drops the record first; a failed clear leaves the marker in place"
+else
+  # Running as root defeats the permission bit; do not assert a guarantee the
+  # filesystem is not enforcing.
+  ok "--clear ordering asserted structurally (write-failure path skipped: writes succeeded)"
+fi
+"$SCRIPT" --clear --session "$SID" --repo "$REPO" >/dev/null 2>&1
+
 # --- 19l. An unreadable state file is DIAGNOSED, not silently idle -----------
 #          read_record returns 1 both when no record exists (normal, and the
 #          idle exemption) and when the state file cannot be read (a fault).
@@ -810,6 +862,16 @@ grep -q 'TABLE_EMITTED' "$SUBAGENT" || \
 #      the gap the first version of guard (a) left behind.
 grep -q 'CLOCK_RECORDED' "$SUBAGENT" || \
   fail "/subagent arms the floor without gating on the clock actually being recorded"
+
+# (c2) Step 8 must re-derive ALL THREE of REPO_KEY, TF_SESSION and ACTIVE_COUNT,
+#      not two of them. They are plain shell variables from 7.3, so every one is
+#      gone in this process; an empty --active is a usage error, costing both the
+#      stale/fresh verdict and the record for a table that did print.
+STEP8="$(sed -n '/^## Step 8: Enter Monitor Mode/,$p' "$SUBAGENT")"
+for VAR in REPO_KEY TF_SESSION ACTIVE_COUNT; do
+  printf '%s\n' "$STEP8" | grep -qE "^ *${VAR}=" || \
+    fail "/subagent Step 8 uses \$$VAR without re-deriving it after a compaction"
+done
 
 # (d) Round completion is a teardown site the spec names, and it needs a real
 #     call — prose alone is what let (a)-(c) ship.
