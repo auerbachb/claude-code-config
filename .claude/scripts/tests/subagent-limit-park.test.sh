@@ -43,6 +43,7 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
 SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
+PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 RULES="$REPO_ROOT/.claude/rules"
@@ -706,6 +707,400 @@ require_text "probe F rejects a parked record missing required fields" \
 # Negative control for the wiring assertions above: prove the matcher can fail.
 refute_text "negative control — an unrelated pattern does not match" \
   "$RULES/monitor-mode.md" 'crash asks, exhaustion auto, limit-unparked'
+
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive (#1619): the horizon gate, and its parity with /pm 2D.7 =="
+# ---------------------------------------------------------------------------
+# The subagent monitor loop and day mode's D2 tick read the SAME script and must
+# reach the SAME verdict — two readers of one predicate is exactly the shape
+# that drifts silently, so both blocks are run over one fixture matrix and
+# compared field by field rather than eyeballed.
+
+BLOCK_HORIZON="$(extract_skill_bash "$DOC" subagent-limit-horizon-gate)"       || exit 1
+BLOCK_WINDOW="$(extract_skill_bash  "$DOC" subagent-limit-preemptive-window)"  || exit 1
+BLOCK_PM_D2="$(extract_skill_bash   "$PM_SKILL" pm-day-d2-horizon-branch)"     || exit 1
+
+# A stand-in for usage-horizon.sh: --check prints the STATUS/REASON pair and
+# exits on the documented code; --observe exits 0 whatever the verdict.
+make_horizon_stub() {   # make_horizon_stub <status> [observe_rc]
+  local status="$1" observe_rc="${2:-0}" path="$STUB_DIR/usage-horizon.sh" rc
+  case "$status" in
+    clear) rc=0 ;; approaching) rc=1 ;; critical) rc=2 ;; *) rc=3 ;;
+  esac
+  cat > "$path" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+  --observe) exit $observe_rc ;;
+  --check)   printf 'STATUS=%s\nREASON=%s\n' "$status" "stub"; exit $rc ;;
+esac
+exit 4
+STUB
+  chmod +x "$path"
+  echo "$path"
+}
+run_horizon() {  # run_horizon <block> <script-path> [remaining] [limit]
+  USAGE_HORIZON_SH="$2" HORIZON_REMAINING="${3:-}" HORIZON_LIMIT="${4:-}" \
+    bash -c "$1" 2>/dev/null
+}
+
+# The four verdicts, each asserted on the two decisions it drives.
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000)
+check_eq "clear: refill allowed" "true"  "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "clear: no park"        "false" "$(field "$OUT" HORIZON_PARK)"
+
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub approaching)" 200000 1000000)
+check_eq "approaching: launches nothing new" "false" "$(field "$OUT" HORIZON_REFILL_OK)"
+check_eq "approaching: NEVER parks"          "false" "$(field "$OUT" HORIZON_PARK)"
+check_eq "approaching: idle reason"          "paused (horizon approaching)" \
+  "$(field "$OUT" HORIZON_IDLE_REASON)"
+
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub critical)" 50000 1000000)
+check_eq "critical: parks"          "true"  "$(field "$OUT" HORIZON_PARK)"
+check_eq "critical: no new work"    "false" "$(field "$OUT" HORIZON_REFILL_OK)"
+
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub unknown)" 50000 1000000)
+check_eq "unknown: verdict"      "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "unknown: NEVER parks"  "false"   "$(field "$OUT" HORIZON_PARK)"
+check_eq "unknown: no refill"    "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+
+# Every degraded input lands on `unknown`, and `unknown` is never `clear`. Each
+# of these would be a fail-open under a `!= critical` test.
+OUT=$(run_horizon "$BLOCK_HORIZON" "$STUB_DIR/does-not-exist.sh" 50000 1000000)
+check_eq "missing script: unknown, no park" "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "  and no launches"                "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+OUT=$(run_horizon "$BLOCK_HORIZON" "" 50000 1000000)
+check_eq "unresolved helper: unknown"       "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "  and never parks"                "false"   "$(field "$OUT" HORIZON_PARK)"
+# No counter in context is an ABSENT reading, not a remembered one.
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub critical)" "" "")
+check_eq "no counter: observe skipped, check still consulted" "critical" \
+  "$(field "$OUT" HORIZON_STATUS)"
+# A failed --observe is a write failure, never a verdict: hold unknown.
+OUT=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear 5)" 900000 1000000)
+check_eq "failed observe clamps to unknown"  "unknown" "$(field "$OUT" HORIZON_STATUS)"
+check_eq "  and never reads as clear"        "false"   "$(field "$OUT" HORIZON_REFILL_OK)"
+GARBAGE="$STUB_DIR/garbage.sh"
+printf '#!/usr/bin/env bash\necho "Review limit reached"\nexit 0\n' > "$GARBAGE"; chmod +x "$GARBAGE"
+OUT=$(run_horizon "$BLOCK_HORIZON" "$GARBAGE" 50000 1000000)
+check_eq "garbage output: unknown, not clear" "unknown" "$(field "$OUT" HORIZON_STATUS)"
+
+# PARITY. Same inputs into both readers; identical verdict/refill/park/idle.
+for CASE in clear approaching critical unknown; do
+  STUB_PATH="$(make_horizon_stub "$CASE")"
+  MINE=$(run_horizon "$BLOCK_HORIZON" "$STUB_PATH" 500000 1000000 \
+    | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK|IDLE_REASON)=')
+  THEIRS=$(run_horizon "$BLOCK_PM_D2" "$STUB_PATH" 500000 1000000 \
+    | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK|IDLE_REASON)=')
+  check_eq "parity with /pm 2D.7's D2 gate on '$CASE'" "$THEIRS" "$MINE"
+done
+# Parity on the degraded paths too — that is where a divergence would be a
+# fail-open rather than a cosmetic difference.
+for SCRIPT in "$STUB_DIR/does-not-exist.sh" "$GARBAGE" ""; do
+  MINE=$(run_horizon "$BLOCK_HORIZON" "$SCRIPT" 500000 1000000 \
+    | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK)=')
+  THEIRS=$(run_horizon "$BLOCK_PM_D2" "$SCRIPT" 500000 1000000 \
+    | grep -E '^HORIZON_(STATUS|REFILL_OK|PARK)=')
+  check_eq "parity on degraded input '${SCRIPT:-<unresolved>}'" "$THEIRS" "$MINE"
+done
+# Negative control for the parity comparison itself: two DIFFERENT verdicts must
+# not compare equal, or every check above would pass vacuously.
+MINE=$(run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub clear)" 900000 1000000 \
+  | grep -E '^HORIZON_PARK=')
+THEIRS=$(run_horizon "$BLOCK_PM_D2" "$(make_horizon_stub critical)" 50000 1000000 \
+  | grep -E '^HORIZON_PARK=')
+check_true "negative control — the parity comparison can fail" \
+  "$( [ "$MINE" != "$THEIRS" ] && echo true || echo false )"
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive: knobs, deadline, and the reset-known / reset-unknown split =="
+# ---------------------------------------------------------------------------
+
+run_window() { env "$@" bash -c "$BLOCK_WINDOW" 2>/dev/null; }
+
+OUT=$(run_window HORIZON_RESET_EPOCH=)
+check_eq "cause is preemptive"          "preemptive"     "$(field "$OUT" PARK_CAUSE)"
+check_eq "kind is always rolling_window" "rolling_window" "$(field "$OUT" LIMIT_KIND)"
+check_eq "default landing window"        "2"             "$(field "$OUT" PARK_WINDOW_MIN)"
+check_eq "default probe cadence"         "30"            "$(field "$OUT" PROBE_CADENCE_MIN)"
+check_eq "default probe bound"           "12"            "$(field "$OUT" PROBE_MAX_FIRES)"
+check_eq "no reset time known"           "false"         "$(field "$OUT" PARK_RESET_KNOWN)"
+check_eq "  so the real bound is claimed, not the -1 sentinel" "12" \
+  "$(field "$OUT" CLAIM_FIRES)"
+# The deadline must be in the FUTURE: every reader treats a non-future
+# parked_until as "no park", so a knob that fell through to 0 would stop the
+# board while its own record said it had not been parked.
+PU=$(field "$OUT" PARKED_UNTIL)
+check_true "deadline is the cadence x fires outer edge, in the future" \
+  "$( [ "$(iso_to_epoch "$PU")" -gt "$(date -u +%s)" ] && echo true || echo false )"
+
+# A known reset wins, and switches the wake to the sleep-until-reset shape.
+FUTURE=$(( $(date -u +%s) + 5400 ))
+OUT=$(run_window HORIZON_RESET_EPOCH="$FUTURE")
+check_eq "a known reset is used"            "true" "$(field "$OUT" PARK_RESET_KNOWN)"
+check_eq "  and carries no probe bound"     "null" "$(field "$OUT" CLAIM_FIRES)"
+check_eq "  and parks until that instant"   "$(epoch_to_iso "$FUTURE")" \
+  "$(field "$OUT" PARKED_UNTIL)"
+# A PAST reset is no reset at all — same validation §1 applies.
+OUT=$(run_window HORIZON_RESET_EPOCH=$(( $(date -u +%s) - 60 )))
+check_eq "a past reset is ignored" "false" "$(field "$OUT" PARK_RESET_KNOWN)"
+
+# Knob validation is EXECUTED, not merely documented.
+OUT=$(run_window CLAUDE_HORIZON_PARK_WINDOW_MINUTES=0 HORIZON_RESET_EPOCH=)
+check_eq "window 0 is legal — reactive parity" "0" "$(field "$OUT" PARK_WINDOW_MIN)"
+OUT=$(run_window CLAUDE_HORIZON_PARK_WINDOW_MINUTES=abc HORIZON_RESET_EPOCH=)
+check_eq "a malformed window falls back to 2"  "2" "$(field "$OUT" PARK_WINDOW_MIN)"
+OUT=$(run_window CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=0 HORIZON_RESET_EPOCH=)
+check_eq "cadence 0 is rejected — a hot loop"  "30" "$(field "$OUT" PROBE_CADENCE_MIN)"
+OUT=$(run_window CLAUDE_HORIZON_PROBE_MAX_FIRES=0 HORIZON_RESET_EPOCH=)
+check_eq "bound 0 is rejected — a self-stopping wake" "12" "$(field "$OUT" PROBE_MAX_FIRES)"
+OUT=$(run_window CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=5 CLAUDE_HORIZON_PROBE_MAX_FIRES=3 HORIZON_RESET_EPOCH=)
+check_eq "valid cadence override honoured" "5" "$(field "$OUT" PROBE_CADENCE_MIN)"
+check_eq "valid bound override honoured"   "3" "$(field "$OUT" PROBE_MAX_FIRES)"
+check_eq "  and the bound is what gets claimed" "3" "$(field "$OUT" CLAIM_FIRES)"
+
+# A leading zero passes `^[0-9]+$` AND `[ 08 -gt 0 ]`, then dies in the OCTAL
+# arithmetic that computes the deadline — leaving RESET_EPOCH empty and
+# PARKED_UNTIL garbage, and writing `08` into state where jq rejects it as a
+# number. Normalising through `10#` at validation time is what closes it.
+OUT=$(run_window CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=08 CLAUDE_HORIZON_PROBE_MAX_FIRES=09 \
+                 CLAUDE_HORIZON_PARK_WINDOW_MINUTES=05 HORIZON_RESET_EPOCH=)
+check_eq "leading-zero cadence is decimal, not octal" "8" "$(field "$OUT" PROBE_CADENCE_MIN)"
+check_eq "leading-zero bound is decimal too"          "9" "$(field "$OUT" PROBE_MAX_FIRES)"
+check_eq "leading-zero window is decimal too"         "5" "$(field "$OUT" PARK_WINDOW_MIN)"
+check_eq "  and the claimed bound is a valid JSON number" "9" "$(field "$OUT" CLAIM_FIRES)"
+ZERO_EPOCH=$(iso_to_epoch "$(field "$OUT" PARKED_UNTIL)" 2>/dev/null || echo 0)
+check_true "  and the deadline is still a real future instant" \
+  "$( [ "$ZERO_EPOCH" -gt "$(date -u +%s)" ] && echo true || echo false )"
+ZERO_FIRES=$(field "$OUT" CLAIM_FIRES)
+check_true "  and jq accepts that bound as a number" \
+  "$( jq -e -n --argjson f "$ZERO_FIRES" '$f > 0' >/dev/null 2>&1 && echo true || echo false )"
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive: a critical fixture parks with the preemptive cause =="
+# ---------------------------------------------------------------------------
+# Test Plan 1: fixture counter below the critical threshold -> park with the
+# preemptive cause, the landing window honoured, and the probe wake armed when
+# no reset time is known. State is read BACK from the file: a claim block that
+# printed "won" while writing nothing would pass a stdout-only assertion.
+
+seed_unparked
+W=$(run_window CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=30 CLAUDE_HORIZON_PROBE_MAX_FIRES=12 HORIZON_RESET_EPOCH=)
+PRE_UNTIL=$(field "$W" PARKED_UNTIL)
+OUT=$(PARK_CAUSE=preemptive CLAIM_FIRES="$(field "$W" CLAIM_FIRES)" \
+      PARKED_UNTIL="$PRE_UNTIL" LIMIT_KIND=rolling_window \
+      bash -c "$BLOCK_CLAIM" 2>/dev/null | tail -1)
+check_eq "the pre-emptive claim wins the empty slot" "PARK_CLAIM=won" "$OUT"
+check_eq "  cause recorded as preemptive"  "preemptive"     "$(day_get limit_cause)"
+check_eq "  kind recorded as rolling"      "rolling_window" "$(day_get limit_kind)"
+check_eq "  deadline recorded"             "$PRE_UNTIL"     "$(day_get parked_until)"
+check_eq "  the probe bound rides the SAME write" "12"      "$(day_get limit_probe_fires_remaining)"
+check_eq "  thrash counter incremented"    "1"              "$(day_get consecutive_limit_hits)"
+# ...and that record is exactly what §6 recovery re-arms the PROBE from, with
+# the stored count rather than a fresh bound.
+check_eq "recovery re-arms the probe with the claimed count" \
+  "PARK_RECOVERY=rearm_probe fires=12" "$(run_recovery)"
+
+# The wake: no reset time -> the bounded probe, at the cadence, not a one-shot.
+OUT=$(NEW_HITS=1 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=false \
+      PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 RESET_EPOCH="$(iso_to_epoch "$PRE_UNTIL")" \
+      PARKED_UNTIL="$PRE_UNTIL" bash -c "$BLOCK_WAKE" 2>/dev/null)
+check_eq "an unknown reset arms the bounded probe" "probe" "$(field "$OUT" WAKE)"
+check_eq "  at the cadence, in seconds"            "1800"  "$(field "$OUT" WAKE_SLEEP)"
+check_true "  with a probe- generation, not a limit- one" \
+  "$( case "$(field "$OUT" WAKE_GENERATION)" in probe-*) echo true ;; *) echo false ;; esac )"
+# A known reset still takes the reactive one-shot — the probe is the exception,
+# not the new default.
+RESET_KNOWN=$(( $(date -u +%s) + 3600 ))
+OUT=$(NEW_HITS=1 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=true \
+      RESET_EPOCH="$RESET_KNOWN" PARKED_UNTIL="$(epoch_to_iso "$RESET_KNOWN")" \
+      bash -c "$BLOCK_WAKE" 2>/dev/null)
+check_eq "a known reset still arms the one-shot" "armed" "$(field "$OUT" WAKE)"
+# The reactive leg passes no PARK_RESET_KNOWN at all and must be unchanged.
+OUT=$(run_wake 1 rolling_window "$RESET_KNOWN")
+check_eq "the reactive leg is unchanged by the new branch" "armed" "$(field "$OUT" WAKE)"
+# The thrash cap and the weekly branch still outrank the probe branch: a bounded
+# probe against a wall that keeps refusing is the hot loop the cap exists to stop.
+OUT=$(NEW_HITS=3 LIMIT_KIND=rolling_window PARK_RESET_KNOWN=false \
+      PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 RESET_EPOCH="$RESET_KNOWN" \
+      PARKED_UNTIL="$(epoch_to_iso "$RESET_KNOWN")" bash -c "$BLOCK_WAKE" 2>/dev/null)
+check_eq "the thrash cap outranks the probe branch" "capped" "$(field "$OUT" WAKE)"
+OUT=$(NEW_HITS=1 LIMIT_KIND=weekly PARK_RESET_KNOWN=false \
+      PROBE_CADENCE_MIN=30 PROBE_MAX_FIRES=12 RESET_EPOCH="$RESET_KNOWN" \
+      PARKED_UNTIL="$(epoch_to_iso "$RESET_KNOWN")" bash -c "$BLOCK_WAKE" 2>/dev/null)
+check_eq "a weekly cap outranks it too"             "weekly" "$(field "$OUT" WAKE)"
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive: approaching and unknown change nothing durable =="
+# ---------------------------------------------------------------------------
+# Test Plan 2 and 3. Neither verdict may write state, so the whole file is
+# compared byte for byte around the gate — a park field written and reverted
+# would still show up as a differing snapshot.
+
+seed_unparked
+BEFORE=$(cat "$STATE_FILE")
+run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub approaching)" 200000 1000000 >/dev/null
+check_eq "approaching writes no state"  "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq "  and leaves the slot unclaimed" "null" "$(day_get limit_cause)"
+run_horizon "$BLOCK_HORIZON" "$(make_horizon_stub unknown)" 200000 1000000 >/dev/null
+check_eq "unknown writes no state"      "$BEFORE" "$(cat "$STATE_FILE")"
+check_eq "  and arms no wake"           "null"    "$(day_get limit_resume_task_id)"
+# The queue head is what `approaching` must hold back, and the running
+# pipelines are what it must NOT touch — both are stated where the loop reads.
+require_text "approaching holds the queue head as well as the backlog" \
+  "$DOC" 'no queued chain head, no backlog'
+require_text "  while running pipelines keep going" \
+  "$DOC" 'Running pipelines are untouched'
+require_text "  and in-flight successors still launch" \
+  "$DOC" 'A→B and B→C transitions still run'
+require_text "the subagent monitor loop gates refill on the verdict" \
+  "$SUBAGENT" "Step 0's horizon verdict gates this step"
+require_text "  and gates the first dispatch on it too" \
+  "$SUBAGENT" 'Check the usage horizon before every one of those launches'
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive: a park day mode already opened is ADOPTED, never doubled =="
+# ---------------------------------------------------------------------------
+# Test Plan 4. The claim is the only mutual-exclusion point, so the assertion
+# that matters is that the existing record SURVIVES ours untouched.
+
+seed_existing_park preemptive "$(epoch_to_iso $(( NOW + 3600 )))" '"task-daymode"'
+OUT=$(PARK_CAUSE=preemptive CLAIM_FIRES=12 PARKED_UNTIL="$PARK_UNTIL_FIX" \
+      LIMIT_KIND=rolling_window bash -c "$BLOCK_CLAIM" 2>/dev/null | tail -1)
+check_eq "a day-mode pre-emptive park is adopted"  "PARK_CLAIM=adopted" "$OUT"
+check_eq "  its deadline is untouched"   "$(epoch_to_iso $(( NOW + 3600 )))" "$(day_get parked_until)"
+check_eq "  its wake still owns the slot" "task-daymode" "$(day_get limit_resume_task_id)"
+check_eq "  and no second bound was written" "null" "$(day_get limit_probe_fires_remaining)"
+# A second Monitor is refused at the identity publish as well — the last
+# mutual-exclusion point, so an adopted park cannot register a wake even if the
+# thread wrongly reached §4.
+OUT=$(LIMIT_MONITOR_TASK_ID='"task-second"' WAKE_GENERATION="probe-second" \
+      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+check_eq "  a second wake is superseded at publish" "WAKE_PUBLISH=superseded" "$OUT"
+check_eq "  the day-mode wake still owns the slot"  "task-daymode" "$(day_get limit_resume_task_id)"
+# Day mode claims `parked_until` first (2D.7 Step 1) and only takes
+# `limit_cause` when it finishes the record (Step 3); §2 takes both in one write.
+# BOTH interleavings must leave exactly one record and one wake. This is AC 4's
+# "never double-park" property, driven through the real blocks rather than read.
+seed_unparked
+# Order A — the subagent claims first; day mode's parked_until compare must lose.
+PARK_CAUSE=preemptive CLAIM_FIRES=12 PARKED_UNTIL="$PARK_UNTIL_FIX" \
+  LIMIT_KIND=rolling_window bash -c "$BLOCK_CLAIM" >/dev/null 2>&1
+DAY_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"$(epoch_to_iso $(( NOW + 60 )))\"" \
+  --expect null >/dev/null 2>&1 || DAY_RC=$?
+check_eq "subagent-first: day mode's parked_until claim loses" "7" "$DAY_RC"
+check_eq "  and the subagent's record stands" "preemptive" "$(day_get limit_cause)"
+# Order B — day mode claims parked_until first; the subagent's limit_cause
+# compare still wins, and day mode's own Step 3 compare is then superseded.
+seed_unparked
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.parked_until=\"$(epoch_to_iso $(( NOW + 60 )))\"" \
+  --expect null --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=-1" >/dev/null 2>&1
+OUT=$(PARK_CAUSE=preemptive CLAIM_FIRES=12 PARKED_UNTIL="$PARK_UNTIL_FIX" \
+      LIMIT_KIND=rolling_window bash -c "$BLOCK_CLAIM" 2>/dev/null | tail -1)
+check_eq "daymode-first: the subagent still claims the cause" "PARK_CLAIM=won" "$OUT"
+DAY_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"preemptive\"" \
+  --expect null >/dev/null 2>&1 || DAY_RC=$?
+check_eq "  and day mode's Step 3 compare is superseded" "7" "$DAY_RC"
+check_eq "  leaving exactly one cause"      "preemptive" "$(day_get limit_cause)"
+check_eq "  and one deadline — the winner's" "$PARK_UNTIL_FIX" "$(day_get parked_until)"
+require_text "the decision record documents both interleavings" \
+  "$DOC" 'The two claim orders interleave to one record and one wake'
+
+require_text "and the doc says the adoption path arms nothing" \
+  "$DOC" 'Skip this step entirely on `adopted`'
+# Each wake branch has exactly ONE command, and they must not be confusable:
+# wiring the bounded probe to /go-on would resume on its first fire, unbounded.
+require_text "the armed branch's command is /go-on --generation" \
+  "$DOC" 'Its command is `/go-on --generation`'
+require_text "  and the probe branch's is /pm day --probe-wake" \
+  "$DOC" 'The probe branch does not print `/go-on`'
+require_text "  ending at the same relaunch, not a third route" \
+  "$DOC" 'Those are §5.s two entry points'
+# A reactive kill that landed first also wins, and the pre-emptive path adopts it
+# rather than overwriting the better (vendor-supplied) reset time.
+seed_existing_park reactive "$(epoch_to_iso $(( NOW + 900 )))" '"task-reactive"'
+OUT=$(PARK_CAUSE=preemptive CLAIM_FIRES=12 PARKED_UNTIL="$PARK_UNTIL_FIX" \
+      LIMIT_KIND=rolling_window bash -c "$BLOCK_CLAIM" 2>/dev/null | tail -1)
+check_eq "a reactive park is adopted too" "PARK_CLAIM=adopted" "$OUT"
+check_eq "  and keeps its vendor reset"   "$(epoch_to_iso $(( NOW + 900 )))" "$(day_get parked_until)"
+
+# ---------------------------------------------------------------------------
+echo "== Pre-emptive: wiring, and the #1444 ownership decision (AC 2, 4, 5, 6) =="
+# ---------------------------------------------------------------------------
+
+require_text "monitor-mode's per-cycle checklist reads the horizon" \
+  "$RULES/monitor-mode.md" 'usage-horizon\.sh --observe'
+require_text "  from the harness-printed counter only" \
+  "$RULES/monitor-mode.md" 'harness-printed `<total_tokens>`'
+require_text "  and routes critical to the park procedure" \
+  "$RULES/monitor-mode.md" 'subagent-thread-limit-park\.md` §7'
+require_text "the subagent monitor loop reads it every cycle" \
+  "$SUBAGENT" 'Read the usage horizon'
+require_text "  observing then checking" \
+  "$SUBAGENT" 'usage-horizon\.sh --observe'
+require_text "  and resolving the script through Step 0" \
+  "$SUBAGENT" 'USAGE_HORIZON_SH=\$\(resolve_script usage-horizon\.sh'
+require_text "  with a named degraded mode when it does not resolve" \
+  "$SUBAGENT" 'usage-horizon\.sh not found \(checked all three paths\)'
+require_text "the doc pins the counter to the harness value" \
+  "$DOC" 'the one the \*\*harness printed\*\*'
+require_text "  and forbids substituting a remembered figure" \
+  "$DOC" 'Never substitute a remembered figure'
+require_text "  and states the cause the pre-emptive leg claims" \
+  "$DOC" 'PARK_CAUSE=preemptive'
+require_text "  and reuses 2D.7's landing-window and probe knobs" \
+  "$DOC" 'CLAUDE_HORIZON_PARK_WINDOW_MINUTES'
+require_text "  and says a pre-emptive park is always rolling_window" \
+  "$DOC" 'ALWAYS rolling_window'
+
+# AC 4 / #1444: one decision record, naming who may claim and who may only adopt.
+require_text "the decision record exists" \
+  "$DOC" 'Which loop may park which work'
+require_text "  keyed on the limit_cause compare-and-set" \
+  "$DOC" 'compare-and-set on `limit_cause`'
+require_text "  saying double-parking is unrepresentable, not merely banned" \
+  "$DOC" 'it is unrepresentable'
+require_text "  and naming #1444's loops as honour-and-adopt only" \
+  "$DOC" 'honour and adopt only'
+require_text "  and stating the principle it rests on" \
+  "$DOC" 'launch ownership, not loop seniority'
+require_text "pm-monitoring-decision separates polling from parking" \
+  "$REPO_ROOT/.claude/reference/pm-monitoring-decision.md" 'Polling ownership is not park ownership'
+
+# AC 5: both out-of-scope notes now name what is in scope.
+require_text "/pm 2D.7 names the newly in-scope loops" \
+  "$PM_SKILL" 'Now in scope elsewhere'
+require_text "  and still excludes #1444's two loops" \
+  "$PM_SKILL" 'Still out of scope'
+refute_text "  and no longer calls the monitor-mode reflex an unfiled follow-up" \
+  "$PM_SKILL" 'is a named follow-up, not part of this change'
+require_text "pm-day-mode.md's scope boundary is updated" \
+  "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'Scope boundary \(updated by #1619\)'
+refute_text "  and no longer says the follow-up is unfiled" \
+  "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'a named follow-up to be filed once this lands'
+
+# AC 6: safety.md's horizon carve-out covers this reader WITHOUT amendment.
+refute_text "safety.md was not amended for this reader" \
+  "$RULES/safety.md" 'subagent-thread-limit-park'
+require_text "  and its horizon carve-out still stands as written" \
+  "$RULES/safety.md" 'Horizon carve-out \(#1427\)'
+require_text "the doc claims that carve-out rather than widening it" \
+  "$DOC" "carve-out \(#1427\) covers this reader"
+# No local estimation anywhere in the new procedure.
+refute_text "the pre-emptive leg estimates nothing locally" \
+  "$DOC" 'estimate the remaining|derive the counter|count the tokens'
+
+# The schema records that a subagent thread can now write a preemptive cause.
+require_text "the schema records the pre-emptive subagent-thread writer" \
+  "$SCHEMA" 'pre-emptively on its own .critical. usage-horizon verdict' 
+
+# Negative control for this section's matchers: the same files, a pattern that
+# was never written. Without it every require_text above could be passing on a
+# grep that matches anything.
+refute_text "negative control — an unwritten pattern does not match" \
+  "$DOC" 'Which loop may park which unicorn'
 
 # ---------------------------------------------------------------------------
 echo

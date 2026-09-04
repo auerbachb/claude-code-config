@@ -482,7 +482,16 @@ require_text "restart recovery parses parked_until as UTC" "$SKILL" \
   "date -u -j -f '%Y-%m-%dT%H:%M:%SZ'"
 require_text "weekly caps stay manual-resume"     "$SKILL" 'weekly caps remain the reactive path.s business and stay manual-resume'
 require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --check` exits 0'
-require_text "non-day threads are out of scope"   "$SKILL" 'Out of scope:.*non-day orchestration threads'
+# #1619 narrowed this boundary rather than removing it: the monitor-loop reflex
+# is now in scope (a subagent-running thread reads the same horizon and claims
+# the same repo park slot), while /pr-monitor-and-manage and /babysit-pr stay
+# out until #1444. Assert BOTH halves — dropping the assertion when the sentence
+# changed would have retired the only check that the boundary is stated at all.
+require_text "the monitor-loop reflex is now in scope (#1619)" "$SKILL" 'Now in scope elsewhere'
+require_text "  and names the shared compare-and-set that prevents double-parking" \
+  "$SKILL" 'compare-and-set on `limit_cause`'
+require_text "/pmm and /babysit-pr are still out of scope" \
+  "$SKILL" 'Still out of scope:.*pr-monitor-and-manage'
 require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
 
 require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'

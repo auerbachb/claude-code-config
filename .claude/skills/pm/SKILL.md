@@ -1265,24 +1265,29 @@ The two probe knobs reject zero for concrete reasons, not tidiness: a cadence of
 # PARK_EPOCH equal NOW_EPOCH below — and every reader in this skill treats a
 # non-future parked_until as "the park resolved or never existed". The board would
 # wind down while its own durable record says it is not parked.
+# Every accepted knob is normalised through `10#` (#1619 review). `^[0-9]+$`
+# admits a leading zero and `[ 08 -gt 0 ]` accepts it, but `$(( 08 * … ))` below is
+# an OCTAL context and dies with "value too great for base" — leaving RESET_EPOCH
+# empty and PARKED_UNTIL garbage, the exact silent half-park these knobs guard.
+# `08` also reaches session-state.sh as a JSON number, which jq rejects.
 PARK_WINDOW_MIN=2; PROBE_CADENCE_MIN=30; PROBE_MAX_FIRES=12
 if [ -n "${CLAUDE_HORIZON_PARK_WINDOW_MINUTES:-}" ]; then
   if [[ "$CLAUDE_HORIZON_PARK_WINDOW_MINUTES" =~ ^[0-9]+$ ]]; then
-    PARK_WINDOW_MIN="$CLAUDE_HORIZON_PARK_WINDOW_MINUTES"   # 0 is legal — reactive parity
+    PARK_WINDOW_MIN=$(( 10#$CLAUDE_HORIZON_PARK_WINDOW_MINUTES ))   # 0 is legal — reactive parity
   else
     echo "horizon: rejected CLAUDE_HORIZON_PARK_WINDOW_MINUTES='$CLAUDE_HORIZON_PARK_WINDOW_MINUTES' — using 2" >&2
   fi
 fi
 if [ -n "${CLAUDE_HORIZON_PROBE_CADENCE_MINUTES:-}" ]; then
   if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" -gt 0 ]; then
-    PROBE_CADENCE_MIN="$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES"
+    PROBE_CADENCE_MIN=$(( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES ))
   else
     echo "horizon: rejected CLAUDE_HORIZON_PROBE_CADENCE_MINUTES='$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES' — using 30" >&2
   fi
 fi
 if [ -n "${CLAUDE_HORIZON_PROBE_MAX_FIRES:-}" ]; then
   if [[ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" -gt 0 ]; then
-    PROBE_MAX_FIRES="$CLAUDE_HORIZON_PROBE_MAX_FIRES"
+    PROBE_MAX_FIRES=$(( 10#$CLAUDE_HORIZON_PROBE_MAX_FIRES ))
   else
     echo "horizon: rejected CLAUDE_HORIZON_PROBE_MAX_FIRES='$CLAUDE_HORIZON_PROBE_MAX_FIRES' — using 12" >&2
   fi
@@ -1484,7 +1489,9 @@ With a known reset the second line is 2D.6's shape instead (`resuming automatica
 
 **The bound field is three-valued (#1445).** `limit_probe_fires_remaining` used to carry two incompatible meanings in one `null`: "the reset time is known, so re-arm the sleep-until-reset one-shot" and "the reset is unknown and no bound has been written yet". `-1` now carries the second — written by Step 1's claim while the record is still being assembled, and by `/pause` teardown and `/pause-resume` disarm once the wake that owned the bound has been stopped. `null` keeps its original meaning exactly, so nothing reading it today changes behaviour; `>= 0` is still a live count. Every reader treats `-1` as "stay parked, re-arm nothing, manual resume" — which is what a `null` could not say without also ordering a wake.
 
-**Out of scope:** non-day orchestration threads. `/pr-monitor-and-manage` and `/babysit-pr` do not consult the horizon and are unchanged — the day-mode carve-out in `.claude/reference/pm-monitoring-decision.md` is what makes day mode the one loop that owns a repo's between-turn dispatch, so it is the one loop that can park it. Extending the reflex to `monitor-mode.md`'s per-cycle checklist is a named follow-up, not part of this change.
+**Now in scope elsewhere (#1619):** `monitor-mode.md`'s per-cycle checklist and `/subagent`'s monitor loop run this same reflex — the named follow-up has landed. A thread running Phase A/B/C subagents reads the horizon each cycle and, on `critical`, parks through `.claude/reference/subagent-thread-limit-park.md` §7 with `limit_cause="preemptive"`, this section's landing-window and probe knobs, and this section's probe-fire handler. It is not a second parker: it claims the same repo slot by compare-and-set on `limit_cause`, so day mode and a subagent thread on one repo can race freely and exactly one wins — the loser adopts and arms nothing. Day mode's own behaviour is unchanged.
+
+**Still out of scope:** `/pr-monitor-and-manage` and `/babysit-pr` (#1444). They do not consult the horizon and are unchanged. The ownership rule that decides which loop may park which work — a loop may park the work it launched, and a loop that only watches PRs others launched honours a park without claiming one — is recorded once, in `subagent-thread-limit-park.md` §8, jointly for this issue and #1444.
 
 ---
 

@@ -32,6 +32,7 @@ ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
+USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -45,6 +46,7 @@ TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
+- `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
@@ -348,6 +350,7 @@ For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).
 - **Respect Step 6.0b's chains.** Only the head of each overlap chain is launchable; a queued chain member waits for the one ahead of it to reach `merged`/`blocked`, even when a ceiling slot is free. Overlap serialization and the concurrency ceiling are separate limits — a free slot is permission to launch *some* issue, never permission to launch one whose file is still contested.
 - **A free slot is a trigger, not a resting state** (`CLAUDE.md` "KEEP THE PIPELINE FULL"). Below the ceiling with issues still queued, launch eligible chain heads on the current monitor tick — don't wait to be asked, and keep launching within the tick until slots are full or no eligible head remains (fill, don't ramp one-per-tick). Below the ceiling with the queue **empty**: under `/pm`, hand the free capacity to `/pm` Step 3.4's backlog refill; standalone, report the free slots and the idle reason (backlog ranking is `/pm`'s job, not this skill's) rather than sitting on them silently.
+- **Check the usage horizon before every one of those launches too** (#1619). Step 8 item 0's verdict binds here, on the first dispatch as much as on a refill tick: `approaching` and `unknown` start nothing new (running pipelines and their A→B / B→C successors continue), and `critical` parks per `subagent-thread-limit-park.md` §7.4 instead of launching. Never read a missing or unreadable verdict as `clear`.
 - **Check the refill pause before every one of those launches — standalone runs included.** The stop the user said in a `/pm` thread is persisted, not remembered, so it binds here too:
 
   ```bash
@@ -694,6 +697,12 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 ### Monitor loop (repeat every ~60 seconds):
 
+0. **Read the usage horizon** (#1619). Hand the counter the **harness** printed into this turn's context — `<total_tokens>N tokens left</total_tokens>`, refreshed after every tool result — to `usage-horizon.sh --observe`, then branch on `--check`. Never a figure derived from the transcript, from this thread's own accounting, or remembered from an earlier turn: an absent counter is an absent reading, which is `unknown`. Resolve `subagent-thread-limit-park.md` through Step 0.1's candidate order and run its **§7.1 gate block** rather than re-deriving the branch here.
+   - `clear` → the cycle proceeds unchanged.
+   - `approaching` → **step 4 refills nothing** this cycle: no queued chain head, no backlog pick, no replacement for a slot that just freed. Running pipelines are untouched and steps 2–3's A→B / B→C transitions still run — a successor finishes work already in flight, it does not start new work. Report `paused (horizon approaching)` on the idle line.
+   - `unknown` → identical to `approaching` in what it stops, and it writes nothing and parks nothing. Report `paused (horizon unknown)`.
+   - `critical` → run §7.4 **before this cycle ends**, then end the loop: claim the park (`PARK_CAUSE=preemptive`), wind down through `/pause` with the landing window, record each surviving pipeline's phase, and arm the wake. A park already claimed by day mode or a sibling thread is **adopted**, not duplicated (§8) — record the pipelines, arm no second `Monitor`.
+   - `USAGE_HORIZON_SH` unresolved (Step 0) → the gate holds `unknown`; it never reads as `clear`.
 1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2). **A subagent that died carries a classification, not just an absence:** run `subagent-thread-limit-park.md` §1 on the runtime's structured failure payload first, resolving that document through Step 0.1's candidate order rather than a bare `.claude/reference/` path — most repos carry no `.claude/`, and an unresolvable reference here is the same stop Step 0.1 defines, not a silent fall-through to the crash path. `LIMIT_SIGNAL=true` is an account wall, not a crash — run that document's §2–§4 (claim the park, stop the remaining subagents through `/pause` Steps 2–7 with `--window 0`, record each pipeline's phase, arm the wake) and end the loop; the siblings still running are about to hit the same wall, and the ask-before-respawn crash path reaches a human who cannot help until the window reopens. **Classify every returned status before processing any of them.** If ANY carries `LIMIT_SIGNAL=true`, park on that tick: persist the other completed results as pending transitions and launch no successor this cycle. Processing a healthy sibling's completion first would launch its next phase into the same closed window the park is being opened for. `LIMIT_SIGNAL=false` on every status is the ordinary crash path, unchanged.
 2. **Execute pending phase transitions.** For each completed subagent:
    Re-check **every** launch control before every successor — the full set is
@@ -705,7 +714,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
-4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
+4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
 5. **Compute this pipeline's table cells and check per-pipeline overrun (when `OVERRUN_CHECK_SH` and `ESTIMATE_RESOLVE_SH` are resolved).** For each active PR, derive BOUND_MIN from the issue's estimate. Always compute the cells (no window needed). Then check for a breach only when a window is active. Skip silently if either helper is unavailable — the row still renders, with `—` in the clock columns.
    ```bash
    # Derive planning bound from the issue's estimate (requires ESTIMATE_RESOLVE_SH)
