@@ -41,12 +41,15 @@ check_contains() {
 
 # ---- portable ISO-8601 timestamp N hours in the past --------------------------
 # GNU and BSD date disagree on both the offset and the epoch-to-string flags, so
-# try each spelling rather than assuming a platform.
+# try each spelling rather than assuming a platform. GNU is tried FIRST and the
+# order is load-bearing: GNU `date -r` reads its argument as a FILE, so a
+# BSD-first chain silently emits a file's mtime whenever one happens to be named
+# for the epoch (issue #1587). Both arms stay — GNU alone strands macOS.
 iso_ago() {
   local hours="$1" epoch
   epoch=$(( $(date -u +%s) - hours * 3600 ))
-  date -u -r "$epoch" +%FT%TZ 2>/dev/null && return 0
   date -u -d "@$epoch" +%FT%TZ 2>/dev/null && return 0
+  date -u -r "$epoch" +%FT%TZ 2>/dev/null && return 0
   echo "iso_ago: no usable date(1) spelling" >&2
   return 1
 }
