@@ -27,6 +27,8 @@ Issue #1194 named this tension deliberately and required it be resolved here rat
 
 Day mode is also the strictly better owner for its own PRs: it holds the issue claims, the queue, the ranked backlog, and the phase state for each pipeline. `/pr-monitor-and-manage` re-derives PR state from GitHub every tick by design and knows none of that — it could merge a PR but never start the next issue, which is precisely the half of the loop #1194 exists to automate.
 
+**Polling ownership is not park ownership (#1619).** This document decides who may *poll* a repo between turns. Who may *park* it on an account usage limit is a separate question with a separate answer, recorded once in `.claude/reference/subagent-thread-limit-park.md` §8: a loop may park the work it launched, and every parker claims one shared repo slot by compare-and-set on `limit_cause`, so two loops on one repo cannot both park. That is why a thread running Phase A/B/C subagents may park without becoming a second poll owner, and why `/pr-monitor-and-manage` and `/babysit-pr` honour a park without claiming one (#1444).
+
 **Scope of the carve-out.** It is one `Monitor` per repo, armed only by an explicit `/pm day` or `/pm --run`, torn down on every exit path, and reclaimed by a freshness window when its session dies. Everything else in this document is unchanged: a bare `/pm` still arms nothing, and `CronCreate` is still never an option.
 
 ## Paused work resumes where it lives (#1431)

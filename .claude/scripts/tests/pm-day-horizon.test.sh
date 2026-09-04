@@ -482,7 +482,16 @@ require_text "restart recovery parses parked_until as UTC" "$SKILL" \
   "date -u -j -f '%Y-%m-%dT%H:%M:%SZ'"
 require_text "weekly caps stay manual-resume"     "$SKILL" 'weekly caps remain the reactive path.s business and stay manual-resume'
 require_text "credit budget still gates refill"   "$SKILL" 'credit-budget\.sh --check` exits 0'
-require_text "non-day threads are out of scope"   "$SKILL" 'Out of scope:.*non-day orchestration threads'
+# #1619 narrowed this boundary rather than removing it: the monitor-loop reflex
+# is now in scope (a subagent-running thread reads the same horizon and claims
+# the same repo park slot), while /pr-monitor-and-manage and /babysit-pr stay
+# out until #1444. Assert BOTH halves — dropping the assertion when the sentence
+# changed would have retired the only check that the boundary is stated at all.
+require_text "the monitor-loop reflex is now in scope (#1619)" "$SKILL" 'Now in scope elsewhere'
+require_text "  and names the shared compare-and-set that prevents double-parking" \
+  "$SKILL" 'compare-and-set on `limit_cause`'
+require_text "/pmm and /babysit-pr are still out of scope" \
+  "$SKILL" 'Still out of scope:.*pr-monitor-and-manage'
 require_text "park surfaces at most two lines"    "$SKILL" 'Two lines on park, one on resume'
 
 require_text "pause teardown covers the probe wake" "$PAUSE" 'both wake shapes'
@@ -608,6 +617,16 @@ check_eq "window knob 0 is accepted (reactive parity)" "0" "$WINDOW_OUT"
 WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
   CLAUDE_HORIZON_PARK_WINDOW_MINUTES=zzz bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
 check_eq "window knob garbage falls back to 2" "2" "$WINDOW_OUT"
+
+# A 20-digit knob passes `^[0-9]+$` and then WRAPS silently through `10#`
+# (rc 0, no error) into a garbage deadline — the `{1,6}` bound rejects it
+# instead (#1619 review). Both copies of this block carry the same bound.
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=99999999999999999999 bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "a 20-digit window is rejected, not wrapped" "2" "$WINDOW_OUT"
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=999999 bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "  six digits is still accepted" "999999" "$WINDOW_OUT"
 
 # ---------------------------------------------------------------------------
 echo "== rc propagation: a failed write is never reported as success (AC 4) =="

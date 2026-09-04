@@ -15,6 +15,7 @@ If the user explicitly requests substantive work, warn that monitoring N active 
 ## Monitor Loop — Per-Cycle Checklist (MANDATORY)
 
 Every ~60s, in order:
+0. **Usage horizon.** Feed the harness-printed `<total_tokens>` to `usage-horizon.sh --observe`, then `--check`: `approaching`/`unknown` → start nothing new (item 4; item 2's successors continue); `critical` → park per `subagent-thread-limit-park.md` §7, then end the cycle.
 1. Process completed subagents and parse exit reports.
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
@@ -25,13 +26,13 @@ Every ~60s, in order:
 
 ## Subagent Health Monitoring (MANDATORY)
 
-Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work. Successes are silent unless they match a defined exception. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
+Poll every cycle; never fire-and-forget. Report failures and blockers immediately — PR/issue, phase, failure mode, remaining work; successes stay silent. Verify outputs before marking complete (`gh pr view` for pushes, comments/replies for feedback handling).
 
 Respawn permissions: crash asks, exhaustion auto, limit-parked neither — it parks the board and arms a wake (`phase-protocols.md` §Limit-parked).
 
 ## Liveness
 
-Routine per-tick heartbeats are removed; canonical liveness and output rules live in `scheduling-reliability.md` §Mandatory Pre-Exit Checklist.
+Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist.
 
 ## File-Write Status Updates (MANDATORY)
 
