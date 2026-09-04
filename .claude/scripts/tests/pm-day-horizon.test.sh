@@ -618,6 +618,16 @@ WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_R
   CLAUDE_HORIZON_PARK_WINDOW_MINUTES=zzz bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
 check_eq "window knob garbage falls back to 2" "2" "$WINDOW_OUT"
 
+# A 20-digit knob passes `^[0-9]+$` and then WRAPS silently through `10#`
+# (rc 0, no error) into a garbage deadline — the `{1,6}` bound rejects it
+# instead (#1619 review). Both copies of this block carry the same bound.
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=99999999999999999999 bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "a 20-digit window is rejected, not wrapped" "2" "$WINDOW_OUT"
+WINDOW_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" HORIZON_RESET_EPOCH="" \
+  CLAUDE_HORIZON_PARK_WINDOW_MINUTES=999999 bash -c "$BLOCK_CLAIM"'; echo "WINDOW=$PARK_WINDOW_MIN"' 2>/dev/null | sed -n 's/^WINDOW=//p')
+check_eq "  six digits is still accepted" "999999" "$WINDOW_OUT"
+
 # ---------------------------------------------------------------------------
 echo "== rc propagation: a failed write is never reported as success (AC 4) =="
 # ---------------------------------------------------------------------------

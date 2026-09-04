@@ -893,8 +893,13 @@ The placement is the point: D2 reads `refill_halted` to decide whether to launch
 
 ```bash
 # HORIZON_REMAINING / HORIZON_LIMIT: the numbers the HARNESS printed this turn.
-# Leave both empty when the counter is not in context — an absent reading is
-# `unknown`, which is never `clear` and never a park trigger.
+# Leave both empty when the counter is not in context — never substitute a
+# remembered figure. An absent reading is never `clear`, but it is not inert
+# either: with nothing to observe, the gate falls through to `--check`, which
+# answers `unknown` unless THIS session already recorded a reading inside its
+# TTL. A live same-session `critical` does still park, and should — the counter
+# only falls within a session, so the reading a fresh figure would have
+# corrected is stale only in the safe direction.
 HORIZON_STATUS=unknown
 HORIZON_OBSERVE_RC=0
 if [ -n "${USAGE_HORIZON_SH:-}" ] && [ -n "${HORIZON_REMAINING:-}" ]; then
@@ -1249,9 +1254,9 @@ The difference from 2D.6 is *when*, not *what*: no error has fired yet, so there
 
 | Value | Default | Env | Accepted |
 |-------|---------|-----|----------|
-| Landing window for the park | `2` minutes | `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` | `^[0-9]+$` — **`0` is legal** and selects reactive parity |
-| Probe cadence | `30` minutes | `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` | `^[0-9]+$` **and `> 0`** |
-| Probe fire bound | `12` fires | `CLAUDE_HORIZON_PROBE_MAX_FIRES` | `^[0-9]+$` **and `> 0`** |
+| Landing window for the park | `2` minutes | `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` | `^[0-9]{1,6}$` — **`0` is legal** and selects reactive parity |
+| Probe cadence | `30` minutes | `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` | `^[0-9]{1,6}$` **and `> 0`** |
+| Probe fire bound | `12` fires | `CLAUDE_HORIZON_PROBE_MAX_FIRES` | `^[0-9]{1,6}$` **and `> 0`** |
 
 The two probe knobs reject zero for concrete reasons, not tidiness: a cadence of `0` makes the Monitor's `sleep 0` a hot loop firing a turn as fast as the harness allows — the runaway this whole park exists to avoid, at the worst possible moment — and a bound of `0` arms a wake whose first fire immediately reads the bound as spent, so the board parks with a Monitor that can only ever stop itself. The window knob is the opposite case: `0` is the documented way to ask for 2D.6's exact behavior.
 
@@ -1270,23 +1275,29 @@ The two probe knobs reject zero for concrete reasons, not tidiness: a cadence of
 # an OCTAL context and dies with "value too great for base" — leaving RESET_EPOCH
 # empty and PARKED_UNTIL garbage, the exact silent half-park these knobs guard.
 # `08` also reaches session-state.sh as a JSON number, which jq rejects.
+# The digit bound is the same guard aimed at magnitude (#1619 review). A bare
+# `^[0-9]+$` accepts a 20-digit knob that `10#` then WRAPS SILENTLY — rc 0, no
+# error: `$(( 10#99999999999999999999 ))` is 7766279631452241919, and one more
+# `* 60` lands on 0. That is a non-future PARKED_UNTIL, which every reader in
+# this file treats as "the park resolved or never existed" — the same silent
+# half-park by a different road. Six digits is ~1.9 years of minutes.
 PARK_WINDOW_MIN=2; PROBE_CADENCE_MIN=30; PROBE_MAX_FIRES=12
 if [ -n "${CLAUDE_HORIZON_PARK_WINDOW_MINUTES:-}" ]; then
-  if [[ "$CLAUDE_HORIZON_PARK_WINDOW_MINUTES" =~ ^[0-9]+$ ]]; then
+  if [[ "$CLAUDE_HORIZON_PARK_WINDOW_MINUTES" =~ ^[0-9]{1,6}$ ]]; then
     PARK_WINDOW_MIN=$(( 10#$CLAUDE_HORIZON_PARK_WINDOW_MINUTES ))   # 0 is legal — reactive parity
   else
     echo "horizon: rejected CLAUDE_HORIZON_PARK_WINDOW_MINUTES='$CLAUDE_HORIZON_PARK_WINDOW_MINUTES' — using 2" >&2
   fi
 fi
 if [ -n "${CLAUDE_HORIZON_PROBE_CADENCE_MINUTES:-}" ]; then
-  if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" -gt 0 ]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]{1,6}$ ]] && [ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" -gt 0 ]; then
     PROBE_CADENCE_MIN=$(( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES ))
   else
     echo "horizon: rejected CLAUDE_HORIZON_PROBE_CADENCE_MINUTES='$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES' — using 30" >&2
   fi
 fi
 if [ -n "${CLAUDE_HORIZON_PROBE_MAX_FIRES:-}" ]; then
-  if [[ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" =~ ^[0-9]+$ ]] && [ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" -gt 0 ]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" =~ ^[0-9]{1,6}$ ]] && [ "$CLAUDE_HORIZON_PROBE_MAX_FIRES" -gt 0 ]; then
     PROBE_MAX_FIRES=$(( 10#$CLAUDE_HORIZON_PROBE_MAX_FIRES ))
   else
     echo "horizon: rejected CLAUDE_HORIZON_PROBE_MAX_FIRES='$CLAUDE_HORIZON_PROBE_MAX_FIRES' — using 12" >&2

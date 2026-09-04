@@ -895,6 +895,32 @@ ZERO_FIRES=$(field "$OUT" CLAIM_FIRES)
 check_true "  and jq accepts that bound as a number" \
   "$( jq -e -n --argjson f "$ZERO_FIRES" '$f > 0' >/dev/null 2>&1 && echo true || echo false )"
 
+# The same hole by magnitude (#1619 review). A bare `^[0-9]+$` accepts a 20-digit
+# knob, and `10#` then WRAPS IT SILENTLY — rc 0, no error, no stderr:
+# `$(( 10#99999999999999999999 ))` is 7766279631452241919, and one more `* 60`
+# lands on 0. The park deadline that computes is not in the future, so every
+# reader treats the record as "no park" — the leading-zero failure by another
+# road. The `{1,6}` digit bound is what closes it, so a huge knob must REJECT
+# to the documented default rather than be normalised into garbage.
+# Negative control (bound reverted to `^[0-9]+$`): the WINDOW knob is the one
+# that actually wraps — 2 becomes 7766279631452241919 — because it is the only
+# one with no `-gt 0` test. `[ <20 digits> -gt 0 ]` errors out ("integer
+# expression expected") and accidentally saves the other two, which is luck,
+# not a guard: `$(( ))` wraps where `[ ]` refuses. Assert all three anyway.
+HUGE=99999999999999999999
+OUT=$(run_window CLAUDE_HORIZON_PARK_WINDOW_MINUTES=$HUGE \
+                 CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=$HUGE \
+                 CLAUDE_HORIZON_PROBE_MAX_FIRES=$HUGE HORIZON_RESET_EPOCH=)
+check_eq "a 20-digit window is rejected, not wrapped"  "2"  "$(field "$OUT" PARK_WINDOW_MIN)"
+check_eq "a 20-digit cadence is rejected, not wrapped" "30" "$(field "$OUT" PROBE_CADENCE_MIN)"
+check_eq "a 20-digit bound is rejected, not wrapped"   "12" "$(field "$OUT" PROBE_MAX_FIRES)"
+HUGE_EPOCH=$(iso_to_epoch "$(field "$OUT" PARKED_UNTIL)" 2>/dev/null || echo 0)
+check_true "  and the deadline is still a real future instant" \
+  "$( [ "$HUGE_EPOCH" -gt "$(date -u +%s)" ] && echo true || echo false )"
+# Negative control: the bound must not be so tight it rejects a legitimate knob.
+OUT=$(run_window CLAUDE_HORIZON_PROBE_CADENCE_MINUTES=999999 HORIZON_RESET_EPOCH=)
+check_eq "  six digits is still accepted" "999999" "$(field "$OUT" PROBE_CADENCE_MIN)"
+
 # ---------------------------------------------------------------------------
 echo "== Pre-emptive: a critical fixture parks with the preemptive cause =="
 # ---------------------------------------------------------------------------
