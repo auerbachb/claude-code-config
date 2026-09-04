@@ -36,20 +36,85 @@
 # EXIT STATUS
 #   0  A STATUS verdict was printed
 #   2  Usage/dependency error
-#   4  GitHub/API/state read error
+#   4  GitHub/API/state read error, OR a raw shell exec failure (126/127) caught
+#      at the exit boundary and normalized here — see the EXIT BOUNDARY note.
 #   70  --help header extraction produced no output (internal defect).
+#
+#   EVERY non-zero exit prints exactly one `escalate-review.sh: ...` diagnostic
+#   line to stderr. A non-verdict exit is never silent (issue #1600): the caller
+#   reads an empty stdout as an empty verdict, so a script that dies without
+#   saying so is indistinguishable from one that ran and decided nothing.
+#
+# EXIT BOUNDARY (issue #1600)
+#   During PR #1553's review loop this script exited 126 with zero output on
+#   both streams, so the caller had to walk cr-github-review.md's chain by hand.
+#   126/127 mean the SHELL could not launch something; this script never exits
+#   them on purpose. Under `set -euo pipefail` an unguarded command substitution
+#   propagates that raw status straight out with nothing printed. The EXIT trap
+#   below normalizes it to 4 — nothing was determined — with one stderr line,
+#   mirroring repo-root.sh's precedent (issue #1403).
+#
+#   SCOPE: this covers exits from a script that STARTED. It cannot cover a
+#   failure to launch the interpreter itself (a corrupted PATH, `env: bash: No
+#   such file or directory` — issue #1556), because no in-script trap runs then.
 
 set -euo pipefail
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
+# Installed BEFORE anything else can fail, and it owns two jobs (issue #1600).
+#
+# 1. Normalize an escaping 126/127 to 4. Those two mean the shell could not
+#    launch a command, and this script never exits them deliberately. The
+#    dependency preflight below is the fast, friendly diagnosis, but it cannot
+#    be complete: `command -v` proves a NAME resolves, not that the file will
+#    exec (a bad interpreter, a dangling symlink, the wrong architecture all
+#    resolve fine), and nothing closes the window between the check and the
+#    call. So the guarantee is enforced at the boundary instead: whatever went
+#    wrong, no verdict was reached, and that is exactly exit 4.
+# 2. Backstop every OTHER non-zero exit that reaches here without a diagnostic —
+#    an unguarded substitution failing on, say, a jq parse error would otherwise
+#    still be silent. `DIAG_PRINTED` is what keeps that from double-printing on
+#    the paths that already spoke.
+#
+# It deliberately does NOT emit a verdict. A shell-launch failure is a broken
+# environment, not a bounded helper outage: fabricating a STATUS= line here
+# would be a guard that passes by not running. Contrast issue #1465, which
+# degrades to polling_cr for an evaluator outage the script actually diagnosed.
+DIAG_PRINTED=0
 PR_NUMBER=""
+
+on_exit() {
+  local rc=$?
+  if [[ "$rc" -eq 126 || "$rc" -eq 127 ]]; then
+    printf 'escalate-review.sh: a required command could not be launched (shell exit %s), so no STATUS verdict was reached%s — repair PATH/permissions and retry\n' \
+      "$rc" "${PR_NUMBER:+ for PR #$PR_NUMBER}" >&2
+    exit 4
+  fi
+  if [[ "$rc" -ne 0 && "$DIAG_PRINTED" -eq 0 ]]; then
+    printf 'escalate-review.sh: exited %s before emitting a STATUS verdict%s — no verdict was reached\n' \
+      "$rc" "${PR_NUMBER:+ for PR #$PR_NUMBER}" >&2
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_usage() {
   awk 'NR == 1 { next } /^#/ { print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
-    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+    { DIAG_PRINTED=1; printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
+
+# The one-line diagnostic every fatal path goes through, so on_exit's backstop
+# stays quiet on the paths that already explained themselves.
+die() { # <exit_code> <reason...>
+  local code="$1"; shift
+  DIAG_PRINTED=1
+  printf 'escalate-review.sh: %s\n' "$*" >&2
+  exit "$code"
 }
 
 die_usage() {
+  DIAG_PRINTED=1
   echo "escalate-review.sh: $1" >&2
   echo "Run with --help for usage." >&2
   exit 2
@@ -89,8 +154,7 @@ fi
 
 for dep in gh jq python3; do
   if ! command -v "$dep" >/dev/null 2>&1; then
-    echo "escalate-review.sh: '$dep' not found on PATH" >&2
-    exit 2
+    die 2 "'$dep' not found on PATH"
   fi
 done
 
@@ -100,8 +164,7 @@ PR_STATE="$SCRIPT_DIR/pr-state.sh"
 GREPTILE_BUDGET="$SCRIPT_DIR/greptile-budget.sh"
 
 if [[ ! -x "$SESSION_STATE" || ! -x "$PR_STATE" || ! -x "$GREPTILE_BUDGET" ]]; then
-  echo "escalate-review.sh: required sibling scripts are missing or not executable" >&2
-  exit 2
+  die 2 "required sibling scripts are missing or not executable"
 fi
 
 CURRENT_REVIEWER="$("$SESSION_STATE" --get ".prs[\"$PR_NUMBER\"].reviewer // \"\"" 2>/dev/null || true)"
@@ -111,18 +174,15 @@ fi
 
 STATE_PATH="$("$PR_STATE" --pr "$PR_NUMBER" 2>/dev/null)"
 if [[ -z "$STATE_PATH" || ! -f "$STATE_PATH" ]]; then
-  echo "escalate-review.sh: failed to gather PR state for #$PR_NUMBER" >&2
-  exit 4
+  die 4 "failed to gather PR state for #$PR_NUMBER"
 fi
 
 read -r OWNER REPO HEAD_SHA < <(jq -r '[.pr.owner, .pr.repo, .pr.head_sha] | @tsv' "$STATE_PATH") || {
-  echo "escalate-review.sh: failed to read PR state JSON" >&2
-  exit 4
+  die 4 "failed to read PR state JSON"
 }
 
 if [[ -z "$OWNER" || -z "$REPO" || -z "$HEAD_SHA" ]]; then
-  echo "escalate-review.sh: PR state missing owner/repo/head_sha" >&2
-  exit 4
+  die 4 "PR state missing owner/repo/head_sha"
 fi
 
 # Gate-already-met short-circuit (issue reported on PR #619, 2026-07-21): before
@@ -156,8 +216,7 @@ VALID_APPROVERS="$(jq -r --arg sha "$HEAD_SHA" '
   | map(. as $l | select($doc | approval_valid($l)))
   | join(",")
 ' "$STATE_PATH")" || {
-  echo "escalate-review.sh: failed to evaluate primary-review-met check" >&2
-  exit 4
+  die 4 "failed to evaluate primary-review-met check"
 }
 PRIMARY_REVIEW_MET=false
 [[ -n "$VALID_APPROVERS" ]] && PRIMARY_REVIEW_MET=true
@@ -388,8 +447,7 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
 fi
 
 COMMITS_JSON="$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/commits?per_page=100" 2>/dev/null | jq -s 'add // []')" || {
-  echo "escalate-review.sh: failed to fetch PR commits" >&2
-  exit 4
+  die 4 "failed to fetch PR commits"
 }
 
 # A COMMIT date, which is NOT when this SHA became HEAD. It is only the FLOOR of
@@ -401,8 +459,7 @@ PUSH_TIMESTAMP="$(jq -r --arg sha "$HEAD_SHA" '
 ' <<<"$COMMITS_JSON")"
 
 if [[ -z "$PUSH_TIMESTAMP" ]]; then
-  echo "escalate-review.sh: could not determine push timestamp for #$PR_NUMBER" >&2
-  exit 4
+  die 4 "could not determine push timestamp for #$PR_NUMBER"
 fi
 
 # Age in seconds of an ISO-8601 timestamp, clamped at 0. Two callers share it —
@@ -662,8 +719,7 @@ read -r BUGBOT_FAILED BUGBOT_GENUINE < <(jq -r '
     ) as $genuine
   | [$failed, $genuine] | @tsv
 ' "$STATE_PATH") || {
-  echo "escalate-review.sh: failed to classify BugBot activity" >&2
-  exit 4
+  die 4 "failed to classify BugBot activity"
 }
 
 # Same app-scoped predicate as the classifier above (issue #956) — a same-named
@@ -694,8 +750,7 @@ BUGBOT_TRIGGER_TS="$(jq -r '
    | select(. != "")]
   | sort | last // ""
 ' "$STATE_PATH")" || {
-  echo "escalate-review.sh: failed to scan for a BugBot trigger comment" >&2
-  exit 4
+  die 4 "failed to scan for a BugBot trigger comment"
 }
 
 # Only a trigger that POSTDATES the HEAD commit counts. A trigger left over from
@@ -722,14 +777,12 @@ case "$CACHED_BUGBOT_INSTALLED" in
     if [[ "$BUGBOT_CHECK_PRESENT" == "true" || "$BUGBOT_FAILED" == "true" || "$BUGBOT_GENUINE" == "true" ]]; then
       BUGBOT_INSTALLED="true"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=true" 2>/dev/null || {
-        echo "escalate-review.sh: failed to cache bugbot_installed=true" >&2
-        exit 4
+        die 4 "failed to cache bugbot_installed=true"
       }
     elif [[ "$AGE_SECONDS" -ge 600 ]]; then
       BUGBOT_INSTALLED="false"
       "$SESSION_STATE" --set ".prs[\"$PR_NUMBER\"].bugbot_installed=false" 2>/dev/null || {
-        echo "escalate-review.sh: failed to cache bugbot_installed=false" >&2
-        exit 4
+        die 4 "failed to cache bugbot_installed=false"
       }
     else
       BUGBOT_INSTALLED="false"
@@ -1018,8 +1071,7 @@ fi
 BUDGET_CHECK_RC=0
 BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || BUDGET_CHECK_RC=$?
 if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
-  echo "escalate-review.sh: failed to check Greptile budget" >&2
-  exit 4
+  die 4 "failed to check Greptile budget"
 fi
 
 BUDGET_EXHAUSTED="$(jq -r '.exhausted == true' <<<"$BUDGET_JSON")"
