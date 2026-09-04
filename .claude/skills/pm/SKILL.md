@@ -1685,7 +1685,8 @@ Never drop the table.
 
 | Trigger | Render |
 |---------|--------|
-| Dispatch (3.1 inline batch, 3.4 refill picks) | `/subagent` Step 7.2 prints the launch table for the batch `/pm` handed it — **that is this render.** Do not print a second table on the same turn; report the picks in the one line 3.1/3.4 already specify |
+| Dispatch that *is* the whole round — a 3.1 inline batch, or a 3.4 refill with nothing else still running | `/subagent` Step 7.2 prints the launch table for the batch `/pm` handed it — **that is this render.** Do not print a second table on the same turn; report the picks in the one line 3.1/3.4 already specify |
+| A 3.4 refill **while pipelines from an earlier dispatch are still running** | `/board`, once, **instead of** Step 7.2's launch table — still one table on the turn, and still the one line of picks. Step 7.2 covers "the whole round" as `/pm` handed it, which on a refill is the picks alone; printing that under a **Running now** heading while three older pipelines are mid-flight states something false about the round. `/pm` holds the queue and the handles, so its board renders complete (above) — the refilled slots appear alongside the pipelines that were already running, which is the whole point of a refill render |
 | Day-mode heartbeat (2D.3 D5) | On the freshness trigger only — see D5 |
 | A progress question — "how far along?", "where is everything?", "status" | This table, recomputed, whatever the count: one shape whether one pipeline is running or five |
 | A `TABLE FLOOR:` line from the armed watch | An instruction to render, not a status to acknowledge — render and let `/board` Step 5 record it |
