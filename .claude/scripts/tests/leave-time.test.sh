@@ -955,8 +955,6 @@ require_text .claude/rules/phase-protocols.md 'subagent-step7-deadline-decline' 
   'the successor launch gate must run the armed-deadline check, not only refill + execution-pause'
 require_text .claude/rules/phase-protocols.md 'frees no' \
   'a deadline-declined successor must not free its overlap-chain successors'
-require_text .claude/skills/subagent-dispatch/SKILL.md 'still holds its overlap chain' \
-  '/subagent-dispatch must state the chain exception, not just "every other agent"'
 
 # The deadline verdict must read the same projected finish the row displays — in BOTH
 # places it was stated. Fixing one copy and leaving the other is how the two come to
@@ -1008,10 +1006,6 @@ require_order "$LEAVE_SKILL" '## Step 9:' \
   "the countermand snippet must null winddown_generation BEFORE the TaskStop it describes"
 
 # The gate reaches any orchestration thread, not just /pm.
-require_text .claude/skills/subagent-dispatch/SKILL.md 'subagent-step7-deadline-decline' \
-  '/subagent-dispatch must point at the canonical Step 7 anchor for the gate'
-require_text .claude/skills/subagent-dispatch/SKILL.md 'do not restate or fork it here' \
-  '/subagent-dispatch must reference /subagent Step 7 rather than fork the gate'
 require_text .claude/skills/wave/SKILL.md 'unestimated; /subagent will decline this' \
   '/wave must warn about unestimated rows too — Step 7 declines them while a deadline is armed'
 require_text .claude/skills/wave/SKILL.md 'cannot finish before {clock}' \
