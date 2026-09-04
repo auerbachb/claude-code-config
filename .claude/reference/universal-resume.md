@@ -29,6 +29,7 @@ front door that routes into them.
 | C | `end` | `~/.claude/handoffs/portable-handoff-<owner>-<repo>-*.md`, excluding `*-checkpoint.md` | `portable-handoff-publish.sh` (`/end` Step 6) |
 | D | `token_exhaustion` | `.repos[k].prs[*].handoff_reason == "token_exhaustion"` | Token/turn exhaustion protocol (`subagent-orchestration.md`) |
 | E | `unplanned` | Live registry entries, `.repos[k].prs`, scoped handoff files, `*-checkpoint.md`, in-progress rebase, dirty/unpushed feature branch, open PR | Ordinary work, plus `checkpoint-handoff.sh` |
+| F | `usage_limit_park` | `.repos[k].day.parked_until` non-null **and** `.repos[k].prs[*].handoff_reason == "usage_limit_park"` | Reactive subagent-thread park (`subagent-thread-limit-park.md`; issue #1618) |
 
 **Probe B reads a set, not a slot (issue #1576).** Pause records are keyed per
 session, so a repo routinely holds several. Probe B is `present` when *any*
@@ -55,11 +56,20 @@ excludes the suffix and probe E includes it as ordinary in-flight evidence.
    only `/pause-resume` / `/end-resume` may clear it (`phase-protocols.md`
    §"Launch gate before every successor"). Any other lane would run with launches
    blocked and fail closed at the first successor.
-2. **`token_exhaustion`** — an explicit, recorded stopping point with a phase and
+2. **`usage_limit_park`** — the account window closed under a thread running
+   Phase A/B/C pipelines, and each parked pipeline knows the phase it must
+   resume at. It ranks above `token_exhaustion` because it carries strictly more
+   evidence — a repo park record *and* per-PR phase records — and its own lane
+   clears the gate by delegating to `/pause-resume` rather than running under it.
+   A `--generation` token validated in `/go-on` 0.2a lifts it above rank 1 as
+   well: the park closes the same execution gate `/pause` does, so probe A reads
+   `present` on every parked board, and rank 1 alone would delegate to a resume
+   that re-arms live runtime IDs and leaves every dead pipeline stopped.
+3. **`token_exhaustion`** — an explicit, recorded stopping point with a phase and
    remaining work. It ranks below a planned stop for the gate reason above: a
    phase continued under an armed gate cannot launch anything.
-3. **`unplanned`** — inferred from in-flight state rather than recorded by a stop.
-4. **`none`** — every probe readable, nothing found.
+4. **`unplanned`** — inferred from in-flight state rather than recorded by a stop.
+5. **`none`** — every probe readable, nothing found.
 
 **Explicit parked state outranks generic stall detection** because the two
 routinely coexist: a `/pause` parks a PR that still looks perfectly in-flight to
@@ -80,12 +90,14 @@ unorderable evidence — reported, never ordered.
 That is why probe A is tri-state — `present` | `absent` | `unreadable` — rather
 than a map that defaults to empty. Collapsing a failed read, a malformed map, or
 an invalid active record into `{}` reads as "no planned stop", drops the ladder
-to rank 2 or 3, and starts a `token_exhaustion` or `unplanned` resume while a
+to a lower rank, and starts a `token_exhaustion` or `unplanned` resume while a
 gate may be armed: every successor launch then fails closed and the parked board
 goes unread. Only `session-state.sh` exit 3 — no state file at all — is an
 unambiguous `absent`; exits 4 and 5, an unresolved helper, and an unknown repo
-key are all `unreadable`, and `unreadable` bars ranks 2, 3, and 4 outright.
-Rank 2 is barred on the same evidence as the other two: a token-exhaustion
+key are all `unreadable`, and `unreadable` bars ranks 2 through 5 outright —
+except for a `--generation` validated in 0.2a, which names one specific park
+record and so identifies the stoppage without the gate having to.
+Rank 3 is barred on the same evidence as the others: a token-exhaustion
 handoff says a phase ran out of budget, never that no planned stop is armed, and
 continuing that phase is a resume like any other.
 
@@ -145,7 +157,7 @@ commands clear the execution gate, and the registry moves entries
 records do not close — most importantly `unplanned`, where nothing marks the
 resume as done.
 
-**Rank 4 writes nothing.** "Nothing to resume" is a read-only verdict; a state
+**Rank 5 writes nothing.** "Nothing to resume" is a read-only verdict; a state
 write there would make a no-op look like an event.
 
 ## Duplicate suppression
@@ -180,7 +192,7 @@ Unclassifiable cases, all report-only:
 
 | Case | Why it cannot be resolved automatically |
 |---|---|
-| Probe A `unreadable` | A planned stop may be armed; ranks 2, 3, and 4 are all barred |
+| Probe A `unreadable` | A planned stop may be armed; ranks 2 through 5 are all barred (a validated `--generation` excepted) |
 | An active gate record with an unknown `command` or non-`Z` `at` | Unorderable and unclassifiable; sorting it would invent an answer |
 | B and C both present, A absent/unreadable | Two planned stops, no comparable timestamps |
 | This session's gate `active`, no class readable | Launches are blocked and nothing says which command closes them |
@@ -188,6 +200,7 @@ Unclassifiable cases, all report-only:
 | A union record is `active: true` but `/pause-resume` finds no state or marker | The record and its restore path disagree; name the record's session key |
 | A marker `/pause` published as not auto-discoverable (`_unknown` repo key) | Only the explicit `/pause-resume --marker <path>` form can select it; `/go-on` takes no `--marker` |
 | Several token-exhaustion entries, none matching this branch's PR | No basis to pick one; name them all |
+| Probe F `present` but a pipeline's handoff is missing or names a different phase | The record and its evidence disagree; report that pipeline instead of relaunching it |
 
 ## Relationship to the dedicated commands
 

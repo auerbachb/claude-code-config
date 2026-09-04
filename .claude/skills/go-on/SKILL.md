@@ -1,13 +1,13 @@
 ---
 name: go-on
-description: Use when stopped work should be picked back up, whatever stopped it — `/pause`, `/end`, a token-exhaustion handoff, a session that died (crash, compaction, sign-out), or a stalled review/merge workflow. Universal resume — classifies the stoppage from the evidence. Invoke as `/go-on [--resume-refill] [--again]`.
+description: Use when stopped work should be picked back up, whatever stopped it — `/pause`, `/end`, a token-exhaustion handoff, an account usage-limit park, a session that died (crash, compaction, sign-out), or a stalled review/merge workflow. Universal resume — classifies the stoppage from the evidence. Invoke as `/go-on [--resume-refill] [--again] [--generation <id>]`.
 triggers:
   - go-on
   - resume
   - pick up where we left off
   - continue the interrupted work
   - what was I doing
-argument-hint: "[--resume-refill] [--again] (refill stays paused without --resume-refill)"
+argument-hint: "[--resume-refill] [--again] [--generation <id>] (refill stays paused without --resume-refill)"
 ---
 
 Resume the work, whatever stopped it. Step 0 classifies the stoppage from recorded evidence and routes; Steps 0b–10 are the interrupted-review-workflow lane it routes to.
@@ -67,6 +67,7 @@ Evidence sources, the precedence table, the newest-wins tie-break, and the degra
 
 - `--resume-refill` — forwarded **verbatim** to the delegated resume command. `/go-on` never writes `refill.paused` itself. Without the flag the refill pause stands on every lane and is reported, and on a lane with no planned-stop record the flag is reported as having had no effect (naming the command that clears it) — never acted on directly.
 - `--again` — ignore the resume receipt in 0.5 and re-evaluate from scratch.
+- `--generation <id>` — **internal**: only the usage-limit wake armed by `.claude/reference/subagent-thread-limit-park.md` §4 passes it. It asserts "I am the wake this repo's park record armed", and 0.2a rejects it when that is no longer true.
 
 ### 0.2 Resolve the stop-state helpers
 
@@ -102,6 +103,40 @@ fi
 ```
 
 **An unresolved helper never reads as "no evidence".** Print `DEGRADED: <name> not found (checked both installed paths) — <class> detection unavailable, continuing without it` — both, not three, because the checkout candidate is deliberately excluded above — and carry that gap into the verdict: a class that could not be probed is *unknown*, not *absent*. With `session-state.sh` unresolved, only the on-disk marker and handoff-note globs remain; if those are also empty the verdict is **unclassifiable** (0.4), never "nothing to resume".
+
+### 0.2a Validate an auto-wake generation (only when `--generation` was passed)
+
+A wake that fires after its park was resumed, replaced, or adopted by another owner must change nothing. Validate **before** any probe runs, any gate is touched, or any work is re-armed — the same order and the same verdicts `/pause-resume` Step 0 uses, against the same field, so the two wake shapes cannot disagree. It runs here, immediately after 0.2, because it needs `SESSION_STATE_SH` and `REPO_KEY`; with `--generation` present and either unresolved, the run stops rather than continuing unvalidated.
+
+<!-- test-anchor: go-on-limit-generation-gate -->
+
+```bash
+# Inputs: CALLER_GENERATION (from --generation), SESSION_STATE_SH, REPO_KEY.
+# Output: GENERATION_VERDICT=valid|stale|blocked|absent
+if [[ -z "${CALLER_GENERATION:-}" ]]; then
+  GENERATION_VERDICT=absent            # ordinary manual /go-on — nothing to validate
+elif [[ -z "${SESSION_STATE_SH:-}" || -z "${REPO_KEY:-}" ]]; then
+  GENERATION_VERDICT=blocked           # cannot validate; change nothing
+else
+  STORED_RC=0
+  STORED_GENERATION=$("$SESSION_STATE_SH" \
+    --get ".repos[\"$REPO_KEY\"].day.limit_resume_generation" 2>/dev/null) || STORED_RC=$?
+  if [[ "$STORED_RC" -ne 0 && "$STORED_RC" -ne 3 ]]; then
+    GENERATION_VERDICT=blocked         # unreadable is never "no generation"
+  elif [[ "$STORED_RC" -eq 3 || -z "$STORED_GENERATION" || "$STORED_GENERATION" == "null" \
+          || "$CALLER_GENERATION" != "$STORED_GENERATION" ]]; then
+    GENERATION_VERDICT=stale
+  else
+    GENERATION_VERDICT=valid
+  fi
+fi
+printf 'GENERATION_VERDICT=%s\n' "$GENERATION_VERDICT"
+```
+
+- **`valid`** → continue to 0.3. The park is still this wake's to resume.
+- **`stale`** → print `Stale auto-wake rejected; nothing was resumed.` and **exit 0**. No gate cleared, no probe run, no receipt written, no launch.
+- **`blocked`** → print one line naming the read failure and exit 1. An unreadable generation is not a licence to resume.
+- **`absent`** → a manual invocation; the ladder runs normally.
 
 ### 0.3 Probe the evidence
 
@@ -145,7 +180,7 @@ GATE_CLASS=$(jq -r '.class // ""' <<<"$GATE_JSON")   # end | pause | "" (absent/
 GATE_AT=$(jq -r '.at // ""' <<<"$GATE_JSON")
 ```
 
-`GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — it blocks ranks 2, 3, and 4 outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 2 is barred for the same reason as ranks 3 and 4 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through.
+`GATE_STATE=unreadable` is **unclassifiable evidence, not an absent gate** — ranks 2 through 5 are all barred outright (0.4). Resuming an `unplanned` or `token_exhaustion` lane while a planned stop may be armed is the exact mistake the ladder exists to prevent: the gate would block every successor launch, and the parked board would go unread. Rank 3 is barred for the same reason as ranks 4 and 5 and on the same evidence — continuing a recorded phase is a resume like any other, and a token-exhaustion handoff is not evidence that no `pause` or `end` gate is armed. Only `GATE_STATE=absent` — an unambiguous "no record" — lets the ladder fall through. The single exception is a validated `--generation` (0.2a), which names one specific park record rather than inferring the class from the gate.
 
 Also read this session's own gate — it decides whether new launches are blocked right now. The helper prints `active` | `inactive` and exits 0; an unresolved helper or a failed call is `unreadable`, which feeds the unclassifiable rule in 0.4, never `inactive`:
 
@@ -248,21 +283,83 @@ If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or
 
 **E — unplanned interruption** (crash, compaction, sign-out — no planned-stop record at all): any of a registry entry still `running`/`stopping`/`stop_failed` (`"$TASK_REGISTRY_SH" --list --live`), a `.repos["$REPO_KEY"].prs` entry, a scoped handoff file for this branch's PR, a `*-checkpoint.md` note for this repo, an in-progress rebase, or a feature branch with uncommitted/unpushed work or an open PR.
 
+**F — usage-limit park** (issue #1618): the repo park record at `.repos["$REPO_KEY"].day` — `parked_until` non-null — **together with** at least one `.repos["$REPO_KEY"].prs[*]` entry whose `handoff_reason == "usage_limit_park"`, carrying `phase`, `head_sha`, and `remaining_work` (schema: `session-state-schema.json` `_usage_limit_park_example`). The park record alone is day mode's business (`/pm` 2D.5 owns it); it is the per-PR records that make this a *subagent-thread* park with pipelines to relaunch. Corroborate each against its scoped handoff file (`"$HANDOFF_STATE_SH" --owner-repo <owner>/<repo> --get <N>`): the handoff's `phase_completed` is what decides which phase relaunches, and a record the handoff cannot support is reported, never resumed. Same tri-state rule as every probe above — only exit 3 is "no state file"; anything else is `unreadable`, never `absent`.
+
+<!-- test-anchor: go-on-limit-park-probe -->
+
+```bash
+# Inputs: SESSION_STATE_SH, REPO_KEY. Outputs: PARK_PROBE=present|absent|unreadable,
+# PARK_PIPELINES (JSON array of {pr, phase, head_sha, needs}), PARK_ACTIVE
+# (true while parked_until is still in the future) and PARK_WAIT_S.
+PARK_PROBE=unreadable
+PARK_PIPELINES="[]"
+PARK_ACTIVE=false
+PARK_WAIT_S=0
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  PU_RC=0
+  PARK_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.parked_until" 2>/dev/null) || PU_RC=$?
+  PRS_RC=0
+  PRS_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].prs" 2>/dev/null) || PRS_RC=$?
+  if (( PU_RC == 3 )) && (( PRS_RC == 3 )); then
+    PARK_PROBE=absent
+  elif (( PU_RC != 0 && PU_RC != 3 )) || (( PRS_RC != 0 && PRS_RC != 3 )); then
+    PARK_PROBE=unreadable
+  elif [[ -z "$PARK_UNTIL" || "$PARK_UNTIL" == "null" ]]; then
+    PARK_PROBE=absent
+  elif ! PARK_EPOCH=$(date -u -d "$PARK_UNTIL" +%s 2>/dev/null \
+                      || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARK_UNTIL" '+%s' 2>/dev/null) \
+       || [[ ! "$PARK_EPOCH" =~ ^[0-9]+$ ]]; then
+    # A park record whose timestamp will not parse is damaged evidence, not an
+    # absent park — same rule the recovery block applies, and the same reason:
+    # falling through would let a lane launch into a window nothing can date.
+    PARK_PROBE=unreadable
+  elif PARK_PIPELINES=$(jq -ce '
+      # Same corruption rule probe B applies: a `.prs` that is neither a map nor
+      # null is damaged, not empty. Without this an ARRAY would take to_entries
+      # silently, and its numeric indices would read as fabricated PR numbers.
+      (if type != "object" and type != "null" then error("prs is not a map") else . end)
+      | (. // {}) | to_entries
+      | map(select((.value.handoff_reason // "") == "usage_limit_park"))
+      | map({pr: .key,
+             phase:    (.value.usage_limit_park.phase     // .value.phase     // ""),
+             head_sha: (.value.usage_limit_park.head_sha  // .value.head_sha  // ""),
+             needs:    (.value.usage_limit_park.needs     // .value.needs     // "")})
+    ' <<<"${PRS_RAW:-null}" 2>/dev/null); then
+    if [[ "$PARK_PIPELINES" == "[]" ]]; then PARK_PROBE=absent; else PARK_PROBE=present; fi
+    # Is the window still shut? The wake fires at reset + 2 minutes, so by the
+    # time it runs `parked_until` is already past and PARK_ACTIVE is false. A
+    # MANUAL /go-on before then must not relaunch into the closed window.
+    PARK_WAIT_S=$(( PARK_EPOCH - $(date -u +%s) ))
+    if [ "$PARK_WAIT_S" -gt 0 ]; then PARK_ACTIVE=true; else PARK_WAIT_S=0; fi
+  else
+    PARK_PIPELINES="[]"; PARK_PROBE=unreadable
+  fi
+fi
+printf 'PARK_PROBE=%s\nPARK_ACTIVE=%s\nPARK_WAIT_S=%s\nPARK_PIPELINES=%s\n' \
+  "$PARK_PROBE" "$PARK_ACTIVE" "$PARK_WAIT_S" "$PARK_PIPELINES"
+```
+
 ### 0.4 Precedence — first match wins
 
 | Rank | Class | Fires on | Resume action |
 |---|---|---|---|
 | 1 | `pause` / `end` | A `present`; or A `absent` with exactly one of B / C | Delegate: `/pause-resume [--resume-refill]` or `/end-resume [--resume-refill]` |
-| 2 | `token_exhaustion` | D, **and** every planned-stop probe readable | Continue the recorded phase (0.6) |
-| 3 | `unplanned` | E only, **and** every planned-stop probe readable | Steps 0b–10 below |
-| 4 | `none` | nothing, and every probe readable | Report `nothing to resume`; change no state |
+| 2 | `usage_limit_park` | F `present`, **and** every planned-stop probe readable; or `--generation` validated `valid` in 0.2a | Relaunch each parked pipeline at its recorded phase (0.6) |
+| 3 | `token_exhaustion` | D, **and** every planned-stop probe readable | Continue the recorded phase (0.6) |
+| 4 | `unplanned` | E only, **and** every planned-stop probe readable | Steps 0b–10 below |
+| 5 | `none` | nothing, and every probe readable | Report `nothing to resume`; change no state |
 
-**Explicit parked state outranks generic stall detection.** A readable planned-stop record wins over in-flight-looking branch state every time: rank 3 is reached only when ranks 1–2 found nothing. A planned stop also outranks rank 2 because its gates are armed, and only `/pause-resume` / `/end-resume` may clear them (`phase-protocols.md` §"Launch gate before every successor").
+**Explicit parked state outranks generic stall detection.** A readable planned-stop record wins over in-flight-looking branch state every time: rank 4 is reached only when ranks 1–3 found nothing. A planned stop also outranks ranks 2 and 3 because its gates are armed, and only `/pause-resume` / `/end-resume` may clear them (`phase-protocols.md` §"Launch gate before every successor").
+
+**A validated `--generation` outranks probe A.** The usage-limit park closes the same execution gate `/pause` does, so probe A reads `present` with `command: pause` on every parked board — and rank 1 alone would delegate to `/pause-resume`, which re-arms live runtime IDs and would leave every dead pipeline stopped. A generation that 0.2a validated is the park record naming this invocation as its own wake, which is stronger evidence than the gate it armed itself. So `GENERATION_VERDICT == valid` selects rank 2 — **but only when probe F is readable**. A validated token says which park armed this wake; it says nothing about whether that park's record can still be read, and rank 2 retires the park and relaunches pipelines, both of which need a record that parses. F `unreadable` with a valid generation is therefore `unclassifiable` (report the read failure, retire nothing, relaunch nothing), and F `absent` with a valid generation falls through to rank 1 — the day-mode park case, whose wake this same `/go-on` serves by forwarding the generation to `/pause-resume` (0.6). Without `--generation`, F is ranked on its evidence like any other probe and rank 1 keeps precedence.
+
+**F `unreadable` blocks ranks 3, 4, and 5**, on the same rule that makes `GATE_STATE=unreadable` block them: a park that could not be read cannot be ruled out, and relaunching an `unplanned` lane into a still-closed window is the failure this rank exists to prevent.
 
 **`pause` vs `end` — newest wins, decided by probe A.** Each activation writes `command` + `at` in the same UTC `Z` format, so the newest active entry names the class. Corroborating records (B, C) settle it only when A is missing or unreadable, and cannot order two classes against each other — their timestamps are not comparable (one ISO string, one file mtime).
 
 **Unclassifiable → report, never guess** (`[BLOCKED]`, no state change, no launch). Print what was found, then offer the resolution paths as a menu (`ask-menu.md`; prose fallback when headless). The cases:
-- `GATE_STATE=unreadable` — the planned-stop record could not be read or carries an active entry with an unknown `command` or a non-UTC-`Z` `at`. A `pause` or `end` may be armed, so ranks 2, 3, and 4 are all barred — including rank 2 even when a token-exhaustion handoff (D) is present and readable.
+- `PARK_PROBE=unreadable` with a validated `--generation` — the wake names a park whose record will not parse. Retire nothing and relaunch nothing; report the read failure and the generation it arrived with.
+- `GATE_STATE=unreadable` — the planned-stop record could not be read or carries an active entry with an unknown `command` or a non-UTC-`Z` `at`. A `pause` or `end` may be armed, so ranks 2 through 5 are all barred — including rank 3 even when a token-exhaustion handoff (D) is present and readable. The one exception is a `--generation` that 0.2a validated: that token names a specific park record, so it identifies the stoppage without the gate having to.
 - B and C both present, A `absent` or unreadable — two planned stops that cannot be ordered. Options: `/pause-resume`, `/end-resume`.
 - This session's gate is `active` — or `GATE_LIVE=unreadable` — and no class is readable from A, B, or C.
 - A probe could not be *read* (0.2) and its class cannot be ruled out.
@@ -279,13 +376,13 @@ Read **this session's own** receipt at `.repos["$REPO_KEY"].resumes["$SESSION_ID
        to force a pass.
 ```
 
-`<receipt .at>` is the receipt's `at` field — when the previous resume ran, not when the stoppage was recorded. Arm nothing, launch nothing, write nothing. After a **successful** dispatch (ranks 1–3 only), write the receipt in one call:
+`<receipt .at>` is the receipt's `at` field — when the previous resume ran, not when the stoppage was recorded. Arm nothing, launch nothing, write nothing. After a **successful** dispatch (ranks 1–4 only), write the receipt in one call:
 
 ```bash
 "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].resumes[\"$SESSION_ID\"]=$RESUME_JSON"
 ```
 
-`RESUME_JSON` is `{class, evidence_digest, at, session_id, dispatched_to}`, where `at` is now. Rank 4 writes nothing at all — "nothing to resume" is a read-only verdict.
+`RESUME_JSON` is `{class, evidence_digest, at, session_id, dispatched_to}`, where `at` is now. Rank 5 writes nothing at all — "nothing to resume" is a read-only verdict.
 
 **Receipts are keyed per session (issue #1576).** As a repo singleton the receipt was a cross-session mask: whichever session dispatched last was the only one recorded, so a sibling's "already resumed" verdict could suppress a dispatch while that session's own pause record was still un-resumed — silent data loss with no error anywhere. `--set` on one map key preserves the others, so concurrent `/go-on` runs never overwrite each other.
 
@@ -335,7 +432,8 @@ fi
 
 An unresolved `background-task-registry.sh` or a failed listing is an **unreadable inventory, never an empty one** (the same rule `/pause` Step 0 applies): say the live-task check could not run, and do not launch anything in the `unplanned` or `token_exhaustion` lanes on the assumption nothing is running. Delegation to `/pause-resume` / `/end-resume` still proceeds — their own claims are locked, so they cannot double-launch on a blind check.
 
-- **`pause` / `end`** — invoke `/pause-resume` or `/end-resume`, forwarding `--resume-refill` when given. They clear the execution gate, re-arm stopped work, and own the refill decision. Report their outcome; do not re-run their steps here.
+- **`pause` / `end`** — invoke `/pause-resume` or `/end-resume`, forwarding `--resume-refill` when given, **and `--generation` when 0.2a validated one**. Forwarding it is what lets a single re-armed `/go-on` wake serve a day-mode park too: with no per-PR park records the ladder falls here, and `/pause-resume` re-validates the same token against the same field before clearing anything. They clear the execution gate, re-arm stopped work, and own the refill decision. Report their outcome; do not re-run their steps here.
+- **`usage_limit_park`** — **only once the window has reopened.** `PARK_ACTIVE=true` means `parked_until` is still in the future: report `parked until <parked_until> — <PARK_WAIT_S>s remaining; resuming automatically when the wake fires` and relaunch nothing, on a manual run and on a `--generation` wake alike (a wake that fires early is a wake whose deadline was mis-derived, and dispatching on it walks straight back into the wall). With the park expired, in order: (1) clear the execution gate and retire the `.day` park record by delegating to `/pause-resume --generation "$CALLER_GENERATION"` (omit the flag on a manual run) — it owns the gate, disarms any still-armed wake, and retires the six park fields in one write, so no second resume route is introduced here; (2) for each entry in `PARK_PIPELINES`, read its scoped handoff file and relaunch that pipeline at the phase `phase_completed` supports — `"A"` relaunches **Phase B**, `"B"` relaunches Phase C or a replacement Phase B per `phase-protocols.md`, never from scratch and never a fresh Phase A over an existing PR; (3) clear that PR's `usage_limit_park` and `handoff_reason` as each relaunch lands, and reset `.day.consecutive_limit_hits` to 0 once one relaunched pipeline completes a phase without re-hitting the limit. A pipeline whose handoff is missing or contradicts the record is **reported, not relaunched**. When a parent orchestrator is live for that PR, its `phase-protocols.md` replacement path is preferred and this lane says so rather than racing it — the same rule the token-exhaustion lane follows. Procedure: `.claude/reference/subagent-thread-limit-park.md` §5.
 - **`token_exhaustion`** — read the entry's `phase`, `head_sha`, and `remaining_work`, then continue that phase: enter Steps 0b–10 at the step its `needs` names (`continue_polling` → Step 6, unpushed fixes → Step 1b). The parent's replacement-subagent path (`phase-protocols.md`) is unchanged and still preferred when a parent orchestrator is live — say so rather than racing it.
 - **`unplanned`** — continue to Step 0b. This is the original `/go-on` behavior, unchanged.
 - **Monitors and artifact watches that died with the session are not re-armed here.** They belong to their owning skills' recovery paths (`/babysit-pr`, `/pr-monitor-and-manage-wake`, `/pm day resume`, `monitor-mode.md` §PM Monitoring Recovery) — the same ones `/pause-resume` Step 5 delegates to. Name what was found and which command owns it.

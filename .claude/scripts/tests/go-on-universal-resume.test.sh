@@ -66,7 +66,7 @@ has "$GO_ON" 'Explicit parked state outranks generic stall detection'
 has "$GO_ON" 'newest wins'
 has "$LADDER" 'Explicit parked state outranks generic stall detection'
 
-# Structural, not textual: the rank table itself must carry all four classes in
+# Structural, not textual: the rank table itself must carry all five classes in
 # rank order. Dropping or reordering a dispatch row fails here even though every
 # one of those words still appears in the surrounding prose.
 RANK_ROWS=$(awk -F'|' '
@@ -77,9 +77,10 @@ RANK_ROWS=$(awk -F'|' '
 ' "$GO_ON")
 [[ -n "$RANK_ROWS" ]] || fail "could not extract the precedence table from go-on"
 EXPECTED_RANKS='1:pause/end
-2:token_exhaustion
-3:unplanned
-4:none'
+2:usage_limit_park
+3:token_exhaustion
+4:unplanned
+5:none'
 [[ "$RANK_ROWS" == "$EXPECTED_RANKS" ]] \
   || fail "precedence table drifted (got: $(tr '\n' ' ' <<<"$RANK_ROWS"))"
 
@@ -97,16 +98,23 @@ fires_on() {
                                   if (r == want) { print $4; exit } }
   ' "$GO_ON"
 }
-for guarded_rank in 2 3 4; do
+# Rank 2 (usage_limit_park, #1618) carries the same readability condition; the
+# one documented way past it is a `--generation` token validated in 0.2a, which
+# names one specific park record instead of inferring the class from the gate.
+for guarded_rank in 2 3 4 5; do
   cell=$(fires_on "$guarded_rank")
   [[ -n "$cell" ]] || fail "precedence table has no rank $guarded_rank row"
   grep -Eq 'readable' <<<"$cell" \
     || fail "rank $guarded_rank must require a readable planned-stop probe (got:$cell)"
 done
 # And the prose that names which ranks an unreadable gate bars must agree.
-has "$GO_ON" 'blocks ranks 2, 3, and 4 outright'
-has "$GO_ON" 'ranks 2, 3, and 4 are all barred'
-has "$LADDER" 'bars ranks 2, 3, and 4 outright'
+has "$GO_ON" 'blocks ranks 3, 4, and 5'
+has "$GO_ON" 'ranks 2 through 5 are all barred'
+has "$LADDER" 'bars ranks 2 through 5 outright'
+# The generation escape hatch is documented on both surfaces, so a future edit
+# cannot quietly widen it into a general bypass of the readability rule.
+has "$GO_ON" 'validated `--generation`'
+has "$LADDER" 'validated in 0.2a'
 
 # --- The refill gate is never re-enabled silently ---------------------------
 has "$GO_ON" '\-\-resume-refill'
