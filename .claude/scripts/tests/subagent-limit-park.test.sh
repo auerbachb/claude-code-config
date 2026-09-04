@@ -43,6 +43,7 @@ REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 DOC="$REPO_ROOT/.claude/reference/subagent-thread-limit-park.md"
 GO_ON="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
 SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
+PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
 RULES="$REPO_ROOT/.claude/rules"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
@@ -427,6 +428,41 @@ check_eq "unresolved helper blocks too"                "GENERATION_VERDICT=block
 
 
 # ---------------------------------------------------------------------------
+echo "== per-PR park write retries a lock timeout (exit 6) =="
+# ---------------------------------------------------------------------------
+# Exit 6 leaves state unchanged, so a dropped write makes the PR invisible to
+# BOTH resume scans. The block must retry once; a second failure is reported.
+FLAKY="$STUB_DIR/flaky-session-state.sh"
+cat > "$FLAKY" <<'STUB'
+#!/usr/bin/env bash
+# Fails the FIRST --set with a lock timeout, then succeeds.
+if [[ "$1" == "--set" ]]; then
+  if [[ -f "$FLAKY_MARKER" ]]; then exit 0; fi
+  : > "$FLAKY_MARKER"
+  exit 6
+fi
+exit 0
+STUB
+chmod +x "$FLAKY"
+FLAKY_MARKER="$STUB_DIR/flaky.marker"; rm -f "$FLAKY_MARKER"
+OUT=$(FLAKY_MARKER="$FLAKY_MARKER" SESSION_STATE_SH="$FLAKY" \
+  PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
+  PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
+check_eq "a lock timeout is retried, not reported as a lost pipeline" \
+  "PR_PARK=1616:recorded" "$OUT"
+
+ALWAYS6="$STUB_DIR/always6-session-state.sh"
+printf '#!/usr/bin/env bash\n[[ "$1" == "--set" ]] && exit 6\nexit 0\n' > "$ALWAYS6"
+chmod +x "$ALWAYS6"
+OUT=$(SESSION_STATE_SH="$ALWAYS6" \
+  PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
+  PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" bash -c "$BLOCK_PIPELINE" 2>/dev/null | tail -1)
+check_eq "  but a persistent timeout still reports the lost pipeline" \
+  "PR_PARK=1616:error rc=6" "$OUT"
+require_text "and the reference doc requires the single retry" \
+  "$DOC" 'Retry ONCE'
+
+# ---------------------------------------------------------------------------
 echo "== /go-on probe F: finds the parked pipelines and their phases (AC 7) =="
 # ---------------------------------------------------------------------------
 
@@ -464,6 +500,37 @@ check_eq "park with no pipeline records is absent for probe F" \
 # An unparked board with a leftover PR entry is absent too.
 seed_unparked
 check_eq "unparked board: probe F absent" "absent" "$(field "$(run_probe)" PARK_PROBE)"
+
+# A RETIRED park over surviving per-PR records is a resume-now park, not an
+# absent one (#1618). /pause-resume Step 5 retires the six park fields in one
+# write and only then relaunches, deliberately leaving handoff_reason set on any
+# PR whose relaunch did not land "so the next pass can retry it". Gating the
+# .prs scan on parked_until made that next pass blind — the orphaned record was
+# unreachable by every later /go-on and the promised retry could never happen.
+seed_unparked
+run_claim "$PARK_UNTIL_FIX" rolling_window >/dev/null
+PR_NUM=1616 PARK_PHASE=B PARK_HEAD_SHA=abc1234 PARK_NEEDS=relaunch_phase_b \
+  PARK_REMAINING='[]' PARKED_UNTIL="$PARK_UNTIL_FIX" bash -c "$BLOCK_PIPELINE" >/dev/null 2>&1
+# Step 5's retirement: the park fields go, the per-PR record stays.
+"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].day.parked_until=null" >/dev/null 2>&1
+OUT=$(run_probe)
+check_eq "a retired park over surviving records is still present" \
+  "present" "$(field "$OUT" PARK_PROBE)"
+check_eq "  and the window is open, so the lane may relaunch" \
+  "false" "$(field "$OUT" PARK_ACTIVE)"
+check_eq "  with no wait to report" "0" "$(field "$OUT" PARK_WAIT_S)"
+check_eq "  and it still names the orphaned PR" \
+  "1616" "$(jq -r '.[0].pr' <<<"$(field "$OUT" PARK_PIPELINES)")"
+require_text "and go-on documents that records outlive a retired parked_until" \
+  "$GO_ON" 'Records OUTLIVE a retired'
+require_text "  and that a bare claim is not a confirmed resume" \
+  "$GO_ON" 'claimed-not-confirmed'
+require_text "  and that the park digest covers every parked PR" \
+  "$GO_ON" 'carries every parked PR'
+require_text "pause-resume reclaims a dead usage_limit_relaunching claim" \
+  "$PAUSE_RESUME" 'Reclaim stale claims before you scan'
+require_text "  and refuses to reclaim on an unreadable inventory" \
+  "$PAUSE_RESUME" 'inventory is never an empty'
 # "Could not look" is never "nothing there".
 OUT=$(SESSION_STATE_SH="$CORRUPT_STATE" bash -c "$BLOCK_PROBE" 2>/dev/null)
 check_eq "unreadable state: probe F unreadable, never absent" \
@@ -473,6 +540,19 @@ check_eq "unreadable state: probe F unreadable, never absent" \
 seed_existing_park reactive "not-a-timestamp" 'null'
 check_eq "probe F: a malformed parked_until is unreadable" \
   "unreadable" "$(field "$(run_probe)" PARK_PROBE)"
+
+# ...and so is a value that only ONE of the two parsers accepts. GNU `date -d`
+# takes relative words, so an unvalidated field would read as a plausible epoch
+# on Linux and as damaged evidence on macOS — the same record, two verdicts.
+for BAD in tomorrow now "+1 day" "2026-09-04 01:23:45" "2026-09-04T01:23:45+00:00"; do
+  seed_existing_park reactive "$BAD" 'null'
+  check_eq "probe F: non-canonical parked_until '$BAD' is unreadable" \
+    "unreadable" "$(field "$(run_probe)" PARK_PROBE)"
+done
+# The canonical shape still parses, so the gate rejects only what it should.
+seed_existing_park reactive "$PARK_UNTIL_FIX" 'null'
+check_eq "probe F: a canonical Z timestamp is still accepted" \
+  "absent" "$(field "$(run_probe)" PARK_PROBE)"
 
 # A validated generation names WHICH park armed the wake; it says nothing about
 # whether that park's record still parses. Rank 2 retires the park and relaunches

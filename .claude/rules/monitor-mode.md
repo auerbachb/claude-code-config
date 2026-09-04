@@ -42,7 +42,7 @@ Operations touching 4+ files: one-line status every 3 writes/edits; batches of 1
 If a summary block references prior work you do not remember, recover before all other work:
 1. Rerun session-start checks.
 2. Read `session-state.json` + handoffs; reconcile each open PR on GitHub (all 3 endpoints per `cr-github-review.md`).
-   Also re-read any usage-limit park and re-arm its wake (`subagent-thread-limit-park.md` §6).
+   Also re-read any usage-limit park; re-arm its wake only when it is an unexpired `rolling_window` one — a weekly cap never gets an in-session wake (`subagent-thread-limit-park.md` §6).
 3. Per polled PR: `polling-state-gate.sh <N> --verify-state` (optional `--root-repo`), then resume with `polling-state-gate.sh <N>` (shells `merge-gate.sh`).
 4. Reconcile state (PR, HEAD, reviewer, pending); verify stale agents and stalled transitions; launch as needed.
 5. Resume monitoring silently — message if recovery reveals a blocker, failure, or decision needing input, or if a defined exception occurs.

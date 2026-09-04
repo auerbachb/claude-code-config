@@ -262,10 +262,22 @@ PARK_PR_JSON=$(jq -c -n \
   '{phase: $phase, needs: $needs, handoff_reason: "usage_limit_park",
     head_sha: $sha, parked_until: $until, remaining_work: $remaining}')
 PR_PARK_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].usage_limit_park=$PARK_PR_JSON" \
-  --set ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].handoff_reason=\"usage_limit_park\"" \
-  >/dev/null 2>&1 || PR_PARK_RC=$?
+write_pr_park() {
+  "$SESSION_STATE_SH" \
+    --set ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].usage_limit_park=$PARK_PR_JSON" \
+    --set ".repos[\"$REPO_KEY\"].prs[\"$PR_NUM\"].handoff_reason=\"usage_limit_park\"" \
+    >/dev/null 2>&1
+}
+write_pr_park || PR_PARK_RC=$?
+# Exit 6 is a lock timeout — transient and documented as retryable
+# (`handoff-files.md`) — and it leaves state UNCHANGED, so the record is simply
+# absent: Probe F and /pause-resume Step 5 scan for exactly this field and would
+# both miss the PR. Retry ONCE, as the prose below requires; a second failure is
+# a lost pipeline to be named in the report, not a warning to be logged.
+if [ "$PR_PARK_RC" -eq 6 ]; then
+  PR_PARK_RC=0
+  write_pr_park || PR_PARK_RC=$?
+fi
 [ "$PR_PARK_RC" -eq 0 ] && echo "PR_PARK=$PR_NUM:recorded" \
                         || echo "PR_PARK=$PR_NUM:error rc=$PR_PARK_RC"
 ```

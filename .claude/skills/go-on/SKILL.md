@@ -283,7 +283,7 @@ If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or
 
 **E — unplanned interruption** (crash, compaction, sign-out — no planned-stop record at all): any of a registry entry still `running`/`stopping`/`stop_failed` (`"$TASK_REGISTRY_SH" --list --live`), a `.repos["$REPO_KEY"].prs` entry, a scoped handoff file for this branch's PR, a `*-checkpoint.md` note for this repo, an in-progress rebase, or a feature branch with uncommitted/unpushed work or an open PR.
 
-**F — usage-limit park** (issue #1618): the repo park record at `.repos["$REPO_KEY"].day` — `parked_until` non-null — **together with** at least one `.repos["$REPO_KEY"].prs[*]` entry whose `handoff_reason == "usage_limit_park"`, carrying `phase`, `head_sha`, and `remaining_work` (schema: `session-state-schema.json` `_usage_limit_park_example`). The park record alone is day mode's business (`/pm` 2D.5 owns it); it is the per-PR records that make this a *subagent-thread* park with pipelines to relaunch. Corroborate each against its scoped handoff file (`"$HANDOFF_STATE_SH" --owner-repo <owner>/<repo> --get <N>`): the handoff's `phase_completed` is what decides which phase relaunches, and a record the handoff cannot support is reported, never resumed. Same tri-state rule as every probe above — only exit 3 is "no state file"; anything else is `unreadable`, never `absent`.
+**F — usage-limit park** (issue #1618): at least one `.repos["$REPO_KEY"].prs[*]` entry whose `handoff_reason == "usage_limit_park"`, carrying `phase`, `head_sha`, and `remaining_work` (schema: `session-state-schema.json` `_usage_limit_park_example`). The repo park record at `.repos["$REPO_KEY"].day` decides only *whether the window is still shut*: a non-null `parked_until` in the future sets `PARK_ACTIVE`, and the park record **alone**, with no per-PR entries, is day mode's business (`/pm` 2D.5 owns it) and reads `absent` here. It is the per-PR records that make this a *subagent-thread* park with pipelines to relaunch, so **they are what the probe keys on** — a retired `parked_until` over surviving records is a resume-now park, not an absent one (`/pause-resume` Step 5 retires the park fields before its relaunches land, and leaves the flag set on any that did not). Corroborate each against its scoped handoff file (`"$HANDOFF_STATE_SH" --owner-repo <owner>/<repo> --get <N>`): the handoff's `phase_completed` is what decides which phase relaunches, and a record the handoff cannot support is reported, never resumed. Same tri-state rule as every probe above — only exit 3 is "no state file"; anything else is `unreadable`, never `absent`.
 
 <!-- test-anchor: go-on-limit-park-probe -->
 
@@ -304,14 +304,23 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     PARK_PROBE=absent
   elif (( PU_RC != 0 && PU_RC != 3 )) || (( PRS_RC != 0 && PRS_RC != 3 )); then
     PARK_PROBE=unreadable
-  elif [[ -z "$PARK_UNTIL" || "$PARK_UNTIL" == "null" ]]; then
-    PARK_PROBE=absent
-  elif ! PARK_EPOCH=$(date -u -d "$PARK_UNTIL" +%s 2>/dev/null \
-                      || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARK_UNTIL" '+%s' 2>/dev/null) \
-       || [[ ! "$PARK_EPOCH" =~ ^[0-9]+$ ]]; then
+  elif [[ -n "$PARK_UNTIL" && "$PARK_UNTIL" != "null" \
+          && ! "$PARK_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    # Canonical UTC `Z`, or it is damaged evidence. Validate the SHAPE before
+    # either parser, because the two disagree about what is valid: GNU `date -d`
+    # accepts relative words ("tomorrow", "now", "+1 day") and would turn a
+    # corrupt field into a plausible epoch, skipping the `unreadable` verdict
+    # entirely, while BSD `date -j -f` rejects them — so the same record would
+    # classify differently on Linux and macOS. The format gate makes both agree.
+    PARK_PROBE=unreadable
+  elif [[ -n "$PARK_UNTIL" && "$PARK_UNTIL" != "null" ]] \
+       && ! PARK_EPOCH=$(date -u -d "$PARK_UNTIL" +%s 2>/dev/null \
+                         || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$PARK_UNTIL" '+%s' 2>/dev/null); then
     # A park record whose timestamp will not parse is damaged evidence, not an
     # absent park — same rule the recovery block applies, and the same reason:
     # falling through would let a lane launch into a window nothing can date.
+    PARK_PROBE=unreadable
+  elif [[ -n "$PARK_UNTIL" && "$PARK_UNTIL" != "null" && ! "$PARK_EPOCH" =~ ^[0-9]+$ ]]; then
     PARK_PROBE=unreadable
   elif PARK_PIPELINES=$(jq -ce '
       # Same corruption rule probe B applies: a `.prs` that is neither a map nor
@@ -332,12 +341,32 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
       | if any(.[]; .phase == "" or .head_sha == "" or .needs == "")
         then error("parked record missing phase/head_sha/needs") else . end
     ' <<<"${PRS_RAW:-null}" 2>/dev/null); then
-    if [[ "$PARK_PIPELINES" == "[]" ]]; then PARK_PROBE=absent; else PARK_PROBE=present; fi
-    # Is the window still shut? The wake fires at reset + 2 minutes, so by the
-    # time it runs `parked_until` is already past and PARK_ACTIVE is false. A
-    # MANUAL /go-on before then must not relaunch into the closed window.
-    PARK_WAIT_S=$(( PARK_EPOCH - $(date -u +%s) ))
-    if [ "$PARK_WAIT_S" -gt 0 ]; then PARK_ACTIVE=true; else PARK_WAIT_S=0; fi
+    if [[ "$PARK_PIPELINES" == "[]" ]]; then
+      # No per-PR records: not a subagent-thread park, whatever `parked_until`
+      # says. A standing repo park on its own is day mode's business (`/pm` 2D.5
+      # owns it), exactly as this probe's prose states.
+      PARK_PROBE=absent
+    elif [[ -z "$PARK_UNTIL" || "$PARK_UNTIL" == "null" ]]; then
+      # Records OUTLIVE a retired `parked_until` (#1618), so the `.prs` scan runs
+      # whether or not the repo park still stands. `/pause-resume` Step 5 retires
+      # the six park fields in ONE write and only then relaunches, deliberately
+      # leaving `handoff_reason == "usage_limit_park"` set on any PR whose
+      # relaunch did not land "so the next pass can retry it". Gating this scan
+      # on `parked_until` is what made that next pass blind: the orphaned records
+      # were unreachable by every later `/go-on`, and the retry the delegation
+      # lane promises could never happen. The window is demonstrably open — the
+      # park that closed it is gone — so this is a resume-now park, never a wait.
+      PARK_PROBE=present
+      PARK_ACTIVE=false
+      PARK_WAIT_S=0
+    else
+      PARK_PROBE=present
+      # Is the window still shut? The wake fires at reset + 2 minutes, so by the
+      # time it runs `parked_until` is already past and PARK_ACTIVE is false. A
+      # MANUAL /go-on before then must not relaunch into the closed window.
+      PARK_WAIT_S=$(( PARK_EPOCH - $(date -u +%s) ))
+      if [ "$PARK_WAIT_S" -gt 0 ]; then PARK_ACTIVE=true; else PARK_WAIT_S=0; fi
+    fi
   else
     PARK_PIPELINES="[]"; PARK_PROBE=unreadable
   fi
@@ -375,7 +404,7 @@ printf 'PARK_PROBE=%s\nPARK_ACTIVE=%s\nPARK_WAIT_S=%s\nPARK_PIPELINES=%s\n' \
 
 ### 0.5 Resume receipt — never resume the same stoppage twice
 
-Read **this session's own** receipt at `.repos["$REPO_KEY"].resumes["$SESSION_ID"]` before dispatching, where `$SESSION_ID` is `${CLAUDE_SESSION_ID:-default}` under the same `[^[:alnum:]_.-] -> _` sanitization `/pause` Step 7a applies. Build the evidence digest `class|record_at|pr|head_sha|branch`. If it equals the receipt's `evidence_digest` and `--again` was not passed:
+Read **this session's own** receipt at `.repos["$REPO_KEY"].resumes["$SESSION_ID"]` before dispatching, where `$SESSION_ID` is `${CLAUDE_SESSION_ID:-default}` under the same `[^[:alnum:]_.-] -> _` sanitization `/pause` Step 7a applies. Build the evidence digest `class|record_at|pr|head_sha|branch`. **On the `usage_limit_park` class the `pr|head_sha` slot carries every parked PR**, as `pr:head_sha` pairs sorted by PR number and joined with `,` — not one representative pair. A park is routinely a *set* of pipelines, and a single pair cannot tell a fully-resumed board from a partly-resumed one: dispatch four, land three, and the digest built on the same representative PR is byte-identical, so the next `/go-on` matches its own receipt and answers `[DONE]` while one pipeline is still parked. Keyed on the whole set, any PR that remains parked changes the digest and the retry happens. If it equals the receipt's `evidence_digest` and `--again` was not passed:
 
 ```
 [DONE] nothing to resume — the <class> stoppage recorded at <record_at> was already
@@ -442,7 +471,7 @@ An unresolved `background-task-registry.sh` or a failed listing is an **unreadab
 - **`pause` / `end`** — invoke `/pause-resume` or `/end-resume`, forwarding `--resume-refill` when given, **and `--generation` when 0.2a validated one**. Forwarding it is what lets a single re-armed `/go-on` wake serve a day-mode park too: with no per-PR park records the ladder falls here, and `/pause-resume` re-validates the same token against the same field before clearing anything. They clear the execution gate, re-arm stopped work, and own the refill decision. Report their outcome; do not re-run their steps here.
 - **`usage_limit_park`** — **only once the window has reopened.** `PARK_ACTIVE=true` means `parked_until` is still in the future: report `parked until <parked_until> — <PARK_WAIT_S>s remaining; resuming automatically when the wake fires` and relaunch nothing, on a manual run and on a `--generation` wake alike (a wake that fires early is a wake whose deadline was mis-derived, and dispatching on it walks straight back into the wall). With the park expired, delegate the whole resume to `/pause-resume --generation "$CALLER_GENERATION"` (omit the flag on a manual run) and **relaunch nothing here**. It owns the execution gate, disarms any still-armed wake, retires the six park fields in one write, and — since issue #1618 — its Step 5 relaunches the parked pipelines themselves, claiming each PR before it launches. `PARK_PIPELINES` is this lane's *expectation*, not a second work list: relaunching from it after Step 5 has already run is how one park becomes two Phase B or C pipelines on one branch, because the list was captured before the delegation and knows nothing of the claims Step 5 took. This is the same rule the `pause` / `end` lane states — report their outcome; do not re-run their steps here — and it is what keeps the design's promise of one set of records, two entry points, and no second resume route.
 
-Then **reconcile and report, without launching**: re-read `.prs[*]` and compare against `PARK_PIPELINES`. An entry that no longer carries `handoff_reason == "usage_limit_park"` was relaunched or claimed by Step 5 — report it as resumed. One still carrying it was left behind deliberately (a launch gate declined it, its handoff is missing or contradicts the record, or another thread holds `usage_limit_relaunching`); name it and the reason Step 5 gave, and leave it parked for the next pass rather than launching it here to "finish the job". If the re-read fails, say the reconciliation could not run and name `PARK_PIPELINES` as the unverified expectation — never report those PRs as resumed on an unreadable check. When a parent orchestrator is live for that PR, its `phase-protocols.md` replacement path is preferred and this lane says so rather than racing it — the same rule the token-exhaustion lane follows. Procedure: `.claude/reference/subagent-thread-limit-park.md` §5.
+Then **reconcile and report, without launching**: re-read `.prs[*]` and compare against `PARK_PIPELINES`. An entry that no longer carries `handoff_reason == "usage_limit_park"` **and no longer carries `usage_limit_relaunching` either** was relaunched by Step 5 — report it as resumed. One reading `usage_limit_relaunching` is *claimed*, which is not the same thing: the claim is taken before the launch, so the value alone says a thread intended to relaunch it, never that anything is running. Report it as claimed-not-confirmed and name it, so a claim whose thread died is visible here instead of being counted as a resume; Step 5's own stale-claim reclaim is what returns it to the retryable set on the next pass. One still carrying it was left behind deliberately (a launch gate declined it, its handoff is missing or contradicts the record, or another thread holds `usage_limit_relaunching`); name it and the reason Step 5 gave, and leave it parked for the next pass rather than launching it here to "finish the job". If the re-read fails, say the reconciliation could not run and name `PARK_PIPELINES` as the unverified expectation — never report those PRs as resumed on an unreadable check. When a parent orchestrator is live for that PR, its `phase-protocols.md` replacement path is preferred and this lane says so rather than racing it — the same rule the token-exhaustion lane follows. Procedure: `.claude/reference/subagent-thread-limit-park.md` §5.
 - **`token_exhaustion`** — read the entry's `phase`, `head_sha`, and `remaining_work`, then continue that phase: enter Steps 0b–10 at the step its `needs` names (`continue_polling` → Step 6, unpushed fixes → Step 1b). The parent's replacement-subagent path (`phase-protocols.md`) is unchanged and still preferred when a parent orchestrator is live — say so rather than racing it.
 - **`unplanned`** — continue to Step 0b. This is the original `/go-on` behavior, unchanged.
 - **Monitors and artifact watches that died with the session are not re-armed here.** They belong to their owning skills' recovery paths (`/babysit-pr`, `/pr-monitor-and-manage-wake`, `/pm day resume`, `monitor-mode.md` §PM Monitoring Recovery) — the same ones `/pause-resume` Step 5 delegates to. Name what was found and which command owns it.
