@@ -35,7 +35,7 @@ VERIFY="$REPO_ROOT/.claude/scripts/verify-exit-report-block.sh"
 # tolerates it. Probe the BEHAVIOR rather than parsing a version string: the
 # child `bash` resolved from PATH need not be the one running this suite, and a
 # behavioral probe cannot drift from the thing it gates.
-if bash -c 'set -u; a=(); : "${a[@]}"' >/dev/null 2>&1; then
+if bash -c 'set -u; a=(); : "${a[@]}"' >/dev/null 2>&1; then  # empty-array-ok: the bare expansion IS the probe — this line deliberately triggers the abort it is measuring
   EMPTY_EXPANSION_ABORTS=0
 else
   EMPTY_EXPANSION_ABORTS=1

@@ -282,7 +282,7 @@ for n in 1 2 3 4; do
     --command pause --window-minutes "$n" >/dev/null & race_pids+=("$!")
   "$PAUSE" --repo "$REPO" --clear --session lifecycle-race >/dev/null & race_pids+=("$!")
 done
-for pid in "${race_pids[@]}"; do wait "$pid"; done
+for pid in ${race_pids[@]+"${race_pids[@]}"}; do wait "$pid"; done
 RACE_STATE="$("$PAUSE" --repo "$REPO" --status --session lifecycle-race)"
 RACE_MARKER="$CLAUDE_EXECUTION_PAUSE_MARKER_DIR/claude-execution-pause-v2-$(scope_hash "$REPO" lifecycle-race)"
 if [[ "$RACE_STATE" == active ]]; then

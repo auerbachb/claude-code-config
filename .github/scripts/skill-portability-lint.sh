@@ -144,7 +144,7 @@ fi
 
 # A file present but unreadable would make every grep below return nothing,
 # which is byte-identical to "this file is clean". Fail on it explicitly.
-for f in "${guarded_files[@]}"; do
+for f in ${guarded_files[@]+"${guarded_files[@]}"}; do
   if [[ ! -r "$f" ]]; then
     echo "::error::Guarded surface exists but is unreadable: $f — cannot report a pass for a file that was never inspected"
     exit 3
@@ -178,7 +178,7 @@ done
 # The canonical list puts it two lines above; 6 absorbs comments and wrapping.
 CANDIDATE_WINDOW=6
 
-for f in "${guarded_files[@]}"; do
+for f in ${guarded_files[@]+"${guarded_files[@]}"}; do
   # Read the file once so a candidate entry can consult its own neighbours.
   file_lines=()
   while IFS= read -r l; do file_lines+=("$l"); done < "$f"

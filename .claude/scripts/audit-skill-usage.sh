@@ -194,7 +194,7 @@ if (( ${#RECOMMEND[@]} > 0 )); then
   while IFS= read -r entry; do
     sorted+=("$entry")
   done < <(printf '%s\n' "${RECOMMEND[@]}" | sort -t$'\t' -k2 -rn)
-  for entry in "${sorted[@]}"; do
+  for entry in ${sorted[@]+"${sorted[@]}"}; do
     skill_name="${entry%%$'\t'*}"
     age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"
@@ -212,7 +212,7 @@ if (( ${#FLAGGED[@]} > 0 )); then
   while IFS= read -r entry; do
     sorted+=("$entry")
   done < <(printf '%s\n' "${FLAGGED[@]}" | sort -t$'\t' -k2 -rn)
-  for entry in "${sorted[@]}"; do
+  for entry in ${sorted[@]+"${sorted[@]}"}; do
     skill_name="${entry%%$'\t'*}"
     age_days="${entry##*$'\t'}"
     printf "  - %s (unused for %d days)\n" "$skill_name" "$age_days"

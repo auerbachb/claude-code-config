@@ -157,7 +157,7 @@ state_set() {  # pairs of subpath / json-value; non-zero when the write did NOT 
     sub="$1"; val="$2"; shift 2
     args+=(--set ".repos[\"$REPO\"].release.$sub=$val")
   done
-  STATE_WRITE_ERR="$("$STATE_SH" --raw-path "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  STATE_WRITE_ERR="$("$STATE_SH" --raw-path ${args[@]+"${args[@]}"} 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -eq 0 ]; then
     STATE_WRITE_ERR=""
   elif [ -z "$STATE_WRITE_ERR" ]; then
