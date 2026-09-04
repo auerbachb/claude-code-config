@@ -1648,13 +1648,20 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 # ACTIVE_COUNT = pipelines running OR queued right now, counted from the table
 # just printed. Gate on a table having ACTUALLY been emitted: stamping the clock
 # without one restarts the hour and hides a board that has already gone stale.
-# TABLE_RENDERED carries that fact explicitly. Set it to 1 on the line AFTER the
-# table reaches the user — whether /board printed it or the DEGRADED inline
-# fallback did — and re-initialise it to 0 here every time, plainly, never as a
-# `${TABLE_RENDERED:-0}` default: a 1 left over from an earlier render is exactly
-# how the clock gets stamped for a board this pass never printed.
+# TABLE_RENDERED carries that fact explicitly. Set it to 1 ONLY on the path where
+# a table actually reached the user — whether /board printed it or the DEGRADED
+# inline fallback did — and re-initialise it to 0 here every time, plainly, never
+# as a `${TABLE_RENDERED:-0}` default: a 1 left over from an earlier render is
+# exactly how the clock gets stamped for a board this pass never printed.
+# A render that FAILED — /board did not resolve AND the inline fallback did not
+# print either — leaves the flag at 0 and falls through to the DEGRADED
+# else-branch below, which is the correct outcome: no table, no clock stamp.
+# So the assignment is never a straight-line statement after the render. An
+# unconditional 1 makes the guard vacuous on exactly the failure it was added to
+# catch, the same way a carried-over 1 does.
 TABLE_RENDERED=0
 # … render the table (via /board, or the inline fallback above) …
+# … then, on the success path ONLY — a table was emitted:
 TABLE_RENDERED=1
 if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "$TABLE_RENDERED" -eq 1 \
       && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
