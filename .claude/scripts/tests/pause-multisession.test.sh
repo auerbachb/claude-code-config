@@ -411,6 +411,8 @@ CLASS_MATRIX='[
   {"case":"map: malformed value",     "v":{"s1":"not-a-record"},         "kind":"map",  "want":"unreadable"},
   {"case":"map: scalar",              "v":123,                           "kind":"map",  "want":"unreadable"},
   {"case":"map: array",               "v":[],                            "kind":"map",  "want":"unreadable"},
+  {"case":"map: empty string",        "v":"",                            "kind":"map",  "want":"unreadable"},
+  {"case":"slot: empty string",       "v":"",                            "kind":"slot", "want":"unreadable"},
   {"case":"slot: absent",             "v":null,                          "kind":"slot", "want":"absent"},
   {"case":"slot: record",             "v":{"active":true},               "kind":"slot", "want":"present"},
   {"case":"slot: scalar",             "v":123,                           "kind":"slot", "want":"unreadable"}
@@ -431,6 +433,47 @@ while [[ "$i" -lt "$CCOUNT" ]]; do
   check_eq "ownership sweep agrees — $CASE"  "$WANT" "$(eval_class "$CLASS_SWEEP" "$VAL" "$KIND")"
   i=$((i + 1))
 done
+
+# ---------------------------------------------------------------------------
+echo "== An empty read is a DAMAGED slot, not an absent one =="
+# ---------------------------------------------------------------------------
+# The classifier above already calls the empty JSON string `unreadable` for both
+# shapes. It never saw one: `session-state.sh --get` prints NOTHING for a slot
+# holding `""` (rc=0, empty stdout), and all three readers coerced that empty
+# read to `null` before the classifier ran — `${VAR:-null}`, `[[ -z "$v" ]]`,
+# and `if . == "" then null`. A slot holding `""` is not a map and not a record,
+# so reporting it absent is the same "corrupt board read as nothing parked"
+# masking this contract exists to stop. Assert the SHELL halves, per reader,
+# because that is the layer the coercion lived in.
+check_eq "session-state.sh --get really does print nothing for a slot holding \"\"" \
+  "" "$(reset_state; jq -n --arg key "$REPO_KEY" '{repos: {($key): {pauses: ""}}}' > "$STATE_FILE"
+        "$SCRIPT" --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+reset_state
+
+# The sweep's coercion, extracted and run as-is.
+eval "$(awk '/^pause_slot_arg\(\) \{/,/^\}/' "$SWEEP")"
+check_eq "the sweep hands an empty read through as a JSON string, not null" \
+  '""' "$(pause_slot_arg "")"
+check_eq "and still calls the literal null absent" "null" "$(pause_slot_arg "null")"
+check_eq "and still passes a healthy record through untouched" \
+  '{"active":true}' "$(pause_slot_arg '{"active":true}')"
+
+# /pause-resume's coercion, extracted and run as-is.
+eval "$(awk '/^_json_or_null\(\) \{/,/^\}/' "$PAUSE_RESUME_SKILL")"
+check_eq "/pause-resume hands an empty read through as a JSON string, not null" \
+  '""' "$(_json_or_null "")"
+check_eq "and still calls the literal null absent" "null" "$(_json_or_null "null")"
+
+# /go-on parses inside jq instead, so assert its `parse` def and its init value.
+PARSE_GOON="$(awk '/^ *def parse: /{sub(/^[ \t]+/,""); print; exit}' "$GO_ON_SKILL")"
+check_eq "/go-on parses an empty read as damaged, not as null" '"unparseable"' \
+  "$(jq -nc --arg v "" "$PARSE_GOON"' $v | parse')"
+check_eq "/go-on still parses the literal null as absent" "null" \
+  "$(jq -nc --arg v "null" "$PARSE_GOON"' $v | parse')"
+check_eq "/go-on seeds its slot vars with null, so an unread slot stays absent" "3" \
+  "$(grep -cE '^(PAUSES|LEGACY_PAUSE|LEGACY_SUSPEND)_RAW="null"$' "$GO_ON_SKILL")"
+check_eq "and no reader re-coerces an empty slot read back to null" "0" \
+  "$(grep -cE '\$\{(PAUSES|LEGACY_PAUSE|LEGACY_SUSPEND)_RAW:-null\}' "$GO_ON_SKILL")"
 
 # A corrupt map and a corrupt legacy slot reach the SAME verdict — the asymmetry
 # BugBot named (`else []` for one, `error()` for the other) is gone.
@@ -619,7 +662,7 @@ sweep_verdict() { # sweep_verdict <raw .pause slot value, written verbatim>
       ./.claude/scripts/candidate-ownership.sh 4242 --repo "$REPO_KEY" --json 2>/dev/null )
 }
 
-for _shape in '"not JSON at all, just text"' '[1,2,3]'; do
+for _shape in '"not JSON at all, just text"' '[1,2,3]' '""'; do
   OUT="$(sweep_verdict "$(jq -rn --argjson v "$_shape" '$v | if type == "string" then . else tojson end')")"
   check_eq "a corrupt .pause ($_shape) still reports the keyed record as owned" \
     "owned_live" "$(jq -r '.verdict' <<<"$OUT")"

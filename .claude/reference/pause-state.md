@@ -148,6 +148,23 @@ beside it: `/pause-resume` emptied `PAUSE_RECORDS`, and the ownership sweep drew
 no parked-unit evidence at all, so a candidate owned by a perfectly readable
 keyed record could still be dispatched.
 
+**Only the literal `null` is absent — an empty read is damaged.** The classifier
+sees a slot's *value*, but every reader gets that value through
+`session-state.sh --get`, which prints **nothing** (rc=0, empty stdout) for a slot
+holding the JSON string `""`. Each reader used to fold that empty read back into
+`null` before the classifier ran — `${VAR:-null}` in `/go-on`, `[[ -z "$v" ]]` in
+the sweep's `pause_slot_arg`, `[[ -n "$1" ]]` in `/pause-resume`'s
+`_json_or_null`, plus a `if . == "" then null` special case inside `/go-on`'s
+`parse`. A slot holding `""` is neither a map of records nor a record, so
+reporting it absent is the same "corrupt board read as nothing parked" masking
+this contract exists to prevent. The empty read now survives to the classifier as
+a JSON string and lands on `unreadable`. The readers therefore reserve the
+literal `null` for the two cases that really are absent-or-already-named: a `--get`
+on a missing path (which prints `null`), and `rc=3` (no state file has ever been
+written). A read that failed some *other* way is handed `null` too, because its
+caller has already named that slot — passing the empty read on instead would name
+the same slot a second time.
+
 Probe B is the one reader whose *verdict* is tri-state rather than a record list,
 so it takes the boundary explicitly: a surviving slot's un-resumed record is
 `present` evidence no matter what its damaged sibling holds, and probe B falls to

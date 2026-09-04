@@ -214,9 +214,14 @@ fi
 # `.pauses` is empty: gating the legacy read on an empty map is this very bug one
 # level up — a pre-upgrade board becomes unreachable the moment any keyed record
 # exists.
-PAUSES_RAW=""
-LEGACY_PAUSE_RAW=""
-LEGACY_SUSPEND_RAW=""
+# `null` — the literal jq text for "this slot holds nothing" — is the ONLY
+# absent value. An EMPTY string is not absent: `--get` prints nothing for a slot
+# that holds the JSON string `""`, and that is a damaged slot, so the empty read
+# must survive to `parse` and classify `unreadable` rather than being coerced
+# here (issue #1611).
+PAUSES_RAW="null"
+LEGACY_PAUSE_RAW="null"
+LEGACY_SUSPEND_RAW="null"
 # The names of the slots that could not be read or would not parse. Empty means
 # every slot was readable; a name here is reported and that slot alone dropped.
 PAUSE_SLOTS_UNREADABLE=""
@@ -228,9 +233,12 @@ else
   for PAUSE_SLOT in pauses pause suspend; do
     SLOT_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].$PAUSE_SLOT" 2>/dev/null)
     SLOT_RC=$?
-    if (( SLOT_RC == 3 )); then SLOT_RAW=""   # no state file — the absence probe A already saw
+    if (( SLOT_RC == 3 )); then SLOT_RAW="null"   # no state file — the absence probe A already saw
     elif (( SLOT_RC != 0 )); then
-      SLOT_RAW=""
+      # Named here, so hand the combine `null` and let it stay silent about this
+      # slot — otherwise it would classify the empty read `unreadable` too and
+      # name the same slot twice.
+      SLOT_RAW="null"
       PAUSE_SLOTS_UNREADABLE="${PAUSE_SLOTS_UNREADABLE:+$PAUSE_SLOTS_UNREADABLE }$PAUSE_SLOT"
     fi
     case "$PAUSE_SLOT" in
@@ -241,9 +249,9 @@ else
   done
 fi
 PAUSE_PROBE=$(jq -c -n \
-  --arg keyed  "${PAUSES_RAW:-null}" \
-  --arg lpause "${LEGACY_PAUSE_RAW:-null}" \
-  --arg lsusp  "${LEGACY_SUSPEND_RAW:-null}" '
+  --arg keyed  "$PAUSES_RAW" \
+  --arg lpause "$LEGACY_PAUSE_RAW" \
+  --arg lsusp  "$LEGACY_SUSPEND_RAW" '
   # ---- one slot, one verdict (issue #1611) -----------------------------------
   # Classify a single pause source on its OWN: `absent` (null), `present` (the
   # shape that slot holds), or `unreadable` (anything else). The session-keyed
@@ -269,11 +277,15 @@ PAUSE_PROBE=$(jq -c -n \
                       else 0 end);
   def unresumed: (.active != false)
                  or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
-  # An empty read is "nothing there". A value that will not parse is a DAMAGED
-  # slot, not an empty one — caught HERE, inside the slot, so it classifies as
-  # `unreadable` rather than aborting the program and taking the other two with
-  # it. The caught value is a string, which slot_class already calls unreadable.
-  def parse: if . == "" then null else (try fromjson catch "unparseable") end;
+  # A value that will not parse is a DAMAGED slot — caught HERE, inside the slot,
+  # so it classifies as `unreadable` rather than aborting the program and taking
+  # the other two with it. The caught value is a string, which slot_class already
+  # calls unreadable. An EMPTY read parses no better than any other non-JSON text
+  # and is damaged for the same reason: `--get` prints nothing for a slot holding
+  # the JSON string `""`, so special-casing `""` to null would report exactly that
+  # corrupt slot as "nothing parked" (issue #1611). Only the caller's literal
+  # `null` — a genuinely absent slot, or one already named above — is absent.
+  def parse: try fromjson catch "unparseable";
   # Only a `present` slot contributes records; a damaged one contributes none
   # and is reported by name instead.
   def slot_records($kind):

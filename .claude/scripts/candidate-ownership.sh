@@ -407,12 +407,17 @@ else
     # map is empty: an else-branch would make a board parked before either rename
     # invisible the moment any session wrote a keyed record — the same masking
     # bug #1576 removed one level up.
-    ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses" || true
-    PAUSES_MAP_JSON="$SS_VALUE"
-    ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)" || true
-    PAUSE_LEGACY_JSON="$SS_VALUE"
-    ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)" || true
-    SUSPEND_LEGACY_JSON="$SS_VALUE"
+    # On a usable read the value is kept VERBATIM, empty included: `--get` prints
+    # nothing for a slot holding the JSON string `""`, and that is a damaged
+    # slot the combine has to see. A failed read is already named by ss_get, so
+    # it is handed the literal `null` instead of being classified a second time
+    # (issue #1611).
+    if ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses"; then
+      PAUSES_MAP_JSON="$SS_VALUE"; else PAUSES_MAP_JSON="null"; fi
+    if ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)"; then
+      PAUSE_LEGACY_JSON="$SS_VALUE"; else PAUSE_LEGACY_JSON="null"; fi
+    if ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)"; then
+      SUSPEND_LEGACY_JSON="$SS_VALUE"; else SUSPEND_LEGACY_JSON="null"; fi
     # Each of the three slots is classified on its OWN in the combine below
     # (issue #1611), so a corrupt one is named alone and the healthy ones still
     # contribute. Nothing is pre-checked or cleared here: a shell-side check for
@@ -449,7 +454,10 @@ json_or_null() { # a `--get` on a missing path prints "null"; normalize both
 # a map, so slot_class already classifies it `unreadable` and the slot is named.
 pause_slot_arg() {
   local v="$1"
-  [[ -z "$v" || "$v" == "null" ]] && { printf 'null'; return; }
+  # The literal `null` is the ONLY absent value. An EMPTY value is a slot holding
+  # the JSON string `""` — damaged — and must reach slot_class as a string so it
+  # is named, not coerced to `null` and reported as "nothing parked".
+  [[ "$v" == "null" ]] && { printf 'null'; return; }
   if printf '%s' "$v" | jq -e . >/dev/null 2>&1; then printf '%s' "$v"
   else jq -Rn --arg v "$v" '$v'; fi
 }

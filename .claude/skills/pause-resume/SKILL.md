@@ -148,8 +148,14 @@ STATE_UNREADABLE=false
 # absent one — passing it as a JSON STRING keeps it that way, because a string is
 # neither a record nor a map and `slot_class` classifies it `unreadable`.
 # Coercing it to `null` here would read a corrupt board as "nothing parked".
+# The literal `null` is the ONLY absent value. An EMPTY argument is NOT absent:
+# `--get` prints nothing for a slot holding the JSON string `""`, and that is a
+# damaged slot, so it must fall through to the parse check below and reach
+# `slot_class` as a string — `unreadable`, named — rather than being coerced to
+# `null` and reported as "nothing parked" (issue #1611). `_read_slot` hands this
+# the literal `null` for the genuinely-absent and already-named cases.
 _json_or_null() {
-  [[ -n "$1" && "$1" != "null" ]] || { printf 'null'; return; }
+  [[ "$1" != "null" ]] || { printf 'null'; return; }
   if printf '%s' "$1" | jq -e . >/dev/null 2>&1; then printf '%s' "$1"
   else jq -Rn --arg v "$1" '$v'; fi
 }
@@ -167,9 +173,13 @@ _read_slot() { # _read_slot <jq-path> <label> -> SLOT_VALUE
   SLOT_VALUE=""
   SLOT_VALUE=$("$SESSION_STATE_SH" --get "$1" 2>/dev/null) || _rc=$?
   case "$_rc" in
+    # rc=0 keeps the value verbatim, EMPTY INCLUDED: an empty read is a slot
+    # holding `""`, which is damaged, and the combine must see it (issue #1611).
     0) ;;
-    3) SLOT_VALUE="" ;;
-    *) SLOT_VALUE=""
+    3) SLOT_VALUE="null" ;;      # no state file — genuinely absent
+    # Named right here, so hand the combine `null`: were it given the empty read
+    # it would classify this slot `unreadable` as well and name it twice.
+    *) SLOT_VALUE="null"
        STATE_UNREADABLE=true
        echo "DEGRADED: could not read $2 (session-state.sh rc=$_rc) — parked work there was not consulted" >&2 ;;
   esac
