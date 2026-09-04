@@ -1,7 +1,7 @@
 # Phase Completion Protocols & Exit Reports
 
 > **Always:** Print a Structured Exit Report as the final output before every subagent exits. Execute the appropriate Completion Protocol immediately when a subagent returns. Verify outputs before marking complete.
-> **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns ("Always do").
+> **Ask first:** Crashed/no-handoff respawns — tell the user first; exhaustion with valid handoff auto-respawns, and a limit-parked death never asks ("Always do").
 > **Never:** Skip the exit report. Launch the next phase without verifying the previous phase's outputs. Do NOT ask permission for autonomous phase transitions — including Phase C after `merge_ready`.
 
 ## Launch gate before every successor
@@ -26,11 +26,15 @@ overlap-chain successor. This gate overrides every "within
 
 Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one colon-separated field per line, no extra whitespace. Fields + valid `OUTCOME` values: `.claude/reference/exit-report-format.md`; evidence requirements: `.claude/reference/verification-evidence-patterns.md`. On exhaustion, print `OUTCOME: exhaustion` before the token limit.
 
+## Limit-parked is not a crash
+
+A missing exit report is a crash **only** when the runtime's own structured classification is not a usage limit (`rate_limit`, `rate_limit_error`, the harness session-limit code). When it is, park, arm the wake, resume on wake, never ask: `.claude/reference/subagent-thread-limit-park.md`.
+
 ## Phase A Completion Protocol (MANDATORY)
 
 **WHEN** a Phase A subagent returns, execute immediately — before any other work:
 
-1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report = silent failure — report to user, check GitHub.
+1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`. No exit report: classify first (§Limit-parked), else silent failure — report, check GitHub.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` → proceed to step 3
    - `exhaustion` → **run step 4 (worktree cleanup) now**, then launch replacement Phase A within 60s. Report to user. **STOP — do not execute steps 3, 5-7**.
@@ -44,7 +48,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 
 **WHEN** a Phase B subagent returns, execute immediately:
 
-1. **Parse the exit report.** No exit report = silent failure.
+1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure.
 2. **Branch on OUTCOME:**
    - `merge_ready` → proceed to step 3 (launch Phase C). This is the single Phase-C-advancing terminal.
    - `clean`, `fixes_pushed`, or `exhaustion` → launch replacement Phase B within 60s, update `session-state.json` (keep phase B; record new SHA/remaining work as applicable), and **STOP**. Report `exhaustion` (a failure); `clean`/`fixes_pushed` are silent (`CLAUDE.md` #3).
@@ -56,7 +60,7 @@ Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one
 
 **WHEN** a Phase C subagent returns, execute immediately:
 
-1. **Parse the exit report.** No exit report = silent failure — check GitHub API.
+1. **Parse the exit report.** None: classify first (§Limit-parked), else silent failure — check GitHub API.
 2. **Branch on OUTCOME:**
    - `merged` → verify `gh pr view N --json state --jq '.state'` is `MERGED`, then clean up.
    - `blocked` → report blocker details to user. Do NOT merge.

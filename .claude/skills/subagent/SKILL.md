@@ -56,6 +56,12 @@ Step 5.1's decomposition has two reads of its own, and they fail in opposite dir
 
 ---
 
+### 0.1: Recover an unexpired usage-limit park (session start, and after compaction)
+
+Before gathering issue data or dispatching anything, check whether this repo is parked on an account usage limit. A park is durable; the `Monitor` that was going to wake it is not, so a session that restarts inside a park must re-arm the wake or the board stays parked until a human notices — the PR #1616 failure this exists to end.
+
+Read `subagent-thread-limit-park.md` §6 through Step 0's candidate order (`$HOME/.claude/skills-worktree/.claude/reference/`, `$HOME/.claude/reference/`, `.claude/reference/` — most repos carry no `.claude/`, so a bare local path resolves only by luck), run the recovery block that section documents, and act on the verdict (no candidate resolves → one line, `ERROR: subagent-thread-limit-park.md not found (checked all three paths) — usage-limit park recovery unavailable`, then **stop**: not being able to check for a park is the `unreadable` verdict by another name, and dispatching on it is exactly the launch into a closed window this step exists to prevent): `rearm` re-arms the sleep-until-reset wake and **stops here**; `rearm_probe` re-arms `/pm` 2D.7's bounded probe with the recorded count and stops — do not dispatch into a closed window; `manual` and `unreadable` also stop, with the one-line reason; `expired` routes to `/go-on`; only `none` continues to Step 1. The same block runs in `monitor-mode.md`'s Post-Compaction Recovery.
+
 ## Step 1: Gather Issue Data
 
 For each issue number, fetch the full issue:
@@ -688,7 +694,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 
 ### Monitor loop (repeat every ~60 seconds):
 
-1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2).
+1. **Check for completed subagents.** Poll active agent statuses. If any returned results, process immediately (step 2). **A subagent that died carries a classification, not just an absence:** run `subagent-thread-limit-park.md` §1 on the runtime's structured failure payload first, resolving that document through Step 0.1's candidate order rather than a bare `.claude/reference/` path — most repos carry no `.claude/`, and an unresolvable reference here is the same stop Step 0.1 defines, not a silent fall-through to the crash path. `LIMIT_SIGNAL=true` is an account wall, not a crash — run that document's §2–§4 (claim the park, stop the remaining subagents through `/pause` Steps 2–7 with `--window 0`, record each pipeline's phase, arm the wake) and end the loop; the siblings still running are about to hit the same wall, and the ask-before-respawn crash path reaches a human who cannot help until the window reopens. **Classify every returned status before processing any of them.** If ANY carries `LIMIT_SIGNAL=true`, park on that tick: persist the other completed results as pending transitions and launch no successor this cycle. Processing a healthy sibling's completion first would launch its next phase into the same closed window the park is being opened for. `LIMIT_SIGNAL=false` on every status is the ordinary crash path, unchanged.
 2. **Execute pending phase transitions.** For each completed subagent:
    Re-check **every** launch control before every successor — the full set is
    `phase-protocols.md` §"Launch gate before every successor" (refill pause,
@@ -893,7 +899,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
 When a Phase A subagent returns:
 
 1. **Parse the exit report.** Extract `PR_NUMBER`, `HEAD_SHA`, `OUTCOME`, `REVIEWER`, `NEXT_PHASE`.
-   - If no exit report: treat as silent failure — report to user and check GitHub API.
+   - If no exit report: classify the failure per `subagent-thread-limit-park.md` §1 **before** calling it a crash. A confirmed usage-limit signal parks (that document's §2–§4) and never asks; anything else is a silent failure — report to user and check GitHub API.
 2. **Branch on OUTCOME:**
    - `pushed_fixes` or `no_findings` -> proceed to step 3.
    - `exhaustion` -> launch a replacement Phase A subagent within 60s. Report to user. The replacement re-enters Step 7.1, which reuses the recorded `started_at` — the pipeline's Start does not restart just because the agent did.
@@ -989,7 +995,7 @@ If missing, reconstruct state from GitHub API.
 
 When a Phase B subagent returns:
 
-1. **Parse exit report.**
+1. **Parse exit report.** A missing one runs the same limit-vs-crash classification Phase A step 1 names; a limit death parks at phase `B`, so `/go-on` relaunches Phase B rather than restarting the pipeline.
 2. **Branch on OUTCOME:**
    - `merge_ready` -> launch Phase C within 60s (auto `/wrap`, no approval pause).
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
@@ -1081,7 +1087,7 @@ Resolve the path with `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_N
 
 When a Phase C subagent returns:
 
-1. **Parse exit report.**
+1. **Parse exit report.** Same limit-vs-crash classification on a missing one (Phase A step 1).
 2. **Branch on OUTCOME:**
    - `merged` -> verify GitHub shows the PR merged, then delete the handoff file via `handoff-state.sh --owner-repo {owner}/{repo} --delete {PR_NUMBER}` (serialized under the shared lock — never `rm -f` the file directly).
    - `blocked` -> report blocker details to user. Do NOT merge.

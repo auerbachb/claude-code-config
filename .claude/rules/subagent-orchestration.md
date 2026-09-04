@@ -1,7 +1,7 @@
 # Subagent Context
 
 > **Always:** Spawn subagents via custom agent definitions in `.claude/agents/` (see "How to Spawn Subagents" below). Use `mode: "bypassPermissions"` on every Agent tool call. Set `model` explicitly at every call site per the Model Selection policy (see below). Use phase decomposition (A/B/C). Timestamp every message (see `monitor-mode.md`). Write handoff files on phase completion (see `handoff-files.md`). Print Structured Exit Report before every subagent exit (see `phase-protocols.md`). Arm the silence ceiling in the same step as the spawn (`scheduling-reliability.md`).
-> **Ask first:** Respawning a crashed/no-handoff subagent — tell the user what happened first; exhaustion with valid handoff auto-respawns ("Always do").
+> **Ask first:** Respawning a crashed/no-handoff subagent — tell the user what happened first; exhaustion with valid handoff auto-respawns ("Always do"). A subagent killed by an account usage limit is neither: it parks and wakes, unasked (`subagent-thread-limit-park.md`).
 > **Never:** Summarize rules for subagents. Spawn subagents without `mode: "bypassPermissions"`. Spawn without an explicit `model` parameter. Fire-and-forget subagents.
 
 ## How to Spawn Subagents
@@ -39,7 +39,7 @@ Fleet: **Fable, Opus, Sonnet, Haiku** (Agent `model` takes the lowercase family 
 
 ## Phase Transition Autonomy (Quick Reference)
 
-**Always do:** local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
+**Always do:** park + arm the wake on a limit-killed subagent (never ask); local CR review; commit/push after clean local review; create PR after push; enter 60s GitHub polling; fix valid reviewer findings; follow CR→BugBot→Greptile→self-review fallback timing; launch Phase B after Phase A; launch Phase C after `merge_ready` (auto — no merge-approval pause); verify AC after merge gate; respawn exhaustion with valid handoff.
 
 **Ask first only:** respawning a crashed/no-handoff subagent.
 
