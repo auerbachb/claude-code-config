@@ -758,6 +758,33 @@ check_eq "17i2: the --repo= spelling is rejected the same way" "2" "$RC"
 run_in "$R14" --since "$WINDOW_START" --exclude= --json
 check_eq "17j2: the --exclude= spelling is rejected the same way" "2" "$RC"
 
+# --exclude is empty in a SECOND sense the other three flags do not have. Its
+# value is comma-split by is_excluded(), which `continue`s past blank fields, so
+# `,` and `'   '` are non-empty strings that carry no pattern: pre-fix they
+# cleared the -n guard and the run applied the built-in list alone — the very
+# silent-default failure 17j rejects for `''`. Both spellings, both shapes.
+run_in "$R14" --since "$WINDOW_START" --exclude ',' --json
+check_eq "17j3: a comma-only --exclude exits 2 rather than excluding nothing named" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude=, --json
+check_eq "17j4: the --exclude=, spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude '   ' --json
+check_eq "17j5: a whitespace-only --exclude exits 2" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude ', ,' --json
+check_eq "17j6: so does a value whose every comma-field is blank" "2" "$RC"
+EXCL_BLANK_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --exclude ',' --json) 2>&1 >/dev/null )
+check_eq "17j7: and the rejection names --exclude and says non-blank pattern" "yes" \
+  "$(case "$EXCL_BLANK_ERR" in *"--exclude"*"non-blank"*) echo yes ;; *) echo no ;; esac)"
+
+# NEGATIVE CONTROL — the widened test rejects BLANKNESS, not punctuation or
+# whitespace. A value carrying one real pattern still runs, and runs exactly
+# like the no---exclude baseline in 17m when that pattern matches nothing.
+run_in "$R14" --since "$WINDOW_START" --exclude 'no-such-path-xyz' --json
+check_eq "17j8: NEGATIVE CONTROL — a non-blank --exclude still runs" "0" "$RC"
+check_jq "17j9: NEGATIVE CONTROL — and scans identically to the baseline" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "candidate"'
+run_in "$R14" --since "$WINDOW_START" --exclude ' *.md ,docs/*' --json
+check_eq "17j10: NEGATIVE CONTROL — padding around a real pattern is not blankness" "0" "$RC"
+
 # NEGATIVE CONTROL 1 — the guard rejects the EMPTY value, not the flag itself.
 # Without this, 17e/17f would pass just as well if --ref were broken outright.
 run_in "$R14" --since "$WINDOW_START" --ref main --json

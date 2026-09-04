@@ -52,8 +52,9 @@
 #                        fatal); skipped when there is no `origin` remote.
 #   --conflict-weight N  Score added per recorded conflict round. Default 2.
 #   --exclude <globs>    Comma-separated globs to ignore, in addition to the
-#                        defaults below. An EMPTY value exits 2 (see EMPTY
-#                        VALUES below).
+#                        defaults below. An EMPTY value exits 2, as does one
+#                        holding no non-blank pattern (`,` or whitespace) --
+#                        see EMPTY VALUES below.
 #   --no-default-excludes  Drop the built-in exclusion list.
 #   --source auto|git|gh   Enumeration source. Default auto (git, falling back
 #                        to gh when git yields no PR-marked commits).
@@ -92,7 +93,10 @@
 #   named exclusion policy is silently never applied) and --exemptions (issue
 #   #1571, guarded first). All five reject an empty value at PARSE TIME with
 #   exit 2, because parse time is the last point at which "passed empty" and
-#   "never passed" are still distinguishable.
+#   "never passed" are still distinguishable. --exclude additionally rejects a
+#   value holding no non-blank pattern (`,`, `, ,`, whitespace): is_excluded()
+#   skips blank comma-fields, so such a value is empty in the only sense that
+#   reaches the scan and would fall back to the built-in list just as `''` did.
 #
 #   The other value-taking flags need no such guard and are deliberately left
 #   alone: --threshold, --conflict-weight, --pr-cap, --top and --sweep-threshold
@@ -406,6 +410,20 @@ NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
 
 DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
 
+# --exclude is the one guarded flag whose emptiness is not just "". Its value is
+# comma-split by is_excluded(), which `continue`s past blank fields, so `,` and
+# `'   '` clear a bare -n test yet contribute NO pattern: the run then applies
+# DEFAULT_EXCLUDES alone, which is exactly the "silent default the caller never
+# named" failure the guard block below exists to stop. The other guarded flags
+# need no equivalent: --since, --repo and --ref are consumed verbatim
+# downstream, so a blank value there produces a visibly wrong scan rather than a
+# silent fallback to a default policy.
+require_exclude_patterns() {  # $1 raw --exclude value
+  [ -n "$1" ] || { err "--exclude requires a non-empty value"; exit 2; }
+  [ -n "$(printf '%s' "$1" | tr -d '[:space:],')" ] ||
+    { err "--exclude requires at least one non-blank pattern"; exit 2; }
+}
+
 # ---- flag parsing (supports --flag value and --flag=value) ------------------
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -419,7 +437,9 @@ while [ $# -gt 0 ]; do
     # HEAD) via resolve_scan_ref(). Parse time is the LAST point at which
     # "passed empty" and "never passed" are still distinguishable, so each is
     # rejected here with exit 2 rather than measured against the wrong policy.
-    # The remaining value-taking flags need no guard: --threshold,
+    # --exclude goes one step further via require_exclude_patterns() above,
+    # because a comma- or whitespace-only value is blank in the only sense that
+    # matters downstream. The remaining value-taking flags need no guard: --threshold,
     # --conflict-weight, --pr-cap, --top and --sweep-threshold are rejected by
     # their numeric validators below (which match ''), --source by its enum
     # validator, and --exemptions by its own copy of this guard.
@@ -438,9 +458,9 @@ while [ $# -gt 0 ]; do
     --conflict-weight=*)  CONFLICT_WEIGHT="${1#*=}" ;;
     --conflict-weight)    shift; [ $# -gt 0 ] || { err "--conflict-weight requires a value"; exit 2; }; CONFLICT_WEIGHT="$1" ;;
     --exclude=*)          EXTRA_EXCLUDES="${1#*=}"
-                          [ -n "$EXTRA_EXCLUDES" ] || { err "--exclude requires a non-empty value"; exit 2; } ;;
+                          require_exclude_patterns "$EXTRA_EXCLUDES" ;;
     --exclude)            shift; [ $# -gt 0 ] || { err "--exclude requires a value"; exit 2; }
-                          [ -n "$1" ] || { err "--exclude requires a non-empty value"; exit 2; }
+                          require_exclude_patterns "$1"
                           EXTRA_EXCLUDES="$1" ;;
     --no-default-excludes) USE_DEFAULT_EXCLUDES=0 ;;
     --source=*)           SOURCE_MODE="${1#*=}" ;;
