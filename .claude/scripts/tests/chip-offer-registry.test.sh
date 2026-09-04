@@ -13,6 +13,8 @@
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
 #   Runnable-invocation pin: /harness-audit ships its reservation as an executable
 #     snippet, so that snippet must survive deletion detection on its own
+#   HOME-uniqueness invariant: no two tests may share a session-state.json, with
+#     a planted-duplicate negative control proving the check can fail (#1601)
 #
 # All tests use a temp HOME dir so ~/.claude/session-state.json is not touched.
 
@@ -38,9 +40,27 @@ fail() { FAIL=$(( FAIL+1 )); echo "FAIL — $1"; }
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# Every HOME this suite hands out is appended here, so the uniqueness invariant
+# in the "allocated HOMEs are unique" test below is asserted over what the run
+# ACTUALLY allocated rather than over a synthetic sample (issue #1601).
+HOME_LEDGER="$TMP_DIR/allocated-homes.txt"
+: > "$HOME_LEDGER"
+
+# make_home allocates a unique per-test HOME.
+#
+# It used to be "$TMP_DIR/$RANDOM".  $RANDOM is 15-bit (0-32767) and this suite
+# calls make_home 23 times a run, so two tests drew the same number — and so
+# shared one session-state.json — in roughly 0.77% of runs (1 in 130),
+# silently, because `mkdir -p` is happy to "create" a directory that already
+# exists.  The macOS CI flake in issue #1601 was exactly that: test 7's home
+# collided with test 5/6's, so test 7 read `.[0].state` off test 5's leftover
+# entry (rc=0 state=offered) and test 8's --count then saw test 5's two
+# survivors (count=2, expected 0).  mktemp -d is collision-free by construction.
 make_home() {
-  local d="$TMP_DIR/$RANDOM"
+  local d
+  d="$(mktemp -d "$TMP_DIR/home-XXXXXXXX")" || return 1
   mkdir -p "$d/.claude"
+  printf '%s\n' "$d" >> "$HOME_LEDGER"
   echo "$d"
 }
 
@@ -121,8 +141,10 @@ fi
 # 7. --transition: offered → running
 # ---------------------------------------------------------------------------
 H="$(make_home)"
+TR_ERR="$TMP_DIR/transition-stderr.txt"
+: > "$TR_ERR"
 tid3="$(run_registry "$H" --reserve --emitter wave --issue 20 --cap-free 5)"
-run_registry "$H" --transition --task-id "$tid3" --state running
+run_registry "$H" --transition --task-id "$tid3" --state running 2>>"$TR_ERR"
 rc_tr=$?
 st="$(run_registry "$H" --list | jq -r '.[0].state')"
 if [[ $rc_tr -eq 0 && "$st" == "running" ]]; then
@@ -132,7 +154,7 @@ else
 fi
 
 # 8. --transition: running → pr-backed removes from capacity count
-run_registry "$H" --transition --task-id "$tid3" --state pr-backed >/dev/null
+run_registry "$H" --transition --task-id "$tid3" --state pr-backed >/dev/null 2>>"$TR_ERR"
 n_pr="$(run_registry "$H" --count)"
 if [[ "$n_pr" == "0" ]]; then
   ok "--transition to pr-backed removes entry from capacity count"
@@ -205,8 +227,8 @@ fi
 H="$(make_home)"
 t_c="$(run_registry "$H" --reserve --emitter pm --issue 60 --cap-free 5)"
 t_d="$(run_registry "$H" --reserve --emitter prompt --issue 61 --cap-free 5)"
-run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null
-run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null
+run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null 2>>"$TR_ERR"
+run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null 2>>"$TR_ERR"
 n_term="$(run_registry "$H" --count)"
 if [[ "$n_term" == "0" ]]; then
   ok "done and retracted entries excluded from count"
@@ -214,10 +236,25 @@ else
   fail "terminal states: count=$n_term (expected 0)"
 fi
 
+# 14b. NEGATIVE CONTROL for tests 7, 8 and 14: none of those --transition calls
+# is concurrent, so state-lock.sh must never have had to break a lock to let one
+# through.  If it did, the transitions above passed for the wrong reason and the
+# real defect is lock timing, not the harness — this assertion is what keeps the
+# two apart (issue #1601; idiom from state-lock.test.sh).
+if [[ ! -s "$TR_ERR" ]] && ! grep -qE 'broke stale lock|lock was broken' "$TR_ERR"; then
+  ok "non-concurrent --transition calls emit no stderr and never break a lock"
+elif grep -qE 'broke stale lock|lock was broken' "$TR_ERR"; then
+  fail "LOCK DEFECT: a non-concurrent --transition broke a lock — $(grep -E 'broke stale lock|lock was broken' "$TR_ERR" | head -1)"
+else
+  fail "unexpected --transition stderr in tests 7/8/14: $(head -1 "$TR_ERR")"
+fi
+
 # ---------------------------------------------------------------------------
 # 15. missing session-state.json is not an error (--count → 0)
 # ---------------------------------------------------------------------------
-H_absent="$TMP_DIR/absent-$RANDOM"   # intentionally no mkdir
+# Allocated with mktemp -d for the same collision reason as make_home (#1601);
+# NOT via make_home, because this case needs a HOME with no state file in it.
+H_absent="$(mktemp -d "$TMP_DIR/absent-XXXXXXXX")"
 mkdir -p "$H_absent/.claude"          # create .claude so log write doesn't error; no state file
 n_absent="$(run_registry "$H_absent" --count 2>/dev/null)"
 rc_absent=$?
@@ -601,6 +638,43 @@ else
   else
     ok "harness-audit ships a runnable --reserve invocation inside a shell fence"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 40. Every HOME this run allocated is unique (issue #1601 regression pin).
+# ---------------------------------------------------------------------------
+# Two tests sharing one HOME share one session-state.json, and the second one
+# then asserts against the first one's leftover entries.  That is what made
+# tests 7 and 8 flake on macOS CI while nothing about them had changed.  This
+# check runs last, over the HOMEs the suite ACTUALLY handed out, so it fails on
+# any future reintroduction of a collision-prone allocator no matter which pair
+# of tests happens to collide.
+
+# dup_count <ledger-file> — how many distinct values appear more than once.
+dup_count() { sort "$1" | uniq -d | wc -l | tr -d ' '; }
+
+n_homes="$(wc -l < "$HOME_LEDGER" | tr -d ' ')"
+n_dup_homes="$(dup_count "$HOME_LEDGER")"
+if [[ "$n_homes" -lt 20 ]]; then
+  # Guard against a vacuous pass: an empty or barely-written ledger has no
+  # duplicates either, and would let a collision bug through silently.
+  fail "HOME ledger recorded only $n_homes allocations (expected ≥20) — the uniqueness check below would pass vacuously"
+elif [[ "$n_dup_homes" -eq 0 ]]; then
+  ok "all $n_homes per-test HOMEs allocated this run are unique (no shared session-state.json)"
+else
+  fail "HOME collision: $n_dup_homes duplicated HOME(s) across $n_homes allocations, e.g. $(sort "$HOME_LEDGER" | uniq -d | head -1)"
+fi
+
+# 41. NEGATIVE CONTROL for test 40: plant a known duplicate and confirm the same
+# detector reports it.  A uniqueness assertion that cannot fail proves nothing.
+neg_ledger="$TMP_DIR/negative-control-homes.txt"
+head -3 "$HOME_LEDGER" > "$neg_ledger"
+head -1 "$HOME_LEDGER" >> "$neg_ledger"     # the planted duplicate
+n_dup_neg="$(dup_count "$neg_ledger")"
+if [[ "$n_dup_neg" -eq 1 ]]; then
+  ok "negative control: duplicate-HOME detector reports a planted duplicate"
+else
+  fail "negative control: detector saw $n_dup_neg duplicates in a ledger with 1 planted — test 40 is vacuous"
 fi
 
 # ---------------------------------------------------------------------------
