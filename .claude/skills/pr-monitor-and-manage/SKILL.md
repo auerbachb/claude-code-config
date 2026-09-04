@@ -122,13 +122,16 @@ Capture an exit code for **each** of the three reads. Never `|| echo` a default 
 
 ```bash
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+# `--repo-key` NEVER returns empty — it prints `_unknown` and exits 0 — so
+# normalise the sentinel first, or the `-z` guard below is dead code.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 ACTIVE_RC=0; TICK_RC=0; EFF_RC=0
 DAY_ACTIVE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.active") || ACTIVE_RC=$?
 DAY_LAST_TICK=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.last_tick_at") || TICK_RC=$?
 DAY_EFF_MIN=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.cadence_effective_minutes") || EFF_RC=$?
 ```
 
-Each exit code takes the same reading: `0` is the value; `3` means no state file has ever been written, so there is genuinely no day loop; **anything else is unreadable state and refuses the arm** — say the read failed rather than proceeding. Defaulting `DAY_EFF_MIN` to `5` on a failed read is the specific trap: for a loop widened to a 30-minute cadence it shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m`, so a live loop that ticked 20 minutes ago is declared dead and this skill arms straight into a second owner.
+Each exit code takes the same reading: `0` is the value; `3` means no state file has ever been written, so there is genuinely no day loop; **anything else is unreadable state and refuses the arm** — say the read failed rather than proceeding. An **empty `REPO_KEY`** — the normalised `_unknown` — refuses the arm on the same ground: with no resolvable repo scope the three reads address a bucket nothing ever writes, so they return a confident *no live loop* for a repo they never actually consulted. Say the scope would not resolve rather than arming on that answer. Defaulting `DAY_EFF_MIN` to `5` on a failed read is the specific trap: for a loop widened to a 30-minute cadence it shrinks the freshness window from `max(3 × 30, 15) = 90m` to `15m`, so a live loop that ticked 20 minutes ago is declared dead and this skill arms straight into a second owner.
 
 With all three readable: `DAY_ACTIVE == true` **and** `DAY_LAST_TICK` inside `max(3 × DAY_EFF_MIN, 15m)` → a day loop is live: refuse to arm and stop, in one line — `A /pm day loop is running for this repo — say "stop" to it first, then /pr-monitor-and-manage.` `false`/`null`, or an `active: true` whose `last_tick_at` is outside the window (its session died — the freshness rule from `/pm` Step 2D.1(b)), mean no live loop: proceed.
 
@@ -377,6 +380,10 @@ Print the **full table** when any of: (a) first tick / post-resume (digests are 
 **Quiet tick** (none of a–e): one line: `[$TS] PMM tick — N PR(s) (author:x) — no change (#N1 #N2; hard-blocked: #N3 human-CR; queued (cap): #N4)`.
 
 Table columns: Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent. Full column definitions and merge-sequence annotation: `references/pmm-classify.md`.
+
+**These columns diverge from the canonical "Running now" table deliberately, and the divergence is documented** — `.claude/reference/time-estimates.md` §"Documented divergence: `/pr-monitor-and-manage`" (issue #1527). PMM's table answers *what does each PR need next*; the canonical table answers *when will this round land*. Six of these eight columns are read back by Step 5's dispatch, so they are load-bearing rather than presentational.
+
+**The round-progress question is answered by `/board`, not by reshaping this table.** When the user asks "where is everything", "how far along", or a `TABLE FLOOR:` line arrives from an armed table-freshness watch, run the complete `.claude/skills/board/SKILL.md` workflow inline and print its canonical table — the same "run the full SKILL.md, no shortcuts" idiom `/pm` Steps 1C, 1D and 2D.4 use, and the same shape every other surface renders, unaltered. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"` and render it from that spec directly; unlike `/pm`, PMM resolves no table-freshness binding of its own, so state that the render went unrecorded and expect an armed floor to re-fire. PMM records no launch timestamp of its own and **never re-derives a Start**: `/board` Step 2 reads it back from `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, falling back to `gh pr view --json createdAt` only for pipelines that predate the record. A PMM thread that did not dispatch the round gets `/board`'s own partial-board honesty — no queued rows, an approximate delivered count, both stated — which is correct here rather than something to paper over: PMM discovers PRs by author, so it genuinely does not know a round's membership.
 
 **Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot | Graphite`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
 

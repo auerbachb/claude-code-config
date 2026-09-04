@@ -297,6 +297,8 @@ Print the **full table** (below the lead line) when ANY of:
 
 ### Table format
 
+**This is a documented divergence from the canonical "Running now" table, not an unreconciled one** (issue #1527). The rationale is recorded once, in `.claude/reference/time-estimates.md` §"Documented divergence: `/pr-monitor-and-manage`" — do not restate it here, and do not reshape these columns toward the canonical seven without changing that entry first. The canonical table still has a home in this skill: the round-progress question routes to `/board` (SKILL.md Step 4), which renders it unaltered.
+
 | Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict | Subagent |
 |-------|----|-------|---------|----|--------------------|---------|----------|
 | #<issue or —> | #<N> | <merge_state> | <review_decision> | <pass>/<fail>/<prog> | <count> | <VERDICT from Step 3> | <SUBAGENT_STATUS> |
