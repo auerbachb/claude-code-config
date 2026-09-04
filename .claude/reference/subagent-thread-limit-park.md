@@ -396,9 +396,14 @@ printf 'WAKE=%s\nWAKE_SLEEP=%s\nWAKE_GENERATION=%s\n' "$WAKE" "$WAKE_SLEEP" "$WA
 On `WAKE=armed`, arm **one** persistent `Monitor` running the same one-shot
 shape 2D.6 arms — `while sleep "$WAKE_SLEEP"; do printf '%s\n' "$WAKE_COMMAND"; break; done`
 — and publish its identity immediately. Its command is `/go-on --generation`, not
-`/pause-resume`, because only `/go-on` can relaunch a dead Phase A/B/C pipeline at
-its recorded phase; `/pause-resume` re-arms live runtime IDs and would leave every
-parked pipeline stopped. It remains the same wake *class* in the same registry, so
+a bare `/pause-resume`, which re-arms live runtime IDs and would leave every
+parked pipeline stopped. `/go-on` classifies the stoppage and relaunches each dead
+Phase A/B/C pipeline at its recorded phase without a day-mode turn to route
+through. The probe branch below reaches that same phase-aware relaunch by the
+other road — `/pause-resume --generation`, whose Step 5 replays the per-PR records
+§3 wrote — so the choice here is which entry point fits an `armed` wake, not a
+claim that only one command can restart a parked pipeline. It remains the same
+wake *class* in the same registry, so
 `/pause` Step 2 item 4 and `/pause-resume` Step 5 tear it down unchanged.
 
 On `WAKE=probe` (§7 only, when no reset time is known), arm **one** persistent

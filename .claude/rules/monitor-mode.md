@@ -15,7 +15,7 @@ If the user explicitly requests substantive work, warn that monitoring N active 
 ## Monitor Loop — Per-Cycle Checklist (MANDATORY)
 
 Every ~60s, in order:
-0. **Usage horizon.** Feed the harness-printed `<total_tokens>` figure to `usage-horizon.sh --observe`, then `--check`: `approaching`/`unknown` → start nothing new (item 4; item 2's in-flight successors continue); `critical` → park per `subagent-thread-limit-park.md` §7.
+0. **Usage horizon.** Feed the harness-printed `<total_tokens>` to `usage-horizon.sh --observe`, then `--check`: `approaching`/`unknown` → start nothing new (item 4; item 2's successors continue); `critical` → park per `subagent-thread-limit-park.md` §7, then end the cycle.
 1. Process completed subagents and parse exit reports.
 2. Execute phase transitions via `phase-protocols.md`; also launch transitions stalled in `session-state.json`.
 3. For every session PR still on `reviewer == cr`, run `.claude/scripts/escalate-review.sh <PR_NUMBER>` and act on its `STATUS=` verdict before sleeping.
