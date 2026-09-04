@@ -270,6 +270,17 @@ PR_PARK_RC=0
                         || echo "PR_PARK=$PR_NUM:error rc=$PR_PARK_RC"
 ```
 
+**A `PR_PARK=<N>:error` line is a lost pipeline, not a logged warning.** The
+resume paths find parked pipelines *only* by scanning `.prs[*]` for
+`handoff_reason == "usage_limit_park"` (§5), and Probe F reads the same records,
+so a PR whose write failed is invisible to both: it stays killed while every
+parked sibling comes back. Never count that PR as parked. Name it explicitly in
+the park report — `unparked: PR <N> (rc=<rc>) — relaunch manually` — carry the
+failure into the park's own summary rather than the shell's stdout alone, and
+retry the write once before reporting, since `session-state.sh` exits **6** on a
+lock timeout, which is transient. A park that silently drops a pipeline is worse
+than no park: the wake fires, the board resumes, and one PR never comes back.
+
 `handoff_reason` is written at the PR entry's top level as well as inside the
 record because that is the key `/go-on` Probe D already scans; the nested
 `usage_limit_park` object carries the resume detail without changing the shape
@@ -416,6 +427,13 @@ through its own Step 5, which relaunches parked pipelines from these records
 directly rather than calling `/go-on` back (that would be a cycle, since
 `/go-on`'s park lane delegates to `/pause-resume` for the gate). One set of
 records, two entry points, no second resume route.
+
+**Claim each PR before relaunching it.** The per-PR records are repo-scoped, so
+two threads resuming the same repo would otherwise both relaunch the same
+pipeline. `/pause-resume` Step 5 owns the transition — a locked flip of
+`handoff_reason` from `usage_limit_park` to `usage_limit_relaunching`, rolled
+back on a blocked or failed launch — and any other route into these records
+takes the same claim.
 
 **Resume clears the park.** `/pause-resume` Step 5's `retire_limit_park` clears
 the six `.day` fields in one write; the resuming thread additionally clears each

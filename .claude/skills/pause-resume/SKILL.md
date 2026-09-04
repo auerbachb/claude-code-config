@@ -960,7 +960,17 @@ before either one persists the pause-state array:
   withdrawing it. Set `rearmed: true` only when the re-arm was published or the
   clear succeeded, and report an unconfirmed disarm exactly as the row above does.
 
-**Relaunch any usage-limit-parked pipelines before finishing (issue #1618).** A registry re-arm restores *live* runtime IDs; a Phase A/B/C pipeline killed by the account wall has no live ID to restore, so it would otherwise stay stopped while everything around it resumed. After the re-arms above, read `.repos["$REPO_KEY"].prs[*]` for entries with `handoff_reason == "usage_limit_park"` and, for each, relaunch that pipeline from its scoped handoff file at the phase `phase_completed` supports — the procedure in `.claude/reference/subagent-thread-limit-park.md` §5, followed **directly**, never by invoking `/go-on` (that command's park lane delegates *here* for the gate, so calling it back would be a cycle). **Every `/subagent` Step 7 launch gate applies to each relaunch** — ceiling, chain head, refill pause, execution pause, and the armed deadline — and a record that fails one is queued with its flag left set, never launched. Clear each PR's `usage_limit_park` and `handoff_reason` only as its relaunch actually lands; a record whose handoff is missing or names a different phase is reported, not relaunched. This is what makes a park adopted from day mode resume correctly: the wake that fires is whichever owner armed it, and both routes end at the same per-PR records.
+**Relaunch any usage-limit-parked pipelines before finishing (issue #1618).** A registry re-arm restores *live* runtime IDs; a Phase A/B/C pipeline killed by the account wall has no live ID to restore, so it would otherwise stay stopped while everything around it resumed. After the re-arms above, read `.repos["$REPO_KEY"].prs[*]` for entries with `handoff_reason == "usage_limit_park"` and, for each, relaunch that pipeline from its scoped handoff file at the phase `phase_completed` supports — the procedure in `.claude/reference/subagent-thread-limit-park.md` §5, followed **directly**, never by invoking `/go-on` (that command's park lane delegates *here* for the gate, so calling it back would be a cycle). **Claim each PR before you relaunch it.** These records are repo-scoped, not
+session-scoped, so two threads resuming the same repo both see the same parked
+PRs; without a claim they each relaunch it and the board gets duplicate Phase B
+or C pipelines on one branch. Take the same locked single-writer transition this
+step already uses for registry entries: under one `session-state.sh` write, flip
+that PR's `handoff_reason` from `usage_limit_park` to `usage_limit_relaunching`
+and proceed only if the write observed the old value — a PR already reading
+`usage_limit_relaunching` belongs to the other thread, so skip it and list it as
+claimed elsewhere. A failed or blocked launch rolls the value back to
+`usage_limit_park` so the next pass can retry it; only a landed relaunch clears
+the field per the rule below. **Every `/subagent` Step 7 launch gate applies to each relaunch** — ceiling, chain head, refill pause, execution pause, and the armed deadline — and a record that fails one is queued with its flag left set, never launched. Clear each PR's `usage_limit_park` and `handoff_reason` only as its relaunch actually lands; a record whose handoff is missing or names a different phase is reported, not relaunched. This is what makes a park adopted from day mode resume correctly: the wake that fires is whichever owner armed it, and both routes end at the same per-PR records.
 
 Entries with `stopped: false` are listed as "not confirmed stopped at pause time — verify manually before re-arming."
 

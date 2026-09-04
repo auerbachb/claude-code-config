@@ -589,6 +589,26 @@ require_text "the reference doc names both wake entry points" \
   "$DOC" 'Either wake reaches the same relaunch'
 require_text "subagent SKILL stops when the reference cannot be resolved" \
   "$SUBAGENT" 'checked all three paths'
+# CodeAnt #1621: the monitor loop pointed at a bare `.claude/reference/` path
+# while Step 0.1 resolves the same doc through three candidates — an installed
+# skill in a repo without `.claude/` could not reach it.
+require_text "the monitor loop resolves the reference through Step 0.1" \
+  "$SUBAGENT" "Step 0.1's candidate order"
+refute_text "  and hardcodes no bare .claude/reference path for it" \
+  "$SUBAGENT" '\.claude/reference/subagent-thread-limit-park'
+# CodeAnt #1621: a failed per-PR park write left the pipeline invisible to both
+# the §5 scan and Probe F — the echoed error line had no consumer.
+require_text "a failed per-PR park write is a lost pipeline, not a warning" \
+  "$DOC" 'lost pipeline, not a logged warning'
+require_text "  and is named in the park report as needing a manual relaunch" \
+  "$DOC" 'unparked: PR'
+# CodeAnt #1621: the per-PR records are repo-scoped, so two resuming threads
+# would each relaunch the same parked pipeline without a claim.
+require_text "the relaunch claims each PR before launching it" \
+  "$REPO_ROOT/.claude/skills/pause-resume/SKILL.md" 'usage_limit_relaunching'
+require_text "  and the reference doc names the same claim" \
+  "$DOC" 'usage_limit_relaunching'
+
 # Negative control for the wiring assertions above: prove the matcher can fail.
 refute_text "negative control — an unrelated pattern does not match" \
   "$RULES/monitor-mode.md" 'crash asks, exhaustion auto, limit-unparked'
