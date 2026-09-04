@@ -28,10 +28,12 @@
 #
 #   --since <date|ref>   Window start. A date (YYYY-MM-DD) is used as-is; any
 #                        other value is resolved as a git ref/SHA via its commit
-#                        date. Default: 14 days back (via gh-window.sh).
+#                        date. Default: 14 days back (via gh-window.sh). An
+#                        EMPTY value exits 2 (see EMPTY VALUES below).
 #   --threshold N        Hotspot score threshold. Default 3.
 #   --repo <owner/repo>  Target repo. Defaults to the current checkout. Naming a
-#                        repo other than the checkout forces --source gh.
+#                        repo other than the checkout forces --source gh. An
+#                        EMPTY value exits 2 (see EMPTY VALUES below).
 #   --ref <ref>          Scan this ref on the git path instead of the
 #                        auto-resolved default branch. Exits 3 when it does not
 #                        resolve — an explicit ref is never silently ignored.
@@ -39,7 +41,9 @@
 #                        Also exits 3 when the ref resolves but carries no
 #                        PR-marked commits under --source auto: the gh fallback
 #                        scans repo-wide and cannot honour a ref, so the run
-#                        refuses rather than measuring something else.
+#                        refuses rather than measuring something else. An EMPTY
+#                        value exits 2 (see EMPTY VALUES below) rather than
+#                        falling back to auto-detection.
 #   --fetch              Best-effort `git fetch origin` before resolving the
 #                        scan ref, so a stale remote-tracking ref cannot narrow
 #                        the window. OFF by default: this script is otherwise
@@ -48,7 +52,9 @@
 #                        fatal); skipped when there is no `origin` remote.
 #   --conflict-weight N  Score added per recorded conflict round. Default 2.
 #   --exclude <globs>    Comma-separated globs to ignore, in addition to the
-#                        defaults below.
+#                        defaults below. An EMPTY value exits 2, as does one
+#                        holding no non-blank pattern (`,` or whitespace) --
+#                        see EMPTY VALUES below.
 #   --no-default-excludes  Drop the built-in exclusion list.
 #   --source auto|git|gh   Enumeration source. Default auto (git, falling back
 #                        to gh when git yields no PR-marked commits).
@@ -76,6 +82,29 @@
 #                        envelope reports `exemptions_file: null`, so the
 #                        disabled state is observable rather than silent.
 #   --json               Emit a single JSON object. Default emits TSV rows.
+#
+# EMPTY VALUES (issue #1577):
+#   `--ref ''` and `--ref=` both survive the "requires a value" check — the
+#   argument IS present — and then read downstream exactly like no --ref at all,
+#   because resolve_scan_ref() gates on `[ -n "$REF" ]`. The run would silently
+#   fall through to auto-detection and scan a ref the caller never named. The
+#   same shape holds for --since (silently re-computes the default 14-day
+#   window), --repo (gh silently infers the repo from the cwd), --exclude (the
+#   named exclusion policy is silently never applied) and --exemptions (issue
+#   #1571, guarded first). All five reject an empty value at PARSE TIME with
+#   exit 2, because parse time is the last point at which "passed empty" and
+#   "never passed" are still distinguishable. --exclude additionally rejects a
+#   value holding no non-blank pattern (`,`, `, ,`, whitespace): is_excluded()
+#   skips blank comma-fields, so such a value is empty in the only sense that
+#   reaches the scan and would fall back to the built-in list just as `''` did.
+#
+#   The other value-taking flags need no such guard and are deliberately left
+#   alone: --threshold, --conflict-weight, --pr-cap, --top and --sweep-threshold
+#   are already rejected with exit 2 by their numeric validators (whose `case`
+#   patterns match the empty string), and --source by its enum validator. The
+#   resulting invariant: every value-taking flag either rejects an empty value
+#   at parse time or is rejected downstream by its own validator; none falls
+#   back to a default the caller did not name.
 #
 # SCORING (the documented weight — issue #755 AC 2):
 #
@@ -381,24 +410,66 @@ NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
 
 DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
 
+# --exclude is the one guarded flag whose emptiness is not just "". Its value is
+# comma-split by is_excluded(), which `continue`s past blank fields, so `,` and
+# `'   '` clear a bare -n test yet contribute NO pattern: the run then applies
+# DEFAULT_EXCLUDES alone, which is exactly the "silent default the caller never
+# named" failure the guard block below exists to stop. The other guarded flags
+# need no equivalent: --since, --repo and --ref are consumed verbatim
+# downstream, so a blank value there produces a visibly wrong scan rather than a
+# silent fallback to a default policy.
+require_exclude_patterns() {  # $1 raw --exclude value
+  [ -n "$1" ] || { err "--exclude requires a non-empty value"; exit 2; }
+  [ -n "$(printf '%s' "$1" | tr -d '[:space:],')" ] ||
+    { err "--exclude requires at least one non-blank pattern"; exit 2; }
+}
+
 # ---- flag parsing (supports --flag value and --flag=value) ------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since=*)            SINCE="${1#*=}" ;;
-    --since)              shift; [ $# -gt 0 ] || { err "--since requires a value"; exit 2; }; SINCE="$1" ;;
+    # EMPTY-VALUE GUARDS (issue #1577, generalising issue #1571's --exemptions
+    # guard). Four flags below are read downstream through a `[ -n "$VAR" ]`
+    # test, so an explicitly empty value is indistinguishable there from the
+    # flag never having been passed and the run silently applies a DEFAULT the
+    # caller did not name: --since falls back to the computed 14-day window,
+    # --repo to whatever `gh` infers from the cwd, --exclude to the built-in
+    # list alone, and --ref to auto-detection (origin/HEAD -> origin/main ->
+    # HEAD) via resolve_scan_ref(). Parse time is the LAST point at which
+    # "passed empty" and "never passed" are still distinguishable, so each is
+    # rejected here with exit 2 rather than measured against the wrong policy.
+    # --exclude goes one step further via require_exclude_patterns() above,
+    # because a comma- or whitespace-only value is blank in the only sense that
+    # matters downstream. The remaining value-taking flags need no guard: --threshold,
+    # --conflict-weight, --pr-cap, --top and --sweep-threshold are rejected by
+    # their numeric validators below (which match ''), --source by its enum
+    # validator, and --exemptions by its own copy of this guard.
+    --since=*)            SINCE="${1#*=}"
+                          [ -n "$SINCE" ] || { err "--since requires a non-empty value"; exit 2; } ;;
+    --since)              shift; [ $# -gt 0 ] || { err "--since requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--since requires a non-empty value"; exit 2; }
+                          SINCE="$1" ;;
     --threshold=*)        THRESHOLD="${1#*=}" ;;
     --threshold)          shift; [ $# -gt 0 ] || { err "--threshold requires a value"; exit 2; }; THRESHOLD="$1" ;;
-    --repo=*)             REPO="${1#*=}" ;;
-    --repo)               shift; [ $# -gt 0 ] || { err "--repo requires a value"; exit 2; }; REPO="$1" ;;
+    --repo=*)             REPO="${1#*=}"
+                          [ -n "$REPO" ] || { err "--repo requires a non-empty value"; exit 2; } ;;
+    --repo)               shift; [ $# -gt 0 ] || { err "--repo requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--repo requires a non-empty value"; exit 2; }
+                          REPO="$1" ;;
     --conflict-weight=*)  CONFLICT_WEIGHT="${1#*=}" ;;
     --conflict-weight)    shift; [ $# -gt 0 ] || { err "--conflict-weight requires a value"; exit 2; }; CONFLICT_WEIGHT="$1" ;;
-    --exclude=*)          EXTRA_EXCLUDES="${1#*=}" ;;
-    --exclude)            shift; [ $# -gt 0 ] || { err "--exclude requires a value"; exit 2; }; EXTRA_EXCLUDES="$1" ;;
+    --exclude=*)          EXTRA_EXCLUDES="${1#*=}"
+                          require_exclude_patterns "$EXTRA_EXCLUDES" ;;
+    --exclude)            shift; [ $# -gt 0 ] || { err "--exclude requires a value"; exit 2; }
+                          require_exclude_patterns "$1"
+                          EXTRA_EXCLUDES="$1" ;;
     --no-default-excludes) USE_DEFAULT_EXCLUDES=0 ;;
     --source=*)           SOURCE_MODE="${1#*=}" ;;
     --source)             shift; [ $# -gt 0 ] || { err "--source requires a value"; exit 2; }; SOURCE_MODE="$1" ;;
-    --ref=*)              REF="${1#*=}" ;;
-    --ref)                shift; [ $# -gt 0 ] || { err "--ref requires a value"; exit 2; }; REF="$1" ;;
+    --ref=*)              REF="${1#*=}"
+                          [ -n "$REF" ] || { err "--ref requires a non-empty value"; exit 2; } ;;
+    --ref)                shift; [ $# -gt 0 ] || { err "--ref requires a value"; exit 2; }
+                          [ -n "$1" ] || { err "--ref requires a non-empty value"; exit 2; }
+                          REF="$1" ;;
     --fetch)              DO_FETCH=1 ;;
     --pr-cap=*)           PR_CAP="${1#*=}" ;;
     --pr-cap)             shift; [ $# -gt 0 ] || { err "--pr-cap requires a value"; exit 2; }; PR_CAP="$1" ;;
