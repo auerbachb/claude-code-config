@@ -103,10 +103,12 @@
 #
 # === Deferral list (self-expiring) ===
 #
-# One pre-existing violation could not be remediated on the PR that introduced
-# this lint because its file was open in another in-flight PR, and editing it
-# would have manufactured a cross-PR conflict. `DEFERRED` below carries it with
-# a reason.
+# `DEFERRED` below carries, with a reason, any pre-existing violation that
+# cannot be remediated on the PR that surfaces it — the case it was built for
+# being a file open in another in-flight PR, where editing it would manufacture
+# a cross-PR conflict. The list is currently EMPTY: the one entry it shipped
+# with (`candidate-ownership.sh`, array `UNIQ`) was retired by issue #1617 once
+# PR #1607 freed the file.
 #
 # The list cannot rot: a deferral that no longer matches a live finding is
 # itself reported as an error, so the entry must be deleted in the same change
@@ -176,13 +178,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 # --- deferral list ---------------------------------------------------------
-# Pre-existing violations this lint could not fix on the PR that introduced it.
+# Pre-existing violations a PR cannot fix in place (e.g. the file is open in
+# another in-flight PR). Empty is the healthy state; it is empty now.
 # Format: <path>|<array name>|<reason>. A deferral that matches no live finding
 # is reported as a STALE entry and fails the lint, so the list expires itself
 # rather than quietly outliving its justification.
-DEFERRED=(
-  '.claude/scripts/candidate-ownership.sh|UNIQ|file open in PR #1607 (issue #1330) when the lint landed; editing it would have manufactured a cross-PR conflict. Guarded on line 182 already, so the author knew the idiom — line 186 was simply missed. Fix with the guarded idiom once #1607 merges.'
-)
+DEFERRED=()
 
 is_deferred() {  # <file> <name>; also records the hit in DEFERRED_HIT
   local f="$1" n="$2" i=0 entry

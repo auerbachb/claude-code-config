@@ -14,7 +14,11 @@
 #           with no array expansion must each FAIL rather than pass green.
 #   Part 3  real-corpus controls — the live repo passes, AND a planted
 #           unguarded expansion makes it fail. Without the second half the
-#           first half is satisfied by a lint that can never fire.
+#           first half is satisfied by a lint that can never fire. Both halves
+#           of the DEFERRED mechanism (a matching entry is honoured; a no-longer-
+#           matching one is reported as STALE) are proved against a fixture
+#           entry injected into a copy of the lint, so they keep testing
+#           something once the live list is empty — which is its healthy state.
 #   Part 4  runtime proof on a bash that actually aborts: the hazardous shape
 #           really does die with `unbound variable`, the guarded idiom really
 #           does survive with zero arguments, and "${a[@]:-}" really does yield
@@ -294,30 +298,79 @@ PLANTED
   PLANT_OWNED=0
 fi
 
-# 3c. A stale deferral must be reported. The DEFERRED list is the one part of
-#     this lint that could silently outlive its justification, so prove the
-#     expiry check fires when the deferred file is present but clean.
-STALE_DIR="${TMP_ROOT}/stale"
-mkdir -p "${STALE_DIR}/.claude/scripts"
-cat > "${STALE_DIR}/.claude/scripts/clean.sh" <<'CLEAN'
+# 3c/3d. Both halves of the DEFERRED mechanism. The live list is EMPTY in the
+#     healthy state (issue #1617 retired its only entry), so these cases must
+#     not read the shipped list — a test that did would go vacuous the moment a
+#     deferral is retired, exactly when the expiry check matters most. Instead
+#     inject a fixture entry into a COPY of the lint, and assert the injection
+#     landed before trusting either verdict.
+DEFERRED_LINT="${TMP_ROOT}/lint-with-deferral.sh"
+awk '
+  $0 == "DEFERRED=()" {
+    print "DEFERRED=("
+    print "  '\''.claude/scripts/deferral-fixture.sh|ITEMS|test fixture (unguarded-array-expansion-lint.test.sh)'\''"
+    print ")"
+    injected = 1
+    next
+  }
+  { print }
+  END { exit(injected ? 0 : 1) }
+' "$LINT" > "$DEFERRED_LINT" || {
+  bad "could not inject a fixture deferral — 'DEFERRED=()' no longer appears verbatim in the lint; the deferral cases below would pass vacuously"
+  DEFERRED_LINT=""
+}
+
+if [ -n "$DEFERRED_LINT" ]; then
+  # 3c. A deferral that DOES match a live finding is honoured, not reported.
+  HONOURED_DIR="${TMP_ROOT}/deferral-honoured"
+  mkdir -p "${HONOURED_DIR}/.claude/scripts"
+  cat > "${HONOURED_DIR}/.claude/scripts/clean.sh" <<'CLEAN'
 #!/usr/bin/env bash
 set -euo pipefail
 GIT=(git -C "$PWD")
 "${GIT[@]}" status
 CLEAN
-# The deferred path, present but carrying no violation.
-cat > "${STALE_DIR}/.claude/scripts/candidate-ownership.sh" <<'FIXED'
+  # The deferred path, still carrying the violation the entry describes.
+  cat > "${HONOURED_DIR}/.claude/scripts/deferral-fixture.sh" <<'BROKEN'
 #!/usr/bin/env bash
 set -euo pipefail
-UNIQ=()
-CANDIDATES=(${UNIQ[@]+"${UNIQ[@]}"})
+ITEMS=()
+printf '%s\n' "${ITEMS[@]}"
+BROKEN
+  out=$(cd "$HONOURED_DIR" && bash "$DEFERRED_LINT" 2>&1) && got=0 || got=$?
+  if [ "${got:-0}" -eq 0 ] && printf '%s' "$out" | grep -q 'DEFERRED .*deferral-fixture.sh'; then
+    ok "a matching deferral is honoured rather than reported as an error"
+  else
+    bad "a matching deferral did NOT suppress its finding — the escape hatch is broken"
+    printf '       output: %s\n' "$(printf '%s' "$out" | tail -2)"
+  fi
+
+  # 3d. A stale deferral must be reported. The DEFERRED list is the one part of
+  #     this lint that could silently outlive its justification, so prove the
+  #     expiry check fires when the deferred file is present but clean.
+  STALE_DIR="${TMP_ROOT}/stale"
+  mkdir -p "${STALE_DIR}/.claude/scripts"
+  cat > "${STALE_DIR}/.claude/scripts/clean.sh" <<'CLEAN'
+#!/usr/bin/env bash
+set -euo pipefail
+GIT=(git -C "$PWD")
+"${GIT[@]}" status
+CLEAN
+  # The deferred path, present but carrying no violation.
+  cat > "${STALE_DIR}/.claude/scripts/deferral-fixture.sh" <<'FIXED'
+#!/usr/bin/env bash
+set -euo pipefail
+ITEMS=()
+COPY=(${ITEMS[@]+"${ITEMS[@]}"})
+printf '%s\n' ${COPY[@]+"${COPY[@]}"}
 FIXED
-out=$(cd "$STALE_DIR" && bash "$LINT" 2>&1) && got=0 || got=$?
-if [ "${got:-0}" -ne 0 ] && printf '%s' "$out" | grep -q 'STALE deferral'; then
-  ok "stale deferral is reported once its site is clean"
-else
-  bad "stale deferral was NOT reported — the allowlist can rot silently"
-  printf '       output: %s\n' "$(printf '%s' "$out" | tail -2)"
+  out=$(cd "$STALE_DIR" && bash "$DEFERRED_LINT" 2>&1) && got=0 || got=$?
+  if [ "${got:-0}" -ne 0 ] && printf '%s' "$out" | grep -q 'STALE deferral'; then
+    ok "stale deferral is reported once its site is clean"
+  else
+    bad "stale deferral was NOT reported — the allowlist can rot silently"
+    printf '       output: %s\n' "$(printf '%s' "$out" | tail -2)"
+  fi
 fi
 
 echo
