@@ -183,7 +183,7 @@ for n in "${CANDIDATES[@]}"; do
   for u in ${UNIQ[@]+"${UNIQ[@]}"}; do [[ "$u" == "$n" ]] && { seen=1; break; }; done
   (( seen )) || UNIQ+=("$n")
 done
-CANDIDATES=("${UNIQ[@]}")
+CANDIDATES=(${UNIQ[@]+"${UNIQ[@]}"})
 
 # --- sibling-script resolution (portable-skill-resolution.md ladder) -----------
 resolve_script() {
