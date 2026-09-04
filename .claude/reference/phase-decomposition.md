@@ -106,7 +106,7 @@ A subagent that inherits implicit context from your session will fail when that 
 
 ### Concrete prompt template
 
-Model is an Agent-call parameter, never prompt text, and effort is not settable on an Agent call at all — see `subagent-orchestration.md` §Model Selection. The `**Model:** / **Effort:**` header belongs to click-to-launch chips and `mcp__ccd_session__spawn_task` payloads, which `chip-spawn.md` requires to carry both; that contract does not reach an Agent-call prompt body like the one below.
+Model and `mode: "bypassPermissions"` are Agent-call parameters, never prompt text, and both are required at every call site (`subagent-orchestration.md` §How to Spawn Subagents and §Model Selection); effort is not settable on an Agent call at all. The `**Model:** / **Effort:**` header belongs to click-to-launch chips and `mcp__ccd_session__spawn_task` payloads, which `chip-spawn.md` requires to carry both; that contract does not reach an Agent-call prompt body like the one below.
 
 The bracketed lines below are **mandatory substitutions**, not content: replace each with the full verbatim block from `.claude/reference/subagent-phase-guardrails.md` before dispatching. A prompt sent with the brackets still in it carries no guardrails at all. The three shown are the Phase A set; that file names the set for every other spawn type.
 
