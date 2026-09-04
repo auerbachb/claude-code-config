@@ -118,7 +118,7 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
      `verification-before-completion` (reference doc, not a duplicate skill).
 - **P1 — second cycle (2026-08-12), separate PRs each:**
   1. **`silent-failure-hunter` agent** — add to `.claude/agents/silent-failure-hunter.md`; direct fit for our Bash-heavy scripts. Source: ECC `agents/silent-failure-hunter.md` @ `569b1d5b`. Issue [#1163](https://github.com/auerbachb/claude-code-config/issues/1163).
-  2. **`dispatching-parallel-agents` skill** — distill parallel-agent dispatch discipline into `.claude/skills/subagent-dispatch/SKILL.md` or `.claude/reference/parallel-agent-dispatch.md`. Source: superpowers `skills/dispatching-parallel-agents/SKILL.md` @ `b36e0829`. Issue [#1164](https://github.com/auerbachb/claude-code-config/issues/1164).
+  2. **`dispatching-parallel-agents` skill** — distill parallel-agent dispatch discipline into `.claude/skills/subagent-dispatch/SKILL.md` or `.claude/reference/parallel-agent-dispatch.md`. Source: superpowers `skills/dispatching-parallel-agents/SKILL.md` @ `b36e0829`. Issue [#1164](https://github.com/auerbachb/claude-code-config/issues/1164). *(Shipped, then retired in [#1584](https://github.com/auerbachb/claude-code-config/issues/1584); guidance folded into `.claude/reference/phase-decomposition.md`.)*
   3. **`receiving-code-review` skill** — adapt Phase B reviewer verification discipline into `.claude/skills/receiving-code-review/SKILL.md`. Source: superpowers `skills/receiving-code-review/SKILL.md` @ `b36e0829`. Issue [#1165](https://github.com/auerbachb/claude-code-config/issues/1165).
 - **P2 — deferred (revisit, see below).**
 
@@ -147,7 +147,7 @@ conventions; (3) low adaptation/maintenance cost; (4) high daily-use value.
 | 2026-07-02 | affaan-m/everything-claude-code `skill-comply` @ `81af407` | `skill-conventions-audit.sh` static audit | [#530](https://github.com/auerbachb/claude-code-config/pull/530) | Bash-only convention checks; no LLM harness. |
 | 2026-07-02 | obra/superpowers `verification-before-completion` @ `f268f7c` | `verification-evidence-patterns.md` reference | [#532](https://github.com/auerbachb/claude-code-config/pull/532) | Repo-specific claim→evidence map; linked from phase-protocols + AC skill. |
 
-_August 2026 candidates (Issues #1163, #1164, #1165) move to this log when their PRs merge. Tracked in the P1 backlog above and in `skill-repo-diff-2026-08.md`._
+_August 2026 candidates (Issues #1163, #1164, #1165) move to this log when their PRs merge. Tracked in the P1 backlog above and in `skill-repo-diff-2026-08.md`. #1164 shipped in [#1175](https://github.com/auerbachb/claude-code-config/pull/1175) and was retired in [#1584](https://github.com/auerbachb/claude-code-config/issues/1584), so it is recorded in that cycle's Import Log rather than here._
 
 ## Re-Survey Checklist (each cycle)
 

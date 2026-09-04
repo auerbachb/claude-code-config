@@ -661,7 +661,7 @@ elif [[ ! "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
   # by table-freshness.sh, so the clock is never written.
   echo 'DEGRADED: ACTIVE_COUNT is not an integer — table-freshness floor not armed; re-render the "Running now" table on every heartbeat instead'
 elif "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
-       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-dispatch; then
+       --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-launch; then
   CLOCK_RECORDED=true
 else
   echo 'DEGRADED: table-freshness clock not recorded — re-render the "Running now" table on every heartbeat instead'
