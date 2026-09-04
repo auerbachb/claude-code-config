@@ -73,7 +73,9 @@ new_home() {
   local __var="$1" __d
   __d="$(mktemp -d "$TMP_DIR/home-XXXXXXXX")" || die "new_home: mktemp -d failed under $TMP_DIR"
   mkdir -p "$__d/.claude" || die "new_home: mkdir -p $__d/.claude failed"
-  printf '%s\n' "$__d" >> "$HOME_LEDGER"
+  # A dropped append would silently shrink the ledger, and the uniqueness
+  # invariant would then pass over a HOME it never saw.
+  printf '%s\n' "$__d" >> "$HOME_LEDGER" || die "new_home: could not record $__d in $HOME_LEDGER"
   printf -v "$__var" '%s' "$__d"
 }
 
@@ -265,10 +267,12 @@ fi
 # ---------------------------------------------------------------------------
 # 15. missing session-state.json is not an error (--count → 0)
 # ---------------------------------------------------------------------------
-# Allocated with mktemp -d for the same collision reason as make_home (#1601);
-# NOT via make_home, because this case needs a HOME with no state file in it.
-H_absent="$(mktemp -d "$TMP_DIR/absent-XXXXXXXX")" || die "mktemp -d failed under $TMP_DIR"
-mkdir -p "$H_absent/.claude"          # create .claude so log write doesn't error; no state file
+# Allocated through new_home like every other test HOME, so this one is covered
+# by the uniqueness invariant too (#1601).  new_home creates .claude but never a
+# session-state.json, which is exactly what this case needs: the state file must
+# be absent, and the .claude dir must exist so the script-usage.log write does
+# not error.
+new_home H_absent
 n_absent="$(run_registry "$H_absent" --count 2>/dev/null)"
 rc_absent=$?
 if [[ $rc_absent -eq 0 && "$n_absent" == "0" ]]; then
