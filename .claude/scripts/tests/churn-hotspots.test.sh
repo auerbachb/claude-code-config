@@ -576,6 +576,19 @@ check_jq "12d: total_hotspot_count keeps the full pre-bound figure" "$OUT" '.tot
 (cd "$R1" && bash "$SCRIPT" --threshold abc >/dev/null 2>&1); check_eq "13c: non-numeric threshold exits 2" "2" "$?"
 (cd "$R1" && bash "$SCRIPT" --source bogus >/dev/null 2>&1); check_eq "13d: invalid --source exits 2" "2" "$?"
 (cd "$R1" && bash "$SCRIPT" --help >/dev/null 2>&1); check_eq "13e: --help exits 0" "0" "$?"
+# print_help() re-prints the comment header and STOPS at the first non-comment
+# line, so a header section can silently vanish from --help while the exit code
+# stays 0. Assert on content, not just status: every documented flag and the
+# trailing sections must survive the extraction.
+HELP_OUT=$(cd "$R1" && bash "$SCRIPT" --help 2>/dev/null)
+for flag in --since --repo --ref --exclude --exemptions; do
+  check_eq "13e-help: --help documents $flag" "yes" \
+    "$(case "$HELP_OUT" in *"$flag"*) echo yes ;; *) echo no ;; esac)"
+done
+check_eq "13e-help: --help reaches the EMPTY VALUES section" "yes" \
+  "$(case "$HELP_OUT" in *"EMPTY VALUES"*) echo yes ;; *) echo no ;; esac)"
+check_eq "13e-help: --help is not truncated before EXIT CODES" "yes" \
+  "$(case "$HELP_OUT" in *"EXIT CODES:"*) echo yes ;; *) echo no ;; esac)"
 
 # --flag=value form is accepted alongside --flag value
 run_in "$R1" --since="$WINDOW_START" --threshold=3 --json
@@ -712,6 +725,54 @@ check_eq "17c: an unresolvable --ref exits 3 instead of scanning something else"
 
 (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref main --source gh --json >/dev/null 2>&1)
 check_eq "17d: --ref on the gh path is a usage error" "2" "$?"
+
+# An EMPTY --ref is the quiet version of 17c (issue #1577). It survives the
+# "requires a value" check — the argument IS present — and then reads downstream
+# exactly like no --ref at all, because resolve_scan_ref() gates on
+# `[ -n "$REF" ]`. Pre-fix, the run fell through to auto-detection and scanned a
+# ref the caller never named, with no diagnostic. Both spellings are rejected at
+# parse time, the last point at which "passed empty" and "never passed" differ.
+run_in "$R14" --since "$WINDOW_START" --ref '' --json
+check_eq "17e: an explicit empty --ref exits 2 rather than auto-detecting" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --ref= --json
+check_eq "17f: the --ref= spelling is rejected the same way" "2" "$RC"
+REF_EMPTY_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref '' --json) 2>&1 >/dev/null )
+check_eq "17g: and the rejection names --ref and says the value must be non-empty" "yes" \
+  "$(case "$REF_EMPTY_ERR" in *"--ref"*"non-empty"*) echo yes ;; *) echo no ;; esac)"
+
+# The same hole existed on every other flag read through a `[ -n "$VAR" ]` test:
+# --since silently re-computes the default window, --repo lets gh infer the repo
+# from the cwd, --exclude silently applies no named exclusion. Guarded together.
+run_in "$R14" --ref main --since '' --json
+check_eq "17h: an explicit empty --since exits 2 rather than defaulting the window" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --repo '' --json
+check_eq "17i: an explicit empty --repo exits 2 rather than inferring from cwd" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude '' --json
+check_eq "17j: an explicit empty --exclude exits 2 rather than excluding nothing" "2" "$RC"
+# The `--flag=` spellings hit DIFFERENT case arms from the space-separated form,
+# so each parser branch needs its own assertion or half the guard is untested.
+run_in "$R14" --ref main --since= --json
+check_eq "17h2: the --since= spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --repo= --json
+check_eq "17i2: the --repo= spelling is rejected the same way" "2" "$RC"
+run_in "$R14" --since "$WINDOW_START" --exclude= --json
+check_eq "17j2: the --exclude= spelling is rejected the same way" "2" "$RC"
+
+# NEGATIVE CONTROL 1 — the guard rejects the EMPTY value, not the flag itself.
+# Without this, 17e/17f would pass just as well if --ref were broken outright.
+run_in "$R14" --since "$WINDOW_START" --ref main --json
+check_eq "17k: NEGATIVE CONTROL — a non-empty --ref still runs" "0" "$RC"
+check_jq "17l: NEGATIVE CONTROL — and is still honoured as explicit" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "explicit"'
+
+# NEGATIVE CONTROL 2 — auto-detection is untouched when --ref is ABSENT, and
+# this is precisely the pre-fix behaviour of `--ref ''`: the empty value was
+# indistinguishable from this run, which is why it was silent. 17e now differs
+# from this control, so the fix is observable rather than assumed.
+run_in "$R14" --since "$WINDOW_START" --json
+check_eq "17m: NEGATIVE CONTROL — an absent --ref still auto-detects" "0" "$RC"
+check_jq "17n: NEGATIVE CONTROL — via candidate resolution, exactly as before" "$OUT" \
+  '.scan_ref == "main" and .scan_ref_source == "candidate"'
 
 # =============================================================================
 # Scenario 18 — HEAD fallback: loud, reported, and extraction still guarded
