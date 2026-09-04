@@ -65,7 +65,7 @@ Multiple tasks?
 - Tasks span different subsystems, files, or problem domains
 - Each task can be understood without context from the others
 - Agents will not edit the same files or shared state
-- The launch gate clears — `/subagent` Step 7 owns the pipeline-ceiling count and the armed-deadline decline; run it there rather than re-deriving either here
+- The launch gate clears — `phase-protocols.md` §Launch gate binds *every* launch and fails closed on any unreadable stop control; `/subagent` Step 7 is its executable form, owning the pipeline-ceiling count and the armed-deadline decline. Run the gate at one of those two sites rather than re-deriving either here
 
 **Do NOT parallelize when:**
 
