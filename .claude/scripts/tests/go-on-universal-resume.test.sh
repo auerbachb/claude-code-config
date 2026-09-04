@@ -315,22 +315,30 @@ done
 # the block as written reported probe B `absent` while a pre-upgrade board was
 # still parked and `/pause-resume` would still restore it — the same masking bug
 # this issue exists to remove, one level up. Extract the real program and run it.
-grep -q 'REPO_KEY\\"\].\$LEGACY_SLOT' "$GO_ON" \
+grep -q 'for PAUSE_SLOT in pauses pause suspend' "$GO_ON" \
+  || fail "probe B no longer reads all three pause slots in its executable block"
+grep -q 'REPO_KEY\\"\].\$PAUSE_SLOT' "$GO_ON" \
   || fail "probe B no longer reads the legacy slots in its executable block"
 
 PROBE_B=$(awk '
-  index($0, "--arg lsusp")               { flag = 1; next }
-  flag                                   { print }
-  flag && index($0, "| sort_by(.paused_at") { exit }
+  index($0, "--arg lsusp")                       { flag = 1; next }
+  flag                                           { print }
+  flag && index($0, "slot_degraded(\"suspend\"") { exit }
 ' "$GO_ON")
 [[ -n "$PROBE_B" ]] || fail "could not extract the probe B union program from go-on"
-# Strip the trailing shell tail (`' 2>/dev/null) \`). The program is single-quoted
+# Strip the trailing shell tail (`' 2>/dev/null)`). The program is single-quoted
 # in the skill, so it cannot itself contain an apostrophe.
 PROBE_B="${PROBE_B%\'*}"
+[[ "$PROBE_B" == *"degraded:"* ]] \
+  || fail "probe B no longer reports which slot degraded (issue #1611)"
 
-probe_b() {  # probe_b <keyed> <legacy-pause> <legacy-suspend>
+probe_b_full() {  # probe_b_full <keyed> <legacy-pause> <legacy-suspend>
   jq -c -n --arg keyed "$1" --arg lpause "$2" --arg lsusp "$3" "$PROBE_B"
 }
+# The union itself. Since issue #1611 the program returns {records, degraded} so
+# a damaged slot can be named without discarding the slots read beside it; every
+# union assertion below reads `.records`.
+probe_b() { probe_b_full "$@" | jq -c '.records'; }
 
 KEYED_ONE='{"s1":{"active":true,"paused_at":"2026-09-01T10:00:00Z"}}'
 LEGACY_P='{"active":true,"paused_at":"2026-09-02T10:00:00Z"}'
@@ -360,14 +368,25 @@ UNION=$(probe_b "$KEYED_ONE" "$LEGACY_P" "$LEGACY_S") \
       | jq -r 'length')" == 1 ]] \
   || fail "probe B dropped a partially-restored legacy record"
 
-# A corrupt legacy slot raises, so the caller marks probe B unreadable rather
-# than reading a damaged board as "nothing parked".
-if probe_b '{}' '123' 'null' >/dev/null 2>&1; then
-  fail "a corrupt legacy slot must raise, not read as an empty slot"
-fi
-# Control: the same invocation shape succeeds on valid input, so the negative
-# case above is failing on the fixture rather than on the invocation.
-probe_b '{}' 'null' 'null' >/dev/null 2>&1 \
-  || fail "probe B rejected an all-empty union — the negative case proves nothing"
+# A corrupt legacy slot is NAMED as degraded rather than read as an empty slot —
+# and since issue #1611 it degrades ALONE: the slots read beside it survive, so
+# a healthy keyed board is still `present` evidence.
+CORRUPT_OUT=$(probe_b_full "$KEYED_ONE" '123' "$LEGACY_S") \
+  || fail "a corrupt legacy slot must degrade that slot, not abort the union"
+[[ "$(jq -r '.degraded | join(",")' <<<"$CORRUPT_OUT")" == "pause" ]] \
+  || fail "a corrupt legacy .pause must be named as the degraded slot (got: $CORRUPT_OUT)"
+[[ "$(jq -r '.records | length' <<<"$CORRUPT_OUT")" == 2 ]] \
+  || fail "a corrupt legacy slot discarded the healthy slots read beside it (got: $CORRUPT_OUT)"
+# A slot whose raw value is not JSON at all is caught inside that slot too.
+UNPARSEABLE_OUT=$(probe_b_full "$KEYED_ONE" 'not json at all' 'null') \
+  || fail "an unparseable slot value must not abort the union"
+[[ "$(jq -r '.degraded | join(",")' <<<"$UNPARSEABLE_OUT")" == "pause" ]] \
+  || fail "an unparseable legacy slot must be named (got: $UNPARSEABLE_OUT)"
+[[ "$(jq -r '.records | length' <<<"$UNPARSEABLE_OUT")" == 1 ]] \
+  || fail "an unparseable slot discarded the keyed record (got: $UNPARSEABLE_OUT)"
+# Control: healthy input names no degraded slot, so the checks above are failing
+# on the fixture rather than on the invocation.
+[[ "$(probe_b_full '{}' 'null' 'null' | jq -r '.degraded | length')" == 0 ]] \
+  || fail "probe B named a degraded slot on an all-empty union — the cases above prove nothing"
 
 echo "OK: /go-on universal resume contract tests passed"

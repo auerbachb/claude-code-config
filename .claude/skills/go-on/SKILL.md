@@ -199,81 +199,121 @@ fi
 **Read the whole map, never one slot.** A sibling session's record with `active: false` says only that *that* session's board was restored — it is never evidence that nothing else is parked, and reading a single slot is what let a later `/pause` hide an earlier one entirely. Read the map and both legacy slots and take the union:
 
 ```bash
+# Three sources, three verdicts (issue #1611). `.pauses` and both legacy
+# singletons are read in ONE uniform loop and classified EACH ON ITS OWN, so a
+# damaged slot degrades alone: a failed read no longer breaks out of the loop,
+# and an unparseable value no longer raises out of the combine, either of which
+# threw away the healthy slots read beside it.
+#
 # Same tri-state rule probe A applies: exit 3 is the one unambiguous "no state
-# file"; every other non-zero — an unresolved helper included — is UNREADABLE and
-# must not let probe B report `absent` or a lane continue.
+# file"; every other non-zero — an unresolved helper included — is UNREADABLE
+# for that slot and must not let it read `absent`.
+#
+# The legacy singletons are read UNCONDITIONALLY, on the same rule and in the
+# same loop. They are union members, never an else-branch taken only when
+# `.pauses` is empty: gating the legacy read on an empty map is this very bug one
+# level up — a pre-upgrade board becomes unreachable the moment any keyed record
+# exists.
 PAUSES_RAW=""
-# PAUSES_STATE tracks whether the READS succeeded — it is NOT probe B's verdict
-# and has no consumer outside this block. `present` means "the read returned",
-# never "something is parked": an empty or all-resumed map reads `present` and
-# yields `[]`, which is probe B **absent**. The verdict is PAUSE_UNRESUMED, and
-# only its two empties (`[]` vs `""`) separate absent from unreadable.
-PAUSES_STATE=unreadable           # read status only: unreadable | absent | present
-if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  PAUSES_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)
-  READ_RC=$?
-  if (( READ_RC == 3 )); then PAUSES_STATE=absent; PAUSES_RAW=""
-  elif (( READ_RC == 0 )); then PAUSES_STATE=present
-  else PAUSES_STATE=unreadable; PAUSES_RAW=""
-  fi
-fi
-# Both legacy singletons are read UNCONDITIONALLY, on the same tri-state rule.
-# They are union members, never an else-branch taken only when `.pauses` is
-# empty: gating the legacy read on an empty map is this very bug one level up —
-# a pre-upgrade board becomes unreachable the moment any keyed record exists.
 LEGACY_PAUSE_RAW=""
 LEGACY_SUSPEND_RAW=""
-if [[ "$PAUSES_STATE" != unreadable && -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  for LEGACY_SLOT in pause suspend; do
-    SLOT_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].$LEGACY_SLOT" 2>/dev/null)
+# The names of the slots that could not be read or would not parse. Empty means
+# every slot was readable; a name here is reported and that slot alone dropped.
+PAUSE_SLOTS_UNREADABLE=""
+if [[ -z "$SESSION_STATE_SH" || -z "$REPO_KEY" ]]; then
+  # No helper or no repo identity reaches none of them — that is three unreadable
+  # slots, not an absent probe.
+  PAUSE_SLOTS_UNREADABLE="pauses pause suspend"
+else
+  for PAUSE_SLOT in pauses pause suspend; do
+    SLOT_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].$PAUSE_SLOT" 2>/dev/null)
     SLOT_RC=$?
-    if (( SLOT_RC == 3 )); then SLOT_RAW=""          # no state file — the absence probe A already saw
-    elif (( SLOT_RC != 0 )); then PAUSES_STATE=unreadable; break
+    if (( SLOT_RC == 3 )); then SLOT_RAW=""   # no state file — the absence probe A already saw
+    elif (( SLOT_RC != 0 )); then
+      SLOT_RAW=""
+      PAUSE_SLOTS_UNREADABLE="${PAUSE_SLOTS_UNREADABLE:+$PAUSE_SLOTS_UNREADABLE }$PAUSE_SLOT"
     fi
-    if [[ "$LEGACY_SLOT" == pause ]]; then LEGACY_PAUSE_RAW="$SLOT_RAW"
-    else LEGACY_SUSPEND_RAW="$SLOT_RAW"; fi
+    case "$PAUSE_SLOT" in
+      pauses)  PAUSES_RAW="$SLOT_RAW" ;;
+      pause)   LEGACY_PAUSE_RAW="$SLOT_RAW" ;;
+      suspend) LEGACY_SUSPEND_RAW="$SLOT_RAW" ;;
+    esac
   done
 fi
-PAUSE_UNRESUMED=$(jq -c -n \
+PAUSE_PROBE=$(jq -c -n \
   --arg keyed  "${PAUSES_RAW:-null}" \
   --arg lpause "${LEGACY_PAUSE_RAW:-null}" \
   --arg lsusp  "${LEGACY_SUSPEND_RAW:-null}" '
+  # ---- one slot, one verdict (issue #1611) -----------------------------------
+  # Classify a single pause source on its OWN: `absent` (null), `present` (the
+  # shape that slot holds), or `unreadable` (anything else). The session-keyed
+  # map and the legacy singletons take the SAME rule — only `$kind` differs,
+  # because only the shape differs — so a corrupt map is named exactly the way a
+  # corrupt singleton is, and neither is ever read as "nothing parked".
+  # This definition is identical in /pause-resume Step 1, /go-on probe B, and
+  # here; pause-multisession.test.sh extracts all three and fails if they drift.
+  def slot_class($kind):
+    if type == "null" then "absent"
+    elif $kind == "map"
+      then (if type == "object" and (to_entries | all(.value | type == "object"))
+            then "present" else "unreadable" end)
+    elif type == "object" then "present"
+    else "unreadable" end;
+  # A damaged slot names itself and nothing else. The caller degrades exactly
+  # the slots listed here, so every surviving slot still contributes.
+  def slot_degraded($name; $kind):
+    if slot_class($kind) == "unreadable" then [$name] else [] end;
+  # ---- end shared per-slot validation ----------------------------------------
   def pend($a): ($a | if type == "array"
                       then map(select((type != "object") or ((.rearmed // false) != true))) | length
                       else 0 end);
   def unresumed: (.active != false)
                  or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
-  # An empty read is "nothing there"; anything else must parse, and a parse
-  # failure raises so the caller marks probe B unreadable.
-  def parse: if . == "" then null else fromjson end;
-  # A value that is neither null nor a map of records is CORRUPT, not empty —
-  # a single malformed VALUE included, which the select below would otherwise
-  # drop silently. Raise so the caller marks probe B unreadable rather than
-  # reading a damaged board as "nothing parked".
-  def keyed_records:
-    (if type != "object" and type != "null" then error("pauses is not a map")
-     elif type == "object" and ((to_entries | all(.value | type == "object")) | not)
-       then error("pauses holds a malformed record")
-     else . end)
-    | if type == "object" then to_entries | map(.value) else [] end;
-  # A legacy slot holds ONE record, not a map. Same corruption rule: a non-object
-  # non-null value raises rather than being read as an empty slot.
-  def legacy_record:
-    if type == "null" then []
-    elif type == "object" then [.]
-    else error("legacy pause slot is not a record") end;
-  [ ($keyed  | parse | keyed_records)[],
-    ($lpause | parse | legacy_record)[],
-    ($lsusp  | parse | legacy_record)[] ]
-  | map(select((type == "object") and unresumed))
-  # Newest first, on either spelling of the timestamp (legacy: `suspended_at`).
-  | sort_by(.paused_at // .suspended_at // "") | reverse' 2>/dev/null) \
-  || { PAUSE_UNRESUMED=""; PAUSES_STATE=unreadable; }
-[[ "$PAUSES_STATE" == unreadable ]] && PAUSE_UNRESUMED=""
+  # An empty read is "nothing there". A value that will not parse is a DAMAGED
+  # slot, not an empty one — caught HERE, inside the slot, so it classifies as
+  # `unreadable` rather than aborting the program and taking the other two with
+  # it. The caught value is a string, which slot_class already calls unreadable.
+  def parse: if . == "" then null else (try fromjson catch "unparseable") end;
+  # Only a `present` slot contributes records; a damaged one contributes none
+  # and is reported by name instead.
+  def slot_records($kind):
+    if slot_class($kind) != "present" then []
+    elif $kind == "map" then (to_entries | map(.value))
+    else [.] end;
+  { records: ( (($keyed  | parse) | slot_records("map"))
+             + (($lpause | parse) | slot_records("slot"))
+             + (($lsusp  | parse) | slot_records("slot"))
+             | map(select((type == "object") and unresumed))
+             # Newest first, on either spelling of the timestamp (legacy: `suspended_at`).
+             | sort_by(.paused_at // .suspended_at // "") | reverse ),
+    degraded: ( (($keyed  | parse) | slot_degraded("pauses"; "map"))
+              + (($lpause | parse) | slot_degraded("pause"; "slot"))
+              + (($lsusp  | parse) | slot_degraded("suspend"; "slot")) ) }' 2>/dev/null)
+if [[ -z "$PAUSE_PROBE" ]]; then
+  # The combine itself failed — no slot can be vouched for.
+  PAUSE_UNRESUMED=""
+  PAUSE_SLOTS_UNREADABLE="pauses pause suspend"
+else
+  PAUSE_DAMAGED=$(jq -r '.degraded | join(" ")' <<<"$PAUSE_PROBE")
+  [[ -z "$PAUSE_DAMAGED" ]] || \
+    PAUSE_SLOTS_UNREADABLE="${PAUSE_SLOTS_UNREADABLE:+$PAUSE_SLOTS_UNREADABLE }$PAUSE_DAMAGED"
+  PAUSE_UNRESUMED=$(jq -c '.records' <<<"$PAUSE_PROBE")
+  # Probe B is `unreadable` only when a damaged slot is ALL there is. A surviving
+  # slot's un-resumed record is `present` evidence no matter what its damaged
+  # sibling holds — that is the whole point of degrading per slot.
+  if [[ -n "$PAUSE_SLOTS_UNREADABLE" && "$PAUSE_UNRESUMED" == "[]" ]]; then
+    PAUSE_UNRESUMED=""
+  fi
+fi
+# Name every damaged slot to the user; the slots not named here still counted.
+[[ -z "$PAUSE_SLOTS_UNREADABLE" ]] || \
+  echo "DEGRADED: pause slot(s) $PAUSE_SLOTS_UNREADABLE unreadable — records there were not consulted; the other pause slots were" >&2
 ```
 
 The union above is the whole of probe B — the legacy slots are read and sorted in
-that same program, not left to a follow-up step. The two empties are distinct and must stay so: `PAUSE_UNRESUMED` holding `[]` means every read succeeded and nothing is parked — `absent`; holding `""` means a read or the parse failed — `unreadable`, never `absent` (§Degradation). A `.pauses` value that is neither null nor a map is corrupt, so it raises rather than collapsing to `[]`.
+that same program, not left to a follow-up step. The two empties are distinct and must stay so: `PAUSE_UNRESUMED` holding `[]` means every readable slot was consulted and nothing is parked — `absent`; holding `""` means no slot could be vouched for — `unreadable`, never `absent` (§Degradation).
+
+**Degradation is per slot (issue #1611).** A `.pauses` value that is neither null nor a map of records is corrupt, and so is a legacy slot holding anything but a record — but a damaged slot is *named* in `PAUSE_SLOTS_UNREADABLE` and dropped **alone**, never collapsed to `[]` and never raised out of the combine. The surviving slots still produce their records, so probe B reads `present` on a healthy keyed board even while `.pause` is corrupt; it falls to `unreadable` only when a damaged slot is all there is. The `slot_class` rule doing the classifying is verbatim-identical in `/pause-resume` Step 1 and `candidate-ownership.sh`, and `pause-multisession.test.sh` fails if the three drift.
 
 If the state read fails, the existence of any `~/.claude/handoffs/pause-*.md` or `suspend-*.md` is a pause **candidate** — `/pause-resume` Step 1 owns marker selection and fails closed with `No parked session found` when the marker belongs to another repo, so a false candidate costs a no-op, never a wrong restore.
 

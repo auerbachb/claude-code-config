@@ -121,20 +121,38 @@ Order of precedence:
    restore, so globbing there would rediscover a completed board and restore it
    twice. `RECORDS_TOTAL` keeps the two cases apart.
 
+**Three sources, three verdicts (issue #1611).** `.pauses`, the legacy `.pause`,
+and the legacy `.suspend` are validated **each on its own** before they are
+combined, by one `slot_class` rule shared verbatim with `/go-on` probe B and
+`candidate-ownership.sh`. A damaged slot is named individually and drops out
+alone; the surviving slots still contribute their records. The keyed map takes
+that same rule as the singletons — a corrupt map is *named*, never silently
+empty. Nothing raises: aborting the combine over one bad slot is what discarded
+the healthy boards read beside it.
+
 ```bash
 PAUSE_RECORDS='[]'
 RECORDS_TOTAL=0
-# Set when a corrupt `pauses` source was discarded. RECORDS_TOTAL is counted
-# AFTER that discard, so it cannot by itself distinguish "no records existed"
-# from "records existed and we threw the source away" — and only the first of
-# those may reach the marker glob.
+# Set when ANY pause slot was discarded as damaged — the keyed map or either
+# legacy singleton (issue #1611). RECORDS_TOTAL counts only the slots that were
+# read, so it cannot by itself distinguish "no records existed" from "records
+# existed and we threw that slot away" — and only the first of those may reach
+# the marker glob.
 PAUSES_DISCARDED=false
 USE_MARKER=false
 MARKER_PATH=""
 STATE_KEY="pause"
 STATE_UNREADABLE=false
-# jq refuses an empty --argjson; normalize an absent read to null.
-_json_or_null() { [[ -n "$1" && "$1" != "null" ]] && printf '%s' "$1" || printf 'null'; }
+# jq refuses an empty --argjson; normalize an absent read to null. A slot that
+# READ successfully but holds text that is not JSON is a DAMAGED slot, not an
+# absent one — passing it as a JSON STRING keeps it that way, because a string is
+# neither a record nor a map and `slot_class` classifies it `unreadable`.
+# Coercing it to `null` here would read a corrupt board as "nothing parked".
+_json_or_null() {
+  [[ -n "$1" && "$1" != "null" ]] || { printf 'null'; return; }
+  if printf '%s' "$1" | jq -e . >/dev/null 2>&1; then printf '%s' "$1"
+  else jq -Rn --arg v "$1" '$v'; fi
+}
 # "Could not look" is never "nothing there". Exit 3 is the one unambiguous
 # absent — no state file has ever been written; every other non-zero is an
 # UNREADABLE source, which must be carried into the verdict rather than
@@ -177,29 +195,37 @@ if [[ -z "$EXPLICIT_MARKER" && -n "$SESSION_STATE_SH" ]]; then
     _read_slot ".repos[\"$REPO_KEY\"].pauses" "the pauses map";        PAUSES_MAP="$SLOT_VALUE"
     _read_slot ".repos[\"$REPO_KEY\"].pause" "the legacy pause slot";   LEGACY_PAUSE="$SLOT_VALUE"
     _read_slot ".repos[\"$REPO_KEY\"].suspend" "the legacy suspend slot"; LEGACY_SUSPEND="$SLOT_VALUE"
-    # A `pauses` value that is neither absent nor a map of records is CORRUPT,
-    # not empty — and that applies to a single malformed VALUE inside an
-    # otherwise-valid map just as much as to the map itself. The union build
-    # below drops non-object values with `select`, which would silently swallow
-    # a damaged board and report a clean no-op over it. Check both levels, mark
-    # the source unreadable, and drop only it — the legacy slots still
-    # contribute their records, and an explicit --marker still recovers.
-    if [[ -n "$PAUSES_MAP" && "$PAUSES_MAP" != "null" ]] && \
-       ! jq -e 'type == "object" and (to_entries | all(.value | type == "object"))' \
-            >/dev/null 2>&1 <<<"$PAUSES_MAP"; then
-      STATE_UNREADABLE=true
-      PAUSES_DISCARDED=true
-      PAUSES_MAP=""
-      echo "DEGRADED: the pauses map is not an object, or holds a malformed record — its records were not consulted" >&2
-    fi
-    # Build one selection list. `tojson` quotes each path segment, so a session
-    # key never breaks out of the jq path it is spliced into.
-    PAUSE_RECORDS=$(jq -nc \
+    # Every slot is validated on its OWN inside the one program below (issue
+    # #1611), which returns the surviving records, how many records existed, and
+    # the name of each damaged slot. Nothing is pre-checked here and nothing
+    # raises: a raise aborts the program, so one corrupt legacy singleton used
+    # to empty PAUSE_RECORDS outright and take the healthy keyed boards with it.
+    PAUSE_SELECTION=$(jq -nc \
       --arg repo_key "$REPO_KEY" \
       --argjson pauses "$(_json_or_null "$PAUSES_MAP")" \
       --argjson legacy_pause "$(_json_or_null "$LEGACY_PAUSE")" \
       --argjson legacy_suspend "$(_json_or_null "$LEGACY_SUSPEND")" '
       def base: ".repos[" + ($repo_key | tojson) + "]";
+      # ---- one slot, one verdict (issue #1611) -----------------------------------
+      # Classify a single pause source on its OWN: `absent` (null), `present` (the
+      # shape that slot holds), or `unreadable` (anything else). The session-keyed
+      # map and the legacy singletons take the SAME rule — only `$kind` differs,
+      # because only the shape differs — so a corrupt map is named exactly the way a
+      # corrupt singleton is, and neither is ever read as "nothing parked".
+      # This definition is identical in /pause-resume Step 1, /go-on probe B, and
+      # here; pause-multisession.test.sh extracts all three and fails if they drift.
+      def slot_class($kind):
+        if type == "null" then "absent"
+        elif $kind == "map"
+          then (if type == "object" and (to_entries | all(.value | type == "object"))
+                then "present" else "unreadable" end)
+        elif type == "object" then "present"
+        else "unreadable" end;
+      # A damaged slot names itself and nothing else. The caller degrades exactly
+      # the slots listed here, so every surviving slot still contributes.
+      def slot_degraded($name; $kind):
+        if slot_class($kind) == "unreadable" then [$name] else [] end;
+      # ---- end shared per-slot validation ----------------------------------------
       # A malformed array must not throw and lose the whole selection.
       def pend($a): ($a | if type == "array"
                           then map(select((type != "object") or ((.rearmed // false) != true))) | length
@@ -211,48 +237,58 @@ if [[ -z "$EXPLICIT_MARKER" && -n "$SESSION_STATE_SH" ]]; then
       # returns true for exactly the resumed records it is meant to exclude.
       def unresumed: (.active != false)
                      or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
-      # A legacy slot is one record or nothing. A value that is neither is a
-      # DAMAGED singleton, not an empty one: dropping it silently would report a
-      # pre-upgrade board as "nothing parked", which is the failure this issue
-      # exists to remove. Raise so the caller marks the source unreadable —
-      # matching /go-on probe B and candidate-ownership.sh, which read the same
-      # two slots and must not disagree about what a corrupt one means.
-      def legacy($block; $key):
-        if ($block | type) == "object"
-        then [{ session_id: ($block.session_id // "legacy"),
+      # Only a `present` slot contributes entries; a damaged one contributes none
+      # and is named through `degraded` instead. Each entry carries its own
+      # write-back address, so Step 7 closes exactly the record Step 1 loaded.
+      def keyed_entries:
+        if slot_class("map") != "present" then []
+        else (to_entries
+              | map({ session_id: .key,
+                      state_key:  "pauses",
+                      state_path: (base + ".pauses[" + (.key | tojson) + "]"),
+                      record:     .value })) end;
+      def legacy_entries($key):
+        if slot_class("slot") != "present" then []
+        else [{ session_id: (.session_id // "legacy"),
                 state_key:  $key,
                 state_path: (base + "." + $key),
-                record:     $block }]
-        elif ($block | type) == "null" then []
-        else error("legacy " + $key + " slot is not a record") end;
-      ( if ($pauses | type) == "object"
-        then ($pauses | to_entries
-              | map(select((.value | type) == "object")
-                    | { session_id: .key,
-                        state_key:  "pauses",
-                        state_path: (base + ".pauses[" + (.key | tojson) + "]"),
-                        record:     .value }))
-        else [] end )
-      + legacy($legacy_pause; "pause")
-      + legacy($legacy_suspend; "suspend")
-      | map(select(.record | unresumed))
-      | sort_by(.record.paused_at // .record.suspended_at // "")
-      | reverse') || { PAUSE_RECORDS='[]'; STATE_UNREADABLE=true
-          echo "DEGRADED: pause records could not be combined — none were consulted" >&2; }
-    # How many records EXISTED, before the un-resumed filter. `RECORD_COUNT == 0`
-    # is ambiguous on its own: it means "nothing is parked" only when there were
-    # no records at all. When records existed and were all already resumed, the
-    # marker glob must NOT run — markers are retained after a restore, so it
-    # would rediscover a completed board and restore it a second time.
-    RECORDS_TOTAL=$(jq -n \
-      --argjson pauses "$(_json_or_null "$PAUSES_MAP")" \
-      --argjson legacy_pause "$(_json_or_null "$LEGACY_PAUSE")" \
-      --argjson legacy_suspend "$(_json_or_null "$LEGACY_SUSPEND")" '
-      (if ($pauses | type) == "object"
-       then ($pauses | to_entries | map(select((.value | type) == "object")) | length)
-       else 0 end)
-      + (if ($legacy_pause | type) == "object" then 1 else 0 end)
-      + (if ($legacy_suspend | type) == "object" then 1 else 0 end)') || RECORDS_TOTAL=0
+                record:     . }] end;
+      ( ($pauses | keyed_entries)
+      + ($legacy_pause | legacy_entries("pause"))
+      + ($legacy_suspend | legacy_entries("suspend")) )
+      # `total` counts the records that EXISTED, before the un-resumed filter;
+      # `records` is the selection, newest first on either spelling of the stamp.
+      | { total: length,
+          records: ( map(select(.record | unresumed))
+                     | sort_by(.record.paused_at // .record.suspended_at // "")
+                     | reverse ),
+          degraded: ( ($pauses | slot_degraded("the pauses map"; "map"))
+                    + ($legacy_pause | slot_degraded("the legacy pause slot"; "slot"))
+                    + ($legacy_suspend | slot_degraded("the legacy suspend slot"; "slot")) ) }')
+    if [[ -z "$PAUSE_SELECTION" ]]; then
+      PAUSE_RECORDS='[]'
+      RECORDS_TOTAL=0
+      STATE_UNREADABLE=true
+      PAUSES_DISCARDED=true
+      echo "DEGRADED: pause records could not be combined — none were consulted" >&2
+    else
+      # One line per damaged slot, naming only that slot. Any slot NOT named here
+      # was read and still contributed, so a corrupt `.pause` no longer empties
+      # the selection: the keyed boards and the legacy `.suspend` record survive
+      # it, and an explicit --marker still recovers on top of that.
+      while IFS= read -r _damaged_slot; do
+        [[ -n "$_damaged_slot" ]] || continue
+        STATE_UNREADABLE=true
+        PAUSES_DISCARDED=true
+        echo "DEGRADED: $_damaged_slot is not a pause record, or holds a malformed record — its records were not consulted; the other pause slots still were" >&2
+      done < <(jq -r '.degraded[]?' <<<"$PAUSE_SELECTION")
+      PAUSE_RECORDS=$(jq -c '.records' <<<"$PAUSE_SELECTION")
+      # `RECORDS_TOTAL` counts only the slots that were READ, so on its own it
+      # cannot tell "no records existed" from "a slot was discarded and its
+      # records with it". PAUSES_DISCARDED keeps those two apart — only the first
+      # of them may reach the marker glob.
+      RECORDS_TOTAL=$(jq -r '.total' <<<"$PAUSE_SELECTION")
+    fi
     LEGACY_SELECTED=$(jq -r '[.[] | select(.state_key == "suspend")] | length' <<<"$PAUSE_RECORDS")
     [[ "$LEGACY_SELECTED" -eq 0 ]] || \
       echo "(including legacy pre-Issue-1310 suspend state; new pauses use .pauses[<session>])"
@@ -300,7 +336,7 @@ if [[ "$RECORD_COUNT" -eq 0 ]]; then
   fi
   # Automatic glob ONLY when the union held no records at all. `RECORD_COUNT`
   # alone is not enough: records that exist but were filtered — all resumed, or
-  # dropped because a corrupt `pauses` map made that source unreadable — leave
+  # dropped because a corrupt slot made that one source unreadable — leave
   # RECORDS_TOTAL positive, and their markers are retained after a restore. A
   # glob there rediscovers a finished board and restores it a second time.
   # An EXPLICIT --marker is unaffected: it skips the enumeration entirely, so
