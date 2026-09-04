@@ -410,7 +410,12 @@ else
     BUILD_NOW=1; WINDOW_REASON="could not parse last build completion — treating window as open"
   else
     WINDOW_EPOCH=$(( LAST_EPOCH + INTERVAL * 60 ))
-    WINDOW_OPENS="\"$(date -u -r "$WINDOW_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$WINDOW_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)\""
+    # GNU is tried FIRST deliberately, and the order is load-bearing: GNU `date -r`
+    # reads its argument as a FILE and prints that file's mtime, so a BSD-first chain
+    # silently renders the wrong time whenever a file happens to be named for the
+    # epoch. Both arms stay — GNU alone strands macOS, BSD alone strands GNU
+    # (issue #1587; same class as issue #1529).
+    WINDOW_OPENS="\"$(date -u -d "@$WINDOW_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$WINDOW_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)\""
     ELAPSED_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
     if [ "$ELAPSED_MIN" -ge "$INTERVAL" ]; then
       BUILD_NOW=1; WINDOW_REASON="${ELAPSED_MIN}m since the last build finished (window ${INTERVAL}m)"

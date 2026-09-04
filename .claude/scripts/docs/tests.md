@@ -36,6 +36,7 @@ for order.
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
 | [cr-plan.test.sh](../tests/cr-plan.test.sh) | Tests for `cr-plan.sh` |
 | [cursor-review-workflow-suppression.test.sh](../tests/cursor-review-workflow-suppression.test.sh) | Tests the one-nudge-per-HEAD guard in `.github/workflows/cursor-review-pr-comment.yml` |
+| [date-r-ordering.test.sh](../tests/date-r-ordering.test.sh) | Pins every shipped `date -r` fallback chain GNU-first (#1587) — a GNU-semantics `date` shim plus an epoch-named decoy file prove each fixed site reads the epoch, not a filename, with per-site negative controls, structural order checks on the already-GNU-first sites, and the deliberate BSD-first negative-control fixture in `overrun-check-tzdata.test.sh` pinned as such |
 | [diff-survival-check.test.sh](../tests/diff-survival-check.test.sh) | Tests for `diff-survival-check.sh` |
 | [dirty-main-guard.test.sh](../tests/dirty-main-guard.test.sh) | Tests for `dirty-main-guard.sh` |
 | [empty-array-expansion.test.sh](../tests/empty-array-expansion.test.sh) | Sibling-sweep regressions for the empty-array-under-`set -u` abort on bash 3.2 |

@@ -28,11 +28,14 @@ BASE_HINT="Turn ended on an Anthropic usage limit. Reconstruct in-flight state f
 # Fixture mtimes MUST be derived from the current clock. The hook filters with
 # `find -mtime -N`, which is relative to now, so a hard-coded calendar date is a
 # time bomb: fine on the day it is written, then silently future-dated before it
-# and aged out after it. `date -r` is BSD, `date -d @` is GNU.
+# and aged out after it. `date -r` is BSD, `date -d @` is GNU. GNU is tried FIRST
+# and the order is load-bearing: GNU `date -r` reads its argument as a FILE, so a
+# BSD-first chain silently emits a file's mtime whenever one happens to be named
+# for the epoch (issue #1587). Both arms stay — GNU alone strands macOS.
 stamp_ago() { # $1 = seconds before now -> YYYYMMDDhhmm for `touch -t`
   local epoch=$(( $(date -u +%s) - $1 ))
-  date -u -r "$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
   date -u -d "@$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
+  date -u -r "$epoch" +%Y%m%d%H%M 2>/dev/null && return 0
   return 1
 }
 touch_ago() { local when; when=$(stamp_ago "$2") || fail "cannot compute a relative timestamp on this platform"; touch -t "$when" "$1"; }

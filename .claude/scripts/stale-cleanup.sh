@@ -1721,10 +1721,16 @@ scan_checkouts() {
 scan_checkouts
 
 ts_to_date() {
-  # Portable across BSD/GNU date: read a unix ts on stdin, emit YYYY-MM-DD.
+  # Portable across BSD/GNU date: read a unix ts, emit YYYY-MM-DD.
+  #
+  # GNU is tried FIRST deliberately, and the order is load-bearing: GNU `date -r`
+  # reads its argument as a FILE and prints that file's mtime, so a BSD-first chain
+  # silently renders the wrong date whenever a file happens to be named for the
+  # epoch. Both arms stay — GNU alone strands macOS, BSD alone strands GNU
+  # (issue #1587; same class as issue #1529).
   local ts="$1"
-  if date -r "$ts" +%Y-%m-%d 2>/dev/null; then return; fi
-  date -d "@$ts" +%Y-%m-%d 2>/dev/null || echo "?"
+  if date -d "@$ts" +%Y-%m-%d 2>/dev/null; then return; fi
+  date -r "$ts" +%Y-%m-%d 2>/dev/null || echo "?"
 }
 
 emit_text() {
