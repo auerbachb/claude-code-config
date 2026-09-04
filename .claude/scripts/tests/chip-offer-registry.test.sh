@@ -13,6 +13,8 @@
 #     explicit --reserve call site, not an inherited-by-reference one (#1388)
 #   Runnable-invocation pin: /harness-audit ships its reservation as an executable
 #     snippet, so that snippet must survive deletion detection on its own
+#   HOME-uniqueness invariant: no two tests may share a session-state.json, with
+#     a planted-duplicate negative control proving the check can fail (#1601)
 #
 # All tests use a temp HOME dir so ~/.claude/session-state.json is not touched.
 
@@ -33,15 +35,48 @@ PASS=0; FAIL=0
 ok()   { PASS=$(( PASS+1 )); echo "ok   — $1"; }
 fail() { FAIL=$(( FAIL+1 )); echo "FAIL — $1"; }
 
+# A temp-dir allocation that fails is not a test failure — it means the suite
+# cannot isolate anything, so every result after it would be meaningless.
+# Abort rather than continue against an unset HOME.
+die() { echo "FATAL — $1" >&2; exit 1; }
+
 # Per-test temp HOME dir.  State file lives at "$H/.claude/session-state.json".
 # The .claude/ dir is created so the script-usage.log write doesn't error.
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(mktemp -d)" || die "mktemp -d failed: no writable TMPDIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-make_home() {
-  local d="$TMP_DIR/$RANDOM"
-  mkdir -p "$d/.claude"
-  echo "$d"
+# Every HOME this suite hands out is appended here, so the uniqueness invariant
+# in the "allocated HOMEs are unique" test below is asserted over what the run
+# ACTUALLY allocated rather than over a synthetic sample (issue #1601).
+HOME_LEDGER="$TMP_DIR/allocated-homes.txt"
+: > "$HOME_LEDGER"
+
+# new_home <varname> allocates a unique per-test HOME into the named variable.
+#
+# The dir used to be "$TMP_DIR/$RANDOM".  $RANDOM is 15-bit (0-32767) and this
+# suite allocates 23 homes a run, so two tests drew the same number — and so
+# shared one session-state.json — in roughly 0.77% of runs (1 in 130),
+# silently, because `mkdir -p` is happy to "create" a directory that already
+# exists.  The macOS CI flake in issue #1601 was exactly that: test 7's home
+# collided with test 5/6's, so test 7 read `.[0].state` off test 5's leftover
+# entry (rc=0 state=offered) and test 8's --count then saw test 5's two
+# survivors (count=2, expected 0).  mktemp -d is collision-free by construction.
+#
+# It assigns through `printf -v` rather than echoing a path for `H="$(...)"` to
+# capture, because that form cannot fail safely: the function would run in a
+# command-substitution subshell, where neither `return 1` nor `exit` reaches the
+# caller.  An allocation failure would leave H empty and every later test would
+# run against HOME="" — writing to /.claude and reporting the results as though
+# they had been isolated.  Assigning in the caller's own shell lets `die` end
+# the run (CodeAnt, PR #1625).
+new_home() {
+  local __var="$1" __d
+  __d="$(mktemp -d "$TMP_DIR/home-XXXXXXXX")" || die "new_home: mktemp -d failed under $TMP_DIR"
+  mkdir -p "$__d/.claude" || die "new_home: mkdir -p $__d/.claude failed"
+  # A dropped append would silently shrink the ledger, and the uniqueness
+  # invariant would then pass over a HOME it never saw.
+  printf '%s\n' "$__d" >> "$HOME_LEDGER" || die "new_home: could not record $__d in $HOME_LEDGER"
+  printf -v "$__var" '%s' "$__d"
 }
 
 sf() { echo "$1/.claude/session-state.json"; }   # state-file path helper
@@ -55,7 +90,7 @@ run_registry() {
 # ---------------------------------------------------------------------------
 # 1. --reserve: basic happy path
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 tid="$(run_registry "$H" --reserve --emitter pm --issue 1 --cap-free 3)"
 rc=$?
 if [[ $rc -eq 0 && -n "$tid" && "$tid" =~ ^offer- ]]; then
@@ -83,7 +118,7 @@ else
 fi
 
 # 4. --reserve with explicit --task-id is echoed back
-H="$(make_home)"
+new_home H
 custom_id="my-custom-task-99"
 tid2="$(run_registry "$H" --reserve --emitter prompt --issue 42 --cap-free 5 --task-id "$custom_id")"
 rc2=$?
@@ -96,7 +131,7 @@ fi
 # ---------------------------------------------------------------------------
 # 5. --reserve: cap exhausted (exit 7)
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 # Fill 2 slots (cap-free=2)
 run_registry "$H" --reserve --emitter pm --issue 10 --cap-free 2 > /dev/null
 run_registry "$H" --reserve --emitter prompt --issue 11 --cap-free 2 > /dev/null
@@ -120,9 +155,11 @@ fi
 # ---------------------------------------------------------------------------
 # 7. --transition: offered → running
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
+TR_ERR="$TMP_DIR/transition-stderr.txt"
+: > "$TR_ERR"
 tid3="$(run_registry "$H" --reserve --emitter wave --issue 20 --cap-free 5)"
-run_registry "$H" --transition --task-id "$tid3" --state running
+run_registry "$H" --transition --task-id "$tid3" --state running 2>>"$TR_ERR"
 rc_tr=$?
 st="$(run_registry "$H" --list | jq -r '.[0].state')"
 if [[ $rc_tr -eq 0 && "$st" == "running" ]]; then
@@ -132,7 +169,7 @@ else
 fi
 
 # 8. --transition: running → pr-backed removes from capacity count
-run_registry "$H" --transition --task-id "$tid3" --state pr-backed >/dev/null
+run_registry "$H" --transition --task-id "$tid3" --state pr-backed >/dev/null 2>>"$TR_ERR"
 n_pr="$(run_registry "$H" --count)"
 if [[ "$n_pr" == "0" ]]; then
   ok "--transition to pr-backed removes entry from capacity count"
@@ -152,7 +189,7 @@ fi
 # ---------------------------------------------------------------------------
 # 10. --count --state filter
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 30 --cap-free 5)"
 t_b="$(run_registry "$H" --reserve --emitter prompt --issue 31 --cap-free 5)"
 run_registry "$H" --transition --task-id "$t_b" --state running >/dev/null
@@ -177,7 +214,7 @@ fi
 # ---------------------------------------------------------------------------
 # 12. TTL expiry: entries older than TTL are not counted
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 past="1970-01-01T00:00:00Z"
 printf '{"repos":{"test/repo":{"chip_offers":[{"task_id":"old-1","emitter":"pm","issue":50,"state":"offered","offered_at":"%s","expires_at":"%s","pr":null,"last_updated":"%s"}]}}}\n' \
   "$past" "$past" "$past" > "$(sf "$H")"
@@ -189,7 +226,7 @@ else
 fi
 
 # 13. Entries with no offered_at are never treated as expired (fail-closed)
-H="$(make_home)"
+new_home H
 printf '{"repos":{"test/repo":{"chip_offers":[{"task_id":"no-ts","emitter":"pm","issue":51,"state":"offered","pr":null,"last_updated":"2026-01-01T00:00:00Z"}]}}}\n' \
   > "$(sf "$H")"
 n_no_ts="$(CLAUDE_CHIP_OFFER_TTL_S=1 run_registry "$H" --count)"
@@ -202,11 +239,11 @@ fi
 # ---------------------------------------------------------------------------
 # 14. terminal states (done, retracted) not counted
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 t_c="$(run_registry "$H" --reserve --emitter pm --issue 60 --cap-free 5)"
 t_d="$(run_registry "$H" --reserve --emitter prompt --issue 61 --cap-free 5)"
-run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null
-run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null
+run_registry "$H" --transition --task-id "$t_c" --state done >/dev/null 2>>"$TR_ERR"
+run_registry "$H" --transition --task-id "$t_d" --state retracted >/dev/null 2>>"$TR_ERR"
 n_term="$(run_registry "$H" --count)"
 if [[ "$n_term" == "0" ]]; then
   ok "done and retracted entries excluded from count"
@@ -214,11 +251,28 @@ else
   fail "terminal states: count=$n_term (expected 0)"
 fi
 
+# 14b. NEGATIVE CONTROL for tests 7, 8 and 14: none of those --transition calls
+# is concurrent, so state-lock.sh must never have had to break a lock to let one
+# through.  If it did, the transitions above passed for the wrong reason and the
+# real defect is lock timing, not the harness — this assertion is what keeps the
+# two apart (issue #1601; idiom from state-lock.test.sh).
+if [[ ! -s "$TR_ERR" ]] && ! grep -qE 'broke stale lock|lock was broken' "$TR_ERR"; then
+  ok "non-concurrent --transition calls emit no stderr and never break a lock"
+elif grep -qE 'broke stale lock|lock was broken' "$TR_ERR"; then
+  fail "LOCK DEFECT: a non-concurrent --transition broke a lock — $(grep -E 'broke stale lock|lock was broken' "$TR_ERR" | head -1)"
+else
+  fail "unexpected --transition stderr in tests 7/8/14: $(head -1 "$TR_ERR")"
+fi
+
 # ---------------------------------------------------------------------------
 # 15. missing session-state.json is not an error (--count → 0)
 # ---------------------------------------------------------------------------
-H_absent="$TMP_DIR/absent-$RANDOM"   # intentionally no mkdir
-mkdir -p "$H_absent/.claude"          # create .claude so log write doesn't error; no state file
+# Allocated through new_home like every other test HOME, so this one is covered
+# by the uniqueness invariant too (#1601).  new_home creates .claude but never a
+# session-state.json, which is exactly what this case needs: the state file must
+# be absent, and the .claude dir must exist so the script-usage.log write does
+# not error.
+new_home H_absent
 n_absent="$(run_registry "$H_absent" --count 2>/dev/null)"
 rc_absent=$?
 if [[ $rc_absent -eq 0 && "$n_absent" == "0" ]]; then
@@ -231,7 +285,7 @@ fi
 # 16. Concurrent reservation — two emitters against FREE=1 produce exactly 1 offer
 # ---------------------------------------------------------------------------
 # Sequential simulation: fill 0 of 1, first wins; then second fails.
-H="$(make_home)"
+new_home H
 t_a="$(run_registry "$H" --reserve --emitter pm --issue 100 --cap-free 1 2>/dev/null)"
 rc_a=$?
 t_b="$(run_registry "$H" --reserve --emitter prompt --issue 101 --cap-free 1 2>/dev/null)"
@@ -254,7 +308,7 @@ fi
 # broken lock) the count is 0, which is ≤1 but proves nothing about the locking
 # logic.  At least one subprocess must exit 0 (winner) or 7 (cap full) to
 # confirm the code ran rather than errored out silently.
-H2="$(make_home)"
+new_home H2
 ( run_registry "$H2" --reserve --emitter pm --issue 200 --cap-free 1 > /dev/null 2>&1 ) & pid_r1=$!
 ( run_registry "$H2" --reserve --emitter prompt --issue 201 --cap-free 1 > /dev/null 2>&1 ) & pid_r2=$!
 wait "$pid_r1"; rc_r1=$?
@@ -271,7 +325,7 @@ fi
 # ---------------------------------------------------------------------------
 bash "$REGISTRY" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "no mode → exit 2" || fail "no mode should exit 2"
 
-H="$(make_home)"
+new_home H
 HOME="$H" bash "$REGISTRY" --repo test/repo --reserve >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "--reserve missing args → exit 2" || fail "--reserve missing args"
 
@@ -284,7 +338,7 @@ HOME="$H" bash "$REGISTRY" --repo test/repo --reserve --emitter bad --issue 1 --
 # ---------------------------------------------------------------------------
 # 18. Preserve siblings in session-state.json (other keys are not clobbered)
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 printf '{"repos":{"test/repo":{"root_repo":"/some/path"}}}\n' > "$(sf "$H")"
 run_registry "$H" --reserve --emitter pm --issue 300 --cap-free 5 >/dev/null
 root="$(jq -r '.repos["test/repo"].root_repo' "$(sf "$H")")"
@@ -295,7 +349,7 @@ else
 fi
 
 # 19. Registry lives at repo-scoped key, other repos unaffected
-H="$(make_home)"
+new_home H
 printf '{"repos":{"other/repo":{"chip_offers":[{"task_id":"x","emitter":"pm","issue":999,"state":"offered","pr":null,"last_updated":"2026-01-01T00:00:00Z"}]}}}\n' \
   > "$(sf "$H")"
 n_scoped="$(run_registry "$H" --count)"
@@ -308,7 +362,7 @@ fi
 # ---------------------------------------------------------------------------
 # 20. Batch reserve: multiple --issue flags create ONE entry (not N)
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 tid_batch="$(run_registry "$H" --reserve --emitter issue-maker \
   --issue 200 --issue 201 --issue 202 \
   --cap-free 3 2>/dev/null)"
@@ -343,7 +397,7 @@ else
 fi
 
 # 23. Batch reserve with cap-free=1 only lets 1 entry through even for 3 issues
-H="$(make_home)"
+new_home H
 tid_ok="$(run_registry "$H" --reserve --emitter issue-maker \
   --issue 300 --issue 301 --cap-free 1 2>/dev/null)"
 rc_ok=$?
@@ -358,7 +412,7 @@ fi
 # ---------------------------------------------------------------------------
 # 24. --retract: frees a reservation (deferral 2 — release on failure)
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 tid_r="$(run_registry "$H" --reserve --emitter pm --issue 400 --cap-free 3)"
 n_before="$(run_registry "$H" --count)"
 run_registry "$H" --retract --task-id "$tid_r" >/dev/null
@@ -372,7 +426,7 @@ else
 fi
 
 # 25. --retract on unknown task_id is a no-op success (idempotent)
-H="$(make_home)"
+new_home H
 run_registry "$H" --retract --task-id "nonexistent-id-xyz" >/dev/null 2>&1
 rc_noop=$?
 if [[ $rc_noop -eq 0 ]]; then
@@ -382,7 +436,7 @@ else
 fi
 
 # 26. task_id entropy: generated ids include timestamp, PID, and hex random
-H="$(make_home)"
+new_home H
 tid_e="$(run_registry "$H" --reserve --emitter pm --issue 500 --cap-free 5)"
 # Generated format: offer-<epoch>-<pid>-<8hexdigits>
 if [[ "$tid_e" =~ ^offer-[0-9]+-[0-9]+-[0-9a-f]{8}$ ]]; then
@@ -392,12 +446,12 @@ else
 fi
 
 # 27. --reserve with no --issue exits 2
-H="$(make_home)"
+new_home H
 HOME="$H" bash "$REGISTRY" --repo test/repo --reserve --emitter pm --cap-free 3 >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "--reserve with no --issue exits 2" || fail "--reserve with no --issue: expected exit 2"
 
 # 28. --retract with no --task-id exits 2
-H="$(make_home)"
+new_home H
 HOME="$H" bash "$REGISTRY" --repo test/repo --retract >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "--retract with no --task-id exits 2" || fail "--retract no --task-id: expected exit 2"
 
@@ -408,7 +462,7 @@ HOME="$H" bash "$REGISTRY" --repo test/repo --retract >/dev/null 2>&1
 #     Scenario: CAP=6, 3 existing offered entries, FREE=3 → admission limit = 6.
 #     All 3 new reservations must succeed; a 7th would exceed the limit.
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 # Seed 3 baseline entries (cap-free=10 as an unconstrained seed)
 run_registry "$H" --reserve --emitter pm --issue 700 --cap-free 10 >/dev/null
 run_registry "$H" --reserve --emitter prompt --issue 701 --cap-free 10 >/dev/null
@@ -453,7 +507,7 @@ fi
 #     "harness-audit" and is reported as drift rather than normalized away.
 #     Fails closed if either list cannot be extracted.
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 HELP_EMITTERS="$(HOME="$H" bash "$REGISTRY" --help 2>/dev/null \
   | awk '/^VALID EMITTERS$/{getline; print; exit}' \
   | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep . | sort | tr '\n' ' ')"
@@ -471,7 +525,7 @@ fi
 # 37. harness-audit is accepted by --reserve (behavioral pin for the sixth
 #     canonical emitter named in chip-launching.md).
 # ---------------------------------------------------------------------------
-H="$(make_home)"
+new_home H
 rc_ha=0
 tid_ha="$(run_registry "$H" --reserve --emitter harness-audit --issue 1464 --cap-free 3 2>/dev/null)" || rc_ha=$?
 if [[ $rc_ha -eq 0 && -n "$tid_ha" ]]; then
@@ -601,6 +655,43 @@ else
   else
     ok "harness-audit ships a runnable --reserve invocation inside a shell fence"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 40. Every HOME this run allocated is unique (issue #1601 regression pin).
+# ---------------------------------------------------------------------------
+# Two tests sharing one HOME share one session-state.json, and the second one
+# then asserts against the first one's leftover entries.  That is what made
+# tests 7 and 8 flake on macOS CI while nothing about them had changed.  This
+# check runs last, over the HOMEs the suite ACTUALLY handed out, so it fails on
+# any future reintroduction of a collision-prone allocator no matter which pair
+# of tests happens to collide.
+
+# dup_count <ledger-file> — how many distinct values appear more than once.
+dup_count() { sort "$1" | uniq -d | wc -l | tr -d ' '; }
+
+n_homes="$(wc -l < "$HOME_LEDGER" | tr -d ' ')"
+n_dup_homes="$(dup_count "$HOME_LEDGER")"
+if [[ "$n_homes" -lt 20 ]]; then
+  # Guard against a vacuous pass: an empty or barely-written ledger has no
+  # duplicates either, and would let a collision bug through silently.
+  fail "HOME ledger recorded only $n_homes allocations (expected ≥20) — the uniqueness check below would pass vacuously"
+elif [[ "$n_dup_homes" -eq 0 ]]; then
+  ok "all $n_homes per-test HOMEs allocated this run are unique (no shared session-state.json)"
+else
+  fail "HOME collision: $n_dup_homes duplicated HOME(s) across $n_homes allocations, e.g. $(sort "$HOME_LEDGER" | uniq -d | head -1)"
+fi
+
+# 41. NEGATIVE CONTROL for test 40: plant a known duplicate and confirm the same
+# detector reports it.  A uniqueness assertion that cannot fail proves nothing.
+neg_ledger="$TMP_DIR/negative-control-homes.txt"
+head -3 "$HOME_LEDGER" > "$neg_ledger"
+head -1 "$HOME_LEDGER" >> "$neg_ledger"     # the planted duplicate
+n_dup_neg="$(dup_count "$neg_ledger")"
+if [[ "$n_dup_neg" -eq 1 ]]; then
+  ok "negative control: duplicate-HOME detector reports a planted duplicate"
+else
+  fail "negative control: detector saw $n_dup_neg duplicates in a ledger with 1 planted — test 40 is vacuous"
 fi
 
 # ---------------------------------------------------------------------------
