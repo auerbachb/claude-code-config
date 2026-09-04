@@ -407,24 +407,23 @@ else
     # map is empty: an else-branch would make a board parked before either rename
     # invisible the moment any session wrote a keyed record — the same masking
     # bug #1576 removed one level up.
-    ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses" || true
-    PAUSES_MAP_JSON="$SS_VALUE"
-    ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)" || true
-    PAUSE_LEGACY_JSON="$SS_VALUE"
-    ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)" || true
-    SUSPEND_LEGACY_JSON="$SS_VALUE"
-    # A `pauses` value that is neither absent nor a map of records is CORRUPT,
-    # not empty — a single malformed VALUE included, which the `select` in the
-    # union build would otherwise drop silently. Drop only that source and NAME
-    # it, so the legacy slots still contribute and the sweep never reads a
-    # damaged board as "nothing parked".
-    if [[ -n "$PAUSES_MAP_JSON" && "$PAUSES_MAP_JSON" != "null" ]] && \
-       ! printf '%s' "$PAUSES_MAP_JSON" | \
-         jq -e 'type == "object" and (to_entries | all(.value | type == "object"))' \
-           >/dev/null 2>&1; then
-      batch_degrade "pauses: not an object, or holds a malformed record (those parked records were not consulted)"
-      PAUSES_MAP_JSON=""
-    fi
+    # On a usable read the value is kept VERBATIM, empty included: `--get` prints
+    # nothing for a slot holding the JSON string `""`, and that is a damaged
+    # slot the combine has to see. A failed read is already named by ss_get, so
+    # it is handed the literal `null` instead of being classified a second time
+    # (issue #1611).
+    if ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses"; then
+      PAUSES_MAP_JSON="$SS_VALUE"; else PAUSES_MAP_JSON="null"; fi
+    if ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)"; then
+      PAUSE_LEGACY_JSON="$SS_VALUE"; else PAUSE_LEGACY_JSON="null"; fi
+    if ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)"; then
+      SUSPEND_LEGACY_JSON="$SS_VALUE"; else SUSPEND_LEGACY_JSON="null"; fi
+    # Each of the three slots is classified on its OWN in the combine below
+    # (issue #1611), so a corrupt one is named alone and the healthy ones still
+    # contribute. Nothing is pre-checked or cleared here: a shell-side check for
+    # `pauses` only, with the legacy slots left to a raise inside the combine,
+    # is exactly the asymmetry that made one damaged singleton discard every
+    # keyed record read alongside it.
     ss_get ".repos[\"$REPO_KEY\"].background_tasks" "background_tasks" || true
     BG_TASKS_JSON="$SS_VALUE"
     # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>];
@@ -447,21 +446,55 @@ json_or_null() { # a `--get` on a missing path prints "null"; normalize both
   [[ -z "$v" || "$v" == "null" ]] && { printf 'null'; return; }
   if printf '%s' "$v" | jq -e . >/dev/null 2>&1; then printf '%s' "$v"; else printf 'null'; fi
 }
+# A pause slot that READ successfully (rc=0) but holds text that is not JSON is
+# a DAMAGED slot, not an absent one. `json_or_null` coerces it to `null`, which
+# `slot_class` would then call `absent` — a corrupt board read as "nothing
+# parked", the exact masking this degradation contract exists to prevent. Hand
+# the raw text through as a JSON STRING instead: a string is neither a record nor
+# a map, so slot_class already classifies it `unreadable` and the slot is named.
+pause_slot_arg() {
+  local v="$1"
+  # The literal `null` is the ONLY absent value. An EMPTY value is a slot holding
+  # the JSON string `""` — damaged — and must reach slot_class as a string so it
+  # is named, not coerced to `null` and reported as "nothing parked".
+  [[ "$v" == "null" ]] && { printf 'null'; return; }
+  if printf '%s' "$v" | jq -e . >/dev/null 2>&1; then printf '%s' "$v"
+  else jq -Rn --arg v "$v" '$v'; fi
+}
 # PAUSE_JSON is an ARRAY of un-resumed pause records (issue #1576), never one
 # block: a repo can hold several, and a sibling's `active: false` is not evidence
 # that nothing else is parked. Records that are already resumed are dropped here,
 # so downstream code no longer re-checks `.active` per block.
-PAUSE_JSON="$(jq -nc \
-  --argjson pauses "$(json_or_null "$PAUSES_MAP_JSON")" \
-  --argjson legacy_pause "$(json_or_null "$PAUSE_LEGACY_JSON")" \
-  --argjson legacy_suspend "$(json_or_null "$SUSPEND_LEGACY_JSON")" '
-  # A legacy slot is one record or nothing. A value that is neither is a DAMAGED
-  # singleton, not an empty one — dropping it silently would let this sweep
-  # dispatch work while /pause-resume and /go-on both call that same source
-  # unreadable. Raise; the caller degrades the whole pause source and names it.
-  def one($b): if ($b | type) == "object" then [$b]
-               elif ($b | type) == "null" then []
-               else error("legacy pause slot is not a record") end;
+#
+# Each of the three sources is validated on its OWN before the combine (issue
+# #1611) and the program returns both the surviving records and the names of the
+# damaged slots. It never raises: a raise aborts the whole program, so one
+# damaged legacy singleton used to discard every healthy keyed record read
+# beside it and this sweep then drew no parked-unit evidence at all.
+PAUSE_COMBINED="$(jq -nc \
+  --argjson pauses "$(pause_slot_arg "$PAUSES_MAP_JSON")" \
+  --argjson legacy_pause "$(pause_slot_arg "$PAUSE_LEGACY_JSON")" \
+  --argjson legacy_suspend "$(pause_slot_arg "$SUSPEND_LEGACY_JSON")" '
+  # ---- one slot, one verdict (issue #1611) -----------------------------------
+  # Classify a single pause source on its OWN: `absent` (null), `present` (the
+  # shape that slot holds), or `unreadable` (anything else). The session-keyed
+  # map and the legacy singletons take the SAME rule — only `$kind` differs,
+  # because only the shape differs — so a corrupt map is named exactly the way a
+  # corrupt singleton is, and neither is ever read as "nothing parked".
+  # This definition is identical in /pause-resume Step 1, /go-on probe B, and
+  # here; pause-multisession.test.sh extracts all three and fails if they drift.
+  def slot_class($kind):
+    if type == "null" then "absent"
+    elif $kind == "map"
+      then (if type == "object" and (to_entries | all(.value | type == "object"))
+            then "present" else "unreadable" end)
+    elif type == "object" then "present"
+    else "unreadable" end;
+  # A damaged slot names itself and nothing else. The caller degrades exactly
+  # the slots listed here, so every surviving slot still contributes.
+  def slot_degraded($name; $kind):
+    if slot_class($kind) == "unreadable" then [$name] else [] end;
+  # ---- end shared per-slot validation ----------------------------------------
   # ONE un-resumed predicate across every reader (pause-resume Step 1, go-on
   # probe B, here). It must match /pause-resume exactly: a record it would still
   # restore is a record this sweep must still call parked.
@@ -476,15 +509,37 @@ PAUSE_JSON="$(jq -nc \
                       else 0 end);
   def unresumed: (.active != false)
                  or ((pend(.monitors_stopped) + pend(.background_tasks_stopped)) > 0);
-  ( if ($pauses | type) == "object"
-    then ($pauses | to_entries | map(select((.value | type) == "object") | .value))
-    else [] end )
-  + one($legacy_pause) + one($legacy_suspend)
-  | map(select(unresumed))' 2>/dev/null)" || PAUSE_JSON=""
-[[ -n "$PAUSE_JSON" ]] || {
+  # Only a `present` slot contributes records; a damaged one contributes none
+  # and is reported by name instead.
+  def slot_records($kind):
+    if slot_class($kind) != "present" then []
+    elif $kind == "map" then (to_entries | map(.value))
+    else [.] end;
+  { records: ( ($pauses         | slot_records("map"))
+             + ($legacy_pause   | slot_records("slot"))
+             + ($legacy_suspend | slot_records("slot"))
+             | map(select(unresumed)) ),
+    degraded: ( ($pauses         | slot_degraded("pauses"; "map"))
+              + ($legacy_pause   | slot_degraded("pause (legacy)"; "slot"))
+              + ($legacy_suspend | slot_degraded("suspend (legacy)"; "slot")) ) }' 2>/dev/null)" \
+  || PAUSE_COMBINED=""
+if [[ -z "$PAUSE_COMBINED" ]]; then
   PAUSE_JSON="null"
   batch_degrade "pause records: could not be combined (parked-unit evidence not consulted)"
-}
+else
+  # Name each damaged slot on its own line. Every slot NOT named here was read
+  # and did contribute, so a candidate owned by a healthy record is still
+  # reported as owned even while a sibling slot is corrupt.
+  while IFS= read -r _damaged_slot; do
+    [[ -n "$_damaged_slot" ]] || continue
+    batch_degrade "$_damaged_slot: not a pause record, or holds a malformed record (that slot alone was not consulted; the other pause sources still were)"
+  done < <(printf '%s' "$PAUSE_COMBINED" | jq -r '.degraded[]?' 2>/dev/null)
+  PAUSE_JSON="$(printf '%s' "$PAUSE_COMBINED" | jq -c '.records' 2>/dev/null)" || PAUSE_JSON=""
+  [[ -n "$PAUSE_JSON" ]] || {
+    PAUSE_JSON="null"
+    batch_degrade "pause records: could not be combined (parked-unit evidence not consulted)"
+  }
+fi
 BG_TASKS_JSON="$(json_or_null "$BG_TASKS_JSON")"
 EXEC_PAUSES_JSON="$(json_or_null "$EXEC_PAUSES_JSON")"
 PMM_JSON="$(json_or_null "$PMM_JSON")"

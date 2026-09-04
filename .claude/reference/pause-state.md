@@ -112,6 +112,76 @@ label so old records remain intelligible as well as recoverable.
 When marker fallback selects a legacy `suspend-*.md` file, it also selects the
 legacy state key before any completion write.
 
+### Per-source degradation (issue #1611)
+
+The three sources — `.pauses`, legacy `.pause`, legacy `.suspend` — are **each
+validated on its own before the combine**, never validated as one combined read.
+One shared jq rule does the classifying, carried verbatim in all three readers
+(`/pause-resume` Step 1, `/go-on` probe B, `candidate-ownership.sh`):
+
+```jq
+def slot_class($kind):
+  if type == "null" then "absent"
+  elif $kind == "map"
+    then (if type == "object" and (to_entries | all(.value | type == "object"))
+          then "present" else "unreadable" end)
+  elif type == "object" then "present"
+  else "unreadable" end;
+def slot_degraded($name; $kind):
+  if slot_class($kind) == "unreadable" then [$name] else [] end;
+```
+
+`$kind` is `"map"` for the session-keyed map and `"slot"` for the legacy
+singletons: only the *shape* differs, never the *rule*. A corrupt map is
+therefore named exactly the way a corrupt singleton is — the earlier asymmetry,
+where a bad map took a quiet `else []` branch while a bad singleton raised, is
+gone.
+
+**A damaged slot is named individually and drops out alone; every surviving slot
+still contributes.** Each combine returns `{records, degraded}` (plus `total` in
+`/pause-resume`), and the caller reports each name in its own idiom — a
+`DEGRADED:` line plus `STATE_UNREADABLE` in `/pause-resume`, `batch_degrade` in
+the ownership sweep, `PAUSE_SLOTS_UNREADABLE` in `/go-on` probe B. **No reader
+raises out of the combine.** Raising aborts the whole program, which is how one
+damaged pre-upgrade singleton used to discard every healthy keyed record read
+beside it: `/pause-resume` emptied `PAUSE_RECORDS`, and the ownership sweep drew
+no parked-unit evidence at all, so a candidate owned by a perfectly readable
+keyed record could still be dispatched.
+
+**Only the literal `null` is absent — an empty read is damaged.** The classifier
+sees a slot's *value*, but every reader gets that value through
+`session-state.sh --get`, which prints **nothing** (rc=0, empty stdout) for a slot
+holding the JSON string `""`. Each reader used to fold that empty read back into
+`null` before the classifier ran — `${VAR:-null}` in `/go-on`, `[[ -z "$v" ]]` in
+the sweep's `pause_slot_arg`, `[[ -n "$1" ]]` in `/pause-resume`'s
+`_json_or_null`, plus a `if . == "" then null` special case inside `/go-on`'s
+`parse`. A slot holding `""` is neither a map of records nor a record, so
+reporting it absent is the same "corrupt board read as nothing parked" masking
+this contract exists to prevent. The empty read now survives to the classifier as
+a JSON string and lands on `unreadable`. The readers therefore reserve the
+literal `null` for the two cases that really are absent-or-already-named: a `--get`
+on a missing path (which prints `null`), and `rc=3` (no state file has ever been
+written). A read that failed some *other* way is handed `null` too, because its
+caller has already named that slot — passing the empty read on instead would name
+the same slot a second time.
+
+Probe B is the one reader whose *verdict* is tri-state rather than a record list,
+so it takes the boundary explicitly: a surviving slot's un-resumed record is
+`present` evidence no matter what its damaged sibling holds, and probe B falls to
+`unreadable` only when a damaged slot is all there is.
+
+**Why the rule is inlined three times rather than sourced from `.claude/scripts/lib/`.**
+Two of the three readers are SKILL.md prose, and their helper resolution
+(`resolve_script`) deliberately covers only `$HOME/.claude/skills-worktree/.claude/scripts/`
+and `$HOME/.claude/scripts/` — never the current checkout, since a resume command
+may run from an unrelated repository. A jq module would add a new
+unresolvable-dependency failure mode to exactly the readers whose contract is
+"never degrade silently", and jq's module system needs `-L` plumbing the inline
+`jq -n --argjson … '<program>'` call shape does not carry. Drift is prevented
+instead by extraction: `pause-multisession.test.sh` lifts `slot_class` out of all
+three sources, asserts the texts agree, and runs all three against one fixture
+matrix — the same anti-drift mechanism already pinning the un-resumed predicate.
+
 ## Triage rule rationale
 
 The rule is deliberately conservative, as the issue's Notes prescribe:

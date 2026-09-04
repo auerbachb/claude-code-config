@@ -90,11 +90,28 @@ has "$PAUSE_RESUME" 'PAUSES_DISCARDED=true'
 # A scalar inside a recovery array must not abort jq and discard healthy records.
 has "$PAUSE_RESUME" 'type != "object"'
 has "$GO_ON" 'type != "object"'
-# A corrupt `pauses` value is unreadable, not empty — in all three readers.
-has "$PAUSE_RESUME" 'pauses map is not an object, or holds a malformed record'
-has "$GO_ON" 'pauses is not a map'
-has "$GO_ON" 'pauses holds a malformed record'
-has "$SWEEP_SCRIPT" 'pauses: not an object, or holds a malformed record'
+# A corrupt pause source is unreadable, not empty — in all three readers, and by
+# ONE shared rule (issue #1611): `slot_class` classifies a single slot as
+# absent | present | unreadable, identically for the session-keyed map and the
+# legacy singletons, and each reader degrades only the slot it names. Raising
+# instead aborted the whole combine, so one damaged singleton discarded the
+# healthy records read beside it. Parity of the three copies is pinned in
+# pause-multisession.test.sh; here we only assert each reader carries it.
+has "$PAUSE_RESUME" 'def slot_class\(\$kind\):'
+has "$GO_ON" 'def slot_class\(\$kind\):'
+has "$SWEEP_SCRIPT" 'def slot_class\(\$kind\):'
+# The damaged slot is named individually rather than collapsing the source.
+has "$PAUSE_RESUME" 'def slot_degraded\(\$name; \$kind\):'
+has "$GO_ON" 'def slot_degraded\(\$name; \$kind\):'
+has "$SWEEP_SCRIPT" 'def slot_degraded\(\$name; \$kind\):'
+has "$PAUSE_RESUME" 'is not a pause record, or holds a malformed record'
+has "$GO_ON" 'DEGRADED: pause slot\(s\) \$PAUSE_SLOTS_UNREADABLE unreadable'
+has "$SWEEP_SCRIPT" 'not a pause record, or holds a malformed record'
+# No reader may raise out of the combine any more — that is what threw away the
+# surviving slots. (`error(` appears nowhere in these three pause programs.)
+hasnt "$PAUSE_RESUME" 'error\("legacy'
+hasnt "$GO_ON" 'error\("legacy'
+hasnt "$SWEEP_SCRIPT" 'error\("legacy'
 # A malformed VALUE inside an otherwise-valid map is corrupt too — `select`
 # would drop it silently, reporting a clean no-op over a damaged board.
 has "$PAUSE_RESUME" 'all\(\.value \| type == "object"\)'
@@ -105,9 +122,11 @@ has "$SWEEP_SCRIPT" 'all\(\.value \| type == "object"\)'
 has "$PAUSE_RESUME" 'session_id:"marker"'
 has "$PAUSE_RESUME" 'RECORD_COUNT=1'
 has "$PAUSE_RESUME" '\-n "\$STATE_PATH"'
-# go-on's pauses read is tri-state, like probe A: only exit 3 is absent.
-has "$GO_ON" 'PAUSES_STATE=unreadable'
-has "$GO_ON" 'READ_RC == 3'
+# go-on's pause reads are tri-state, like probe A: only exit 3 is absent, and a
+# failed read degrades THAT SLOT rather than breaking out of the loop.
+has "$GO_ON" 'PAUSE_SLOTS_UNREADABLE'
+has "$GO_ON" 'SLOT_RC == 3'
+has "$GO_ON" 'for PAUSE_SLOT in pauses pause suspend'
 # An unreadable receipt is not "no receipt": dispatching there re-runs a
 # stoppage this session may already have resumed.
 has "$GO_ON" 'RECEIPT_STATE'

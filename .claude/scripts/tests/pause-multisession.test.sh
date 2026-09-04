@@ -64,15 +64,16 @@ ss() { bash "$SCRIPT" "$@"; }
 reset_state() { rm -f "$STATE_FILE"; }
 
 # --- the selection program, lifted from the skill -----------------------------
-# Range: the first `def base:` line through the `| reverse` that closes the
-# program. The trailing `') || ...` shell text is stripped.
+# Range: the first `def base:` line through the last `slot_degraded(...)` line,
+# which closes the program. The trailing `')` shell text is stripped — the
+# program is single-quoted in the skill, so it contains no apostrophe of its own.
 SELECT_JQ="$(awk '
-  /def base:/          { grab = 1 }
-  grab && /\| reverse/ { sub(/.\).*$/, ""); print; exit }
-  grab                 { print }
+  /def base:/ { grab = 1 }
+  grab && /slot_degraded\("the legacy suspend slot"/ { sub(/\047.*$/, ""); print; exit }
+  grab        { print }
 ' "$PAUSE_RESUME_SKILL")"
 
-if [[ -z "$SELECT_JQ" || "$SELECT_JQ" != *"def unresumed"* || "$SELECT_JQ" != *"legacy("* ]]; then
+if [[ -z "$SELECT_JQ" || "$SELECT_JQ" != *"def unresumed"* || "$SELECT_JQ" != *"slot_class("* ]]; then
   echo "FAIL — could not extract the Step 1 selection program from $PAUSE_RESUME_SKILL" >&2
   echo "       (the skill's enumeration block changed shape; update this extractor)" >&2
   exit 1
@@ -89,12 +90,17 @@ if ! jq -n --arg repo_key x --argjson pauses null \
 fi
 PASS=$((PASS + 1)); echo "ok   — Step 1 selection program extracted from the skill and compiles"
 
-# select <pauses-json> <legacy-pause-json> <legacy-suspend-json>
-select_records() {
+# select_full <pauses-json> <legacy-pause-json> <legacy-suspend-json>
+# The program returns {total, records, degraded} (issue #1611): per-slot
+# degradation has to travel with the selection, or the caller cannot name the
+# damaged slot without re-deriving it from a second program that could drift.
+select_full() {
   jq -nc --arg repo_key "$REPO_KEY" \
     --argjson pauses "$1" --argjson legacy_pause "$2" --argjson legacy_suspend "$3" \
     "$SELECT_JQ"
 }
+select_records() { select_full "$@" | jq -c '.records'; }
+select_degraded() { select_full "$@" | jq -r '.degraded | join(",")'; }
 
 # A pause board. board <session> <paused_at> <pr> <active> [resumed_at]
 board() {
@@ -353,32 +359,326 @@ while [[ "$i" -lt "$COUNT" ]]; do
 done
 
 # ---------------------------------------------------------------------------
-echo "== A corrupt legacy slot raises in every reader =="
+echo "== One slot, one verdict — the shared classifier (issue #1611) =="
 # ---------------------------------------------------------------------------
 # The shared predicate above settles what an un-resumed RECORD is. It says
-# nothing about a legacy slot holding a value that is not a record at all, and
-# the three readers disagreed there: /pause-resume's legacy() and the sweep's
-# one() dropped a non-object `.pause` / `.suspend` as though the slot were empty,
-# while /go-on probe B raised. A damaged pre-upgrade singleton therefore read as
-# "nothing parked" in two readers of three — the same silent masking this issue
-# removes, arrived at by a different route. All three must now raise so the
-# caller degrades the source and names it.
-corrupt_slot_guards() { grep -c 'slot is not a record' "$1"; }
-for _reader in \
-  "pause-resume:$PAUSE_RESUME_SKILL" \
-  "go-on probe B:$GO_ON_SKILL" \
-  "ownership sweep:$SWEEP"; do
-  _rname="${_reader%%:*}"; _rpath="${_reader#*:}"
-  check_eq "$_rname raises on a corrupt legacy slot" "1" \
-    "$(corrupt_slot_guards "$_rpath")"
+# nothing about a SLOT holding a value that is not a record at all, and the three
+# readers disagreed there twice over. First /pause-resume and the sweep dropped a
+# non-object `.pause` / `.suspend` as though the slot were empty while /go-on
+# raised (#1607 made all three raise). Then the raise itself proved too coarse:
+# it aborts the whole combine, so ONE damaged legacy singleton discarded every
+# healthy keyed record read beside it — and a corrupt `.pauses` value took a
+# quiet `else []` branch in two readers while a corrupt legacy slot raised, so
+# the two damaged shapes were not even treated alike.
+#
+# Both are now one rule: `slot_class` classifies a single slot as
+# absent | present | unreadable, identically for the keyed map and the legacy
+# singletons, and the caller degrades only the slot it names. Extract that rule
+# from all three readers, prove the texts agree, and run all three against one
+# fixture matrix.
+SWEEP="$REPO_ROOT/.claude/scripts/candidate-ownership.sh"
+GO_ON_SKILL="$REPO_ROOT/.claude/skills/go-on/SKILL.md"
+
+# Leading indentation differs by host program (a shell heredoc-free jq argument
+# at 2 spaces, a skill code block at 6); the RULE must not.
+extract_slot_class() {
+  awk '
+    /def slot_class\(\$kind\):/ { grab = 1 }
+    grab { sub(/^[ \t]+/, ""); print }
+    grab && /if slot_class\(\$kind\) == "unreadable" then \[\$name\] else \[\] end;/ { exit }
+  ' "$1"
+}
+CLASS_SKILL="$(extract_slot_class "$PAUSE_RESUME_SKILL")"
+CLASS_GOON="$(extract_slot_class "$GO_ON_SKILL")"
+CLASS_SWEEP="$(extract_slot_class "$SWEEP")"
+for _c in "$CLASS_SKILL" "$CLASS_GOON" "$CLASS_SWEEP"; do
+  if [[ "$_c" != *"def slot_degraded"* ]]; then
+    echo "FAIL — could not extract the slot classifier from all three readers" >&2
+    exit 1
+  fi
 done
-# Negative control: the probe is a real search, not a phrase that matches
-# anywhere. The pre-fix shape of one() must report 0, or the three checks above
-# would pass without proving a guard exists.
-printf 'def one($b): if ($b | type) == "object" then [$b] else [] end;\n' \
-  > "$TMP_HOME/legacy-probe.txt"
-check_eq "the corrupt-slot probe does not match an unguarded reader" "0" \
-  "$(corrupt_slot_guards "$TMP_HOME/legacy-probe.txt")"
+PASS=$((PASS + 1)); echo "ok   — the slot classifier extracted from all three readers"
+check_eq "/go-on probe B carries the identical classifier" "$CLASS_SKILL" "$CLASS_GOON"
+check_eq "the ownership sweep carries the identical classifier" "$CLASS_SKILL" "$CLASS_SWEEP"
+
+# value | kind | expected class. Nine cases: every source state each reader can
+# meet, for BOTH slot shapes — which is the point, since the asymmetry being
+# removed is precisely that the map and the singletons classified differently.
+CLASS_MATRIX='[
+  {"case":"map: absent",              "v":null,                          "kind":"map",  "want":"absent"},
+  {"case":"map: empty",               "v":{},                            "kind":"map",  "want":"present"},
+  {"case":"map: records",             "v":{"s1":{"active":true}},        "kind":"map",  "want":"present"},
+  {"case":"map: malformed value",     "v":{"s1":"not-a-record"},         "kind":"map",  "want":"unreadable"},
+  {"case":"map: scalar",              "v":123,                           "kind":"map",  "want":"unreadable"},
+  {"case":"map: array",               "v":[],                            "kind":"map",  "want":"unreadable"},
+  {"case":"map: empty string",        "v":"",                            "kind":"map",  "want":"unreadable"},
+  {"case":"slot: empty string",       "v":"",                            "kind":"slot", "want":"unreadable"},
+  {"case":"slot: absent",             "v":null,                          "kind":"slot", "want":"absent"},
+  {"case":"slot: record",             "v":{"active":true},               "kind":"slot", "want":"present"},
+  {"case":"slot: scalar",             "v":123,                           "kind":"slot", "want":"unreadable"}
+]'
+
+eval_class() { # eval_class <classifier-text> <value-json> <kind>
+  jq -nr --argjson v "$2" --arg k "$3" "$1"' $v | slot_class($k)'
+}
+CCOUNT=$(printf '%s' "$CLASS_MATRIX" | jq -r 'length')
+i=0
+while [[ "$i" -lt "$CCOUNT" ]]; do
+  CASE=$(printf '%s' "$CLASS_MATRIX" | jq -r ".[$i].case")
+  VAL=$(printf '%s' "$CLASS_MATRIX" | jq -c ".[$i].v")
+  KIND=$(printf '%s' "$CLASS_MATRIX" | jq -r ".[$i].kind")
+  WANT=$(printf '%s' "$CLASS_MATRIX" | jq -r ".[$i].want")
+  check_eq "pause-resume classifies — $CASE" "$WANT" "$(eval_class "$CLASS_SKILL" "$VAL" "$KIND")"
+  check_eq "go-on probe B agrees — $CASE"    "$WANT" "$(eval_class "$CLASS_GOON" "$VAL" "$KIND")"
+  check_eq "ownership sweep agrees — $CASE"  "$WANT" "$(eval_class "$CLASS_SWEEP" "$VAL" "$KIND")"
+  i=$((i + 1))
+done
+
+# ---------------------------------------------------------------------------
+echo "== An empty read is a DAMAGED slot, not an absent one =="
+# ---------------------------------------------------------------------------
+# The classifier above already calls the empty JSON string `unreadable` for both
+# shapes. It never saw one: `session-state.sh --get` prints NOTHING for a slot
+# holding `""` (rc=0, empty stdout), and all three readers coerced that empty
+# read to `null` before the classifier ran — `${VAR:-null}`, `[[ -z "$v" ]]`,
+# and `if . == "" then null`. A slot holding `""` is not a map and not a record,
+# so reporting it absent is the same "corrupt board read as nothing parked"
+# masking this contract exists to stop. Assert the SHELL halves, per reader,
+# because that is the layer the coercion lived in.
+check_eq "session-state.sh --get really does print nothing for a slot holding \"\"" \
+  "" "$(reset_state; jq -n --arg key "$REPO_KEY" '{repos: {($key): {pauses: ""}}}' > "$STATE_FILE"
+        "$SCRIPT" --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+reset_state
+
+# The sweep's coercion, extracted and run as-is.
+eval "$(awk '/^pause_slot_arg\(\) \{/,/^\}/' "$SWEEP")"
+check_eq "the sweep hands an empty read through as a JSON string, not null" \
+  '""' "$(pause_slot_arg "")"
+check_eq "and still calls the literal null absent" "null" "$(pause_slot_arg "null")"
+check_eq "and still passes a healthy record through untouched" \
+  '{"active":true}' "$(pause_slot_arg '{"active":true}')"
+
+# /pause-resume's coercion, extracted and run as-is.
+eval "$(awk '/^_json_or_null\(\) \{/,/^\}/' "$PAUSE_RESUME_SKILL")"
+check_eq "/pause-resume hands an empty read through as a JSON string, not null" \
+  '""' "$(_json_or_null "")"
+check_eq "and still calls the literal null absent" "null" "$(_json_or_null "null")"
+
+# /go-on parses inside jq instead, so assert its `parse` def and its init value.
+PARSE_GOON="$(awk '/^ *def parse: /{sub(/^[ \t]+/,""); print; exit}' "$GO_ON_SKILL")"
+check_eq "/go-on parses an empty read as damaged, not as null" '"unparseable"' \
+  "$(jq -nc --arg v "" "$PARSE_GOON"' $v | parse')"
+check_eq "/go-on still parses the literal null as absent" "null" \
+  "$(jq -nc --arg v "null" "$PARSE_GOON"' $v | parse')"
+check_eq "/go-on seeds its slot vars with null, so an unread slot stays absent" "3" \
+  "$(grep -cE '^(PAUSES|LEGACY_PAUSE|LEGACY_SUSPEND)_RAW="null"$' "$GO_ON_SKILL")"
+check_eq "and no reader re-coerces an empty slot read back to null" "0" \
+  "$(grep -cE '\$\{(PAUSES|LEGACY_PAUSE|LEGACY_SUSPEND)_RAW:-null\}' "$GO_ON_SKILL")"
+
+# A corrupt map and a corrupt legacy slot reach the SAME verdict — the asymmetry
+# BugBot named (`else []` for one, `error()` for the other) is gone.
+check_eq "a corrupt map and a corrupt legacy slot classify alike" \
+  "$(eval_class "$CLASS_SKILL" '"junk"' map)" \
+  "$(eval_class "$CLASS_SKILL" '"junk"' slot)"
+
+# ---------------------------------------------------------------------------
+echo "== A damaged slot degrades ALONE, in all three readers =="
+# ---------------------------------------------------------------------------
+# Extract each reader's whole combine and run it. These are the three programs
+# the issue names; each must return the surviving records AND name the damaged
+# slot, rather than raising and returning nothing.
+SWEEP_JQ="$(awk '
+  index($0, "--argjson legacy_suspend") { flag = 1; next }
+  flag { print }
+  flag && index($0, "slot_degraded(\"suspend (legacy)\"") { exit }
+' "$SWEEP")"
+SWEEP_JQ="${SWEEP_JQ%\'*}"
+PROBE_B_JQ="$(awk '
+  index($0, "--arg lsusp") { flag = 1; next }
+  flag { print }
+  flag && index($0, "slot_degraded(\"suspend\"") { exit }
+' "$GO_ON_SKILL")"
+PROBE_B_JQ="${PROBE_B_JQ%\'*}"
+for _prog in "$SWEEP_JQ" "$PROBE_B_JQ"; do
+  if [[ "$_prog" != *"def slot_class"* || "$_prog" != *"degraded:"* ]]; then
+    echo "FAIL — could not extract the combine program from the sweep and go-on" >&2
+    exit 1
+  fi
+done
+# Compile both, so a clipped extraction fails here rather than making every
+# assertion below read as "no records".
+jq -n --argjson pauses null --argjson legacy_pause null --argjson legacy_suspend null \
+  "$SWEEP_JQ" >/dev/null 2>&1 \
+  || { echo "FAIL — the extracted ownership-sweep combine does not compile" >&2; exit 1; }
+jq -n --arg keyed null --arg lpause null --arg lsusp null "$PROBE_B_JQ" >/dev/null 2>&1 \
+  || { echo "FAIL — the extracted go-on probe B combine does not compile" >&2; exit 1; }
+PASS=$((PASS + 1)); echo "ok   — sweep and probe B combines extracted and compile"
+
+sweep_combine() { # sweep_combine <pauses> <legacy-pause> <legacy-suspend>
+  jq -nc --argjson pauses "$1" --argjson legacy_pause "$2" --argjson legacy_suspend "$3" "$SWEEP_JQ"
+}
+probe_b_combine() { # same three sources, as RAW STRINGS (what --get returns)
+  jq -nc --arg keyed "$1" --arg lpause "$2" --arg lsusp "$3" "$PROBE_B_JQ"
+}
+
+KEYED_TWO="$(jq -nc --arg a "$SESS_A" --arg b "$SESS_B" --arg ata "$AT_A" --arg atb "$AT_B" \
+  '{($a): {active:true, paused_at:$ata}, ($b): {active:true, paused_at:$atb}}')"
+GOOD_SUSPEND='{"active":true,"suspended_at":"2026-08-29T10:00:00Z"}'
+CORRUPT='"a string where a record belongs"'
+
+echo "-- a corrupt legacy .pause keeps the keyed map and .suspend --"
+# FAILS WITHOUT FIX: the raise aborted the whole combine, so /pause-resume got
+# `[]` + STATE_UNREADABLE, and the sweep tripped batch_degrade and drew NO
+# parked-unit evidence — a candidate owned by a readable keyed record could then
+# be dispatched underneath a live parked board.
+check_eq "pause-resume keeps 3 records" "3" \
+  "$(select_records "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND" | jq -r 'length')"
+check_eq "pause-resume names only the damaged slot" "the legacy pause slot" \
+  "$(select_degraded "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND")"
+check_eq "the ownership sweep keeps 3 records" "3" \
+  "$(sweep_combine "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND" | jq -r '.records | length')"
+check_eq "the sweep names only the damaged slot" "pause (legacy)" \
+  "$(sweep_combine "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+check_eq "probe B keeps 3 records" "3" \
+  "$(probe_b_combine "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND" | jq -r '.records | length')"
+check_eq "probe B names only the damaged slot" "pause" \
+  "$(probe_b_combine "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+
+echo "-- a corrupt legacy .suspend keeps the keyed map and .pause --"
+GOOD_PAUSE='{"active":true,"paused_at":"2026-08-30T10:00:00Z"}'
+check_eq "pause-resume keeps 3 records" "3" \
+  "$(select_records "$KEYED_TWO" "$GOOD_PAUSE" "$CORRUPT" | jq -r 'length')"
+check_eq "pause-resume names only .suspend" "the legacy suspend slot" \
+  "$(select_degraded "$KEYED_TWO" "$GOOD_PAUSE" "$CORRUPT")"
+check_eq "the ownership sweep keeps 3 records" "3" \
+  "$(sweep_combine "$KEYED_TWO" "$GOOD_PAUSE" "$CORRUPT" | jq -r '.records | length')"
+check_eq "probe B keeps 3 records" "3" \
+  "$(probe_b_combine "$KEYED_TWO" "$GOOD_PAUSE" "$CORRUPT" | jq -r '.records | length')"
+
+echo "-- a corrupt .pauses map is NAMED, not silently empty, and the legacy slots survive --"
+# FAILS WITHOUT FIX (the sweep and /pause-resume): a corrupt map took an
+# `else []` branch inside the combine — dropped without a word in the program
+# itself — while a corrupt legacy slot raised. Same damage, two behaviours.
+check_eq "pause-resume keeps both legacy records" "2" \
+  "$(select_records "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r 'length')"
+check_eq "pause-resume names the map" "the pauses map" \
+  "$(select_degraded "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND")"
+check_eq "the ownership sweep keeps both legacy records" "2" \
+  "$(sweep_combine "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.records | length')"
+check_eq "the sweep names the map" "pauses" \
+  "$(sweep_combine "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+check_eq "probe B keeps both legacy records" "2" \
+  "$(probe_b_combine "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.records | length')"
+check_eq "probe B names the map" "pauses" \
+  "$(probe_b_combine "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+
+echo "-- a malformed VALUE inside an otherwise-valid map degrades the map alone --"
+MALFORMED_MAP="$(jq -nc --arg a "$SESS_A" '{($a): "not-a-record"}')"
+check_eq "pause-resume names the map, keeps the legacy record" "the pauses map" \
+  "$(select_degraded "$MALFORMED_MAP" "$GOOD_PAUSE" null)"
+check_eq "and that legacy record is still selected" "1" \
+  "$(select_records "$MALFORMED_MAP" "$GOOD_PAUSE" null | jq -r 'length')"
+
+echo "-- two damaged slots are both named, and the survivor still counts --"
+check_eq "pause-resume names both" "the pauses map,the legacy suspend slot" \
+  "$(select_degraded "$CORRUPT" "$GOOD_PAUSE" "$CORRUPT")"
+check_eq "the surviving .pause record is still selected" "1" \
+  "$(select_records "$CORRUPT" "$GOOD_PAUSE" "$CORRUPT" | jq -r 'length')"
+
+echo "-- nothing damaged means nothing named --"
+check_eq "pause-resume degrades no slot on healthy state" "" \
+  "$(select_degraded "$KEYED_TWO" "$GOOD_PAUSE" "$GOOD_SUSPEND")"
+check_eq "the sweep degrades no slot on healthy state" "" \
+  "$(sweep_combine "$KEYED_TWO" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+check_eq "probe B degrades no slot on healthy state" "" \
+  "$(probe_b_combine "$KEYED_TWO" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r '.degraded | join(",")')"
+
+echo "-- probe B: an unparseable slot value is that slot's problem, not the union's --"
+# probe B receives RAW strings, so a slot holding non-JSON must be caught inside
+# the slot. Raising out of `fromjson` took the other two slots with it.
+check_eq "probe B survives non-JSON in .pause" "2" \
+  "$(probe_b_combine "$KEYED_TWO" 'this is not json' 'null' | jq -r '.records | length')"
+check_eq "probe B names the unparseable slot" "pause" \
+  "$(probe_b_combine "$KEYED_TWO" 'this is not json' 'null' | jq -r '.degraded | join(",")')"
+
+echo "-- negative control: the pre-#1611 shapes lose everything --"
+# The assertions above prove the new behaviour. They prove it is NEW only against
+# the shapes it replaced: `one()`'s raise, which aborts the combine, and the
+# map's silent `else []`, which names nothing. Both are exercised here on the
+# same fixtures, and both must fail the checks above.
+cat > "$TMP_HOME/prechange.jq" <<'PRECHANGE'
+def one($b): if ($b | type) == "object" then [$b]
+             elif ($b | type) == "null" then []
+             else error("legacy pause slot is not a record") end;
+( if ($pauses | type) == "object"
+  then ($pauses | to_entries | map(select((.value | type) == "object") | .value))
+  else [] end )
++ one($legacy_pause) + one($legacy_suspend)
+PRECHANGE
+PRECHANGE_JQ="$(cat "$TMP_HOME/prechange.jq")"
+prechange_combine() {
+  jq -nc --argjson pauses "$1" --argjson legacy_pause "$2" --argjson legacy_suspend "$3" \
+    "$PRECHANGE_JQ" 2>/dev/null
+}
+# A corrupt legacy slot aborts the program: no output at all, so the healthy
+# keyed records and the healthy `.suspend` record are lost with it.
+check_eq "pre-change: a corrupt legacy slot returns nothing" "" \
+  "$(prechange_combine "$KEYED_TWO" "$CORRUPT" "$GOOD_SUSPEND")"
+# ...while a corrupt map is silently dropped and names nothing — the asymmetry.
+check_eq "pre-change: a corrupt map is silently empty, not named" "2" \
+  "$(prechange_combine "$CORRUPT" "$GOOD_PAUSE" "$GOOD_SUSPEND" | jq -r 'length')"
+
+# ---------------------------------------------------------------------------
+echo "== End to end: the sweep still reports ownership past a damaged slot =="
+# ---------------------------------------------------------------------------
+# The jq-level checks above prove the combine. This runs the REAL sweep, because
+# two shell-level coercions sat between the state file and that combine and both
+# turned a damaged slot back into an absent one:
+#   * `json_or_null` mapped a slot holding non-JSON text to `null`, which the
+#     classifier then calls `absent` — a corrupt board read as "nothing parked";
+#   * a slot holding valid JSON of the wrong type reached the old `one()`, whose
+#     raise aborted the whole combine and left the sweep with NO parked evidence.
+# The second is the reported failure: with a perfectly readable keyed record
+# naming issue 4242 as parked, the sweep answered `unowned` and `/pm` was free to
+# dispatch it underneath a live parked board.
+STUB_BIN="$TMP_HOME/stub-bin"
+mkdir -p "$STUB_BIN"
+# Offline and deterministic: the sweep's gh reads are evidence, not the subject.
+printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/gh"
+chmod +x "$STUB_BIN/gh"
+
+sweep_verdict() { # sweep_verdict <raw .pause slot value, written verbatim>
+  reset_state
+  jq -n --arg slot "$1" --arg key "$REPO_KEY" '
+    {repos: {($key): {
+      pauses: {"dead-session-1": {
+        active: true, session_id: "dead-session-1",
+        paused_at: "2026-09-03T10:00:00Z",
+        parked: [{kind:"pr", ref:4242, branch:"issue-4242-thing",
+                  stopped_at:"awaiting review", next_move:"poll"}],
+        monitors_stopped: [], background_tasks_stopped: []}},
+      pause: ($slot | try fromjson catch .)}}}' > "$STATE_FILE"
+  ( cd "$REPO_ROOT" && PATH="$STUB_BIN:$PATH" \
+      ./.claude/scripts/candidate-ownership.sh 4242 --repo "$REPO_KEY" --json 2>/dev/null )
+}
+
+for _shape in '"not JSON at all, just text"' '[1,2,3]' '""'; do
+  OUT="$(sweep_verdict "$(jq -rn --argjson v "$_shape" '$v | if type == "string" then . else tojson end')")"
+  check_eq "a corrupt .pause ($_shape) still reports the keyed record as owned" \
+    "owned_live" "$(jq -r '.verdict' <<<"$OUT")"
+  check_eq "and the sweep names that slot, and only that slot" "1" \
+    "$(jq -r '[.degraded[] | select(startswith("pause (legacy):"))] | length' <<<"$OUT")"
+  check_eq "the combine itself is never reported as failed" "0" \
+    "$(jq -r '[.degraded[] | select(startswith("pause records: could not be combined"))] | length' <<<"$OUT")"
+done
+
+echo "-- control: a healthy .pause names no pause slot at all --"
+OUT="$(sweep_verdict '{"active":false}')"
+check_eq "healthy state reports the keyed record owned" "owned_live" \
+  "$(jq -r '.verdict' <<<"$OUT")"
+check_eq "and degrades no pause slot" "0" \
+  "$(jq -r '[.degraded[] | select(startswith("pause"))] | length' <<<"$OUT")"
+reset_state
 
 # ---------------------------------------------------------------------------
 echo "== A marker restore is never counted as restored =="
