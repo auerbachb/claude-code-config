@@ -609,6 +609,20 @@ require_text "the relaunch claims each PR before launching it" \
 require_text "  and the reference doc names the same claim" \
   "$DOC" 'usage_limit_relaunching'
 
+# CodeAnt #1621 (critical): /pause-resume Step 5 now relaunches the parked
+# pipelines, so the /go-on park lane relaunching its own saved PARK_PIPELINES
+# afterwards produced two Phase B/C pipelines on one branch.
+require_text "the go-on park lane delegates the relaunch and launches nothing" \
+  "$GO_ON" 'relaunch nothing here'
+require_text "  and treats PARK_PIPELINES as an expectation, not a work list" \
+  "$GO_ON" 'not a second work list'
+refute_text "  so it no longer relaunches each PARK_PIPELINES entry itself" \
+  "$GO_ON" 'for each entry in .PARK_PIPELINES., read its scoped handoff file and relaunch'
+# CodeAnt #1621: probe F filled missing phase/head_sha/needs with empty strings,
+# so a damaged record reported as resumable instead of unreadable.
+require_text "probe F rejects a parked record missing required fields" \
+  "$GO_ON" 'parked record missing phase/head_sha/needs'
+
 # Negative control for the wiring assertions above: prove the matcher can fail.
 refute_text "negative control — an unrelated pattern does not match" \
   "$RULES/monitor-mode.md" 'crash asks, exhaustion auto, limit-unparked'
