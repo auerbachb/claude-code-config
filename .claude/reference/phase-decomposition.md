@@ -91,14 +91,14 @@ Dispatch mechanics — how many Agent calls fit in one response, ceiling arithme
 | **Evidence** | Relevant error messages, test names, or failing assertions |
 | **Constraints** | Files/directories NOT to touch |
 | **Output format** | What the agent should return (summary, handoff, exit report) |
-| **Safety/Mindset blocks** | Verbatim from `.claude/reference/subagent-phase-guardrails.md` |
+| **Guardrail blocks** | Verbatim from `.claude/reference/subagent-phase-guardrails.md`, which names the set this spawn carries |
 
 ### Context isolation — repo-specific rules
 
 - **One worktree per agent/PR.** Each agent works in its own worktree (`EnterWorktree`). See `CLAUDE.md` "ALWAYS USE A WORKTREE" and `.claude/rules/main-hygiene.md`.
 - **Absolute paths everywhere.** The Bash tool has a minimal `PATH`; bare tool names can resolve wrong. Always pass `/opt/homebrew/bin/<tool>` or a resolved path.
 - **No shared mutable state.** Parallel agents must not write to the same branch, file, or session-state key. If they must share output, route it through handoff files with distinct PR-scoped keys.
-- **Guardrail blocks are non-negotiable.** Include the verbatim `SAFETY:` and `MINDSET:` blocks from `.claude/reference/subagent-phase-guardrails.md` in every spawn prompt. Do not reword them — a reworded copy drifts or fails `verbatim-block-lint.sh`.
+- **Guardrail blocks are non-negotiable.** Paste them verbatim from `.claude/reference/subagent-phase-guardrails.md`, which is canonical for *which* blocks a given spawn carries — `RESOLVE` and `SAFETY` on every phase; `MINDSET` on every spawn except `phase-c-merger`; `SKILLS` additionally on any non-custom spawn holding the `Skill` tool (`subagent-orchestration.md` §Fallback). Do not reword them — a reworded copy drifts or fails `verbatim-block-lint.sh`.
 
 ### Why self-contained prompts matter
 
@@ -106,11 +106,12 @@ A subagent that inherits implicit context from your session will fail when that 
 
 ### Concrete prompt template
 
-Model is an Agent-call parameter, never prompt text, and effort is not settable on a spawn at all — see `subagent-orchestration.md` §Model Selection. The `**Model:** / **Effort:**` header belongs to click-to-launch chips and `mcp__ccd_session__spawn_task` payloads, which `chip-spawn.md` requires to carry both; that contract does not reach an Agent-call prompt body like the one below.
+Model is an Agent-call parameter, never prompt text, and effort is not settable on an Agent call at all — see `subagent-orchestration.md` §Model Selection. The `**Model:** / **Effort:**` header belongs to click-to-launch chips and `mcp__ccd_session__spawn_task` payloads, which `chip-spawn.md` requires to carry both; that contract does not reach an Agent-call prompt body like the one below.
 
-The two bracketed lines below are **mandatory substitutions**, not content: replace each with the full verbatim block from `.claude/reference/subagent-phase-guardrails.md` before dispatching. A prompt sent with the brackets still in it carries no guardrails at all.
+The bracketed lines below are **mandatory substitutions**, not content: replace each with the full verbatim block from `.claude/reference/subagent-phase-guardrails.md` before dispatching. A prompt sent with the brackets still in it carries no guardrails at all. The three shown are the Phase A set; that file names the set for every other spawn type.
 
 ```markdown
+[replace with the verbatim RESOLVE block from .claude/reference/subagent-phase-guardrails.md]
 [replace with the verbatim SAFETY block from .claude/reference/subagent-phase-guardrails.md]
 [replace with the verbatim MINDSET block from .claude/reference/subagent-phase-guardrails.md]
 

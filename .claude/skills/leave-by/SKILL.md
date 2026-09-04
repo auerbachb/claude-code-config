@@ -885,8 +885,8 @@ re-declare nothing, and say nothing about the leave time — the same posture as
 ## Step 10: What the deadline does to dispatch
 
 The decline check itself lives at the launch sites, not here — one gate, applied wherever a pipeline
-starts: `/subagent` Step 7 (the executable form, reused at every A→A, A→B, B→C, queued-head and
-refill launch), and an advisory annotation in `/wave` Step 9. This skill only arms the
+starts: `/subagent` Step 7 (the executable form, reused at every A→A, A→B, B→B, B→C, queued-head
+and refill launch), and an advisory annotation in `/wave` Step 9. This skill only arms the
 `deadline_epoch` that both of them read.
 
 ## Step 11: Session-restart recovery
