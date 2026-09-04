@@ -1040,13 +1040,27 @@ REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
 [[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
 TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 TABLE_VERDICT=""
+TABLE_RC=0
 if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+  # `stale` EXITS 1, and it is the one verdict that changes what this heartbeat
+  # prints — so capture the status instead of letting the assignment carry it to
+  # errexit, which would kill the tick on precisely the path the floor exists for.
+  # stderr stays attached on purpose: exit 2 prints its diagnostic there and
+  # nothing on stdout, so `2>/dev/null` would leave a misconfigured call
+  # rendering a table every tick with no way to find out why.
   TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
-    --repo "$REPO_KEY" --session "$TF_SESSION" 2>/dev/null)
+    --repo "$REPO_KEY" --session "$TF_SESSION") || TABLE_RC=$?
+  # 0 (fresh/idle/unrecorded) and 1 (stale) both print the authoritative verdict
+  # word; 2 (usage) and 5 (state write) print none, and take the documented
+  # degraded path below rather than passing as an ordinary empty verdict.
+  if (( TABLE_RC != 0 && TABLE_RC != 1 )); then
+    TABLE_VERDICT=""
+    echo "DEGRADED: table-freshness --check failed (exit $TABLE_RC) — rendering the table"
+  fi
 fi
 ```
 
-`stale` (exit 1) → **this heartbeat carries the full table**: the line above, then the board rendered per 3.3a, whose `/board` Step 5 records the render and re-arms the hour. `fresh` / `idle` / `unrecorded` → the one-liner alone. An unresolved `table-freshness.sh`, or a non-integer `ACTIVE_COUNT`, renders the table: failing toward *more* renders is correct, since the floor exists to guarantee a board at least hourly and its absence must never buy permission to emit fewer. Never record a render that did not happen — a one-liner tick calls nothing.
+`stale` (exit 1) → **this heartbeat carries the full table**: the line above, then the board rendered per 3.3a, whose `/board` Step 5 records the render and re-arms the hour. `fresh` / `idle` / `unrecorded` → the one-liner alone. An unresolved `table-freshness.sh`, a non-integer `ACTIVE_COUNT`, or a `--check` that exited outside its verdict-bearing `0`/`1` (usage, or a state write it could not perform) renders the table: failing toward *more* renders is correct, since the floor exists to guarantee a board at least hourly and its absence must never buy permission to emit fewer. Never record a render that did not happen — a one-liner tick calls nothing.
 
 No plan restating and no per-phase narration. **The canonical "Running now" table is the one sanctioned table here**, on the trigger above; `/pm` renders no other. The launches D2 reports and the blockers D1 surfaces are the only other routine output; everything else is suppressed (`CLAUDE.md` #3).
 
@@ -1634,7 +1648,16 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 # ACTIVE_COUNT = pipelines running OR queued right now, counted from the table
 # just printed. Gate on a table having ACTUALLY been emitted: stamping the clock
 # without one restarts the hour and hides a board that has already gone stale.
-if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
+# TABLE_RENDERED carries that fact explicitly. Set it to 1 on the line AFTER the
+# table reaches the user — whether /board printed it or the DEGRADED inline
+# fallback did — and re-initialise it to 0 here every time, plainly, never as a
+# `${TABLE_RENDERED:-0}` default: a 1 left over from an earlier render is exactly
+# how the clock gets stamped for a board this pass never printed.
+TABLE_RENDERED=0
+# … render the table (via /board, or the inline fallback above) …
+TABLE_RENDERED=1
+if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "$TABLE_RENDERED" -eq 1 \
+      && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
   "$TABLE_FRESHNESS_SH" --note-rendered --active "$ACTIVE_COUNT" \
     --repo "$REPO_KEY" --session "$TF_SESSION" --surface pm-board \
     || echo 'DEGRADED: table-freshness clock not recorded — the floor may fire again shortly'
