@@ -330,15 +330,19 @@ state_lock_release; trap - EXIT
    `delivery: "pending"`, preserving the rest of the watermark document. Release
    only after the write lands.
 3. **Offer**, by whichever path is available:
-   - **Chip** via `mcp__ccd_session__spawn_task`, per `chip-launching.md`.
-     On success record the returned `task_id` and set `delivery: "chip"`, so
-     the offer can be withdrawn later.
+   - **Chip** via `mcp__ccd_session__spawn_task`, per `chip-launching.md` —
+     **reserve first** (§Registry reservation below). On success record the
+     returned `task_id` and set `delivery: "chip"`, so the offer can be
+     withdrawn later.
    - **Fallback** (no `spawn_task` in session): print the byte-identical fenced
      block and set `delivery: "fallback"`, `task_id: null`. **A fallback block
      is still an offer** — the month stays claimed, or the tick reprints the
      same wall of text every day until someone acts on it.
 4. **Roll back** the claim (clear `last_offered_month`) only if *neither* path
    delivered anything. An undelivered claim would silently skip the month.
+   The *reservation* rolls back on a **different** trigger — a failed
+   `spawn_task`, retracted even when the fallback then delivers the offer and
+   the month therefore stays claimed (§Registry reservation).
 
 ### On-demand path
 
@@ -350,11 +354,51 @@ state_lock_release; trap - EXIT
   its *display* name far more often than its API id, so an id-only comparison
   would report a mismatch on the very model it was asked to check for — and the
   inline path would never run.
-- **Mismatch** → say so plainly, offer the same step-up chip, and stop. The user
-  either clicks it or re-runs with `--force-here`.
+- **Mismatch** → say so plainly, offer the same step-up chip — **reserve first**,
+  §Registry reservation below — and stop. The user either clicks it or re-runs
+  with `--force-here`.
 - **`--force-here`** → proceed on the current model and stamp
   `judged_on_model: <actual>` into the report header, so a reader can weigh the
   verdicts against the tier that produced them.
+
+### Registry reservation
+
+Both offer paths above end in the same `mcp__ccd_session__spawn_task` call, and
+**every emitter that calls `spawn_task` MUST call
+`chip-offer-registry.sh --reserve` first** (`chip-launching.md` §Offer Registry,
+Issue #1225). Naming the call here rather than inheriting it by reference is the
+point: `active-work-cap.sh` counts registry entries, so an unreserved chip is
+work the repo-wide cap cannot see — and a reservation that is only implied is
+not greppable, which is how it stayed missing (#1388).
+
+`$REGISTRY` is that script, resolved per the reference's path order:
+
+```bash
+REG_TID="$("$REGISTRY" --emitter harness-audit --issue 770 \
+  --cap-free "$CAP_ADMISSION" --reserve 2>/dev/null)" || REG_TID_RC=$?
+```
+
+- **`--emitter harness-audit`** — the sixth canonical emitter name, already in
+  the registry's validated allowlist. Any other spelling exits 2.
+- **`--issue 770`** — this skill's own tracking issue. The step-up chip covers no
+  backlog issue, and #770 is the number the Step 8 report header already carries,
+  so the mandatory flag is satisfied without inventing per-tick state.
+- **Exit 7 = cap exhausted.** Offer nothing. On the tick path that means rolling
+  the month claim back (item 4) — a claimed-but-undelivered month silently skips
+  the audit. The on-demand path holds no claim, so it just says the cap is full
+  and stops.
+- **Capture `$REG_TID`** for the lifecycle calls; record it alongside the
+  `spawn_task` task_id, which is a different id.
+- **A `spawn_task` that fails after a successful reserve releases the slot in the
+  same turn** — `chip-offer-registry.sh --retract --task-id "$REG_TID"` — then
+  falls back to the printed block. TTL would free it eventually; an explicit
+  retract does not make the next tick wait for that.
+
+Mechanics stay in `chip-launching.md`: resolving `$REGISTRY`, the single
+`active-work-cap.sh --json` snapshot that yields `$CAP_ADMISSION`
+(`registry_baseline + FREE`, atomic — a separate `--count` reopens the TOCTOU
+window), the degraded path when the registry is unavailable, and the
+`--transition` states. Do not restate them here.
 
 ### Chip model + effort contract
 
