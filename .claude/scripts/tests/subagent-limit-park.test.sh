@@ -99,6 +99,25 @@ refute_text() {
 }
 field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
 
+# Ordering assertions. `require_text` proves a string is SOMEWHERE in a file;
+# these prove one string precedes another, which is what a checklist position
+# actually means. Both readers put the horizon read at item 0 deliberately: a
+# document that kept every matched string but demoted the read below the refill
+# step would satisfy every presence assertion and still start work it should
+# not have.
+line_of() {   # line_of <file> <extended-regex> -> first matching line no, or 0
+  local n
+  n="$(grep -nE -m1 -- "$2" "$1" 2>/dev/null | cut -d: -f1)"
+  printf '%s' "${n:-0}"
+}
+check_before() {   # check_before <desc> <file> <earlier-regex> <later-regex>
+  local desc="$1" file="$2" a b
+  a="$(line_of "$file" "$3")"
+  b="$(line_of "$file" "$4")"
+  check_true "$desc" \
+    "$( [ "$a" -gt 0 ] && [ "$b" -gt 0 ] && [ "$a" -lt "$b" ] && echo true || echo false )"
+}
+
 # Extract every anchored block once. A failed extraction is FATAL, never
 # skipped: a suite that silently runs zero lines of the document passes green
 # forever, which is the whole failure class `lib/skill-bash.sh` exists to end.
@@ -1044,6 +1063,29 @@ require_text "  and resolving the script through Step 0" \
   "$SUBAGENT" 'USAGE_HORIZON_SH=\$\(resolve_script usage-horizon\.sh'
 require_text "  with a named degraded mode when it does not resolve" \
   "$SUBAGENT" 'usage-horizon\.sh not found \(checked all three paths\)'
+
+# CodeAnt (#1628): the wiring assertions above are presence-only, so a loop that
+# kept the strings but moved the gate — or ran --check without --observe — would
+# still pass. Pin the POSITION as well: item 0 of each per-cycle checklist,
+# ahead of every other item, observing before checking.
+check_before "monitor-mode: the horizon read opens the per-cycle checklist" \
+  "$RULES/monitor-mode.md" '^Every ~60s, in order:' '^0\. \*\*Usage horizon'
+check_before "  and precedes every other item in it" \
+  "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon' '^1\. Process completed subagents'
+require_text "  observing before checking, on that same line" \
+  "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon.*--observe.*--check'
+check_before "the subagent monitor loop reads it as item 0 too" \
+  "$SUBAGENT" '^### Monitor loop' '^0\. \*\*Read the usage horizon'
+check_before "  ahead of processing completed subagents" \
+  "$SUBAGENT" '^0\. \*\*Read the usage horizon' '^1\. \*\*Check for completed subagents'
+require_text "  observing before branching on --check" \
+  "$SUBAGENT" '^0\. \*\*Read the usage horizon.*--observe.*--check'
+# Negative control for the ordering matcher: the reversed claim must FAIL, or
+# every check_before above would be passing on a comparison that cannot fail.
+check_true "negative control — check_before can distinguish order" \
+  "$( A="$(line_of "$RULES/monitor-mode.md" '^0\. \*\*Usage horizon')"
+      B="$(line_of "$RULES/monitor-mode.md" '^1\. Process completed subagents')"
+      [ "$B" -lt "$A" ] && echo false || echo true )"
 require_text "the doc pins the counter to the harness value" \
   "$DOC" 'the one the \*\*harness printed\*\*'
 require_text "  and forbids substituting a remembered figure" \
