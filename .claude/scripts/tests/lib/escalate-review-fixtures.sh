@@ -100,7 +100,84 @@ case "$sub" in
 esac
 STUB
 chmod +x "$STUB_BIN/gh"
+
+# ---- forced shell exec failure (issue #1600) ---------------------------------
+# escalate-review.sh exited 126 with zero output on both streams during PR
+# #1553's review loop. Under `set -euo pipefail` an UNGUARDED command
+# substitution propagates the shell's own status straight out of the script with
+# nothing printed, so the caller reads an empty verdict rather than a failure.
+#
+# Reproducing that needs a jq that passes the script's `command -v` preflight and
+# THEN fails, which is exactly the window the preflight cannot close. The shim
+# below is that jq: it delegates to the real one unless this invocation's program
+# text carries the configured trip pattern, so a suite can break exactly one
+# call site — the unguarded ones — and leave every other jq call working.
+#
+# `$ESC_JQ_REAL` is resolved BEFORE the shim is installed and before STUB_BIN
+# goes on PATH, so the shim cannot recurse into itself.
+ESC_JQ_REAL="$(command -v jq)"
+export ESC_JQ_REAL
+
+# A real, non-executable file. `exec`ing it is a genuine shell exec failure —
+# rc 126, not a fabricated `exit 126` — and the redirect swallows the shell's own
+# "Permission denied" so the observable matches the incident exactly: zero bytes
+# on both streams.
+ESC_JQ_UNRUNNABLE="$STUB_BIN/.unrunnable"
+printf 'not executable\n' > "$ESC_JQ_UNRUNNABLE"
+chmod -x "$ESC_JQ_UNRUNNABLE"
+export ESC_JQ_UNRUNNABLE
+
 export PATH="$STUB_BIN:$PATH"
+
+# The shim is installed ON DEMAND, not at load time: every other suite in this
+# family sources this file, and a permanently interposed jq would add a bash
+# fork to each of their (many) jq calls for no benefit.
+ESC_JQ_SHIM="$STUB_BIN/jq"
+
+# Arm the shim: every jq invocation whose program text contains $1 fails.
+# $2 = "exec" (genuine shell 126) or "code" (silent exit with $3, default 3).
+#
+# Asserts the manipulation LANDED rather than trusting it. A silently inert trip
+# would leave the scenario running an ordinary healthy script that happens to
+# expect a different verdict — a guard that passes by not running.
+break_jq_on() { # <program-text-substring> [exec|code] [rc]
+  ESC_JQ_TRIP_PATTERN="$1"
+  ESC_JQ_TRIP_MODE="${2:-exec}"
+  ESC_JQ_TRIP_RC="${3:-3}"
+  export ESC_JQ_TRIP_PATTERN ESC_JQ_TRIP_MODE ESC_JQ_TRIP_RC
+  cat > "$ESC_JQ_SHIM" <<'STUB'
+#!/usr/bin/env bash
+# Test shim (issue #1600). No `set -e`/pipefail and no pipelines on purpose: the
+# whole point is to control this process's exit status precisely.
+if [[ -n "${ESC_JQ_TRIP_PATTERN:-}" && "$*" == *"${ESC_JQ_TRIP_PATTERN}"* ]]; then
+  if [[ "${ESC_JQ_TRIP_MODE:-exec}" == "exec" ]]; then
+    exec "$ESC_JQ_UNRUNNABLE" 2>/dev/null
+  fi
+  exit "${ESC_JQ_TRIP_RC:-3}"
+fi
+exec "$ESC_JQ_REAL" "$@"
+STUB
+  chmod +x "$ESC_JQ_SHIM"
+  hash -r 2>/dev/null || true   # this shell may have hashed the real jq already
+  local want got
+  case "$ESC_JQ_TRIP_MODE" in exec) want=126 ;; *) want="$ESC_JQ_TRIP_RC" ;; esac
+  jq -r "$1" </dev/null >/dev/null 2>&1
+  got=$?
+  check_eq "jq shim trips on '$1' with rc $want" "$want" "$got"
+  # The negative half: an unrelated jq program must still work, or the shim
+  # would break the whole script rather than the one site under test.
+  got="$(printf '{"a":1}' | jq -r '.a' 2>/dev/null)"
+  check_eq "jq shim still delegates unrelated programs to the real jq" "1" "$got"
+}
+
+restore_jq() {
+  rm -f "$ESC_JQ_SHIM"
+  unset ESC_JQ_TRIP_PATTERN ESC_JQ_TRIP_MODE ESC_JQ_TRIP_RC
+  hash -r 2>/dev/null || true
+  local got
+  got="$(printf '{"a":1}' | jq -r '.a' 2>/dev/null)"
+  check_eq "jq shim removed — real jq restored" "1" "$got"
+}
 
 # ---- helpers -----------------------------------------------------------------
 PR_NUM="99552"
