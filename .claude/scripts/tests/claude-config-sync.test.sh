@@ -1219,6 +1219,15 @@ test_25_publisher_is_bounded_inside_the_lock() {
     "contains \"\$publisher_body\" 'refusing to run unbounded'"
   assert "the publish region reserves room for the rest of the locked pass" \
     "[ -n \"\$(grep '_publish_region_budget=' '$SYNC')\" ]"
+  # The functional leg below stalls the SKILL publisher only, so on its own it
+  # would not notice an agents publisher that regressed to a bare `bash` call
+  # (CodeAnt, PR #1640). Both call sites are pinned structurally instead —
+  # cheaper and less flaky than a second sleeping-stub fixture, and it fails on
+  # exactly the regression the functional leg would miss.
+  assert "BOTH publishers go through run_publisher, not just the stalled one" \
+    "[ \"\$(grep -c '^  if ! run_publisher \"\$publish_' '$SYNC')\" -eq 2 ]"
+  assert "and neither publisher is invoked with a bare bash call" \
+    "[ -z \"\$(grep -E '^[^#]*bash \"\$publish_(skills|agents)\"' '$SYNC')\" ]"
   # (control) the region budget must stay INSIDE the staleness window it defends.
   assert "(control) the publish budget is smaller than the staleness window" \
     "grep -q '_publish_region_budget=\$(( _stale_age - _PUBLISH_TAIL_RESERVE_SECS ))' '$SYNC'"
@@ -1263,8 +1272,18 @@ test_25_publisher_is_bounded_inside_the_lock() {
   ok_out="$(HOME="$home" CLAUDE_CONFIG_SYNC_PUBLISH_BOUND=20 bash "$SYNC" --json 2>/dev/null)" || true
   assert "(control) the same fixture succeeds with a working publisher" \
     "[ \"\$(printf '%s' \"\$ok_out\" | jq -r .outcome)\" = 'ok' ]"
+  # -L alone only proves SOMETHING was created at that path; a publisher that
+  # linked the wrong target, or left a stale link from an earlier fixture, would
+  # still pass (CodeAnt, PR #1640). Assert the link resolves AND that it points
+  # into the managed skills worktree, which is the property the publish is for.
   assert "(control) and the links the stalled tick never made are now published" \
     "[ -L '$home/.claude/skills/beta' ]"
+  assert "(control) that link resolves rather than dangling" \
+    "[ -e '$home/.claude/skills/beta' ]"
+  assert "(control) and it points into the managed skills worktree" \
+    "case \"\$(readlink '$home/.claude/skills/beta')\" in \
+       '$home/.claude/skills-worktree/.claude/skills/beta') true ;; \
+       *) false ;; esac"
 
   rm -rf "$tmp"
 }

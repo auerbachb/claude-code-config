@@ -740,15 +740,22 @@ exit 0
 okp_out="$(printf '{"source":"startup"}' \
   | HOME="$OKP/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
     bash "$OKP/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
-OKP_OUT="$okp_out" python3 - <<'PY' || fail "the ample-budget control reported a publish failure, so the bound is tripping on a healthy publisher; got: $okp_out"
+# Silence must NOT read as success here (CodeAnt, PR #1640). Tolerating an
+# empty body or a bare "{}" would let a hook that stopped emitting JSON — or
+# never reached the publish block at all — satisfy the control that exists to
+# prove the bound does not trip on a HEALTHY publisher. build_publish_fixture
+# seeds a restart marker in this HOME precisely so the hook always has
+# something to say, which makes "it said nothing" a real failure, not a
+# tolerable no-op.
+OKP_OUT="$okp_out" python3 - <<'PY' || fail "the ample-budget control did not produce a usable hook result, so it could not prove the bound leaves a healthy publisher alone; got: $okp_out"
 import json, os, sys
 text = os.environ.get("OKP_OUT", "").strip()
 if not text or text == "{}":
-    sys.exit(0)
+    sys.exit(1)
 try:
     ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
 except Exception:
-    sys.exit(0)
+    sys.exit(1)
 sys.exit(1 if "publish failed" in ctx else 0)
 PY
 python3 - "$OKP/home/.claude/sync-restart-recommended.json" <<'PY' || fail "the ample-budget control did not clear the restart marker — the stall assertion above would pass vacuously (issue #1593)"
