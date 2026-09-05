@@ -163,7 +163,15 @@ trap on_exit EXIT
 # writable (root, a container) that quietly drops a stray file at the
 # filesystem root instead of logging nothing.
 if [[ -n "${HOME:-}" ]]; then
-  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ 2>/dev/null || true)" "${0##*/}" "${*//$'\n'/ }" \
+  # The record is TAB-delimited and line-oriented, so BOTH delimiters have to go:
+  # an argument carrying a tab invents columns and one carrying a newline or a
+  # carriage return invents rows, either of which silently corrupts every later
+  # read of the log. A `--repo` path can carry any of the three — they are legal
+  # in a filename — so the sanitising is on the value, not on a trusted caller.
+  USAGE_ARGS="${*//$'\n'/ }"
+  USAGE_ARGS="${USAGE_ARGS//$'\r'/ }"
+  USAGE_ARGS="${USAGE_ARGS//$'\t'/ }"
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ 2>/dev/null || true)" "${0##*/}" "$USAGE_ARGS" \
     2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 

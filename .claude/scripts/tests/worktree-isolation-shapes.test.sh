@@ -58,6 +58,16 @@ cleanup() {
   # T14b spawns a deliberately hanging check; kill any survivor so a failing
   # assertion cannot leak one into the runner.
   pkill -f "$TMP/hangs" >/dev/null 2>&1 || true
+  # Its descendant outlives the wrapper's own pattern, so kill it by the pid it
+  # recorded rather than by a `sleep`-shaped pattern that would reach unrelated
+  # processes belonging to other runs on this machine.
+  if [[ -r "$TMP/hang-child.pid" ]]; then
+    CLEANUP_HANG_PID=""
+    read -r CLEANUP_HANG_PID < "$TMP/hang-child.pid" 2>/dev/null || CLEANUP_HANG_PID=""
+    if [[ -n "$CLEANUP_HANG_PID" ]]; then
+      kill "$CLEANUP_HANG_PID" >/dev/null 2>&1 || true
+    fi
+  fi
   rm -rf "$TMP" "$TMP_HOME"
 }
 trap cleanup EXIT
@@ -314,6 +324,33 @@ else
   pass "T7d: SKIP — this filesystem rejects a trailing newline in a directory name"
 fi
 
+# ---- T7e: the usage log survives a delimiter in the argument ----------------
+# Every script appends one TAB-delimited, line-oriented telemetry record on
+# entry. The argument list goes into the third column verbatim, so a `--repo`
+# path carrying a tab invents columns and one carrying a newline invents rows —
+# either silently corrupts every later read of the log. The path characters
+# T7b/T7c already prove are legal are exactly the ones that must not reach it.
+USAGE_HOME="$(mktemp -d 2>/dev/null || true)"
+if [[ -n "$USAGE_HOME" && -d "$USAGE_HOME" ]]; then
+  mkdir -p "$USAGE_HOME/.claude"
+  # The path need not exist — the record is written on ENTRY, before the
+  # argument is resolved, which is the whole reason an unvalidated value reaches
+  # the log at all.
+  HOME="$USAGE_HOME" "$WSTATUS" --repo "$(printf 'a\tb\nc')" >/dev/null 2>&1 || true
+  USAGE_LOG="$USAGE_HOME/.claude/script-usage.log"
+  if [[ -r "$USAGE_LOG" ]]; then
+    check_eq "T7e: a tab/newline argument still writes exactly one record" \
+      "1" "$(wc -l < "$USAGE_LOG" | tr -d '[:space:]')"
+    check_eq "T7e: and exactly three columns, so the delimiters were sanitised" \
+      "3" "$(awk -F'\t' 'END { print NF }' "$USAGE_LOG")"
+  else
+    fail "T7e: no telemetry record was written, so the sanitising was never exercised"
+  fi
+  rm -rf "$USAGE_HOME"
+else
+  fail "T7e: could not create a temporary HOME, so the telemetry check did not run"
+fi
+
 # ---- T8: --json carries the same four fields --------------------------------
 RC=0
 JOUT="$(cd "$NONREPO" && "$WSTATUS" --repo "$LINKED" --json 2>&1)" || RC=$?
@@ -486,9 +523,15 @@ check_eq "T14: and ran the check exactly once" "1" "$(cat "$STUB_STATE")"
 # holds the caller indefinitely with no output (the issue #1363 shape). The
 # elapsed-time assertion is what makes this falsifiable — an unbounded check
 # would still "fail" with a non-zero status eventually, but only after 120s.
+# The descendant records its OWN pid. The survivor check below needs to name
+# this run's child exactly; a command-line pattern cannot, because the wedged
+# process is a plain `sleep`, indistinguishable from any other on the machine.
+export HANG_CHILD_PID_FILE="$TMP/hang-child.pid"
 cat > "$TMP/hangs" <<'EOF'
 #!/usr/bin/env bash
-sleep 120
+sleep 120 &
+echo $! > "$HANG_CHILD_PID_FILE"
+wait
 EOF
 chmod +x "$TMP/hangs"
 HANG_START="$(date -u +%s)"
@@ -504,11 +547,25 @@ else
 fi
 # The killed child must not outlive the run; a survivor would keep polling the
 # runner's process table and leak into whatever runs next.
-# Matches the wrapper AND its child. The wedged process is `sleep 120`, spawned
-# BY "$TMP/hangs", and its own command line contains no "$TMP/hangs" — so
-# pgrep on the wrapper alone would report a clean kill while the descendant that
-# run_bounded's process-group kill exists to reach was still running.
-if pgrep -f "$TMP/hangs" >/dev/null 2>&1 || pgrep -f "sleep 120" >/dev/null 2>&1; then
+#
+# Both the wrapper AND its descendant are checked. The wedged process is a bare
+# `sleep`, spawned BY "$TMP/hangs", and its own command line contains no
+# "$TMP/hangs" — so pgrep on the wrapper alone would report a clean kill while
+# the descendant that run_bounded's process-group kill exists to reach was still
+# running. But the descendant is named by its RECORDED PID, never by a
+# `pgrep -f "sleep 120"`: that pattern matches any unrelated process on the
+# machine running a sleep of the same length — another suite, a parallel agent —
+# and would fail a run whose own child was killed correctly. The pid is read
+# immediately after the kill, so recycling is not a practical concern.
+HANG_CHILD_PID=""
+if [[ -r "$TMP/hang-child.pid" ]]; then
+  read -r HANG_CHILD_PID < "$TMP/hang-child.pid" || HANG_CHILD_PID=""
+fi
+if [[ -z "$HANG_CHILD_PID" ]]; then
+  # Never pass by not running: no pid means the descendant assertion did not
+  # happen, which is a failure of the test, not evidence of a clean kill.
+  fail "T14b: the hanging check never recorded its child pid — the descendant survivor check could not run"
+elif pgrep -f "$TMP/hangs" >/dev/null 2>&1 || kill -0 "$HANG_CHILD_PID" 2>/dev/null; then
   fail "T14b: the hanging check (or its child) survived the kill"
 else
   pass "T14b: and the hanging check was actually killed"
