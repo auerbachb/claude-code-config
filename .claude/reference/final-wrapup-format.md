@@ -26,13 +26,13 @@ This file is the resolution: the wrap-up **is** the sanctioned final message, no
 - **Decisions you made:** {recorded so they are not re-proposed later.}
 ```
 
-Slot order is fixed. Slots with nothing to say are omitted, not padded — an omitted slot is silence, never a "N/A" line.
+Slot order is fixed — the blocked-ending slot below is its one sanctioned override. Slots with nothing to say are omitted, not padded — an omitted slot is silence, never a "N/A" line.
 
 ## Rules
 
 ### Emit exactly once, at terminal state
 
-- Terminal state = the work merged, the work is blocked pending a decision, or the user's question is answered.
+- Terminal state = **the whole of what the user asked for** has landed — that work merged, blocked pending a decision, or the question answered. It is a property of the request, not of any one worker finishing: a monitor whose subagents have all completed (`monitor-mode.md` §Dedicated Monitor Mode exit), a phase boundary, and one PR of a fleet merging while the rest still run are each an ending, and none of them is terminal.
 - **Never per-phase.** A pipeline that runs Phase A → B → C emits one wrap-up at the end, not one per phase.
 - **Never repeated on later conversational turns.** Once emitted for a task, follow-up turns answer what was asked; they do not re-render the wrap-up. A genuinely new task earns its own.
 - The `merged PR #N` always-emit line is a **separate, unchanged** exception (`CLAUDE.md` item #3). It fires at the merge moment, carries no timestamp prefix, and is neither replaced by nor folded into the wrap-up.
@@ -49,7 +49,7 @@ A trivial task — a one-file fix, a single lookup answered — renders as the T
 
 ### Blocked endings use the same shape
 
-Same template, with the blocker and the decision needed as the **first** bullet, phrased as a question the user can answer in one line. The TL;DR still leads and still states the outcome plainly ("Stopped short of merging — X needs your call").
+Same template, plus one added slot — **Blocker / decision needed** — phrased as a question the user can answer in one line. It goes **first**, ahead of `Where this lives`; that placement is the single override of the fixed slot order, and every other slot keeps its relative position beneath it. The TL;DR still leads and still states the outcome plainly ("Stopped short of merging — X needs your call").
 
 ### Jargon policy
 
