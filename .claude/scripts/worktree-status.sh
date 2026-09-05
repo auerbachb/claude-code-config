@@ -37,7 +37,8 @@
 # OUTPUT
 #   Default — four KEY=VALUE lines on stdout, in this order, one per line:
 #
-#     HEAD=<40-char sha>      HEAD commit of this worktree
+#     HEAD=<object id>        HEAD commit of this worktree (40 hex chars in a
+#                             SHA-1 repo, 64 in a SHA-256 one — do not pin 40)
 #     BRANCH=<name>           current branch; EMPTY when HEAD is detached
 #     DETACHED=<true|false>   whether HEAD is detached
 #     ROOT=<abs path>         top level of THIS worktree (not the main worktree)
@@ -217,8 +218,17 @@ source "$BOUNDED_RUN_LIB"
 
 TIMEOUT_SECS="$(normalize_bound "${WORKTREE_STATUS_TIMEOUT_SECS:-10}" 10)"
 
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/worktree-status.XXXXXX")"
-CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/worktree-status-err.XXXXXX")"
+# Both capture files are required. Unchecked, a failed mktemp leaves an empty
+# path, every run_bounded redirection fails, and git is reported as failing for
+# a reason that has nothing to do with git — a wrong answer dressed as a real
+# one. This script uses `set -uo pipefail`, not `set -e`, so nothing else stops
+# it. Fail closed and say why.
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/worktree-status.XXXXXX" 2>/dev/null || true)"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/worktree-status-err.XXXXXX" 2>/dev/null || true)"
+if [[ -z "$CAPTURE" || -z "$CAPTURE_ERR" || ! -w "$CAPTURE" || ! -w "$CAPTURE_ERR" ]]; then
+  echo "worktree-status.sh: could not create the capture files under ${TMPDIR:-/tmp} (mktemp failed or the result is not writable) — nothing was read" >&2
+  exit 5
+fi
 
 # Always at least one element, so the expansion is safe under `set -u` on bash
 # 3.2 (macOS default), which errors on expanding an empty array.

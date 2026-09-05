@@ -219,8 +219,13 @@ done
 #      confused. `command -v` also covers builtins and functions, which is why
 #      it is used rather than a bare file test.
 if [[ "${CMD[0]}" == */* ]]; then
-  if [[ ! -x "${CMD[0]}" ]]; then
-    echo "wait-until.sh: the check command is not an executable file: ${CMD[0]}" >&2
+  # REGULAR file, not merely executable. A directory carries the execute bit
+  # (that is traverse permission) and would sail through a bare -x, then exec as
+  # 126 and be polled to a cap timeout. A FIFO is worse still: the shebang read
+  # below would block on it forever, before the timeout loop that is supposed to
+  # bound this run has even started.
+  if [[ ! -f "${CMD[0]}" || ! -x "${CMD[0]}" ]]; then
+    echo "wait-until.sh: the check command is not an executable regular file: ${CMD[0]}" >&2
     exit 3
   fi
   # Executable is not the same as launchable. A script whose interpreter is
@@ -447,11 +452,11 @@ while :; do
     ACTUAL="$(trim "$(cat "$CAPTURE" 2>/dev/null || true)")"
     if [[ "$LAST_RC" -eq 0 && "$ACTUAL" == "$EXPECT" ]]; then
       MET=1
-      STATE="met: output == '$EXPECT'"
+      STATE="met: output matched --expect"
     elif [[ "$LAST_RC" -ne 0 ]]; then
-      STATE="check exited $LAST_RC (want 0 and output '$EXPECT')"
+      STATE="check exited $LAST_RC (want 0 and output matching --expect)"
     else
-      STATE="output '$ACTUAL' != '$EXPECT'"
+      STATE="output did not match --expect (${#ACTUAL} chars vs ${#EXPECT})"
     fi
   else
     if [[ "$LAST_RC" -eq 0 ]]; then

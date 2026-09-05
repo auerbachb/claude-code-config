@@ -41,8 +41,16 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || { echo "cannot resol
 REPO_ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 [[ -d "$REPO_ROOT/.claude/scripts" ]] || { echo "cannot resolve repo root from $TEST_DIR" >&2; exit 1; }
 
-TMP="$(mktemp -d)"
-TMP_HOME="$(mktemp -d)"
+# Guarded: this suite runs under `set -uo pipefail`, not `set -e`, so a failed
+# mktemp -d would leave TMP empty and every later "$TMP/..." path would resolve
+# from the filesystem ROOT — the setup writes "$TMP/install/.claude/scripts",
+# and `rm -rf "$TMP"` in cleanup would target "/". Stop before any of that.
+TMP="$(mktemp -d 2>/dev/null || true)"
+TMP_HOME="$(mktemp -d 2>/dev/null || true)"
+if [[ -z "$TMP" || -z "$TMP_HOME" || ! -d "$TMP" || ! -d "$TMP_HOME" ]]; then
+  echo "cannot create temporary directories under ${TMPDIR:-/tmp} — refusing to run with unanchored paths" >&2
+  exit 1
+fi
 cleanup() {
   # T14b spawns a deliberately hanging check; kill any survivor so a failing
   # assertion cannot leak one into the runner.
@@ -401,7 +409,25 @@ chmod -x "$TMP/not-executable"
 RC=0
 ERROUT="$("$WAIT" --interval 1 --timeout 30 -- "$TMP/not-executable" 2>&1 >/dev/null)" || RC=$?
 check_eq "T13b: a non-executable path exits 3 before any polling" "3" "$RC"
-check_contains "T13b: and says so" "not an executable file" "$ERROUT"
+check_contains "T13b: and says so" "not an executable regular file" "$ERROUT"
+
+# A DIRECTORY carries the execute bit (that is traverse permission), so a bare
+# -x would pass it through to exec as 126 and poll it to a cap timeout. A FIFO
+# is worse: the shebang read would block on it before the timeout loop starts.
+# Both must be refused by the preflight, as launch failures, not as timeouts.
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --timeout 3 -- "$TMP" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13b: a directory exits 3, not a cap timeout" "3" "$RC"
+check_contains "T13b: and names it a regular-file problem" "not an executable regular file" "$ERROUT"
+
+if mkfifo "$TMP/fifo-check" 2>/dev/null; then
+  chmod +x "$TMP/fifo-check" 2>/dev/null || true
+  RC=0; ERROUT=""
+  ERROUT="$("$WAIT" --timeout 3 -- "$TMP/fifo-check" 2>&1 >/dev/null)" || RC=$?
+  check_eq "T13b: a FIFO exits 3 rather than blocking the shebang read" "3" "$RC"
+else
+  pass "T13b: FIFO case skipped (mkfifo unavailable)"
+fi
 
 # ---- T14: a cap smaller than one interval still costs exactly one check ------
 echo 0 > "$STUB_STATE"
@@ -433,8 +459,12 @@ else
 fi
 # The killed child must not outlive the run; a survivor would keep polling the
 # runner's process table and leak into whatever runs next.
-if pgrep -f "$TMP/hangs" >/dev/null 2>&1; then
-  fail "T14b: the hanging check survived the kill"
+# Matches the wrapper AND its child. The wedged process is `sleep 120`, spawned
+# BY "$TMP/hangs", and its own command line contains no "$TMP/hangs" — so
+# pgrep on the wrapper alone would report a clean kill while the descendant that
+# run_bounded's process-group kill exists to reach was still running.
+if pgrep -f "$TMP/hangs" >/dev/null 2>&1 || pgrep -f "sleep 120" >/dev/null 2>&1; then
+  fail "T14b: the hanging check (or its child) survived the kill"
 else
   pass "T14b: and the hanging check was actually killed"
 fi
