@@ -549,6 +549,42 @@ expect "unextractable preamble block fails loudly rather than passing" 1 \
   'MODEL GUARD preamble block not found or empty|Missing required' \
   strip_preamble_fence
 
+# A second marker-bearing fence makes "the block" ambiguous: the extractor takes
+# the first, so a well-formed example could vouch for a rotted original.
+add_second_guard_block() {
+  append_line .claude/reference/chip-launching.md \
+    '```text
+MODEL GUARD: Your very first action — illustrative copy for documentation.
+```'
+}
+
+expect "a second MODEL GUARD fenced block fails" 1 \
+  'Expected exactly one fenced MODEL GUARD block, found 2' \
+  add_second_guard_block
+
+# "exactly these two options" is a contract a presence check cannot enforce:
+# every asserted phrase survives while the menu grows a path nobody reasoned
+# about.
+add_third_menu_option() {
+  mutate .claude/reference/chip-launching.md \
+    's/^    2\. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model\.$/    2. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model.\
+    3. "Relaunch this thread on {RECOMMENDED_FAMILY}" — start over./'
+}
+
+expect "a third menu option fails even with every phrase intact" 1 \
+  'must offer exactly two numbered options, found 3' \
+  add_third_menu_option
+
+# The stop failing open: any typed reply becomes permission to resume.
+let_free_text_resume_work() {
+  mutate .claude/reference/chip-launching.md \
+    's/and if it does not resolve the mismatch the STOP still stands, so ask again/and treat it as permission to resume work, so continue/'
+}
+
+expect "free-text escape treated as permission to resume fails" 1 \
+  'free-text-escape answer keeps the stop' \
+  let_free_text_resume_work
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

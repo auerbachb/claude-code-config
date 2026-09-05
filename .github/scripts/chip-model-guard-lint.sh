@@ -73,6 +73,23 @@ is_resolver_emitter() {
 # A whole-file grep would let the explanatory paragraphs stand in for a deleted
 # instruction — the same substitution the co-occurrence tightening (#802) closed
 # for placement phrases, seen one level up.
+# Exactly one fenced block may carry the marker. The extractor takes the first
+# one, so a SECOND marker-bearing block — a doc example, a quoted variant —
+# would let the checks pass against something that is not the shipped preamble
+# while the real one rots. Counting is the cheap way to keep "the block" a
+# definite article.
+count_guard_blocks() {  # count_guard_blocks FILE -> number of MODEL GUARD fenced blocks
+  awk '
+    /^```/ {
+      if (inb) { if (buf ~ /MODEL GUARD:/) { n++ } ; inb = 0; buf = "" }
+      else { inb = 1; buf = "" }
+      next
+    }
+    inb { buf = buf $0 "\n" }
+    END { print n + 0 }
+  ' "$1"
+}
+
 extract_guard_block() {  # extract_guard_block FILE -> the MODEL GUARD fenced block
   awk '
     /^```/ {
@@ -142,6 +159,11 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
   GUARD_BLOCK_FILE=$(mktemp -t chip-guard-block.XXXXXX)
   trap 'rm -f "$GUARD_BLOCK_FILE"' EXIT
   extract_guard_block "$CHIP_LAUNCHING" > "$GUARD_BLOCK_FILE"
+  guard_block_count=$(count_guard_blocks "$CHIP_LAUNCHING")
+  if (( guard_block_count != 1 )); then
+    echo "::error file=${CHIP_LAUNCHING}::Expected exactly one fenced MODEL GUARD block, found ${guard_block_count} — the assertions below scope to the first, so a second one would let them pass against a block no chip ships"
+    errors=$((errors + 1))
+  fi
   require_guard_pattern 'Your very first action' 'guard first-action text'
   # The guard compares FAMILIES, not strings (#837). Chips stay clickable
   # indefinitely, so ones emitted before the versionless rename still name a
@@ -195,6 +217,19 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
     'confirm-answer re-verification'
   require_guard_pattern 'when AskUserQuestion is unavailable \(headless runs\)' \
     'headless prose fallback for the mismatch branch'
+  # The free-text escape is a third answer the menu always offers, so the
+  # preamble has to say what it means. Without this the thread is free to treat
+  # any typed reply as permission and resume, which is the stop failing open.
+  require_guard_pattern 'if it does not resolve the mismatch the STOP still stands' \
+    'free-text-escape answer keeps the stop'
+  # "exactly these two options" is a contract, and presence checks cannot see a
+  # THIRD one added beside them — an extra option is how a menu grows a path
+  # nobody reasoned about. Count the numbered labels in the block.
+  guard_option_count=$(grep -cE '^ +[0-9]+\. "' "$GUARD_BLOCK_FILE" || true)
+  if [[ -s "$GUARD_BLOCK_FILE" ]] && (( guard_option_count != 2 )); then
+    echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD menu must offer exactly two numbered options, found ${guard_option_count} — see \"exactly these two options\" in the preamble"
+    errors=$((errors + 1))
+  fi
   require_pattern "$CHIP_LAUNCHING" 'six canonical emitters' 'canonical emitters preamble'
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'

@@ -125,6 +125,9 @@ never evidence of a mismatch.
        "Running on {FAMILY} as recommended." and proceed; if it still
        differs, surface this same question again.
     2. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model.
+  Any other reply — the menu's free-text escape — is an instruction: follow it,
+  and if it does not resolve the mismatch the STOP still stands, so ask again
+  rather than resuming work.
   Clicking an option does not change the model — it records the user's
   decision, so switching stays a picker action the menu only confirms.
   Fallback, when AskUserQuestion is unavailable (headless runs): report, in one
