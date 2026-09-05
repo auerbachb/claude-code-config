@@ -128,11 +128,13 @@ Run the shared merge-gate verifier. Do not restate the gate from memory:
 review, terminal CI, unresolved-thread, and merge-metadata requirements, and
 `merge-gate.sh` is their executable source of truth.
 
-Keep one Phase-C-specific branch inline: **`merge_state == "BEHIND"`**, whose
-decision tree follows the exit-code bullets below. **`missing`** is meaningful
-only on exit `1`; exits `2`/`3`/`4` are script, usage, or `gh` errors and are
-reported from their own message, never by parsing **`missing`**. And never infer
-BEHIND from **`missing`** substring matching.
+Keep one Phase-C-specific classification inline: every exit-`1` reading runs
+through the block below, which recognizes **two** candidate types that are not
+blocked — a **clean-`BEHIND` candidate** and an **`ac-gate`-only candidate** —
+and blocks everything else. **`missing`** is meaningful only on exit `1`; exits
+`2`/`3`/`4` are script, usage, or `gh` errors and are reported from their own
+message, never by parsing **`missing`**. And never infer BEHIND from
+**`missing`** substring matching.
 
 ```bash
 # Prefer the handoff's reviewer field; fall back to reviewer-of.sh (session-state
@@ -186,12 +188,11 @@ If `REVIEWER_ERROR` is set, set `OUTCOME: blocked`, include the error in the out
 
 Only when `REVIEWER_ERROR` is unset, branch on `GATE_EXIT`:
 - Exit `0` → merge gate met (all three paths + CI + merge metadata satisfied). Proceed to Step 2 (AC verification).
-- Exit `1` with **`merge_state == "BEHIND"`** → take the BEHIND decision tree below. This is **not** automatically `OUTCOME: blocked`. Detect the state from **`.merge_state`**; do not treat **`missing`** text as the source of truth for detecting it.
-- Exit `1` otherwise → gate not met for another reason. Parse the **`missing`** array from the JSON output and include it verbatim in your exit report; set **`OUTCOME: blocked`**.
+- Exit `1` → **do not decide here.** Every exit-`1` reading, `BEHIND` or not, goes to the classification block below, which computes `IS_BEHIND`, `$ac_gate_only`, and `REMAINDER` and is the only thing that decides proceed-vs-block. Exit `1` is **not** automatically `OUTCOME: blocked`. Detect `BEHIND` from **`.merge_state`**; do not treat **`missing`** text as the source of truth for detecting it. When the block classifies the PR as neither candidate type, parse the **`missing`** array from the JSON output, include it verbatim in your exit report, and set **`OUTCOME: blocked`**.
 - Exit `2`/`3`/`4` → script/usage/gh error. Set `OUTCOME: blocked` and report the stderr/JSON message.
 - Exit `127` → `run_script` could not resolve `merge-gate.sh` at all (see "Resolving helper scripts"). Nothing was reported *about the PR*, so this is never "gate met" and never a `missing` to parse. Set `OUTCOME: blocked`, name the unavailable helper in one line, and stop — do not fall through to Step 2.
 
-### `BEHIND` is not an automatic block (issue #1563)
+### Exit-`1` classification: two non-blocking candidates (issues #1563, #1588)
 
 A `merge_state` of **`BEHIND`** is **not on its own a blocker.** A *verified
 clean* `BEHIND` is an auto-merge, not a hard stop — canonical in
@@ -214,6 +215,20 @@ structured `blocking[]` names, never on the prose: an empty `blocking[]` proves
 nothing and must never license dropping a CI line, and a real failure sitting
 alongside `ac-gate` must survive.
 
+**That `ac-gate` carve-out is not tied to `BEHIND` (issue #1588).** A red
+pre-tick `ac-gate` is a CI **backstop** for the agent-side AC check
+(`.claude/reference/ac-gate.md`, `.claude/rules/cr-merge-gate.md` Step 2): it is
+red **by design** on any PR carrying real unchecked Test Plan boxes until an
+agent ticks them and reruns the check, whatever `main` has done underneath. That
+shape is if anything the *more common* one — every freshly-reviewed PR with
+genuine AC items hits it — so the same predicate has to admit it when
+`merge_state` is `UNSTABLE`, `BLOCKED`, or anything else. Observed blocking a
+merge-ready PR #1579 (`merge_state: "UNSTABLE"`, `mergeable: "MERGEABLE"`,
+`primary_review_met: true`, zero unresolved threads, sole `missing[]` entry the
+failing `ac-gate` CI line). When `IS_BEHIND == 0` the `BEHIND`-strip clause in
+the filter below is simply a no-op, so `REMAINDER` already means exactly
+"`missing[]` minus the all-`ac-gate` failing-CI line" — the jq needs no change.
+
 ```bash
 # printf, not echo: zsh's echo mangles JSON on the way into jq.
 IS_BEHIND=0
@@ -227,23 +242,59 @@ REMAINDER=$(printf '%s' "$GATE_JSON" | jq -c '
   | [ (.missing // [])[]
       | select((startswith("branch is BEHIND base")) | not)
       | select(($ac_gate_only and (startswith("CI has") and contains("failing check-run"))) | not) ]')
+# Same predicate, surfaced for the shell branch below. `jq -e` would exit 1 on a
+# `false` result and abort the block under `set -e`, so read the literal instead.
+AC_GATE_ONLY=$(printf '%s' "$GATE_JSON" | jq -r '
+  ([ (.ci_status.blocking // [])[] | .name ]) as $blocking
+  | (($blocking | length) > 0 and ($blocking | all(. == "ac-gate")))')
+REMAINDER_EMPTY=0
+if [[ "$(printf '%s' "$REMAINDER" | jq -r 'length')" == "0" ]]; then REMAINDER_EMPTY=1; fi
+# The `ac-gate`-only branch asserts the PR is NOT behind, so it needs a merge
+# state that was actually read. An absent/empty/null `.merge_state` is
+# "unreadable", not "not BEHIND" — `IS_BEHIND=0` would then be a guess.
+MERGE_STATE_KNOWN=0
+if [[ -n "$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // "" | select(. != "")')" ]]; then
+  MERGE_STATE_KNOWN=1
+fi
 ```
 
 Only the *failing*-CI line is dropped. An `incomplete` CI line means checks are
 still running and stays in `REMAINDER`, as does every unresolved-thread or
 review entry.
 
-- **`IS_BEHIND == 0`** → you are not on this branch at all; fall back to the
-  "Exit `1` otherwise" bullet above and report `missing` verbatim.
+Classify on `IS_BEHIND`, `MERGE_STATE_KNOWN`, `AC_GATE_ONLY`, and
+`REMAINDER_EMPTY` — nothing else.
+**Neither candidate type is an authorization to merge**; both only earn a trip
+to Step 2, and both still have to clear Step 2a and Step 3.
+
+| `IS_BEHIND` | `REMAINDER` | Classification | Phase C action |
+|---|---|---|---|
+| `1` | empty | **clean-`BEHIND` candidate** (`BEHIND`, optionally plus an all-`ac-gate` failing-CI line, was everything) | Probe with `clean-behind-check.sh` (below), then Step 2. |
+| `1` | non-empty | not a candidate | `OUTCOME: blocked`, `REMAINDER` verbatim; parent runs `/fixpr`. **Unchanged.** |
+| `0` | empty **and** `AC_GATE_ONLY == true` **and** `MERGE_STATE_KNOWN == 1` | **`ac-gate`-only candidate** (issue #1588) | Go straight to Step 2 — **no `clean-behind-check.sh`**, there is no `BEHIND` to verify clean. |
+| `0` | any, with `MERGE_STATE_KNOWN == 0` | not a candidate — merge state unreadable | `OUTCOME: blocked`, say the gate reported no `merge_state`. Never read an empty one as "not `BEHIND`". |
+| `0` | empty but `AC_GATE_ONLY == false` | not a candidate | `OUTCOME: blocked`, report `missing` verbatim. |
+| `0` | non-empty | not a candidate | `OUTCOME: blocked`, report `missing`/`REMAINDER` verbatim. |
+
+An empty `REMAINDER` with `AC_GATE_ONLY == false` cannot happen from the filter
+above (nothing else is ever dropped when the predicate is false), so reaching it
+means the JSON was not what you think it is: block and report rather than
+proceeding on an unexplained empty.
+
 - **`REMAINDER` non-empty** → the gate is unmet for those reasons, and a
   `BEHIND` accompanying any of them needs a rebase regardless. `OUTCOME:
   blocked` with `REMAINDER` verbatim in the exit report; the parent runs
   **`/fixpr`** (rebase + force-push from a guard-clean worktree) until
   **`merge_state`** is no longer **`BEHIND`**, then re-runs Phase C. **This is
   unchanged behavior.**
-- **`REMAINDER` empty** (`BEHIND`, optionally plus an all-`ac-gate` failing-CI
-  line, was everything) → **clean-`BEHIND` candidate.** Probe it, then continue
-  to Step 2 — do **not** report blocked yet:
+- **`IS_BEHIND == 0`, `MERGE_STATE_KNOWN == 1`, `AC_GATE_ONLY == true`,
+  `REMAINDER` empty** → **`ac-gate`-only candidate.** Continue to Step 2 exactly as the clean-`BEHIND`
+  path does, then Step 2a. Do **not** run `clean-behind-check.sh` on this path:
+  it is `BEHIND`-specific, and on a non-`BEHIND` PR its verdict answers a
+  question nobody asked. Do **not** report blocked.
+- **`IS_BEHIND == 1`, `REMAINDER` empty** (`BEHIND`, optionally plus an
+  all-`ac-gate` failing-CI line, was everything) → **clean-`BEHIND` candidate.**
+  Probe it, then continue to Step 2 — do **not** report blocked yet:
 
   ```bash
   # `|| CB_EXIT=$?`, not a bare assignment + `CB_EXIT=$?`: exit 1 is the EXPECTED
@@ -316,11 +367,13 @@ review entry.
 
 4. If any item fails verification: `OUTCOME: blocked` — report which items failed and why. Do NOT tick failing items.
 
-### Step 2a: Clean-`BEHIND` follow-through (candidates only)
+### Step 2a: Post-tick follow-through (candidates only)
 
-Skip this entirely unless Step 1 flagged a clean-`BEHIND` candidate. Ticking AC
-has two non-obvious after-effects; both must settle before Step 3, and they
-overlap, so run them in this order and wait once.
+Skip this entirely unless Step 1 flagged a candidate — **either** a
+clean-`BEHIND` candidate **or** an `ac-gate`-only candidate. Items 1 and 2 are
+identical for both; only item 3's re-probe differs. Ticking AC has two
+non-obvious after-effects; both must settle before Step 3, and they overlap, so
+run them in this order and wait once.
 
 1. **Re-run the failed `ac-gate` check.** `ac-gate.yml` triggers on
    `opened`/`synchronize`/`reopened`, so a PR-body edit never re-fires it — a red
@@ -361,10 +414,12 @@ overlap, so run them in this order and wait once.
 
 2. **Wait out the mergeability recompute.** `ac-checkboxes.sh --tick` /
    `--all-pass` PATCHes the PR body, and GitHub invalidates mergeability on any
-   body write. The next gate read therefore returns `merge_state: "UNKNOWN"` with
-   the `BEHIND` entry **gone from `missing[]`**. That is not a new blocker and
-   never a reason to rebase — poll `gh pr view {{PR_NUMBER}} --json
-   mergeStateStatus` until it is no longer `UNKNOWN` (~30–60s).
+   body write. The next gate read therefore returns `merge_state: "UNKNOWN"`.
+   That is not a new blocker and never a reason to rebase — poll `gh pr view
+   {{PR_NUMBER}} --json mergeStateStatus` until it is no longer `UNKNOWN`
+   (~30–60s). (The extra detail that the `BEHIND` entry also goes **missing from
+   `missing[]`** during the recompute applies only to the clean-`BEHIND`
+   candidate; an `ac-gate`-only candidate had no `BEHIND` entry to lose.)
 
    **Do not advance to item 3 on the mergeability signal alone.** The gate to
    proceed is a **conjunction**, and the reran `ac-gate` is normally the slower
@@ -390,15 +445,46 @@ overlap, so run them in this order and wait once.
    An `ac-gate` that completes with a **failing** conclusion is a real AC
    failure: `OUTCOME: blocked` per Step 2 item 4, not a rerun loop.
 
-3. **Re-probe.** Run `clean-behind-check.sh` again — same invocation *and the
-   same `CB_EXIT` status table* as Step 1, so `2`/`3`/`4`/`127` block here too
-   rather than being read as an unclean `BEHIND`. Exit `0` / `safe_to_offer:
-   true` is the authorization you carry into Step 3. A **still-incomplete**
-   `ac-gate` in `residual_blockers` here means item 2's gate was left early —
-   go back and finish the wait; it is not an unclean `BEHIND`. Exit `1` once AC
-   is ticked and `ac-gate` has completed **green** → the `BEHIND` genuinely is
-   not clean: `OUTCOME: blocked`, report `reasons_not_safe`, and the parent runs
-   `/fixpr`.
+3. **Re-probe — branch on the candidate type.**
+
+   **Clean-`BEHIND` candidate:** run `clean-behind-check.sh` again — same
+   invocation *and the same `CB_EXIT` status table* as Step 1, so `2`/`3`/`4`/`127`
+   block here too rather than being read as an unclean `BEHIND`. Exit `0` /
+   `safe_to_offer: true` is the authorization you carry into Step 3. A
+   **still-incomplete** `ac-gate` in `residual_blockers` here means item 2's gate
+   was left early — go back and finish the wait; it is not an unclean `BEHIND`.
+   Exit `1` once AC is ticked and `ac-gate` has completed **green** → the
+   `BEHIND` genuinely is not clean: `OUTCOME: blocked`, report
+   `reasons_not_safe`, and the parent runs `/fixpr`.
+
+   **`ac-gate`-only candidate:** run **`merge-gate.sh`** again — same invocation
+   and the same `GATE_EXIT` semantics as Step 1. Do **not** use
+   `clean-behind-check.sh` here; it probes a `BEHIND` this PR never had, and its
+   `reasons_not_safe` would be answering a different question. Read the re-probe
+   as:
+
+   | Re-probe result | Phase C action |
+   |---|---|
+   | `GATE_EXIT == 0` | Gate met. Carry into Step 3 as a normal gate-met merge. |
+   | `GATE_EXIT == 1`, `ac-gate` **absent** from `ci_status` on HEAD | Not a re-probe result you may read as green. `OUTCOME: blocked`, report `missing` verbatim. |
+   | `GATE_EXIT == 1`, only an **incomplete** `ac-gate` CI line remains | Item 2's wait was left early — go back and finish it. Not a blocker. |
+   | `GATE_EXIT == 1`, `ac-gate` still **failing** | A real AC failure: `OUTCOME: blocked` per Step 2 item 4. Not a rerun loop. |
+   | `GATE_EXIT == 1`, any other reason | `OUTCOME: blocked`, report `missing` verbatim. |
+   | `GATE_EXIT` `2`/`3`/`4`/`127` | `OUTCOME: blocked`, report the message / name the unavailable helper. |
+
+   `GATE_EXIT == 0` is the whole CI judgment here — do not second-guess the
+   `ac-gate` conclusion behind it. `merge-gate.sh` already required every
+   check-run terminal and non-blocking per `.claude/rules/cr-merge-gate.md`
+   Step 1b, where `cancelled`/`neutral`/`skipped` are **non-blocking by
+   policy** — and a `skipped` `ac-gate` is the designed outcome for an
+   exemption (`.claude/reference/ac-gate.md`). Re-requiring `conclusion:
+   "success"` here would block exactly those PRs and would fork this path's CI
+   standard away from the clean-`BEHIND` path's.
+
+   Do **not** re-enter the Step 1 classification block from here: the `ac-gate`
+   carve-out earns one trip through Step 2/2a per Phase C run, and re-admitting a
+   still-failing `ac-gate` as a fresh "candidate" is how this becomes an infinite
+   rerun loop.
 
 ## Step 3: Execute the Canonical `/wrap` Flow
 
@@ -414,11 +500,19 @@ After Step 1 and Step 2 both pass:
 
 Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `.claude/skills/wrap/SKILL.md` is the canonical source; Phase C only gates entry to that shared flow and reports the result.
 
-**On the clean-`BEHIND` path, `/wrap` Step 2.4 is the merge executor** — it runs
-`admin-merge.sh {{PR_NUMBER}} --auto-plain --ac-verified` itself, with no user
-turn (issue #754). **Do not run `admin-merge.sh` yourself:** `--auto-plain`
-carries a repeat guard, so your call would consume the one attempt and `/wrap`'s
-would then refuse with exit `8`, merging nothing.
+**On the clean-`BEHIND` path — and only that path — `/wrap` Step 2.4 is the
+merge executor** — it runs `admin-merge.sh {{PR_NUMBER}} --auto-plain
+--ac-verified` itself, with no user turn (issue #754). **Do not run
+`admin-merge.sh` yourself:** `--auto-plain` carries a repeat guard, so your call
+would consume the one attempt and `/wrap`'s would then refuse with exit `8`,
+merging nothing.
+
+An **`ac-gate`-only candidate** takes the ordinary Step 3 path above: its
+re-probe ended at a plain `GATE_EXIT == 0`, so it is a normal gate-met merge and
+`/wrap`'s usual squash merge applies. The `admin-merge.sh` handoff and the table
+below are clean-`BEHIND`-only — nothing on the `ac-gate`-only path needs a
+protection bypass, and `/wrap` will reach for one only if the PR turns out to be
+`BEHIND` after all, which is then that path's business, not this carve-out's.
 
 Step 2.4 owns that script's semantics; all this table adds is the Phase C
 `OUTCOME` each result maps to.
