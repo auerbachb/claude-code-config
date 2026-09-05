@@ -240,7 +240,7 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     _last_bound=0
     BOUNDED_TIMED_OUT=1
     _bound_declined=1
-    _bounded_out="bounded-run.sh unavailable — refusing to run unbounded ${context}"
+    _bounded_out="${_bound_unavailable_reason:-bounded-run.sh unavailable} — refusing to run unbounded ${context}"
     return 124
   fi
   local budget_left
@@ -264,6 +264,22 @@ _run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] 
     return 124
   fi
   run_bounded "$_last_bound" "$@" || rc=$?
+  # The library rotates CAPTURE/CAPTURE_ERR away from a child left alive after
+  # SIGKILL (the handover opted into above). Its two mktemp calls are NOT
+  # checked, so a full or read-only $TMPDIR leaves the paths empty — and the
+  # NEXT call's `: > "$CAPTURE"` redirection would then fail, so its command
+  # never runs at all, silently, with nothing recorded (CodeAnt, PR #1640).
+  # That is the one failure this whole change exists to prevent, so detect it
+  # and fall back to the posture the rest of this function already takes:
+  # decline and record, rather than appear to run.
+  if [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
+    _bound_available=0
+    _bound_unavailable_reason="capture handover could not allocate a replacement temp file"
+    BOUNDED_TIMED_OUT=1
+    _bound_declined=1
+    _bounded_out="$_bound_unavailable_reason"
+    return 124
+  fi
   _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
   [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
   return "$rc"
@@ -358,6 +374,7 @@ _bootstrapped=0
 # question: `errors` drives what the session is TOLD, this drives whether the
 # restart marker may be CLEARED. A publisher that never ran leaves stale links
 # in a category the marker describes, whether or not the miss was loud.
+_bound_unavailable_reason="bounded-run.sh unavailable"
 _publish_incomplete=0
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then

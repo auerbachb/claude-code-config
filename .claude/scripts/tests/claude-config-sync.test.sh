@@ -953,8 +953,14 @@ test_17_missing_bound_declines_instead_of_running_unbounded() {
 
   assert "the sync declines its lock-held calls when the bound is unavailable" \
     "grep -q 'declined: bounded-run.sh unavailable' '$SYNC'"
+  # Two greps rather than one literal: the hook now carries a SECOND decline
+  # reason (a failed capture handover, CodeAnt PR #1640), so the reason is a
+  # variable with the missing-library text as its default. Asserting the two
+  # halves keeps this pinned to the behaviour — it declines, and the default
+  # reason still names the missing library — without re-pinning one string that
+  # any added reason would split again.
   assert "the hook declines its lock-held calls for the same reason" \
-    "grep -q 'bounded-run.sh unavailable — refusing to run unbounded' '$HOOK'"
+    "grep -q 'refusing to run unbounded' '$HOOK' && grep -q 'bounded-run.sh unavailable' '$HOOK'"
   assert "the sync refuses to bootstrap unbounded as well" \
     "grep -q 'refusing to run setup-skills-worktree.sh unbounded' '$SYNC'"
 

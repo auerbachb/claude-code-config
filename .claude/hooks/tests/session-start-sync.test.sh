@@ -795,4 +795,24 @@ case "$hook_trap_line" in
   *) fail "the EXIT trap does not unlink ORPHANED_CAPTURES — handed-over captures leak in \$TMPDIR (CodeAnt, PR #1640)" ;;
 esac
 
+# --- 17. A failed handover allocation must decline, not silently no-op --------
+# bounded-run.sh's rotation calls mktemp twice and checks neither, so a full or
+# read-only $TMPDIR leaves CAPTURE/CAPTURE_ERR empty. The NEXT bounded call's
+# `: > "$CAPTURE"` redirection would then fail and its command would never run
+# — silently, with nothing recorded, which is the exact failure this whole
+# change exists to prevent (CodeAnt, PR #1640). Opting into the handover is
+# what creates that path, so the caller must detect it.
+bounded_body="$(awk '/^_run_hook_bounded\(\) \{/,/^\}$/' "$HOOK")"
+[ -n "$bounded_body" ] || fail "could not extract the _run_hook_bounded body from session-start-sync.sh"
+case "$bounded_body" in
+  *'-z "${CAPTURE:-}"'*) : ;;
+  *) fail "_run_hook_bounded does not check that the capture pair survived the orphan handover — a failed mktemp there makes every later bounded call a silent no-op (CodeAnt, PR #1640)" ;;
+esac
+case "$bounded_body" in
+  *_bound_available=0*) : ;;
+  *) fail "a failed handover allocation does not disable bounding, so later calls would run with an empty \$CAPTURE instead of declining (CodeAnt, PR #1640)" ;;
+esac
+grep -q '_bound_unavailable_reason' "$HOOK" \
+  || fail "the decline message is hard-coded to \"bounded-run.sh unavailable\", so a handover-allocation decline would be reported as a missing library (CodeAnt, PR #1640)"
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"
