@@ -91,9 +91,28 @@ STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || ec
 - If `$STOP_PENDING` is `true` → report incomplete PMM teardown and exit non-zero; never resume or
   auto-check until `/pmm-stop` completes exact task teardown.
 - If `$PAUSED_AT` is `null`/empty → print **"PMM not paused — either not started or already running."** and exit 0 (idempotent no-op).
-- If present → route by mode:
+- If present → **Step 3.5 first** (re-consult the usage horizon; a non-resuming verdict ends the invocation before anything is stopped), then route by mode:
   - **`--auto-check`** → Step 4a (compare fleet; the re-scan stays unless changed).
   - **User-initiated (default)** → Step 3 (cancel re-scan) → Step 4b (resume).
+
+## Step 3.5: Re-consult the usage horizon before resuming anything (issue #1444)
+
+Runs on **both** resume routes, immediately after Step 2 routes and **before** Step 3 tears anything down. A wake that resumes straight back into a closed usage window undoes the stand-down that paused the fleet in the first place, and the pause it would have to re-take costs another full tick. Consulting before teardown is what lets a refusal be a true no-op: nothing has been stopped yet, so a still-`critical` verdict leaves the armed re-scan exactly as it found it rather than having to arm a replacement — which §8.1 forbids this loop from doing anyway.
+
+Resolve `usage-horizon.sh` with the same candidate order as `session-state.sh` (`$HOME/.claude/skills-worktree/.claude/scripts/`, `$HOME/.claude/scripts/`, `.claude/scripts/`), then run `subagent-thread-limit-park.md` §7.1's gate block followed by §8.1's posture block — resolved through the matching `.claude/reference/` order, not re-derived here. Feed §7.1 the counter the **harness** printed into this turn's context and nothing else; an absent counter is `unknown`.
+
+| Verdict | This wake |
+|---------|-----------|
+| `clear` | Resume normally — Step 4a / Step 4b unchanged. |
+| `approaching` | Resume. The fleet polls again and Step 3.7 of the main skill keeps suppressing new fixer dispatch while the verdict holds — a paused fleet cannot land the merge-ready PRs an `approaching` window still has room for. |
+| `critical` | **Do not resume.** Stop nothing, arm nothing, write nothing: the pause marker, the config, the fleet snapshot, and any armed re-scan all stay exactly as they are. Print the line below and exit 0. This path claims no park and never touches `.repos["<key>"].day.*` (§8). |
+| `unknown` | **Do not resume dispatch, and park nothing further.** The existing pause already holds; leave every field untouched, say the verdict was unreadable, and exit 0. A user who wants the fleet back regardless re-runs this command after the counter is readable, or starts `/pr-monitor-and-manage` directly. |
+
+```text
+[$TS] PMM stays paused — usage horizon critical (paused_at=<PAUSED_AT>, cause=<pause_cause>). Re-run /pr-monitor-and-manage-wake once the window reopens.
+```
+
+`unknown` prints the same line with `— horizon verdict unreadable` in place of the verdict clause. Read `.pmm.pause_cause` for that line only: a fleet paused for `empty_fleet` and one paused for `usage_horizon` both stay paused here, so the cause is reporting, not routing. On `--auto-check`, a non-resuming verdict leaves the re-scan running and counts as "no change" for its own purposes — the next re-scan tick re-consults.
 
 ## Step 3: Cancel the auto-wake re-scan (user resume and auto-check-on-change only)
 
@@ -232,6 +251,7 @@ After a successful arm, clear the marker and publish the new task ID in one atom
 "$SESSION_STATE_SH" \
   --set '.pmm.stop_requested=false' \
   --set '.pmm.paused_at=null' \
+  --set '.pmm.pause_cause=null' \
   --set '.pmm.fleet_at_pause=null' \
   --set '.pmm.config_at_pause=null' \
   --set '.pmm_idle_streak=0' \

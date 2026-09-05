@@ -15,6 +15,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 |-------|------|-----------|---------|
 | `.pmm.stop_requested` | boolean | `-stop`, failed arm rollback | main tick gate, `-wake` |
 | `.pmm.paused_at` | ISO-8601 string | Main skill Pause step 4 | Step 0a, `-wake` Step 2 |
+| `.pmm.pause_cause` | `"usage_horizon"` \| `"stable_frozen"` \| `"empty_fleet"` \| `"idle"` (\| `"unspecified"` — a routing bug, never assigned deliberately) | Assigned by the Step 7 route; written by main skill Pause step 4 | `-wake` Step 3.5, for its status line only — that step re-consults the horizon on every cause (#1444) |
 | `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 4 (built in step 3) | `-wake` Step 4a |
 | `.pmm.config_at_pause` | object | Main skill Pause step 4 (built in step 3) | Step 0a, `-wake` Step 4a, `-wake` Step 4b |
 
@@ -88,14 +89,14 @@ A stale marker left by a killed session is safely reconciled here: the next `/pr
 
 ## Pause (auto-pause — resumable)
 
-Reached from Step 7 when the fleet is empty or idle. Unlike Stop & Clean Exit, Pause preserves a resume marker so `/pr-monitor-and-manage-wake` or re-invoking this skill can pick up where it left off.
+Reached from Step 7 when the fleet is empty or idle, or when the usage-horizon consult stood the loop down (#1444). Unlike Stop & Clean Exit, Pause preserves a resume marker so `/pr-monitor-and-manage-wake` or re-invoking this skill can pick up where it left off.
 
 ### 1. Final heartbeat
 
 Print the **full** Step 4 status table one last time — terminal snapshots (Pause here, Stop & Clean Exit) are an explicit exception to Step 4's quiet-tick suppression, so the user always gets a final fleet snapshot even when the pause tick itself was quiet — then a one-line reason:
 
 ```text
-[$TS] PMM pausing — reason: <empty fleet | N idle ticks | stable-frozen (N unchanged ticks)>
+[$TS] PMM pausing — reason: <empty fleet | N idle ticks | stable-frozen (N unchanged ticks) | usage horizon critical>
 ```
 
 ### 2. Stop the main Monitor
@@ -134,13 +135,30 @@ CONFIG_AT_PAUSE=$(jq -nc \
 > batch below mirrors that block — update both together.
 
 ```bash
+# PAUSE_CAUSE is assigned by the Step 7 route that reached this pause, and by
+# nothing else: route 3 sets `usage_horizon`, route 4 `stable_frozen`, route 5
+# `empty_fleet`, route 6 `idle`. It is PMM's own bookkeeping in PMM's own
+# namespace, and it is REPORTING-ONLY: the wake path re-consults the horizon
+# before teardown on EVERY cause, so this value routes nothing there and reads
+# only into its status line. Nothing under .repos["<key>"].day.* is written here
+# on any route (#1444). An unset value means the routing above did not assign
+# one, which is a bug — but a pause must still leave a marker a resume can find,
+# so normalise and warn rather than abort a half-finished teardown.
+case "${PAUSE_CAUSE:-}" in
+  usage_horizon|stable_frozen|empty_fleet|idle) ;;
+  *) echo "[PMM] pause reached with no route-assigned cause ('${PAUSE_CAUSE:-}') — recording 'unspecified'" >&2
+     PAUSE_CAUSE=unspecified ;;
+esac
 "$SESSION_STATE_SH" \
   --set ".pmm.paused_at=\"$NOW\"" \
+  --set ".pmm.pause_cause=\"$PAUSE_CAUSE\"" \
   --set ".pmm.fleet_at_pause=$FLEET_AT_PAUSE" \
   --set ".pmm.config_at_pause=$CONFIG_AT_PAUSE" \
   --set '.pmm_active=false' \
   --set '.pmm_next_expected_tick_at=null'
 ```
+
+On the `usage_horizon` route, step 5's auto-wake re-scan is **skipped** even when `$PMM_AUTO_WAKE` is true: an hourly re-scan into a closed usage window is exactly the polling the stand-down exists to stop, and `/pr-monitor-and-manage-wake` re-consults the horizon before it resumes anything. Say so in the pause line rather than leaving the user to infer that `--auto-wake` was honoured.
 
 After Step 2's `TaskStop` succeeds, add `--set '.pmm_monitor_task_id=null'` and
 `--set '.pmm_monitor_generation=null'` to this same batch. If the stop failed, omit both writes
@@ -182,7 +200,7 @@ Cross-session continuity is the pause marker's job, not this Monitor's — see t
 PMM paused — <N> PR(s) waiting on reviewer, no changes for <idle window>. Wake with `/pr-monitor-and-manage-wake` or re-run `/pr-monitor-and-manage <flags>`.
 ```
 
-If `--auto-wake` is set, add: `Auto-wake re-scan armed — will scan every <cadence> for fleet changes while this session lasts.`
+If `--auto-wake` is set **and step 5 actually armed the re-scan**, add: `Auto-wake re-scan armed — will scan every <cadence> for fleet changes while this session lasts.` Print it only after a returned task ID was published — never from the flag alone, and never on the `usage_horizon` route, where step 5 is skipped by design. On that route say instead: `Auto-wake re-scan not armed — the usage window is closed; wake with /pr-monitor-and-manage-wake once it reopens.` A failed arm keeps step 5's own "paused without auto-wake" report.
 
 > **Post-merge symlink:** after this skill's `-wake` companion merges to `main`, symlink `~/.claude/skills/pr-monitor-and-manage-wake` → the skills-worktree copy per `skill-symlinks.md`.
 
@@ -208,9 +226,12 @@ required stop succeeds perform the terminal cleanup (this is not resumable):
   --set '.pmm.auto_wake_monitor_task_id=null' \
   --set '.pmm.auto_wake_monitor_generation=null' \
   --set '.pmm.paused_at=null' \
+  --set '.pmm.pause_cause=null' \
   --set '.pmm.fleet_at_pause=null' \
   --set '.pmm.config_at_pause=null'
 ```
+
+`.pmm.pause_cause` is cleared here with the rest of the marker (#1444): a stopped fleet is not a paused one, and a retained `usage_horizon` cause would make the next `-wake` describe a pause that no longer exists.
 
 Print a final summary:
 
