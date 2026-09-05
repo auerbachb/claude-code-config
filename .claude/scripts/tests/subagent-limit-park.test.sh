@@ -144,7 +144,19 @@ pr_get()  { jq -r --arg k "$REPO_KEY" --arg n "$1" ".repos[\$k].prs[\$n].$2" "$S
 seed_unparked() {
   jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {
       active: true, parked_until: null, limit_kind: null, limit_cause: null,
+      park_claim_token: null,
       limit_probe_fires_remaining: null, limit_resume_task_id: null,
+      limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
+}
+# A `/pm` 2D.7 Step 1 claim caught mid-assembly: `parked_until` and the kind are
+# durable, the token is held, and `limit_cause` is still null because Step 3
+# never ran (#1596).
+seed_inflight_claim() {  # seed_inflight_claim <token> <parked_until>
+  jq -n --arg k "$REPO_KEY" --arg tok "$1" --arg until "$2" \
+    '{repos: {($k): {day: {
+      active: true, parked_until: $until, limit_kind: "rolling_window",
+      limit_cause: null, park_claim_token: $tok,
+      limit_probe_fires_remaining: -1, limit_resume_task_id: null,
       limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
 }
 # A board day mode (or a sibling thread) already parked.
@@ -282,6 +294,29 @@ check_eq "  thrash counter NOT bumped by the loser" "1"             "$(day_get c
 # Field-by-field checks can only pin the fields someone thought to list. A lost
 # claim must write NOTHING, so compare the whole file.
 check_eq "  a lost claim writes nothing at all" "$BEFORE" "$(cat "$STATE_FILE")"
+
+# An in-flight 2D.7 claim is the one park state this claim may take rather than
+# adopt: `limit_cause` is still null, so the compare wins — and the win must
+# RETIRE that claim's token in the same write (#1596), or the claim goes on to
+# finalise (or release) over the record this thread just created.
+seed_inflight_claim "park-20261201T090000Z-4242-7" "2026-12-01T15:00:00Z"
+OUT=$(run_claim "$PARK_UNTIL_FIX" rolling_window)
+check_eq "in-flight 2D.7 claim: this leg wins the cause compare" \
+  "PARK_CLAIM=won" "$(printf '%s' "$OUT" | tail -1)"
+check_eq "  the in-flight claim token is retired" "null"       "$(day_get park_claim_token)"
+check_eq "  and this leg's record is the survivor" "reactive"  "$(day_get limit_cause)"
+check_eq "  with this leg's parked_until"  "$PARK_UNTIL_FIX"   "$(day_get parked_until)"
+# Non-vacuity: without the `--set park_claim_token=null` the same win leaves the
+# token standing, and 2D.7's stale finalisation then still matches this slot.
+seed_inflight_claim "park-20261201T090000Z-4242-7" "2026-12-01T15:00:00Z"
+CONTROL_CLAIM_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" --expect null \
+  --set ".repos[\"$REPO_KEY\"].day.parked_until=\"$PARK_UNTIL_FIX\"" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"rolling_window\"" \
+  >/dev/null 2>&1 || CONTROL_CLAIM_RC=$?
+check_eq "control: the untokenized claim also wins" "0" "$CONTROL_CLAIM_RC"
+check_eq "control: ...but leaves the stale claim token live" \
+  "park-20261201T090000Z-4242-7" "$(day_get park_claim_token)"
 
 # A sibling REACTIVE park (another subagent thread on the same repo) is adopted
 # on the same compare, not merely a day-mode one.
