@@ -125,6 +125,25 @@ A green run drops from thousands of lines to one; the full capture is always at 
 [`summarize-test-run.sh`](.github/scripts/summarize-test-run.sh), which mirrors the contract into
 the job's step summary and raises an `::error::` annotation on a red run.
 
+## Adding a Script or Test to the `.claude/scripts/` Catalog
+
+The catalog — [`.claude/scripts/README.md`](.claude/scripts/README.md) plus one doc per category under `.claude/scripts/docs/` — is **generated**, not hand-authored (issue #1578).
+
+**To add a script or a test suite:** put one line in the new file's own header block and regenerate.
+
+```bash
+# in the new file, inside the leading comment block:
+# catalog: <category-id> — <one-line description>
+
+bash .github/scripts/scripts-catalog-gen.sh --write
+```
+
+`<category-id>` is the filename stem of the owning doc under `.claude/scripts/docs/` (`tests`, `utilities`, `release-cadence`, …). That is the whole change — you never edit a shared doc, which is what removed both the structural churn (issue #1571) and the recurring merge conflicts in `docs/tests.md` (PR #1543). A region two branches both regenerated is resolved by re-running the generator, not by reading a diff.
+
+**To add a category:** add `docs/<id>.md` carrying an H1, `<!-- catalog:category id=<id> order=<N> -->`, `<!-- catalog:covers <one-line index summary> -->`, a `<!-- catalog:rows:begin -->` / `<!-- catalog:rows:end -->` pair (plus a second pair marked `<!-- catalog:rows:begin kind=py -->` if the category will hold Python helpers — a `.py` file whose doc has no `kind=py` region is reported as unplaced, never silently dropped), and the `[← back to the index](../README.md)` back-link — then regenerate. Adding a category is adding a file; there is no shared registry to edit. Regeneration also rewrites this doc's entry in `.claude/reference/churn-hotspot-exemptions.json` (a generated region is lint-enforced churn, so it is exempt from hotspot scoring by construction) — commit that file alongside the new category doc.
+
+`.github/scripts/scripts-catalog-lint.sh` (auto-discovered, see below) fails CI when a file has no declaration, when a declaration names a category with no doc, when a committed region has drifted, or when a hand-written row appears outside a generated region. Rationale and the rejected alternatives: [`scripts-catalog-generation-decision.md`](.claude/reference/scripts-catalog-generation-decision.md).
+
 ## Adding a Doc Lint
 
 Doc lints are **auto-discovered** by the [`rule-lint.yml`](.github/workflows/rule-lint.yml) CI workflow — you do **not** edit the workflow to register one (issue #1138, which retired the per-lint step list that made that file a merge-conflict hotspot; same pattern as issue #681 for tests).

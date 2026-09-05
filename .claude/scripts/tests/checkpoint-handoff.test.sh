@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for checkpoint-handoff.sh (issue #941).
+# catalog: tests — Tests the degrade ladder in `checkpoint-handoff.sh` — the emitted document must pass `portable-handoff-lint.sh` in any repository, harness-shaped filenames included. **Slow (~71s idle, ~202s loaded): any bound must be ≥420s** (#1505)
 #
 # The interesting property under test is the DEGRADE LADDER: the script must
 # produce a document that passes portable-handoff-lint.sh in whatever repository

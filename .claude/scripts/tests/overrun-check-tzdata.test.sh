@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # overrun-check.sh ET clock under a missing-tzdata system (issue #1529).
+# catalog: tests — Tests `overrun-check.sh`'s ET clock on a system where `America/New_York` does not resolve (#1529) — a PATH-shim `date` reproduces glibc-without-tzdata (zone falls back to UTC, `date` still exits 0); asserts cell mode and the breach alert render a **labelled** UTC value rather than an unlabelled 12-hour UTC clock under an `(ET)` header, with a negative control pinning unchanged Eastern output and a fidelity control proving the shim reproduces the bug
 #
 # WHY THIS SUITE EXISTS
 #

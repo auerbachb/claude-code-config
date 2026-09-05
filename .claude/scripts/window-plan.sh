@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # window-plan.sh — Parse a user-stated planning window into machine values.
+# catalog: backlog-pm — Parse a user-stated planning window ("until 5:00 PM", "overnight") into canonical machine values
 #
 # PURPOSE
 #   Converts a human-readable planning window ("until 5:00 PM", "3 hours",

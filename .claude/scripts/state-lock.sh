@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # state-lock.sh — portable advisory write lock for ~/.claude/session-state.json.
+# catalog: session-state-locking — *(library — source, do not execute)* Portable mkdir-based advisory lock for session-state writes
 #
 # PURPOSE
 #   Serializes the WHOLE read-modify-write cycle of every writer that touches

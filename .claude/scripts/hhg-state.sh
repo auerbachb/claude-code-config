@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # hhg-state.sh — Extract a 2-letter USPS state code from HHG-formatted text.
+# catalog: utilities — Extract a 2-letter USPS state code from HHG-formatted text
 #
 # PURPOSE
 #   Centralizes the state-code extraction contract used by `/wrap` Step 3.2

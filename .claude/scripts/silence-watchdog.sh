@@ -1,5 +1,6 @@
 #!/bin/bash
 # External silence watchdog for macOS launchd.
+# catalog: scheduling-monitoring — External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only)
 #
 # This complements the in-process PostToolUse hook by checking heartbeat files
 # even when Claude is stalled and no tool hook is firing. macOS-only v1.

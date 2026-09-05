@@ -148,12 +148,16 @@ STATE_UNREADABLE=false
 # absent one — passing it as a JSON STRING keeps it that way, because a string is
 # neither a record nor a map and `slot_class` classifies it `unreadable`.
 # Coercing it to `null` here would read a corrupt board as "nothing parked".
-# The literal `null` is the ONLY absent value. An EMPTY argument is NOT absent:
-# `--get` prints nothing for a slot holding the JSON string `""`, and that is a
-# damaged slot, so it must fall through to the parse check below and reach
-# `slot_class` as a string — `unreadable`, named — rather than being coerced to
-# `null` and reported as "nothing parked" (issue #1611). `_read_slot` hands this
-# the literal `null` for the genuinely-absent and already-named cases.
+# The literal `null` is the ONLY absent value, and since the slots are read with
+# `--get-json` (issue #1629) that text is unambiguously JSON null: a slot
+# corrupted into the STRING "null" arrives quoted as `"null"`, parses as a JSON
+# string, and is named `unreadable` instead of being read as absent — which is
+# precisely what raw `--get` could not express. An EMPTY argument is likewise NOT
+# absent: every successful `--get-json` read prints something, so nothing at all
+# means the read produced nothing, which is damaged; it falls through to the
+# parse check below and reaches `slot_class` as a string (issue #1611).
+# `_read_slot` hands this the literal `null` for the genuinely-absent and
+# already-named cases.
 _json_or_null() {
   [[ "$1" != "null" ]] || { printf 'null'; return; }
   if printf '%s' "$1" | jq -e . >/dev/null 2>&1; then printf '%s' "$1"
@@ -171,10 +175,16 @@ SLOT_VALUE=""
 _read_slot() { # _read_slot <jq-path> <label> -> SLOT_VALUE
   local _rc=0
   SLOT_VALUE=""
-  SLOT_VALUE=$("$SESSION_STATE_SH" --get "$1" 2>/dev/null) || _rc=$?
+  # `--get-json`, not `--get`: raw output collapses an absent slot, a stored
+  # JSON null, and a slot corrupted into the string "null" into the same four
+  # characters, so the third would be restored-from as "nothing parked"
+  # (issue #1629). Exit codes are identical between the two modes, so the rc
+  # mapping below is unchanged.
+  SLOT_VALUE=$("$SESSION_STATE_SH" --get-json "$1" 2>/dev/null) || _rc=$?
   case "$_rc" in
-    # rc=0 keeps the value verbatim, EMPTY INCLUDED: an empty read is a slot
-    # holding `""`, which is damaged, and the combine must see it (issue #1611).
+    # rc=0 keeps the value verbatim, EMPTY INCLUDED: an empty read means the
+    # read produced no JSON at all, which is damaged, and the combine must see
+    # it (issue #1611).
     0) ;;
     3) SLOT_VALUE="null" ;;      # no state file — genuinely absent
     # Named right here, so hand the combine `null`: were it given the empty read
@@ -415,7 +425,7 @@ fi
 
 **Reading from `session-state.json` is the primary path.** When that path is available, all later steps can use `jq` to parse each record as JSON. When the marker fallback is active (`USE_MARKER=true`), later steps read the marker file directly from `$MARKER_PATH` — they cannot assume `$PAUSE_STATE` is valid JSON, and should extract what they can from the human-readable sections.
 
-**`.pauses` is invisible to `--session-view`** (that projection lifts only `.prs` and `.root_repo`). Always read it with an explicit `--get .repos["<key>"].pauses` — never via `--session-view`. The same holds for the legacy `.pause` and `.suspend` slots.
+**`.pauses` is invisible to `--session-view`** (that projection lifts only `.prs` and `.root_repo`). Always read it with an explicit `--get-json .repos["<key>"].pauses` — never via `--session-view`. The same holds for the legacy `.pause` and `.suspend` slots. Use `--get-json`, not `--get`, for every pause slot: raw output cannot tell an absent slot from one holding the JSON string `"null"`, so a corrupt board would read as "nothing parked" (issue #1629).
 
 **Each selection entry carries its own write-back address.** `state_path` is the
 exact jq path of the record — `.repos[<key>].pauses[<session>]` for a keyed

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # candidate-ownership.sh — Does another thread already own this candidate? (issue #1431)
+# catalog: backlog-pm — Read-only pre-dispatch sweep — does another thread already own this candidate, is it live or dead, and how is it resumed
 #
 # PURPOSE
 #   A cold-started `/pm` rebuilds the board from GitHub and refills the pipeline
@@ -374,19 +375,33 @@ fi
 # subshell — an unreadable state file would then degrade to complete silence,
 # which is the one failure mode the degradation contract exists to prevent.
 SS_VALUE=""
-ss_get() { # ss_get <jq-path> <degrade-label> -> SS_VALUE, rc 0 on a usable read
-  local path="$1" label="$2" rc=0
+_ss_read() { # _ss_read <flag> <jq-path> <degrade-label> -> SS_VALUE, rc 0 on a usable read
+  local flag="$1" path="$2" label="$3" rc=0
   SS_VALUE=""
   [[ -z "$SESSION_STATE_SH" ]] && return 1
-  SS_VALUE="$("$SESSION_STATE_SH" --get "$path" 2>/dev/null)" || rc=$?
+  SS_VALUE="$("$SESSION_STATE_SH" "$flag" "$path" 2>/dev/null)" || rc=$?
   case "$rc" in
     0) return 0 ;;
     # 3 = no state file has ever been written. Legitimately empty, not a failure.
     3) SS_VALUE=""; return 1 ;;
     *) SS_VALUE=""
-       batch_degrade "session-state.sh --get $label: rc=$rc (that source not consulted)"
+       batch_degrade "session-state.sh $flag $label: rc=$rc (that source not consulted)"
        return 1 ;;
   esac
+}
+ss_get() { # ss_get <jq-path> <degrade-label> -> SS_VALUE, rc 0 on a usable read
+  _ss_read --get "$1" "$2"
+}
+# Pause slots only (issue #1629). `--get` prints raw, so a slot holding the
+# JSON STRING "null" arrives as the four characters `null` — indistinguishable
+# from an absent slot, and therefore read as "nothing parked": exactly the
+# masking the per-slot degradation contract exists to stop. `--get-json` keeps
+# the value's JSON type, so that slot arrives as `"null"`, is not a record map,
+# and `slot_class` names it `unreadable`. Same guards, same exit codes, same
+# rc mapping — only the wire format differs. The non-pause reads below stay on
+# `--get`: their consumers want the raw scalar.
+ss_get_json() { # ss_get_json <jq-path> <degrade-label> -> SS_VALUE
+  _ss_read --get-json "$1" "$2"
 }
 
 PAUSE_JSON=""
@@ -407,16 +422,18 @@ else
     # map is empty: an else-branch would make a board parked before either rename
     # invisible the moment any session wrote a keyed record — the same masking
     # bug #1576 removed one level up.
-    # On a usable read the value is kept VERBATIM, empty included: `--get` prints
-    # nothing for a slot holding the JSON string `""`, and that is a damaged
-    # slot the combine has to see. A failed read is already named by ss_get, so
-    # it is handed the literal `null` instead of being classified a second time
-    # (issue #1611).
-    if ss_get ".repos[\"$REPO_KEY\"].pauses" "pauses"; then
+    # Read with `--get-json` (issue #1629), so the value keeps its JSON type and
+    # the combine can tell an absent slot from a corrupt one. On a usable read
+    # the value is kept VERBATIM: a slot holding `""` arrives as `""` and one
+    # holding the string "null" arrives as `"null"` — both damaged, both of
+    # which the combine has to see rather than mistake for absent. A failed read
+    # is already named by ss_get_json, so it is handed the literal `null`
+    # instead of being classified a second time (issue #1611).
+    if ss_get_json ".repos[\"$REPO_KEY\"].pauses" "pauses"; then
       PAUSES_MAP_JSON="$SS_VALUE"; else PAUSES_MAP_JSON="null"; fi
-    if ss_get ".repos[\"$REPO_KEY\"].pause" "pause (legacy)"; then
+    if ss_get_json ".repos[\"$REPO_KEY\"].pause" "pause (legacy)"; then
       PAUSE_LEGACY_JSON="$SS_VALUE"; else PAUSE_LEGACY_JSON="null"; fi
-    if ss_get ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)"; then
+    if ss_get_json ".repos[\"$REPO_KEY\"].suspend" "suspend (legacy)"; then
       SUSPEND_LEGACY_JSON="$SS_VALUE"; else SUSPEND_LEGACY_JSON="null"; fi
     # Each of the three slots is classified on its OWN in the combine below
     # (issue #1611), so a corrupt one is named alone and the healthy ones still
@@ -452,11 +469,17 @@ json_or_null() { # a `--get` on a missing path prints "null"; normalize both
 # parked", the exact masking this degradation contract exists to prevent. Hand
 # the raw text through as a JSON STRING instead: a string is neither a record nor
 # a map, so slot_class already classifies it `unreadable` and the slot is named.
+# Its input is `--get-json` output (issue #1629), so the bare text `null` is now
+# unambiguously JSON null, and a slot corrupted into the STRING "null" arrives
+# quoted as `"null"` — valid JSON, passed straight through, classified
+# `unreadable` by slot_class. Under the old raw `--get` the two were the same
+# four characters and the corrupt slot was read as absent.
 pause_slot_arg() {
   local v="$1"
-  # The literal `null` is the ONLY absent value. An EMPTY value is a slot holding
-  # the JSON string `""` — damaged — and must reach slot_class as a string so it
-  # is named, not coerced to `null` and reported as "nothing parked".
+  # The literal `null` is the ONLY absent value. An EMPTY value cannot come from
+  # a successful --get-json read (every JSON value prints something), so it means
+  # the read produced nothing at all — damaged, and it must reach slot_class as a
+  # string so it is named, not coerced to `null` and reported as "nothing parked".
   [[ "$v" == "null" ]] && { printf 'null'; return; }
   if printf '%s' "$v" | jq -e . >/dev/null 2>&1; then printf '%s' "$v"
   else jq -Rn --arg v "$v" '$v'; fi

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for estimate-resolve.sh (issue #1371 — GH_ARGS[@] unbound).
+# catalog: tests — Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression
 #
 # The 2026-08-26 failure: with no extra flags GH_ARGS is EMPTY, and expanding a
 # bare "${GH_ARGS[@]}" under `set -u` aborts on macOS bash 3.2 (and bash

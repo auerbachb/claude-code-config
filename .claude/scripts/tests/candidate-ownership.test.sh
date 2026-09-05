@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline unit tests for candidate-ownership.sh (issue #1431 — /pm's pre-dispatch
 # ownership sweep).
+# catalog: tests — Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee
 #
 # Seeds the real state sources — a session-state.json under a temp HOME, handoff
 # and marker files, a session listing — and stubs `gh` and `issue-claim.sh` so a
@@ -348,6 +349,58 @@ echo "-- (2e) a pauses value that is not a map is unreadable, and legacy records
 sweep 201 205
 check_contains "the corrupt map is named" "pauses" "$(field 205 '.degraded | join("|")')"
 check_eq "#201 still owned from the legacy slot" "true" "$(field 201 '.owned')"
+
+############################################################################
+scenario "(2f) a pause slot holding the STRING \"null\" is damaged, not absent (issue #1629)"
+# END-TO-END through the sweep's OWN read + combine path — the state file really
+# holds the corrupt slot, the real session-state.sh reads it, and the assertion
+# is on the sweep's rendered output. That is what an extracted-classifier test
+# cannot prove: it exercises the wiring (which read mode each slot uses) as well
+# as the verdict.
+#
+# Raw `--get` printed the same four characters `null` for an ABSENT slot and for
+# one corrupted into the JSON STRING "null", so the combine classified a damaged
+# board `absent` and the sweep reported a clean, unparked repo over it.
+# `--get-json` keeps the JSON type, so the slot arrives quoted and is NAMED.
+#
+# FAILS WITHOUT FIX: revert candidate-ownership.sh's three pause reads from
+# `ss_get_json` back to `ss_get` and every `.degraded` assertion below goes empty
+# while the sweep still answers "dispatch" — the exact silent masking #1629 closes.
+seed_state ".pauses=\"null\""
+# Negative control on the fixture itself: if the seed did not survive as a JSON
+# STRING, the rows below would be asserting against a different corruption.
+check_eq "the seeded .pauses really holds the STRING \"null\"" "string" \
+  "$(jq -r --arg k "$REPO_KEY" '.repos[$k].pauses | type' "$STATE_FILE")"
+sweep 206
+check_contains "the sweep names the corrupt pauses slot" "pauses" \
+  "$(field 206 '.degraded | join("|")')"
+check_contains "and calls it a slot it could not read, not an empty one" \
+  "not a pause record" "$(field 206 '.degraded | join("|")')"
+check_eq "and the sweep still answers for the candidate" "dispatch" "$(field 206 '.action')"
+
+############################################################################
+# Per-slot degradation (issue #1611) end-to-end: two damaged legacy slots are
+# named individually while the healthy `.pauses` record beside them still marks
+# its issue owned. A whole-source bail would lose that record silently.
+scenario "(2g) legacy .pause / .suspend holding the STRING \"null\" — named singly, healthy keyed board survives"
+export FAKE_CLAIM_207="claimed:sessKeep:alice"
+seed_pr 907 207 "issue-207-legacy-null"
+seed_state ".pauses={\"sessKeep\":{\"active\":true,\"session_id\":\"sessKeep\",\
+\"paused_at\":\"2026-09-02T22:40:00Z\",\"parked\":[{\"kind\":\"pr\",\"ref\":907,\
+\"branch\":\"issue-207-legacy-null\",\"stopped_at\":\"awaiting review\",\"next_move\":\"poll\"}]}}"
+seed_state ".pause=\"null\""
+seed_state ".suspend=\"null\""
+seed_sessions '[{"id":"sessKeep","status":"paused","title":"Issue #207 coding thread"}]'
+check_eq "the seeded legacy .pause really holds the STRING \"null\"" "string" \
+  "$(jq -r --arg k "$REPO_KEY" '.repos[$k].pause | type' "$STATE_FILE")"
+sweep 207
+check_contains "the corrupt legacy .pause is named on its own" "pause (legacy)" \
+  "$(field 207 '.degraded | join("|")')"
+check_contains "the corrupt legacy .suspend is named on its own" "suspend (legacy)" \
+  "$(field 207 '.degraded | join("|")')"
+check_eq "the healthy keyed board still marks the issue owned" "true" "$(field 207 '.owned')"
+check_eq "so the candidate is skipped, never dispatched over a live board" "skip" "$(field 207 '.action')"
+check_eq "and its parked state is still read" "paused" "$(field 207 '.state')"
 
 ############################################################################
 scenario "(3) dead/archived owner with surviving branch + handoff — adopt from the PR"

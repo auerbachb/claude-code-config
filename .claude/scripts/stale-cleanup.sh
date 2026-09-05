@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # stale-cleanup.sh — Detect and optionally remove stale worktrees and branches.
+# catalog: trust-worktree-repo — Detect and optionally remove stale worktrees, branches, and orphaned worktree registrations (out-of-band, safe; every registration read wall-clock bounded)
 #
 # PURPOSE
 #   Replaces the self-cleanup that /wrap used to do (worktree removal + branch

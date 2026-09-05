@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # unset-home-contract.test.sh — the shared unset-HOME contract (issue #1434).
+# catalog: tests — Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434)
 #
 # Issue #1430 (PR #1433) guarded the usage-telemetry append so it could never
 # abort a script. In four scripts the NEXT unconditional ${HOME} expansion still

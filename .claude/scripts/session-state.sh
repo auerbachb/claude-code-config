@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # session-state.sh — Surgical read/write helper for ~/.claude/session-state.json.
+# catalog: session-state-locking — Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed)
 #
 # PURPOSE
 #   Single helper for read-modify-write operations on ~/.claude/session-state.json
@@ -11,12 +12,16 @@
 #
 #   Multiple --set flags merge into ONE atomic write (not N sequential writes),
 #   so callers can mutate several paths in a single transaction without a
-#   partial-write race window between them.
+#   partial-write race window between them. `--remove-agent` joins that same
+#   write (issue #1631) so an agent record can be dropped without the
+#   read-filter-write idiom that used to lose a sibling thread's entries.
 #
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
+#   session-state.sh [--repo <owner/name>] --get-json <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
 #   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
+#   session-state.sh --remove-agent <agent-id> [--remove-agent ...] [--set ...]
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
@@ -105,6 +110,36 @@
 #                      Returns "null" with exit 0 if the path is absent but
 #                      the file is a valid JSON object — matches jq semantics.
 #
+#                      Raw output is LOSSY by design (issue #1629): an absent
+#                      path, a stored JSON `null`, and a stored JSON STRING
+#                      "null" all print the same four characters, and a stored
+#                      `""` prints nothing at all. Every caller that compares
+#                      stdout to the literal `null` therefore reads a slot
+#                      holding the string "null" as absent. That is fine for
+#                      the many callers whose paths can only ever hold a
+#                      number, a SHA, or a flag; a caller that must tell
+#                      "nothing is here" from "something corrupt is here"
+#                      wants --get-json instead.
+#
+#   --get-json <path>  Identical to --get in every guard, scoping, migration,
+#                      and exit code — it runs the SAME execution block — but
+#                      prints the value as JSON (`jq -c`) instead of raw. That
+#                      makes the four states above distinct on the wire:
+#                        absent path        -> null
+#                        stored JSON null   -> null
+#                        stored string      -> "null"
+#                        stored empty string-> ""
+#                      An absent path and a stored JSON null still coincide,
+#                      as they do in jq itself — the distinction this mode
+#                      exists to give is absent-vs-CORRUPT, which is what the
+#                      pause-source readers (/pause-resume Step 1, /go-on
+#                      probe B, candidate-ownership.sh) need so a damaged
+#                      board is never reported as "nothing parked".
+#                      Exit codes match --get exactly: 3 = no state file,
+#                      4 = jq parse error, 2 = no jq path. --get and
+#                      --get-json are mutually exclusive, and each may be
+#                      given at most once.
+#
 #   --repo-key         Print the resolved repo key (see REPO SCOPING) and
 #                      exit 0. For consumers that must build their own jq
 #                      paths against the state file — e.g.
@@ -120,10 +155,10 @@
 #                      origin). The projection, applied to the migrated document:
 #                        • .prs        = .repos[<key>].prs // {}   (this repo only)
 #                        • .root_repo  = .repos[<key>].root_repo // null
-#                        • .active_agents = the global array with every entry
+#                        • .active_agents = the global map with every entry
 #                          that belongs to a DIFFERENT repo removed. Attribution,
 #                          in order: an explicit .owner_repo on the entry wins
-#                          (kept iff it equals <key>) — the array has no repo
+#                          (kept iff it equals <key>) — entries carry no repo
 #                          field today, but honoring it here means stamping it at
 #                          the write sites later needs no reader change. Absent
 #                          that, an entry with no .pr is kept (unattributable);
@@ -181,14 +216,35 @@
 #                      timestamp on every write — matches the pattern in
 #                      greptile-budget.sh and reviewer-of.sh.
 #
+#   --remove-agent <id>  Delete one key from the `.active_agents` map
+#                      (issue #1631). May be repeated, and composes with --set
+#                      and --cas: every assignment and deletion in one
+#                      invocation lands in the SAME jq pipeline, under the same
+#                      lock hold, in one atomic mv. Deletions are applied
+#                      BEFORE assignments regardless of flag order, so a
+#                      same-key `--remove-agent X --set '.active_agents["X"]=…'`
+#                      always means REPLACE and the assignment survives; for
+#                      different keys the order is immaterial. Removing an id
+#                      that is not present is a no-op that still exits 0, so a
+#                      caller draining an agent twice never has to probe first.
+#                      This is the ONLY supported way to drop an agent record.
+#                      The old idiom — `--get '.active_agents'`, filter locally,
+#                      `--set` the whole value back — spans two lock windows,
+#                      so a sibling thread's append between the read and the
+#                      write is silently discarded; that is the loss #1631
+#                      fixes and why the field is now a keyed map.
+#
 # EXIT STATUS
-#   0  Success — value printed (--get) or write completed (--set). A --get on
-#      a corrupted known-typed field (see FIELD-TYPE CONTRACT) also exits 0,
-#      printing a safe default instead of the corrupt value.
+#   0  Success — value printed (--get/--get-json) or write completed (--set).
+#      A --get/--get-json on a corrupted known-typed field (see FIELD-TYPE
+#      CONTRACT) also exits 0, printing a safe default instead of the corrupt
+#      value.
 #   2  Usage error — missing/invalid mode, unknown flag, malformed --set
-#      argument (no `=`), no jq path given for --get, or a --repo value that
+#      argument (no `=`), no jq path given for --get/--get-json, both of those
+#      flags given together or either given twice, or a --repo value that
 #      is not a plausible repo key (`[A-Za-z0-9._/-]+`).
-#   3  State file missing on --get. (--set creates the file from `{}`.)
+#   3  State file missing on --get/--get-json. (--set creates the file from
+#      `{}`.)
 #   4  jq failed to parse the file or evaluate the path/expression, OR a
 #      --set or --cas would leave a known-typed field (see FIELD-TYPE
 #      CONTRACT) holding the wrong JSON type — the write is rejected and the
@@ -233,7 +289,7 @@
 #   wedge every future session. Full contract, tunables, and failure modes:
 #   `.claude/scripts/state-lock.sh`.
 #
-#   --get does NOT lock: `mv` is atomic, so a reader always observes either
+#   --get/--get-json do NOT lock: `mv` is atomic, so a reader always observes either
 #   the pre-write or the post-write document, never a partial one. Reads stay
 #   contention-free.
 #
@@ -300,7 +356,8 @@
 #   therefore rejects the WHOLE invocation (exit 4, nothing written), exactly
 #   as a wrong-typed value in a multi---set batch already did (issue #1445).
 #
-#   --get on a known top-level field whose *stored* value doesn't match the
+#   --get (and --get-json, which shares the block) on a known top-level field
+#   whose *stored* value doesn't match the
 #   contract (state corrupted before this guard existed, or written by
 #   something bypassing this script) prints a warning to stderr and returns
 #   a safe default (`[]`/`{}`) on stdout instead of the corrupt value,
@@ -312,6 +369,8 @@
 #
 # OUTPUT
 #   --get: raw value on stdout (one line per jq output, like `jq -r`).
+#   --get-json: the same value as JSON on stdout (one line per jq output, like
+#          `jq -c`), so `null`, the string `"null"`, and `""` are distinct.
 #   --set: nothing on stdout when the write succeeds.
 #   stderr: one-line error messages on failure.
 #
@@ -336,6 +395,15 @@
 #   # Read a value:
 #   session-state.sh --get '.greptile_daily.reviews_used'
 #   # -> 3
+#
+#   # Read a value WITHOUT losing its JSON type (issue #1629). Distinguishing
+#   # an absent slot from one corrupted into the string "null" is the whole
+#   # point — with --get both of these print `null`:
+#   session-state.sh --get-json '.repos["org/repo"].pauses'
+#   # absent          -> null
+#   # stored as null  -> null
+#   # stored as "null"-> "null"      (corrupt: a string, not a record map)
+#   # stored as ""    -> ""          (corrupt: --get would print nothing)
 #
 #   # Set a single value (string auto-detected). The path is scoped to the
 #   # repo of the current working directory, so this writes
@@ -769,14 +837,62 @@ def _scoped($pathmap; $unknown):
   | del(.prs) | del(.root_repo)
   | .schema_version = 2;
 
+# active_agents array -> map keyed by agent id (issue #1631). The array was
+# not addressable per entry, so every writer replaced the whole value and two
+# threads racing that read-modify-write dropped each other live agents. As a
+# map each writer touches only its own key. Applied to EVERY read and write
+# pipeline, and independent of the .prs/.root_repo migration above: it is a
+# different field, so it also runs on the branch that refuses a corrupt
+# legacy document. In memory for --get/--session-view; persisted by the next
+# write or by --migrate. No schema_version bump is needed, because unlike
+# flat->scoped this migration is self-detecting by type and idempotent.
+#
+# `null` and other non-object elements are DROPPED (one observed clobber left
+# `[null, {...}]` on disk). An entry with no usable `.id` keeps a stable
+# `_unkeyed_<index>` key rather than being discarded. `.agent` is honored as a
+# secondary key source because live entries written before this change carry
+# that field instead of `.id`. The two are tried in order for the first USABLE
+# key — a non-empty string or a number — NOT the first non-null one: `//` falls
+# through only on null and false, so an entry carrying `id: ""` (or an object,
+# or an array) would have shadowed a perfectly good `.agent` and landed under
+# `_unkeyed_` instead (CodeAnt, PR #1637). Duplicate ids collapse
+# to the last entry, the same last-writer-wins the array already had. Any
+# non-array, non-object value (including null/absent) is left untouched, which
+# is the "refuse rather than discard" behavior migrate() uses everywhere else.
+#
+# The `_unkeyed_<index>` fallback is NOT assumed free: nothing stops a real
+# agent from carrying the literal id `_unkeyed_3`, and a migration that loses a
+# real, identified agent to an anonymous one would defeat the point of this
+# change. So the fallback appends `_` until the key is unused in the map built
+# so far. Collision the other way — a real id landing on a key an earlier
+# unkeyed entry took — stays last-writer-wins, identical to the duplicate-id
+# case above, and the record it displaces is the anonymous one.
+def _agents_map:
+  if (.active_agents | type) == "array"
+  then .active_agents = ( reduce (.active_agents | to_entries[]) as $e (
+         {};
+         if ($e.value | type) != "object" then .
+         else ( ( [ $e.value.id?, $e.value.agent? ]
+                  | map(select((type == "string" and length > 0) or type == "number"))
+                  | map(tostring) | first ) as $id
+              | . as $acc
+              | (if $id != null then $id
+                 else ( ("_unkeyed_" + ($e.key | tostring))
+                        | until( (. as $s | $acc | has($s)) | not; . + "_" ) )
+                 end) as $k
+              | .[$k] = $e.value )
+         end ) )
+  else . end;
+
 def migrate($pathmap; $unknown):
-  if (.prs != null and (.prs | type) != "object")
-     or (.root_repo != null and (.root_repo | type) != "string")
-  then .
-  elif (.prs != null) or (.root_repo != null)
-  then _scoped($pathmap; $unknown)
-  else (.schema_version // 2) as $v | .schema_version = $v
-  end;
+  ( if (.prs != null and (.prs | type) != "object")
+       or (.root_repo != null and (.root_repo | type) != "string")
+    then .
+    elif (.prs != null) or (.root_repo != null)
+    then _scoped($pathmap; $unknown)
+    else (.schema_version // 2) as $v | .schema_version = $v
+    end )
+  | _agents_map;
 '
 
 # True when the document carries legacy top-level keys whose shape we refuse
@@ -1260,9 +1376,66 @@ add_write_assignment() {
   pr_record_write_target "$scoped_path"
 }
 
+# Append one `del(.active_agents[<id>])` stage per --remove-agent to the shared
+# write pipeline (issue #1631), and register `active_agents` with the field-type
+# contract so the deletion is checked exactly like an assignment. Called from
+# both write blocks right after their assignment loops, so a --remove-agent
+# batched with --set or gated by --cas commits in the same atomic write.
+#
+# The id goes in through `--arg`, never string interpolation: agent ids are
+# caller data, and a jq program built by concatenating them would be an
+# injection surface. `.active_agents` is a genuinely global field, so the path
+# is written literally rather than through scope_path().
+#
+# Deleting a key that is not present is a no-op — jq's del() on a missing key
+# returns the object unchanged — so a caller draining an agent it already
+# removed still exits 0 rather than having to probe first.
+#
+# The seed makes an absent map an empty object, so the field-type contract
+# registered below sees an object rather than the `null` an absent field
+# reports; without it, the first --remove-agent against a fresh state file
+# would be rejected as a type violation for doing nothing. A value that is
+# present but NOT an object is passed through untouched on purpose: del() on a
+# string would abort the pipeline with exit 5, whereas leaving it alone lets
+# the contract reject it with exit 4 and the message that names the field.
+#
+# The seed tests `== null` rather than using `// {}`: jq's alternative operator
+# treats `false` as empty too, so `// {}` would quietly heal a corrupt `false`
+# into a valid empty map — a write that reports success while discarding the
+# evidence, and the one value that would slip past the contract this stage
+# deliberately defers to.
+add_remove_agent_stages() {
+  local i id_var stage
+  [[ "${#REMOVE_AGENTS[@]}" -gt 0 ]] || return 0
+  for i in "${!REMOVE_AGENTS[@]}"; do
+    id_var="__rmagent$i"
+    JQ_ARGS+=(--arg "$id_var" "${REMOVE_AGENTS[$i]}")
+    stage=".active_agents = ((if .active_agents == null then {} else .active_agents end) | if type == \"object\" then del(.[\$$id_var]) else . end)"
+    if [[ -z "$JQ_FILTER" ]]; then
+      JQ_FILTER="$stage"
+    else
+      JQ_FILTER="$JQ_FILTER | $stage"
+    fi
+  done
+  case " $TOUCHED_KNOWN_FIELDS " in
+    *" active_agents "*) ;;
+    *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS active_agents" ;;
+  esac
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
+# Output format for the shared read block (issue #1629). --get sets `raw`
+# (jq -r, the historical, lossy contract every existing caller depends on);
+# --get-json sets `json` (jq -c), which is what keeps an absent path, a stored
+# JSON null, the STRING "null", and "" distinguishable on stdout. Both flags
+# run the SAME MODE="get" execution block — only this variable differs — so
+# the two modes can never drift apart in their guards, scoping, or exit codes.
+GET_OUTPUT="raw"
+# Which spelling the caller actually typed, so the usage errors below name that
+# flag rather than always saying "--get". Empty until one of them is seen.
+GET_FLAG=""
 REPO_ARG=""
 RAW_PATH="0"
 DRY_RUN="0"
@@ -1277,6 +1450,10 @@ CAS_PATH=""
 CAS_VALUE=""
 CAS_EXPECT=""
 CAS_EXPECT_SET=0
+# For --remove-agent: agent ids to delete from the `.active_agents` map
+# (issue #1631). Kept as data, never interpolated into a jq program — each id
+# is bound to its own `--arg` at write time.
+REMOVE_AGENTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1327,17 +1504,29 @@ while [[ $# -gt 0 ]]; do
       MODE="migrate"
       shift
       ;;
-    --get)
+    --get|--get-json)
+      # Two spellings of one mode: they differ ONLY in the final output format
+      # (issue #1629). Sharing MODE="get" is deliberate — the file-missing,
+      # single-object, migration, scoping, and field-type self-heal guards are
+      # then literally the same code for both, so a fix to one is a fix to both.
       if [[ -n "$MODE" && "$MODE" != "get" ]]; then
-        die_usage "--get cannot be combined with --$MODE"
+        die_usage "$1 cannot be combined with --$MODE"
+      fi
+      # `-n "$GET_FLAG"` (not `-n "$GET_PATH"`) is the repeat check: a path can
+      # legitimately be the empty string, and testing the path would let
+      # `--get "" --get-json .x` through as if only one flag had been given.
+      if [[ -n "$GET_FLAG" ]]; then
+        if [[ "$GET_FLAG" == "$1" ]]; then
+          die_usage "$1 may only be given once"
+        fi
+        die_usage "--get and --get-json are mutually exclusive"
       fi
       if [[ $# -lt 2 ]]; then
-        die_usage "--get requires a jq path"
-      fi
-      if [[ -n "$GET_PATH" ]]; then
-        die_usage "--get may only be given once"
+        die_usage "$1 requires a jq path"
       fi
       MODE="get"
+      GET_FLAG="$1"
+      [[ "$1" == "--get-json" ]] && GET_OUTPUT="json"
       GET_PATH="$2"
       shift 2
       ;;
@@ -1368,6 +1557,23 @@ while [[ $# -gt 0 ]]; do
       fi
       SET_PATHS+=("${local_arg%%=*}")
       SET_VALUES+=("${local_arg#*=}")
+      shift 2
+      ;;
+    --remove-agent)
+      # Deleting one key from `.active_agents` (issue #1631). It composes with
+      # --set and --cas exactly as they compose with each other, and rides the
+      # SAME write path they do — one lock hold, one migration stage, one
+      # field-type check, one atomic mv. There is deliberately no second
+      # implementation of that machinery here: #1283 taught that a parallel
+      # write path drifts from the one it copied.
+      if [[ -n "$MODE" && "$MODE" != "set" && "$MODE" != "cas" ]]; then
+        die_usage "--remove-agent cannot be combined with --$MODE"
+      fi
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        die_usage "--remove-agent requires an agent id"
+      fi
+      [[ "$MODE" == "cas" ]] || MODE="set"
+      REMOVE_AGENTS+=("$2")
       shift 2
       ;;
     --cas)
@@ -1420,7 +1626,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --cas, --session-view, --repo-key or --migrate is required"
+  die_usage "one of --get, --get-json, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
 fi
 
 # --cas requires --expect; --expect without --cas is a usage error.
@@ -1537,7 +1743,7 @@ migrate_jq_args() {
 # ============================================================================
 if [[ "$MODE" == "get" ]]; then
   if [[ -z "$GET_PATH" ]]; then
-    die_usage "--get requires a jq path"
+    die_usage "${GET_FLAG:---get} requires a jq path"
   fi
   if [[ ! -f "$STATE_FILE" ]]; then
     echo "session-state.sh: state file not found: $STATE_FILE" >&2
@@ -1605,15 +1811,26 @@ if [[ "$MODE" == "get" ]]; then
     fi
   fi
 
-  # Use jq -r so callers get the raw value (string without quotes, number
-  # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
+  # --get uses jq -r so callers get the raw value (string without quotes,
+  # number as-is, etc.); --get-json uses jq -c so the value keeps its JSON
+  # type and an absent slot, a stored `null`, a stored `"null"`, and a stored
+  # `""` are four distinguishable outputs (issue #1629). Everything else about
+  # the read — the filter, the migration args, the error translation — is
+  # identical, which is the point of sharing this block.
+  #
+  # jq exits non-zero on parse errors — translate to 4.
   #
   # The migration runs in memory only: a read never rewrites the state file,
   # but it still sees legacy entries in their scoped home, so a session that
   # only ever reads is not blind to state written before the restructure.
+  if [[ "$GET_OUTPUT" == "json" ]]; then
+    get_jq_flag="-c"
+  else
+    get_jq_flag="-r"
+  fi
   jq_err="$(mktemp)"
   trap "rm -f '$jq_err' 2>/dev/null" EXIT
-  if ! jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+  if ! jq "$get_jq_flag" --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
        "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
     echo "session-state.sh: jq failed reading $STATE_FILE: $(cat "$jq_err")" >&2
     exit 4
@@ -1673,9 +1890,9 @@ migrate(\$__pathmap; \$__unknown)"
 | ([ (.repos // {}) | to_entries[] | select(.key != \$__rk and .key != \$__unknown) | (.value.prs // {}) | keys[] ]) as \$otherpr
 | .prs = (\$mine.prs // {})
 | .root_repo = (\$mine.root_repo // null)
-| .active_agents = ((.active_agents // [])
-    | if type != \"array\" then [] else . end
-    | map(select(type == \"object\"
+| .active_agents = ((.active_agents // {})
+    | if type != \"object\" then {} else . end
+    | with_entries(select(.value | type == \"object\"
         and (
         if (.owner_repo != null) then (.owner_repo == \$__rk)
         elif (.pr == null) then true
@@ -1823,6 +2040,12 @@ if [[ "$MODE" == "cas" ]]; then
   TOUCHED_NESTED_CHECKS=""
   WHOLE_ENTRY_PATHS=""
   WHOLE_MAP_PATHS=""
+  # BEFORE every assignment in this pipeline — the CAS target included, not just
+  # the composed --set writes. Staging removes after the CAS assignment left
+  # `--cas '.active_agents["X"]=...' --remove-agent X` deleting the record it had
+  # just written (CodeAnt, PR #1637). See the --set path below for why the order
+  # is fixed rather than following flag order.
+  add_remove_agent_stages
   add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
   # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
   # with no composed writes — unlike the --set block below, which cannot be
@@ -1877,7 +2100,10 @@ fi
 # ============================================================================
 # --set
 # ============================================================================
-if [[ "${#SET_PATHS[@]}" -eq 0 ]]; then
+# A --remove-agent-only invocation reaches this block with no --set pairs
+# (issue #1631) — it is a write with one del() stage and no assignments, which
+# is why the guard counts both accumulators rather than SET_PATHS alone.
+if [[ "${#SET_PATHS[@]}" -eq 0 && "${#REMOVE_AGENTS[@]}" -eq 0 ]]; then
   die_usage "--set requires at least one <jq-path>=<value>"
 fi
 
@@ -1928,9 +2154,21 @@ TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
 WHOLE_ENTRY_PATHS=""
 WHOLE_MAP_PATHS=""
-for i in "${!SET_PATHS[@]}"; do
-  add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
-done
+# Deletions are staged BEFORE assignments, and that order is FIXED — it does
+# not follow flag order (CodeAnt, PR #1637). The stages are built from two
+# separate arrays, so argv position is not recoverable here; staging removes
+# last silently deleted a record the caller had just assigned in the same
+# invocation, which is the loss issue #1631 exists to stop arriving through the
+# drain path. Front-loading them makes a same-key
+# `--remove-agent X --set '.active_agents["X"]=…'` mean REPLACE in either flag
+# order — the caller's explicit assignment always survives. Different keys are
+# unaffected either way, which is every other composed call.
+add_remove_agent_stages
+if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
+  for i in "${!SET_PATHS[@]}"; do
+    add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
+  done
+fi
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
 # atomic write. Use UTC ISO 8601 to match `(now | todate)` semantics in
@@ -1938,7 +2176,11 @@ done
 # but emitting from bash keeps the path injection-free.
 LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 JQ_ARGS+=(--arg __last_updated "$LAST_UPDATED")
-JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+if [[ -z "$JQ_FILTER" ]]; then
+  JQ_FILTER=".last_updated = \$__last_updated"
+else
+  JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+fi
 
 # Migrate first, in the same atomic write (issue #638). A write through this
 # helper is therefore what permanently heals a legacy flat file — the scoped

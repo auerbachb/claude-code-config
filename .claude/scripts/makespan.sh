@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # makespan.sh — Model batch makespan from per-issue estimates.
+# catalog: backlog-pm — Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput
 #
 # PURPOSE
 #   Compute the projected finish time for a batch of issues, respecting the

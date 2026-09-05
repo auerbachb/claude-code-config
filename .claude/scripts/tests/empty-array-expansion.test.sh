@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Sibling-sweep regressions for the empty-array-under-`set -u` abort (issue #1371).
+# catalog: tests — Sibling-sweep regressions for the empty-array-under-`set -u` abort on bash 3.2
 #
 # Expanding a bare "${ARR[@]}" when ARR is EMPTY aborts under `set -u` on macOS
 # bash 3.2 (and bash 4.0-4.3). estimate-resolve.sh's own coverage lives in

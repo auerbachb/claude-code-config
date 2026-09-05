@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # GNU-vs-BSD `date` fallback ORDER across the repo (issue #1587).
+# catalog: tests — Pins every shipped `date -r` fallback chain GNU-first (#1587) — a GNU-semantics `date` shim plus an epoch-named decoy file prove each fixed site reads the epoch, not a filename, with per-site negative controls, structural order checks on the already-GNU-first sites, and the deliberate BSD-first negative-control fixture in `overrun-check-tzdata.test.sh` pinned as such
 #
 # WHY THIS SUITE EXISTS
 #
@@ -54,7 +55,10 @@
 #      before the BSD `-r "` arm, so the order cannot silently flip back.
 #
 # Sites 1-4 were BSD-first and are fixed by this change; sites 5-7 were already
-# GNU-first and are pinned here so they stay that way.
+# GNU-first and are pinned here so they stay that way. Site 8
+# (lib/usage-limit-classify.sh, issue #1633) arrived GNU-first and is pinned
+# too — it is a shared library, so a reordering edit there is one neither
+# caller would notice.
 #
 # DELIBERATELY NOT COVERED
 #
@@ -77,9 +81,11 @@ ISSUE_CLAIM_TEST="$REPO_ROOT/.claude/scripts/tests/issue-claim.test.sh"
 PR_PREFLIGHT_TEST="$REPO_ROOT/.claude/scripts/tests/pr-preflight.test.sh"
 USAGE_HORIZON_TEST="$REPO_ROOT/.claude/scripts/tests/usage-horizon.test.sh"
 USAGE_LIMIT_TEST="$REPO_ROOT/.claude/hooks/tests/usage-limit-record-handoff-pointer.test.sh"
+LIMIT_CLASSIFY="$REPO_ROOT/.claude/scripts/lib/usage-limit-classify.sh"
 
 for f in "$RELEASE_DECIDE" "$STALE_CLEANUP" "$CHIP_REGISTRY" "$ISSUE_CLAIM_TEST" \
-         "$PR_PREFLIGHT_TEST" "$USAGE_HORIZON_TEST" "$USAGE_LIMIT_TEST"; do
+         "$PR_PREFLIGHT_TEST" "$USAGE_HORIZON_TEST" "$USAGE_LIMIT_TEST" \
+         "$LIMIT_CLASSIFY"; do
   [[ -f "$f" ]] || { echo "missing source under test: $f" >&2; exit 1; }
 done
 
@@ -318,6 +324,18 @@ if require_snippet "usage-horizon.test.sh backdate_reading" "$BACKDATE_READING";
     FAIL=$((FAIL + 1)); echo "FAIL — usage-horizon.test.sh backdate_reading lost its result-shape gate"
   fi
 fi
+
+# lib/usage-limit-classify.sh (issue #1633) — written GNU-first from the start.
+# Pinned here because it is a LIBRARY: two callers depend on its epoch->text
+# helpers, so a reordering edit here is one nobody would notice at either call
+# site. Live decoy-file proof lives in credit-budget.test.sh.
+CLASSIFY_ISO="$(sed -n '/^_ulc_utc_iso_from_epoch() {/,/^}$/p' "$LIMIT_CLASSIFY")"
+require_snippet "usage-limit-classify.sh _ulc_utc_iso_from_epoch" "$CLASSIFY_ISO" \
+  && check_gnu_first "usage-limit-classify.sh _ulc_utc_iso_from_epoch" "$CLASSIFY_ISO"
+
+CLASSIFY_DAY="$(sed -n '/^_ulc_day_in_zone() {/,/^}$/p' "$LIMIT_CLASSIFY")"
+require_snippet "usage-limit-classify.sh _ulc_day_in_zone" "$CLASSIFY_DAY" \
+  && check_gnu_first "usage-limit-classify.sh _ulc_day_in_zone" "$CLASSIFY_DAY"
 
 # ---------------------------------------------------------------------------
 # The pre-fix fixture in overrun-check-tzdata.test.sh must stay BSD-first: it is

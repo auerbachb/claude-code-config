@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for `/pm` day mode's usage-horizon reflex — issue #1428.
+# catalog: tests — Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in `.claude/skills/pm/SKILL.md`, pulled out at run time
@@ -9,8 +10,9 @@
 #   skill and this suite runs the edit. Same principle as
 #   `pmm-wake-step-4a.test.sh` and `pr-state-classify.test.sh`.
 #
-#   Five anchors, five jobs:
+#   Six anchors, six jobs:
 #     pm-day-d2-horizon-branch  D2's tick gate — verdict -> {refill, park, idle}
+#     pm-day-2d6-park-claim     the REACTIVE compare-and-set park claim (#1622)
 #     pm-day-2d7-park-claim     the compare-and-set single-park claim
 #     pm-day-2d7-park-record    the park record, including the cause field
 #     pm-day-2d7-wake-publish   the wake identity pair (armed / lost / failed / stranded)
@@ -108,6 +110,7 @@ refute_text() {
 BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
 BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
 BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
+BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
 BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
 BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
 
@@ -346,6 +349,66 @@ check_eq "wake publish loses to an armed wake" "7" "$PUB_RC"
 check_eq "armed wake identity survives" "reactive-task" "$(day_get limit_resume_task_id)"
 
 # ---------------------------------------------------------------------------
+echo "== 2D.6 reactive park claim (#1622) =="
+# ---------------------------------------------------------------------------
+# The reactive path used to write its record with a plain --set batch, guarded
+# only by an application-level TaskStop-then-overwrite sequence. It now claims
+# `limit_cause` by compare-and-set composed with the same writes, so the two
+# directions of the race are symmetric: whoever claims the cause first owns the
+# record, and the loser adopts rather than overwriting.
+
+run_2d6() {   # run_2d6 [new_hits]
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    PARKED_UNTIL="2026-08-28T04:00:00Z" LIMIT_KIND="rolling_window" \
+    NEW_HITS="${1-1}" bash -c "$BLOCK_2D6" 2>/dev/null
+}
+
+seed_day_state
+check_eq "2D.6: claims a clean board" "PARK_CLAIM=won" "$(run_2d6 | tail -1)"
+check_eq "2D.6: cause is reactive"        "reactive"             "$(day_get limit_cause)"
+check_eq "2D.6: parked_until persisted"   "2026-08-28T04:00:00Z" "$(day_get parked_until)"
+check_eq "2D.6: kind persisted"           "rolling_window"       "$(day_get limit_kind)"
+check_eq "2D.6: no probe bound"           "null"                 "$(day_get limit_probe_fires_remaining)"
+check_eq "2D.6: thrash counter written"   "1"                    "$(day_get consecutive_limit_hits)"
+check_eq "2D.6: wake id starts null"      "null"                 "$(day_get limit_resume_task_id)"
+check_eq "2D.6: refill.paused untouched"  "null" "$(jq -r --arg k "$REPO_KEY" '.repos[$k].refill // "null"' "$STATE_FILE")"
+
+# A pre-emptive park already holds the slot AND has armed its wake. The reactive
+# path must adopt it: no overwrite of the timestamp, the cause, the probe bound
+# or the counter, and — the #1622 point — no nulling of the live wake identity.
+jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {parked_until: "2026-08-28T09:00:00Z",
+  limit_kind: "rolling_window", limit_cause: "preemptive", limit_probe_fires_remaining: 12,
+  limit_resume_task_id: "probe-task", limit_resume_generation: "probe-gen-1",
+  consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
+check_eq "2D.6: adopts an existing park" "PARK_CLAIM=adopted" "$(run_2d6 3 | tail -1)"
+check_eq "adopted: cause survives"          "preemptive"           "$(day_get limit_cause)"
+check_eq "adopted: parked_until survives"   "2026-08-28T09:00:00Z" "$(day_get parked_until)"
+check_eq "adopted: probe bound survives"    "12"                   "$(day_get limit_probe_fires_remaining)"
+check_eq "adopted: thrash counter survives" "2"                    "$(day_get consecutive_limit_hits)"
+check_eq "adopted: the live wake is NOT stranded" "probe-task"     "$(day_get limit_resume_task_id)"
+check_eq "adopted: its generation survives too"   "probe-gen-1"    "$(day_get limit_resume_generation)"
+
+# An unset/garbage NEW_HITS is fail-closed, not a park with an empty counter:
+# writing "" there would be coerced back to a reset streak on the next read, so
+# MAX_LIMIT_HITS could never bite.
+seed_day_state
+check_eq "2D.6: a non-numeric NEW_HITS fails closed" "PARK_CLAIM=error rc=hits" "$(run_2d6 '' | tail -1)"
+check_eq "hits guard: nothing was claimed" "null" "$(day_get limit_cause)"
+check_eq "hits guard: nothing was parked"  "null" "$(day_get parked_until)"
+
+# An I/O failure is reported as an error, never as a win. A state file that is
+# not writable takes session-state.sh non-zero on something other than 7.
+seed_day_state
+BAD_2D6_OUT=$(SESSION_STATE_SH="$STUB_DIR/does-not-exist.sh" REPO_KEY="$REPO_KEY" \
+  PARKED_UNTIL="2026-08-28T04:00:00Z" LIMIT_KIND="rolling_window" NEW_HITS=1 \
+  bash -c "$BLOCK_2D6" 2>/dev/null | tail -1)
+case "$BAD_2D6_OUT" in
+  "PARK_CLAIM=error rc="*) PASS=$((PASS + 1)); echo "ok   — 2D.6: an unusable helper is an error, not a win ($BAD_2D6_OUT)" ;;
+  *) FAIL=$((FAIL + 1)); echo "FAIL — 2D.6 reported '$BAD_2D6_OUT' when the helper could not run" ;;
+esac
+check_eq "helper failure: nothing was claimed" "null" "$(day_get limit_cause)"
+
+# ---------------------------------------------------------------------------
 echo "== Concurrent park race (AC 4) =="
 # ---------------------------------------------------------------------------
 
@@ -469,11 +532,17 @@ require_text "window knob documented as 0-legal" "$SKILL" '`0` is legal.*reactiv
 require_text "hot-loop rationale is stated"  "$SKILL" 'sleep 0.* hot loop'
 # A wake whose TaskStop failed — or whose registry could not be read — must keep
 # its identity: nulling it strands a ticking Monitor that nothing can name.
-require_text "failed TaskStop aborts the replacement" "$SKILL" 'aborts the replacement'
-require_text "abort is carried by a flag, not a top-level return" "$SKILL" 'ADOPT_ABORT'
+# #1622 replaced 2D.6's TaskStop-then-overwrite guard with the same cause CAS
+# 2D.7 and the subagent leg use. Assert the NEW shape, and refute the old one —
+# a presence-only check would still pass if the override sentence came back.
+require_text "2D.6 claims the slot by compare-and-set" "$SKILL" \
+  '\-\-cas .*day\.limit_cause=.*reactive.* \-\-expect null'
+require_text "2D.6 adopts on a lost claim" "$SKILL" 'PARK_CLAIM=adopted'
+require_text "2D.6 states why the identity nulls are safe" "$SKILL" 'safe no-op'
+refute_text "the TaskStop-first override is gone" "$SKILL" 'ADOPT_ABORT'
 require_text "known reset arms the one-shot instead" "$SKILL" "arm 2D\.6's sleep-until-reset one-shot verbatim"
 require_text "reactive path tags its cause"       "$SKILL" 'day\.limit_cause=..reactive'
-require_text "reactive path adopts a live wake"   "$SKILL" 'Stop it BEFORE the write nulls its ID'
+refute_text "reactive path no longer stops the wake first" "$SKILL" 'Stop it BEFORE the write nulls its ID'
 require_text "recovery re-arms with remaining fires" "$SKILL" 'not a fresh bound'
 # Restart recovery compares parked_until against `date -u +%s`, so its BSD
 # fallback must parse the Z timestamp as UTC. A bare `date -j -f` there reads
@@ -1019,6 +1088,14 @@ if [[ -n "$CTRL_DIR" ]]; then
   check_eq "control: the park record cannot be written without composition" \
     "PARK_RECORD=error rc=2" "$CTRL_RECORD_OUT"
   check_eq "control: and it claimed no cause" "null" "$(day_get limit_cause)"
+
+  seed_day_state
+  CTRL_2D6_OUT=$(SESSION_STATE_SH="$CTRL_SS" REPO_KEY="$REPO_KEY" \
+    PARKED_UNTIL="2026-08-28T04:00:00Z" LIMIT_KIND="rolling_window" NEW_HITS=1 \
+    bash -c "$BLOCK_2D6" 2>/dev/null | tail -1)
+  check_eq "control: the reactive claim cannot be written without composition" \
+    "PARK_CLAIM=error rc=2" "$CTRL_2D6_OUT"
+  check_eq "control: and it claimed no reactive cause" "null" "$(day_get limit_cause)"
 
   seed_day_state
   CTRL_WAKE_OUT=$(SESSION_STATE_SH="$CTRL_SS" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \

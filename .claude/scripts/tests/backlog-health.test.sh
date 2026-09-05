@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for backlog-health.sh (issue #598).
+# catalog: tests — Tests for `backlog-health.sh`
 # Stubs `gh` with fixture JSON. backlog-health.sh shells out to the real
 # backlog-staleness.sh, so this test exercises that composition end-to-end
 # rather than mocking it out — both scripts share the same gh stub.

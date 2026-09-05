@@ -1,19 +1,20 @@
 # Tests
 
+<!-- catalog:category id=tests order=130 -->
+<!-- catalog:covers Every test under `tests/`, all offline (no network required) -->
+
 All tests live in `tests/` and run offline (no network required). Run from the repo root:
 `bash .claude/scripts/tests/<name>.test.sh`
 
-Rows are kept in `LC_ALL=C sort` order — byte order, not dictionary order, so
-`overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
-0x2D, `.` is 0x2E). The marker below opts this doc into the ordering check in
-`.github/scripts/scripts-catalog-lint.sh` (#1544). The sibling category docs
-group their rows by workflow role instead, carry no marker, and are not checked
-for order.
-
-<!-- catalog-lint: ordered -->
+Rows are generated in `LC_ALL=C sort` order — byte order, not dictionary order,
+so `overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
+0x2D, `.` is 0x2E). Every category doc is ordered the same way now that the rows
+are generated (#1578), which retired the per-doc `<!-- catalog-lint: ordered -->`
+opt-in of issue #1544.
 
 | Test | What it covers |
 |------|----------------|
+<!-- catalog:rows:begin -->
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
@@ -35,6 +36,7 @@ for order.
 | [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
 | [cr-plan.test.sh](../tests/cr-plan.test.sh) | Tests for `cr-plan.sh` |
+| [credit-budget.test.sh](../tests/credit-budget.test.sh) | Tests `credit-budget.sh` and `lib/usage-limit-classify.sh` — the plan-window vs credit-overage classifier matrix, reset-clause parsing and its refusals, plan-window events yielding `ok` with the pre-fix predicate as a negative control (#1633), a genuine overage still yielding `reached`, a reopened window never gating, and the fail-closed paths |
 | [cursor-review-workflow-suppression.test.sh](../tests/cursor-review-workflow-suppression.test.sh) | Tests the one-nudge-per-HEAD guard in `.github/workflows/cursor-review-pr-comment.yml` |
 | [date-r-ordering.test.sh](../tests/date-r-ordering.test.sh) | Pins every shipped `date -r` fallback chain GNU-first (#1587) — a GNU-semantics `date` shim plus an epoch-named decoy file prove each fixed site reads the epoch, not a filename, with per-site negative controls, structural order checks on the already-GNU-first sites, and the deliberate BSD-first negative-control fixture in `overrun-check-tzdata.test.sh` pinned as such |
 | [diff-survival-check.test.sh](../tests/diff-survival-check.test.sh) | Tests for `diff-survival-check.sh` |
@@ -110,6 +112,7 @@ for order.
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
 | [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
 | [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |
+| [session-state-active-agents.test.sh](../tests/session-state-active-agents.test.sh) | Tests the `.active_agents` keyed-map contract in `session-state.sh` — a negative control proving the old whole-value replace loses a sibling thread's entries, concurrent per-key writes that lose none, the array→map migration, and `--remove-agent` (issue #1631) |
 | [session-state-audit.test.sh](../tests/session-state-audit.test.sh) | Tests for `session-state-audit.sh` |
 | [session-state-cas.test.sh](../tests/session-state-cas.test.sh) | Tests `session-state.sh --cas` — compare-and-set success, loss, a distinct exit code, and concurrent writers |
 | [session-state-migration.test.sh](../tests/session-state-migration.test.sh) | Tests the legacy-flat → per-repo migration in `session-state.sh` |
@@ -125,7 +128,7 @@ for order.
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
-| [worktree-isolation-shapes.test.sh](../tests/worktree-isolation-shapes.test.sh) | Tests for `worktree-status.sh` and `wait-until.sh` — the issue #1470 command shapes |
+<!-- catalog:rows:end -->
 
 ## Pointing a merge-gate suite at another checkout
 

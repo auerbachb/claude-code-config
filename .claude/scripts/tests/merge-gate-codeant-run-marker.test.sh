@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-codeant-run-marker.test.sh — Regression tests for issue #1365:
+# catalog: tests — Tests that CodeAnt pre-analysis approval stubs do not score as review coverage in `merge-gate.sh`
 # CodeAnt pre-analysis approval STUBS scored as review coverage.
 #
 # Observed live on auerbachb/still-point PR #676, HEAD bb7d4e2, 2026-08-26.
@@ -96,6 +97,29 @@
 #   (q5) redemption + self_report_mismatch  -> still blocked, flag false
 #   (q6) no structured run record at all    -> nothing to redeem, unchanged
 #   (r)  merge-gate integration             -> gate passes, redemption announced
+#
+# Issue #1632 — two runs on ONE SHA. `run_has_findings_on_head` counted EVERY
+# CodeAnt inline comment on HEAD, not the findings of the run doing the
+# redeeming. So on a SHA where run 1 posted findings that were all
+# declined-with-evidence and RESOLVED (no code change warranted, therefore no new
+# HEAD), the gate's own stated remedy — "comment `@codeant-ai review`" — could
+# not work: run 2 completes with zero new findings, but the earlier comments keep
+# the term true forever. Observed on PR #1612 at da2acd8 and PR #1627 at d4ac833;
+# both fell to Greptile with the stickiness that brings.
+#
+# The inline term is now scoped to the governing run: a comment counts only when
+# its created_at is inside that run's window, or its thread is not known to be
+# resolved. Review-state findings stay SHA-wide.
+#
+#   (s1) run 1 findings resolved, run 2 clean -> redeemed
+#   (s2) run 2 posts a NEW finding            -> blocks
+#   (s2b) run-2 finding already resolved      -> still blocks (window branch)
+#   (s3) a run-1 thread still unresolved      -> blocks
+#   (s4) negative control: the same (s1) fixture with no thread data is the
+#        pre-#1632 payload, and it must still return false — otherwise (s1)
+#        proves nothing. The whole-suite control is
+#        `EVAL_SUT=<origin/main>/review-substance.sh bash "$0"`, under which
+#        (s1) fails; verified 2026-09-04.
 #
 # Every case above whose claim is "the stub is REFUSED" carries a finding on
 # HEAD, so it keeps testing the refusal path rather than sliding onto the
@@ -688,6 +712,189 @@ check_eq "false" "$(r_field "$EV" redeemed_by_clean_run "$CR_BOT")" \
 check_contains "temporal_inversion" "$(r_disq "$EV" "$CR_BOT")" \
   "(q6) and the prose-marker inversion path is unaffected"
 check_eq "false" "$(r_field "$EV" counts_as_coverage "$CR_BOT")" "(q6) still not coverage"
+
+# --------------------------------------------------------------------------
+# (s) Issue #1632 — per-run scoping of the inline-comment findings term.
+#
+#     One SHA, two completed runs. Run 1 (16:16:40 -> 16:19:51) posted two
+#     inline findings; both were answered and their threads RESOLVED, so no new
+#     commit exists. Run 2 (16:25:00 -> 16:27:00) was the "@codeant-ai review"
+#     re-run and came back clean, posting nothing. The governing marker is run 2
+#     (max_by([done not, started])), and the approval predates both.
+# --------------------------------------------------------------------------
+
+# An inline finding on HEAD carrying the REST id and created_at the window and
+# resolution tests read. commit_id AND original_commit_id are HEAD so it is not
+# excluded by the (q4) repointing filter.
+inline_finding() { # id created_at
+  jq -cn --arg login "$CA" --arg sha "$HEAD_SHA" --argjson id "$1" --arg at "$2" '
+    {id: $id, user: {login: $login, type: "Bot"},
+     commit_id: $sha, original_commit_id: $sha,
+     created_at: $at, updated_at: $at,
+     body: "This early return leaves the advisory lock held; release it first."}'
+}
+
+# evidence() with the issue #1632 key added. Kept separate rather than folded
+# into evidence() so every existing case keeps exercising the ABSENT-key path,
+# which is the compatibility contract this feature rests on.
+evidence_res() { # reviews_json issue_comments_json pr_comments_json resolved_ids_json
+  jq -cn --arg sha "$HEAD_SHA" --arg push "$PUSH_TS" \
+     --argjson reviews "$1" --argjson convo "$2" --argjson inline "$3" \
+     --argjson resolved "$4" \
+     '{head_sha:$sha, push_ts:$push, reviews:$reviews,
+       pr_comments:$inline, issue_comments:$convo,
+       resolved_comment_ids:$resolved}' \
+    | "$EVAL_SUT" 2>/dev/null
+}
+
+S_ROWS="[$(run_row "$HEAD_SHA" true "$STARTED2" "$FINISHED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+S_STATUS="[$(status_comment_rows "$S_ROWS")]"
+S_APPROVAL="[$(approval "$CA" "2026-08-26T16:16:13Z")]"
+# Inside run 1's window (16:16:40 -> 16:19:51), outside run 2's.
+S_RUN1_FINDINGS="[$(inline_finding 901 "2026-08-26T16:17:00Z"),$(inline_finding 902 "2026-08-26T16:18:00Z")]"
+
+# (s1) Both run-1 findings resolved, run 2 clean -> the re-run redeems the stub.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "false" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s1) resolved findings from an EARLIER run on this SHA are not this run's findings"
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s1) so the later clean run redeems the pre-run approval"
+check_eq "true" "$(r_field "$EV" counts_as_coverage)" "(s1) and the approval counts as coverage"
+check_eq "true" "$(r_field "$EV" pre_run_approval)" \
+  "(s1) the ordering violation is still recorded — redeemed, not erased"
+check_eq "2" "$(r_field "$EV" inline_comments_on_head)" \
+  "(s1) the comments are still COUNTED and reported; only the findings term changed"
+check_eq "" "$(r_disq "$EV")" "(s1) nothing left in disqualified_by"
+
+# (s2) Run 2 posts a NEW finding on the same SHA -> nothing to redeem.
+S_RUN2_FINDING=$(inline_finding 903 "2026-08-26T16:26:00Z")
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" \
+     "[$(inline_finding 901 "2026-08-26T16:17:00Z"),$(inline_finding 902 "2026-08-26T16:18:00Z"),$S_RUN2_FINDING]" \
+     "[901,902]")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s2) a finding posted inside the governing run's window counts"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s2) and blocks the redemption"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(s2) the stub stays refused"
+
+# (s2b) Same, but the run-2 finding's thread was resolved too. The window branch
+#       is a disjunct, not a fallback: a finding THIS run produced counts however
+#       quickly it was closed out. Without this, "resolve the thread" would be a
+#       one-step laundering of a live finding.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" \
+     "[$(inline_finding 901 "2026-08-26T16:17:00Z"),$S_RUN2_FINDING]" "[901,903]")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s2b) resolving a finding the governing run itself posted does not launder it"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s2b) redemption still refused"
+
+# (s3) One run-1 thread is still UNRESOLVED -> blocks, whatever run posted it.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" "[901]")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s3) an unresolved earlier-run thread still counts as an open finding"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s3) and blocks the redemption"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(s3) the stub stays refused"
+
+# (s4) NEGATIVE CONTROL. The identical (s1) fixture with the key absent is the
+#      pre-#1632 payload — every inline comment reads as unresolved — and it must
+#      still refuse. If this ever passes as redeemed, (s1) is vacuous: the
+#      redemption would be coming from the window test alone rather than from the
+#      resolution data, and every caller that supplies no thread data would have
+#      silently changed verdict.
+EV=$(evidence "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s4) negative control: with no thread data every HEAD inline comment still counts"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s4) negative control: and the pre-#1632 payload still refuses redemption"
+# Same, spelled as an explicit empty array rather than an absent key.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" "[]")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s4) negative control: an explicit empty resolved set behaves identically"
+# And ids may arrive as strings — both sides are stringified before the compare.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" '["901","902"]')
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s4) string-spelled ids match the numeric REST ids"
+
+# (s5) MALFORMED run timestamps. Every timestamp compare in this module is
+#      lexicographic, so a non-timestamp `started` does not fail loudly — it
+#      sorts. Pre-fix, "zz" canonicalised to "zzZ", which every real timestamp
+#      sorts before, and the (s1) fixture was redeemed from a run record that
+#      never described a run: $pre_run read the approval as predating it, and the
+#      window disjunct matched nothing, withdrawing the (s2b) anti-laundering
+#      term. An unusable record must leave the reviewer where an absent one does.
+#      The malformed row is the SOLE marker, so it is unambiguously the one
+#      governing the verdict — nothing else can be quietly doing the work.
+S_STATUS_BAD_START="[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "zz" "$FINISHED2")]")]"
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS_BAD_START" "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "" "$(r_field "$EV" run_started_at)" \
+  "(s5) a malformed started is blanked, not canonicalised into a sortable string"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s5) and an unusable run record redeems nothing, even with every thread resolved"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" \
+  "(s5) so the stub is not coverage"
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(s5) a record that cannot place the approval inside its own run still blocks"
+
+# (s5a) The same fixture ALONGSIDE a well-formed earlier run. max_by ranks the
+#       blanked `started` first, so the well-formed run 1 governs and its own
+#       window catches findings 901/902 — refused on the ordinary (s2b) ground.
+#       Pins that demoting the garbage row does not hand the verdict to nobody.
+S_ROWS_BAD_START="[$(run_row "$HEAD_SHA" true "zz" "$FINISHED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+EV=$(evidence_res "$S_APPROVAL" "[$(status_comment_rows "$S_ROWS_BAD_START")]" \
+     "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "2026-08-26T16:16:40Z" "$(r_field "$EV" run_started_at)" \
+  "(s5a) the well-formed run governs once the garbage row is demoted"
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s5a) and its own window still counts the findings it posted"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s5a) redemption refused"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(s5a) the stub stays refused"
+
+# (s5b) A malformed `finished` only ever opens the window wider, which counts
+#       MORE comments as findings — the withholding direction. The run-2 finding
+#       is still caught, so redemption stays refused.
+S_ROWS_BAD_FIN="[$(run_row "$HEAD_SHA" true "$STARTED2" "nope"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+EV=$(evidence_res "$S_APPROVAL" "[$(status_comment_rows "$S_ROWS_BAD_FIN")]" \
+     "[$(inline_finding 901 "2026-08-26T16:17:00Z"),$(inline_finding 903 "2026-08-26T16:26:00Z")]" \
+     "[901,903]")
+check_eq "" "$(r_field "$EV" run_finished_at)" \
+  "(s5b) a malformed finished is blanked too"
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s5b) leaving the window open-ended, which counts more findings, never fewer"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s5b) redemption refused"
+
+# (s5c) POSITIVE CONTROL for (s5): the identical fixture with a well-formed
+#       `started` is (s1), which redeems. Without this, (s5) would pass just as
+#       well if the validation rejected every timestamp and killed the feature.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s5c) positive control: a well-formed marker still redeems — the check rejects garbage, not timestamps"
+
+# (s5d) Zone and seconds variants that CodeAnt or a future payload could legally
+#       emit must survive the check. A false reject here would strand a genuine
+#       clean run behind the same deadlock #1432 exists to clear.
+for _ts in "2026-08-26T16:25:00.500000" "2026-08-26T16:25:00Z" "2026-08-26T16:25:00+00:00" "2026-08-26T16:25:00+0000" "2026-08-26T16:25"; do
+  EV=$(evidence_res "$S_APPROVAL" \
+       "[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "$_ts" "$FINISHED2")]")]" \
+       "$S_RUN1_FINDINGS" "[901,902]")
+  check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+    "(s5d) a well-formed marker spelled '$_ts' is accepted"
+done
+
+# (s5e) NON-UTC offsets are rejected rather than accepted-and-mis-sorted. These
+#       values are compared lexicographically against Z-spelled review timestamps,
+#       so "…T16:25:00+05:00" sorts BEFORE "…T16:20:00Z" ("+" < "Z") — the
+#       opposite of how the instants actually run. canon_ts already folds the zero
+#       offsets onto Z, so nothing legitimate is lost; a real offset becomes
+#       ts_unusable and blocks.
+for _ts in "2026-08-26T16:25:00+05:00" "2026-08-26T16:25:00-08:00" "2026-08-26T16:25:00+0530"; do
+  EV=$(evidence_res "$S_APPROVAL" \
+       "[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "$_ts" "$FINISHED2")]")]" \
+       "$S_RUN1_FINDINGS" "[901,902]")
+  check_eq "" "$(r_field "$EV" run_started_at)" \
+    "(s5e) a non-UTC offset '$_ts' is not left to sort against Z-spelled timestamps"
+  check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+    "(s5e) and '$_ts' redeems nothing"
+  check_contains "pre_run_approval" "$(r_disq "$EV")" \
+    "(s5e) '$_ts' blocks as an unusable record"
+done
 
 # --------------------------------------------------------------------------
 # (h)/(i) merge-gate.sh integration: the verdict has to reach the gate, and the

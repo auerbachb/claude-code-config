@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # bugbot-refused-head.sh — has BugBot refused THIS HEAD for a Cursor usage/spend limit?
+# catalog: review-escalation — One shared answer for every `@cursor review` trigger path: has BugBot already refused this HEAD for a Cursor usage/spend limit?
 #
 # PURPOSE
 #   One shared answer for every `@cursor review` trigger path. BugBot is metered

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for model-fleet.sh (issue #770).
+# catalog: tests — Tests for `model-fleet.sh`
 #
 # Fully hermetic: every case points the resolver at a temp fixture via --file,
 # so nothing here depends on what .claude/model-fleet.json currently says. The

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # portable-handoff-context.sh — bounded, secret-free facts shared by /end and automatic checkpoint handoffs.
+# catalog: utilities — Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/end`
 
 set -uo pipefail
 

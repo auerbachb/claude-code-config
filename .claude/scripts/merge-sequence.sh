@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-sequence.sh — Overlap-aware merge dispatch planner (issue #756).
+# catalog: merge-gate-sequencing — Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet
 #
 # PURPOSE
 #   Merge order is first-ready-first-merged by default, blind to file overlap.

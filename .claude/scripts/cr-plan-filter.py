@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# catalog: utilities — Substantive-plan filter for CodeRabbit issue comments (called by `cr-plan.sh`)
 """Substantive-plan filter for CodeRabbit issue comments (issue #541).
 
 Reads `gh issue view <N> --json comments` JSON on stdin and prints the body

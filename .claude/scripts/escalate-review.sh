@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # escalate-review.sh — Deterministic CR→BugBot→Greptile escalation verdict.
+# catalog: review-escalation — Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help`
 #
 # PURPOSE
 #   Implements the per-cycle reviewer escalation gate documented in
@@ -265,12 +266,28 @@ if [[ "$PRIMARY_REVIEW_MET" == "true" ]]; then
       EVALUATOR_UNUSABLE=true
       echo "escalate-review.sh: review-substance.sh not found or not executable at $REVIEW_SUBSTANCE_SH — cannot verify that the APPROVED on HEAD represents a real review; not reporting gate_met (issue #875)" >&2
     else
+      # resolved_comment_ids (issue #1632) is derived from the SAME state file —
+      # pr-state.sh already requests `databaseId` on every review-thread comment,
+      # so this costs no extra API call. It must be supplied here for the same
+      # reason the freshness parity suite exists: merge-gate.sh passes it, and an
+      # evaluator fed a poorer payload here would refuse a redemption the gate
+      # grants, sending a green PR to a PAID Greptile escalation.
+      #
+      # pr-state.sh projects `comments(first: 10)` per thread, so a thread longer
+      # than that contributes only its first ten ids. That degrades in the safe
+      # direction: an id we do not see reads as unresolved and still counts as a
+      # finding, and the FINDING itself is a thread's first comment.
       SUBSTANCE_RAW="$(jq -c --arg sha "$HEAD_SHA" --arg push "$HEAD_COMMIT_TS" '{
           head_sha: $sha,
           push_ts: $push,
           reviews: (.comments.reviews // []),
           pr_comments: (.comments.inline // []),
-          issue_comments: (.comments.conversation // [])
+          issue_comments: (.comments.conversation // []),
+          resolved_comment_ids: [ (.threads.all // [])[]
+                                  | select(.isResolved == true)
+                                  | (.comments.nodes // [])[]
+                                  | .databaseId
+                                  | select(. != null) ]
         }' "$STATE_PATH" 2>/dev/null | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)"
       # Structure, not just parseability (same test merge-gate.sh applies): the
       # redemption term and the hollow guard both read .reviewers[<login>], and a

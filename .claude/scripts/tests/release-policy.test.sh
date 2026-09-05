@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-policy.test.sh — Offline unit tests for release-policy.sh (issue #1169).
+# catalog: tests — Tests for `release-policy.sh`
 # Stubs `gh` so no network or real repo is touched.
 # Run from repo root: bash .claude/scripts/tests/release-policy.test.sh
 set -uo pipefail

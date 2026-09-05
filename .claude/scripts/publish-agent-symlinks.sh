@@ -1,5 +1,6 @@
 #!/bin/bash
 # publish-agent-symlinks.sh — Publish ~/.claude/agents/ symlinks from the skills worktree
+# catalog: trust-worktree-repo — Publish the `~/.claude/agents/` symlinks from the skills worktree; idempotent, re-run on every session start
 #
 # Extracted from setup-skills-worktree.sh Step 5b (issue #1197) so that
 # session-start-sync.sh can run the same idempotent publish on every session

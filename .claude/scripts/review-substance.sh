@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # review-substance.sh — Decide whether a bot's APPROVED review on a SHA
 # represents an actual review, or is a hollow rubber stamp (issue #875).
+# catalog: merge-gate-sequencing — Decide whether a bot's `APPROVED` on a SHA is real review coverage or a hollow rubber stamp
 #
 # `merge-gate.sh` used to count ANY bot APPROVED whose commit_id matched HEAD as
 # review coverage. Across the 2026-07-30/08-01 sessions those approvals were
@@ -65,8 +66,17 @@
 #     "push_ts":         "2026-07-31T…Z",  # optional; HEAD committer date
 #     "reviews":         [ … ],            # pulls/{N}/reviews
 #     "pr_comments":     [ … ],            # pulls/{N}/comments  (inline diff)
-#     "issue_comments":  [ … ]             # issues/{N}/comments (conversation)
+#     "issue_comments":  [ … ],            # issues/{N}/comments (conversation)
+#     "resolved_comment_ids": [ 123, … ]   # optional; REST ids of inline
+#                                          # comments whose review thread is
+#                                          # resolved (GraphQL databaseId)
 #   }
+#
+# `resolved_comment_ids` is OPTIONAL and defaults to []. Omitting it reproduces
+# the pre-#1632 behaviour exactly: an id absent from the set reads as "thread
+# unresolved or unknown", which still counts as a finding. Only callers holding
+# the GraphQL reviewThreads data supply it (merge-gate.sh; escalate-review.sh
+# via pr-state.sh, which already fetches comment databaseId).
 #
 # Output (stdout, one JSON object):
 #   {
@@ -116,13 +126,35 @@
 #                             APPROVED does not sit inside that run: the run is
 #                             not `done`, or submitted_at < run_started_at.
 #                             Reported raw — it stays true when redeemed.
-#   run_has_findings_on_head  that reviewer left a non-APPROVED review or an
-#                             inline comment on HEAD. Read by PRESENCE on the
-#                             commit_id-scoped indexes, never by ordering
-#                             against the run window: CodeAnt freezes
-#                             submitted_at on in-place edits (#876), so a
-#                             timestamp test cannot fire for the reviewer this
-#                             term exists to judge.
+#   run_has_findings_on_head  that reviewer left a non-APPROVED review or a
+#                             BLOCKING inline comment on HEAD.
+#
+#                             Review-state findings stay SHA-wide, read by
+#                             PRESENCE on the commit_id-scoped index and never by
+#                             ordering a review object against the run window:
+#                             CodeAnt freezes submitted_at on in-place edits
+#                             (#876), so a timestamp test on a REVIEW cannot fire
+#                             for the reviewer this term exists to judge.
+#
+#                             The INLINE-comment term is scoped to the governing
+#                             run (issue #1632). An inline comment on HEAD counts
+#                             only when its created_at falls inside that run"s
+#                             started->finished window, OR its thread is still
+#                             unresolved (or its resolution is unknown, which is
+#                             the default). A finding an EARLIER run posted on
+#                             this same SHA that was then declined-with-evidence
+#                             and RESOLVED is therefore not carried into a later
+#                             clean run"s verdict — otherwise the gate"s own
+#                             stated remedy ("comment @codeant-ai review") could
+#                             never redeem a hollow approval, because a re-run
+#                             that finds nothing posts nothing new (observed on
+#                             PR #1612 at da2acd8 and PR #1627 at d4ac833, both
+#                             forced down to Greptile). created_at is safe here
+#                             where submitted_at is not: it is the posting time
+#                             of a distinct comment object, not a PATCHed-in-place
+#                             verdict. With no governing run marker the window
+#                             test cannot apply and every HEAD inline comment
+#                             counts, exactly as before.
 #   redeemed_by_clean_run     the ONE narrow exception to "pre_run_approval is
 #                             not suppressed by external evidence" (issue
 #                             #1432). True when pre_run_approval holds AND the
@@ -343,11 +375,56 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # gap only holds under that reading), so canonicalise onto the same spelling
   # and let one lexicographic rule cover both sides. A marker that already
   # carries a zone is left alone rather than double-suffixed.
+  #
+  # A value that is not a timestamp at all yields "" rather than a canonicalised
+  # nonsense string (CodeRabbit review of this PR). Every consumer compares these
+  # LEXICOGRAPHICALLY, so garbage does not fail loudly — it sorts. `started: "zz"`
+  # canonicalised to "zzZ", which every real timestamp sorts before, and that
+  # silently inverted two guards at once: `$pre_run` read every approval as
+  # predating the run, and the issue #1632 window disjunct matched nothing, which
+  # withdrew the anti-laundering term that makes resolving a finding the governing
+  # run itself posted fail to launder it. Redemption was then granted off a run
+  # record that never described a real run.
+  #
+  # Blanking is the conservative repair. It does TWO separate things, and the
+  # distinction matters (CodeRabbit CLI review of this PR):
+  #
+  #   * The blank itself lands on a degrade path the module already documents
+  #     rather than inventing one — "" is exactly the "done run with no parseable
+  #     `started`" shape $pre_run handles at its `started == ""` branch, and it
+  #     also drops the row to the bottom of run_marker_head"s max_by, so a
+  #     well-formed sibling run governs instead of the garbage one.
+  #   * Blanking ALONE would then be too permissive, because a sole garbage row
+  #     would stop pre_run_approval from firing at all. So run_markers carries a
+  #     separate `ts_unusable` flag for a field that was SUPPLIED but unreadable,
+  #     as opposed to omitted, and $pre_run treats that as true while
+  #     $redeem_shape bars it outright — the rule stated below at $redeem_shape,
+  #     that an absent or unparseable run record never redeems.
+  #
+  # Blanking rather than DROPPING the row is deliberate: dropping would take an
+  # in-flight ($runmark.done false) record with a malformed `started` out of
+  # $runmark entirely, turning a blocking in-flight verdict into no verdict at
+  # all, which is the permissive direction. A blanked `finished` likewise leaves
+  # the window open-ended, which only ever counts MORE comments as findings.
+  # Pinned by (s5)/(s5a)/(s5b).
+  #
+  # The accepted terminator is `Z` ONLY, and that is a correctness requirement,
+  # not fussiness (CodeRabbit CLI review of this PR). These values are compared
+  # lexicographically against `Z`-spelled review timestamps and ordered by max_by,
+  # so a real non-UTC offset would be silently mis-ordered — "…T16:25:00+05:00"
+  # sorts BEFORE "…T16:20:00Z" because "+" < "Z", not after it, as the instants
+  # actually run. canon_ts has already folded the only zero offsets observed in
+  # the wild (`+00:00`, `+0000`) onto `Z`, and CodeAnt writes naive UTC, so no
+  # legitimate payload is rejected; a genuinely offset-bearing one becomes
+  # ts_unusable and blocks rather than sorting wrongly. Seconds stay optional so
+  # the check rejects garbage rather than narrowing the shapes actually observed.
   def canon_marker_ts:
     (. // "") | tostring
     | if . == "" then ""
       else canon_ts
-           | if test("(Z|[+-][0-9]{2}:?[0-9]{2})$") then . else . + "Z" end
+           | (if test("(Z|[+-][0-9]{2}:?[0-9]{2})$") then . else . + "Z" end)
+           | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?Z$")
+             then . else "" end
       end;
 
   (.head_sha // "" | ascii_downcase)  as $sha
@@ -355,6 +432,12 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   | (.reviews // [])                  as $reviews
   | (.pr_comments // [])              as $inline
   | (.issue_comments // [])           as $convo
+  # Issue #1632. Optional; see the input-schema note in the header. Built as a
+  # lookup OBJECT rather than kept as an array so the membership test below is
+  # O(1) per inline comment instead of O(threads). Ids are stringified on both
+  # sides so a JSON number and its string spelling cannot silently miss.
+  | ( (.resolved_comment_ids // []) | map(tostring)
+      | reduce .[] as $rid ({}; .[$rid] = true) )    as $resolved_ids
   | ($reviewers | split(",") | map(select(length > 0)))     as $approvers
   | ($corroborators | split(",") | map(select(length > 0))) as $others
 
@@ -655,7 +738,18 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               label:    ((.label // "") | tostring),
               started:  (.started  | canon_marker_ts),
               finished: (.finished | canon_marker_ts),
-              done:     (.done == true) }
+              done:     (.done == true),
+              # A field the bot SUPPLIED but that is not a timestamp, as opposed
+              # to one it simply omitted. canon_marker_ts blanks both, and the
+              # two must not be conflated: an omitted `started` is the documented
+              # pre-#1365 degrade ("judge the reviewer as before"), while a
+              # supplied-but-garbage one is a record actively claiming something
+              # unreadable, which cannot vouch for anything. Carried as its own
+              # flag so $pre_run and $redeem_shape can each say so explicitly
+              # rather than inferring it from an empty string.
+              ts_unusable:
+                (((((.started  // "") | tostring) != "") and ((.started  | canon_marker_ts) == ""))
+                 or ((((.finished // "") | tostring) != "") and ((.finished | canon_marker_ts) == ""))) }
           | select(.commit != "") ];
 
     # ---- Conversation index: one pass, all regex work done here -------------
@@ -788,7 +882,15 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
           | select(((.commit_id // "") | ascii_downcase) == $sha)
           | select((((.original_commit_id // .commit_id) // "") | ascii_downcase) == $sha)
           | { login: (.user.login // ""),
-              ts: (((.updated_at // .created_at) // "") | canon_ts) } ] ) as $iidx
+              ts: (((.updated_at // .created_at) // "") | canon_ts),
+              # created_at (NOT updated_at) is the run-window dimension: the
+              # question is which run POSTED this comment, and an edit made
+              # afterwards must not move it into a later run"s window.
+              created: (((.created_at // .updated_at) // "") | canon_ts),
+              # REST comment id, stringified to match $resolved_ids. Missing
+              # ("") can never be in the set, so it reads as unresolved and
+              # still counts — the conservative direction.
+              cid: (((.id // "") | tostring)) } ] ) as $iidx
 
     # ---- Latest review per login on HEAD -----------------------------------
     | ( [ $reviews[]?
@@ -1046,20 +1148,54 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # Degrades rather than blocks when the record is unusable: no marker for
         # HEAD, or a done run with no parseable `started`, yields false and the
         # reviewer is judged exactly as it was pre-#1365.
+        # ts_unusable is checked BEFORE done: a record whose own timestamps are
+        # unreadable cannot place the approval inside or outside it, and the
+        # conservative reading of an unprovable ordering is the blocking one.
+        # It is NOT folded into the `started == ""` branch below, which stays
+        # the pre-#1365 degrade for a field the bot never supplied.
         | ( if ($ap == null or $runmark == null or $ap_ts == "") then false
+            elif ($runmark.ts_unusable == true) then true
             elif ($runmark.done | not) then true
             elif ($runmark.started == "") then false
             else ($ap_ts < $runmark.started)
             end )                                                          as $pre_run
 
-        # Did this reviewer produce FINDINGS on HEAD? Detected by commit_id-scoped
-        # PRESENCE alone — never by ordering a finding against the run window.
-        # $ridx and $iidx are already filtered to HEAD, so a non-APPROVED review
-        # or an inline comment anchored here can only have come from a run on
-        # this commit. A submitted_at comparison would be worse than imprecise:
-        # CodeAnt PATCHes its review objects in place and never refreshes
-        # submitted_at (#876), so the timestamps of the very reviewer this term
-        # exists to judge are frozen and unorderable.
+        # Did this reviewer produce FINDINGS on HEAD, from the run that is being
+        # judged? $ridx and $iidx are already filtered to HEAD, so anything on
+        # either index came from a run on this commit — but a SHA can hold more
+        # than one run, and issue #1632 is the case where it does.
+        #
+        # REVIEW-STATE findings stay SHA-wide, detected by PRESENCE alone and
+        # never by ordering a review object against the run window. A
+        # submitted_at comparison there would be worse than imprecise: CodeAnt
+        # PATCHes its review objects in place and never refreshes submitted_at
+        # (#876), so the timestamps of the very reviewer this term exists to
+        # judge are frozen and unorderable. A lingering non-APPROVED review
+        # therefore still blocks redemption, unconditionally.
+        #
+        # INLINE-comment findings are scoped to the governing run (issue #1632).
+        # An inline comment counts when EITHER its created_at falls inside
+        # $runmark"s started->finished window, OR its thread is not known to be
+        # resolved. It is excluded only when it is BOTH outside the window AND
+        # resolved — i.e. a finding an earlier run on this same SHA posted, that
+        # was answered and closed out. Without that scoping the gate"s own
+        # documented remedy is unreachable: a re-run triggered by
+        # "@codeant-ai review" that finds nothing posts nothing new, so the
+        # earlier comments keep run_has_findings_on_head true forever and no
+        # clean run can ever redeem the stub (PR #1612 at da2acd8, PR #1627 at
+        # d4ac833 — both fell to Greptile with the stickiness that brings).
+        #
+        # created_at is a legitimate ordering dimension here where submitted_at
+        # is not: it stamps a distinct comment OBJECT at the moment it was
+        # posted, rather than a verdict the bot rewrites in place. And the
+        # window test can only ever ADD findings — an unresolved thread counts
+        # regardless — so a bot that did freeze a comment timestamp lands on the
+        # resolution branch, not on a false clean.
+        #
+        # $resolved_ids defaults to {} for callers that pass no thread data, and
+        # an empty set makes every inline comment unresolved, which reproduces
+        # the pre-#1632 "any inline comment counts" behaviour byte for byte.
+        # With $runmark null there is no window to test and the same holds.
         #
         # Deliberately NOT filtered through fresh_review, unlike
         # $other_review_len. A COMMENTED review that GitHub re-pointed onto HEAD
@@ -1083,7 +1219,25 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
                 | select(.login == $login
                          and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")) ]
               | length) > 0)
-            or (($inl | length) > 0) )                                     as $run_has_findings
+            or (([ $inl[]
+                   | select(
+                       # No governing run record: the window test cannot apply,
+                       # so every HEAD inline comment counts (pre-#1632 rule).
+                       ($runmark == null)
+                       # Posted by the governing run itself. $runmark.started /
+                       # .finished are already canonicalised onto the `Z`
+                       # spelling by canon_marker_ts at parse time, so these are
+                       # like-for-like string compares. A run still in flight
+                       # carries an empty `finished`, which leaves the window
+                       # open-ended rather than empty.
+                       or ((($runmark.started // "") != "") and (.created != "")
+                           and (.created >= $runmark.started)
+                           and ((($runmark.finished // "") == "")
+                                or (.created <= $runmark.finished)))
+                       # Not known to be resolved — unresolved, or the caller
+                       # supplied no thread data for it.
+                       or (($resolved_ids[.cid] // false) | not)) ]
+                 | length) > 0) )                                          as $run_has_findings
 
         # Redemption of a pre-run approval (issue #1432) — the one narrow
         # exception to "$pre_run is not suppressed by external evidence".
@@ -1112,6 +1266,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # are untouched in the refuse direction.
         | ( $pre_run
             and $runmark != null
+            and ($runmark.ts_unusable != true)
             and ($runmark.done == true)
             and ($run_has_findings | not) )                                as $redeem_shape
 

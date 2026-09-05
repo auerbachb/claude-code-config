@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # handoff-migrate.sh — Migrate flat handoff files to per-repo scoped paths (issue #655).
+# catalog: session-state-locking — One-time migration of flat handoff files to per-repo scoped paths
 #
 # Background
 #   Before issue #655, every handoff file lived at a flat path:
@@ -83,7 +84,8 @@ while [[ $# -gt 0 ]]; do
     --apply)   APPLY=1; shift ;;
     --verbose) VERBOSE=1; shift ;;
     -h|--help)
-      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+      awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+        { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
       exit 0
       ;;
     *) echo "handoff-migrate.sh: unknown argument: $1" >&2; exit 1 ;;

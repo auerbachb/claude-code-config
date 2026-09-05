@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # clean-behind-check.sh — Detect the "clean BEHIND, safe to offer admin-merge" state (issue #631).
+# catalog: merge-gate-sequencing — Decide whether a BEHIND PR is safe for /admin-merge (hunk-level overlap check) vs a rebase
 #
 # When a PR is fully done — review-approved on HEAD, CI green, all threads
 # resolved, AC verified — and the ONLY remaining blocker is a purely mechanical

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # statusline.sh — Render the Claude Code status line: ET time · branch · agents · watchers.
+# catalog: scheduling-monitoring — Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0
 #
 # Implements FU-3 from .claude/reference/token-efficiency-audit-2026-07.md. A
 # status line renders OUTSIDE the model's context window, so everything it shows
@@ -56,7 +57,7 @@
 #
 # Counts come from ~/.claude/session-state.json via `session-state.sh
 # --session-view`:
-#     agents   = .active_agents | length
+#     agents   = .active_agents | length   (a map keyed by agent id, issue #1631)
 #     watchers = (.polling_jobs | length)
 #              + (.prs[] | select(.babysit.active == true) | count)
 #              + (1 when .pmm_active == true)
@@ -203,8 +204,16 @@ if [[ -x "$SESSION_STATE_SH" ]]; then
   if [[ -n "$STATE_VIEW" ]]; then
     COUNTS=$(printf '%s' "$STATE_VIEW" | jq -r '
       def arrlen($v): if ($v | type) == "array" then ($v | length) else 0 end;
+      # active_agents is a keyed MAP since issue #1631 (it was an array), so it
+      # gets its own guard rather than arrlen — which returns 0 for an object
+      # and would silently render "no agents" while four were running. The
+      # array branch stays for a state file this session has not written since
+      # the migration; session-state.sh --session-view normally hands us the
+      # migrated shape already.
+      def agentlen($v): ($v | type) as $t
+        | if $t == "object" or $t == "array" then ($v | length) else 0 end;
       [
-        arrlen(.active_agents),
+        agentlen(.active_agents),
         ( arrlen(.polling_jobs)
           + ( if (.prs | type) == "object"
               then [ .prs[] | select((type == "object") and (.babysit?.active == true)) ] | length

@@ -1,5 +1,6 @@
 #!/bin/bash
 # Uninstall the macOS launchd watchdog for Claude heartbeat files.
+# catalog: scheduling-monitoring — Uninstall the macOS launchd silence watchdog
 #
 # macOS-only v1. Linux/systemd support is intentionally out of scope.
 

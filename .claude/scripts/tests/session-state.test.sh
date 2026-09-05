@@ -5,6 +5,7 @@
 # corrupted .active_agents into a literal string). Uses a temporary HOME so
 # it never touches the real ~/.claude/. Requires jq. Run from repo root:
 #   bash .claude/scripts/tests/session-state.test.sh
+# catalog: tests — Tests for `session-state.sh`
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -33,50 +34,68 @@ run() { bash "$SCRIPT" "$@"; }
 reset_state() { rm -f "$STATE_FILE"; }
 
 echo "== Write-time guard: reject the exact ticket reproduction =="
+# `.active_agents` is object-typed since issue #1631 (it was an array), so the
+# ticket's unevaluated-jq-filter value is rejected as a string-for-OBJECT now.
+# The array branch of the same contract is exercised below against
+# `.polling_jobs`, which is still array-typed — the guard is per-field, and
+# dropping the last array-typed case would leave that branch untested.
 reset_state
 OUT=$(run --set '.active_agents=(.active_agents // [] | map(select(.pr_number != 71)))' 2>&1); RC=$?
 check_eq "unevaluated jq filter rejected (exit 4)" "4" "$RC"
-check_eq "error names the field and both types" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$OUT")"
+check_eq "error names the field and both types" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
 echo
-echo "== Write-time guard: accepting a valid array write =="
+echo "== Write-time guard: the array branch still fires (polling_jobs) =="
 reset_state
-run --set '.active_agents=[{"id":"a1","pr":71}]'
+OUT=$(run --set '.polling_jobs=(.polling_jobs // [] | map(select(.id != "x")))' 2>&1); RC=$?
+check_eq "unevaluated jq filter on an array field rejected (exit 4)" "4" "$RC"
+check_eq "error names polling_jobs and both types" "1" "$(grep -c "field '.polling_jobs' would become type 'string' but must be 'array'" <<<"$OUT")"
+run --set '.polling_jobs=[{"id":"j1"}]'
 check_eq "valid array write exits 0" "0" "$?"
-check_eq "active_agents holds the written array" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
-
-echo
-echo "== Write-time guard: rejecting a wrong-type (object) write to an array field =="
-OUT=$(run --set '.active_agents={"oops":true}' 2>&1); RC=$?
+check_eq "polling_jobs holds the written array" '[{"id":"j1"}]' "$(jq -c '.polling_jobs' "$STATE_FILE")"
+OUT=$(run --set '.polling_jobs={"oops":true}' 2>&1); RC=$?
 check_eq "object-for-array rejected (exit 4)" "4" "$RC"
-check_eq "prior valid array data is untouched after the rejected write" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+check_eq "prior valid array data is untouched after the rejected write" '[{"id":"j1"}]' "$(jq -c '.polling_jobs' "$STATE_FILE")"
 
 echo
-echo "== Write-time guard: rejecting a wrong-type (bare scalar string) write to an array field =="
+echo "== Write-time guard: accepting a valid map write to active_agents =="
+reset_state
+run --set '.active_agents={"a1":{"id":"a1","pr":71}}'
+check_eq "valid map write exits 0" "0" "$?"
+check_eq "active_agents holds the written map" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
+
+echo
+echo "== Write-time guard: rejecting a wrong-type (array) write to the map field =="
+OUT=$(run --set '.active_agents=[{"id":"a1"}]' 2>&1); RC=$?
+check_eq "array-for-object rejected (exit 4)" "4" "$RC"
+check_eq "prior valid map data is untouched after the rejected write" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
+
+echo
+echo "== Write-time guard: rejecting a wrong-type (bare scalar string) write to the map field =="
 OUT=$(run --set '.active_agents=notjson' 2>&1); RC=$?
-check_eq "scalar-for-array rejected (exit 4)" "4" "$RC"
-check_eq "prior valid array data is still untouched" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+check_eq "scalar-for-object rejected (exit 4)" "4" "$RC"
+check_eq "prior valid map data is still untouched" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: element/sub-path writes validated against the FINAL field type =="
 reset_state
-run --set '.active_agents=[{"id":"pmm-fix-71","pr":71}]'
-run --set '.active_agents[0].status="done"'
-check_eq "sub-path write on a known array field exits 0" "0" "$?"
-check_eq "sub-path write preserved array-ness and applied the edit" '[{"id":"pmm-fix-71","pr":71,"status":"done"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --set '.active_agents={"pmm-fix-71":{"id":"pmm-fix-71","pr":71}}'
+run --set '.active_agents["pmm-fix-71"].status="done"'
+check_eq "sub-path write on a known map field exits 0" "0" "$?"
+check_eq "sub-path write preserved map-ness and applied the edit" '{"pmm-fix-71":{"id":"pmm-fix-71","pr":71,"status":"done"}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
 reset_state
 OUT=$(run --set '.["active_agents"]=corrupted string value' 2>&1); RC=$?
 check_eq "bracket-notation write rejected (exit 4)" "4" "$RC"
-check_eq "error still names active_agents" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$OUT")"
+check_eq "error still names active_agents" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected bracket-notation write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
-run --set '.["active_agents"]=[{"id":"a1"}]'
-check_eq "valid array write via bracket notation exits 0" "0" "$?"
-check_eq "bracket-notation write applied correctly" '[{"id":"a1"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --set '.["active_agents"]={"a1":{"id":"a1"}}'
+check_eq "valid map write via bracket notation exits 0" "0" "$?"
+check_eq "bracket-notation write applied correctly" '{"a1":{"id":"a1"}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Read-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
@@ -84,8 +103,8 @@ printf '%s\n' '{"active_agents": "corrupted string value"}' > "$STATE_FILE"
 ERR_FILE="$(mktemp)"
 OUT=$(run --get '.["active_agents"]' 2>"$ERR_FILE"); RC=$?
 check_eq "bracket-notation corrupted --get still exits 0" "0" "$RC"
-check_eq "bracket-notation corrupted --get returns the safe default '[]'" "[]" "$OUT"
-check_eq "bracket-notation corrupted --get warns on stderr" "1" "$(grep -c "field '.\[\"active_agents\"\]' is corrupted — expected array but found string" "$ERR_FILE")"
+check_eq "bracket-notation corrupted --get returns the safe default '{}'" "{}" "$OUT"
+check_eq "bracket-notation corrupted --get warns on stderr" "1" "$(grep -c "field '.\[\"active_agents\"\]' is corrupted — expected object but found string" "$ERR_FILE")"
 rm -f "$ERR_FILE"
 
 echo
@@ -205,13 +224,13 @@ check_eq "unknown-field batch write exits 0" "0" "$?"
 check_eq "unknown fields written as given" '{"monitoring_active":true,"some_future_field":"/tmp/foo"}' "$(jq -c '{monitoring_active, some_future_field}' "$STATE_FILE")"
 
 echo
-echo "== Read-time guard: --get on a pre-corrupted known array field =="
+echo "== Read-time guard: --get on a pre-corrupted known map field =="
 printf '%s\n' '{"active_agents": "corrupted string value"}' > "$STATE_FILE"
 ERR_FILE="$(mktemp)"
 OUT=$(run --get '.active_agents' 2>"$ERR_FILE"); RC=$?
 check_eq "corrupted --get still exits 0 (self-healing default, not an error)" "0" "$RC"
-check_eq "corrupted --get returns the safe default '[]'" "[]" "$OUT"
-check_eq "corrupted --get warns on stderr naming the field and types" "1" "$(grep -c "field '.active_agents' is corrupted — expected array but found string" "$ERR_FILE")"
+check_eq "corrupted --get returns the safe default '{}'" "{}" "$OUT"
+check_eq "corrupted --get warns on stderr naming the field and types" "1" "$(grep -c "field '.active_agents' is corrupted — expected object but found string" "$ERR_FILE")"
 rm -f "$ERR_FILE"
 
 echo
@@ -222,14 +241,15 @@ check_eq "absent field --get still exits 0" "0" "$RC"
 check_eq "absent field --get returns literal 'null' (existing caller idiom, unchanged)" "null" "$OUT"
 
 echo
-echo "== Read-time guard: self-healing via the documented read-filter-write pattern =="
+echo "== Removing one agent: --remove-agent, the documented replacement for read-filter-write =="
+# Before issue #1631 this was a --get, a local filter, and a --set of the whole
+# array — two lock windows, so a sibling thread's append between them was lost.
+# The targeted delete is now the only supported way to drop an agent record.
 printf '%s\n' '{"active_agents": [{"id":"pmm-fix-71","pr":71},{"id":"pmm-fix-99","pr":99}]}' > "$STATE_FILE"
-CURRENT_AGENTS=$(run --get '.active_agents' 2>/dev/null || echo null)
-[ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
-FILTERED_AGENTS=$(jq --arg id "pmm-fix-71" '[.[] | select(.id != $id)]' <<<"$CURRENT_AGENTS")
-run --set ".active_agents=$FILTERED_AGENTS"
-check_eq "read-filter-write round trip exits 0" "0" "$?"
-check_eq "read-filter-write round trip removed the targeted entry" '[{"id":"pmm-fix-99","pr":99}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --remove-agent "pmm-fix-71"
+check_eq "--remove-agent exits 0" "0" "$?"
+check_eq "--remove-agent removed the targeted entry and migrated the legacy array" \
+  '{"pmm-fix-99":{"id":"pmm-fix-99","pr":99}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== --session-view: repo-scoped projection of the whole document (issue #687) =="
@@ -333,7 +353,7 @@ echo "== --session-view: empty-but-valid file yields an empty scoped view =="
 printf '%s\n' '{}' > "$STATE_FILE"
 VIEW_EMPTY="$(run --repo org/none --session-view)"
 check_eq "empty file exits 0 with empty prs" "{}" "$(jq -c '.prs' <<<"$VIEW_EMPTY")"
-check_eq "empty file: active_agents defaults to []" "[]" "$(jq -c '.active_agents' <<<"$VIEW_EMPTY")"
+check_eq "empty file: active_agents defaults to {}" "{}" "$(jq -c '.active_agents' <<<"$VIEW_EMPTY")"
 check_eq "empty file: root_repo is null" "null" "$(jq -c '.root_repo' <<<"$VIEW_EMPTY")"
 
 echo
@@ -742,6 +762,136 @@ check_eq "schema tri-state: string pr_nested disables the entry scan outright" "
 sb_run '._field_types.pr_nested = "oops"' --repo test/repo \
   --set '.prs={"999":{"last_cron_action":"bad"}}'
 check_eq "schema tri-state: string pr_nested degrades the whole-map scan too" "0" "$?"
+
+echo
+echo "== --get-json: four stored shapes stay distinct (issue #1629) =="
+# Raw --get is lossy by contract: an absent path, a stored JSON null, and a
+# stored JSON STRING "null" all print the same four characters, and a stored ""
+# prints nothing. Every pause-source reader compares stdout to the literal
+# `null` to mean "absent", so a slot corrupted into the string "null" was read
+# as "nothing parked" — a damaged board reported as an empty one.
+#
+# NEGATIVE CONTROL FIRST: assert the conflation --get really does produce, so
+# the --get-json assertions below are measured against a demonstrated defect
+# rather than an assumed one. These --get rows must keep passing forever: the
+# raw mode is the default and every existing caller depends on it.
+reset_state
+SEED_KEY="test/getjson"
+jq -n --arg k "$SEED_KEY" '{repos: {($k): {
+  jnull: null, snull: "null", empty: "", rec: {"s1":{"active":true}}, num: 7 }}}' \
+  > "$STATE_FILE"
+gj() { run --raw-path --get-json ".repos[\"$SEED_KEY\"].$1"; }
+gr() { run --raw-path --get      ".repos[\"$SEED_KEY\"].$1"; }
+
+check_eq "--get conflates a stored JSON null with absent"       "null" "$(gr jnull)"
+check_eq "--get conflates the STRING \"null\" with absent"      "null" "$(gr snull)"
+check_eq "--get prints nothing for a slot holding \"\""         ""     "$(gr empty)"
+check_eq "--get on a genuinely absent path also prints null"    "null" "$(gr nope)"
+# The defect stated as one assertion: three genuinely different stored values,
+# one indistinguishable output.
+check_eq "--get: absent, JSON null and the string \"null\" are one output" "1" \
+  "$([[ "$(gr nope)" == "$(gr jnull)" && "$(gr jnull)" == "$(gr snull)" ]] && echo 1 || echo 0)"
+
+# --get-json separates them. Fails against the pre-change tree, where the flag
+# is an unknown-flag usage error (exit 2) and every row below reads empty.
+check_eq "--get-json prints bare null for a stored JSON null"   "null"   "$(gj jnull)"
+check_eq "--get-json prints a QUOTED \"null\" for the string"   '"null"' "$(gj snull)"
+check_eq "--get-json prints \"\" for a slot holding the empty string" '""' "$(gj empty)"
+check_eq "--get-json prints bare null for an absent path"       "null"   "$(gj nope)"
+check_eq "--get-json: the string \"null\" is distinct from absent" "1" \
+  "$([[ "$(gj snull)" != "$(gj nope)" ]] && echo 1 || echo 0)"
+check_eq "--get-json: the empty string is distinct from absent"  "1" \
+  "$([[ "$(gj empty)" != "$(gj nope)" ]] && echo 1 || echo 0)"
+# An absent path and a stored JSON null still coincide — as they do in jq
+# itself. The distinction this mode owes its callers is absent-vs-CORRUPT.
+check_eq "--get-json still reads an absent path as the stored JSON null" "1" \
+  "$([[ "$(gj nope)" == "$(gj jnull)" ]] && echo 1 || echo 0)"
+
+# Structured and scalar values keep their JSON form (compact, one line).
+check_eq "--get-json emits compact JSON for an object" '{"s1":{"active":true}}' "$(gj rec)"
+check_eq "--get-json emits a number unquoted"          "7"                      "$(gj num)"
+check_eq "--get still pretty-prints an object (unchanged)" "1" \
+  "$(gr rec | grep -c '"s1": {')"
+
+echo
+echo "== --get-json: exit codes match --get exactly =="
+reset_state
+run --get-json '.anything' >/dev/null 2>&1
+check_eq "missing state file exits 3 (same as --get)" "3" "$?"
+run --get '.anything' >/dev/null 2>&1
+check_eq "…and --get still exits 3 there too" "3" "$?"
+
+printf '%s' '{' > "$STATE_FILE"
+run --get-json '.anything' >/dev/null 2>&1
+check_eq "unparseable state file exits 4 (same as --get)" "4" "$?"
+run --get '.anything' >/dev/null 2>&1
+check_eq "…and --get still exits 4 there too" "4" "$?"
+
+printf '%s' '[1,2]' > "$STATE_FILE"
+run --get-json '.[0]' >/dev/null 2>&1
+check_eq "non-object top-level state file exits 4" "4" "$?"
+
+reset_state
+OUT=$(run --get-json 2>&1); RC=$?
+check_eq "--get-json with no jq path is a usage error (exit 2)" "2" "$RC"
+check_eq "…and the message names --get-json, not --get" "1" \
+  "$(grep -c -- '--get-json requires a jq path' <<<"$OUT")"
+OUT=$(run --get-json '.a' --get-json '.b' 2>&1); RC=$?
+check_eq "--get-json twice is a usage error (exit 2)" "2" "$RC"
+check_eq "…and names --get-json" "1" "$(grep -c -- '--get-json may only be given once' <<<"$OUT")"
+OUT=$(run --get '.a' --get-json '.b' 2>&1); RC=$?
+check_eq "--get + --get-json together is a usage error (exit 2)" "2" "$RC"
+check_eq "…and says they are mutually exclusive" "1" \
+  "$(grep -c -- '--get and --get-json are mutually exclusive' <<<"$OUT")"
+OUT=$(run --get-json '.a' --session-view 2>&1); RC=$?
+check_eq "--get-json + --session-view is a usage error (exit 2)" "2" "$RC"
+OUT=$(run 2>&1); RC=$?
+check_eq "the no-mode usage message advertises --get-json" "1" \
+  "$(grep -c -- '--get-json' <<<"$OUT")"
+
+echo
+echo "== --get-json: shares every --get guard, not a parallel copy =="
+# Repo scoping: an unprefixed .prs path is rewritten into the active repo's
+# scope for --get-json exactly as it is for --get.
+reset_state
+run --repo org/a --set '.prs["84"].phase=B' >/dev/null
+check_eq "--get-json is repo-scoped like --get" '"B"' "$(run --repo org/a --get-json '.prs["84"].phase')"
+check_eq "…and the raw mode still prints it unquoted" "B" "$(run --repo org/a --get '.prs["84"].phase')"
+check_eq "--get-json on another repo's scope reads absent" "null" \
+  "$(run --repo org/b --get-json '.prs["84"].phase')"
+
+# Field-type self-heal (issue #625): a corrupt known top-level field returns a
+# safe default with exit 0 — and that default must be valid JSON in this mode.
+reset_state
+jq -n '{active_agents: "corrupt-string"}' > "$STATE_FILE"
+OUT=$(run --get-json '.active_agents' 2>/dev/null); RC=$?
+check_eq "--get-json inherits the field-type self-heal default" "{}" "$OUT"
+check_eq "…still exiting 0" "0" "$RC"
+check_eq "…and the default parses as JSON" "0" "$(printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; echo $?)"
+
+# Legacy-layout migration runs in memory for both modes.
+reset_state
+jq -n '{prs: {"84": {phase: "A", owner_repo: "org/legacy"}}}' > "$STATE_FILE"
+check_eq "--get-json sees a legacy entry through the in-memory migration" '"A"' \
+  "$(run --repo org/legacy --get-json '.prs["84"].phase')"
+check_eq "…and the read did not rewrite the file" "1" \
+  "$(jq -e 'has("prs")' "$STATE_FILE" >/dev/null && echo 1 || echo 0)"
+
+echo
+echo "== --get-json: the pause-slot shapes the readers must tell apart =="
+# The end-to-end reason this mode exists. Seeded exactly as a damaged pause
+# board looks, read exactly as the three readers now read it.
+reset_state
+PK="org/pause"
+jq -n --arg k "$PK" '{repos: {($k): {pauses: "null"}}}' > "$STATE_FILE"
+SLOT_JSON="$(run --raw-path --get-json ".repos[\"$PK\"].pauses")"
+check_eq "a pauses slot corrupted to the string \"null\" reads as a JSON string" \
+  "string" "$(printf '%s' "$SLOT_JSON" | jq -r 'type')"
+check_eq "…so it is NOT the absent value the readers key on" "1" \
+  "$([[ "$SLOT_JSON" != "null" ]] && echo 1 || echo 0)"
+jq -n --arg k "$PK" '{repos: {($k): {pauses: null}}}' > "$STATE_FILE"
+check_eq "a genuinely absent pauses slot still reads as JSON null" "null" \
+  "$(run --raw-path --get-json ".repos[\"$PK\"].pauses" | jq -r 'type')"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

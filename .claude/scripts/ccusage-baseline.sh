@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ccusage-baseline.sh — Read-only per-repo/per-session spend and usage baseline (issue #781).
+# catalog: token-measurement — Read-only per-session spend baseline via `ccusage`; exits 0 OK / 1 no data / 2 usage error / 3 ccusage missing / 4 invocation error; `--json` for machine output, `--recent` for last 3 days (#781)
 #
 # PURPOSE:
 #   Provides a reproducible, read-only way to capture per-session token spend

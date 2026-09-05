@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # stale-cleanup.test.sh — Offline tests for the invoking-repo scope contract
+# catalog: tests — Tests for `stale-cleanup.sh`
 # (issue #697, contract from issue #687) in stale-cleanup.sh and
 # dirty-main-guard.sh.
 #

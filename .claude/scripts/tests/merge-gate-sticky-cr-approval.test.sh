@@ -2,6 +2,7 @@
 # merge-gate-sticky-cr-approval.test.sh — Regression tests for issue #865:
 # a fresh CR-path APPROVED on the current HEAD SHA satisfies the merge gate
 # even when reviewer == bugbot (sticky). The sticky pointer is NOT changed.
+# catalog: tests — Tests that a fresh CR-path approval on current HEAD satisfies the gate even when the sticky reviewer is BugBot
 #
 # All freshness (#836), retraction (#893), and substance (#875/#876) guards
 # apply on the bypass path — same code paths as the cr) branch, not a copy.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-usage-report.sh — Roll up Skill tool telemetry from ~/.claude/skill-usage.log
+# catalog: skills-telemetry — Read `~/.claude/skill-usage.log` and print usage tables and dead-skill candidates
 #
 # PURPOSE:
 #   Reads ~/.claude/skill-usage.log (append-only, one line per Skill invocation;

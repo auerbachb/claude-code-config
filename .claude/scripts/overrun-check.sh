@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # overrun-check.sh — Per-pipeline planning-bound breach check for the monitor loop.
+# catalog: scheduling-monitoring — Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only
 #
 # PURPOSE
 #   Called once per poll cycle per active PR pipeline. Detects when the elapsed

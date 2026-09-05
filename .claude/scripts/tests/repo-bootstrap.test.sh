@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for repo-bootstrap.sh — file-set check/apply/report behavior.
+# catalog: tests — Tests for `repo-bootstrap.sh` — file-set check/apply/report behavior and the exit-code contract
 #
 # Covers: all files present, one file missing, all files missing,
 # write failure mid-set, --help output, and exit-code contract.

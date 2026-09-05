@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Find existing issues that may already cover a finding — TITLE *and* BODY.
+# catalog: backlog-pm — Score open issues against keywords to find duplicate candidates before filing
 #
 # Usage: issue-dedup.sh <keywords> [options]
 #        issue-dedup.sh --help

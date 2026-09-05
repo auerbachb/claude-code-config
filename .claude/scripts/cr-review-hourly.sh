@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # cr-review-hourly.sh — CodeRabbit account-level hourly review budget + per-PR explicit triggers.
+# catalog: review-escalation — Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count
 #
 # PURPOSE
 #   Tracks consumption against CodeRabbit's ~8 PR reviews/hour (Pro) hidden ceiling and

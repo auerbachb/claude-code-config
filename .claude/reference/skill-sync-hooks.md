@@ -27,6 +27,19 @@ The two sides wait for different lengths of time, because they are bounded by di
 
 A real critical section is milliseconds; both defaults are sized for the contention tail, not the common case. The marker's read is lock-free — a contended session start still surfaces the restart notice — and only the startup *clear* re-takes the lock, for at most 5s.
 
+**Bounded execution.** `state-lock.sh` breaks a lock on *age alone*, with no liveness check, so any lock-held call that stalls past `STALE_AGE` (120s default) invites a second sync to mutate the same worktree concurrently. Every lock-held call on both sides is therefore scheduled against one deadline — the hook's registered `timeout 30`, the job's staleness window — and a call with too little budget left is **declined and recorded** rather than started and killed. A recorded failure keeps the publish guard and the marker-clear guard honest; a kill records nothing, which is the failure these bounds exist to remove. Issue #1593 extended the same treatment to the symlink publishers and the hook's root-repo sync leg, which PR #1553 had left outside the budget. The per-call ceilings, all clamped to what is left of their region:
+
+| Variable | Read by | Default | Bounds |
+|----------|---------|---------|--------|
+| `CLAUDE_CONFIG_SYNC_GIT_BOUND` | `claude-config-sync.sh` | half the staleness window (60s) | one lock-held `fetch`/`reset`/bootstrap |
+| `CLAUDE_CONFIG_SYNC_PUBLISH_BOUND` | `claude-config-sync.sh` | a sixth of the window (20s) | one lock-held symlink publisher |
+| `CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND` | `session-start-sync.sh` | 8s | one lock-held `fetch`/`reset` |
+| `CLAUDE_CONFIG_SYNC_HOOK_SETUP_BOUND` | `session-start-sync.sh` | 18s | `setup-skills-worktree.sh` (clone + fetch + publish + register) |
+| `CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND` | `session-start-sync.sh` | 5s | one symlink publisher |
+| `CLAUDE_CONFIG_SYNC_HOOK_ROOT_SYNC_BOUND` | `session-start-sync.sh` | 6s | the post-lock root-repo `main-sync.sh` / `pull --ff-only` leg |
+
+The hook's post-region calls reserve only the genuinely unbounded tail (the marker `jq`, the scheduling reconcile, the JSON emission), which is what makes its 9s post-git reserve arithmetic rather than a guess: the work it covers now bounds itself.
+
 **Signal path.** `~/.claude/sync-restart-recommended.json` carries two independent portions:
 
 | Portion | Written when | Cleared when |
