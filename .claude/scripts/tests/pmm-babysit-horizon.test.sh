@@ -327,6 +327,17 @@ require_text "  pre-flight is held on the same flag" \
   "$PMM" 'Skipped whole when .WATCH_LAUNCH_OK=false'
 require_text "  and the 3.7 table names it alongside 5c" \
   "$PMM" 'Pre-flight \(5\.0\) and new .phase-a-fixer. dispatch \(5c\)'
+# Step 5e's exhaustion respawn continues an in-flight pipeline, so neither flag
+# bars it — the skill must say so rather than claim a critical tick dispatches
+# nothing at all (#1653 review).
+require_text "  naming 5e's exhaustion respawn as the deliberate exception" \
+  "$PMM" "Step 5e.s exhaustion respawn is the one dispatch neither flag bars"
+# The park probe reads the WHOLE day object: 2D.7 claims parked_until before
+# limit_cause, so a limit_cause-only probe misses a half-assembled park.
+require_text "  probing the whole day object, not limit_cause alone" \
+  "$PMM" 'read-only\*\* probe of the whole .\.repos\["<key>"\]\.day. object'
+require_text "  and §8.1's block treats either field as an open park" \
+  "$DOC" '\(\.limit_cause // null\) != null or \(\.parked_until // null\) != null'
 require_text "  and leaving in-flight subagents alone" \
   "$PMM" 'In-flight work is never touched'
 require_text "  standing down on critical through its OWN pause" \
