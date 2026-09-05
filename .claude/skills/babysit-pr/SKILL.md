@@ -120,6 +120,7 @@ SESSION_STATE_SH=$(resolve_script session-state.sh) || { echo "ERROR: session-st
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh)   || true   # optional; degrade gracefully
 GREPTILE_SH=$(resolve_script greptile-budget.sh)     || true   # optional; degrade gracefully
 PREFLIGHT_SH=$(resolve_script pr-preflight.sh)       || true   # optional; degrade gracefully (#493)
+USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh)  || true   # optional; unresolved holds the `unknown` verdict (#1444)
 PR_AUTHORSHIP_SH=$(resolve_script pr-authorship.sh) || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — babysit authorship gate unavailable" >&2; exit 1; }
 ADMIN_MERGE_SH=$(resolve_script admin-merge.sh)     || { echo "ERROR: admin-merge.sh not found (checked all three paths) — clean-BEHIND recovery unavailable" >&2; exit 1; }
 
@@ -177,7 +178,9 @@ bump_parse_failure_counter() {
   "last_dispatch": null,        // {"skill":"…","started_at":"…","completed_at":"…","status":"…"}
   "auto_resolve_conflicts": false, // from --auto-resolve-conflicts; enables unattended rebase+force-push on simple conflicts
   "max_conflict_rounds": 3,        // from --max-conflict-rounds; hard cap on consecutive conflict rounds
-  "conflict_streak": 0             // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
+  "conflict_streak": 0,            // consecutive conflict rounds entered this watcher run; does not reset on SHA change — only on a non-conflicting tick
+  "horizon_status": null,          // last usage-horizon verdict seen by T2.5 (#1444): clear|approaching|critical|unknown. Heartbeat + cadence bookkeeping in THIS watcher's own namespace — never a park record, never read by day mode
+  "horizon_held_since": null       // ISO-8601 of the first consecutive `critical` tick; null once the verdict leaves `critical`
 }
 ```
 
@@ -529,6 +532,25 @@ if [[ -n "$GREPTILE_SH" ]]; then "$GREPTILE_SH" --check >/dev/null 2>&1 || GREP_
 
 The classifier (T3) consumes `CR_BUDGET_OK` / `GREP_BUDGET_OK`: a PR whose only gap is a fresh review becomes `hard-blocked` (budget exhaustion) **only** when CR **and** Greptile are both exhausted and there is no other recoverable work; otherwise it stays `waiting-on-bots` (a trigger path still exists). Re-running `/babysit-pr` after the window resets resumes cleanly.
 
+### T2.5. Usage-horizon consult (read-only — issue #1444)
+
+Runs after the rate-cap snapshot and before classification, for the same reason T2 does: the verdict has to be in hand before anything decides to dispatch, and a verdict read after T4 would have already spent the runway it exists to protect.
+
+**Run `subagent-thread-limit-park.md` §7.1's gate block, then §8.1's posture block** — resolve that document through the same three-candidate order as the scripts above and run the blocks it holds; do not re-derive either branch here. Feed §7.1 the counter the **harness** printed into this turn's context (`<total_tokens>N tokens left</total_tokens>`) and nothing else — never a figure from the transcript, this watcher's own accounting, or an earlier tick. An absent counter is `unknown`, and an unresolved `USAGE_HORIZON_SH` is `unknown` too. `unknown` is never `clear`.
+
+| `HORIZON_STATUS` | T4 dispatch | T5 cadence | State written |
+|------------------|-------------|------------|---------------|
+| `clear` | normal | normal tiers | `horizon_status`, `horizon_held_since=null` |
+| `approaching` | new `/fixpr` **suppressed**; `/wrap` on a `merge-ready` PR still dispatches | normal tiers | `horizon_status`, `horizon_held_since=null` |
+| `unknown` | same as `approaching` | normal tiers | `horizon_status` only — **never parks, never widens** |
+| `critical` | **all dispatch suppressed** | held at the horizon cadence (T5) | `horizon_status`, `horizon_held_since` |
+
+**Why `/wrap` survives `approaching` and `unknown`.** A merge-ready PR is finishing work, not starting it (`subagent-thread-limit-park.md` §7.2, §8.1); refusing to land it would hold the PR — and this watcher — open across the whole window. `/fixpr` starts a new round of bot reviews and CI, which is exactly the new work those verdicts stop. `critical` stops both because the watcher itself is standing down.
+
+**In-flight dispatch is never orphaned.** `dispatch_in_flight` idempotency in T4 is untouched by any verdict: a `/fixpr` or `/wrap` already running keeps running and is still reconciled by T0 on the next tick. This step suppresses *new* dispatch and nothing else.
+
+**This watcher claims no park (§8).** It watches one PR it did not launch. Everything it writes stays under `.prs["<PR>"].babysit.*`; it never runs `session-state.sh --cas` on `limit_cause` and never `--set` anything under `.repos["<key>"].day.*`, on any verdict. `WATCH_PARK_SEEN` from §8.1 is a read-only probe used only for the heartbeat's wording.
+
 ### T3. Classify (first match wins, in this order)
 
 Re-fetch the authoritative open/merged state once:
@@ -553,6 +575,8 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 ### T4. Dispatch with idempotency (`session-state.json` is the source of truth)
 
 Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
+
+**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T2.5 verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed tick is **not** a terminal state and **not** a `hard-blocked` classification: the watcher stays armed, `blocker_streak` still counts it as a blocker-state tick (no forward progress was made), and `--max-iter` still bounds the wait exactly as it does for a bot that never answers.
 
 #### T4: `conflicting` dispatch
 
@@ -655,7 +679,29 @@ WIDE_MIN=$(( BASE_MIN * 3 )); (( WIDE_MIN < 15 )) && WIDE_MIN=15
 PREV_EFFECTIVE_MIN=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.cadence_effective_minutes" 2>/dev/null || echo "$BASE_MIN")
 [[ "$PREV_EFFECTIVE_MIN" =~ ^[0-9]+$ ]] || PREV_EFFECTIVE_MIN=$BASE_MIN
 if (( STREAK >= 3 )); then EFFECTIVE_MIN=$WIDE_MIN; else EFFECTIVE_MIN=$BASE_MIN; fi
+
+# Usage-horizon hold (#1444). A `critical` verdict widens to the probe cadence
+# that `subagent-thread-limit-park.md` §7.4 uses for the same window, so a
+# stood-down watcher polls at the rate the park's own wake probes at instead of
+# hammering a closed window at 5m. It only ever WIDENS: max() against the
+# backoff tier keeps a frozen-state 60m cadence from being pulled back to 30m.
+# `approaching` and `unknown` do NOT widen — `unknown` especially, since a
+# routinely-displaced session (§7.3) would otherwise drift its own cadence out
+# on a posture that means nothing about this account's runway.
+HORIZON_HOLD_MIN=30
+if [[ -n "${CLAUDE_HORIZON_PROBE_CADENCE_MINUTES:-}" ]]; then
+  if [[ "$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES" =~ ^[0-9]{1,6}$ ]] && (( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES > 0 )); then
+    HORIZON_HOLD_MIN=$(( 10#$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES ))
+  else
+    echo "horizon: rejected CLAUDE_HORIZON_PROBE_CADENCE_MINUTES='$CLAUDE_HORIZON_PROBE_CADENCE_MINUTES' — using 30" >&2
+  fi
+fi
+if [[ "${HORIZON_STATUS:-unknown}" == critical ]]; then
+  (( EFFECTIVE_MIN < HORIZON_HOLD_MIN )) && EFFECTIVE_MIN=$HORIZON_HOLD_MIN
+fi
 ```
+
+**The hold releases itself.** The cadence is recomputed from `HORIZON_STATUS` every tick, so the first tick that reads `clear` returns to whichever tier the digest streak selects — there is no held flag to clear and nothing to resume by hand. `horizon_held_since` is stamped on the first consecutive `critical` tick and nulled the moment the verdict leaves `critical`; it exists for the heartbeat and for `/recap`, and no other loop reads it.
 
 | `digest_streak` | Effective cadence |
 |-----------------|-------------------|
@@ -694,8 +740,12 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.blocker_streak=$BLOCKER_STREAK" \
   --set ".prs[\"$PR\"].babysit.conflict_streak=$CONFLICT_STREAK_NEW" \
   --set ".prs[\"$PR\"].babysit.tick_count=$NEW_TICK_COUNT" \
+  --set ".prs[\"$PR\"].babysit.horizon_status=\"${HORIZON_STATUS:-unknown}\"" \
+  --set ".prs[\"$PR\"].babysit.horizon_held_since=$HORIZON_HELD_SINCE" \
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
+
+`HORIZON_HELD_SINCE` is the JSON value to persist, computed just above this write: on a `critical` tick it is the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string, otherwise `"$NOW"`; on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
 
 **Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
 current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set
@@ -770,6 +820,8 @@ One-liner format:
 ```
 
 Append context: blocker reason on `hard-blocked`/`waiting-on-bots`; dispatch target on a dispatch; `(backoff: stable ×<streak>, widened to <WIDE_MIN>m)` when cadence widened; the final summary on termination.
+
+**Horizon context (issue #1444).** When T2.5's verdict was anything but `clear`, append `WATCH_IDLE_REASON` and, when a dispatch was suppressed, what was held: `… — paused (horizon approaching): /fixpr held, /wrap still dispatching`. On `critical` say the watcher is standing down, name the cadence it held to, and use `WATCH_PARK_SEEN` for the park clause — `adopting the park already open for <owner/repo>`, `no park open`, or `park slot unreadable`. This line is **always emitted**, `--silent` included: a watcher that quietly stops dispatching looks identical to one that has nothing to do, and those are opposite states.
 
 **`--silent`:** suppress the line on plain `waiting-on-bots`/no-change ticks, but **always** print on state change, any dispatch, backoff transitions, and termination. (Default — no `--silent` — prints every tick, satisfying the per-tick heartbeat AC.)
 
