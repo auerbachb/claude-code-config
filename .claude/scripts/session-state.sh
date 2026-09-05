@@ -188,9 +188,13 @@
 #                      (issue #1631). May be repeated, and composes with --set
 #                      and --cas: every assignment and deletion in one
 #                      invocation lands in the SAME jq pipeline, under the same
-#                      lock hold, in one atomic mv. Removing an id that is not
-#                      present is a no-op that still exits 0, so a caller
-#                      draining an agent twice never has to probe first.
+#                      lock hold, in one atomic mv. Deletions are applied
+#                      BEFORE assignments regardless of flag order, so a
+#                      same-key `--remove-agent X --set '.active_agents["X"]=…'`
+#                      always means REPLACE and the assignment survives; for
+#                      different keys the order is immaterial. Removing an id
+#                      that is not present is a no-op that still exits 0, so a
+#                      caller draining an agent twice never has to probe first.
 #                      This is the ONLY supported way to drop an agent record.
 #                      The old idiom — `--get '.active_agents'`, filter locally,
 #                      `--set` the whole value back — spans two lock windows,
@@ -1952,6 +1956,9 @@ if [[ "$MODE" == "cas" ]]; then
   WHOLE_ENTRY_PATHS=""
   WHOLE_MAP_PATHS=""
   add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
+  # BEFORE the assignments — see the --set path below for why deletions are
+  # staged first rather than in flag order.
+  add_remove_agent_stages
   # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
   # with no composed writes — unlike the --set block below, which cannot be
   # reached with zero assignments. Index expansion of an empty array is fine on
@@ -1962,9 +1969,6 @@ if [[ "$MODE" == "cas" ]]; then
       add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
     done
   fi
-  # After the assignments, so a --cas that both writes a claim and drains an
-  # agent applies them in flag-order semantics: assign, then delete.
-  add_remove_agent_stages
 
   CAS_LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   JQ_ARGS+=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY"
@@ -2062,12 +2066,21 @@ TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
 WHOLE_ENTRY_PATHS=""
 WHOLE_MAP_PATHS=""
+# Deletions are staged BEFORE assignments, and that order is FIXED — it does
+# not follow flag order (CodeAnt, PR #1637). The stages are built from two
+# separate arrays, so argv position is not recoverable here; staging removes
+# last silently deleted a record the caller had just assigned in the same
+# invocation, which is the loss issue #1631 exists to stop arriving through the
+# drain path. Front-loading them makes a same-key
+# `--remove-agent X --set '.active_agents["X"]=…'` mean REPLACE in either flag
+# order — the caller's explicit assignment always survives. Different keys are
+# unaffected either way, which is every other composed call.
+add_remove_agent_stages
 if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
   for i in "${!SET_PATHS[@]}"; do
     add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
   done
 fi
-add_remove_agent_stages
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
 # atomic write. Use UTC ISO 8601 to match `(now | todate)` semantics in

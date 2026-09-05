@@ -238,6 +238,30 @@ check_eq "--remove-agent composes with --set in one write" '["new"]' "$(disk_key
 check_eq "...and the unrelated --set in the same batch landed" \
   'true' "$(jq -r '.monitoring_active' "$STATE_FILE")"
 
+# FAILS WITHOUT FIX: same-key remove + assign in one invocation. Deletions used
+# to be staged after every assignment, so a respawn that drained an id and
+# reassigned it in the same call ended with NO record at all — the drain path
+# reintroducing the loss issue #1631 fixed in the writers. Deletions now stage
+# first, so the assignment always survives, in EITHER flag order (CodeAnt, #1637).
+seed '{"schema_version":2,"active_agents":{"respawn":{"id":"respawn","phase":"A"}},"repos":{}}'
+run --raw-path --remove-agent respawn --set ".active_agents[\"respawn\"]=$(agent_json respawn B)" \
+  >/dev/null 2>&1
+check_eq "same-key remove+assign keeps the assignment (remove first)" '["respawn"]' "$(disk_keys)"
+check_eq "...and it is the NEW record, not the drained one" \
+  'B' "$(jq -r '.active_agents.respawn.phase' "$STATE_FILE")"
+
+seed '{"schema_version":2,"active_agents":{"respawn":{"id":"respawn","phase":"A"}},"repos":{}}'
+run --raw-path --set ".active_agents[\"respawn\"]=$(agent_json respawn B)" --remove-agent respawn \
+  >/dev/null 2>&1
+check_eq "same-key assign+remove is order-insensitive: assignment still wins" \
+  'B' "$(jq -r '.active_agents.respawn.phase' "$STATE_FILE")"
+
+# Different keys are unaffected by the staging order — the common case.
+seed '{"schema_version":2,"active_agents":{"gone":{"id":"gone"},"stays":{"id":"stays"}},"repos":{}}'
+run --raw-path --remove-agent gone --set ".active_agents[\"fresh\"]=$(agent_json fresh A)" \
+  >/dev/null 2>&1
+check_eq "distinct keys: the drain and the append both land" '["fresh","stays"]' "$(disk_keys)"
+
 # Composition with --cas: the compare gates the deletion too.
 seed '{"schema_version":2,"active_agents":{"old":{"id":"old"}},"pmm_active":false,"repos":{}}'
 run --raw-path --cas '.pmm_active=true' --expect 'false' --remove-agent old >/dev/null 2>&1; RC=$?

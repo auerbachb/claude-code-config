@@ -552,6 +552,17 @@ The Start column must survive every later tick **and a context compaction**, so 
 
 ```bash
 REPO_KEY=$("$SESSION_STATE_SH" --repo-key)
+
+# This spawn's active_agents entry, built FIRST so it can ride along in the one
+# invocation below. -c is load-bearing: the entry is interpolated into a --set
+# argument, and jq's default pretty-print would embed newlines in it. Details
+# and the field contract are in 7.2 — it is built here only so that nothing
+# about this launch reaches disk in two separate writes.
+AGENT_ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" \
+  --argjson issue "{ISSUE_NUMBER}" --arg launched "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  '{id:$id, task:$task, issue:$issue, pr:null, phase:"A", status:"spawned", launched:$launched}')
+AGENT_SET=(--set ".active_agents[\"$AGENT_ID\"]=$AGENT_ENTRY")
+
 # Stamp the launch record ONCE per issue. A replacement Phase A (exhaustion
 # respawn — Step 9) re-enters this same spawn path, so an unconditional write
 # would reset Start / Projected end / Remaining for a pipeline that began
@@ -562,16 +573,20 @@ LAUNCHED_AT=$("$SESSION_STATE_SH" \
 [[ "$LAUNCHED_AT" == "null" ]] && LAUNCHED_AT=""
 if [[ -z "$LAUNCHED_AT" ]]; then
   LAUNCHED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  # ONE invocation carries every piece of spawn-time state — the pipeline
+  # record, monitoring_active, AND this spawn's agent entry. A second call for
+  # the agent would leave the pipeline active with no active_agents record
+  # whenever that second call failed.
   "$SESSION_STATE_SH" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
-    --set '.monitoring_active=true'
-    # …batched with this spawn's active_agents write, so all spawn-time state
-    # commits in ONE atomic write rather than leaving a partial record behind.
+    --set '.monitoring_active=true' \
+    "${AGENT_SET[@]}"
 else
   # Respawn: the launch record stands. Never re-null `.pr` either — that link is
-  # the heartbeat's fallback to `pipeline_started_at` (Step 8).
-  "$SESSION_STATE_SH" --set '.monitoring_active=true'
+  # the heartbeat's fallback to `pipeline_started_at` (Step 8). The agent entry
+  # still rides along — a replacement agent needs its own record.
+  "$SESSION_STATE_SH" --set '.monitoring_active=true' "${AGENT_SET[@]}"
 fi
 ```
 
@@ -579,22 +594,9 @@ fi
 
 Record each spawned agent in `session-state.json` under its OWN key in the `active_agents` map, batched into the same atomic `session-state.sh` call as the pipeline and `monitoring_active` writes above. **Build the entry as real JSON first, then interpolate it** — `--set` parses its value as JSON and *falls back to a plain string* when the parse fails, so a bare field list (`{id, task, …}`) lands as a string under the agent key and readers can no longer reach `.phase` or `.status`. The whole-field type check does not catch it, because `.active_agents` is still an object. Use the same shape `pmm-act.md` does, with the fields `id`, `task`, `issue`, `pr`, `phase`, `status`, `launched`:
 
-```bash
-# -c is load-bearing: the entry is interpolated into a --set argument, and jq's
-# default pretty-print would embed newlines in it.
-ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" --argjson issue "$ISSUE_N" \
-  --argjson pr "${PR_N:-null}" --arg launched "$NOW" \
-  '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched}')
+That build is the `AGENT_ENTRY` / `AGENT_SET` pair in 7.1's block above, and `"${AGENT_SET[@]}"` is passed to the **same** `session-state.sh` invocation as the pipeline and `monitoring_active` writes — do not issue a second call for it. A separate agent write is not merely non-atomic: when it fails, the pipeline is left active with no `active_agents` record, which is the partial launch record every reader downstream then has to guess about. `.pr` is `null` at spawn for the reason 7.1 gives (no PR exists yet); Phase A Completion fills it later.
 
-# ONE call — the per-key agent write rides along with the pipeline and
-# monitoring_active writes above, so the whole launch record commits atomically.
-"$SESSION_STATE_SH" \
-  --set ".active_agents[\"$AGENT_ID\"]=$ENTRY" \
-  --set '.monitoring_active=true' \
-  --set ".repos[\"$REPO_KEY\"].prs[\"$PR_N\"].pipeline_started_at=\"$NOW\""
-```
-
-Spawning several agents in one round: accumulate the `--set` pairs in an array and pass it to a **single** `"$SESSION_STATE_SH"` invocation, as `pmm-act.md` does — never one call per agent. Never `--get` the map, merge locally, and `--set` the whole value back: that read-modify-write spans two lock windows, and a sibling thread's append between them is silently discarded (issue #1631). Set `monitoring_active=true` in the same call. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
+Spawning several agents in one round: accumulate each agent's `--set` pair into that one array and pass it to a **single** `"$SESSION_STATE_SH"` invocation, as `pmm-act.md` does — never one call per agent. Never `--get` the map, merge locally, and `--set` the whole value back: that read-modify-write spans two lock windows, and a sibling thread's append between them is silently discarded (issue #1631). Set `monitoring_active=true` in the same call. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 
 ### 7.2: Launch announcement — the "Running now" table
 
