@@ -203,8 +203,31 @@ recorded run is disqualified **`pre_run_approval`** (`done` false, or
 `submitted_at < started`; the bound is the run *start* because CodeAnt stamps
 `finished` after posting its verdict). `pre_run_approval` is deliberately not
 suppressed by `external_evidence_on_head` — in the reported trace the
-suppressing evidence *was* the marker comment — and a malformed or HEAD-less
+suppressing evidence *was* the marker comment — and an unparseable or HEAD-less
 payload degrades to the pre-#1365 verdict rather than blocking.
+
+**A row whose timestamps are not timestamps is unusable, not merely blank**
+(CodeRabbit review of PR #1635). Every compare here is lexicographic, so garbage
+does not fail — it *sorts*: `started: "zz"` canonicalised to `"zzZ"`, which every
+real timestamp sorts before, and that inverted two guards at once. `pre_run` read
+every approval as predating the run, and the issue #1632 window disjunct below
+matched nothing, withdrawing the term that stops a resolved finding the governing
+run itself posted from being laundered — so redemption was granted off a record
+that never described a real run. `canon_marker_ts` now blanks any value that is
+not an ISO-8601 datetime (seconds optional, either zone spelling), and the row
+carries a separate `ts_unusable` flag distinguishing **supplied-but-garbage** from
+**omitted**. The two must not be conflated: an omitted `started` is the documented
+pre-#1365 degrade, while a garbage one is a record actively claiming something
+unreadable. `ts_unusable` therefore forces `pre_run_approval` (an unreadable
+record cannot place the approval inside or outside its own run, and the
+conservative reading of an unprovable ordering is the blocking one) and
+independently bars `redeemed_by_clean_run`, matching the standing rule that an
+absent or unparseable run record never redeems. Blanking rather than *dropping*
+the row is deliberate — dropping would take an in-flight (`done: false`) row out
+of `run_marker_head` entirely, turning a blocking in-flight verdict into no
+verdict at all. Pinned by cases (s5)/(s5a)/(s5b) in
+`tests/merge-gate-codeant-run-marker.test.sh`, with (s5c)/(s5d) as the positive
+controls that keep the check from rejecting timestamps rather than garbage.
 
 **Row selection is by content, never by list position** (issue #1419). The
 first cut took `| last`, believing the payload appends in touch order; live
@@ -302,6 +325,17 @@ it already runs; `escalate-review.sh` derives it from `pr-state.sh`'s
 `threads.all`, which already requests `databaseId`. Neither costs an extra API
 call. Ids are stringified on both sides, so a number and its string spelling
 cannot silently miss.
+
+Both derivations inherit their caller's existing pagination bound rather than
+introducing one — `merge-gate.sh` reads an unpaginated `reviewThreads(first: 100)
+{ comments(first: 100) }` query (tracked separately as issue #1634), and
+`escalate-review.sh` reads whatever `pr-state.sh` put in `threads.all`. So
+"every comment" is bounded in practice: a thread or comment past the cap is
+simply **absent** from the set, reads as unresolved, and therefore still counts
+as a finding. Truncation can only ever WITHHOLD redemption, never grant it — the
+same safe direction as the `[]` default below. Do not generalize that to the
+bound being harmless: the universal unresolved-thread gate in `merge-gate.sh`
+reads the same payload and is *permissive* when truncated.
 
 The key is **optional and defaults to `[]`**. An empty set makes every inline
 comment read as unresolved, which reproduces the pre-#1632 behaviour byte for

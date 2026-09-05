@@ -812,6 +812,89 @@ EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" '["901","902"]')
 check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
   "(s4) string-spelled ids match the numeric REST ids"
 
+# (s5) MALFORMED run timestamps. Every timestamp compare in this module is
+#      lexicographic, so a non-timestamp `started` does not fail loudly — it
+#      sorts. Pre-fix, "zz" canonicalised to "zzZ", which every real timestamp
+#      sorts before, and the (s1) fixture was redeemed from a run record that
+#      never described a run: $pre_run read the approval as predating it, and the
+#      window disjunct matched nothing, withdrawing the (s2b) anti-laundering
+#      term. An unusable record must leave the reviewer where an absent one does.
+#      The malformed row is the SOLE marker, so it is unambiguously the one
+#      governing the verdict — nothing else can be quietly doing the work.
+S_STATUS_BAD_START="[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "zz" "$FINISHED2")]")]"
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS_BAD_START" "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "" "$(r_field "$EV" run_started_at)" \
+  "(s5) a malformed started is blanked, not canonicalised into a sortable string"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s5) and an unusable run record redeems nothing, even with every thread resolved"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" \
+  "(s5) so the stub is not coverage"
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(s5) a record that cannot place the approval inside its own run still blocks"
+
+# (s5a) The same fixture ALONGSIDE a well-formed earlier run. max_by ranks the
+#       blanked `started` first, so the well-formed run 1 governs and its own
+#       window catches findings 901/902 — refused on the ordinary (s2b) ground.
+#       Pins that demoting the garbage row does not hand the verdict to nobody.
+S_ROWS_BAD_START="[$(run_row "$HEAD_SHA" true "zz" "$FINISHED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+EV=$(evidence_res "$S_APPROVAL" "[$(status_comment_rows "$S_ROWS_BAD_START")]" \
+     "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "2026-08-26T16:16:40Z" "$(r_field "$EV" run_started_at)" \
+  "(s5a) the well-formed run governs once the garbage row is demoted"
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s5a) and its own window still counts the findings it posted"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s5a) redemption refused"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(s5a) the stub stays refused"
+
+# (s5b) A malformed `finished` only ever opens the window wider, which counts
+#       MORE comments as findings — the withholding direction. The run-2 finding
+#       is still caught, so redemption stays refused.
+S_ROWS_BAD_FIN="[$(run_row "$HEAD_SHA" true "$STARTED2" "nope"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]"
+EV=$(evidence_res "$S_APPROVAL" "[$(status_comment_rows "$S_ROWS_BAD_FIN")]" \
+     "[$(inline_finding 901 "2026-08-26T16:17:00Z"),$(inline_finding 903 "2026-08-26T16:26:00Z")]" \
+     "[901,903]")
+check_eq "" "$(r_field "$EV" run_finished_at)" \
+  "(s5b) a malformed finished is blanked too"
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(s5b) leaving the window open-ended, which counts more findings, never fewer"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(s5b) redemption refused"
+
+# (s5c) POSITIVE CONTROL for (s5): the identical fixture with a well-formed
+#       `started` is (s1), which redeems. Without this, (s5) would pass just as
+#       well if the validation rejected every timestamp and killed the feature.
+EV=$(evidence_res "$S_APPROVAL" "$S_STATUS" "$S_RUN1_FINDINGS" "[901,902]")
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(s5c) positive control: a well-formed marker still redeems — the check rejects garbage, not timestamps"
+
+# (s5d) Zone and seconds variants that CodeAnt or a future payload could legally
+#       emit must survive the check. A false reject here would strand a genuine
+#       clean run behind the same deadlock #1432 exists to clear.
+for _ts in "2026-08-26T16:25:00.500000" "2026-08-26T16:25:00Z" "2026-08-26T16:25:00+00:00" "2026-08-26T16:25:00+0000" "2026-08-26T16:25"; do
+  EV=$(evidence_res "$S_APPROVAL" \
+       "[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "$_ts" "$FINISHED2")]")]" \
+       "$S_RUN1_FINDINGS" "[901,902]")
+  check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+    "(s5d) a well-formed marker spelled '$_ts' is accepted"
+done
+
+# (s5e) NON-UTC offsets are rejected rather than accepted-and-mis-sorted. These
+#       values are compared lexicographically against Z-spelled review timestamps,
+#       so "…T16:25:00+05:00" sorts BEFORE "…T16:20:00Z" ("+" < "Z") — the
+#       opposite of how the instants actually run. canon_ts already folds the zero
+#       offsets onto Z, so nothing legitimate is lost; a real offset becomes
+#       ts_unusable and blocks.
+for _ts in "2026-08-26T16:25:00+05:00" "2026-08-26T16:25:00-08:00" "2026-08-26T16:25:00+0530"; do
+  EV=$(evidence_res "$S_APPROVAL" \
+       "[$(status_comment_rows "[$(run_row "$HEAD_SHA" true "$_ts" "$FINISHED2")]")]" \
+       "$S_RUN1_FINDINGS" "[901,902]")
+  check_eq "" "$(r_field "$EV" run_started_at)" \
+    "(s5e) a non-UTC offset '$_ts' is not left to sort against Z-spelled timestamps"
+  check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+    "(s5e) and '$_ts' redeems nothing"
+  check_contains "pre_run_approval" "$(r_disq "$EV")" \
+    "(s5e) '$_ts' blocks as an unusable record"
+done
+
 # --------------------------------------------------------------------------
 # (h)/(i) merge-gate.sh integration: the verdict has to reach the gate, and the
 #     missing[] reason has to say WHY — naming the reviewer and the timing, not

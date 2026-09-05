@@ -374,11 +374,56 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
   # gap only holds under that reading), so canonicalise onto the same spelling
   # and let one lexicographic rule cover both sides. A marker that already
   # carries a zone is left alone rather than double-suffixed.
+  #
+  # A value that is not a timestamp at all yields "" rather than a canonicalised
+  # nonsense string (CodeRabbit review of this PR). Every consumer compares these
+  # LEXICOGRAPHICALLY, so garbage does not fail loudly — it sorts. `started: "zz"`
+  # canonicalised to "zzZ", which every real timestamp sorts before, and that
+  # silently inverted two guards at once: `$pre_run` read every approval as
+  # predating the run, and the issue #1632 window disjunct matched nothing, which
+  # withdrew the anti-laundering term that makes resolving a finding the governing
+  # run itself posted fail to launder it. Redemption was then granted off a run
+  # record that never described a real run.
+  #
+  # Blanking is the conservative repair. It does TWO separate things, and the
+  # distinction matters (CodeRabbit CLI review of this PR):
+  #
+  #   * The blank itself lands on a degrade path the module already documents
+  #     rather than inventing one — "" is exactly the "done run with no parseable
+  #     `started`" shape $pre_run handles at its `started == ""` branch, and it
+  #     also drops the row to the bottom of run_marker_head"s max_by, so a
+  #     well-formed sibling run governs instead of the garbage one.
+  #   * Blanking ALONE would then be too permissive, because a sole garbage row
+  #     would stop pre_run_approval from firing at all. So run_markers carries a
+  #     separate `ts_unusable` flag for a field that was SUPPLIED but unreadable,
+  #     as opposed to omitted, and $pre_run treats that as true while
+  #     $redeem_shape bars it outright — the rule stated below at $redeem_shape,
+  #     that an absent or unparseable run record never redeems.
+  #
+  # Blanking rather than DROPPING the row is deliberate: dropping would take an
+  # in-flight ($runmark.done false) record with a malformed `started` out of
+  # $runmark entirely, turning a blocking in-flight verdict into no verdict at
+  # all, which is the permissive direction. A blanked `finished` likewise leaves
+  # the window open-ended, which only ever counts MORE comments as findings.
+  # Pinned by (s5)/(s5a)/(s5b).
+  #
+  # The accepted terminator is `Z` ONLY, and that is a correctness requirement,
+  # not fussiness (CodeRabbit CLI review of this PR). These values are compared
+  # lexicographically against `Z`-spelled review timestamps and ordered by max_by,
+  # so a real non-UTC offset would be silently mis-ordered — "…T16:25:00+05:00"
+  # sorts BEFORE "…T16:20:00Z" because "+" < "Z", not after it, as the instants
+  # actually run. canon_ts has already folded the only zero offsets observed in
+  # the wild (`+00:00`, `+0000`) onto `Z`, and CodeAnt writes naive UTC, so no
+  # legitimate payload is rejected; a genuinely offset-bearing one becomes
+  # ts_unusable and blocks rather than sorting wrongly. Seconds stay optional so
+  # the check rejects garbage rather than narrowing the shapes actually observed.
   def canon_marker_ts:
     (. // "") | tostring
     | if . == "" then ""
       else canon_ts
-           | if test("(Z|[+-][0-9]{2}:?[0-9]{2})$") then . else . + "Z" end
+           | (if test("(Z|[+-][0-9]{2}:?[0-9]{2})$") then . else . + "Z" end)
+           | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?Z$")
+             then . else "" end
       end;
 
   (.head_sha // "" | ascii_downcase)  as $sha
@@ -692,7 +737,18 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               label:    ((.label // "") | tostring),
               started:  (.started  | canon_marker_ts),
               finished: (.finished | canon_marker_ts),
-              done:     (.done == true) }
+              done:     (.done == true),
+              # A field the bot SUPPLIED but that is not a timestamp, as opposed
+              # to one it simply omitted. canon_marker_ts blanks both, and the
+              # two must not be conflated: an omitted `started` is the documented
+              # pre-#1365 degrade ("judge the reviewer as before"), while a
+              # supplied-but-garbage one is a record actively claiming something
+              # unreadable, which cannot vouch for anything. Carried as its own
+              # flag so $pre_run and $redeem_shape can each say so explicitly
+              # rather than inferring it from an empty string.
+              ts_unusable:
+                (((((.started  // "") | tostring) != "") and ((.started  | canon_marker_ts) == ""))
+                 or ((((.finished // "") | tostring) != "") and ((.finished | canon_marker_ts) == ""))) }
           | select(.commit != "") ];
 
     # ---- Conversation index: one pass, all regex work done here -------------
@@ -1091,7 +1147,13 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # Degrades rather than blocks when the record is unusable: no marker for
         # HEAD, or a done run with no parseable `started`, yields false and the
         # reviewer is judged exactly as it was pre-#1365.
+        # ts_unusable is checked BEFORE done: a record whose own timestamps are
+        # unreadable cannot place the approval inside or outside it, and the
+        # conservative reading of an unprovable ordering is the blocking one.
+        # It is NOT folded into the `started == ""` branch below, which stays
+        # the pre-#1365 degrade for a field the bot never supplied.
         | ( if ($ap == null or $runmark == null or $ap_ts == "") then false
+            elif ($runmark.ts_unusable == true) then true
             elif ($runmark.done | not) then true
             elif ($runmark.started == "") then false
             else ($ap_ts < $runmark.started)
@@ -1203,6 +1265,7 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # are untouched in the refuse direction.
         | ( $pre_run
             and $runmark != null
+            and ($runmark.ts_unusable != true)
             and ($runmark.done == true)
             and ($run_has_findings | not) )                                as $redeem_shape
 
