@@ -131,6 +131,26 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
   # both GNU and BSD ERE, where \{ shades into interval-expression territory.
   require_pattern "$CHIP_LAUNCHING" 'Match \(same family\): state "Running on [{]FAMILY[}]' \
     'family self-report in match branch'
+  # The mismatch branch is a clickable menu, not a typed reply (#1398). Each
+  # element the menu contract turns on is asserted separately, for the same
+  # reason the family rules above are: one assertion would leave the rest free
+  # to be dropped in a reword, and the whole point of the menu is that a
+  # mismatch resolves in one click with the recommended path first.
+  require_pattern "$CHIP_LAUNCHING" 'Surface the choice with AskUserQuestion' \
+    'mismatch-branch AskUserQuestion vehicle'
+  # Both option labels are pinned WITH their placeholders: the labels are
+  # family-level by contract (see the decision record), so a label rewritten to
+  # substitute a full model string must not satisfy the check.
+  require_pattern "$CHIP_LAUNCHING" '"Switched to [{]RECOMMENDED_FAMILY[}] — continue \(Recommended\)"' \
+    'switched-confirm option, recommended-first suffix'
+  require_pattern "$CHIP_LAUNCHING" '"Continue on [{]RUNNING_FAMILY[}] anyway"' \
+    'proceed-on-current-model option'
+  # A click cannot switch the model, so the confirm answer is verified rather
+  # than trusted. Without this the menu degrades into an unchecked override.
+  require_pattern "$CHIP_LAUNCHING" 're-check the family you are running' \
+    'confirm-answer re-verification'
+  require_pattern "$CHIP_LAUNCHING" 'when AskUserQuestion is unavailable \(headless runs\)' \
+    'headless prose fallback for the mismatch branch'
   require_pattern "$CHIP_LAUNCHING" 'six canonical emitters' 'canonical emitters preamble'
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'

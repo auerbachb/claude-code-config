@@ -438,6 +438,75 @@ expect "family rule re-requiring exact strings (substring intact) fails" 1 \
   'family-level comparison rule' \
   readd_string_equality_after_family_rule
 
+# --- #1398: the mismatch branch is a menu -----------------------------------
+# Every case below degrades the menu contract while LEAVING ITS VOCABULARY IN
+# PLACE, so a looser keyword check would pass each one and prove nothing. That
+# is the same discipline the family-comparison cases above follow.
+
+# The tool name survives in the sentence; only the instruction to use it goes.
+revert_menu_to_typed_reply() {
+  mutate .claude/reference/chip-launching.md \
+    's/Surface the choice with AskUserQuestion/Report both models and wait for a typed reply (AskUserQuestion optional)/'
+}
+
+expect "mismatch branch reverted to a typed reply fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  revert_menu_to_typed_reply
+
+# Both options survive, but neither is marked recommended — the menu still
+# renders and the user loses the steer ask-menu.md requires.
+drop_recommended_suffix() {
+  mutate .claude/reference/chip-launching.md \
+    's/ — continue (Recommended)"/ — continue"/'
+}
+
+expect "switched-confirm option without the (Recommended) suffix fails" 1 \
+  'switched-confirm option, recommended-first suffix' \
+  drop_recommended_suffix
+
+# A one-option menu is not a choice: without the proceed-on-current path the
+# only way past the guard is to claim a switch that may not have happened.
+drop_proceed_option() {
+  mutate .claude/reference/chip-launching.md '/"Continue on {RUNNING_FAMILY} anyway"/d'
+}
+
+expect "menu missing the proceed-on-current-model option fails" 1 \
+  'proceed-on-current-model option' \
+  drop_proceed_option
+
+# The label substitutes the full model string instead of the family, which the
+# decision record rules out for labels (the QUESTION text carries full names).
+substitute_full_model_in_label() {
+  mutate .claude/reference/chip-launching.md \
+    's/"Switched to {RECOMMENDED_FAMILY} — continue/"Switched to {RECOMMENDED_MODEL} — continue/'
+}
+
+expect "option label substituting a full model instead of a family fails" 1 \
+  'switched-confirm option, recommended-first suffix' \
+  substitute_full_model_in_label
+
+# Trusting the click is the failure this loop exists to prevent: a click cannot
+# switch the model, so an unverified confirm is an unchecked override.
+trust_the_click() {
+  mutate .claude/reference/chip-launching.md \
+    's/re-check the family you are running: if it now matches, state/take the user at their word and state/'
+}
+
+expect "confirm answer trusted without re-verification fails" 1 \
+  'confirm-answer re-verification' \
+  trust_the_click
+
+# The prose branch survives verbatim, but its trigger stops being "the tool is
+# unavailable" and becomes discretionary — which makes the menu skippable.
+make_fallback_discretionary() {
+  mutate .claude/reference/chip-launching.md \
+    's/Fallback, when AskUserQuestion is unavailable (headless runs): report, in one/Alternatively, if you would rather not ask: report, in one/'
+}
+
+expect "prose fallback made discretionary rather than headless-only fails" 1 \
+  'headless prose fallback for the mismatch branch' \
+  make_fallback_discretionary
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

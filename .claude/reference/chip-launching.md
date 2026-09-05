@@ -119,11 +119,12 @@ never evidence of a mismatch.
   question naming BOTH models in full, the one you are running as and the one
   recommended above (each carries its family), with exactly these two options,
   recommended first, labelled by family:
-    1. "Switched to {RECOMMENDED} — continue (Recommended)" — the user has
-       switched the picker. On this answer, re-check the family you are
-       running: if it now matches, state "Running on {FAMILY} as recommended."
-       and proceed; if it still differs, surface this same question again.
-    2. "Continue on {RUNNING} anyway" — proceed on the current model.
+    1. "Switched to {RECOMMENDED_FAMILY} — continue (Recommended)" — the
+       user has switched the picker. On this answer,
+       re-check the family you are running: if it now matches, state
+       "Running on {FAMILY} as recommended." and proceed; if it still
+       differs, surface this same question again.
+    2. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model.
   Clicking an option does not change the model — it records the user's
   decision, so switching stays a picker action the menu only confirms.
   Fallback, when AskUserQuestion is unavailable (headless runs): report, in one
