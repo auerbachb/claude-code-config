@@ -256,13 +256,14 @@ FNR == 1 {
   # Tracked in source order, both directions: `set -o pipefail` arms the scan
   # (the rest of THIS line included — `set -o pipefail; cmd | grep -q x` is
   # live), `set +o pipefail` disarms it until the next enable. Combined
-  # (`-euo pipefail`) and separated (`-e -o pipefail`) spellings both count.
-  if (line ~ /(^|[[:space:]])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
+  # (`-euo pipefail`) and separated (`-e -o pipefail`) spellings both count,
+  # and `set` may follow a control operator directly (`cd x;set -o pipefail`).
+  if (line ~ /(^|[[:space:];&|(])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
     if (!scanning) {
       scanning = 1
       if (!counted) { counted = 1; files_scanned++ }
     }
-  } else if (line ~ /(^|[[:space:]])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
+  } else if (line ~ /(^|[[:space:];&|(])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
     scanning = 0
     next
   }

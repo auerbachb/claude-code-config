@@ -182,6 +182,12 @@ printf '%s\n' "$(jq -r .title "$f")" \
   | grep -qi needle || echo missing
 FIX
 
+expect "set glued to a control operator (;set -o pipefail) arms the scan" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+cd "$dir";set -o pipefail
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
