@@ -206,6 +206,11 @@ else
   # it, so there is no window in which the slot is owned but the metadata is not
   # written. `limit_cause` is the CAS field precisely because it is null until
   # exactly one path — 2D.6, 2D.7, another thread, or this one — claims it.
+  # Nulling `park_claim_token` (#1596) retires any 2D.7 Step 1 claim still being
+  # assembled, in the SAME write that takes the slot from it — that claim's
+  # finalisation and its release then both exit 7 rather than writing over the
+  # record this thread just won. This leg needs no token of its own: it is
+  # single-phase, so it never has an assembly window for one to protect.
   PARK_CLAIM_RC=0
   "$SESSION_STATE_SH" \
     --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"$PARK_CAUSE\"" --expect null \
@@ -213,6 +218,7 @@ else
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"$LIMIT_KIND\"" \
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=$CLAIM_FIRES" \
     --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
+    --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
     >/dev/null 2>&1 || PARK_CLAIM_RC=$?
   case "$PARK_CLAIM_RC" in
     0) echo "PARK_CLAIM=won" ;;
@@ -229,7 +235,12 @@ fi
   the wake that is already armed has no way to know about them. Then skip §4
   entirely: no second wake, no second Monitor, no second chat line. This is the
   #1428 / #1445 adoption contract, reached through the same `limit_cause`
-  compare-and-set both of those paths use. **The adopted wake still resumes these
+  compare-and-set both of those paths use. Losing that compare means
+  `limit_cause` was already set, and every path that sets it does so in the same
+  atomic write that completes its record — so the park being adopted is a
+  finished one, never a 2D.7 claim still mid-assembly (which holds a token and a
+  null cause, and would have lost this compare to us instead). **The adopted
+  wake still resumes these
   pipelines**: day mode's wake fires `/pause-resume --generation`, whose Step 5
   relaunch reads the very per-PR records §3 writes and follows §5 directly. That
   is why §3 runs on the adoption path and why the wake command may differ
@@ -844,11 +855,17 @@ first line — the owner's wake already announced itself.
 
 ### 7.6 Recovery and teardown parity
 
-Nothing new. §6 already branches on `limit_cause` and the three-valued
+Almost nothing new. §6 already branches on `limit_cause` and the three-valued
 `limit_probe_fires_remaining`: a pre-emptive park with fires left re-arms the
 probe **with that count** (`rearm_probe`), a known-reset park re-arms the
 one-shot (`rearm`), and `0`, `-1`, a weekly kind, or an unreadable value all take
-the manual branch. `/pause` stops the probe Monitor and `/pause-resume` disarms
+the manual branch. The one addition is `park_claim_token` (#1596): read it with
+the same exit-code table, and treat a **non-null token with a null `limit_cause`**
+as `/pm` 2D.1(b+) does — an unfinished 2D.7 Step 1 claim, recovered from the
+`rolling_window` kind and the bound that claim persisted (`null` → `rearm`,
+`-1` → the manual branch), never from a fresh bound. A non-null `limit_cause`
+means the record completed, so any leftover token is ignored. This leg mints no
+token of its own, so nothing else here changes. `/pause` stops the probe Monitor and `/pause-resume` disarms
 it through the same two identity fields, because it is the same wake class.
 
 ---

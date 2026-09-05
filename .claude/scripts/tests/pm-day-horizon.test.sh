@@ -111,6 +111,7 @@ BLOCK_D2="$(extract_skill_bash "$SKILL" pm-day-d2-horizon-branch)" || exit 1
 BLOCK_CLAIM="$(extract_skill_bash "$SKILL" pm-day-2d7-park-claim)" || exit 1
 BLOCK_RECORD="$(extract_skill_bash "$SKILL" pm-day-2d7-park-record)" || exit 1
 BLOCK_2D6="$(extract_skill_bash "$SKILL" pm-day-2d6-park-claim)" || exit 1
+BLOCK_RELEASE="$(extract_skill_bash "$SKILL" pm-day-2d7-park-release)" || exit 1
 BLOCK_WAKE="$(extract_skill_bash "$SKILL" pm-day-2d7-wake-publish)" || exit 1
 BLOCK_PROBE="$(extract_skill_bash "$SKILL" pm-day-2d7-probe-fire)" || exit 1
 
@@ -166,6 +167,7 @@ seed_day_state() {
   # A day block shaped like 2D.2's init write, with no park recorded.
   jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {
       active: true, parked_until: null, limit_kind: null, limit_cause: null,
+      park_claim_token: null,
       limit_probe_fires_remaining: null, limit_resume_task_id: null,
       limit_resume_generation: null, consecutive_limit_hits: 0}}}}' > "$STATE_FILE"
 }
@@ -302,15 +304,95 @@ else
   FAIL=$((FAIL + 1)); echo "FAIL — past reset epoch was used as the park time"
 fi
 
+# The claim now mints an identity for itself (#1596); everything downstream of
+# Step 1 compares against it, so the suite has to carry it exactly as Steps 2
+# and 3 do.
+claim_token() { printf '%s\n' "$1" | sed -n 's/^PARK_CLAIM_TOKEN=//p' | head -1; }
+
+# Win a claim and hand back its token — the precondition for record and release.
+claim_and_token() {   # claim_and_token [reset_epoch]
+  claim_token "$(run_claim "${1:-}")"
+}
+
 run_record() {
-  local reset_known="$1"
+  local reset_known="$1" token="${2-}"
   SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
     PARK_RESET_KNOWN="$reset_known" PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    PARK_CLAIM_TOKEN="$token" \
     bash -c "$BLOCK_RECORD" 2>/dev/null
 }
 
+run_release() {   # run_release <token>
+  SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
+    PARK_CLAIM_TOKEN="${1-}" bash -c "$BLOCK_RELEASE" 2>/dev/null
+}
+
 seed_day_state
-check_eq "record: writes on a park it still owns" "PARK_RECORD=written" "$(run_record false | tail -1)"
+CLAIM_TOK="$(claim_and_token)"
+if [[ "$CLAIM_TOK" =~ ^park-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]+$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — claim mints a unique claim token ($CLAIM_TOK)"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — claim minted no usable token (got '$CLAIM_TOK')"
+fi
+# Uniqueness is the property the token exists for, and neither of the first two
+# halves can supply it: a reused PID inside the same second agrees on both, which
+# is exactly the collision the nonce has to close (#1656 review). Mint a second
+# claim and compare the NONCE halves — this harness runs each claim in its own
+# `bash -c`, so `$$` differs here and comparing whole tokens would pass on the
+# PID alone, proving nothing about the nonce.
+UNIQ_TOK_A="$CLAIM_TOK"
+seed_day_state
+UNIQ_TOK_B="$(claim_and_token)"
+if [[ -n "$UNIQ_TOK_B" && "${UNIQ_TOK_A##*-}" != "${UNIQ_TOK_B##*-}" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — same-second claims mint different nonces"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — same-second nonces collided ('${UNIQ_TOK_A##*-}' vs '${UNIQ_TOK_B##*-}')"
+fi
+# Control: the nonce carries real entropy rather than one 15-bit `$RANDOM` draw.
+# BOTH documented paths render 16 lowercase hex chars — 8 bytes of /dev/urandom,
+# or the four `%04x`-formatted `$RANDOM` draws it falls back to — so this asserts
+# the shape itself rather than a floor that only one path clears. A single
+# `${RANDOM}` — the pre-#1656 shape — is at most 5 decimal digits and fails both
+# the width and the hex class, so the check cannot pass vacuously against the
+# old token.
+UNIQ_NONCE_A="${UNIQ_TOK_A##*-}"
+if [[ "$UNIQ_NONCE_A" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — control: the nonce is 16 hex chars, not a single \$RANDOM draw"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — control: nonce '${UNIQ_TOK_A##*-}' is not the documented 16-hex-char shape"
+fi
+# The fallback is only reachable with an unreadable /dev/urandom, which this
+# harness cannot produce — so assert the documented expression directly, and
+# prove the assertion has teeth by running the pre-fix three-decimal shape
+# through the same predicate.
+FALLBACK_NONCE=$(printf '%04x%04x%04x%04x' "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}")
+if [[ "$FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — the \$RANDOM fallback matches the same 16-hex-char shape"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — fallback nonce '$FALLBACK_NONCE' does not match the urandom shape"
+fi
+# The fallback branch is unreachable in this harness, so the line above models the
+# skill's expression rather than running it. Anchor the model to the source, or a
+# changed SKILL.md fallback leaves this suite green while asserting nothing.
+require_text "the documented fallback is the four-draw %04x form this shape check models" "$SKILL" \
+  '%04x%04x%04x%04x'
+OLD_FALLBACK_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
+if [[ ! "$OLD_FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — control: the pre-fix three-decimal fallback fails that shape"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — control: three-decimal fallback '$OLD_FALLBACK_NONCE' passed, so the shape check is vacuous"
+fi
+# Restore the state the rest of this section asserts against.
+seed_day_state
+CLAIM_TOK="$(claim_and_token)"
+check_eq "claim persists its token"       "$CLAIM_TOK"     "$(day_get park_claim_token)"
+check_eq "claim persists rolling_window"  "rolling_window" "$(day_get limit_kind)"
+check_eq "record: writes on a park it still owns" "PARK_RECORD=written" "$(run_record false "$CLAIM_TOK" | tail -1)"
+check_eq "record: retires the claim token" "null" "$(day_get park_claim_token)"
 check_eq "record: rolling_window kind"   "rolling_window" "$(day_get limit_kind)"
 check_eq "record: cause is preemptive"   "preemptive"     "$(day_get limit_cause)"
 check_eq "record: probe bound persisted" "12"             "$(day_get limit_probe_fires_remaining)"
@@ -318,20 +400,35 @@ check_eq "record: thrash counter"        "1"              "$(day_get consecutive
 check_eq "record: refill.paused untouched" "null" "$(jq -r --arg k "$REPO_KEY" '.repos[$k].refill // "null"' "$STATE_FILE")"
 
 seed_day_state
-run_record true >/dev/null
+run_record true "$(claim_and_token "$(( $(date -u +%s) + 3600 ))")" >/dev/null
 check_eq "known reset: no probe bound" "null" "$(day_get limit_probe_fires_remaining)"
 check_eq "known reset: still preemptive" "preemptive" "$(day_get limit_cause)"
+
+# A lost token is a bug, not a supersession, and the two demand opposite
+# handling — so it must NOT report `superseded` (which would end the sub-step
+# silently, leaving Step 1's claim standing with nothing to finish or undo it).
+seed_day_state
+LIVE_TOK="$(claim_and_token)"
+TOKENLESS_OUT="$(run_record false "")"
+check_eq "record: an empty token fails closed" "PARK_RECORD=error rc=token" "$(printf '%s\n' "$TOKENLESS_OUT" | tail -1)"
+check_eq "token guard: no cause written"  "null"       "$(day_get limit_cause)"
+check_eq "token guard: the live claim survives" "$LIVE_TOK" "$(day_get park_claim_token)"
+printf '%s\n' "$TOKENLESS_OUT" > "$STUB_DIR/tokenless.out"
+refute_text "token guard: never reported as superseded" "$STUB_DIR/tokenless.out" 'PARK_RECORD=superseded'
 
 # Winning the Step 1 claim is not a licence to finish: a real kill can take the
 # park during the shutdown that sits between the two. The completion path must
 # then write NOTHING — otherwise it overwrites the reactive winner's cause and
 # probe bound, and goes on to arm a second wake over its identity.
+# The reactive claim retires our token in the same write that takes the slot
+# (#1596), so the record we come back to finish holds a null token, not ours.
 jq -n --arg k "$REPO_KEY" '{repos: {($k): {day: {parked_until: "2026-08-28T04:00:00Z",
   limit_kind: "rolling_window", limit_cause: "reactive", limit_probe_fires_remaining: null,
+  park_claim_token: null,
   limit_resume_task_id: "reactive-task", limit_resume_generation: "limit-gen-1",
   consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
 check_eq "record: stands down when superseded mid-shutdown" "PARK_RECORD=superseded" \
-  "$(run_record false | tail -1)"
+  "$(run_record false "park-20260828T033000Z-1234-5" | tail -1)"
 check_eq "superseded: reactive cause survives"      "reactive"       "$(day_get limit_cause)"
 check_eq "superseded: reactive wake survives"       "reactive-task"  "$(day_get limit_resume_task_id)"
 check_eq "superseded: no probe bound written"       "null"           "$(day_get limit_probe_fires_remaining)"
@@ -371,6 +468,7 @@ check_eq "2D.6: kind persisted"           "rolling_window"       "$(day_get limi
 check_eq "2D.6: no probe bound"           "null"                 "$(day_get limit_probe_fires_remaining)"
 check_eq "2D.6: thrash counter written"   "1"                    "$(day_get consecutive_limit_hits)"
 check_eq "2D.6: wake id starts null"      "null"                 "$(day_get limit_resume_task_id)"
+check_eq "2D.6: claim token starts null"  "null"                 "$(day_get park_claim_token)"
 check_eq "2D.6: refill.paused untouched"  "null" "$(jq -r --arg k "$REPO_KEY" '.repos[$k].refill // "null"' "$STATE_FILE")"
 
 # A pre-emptive park already holds the slot AND has armed its wake. The reactive
@@ -407,6 +505,78 @@ case "$BAD_2D6_OUT" in
   *) FAIL=$((FAIL + 1)); echo "FAIL — 2D.6 reported '$BAD_2D6_OUT' when the helper could not run" ;;
 esac
 check_eq "helper failure: nothing was claimed" "null" "$(day_get limit_cause)"
+
+# A 2D.7 claim caught mid-assembly is exactly the state the reactive path may
+# land on, and the #1596 point is that winning the slot RETIRES that claim's
+# token in the same atomic write — otherwise the claim goes on to finish over
+# the record this write just created.
+seed_day_state
+INFLIGHT_TOK="$(claim_and_token)"
+check_eq "2D.6: an in-flight claim loses the cause compare" "PARK_CLAIM=won" "$(run_2d6 | tail -1)"
+check_eq "2D.6: the in-flight claim token is retired" "null" "$(day_get park_claim_token)"
+check_eq "2D.6: the reactive record is the survivor"  "reactive" "$(day_get limit_cause)"
+# ...and the retired claim can no longer finish or release over it.
+check_eq "retired claim: its finalisation stands down" "PARK_RECORD=superseded" \
+  "$(run_record false "$INFLIGHT_TOK" | tail -1)"
+check_eq "retired claim: its release stands down"      "PARK_RELEASE=superseded" \
+  "$(run_release "$INFLIGHT_TOK" | tail -1)"
+check_eq "retired claim: reactive park intact"  "2026-08-28T04:00:00Z" "$(day_get parked_until)"
+check_eq "retired claim: reactive cause intact" "reactive"             "$(day_get limit_cause)"
+
+# ---------------------------------------------------------------------------
+echo "== Stale release vs. a REUSED slot (#1596) =="
+# ---------------------------------------------------------------------------
+# The interleaving the ticket describes: our claim opens, is released, and the
+# slot is re-claimed pre-emptively — then OUR release finally fires. Under the
+# old `--cas limit_cause=null --expect null` gate the cause is null in both
+# claims' assembly windows, so the stale release matched and cleared a live
+# park. The token has no such collision: it is a different VALUE, not a shared
+# null.
+
+seed_day_state
+TOK_1="$(claim_and_token)"
+check_eq "reuse: first claim released cleanly" "PARK_RELEASE=released" "$(run_release "$TOK_1" | tail -1)"
+check_eq "reuse: release cleared parked_until" "null" "$(day_get parked_until)"
+check_eq "reuse: release cleared the kind"     "null" "$(day_get limit_kind)"
+check_eq "reuse: release retired the token"    "null" "$(day_get park_claim_token)"
+
+TOK_2="$(claim_and_token)"
+if [[ -n "$TOK_2" && "$TOK_2" != "$TOK_1" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — reuse: the second claim minted a DIFFERENT token"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL — reuse: second claim token '$TOK_2' did not differ from '$TOK_1'"
+fi
+REUSED_UNTIL="$(day_get parked_until)"
+
+# The stale release from claim 1 arrives late. Every assertion below is paired
+# with a state read, per this file's non-vacuity rule: a status line alone
+# cannot show that nothing was cleared.
+check_eq "stale release: stands down on a reused slot" "PARK_RELEASE=superseded" \
+  "$(run_release "$TOK_1" | tail -1)"
+check_eq "stale release: reused claim token untouched" "$TOK_2"        "$(day_get park_claim_token)"
+check_eq "stale release: reused parked_until untouched" "$REUSED_UNTIL" "$(day_get parked_until)"
+check_eq "stale release: reused kind untouched"        "rolling_window" "$(day_get limit_kind)"
+check_eq "stale release: reused probe sentinel untouched" "-1"          "$(day_get limit_probe_fires_remaining)"
+
+# Stale FINALISATION on the same reused slot: it must write nothing either,
+# otherwise the second claim's record is completed by the first claim's data.
+check_eq "stale finalisation: stands down on a reused slot" "PARK_RECORD=superseded" \
+  "$(run_record false "$TOK_1" | tail -1)"
+check_eq "stale finalisation: no cause written"        "null"   "$(day_get limit_cause)"
+check_eq "stale finalisation: no probe bound written"  "-1"     "$(day_get limit_probe_fires_remaining)"
+check_eq "stale finalisation: thrash counter untouched" "0"     "$(day_get consecutive_limit_hits)"
+check_eq "stale finalisation: reused claim token untouched" "$TOK_2" "$(day_get park_claim_token)"
+
+# NEGATIVE CONTROL — the pre-fix release, keyed on `limit_cause=null`, run
+# against the identical fixture. It must CLOBBER the reused slot; if it does
+# not, the case above is proving nothing and the guard passes vacuously.
+CONTROL_RC=0
+"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect null \
+  --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+  >/dev/null 2>&1 || CONTROL_RC=$?
+check_eq "control: the untokenized release MATCHES the reused slot" "0"    "$CONTROL_RC"
+check_eq "control: and clears the live park it never owned"         "null" "$(day_get parked_until)"
 
 # ---------------------------------------------------------------------------
 echo "== Concurrent park race (AC 4) =="
@@ -794,6 +964,7 @@ check_eq "record: refused write left the counter alone" "0" "$(day_get consecuti
 seed_day_state
 RECORD_OUT=$(SESSION_STATE_SH="$FAULT_SH" STATE_FILE="$STATE_FILE" REPO_KEY="$REPO_KEY" \
   PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 FAULT_ON=cas FAULT_RC=6 \
+  PARK_CLAIM_TOKEN="park-20260828T033000Z-1234-5" \
   bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
 check_eq "record: failed record write reports error" "PARK_RECORD=error rc=6" "$RECORD_OUT"
 check_eq "record: failed record write claimed no cause" "null" "$(day_get limit_cause)"
@@ -849,7 +1020,8 @@ assert_bound_precedes_expiry "2D.5 qualifies its expiry shortcut"     'may recov
 # the outcome it guarded still has to hold.
 seed_day_state
 RECORD_OUT=$(SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
-  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
+  PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 \
+  PARK_CLAIM_TOKEN="$(claim_and_token)" bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
 check_eq "record: uncontended write still reports written" "PARK_RECORD=written" "$RECORD_OUT"
 
 # ---------------------------------------------------------------------------
@@ -862,15 +1034,20 @@ echo "== Atomic park record + wake identity (issue #1445) =="
 # path's, never a blend. The two writers below carry DIFFERENT metadata, so a
 # mixed record is detectable rather than merely improbable.
 seed_day_state
+RACE_TOK="$(claim_and_token)"
 RC_P_FILE="$STUB_DIR/rc_preemptive"; RC_R_FILE="$STUB_DIR/rc_reactive"
 ( SESSION_STATE_SH="$SESSION_STATE_SH" REPO_KEY="$REPO_KEY" \
-    PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 PARK_CLAIM_TOKEN="$RACE_TOK" \
     bash -c "$BLOCK_RECORD" >"$STUB_DIR/out_preemptive" 2>/dev/null
   tail -1 "$STUB_DIR/out_preemptive" > "$RC_P_FILE" ) &
+# Shaped like the real reactive claim, `--set park_claim_token=null` included
+# (#1596): retiring the in-flight token in the same write that takes the cause is
+# what keeps the two writers mutually exclusive from BOTH directions.
 ( "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" \
     --expect null \
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"rolling_window\"" \
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
     --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=99" >/dev/null 2>&1
   printf 'rc=%s' "$?" > "$RC_R_FILE" ) &
 wait
@@ -937,22 +1114,25 @@ check_eq "wake: an unstoppable orphan reports stranded" "WAKE_PUBLISH=stranded" 
   "$(run_wake probe-task probe-gen-4)"
 make_taskstop_stub 0
 
-# The abort release must be keyed on `limit_cause`, never on the claim's own
-# timestamp. With a KNOWN reset, 2D.7's PARK_EPOCH *is* the vendor reset epoch,
-# and a reactive kill parking off the same signal computes the same instant — so
+# The abort release must be keyed on the claim's own token (#1596), never on the
+# claim's timestamp (#1445's finding) and no longer on `limit_cause` alone. With
+# a KNOWN reset, 2D.7's PARK_EPOCH *is* the vendor reset epoch, and a reactive
+# kill parking off the same signal computes the same instant — so
 # `--expect "<our timestamp>"` matches a park that is not ours and clears a real
 # one while its wake stays armed. The collision is constructed exactly here: both
-# paths carry the identical parked_until.
+# paths carry the identical parked_until. The token is unaffected by it, because
+# a reactive claim retires the token rather than reproducing it.
 COLLIDING_TS="2026-08-28T09:00:00Z"
-jq -n --arg k "$REPO_KEY" --arg ts "$COLLIDING_TS" '{repos: {($k): {day: {
-    parked_until: $ts, limit_kind: "rolling_window", limit_cause: "reactive",
-    limit_probe_fires_remaining: null, limit_resume_task_id: "reactive-task",
-    limit_resume_generation: "limit-gen-1", consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
-RELEASE_RC=0
-"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect null \
-  --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" >/dev/null 2>&1 || RELEASE_RC=$?
-check_eq "release: loses to a reactive park sharing the same timestamp" "7" "$RELEASE_RC"
+seed_day_state
+COLLIDING_TOK="$(claim_and_token "$(iso_to_epoch "$COLLIDING_TS")")"
+jq --arg k "$REPO_KEY" --arg ts "$COLLIDING_TS" '.repos[$k].day.parked_until=$ts
+  | .repos[$k].day.limit_cause="reactive" | .repos[$k].day.park_claim_token=null
+  | .repos[$k].day.limit_resume_task_id="reactive-task"
+  | .repos[$k].day.limit_resume_generation="limit-gen-1"
+  | .repos[$k].day.consecutive_limit_hits=2' "$STATE_FILE" > "$STATE_FILE.tmp" \
+  && mv "$STATE_FILE.tmp" "$STATE_FILE"
+check_eq "release: loses to a reactive park sharing the same timestamp" "PARK_RELEASE=superseded" \
+  "$(run_release "$COLLIDING_TOK" | tail -1)"
 check_eq "release: the reactive park survives" "$COLLIDING_TS" "$(day_get parked_until)"
 check_eq "release: the reactive wake survives"  "reactive-task" "$(day_get limit_resume_task_id)"
 # Non-vacuity: the old timestamp-keyed shape would have cleared that same park,
@@ -964,16 +1144,54 @@ check_eq "control: the timestamp-keyed release WOULD have cleared it" "0" "$STAL
 check_eq "control: ...leaving a wake armed over no park" "null" "$(day_get parked_until)"
 # Positive control: an abort with no competing park still clears its own claim.
 seed_day_state
-run_claim >/dev/null
-OWN_RELEASE_RC=0
-"$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].day.limit_cause=null" --expect null \
-  --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" >/dev/null 2>&1 || OWN_RELEASE_RC=$?
-check_eq "release: an uncontended abort clears its own claim" "0" "$OWN_RELEASE_RC"
+OWN_TOK="$(claim_and_token)"
+check_eq "release: an uncontended abort clears its own claim" "PARK_RELEASE=released" \
+  "$(run_release "$OWN_TOK" | tail -1)"
 check_eq "release: parked_until cleared" "null" "$(day_get parked_until)"
+check_eq "release: the claim's kind retired with it" "null" "$(day_get limit_kind)"
 check_eq "release: the -1 sentinel retired with it" "null" "$(day_get limit_probe_fires_remaining)"
-require_text "the release is keyed on limit_cause, not the timestamp" "$SKILL" \
-  'Gate the release on `limit_cause`, not on your own timestamp'
+check_eq "release: the token retired with it" "null" "$(day_get park_claim_token)"
+# A release with no token in hand cannot prove ownership, so it must clear
+# nothing rather than fall through to a match-anything compare.
+seed_day_state
+NOTOK_TOK="$(claim_and_token)"
+check_eq "release: an empty token fails closed" "PARK_RELEASE=error rc=token" "$(run_release "" | tail -1)"
+check_eq "release token guard: the claim survives" "$NOTOK_TOK" "$(day_get park_claim_token)"
+require_text "the release is keyed on the claim token, not the timestamp or the cause" "$SKILL" \
+  'Gate the release on your claim token, not on your own timestamp and not on `limit_cause`'
+
+# Exit 6 is a lock timeout and documented as retryable, so the release retries it
+# once instead of abandoning its own claim. Stub `session-state.sh` to fail the
+# first write with 6 and delegate every later call to the real script: a release
+# that retries reports `released` and leaves the record cleared, one that does not
+# reports `error rc=6` and leaves its token standing.
+RETRY_STUB_DIR="$(mktemp -d)"
+cat >"$RETRY_STUB_DIR/session-state.sh" <<STUB
+#!/usr/bin/env bash
+if [ ! -e "$RETRY_STUB_DIR/fired" ]; then : >"$RETRY_STUB_DIR/fired"; exit 6; fi
+exec "$SESSION_STATE_SH" "\$@"
+STUB
+chmod +x "$RETRY_STUB_DIR/session-state.sh"
+seed_day_state
+RETRY_TOK="$(claim_and_token)"
+RETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$REPO_KEY" \
+  PARK_CLAIM_TOKEN="$RETRY_TOK" bash -c "$BLOCK_RELEASE" 2>/dev/null | tail -1)"
+check_eq "release: a lock timeout is retried, not abandoned" "PARK_RELEASE=released" "$RETRY_OUT"
+check_eq "release retry: the record really cleared" "null" "$(day_get park_claim_token)"
+check_eq "release retry: parked_until cleared with it" "null" "$(day_get parked_until)"
+# Control: the stub fires only once, so a release that never retried would have
+# stopped at the timeout. Re-arm it against a release that cannot win anyway and
+# confirm the first call is what the stub consumed.
+rm -f "$RETRY_STUB_DIR/fired"
+seed_day_state
+NORETRY_TOK="$(claim_and_token)"
+NORETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$REPO_KEY" \
+  PARK_CLAIM_TOKEN="not-$NORETRY_TOK" bash -c "$BLOCK_RELEASE" 2>/dev/null | tail -1)"
+check_eq "release retry: a retried non-owner still stands down" "PARK_RELEASE=superseded" "$NORETRY_OUT"
+check_eq "release retry control: the real claim survives it" "$NORETRY_TOK" "$(day_get park_claim_token)"
+rm -rf "$RETRY_STUB_DIR"
+require_text "the release retries a documented-retryable lock timeout" "$SKILL" \
+  'Exit 6 is a lock timeout and documented as retryable'
 
 # ---------------------------------------------------------------------------
 echo "== Three-valued limit_probe_fires_remaining (issue #1445) =="
@@ -995,7 +1213,7 @@ check_eq "claim: known reset keeps null (legacy meaning preserved)" "null" \
 # The record replaces the sentinel with the real bound, in its own single write.
 seed_day_state
 run_claim >/dev/null
-run_record false >/dev/null
+run_record false "$(day_get park_claim_token)" >/dev/null
 check_eq "record: the real bound replaces the sentinel" "12" \
   "$(day_get limit_probe_fires_remaining)"
 
@@ -1086,8 +1304,15 @@ if [[ -n "$CTRL_DIR" ]]; then
   # The blocks themselves, against that control. `written` / `armed` here would
   # mean the sections above pass without the primitive — i.e. prove nothing.
   seed_day_state
+  # Claim through the REAL helper first: an assignment prefix is visible to the
+  # expansions of the assignments after it, so inlining this beside
+  # SESSION_STATE_SH="$CTRL_SS" would claim through the control and hand the
+  # block an empty token — failing on the token guard instead of on the
+  # composition, which is the one thing this control exists to prove.
+  CTRL_CLAIM_TOKEN="$(claim_and_token)"
   CTRL_RECORD_OUT=$(SESSION_STATE_SH="$CTRL_SS" REPO_KEY="$REPO_KEY" \
     PARK_RESET_KNOWN=false PROBE_MAX_FIRES=12 NEW_HITS=1 \
+    PARK_CLAIM_TOKEN="$CTRL_CLAIM_TOKEN" \
     bash -c "$BLOCK_RECORD" 2>/dev/null | tail -1)
   check_eq "control: the park record cannot be written without composition" \
     "PARK_RECORD=error rc=2" "$CTRL_RECORD_OUT"

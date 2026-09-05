@@ -640,7 +640,7 @@ fi
 
 Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
 
-**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind` and the bound in one write. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind`, `park_claim_token` and the bound in one write. The token goes with them (#1596): it is non-null only while a 2D.7 claim is mid-assembly, and this resume ends the park that claim belongs to. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
 
 ```bash
 LIMIT_WAKE_RESOLVED=false
@@ -655,6 +655,7 @@ retire_limit_park() {
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
+    --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
     --set ".repos[\"$REPO_KEY\"].day.parked_until=null"
 }
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
