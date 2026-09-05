@@ -507,6 +507,48 @@ expect "prose fallback made discretionary rather than headless-only fails" 1 \
   'headless prose fallback for the mismatch branch' \
   make_fallback_discretionary
 
+# Wholesale deletion of the mismatch branch, with every explanatory paragraph
+# left standing. Measured: the pre-#1398 whole-file lint also catches this one
+# (5 errors), because these anchors are quoted labels and imperative sentences
+# that appear nowhere in the prose. It is kept as a plain regression test, and
+# the block-scoping claim is carried by the NEXT case, which the whole-file
+# lint provably does not catch.
+delete_mismatch_branch_keep_prose() {
+  mutate .claude/reference/chip-launching.md \
+    '/^- Mismatch (different family)/,/is the recommended path instead\./d'
+}
+
+expect "mismatch branch deleted while its prose survives fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  delete_mismatch_branch_keep_prose
+
+# The discriminating case for block scoping: the instruction leaves the fence
+# and reappears as commentary underneath it, so the bytes a chip actually ships
+# no longer carry it while the phrase is still somewhere in the file. Verified
+# against the pre-#1398 script: whole-file greps report OK here (exit 0), and
+# only the block-scoped check fails it. That delta is the whole reason
+# require_guard_pattern exists.
+move_menu_instruction_out_of_fence() {
+  mutate .claude/reference/chip-launching.md \
+    's/^  STOP\. Do no other work\. Surface the choice with AskUserQuestion — one$/  STOP. Do no other work. Report both models and wait. (Threads should/'
+  append_line .claude/reference/chip-launching.md \
+    'Commentary: Surface the choice with AskUserQuestion — one question naming both.'
+}
+
+expect "menu instruction moved out of the fence into prose fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  move_menu_instruction_out_of_fence
+
+# A check that cannot run must never report OK (the silent-pass shape): with no
+# fenced preamble at all, every block-scoped assertion has to fail loudly.
+strip_preamble_fence() {
+  mutate .claude/reference/chip-launching.md '/^```text$/,/^```$/{ /MODEL GUARD/!d; }'
+}
+
+expect "unextractable preamble block fails loudly rather than passing" 1 \
+  'MODEL GUARD preamble block not found or empty|Missing required' \
+  strip_preamble_fence
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else
