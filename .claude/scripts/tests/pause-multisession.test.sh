@@ -808,6 +808,110 @@ check_eq "singleton receipt keeps only the later session" "$SESS_B" \
   "$(ss --get ".repos[\"$REPO_KEY\"].resume" 2>/dev/null | jq -r '.session_id')"
 
 # ---------------------------------------------------------------------------
+echo "== A slot holding the STRING \"null\" is damaged, not absent (issue #1629) =="
+# ---------------------------------------------------------------------------
+# #1611 closed the `""` half of this. The `"null"` half was unreachable from the
+# readers: raw `--get` prints the same four characters for an absent path, a
+# stored JSON null, AND a slot corrupted into the JSON STRING "null", and
+# reserving that text for "absent" is the only signal raw output offers. So a
+# corrupt board read as "nothing parked" with no reader bug to point at. The fix
+# is the interface: the three readers now read pause slots with `--get-json`.
+#
+# These assertions drive the REAL shell read path — a seeded state file, read by
+# the real script, coerced by each reader's own extracted function — not a
+# hand-written value handed straight to the classifier.
+reset_state
+ss --set ".repos[\"$REPO_KEY\"].pauses=\"null\"" >/dev/null 2>&1
+check_eq "the seeded slot really does hold the STRING \"null\"" "string" \
+  "$(jq -r --arg k "$REPO_KEY" '.repos[$k].pauses | type' "$STATE_FILE")"
+
+# NEGATIVE CONTROL: the conflation the readers could not see past.
+GET_RAW="$(ss --get ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+GET_JSON="$(ss --get-json ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+check_eq "--get prints the corrupt slot as bare null (the defect)" "null" "$GET_RAW"
+check_eq "--get-json prints it quoted, so it is distinguishable" '"null"' "$GET_JSON"
+
+# Each reader's own coercion, extracted and run as-is, on BOTH wire formats.
+# `--get` output classifies absent (the bug); `--get-json` output classifies
+# unreadable (the fix). Same function, same fixture — only the read mode moved.
+eval "$(awk '/^pause_slot_arg\(\) \{/,/^\}/' "$SWEEP")"
+eval "$(awk '/^_json_or_null\(\) \{/,/^\}/' "$PAUSE_RESUME_SKILL")"
+
+# Every `--get-json` classification row below is paired with the value row above
+# (`--get-json prints it quoted`), which is what keeps them from passing
+# vacuously: on a tree with no --get-json the read returns EMPTY, and empty is
+# `unreadable` to all three coercions for an entirely different reason. Assert
+# the input reached them, not just the verdict.
+check_eq "the --get-json read produced input, not an empty failure" "1" \
+  "$([[ -n "$GET_JSON" ]] && echo 1 || echo 0)"
+check_eq "sweep + --get would call the corrupt slot ABSENT (pre-fix behaviour)" \
+  "absent"     "$(eval_class "$CLASS_SWEEP" "$(pause_slot_arg "$GET_RAW")" map)"
+check_eq "sweep + --get-json calls it unreadable" \
+  "unreadable" "$(eval_class "$CLASS_SWEEP" "$(pause_slot_arg "$GET_JSON")" map)"
+check_eq "pause-resume + --get would call it ABSENT (pre-fix behaviour)" \
+  "absent"     "$(eval_class "$CLASS_SKILL" "$(_json_or_null "$GET_RAW")" map)"
+check_eq "pause-resume + --get-json calls it unreadable" \
+  "unreadable" "$(eval_class "$CLASS_SKILL" "$(_json_or_null "$GET_JSON")" map)"
+check_eq "go-on + --get would call it ABSENT (pre-fix behaviour)" \
+  "absent"     "$(eval_class "$CLASS_GOON" "$(jq -nc --arg v "$GET_RAW"  "$PARSE_GOON"' $v | parse')" map)"
+check_eq "go-on + --get-json calls it unreadable" \
+  "unreadable" "$(eval_class "$CLASS_GOON" "$(jq -nc --arg v "$GET_JSON" "$PARSE_GOON"' $v | parse')" map)"
+
+echo "-- the legacy singletons take the same rule --"
+reset_state
+ss --set ".repos[\"$REPO_KEY\"].pause=\"null\"" >/dev/null 2>&1
+ss --set ".repos[\"$REPO_KEY\"].suspend=\"null\"" >/dev/null 2>&1
+for _slot in pause suspend; do
+  _j="$(ss --get-json ".repos[\"$REPO_KEY\"].$_slot" 2>/dev/null)"
+  # Paired with the classification rows below so they cannot pass vacuously: a
+  # tree without --get-json returns EMPTY here, which every coercion also calls
+  # `unreadable`. This row is what distinguishes "read it and judged it damaged"
+  # from "could not read it at all".
+  check_eq ".$_slot reads back as a quoted JSON string under --get-json" '"null"' "$_j"
+  check_eq "sweep calls a .$_slot holding \"null\" unreadable" \
+    "unreadable" "$(eval_class "$CLASS_SWEEP" "$(pause_slot_arg "$_j")" slot)"
+  check_eq "pause-resume calls a .$_slot holding \"null\" unreadable" \
+    "unreadable" "$(eval_class "$CLASS_SKILL" "$(_json_or_null "$_j")" slot)"
+  check_eq "go-on calls a .$_slot holding \"null\" unreadable" \
+    "unreadable" "$(eval_class "$CLASS_GOON" "$(jq -nc --arg v "$_j" "$PARSE_GOON"' $v | parse')" slot)"
+done
+
+echo "-- a genuinely absent slot is still absent, and a healthy board still present --"
+# Without these the fix could pass by calling everything unreadable.
+reset_state
+ABSENT_JSON="$(ss --set '.schema_version=2' >/dev/null 2>&1; ss --get-json ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+check_eq "an absent pauses slot reads as bare null under --get-json" "null" "$ABSENT_JSON"
+check_eq "sweep still calls it absent"        "absent" "$(eval_class "$CLASS_SWEEP" "$(pause_slot_arg "$ABSENT_JSON")" map)"
+check_eq "pause-resume still calls it absent" "absent" "$(eval_class "$CLASS_SKILL" "$(_json_or_null "$ABSENT_JSON")" map)"
+check_eq "go-on still calls it absent"        "absent" \
+  "$(eval_class "$CLASS_GOON" "$(jq -nc --arg v "$ABSENT_JSON" "$PARSE_GOON"' $v | parse')" map)"
+
+reset_state
+ss --set ".repos[\"$REPO_KEY\"].pauses={\"$SESS_A\":$(board "$SESS_A" "$AT_A" 1573 true)}" >/dev/null 2>&1
+HEALTHY_JSON="$(ss --get-json ".repos[\"$REPO_KEY\"].pauses" 2>/dev/null)"
+check_eq "sweep still calls a healthy keyed board present"        "present" "$(eval_class "$CLASS_SWEEP" "$(pause_slot_arg "$HEALTHY_JSON")" map)"
+check_eq "pause-resume still calls a healthy keyed board present" "present" "$(eval_class "$CLASS_SKILL" "$(_json_or_null "$HEALTHY_JSON")" map)"
+check_eq "go-on still calls a healthy keyed board present"        "present" \
+  "$(eval_class "$CLASS_GOON" "$(jq -nc --arg v "$HEALTHY_JSON" "$PARSE_GOON"' $v | parse')" map)"
+check_eq "and the records survive the round trip" "1" \
+  "$(select_records "$HEALTHY_JSON" null null | jq -r 'length')"
+
+echo "-- all three readers actually read the pause slots with --get-json --"
+# The pin. A future edit that quietly reverts a pause slot to raw `--get` puts
+# the invisible-corruption hole straight back, and nothing above would catch it
+# because every assertion here feeds the coercions by hand.
+check_eq "candidate-ownership.sh reads its three pause slots with --get-json" "3" \
+  "$(grep -cE 'ss_get_json "\.repos\[\\"\$REPO_KEY\\"\]\.(pauses|pause|suspend)"' "$SWEEP")"
+check_eq "candidate-ownership.sh reads no pause slot with plain --get" "0" \
+  "$(grep -cE '^[^#]*ss_get "\.repos\[\\"\$REPO_KEY\\"\]\.(pauses|pause|suspend)"' "$SWEEP")"
+check_eq "/pause-resume _read_slot uses --get-json" "1" \
+  "$(grep -c -- 'SLOT_VALUE=$("$SESSION_STATE_SH" --get-json "$1"' "$PAUSE_RESUME_SKILL")"
+check_eq "/go-on probe B uses --get-json for its slot loop" "1" \
+  "$(grep -c -- 'SLOT_RAW=$("$SESSION_STATE_SH" --get-json ' "$GO_ON_SKILL")"
+check_eq "and session-state.sh actually provides --get-json" "1" \
+  "$(grep -c -- '--get|--get-json)' "$SCRIPT")"
+
+# ---------------------------------------------------------------------------
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then

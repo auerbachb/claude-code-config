@@ -30,7 +30,9 @@ The sweep adds **no new registry**. It reads the same sources `/wave` Step 2 and
 | `gh issue list --label in-progress` | once, batched | the cheap claim index (`/wave`'s batching pattern) |
 | `active-work-cap.sh --json` | once | `offered_issue_nums` — a first-pass "already spoken for" signal |
 | `gh pr list --state open` | once | open PRs and their closing refs, joining issue → PR → branch |
-| `session-state.sh --get .repos[<key>].pause` | once | parked units, their stopping point, the marker path |
+| `session-state.sh --get-json .repos[<key>].pauses` | once | the session-keyed pause boards: parked units, their stopping point, the marker path |
+| `session-state.sh --get-json .repos[<key>].pause` | once | the legacy pause singleton, read as a union member alongside `.pauses` |
+| `session-state.sh --get-json .repos[<key>].suspend` | once | the pre-#1310 legacy singleton, same union |
 | `session-state.sh --get .repos[<key>].background_tasks` | once | per-task owner, session id, status, recovery path |
 | `session-state.sh --get .repos[<key>].execution_pauses` | once | session-scoped launch gates — what makes an owner *paused* rather than dead |
 | `session-state.sh --get .pmm_active` / `.pmm` | once | the paused PR fleet and the PRs it held |
@@ -38,7 +40,9 @@ The sweep adds **no new registry**. It reads the same sources `/wave` Step 2 and
 | `~/.claude/handoffs/pause-*.md`, `suspend-*.md`, `portable-handoff-*.md` | once, globbed (`*-checkpoint.md` excluded) | resume markers naming the issue, and the session id in the filename |
 | `git for-each-ref` | per candidate, on demand | a surviving `issue-N-*` branch — the adoption source of last resort |
 
-`.pause`, `.day`, `.resume`, and `.execution_pauses` are **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`), so each is fetched by explicit `--get`. A sweep built on `--session-view` would report every armed pause as absent.
+`.pauses`, `.pause`, `.suspend`, `.day`, `.resume`, and `.execution_pauses` are **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo`), so each is fetched by an explicit path read. A sweep built on `--session-view` would report every armed pause as absent.
+
+The three **pause** slots are read with `--get-json`, not `--get` (issue #1629): raw output prints the same bare `null` for an absent slot, a stored JSON `null`, and a slot corrupted into the JSON string `"null"`, so the sweep would report a damaged board as "nothing parked". `--get-json` keeps the JSON type, and the corrupt slot classifies `unreadable` and is named. The non-pause rows stay on `--get`, whose consumers want the raw scalar.
 
 Each of those also has to be addressed at its **repo-scoped** path. `session-state.sh` transparently rewrites only a leading `.prs` or `.root_repo` into the active repo's scope; everything else is read literally. `execution-pause.sh` writes solely to `.repos[<key>].execution_pauses[<session>]`, so a top-level `.execution_pauses` read matches nothing and every `/end` and `/pause` launch gate is invisible to the sweep — the same trap the `.pause` / `.background_tasks` rows above avoid, and one a passing test suite will not catch unless a negative control pins the top-level shape as *not* the contract.
 

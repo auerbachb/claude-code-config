@@ -17,6 +17,7 @@
 #
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
+#   session-state.sh [--repo <owner/name>] --get-json <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
 #   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
 #   session-state.sh --remove-agent <agent-id> [--remove-agent ...] [--set ...]
@@ -107,6 +108,36 @@
 #                      state file does not exist; exits 4 on jq parse errors.
 #                      Returns "null" with exit 0 if the path is absent but
 #                      the file is a valid JSON object — matches jq semantics.
+#
+#                      Raw output is LOSSY by design (issue #1629): an absent
+#                      path, a stored JSON `null`, and a stored JSON STRING
+#                      "null" all print the same four characters, and a stored
+#                      `""` prints nothing at all. Every caller that compares
+#                      stdout to the literal `null` therefore reads a slot
+#                      holding the string "null" as absent. That is fine for
+#                      the many callers whose paths can only ever hold a
+#                      number, a SHA, or a flag; a caller that must tell
+#                      "nothing is here" from "something corrupt is here"
+#                      wants --get-json instead.
+#
+#   --get-json <path>  Identical to --get in every guard, scoping, migration,
+#                      and exit code — it runs the SAME execution block — but
+#                      prints the value as JSON (`jq -c`) instead of raw. That
+#                      makes the four states above distinct on the wire:
+#                        absent path        -> null
+#                        stored JSON null   -> null
+#                        stored string      -> "null"
+#                        stored empty string-> ""
+#                      An absent path and a stored JSON null still coincide,
+#                      as they do in jq itself — the distinction this mode
+#                      exists to give is absent-vs-CORRUPT, which is what the
+#                      pause-source readers (/pause-resume Step 1, /go-on
+#                      probe B, candidate-ownership.sh) need so a damaged
+#                      board is never reported as "nothing parked".
+#                      Exit codes match --get exactly: 3 = no state file,
+#                      4 = jq parse error, 2 = no jq path. --get and
+#                      --get-json are mutually exclusive, and each may be
+#                      given at most once.
 #
 #   --repo-key         Print the resolved repo key (see REPO SCOPING) and
 #                      exit 0. For consumers that must build their own jq
@@ -203,13 +234,16 @@
 #                      fixes and why the field is now a keyed map.
 #
 # EXIT STATUS
-#   0  Success — value printed (--get) or write completed (--set). A --get on
-#      a corrupted known-typed field (see FIELD-TYPE CONTRACT) also exits 0,
-#      printing a safe default instead of the corrupt value.
+#   0  Success — value printed (--get/--get-json) or write completed (--set).
+#      A --get/--get-json on a corrupted known-typed field (see FIELD-TYPE
+#      CONTRACT) also exits 0, printing a safe default instead of the corrupt
+#      value.
 #   2  Usage error — missing/invalid mode, unknown flag, malformed --set
-#      argument (no `=`), no jq path given for --get, or a --repo value that
+#      argument (no `=`), no jq path given for --get/--get-json, both of those
+#      flags given together or either given twice, or a --repo value that
 #      is not a plausible repo key (`[A-Za-z0-9._/-]+`).
-#   3  State file missing on --get. (--set creates the file from `{}`.)
+#   3  State file missing on --get/--get-json. (--set creates the file from
+#      `{}`.)
 #   4  jq failed to parse the file or evaluate the path/expression, OR a
 #      --set or --cas would leave a known-typed field (see FIELD-TYPE
 #      CONTRACT) holding the wrong JSON type — the write is rejected and the
@@ -254,7 +288,7 @@
 #   wedge every future session. Full contract, tunables, and failure modes:
 #   `.claude/scripts/state-lock.sh`.
 #
-#   --get does NOT lock: `mv` is atomic, so a reader always observes either
+#   --get/--get-json do NOT lock: `mv` is atomic, so a reader always observes either
 #   the pre-write or the post-write document, never a partial one. Reads stay
 #   contention-free.
 #
@@ -321,7 +355,8 @@
 #   therefore rejects the WHOLE invocation (exit 4, nothing written), exactly
 #   as a wrong-typed value in a multi---set batch already did (issue #1445).
 #
-#   --get on a known top-level field whose *stored* value doesn't match the
+#   --get (and --get-json, which shares the block) on a known top-level field
+#   whose *stored* value doesn't match the
 #   contract (state corrupted before this guard existed, or written by
 #   something bypassing this script) prints a warning to stderr and returns
 #   a safe default (`[]`/`{}`) on stdout instead of the corrupt value,
@@ -333,6 +368,8 @@
 #
 # OUTPUT
 #   --get: raw value on stdout (one line per jq output, like `jq -r`).
+#   --get-json: the same value as JSON on stdout (one line per jq output, like
+#          `jq -c`), so `null`, the string `"null"`, and `""` are distinct.
 #   --set: nothing on stdout when the write succeeds.
 #   stderr: one-line error messages on failure.
 #
@@ -357,6 +394,15 @@
 #   # Read a value:
 #   session-state.sh --get '.greptile_daily.reviews_used'
 #   # -> 3
+#
+#   # Read a value WITHOUT losing its JSON type (issue #1629). Distinguishing
+#   # an absent slot from one corrupted into the string "null" is the whole
+#   # point — with --get both of these print `null`:
+#   session-state.sh --get-json '.repos["org/repo"].pauses'
+#   # absent          -> null
+#   # stored as null  -> null
+#   # stored as "null"-> "null"      (corrupt: a string, not a record map)
+#   # stored as ""    -> ""          (corrupt: --get would print nothing)
 #
 #   # Set a single value (string auto-detected). The path is scoped to the
 #   # repo of the current working directory, so this writes
@@ -1379,6 +1425,16 @@ add_remove_agent_stages() {
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
+# Output format for the shared read block (issue #1629). --get sets `raw`
+# (jq -r, the historical, lossy contract every existing caller depends on);
+# --get-json sets `json` (jq -c), which is what keeps an absent path, a stored
+# JSON null, the STRING "null", and "" distinguishable on stdout. Both flags
+# run the SAME MODE="get" execution block — only this variable differs — so
+# the two modes can never drift apart in their guards, scoping, or exit codes.
+GET_OUTPUT="raw"
+# Which spelling the caller actually typed, so the usage errors below name that
+# flag rather than always saying "--get". Empty until one of them is seen.
+GET_FLAG=""
 REPO_ARG=""
 RAW_PATH="0"
 DRY_RUN="0"
@@ -1447,17 +1503,29 @@ while [[ $# -gt 0 ]]; do
       MODE="migrate"
       shift
       ;;
-    --get)
+    --get|--get-json)
+      # Two spellings of one mode: they differ ONLY in the final output format
+      # (issue #1629). Sharing MODE="get" is deliberate — the file-missing,
+      # single-object, migration, scoping, and field-type self-heal guards are
+      # then literally the same code for both, so a fix to one is a fix to both.
       if [[ -n "$MODE" && "$MODE" != "get" ]]; then
-        die_usage "--get cannot be combined with --$MODE"
+        die_usage "$1 cannot be combined with --$MODE"
+      fi
+      # `-n "$GET_FLAG"` (not `-n "$GET_PATH"`) is the repeat check: a path can
+      # legitimately be the empty string, and testing the path would let
+      # `--get "" --get-json .x` through as if only one flag had been given.
+      if [[ -n "$GET_FLAG" ]]; then
+        if [[ "$GET_FLAG" == "$1" ]]; then
+          die_usage "$1 may only be given once"
+        fi
+        die_usage "--get and --get-json are mutually exclusive"
       fi
       if [[ $# -lt 2 ]]; then
-        die_usage "--get requires a jq path"
-      fi
-      if [[ -n "$GET_PATH" ]]; then
-        die_usage "--get may only be given once"
+        die_usage "$1 requires a jq path"
       fi
       MODE="get"
+      GET_FLAG="$1"
+      [[ "$1" == "--get-json" ]] && GET_OUTPUT="json"
       GET_PATH="$2"
       shift 2
       ;;
@@ -1557,7 +1625,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
+  die_usage "one of --get, --get-json, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
 fi
 
 # --cas requires --expect; --expect without --cas is a usage error.
@@ -1674,7 +1742,7 @@ migrate_jq_args() {
 # ============================================================================
 if [[ "$MODE" == "get" ]]; then
   if [[ -z "$GET_PATH" ]]; then
-    die_usage "--get requires a jq path"
+    die_usage "${GET_FLAG:---get} requires a jq path"
   fi
   if [[ ! -f "$STATE_FILE" ]]; then
     echo "session-state.sh: state file not found: $STATE_FILE" >&2
@@ -1742,15 +1810,26 @@ if [[ "$MODE" == "get" ]]; then
     fi
   fi
 
-  # Use jq -r so callers get the raw value (string without quotes, number
-  # as-is, etc.). jq exits non-zero on parse errors — translate to 4.
+  # --get uses jq -r so callers get the raw value (string without quotes,
+  # number as-is, etc.); --get-json uses jq -c so the value keeps its JSON
+  # type and an absent slot, a stored `null`, a stored `"null"`, and a stored
+  # `""` are four distinguishable outputs (issue #1629). Everything else about
+  # the read — the filter, the migration args, the error translation — is
+  # identical, which is the point of sharing this block.
+  #
+  # jq exits non-zero on parse errors — translate to 4.
   #
   # The migration runs in memory only: a read never rewrites the state file,
   # but it still sees legacy entries in their scoped home, so a session that
   # only ever reads is not blind to state written before the restructure.
+  if [[ "$GET_OUTPUT" == "json" ]]; then
+    get_jq_flag="-c"
+  else
+    get_jq_flag="-r"
+  fi
   jq_err="$(mktemp)"
   trap "rm -f '$jq_err' 2>/dev/null" EXIT
-  if ! jq -r --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
+  if ! jq "$get_jq_flag" --argjson __pathmap "$GET_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" \
        "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_GET_PATH" "$STATE_FILE" 2>"$jq_err"; then
     echo "session-state.sh: jq failed reading $STATE_FILE: $(cat "$jq_err")" >&2
     exit 4
