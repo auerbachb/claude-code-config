@@ -86,6 +86,12 @@ _HOOK_TIMEOUT_SECS=30
 # Reserved for everything after the git region: the publishers, hook
 # registration, trust repair, the marker work and the root-repo sync.
 _HOOK_GIT_RESERVE_SECS=9
+# Reserved for the genuinely unbounded tail after the post-region bounded calls:
+# the marker jq, the scheduling reconcile, the notice assembly and the JSON
+# emission. The publishers and the root-repo sync leg schedule against
+# `_HOOK_TIMEOUT_SECS - this`, so the 9s above no longer has to GUESS at their
+# cost — it only has to leave them room to start.
+_HOOK_TAIL_RESERVE_SECS=3
 _HOOK_MIN_BOUND_SECS=3
 _hook_t0="$(date -u +%s 2>/dev/null)" || _hook_t0=""
 _last_bound=0
@@ -97,14 +103,187 @@ _bound_declined=0
 # with no LaunchAgent, for which this hook is the only setup path.
 _setup_bound_secs=18
 _sync_bound_secs=8
+# Post-git-region ceilings (issue #1593). The symlink publishers and the
+# root-repo sync leg were left OUTSIDE the deadline by PR #1553, on the grounds
+# that they are local filesystem work that finishes in well under a second. "In
+# practice" is the gap: on a stalled network home or a failing disk an unbounded
+# publisher outlives the registered 30s timeout mid-publish — some links
+# rewritten, some not, and nothing recorded, so the marker-clear guard cannot
+# see that the publish was partial. Both now schedule against the same deadline
+# as the git calls.
+_publish_bound_secs=5
+_root_sync_bound_secs=6
 if (( _bound_available == 1 )); then
   _sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_GIT_BOUND:-}" 8)"
   _setup_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_SETUP_BOUND:-}" 18)"
+  _publish_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND:-}" 5)"
+  _root_sync_bound_secs="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_ROOT_SYNC_BOUND:-}" 6)"
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
   CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
   [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
-  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
+  # Opt into the library's orphan handover, for the same reason
+  # dirty-main-guard.sh does: a bound trip here is NOT fatal. _publish_one
+  # records the failure and returns 0, so the hook runs on to the second
+  # publisher and then to both root-repo sync legs — every one of them
+  # truncating and re-reading this same pair. A child left unkillable in
+  # uninterruptible I/O (the stalled-network-home case this whole change is
+  # about) still holds these descriptors open, so without the handover a later
+  # call reads the wedged publisher's late output as its own. Handing the pair
+  # over costs two temp files and removes that contamination entirely.
+  ORPHANED_CAPTURES=()
+  BOUNDED_CAPTURE_TEMPLATE="${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX"
+  BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX"
+  # `[@]+` is the portable empty-array expansion — a bare "${arr[@]}" is an
+  # unbound-variable error under `set -u` on macOS's bash 3.2.
+  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"} 2>/dev/null || true' EXIT
 fi
+
+# --- Bounded-call machinery ---
+# Defined HERE, above the lock branch, on purpose. Two of its callers — the
+# root-repo sync leg and the publishers — sit outside the lock-held `else`
+# below, and the root-repo sync runs on the lock-SKIP path too. A definition
+# left inside that branch is simply unset there, so a contended login would call
+# an undefined function and lose the very sync the skip path exists to preserve.
+#
+# Everything the lock-held callers below run happens while HOLDING the
+# config-sync lock, and state-lock.sh breaks a holder by age alone once it
+# passes STALE_AGE (default 120s) — at which point a second sync starts mutating
+# the same worktree and the same ~/.claude links this run is rewriting.
+# claude-config-sync.sh bounds exactly these calls for that reason; the hook has
+# to as well rather than leaning on the hook's registered timeout, which is
+# configured outside this file and so is invisible (and unenforced) here.
+#
+# The bound is deliberately tighter than the scheduled job's: this hook is
+# registered with timeout 30, so any bound above that could never be reached.
+# A tripped bound is a recorded error, never a silently surrendered lock.
+#
+# The lib is sourced and its capture files + EXIT trap are installed ABOVE, on
+# purpose, BEFORE state_lock_acquire — see the note there.
+#
+# Run one command under the bound, mirroring claude-config-sync.sh's git_sync.
+# Called at statement level ONLY, never inside `$( )`: a subshell discards
+# BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
+_bounded_out=""
+# Seconds left of the hook's budget — deliberately NOT clamped to any per-call
+# ceiling. The caller applies the floor to this figure and the ceiling
+# separately: conflating them would make an explicitly configured ceiling below
+# the floor decline every call rather than honouring it. The floor asks "is
+# there room to finish?", a question about the budget, not about how short the
+# operator chose to make one call.
+#
+# The reserve argument names how much of the 30s must be left UNSPENT by the
+# phase being scheduled. The git region reserves 9s for everything after it; the
+# post-region calls reserve only `_HOOK_TAIL_RESERVE_SECS`, because the work
+# that follows THEM is the genuinely unbounded remainder — the marker jq, the
+# scheduling reconcile, the JSON emission. That is what makes the 9s honest
+# arithmetic rather than a guess: it now covers calls that bound themselves.
+#
+# Falls back to the full budget when the clock is unusable — an unreadable clock
+# must not silently collapse every bound to zero and disable the sync outright.
+_budget_remaining() { # _budget_remaining [reserve-secs]
+  local now elapsed remaining budget reserve="${1:-$_HOOK_GIT_RESERVE_SECS}"
+  budget=$(( _HOOK_TIMEOUT_SECS - reserve ))
+  (( budget > 0 )) || budget=1
+  [[ -n "$_hook_t0" ]] || { printf '%s' "$budget"; return 0; }
+  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
+  elapsed=$(( now - _hook_t0 ))
+  remaining=$(( budget - elapsed ))
+  (( remaining < 0 )) && remaining=0
+  printf '%s' "$remaining"
+}
+
+# Phrase a bound trip honestly: a call that ran out of time "exceeded" its
+# bound, one that never started was "declined". Both must still carry the
+# caller's "…failed" token, which is what the publish guard keys off.
+_bound_trip_reason() {
+  if (( _bound_declined == 1 )); then
+    printf 'declined: %s' "$_bounded_out"
+  else
+    printf 'exceeded its %ss bound' "$_last_bound"
+  fi
+}
+
+# Named for the BUDGET it spends, not the lock: most calls are lock-held, but
+# the root-repo sync leg deliberately runs after the release and still has to
+# finish inside the same registered 30s.
+_run_hook_bounded() { # _run_hook_bounded [--reserve <secs>] [--context <text>] <cap-seconds> <command…>
+  local reserve="$_HOOK_GIT_RESERVE_SECS"
+  # Why running this particular call unbounded would be unsafe. Named by the
+  # caller because it is NOT the same everywhere: most calls are lock-held and
+  # the hazard is dispossession, but the root-repo sync leg runs after the
+  # release, where the only thing at stake is the 30s hook timeout. A single
+  # hard-coded "while holding the config-sync lock" would be a false statement
+  # on that path, and a decline message the reader cannot act on.
+  local context="while holding the config-sync lock"
+  while :; do
+    case "${1:-}" in
+      --reserve) reserve="$2"; shift 2 ;;
+      --context) context="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
+  local cap="$1"; shift
+  local rc=0
+  BOUNDED_TIMED_OUT=0
+  _bound_declined=0
+  if (( _bound_available == 0 )); then
+    # Refuse rather than run unbounded. Without a bound there is no deadline, so
+    # this call can outlive the 30s hook timeout — and, for the lock-held
+    # callers, the lock staleness window too, at which point another sync treats
+    # the lock as stale and starts mutating the same worktree concurrently,
+    # which is the race the lock exists to prevent. A kill records nothing,
+    # which is exactly what the publish and marker-clear guards cannot defend
+    # against. Declining costs one opportunistic session refresh and IS
+    # recorded; the scheduled LaunchAgent, which has no 30s ceiling, still does
+    # the worktree and symlink work.
+    _last_bound=0
+    BOUNDED_TIMED_OUT=1
+    _bound_declined=1
+    _bounded_out="${_bound_unavailable_reason:-bounded-run.sh unavailable} — refusing to run unbounded ${context}"
+    return 124
+  fi
+  local budget_left
+  budget_left="$(_budget_remaining "$reserve")"
+  # Ceiling and floor applied to different things on purpose — see
+  # _budget_remaining.
+  _last_bound="$budget_left"
+  (( _last_bound > cap )) && _last_bound="$cap"
+  if (( budget_left < _HOOK_MIN_BOUND_SECS )); then
+    # Declining to start IS the fix. Starting a call that the hook timeout will
+    # kill part-way leaves a half-updated worktree and records nothing, which is
+    # precisely what the publish guard below cannot defend against.
+    #
+    # BOUNDED_TIMED_OUT is set because every caller keys its "…failed" token off
+    # it, and that token is what the publish guard reads — but _bound_declined
+    # distinguishes the two for the message, since "exceeded its Ns bound" would
+    # be untrue of a call that never started.
+    BOUNDED_TIMED_OUT=1
+    _bound_declined=1
+    _bounded_out="only ${budget_left}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
+    return 124
+  fi
+  run_bounded "$_last_bound" "$@" || rc=$?
+  # The library rotates CAPTURE/CAPTURE_ERR away from a child left alive after
+  # SIGKILL (the handover opted into above). Its two mktemp calls are NOT
+  # checked, so a full or read-only $TMPDIR leaves the paths empty — and the
+  # NEXT call's `: > "$CAPTURE"` redirection would then fail, so its command
+  # never runs at all, silently, with nothing recorded (CodeAnt, PR #1640).
+  # That is the one failure this whole change exists to prevent, so detect it
+  # and fall back to the posture the rest of this function already takes:
+  # decline and record, rather than appear to run.
+  if [[ -z "${CAPTURE:-}" || -z "${CAPTURE_ERR:-}" ]]; then
+    _bound_available=0
+    _bound_unavailable_reason="capture handover could not allocate a replacement temp file"
+    BOUNDED_TIMED_OUT=1
+    _bound_declined=1
+    _bounded_out="$_bound_unavailable_reason"
+    return 124
+  fi
+  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
+  [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
+  return "$rc"
+}
 
 _lock_held=0
 _lock_available=0
@@ -180,102 +359,9 @@ if [[ "$_lock_held" != 1 ]]; then
 else
 
 # --- Bound the lock-held setup/fetch/reset ---
-# Everything below runs while HOLDING the config-sync lock, and state-lock.sh
-# breaks a holder by age alone once it passes STALE_AGE (default 120s) — at
-# which point a second sync starts mutating the same worktree and the same
-# ~/.claude links this run is rewriting. claude-config-sync.sh bounds exactly
-# these calls for that reason; the hook has to as well rather than leaning on
-# the hook's registered timeout, which is configured outside this file and so
-# is invisible (and unenforced) here.
-#
-# The bound is deliberately tighter than the scheduled job's: this hook is
-# registered with timeout 30, so any bound above that could never be reached.
-# A tripped bound is a recorded error, never a silently surrendered lock.
-#
-# The lib is sourced and its capture files + EXIT trap are installed ABOVE, on
-# purpose, BEFORE state_lock_acquire — see the note there.
-#
-# Run one lock-held command under the bound, mirroring claude-config-sync.sh's
-# git_sync. Called at statement level ONLY, never inside `$( )`: a subshell
-# discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
-_bounded_out=""
-# Seconds left of the hook's git budget — deliberately NOT clamped to any
-# per-call ceiling. The caller applies the floor to this figure and the ceiling
-# separately: conflating them would make an explicitly configured ceiling below
-# the floor decline every call rather than honouring it. The floor asks "is
-# there room to finish?", a question about the budget, not about how short the
-# operator chose to make one call.
-#
-# Falls back to the full budget when the clock is unusable — an unreadable clock
-# must not silently collapse every bound to zero and disable the sync outright.
-_budget_remaining() {
-  local now elapsed remaining budget
-  budget=$(( _HOOK_TIMEOUT_SECS - _HOOK_GIT_RESERVE_SECS ))
-  (( budget > 0 )) || budget=1
-  [[ -n "$_hook_t0" ]] || { printf '%s' "$budget"; return 0; }
-  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
-  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
-  elapsed=$(( now - _hook_t0 ))
-  remaining=$(( budget - elapsed ))
-  (( remaining < 0 )) && remaining=0
-  printf '%s' "$remaining"
-}
-
-# Phrase a bound trip honestly: a call that ran out of time "exceeded" its
-# bound, one that never started was "declined". Both must still carry the
-# caller's "…failed" token, which is what the publish guard keys off.
-_bound_trip_reason() {
-  if (( _bound_declined == 1 )); then
-    printf 'declined: %s' "$_bounded_out"
-  else
-    printf 'exceeded its %ss bound' "$_last_bound"
-  fi
-}
-
-_run_locked() { # _run_locked <cap-seconds> <command…>
-  local cap="$1"; shift
-  local rc=0
-  BOUNDED_TIMED_OUT=0
-  _bound_declined=0
-  if (( _bound_available == 0 )); then
-    # Refuse rather than run unbounded while holding the lock. Without a bound
-    # there is no deadline, so this call can outlive both the 30s hook timeout
-    # and the lock staleness window — at which point another sync treats the
-    # lock as stale and starts mutating the same worktree concurrently, which is
-    # the race the lock exists to prevent. Declining costs one opportunistic
-    # session refresh; the scheduled LaunchAgent, which has no 30s ceiling, still
-    # does the work.
-    _last_bound=0
-    BOUNDED_TIMED_OUT=1
-    _bound_declined=1
-    _bounded_out="bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
-    return 124
-  fi
-  local budget_left
-  budget_left="$(_budget_remaining)"
-  # Ceiling and floor applied to different things on purpose — see
-  # _budget_remaining.
-  _last_bound="$budget_left"
-  (( _last_bound > cap )) && _last_bound="$cap"
-  if (( budget_left < _HOOK_MIN_BOUND_SECS )); then
-    # Declining to start IS the fix. Starting a call that the hook timeout will
-    # kill part-way leaves a half-updated worktree and records nothing, which is
-    # precisely what the publish guard below cannot defend against.
-    #
-    # BOUNDED_TIMED_OUT is set because every caller keys its "…failed" token off
-    # it, and that token is what the publish guard reads — but _bound_declined
-    # distinguishes the two for the message, since "exceeded its Ns bound" would
-    # be untrue of a call that never started.
-    BOUNDED_TIMED_OUT=1
-    _bound_declined=1
-    _bounded_out="only ${budget_left}s left of the ${_HOOK_TIMEOUT_SECS}s hook budget"
-    return 124
-  fi
-  run_bounded "$_last_bound" "$@" || rc=$?
-  _bounded_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || _bounded_out=""
-  [[ -n "$_bounded_out" ]] || _bounded_out="$(cat "$CAPTURE" 2>/dev/null)" || _bounded_out=""
-  return "$rc"
-}
+# The bounded-call machinery (_budget_remaining, _bound_trip_reason,
+# _run_hook_bounded) is defined ABOVE the lock branch — see the note there for
+# why it cannot live in this branch any more.
 
 # Bootstrap missing skills worktree if setup script is available.
 # NOTE on the message wording below: the publish guard further down keys off the
@@ -288,10 +374,11 @@ _bootstrapped=0
 # question: `errors` drives what the session is TOLD, this drives whether the
 # restart marker may be CLEARED. A publisher that never ran leaves stale links
 # in a category the marker describes, whether or not the miss was loud.
+_bound_unavailable_reason="bounded-run.sh unavailable"
 _publish_incomplete=0
 if [[ ! -d "$skills_wt/.claude/skills" || ! -f "$skills_wt/.git" ]]; then
   if [[ -x "$setup_script" || -f "$setup_script" ]]; then
-    if ! _run_locked "$_setup_bound_secs" bash "$setup_script"; then
+    if ! _run_hook_bounded "$_setup_bound_secs" bash "$setup_script"; then
       if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
         errors="skills worktree setup failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
       else
@@ -322,13 +409,13 @@ _old_head=""
 _new_head=""
 if (( _bootstrapped == 0 )) && [[ -z "$errors" && -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
   _old_head="$(git -C "$skills_wt" rev-parse HEAD 2>/dev/null)" || _old_head=""
-  if ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
+  if ! _run_hook_bounded "$_sync_bound_secs" git -C "$skills_wt" fetch origin main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
       errors="skills worktree fetch failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
     else
       errors="skills worktree fetch failed: $_bounded_out"
     fi
-  elif ! _run_locked "$_sync_bound_secs" git -C "$skills_wt" reset --hard origin/main --quiet; then
+  elif ! _run_hook_bounded "$_sync_bound_secs" git -C "$skills_wt" reset --hard origin/main --quiet; then
     if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
       errors="skills worktree reset failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
     else
@@ -400,35 +487,71 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
    ! [[ "$errors" == *"reset failed"* || "$errors" == *"setup failed"* ]]; then
   # Both publishers separate their streams on purpose: stdout is one line per
   # CHANGE, stderr carries standing advisories (a user-owned symlink left alone,
-  # a legacy link not yet on main). Capture them apart so an advisory is never
+  # a legacy link not yet on main). They stay apart so an advisory is never
   # mistaken for a change; both still reach the session, labelled.
-  _publish_err_file=$(mktemp "${TMPDIR:-/tmp}/session-start-publish.XXXXXX" 2>/dev/null) || _publish_err_file=""
+  #
+  # The separation is now STRUCTURAL rather than hand-rolled: run_bounded puts
+  # the child's stdout in $CAPTURE and its stderr in $CAPTURE_ERR, which is
+  # exactly the split this block used its own mktemp'd error file for. That file
+  # is gone with it, and so is the mixed-stream fallback that counted no change
+  # categories at all whenever mktemp failed.
 
   # Categories whose links a publisher actually CHANGED this run, for the
   # resume-path restart write below. Detection is a WHITELIST of the
   # publishers' change verbs, not "any stdout": the agents publisher prints
   # its standing user-owned-symlink advisory (and a restart note) on stdout,
   # so a personal agent link would otherwise raise a phantom restart on every
-  # resume. Counted only in the separated-stderr case; the mixed-stream
-  # fallback counts nothing — an advisory must never become a phantom signal.
+  # resume.
   _links_changed_cats=""
   _publish_change_verbs='— (creating|updating symlink|symlinked|migrating|replacing directory copy|removing stale)'
   _publish_one() { # _publish_one <script> <label>
     local script="$1" label="$2" out="" err="" rc=0
-    if [[ -n "$_publish_err_file" ]]; then
-      out=$(bash "$script" "$skills_wt" "${_root_repo}" 2>"$_publish_err_file") || rc=$?
-      err=$(cat "$_publish_err_file" 2>/dev/null)
-    else
-      out=$(bash "$script" "$skills_wt" "${_root_repo}" 2>&1) || rc=$?
+    # Bounded against the hook deadline, reserving only the unbounded tail
+    # (issue #1593). A publisher is local filesystem work, but on a stalled
+    # network home or a failing disk it can outlive the registered 30s timeout
+    # mid-publish — some links rewritten, some not, and a kill records NOTHING,
+    # so the marker-clear guard below cannot see that the publish was partial.
+    # It also holds the config-sync lock while stalled, past the staleness
+    # window at which another sync breaks the lock and mutates the same tree.
+    #
+    # Statement level, never inside `$( )`: a subshell would discard
+    # BOUNDED_TIMED_OUT (bounded-run.sh contract).
+    _run_hook_bounded --reserve "$_HOOK_TAIL_RESERVE_SECS" "$_publish_bound_secs" \
+      bash "$script" "$skills_wt" "${_root_repo}" || rc=$?
+    if (( rc != 0 )) && [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+      # A bound trip carries the same "<label> symlink publish failed" token the
+      # rc branch below uses, because that substring is what the publish guard
+      # and the marker clear read. _publish_incomplete is set for the same
+      # reason a MISSING publisher sets it: a publisher that was cut short
+      # refreshed an unknown subset of its links, and the marker's categories
+      # cover exactly those links.
+      errors="${errors:+$errors; }${label} symlink publish failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
+      _publish_incomplete=1
+      # That unknown subset still owes the resume-path restart signal (leg 3),
+      # which is the ONLY thing that ever reports links repointed under an
+      # unchanged HEAD — a later scheduled tick sees a stable HEAD and the links
+      # already in place. Reading $CAPTURE here would not recover the subset
+      # honestly: the child's stdout is a FILE, so it is block-buffered, and a
+      # kill can drop every change line already written — silence would read as
+      # "changed nothing" precisely when the publish was cut mid-write. So claim
+      # the label's WHOLE category set instead. That is the same conservative
+      # direction the marker clear takes: a duplicate restart reminder, never a
+      # lost one. (CodeAnt, PR #1640.)
+      case "$label" in
+        skill) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills claude-md rules" ;;
+        agent) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }agents" ;;
+      esac
+      return 0
     fi
+    out="$(cat "$CAPTURE" 2>/dev/null)" || out=""
+    err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || err=""
     # Harvest change categories BEFORE branching on rc: a publisher can land
     # links and then exit non-zero (e.g. a failed prune), and those landed
     # changes still owe the restart signal. The skill publisher also owns the
     # CLAUDE.md and rules links, and prints their lines under those literal
     # labels — map them to their own categories so this writer agrees with the
     # scheduled job's snapshot-derived ones.
-    if [[ -n "$_publish_err_file" && -n "$out" ]] \
-        && grep -Eq "$_publish_change_verbs" <<< "$out"; then
+    if [[ -n "$out" ]] && grep -Eq "$_publish_change_verbs" <<< "$out"; then
       case "$label" in
         skill)
           _pc_cm="$(grep -E '^  CLAUDE\.md — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_cm=""
@@ -486,7 +609,6 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     _publish_incomplete=1
   fi
 
-  [[ -n "$_publish_err_file" ]] && rm -f "$_publish_err_file" 2>/dev/null
 fi
 
 # --- Sync hooks from global-settings.json into ~/.claude/settings.json ---
@@ -804,14 +926,40 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]]; then
       # have a usable helper but the `-x` test would silently fall through
       # to the inline `git pull` fallback, losing main-sync.sh's status
       # reporting and error handling (see BugBot finding on PR #345).
+      #
+      # Bounded against the same registered-30s deadline as everything else
+      # (issue #1593, scope addition from PR #1553's BugBot finding). This leg
+      # runs AFTER the lock release and after the marker clear, so an overrun
+      # here has a distinct cost: the hook is killed before additionalContext is
+      # emitted, and the informational notice for this session is lost. Only the
+      # tail — the notice assembly and the JSON emission — is left unbounded, so
+      # that is the reserve it schedules against.
+      #
+      # run_bounded returns the child's REAL status, so main-sync.sh's
+      # exit-code contract survives the bounding: 0 updated/up-to-date, 1 benign
+      # skip, 2 hard failure. Only 2 is an error, exactly as before; a bound trip
+      # arrives as 124 with BOUNDED_TIMED_OUT set and is recorded separately.
+      main_sync_rc=0
       if [[ -x "$main_sync_script" || -f "$main_sync_script" ]]; then
-        main_sync_out=$(bash "$main_sync_script" --repo "$root_repo" 2>&1)
-        main_sync_rc=$?
-        if [[ $main_sync_rc -eq 2 ]]; then
+        _run_hook_bounded --reserve "$_HOOK_TAIL_RESERVE_SECS" --context "after the config-sync lock was released, where an overrun loses this session's notice" \
+          "$_root_sync_bound_secs" bash "$main_sync_script" --repo "$root_repo" || main_sync_rc=$?
+        main_sync_out="$(cat "$CAPTURE" 2>/dev/null)" || main_sync_out=""
+        [[ -n "$main_sync_out" ]] || main_sync_out="$(cat "$CAPTURE_ERR" 2>/dev/null)" || main_sync_out=""
+        if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+          errors="${errors:+$errors; }root repo sync failed: $(_bound_trip_reason) — aborted before the hook timeout could kill this run before it reports"
+        elif [[ $main_sync_rc -eq 2 ]]; then
           errors="${errors:+$errors; }root repo sync failed: $main_sync_out"
         fi
-      elif ! err=$(git -C "$root_repo" pull origin main --ff-only --quiet 2>&1); then
-        errors="${errors:+$errors; }root repo pull failed: $err"
+      else
+        _run_hook_bounded --reserve "$_HOOK_TAIL_RESERVE_SECS" --context "after the config-sync lock was released, where an overrun loses this session's notice" \
+          "$_root_sync_bound_secs" git -C "$root_repo" pull origin main --ff-only --quiet || main_sync_rc=$?
+        if [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]]; then
+          errors="${errors:+$errors; }root repo pull failed: $(_bound_trip_reason) — aborted before the hook timeout could kill this run before it reports"
+        elif [[ $main_sync_rc -ne 0 ]]; then
+          err="$(cat "$CAPTURE_ERR" 2>/dev/null)" || err=""
+          [[ -n "$err" ]] || err="$(cat "$CAPTURE" 2>/dev/null)" || err=""
+          errors="${errors:+$errors; }root repo pull failed: $err"
+        fi
       fi
     fi
   else

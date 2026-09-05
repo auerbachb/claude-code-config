@@ -616,10 +616,10 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
   # configured ceiling below the floor decline every call instead of honouring
   # it — which is how a 2s test bound turned into "declined" rather than a real
   # 2s run. Both files carry the same shape, so pin both.
-  local hook_budget_body sync_budget_body run_locked_body
+  local hook_budget_body sync_budget_body run_bounded_body
   hook_budget_body="$(awk_block '^_budget_remaining\(\)' '^}' "$HOOK")"
   sync_budget_body="$(awk_block '^_git_region_remaining\(\)' '^}' "$SYNC")"
-  run_locked_body="$(awk_block '^_run_locked\(\)' '^}' "$HOOK")"
+  run_bounded_body="$(awk_block '^_run_hook_bounded\(\)' '^}' "$HOOK")"
   assert "(setup) both budget helpers were located" \
     "[ -n \"\$hook_budget_body\" ] && [ -n \"\$sync_budget_body\" ]"
   assert "the hook's budget helper returns the budget, not a clamped bound" \
@@ -635,10 +635,10 @@ test_16_hook_git_bounds_fit_the_hook_timeout() {
   assert "a call with too little budget left is declined, not started" \
     "grep -q '_HOOK_MIN_BOUND_SECS' '$HOOK'"
   assert "the decline is recorded as a bound trip so the publish guard holds" \
-    "contains \"\$run_locked_body\" 'BOUNDED_TIMED_OUT=1'"
+    "contains \"\$run_bounded_body\" 'BOUNDED_TIMED_OUT=1'"
   # (control) no call site may still pass the old single-bound signature.
-  assert "(control) every _run_locked call passes an explicit ceiling" \
-    "! grep -qE '_run_locked (bash|git) ' '$HOOK'"
+  assert "(control) every bounded call passes an explicit ceiling" \
+    "! grep -qE '_run_hook_bounded (bash|git) ' '$HOOK'"
 }
 
 # ── Test 8: a REPOINTED agent symlink is restart-worthy ──────────────────────
@@ -953,8 +953,14 @@ test_17_missing_bound_declines_instead_of_running_unbounded() {
 
   assert "the sync declines its lock-held calls when the bound is unavailable" \
     "grep -q 'declined: bounded-run.sh unavailable' '$SYNC'"
+  # Two greps rather than one literal: the hook now carries a SECOND decline
+  # reason (a failed capture handover, CodeAnt PR #1640), so the reason is a
+  # variable with the missing-library text as its default. Asserting the two
+  # halves keeps this pinned to the behaviour — it declines, and the default
+  # reason still names the missing library — without re-pinning one string that
+  # any added reason would split again.
   assert "the hook declines its lock-held calls for the same reason" \
-    "grep -q 'bounded-run.sh unavailable — refusing to run unbounded' '$HOOK'"
+    "grep -q 'refusing to run unbounded' '$HOOK' && grep -q 'bounded-run.sh unavailable' '$HOOK'"
   assert "the sync refuses to bootstrap unbounded as well" \
     "grep -q 'refusing to run setup-skills-worktree.sh unbounded' '$SYNC'"
 
@@ -1190,6 +1196,112 @@ test_24_hook_clear_reasserts_the_lock() {
     "grep -q 'Lock lost mid-clear' '$HOOK'"
 }
 
+# ── Test 25: a stalled symlink publisher trips its bound (issue #1593) ───────
+#
+# PR #1553 bounded the git region but deliberately left the publishers outside
+# it: a few dozen readlink/ln/mv calls finish in well under a second. On a
+# stalled network home they do not, and an unbounded publisher then holds this
+# lock past STALE_AGE — at which point a second sync treats this LIVE holder's
+# lock as stale, breaks it, and rewrites the same ~/.claude links concurrently,
+# while this run's own commit_json is refused by state_lock_assert_held so the
+# restart marker it owed never lands. Both halves of the race the lock exists to
+# prevent, reached by the one call that was never bounded.
+
+test_25_publisher_is_bounded_inside_the_lock() {
+  section "Test 25: a hanging publisher trips its bound instead of losing the lock"
+
+  # Structural first, so a refactor that drops the bound fails loudly even where
+  # the functional fixture below cannot run.
+  local publisher_body
+  publisher_body="$(awk_block '^run_publisher\(\)' '^}' "$SYNC")"
+  assert "(setup) run_publisher was located" "[ -n \"\$publisher_body\" ]"
+  assert "the publisher runs under the bound, not a bare bash call" \
+    "contains \"\$publisher_body\" 'run_bounded \"\$PUBLISH_LAST_BOUND\" bash'"
+  assert "its ceiling is clamped to what is left of the publish region" \
+    "contains \"\$publisher_body\" 'PUBLISH_LAST_BOUND > PUBLISH_BOUND_SECS'"
+  assert "the floor is tested against the region, not the clamped bound" \
+    "contains \"\$publisher_body\" 'region_left < _PUBLISH_MIN_BOUND_SECS'"
+  assert "a missing bound declines rather than running unbounded under the lock" \
+    "contains \"\$publisher_body\" 'refusing to run unbounded'"
+  # A decline must be recognised by an explicit flag, never by matching the
+  # child's own stderr: run_publisher overwrites PUBLISH_STDERR with captured
+  # child stderr, so a publisher whose stderr began with "declined:" would have
+  # a real timeout reported as a decline (CodeRabbit, PR #1640).
+  assert "a decline is tracked by a flag, not inferred from child stderr" \
+    "[ -n \"\$(grep 'PUBLISH_DECLINED=1' '$SYNC')\" ]"
+  assert "and the trip reason tests that flag rather than the stderr text" \
+    "[ -z \"\$(grep -A2 '^_publish_trip_reason()' '$SYNC' | grep 'PUBLISH_STDERR.*==.*declined')\" ]"
+  assert "the publish region reserves room for the rest of the locked pass" \
+    "[ -n \"\$(grep '_publish_region_budget=' '$SYNC')\" ]"
+  # The functional leg below stalls the SKILL publisher only, so on its own it
+  # would not notice an agents publisher that regressed to a bare `bash` call
+  # (CodeAnt, PR #1640). Both call sites are pinned structurally instead —
+  # cheaper and less flaky than a second sleeping-stub fixture, and it fails on
+  # exactly the regression the functional leg would miss.
+  assert "BOTH publishers go through run_publisher, not just the stalled one" \
+    "[ \"\$(grep -c '^  if ! run_publisher \"\$publish_' '$SYNC')\" -eq 2 ]"
+  assert "and neither publisher is invoked with a bare bash call" \
+    "[ -z \"\$(grep -E '^[^#]*bash \"\$publish_(skills|agents)\"' '$SYNC')\" ]"
+  # (control) the region budget must stay INSIDE the staleness window it defends.
+  assert "(control) the publish budget is smaller than the staleness window" \
+    "grep -q '_publish_region_budget=\$(( _stale_age - _PUBLISH_TAIL_RESERVE_SECS ))' '$SYNC'"
+
+  local tmp home origin out started elapsed
+  tmp="$(make_fixture)"
+  home="$tmp/home"
+  origin="$tmp/origin"
+
+  # The sleeping publisher has to be COMMITTED: the run resets the worktree to
+  # origin/main before resolve_helper picks a publisher, so a stub written
+  # straight into the worktree would be overwritten by the run under test.
+  printf '#!/bin/sh\nsleep 120\n' > "$origin/.claude/scripts/publish-skill-symlinks.sh"
+  chmod +x "$origin/.claude/scripts/publish-skill-symlinks.sh"
+  git_commit "$origin" "stalling publisher"
+
+  started="$(date +%s)"
+  out="$(HOME="$home" CLAUDE_CONFIG_SYNC_PUBLISH_BOUND=2 bash "$SYNC" --json 2>/dev/null)" || true
+  elapsed=$(( $(date +%s) - started ))
+
+  assert "the run returned instead of hanging on the publisher" "[ $elapsed -lt 60 ]"
+  assert "and well inside the 120s lock staleness window it defends" "[ $elapsed -lt 100 ]"
+  assert "it reports a failed outcome" \
+    "[ \"\$(printf '%s' \"\$out\" | jq -r .outcome)\" = 'failed' ]"
+  assert "and names the bound it exceeded, not a generic publisher error" \
+    "printf '%s' \"\$out\" | grep -q 'exceeded its 2s bound'"
+  assert "the failure names the publisher that stalled" \
+    "printf '%s' \"\$out\" | grep -q 'publish-skill-symlinks.sh'"
+  assert "the failure is durable in the log" \
+    "grep -q 'exceeded its 2s bound' '$home/.claude/logs/claude-config-sync.log'"
+
+  # Control: restore the REAL publisher in origin and re-run the SAME home. The
+  # assertions above are keyed to the sleeping stub, not to a broken fixture —
+  # and a bound that tripped on a healthy publisher would show up right here.
+  cp "$REPO_ROOT/.claude/scripts/publish-skill-symlinks.sh" "$origin/.claude/scripts/"
+  git_commit "$origin" "working publisher"
+  local ok_out
+  # A generous bound here on purpose: 2s is the value the STALL leg needs, and
+  # reusing it would make this control flake on a slow CI filesystem — reporting
+  # the fix as broken when only the fixture was slow. The control's job is to
+  # prove the failure above is keyed to the sleeping stub, which it still does.
+  ok_out="$(HOME="$home" CLAUDE_CONFIG_SYNC_PUBLISH_BOUND=20 bash "$SYNC" --json 2>/dev/null)" || true
+  assert "(control) the same fixture succeeds with a working publisher" \
+    "[ \"\$(printf '%s' \"\$ok_out\" | jq -r .outcome)\" = 'ok' ]"
+  # -L alone only proves SOMETHING was created at that path; a publisher that
+  # linked the wrong target, or left a stale link from an earlier fixture, would
+  # still pass (CodeAnt, PR #1640). Assert the link resolves AND that it points
+  # into the managed skills worktree, which is the property the publish is for.
+  assert "(control) and the links the stalled tick never made are now published" \
+    "[ -L '$home/.claude/skills/beta' ]"
+  assert "(control) that link resolves rather than dangling" \
+    "[ -e '$home/.claude/skills/beta' ]"
+  assert "(control) and it points into the managed skills worktree" \
+    "case \"\$(readlink '$home/.claude/skills/beta')\" in \
+       '$home/.claude/skills-worktree/.claude/skills/beta') true ;; \
+       *) false ;; esac"
+
+  rm -rf "$tmp"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1233,6 +1345,7 @@ test_21_marker_removal_is_lock_checked
 test_22_publisher_miss_blocks_the_clear_regardless_of_severity
 test_23_bootstrap_bound_is_clamped_to_the_region
 test_24_hook_clear_reasserts_the_lock
+test_25_publisher_is_bounded_inside_the_lock
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

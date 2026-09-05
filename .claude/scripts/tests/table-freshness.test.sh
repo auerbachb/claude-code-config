@@ -911,7 +911,14 @@ grep -q 'CLOCK_RECORDED' "$SUBAGENT" || \
 #      stale/fresh verdict and the record for a table that did print.
 STEP8="$(sed -n '/^## Step 8: Enter Monitor Mode/,$p' "$SUBAGENT")"
 for VAR in REPO_KEY TF_SESSION ACTIVE_COUNT; do
-  printf '%s\n' "$STEP8" | grep -qE "^ *${VAR}=" || \
+  # Here-string, not `printf | grep -q`: this file runs under `set -uo pipefail`,
+  # and `grep -q` exits at its FIRST match, closing the pipe while printf is
+  # still writing. printf then dies of SIGPIPE (141), pipefail promotes that to
+  # the pipeline's status, and a SUCCESSFUL match reads as a failure. It is
+  # size- and buffering-dependent, so it stayed green on macOS and tripped on
+  # the Linux runner (PR #1640, hook-tests). A here-string has no producer to
+  # kill, so grep's own status is the only one.
+  grep -qE "^ *${VAR}=" <<< "$STEP8" || \
     fail "/subagent Step 8 uses \$$VAR without re-deriving it after a compaction"
 done
 
