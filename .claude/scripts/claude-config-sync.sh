@@ -77,6 +77,14 @@
 #
 # ENVIRONMENT
 #   CLAUDE_CONFIG_SYNC_LOCK_TIMEOUT     seconds to wait for the lock (default 30)
+#   CLAUDE_CONFIG_SYNC_GIT_BOUND        per-call ceiling on a lock-held git call
+#                                       (default: half the lock staleness
+#                                       window); clamped to what is left of the
+#                                       region at each call
+#   CLAUDE_CONFIG_SYNC_PUBLISH_BOUND    per-call ceiling on a lock-held symlink
+#                                       publisher (default: a sixth of the
+#                                       staleness window); clamped the same way
+#                                       against the wider publish region
 #   CONFIG_SYNC_FAILURE_THRESHOLD       consecutive failures before the marker
 #                                       carries a failure notice (default 3)
 #   CONFIG_SYNC_MAX_LOG_BYTES           rotate the log/events files past this
@@ -279,12 +287,32 @@ _stale_age="${CLAUDE_STATE_LOCK_STALE_AGE:-120}"
 _git_region_budget=$(( _stale_age / 2 ))
 (( _git_region_budget > 0 )) || _git_region_budget=60
 _GIT_MIN_BOUND_SECS=5
+# The publishers hold the SAME lock, and were deliberately left outside the
+# budget above by PR #1553 on the grounds that a few dozen readlink/ln/mv calls
+# finish in well under a second (issue #1593). "In practice" is the gap: on a
+# stalled network home a publisher can hold this lock past STALE_AGE, at which
+# point a second sync breaks it and mutates the same worktree and the same
+# ~/.claude links concurrently — the exact race the lock exists to prevent.
+#
+# They are therefore scheduled against the SAME staleness window, measured from
+# the SAME acquire instant, with the last quarter reserved for the hook
+# registration, trust repair and state commit that follow them under this lock.
+_PUBLISH_TAIL_RESERVE_SECS=$(( _stale_age / 4 ))
+(( _PUBLISH_TAIL_RESERVE_SECS > 0 )) || _PUBLISH_TAIL_RESERVE_SECS=30
+_publish_region_budget=$(( _stale_age - _PUBLISH_TAIL_RESERVE_SECS ))
+(( _publish_region_budget > 0 )) || _publish_region_budget=90
+# Per-call ceiling, clamped to what is left of the region at each call.
+_default_publish_bound=$(( _stale_age / 6 ))
+(( _default_publish_bound > 0 )) || _default_publish_bound=20
+_PUBLISH_MIN_BOUND_SECS=3
+PUBLISH_BOUND_SECS="$_default_publish_bound"
 # Set at the acquire, so the region is measured from when the lock was taken —
 # which is also when the staleness clock this budget defends against starts.
 _git_region_t0=""
 _default_git_bound="$_git_region_budget"
 if (( GIT_BOUND_AVAILABLE == 1 )); then
   GIT_BOUND_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_GIT_BOUND:-}" "$_default_git_bound")"
+  PUBLISH_BOUND_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_PUBLISH_BOUND:-}" "$_default_publish_bound")"
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/config-sync-out.XXXXXX")"    || CAPTURE=""
   CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/config-sync-err.XXXXXX")" || CAPTURE_ERR=""
   [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || GIT_BOUND_AVAILABLE=0
@@ -318,13 +346,18 @@ GIT_LAST_BOUND="${GIT_BOUND_SECS:-0}"
 #
 # Falls back to the region budget when the clock is unusable: an unreadable
 # clock must not collapse every bound to zero and disable the sync outright.
-_git_region_remaining() {
-  local now elapsed remaining
-  [[ -n "$_git_region_t0" ]] || { printf '%s' "$_git_region_budget"; return 0; }
-  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$_git_region_budget"; return 0; }
-  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$_git_region_budget"; return 0; }
+#
+# The optional argument names WHICH budget to measure against — the git region
+# by default, the wider publish region for the publishers. Both are measured
+# from the same _git_region_t0, because both defend the same staleness clock,
+# which starts at the acquire.
+_git_region_remaining() { # _git_region_remaining [budget-secs]
+  local now elapsed remaining budget="${1:-$_git_region_budget}"
+  [[ -n "$_git_region_t0" ]] || { printf '%s' "$budget"; return 0; }
+  now="$(date -u +%s 2>/dev/null)" || { printf '%s' "$budget"; return 0; }
+  [[ "$now" =~ ^[0-9]+$ ]] || { printf '%s' "$budget"; return 0; }
   elapsed=$(( now - _git_region_t0 ))
-  remaining=$(( _git_region_budget - elapsed ))
+  remaining=$(( budget - elapsed ))
   (( remaining < 0 )) && remaining=0
   printf '%s' "$remaining"
 }
@@ -815,30 +848,76 @@ else
   warn "repo-root.sh not found — legacy-root migrations are disabled for this tick"
 fi
 
-# run_publisher <script> — run a publish script with its two streams captured
-# SEPARATELY, because they mean different things: stdout is one line per CHANGE
-# (so an unchanged machine produces none), stderr carries standing advisories —
-# a user-owned symlink left alone, a legacy link whose target is not on main
-# yet. Merging them would turn every advisory into a phantom change on every
-# hourly tick. Sets PUBLISH_STDOUT / PUBLISH_STDERR; returns the script's status.
+# run_publisher <script> — run a publish script BOUNDED, with its two streams
+# captured SEPARATELY, because they mean different things: stdout is one line
+# per CHANGE (so an unchanged machine produces none), stderr carries standing
+# advisories — a user-owned symlink left alone, a legacy link whose target is
+# not on main yet. Merging them would turn every advisory into a phantom change
+# on every hourly tick. Sets PUBLISH_STDOUT / PUBLISH_STDERR / PUBLISH_TIMED_OUT;
+# returns the script's status, or 124 when the bound cut it short.
+#
+# The separation is now structural rather than hand-rolled: run_bounded writes
+# the child's stdout to $CAPTURE and its stderr to $CAPTURE_ERR, which is
+# precisely the split the mktemp'd error file existed to produce. That file — and
+# the merged-stream fallback that silently lost the distinction whenever mktemp
+# failed — go with it.
+#
+# NEVER call this inside `$( )`, for the same reason as git_sync: a subshell
+# discards BOUNDED_TIMED_OUT and the capture handover (bounded-run.sh contract).
 PUBLISH_STDOUT=""
 PUBLISH_STDERR=""
+PUBLISH_TIMED_OUT=0
+# The bound actually applied to the last call — the region-clamped value, which
+# is what a failure message must name rather than the per-call ceiling.
+PUBLISH_LAST_BOUND="${PUBLISH_BOUND_SECS:-0}"
 run_publisher() {
-  local script="$1" err_file rc=0
+  local script="$1" rc=0 region_left
   PUBLISH_STDOUT=""
   PUBLISH_STDERR=""
-  err_file="$(mktemp "${LOG_DIR}/.publish-err.XXXXXX" 2>/dev/null)" || err_file=""
-  if [[ -n "$err_file" ]]; then
-    PUBLISH_STDOUT="$(bash "$script" "$SKILLS_WT" "$ROOT_REPO_HINT" 2>"$err_file")" || rc=$?
-    PUBLISH_STDERR="$(cat "$err_file" 2>/dev/null)"
-    rm -f "$err_file" 2>/dev/null || true
-  else
-    # No temp file available: a merged capture loses the distinction but keeps
-    # the diagnostics, which beats discarding stderr outright.
-    PUBLISH_STDOUT="$(bash "$script" "$SKILLS_WT" "$ROOT_REPO_HINT" 2>&1)" || rc=$?
-    PUBLISH_STDERR=""
+  PUBLISH_TIMED_OUT=0
+  if (( GIT_BOUND_AVAILABLE == 0 )); then
+    # Refuse rather than run unbounded while holding the lock — the same stance
+    # git_sync takes above, against the same lock, for the same reason: without
+    # a bound there is no deadline, so a stalled publisher can outlive the
+    # ${_stale_age}s staleness window, another sync then treats this LIVE
+    # holder's lock as stale and rewrites the same links concurrently, and this
+    # run's own commit_json is refused by state_lock_assert_held so the restart
+    # marker it owed never lands.
+    PUBLISH_TIMED_OUT=1
+    PUBLISH_LAST_BOUND=0
+    PUBLISH_STDERR="declined: bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
+    return 124
   fi
+  region_left="$(_git_region_remaining "$_publish_region_budget")"
+  # Ceiling and floor applied to different things on purpose — see
+  # _git_region_remaining. The floor asks "is there room to finish?", a question
+  # about the region; the ceiling is how long one call may ever take.
+  PUBLISH_LAST_BOUND="$region_left"
+  (( PUBLISH_LAST_BOUND > PUBLISH_BOUND_SECS )) && PUBLISH_LAST_BOUND="$PUBLISH_BOUND_SECS"
+  if (( region_left < _PUBLISH_MIN_BOUND_SECS )); then
+    # Decline rather than start a call that cannot finish inside the region.
+    # Starting it is what lets the lock go stale under a live holder, and a
+    # recorded failure is strictly better than a silently surrendered mutex.
+    PUBLISH_TIMED_OUT=1
+    PUBLISH_STDERR="declined: only ${region_left}s left of the ${_publish_region_budget}s lock-held publish budget"
+    return 124
+  fi
+  run_bounded "$PUBLISH_LAST_BOUND" bash "$script" "$SKILLS_WT" "$ROOT_REPO_HINT" || rc=$?
+  PUBLISH_STDOUT="$(cat "$CAPTURE" 2>/dev/null)" || PUBLISH_STDOUT=""
+  PUBLISH_STDERR="$(cat "$CAPTURE_ERR" 2>/dev/null)" || PUBLISH_STDERR=""
+  [[ "${BOUNDED_TIMED_OUT:-0}" -eq 1 ]] && PUBLISH_TIMED_OUT=1
   return $rc
+}
+
+# Phrase a publisher trip honestly, exactly as _git_trip_reason does for the
+# git calls: a call that ran out of time "exceeded its Ns bound", one that never
+# started was "declined". Both are recorded failures either way.
+_publish_trip_reason() {
+  if [[ "${PUBLISH_STDERR:-}" == declined:* ]]; then
+    printf '%s' "$PUBLISH_STDERR"
+  else
+    printf 'exceeded its %ss bound' "${PUBLISH_LAST_BOUND:-$PUBLISH_BOUND_SECS}"
+  fi
 }
 
 one_line() { printf '%s' "$1" | tr '\n' ';'; }
@@ -904,7 +983,11 @@ rules_before="$(snapshot_one_link "$RULES_LINK")"         || rules_before=""
 publish_skills="$(resolve_helper publish-skill-symlinks.sh)" || publish_skills=""
 if [[ -n "$publish_skills" ]]; then
   if ! run_publisher "$publish_skills"; then
-    record_failure "publish-skill-symlinks.sh failed: $(one_line "${PUBLISH_STDERR:-$PUBLISH_STDOUT}")"
+    if (( PUBLISH_TIMED_OUT == 1 )); then
+      record_failure "publish-skill-symlinks.sh $(_publish_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+    else
+      record_failure "publish-skill-symlinks.sh failed: $(one_line "${PUBLISH_STDERR:-$PUBLISH_STDOUT}")"
+    fi
   fi
   [[ -n "$PUBLISH_STDOUT" ]] && log info "skills publish: $(one_line "$PUBLISH_STDOUT")"
   [[ -n "$PUBLISH_STDERR" ]] && warn "skills publish advisory: $(one_line "$PUBLISH_STDERR")"
@@ -940,7 +1023,11 @@ publish_agents="$(resolve_helper publish-agent-symlinks.sh)" || publish_agents="
 agents_out=""
 if [[ -n "$publish_agents" ]]; then
   if ! run_publisher "$publish_agents"; then
-    record_failure "publish-agent-symlinks.sh failed: $(one_line "${PUBLISH_STDERR:-$PUBLISH_STDOUT}")"
+    if (( PUBLISH_TIMED_OUT == 1 )); then
+      record_failure "publish-agent-symlinks.sh $(_publish_trip_reason) — aborted before the ${_stale_age}s lock staleness window could dispossess this run"
+    else
+      record_failure "publish-agent-symlinks.sh failed: $(one_line "${PUBLISH_STDERR:-$PUBLISH_STDOUT}")"
+    fi
   fi
   # Only stdout feeds the restart signal below — an advisory is not a change.
   agents_out="$PUBLISH_STDOUT"

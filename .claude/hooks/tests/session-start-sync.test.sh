@@ -592,7 +592,10 @@ rr = d.get("restart_recommended") or {}
 sys.exit(0 if "claude-md" in (rr.get("categories") or []) else 1)
 PY
 # Harvest-before-rc ordering: the category harvest must precede the non-zero
-# exit branch, or a publisher that lands links then fails hides them.
+# exit branch, or a publisher that lands links then fails hides them. The bound
+# trip is the ONE branch that legitimately precedes the harvest: a killed
+# publisher's capture is not a trustworthy account of what it landed, and it is
+# recorded as incomplete rather than harvested.
 harvest_line="$(grep -n '_publish_change_verbs" <<< "\$out"' "$HOOK" | head -1 | cut -d: -f1)"
 rcbranch_line="$(grep -n 'symlink publish failed: \${err:-\$out}' "$HOOK" | head -1 | cut -d: -f1)"
 [ -n "$harvest_line" ] && [ -n "$rcbranch_line" ] \
@@ -600,5 +603,163 @@ rcbranch_line="$(grep -n 'symlink publish failed: \${err:-\$out}' "$HOOK" | head
 [ "$harvest_line" -lt "$rcbranch_line" ] \
   || fail "_publish_one branches on rc before harvesting change categories — landed links from a failing publisher are hidden (BugBot, PR #1553)"
 rm -rf "$R14"
+
+# --- 15. The symlink publishers are BOUNDED (issue #1593) -------------------
+# PR #1553 bounded the git region but deliberately left the publishers outside
+# it, on the grounds that a few dozen readlink/ln/mv calls finish in well under
+# a second. On a stalled network home they do not: an unbounded publisher
+# outlives the registered 30s hook timeout mid-publish — some links rewritten,
+# some not — and a KILL records nothing, so the marker-clear guard cannot see
+# that the publish was partial and deletes a signal for definitions still stale
+# on disk.
+#
+# Structural checks first, so a refactor that drops the bound fails loudly even
+# where the functional fixture below cannot run.
+grep -q '_HOOK_TAIL_RESERVE_SECS' "$HOOK" \
+  || fail "session-start-sync.sh has no post-region reserve — the publishers and root-repo sync leg are not scheduled against the hook deadline (issue #1593)"
+# The whole function body, not a fixed -A window: a comment added inside it
+# must not silently push an assertion off the end and make it pass vacuously.
+publish_one_body="$(awk '/^  _publish_one\(\) \{/,/^  \}$/' "$HOOK")"
+[ -n "$publish_one_body" ] \
+  || fail "could not extract the _publish_one body from session-start-sync.sh"
+case "$publish_one_body" in
+  *_run_hook_bounded*) : ;;
+  *) fail "_publish_one runs its publisher unbounded — a stall outlives the 30s hook timeout with nothing recorded (issue #1593)" ;;
+esac
+case "$publish_one_body" in
+  *'symlink publish failed: $(_bound_trip_reason)'*) : ;;
+  *) fail "a publisher bound trip does not carry the '… symlink publish failed' token the publish guard keys off (issue #1593)" ;;
+esac
+case "$publish_one_body" in
+  *_publish_incomplete=1*) : ;;
+  *) fail "a publisher bound trip does not set _publish_incomplete — a partial publish could still clear the restart marker (issue #1593)" ;;
+esac
+# The root-repo sync leg (owner scope addition from PR #1553 BugBot 3922462913):
+# it runs after the marker clear and before additionalContext is emitted, so an
+# overrun there loses the session's informational notice.
+[ "$(grep -c '_run_hook_bounded --reserve "\$_HOOK_TAIL_RESERVE_SECS" --context ' "$HOOK")" -eq 2 ] \
+  || fail "session-start-sync.sh does not bound BOTH root-repo sync legs (main-sync.sh and the inline pull fallback) — issue #1593"
+# ...and the decline message must not claim the lock is held: this leg runs
+# AFTER the release, so a hard-coded lock rationale would be a false statement
+# the reader cannot act on.
+[ -z "$(grep '_run_hook_bounded --reserve "\$_HOOK_TAIL_RESERVE_SECS" --context ' "$HOOK" | grep 'holding the config-sync lock')" ] \
+  || fail "the root-repo sync leg's decline message claims the config-sync lock is held, but the leg runs after the release (issue #1593)"
+
+# Functional fixture. The hook resolves its publishers from its OWN directory,
+# so the stub has to live in a copied hook tree rather than in the temp HOME.
+# Only the helpers the hook actually reaches are copied; register-hooks.py is
+# stubbed so a registration error cannot masquerade as the publish failure
+# under test (or, in the control below, block the marker clear).
+build_publish_fixture() { # build_publish_fixture <root> <skill-publisher-body>
+  local root="$1" body="$2"
+  mkdir -p "$root/tree/.claude/hooks" "$root/tree/.claude/scripts/lib" "$root/home/.claude/logs"
+  cp "$HOOK" "$root/tree/.claude/hooks/session-start-sync.sh"
+  cp "$REPO_ROOT/.claude/scripts/state-lock.sh" "$REPO_ROOT/.claude/scripts/repo-root.sh" \
+     "$root/tree/.claude/scripts/"
+  cp "$REPO_ROOT/.claude/scripts/lib/bounded-run.sh" "$root/tree/.claude/scripts/lib/"
+  printf '#!/usr/bin/env python3\nprint("hooks registered (stub)")\n' \
+    > "$root/tree/.claude/hooks/register-hooks.py"
+  printf '%s' "$body" > "$root/tree/.claude/scripts/publish-skill-symlinks.sh"
+  printf '#!/bin/sh\nexit 0\n' > "$root/tree/.claude/scripts/publish-agent-symlinks.sh"
+  chmod +x "$root/tree/.claude/scripts/publish-skill-symlinks.sh" \
+           "$root/tree/.claude/scripts/publish-agent-symlinks.sh"
+  # A real git worktree: the hook's bootstrap branch tests for a `.git` FILE,
+  # which a clone does not have.
+  # `git init -q` + symbolic-ref rather than `init -b`: -b needs git 2.28+, and
+  # the sync suite's own fixture already uses this spelling.
+  git init -q "$root/up"
+  git -C "$root/up" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+  mkdir -p "$root/up/.claude/skills/alpha"
+  printf '# alpha\n' > "$root/up/.claude/skills/alpha/SKILL.md"
+  git -C "$root/up" add -A >/dev/null 2>&1
+  git -C "$root/up" -c user.email=t@t -c user.name=t commit -qm seed >/dev/null 2>&1
+  git clone -q "$root/up" "$root/base" >/dev/null 2>&1
+  git -C "$root/base" worktree add -q --detach "$root/home/.claude/skills-worktree" main >/dev/null 2>&1
+  cat > "$root/home/.claude/sync-restart-recommended.json" <<'JSON'
+{
+  "restart_recommended": {
+    "reason": "config sync updated skills",
+    "categories": ["skills"],
+    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+    "at": "2026-09-01T00:00:00Z"
+  }
+}
+JSON
+}
+
+P15="$(mktemp -d)"
+p15_cleanup() { rm -rf "$TMP_HOME" "$MARKER_HOME" "$SKIP_HOME" "$FRESH_HOME" "$OK_HOME" "$P15"; }
+trap p15_cleanup EXIT
+
+# Stalled leg: a publisher that sleeps far past its bound.
+STALL="$P15/stall"
+build_publish_fixture "$STALL" '#!/bin/sh
+sleep 60
+'
+stall_started="$(date +%s)"
+stall_out="$(printf '{"source":"startup"}' \
+  | HOME="$STALL/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=2 \
+    bash "$STALL/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
+stall_elapsed=$(( $(date +%s) - stall_started ))
+
+[ "$stall_elapsed" -lt 45 ] \
+  || fail "a stalled publisher was not cut short — the hook ran ${stall_elapsed}s (issue #1593)"
+STALL_OUT="$stall_out" python3 - <<'PY' || fail "a stalled publisher left no recorded failure; got: $stall_out"
+import json, os, sys
+text = os.environ.get("STALL_OUT", "").strip()
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+# The TOKEN is the contract — it is what the publish guard and the marker clear
+# key off. The exact "2s" is not: the bound is min(budget left, ceiling), so a
+# slow preamble legitimately shortens it, and on a very slow machine the call is
+# DECLINED outright rather than exceeded. Asserting the literal 2s would turn
+# either into a red suite for a fix that worked.
+ok = "skill symlink publish failed" in ctx and ("exceeded its" in ctx or "declined:" in ctx)
+sys.exit(0 if ok else 1)
+PY
+python3 - "$STALL/home/.claude/sync-restart-recommended.json" <<'PY' || fail "a startup whose publisher tripped its bound cleared the restart marker — the session sits on a partial publish with no signal (issue #1593)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
+# Negative control: the SAME fixture with a publisher that finishes inside an
+# ample bound. Without it the assertions above would pass for a hook that had
+# simply stopped publishing altogether.
+OKP="$P15/okp"
+build_publish_fixture "$OKP" '#!/bin/sh
+echo "  alpha — creating symlink"
+exit 0
+'
+okp_out="$(printf '{"source":"startup"}' \
+  | HOME="$OKP/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
+    bash "$OKP/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
+OKP_OUT="$okp_out" python3 - <<'PY' || fail "the ample-budget control reported a publish failure, so the bound is tripping on a healthy publisher; got: $okp_out"
+import json, os, sys
+text = os.environ.get("OKP_OUT", "").strip()
+if not text or text == "{}":
+    sys.exit(0)
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(0)
+sys.exit(1 if "publish failed" in ctx else 0)
+PY
+python3 - "$OKP/home/.claude/sync-restart-recommended.json" <<'PY' || fail "the ample-budget control did not clear the restart marker — the stall assertion above would pass vacuously (issue #1593)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+with open(path) as f:
+    d = json.load(f)
+sys.exit(1 if d.get("restart_recommended") is not None else 0)
+PY
+rm -rf "$P15"
 
 echo "OK: session-start-sync.sh SessionStart migration tests passed"
