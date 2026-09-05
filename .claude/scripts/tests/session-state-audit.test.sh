@@ -252,6 +252,41 @@ check_eq "--heal-types did not reset the legacy array to {}" '[{"id":"still-runn
 rm -f "$HOME"/.claude/session-state.json.bak.*
 
 echo
+echo "== a FALSE container value is healed, not silently declined (issue #1631) =="
+# FAILS WITHOUT FIX: the heal re-validation read the target as `$d[$f] // null`,
+# and jq's `//` treats `false` as EMPTY — so a literal `false` looked like
+# "another writer already repaired it", the heal was dropped from the plan, and
+# --heal-types exited reporting success with the invalid value still on disk.
+# `false` trips no other guard: `false != null` is true, so detection reports
+# the violation correctly and only the repair declines it (CodeAnt, PR #1637).
+write_state
+jq '.active_agents = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+OUT=$(run --offline --json 2>/dev/null)
+check_eq "a false active_agents IS reported as a type violation" "boolean" \
+  "$(jq -r '[.type_violations[] | select(.path == ".active_agents")][0].found' <<<"$OUT")"
+run --apply --heal-types --offline >/dev/null 2>&1
+check_eq "--heal-types actually resets a false active_agents to {}" '{}' \
+  "$(jq -c '.active_agents' "$STATE_FILE")"
+
+# The `.pr == null` and per-PR branches carry the same `has`-based fix, but a
+# false-valued REPO scope cannot be pinned end-to-end here: the LOST integrity
+# check that runs before the write does `.repos[$r].prs` unguarded and dies with
+# "Cannot index boolean with string" first, so the repair aborts (file left
+# untouched, backup kept) for a reason unrelated to the heal plan. That crash is
+# a separate pre-existing defect in a different code path; tracked separately
+# rather than widened into this issue. What IS pinned is that the abort is loud
+# and non-destructive, which is the property that matters for a repair tool.
+write_state
+jq '.repos["auerbachb/claude-code-config"] = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+BEFORE_FALSE_SCOPE="$(cat "$STATE_FILE")"
+OUT=$(run --apply --heal-types --offline 2>&1); RC=$?
+check_eq "a false repo scope aborts the repair rather than half-writing" \
+  "nonzero" "$([[ "$RC" -ne 0 ]] && echo nonzero || echo "zero($RC)")"
+check_eq "the aborted repair left the file byte-identical" \
+  "$BEFORE_FALSE_SCOPE" "$(cat "$STATE_FILE")"
+rm -f "$HOME"/.claude/session-state.json.bak.*
+
+echo
 echo "== Backups never overwrite an earlier snapshot =="
 write_state
 run --apply --heal-types --offline >/dev/null 2>&1

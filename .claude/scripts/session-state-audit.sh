@@ -604,16 +604,27 @@ REVALIDATED="$(jq -c -n \
           ( ($d.active_agents // {}) as $m
             | ($m | type) == "object" and ($m | has($h.agent))
               and (($m[$h.agent] | type) != "object") )
+        # `has` rather than `// null` for the same reason the agent branch
+        # above uses it, plus one more: the `//` operator treats `false` as EMPTY, so
+        # `$d.active_agents // null` yields null for a literal `false` and the
+        # heal is dropped as "already repaired" while the invalid value stays
+        # on disk and --heal-types reports success (CodeAnt, PR #1637). `false`
+        # fails no other guard either — `false != null` is true, so detection
+        # reports the violation and only the repair silently declines it. Every
+        # branch is bound to a variable before `has`, because inside `has(f)`
+        # `.` is the value being queried, not the heal element.
         elif .scope == null then
-          ( ($d[(.path | ltrimstr("."))] // null) as $v
-            | $v != null and ($v | type) != .want )
+          ( (.path | ltrimstr(".")) as $f | .want as $want
+            | ($d | has($f)) and ($d[$f] != null) and (($d[$f] | type) != $want) )
         elif .pr == null then
-          ( ($d.repos[.scope] // null) as $v | $v != null and ($v | type) != .want )
+          ( .scope as $s | .want as $want
+            | (($d.repos // {}) | has($s)) and ($d.repos[$s] != null)
+              and (($d.repos[$s] | type) != $want) )
         else
-          ( entry(.scope; .pr) as $e
-            | $e != null
-            and ( ($e[(.path | split(".") | last)] // null) as $v
-                  | $v != null and ($v | type) != .want ) )
+          ( (.path | split(".") | last) as $f | .want as $want
+            | entry(.scope; .pr) as $e
+            | $e != null and ($e | has($f)) and ($e[$f] != null)
+              and (($e[$f] | type) != $want) )
         end )) )
   }')" || die_error "could not re-validate the repair plan under the lock — $STATE_FILE left unmodified (backup: $BACKUP)"
 
