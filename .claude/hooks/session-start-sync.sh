@@ -121,7 +121,21 @@ if (( _bound_available == 1 )); then
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX")"     || CAPTURE=""
   CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX")" || CAPTURE_ERR=""
   [[ -n "$CAPTURE" && -n "$CAPTURE_ERR" ]] || _bound_available=0
-  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" 2>/dev/null || true' EXIT
+  # Opt into the library's orphan handover, for the same reason
+  # dirty-main-guard.sh does: a bound trip here is NOT fatal. _publish_one
+  # records the failure and returns 0, so the hook runs on to the second
+  # publisher and then to both root-repo sync legs — every one of them
+  # truncating and re-reading this same pair. A child left unkillable in
+  # uninterruptible I/O (the stalled-network-home case this whole change is
+  # about) still holds these descriptors open, so without the handover a later
+  # call reads the wedged publisher's late output as its own. Handing the pair
+  # over costs two temp files and removes that contamination entirely.
+  ORPHANED_CAPTURES=()
+  BOUNDED_CAPTURE_TEMPLATE="${TMPDIR:-/tmp}/session-start-sync-out.XXXXXX"
+  BOUNDED_CAPTURE_ERR_TEMPLATE="${TMPDIR:-/tmp}/session-start-sync-err.XXXXXX"
+  # `[@]+` is the portable empty-array expansion — a bare "${arr[@]}" is an
+  # unbound-variable error under `set -u` on macOS's bash 3.2.
+  trap 'rm -f "${CAPTURE:-}" "${CAPTURE_ERR:-}" ${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"} 2>/dev/null || true' EXIT
 fi
 
 # --- Bounded-call machinery ---

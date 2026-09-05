@@ -762,4 +762,30 @@ sys.exit(1 if d.get("restart_recommended") is not None else 0)
 PY
 rm -rf "$P15"
 
+# --- 16. The capture pair is handed over on a wedged child (CodeAnt, PR #1640) -
+# A bound trip in this hook is NOT fatal: _publish_one records the failure and
+# returns 0, so the run continues to the second publisher and then to both
+# root-repo sync legs — each truncating and re-reading the SAME $CAPTURE pair.
+# A child still alive after SIGKILL is wedged in uninterruptible I/O and still
+# holds those descriptors open, so without bounded-run.sh's orphan handover a
+# later call can read the wedged publisher's late output as its own.
+#
+# Structural only, on purpose: a process that survives SIGKILL cannot be
+# manufactured portably in a test, so the library's own rotation logic is
+# covered by bounded-run.test.sh and what is asserted here is that this caller
+# OPTS IN — the failure mode being a refactor that drops the opt-in silently.
+grep -q '^  ORPHANED_CAPTURES=()' "$HOOK" \
+  || fail "session-start-sync.sh does not declare ORPHANED_CAPTURES — bounded-run.sh's orphan handover is off, so a wedged publisher's late output can contaminate a later call's capture (CodeAnt, PR #1640)"
+grep -q '^  BOUNDED_CAPTURE_TEMPLATE=' "$HOOK" \
+  || fail "session-start-sync.sh does not set BOUNDED_CAPTURE_TEMPLATE — the capture pair is never rotated away from a wedged child (CodeAnt, PR #1640)"
+grep -q '^  BOUNDED_CAPTURE_ERR_TEMPLATE=' "$HOOK" \
+  || fail "session-start-sync.sh does not set BOUNDED_CAPTURE_ERR_TEMPLATE — the stderr half of the pair is never rotated (CodeAnt, PR #1640)"
+# The handover only removes contamination if the rotated-away files are still
+# unlinked at exit; otherwise it trades a correctness bug for a temp-file leak.
+hook_trap_line="$(grep -n "trap 'rm -f" "$HOOK" | head -1 | cut -d: -f2-)"
+case "$hook_trap_line" in
+  *'${ORPHANED_CAPTURES[@]+"${ORPHANED_CAPTURES[@]}"}'*) : ;;
+  *) fail "the EXIT trap does not unlink ORPHANED_CAPTURES — handed-over captures leak in \$TMPDIR (CodeAnt, PR #1640)" ;;
+esac
+
 echo "OK: session-start-sync.sh SessionStart migration tests passed"
