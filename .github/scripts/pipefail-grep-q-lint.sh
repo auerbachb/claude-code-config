@@ -42,7 +42,8 @@
 # on.
 #
 # Only early-exit greps count: an option cluster carrying `q` (`-q`, `-qE`,
-# `-Eq`, `-qxF`, …) or `--quiet` / `--silent`. `grep -c`, `grep -v`, a plain
+# `-Eq`, `-qxF`, …) or `--quiet` / `--silent` — on `grep` itself, a variant
+# (`egrep`, `ggrep`, `zgrep`) or a prefixed call (`LC_ALL=C grep`, `command grep`). `grep -c`, `grep -v`, a plain
 # `grep pattern` all read their input to EOF and cannot strand a producer.
 #
 # === Why quoted spans are stripped first ===
@@ -50,8 +51,8 @@
 # Single-quoted spans and trailing comments are removed before matching, so a
 # `| grep -q` that is DATA — a fixture command string handed to a classifier,
 # an `sh -c '…'` body that runs under a shell without pipefail — is not a
-# finding. Bodies of quoted heredocs (`<<'EOF'`) are skipped for the same
-# reason. Double-quoted strings are NOT stripped: the repo's assert helpers
+# finding. Heredoc bodies (`<<'EOF'` and `<<EOF` alike) are skipped for the
+# same reason — they are text this shell writes somewhere, not commands it runs. Double-quoted strings are NOT stripped: the repo's assert helpers
 # `eval` their double-quoted condition string in the pipefail shell, so a
 # pipeline inside one is live code (`assert "x" "printf '%s' \"\$out\" | grep
 # -q y"` was a real flake site). The cost is a false positive on data that
@@ -199,9 +200,9 @@ FNR == 1 {
   raw = $0
 
   # --- heredoc bookkeeping ---------------------------------------------
-  # A quoted delimiter makes the body literal text (a script writing another
-  # script); nothing in it runs in this file, so skip it — and never let a
-  # `set -o pipefail` inside it switch scanning on.
+  # A heredoc body — quoted delimiter or not — is data to THIS shell (a script
+  # writing another script, a usage block); nothing in it runs here, so skip
+  # it, and never let a `set -o pipefail` inside it switch scanning on.
   if (in_literal_heredoc) {
     if (trim(raw) == heredoc_tag) { in_literal_heredoc = 0; heredoc_tag = "" }
     next
@@ -212,7 +213,7 @@ FNR == 1 {
   # `# cat <<'"'"'EOF'"'"'` opens nothing, and treating it as one would mute
   # every live pipeline after it.
   opener_line = decomment(raw)
-  if (match(opener_line, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"')/)) {
+  if (match(opener_line, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
     tag = substr(opener_line, RSTART, RLENGTH)
     gsub(/^[^<]*<<-?[[:space:]]*/, "", tag)
     gsub(/["'"'"']/, "", tag)
@@ -283,7 +284,10 @@ FNR == 1 {
 
   # Every `| grep …` (not `||`, optionally `|&`) up to the end of that simple
   # command: a separator, a redirection, or a closing paren.
-  while (match(work, /(^|[^|])\|&?[[:space:]]*grep([[:space:]]|$)/)) {
+  # `grep` may carry a prefix — `LC_ALL=C grep`, `command grep`, `env grep` —
+  # or be a variant basename (`egrep`, `ggrep`, `zgrep`): same early exit,
+  # same SIGPIPE hazard.
+  while (match(work, /(^|[^|])\|&?[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*|command|builtin|env)[[:space:]]+)*[a-z]*grep([[:space:]]|$)/)) {
     rest = substr(work, RSTART + RLENGTH)
     args = rest
     if (match(args, /[;&|<>()]/)) args = substr(args, 1, RSTART - 1)

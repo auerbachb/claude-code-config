@@ -29,10 +29,8 @@ if [ ! -f "$LINT" ]; then
 fi
 
 TMP_ROOT="$(mktemp -d -t pipefail-grep-q-lint.XXXXXX)"
-PLANT=""
 cleanup() {
   rm -rf "$TMP_ROOT"
-  [ -n "$PLANT" ] && [ -f "$PLANT" ] && rm -f "$PLANT"
   return 0
 }
 trap cleanup EXIT
@@ -200,6 +198,26 @@ expect "a commented-out heredoc opener does not mute the rest of the file" 1 'ex
 set -uo pipefail
 # cat > "$stub" <<'STUB'
 printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "a prefixed grep (LC_ALL=C grep -q) is a finding" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$big" | LC_ALL=C grep -q needle
+FIX
+
+expect "a variant basename (egrep -q) is a finding" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$big" | egrep -q needle
+FIX
+
+expect "| grep -q inside an UNQUOTED heredoc body is not a finding" 0 'OK' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+cat > "$stub" <<STUB
+printf '%s\n' "$big" | grep -q needle
+STUB
 FIX
 
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
@@ -413,11 +431,16 @@ else
   sed 's/^/       /' <<<"$out"
 fi
 
-# Plant an untracked file carrying the exact pre-fix table-freshness.test.sh
-# shape. `--others` discovery must pick it up and the lint must fail on it —
-# proving the guard can fire against the real tree, not only a fixture.
-PLANT="${REPO_ROOT}/.claude/scripts/tests/zz-pipefail-grep-q-plant-$$.sh"
-cat > "$PLANT" <<'PLANT_EOF'
+# Plant a file carrying the exact pre-fix table-freshness.test.sh shape into a
+# hermetic git repo — untracked, so `--others` discovery has to pick it up —
+# and the lint must fail on it, proving the guard can fire through the same
+# git-backed discovery path the real tree uses. Never planted in the real
+# checkout: a parallel test run would see it, and a SIGKILL would leave it.
+plant_repo="${TMP_ROOT}/plant-repo"
+mkdir -p "$plant_repo/scripts/tests"
+git -C "$plant_repo" init -q
+make_fixture "$plant_repo"
+cat > "$plant_repo/scripts/tests/zz-pipefail-grep-q-plant.sh" <<'PLANT_EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 STEP8="$(sed -n '/^## Step 8/,$p' "$SUBAGENT")"
@@ -426,17 +449,16 @@ for VAR in REPO_KEY TF_SESSION ACTIVE_COUNT; do
     fail "/subagent Step 8 uses \$$VAR without re-deriving it after a compaction"
 done
 PLANT_EOF
-if out=$(cd "$REPO_ROOT" && bash "$LINT" 2>&1); then
-  bad "planted pre-fix shape: lint passed — the guard cannot fire on the real tree"
+if out=$(cd "$plant_repo" && bash "$LINT" 2>&1); then
+  bad "planted pre-fix shape: lint passed — the guard cannot fire through git discovery"
 else
-  if grep -q "zz-pipefail-grep-q-plant-$$.sh:5:" <<<"$out"; then
-    ok "planted pre-fix shape makes the live repo fail, at the right line"
+  if grep -q "zz-pipefail-grep-q-plant.sh:5:" <<<"$out"; then
+    ok "planted pre-fix shape fails through git-backed discovery, at the right line"
   else
     bad "planted pre-fix shape: lint failed but did not name the plant"
     sed 's/^/       /' <<<"$out"
   fi
 fi
-rm -f "$PLANT"; PLANT=""
 
 echo
 echo "=== Part 3: the hazard is real ==="
@@ -455,7 +477,7 @@ awk 'BEGIN { for (i = 0; i < 2000000; i++) print "x" }' > "$BIGFILE"
 # Each probe runs in its own bash so the pipefail in force is exactly the one
 # under test, and so a SIGPIPE death cannot take this test process with it.
 # The payload travels by file, not argv: 1 MiB is past the per-argument limit.
-rc_pipe=$(bash -c 'set -o pipefail; BIG=$(cat "$1"); printf "%s\n" "$BIG" | grep -q x 2>/dev/null; echo $?' _ "$BIGFILE")
+rc_pipe=$(bash -c 'set -o pipefail; BIG=$(cat "$1"); { printf "%s\n" "$BIG" | grep -q x; } 2>/dev/null; echo $?' _ "$BIGFILE")
 rc_here=$(bash -c 'set -o pipefail; BIG=$(cat "$1"); grep -q x <<<"$BIG"; echo $?' _ "$BIGFILE")
 
 if [ "$rc_pipe" != "0" ]; then
@@ -472,7 +494,7 @@ fi
 
 # Control: the same pipeline WITHOUT pipefail reports grep's own status, which
 # is why the lint only scans files that enable it.
-rc_nopf=$(bash -c 'BIG=$(cat "$1"); printf "%s\n" "$BIG" | grep -q x 2>/dev/null; echo $?' _ "$BIGFILE")
+rc_nopf=$(bash -c 'BIG=$(cat "$1"); { printf "%s\n" "$BIG" | grep -q x; } 2>/dev/null; echo $?' _ "$BIGFILE")
 if [ "$rc_nopf" = "0" ]; then
   ok "(control) the same pipeline without pipefail returns 0"
 else

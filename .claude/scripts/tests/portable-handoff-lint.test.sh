@@ -855,7 +855,7 @@ printf 'Then run \033[31m/wrap\033[0m to finish.\n' >>"$ESC_FIX"
 out=$(run_lint "$ESC_FIX" 2>&1); rc=$?
 [[ "$rc" -eq 1 ]] || fail "an escape-laden violation line should still be caught (rc=$rc)"
 grep -q 'skill-invocation' <<<"$out" || fail "escape fixture did not report the violation"
-printf '%s' "$out" | LC_ALL=C grep -q '[[:cntrl:]]' \
+LC_ALL=C grep -q '[[:cntrl:]]' <<<"$out" \
   && fail "the report emitted raw control characters from document text"
 
 # --- 9. Quota authority: nothing here estimates spend --------------------
