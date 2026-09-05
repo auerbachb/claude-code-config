@@ -170,4 +170,48 @@ printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":
 [[ "$(wc -l <"$ROT_LOG" | tr -d ' ')" == "1" ]] || fail "post-rotation log should hold exactly the new record"
 jq -e '.session_id == "rot"' <"$ROT_LOG" >/dev/null || fail "post-rotation log lost the new record"
 
+# --- 10. Which limit was hit is recorded, not left for the gate to guess ---
+# Issue #1633: `error == "rate_limit"` does not say whether the account hit a
+# plan window (spent nothing) or ran out of credits (spent). Recording the
+# classification here is what keeps the vendor's prose parsed in ONE place.
+KIND_DIR="$TMP_DIR/kind"
+mkdir -p "$KIND_DIR"
+KIND_LOG="$KIND_DIR/usage-limit-events.jsonl"
+
+# The exact message four sessions died on, 2026-09-04.
+printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"plan","last_assistant_message":"You'"'"'ve hit your weekly limit · resets 1pm (America/New_York)"}' \
+  | CLAUDE_USAGE_LIMIT_DIR="$KIND_DIR" CLAUDE_HANDOFF_DIR="$KIND_DIR/handoffs" bash "$HOOK"
+
+jq -e '.limit_kind == "plan_window"' <"$KIND_LOG" >/dev/null \
+  || fail "a weekly-limit hit was not recorded as plan_window"
+jq -e '.reset_at != null' <"$KIND_LOG" >/dev/null \
+  || fail "the stated reset time was not recorded"
+
+printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"over","last_assistant_message":"Your credit balance is too low to continue."}' \
+  | CLAUDE_USAGE_LIMIT_DIR="$KIND_DIR" CLAUDE_HANDOFF_DIR="$KIND_DIR/handoffs" bash "$HOOK"
+
+jq -e 'select(.session_id == "over") | .limit_kind == "overage"' <"$KIND_LOG" >/dev/null \
+  || fail "a credit-balance message was not recorded as overage"
+
+# --- 11. The classifier is an OPTIONAL dependency ---
+# This hook's contract is that it always exits 0 and always writes the record.
+# Running it from a directory with no sibling ../scripts/lib must still produce
+# a complete record — with both fields null, which is exactly the legacy shape
+# the gate already knows how to classify for itself.
+ISOLATED="$TMP_DIR/isolated"
+mkdir -p "$ISOLATED"
+cp "$HOOK" "$ISOLATED/usage-limit-record.sh"
+ISO_RC=0
+printf '%s' '{"hook_event_name":"StopFailure","error":"rate_limit","session_id":"nolib","last_assistant_message":"You'"'"'ve hit your weekly limit"}' \
+  | CLAUDE_USAGE_LIMIT_DIR="$ISOLATED/out" CLAUDE_HANDOFF_DIR="$ISOLATED/handoffs" \
+    bash "$ISOLATED/usage-limit-record.sh" || ISO_RC=$?
+
+[[ "$ISO_RC" -eq 0 ]] || fail "hook did not exit 0 with the classifier library absent (rc=$ISO_RC)"
+ISO_LOG="$ISOLATED/out/usage-limit-events.jsonl"
+[[ -f "$ISO_LOG" ]] || fail "no record written with the classifier library absent"
+jq -e '.reason == "rate_limit" and .session_id == "nolib"' <"$ISO_LOG" >/dev/null \
+  || fail "record written without the library is incomplete"
+jq -e '.limit_kind == null and .reset_at == null' <"$ISO_LOG" >/dev/null \
+  || fail "missing library should leave both classification fields null"
+
 echo "PASS: usage-limit-record.sh"

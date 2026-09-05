@@ -48,8 +48,30 @@
 #
 # AUTHORITATIVE PROBE (Probe 1 only — see budget-source-probe.md)
 #   Reads ~/.claude/usage-limit-events.jsonl (written by usage-limit-record.sh
-#   on StopFailure error == "rate_limit") and checks for any event whose
-#   `recorded_at` falls within the current ET calendar day.
+#   on StopFailure error == "rate_limit") and looks for an event, recorded
+#   within the current ET calendar day, that is an OVERAGE.
+#
+#   WHICH EVENTS COUNT (issue #1633)
+#     `reason == "rate_limit"` says a limit was hit; it does NOT say which one.
+#     A plan-window wall (rolling 5-hour or weekly) is the OPPOSITE of a credit
+#     overage: it means the account is on plan and paid nothing per token.
+#     Counting one as the other is how four weekly-limit hits before 07:15Z on
+#     2026-09-04 froze autonomous dispatch for the entire day, reporting a $25
+#     credit budget as spent when nothing had been spent.
+#
+#     So an event gates only when BOTH hold:
+#       1. its kind is `overage` — read from the `limit_kind` field the
+#          recorder writes, or, for legacy records lacking it, classified from
+#          `last_assistant_message` through the SAME library the recorder uses
+#          (lib/usage-limit-classify.sh — the prose is parsed in one place); and
+#       2. its reset time, when one is known, has not yet passed. A window that
+#          has already reopened never gates, whatever its kind.
+#
+#     `plan_window` and `unclassified` events never gate. This probe exists to
+#     detect overage; an event not classified as one is not evidence of credit
+#     spend. The conservative fail-closed posture stays where it belongs — on
+#     UNREADABLE signal state, which still reports `unknown` (exit 2).
+#
 #   No local token/dollar math is performed at any point in this script.
 #
 # ATOMICITY
@@ -58,6 +80,7 @@
 # DEPENDENCIES
 #   - jq
 #   - state-lock.sh (sibling library)
+#   - lib/usage-limit-classify.sh (sibling library; the ONE parser of limit prose)
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
@@ -81,6 +104,21 @@ fi
 # shellcheck source=./state-lock.sh
 if ! source "$SELF_DIR/state-lock.sh"; then
   echo "credit-budget.sh: failed to load $SELF_DIR/state-lock.sh" >&2
+  exit 5
+fi
+
+# Shared usage-limit classifier (issue #1633). REQUIRED here, unlike in the
+# recorder: without it this script cannot tell a plan-window wall from a credit
+# overage, and the only two ways to proceed would be to gate on every
+# rate_limit event (the #1633 defect) or on none (a gate that never fires).
+# Failing loudly is the honest third option.
+if [[ ! -f "$SELF_DIR/lib/usage-limit-classify.sh" || ! -r "$SELF_DIR/lib/usage-limit-classify.sh" ]]; then
+  echo "credit-budget.sh: missing sibling library: $SELF_DIR/lib/usage-limit-classify.sh" >&2
+  exit 5
+fi
+# shellcheck source=./lib/usage-limit-classify.sh
+if ! source "$SELF_DIR/lib/usage-limit-classify.sh"; then
+  echo "credit-budget.sh: failed to load $SELF_DIR/lib/usage-limit-classify.sh" >&2
   exit 5
 fi
 
@@ -207,9 +245,51 @@ read_state() {
   fi
 }
 
+# --- classify one candidate event -------------------------------------------
+# Decides whether a single event is evidence of credit overage RIGHT NOW.
+# Prints nothing; returns 0 when the event gates, 1 when it does not.
+#
+# param 1: the event as a compact JSON object (one line).
+# param 2: current epoch, passed in so every event in a sweep is judged against
+#          the same instant rather than a clock that moves mid-loop.
+event_gates() {
+  local event="$1" now_epoch="$2"
+  local kind reset_at recorded_at message
+
+  kind="$(printf '%s' "$event" | jq -r '.limit_kind // ""' 2>/dev/null)" || kind=""
+  reset_at="$(printf '%s' "$event" | jq -r '.reset_at // ""' 2>/dev/null)" || reset_at=""
+  recorded_at="$(printf '%s' "$event" | jq -r '.recorded_at // ""' 2>/dev/null)" || recorded_at=""
+  message="$(printf '%s' "$event" | jq -r '.last_assistant_message // ""' 2>/dev/null)" || message=""
+
+  # Legacy record (written before the recorder classified at write time):
+  # derive the kind from the same library, so there is still exactly one parser.
+  if [[ -z "$kind" || "$kind" == "null" ]]; then
+    kind="$(usage_limit_kind "$message")"
+  fi
+
+  # Only an overage is evidence of credit spend. plan_window and unclassified
+  # events are not, and gating on them is issue #1633.
+  [[ "$kind" == "overage" ]] || return 1
+
+  if [[ -z "$reset_at" || "$reset_at" == "null" ]]; then
+    reset_at="$(usage_limit_reset_at "$message" "$recorded_at")"
+  fi
+
+  # A window the message says has already reopened never gates. Applied to
+  # every kind, not only plan_window: a stated reopening is a stated end of the
+  # condition. An unparseable reset time is simply not known — it never becomes
+  # a reason to stop gating.
+  if usage_limit_reset_passed "$reset_at" "$now_epoch"; then
+    return 1
+  fi
+
+  return 0
+}
+
 # --- probe authoritative overage signal (Probe 1 from budget-source-probe.md) ---
-# Reads the usage-limit events log; checks for any rate_limit event recorded
-# during the current ET calendar day AND after reset_after_epoch (if set).
+# Reads the usage-limit events log; collects every rate_limit event recorded
+# during the current ET calendar day AND after reset_after_epoch (if set), then
+# asks event_gates() which (if any) is a live overage.
 # Returns "reached", "ok", or "unknown". NEVER performs any token/cost computation.
 #
 # param 1: reset_after_epoch — integer epoch (0 = no filter). Events at or before
@@ -255,18 +335,23 @@ probe_overage_signal() {
       || et_end=""
   fi
 
-  # Use `jq -rn 'first(inputs | ...)'` to return at most one result without piping
-  # to `head -1`. Piping to head -1 causes SIGPIPE when multiple events match,
-  # making jq exit non-zero and turning a valid `reached` result into `unknown`.
-  local found_today rc=0
+  # Emit EVERY in-window candidate, one compact JSON object per line, rather
+  # than `first(inputs | …)`. The first candidate is no longer necessarily the
+  # deciding one — a plan-window hit at 06:23 must not shadow an overage at
+  # 11:00 — so the whole day's window is collected and judged below.
+  # `jq -c` guarantees one line per object even when the captured message
+  # contains newlines, which is what keeps the read loop safe.
+  # No `head -1` anywhere: it would SIGPIPE jq under `set -o pipefail` and turn
+  # a valid `reached` into `unknown`.
+  local candidates rc=0
 
   if [[ -n "$et_start" && -n "$et_end" ]]; then
     # Primary: DST-accurate epoch boundary check.
-    found_today="$(jq -rn \
+    candidates="$(jq -cn \
       --argjson et_start "$et_start" \
       --argjson et_end "$et_end" \
       --argjson reset_after "$reset_after_epoch" \
-      'first(inputs |
+      'inputs |
         select(.reason == "rate_limit") |
         select(
           (.recorded_at // "") |
@@ -276,7 +361,13 @@ probe_overage_signal() {
               $ep >= $et_start and $ep < $et_end and
               ($reset_after <= 0 or $ep > $reset_after))
           end
-        ) | .reason)' \
+        ) |
+        {recorded_at: (.recorded_at // ""),
+         limit_kind: (.limit_kind // ""),
+         reset_at: (.reset_at // ""),
+         last_assistant_message: (
+           (.last_assistant_message // "")
+           | if type == "string" then . else "" end)}' \
       "$EVENTS_LOG" 2>/dev/null)" || rc=$?
   else
     # Fallback: current-session ET offset (less accurate at DST transitions).
@@ -286,11 +377,11 @@ probe_overage_signal() {
     hh="${hh#0}"; mm="${mm#0}"
     local et_offset_secs=$(( (${hh:-0} * 3600 + ${mm:-0} * 60) ))
     [[ "$sign" == "-" ]] && et_offset_secs=$(( -et_offset_secs ))
-    found_today="$(jq -rn \
+    candidates="$(jq -cn \
       --arg today "$TODAY" \
       --argjson offset "$et_offset_secs" \
       --argjson reset_after "$reset_after_epoch" \
-      'first(inputs |
+      'inputs |
         select(.reason == "rate_limit") |
         select(
           (.recorded_at // "") |
@@ -300,21 +391,39 @@ probe_overage_signal() {
               (($ep + $offset) | todate | split("T")[0] == $today) and
               ($reset_after <= 0 or $ep > $reset_after))
           end
-        ) | .reason)' \
+        ) |
+        {recorded_at: (.recorded_at // ""),
+         limit_kind: (.limit_kind // ""),
+         reset_at: (.reset_at // ""),
+         last_assistant_message: (
+           (.last_assistant_message // "")
+           | if type == "string" then . else "" end)}' \
       "$EVENTS_LOG" 2>/dev/null)" || rc=$?
   fi
 
-  # rc 0 with output = found a matching event; rc 0 with no output = no match;
-  # rc non-0 = jq error or file unreadable.
+  # rc non-0 = jq error or file unreadable. Unreadable is never permission.
   if [[ $rc -ne 0 ]]; then
     printf 'unknown'
     return
   fi
-  if [[ -n "$found_today" ]]; then
-    printf 'reached'
-  else
-    printf 'ok'
-  fi
+
+  local now_epoch
+  now_epoch="$(date -u +'%s' 2>/dev/null)" || now_epoch=""
+  # Without a clock the "already reopened" test cannot run. Skipping the test
+  # is the conservative direction — it can only keep an event gating — so the
+  # sweep proceeds with a sentinel no reset time can be at or below.
+  [[ -n "$now_epoch" && "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch=0
+
+  local ev
+  while IFS= read -r ev; do
+    [[ -n "$ev" ]] || continue
+    if event_gates "$ev" "$now_epoch"; then
+      printf 'reached'
+      return
+    fi
+  done <<< "$candidates"
+
+  printf 'ok'
 }
 
 # --- write state (atomic, through the lock) ---
@@ -450,8 +559,8 @@ case "$MODE" in
         # A new event found AFTER any prior reset — the reset is superseded.
         # Persist reached with reset_at cleared (the new event is the authority).
         state_lock_acquire "$STATE_FILE" || exit "$STATE_LOCK_EXIT_TIMEOUT"
-        write_state "reached" "usage-limit-events-today" ""
-        print_state "reached" "usage-limit-events-today"
+        write_state "reached" "overage-event-today" ""
+        print_state "reached" "overage-event-today"
         exit 1
         ;;
       ok)

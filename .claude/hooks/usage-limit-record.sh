@@ -68,6 +68,17 @@
 # OUTPUT  Appends to ~/.claude/usage-limit-events.jsonl
 #         Rewrites  ~/.claude/usage-limit-last.json (atomically)
 #         Always exits 0 — a recorder must never become a new failure mode.
+#
+# WHICH LIMIT (issue #1633)
+#   Every record also carries `limit_kind` (plan_window | overage |
+#   unclassified) and `reset_at`, classified at write time through
+#   ../scripts/lib/usage-limit-classify.sh. `error == "rate_limit"` says a
+#   limit was hit but not which one, and the two are opposite facts: a
+#   plan-window wall means the account is on plan and spent nothing, an overage
+#   means it spent. Recording the distinction is what stops `credit-budget.sh`
+#   from reading a weekly-limit hit as a day's credit spend. Both fields are
+#   null when the library is unavailable — see the block at the classification
+#   site for why that dependency stays optional.
 
 set -uo pipefail
 
@@ -112,6 +123,42 @@ file_size() {
 
 RECORDED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 [[ -n "$RECORDED_AT" ]] || RECORDED_AT="unknown"
+
+# LIMIT KIND (issue #1633)
+#
+# `error == "rate_limit"` says a limit was hit. It does NOT say WHICH limit,
+# and the two possibilities are opposite facts about the account: a plan-window
+# wall (rolling 5-hour or weekly) means the account is on plan and spent
+# nothing, while a credit overage means it spent. `credit-budget.sh` read every
+# record here as the second and froze autonomous dispatch for a whole day on
+# four events that were all the first.
+#
+# Classifying at write time is what keeps the vendor's prose parsed in ONE
+# place: the gate reads this field rather than re-deriving it, and reaches for
+# the same library only for records written before this field existed.
+#
+# The dependency is OPTIONAL, and deliberately so. This hook's contract is that
+# it always exits 0 and always writes the record; a recorder must never become
+# a new failure mode. With the library missing or unloadable both fields are
+# null, which is exactly the legacy shape the gate already knows how to
+# classify for itself.
+#
+# Classification reads `last_assistant_message` ONLY — the same field the gate's
+# fallback sees — so a record's stored kind and a re-derivation from its stored
+# text can never disagree.
+LIMIT_KIND=""
+RESET_AT=""
+_ulc_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/lib/usage-limit-classify.sh"
+if [[ -r "$_ulc_lib" ]]; then
+  # shellcheck source=../scripts/lib/usage-limit-classify.sh
+  if source "$_ulc_lib" 2>/dev/null; then
+    _ulc_msg=$(printf '%s' "$STDIN_JSON" \
+      | jq -r 'if (.last_assistant_message | type) == "string"
+               then .last_assistant_message else "" end' 2>/dev/null) || _ulc_msg=""
+    LIMIT_KIND=$(usage_limit_kind "$_ulc_msg" 2>/dev/null) || LIMIT_KIND=""
+    RESET_AT=$(usage_limit_reset_at "$_ulc_msg" "$RECORDED_AT" 2>/dev/null) || RESET_AT=""
+  fi
+fi
 
 # Only handoffs modified within HANDOFF_MAX_AGE_DAYS are eligible. Without a
 # bound, a document from a different project weeks ago stays advertised forever
@@ -182,9 +229,13 @@ build_record() { # $1 = portable handoff path, or "" for none
     --arg recorded_at "$RECORDED_AT" \
     --arg hint_base "$RESUME_HINT_BASE" \
     --arg handoff "$1" \
+    --arg limit_kind "$LIMIT_KIND" \
+    --arg reset_at "$RESET_AT" \
     '{
        recorded_at: $recorded_at,
        reason: "rate_limit",
+       limit_kind: (if $limit_kind == "" then null else $limit_kind end),
+       reset_at: (if $reset_at == "" then null else $reset_at end),
        session_id: (.session_id // null),
        cwd: (.cwd // null),
        transcript_path: (.transcript_path // null),

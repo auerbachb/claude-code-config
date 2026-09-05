@@ -136,7 +136,9 @@ Claude Code exposes **no** approaching-limit signal to any hook, skill, or sessi
 - `~/.claude/usage-limit-events.jsonl` — append-only history, rotated to `.1` past 256 KiB
 - `~/.claude/usage-limit-last.json` — the most recent event, written atomically; read this first when resuming
 
-Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a truncated `last_assistant_message`, and a `resume_hint`.
+Each record carries `recorded_at`, `session_id`, `cwd`, `transcript_path`, a truncated `last_assistant_message`, a `resume_hint`, and — since issue #1633 — `limit_kind` (`plan_window` | `overage` | `unclassified`) with `reset_at`.
+
+**Which limit was hit.** `error == "rate_limit"` says a limit was hit but not which one, and the two are opposite facts: a plan-window wall (rolling 5-hour or weekly) means the account is on plan and spent nothing, while an overage means it spent. `credit-budget.sh` read every record here as the second and froze autonomous dispatch for a full ET day on four events that were all the first. Classification happens at write time through `.claude/scripts/lib/usage-limit-classify.sh` — the one place the vendor's prose is parsed, shared with that gate. The dependency is deliberately **optional**: with the library absent both fields are null and the record is otherwise unchanged, because a recorder must never become a new failure mode.
 
 ### Prerequisites
 
