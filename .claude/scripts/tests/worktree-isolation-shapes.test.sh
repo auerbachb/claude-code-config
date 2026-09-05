@@ -550,6 +550,53 @@ else
   pass "T13c: SKIP — this env(1) has no -S, so the positive control cannot run here"
 fi
 
+# A shell BUILTIN satisfies `command -v` but env can exec only external
+# programs, so a builtin-only name would pass the preflight and then fail at
+# exec — arriving as the cap timeout the preflight exists to replace. Probed,
+# because several of these ship as real binaries on some platforms (macOS has
+# /usr/bin/cd), which would make the case vacuous rather than wrong.
+WU_BUILTIN=""
+for candidate in shopt declare readonly; do
+  if [[ -n "$(command -v "$candidate" 2>/dev/null)" && -z "$(type -P "$candidate" 2>/dev/null)" ]]; then
+    WU_BUILTIN="$candidate"
+    break
+  fi
+done
+if [[ -n "$WU_BUILTIN" ]]; then
+  printf '#!/usr/bin/env %s\nexit 0\n' "$WU_BUILTIN" > "$TMP/env-builtin"
+  chmod +x "$TMP/env-builtin"
+  RC=0; ERROUT=""
+  ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/env-builtin" 2>&1 >/dev/null)" || RC=$?
+  check_eq "T13c: a builtin-only interpreter env cannot exec exits 3, not 4" "3" "$RC"
+  check_contains "T13c: and names it" "$WU_BUILTIN" "$ERROUT"
+else
+  pass "T13c: SKIP — no builtin-only name available to probe with on this platform"
+fi
+
+# ---- T13d: the bounded-run library is found beside the SCRIPT, never in cwd --
+# The library path must derive from the script's own location. A fallback to a
+# relative "./lib" would load whatever sits under the CALLER's cwd — the wrong
+# library, silently — or blame a path the script never meant. The decoy below is
+# what makes this falsifiable: it is a readable, sourceable lib/bounded-run.sh
+# sitting exactly where a relative lookup would find it.
+mkdir -p "$TMP/decoy/lib" "$TMP/alone"
+cp "$WAIT" "$TMP/alone/wait-until.sh"
+chmod +x "$TMP/alone/wait-until.sh"
+echo 'echo DECOY-LIB-LOADED >&2' > "$TMP/decoy/lib/bounded-run.sh"
+RC=0; ERROUT=""
+ERROUT="$(cd "$TMP/decoy" && "$TMP/alone/wait-until.sh" --timeout 3 -- true 2>&1 >/dev/null)" || RC=$?
+check_eq "T13d: a script with no lib beside it exits 5, environment, not a cap" "5" "$RC"
+check_not_contains "T13d: and never sources the decoy library under the cwd" "DECOY-LIB-LOADED" "$ERROUT"
+check_contains "T13d: naming the path beside the SCRIPT" "$TMP/alone/lib" "$ERROUT"
+
+# Positive control — the real script, run from that same foreign cwd, still
+# finds its own library and answers normally. Without it, a script that simply
+# failed everywhere would pass the assertions above.
+RC=0; OUT=""
+OUT="$(cd "$TMP/decoy" && "$WAIT" --timeout 8 -- printf hi 2>/dev/null)" || RC=$?
+check_eq "T13d: positive control — the installed script works from a foreign cwd" "0" "$RC"
+check_eq "T13d: and relays its output" "hi" "$OUT"
+
 # ---- T14: a cap smaller than one interval still costs exactly one check ------
 echo 0 > "$STUB_STATE"
 RC=0

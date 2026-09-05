@@ -301,8 +301,14 @@ if [[ "${CMD[0]}" == */* ]]; then
       case "$WU_ENV_ARG" in
         *[\'\"\\\$]*) WU_ENV_ARG="" ;;
       esac
+      # `type -P`, not `command -v`: env execs an EXTERNAL program and nothing
+      # else, while command -v also answers for shell builtins and functions.
+      # `#!/usr/bin/env cd` would satisfy command -v and then fail at exec,
+      # arriving as the cap timeout this preflight exists to replace. The bare
+      # command below keeps command -v on purpose — that one is run by this
+      # shell, where a builtin genuinely does execute.
       if [[ -n "$WU_ENV_ARG" && "$WU_ENV_ARG" != -* && "$WU_ENV_ARG" != */* ]] \
-         && ! command -v "$WU_ENV_ARG" >/dev/null 2>&1; then
+         && ! type -P "$WU_ENV_ARG" >/dev/null 2>&1; then
         echo "wait-until.sh: the check command could not be launched — ${CMD[0]} asks env for interpreter '$WU_ENV_ARG', which is not on PATH" >&2
         exit 3
       fi
@@ -326,8 +332,26 @@ fi
 # Refusing here is deliberate: without the bound, a single hanging check turns
 # this script's whole contract — a hard cap — into a lie. Falling through to an
 # unbounded check would be worse than not running at all.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
-BOUNDED_RUN_LIB="${SCRIPT_DIR:-.}/lib/bounded-run.sh"
+# Resolved WITHOUT dirname, and never silently relative. dirname is not in the
+# required-helper list above, so a missing one left SCRIPT_DIR empty and the
+# `${SCRIPT_DIR:-.}` fallback then named `./lib/bounded-run.sh` — whatever
+# happens to sit under the CALLER's cwd, which is either the wrong library or a
+# missing-library message blaming a path this script never meant. Parameter
+# expansion needs no fork at all, and a directory that still will not resolve is
+# an environment failure (5), the same answer the missing library gets below.
+WU_SELF="${BASH_SOURCE[0]:-$0}"
+case "$WU_SELF" in
+  */*) WU_SELF_DIR="${WU_SELF%/*}" ;;
+  # No slash means we were named as a bare word, so the script IS in the current
+  # directory — `.` is the answer here, not a fallback for a failed lookup.
+  *)   WU_SELF_DIR="." ;;
+esac
+SCRIPT_DIR="$(cd "$WU_SELF_DIR" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+if [[ -z "$SCRIPT_DIR" ]]; then
+  echo "wait-until.sh: could not resolve this script's own directory (from '$WU_SELF'), so lib/bounded-run.sh could not be located and the ${TIMEOUT}s cap could not be honoured — nothing was polled" >&2
+  exit 5
+fi
+BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
 if [[ ! -r "$BOUNDED_RUN_LIB" ]]; then
   echo "wait-until.sh: required library not found at $BOUNDED_RUN_LIB, so each check could not be bounded and the ${TIMEOUT}s cap could not be honoured — reinstall .claude/scripts/lib/ and retry" >&2
   exit 5
