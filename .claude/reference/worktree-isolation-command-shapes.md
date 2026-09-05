@@ -32,6 +32,7 @@ Two corollaries:
 
 - **Never wrap a helper in a `cd`.** Pass the target path instead: `dirty-main-guard.sh --repo`, `main-sync.sh --repo`, `polling-state-gate.sh --root-repo`, `admin-merge.sh --repo-path`, `worktree-status.sh --repo`. Every one of those flags exists for this reason.
 - **A genuinely multi-line block is run as a file, not as a paste.** Write it to the session scratchpad and invoke `bash <file>` — a single command. This is the general escape for anything the table below does not already cover, including the stateful wait loop in `fixpr/SKILL.md` Step 4d.
+  - **A file is a child process, so state does not cross in either direction.** Plain shell variables set in earlier steps arrive empty, and assignments the file makes never reach the caller. Write the values the block needs into the top of the file (or pass them as `NAME=value bash <file>`), and hand results back on stdout for the caller to capture — never by assignment. A block that silently reads empty inputs still runs, and reports a verdict it never measured.
 
 ## Case-by-case map
 

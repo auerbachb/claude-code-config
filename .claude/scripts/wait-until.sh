@@ -30,7 +30,9 @@
 #   --interval <secs>  Seconds between checks (default 10; positive integer).
 #   --timeout <secs>   Wall-clock cap on the whole wait (default 600; positive
 #                      integer). The first check always runs, so a cap smaller
-#                      than one interval still performs exactly one check.
+#                      than one interval still performs exactly one check. On
+#                      the kill path the call can return up to ~5s LATE — see
+#                      THE CHECK IS BOUNDED TOO.
 #   --expect <string>  Condition is met when the check's stdout, trimmed of
 #                      leading and trailing whitespace, EQUALS <string> and the
 #                      check exited 0. Without this flag the condition is simply
@@ -77,6 +79,16 @@
 #   lib/bounded-run.sh with the time REMAINING as its bound, in its own process
 #   group, and is killed when that runs out. The result is exit 4 with a message
 #   saying the check was still running, never a silent overrun.
+#
+#   The cap is therefore an upper bound on POLLING, not to the second on the
+#   process. Killing a wedged check is not instantaneous: run_bounded sends
+#   TERM, waits up to 2s for the child to go, sends KILL, then reaps for up to
+#   3s before giving up on the status. So a run that ends by killing its check
+#   returns up to ~5s after --timeout. That overshoot is bounded and only ever
+#   on the kill path — a check that returns on its own is never held past the
+#   cap. The alternative, reserving those 5s out of REMAINING, would silently
+#   shorten every legitimate check's budget to flatter the number, so the
+#   grace is documented rather than subtracted.
 #
 # REQUIREMENTS
 #   mktemp, date, sleep, awk, cat, rm, plus lib/bounded-run.sh beside this
@@ -317,8 +329,10 @@ while :; do
   TICK=$((TICK + 1))
   LAST_RC=0
   # Bounded by the time LEFT, not by the interval: a check that hangs is killed
-  # exactly at the cap, so --timeout is an upper bound on the whole call rather
-  # than on the polling alone. NEVER call run_bounded inside `$( )` — a subshell
+  # at the cap rather than outliving it, so --timeout bounds the whole call and
+  # not just the polling. "At the cap" means the TRIP is at the cap — TERM/KILL
+  # and the reap add up to ~5s after it (see THE CHECK IS BOUNDED TOO in the
+  # header). NEVER call run_bounded inside `$( )` — a subshell
   # discards BOUNDED_TIMED_OUT and turns a bounded failure back into a silent
   # one. run_bounded truncates both capture files itself.
   run_bounded "$REMAINING" "${CMD[@]}" || LAST_RC=$?
