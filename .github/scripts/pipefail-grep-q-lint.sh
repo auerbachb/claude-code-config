@@ -193,7 +193,7 @@ function strip_single_quoted(s) {
 # Walks the line tracking quote state, so `<<` inside a string is data; skips
 # `<<<` (here-string) and anything inside `(( ... ))` / `$(( ... ))`
 # (arithmetic: `<< width` is a shift, not a heredoc); accepts quoted tags and
-# bare identifiers. Handles `cat <<A <<B` (two bodies, A first).
+# bare words (`END.txt`). Handles `cat <<A <<B` (two bodies, A first).
 function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
   n = length(s); sq = 0; dq = 0; arith = 0; out = ""
   for (i = 1; i <= n; i++) {
@@ -216,8 +216,15 @@ function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
         j++
         while (j <= n && substr(s, j, 1) != c) { tag = tag substr(s, j, 1); j++ }
         j++
-      } else if (c ~ /[A-Za-z_]/) {
-        while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { tag = tag substr(s, j, 1); j++ }
+      } else if (c != "" && c !~ /[[:space:];|&<>()]/) {
+        # An unquoted delimiter is a whole shell WORD (`END.txt`, `EOF-1`): it
+        # runs to whitespace or a metacharacter, and quote characters inside it
+        # are removed, exactly as bash does.
+        while (j <= n && substr(s, j, 1) !~ /[[:space:];|&<>()]/) {
+          c = substr(s, j, 1)
+          if (c != "\047" && c != "\"") tag = tag c
+          j++
+        }
       }
       if (tag != "") out = out (out == "" ? "" : "\037") dash tag
       i = j - 1
