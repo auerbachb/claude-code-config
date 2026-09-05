@@ -375,6 +375,21 @@ sed 's/id=tests order=20/id=extra order=30/' "$dir/.claude/scripts/docs/extra.md
 expect "a new category doc surfaces as exemption drift" 1 \
   'churn-hotspot-exemptions\.json::committed catalog region is stale' "$dir" --check
 
+# --- a pipe in a category H1 is escaped into the index -------------------
+# The title is the doc's H1 taken verbatim, so an unescaped pipe splits the
+# generated Categories row and corrupts the index table — and --check would
+# never report it, because the corruption regenerates identically.
+new_case
+sed 's/^# Tools$/# Tools | and things/' "$dir/.claude/scripts/docs/tools.md" > "$dir/tmp" \
+  && mv "$dir/tmp" "$dir/.claude/scripts/docs/tools.md"
+( cd "$dir" && bash "$CATALOG_GEN" --write >/dev/null )
+idx_row=$(grep -F 'docs/tools.md' "$dir/.claude/scripts/README.md" | head -1)
+# Assert the whole row, which pins the escape AND the column count in one go:
+# a raw pipe here would read as a third column instead of literal text.
+check "the pipe in the H1 is escaped, keeping the row two columns" \
+  "$idx_row" '| [Tools \| and things](docs/tools.md) | Scripts that do tool things |'
+expect "a re-run over the escaped title reports no drift" 0 'no drift' "$dir" --check
+
 # --- duplicate rows regions ------------------------------------------------
 # Two regions of the same kind in one doc would each be filled with the same
 # rows, listing every script twice — and --check could never report it, because

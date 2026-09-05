@@ -203,6 +203,9 @@ catalog_row() {
   name="${path##*/}"
   rel="${path#"$CATALOG_SCRIPTS_DIR/"}"
   target=$(normalize_relpath ".." "$rel")
+  # The link text is escaped for the same reason the description is: an
+  # unescaped pipe splits the row, and the split regenerates identically.
+  name="${name//|/\\|}"
   desc="${desc//|/\\|}"
   printf '| [%s](%s) | %s |\n' "$name" "$target" "$desc"
 }

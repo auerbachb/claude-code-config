@@ -307,7 +307,10 @@ categories_block() {
   printf '%s' "$declarations" \
     | LC_ALL=C sort -t$'\037' -k2,2n -k1,1 \
     | while IFS=$'\037' read -r c_id c_order c_title c_covers c_rel; do
-        printf '| [%s](%s) | %s |\n' "$c_title" "docs/${c_id}.md" "${c_covers//|/\\|}"
+        # BOTH cells are escaped. The title is a doc's H1, taken verbatim, so a
+        # pipe in it would split the row and silently corrupt the index table —
+        # and the corruption regenerates identically, so --check could not see it.
+        printf '| [%s](%s) | %s |\n' "${c_title//|/\\|}" "docs/${c_id}.md" "${c_covers//|/\\|}"
       done
 }
 
