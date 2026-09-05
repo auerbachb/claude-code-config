@@ -56,6 +56,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-stack-audit.md` — `/review-stack-audit` design record: why it is a sibling to `/harness-audit` rather than a section of it, why its judgment is one pass, why billed state is a declared proxy, the `gates_merge` vs `approves_via` split, the seeded-baseline departure from the #1199 dependency, and the two-layer dedup (#1201)
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
+- `final-wrapup-format.md` — canonical TL;DR-first end-of-task wrap-up shape for the human-facing final chat message: six ordered slots, the emit-once-at-terminal-state rule, the trivial-task scale-down, the blocked-ending variant, the components-by-role jargon policy, the scope boundary against `/recap` / `/standup` / `/wrap` / `EXIT_REPORT`, and the Issue #1362 worked example (Issue #1396)
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
 
