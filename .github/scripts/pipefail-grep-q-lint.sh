@@ -187,6 +187,38 @@ function strip_single_quoted(s) {
   return s
 }
 
+# Return the delimiter of a heredoc opened by an UNQUOTED `<<` on this line
+# ("" when there is none). Walks the line tracking quote state, so `<<` inside
+# a string is data; skips `<<<` (here-string) and `<< 2` (arithmetic shift,
+# no identifier follows); accepts `<<-`, quoted tags and bare identifiers.
+function opener_tag(s,    i, n, c, sq, dq, j, tag) {
+  n = length(s); sq = 0; dq = 0
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\" && !sq) { i++; continue }
+    if (sq) { if (c == "\047") sq = 0; continue }
+    if (dq) { if (c == "\"") dq = 0; continue }
+    if (c == "\047") { sq = 1; continue }
+    if (c == "\"") { dq = 1; continue }
+    if (c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<" && (i == 1 || substr(s, i - 1, 1) != "<")) {
+      j = i + 2
+      if (substr(s, j, 1) == "-") j++
+      while (j <= n && substr(s, j, 1) ~ /[[:space:]]/) j++
+      c = substr(s, j, 1)
+      if (c == "\047" || c == "\"") {
+        tag = ""; j++
+        while (j <= n && substr(s, j, 1) != c) { tag = tag substr(s, j, 1); j++ }
+        return tag
+      }
+      if (c !~ /[A-Za-z_]/) return ""
+      tag = ""
+      while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { tag = tag substr(s, j, 1); j++ }
+      return tag
+    }
+  }
+  return ""
+}
+
 FNR == 1 {
   in_literal_heredoc = 0
   heredoc_tag = ""
@@ -207,16 +239,14 @@ FNR == 1 {
     if (trim(raw) == heredoc_tag) { in_literal_heredoc = 0; heredoc_tag = "" }
     next
   }
-  # `(^|[^<])` keeps a here-string (`<<<"$var"`) from being misread as a
-  # quoted heredoc opener — that would skip the rest of the file. The opener
-  # is looked for in the DECOMMENTED line for the same reason: a commented-out
-  # `# cat <<'"'"'EOF'"'"'` opens nothing, and treating it as one would mute
-  # every live pipeline after it.
-  opener_line = decomment(raw)
-  if (match(opener_line, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
-    tag = substr(opener_line, RSTART, RLENGTH)
-    gsub(/^[^<]*<<-?[[:space:]]*/, "", tag)
-    gsub(/["'"'"']/, "", tag)
+  # The opener is looked for with a quote-aware walk over the DECOMMENTED
+  # line: `<<EOF` inside a quoted argument (`printf '"'"'%s\n'"'"' '"'"'docs: <<EOF'"'"'`)
+  # opens nothing, a commented-out opener opens nothing, and `<<<"$var"` is a
+  # here-string — treating any of them as an opener would mute every live
+  # pipeline after it. A real `cat <<'"'"'EOF'"'"'` / `<<EOF` / `<<-EOF` still
+  # starts a body that is skipped until its closing tag.
+  tag = opener_tag(decomment(raw))
+  if (tag != "") {
     in_literal_heredoc = 1
     heredoc_tag = tag
     # No `next`: the opener line itself is live code (`cat <<'"'"'EOF'"'"' | grep -q x`
