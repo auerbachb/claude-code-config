@@ -158,6 +158,60 @@ else
   ok "has_reset_clause rejects an unrelated 'reset'"
 fi
 
+# The DAY-WORD arm of the same predicate, which used to search the whole 40-char
+# window instead of anchoring to the word "reset" (CodeAnt, PR #1638). Because a
+# stated reset outranks the overage phrase list in usage_limit_kind, a false
+# positive here downgrades a real overage to plan_window and un-gates spend —
+# so the negative cases matter more than the positive ones.
+if usage_limit_has_reset_clause "Please reset your password tomorrow"; then
+  bad "has_reset_clause matched an unrelated 'reset' followed by a day word"
+else
+  ok "has_reset_clause rejects an unrelated 'reset' followed by a day word"
+fi
+if usage_limit_has_reset_clause "To reset your billing contact on Monday, see step 2"; then
+  bad "has_reset_clause matched an unrelated 'reset' followed by a weekday"
+else
+  ok "has_reset_clause rejects an unrelated 'reset' followed by a weekday"
+fi
+# The end that matters: that false positive must not swallow a real overage.
+check_eq "$(usage_limit_kind "You have run out of credits. Please reset your password tomorrow.")" \
+  "overage" "an unrelated 'reset ... tomorrow' does not mask a credit overage"
+
+# PAIRED positive controls — the anchoring must not have simply stopped the
+# day-word arm from ever firing.
+if usage_limit_has_reset_clause "Usage limit reached · resets tomorrow"; then
+  ok "has_reset_clause still accepts 'resets tomorrow' with no clock time"
+else
+  bad "has_reset_clause rejected 'resets tomorrow'"
+fi
+if usage_limit_has_reset_clause "Weekly limit reached · resets on Monday"; then
+  ok "has_reset_clause still accepts 'resets on Monday'"
+else
+  bad "has_reset_clause rejected 'resets on Monday'"
+fi
+check_eq "$(usage_limit_kind "Weekly limit reached · resets on Monday")" \
+  "plan_window" "a day-only reset clause still classifies as a plan window"
+
+# NEGATIVE CONTROL: the pre-fix day-word arm, verbatim, still matches the
+# password fixture — proving these cases would have misclassified before the
+# change rather than passing vacuously against the new code.
+_prefix_day_arm() { # <message> -> exit 0 when the OLD code saw a reset clause
+  local lower rest
+  lower="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in *reset*) ;; *) return 1 ;; esac
+  rest="${lower#*reset}"; rest="${rest:0:40}"
+  case "$rest" in
+    *tomorrow*|*monday*|*tuesday*|*wednesday*|*thursday*|*friday*|*saturday*|*sunday*)
+      return 0 ;;
+  esac
+  return 1
+}
+if _prefix_day_arm "Please reset your password tomorrow"; then
+  ok "negative control: the pre-fix day-word arm did match the password fixture"
+else
+  bad "negative control failed — fixture never tripped the old code, so the new pass is vacuous"
+fi
+
 # usage_limit_reset_passed: only a positively established reopening returns 0.
 if usage_limit_reset_passed "$PAST_ISO" "$NOW_EPOCH"; then
   ok "reset_passed true for an instant already gone"

@@ -145,7 +145,11 @@ RECORDED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 #
 # Classification reads `last_assistant_message` ONLY — the same field the gate's
 # fallback sees — so a record's stored kind and a re-derivation from its stored
-# text can never disagree.
+# text can never disagree. That invariant is about the STORED text, so the
+# expression below must stay byte-identical to the one writing the field near
+# the end of this file, truncation included: classifying the full message while
+# storing 1,000 characters would let a notice living past the cutoff produce a
+# stored kind the gate's fallback cannot reproduce from the record it can see.
 LIMIT_KIND=""
 RESET_AT=""
 _ulc_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../scripts/lib/usage-limit-classify.sh"
@@ -153,8 +157,10 @@ if [[ -r "$_ulc_lib" ]]; then
   # shellcheck source=../scripts/lib/usage-limit-classify.sh
   if source "$_ulc_lib" 2>/dev/null; then
     _ulc_msg=$(printf '%s' "$STDIN_JSON" \
-      | jq -r 'if (.last_assistant_message | type) == "string"
-               then .last_assistant_message else "" end' 2>/dev/null) || _ulc_msg=""
+      | jq -r '((.last_assistant_message // null)
+                | if . == null then ""
+                  elif type == "string" then .[0:1000]
+                  else (tojson | .[0:1000]) end)' 2>/dev/null) || _ulc_msg=""
     LIMIT_KIND=$(usage_limit_kind "$_ulc_msg" 2>/dev/null) || LIMIT_KIND=""
     RESET_AT=$(usage_limit_reset_at "$_ulc_msg" "$RECORDED_AT" 2>/dev/null) || RESET_AT=""
   fi

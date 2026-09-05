@@ -214,4 +214,27 @@ jq -e '.reason == "rate_limit" and .session_id == "nolib"' <"$ISO_LOG" >/dev/nul
 jq -e '.limit_kind == null and .reset_at == null' <"$ISO_LOG" >/dev/null \
   || fail "missing library should leave both classification fields null"
 
+# --- 12. Write-time classification reads the TRUNCATED message ---
+# The record stores last_assistant_message[0:1000]. Classifying the full message
+# instead would let a notice living past that cutoff produce a stored
+# limit_kind the gate's fallback can never reproduce from the record it can see
+# — the two would disagree about the same event (CodeAnt, PR #1638).
+# The fixture puts an overage phrase ONLY past character 1000, so a stored
+# "overage" here is proof the untruncated text was classified.
+PAD="$(printf 'a%.0s' $(seq 1 1200))"
+TRUNC_DIR="$TMP_DIR/trunc"
+printf '%s' "{\"hook_event_name\":\"StopFailure\",\"error\":\"rate_limit\",\"session_id\":\"trunc\",\"last_assistant_message\":\"$PAD you have run out of credits\"}" \
+  | CLAUDE_USAGE_LIMIT_DIR="$TRUNC_DIR" CLAUDE_HANDOFF_DIR="$TMP_DIR/handoffs" \
+    bash "$HOOK" || fail "hook did not exit 0 on the truncation fixture"
+TRUNC_LOG="$TRUNC_DIR/usage-limit-events.jsonl"
+[[ -f "$TRUNC_LOG" ]] || fail "no record written for the truncation fixture"
+# Positive control: the field really was truncated, so the phrase is absent from
+# the stored text. Without this the kind assertion could pass for the wrong
+# reason (e.g. the message never reaching the record at all).
+jq -e '(.last_assistant_message | length) == 1000
+       and (.last_assistant_message | test("run out of credits") | not)' <"$TRUNC_LOG" >/dev/null \
+  || fail "fixture did not store a 1000-char message with the phrase cut off"
+jq -e '.limit_kind == "unclassified"' <"$TRUNC_LOG" >/dev/null \
+  || fail "stored limit_kind was derived from text the record does not contain"
+
 echo "PASS: usage-limit-record.sh"

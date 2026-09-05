@@ -191,11 +191,14 @@ usage_limit_has_reset_clause() { # <message>  -> exit 0 when present
   local clause_re='^(s|ting)?[[:space:]]*(at[[:space:]]+|on[[:space:]]+)?(tomorrow[[:space:]]*(at[[:space:]]+)?|today[[:space:]]*(at[[:space:]]+)?|in[[:space:]]+)?[[:space:]]*[0-9]'
   if [[ "$rest" =~ $clause_re ]]; then return 0; fi
   # A clause naming a day rather than a clock time still says when the window
-  # reopens, which is all this predicate claims.
-  case "$rest" in
-    *tomorrow*|*monday*|*tuesday*|*wednesday*|*thursday*|*friday*|*saturday*|*sunday*)
-      return 0 ;;
-  esac
+  # reopens, which is all this predicate claims. ANCHORED for the same reason
+  # the clock-time test above is: a bare "is there a day word within 40
+  # characters" search reads "reset your password tomorrow" as a reset clause,
+  # and because a stated reset outranks the overage phrase list in
+  # `usage_limit_kind`, that false positive would silently downgrade a real
+  # overage to `plan_window` — the one direction this module must never fail in.
+  local day_re='^(s|ting)?[[:space:]]*(at[[:space:]]+|on[[:space:]]+)?(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)'
+  if [[ "$rest" =~ $day_re ]]; then return 0; fi
   return 1
 }
 
