@@ -527,6 +527,37 @@ ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/dir-interp" 2>&1 >/dev/null)
 check_eq "T13c: a DIRECTORY named as the interpreter exits 3, not a cap timeout" "3" "$RC"
 check_contains "T13c: and names it as not an executable file" "not an executable file" "$ERROUT"
 
+# The JOINED --split-string=<cmd> form carries the command line in its own
+# token, so the walk rewrites the token to that value rather than stepping over
+# it. Both directions are pinned: the value's first word must still be reached
+# as the interpreter, and it must not be mistaken for something unlaunchable.
+cat > "$TMP/env-split-joined-missing" <<'EOF'
+#!/usr/bin/env --split-string=definitely-not-a-real-interp-1470 -x
+exit 0
+EOF
+chmod +x "$TMP/env-split-joined-missing"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/env-split-joined-missing" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: --split-string=<missing> is reached and refused (3)" "3" "$RC"
+check_contains "T13c: and blames the interpreter, not the whole command line" "asks env for interpreter 'definitely-not-a-real-interp-1470'" "$ERROUT"
+
+# Positive control for the same rewrite, probed because --split-string is the
+# GNU long form and BSD/macOS env offers only -S. Without this, a rewrite that
+# mangled the token into something unresolvable would still pass the case above.
+if env --split-string='true' >/dev/null 2>&1; then
+  cat > "$TMP/env-split-joined-ok" <<'EOF'
+#!/usr/bin/env --split-string=bash -e
+printf ran
+EOF
+  chmod +x "$TMP/env-split-joined-ok"
+  RC=0; OUT=""
+  OUT="$("$WAIT" --interval 1 --timeout 10 -- "$TMP/env-split-joined-ok" 2>/dev/null)" || RC=$?
+  check_eq "T13c: --split-string=<real> still launches (0), not refused" "0" "$RC"
+  check_eq "T13c: and relays its output" "ran" "$OUT"
+else
+  pass "T13c: SKIP — this env(1) has no --split-string long form (BSD/macOS ships -S only)"
+fi
+
 # --argv0 takes a separate value like -u does, so its value must not be offered
 # as the interpreter: the blame would land on the wrong word and refuse a check
 # whose real interpreter is fine.
