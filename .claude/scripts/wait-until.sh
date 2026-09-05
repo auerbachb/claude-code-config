@@ -433,6 +433,15 @@ refresh_elapsed() {
   # does not advance. That is the floor of a wall-clock design, not something
   # this guard claims to fix; what it fixes is the correction-shaped jump (NTP,
   # a manual set) that actually happens on healthy hosts.
+  #
+  # The guard is on THIS loop's clock only. run_bounded anchors its own start
+  # and does not re-anchor, so a backward step landing while a HANGING check is
+  # being bounded lets that one check run long by the size of the jump. The
+  # overrun is bounded and self-correcting rather than open-ended: it happens
+  # once, it cannot exceed the step, and the re-anchor below runs the moment
+  # run_bounded returns, so the loop itself still ends on time. Closing it
+  # properly means re-anchoring inside lib/bounded-run.sh, which is shared by
+  # five callers and outside this script — tracked separately (issue #1651).
   if (( measured < ELAPSED )); then
     START=$((now - ELAPSED))
   else
