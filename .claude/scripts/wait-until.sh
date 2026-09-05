@@ -217,6 +217,25 @@ if [[ "${CMD[0]}" == */* ]]; then
     echo "wait-until.sh: the check command is not an executable file: ${CMD[0]}" >&2
     exit 3
   fi
+  # Executable is not the same as launchable. A script whose interpreter is
+  # missing passes -x and then fails at exec time, which reaching the loop would
+  # report as a cap timeout for a check that never ran — the fault (2) above
+  # exists to prevent. Resolving it HERE rather than reading 126/127 in the loop
+  # is what keeps that rule intact: launchability stays a preflight verdict, so
+  # a check that exits 127 by design is still just not-yet-met.
+  WU_SHEBANG=""
+  read -r WU_SHEBANG < "${CMD[0]}" 2>/dev/null || WU_SHEBANG=""
+  if [[ "$WU_SHEBANG" == '#!'* ]]; then
+    WU_SHEBANG="${WU_SHEBANG#\#!}"
+    WU_SHEBANG="${WU_SHEBANG#"${WU_SHEBANG%%[![:space:]]*}"}"
+    # Field 1 is the interpreter; a `/usr/bin/env foo` form defers to env, which
+    # resolves foo itself, so only the leading word is ours to check.
+    WU_INTERP="${WU_SHEBANG%%[[:space:]]*}"
+    if [[ -n "$WU_INTERP" && "$WU_INTERP" == /* && ! -x "$WU_INTERP" ]]; then
+      echo "wait-until.sh: the check command could not be launched — ${CMD[0]} names interpreter '$WU_INTERP', which is not an executable file" >&2
+      exit 3
+    fi
+  fi
 elif ! command -v "${CMD[0]}" >/dev/null 2>&1; then
   echo "wait-until.sh: the check command could not be launched — not found on PATH: ${CMD[0]}" >&2
   exit 3
@@ -322,7 +341,32 @@ refresh_elapsed() {
     echo "wait-until.sh: could not read the clock (date -u +%s gave '${now}') mid-wait, so the ${TIMEOUT}s cap could not be enforced — stopping rather than polling unbounded" >&2
     exit 2
   fi
-  ELAPSED=$((now - START))
+  local measured=$((now - START))
+  # The cap is enforced against a WALL clock, which can step backwards (NTP
+  # correction, a manual set, a DST-naive host). Left alone, a backward step
+  # makes elapsed shrink and silently hands the loop extra time — the cap
+  # quietly EXTENDING is the same class of failure as the cap quietly vanishing.
+  #
+  # Clamping elapsed to its high-water mark is not enough on its own: a step
+  # back that never corrects would freeze elapsed there and stall the cap
+  # forever. So re-anchor START by the size of the jump. Elapsed is then
+  # non-decreasing AND still advancing, which is the monotonic clock this loop
+  # actually wants — the time lost to the jump is forgiven once, and the wait
+  # continues to completion instead of extending without limit. Measured with a
+  # clock stepped back 6s mid-wait against a 12s cap: unguarded it ran 18s, this
+  # version 13s (the extra second is tick granularity).
+  #
+  # A clock that stops or rewinds PERMANENTLY is still unbounded, here and in
+  # lib/bounded-run.sh alike: elapsed time cannot be measured from a clock that
+  # does not advance. That is the floor of a wall-clock design, not something
+  # this guard claims to fix; what it fixes is the correction-shaped jump (NTP,
+  # a manual set) that actually happens on healthy hosts.
+  if (( measured < ELAPSED )); then
+    START=$((now - ELAPSED))
+  else
+    ELAPSED="$measured"
+  fi
+  return 0
 }
 
 cap_hit() { # reason
