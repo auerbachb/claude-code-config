@@ -311,19 +311,23 @@ ok "reconciles the legacy layout without leaving a stale migrated copy"
 MONTH="$(TZ='America/New_York' date +%Y-%m)"
 
 new_home '{}' "{\"nudge_enabled\":true,\"last_completed_month\":\"2000-01\"}"
-grep -q "harness-audit is due" <<<"$("$SCRIPT")" || fail "a due month should nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "harness-audit is due" <<<"$RECON_OUT" || fail "a due month should nudge"
 ok "nudges when the audit month is due"
 
 new_home '{}' "{\"nudge_enabled\":true,\"last_completed_month\":\"$MONTH\"}"
-grep -q "harness-audit" <<<"$("$SCRIPT")" && fail "an audited month must not nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "harness-audit" <<<"$RECON_OUT" && fail "an audited month must not nudge"
 ok "silent when this month is already audited"
 
 new_home '{}' "{\"nudge_enabled\":true,\"last_offered_month\":\"$MONTH\"}"
-grep -q "already offered" <<<"$("$SCRIPT")" || fail "a pending chip should be named, not re-offered"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "already offered" <<<"$RECON_OUT" || fail "a pending chip should be named, not re-offered"
 ok "names the pending chip instead of re-offering"
 
 new_home '{}' "{\"nudge_enabled\":false,\"last_completed_month\":\"2000-01\"}"
-grep -q "harness-audit" <<<"$("$SCRIPT")" && fail "--stop (nudge_enabled:false) must silence the nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "harness-audit" <<<"$RECON_OUT" && fail "--stop (nudge_enabled:false) must silence the nudge"
 ok "nudge_enabled:false silences the audit nudge"
 
 # --- 7b. review-stack-audit watermark drives its own nudge (issue #1201) -----
@@ -331,21 +335,25 @@ ok "nudge_enabled:false silences the audit nudge"
 # state: its tick runs the real comparison rather than offering a step-up chip.
 
 new_home '{}' '' "{\"nudge_enabled\":true,\"last_completed_month\":\"2000-01\"}"
-grep -q "review-stack-audit is due" <<<"$("$SCRIPT")" || fail "a due review-stack month should nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "review-stack-audit is due" <<<"$RECON_OUT" || fail "a due review-stack month should nudge"
 ok "nudges when the review-stack audit month is due"
 
 new_home '{}' '' "{\"nudge_enabled\":true,\"last_completed_month\":\"$MONTH\"}"
-grep -q "review-stack-audit" <<<"$("$SCRIPT")" && fail "an audited review-stack month must not nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "review-stack-audit" <<<"$RECON_OUT" && fail "an audited review-stack month must not nudge"
 ok "silent when this month's review-stack audit is done"
 
 new_home '{}' '' "{\"nudge_enabled\":false,\"last_completed_month\":\"2000-01\"}"
-grep -q "review-stack-audit" <<<"$("$SCRIPT")" && fail "--stop must silence the review-stack nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "review-stack-audit" <<<"$RECON_OUT" && fail "--stop must silence the review-stack nudge"
 ok "nudge_enabled:false silences the review-stack nudge"
 
 # No watermark at all = never armed. It must stay silent rather than nagging
 # every session start of a user who never asked for this audit.
 new_home '{}'
-grep -q "review-stack-audit" <<<"$("$SCRIPT")" && fail "an unarmed review-stack audit must not nudge"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "review-stack-audit" <<<"$RECON_OUT" && fail "an unarmed review-stack audit must not nudge"
 ok "silent when the review-stack audit was never armed"
 
 # A corrupt watermark must not take the session-start path down with it, and
@@ -368,7 +376,8 @@ ok "the two audit nudges are independent"
 
 # --- 8. A paused fleet is surfaced (the real cross-session continuity) -------
 new_home '{"pmm":{"paused_at":"2026-07-30T10:00:00Z"}}'
-grep -q "paused PR fleet" <<<"$("$SCRIPT")" || fail "a pause marker should be surfaced"
+RECON_OUT="$("$SCRIPT")" || fail "session-scheduling-reconcile.sh exited $? — cannot assert on its output"
+grep -q "paused PR fleet" <<<"$RECON_OUT" || fail "a pause marker should be surfaced"
 ok "surfaces a paused PR fleet from the durable marker"
 
 # --- 9. Fail-soft: never block a session start -------------------------------

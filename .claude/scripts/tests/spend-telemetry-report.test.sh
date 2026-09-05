@@ -36,8 +36,9 @@ grep -q "No telemetry log" <<<"$out" || fail "missing log message absent: $out"
 echo "PASS: missing log exits 0 with message"
 
 # Test 2: --help exits 0 and prints usage
-out="$(run_report --help)"
-[[ $? -eq 0 ]] || fail "--help exits non-zero"
+if ! out="$(run_report --help)"; then
+  fail "--help exits non-zero"
+fi
 grep -qi "spend-telemetry-report" <<<"$out" || fail "--help output missing script name"
 grep -q -- "--days" <<<"$out" || fail "--help output missing --days option"
 grep -q -- "--help" <<<"$out" || fail "--help output missing --help option"
