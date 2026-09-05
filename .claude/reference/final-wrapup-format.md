@@ -72,6 +72,7 @@ When the investigation overturned the framing the task started with — the bug 
 - `/standup` — its own daily business-lens format.
 - `/wrap`'s internal report format and its post-merge phases.
 - The machine-parsed `EXIT_REPORT` block subagents print (`exit-report-format.md`). That is a parser contract between agents; this file is the human-facing chat surface. Issue #1171 covered the former and is unrelated.
+- `/pm day` teardown's two artifacts (`pm/SKILL.md` §2D.4 steps 4–5): the turnover summary is a `/pm-handoff` prompt written for a successor thread to consume, the same artifact class as `EXIT_REPORT`; the day-mode final block is `/pm`'s own fixed-field report, the same class as `/wrap`'s internal format. A day loop ending therefore prints those two, not a wrap-up — the drain-time wrap-up in scope above is the one an orchestration thread emits when the **user's requested work** reaches terminal state, which is a different moment from a day loop tearing itself down.
 
 ## Worked example
 
