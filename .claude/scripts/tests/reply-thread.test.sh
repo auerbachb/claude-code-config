@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for reply-thread.sh (issue #772 — codeant reviewer mode;
+# catalog: tests — Tests for `reply-thread.sh`
 # issue #1374 — graphite reviewer mode).
 # Covers: --reviewer validation (all five modes accepted; unknown rejected);
 # @codeant-ai and @graphite-app strip behavior (plain-text, no auto-mention);

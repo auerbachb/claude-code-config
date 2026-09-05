@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the reactive subagent-thread usage-limit park — issue #1618.
+# catalog: tests — Tests the reactive subagent-thread usage-limit park (#1618) against the real fenced bash in `.claude/reference/subagent-thread-limit-park.md` and `/go-on` — structured-signal detection with its text-only negative controls, the compare-and-set park claim and its adoption of an existing day-mode or sibling park, per-pipeline phase records, the reset-plus-2-minute wake with its thrash cap and weekly branch, stale-generation rejection, and fail-closed recovery
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in `.claude/reference/subagent-thread-limit-park.md`

@@ -2,7 +2,17 @@
 
 > **This is an index only.** Each category doc gives the script name and a one-sentence purpose. For flags, exit codes, and full contract details, run `.claude/scripts/<name> --help` or read the script header.
 >
-> **Adding a new script?** Add one row in the matching category doc under [`docs/`](docs/) — not here. Put the full contract (usage, flags, exit codes) in the script header and `--help` output. `.github/scripts/scripts-catalog-lint.sh` fails CI if a script or test has no row, so the row is not optional.
+> **Adding a new script?** You edit one file — the new script. Put a
+> `# catalog: <category-id> — <one-line description>` line in its header (the
+> id is the filename stem of the owning doc under [`docs/`](docs/)), then run
+> `.github/scripts/scripts-catalog-gen.sh --write`. Every row table and this
+> Categories table are generated regions; do not hand-edit them.
+> `.github/scripts/scripts-catalog-lint.sh` fails CI if a script or test has no
+> declaration or if a committed region has drifted, so the header line is not
+> optional. **Adding a category?** Add a doc under `docs/` carrying
+> `<!-- catalog:category id=… order=… -->`, a `<!-- catalog:covers … -->`
+> summary, an H1, a rows region and the back-link — then regenerate. Rationale:
+> [`scripts-catalog-generation-decision.md`](../reference/scripts-catalog-generation-decision.md).
 
 Manually-invoked utility scripts. See [scripts/ vs hooks/](#scripts-vs-hooks) for the distinction.
 
@@ -10,6 +20,7 @@ Manually-invoked utility scripts. See [scripts/ vs hooks/](#scripts-vs-hooks) fo
 
 | Category | Covers |
 |----------|--------|
+<!-- catalog:categories:begin -->
 | [PR State & Polling](docs/pr-state-polling.md) | Scripts that read PR state, track comment watermarks, and determine reviewer ownership |
 | [Review & Escalation](docs/review-escalation.md) | Scripts that manage the CR→BugBot→Greptile reviewer chain, budgets, and round gating |
 | [Merge Gate & Sequencing](docs/merge-gate-sequencing.md) | Scripts that verify merge readiness and sequence a PR fleet to avoid conflict rounds |
@@ -23,6 +34,7 @@ Manually-invoked utility scripts. See [scripts/ vs hooks/](#scripts-vs-hooks) fo
 | [Trust, Worktree & Repo](docs/trust-worktree-repo.md) | Scripts that repair trust flags, detect stale worktrees, and sync main |
 | [Utilities](docs/utilities.md) | Miscellaneous helpers used by skills and hooks, plus the Python helpers |
 | [Tests](docs/tests.md) | Every test under `tests/`, all offline (no network required) |
+<!-- catalog:categories:end -->
 
 Every entry in those docs is a relative link to the file itself, so a name is one click from its source on github.com and in any editor.
 

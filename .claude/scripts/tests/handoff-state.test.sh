@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit + concurrency tests for handoff-state.sh (issue #682 —
+# catalog: tests — Tests for `handoff-state.sh`
 # handoff files had the same unlocked RMW profile session-state.json had before #639;
 # concurrent orchestrators (/babysit-pr, /pr-monitor-and-manage, Phase B) silently lost
 # each other's array appends when they all read-modify-wrote at once).

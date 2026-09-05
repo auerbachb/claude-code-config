@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the one-nudge-per-HEAD guard in
+# catalog: tests — Tests the one-nudge-per-HEAD guard in `.github/workflows/cursor-review-pr-comment.yml`
 # .github/workflows/cursor-review-pr-comment.yml (issue #1356).
 #
 # WHAT IS UNDER TEST
@@ -514,7 +515,7 @@ echo "== (l): PREMISE — the helper under test is the one production will run =
 # the change correct — that job belongs to the helper's own suite plus (k)'s
 # contract coverage, which is the interchangeability argument this file already
 # makes above.
-ACK_HELPER_DRIFT='.claude/scripts/bugbot-refused-head.sh 9efc1676dcbd5e839322241fa12d66f9a4cf31e5 8aef69445a445ec7c87e80f77eafed2ca9e68a60 — issue #1528: the --help extraction now stops at the first NON-COMMENT line (it previously stopped at the first blank line) and exits 70 with a stderr diagnostic when it yields nothing, instead of printing nothing and exiting 0. Confined entirely to the `--help|-h` arm: no other code path is touched, and scenarios (a)-(j) never invoke --help, so they describe both copies unchanged. Header output was verified byte-identical to the base copy before adoption; the guard itself is pinned by help-output.test.sh Part 4.'
+ACK_HELPER_DRIFT='.claude/scripts/bugbot-refused-head.sh 8aef69445a445ec7c87e80f77eafed2ca9e68a60 d534b5d00d1678ed6f7934d7dd21c82a81ada161 — issue #1578: the ONLY change is one added header comment line, `# catalog: review-escalation — ...`, which moves the scripts catalog row for this file out of a shared markdown doc and into the file itself. It is a comment: no code path, no exit code, and no output of any scenario changes, so scenarios (a)-(j) describe both copies unchanged. The previous acknowledgment (base 9efc1676) self-expired when its reviewed content became main, which is the mechanism working as designed.'
 BASE_REF=""
 for cand in origin/main main; do
   if git rev-parse --verify --quiet "$cand^{commit}" >/dev/null 2>&1; then BASE_REF="$cand"; break; fi

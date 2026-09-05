@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for pr-authorship.sh (issue #733 — hard authorship guard).
+# catalog: tests — Tests for `pr-authorship.sh`
 # Stubs `gh` on PATH so no network/auth is needed. The script has no sibling-script
 # dependencies, so it runs in place from the repo with a temp HOME. Requires jq.
 # Run from repo root:

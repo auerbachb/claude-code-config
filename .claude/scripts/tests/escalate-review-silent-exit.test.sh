@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # No exit path of escalate-review.sh is silent (issue #1600).
+# catalog: tests — Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed
 #
 # THE BUG: during PR #1553's review loop `escalate-review.sh 1553` exited 126
 # with ZERO output on both stdout and stderr — by path and via `bash <path>`

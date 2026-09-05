@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-usage-snapshot.sh — Keep a machine-independent snapshot of the skill
+# catalog: skills-telemetry — Push/restore skill telemetry to/from the repo's dedicated `skill-telemetry` branch
 # telemetry (~/.claude/skill-usage.log + .csv) on the repo's dedicated
 # `skill-telemetry` branch, and restore from it on a fresh machine.
 #

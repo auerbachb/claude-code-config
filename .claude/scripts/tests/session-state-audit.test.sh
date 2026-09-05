@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for session-state-audit.sh (issue #651).
+# catalog: tests — Tests for `session-state-audit.sh`
 #
 # The script both REPORTS and DELETES, so the properties pinned here are mostly
 # about restraint:

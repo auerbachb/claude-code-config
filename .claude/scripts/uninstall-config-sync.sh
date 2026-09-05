@@ -1,5 +1,6 @@
 #!/bin/bash
 # uninstall-config-sync.sh — remove the launchd LaunchAgent installed by
+# catalog: scheduling-monitoring — Unload and remove the config-sync LaunchAgent; `--remove-state` also drops its state, logs and marker
 # install-config-sync.sh (issue #1524).
 #
 # macOS-only, mirroring uninstall-silence-watchdog.sh. A no-op with exit 0 on

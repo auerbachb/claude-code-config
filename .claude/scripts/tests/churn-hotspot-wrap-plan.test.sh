@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for churn-hotspot-wrap-plan.sh (Issue #1307).
+# catalog: tests — Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification
 
 set -uo pipefail
 

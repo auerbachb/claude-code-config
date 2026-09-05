@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # clean-behind-check.test.sh — Offline unit tests for clean-behind-check.sh (issues #631, #667).
+# catalog: tests — Tests for `clean-behind-check.sh`
 # Stubs `gh`, `merge-gate.sh`, and `ac-checkboxes.sh` so no network / real repo is
 # touched. Run from repo root: bash .claude/scripts/tests/clean-behind-check.test.sh
 set -uo pipefail

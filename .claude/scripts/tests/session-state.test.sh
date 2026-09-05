@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for session-state.sh's field-type contract (issue #625 — a
+# catalog: tests — Tests for `session-state.sh`
 # caller passed an unevaluated jq filter expression as a --set value; since
 # it wasn't valid JSON it silently fell into the --arg (string) branch and
 # corrupted .active_agents into a literal string). Uses a temporary HOME so

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # model-fleet.sh — Resolve the current Claude model fleet from one source.
+# catalog: utilities — Resolve the current Claude model fleet from `.claude/model-fleet.json`
 #
 # PURPOSE
 #   Reads `.claude/model-fleet.json` and answers "what is the top-tier model

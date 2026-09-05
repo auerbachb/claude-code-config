@@ -1,5 +1,6 @@
 #!/bin/bash
 # install-config-sync.sh — register the per-machine Claude config sync with
+# catalog: scheduling-monitoring — Register the per-machine config sync (`claude-config-sync.sh`) as a macOS launchd LaunchAgent — one run at login, then every `--interval` seconds
 # launchd, in one command (issue #1524).
 #
 # Installs a LaunchAgent that runs claude-config-sync.sh at login (RunAtLoad)

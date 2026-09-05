@@ -1,5 +1,6 @@
 #!/bin/bash
 # publish-skill-symlinks.test.sh — Tests for .claude/scripts/publish-skill-symlinks.sh
+# catalog: tests — Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, and the `setup-skills-worktree.sh` delegation guard
 # Issue #1524: the skill / CLAUDE.md / rules symlink legs, extracted out of
 # setup-skills-worktree.sh so a steady-state pass can publish them.
 #

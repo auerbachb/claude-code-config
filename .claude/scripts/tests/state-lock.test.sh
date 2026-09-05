@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit + concurrency tests for the session-state write lock (issue #639 —
+# catalog: tests — Tests for `state-lock.sh`
 # session-state.json had no lock, so two writers that both read, both modified,
 # and both wrote back silently lost one of the two changes).
 #

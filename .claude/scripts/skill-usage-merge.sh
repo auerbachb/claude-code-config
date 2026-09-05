@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-usage-merge.sh — Merge another copy of the skill-usage telemetry into
+# catalog: skills-telemetry — Merge another machine's skill-usage telemetry into the live log files
 # the live files (~/.claude/skill-usage.log + ~/.claude/skill-usage.csv).
 #
 # PURPOSE (issue #572):

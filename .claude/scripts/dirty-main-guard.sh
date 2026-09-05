@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dirty-main-guard.sh — Detect and quarantine dirty state on the root repo's main.
+# catalog: trust-worktree-repo — Detect and quarantine dirty tracked state on the root repo's main branch
 #
 # PURPOSE
 #   Enforces the "never leave anything on main" rule (CLAUDE.md). All work

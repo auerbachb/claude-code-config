@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regression test: polling-state-gate.sh must not refuse a valid checkout
+# catalog: tests — Tests multi-repo isolation in `polling-state-gate.sh`
 # because a DIFFERENT repo wrote session-state last (issue #638).
 #
 # The bug: `.root_repo` was one global scalar for the whole state file, and the

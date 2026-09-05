@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for poll-watermarks.sh (issue #741).
+# catalog: tests — Tests for `poll-watermarks.sh`
 #
 # Stubs pr-state.sh to return deterministic comment bundles and uses the real
 # session-state.sh against a temp HOME. Run from repo root:

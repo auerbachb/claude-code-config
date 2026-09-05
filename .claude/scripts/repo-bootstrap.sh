@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # repo-bootstrap.sh — Check (and optionally install) required repo configuration.
+# catalog: trust-worktree-repo — Check and optionally install required repo configuration (provisioned file set, branch protection)
 #
 # Implements the contract from .claude/rules/repo-bootstrap.md:
 #   1. Provisioned files: ensures a set of required files exist in the repo.
@@ -172,6 +173,7 @@ REPO_BOOTSTRAP_FILE_EOF
       cat <<'REPO_BOOTSTRAP_FILE_EOF'
 #!/usr/bin/env bash
 # ac-gate.sh — CI gate: fail a PR that has unchecked acceptance-criteria boxes.
+# catalog: merge-gate-sequencing — CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption
 #
 # Reads the PR body and applies a two-stage check:
 #
@@ -510,6 +512,7 @@ REPO_BOOTSTRAP_FILE_EOF
       cat <<'REPO_BOOTSTRAP_FILE_EOF'
 #!/usr/bin/env bash
 # pr-issue-ref.sh — Extract the linked issue number(s) from a PR body.
+# catalog: pr-state-polling — Extract every linked issue number from a PR body via GitHub's issue-closing keywords (one per line; `--first` for a single primary)
 #
 # Scans the PR body for any of GitHub's nine supported issue-closing keywords
 # (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,

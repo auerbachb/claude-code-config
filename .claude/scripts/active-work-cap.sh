@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # active-work-cap.sh — repo-wide budget for simultaneously active coding work.
+# catalog: scheduling-monitoring — Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters
 #
 # PURPOSE
 #   The 3-4 concurrent-pipeline ceiling in subagent-orchestration.md is a

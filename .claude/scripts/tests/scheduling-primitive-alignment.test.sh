@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for Issue #924: recurring polls use Monitor end to end.
+# catalog: tests — Regression coverage that recurring polls use `Monitor` end to end
 
 set -euo pipefail
 

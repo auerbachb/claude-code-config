@@ -1,5 +1,6 @@
 #!/bin/bash
 # install-config-sync.test.sh — Tests for install-config-sync.sh and
+# catalog: tests — Tests `install-config-sync.sh` / `uninstall-config-sync.sh` against `launchctl` and `uname` stubs — plist rendering, worktree-copy preference, `--interval` validation, teardown, and the non-Darwin guard
 # uninstall-config-sync.sh (issue #1524).
 #
 # Both scripts drive launchd, so `launchctl` and `uname` are stubbed on PATH:

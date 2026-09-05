@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # statusline.sh — Render the Claude Code status line: ET time · branch · agents · watchers.
+# catalog: scheduling-monitoring — Render the Claude Code status line — one stdout line of `ET time · branch · N agents · M watchers`; reads the session JSON on stdin, always exits 0
 #
 # Implements FU-3 from .claude/reference/token-efficiency-audit-2026-07.md. A
 # status line renders OUTSIDE the model's context window, so everything it shows

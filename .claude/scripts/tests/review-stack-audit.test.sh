@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for /review-stack-audit's own engines (issues #1201, #1345):
+# catalog: tests — Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path
 #   measure.sh — per-tool measurement and cap classification
 #   drift.sh   — snapshot vs baseline comparison
 #

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-decide.sh — Decide whether a merge warrants a TestFlight build, and
+# catalog: release-cadence — Decide whether a merge warrants a build, and optionally pull the trigger that repo already uses
 # optionally pull the trigger that repo already uses (issue #1169).
 #
 # One rule produces both desired behaviors with no mode switch:

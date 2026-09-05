@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-review-substance.test.sh — Regression tests for issue #875:
+# catalog: tests — Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage
 # merge-gate.sh must not count a bot APPROVED as review coverage when nothing
 # evidences that the reviewer actually read the commit.
 #

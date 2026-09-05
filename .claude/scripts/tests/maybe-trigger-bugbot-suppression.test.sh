@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the BugBot spend-refusal suppression in
+# catalog: tests — Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh`
 # maybe-trigger-ai-review.sh (issue #1199).
 #
 # WHAT IS UNDER TEST

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-greptile-comment.test.sh — Regression tests for issue #723:
+# catalog: tests — Tests Greptile comment handling in `merge-gate.sh`
 # merge-gate.sh Greptile path must detect comment-based clean passes.
 #
 # Greptile posts via ISSUE COMMENTS (not formal PR review objects).

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-sweep.test.sh — Offline unit tests for release-sweep.sh (issue #1169).
+# catalog: tests — Tests for `release-sweep.sh`
 # Stubs `gh`, `release-policy.sh`, and `release-decide.sh`; uses the REAL
 # session-state.sh against a temp $HOME so durable reads and writes are exercised.
 # Run from repo root: bash .claude/scripts/tests/release-sweep.test.sh

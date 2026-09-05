@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # reviewer-activity.sh — Detect whether each conditionally-triggered reviewer has
+# catalog: pr-state-polling — Detect whether each AI reviewer has posted activity on a specific pushed SHA
 # already posted activity on a specific pushed SHA.
 #
 # Extracted from /fixpr Step 3b (Issue #788 hotspot extraction).

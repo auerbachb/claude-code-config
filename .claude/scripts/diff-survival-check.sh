@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # diff-survival-check.sh — Verify a rebase / conflict resolution did not vaporize
+# catalog: review-threads-diffs — Verify a rebase or conflict resolution did not vaporize the branch's own diff
 # the branch's own diff (issue #757).
 #
 # Manual conflict re-resolution is the riskiest moment in the whole flow. Git is

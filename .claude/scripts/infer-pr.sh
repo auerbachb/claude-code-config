@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # infer-pr.sh — Shared PR inference helper for /wrap and /fixpr (issues #448, #447).
+# catalog: pr-state-polling — Resolve a PR reference from an explicit URL/number or from session-state candidates
 #
 # PURPOSE
 #   Two related jobs behind one contract so /wrap and /fixpr stay in sync:

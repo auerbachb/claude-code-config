@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # issue-claim.sh — Claim an issue at PICK time so two threads can't work it at once (issue #873).
+# catalog: backlog-pm — Claim an issue at pick time so two threads cannot work the same issue at once
 #
 # PURPOSE
 #   Every entry path that starts work on an issue (/start-issue, /subagent Step

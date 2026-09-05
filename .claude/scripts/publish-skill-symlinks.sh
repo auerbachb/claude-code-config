@@ -1,5 +1,6 @@
 #!/bin/bash
 # publish-skill-symlinks.sh — Publish the skill / CLAUDE.md / rules symlinks
+# catalog: trust-worktree-repo — Publish the `~/.claude/skills/`, `CLAUDE.md` and `rules` symlinks from the skills worktree; idempotent, silent when already correct
 # from the skills worktree into ~/.claude/.
 #
 # Extracted from setup-skills-worktree.sh Steps 3, 3b, 4 and 5 (issue #1524) so

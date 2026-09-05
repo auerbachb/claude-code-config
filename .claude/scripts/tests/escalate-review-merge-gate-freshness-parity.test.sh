@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # escalate-review-merge-gate-freshness-parity.test.sh — cross-evaluator drift
+# catalog: tests — Drift guard that `escalate-review.sh` and `merge-gate.sh` reach the same approval-freshness verdict on one PR state, in-place re-reviews included
 # guard for the #836 approval-freshness rule (issue #1387).
 #
 # THE BUG THIS EXISTS TO CATCH

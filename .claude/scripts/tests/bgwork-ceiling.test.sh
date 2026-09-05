@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for bgwork-ceiling.sh — the hard ceiling on chat silence while
+# catalog: tests — Tests for `bgwork-ceiling.sh`
 # background work runs (issue #803).
 #
 # Every marker this script touches is redirected into a temp dir via

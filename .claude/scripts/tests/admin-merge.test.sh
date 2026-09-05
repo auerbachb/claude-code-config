@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # admin-merge.test.sh — Offline unit tests for admin-merge.sh (issue #451).
+# catalog: tests — Tests for `admin-merge.sh`
 # Stubs `gh` and `merge-gate.sh` so no network / real repo is touched.
 # Run from repo root: bash .claude/scripts/tests/admin-merge.test.sh
 set -uo pipefail

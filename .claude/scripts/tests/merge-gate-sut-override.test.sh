@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-sut-override.test.sh — the script-under-test override contract for
+# catalog: tests — Tests the `SUT` / `EVAL_SUT` / `MERGE_GATE` override contract for the `merge-gate-*` family — defaults, environment overrides, refusal of a mistyped path, and that no assignment is re-hardcoded
 # the merge-gate-*.test.sh family (issue #1485).
 #
 # The family resolves the scripts it exercises through SUT (merge-gate.sh),

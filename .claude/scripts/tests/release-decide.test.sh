@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-decide.test.sh — Offline unit tests for release-decide.sh (issue #1169).
+# catalog: tests — Tests for `release-decide.sh`
 # Stubs `gh` and `release-policy.sh`; uses the REAL session-state.sh against a
 # temp $HOME so the durable-state writes are exercised for real.
 # Run from repo root: bash .claude/scripts/tests/release-decide.test.sh

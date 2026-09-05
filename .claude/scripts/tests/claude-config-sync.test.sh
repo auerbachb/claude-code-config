@@ -1,5 +1,6 @@
 #!/bin/bash
 # claude-config-sync.test.sh — Tests for .claude/scripts/claude-config-sync.sh
+# catalog: tests — Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard
 # Issue #1524: the per-machine auto-sync entrypoint.
 #
 # Every test builds a throwaway HOME containing a REAL git clone of a REAL local

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for active-work-cap.sh — the repo-wide budget for simultaneously
+# catalog: tests — Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors
 # active coding work (issue #1191).
 #
 # Every source the script reads is redirected into a temp dir: the chip logs

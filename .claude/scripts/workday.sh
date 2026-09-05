@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # workday.sh — US-business-day calculator (ET-anchored, macOS + GNU date).
+# catalog: scheduling-monitoring — US business-day calculator (ET-anchored, macOS + GNU date)
 #
 # PURPOSE:
 #   Compute US business days: detect holidays, decide whether a given date

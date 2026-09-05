@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # review-substance.sh — Decide whether a bot's APPROVED review on a SHA
+# catalog: merge-gate-sequencing — Decide whether a bot's `APPROVED` on a SHA is real review coverage or a hollow rubber stamp
 # represents an actual review, or is a hollow rubber stamp (issue #875).
 #
 # `merge-gate.sh` used to count ANY bot APPROVED whose commit_id matched HEAD as

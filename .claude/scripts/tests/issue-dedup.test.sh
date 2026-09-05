@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # issue-dedup.test.sh — unit tests for issue-dedup.sh (issue #652)
+# catalog: tests — Tests for `issue-dedup.sh`
 #
 # The load-bearing case is the regression that motivated the helper: issue #647
 # ("polling-state-gate.sh falsely refuses…") restated issue #638's second

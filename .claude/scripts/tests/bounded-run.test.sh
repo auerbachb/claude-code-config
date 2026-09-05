@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # bounded-run.test.sh — Offline tests for lib/bounded-run.sh, the shared
+# catalog: tests — Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract
 # wall-clock bound extracted in issue #1404 from repo-root.sh (issue #1363).
 #
 # The library is the one definition four scripts now rely on to never hang, so

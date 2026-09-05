@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # candidate-ownership.sh — Does another thread already own this candidate? (issue #1431)
+# catalog: backlog-pm — Read-only pre-dispatch sweep — does another thread already own this candidate, is it live or dead, and how is it resumed
 #
 # PURPOSE
 #   A cold-started `/pm` rebuilds the board from GitHub and refills the pipeline

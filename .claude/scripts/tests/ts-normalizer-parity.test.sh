@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ts-normalizer-parity.test.sh — Drift guard for the #836 timestamp rule
+# catalog: tests — Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically
 # (issue #885).
 #
 # THE BUG THIS EXISTS TO CATCH

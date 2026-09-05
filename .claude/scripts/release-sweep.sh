@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-sweep.sh — Follow triggered TestFlight builds to a terminal state and
+# catalog: release-cadence — Cut pending builds once their window opens and surface failed, skipped, or never-started releases
 # cut pending builds once their window opens (issue #1169).
 #
 # The half of the automation that outlives the thread that started it. A merge

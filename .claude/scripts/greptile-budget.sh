@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # greptile-budget.sh — Daily Greptile review budget guard.
+# catalog: review-escalation — Guard the daily Greptile review budget counter in session-state
 #
 # PURPOSE
 #   Single source of truth for the Greptile daily-budget contract defined in

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # bgwork-ceiling.sh — hard ceiling on chat silence while background work runs.
+# catalog: scheduling-monitoring — Hard ceiling on chat silence while background work (subagents, watchers) runs
 #
 # PURPOSE
 #   The silence-by-default rule (CLAUDE.md #3, Issue #1253) is enforced

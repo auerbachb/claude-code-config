@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # spend-telemetry-report.sh — Summarize thread-vs-inline spend/model-tier telemetry
+# catalog: token-measurement — Summarize thread-vs-inline spend and model-tier telemetry from `~/.claude/spend-telemetry.log`
 #
 # PURPOSE:
 #   Reads ~/.claude/spend-telemetry.log (append-only, one line per event;
@@ -47,7 +48,8 @@ set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 usage() {
-  sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 DAYS=""

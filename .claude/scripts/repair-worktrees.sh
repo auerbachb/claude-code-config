@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # repair-worktrees.sh — Detect and optionally clean up stale git worktrees.
+# catalog: trust-worktree-repo — Detect stale git worktrees (merged/deleted branch) and optionally remove them
 #
 # A worktree is "stale" when BOTH:
 #   1. Its branch is merged into main OR its branch no longer exists on origin, AND

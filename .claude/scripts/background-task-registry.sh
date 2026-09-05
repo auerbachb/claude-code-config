@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # background-task-registry.sh — Locked runtime-identity registry for background work.
+# catalog: session-state-locking — Locked exact-runtime-ID registry for current and historical Agent, Bash, Monitor, and Workflow tasks
 #
 # Tracks current-session Agent, Bash, Monitor, and Workflow tasks by the exact
 # runtime ID returned by Claude Code. Entries live under

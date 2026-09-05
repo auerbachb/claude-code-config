@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-stale-approval.test.sh — Regression tests for issue #836:
+# catalog: tests — Tests stale-approval rejection in `merge-gate.sh`
 # merge-gate.sh must reject approvals whose submitted_at predates the HEAD
 # commit's committer date (GitHub force-push commit_id retargeting).
 #

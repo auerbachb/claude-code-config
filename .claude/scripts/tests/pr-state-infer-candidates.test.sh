@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for `pr-state.sh --infer-candidates` (issues #447 / #448).
+# catalog: tests — Tests `pr-state.sh --infer-candidates`
 #
 # Verifies the shared no-argument PR-inference helper:
 #   - missing state file / no `prs` key / no active PRs -> `[]`, exit 0

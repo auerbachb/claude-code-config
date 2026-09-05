@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline integration tests for cr-plan.sh (issue #541 — enrichment false positive).
+# catalog: tests — Tests for `cr-plan.sh`
 # Stubs `gh` so nothing touches the network or the real ~/.claude; exercises the
 # exit-code wiring around cr-plan-filter.py (filter semantics themselves are
 # unit-tested in tests/test_cr_plan_filter.py). Requires python3.
