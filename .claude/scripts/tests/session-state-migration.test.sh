@@ -80,7 +80,10 @@ check_eq "root_repo path attributes #86 via its remote" "A" "$(jq -r '.repos["or
 check_eq "unattributable entry is preserved, not dropped" "B" "$(jq -r '.repos["_unknown"].prs["87"].phase' "$STATE_FILE")"
 check_eq "unresolvable root_repo is preserved too" "A" "$(jq -r '.repos["_unknown"].prs["88"].phase' "$STATE_FILE")"
 check_eq "global root_repo lands on its own repo" "$REAL_CHECKOUT" "$(jq -r '.repos["org/resolved"].root_repo' "$STATE_FILE")"
-check_eq "unrelated top-level fields untouched" '{"greptile_daily":{"reviews_used":3},"active_agents":[{"id":"a1"}]}' \
+# active_agents rides the same write: the legacy array is migrated to the keyed
+# map on any write pipeline (issue #1631), so "untouched" here means the value
+# survives, not that its shape does.
+check_eq "unrelated top-level fields untouched" '{"greptile_daily":{"reviews_used":3},"active_agents":{"a1":{"id":"a1"}}}' \
   "$(jq -c '{greptile_daily, active_agents}' "$STATE_FILE")"
 
 echo

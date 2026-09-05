@@ -4,7 +4,7 @@
   "_field_types": {
     "_description": "Machine-readable field-type contract consumed at runtime by session-state.sh's FIELD-TYPE CONTRACT (issues #625, #640) — the single source of truth for which fields must hold a specific JSON type. `top_level` keys index the root document; `pr_nested` keys index each entry under a repo scope\u2019s PR map, `.repos[\"<owner>/<name>\"].prs[\"<N>\"]` (issue #638) (checked wherever that key appears, at any nesting depth under a PR entry). Values are the expected `jq ... | type` string. Fields absent from both maps are left unvalidated, preserving the 'preserve unknown fields' forward-compat convention documented in handoff-files.md.",
     "top_level": {
-      "active_agents": "array",
+      "active_agents": "object",
       "polling_jobs": "array",
       "polling_failures": "array",
       "polling_backoffs": "array",
@@ -378,17 +378,20 @@
     "status_at": "2026-08-27T21:05:00Z",
     "source": "observed"
   },
-  "active_agents": [
-    {
+  "_active_agents_comment": "Live subagent records for this session, keyed by agent id (issue #1631). This map REPLACES the top-level array the field used to be, following the `resumes`/`pauses` precedent from issue #1576. The array was unsafe because it was not addressable per entry: every writer had to read the whole array, append or filter locally, and `--set` the whole value back. The read and the write span two lock windows, so two orchestration threads on one machine race and the loser\u2019s entries vanish \u2014 observed three times in one day on 2026-09-04, each time dropping live Phase B/C agents with no error anywhere. As a map, each thread writes ONLY its own key (`--set '.active_agents[\"<id>\"]={...}'`) and deletes ONLY its own key (`session-state.sh --remove-agent <id>`), both under the existing lock, so a sibling\u2019s entries are structurally untouchable. An existing ARRAY on disk is migrated to this map on first read \u2014 in memory for `--get`/`--session-view`, persisted by the next write or by `--migrate` \u2014 keyed by each entry\u2019s `id`, dropping `null`/non-object elements and giving an id-less entry a stable `_unkeyed_<index>` key so nothing is lost. No schema_version bump: unlike the flat\u2192scoped migration, this one is self-detecting by type and idempotent. A `null` (or otherwise non-object) VALUE under a key is invalid \u2014 session-state-audit.sh reports it and `--heal-types` drops that one key, never the whole field. Unlike `refill`/`day`/`pauses`, this field stays VISIBLE in session-state.sh --session-view, projected as a repo-scoped, filtered map (same attribution rule as before: explicit `.owner_repo` wins, then entries with no `.pr`, then PR numbers not tracked by another real repo). Entries record what was LAUNCHED, not what is still alive \u2014 the parent removes an entry on completion, so a crashed session leaves one behind and active-work-cap.sh ages it out by `last_seen_at`/`launched`.",
+  "active_agents": {
+    "a3f8d26fa75eddcb3": {
       "id": "a3f8d26fa75eddcb3",
       "task": "PR #620 Phase C",
       "issue": 503,
       "pr": 620,
       "phase": "C",
       "launched": "2026-03-16T15:55:00Z",
-      "last_seen_at": "2026-03-16T15:58:00Z"
+      "last_seen_at": "2026-03-16T15:58:00Z",
+      "status": "running",
+      "head_sha": "abc1234"
     }
-  ],
+  },
   "_polling_jobs_comment": "CronCreate jobs are SESSION-ONLY and in-memory — they die when Claude exits regardless of the durable field, which is a no-op. Since issue #827 no skill in this repo registers one; issue #924 moved recurring polls and /pr-monitor-and-manage auto-wake to recorded Monitor task IDs. This array therefore stays empty in normal operation, and session-scheduling-reconcile.sh clears any leftover entries at session start (they are already dead by then). Kept in the schema so stale pre-#827 state still validates. Why we do not use the durable scheduler that does exist: .claude/reference/cross-session-durability.md",
   "polling_jobs": [],
   "polling_failures": [

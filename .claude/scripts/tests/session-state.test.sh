@@ -33,50 +33,68 @@ run() { bash "$SCRIPT" "$@"; }
 reset_state() { rm -f "$STATE_FILE"; }
 
 echo "== Write-time guard: reject the exact ticket reproduction =="
+# `.active_agents` is object-typed since issue #1631 (it was an array), so the
+# ticket's unevaluated-jq-filter value is rejected as a string-for-OBJECT now.
+# The array branch of the same contract is exercised below against
+# `.polling_jobs`, which is still array-typed — the guard is per-field, and
+# dropping the last array-typed case would leave that branch untested.
 reset_state
 OUT=$(run --set '.active_agents=(.active_agents // [] | map(select(.pr_number != 71)))' 2>&1); RC=$?
 check_eq "unevaluated jq filter rejected (exit 4)" "4" "$RC"
-check_eq "error names the field and both types" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$OUT")"
+check_eq "error names the field and both types" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
 echo
-echo "== Write-time guard: accepting a valid array write =="
+echo "== Write-time guard: the array branch still fires (polling_jobs) =="
 reset_state
-run --set '.active_agents=[{"id":"a1","pr":71}]'
+OUT=$(run --set '.polling_jobs=(.polling_jobs // [] | map(select(.id != "x")))' 2>&1); RC=$?
+check_eq "unevaluated jq filter on an array field rejected (exit 4)" "4" "$RC"
+check_eq "error names polling_jobs and both types" "1" "$(grep -c "field '.polling_jobs' would become type 'string' but must be 'array'" <<<"$OUT")"
+run --set '.polling_jobs=[{"id":"j1"}]'
 check_eq "valid array write exits 0" "0" "$?"
-check_eq "active_agents holds the written array" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
-
-echo
-echo "== Write-time guard: rejecting a wrong-type (object) write to an array field =="
-OUT=$(run --set '.active_agents={"oops":true}' 2>&1); RC=$?
+check_eq "polling_jobs holds the written array" '[{"id":"j1"}]' "$(jq -c '.polling_jobs' "$STATE_FILE")"
+OUT=$(run --set '.polling_jobs={"oops":true}' 2>&1); RC=$?
 check_eq "object-for-array rejected (exit 4)" "4" "$RC"
-check_eq "prior valid array data is untouched after the rejected write" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+check_eq "prior valid array data is untouched after the rejected write" '[{"id":"j1"}]' "$(jq -c '.polling_jobs' "$STATE_FILE")"
 
 echo
-echo "== Write-time guard: rejecting a wrong-type (bare scalar string) write to an array field =="
+echo "== Write-time guard: accepting a valid map write to active_agents =="
+reset_state
+run --set '.active_agents={"a1":{"id":"a1","pr":71}}'
+check_eq "valid map write exits 0" "0" "$?"
+check_eq "active_agents holds the written map" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
+
+echo
+echo "== Write-time guard: rejecting a wrong-type (array) write to the map field =="
+OUT=$(run --set '.active_agents=[{"id":"a1"}]' 2>&1); RC=$?
+check_eq "array-for-object rejected (exit 4)" "4" "$RC"
+check_eq "prior valid map data is untouched after the rejected write" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
+
+echo
+echo "== Write-time guard: rejecting a wrong-type (bare scalar string) write to the map field =="
 OUT=$(run --set '.active_agents=notjson' 2>&1); RC=$?
-check_eq "scalar-for-array rejected (exit 4)" "4" "$RC"
-check_eq "prior valid array data is still untouched" '[{"id":"a1","pr":71}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+check_eq "scalar-for-object rejected (exit 4)" "4" "$RC"
+check_eq "prior valid map data is still untouched" '{"a1":{"id":"a1","pr":71}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: element/sub-path writes validated against the FINAL field type =="
 reset_state
-run --set '.active_agents=[{"id":"pmm-fix-71","pr":71}]'
-run --set '.active_agents[0].status="done"'
-check_eq "sub-path write on a known array field exits 0" "0" "$?"
-check_eq "sub-path write preserved array-ness and applied the edit" '[{"id":"pmm-fix-71","pr":71,"status":"done"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --set '.active_agents={"pmm-fix-71":{"id":"pmm-fix-71","pr":71}}'
+run --set '.active_agents["pmm-fix-71"].status="done"'
+check_eq "sub-path write on a known map field exits 0" "0" "$?"
+check_eq "sub-path write preserved map-ness and applied the edit" '{"pmm-fix-71":{"id":"pmm-fix-71","pr":71,"status":"done"}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Write-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
 reset_state
 OUT=$(run --set '.["active_agents"]=corrupted string value' 2>&1); RC=$?
 check_eq "bracket-notation write rejected (exit 4)" "4" "$RC"
-check_eq "error still names active_agents" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$OUT")"
+check_eq "error still names active_agents" "1" "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$OUT")"
 check_eq "state file never created for a rejected bracket-notation write" "1" "$([[ ! -f "$STATE_FILE" ]] && echo 1 || echo 0)"
 
-run --set '.["active_agents"]=[{"id":"a1"}]'
-check_eq "valid array write via bracket notation exits 0" "0" "$?"
-check_eq "bracket-notation write applied correctly" '[{"id":"a1"}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --set '.["active_agents"]={"a1":{"id":"a1"}}'
+check_eq "valid map write via bracket notation exits 0" "0" "$?"
+check_eq "bracket-notation write applied correctly" '{"a1":{"id":"a1"}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== Read-time guard: bracket-notation top-level paths are not a bypass (CodeAnt finding, PR #630) =="
@@ -84,8 +102,8 @@ printf '%s\n' '{"active_agents": "corrupted string value"}' > "$STATE_FILE"
 ERR_FILE="$(mktemp)"
 OUT=$(run --get '.["active_agents"]' 2>"$ERR_FILE"); RC=$?
 check_eq "bracket-notation corrupted --get still exits 0" "0" "$RC"
-check_eq "bracket-notation corrupted --get returns the safe default '[]'" "[]" "$OUT"
-check_eq "bracket-notation corrupted --get warns on stderr" "1" "$(grep -c "field '.\[\"active_agents\"\]' is corrupted — expected array but found string" "$ERR_FILE")"
+check_eq "bracket-notation corrupted --get returns the safe default '{}'" "{}" "$OUT"
+check_eq "bracket-notation corrupted --get warns on stderr" "1" "$(grep -c "field '.\[\"active_agents\"\]' is corrupted — expected object but found string" "$ERR_FILE")"
 rm -f "$ERR_FILE"
 
 echo
@@ -205,13 +223,13 @@ check_eq "unknown-field batch write exits 0" "0" "$?"
 check_eq "unknown fields written as given" '{"monitoring_active":true,"some_future_field":"/tmp/foo"}' "$(jq -c '{monitoring_active, some_future_field}' "$STATE_FILE")"
 
 echo
-echo "== Read-time guard: --get on a pre-corrupted known array field =="
+echo "== Read-time guard: --get on a pre-corrupted known map field =="
 printf '%s\n' '{"active_agents": "corrupted string value"}' > "$STATE_FILE"
 ERR_FILE="$(mktemp)"
 OUT=$(run --get '.active_agents' 2>"$ERR_FILE"); RC=$?
 check_eq "corrupted --get still exits 0 (self-healing default, not an error)" "0" "$RC"
-check_eq "corrupted --get returns the safe default '[]'" "[]" "$OUT"
-check_eq "corrupted --get warns on stderr naming the field and types" "1" "$(grep -c "field '.active_agents' is corrupted — expected array but found string" "$ERR_FILE")"
+check_eq "corrupted --get returns the safe default '{}'" "{}" "$OUT"
+check_eq "corrupted --get warns on stderr naming the field and types" "1" "$(grep -c "field '.active_agents' is corrupted — expected object but found string" "$ERR_FILE")"
 rm -f "$ERR_FILE"
 
 echo
@@ -222,14 +240,15 @@ check_eq "absent field --get still exits 0" "0" "$RC"
 check_eq "absent field --get returns literal 'null' (existing caller idiom, unchanged)" "null" "$OUT"
 
 echo
-echo "== Read-time guard: self-healing via the documented read-filter-write pattern =="
+echo "== Removing one agent: --remove-agent, the documented replacement for read-filter-write =="
+# Before issue #1631 this was a --get, a local filter, and a --set of the whole
+# array — two lock windows, so a sibling thread's append between them was lost.
+# The targeted delete is now the only supported way to drop an agent record.
 printf '%s\n' '{"active_agents": [{"id":"pmm-fix-71","pr":71},{"id":"pmm-fix-99","pr":99}]}' > "$STATE_FILE"
-CURRENT_AGENTS=$(run --get '.active_agents' 2>/dev/null || echo null)
-[ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
-FILTERED_AGENTS=$(jq --arg id "pmm-fix-71" '[.[] | select(.id != $id)]' <<<"$CURRENT_AGENTS")
-run --set ".active_agents=$FILTERED_AGENTS"
-check_eq "read-filter-write round trip exits 0" "0" "$?"
-check_eq "read-filter-write round trip removed the targeted entry" '[{"id":"pmm-fix-99","pr":99}]' "$(jq -c '.active_agents' "$STATE_FILE")"
+run --remove-agent "pmm-fix-71"
+check_eq "--remove-agent exits 0" "0" "$?"
+check_eq "--remove-agent removed the targeted entry and migrated the legacy array" \
+  '{"pmm-fix-99":{"id":"pmm-fix-99","pr":99}}' "$(jq -c '.active_agents' "$STATE_FILE")"
 
 echo
 echo "== --session-view: repo-scoped projection of the whole document (issue #687) =="
@@ -333,7 +352,7 @@ echo "== --session-view: empty-but-valid file yields an empty scoped view =="
 printf '%s\n' '{}' > "$STATE_FILE"
 VIEW_EMPTY="$(run --repo org/none --session-view)"
 check_eq "empty file exits 0 with empty prs" "{}" "$(jq -c '.prs' <<<"$VIEW_EMPTY")"
-check_eq "empty file: active_agents defaults to []" "[]" "$(jq -c '.active_agents' <<<"$VIEW_EMPTY")"
+check_eq "empty file: active_agents defaults to {}" "{}" "$(jq -c '.active_agents' <<<"$VIEW_EMPTY")"
 check_eq "empty file: root_repo is null" "null" "$(jq -c '.root_repo' <<<"$VIEW_EMPTY")"
 
 echo

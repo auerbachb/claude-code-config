@@ -198,7 +198,8 @@ Read the per-mode path, and read the per-repo agent list beside it:
 
 **`active_agents` is top-level in both modes — do not reach for a per-repo copy.**
 The field-type contract in `session-state-schema.json` lists `active_agents` under
-`top_level`, and that is the list the spawn path writes. Some repo blocks do carry an
+`top_level` as an object — a map keyed by agent id since issue #1631 — and that is
+what the spawn path writes. Some repo blocks do carry an
 `active_agents` key, but it is scoping drift rather than a contract, so reading it as
 a second source would make the board depend on a field nothing promises to maintain.
 
@@ -290,7 +291,7 @@ ever dispatched, across sessions. Rendering all of it would print a history, not
 board. Three row classes make up the round:
 
 - **Running** — a `pipelines` entry of **this repo** that also has a live phase, from
-  any one of three sources: an `active_agents` entry attributed to it by Step 2's
+  any one of three sources: an `active_agents` value attributed to it by Step 2's
   rule, a `prs["<N>"]` entry with a recorded `phase` — read at the per-mode path
   above — or, on the dispatching thread only, a **live agent handle it is holding**
   for a pre-PR row (the sub-bullet below). In every case the PR must not be closed.
