@@ -234,6 +234,36 @@ n=$(( 1 << 2 ))
 printf '%s\n' "$big" | grep -q needle
 FIX
 
+expect "an arithmetic shift by an identifier (<< width) does not open a heredoc" 1 'extra\.sh:4:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+n=$(( 1 << width )); (( m = n << shift ))
+printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "two heredocs on one line (cat <<A <<B) skip BOTH bodies, then resume" 1 'extra\.sh:8:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+cat <<A <<B > "$out"
+printf '%s\n' "$big" | grep -q needle
+A
+set +o pipefail
+B
+printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "a plain <<EOF closes only on the exact line; <<-EOF also on tab-indented" 1 'extra\.sh:9:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+cat <<EOF
+	EOF
+printf '%s\n' "$big" | grep -q needle
+EOF
+cat <<-EOF
+	EOF
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail

@@ -187,12 +187,15 @@ function strip_single_quoted(s) {
   return s
 }
 
-# Return the delimiter of a heredoc opened by an UNQUOTED `<<` on this line
-# ("" when there is none). Walks the line tracking quote state, so `<<` inside
-# a string is data; skips `<<<` (here-string) and `<< 2` (arithmetic shift,
-# no identifier follows); accepts `<<-`, quoted tags and bare identifiers.
-function opener_tag(s,    i, n, c, sq, dq, j, tag) {
-  n = length(s); sq = 0; dq = 0
+# Return every heredoc delimiter opened by an UNQUOTED `<<` on this line, in
+# source order, \037-separated, each prefixed "D" (`<<-`: closer may be
+# tab-indented) or "P" (plain `<<`: closer is the exact line) — "" when none.
+# Walks the line tracking quote state, so `<<` inside a string is data; skips
+# `<<<` (here-string) and anything inside `(( ... ))` / `$(( ... ))`
+# (arithmetic: `<< width` is a shift, not a heredoc); accepts quoted tags and
+# bare identifiers. Handles `cat <<A <<B` (two bodies, A first).
+function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
+  n = length(s); sq = 0; dq = 0; arith = 0; out = ""
   for (i = 1; i <= n; i++) {
     c = substr(s, i, 1)
     if (c == "\\" && !sq) { i++; continue }
@@ -200,28 +203,33 @@ function opener_tag(s,    i, n, c, sq, dq, j, tag) {
     if (dq) { if (c == "\"") dq = 0; continue }
     if (c == "\047") { sq = 1; continue }
     if (c == "\"") { dq = 1; continue }
+    if (c == "(" && substr(s, i + 1, 1) == "(") { arith++; i++; continue }
+    if (c == ")" && substr(s, i + 1, 1) == ")" && arith > 0) { arith--; i++; continue }
+    if (arith > 0) continue
     if (c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<" && (i == 1 || substr(s, i - 1, 1) != "<")) {
-      j = i + 2
-      if (substr(s, j, 1) == "-") j++
+      j = i + 2; dash = "P"
+      if (substr(s, j, 1) == "-") { dash = "D"; j++ }
       while (j <= n && substr(s, j, 1) ~ /[[:space:]]/) j++
       c = substr(s, j, 1)
-      if (c == "\047" || c == "\"") {
-        tag = ""; j++
-        while (j <= n && substr(s, j, 1) != c) { tag = tag substr(s, j, 1); j++ }
-        return tag
-      }
-      if (c !~ /[A-Za-z_]/) return ""
       tag = ""
-      while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { tag = tag substr(s, j, 1); j++ }
-      return tag
+      if (c == "\047" || c == "\"") {
+        j++
+        while (j <= n && substr(s, j, 1) != c) { tag = tag substr(s, j, 1); j++ }
+        j++
+      } else if (c ~ /[A-Za-z_]/) {
+        while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { tag = tag substr(s, j, 1); j++ }
+      }
+      if (tag != "") out = out (out == "" ? "" : "\037") dash tag
+      i = j - 1
+      continue
     }
   }
-  return ""
+  return out
 }
 
 FNR == 1 {
-  in_literal_heredoc = 0
-  heredoc_tag = ""
+  hd_n = 0            # heredoc bodies still to skip, queued by the opener line
+  hd_i = 1
   scanning = 0
   counted = 0
   joined = ""
@@ -234,21 +242,31 @@ FNR == 1 {
   # --- heredoc bookkeeping ---------------------------------------------
   # A heredoc body — quoted delimiter or not — is data to THIS shell (a script
   # writing another script, a usage block); nothing in it runs here, so skip
-  # it, and never let a `set -o pipefail` inside it switch scanning on.
-  if (in_literal_heredoc) {
-    if (trim(raw) == heredoc_tag) { in_literal_heredoc = 0; heredoc_tag = "" }
+  # it, and never let a `set -o pipefail` inside it switch scanning on. Bodies
+  # are tracked as a queue in source order (`cat <<A <<B` skips the A body,
+  # then the B body). A plain `<<` closes only on the EXACT delimiter line; `<<-` also
+  # accepts leading TABS (not spaces) — the same rules bash applies.
+  if (hd_n > 0) {
+    probe = raw
+    if (hd_dash[hd_i]) sub(/^\t+/, "", probe)
+    if (probe == hd_tag[hd_i]) {
+      hd_i++
+      if (hd_i > hd_n) { hd_n = 0; hd_i = 1 }
+    }
     next
   }
-  # The opener is looked for with a quote-aware walk over the DECOMMENTED
-  # line: `<<EOF` inside a quoted argument (`printf '"'"'%s\n'"'"' '"'"'docs: <<EOF'"'"'`)
-  # opens nothing, a commented-out opener opens nothing, and `<<<"$var"` is a
-  # here-string — treating any of them as an opener would mute every live
-  # pipeline after it. A real `cat <<'"'"'EOF'"'"'` / `<<EOF` / `<<-EOF` still
-  # starts a body that is skipped until its closing tag.
-  tag = opener_tag(decomment(raw))
-  if (tag != "") {
-    in_literal_heredoc = 1
-    heredoc_tag = tag
+  # Openers are found with a quote-aware walk over the DECOMMENTED line:
+  # `<<EOF` inside a quoted argument (`printf '"'"'%s\n'"'"' '"'"'docs: <<EOF'"'"'`),
+  # a commented-out opener, a `<<<"$var"` here-string and an arithmetic
+  # `$(( 1 << width ))` all open nothing — treating any of them as an opener
+  # would mute every live pipeline after it.
+  tags = opener_tags(decomment(raw))
+  if (tags != "") {
+    hd_n = split(tags, hd_parts, "\037"); hd_i = 1
+    for (k = 1; k <= hd_n; k++) {
+      hd_dash[k] = (substr(hd_parts[k], 1, 1) == "D")
+      hd_tag[k] = substr(hd_parts[k], 2)
+    }
     # No `next`: the opener line itself is live code (`cat <<'"'"'EOF'"'"' | grep -q x`
     # pipes the body through a producer that can still die of SIGPIPE), so it
     # is scanned below; only the BODY lines that follow are skipped.
