@@ -247,12 +247,44 @@ if [[ "${CMD[0]}" == */* ]]; then
     # `/usr/bin/env foo` defers to env, but env can only fail the same way one
     # step later: a missing foo is still an exec failure that the loop would
     # report as a cap timeout. env resolves it on PATH, so resolve it here the
-    # same way. Only a bare name is checked — an absolute argument was already
-    # covered above, and anything with a slash is env's own business.
+    # same way.
+    #
+    # env's OWN options sit between it and that name, and merely SKIPPING a
+    # `-*` token takes the verdict with it: `#!/usr/bin/env -S python3 -u` hides
+    # the interpreter behind -S, so a missing python3 would exec-fail on every
+    # tick and arrive as a cap timeout (4) — the exact fault (3) this preflight
+    # exists to name. So walk PAST the options to the first real word. Flags
+    # that take a SEPARATE value consume it too, so `-u NAME` never offers NAME
+    # as the command. -S is not one of them: its argument IS the command line,
+    # so the word after it is the interpreter we are looking for.
+    #
+    # Only a bare name is checked — an absolute argument was already covered
+    # above, and anything with a slash is env's own business. Anything the walk
+    # cannot resolve leaves the name empty and the check is skipped: MISSING a
+    # launch failure costs a cap timeout, while GUESSING one would refuse a
+    # check that runs perfectly well, so this fails open on purpose.
     if [[ "$WU_INTERP" == */env ]]; then
-      WU_ENV_ARG="${WU_SHEBANG#"$WU_INTERP"}"
-      WU_ENV_ARG="${WU_ENV_ARG#"${WU_ENV_ARG%%[![:space:]]*}"}"
-      WU_ENV_ARG="${WU_ENV_ARG%%[[:space:]]*}"
+      WU_ENV_REST="${WU_SHEBANG#"$WU_INTERP"}"
+      WU_ENV_TOKENS=()
+      read -r -a WU_ENV_TOKENS <<< "$WU_ENV_REST" || true
+      WU_ENV_ARG=""
+      WU_I=0
+      while (( WU_I < ${#WU_ENV_TOKENS[@]} )); do
+        case "${WU_ENV_TOKENS[WU_I]}" in
+          --) WU_I=$(( WU_I + 1 )); break ;;
+          -S|--split-string) WU_I=$(( WU_I + 1 )) ;;
+          # Rewrite rather than advance: the joined form carries the command
+          # line in its own token. The value is strictly shorter each pass, so
+          # this cannot spin.
+          --split-string=*) WU_ENV_TOKENS[WU_I]="${WU_ENV_TOKENS[WU_I]#*=}" ;;
+          -u|--unset|-C|--chdir) WU_I=$(( WU_I + 2 )) ;;
+          -*|*=*) WU_I=$(( WU_I + 1 )) ;;
+          *) break ;;
+        esac
+      done
+      if (( WU_I < ${#WU_ENV_TOKENS[@]} )); then
+        WU_ENV_ARG="${WU_ENV_TOKENS[WU_I]}"
+      fi
       if [[ -n "$WU_ENV_ARG" && "$WU_ENV_ARG" != -* && "$WU_ENV_ARG" != */* ]] \
          && ! command -v "$WU_ENV_ARG" >/dev/null 2>&1; then
         echo "wait-until.sh: the check command could not be launched — ${CMD[0]} asks env for interpreter '$WU_ENV_ARG', which is not on PATH" >&2

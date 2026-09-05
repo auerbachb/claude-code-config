@@ -28,6 +28,9 @@
 #       the cap exit code — never as met.
 #   T13 an unlaunchable check command is fatal on tick 1 rather than "polled"
 #       to the cap, so a typo cannot masquerade as a timeout.
+#   T13c env's own options (-S, -u) must not hide the interpreter from that
+#       preflight, and a positive control proves the option walk still LAUNCHES
+#       the shebangs it resolves rather than refusing them all.
 #
 # Requires git. No network. Run from anywhere:
 #   bash .claude/scripts/tests/worktree-isolation-shapes.test.sh
@@ -428,6 +431,48 @@ if mkfifo "$TMP/fifo-check" 2>/dev/null; then
 else
   pass "T13b: FIFO case skipped (mkfifo unavailable)"
 fi
+
+
+# ---- T13c: env's own options must not hide the interpreter ------------------
+# `#!/usr/bin/env -S python3 -u` puts the real interpreter BEHIND an option. A
+# preflight that skips every `-*` token loses the launchability verdict with it,
+# and the missing interpreter comes back as a cap timeout (4) instead of the
+# launch failure (3) this preflight exists to name.
+cat > "$TMP/env-dash-s" <<'EOF'
+#!/usr/bin/env -S definitely-not-a-real-interp-1470 --flag
+exit 0
+EOF
+chmod +x "$TMP/env-dash-s"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/env-dash-s" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: an interpreter hidden behind env -S exits 3, not a cap timeout" "3" "$RC"
+check_contains "T13c: and names the interpreter env was asked for" "definitely-not-a-real-interp-1470" "$ERROUT"
+check_not_contains "T13c: and does not disguise it as a cap timeout" "CAP HIT" "$ERROUT"
+
+# A flag that takes a SEPARATE value must consume it: offering that value as the
+# command would refuse a check whose interpreter is perfectly resolvable.
+cat > "$TMP/env-dash-u" <<'EOF'
+#!/usr/bin/env -u WU_TEST_UNSET_1470 definitely-not-a-real-interp-1470
+exit 0
+EOF
+chmod +x "$TMP/env-dash-u"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/env-dash-u" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: -u consumes its value and still reaches the interpreter (3)" "3" "$RC"
+check_contains "T13c: and blames the interpreter" "definitely-not-a-real-interp-1470" "$ERROUT"
+check_not_contains "T13c: and never mistakes -u's value for the command" "WU_TEST_UNSET_1470" "$ERROUT"
+
+# Positive control — without it, a walk that resolved EVERY env shebang to
+# "missing" would pass both cases above while refusing every real check.
+cat > "$TMP/env-dash-s-ok" <<'EOF'
+#!/usr/bin/env -S bash -e
+printf ready
+EOF
+chmod +x "$TMP/env-dash-s-ok"
+RC=0; OUT=""
+OUT="$("$WAIT" --interval 1 --timeout 10 -- "$TMP/env-dash-s-ok" 2>/dev/null)" || RC=$?
+check_eq "T13c: positive control — env -S with a real interpreter still runs (0)" "0" "$RC"
+check_eq "T13c: and its stdout is relayed verbatim" "ready" "$OUT"
 
 # ---- T14: a cap smaller than one interval still costs exactly one check ------
 echo 0 > "$STUB_STATE"
