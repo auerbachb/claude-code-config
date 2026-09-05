@@ -172,10 +172,10 @@ ABSENT_LINES=$(grep -c 'GATE_STATE=absent' <<<"$PROBE_A" || true)
 grep -Eq 'READ_RC == 3 \)\)' <<<"$PROBE_A" \
   || fail "probe A no longer isolates exit 3 as the only no-state-file case"
 # The failed-read branch must land on unreadable on its very next line.
-grep -A1 -E 'READ_RC != 0 \)\)' <<<"$PROBE_A" | grep -q 'GATE_STATE=unreadable' \
+grep -q 'GATE_STATE=unreadable' <<<"$(grep -A1 -E 'READ_RC != 0 \)\)' <<<"$PROBE_A")" \
   || fail "a failed read (READ_RC != 0) must set GATE_STATE=unreadable, not absent"
 # So must the malformed-map fallback (the else arm of the jq validation).
-grep -A1 -E '^[[:space:]]*else[[:space:]]*$' <<<"$PROBE_A" | grep -q 'GATE_STATE=unreadable' \
+grep -q 'GATE_STATE=unreadable' <<<"$(grep -A1 -E '^[[:space:]]*else[[:space:]]*$' <<<"$PROBE_A")" \
   || fail "a malformed gate map must set GATE_STATE=unreadable, not absent"
 
 # --- Stop-state helpers resolve from installed locations only ---------------

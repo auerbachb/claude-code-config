@@ -375,7 +375,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # whitespace after it. Accepting only '^## ' let an indented '## Test Plan'
   # go unrecognised, so its unchecked boxes bypassed the gate entirely — and it
   # diverged from ac-checkboxes.sh, which accepts the indented forms.
-  if printf '%s' "$line" | grep -qE '^[[:space:]]{0,3}##[[:space:]]'; then
+  if grep -qE '^[[:space:]]{0,3}##[[:space:]]' <<<"$line"; then
     # Strip leading indent, the '##' marker, surrounding whitespace. Case is
     # preserved: the exemption heading is matched case-sensitively below.
     heading="$(printf '%s' "$line" | sed -E 's/^[[:space:]]{0,3}##[[:space:]]+//; s/[[:space:]]*$//')"
@@ -415,7 +415,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   fi
 
   # --- unchecked box detection (`- [ ]` with optional leading whitespace) ---
-  if printf '%s' "$line" | grep -qE '^[[:space:]]*-[[:space:]]\[ \]'; then
+  if grep -qE '^[[:space:]]*-[[:space:]]\[ \]' <<<"$line"; then
     case "$STATE" in
       ac|testplan|malformed_postmerge)
         HAS_UNCHECKED_INSCOPE=1
@@ -428,7 +428,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 
   # --- tracking issue line (only counts inside the exemption section) ---
   if [[ "$STATE" == "postmerge" ]]; then
-    if printf '%s' "$line" | grep -qE '^[[:space:]]*Tracking issue:[[:space:]]*#[0-9]+'; then
+    if grep -qE '^[[:space:]]*Tracking issue:[[:space:]]*#[0-9]+' <<<"$line"; then
       TRACKING_ISSUE="$(printf '%s' "$line" | grep -oE '#[0-9]+' | head -1 | grep -oE '[0-9]+')"
     fi
   fi
@@ -478,7 +478,7 @@ if [[ -n "$PENDING_SECTIONS" ]]; then
       CLOSED_REFS_LOADED=1
     fi
 
-    if [[ -n "$CLOSED_REFS" ]] && printf '%s\n' "$CLOSED_REFS" | grep -qxF -- "$SECTION_TRACKING"; then
+    if [[ -n "$CLOSED_REFS" ]] && grep -qxF -- "$SECTION_TRACKING" <<<"$CLOSED_REFS"; then
       echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$SECTION_TRACKING is an issue this PR closes." >&2
       echo "This is the PR #588 pattern: when this PR merges, issue #$SECTION_TRACKING closes automatically" >&2
       echo "and the deferred work is sealed inside a closed issue." >&2
@@ -749,7 +749,7 @@ if [[ "$ALL_MODE" -eq 1 ]]; then
             printf '%s\n' "$_issue_part"
           fi
         done || true)"
-  elif printf '%s\n' "$BODY" | grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+'; then
+  elif grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' <<<"$BODY"; then
     # Current repo unknown AND the body carries qualified refs: refuse rather
     # than guess. Including them lets `Closes other/repo#99` false-collide with
     # a local tracking issue #99 (a wrong rejection); excluding them lets a
@@ -959,10 +959,10 @@ if gh api "repos/$OWNER_REPO/branches/main/protection/required_status_checks" \
   fi
 else
   BP_STDERR=$(cat "$BP_STDERR_FILE")
-  if printf '%s' "$BP_STDERR" | grep -qiE 'HTTP 404|Not Found|Branch not protected'; then
+  if grep -qiE 'HTTP 404|Not Found|Branch not protected' <<<"$BP_STDERR"; then
     BP_STATE="missing"
     BP_NOTE="404 — required status checks not configured."
-  elif printf '%s' "$BP_STDERR" | grep -qiE 'HTTP 403|forbidden|must have admin'; then
+  elif grep -qiE 'HTTP 403|forbidden|must have admin' <<<"$BP_STDERR"; then
     BP_STATE="no_permission"
     BP_NOTE="403 — token lacks permission to read branch protection."
   else

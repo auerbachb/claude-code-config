@@ -60,7 +60,7 @@ check_contains() {
 
 check_line_present() {
   local desc="$1" line="$2" hay="$3"
-  if printf '%s\n' "$hay" | grep -Fxq -- "$line"; then
+  if grep -Fxq -- "$line" <<<"$hay"; then
     pass "$desc"
   else
     fail "$desc (missing exact line '$line')"
@@ -265,7 +265,7 @@ GITHUB_REPOSITORY="" bash "$SCRIPT" --all 104 >/dev/null 2>&1 || RC=$?
 
 OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 104 2>/dev/null)"
 check_line_present "Test9b: with real context, bare #30 is included" "30" "$OUT"
-if printf '%s\n' "$OUT" | grep -Fxq -- "40"; then
+if grep -Fxq -- "40" <<<"$OUT"; then
   fail "Test9c: cross-repo #40 (auerbachb/inventory) must be excluded under real context"
 else
   pass "Test9c: cross-repo #40 correctly excluded under real context"
@@ -340,7 +340,7 @@ bash "$SCRIPT" --all 2>/dev/null || RC=$?
 # ---------------------------------------------------------------------------
 OUT="$(GITHUB_REPOSITORY=auerbachb/claude-code-config bash "$SCRIPT" --all 107 2>/dev/null)"
 check_line_present "Test13a: bare #42 included (same PR, different issue)" "42" "$OUT"
-if printf '%s\n' "$OUT" | grep -Fxq -- "99"; then
+if grep -Fxq -- "99" <<<"$OUT"; then
   fail "Test13b: other-repo#99 must be excluded (got '99' in output)"
 else
   pass "Test13b: other-repo#99 correctly excluded from --all output"
@@ -380,7 +380,7 @@ check_eq "Test15b: default mode returns ONLY the standalone trailer" "1407" "$OU
 LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c . || true)"
 [[ "$LINE_COUNT" -eq 1 ]] && pass "Test15c: variant-1 body yields exactly 1 line" \
   || fail "Test15c: expected 1 line, got $LINE_COUNT"
-if printf '%s\n' "$OUT" | grep -Fxq -- "1356"; then
+if grep -Fxq -- "1356" <<<"$OUT"; then
   fail "Test15d: prose ref #1356 must not appear in default output"
 else
   pass "Test15d: prose ref #1356 correctly excluded by the standalone tier"
@@ -415,7 +415,7 @@ check_eq "Test17a: NEGATIVE CONTROL — pre-fix selector picks the mid-sentence 
 OUT="$(bash "$SCRIPT" 111 2>/dev/null)"
 check_eq "Test17b: bullet trailer and punctuated trailer both count as standalone" \
   "$(printf '801\n802')" "$OUT"
-if printf '%s\n' "$OUT" | grep -Fxq -- "700"; then
+if grep -Fxq -- "700" <<<"$OUT"; then
   fail "Test17c: mid-sentence 'fixes #700' must lose to the standalone trailers"
 else
   pass "Test17c: mid-sentence 'fixes #700' correctly excluded"
@@ -458,7 +458,7 @@ check_eq "Test19a: NEGATIVE CONTROL — pre-fix selector yields only the boundar
   "1" "$(legacy_pick "$BODY113")"
 OUT="$(bash "$SCRIPT" 113 2>/dev/null)"
 check_eq "Test19b: scan-resume does not manufacture a word boundary" "1" "$OUT"
-if printf '%s\n' "$OUT" | grep -Fxq -- "56"; then
+if grep -Fxq -- "56" <<<"$OUT"; then
   fail "Test19c: '#1closed #56' must not match — the char before 'closed' is alnum"
 else
   pass "Test19c: digit-adjacent keyword correctly rejected after scan resume"

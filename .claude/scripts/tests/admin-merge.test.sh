@@ -226,10 +226,10 @@ expect_rc() {  # expect_rc <want> <desc>
   if [[ "$RC" -eq "$1" ]]; then ok "$2"; else bad "$2 (got rc=$RC: $OUT)"; fi
 }
 grep_ok() {    # grep_ok <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
+  if grep -q "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
 }
 grep_absent() {  # grep_absent <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (output: $OUT)"; else ok "$2"; fi
+  if grep -q "$1" <<<"$OUT"; then bad "$2 (output: $OUT)"; else ok "$2"; fi
 }
 
 # --- gh call-log helpers (issue #754) ---------------------------------------
@@ -277,7 +277,7 @@ grep_ok "gh api -X DELETE repos/solo/repo/branches/main/protection/enforce_admin
 grep_ok "gh pr merge 1 --squash --admin" "merge --admin present"
 POST_LINE=$(printf '%s\n' "$OUT" | grep "gh api -X POST repos/solo/repo/branches/main/protection/enforce_admins")
 if [[ -n "$POST_LINE" ]]; then ok "re-enable POST present"; else bad "missing POST: $OUT"; fi
-if printf '%s\n' "$POST_LINE" | grep -qiE -- '-f |--field|enabled='; then
+if grep -qiE -- '-f |--field|enabled=' <<<"$POST_LINE"; then
   bad "POST must have NO body (found a field flag): $POST_LINE"
 else
   ok "POST sent with no body (no -f/--field/enabled=)"
@@ -560,7 +560,7 @@ expect_rc 2 "--auto-plain and --execute are mutually exclusive (exit 2)"
 AUTO_BLOCK=$(awk '/^if \[\[ "\$MODE" == "auto-plain" \]\]; then/{f=1} f{print} f && /^fi$/{exit}' "$SRC")
 if [[ -z "$AUTO_BLOCK" ]]; then
   bad "could not extract the auto-plain branch for static analysis"
-elif printf '%s\n' "$AUTO_BLOCK" | grep -qE '\$(DELETE_CALL|REENABLE_CALL)|-X (DELETE|POST)'; then
+elif grep -qE '\$(DELETE_CALL|REENABLE_CALL)|-X (DELETE|POST)' <<<"$AUTO_BLOCK"; then
   bad "auto-plain branch contains a protection-modifying call"
 else
   ok "auto-plain branch contains no protection-modifying call (static)"

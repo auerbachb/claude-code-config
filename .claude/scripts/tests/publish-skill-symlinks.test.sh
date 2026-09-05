@@ -66,7 +66,7 @@ assert "publish-skill-symlinks.sh is executable" "[ -x '$PUBLISH_SCRIPT' ]"
 assert "--help exits 0 with no stderr" \
   "out=\$(bash '$PUBLISH_SCRIPT' --help 2>'$HELP_ERR'); [ \$? -eq 0 ] && [ ! -s '$HELP_ERR' ] && [ -n \"\$out\" ]"
 assert "--help documents the arguments and the exit-code contract" \
-  "out=\$(bash '$PUBLISH_SCRIPT' --help 2>/dev/null); printf '%s' \"\$out\" | grep -q 'skills-worktree' && printf '%s' \"\$out\" | grep -q 'Exit 0'"
+  "out=\$(bash '$PUBLISH_SCRIPT' --help 2>/dev/null); grep -q 'skills-worktree' <<<\"\$out\" && grep -q 'Exit 0' <<<\"\$out\""
 assert "missing argument is a usage error (exit 2)" \
   "bash '$PUBLISH_SCRIPT' >/dev/null 2>&1; [ \$? -eq 2 ]"
 
@@ -94,7 +94,7 @@ test_1_missing_create() {
   assert "rules symlinked into the worktree" \
     "[ -L '$tmp_home/.claude/rules' ] && [ \"\$(readlink '$tmp_home/.claude/rules')\" = '$fake_wt/.claude/rules' ]"
   assert "output reports the created links" \
-    "printf '%s' \"\$output\" | grep -q 'symlinked'"
+    "grep -q 'symlinked' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -144,7 +144,7 @@ test_3_user_owned_preserved() {
   assert "user-owned alpha still points at the user's target" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$user_target' ]"
   assert "output names the user-owned link" \
-    "printf '%s' \"\$output\" | grep -q 'user-owned symlink'"
+    "grep -q 'user-owned symlink' <<<\"\$output\""
   assert "non-conflicting beta is still published" \
     "[ -L '$tmp_home/.claude/skills/beta' ]"
 
@@ -172,7 +172,7 @@ test_4_stale_pruned() {
   assert "stale beta symlink removed" \
     "[ ! -e '$tmp_home/.claude/skills/beta' ] && [ ! -L '$tmp_home/.claude/skills/beta' ]"
   assert "alpha still intact" "[ -L '$tmp_home/.claude/skills/alpha' ]"
-  assert "prune reported in output" "printf '%s' \"\$output\" | grep -q 'stale symlink'"
+  assert "prune reported in output" "grep -q 'stale symlink' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -205,7 +205,7 @@ test_5_legacy_repoint() {
   assert "rules migrated to the worktree" \
     "[ \"\$(readlink '$tmp_home/.claude/rules')\" = '$fake_wt/.claude/rules' ]"
   assert "migration is reported" \
-    "printf '%s' \"\$output\" | grep -qE '(migrating|updating|symlinked)'"
+    "grep -qE '(migrating|updating|symlinked)' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -233,7 +233,7 @@ test_6_legacy_not_on_main_warns() {
   assert "gamma still points at the root repo" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/gamma')\" = '$fake_root/.claude/skills/gamma' ]"
   assert "warning names the not-on-main case" \
-    "printf '%s' \"\$stderr_out\" | grep -q 'not in worktree'"
+    "grep -q 'not in worktree' <<<\"\$stderr_out\""
 
   cleanup "$tmp_home"
 }
@@ -259,7 +259,7 @@ test_7_repoint_elsewhere() {
   assert "alpha repointed at its own worktree directory" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
   assert "repoint reported in output" \
-    "printf '%s' \"\$output\" | grep -q 'updating symlink'"
+    "grep -q 'updating symlink' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -285,7 +285,7 @@ test_8_non_symlink_preserved() {
   assert "CLAUDE.md content untouched" \
     "grep -q 'hand written' '$tmp_home/.claude/CLAUDE.md'"
   assert "warning names the non-symlink" \
-    "printf '%s' \"\$stderr_out\" | grep -q 'is not a symlink'"
+    "grep -q 'is not a symlink' <<<\"\$stderr_out\""
 
   cleanup "$tmp_home"
 }
@@ -310,7 +310,7 @@ test_9_directory_copy_replaced() {
   assert "alpha points into the worktree" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
   assert "replacement reported in output" \
-    "printf '%s' \"\$output\" | grep -q 'replacing directory copy'"
+    "grep -q 'replacing directory copy' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -335,7 +335,7 @@ test_10_trailing_slash_argument() {
   assert "run with a trailing slash exits 0" "[ $exit_code -eq 0 ]"
   assert "it stays a true no-op (no output at all)" "[ -z \"\$output\" ]"
   assert "no managed link was misread as user-owned" \
-    "! printf '%s' \"\$output\" | grep -q 'user-owned'"
+    "! grep -q 'user-owned' <<<\"\$output\""
   assert "alpha still points at the canonical worktree path" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
 
@@ -398,9 +398,9 @@ test_12_regression_normpath_unavailable() {
 
   assert "publish still exits 0 with a broken python3" "[ $exit_code -eq 0 ]"
   assert "the degradation is announced once, not silently absorbed" \
-    "printf '%s' \"\$output\" | grep -q 'python3 unavailable'"
+    "grep -q 'python3 unavailable' <<<\"\$output\""
   assert "the legacy link was NOT misread as user-owned" \
-    "! printf '%s' \"\$output\" | grep -q 'alpha — leaving user-owned'"
+    "! grep -q 'alpha — leaving user-owned' <<<\"\$output\""
   assert "the legacy link was migrated into the worktree" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
   assert "beta was still published" \
@@ -413,7 +413,7 @@ test_12_regression_normpath_unavailable() {
   ln -s "$legacy_root/.claude/skills/alpha" "$tmp_home/.claude/skills/alpha"
   output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" "$legacy_root" 2>&1)"
   assert "(control) a working python3 prints no degradation notice" \
-    "! printf '%s' \"\$output\" | grep -q 'python3 unavailable'"
+    "! grep -q 'python3 unavailable' <<<\"\$output\""
   assert "(control) and it migrates the legacy link just the same" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
 
@@ -509,9 +509,9 @@ test_15_regression_relative_legacy_link_preserved() {
   assert "gamma still points at the root repo" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/gamma')\" = '../../root-repo/.claude/skills/gamma' ]"
   assert "warning names the not-on-main case" \
-    "printf '%s' \"\$stderr_out\" | grep -q 'not in worktree'"
+    "grep -q 'not in worktree' <<<\"\$stderr_out\""
   assert "no stale-prune line was emitted for gamma" \
-    "! printf '%s' \"\$stderr_out\" | grep -q 'removing stale symlink'"
+    "! grep -q 'removing stale symlink' <<<\"\$stderr_out\""
 
   cleanup "$tmp_home"
 }
@@ -550,7 +550,7 @@ test_16_regression_unremovable_stale_link_exits_1() {
   # that ignores the mode) would let rm succeed, and then an exit-0 assertion
   # would be vacuous rather than meaningful.
   assert "the removal genuinely failed (warning emitted)" \
-    "printf '%s' \"\$stderr_out\" | grep -q 'could not remove'"
+    "grep -q 'could not remove' <<<\"\$stderr_out\""
   assert "publish exits 1 per the documented exit-code contract" "[ $exit_code -eq 1 ]"
   assert "the un-removable link is still present" \
     "[ -L '$tmp_home/.claude/skills/ghost' ]"
@@ -601,7 +601,7 @@ test_17_regression_repoint_never_creates_a_dangling_link() {
   assert "and it was left exactly where it was" \
     "[ \"\$(readlink '$tmp_home/.claude/CLAUDE.md')\" = '$fake_wt/.claude/rules' ]"
   assert "the skip is explained rather than silent" \
-    "printf '%s' \"\$output\" | grep -q 'worktree target is missing'"
+    "grep -q 'worktree target is missing' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -635,7 +635,7 @@ test_18_directory_copy_migration_is_not_destructive() {
   assert "pointing at the worktree skill" \
     "[ \"\$(readlink '$tmp_home/.claude/skills/alpha')\" = '$fake_wt/.claude/skills/alpha' ]"
   assert "the migration was reported" \
-    "printf '%s' \"\$output\" | grep -q 'replacing directory copy'"
+    "grep -q 'replacing directory copy' <<<\"\$output\""
   # No move-aside temp may survive a successful run, or the migration trades a
   # data-loss window for a litter of orphaned copies. The aside now lives
   # OUTSIDE the skills dir (a leftover inside it would be read by the skill

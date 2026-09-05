@@ -435,7 +435,7 @@ with open(path, 'w', encoding='utf-8') as f:
   malformed_out=$(run_setup)
   malformed_exit=$?
   assert "setup.sh FAILS Step 7 on a malformed (blank) command hook" "[ $malformed_exit -ne 0 ]"
-  assert "Step 7 reports the invalid command value" "printf '%s' \"\$malformed_out\" | grep -qi 'invalid command value'"
+  assert "Step 7 reports the invalid command value" "grep -qi 'invalid command value' <<<\"\$malformed_out\""
   # Restore a clean state so the suite ends green.
   python3 -c "
 import json
@@ -559,7 +559,7 @@ test_9_user_owned_skill_symlinks() {
   assert "(a) User-owned symlink target unchanged" \
     "[ \"\$(readlink '$user_skill_link')\" = '$ext_dir/my-personal-skill-test-1198' ]"
   assert "(a) Output names the user-owned link" \
-    "printf '%s' \"\$setup_output\" | grep -q 'my-personal-skill-test-1198'"
+    "grep -q 'my-personal-skill-test-1198' <<<\"\$setup_output\""
 
   # (b) Stale setup-owned link must have been removed.
   assert "(b) Stale setup-owned link pruned" "[ ! -L '$stale_link' ]"

@@ -73,7 +73,7 @@ expect() {
     printf '%s\n' "$out" | sed 's/^/       /'
     return
   fi
-  if [ -n "$want_re" ] && ! printf '%s\n' "$out" | grep -qE "$want_re"; then
+  if [ -n "$want_re" ] && ! grep -qE "$want_re" <<<"$out"; then
     bad "${name}: exit ${got} as expected, but output did not match /${want_re}/"
     printf '%s\n' "$out" | sed 's/^/       /'
     return
@@ -321,7 +321,7 @@ canary_dir="${TMP_ROOT}/canary-nofences"
 mkdir -p "$canary_dir"
 printf '# Doc\n\nNo code fences at all.\n' > "$canary_dir/only.md"
 out=$(cd "$canary_dir" && bash "$LINT" 2>&1) && got=0 || got=$?
-if [ "$got" -eq 1 ] && printf '%s\n' "$out" | grep -q "0 shell code fences"; then
+if [ "$got" -eq 1 ] && grep -q "0 shell code fences" <<<"$out"; then
   ok "vacuity canary: zero shell fences fails instead of passing green"
 else
   bad "vacuity canary: expected exit 1 with the zero-fence message, got exit ${got}"
@@ -332,7 +332,7 @@ canary_dir2="${TMP_ROOT}/canary-nomd"
 mkdir -p "$canary_dir2"
 printf 'not markdown\n' > "$canary_dir2/readme.txt"
 out=$(cd "$canary_dir2" && bash "$LINT" 2>&1) && got=0 || got=$?
-if [ "$got" -eq 1 ] && printf '%s\n' "$out" | grep -q "no Markdown files"; then
+if [ "$got" -eq 1 ] && grep -q "no Markdown files" <<<"$out"; then
   ok "discovery canary: an empty corpus fails instead of passing green"
 else
   bad "discovery canary: expected exit 1 with the no-Markdown message, got exit ${got}"
@@ -341,7 +341,7 @@ fi
 
 # --- usage contract ---------------------------------------------------------
 out=$(bash "$LINT" --help 2>&1) && got=0 || got=$?
-if [ "$got" -eq 0 ] && printf '%s\n' "$out" | grep -q 'Usage:'; then
+if [ "$got" -eq 0 ] && grep -q 'Usage:' <<<"$out"; then
   ok "--help exits 0 and prints usage"
 else
   bad "--help: expected exit 0 with a Usage: line, got exit ${got}"
@@ -442,12 +442,12 @@ REPRO_EOF
 
 if [ -n "$ZSH_BIN" ]; then
   zout="$("$ZSH_BIN" "$REPRO" 2>&1)"
-  if printf '%s\n' "$zout" | grep -q '^BUGGY rc=127$'; then
+  if grep -q '^BUGGY rc=127$' <<<"$zout"; then
     ok "zsh: the pre-fix 'local path' helper cannot exec its own target (rc 127)"
   else
     bad "zsh: expected 'BUGGY rc=127', got: $(printf '%s' "$zout" | tr '\n' ' ')"
   fi
-  if printf '%s\n' "$zout" | grep -q '^FIXED rc=0$'; then
+  if grep -q '^FIXED rc=0$' <<<"$zout"; then
     ok "zsh: the renamed 'local script_path' helper runs cleanly (rc 0)"
   else
     bad "zsh: expected 'FIXED rc=0', got: $(printf '%s' "$zout" | tr '\n' ' ')"
@@ -460,7 +460,7 @@ if [ -n "$ZSH_BIN" ]; then
   fixed_err="$(printf '%s\n' "$zout" | sed -n 's/^FIXED_ERR //p')"
   # GNU env quotes the name (env: 'bash': No such ...) where BSD env does not,
   # so match loosely around it rather than pinning the macOS spelling.
-  if printf '%s\n' "$buggy_err" | grep -qE 'bash.*No such file or directory' \
+  if grep -qE 'bash.*No such file or directory' <<<"$buggy_err" \
      && [ -z "$(printf '%s' "$fixed_err" | tr -d '[:space:]')" ]; then
     ok "zsh: the corruption surfaces as 'env: bash: No such file or directory' (silent for the renamed variant)"
   else
@@ -474,7 +474,7 @@ fi
 # bash control: the identical file is harmless under bash, which is why every
 # .sh file in this repo can keep using `local path`.
 bout="$(bash "$REPRO" 2>&1)"
-if printf '%s\n' "$bout" | grep -q '^BUGGY rc=0$' && printf '%s\n' "$bout" | grep -q '^FIXED rc=0$'; then
+if grep -q '^BUGGY rc=0$' <<<"$bout" && grep -q '^FIXED rc=0$' <<<"$bout"; then
   ok "bash control: both helper shapes work — the defect is zsh-specific"
 else
   bad "bash control: expected both rc=0, got: $(printf '%s' "$bout" | tr '\n' ' ')"

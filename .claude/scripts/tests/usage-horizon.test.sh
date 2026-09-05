@@ -636,7 +636,7 @@ fi
 # reach: the guarantee is the ABSENCE of a code path.
 BODY="$(grep -v '^[[:space:]]*#' "$SCRIPT")"
 for forbidden in transcript ccusage quota-usage estimate; do
-  if printf '%s' "$BODY" | grep -qi "$forbidden"; then
+  if grep -qi "$forbidden" <<<"$BODY"; then
     bad "the executable body references '$forbidden' — comparison-only is no longer true by construction"
   else
     ok "no '$forbidden' reference in the executable body"

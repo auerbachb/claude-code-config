@@ -100,17 +100,17 @@ if [ -z "$ISSUE_NUMBER" ]; then
   exit 2
 fi
 
-if ! printf '%s' "$ISSUE_NUMBER" | grep -Eq '^[1-9][0-9]*$'; then
+if ! grep -Eq '^[1-9][0-9]*$' <<<"$ISSUE_NUMBER"; then
   echo "cr-plan.sh: issue_number must be a positive integer (got: $ISSUE_NUMBER)" >&2
   exit 2
 fi
 
-if ! printf '%s' "$POLL_MINUTES" | grep -Eq '^[0-9]+$'; then
+if ! grep -Eq '^[0-9]+$' <<<"$POLL_MINUTES"; then
   echo "cr-plan.sh: --poll value must be a non-negative integer (got: $POLL_MINUTES)" >&2
   exit 2
 fi
 
-if ! printf '%s' "$MAX_AGE_MINUTES" | grep -Eq '^[0-9]+$'; then
+if ! grep -Eq '^[0-9]+$' <<<"$MAX_AGE_MINUTES"; then
   echo "cr-plan.sh: --max-age-minutes value must be a non-negative integer (got: $MAX_AGE_MINUTES)" >&2
   exit 2
 fi
@@ -148,7 +148,7 @@ ISSUE_META=""
 ISSUE_META_STDERR_FILE="$TMPDIR_CR_PLAN/issue-meta-stderr"
 if ! ISSUE_META=$(gh issue view "$ISSUE_NUMBER" --json state,createdAt --jq '"\(.state)\t\(.createdAt)"' 2>"$ISSUE_META_STDERR_FILE"); then
   ISSUE_META_STDERR=$(cat "$ISSUE_META_STDERR_FILE")
-  if printf '%s' "$ISSUE_META_STDERR" | grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404'; then
+  if grep -qi 'could not resolve\|not found\|no issue found\|HTTP 404' <<<"$ISSUE_META_STDERR"; then
     echo "cr-plan.sh: issue #$ISSUE_NUMBER not found" >&2
     exit 3
   fi

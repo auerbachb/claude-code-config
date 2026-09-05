@@ -160,7 +160,7 @@ if [[ "$INPUT" =~ ^[0-9]+$ ]] && [[ "${#INPUT}" -lt 10 ]]; then
   PR_VIEW_RC=0
   PR_VIEW_OUT=$(gh pr view "$INPUT" --json headRefOid 2>&1) || PR_VIEW_RC=$?
   if [[ "$PR_VIEW_RC" -ne 0 ]] || [[ -z "$PR_VIEW_OUT" ]]; then
-    if echo "$PR_VIEW_OUT" | grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404'; then
+    if grep -qiE 'no pull requests found|could not resolve to a pullrequest|HTTP 404' <<<"$PR_VIEW_OUT"; then
       # Not a PR — treat as an abbreviated commit SHA. The check-runs API
       # accepts abbreviated forms; if the SHA is also invalid, that request
       # will return 404 below and we exit 4 there.
@@ -217,7 +217,7 @@ else
     # to exit 5, not be mis-classified as commit-not-found (exit 4).
     # Pre-existing behavior — not affected by the --check-runs-stdin path
     # (stdin callers are responsible for their own HTTP error handling).
-    if echo "$CHECK_RUNS_RAW" | grep -qiE 'HTTP 404|Not Found|No commit found for SHA'; then
+    if grep -qiE 'HTTP 404|Not Found|No commit found for SHA' <<<"$CHECK_RUNS_RAW"; then
       echo "ERROR: commit $HEAD_SHA not found" >&2
       exit 4
     fi

@@ -90,7 +90,7 @@ expect() {
     printf '       output: %s\n' "$(printf '%s' "$out" | tail -3)"
     return
   fi
-  if [ -n "$want_re" ] && ! printf '%s' "$out" | grep -qE "$want_re"; then
+  if [ -n "$want_re" ] && ! grep -qE "$want_re" <<<"$out"; then
     bad "$name — exit $got correct but output did not match /$want_re/"
     printf '       output: %s\n' "$(printf '%s' "$out" | tail -3)"
     return
@@ -245,7 +245,7 @@ canary() {  # NAME  SETUP_FN  WANT_REGEX
     bad "$name — canary passed green instead of failing"
     return
   fi
-  if ! printf '%s' "$out" | grep -qE "$want_re"; then
+  if ! grep -qE "$want_re" <<<"$out"; then
     bad "$name — failed, but not with the expected canary message"
     printf '       output: %s\n' "$(printf '%s' "$out" | tail -2)"
     return
@@ -338,7 +338,7 @@ ITEMS=()
 printf '%s\n' "${ITEMS[@]}"
 BROKEN
   out=$(cd "$HONOURED_DIR" && bash "$DEFERRED_LINT" 2>&1) && got=0 || got=$?
-  if [ "${got:-0}" -eq 0 ] && printf '%s' "$out" | grep -q 'DEFERRED .*deferral-fixture.sh'; then
+  if [ "${got:-0}" -eq 0 ] && grep -q 'DEFERRED .*deferral-fixture.sh' <<<"$out"; then
     ok "a matching deferral is honoured rather than reported as an error"
   else
     bad "a matching deferral did NOT suppress its finding — the escape hatch is broken"
@@ -365,7 +365,7 @@ COPY=(${ITEMS[@]+"${ITEMS[@]}"})
 printf '%s\n' ${COPY[@]+"${COPY[@]}"}
 FIXED
   out=$(cd "$STALE_DIR" && bash "$DEFERRED_LINT" 2>&1) && got=0 || got=$?
-  if [ "${got:-0}" -ne 0 ] && printf '%s' "$out" | grep -q 'STALE deferral'; then
+  if [ "${got:-0}" -ne 0 ] && grep -q 'STALE deferral' <<<"$out"; then
     ok "stale deferral is reported once its site is clean"
   else
     bad "stale deferral was NOT reported — the allowlist can rot silently"
@@ -394,7 +394,7 @@ if [ -z "$PROBE_BASH" ]; then
   skip "runtime proof — no bash on this machine aborts on empty-array expansion (bash >= 4.4 tolerates it); the abort this lint guards is unobservable here"
 else
   hazard_out=$("$PROBE_BASH" -c 'set -u; args=(); cmd() { :; }; cmd "${args[@]}"; echo SURVIVED' 2>&1) && hazard_rc=0 || hazard_rc=$?  # empty-array-ok: reproducing the abort under test is the whole point of this assertion
-  if [ "$hazard_rc" -ne 0 ] && printf '%s' "$hazard_out" | grep -q 'unbound variable'; then
+  if [ "$hazard_rc" -ne 0 ] && grep -q 'unbound variable' <<<"$hazard_out"; then
     ok "hazardous shape really aborts with 'unbound variable' under $PROBE_BASH"
   else
     bad "hazardous shape did NOT abort as expected (rc=$hazard_rc): $hazard_out"

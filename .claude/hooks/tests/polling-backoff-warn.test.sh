@@ -58,7 +58,7 @@ ok "no warning at streak=2 (below threshold)"
 write_state "$PR" '{"digest_streak":3,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning at streak=3 base=5m"
-echo "$ctx" | grep -q "15m" || fail "expected 15m in message at base=5m, got: $ctx"
+grep -q "15m" <<<"$ctx" || fail "expected 15m in message at base=5m, got: $ctx"
 # 15 > 5 — strictly wider than base
 ok "streak=3 base=5m → widen to 15m (strictly greater than base)"
 
@@ -66,7 +66,7 @@ ok "streak=3 base=5m → widen to 15m (strictly greater than base)"
 write_state "$PR" '{"digest_streak":3,"babysit":{"cadence_base_minutes":1}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning at streak=3 base=1m"
-echo "$ctx" | grep -q "15m" || fail "expected 15m in message at base=1m, got: $ctx"
+grep -q "15m" <<<"$ctx" || fail "expected 15m in message at base=1m, got: $ctx"
 # 15 > 1 — strictly wider
 ok "streak=3 base=1m → widen to 15m (floor, strictly greater than base)"
 
@@ -74,7 +74,7 @@ ok "streak=3 base=1m → widen to 15m (floor, strictly greater than base)"
 write_state "$PR" '{"digest_streak":3,"babysit":{"cadence_base_minutes":20}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning at streak=3 base=20m"
-echo "$ctx" | grep -q "60m" || fail "expected 60m in message at base=20m, got: $ctx"
+grep -q "60m" <<<"$ctx" || fail "expected 60m in message at base=20m, got: $ctx"
 # 60 > 20 — strictly wider
 ok "streak=3 base=20m → widen to 60m (3×base, strictly greater than base)"
 
@@ -82,15 +82,15 @@ ok "streak=3 base=20m → widen to 60m (3×base, strictly greater than base)"
 write_state "$PR" '{"digest_streak":6,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning at streak=6 base=5m"
-echo "$ctx" | grep -q "15m"  || fail "expected 15m at streak=6 base=5m, got: $ctx"
-echo "$ctx" | grep -qv "5m " || true   # 5m should NOT be the recommended interval
+grep -q "15m" <<<"$ctx"  || fail "expected 15m at streak=6 base=5m, got: $ctx"
+grep -qv "5m " <<<"$ctx" || true   # 5m should NOT be the recommended interval
 ok "streak=6 base=5m → still 15m (no 5m no-op interval, no mid-tier)"
 
 # ── 6. Missing cadence_base_minutes defaults to 5m → 15m ─────────────────────
 write_state "$PR" '{"digest_streak":3}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning when cadence_base_minutes absent"
-echo "$ctx" | grep -q "15m" || fail "expected 15m when base absent (default 5), got: $ctx"
+grep -q "15m" <<<"$ctx" || fail "expected 15m when base absent (default 5), got: $ctx"
 ok "absent cadence_base_minutes defaults to 5 → 15m"
 
 # ── 7. Already-applied guard: no re-emit when update matches WIDE_MIN ─────────
@@ -105,7 +105,7 @@ ok "already-applied guard: update to 15m not re-emitted at base=5m"
 write_state "$PR" '{"digest_streak":4,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"update","interval":"5m"}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected warning when previous update was to wrong interval"
-echo "$ctx" | grep -q "15m" || fail "expected 15m after stale 5m interval, got: $ctx"
+grep -q "15m" <<<"$ctx" || fail "expected 15m after stale 5m interval, got: $ctx"
 ok "already-applied guard respects WIDE_MIN: stale 5m update → still emit 15m"
 
 # ── 9. Already-applied guard for base=20m (WIDE_MIN=60m) ─────────────────────
@@ -125,10 +125,10 @@ ok "delete already applied → no re-emit from widen branch"
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP on a Monitor poll with no last_cron_action"
-echo "$ctx" | grep -q "TaskStop" || fail "stop advisory must name TaskStop, got: $ctx"
-echo "$ctx" | grep -q "monitor_task_id" || fail "stop advisory must name the recorded Monitor ID, got: $ctx"
-echo "$ctx" | grep -q "monitor_generation" || fail "stop advisory must clear the matching Monitor generation, got: $ctx"
-echo "$ctx" | grep -q "atomically clear" || fail "stop advisory must clear the Monitor identity atomically, got: $ctx"
+grep -q "TaskStop" <<<"$ctx" || fail "stop advisory must name TaskStop, got: $ctx"
+grep -q "monitor_task_id" <<<"$ctx" || fail "stop advisory must name the recorded Monitor ID, got: $ctx"
+grep -q "monitor_generation" <<<"$ctx" || fail "stop advisory must clear the matching Monitor generation, got: $ctx"
+grep -q "atomically clear" <<<"$ctx" || fail "stop advisory must clear the Monitor identity atomically, got: $ctx"
 ok "Monitor poll (no lifecycle record) → STOP emitted with exact teardown"
 
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5},"last_cron_action":{"type":"delete","interval":"paused"}}'
@@ -143,13 +143,13 @@ ok "Monitor stop marker suppresses the repeat STOP"
 write_state "$PR" '{"digest_streak":4,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected a widen advisory at streak=4"
-echo "$ctx" | grep -q "WIDEN" || fail "widen advisory should be labelled WIDEN, got: $ctx"
-echo "$ctx" | grep -q "KEEP RUNNING" || fail "widen advisory must say the poll keeps running, got: $ctx"
-echo "$ctx" | grep -q "Stop the poll" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
-echo "$ctx" | grep -q "TaskStop" || fail "widen advisory must stop the prior Monitor task, got: $ctx"
-echo "$ctx" | grep -q "replacement at 15m" || fail "widen advisory must arm the replacement cadence, got: $ctx"
-echo "$ctx" | grep -q "fresh monitor_generation" || fail "widen advisory must generate a new Monitor generation, got: $ctx"
-echo "$ctx" | grep -q "atomically persist the new monitor_task_id + monitor_generation + effective cadence" \
+grep -q "WIDEN" <<<"$ctx" || fail "widen advisory should be labelled WIDEN, got: $ctx"
+grep -q "KEEP RUNNING" <<<"$ctx" || fail "widen advisory must say the poll keeps running, got: $ctx"
+grep -q "Stop the poll" <<<"$ctx" && fail "widen advisory must not carry a stop-the-poll instruction, got: $ctx"
+grep -q "TaskStop" <<<"$ctx" || fail "widen advisory must stop the prior Monitor task, got: $ctx"
+grep -q "replacement at 15m" <<<"$ctx" || fail "widen advisory must arm the replacement cadence, got: $ctx"
+grep -q "fresh monitor_generation" <<<"$ctx" || fail "widen advisory must generate a new Monitor generation, got: $ctx"
+grep -q "atomically persist the new monitor_task_id + monitor_generation + effective cadence" <<<"$ctx" \
   || fail "widen advisory must atomically publish replacement identity and cadence, got: $ctx"
 ok "widen advisory (streak 3..8) says keep running, never stop"
 
@@ -157,15 +157,15 @@ ok "widen advisory (streak 3..8) says keep running, never stop"
 write_state "$PR" '{"digest_streak":9,"babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message at streak=9"
-echo "$ctx" | grep -q "Stop the poll" || fail "expected a stop-the-poll instruction, got: $ctx"
-echo "$ctx" | grep -q "TaskStop" || fail "stop message should name TaskStop for Monitor-backed polls, got: $ctx"
+grep -q "Stop the poll" <<<"$ctx" || fail "expected a stop-the-poll instruction, got: $ctx"
+grep -q "TaskStop" <<<"$ctx" || fail "stop message should name TaskStop for Monitor-backed polls, got: $ctx"
 ok "streak>=9 → STOP the recorded Monitor task"
 
 # ── 12. blocker_kind=user_input → stop immediately (any streak) ──────────────
 write_state "$PR" '{"digest_streak":1,"blocker_kind":"user_input","babysit":{"cadence_base_minutes":5}}'
 ctx="$(run_hook "$PR" | context_of)"
 [[ -n "$ctx" ]] || fail "expected STOP message on user_input even at streak=1"
-echo "$ctx" | grep -q "Stop the poll" || fail "expected a stop-the-poll instruction in user_input stop, got: $ctx"
+grep -q "Stop the poll" <<<"$ctx" || fail "expected a stop-the-poll instruction in user_input stop, got: $ctx"
 ok "blocker_kind=user_input → STOP the poll regardless of streak"
 
 # ── 13. Stop branch "already applied" guard ───────────────────────────────────

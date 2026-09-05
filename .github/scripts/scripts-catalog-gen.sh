@@ -269,7 +269,7 @@ while IFS= read -r rel; do
     continue
   fi
   IFS=$'\037' read -r e_id e_desc <<< "$meta"
-  if ! printf '%s' "$declarations" | cut -d$'\037' -f1 | grep -qxF "$e_id"; then
+  if ! grep -qxF "$e_id" <<<"$(cut -d$'\037' -f1 <<<"$declarations")"; then
     echo "::error file=${rel}::category id '${e_id}' does not match any doc under ${CATALOG_DOCS_DIR}/"
     errors=$((errors + 1))
     continue
