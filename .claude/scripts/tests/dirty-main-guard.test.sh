@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Offline tests for dirty-main-guard.sh invoking-repo scoping, including the
-# catalog: tests — Tests for `dirty-main-guard.sh`
 # quarantine path (issue #707 — the #697 remainder; stale-cleanup.test.sh T7
 # covers the guard's --check paths, this suite adds dirty-tracked, quarantine
 # placement/untracked-survival, feature-branch short-circuit, and non-repo cwd).
+# catalog: tests — Tests for `dirty-main-guard.sh`
 #
 # The SUT is copied (with the real repo-root.sh beside it) into throwaway git
 # repo A, which is kept DIRTY on main for the whole run — then invoked with

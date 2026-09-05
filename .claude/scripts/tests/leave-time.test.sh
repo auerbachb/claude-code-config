@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression coverage for issue #1525: declared leave time -> deadline-aware
-# catalog: tests — Runs the real skill-embedded bash for `/leave-by`'s lead-time cascade and `/subagent` Step 7's deadline decline (issue #1525), plus the cross-file contracts: one deadline source, Monitor wake, and teardown on both sides of a pause
 # dispatch -> proactive check-in -> /pause wind-down.
+# catalog: tests — Runs the real skill-embedded bash for `/leave-by`'s lead-time cascade and `/subagent` Step 7's deadline decline (issue #1525), plus the cross-file contracts: one deadline source, Monitor wake, and teardown on both sides of a pause
 #
 # Two halves, deliberately:
 #   1. EXECUTES the real skill-embedded bash (via lib/skill-bash.sh) for the two

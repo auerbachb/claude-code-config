@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude-config-sync.sh — one idempotent freshen pass for this machine's Claude
-# catalog: trust-worktree-repo — One idempotent per-machine freshen pass — fast-forward the skills worktree, publish every symlink, verify links, re-run hook registration and trust repair, and record the restart/failure signal; never touches the root repo checkout
 # config (issue #1524).
+# catalog: trust-worktree-repo — One idempotent per-machine freshen pass — fast-forward the skills worktree, publish every symlink, verify links, re-run hook registration and trust repair, and record the restart/failure signal; never touches the root repo checkout
 #
 # PURPOSE
 #   Keeps a machine current with `origin/main` without anyone opening a session

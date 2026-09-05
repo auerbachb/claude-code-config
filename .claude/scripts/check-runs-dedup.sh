@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-runs-dedup.sh — Collapse a check-run list to one verdict per check,
-# catalog: merge-gate-sequencing — Collapse a check-run list to one verdict per check (newest check suite wins)
 # newest check suite wins (issue #675).
+# catalog: merge-gate-sequencing — Collapse a check-run list to one verdict per check (newest check suite wins)
 #
 # Why this exists: GitHub keeps a check-run record for EVERY run of a check on a
 # commit. Re-triggering a workflow on the same SHA (a PR-body edit re-firing a

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for `/pr-monitor-and-manage-wake` Step 4a — the `--auto-check`
-# catalog: tests — Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash
 # fleet scan (issues #871, #887, #888).
+# catalog: tests — Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in

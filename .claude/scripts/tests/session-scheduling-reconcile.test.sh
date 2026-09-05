@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for session-scheduling-reconcile.sh — session-start reconciliation of
-# catalog: tests — Tests for `session-scheduling-reconcile.sh` against a redirected `HOME`
 # durable scheduling state (issues #827, #874).
+# catalog: tests — Tests for `session-scheduling-reconcile.sh` against a redirected `HOME`
 #
 # HOME is redirected into a temp dir for every case, so the suite never reads
 # or writes the real ~/.claude/session-state.json or audit watermark.

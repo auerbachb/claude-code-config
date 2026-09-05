@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # merge-gate-stale-approval.test.sh — Regression tests for issue #836:
-# catalog: tests — Tests stale-approval rejection in `merge-gate.sh`
 # merge-gate.sh must reject approvals whose submitted_at predates the HEAD
 # commit's committer date (GitHub force-push commit_id retargeting).
+# catalog: tests — Tests stale-approval rejection in `merge-gate.sh`
 #
 # Scenario: after a squash-rebase + force-push, GitHub retargets existing
 # review commit_ids to the new HEAD SHA but does NOT update submitted_at.

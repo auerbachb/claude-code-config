@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the `.active_agents` keyed-map contract in session-state.sh,
 # issue #1631.
+# catalog: tests — Tests the `.active_agents` keyed-map contract in `session-state.sh` — a negative control proving the old whole-value replace loses a sibling thread's entries, concurrent per-key writes that lose none, the array→map migration, and `--remove-agent` (issue #1631)
 #
 # The bug: `.active_agents` was a top-level ARRAY, so no writer could address
 # one entry. Every writer did `--get '.active_agents'`, filtered or appended

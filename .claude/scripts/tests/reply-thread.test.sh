@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Offline unit tests for reply-thread.sh (issue #772 — codeant reviewer mode;
-# catalog: tests — Tests for `reply-thread.sh`
 # issue #1374 — graphite reviewer mode).
 # Covers: --reviewer validation (all five modes accepted; unknown rejected);
 # @codeant-ai and @graphite-app strip behavior (plain-text, no auto-mention);
 # per-reviewer strip-rule independence (neither token is eaten by the other
 # reviewer's rule); existing modes (cr/bugbot/greptile) unchanged;
 # body-empty-after-strip guard.
+# catalog: tests — Tests for `reply-thread.sh`
 #
 # Strategy: stub `gh` on PATH to capture calls without any network I/O. The
 # stub records the API endpoint and body arguments so tests can assert on

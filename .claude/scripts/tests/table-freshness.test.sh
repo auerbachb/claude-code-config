@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for table-freshness.sh — the hourly floor on "Running now" table
-# catalog: tests — Tests for `table-freshness.sh` — the four `--check` verdicts, the tick's firing case with a negative control on each silent one, durability across a simulated compaction, and per-session clock isolation
 # freshness during active rounds (issue #1580).
+# catalog: tests — Tests for `table-freshness.sh` — the four `--check` verdicts, the tick's firing case with a negative control on each silent one, durability across a simulated compaction, and per-session clock isolation
 #
 # ISOLATION
 #   HOME is redirected to a temp dir so session-state.sh reads and writes a

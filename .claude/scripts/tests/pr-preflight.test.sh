@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Offline unit tests for pr-preflight.sh (issue #493 — shared PR pre-flight;
-# catalog: tests — Tests for `pr-preflight.sh`
 # issue #576 — HEAD-SHA reviewer freshness).
 # Stubs `gh` (PR view / endpoint scans / commit date / check-runs / pr ready /
 # pr comment), cr-review-hourly.sh, and session-state.sh so nothing touches the
 # network or real ~/.claude.
 # Requires jq. Run from repo root: bash .claude/scripts/tests/pr-preflight.test.sh
+# catalog: tests — Tests for `pr-preflight.sh`
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests for the BugBot spend-refusal suppression in
-# catalog: tests — Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh`
 # maybe-trigger-ai-review.sh (issue #1199).
+# catalog: tests — Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh`
 #
 # WHAT IS UNDER TEST
 #   BugBot is metered against a Cursor usage/spend limit and refused 64% of PRs

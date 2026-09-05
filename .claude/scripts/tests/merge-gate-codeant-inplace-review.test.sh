@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # merge-gate-codeant-inplace-review.test.sh — Regression tests for issue #876:
-# catalog: tests — Tests that a CodeAnt in-place review edit is not read as a stale approval in `merge-gate.sh`
 # a CodeAnt IN-PLACE review edit must not read as a #836-stale approval.
+# catalog: tests — Tests that a CodeAnt in-place review edit is not read as a stale approval in `merge-gate.sh`
 #
 # THE BUG
 #   CodeAnt PATCHes its EXISTING review object on a re-review rather than posting

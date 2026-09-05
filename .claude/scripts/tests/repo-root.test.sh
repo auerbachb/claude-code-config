@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # repo-root.test.sh — Offline tests for repo-root.sh's resolution contract and
-# catalog: tests — Tests `repo-root.sh`'s resolution contract and its wall-clock bound
 # its wall-clock bound (issue #1363).
+# catalog: tests — Tests `repo-root.sh`'s resolution contract and its wall-clock bound
 #
 # The incident: `git worktree list --porcelain` opens two files per registered
 # worktree, and on a filesystem that stalls per file it blocked for 20+ minutes

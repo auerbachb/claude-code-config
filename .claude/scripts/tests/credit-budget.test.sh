@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # credit-budget.test.sh — coverage for .claude/scripts/credit-budget.sh and the
-# catalog: tests — Tests `credit-budget.sh` and `lib/usage-limit-classify.sh` — the plan-window vs credit-overage classifier matrix, reset-clause parsing and its refusals, plan-window events yielding `ok` with the pre-fix predicate as a negative control (#1633), a genuine overage still yielding `reached`, a reopened window never gating, and the fail-closed paths
 # lib/usage-limit-classify.sh library it shares with the recorder hook
 # (issue #1633).
+# catalog: tests — Tests `credit-budget.sh` and `lib/usage-limit-classify.sh` — the plan-window vs credit-overage classifier matrix, reset-clause parsing and its refusals, plan-window events yielding `ok` with the pre-fix predicate as a negative control (#1633), a genuine overage still yielding `reached`, a reopened window never gating, and the fail-closed paths
 #
 # The defect under test: every `rate_limit` event counted as a credit overage,
 # so four plan-window hits before 07:15Z froze autonomous dispatch for the whole
