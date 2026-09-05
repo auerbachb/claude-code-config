@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the canonical `pr-state-cr-split.jq` projection invoked by
+# catalog: tests — Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh`
 # `pr-state.sh`
 # (issue #956).
 #

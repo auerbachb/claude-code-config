@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the CodeRabbit retry-window grace in escalate-review.sh
+# catalog: tests — CodeRabbit retry-window grace tests for `escalate-review.sh`
 # (issue #1199). Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 #
 # WHAT IS UNDER TEST

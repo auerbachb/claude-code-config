@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pm-config-get.sh — Extract a named section from .claude/pm-config.md.
+# catalog: backlog-pm — Extract a named section from `.claude/pm-config.md`
 #
 # PURPOSE
 #   Parses the repo-local .claude/pm-config.md using line-anchored level-2

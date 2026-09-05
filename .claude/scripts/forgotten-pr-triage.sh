@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # forgotten-pr-triage.sh — detect + classify "forgotten" open PRs (issue #657).
+# catalog: backlog-pm — Detect and classify open PRs that have gone quiet past a staleness threshold
 #
 # PURPOSE:
 #   Surfaces the author's open PRs that have gone quiet — last activity older

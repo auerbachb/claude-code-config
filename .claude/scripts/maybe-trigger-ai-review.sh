@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # maybe-trigger-ai-review.sh — Round-gated complexity trigger for AI reviewers (issue #362).
+# catalog: review-escalation — Post supplemental AI reviewer triggers when complexity and CR-round gates pass
 #
 # When gates pass, posts three separate PR comments (never batched):
 #   1) @codeant-ai review

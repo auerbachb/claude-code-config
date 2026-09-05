@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # reviewer-activity.sh — Detect whether each conditionally-triggered reviewer has
 # already posted activity on a specific pushed SHA.
+# catalog: pr-state-polling — Detect whether each AI reviewer has posted activity on a specific pushed SHA
 #
 # Extracted from /fixpr Step 3b (Issue #788 hotspot extraction).
 # The trigger rate-cap / @coderabbitai full review decision logic stays in the

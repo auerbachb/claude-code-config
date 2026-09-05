@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline never-invited and cache-state tests for escalate-review.sh.
+# catalog: tests — Invitation, grace-window, and cache-state tests for `escalate-review.sh`
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh

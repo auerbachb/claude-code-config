@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for pr-issue-ref.sh — default mode and --all mode (issue #1281).
+# catalog: tests — Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards
 # Stubs `gh` with fixture PR bodies; no real GitHub calls.
 # Run from repo root:
 #   bash .claude/scripts/tests/pr-issue-ref.test.sh

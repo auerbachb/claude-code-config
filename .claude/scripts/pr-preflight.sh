@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pr-preflight.sh — PR pre-flight: draft→ready + four-reviewer trigger (issue #493).
+# catalog: pr-state-polling — Flip a draft PR to ready and trigger the four AI reviewers when absent
 #
 # PURPOSE
 #   Single source of truth for the per-PR pre-flight run by /fixpr (Step 0c),

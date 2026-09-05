@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # session-state.sh — Surgical read/write helper for ~/.claude/session-state.json.
+# catalog: session-state-locking — Canonical read/write helper for `~/.claude/session-state.json` (atomic, scoped, field-typed)
 #
 # PURPOSE
 #   Single helper for read-modify-write operations on ~/.claude/session-state.json

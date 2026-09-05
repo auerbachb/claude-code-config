@@ -6,6 +6,7 @@
 # per-reviewer strip-rule independence (neither token is eaten by the other
 # reviewer's rule); existing modes (cr/bugbot/greptile) unchanged;
 # body-empty-after-strip guard.
+# catalog: tests — Tests for `reply-thread.sh`
 #
 # Strategy: stub `gh` on PATH to capture calls without any network I/O. The
 # stub records the API endpoint and body arguments so tests can assert on

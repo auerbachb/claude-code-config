@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for backlog-staleness.sh (issue #598).
+# catalog: tests — Tests for `backlog-staleness.sh`
 # Stubs `gh` with fixture JSON; runs inside a real temp git repo so the
 # superseded/inactive commit-reference checks exercise real `git log`.
 # Requires jq, git. Run from repo root: bash .claude/scripts/tests/backlog-staleness.test.sh

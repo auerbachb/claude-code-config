@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Verify stdin contains a parseable EXIT_REPORT per
+# catalog: utilities — Verify stdin contains a parseable EXIT_REPORT with all required fields
 # .claude/reference/exit-report-format.md — header line plus KEY: value fields.
 # Exit 0 = valid block with all required fields; 1 = missing/invalid.
 # Uses read loops instead of mapfile/associative arrays — macOS ships bash 3.2.

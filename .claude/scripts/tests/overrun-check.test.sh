@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # overrun-check.sh --readout-cells: the "Running now" table cells (issue #1512).
+# catalog: tests — Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now
 #
 # Cell mode emits ONE tab-separated line — start ET, projected end ET, and either
 # the remaining duration or an overrun marker — for a single pipeline row. Every

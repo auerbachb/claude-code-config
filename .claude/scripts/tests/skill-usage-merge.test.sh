@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-usage-merge.test.sh — unit tests for skill-usage-merge.sh (issue #572)
+# catalog: tests — Tests for `skill-usage-merge.sh`
 #
 # Covers the merge semantics the issue's AC pins down:
 #   - log: line-level union, exact-line dedupe, chronological order

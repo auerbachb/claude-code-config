@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # handoff-state.sh — Locked read/write helper for per-repo handoff files.
+# catalog: session-state-locking — Locked read/write helper for per-repo handoff files (`~/.claude/handoffs/`)
 #
 # PURPOSE
 #   Serializes the WHOLE read-modify-write cycle of every writer that touches

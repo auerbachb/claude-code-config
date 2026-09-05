@@ -1,19 +1,20 @@
 # Tests
 
+<!-- catalog:category id=tests order=130 -->
+<!-- catalog:covers Every test under `tests/`, all offline (no network required) -->
+
 All tests live in `tests/` and run offline (no network required). Run from the repo root:
 `bash .claude/scripts/tests/<name>.test.sh`
 
-Rows are kept in `LC_ALL=C sort` order — byte order, not dictionary order, so
-`overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
-0x2D, `.` is 0x2E). The marker below opts this doc into the ordering check in
-`.github/scripts/scripts-catalog-lint.sh` (#1544). The sibling category docs
-group their rows by workflow role instead, carry no marker, and are not checked
-for order.
-
-<!-- catalog-lint: ordered -->
+Rows are generated in `LC_ALL=C sort` order — byte order, not dictionary order,
+so `overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
+0x2D, `.` is 0x2E). Every category doc is ordered the same way now that the rows
+are generated (#1578), which retired the per-doc `<!-- catalog-lint: ordered -->`
+opt-in of issue #1544.
 
 | Test | What it covers |
 |------|----------------|
+<!-- catalog:rows:begin -->
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
@@ -127,6 +128,7 @@ for order.
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+<!-- catalog:rows:end -->
 
 ## Pointing a merge-gate suite at another checkout
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for `/pm` day mode's usage-horizon reflex — issue #1428.
+# catalog: tests — Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in `.claude/skills/pm/SKILL.md`, pulled out at run time

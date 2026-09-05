@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # complexity-score.sh — PR complexity score for issue #362 auto-triggers.
+# catalog: review-escalation — Compute a PR complexity score from additions, deletions, and changed-file count
 #
 # Formula (documented in `.claude/rules/cr-github-review.md`):
 #   score = additions + deletions + (file_weight × changedFiles)

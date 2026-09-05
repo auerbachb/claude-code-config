@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline unit tests for candidate-ownership.sh (issue #1431 — /pm's pre-dispatch
 # ownership sweep).
+# catalog: tests — Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee
 #
 # Seeds the real state sources — a session-state.json under a temp HOME, handoff
 # and marker files, a session listing — and stubs `gh` and `issue-claim.sh` so a

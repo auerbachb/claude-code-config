@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # backlog-staleness.sh — shared backlog staleness/closure detection (issue #598).
+# catalog: backlog-pm — Detect stale backlog issues (solved by merged PR, inactive, superseded, potential duplicate)
 #
 # PURPOSE:
 #   Reproduces /pm-clean's Step 4-7 detection rules — solved-by-merged-PR,
@@ -43,7 +44,8 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 print_help() {
-  sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

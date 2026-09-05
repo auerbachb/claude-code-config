@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for session-state.sh --cas (compare-and-set), issue #1195.
+# catalog: tests — Tests `session-state.sh --cas` — compare-and-set success, loss, a distinct exit code, and concurrent writers
 #
 # Verifies:
 #   - CAS succeeds (exit 0) when the current value matches --expect

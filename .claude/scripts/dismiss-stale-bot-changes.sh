@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dismiss-stale-bot-changes.sh — Dismiss stale bot CHANGES_REQUESTED PR reviews (wrong commit vs HEAD).
+# catalog: merge-gate-sequencing — Dismiss stale bot CHANGES_REQUESTED reviews on old SHAs after a push
 #
 # Used by /fixpr after every push so GitHub reviewDecision is not stuck on obsolete bot requests.
 # Never dismisses humans: requires GitHub user.type == "Bot" AND login in the repo allowlist.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # session-scheduling-reconcile.sh — reconcile durable scheduling state at
 # session start (issues #827, #874).
+# catalog: scheduling-monitoring — Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived
 #
 # CronCreate jobs are in-memory and session-scoped: every job recorded by a
 # previous session is already gone by the time this runs. Rather than trying to

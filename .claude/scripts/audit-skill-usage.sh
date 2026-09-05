@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # audit-skill-usage.sh — Monthly skill usage audit
+# catalog: skills-telemetry — Legacy monthly skill-usage audit against `.claude/data/skill-usage.json`
 #
 # PURPOSE:
 #   Reads .claude/data/skill-usage.json and reports skills that have not been

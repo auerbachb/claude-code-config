@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # issue-maker-log-scoping.test.sh — offline regression tests for issue #1369:
 # the /issue-maker session log colliding across concurrent conversations.
+# catalog: tests — Regression tests for the `/issue-maker` session log colliding across concurrent conversations
 #
 # THE INCIDENT (2026-08-26, ~4:20–4:26 PM ET)
 #   SKILL.md derived the log path from `${CLAUDE_SESSION_ID:-default}`.

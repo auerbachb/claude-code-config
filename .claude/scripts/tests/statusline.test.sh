@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # statusline.test.sh — Offline unit tests for statusline.sh (issue #779).
+# catalog: tests — Tests for `statusline.sh`
 #
 # Fully offline and hermetic: a temp HOME holds the session-state fixtures, temp
 # git repos make branch resolution deterministic, and global/system git config is

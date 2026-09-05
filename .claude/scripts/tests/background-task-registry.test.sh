@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# catalog: tests — Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # script-usage-report.sh — Summarize script adherence telemetry.
+# catalog: skills-telemetry — Summarize script adherence telemetry from `~/.claude/script-usage.log`
 #
 # PURPOSE:
 #   Reads ~/.claude/script-usage.log and ~/.claude/script-bypass.log, then

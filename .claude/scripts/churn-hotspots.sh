@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # churn-hotspots.sh — Detect multi-PR file churn and surface refactor candidates (issue #755).
+# catalog: backlog-pm — Detect files touched by many distinct merged PRs as refactor candidates
 #
 # PURPOSE:
 #   Some files are magnets: every feature passes through them, and any

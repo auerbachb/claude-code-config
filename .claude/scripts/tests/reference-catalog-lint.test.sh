@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for .claude/scripts/reference-catalog-lint.sh (issue #950)
+# catalog: tests — Tests that `reference-catalog-lint.sh` fails on every drift class it claims to catch
 #
 # This lint shipped (PR #909) with no CI caller and no test, so it had never
 # been observed either passing or failing under anything but a hand-typed

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runtime regression for the script-usage.log telemetry guard (issue #1406).
+# catalog: tests — Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406)
 #
 # Proves, against real converted scripts, that:
 #   (a/b) with HOME pointing at a directory WITHOUT .claude/, a converted

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # off-peak-minute.sh — Deterministic per-repo off-peak cron minute selector.
+# catalog: scheduling-monitoring — Deterministic per-repo off-peak cron minute selector for CronCreate jobs
 #
 # PURPOSE
 #   Centralizes the minute-selection contract for any skill that needs a

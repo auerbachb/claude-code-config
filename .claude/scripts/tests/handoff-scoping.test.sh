@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # handoff-scoping.test.sh — Tests for per-repo handoff scoping (issue #655).
+# catalog: tests — Tests per-repo handoff path scoping in `handoff-state.sh`
 #
 # Coverage:
 #   - --path mode: returns correct scoped or flat path
