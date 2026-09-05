@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for report-path.sh — the collision-free monthly report destination
 # shared by /review-stack-audit and /harness-audit (issues #1345, #1519).
+# catalog: tests — Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control
 #
 # THE BUG THIS PINS. Both skills used to derive their report path from the
 # calendar month alone, so two audits in one month resolved to the SAME file and

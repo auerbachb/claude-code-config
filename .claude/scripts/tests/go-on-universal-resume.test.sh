@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Contract tests for /go-on as the universal resume front door (issue #1397).
+# catalog: tests — Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety
 #
 # Guards the invariants that make one command safe to reach for after ANY
 # stoppage: every class is detected, precedence is explicit and machine-checked,

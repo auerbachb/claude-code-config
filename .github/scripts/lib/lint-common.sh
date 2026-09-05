@@ -27,6 +27,36 @@
 #     directory glob is the authoritative publication source. Returns 1 when
 #     the skills directory is absent or contains no skill directories.
 #
+#   catalog_inscope_files [REPO_ROOT]
+#     Prints the normalized repo-root-relative path of every file in the
+#     .claude/scripts/ catalog's scope, LC_ALL=C sorted: top-level *.sh and
+#     *.py plus tests/*.test.sh. Deliberately excludes lib/, tests/lib/,
+#     tests/fixtures/ and non-script files. Returns 1 when the scope is empty
+#     (a broken glob is never a silent pass). Shared so the catalog generator
+#     and the catalog lint enumerate from one implementation (issue #1578).
+#
+#   catalog_meta FILE
+#     Reads FILE's `# catalog: <id> — <description>` header line and prints
+#     "<id><US><description>" (US = 0x1f). Returns 1 when the line is absent,
+#     2 when it is present but malformed, and 3 when FILE could not be read at
+#     all — three distinct answers, because folding an I/O error into either
+#     of the other two reports a file that could not be examined as a file
+#     that was examined and found wanting. Only the leading comment region is
+#     read — everything from line 2 up to the first line that is neither
+#     blank nor a `#` comment — so a `# catalog:` string in a script's body
+#     or in a heredoc can never be mistaken for the declaration.
+#
+#     The separator is matched with sub(), not substr()/length(): an em dash
+#     is three bytes in UTF-8 and one character, and awk implementations
+#     disagree about which a byte-index sees. A regex is right in both.
+#
+#   catalog_row PATH DESCRIPTION
+#     Prints one catalog table row — `| [name](target) | description |` —
+#     for the in-scope file at repo-root-relative PATH. The target is
+#     computed with normalize_relpath from .claude/scripts/docs/, so the row
+#     a doc carries is the row this function spells. A '|' inside
+#     DESCRIPTION is escaped, so a description can never split the table.
+#
 #   normalize_relpath BASE TARGET
 #     Joins BASE and TARGET and prints the result with '.' and '..' segments
 #     collapsed, so two spellings of one location compare equal. Purely
@@ -92,6 +122,92 @@ published_skills() {
   done
   (( ${#names[@]} > 0 )) || return 1
   printf '%s\n' "${names[@]}" | LC_ALL=C sort
+}
+
+# --- .claude/scripts/ catalog helpers (issue #1578) -------------------------
+# Shared by .github/scripts/scripts-catalog-gen.sh (which writes the catalog)
+# and .github/scripts/scripts-catalog-lint.sh (which checks it). One
+# implementation is the point: a second spelling of "in scope" or of "the row
+# format" is exactly how a generator and its drift check start disagreeing.
+
+CATALOG_SCRIPTS_DIR=".claude/scripts"
+CATALOG_TESTS_DIR=".claude/scripts/tests"
+CATALOG_DOCS_DIR=".claude/scripts/docs"
+
+# catalog_inscope_files [REPO_ROOT]
+# -maxdepth 1 on two named directories: bounded, and it never walks the rest of
+# .claude/ (where untracked paths can stall a recursive find).
+catalog_inscope_files() {
+  local root="${1:-.}" found
+  local scripts_dir tests_dir
+  scripts_dir="${root%/}/$CATALOG_SCRIPTS_DIR"
+  tests_dir="${root%/}/$CATALOG_TESTS_DIR"
+
+  found=$(
+    {
+      if [[ -d "$scripts_dir" ]]; then
+        find "$scripts_dir" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \)
+      fi
+      if [[ -d "$tests_dir" ]]; then
+        find "$tests_dir" -maxdepth 1 -type f -name '*.test.sh'
+      fi
+    } | while IFS= read -r f; do
+          # Re-key on the repo-root-relative path, never on what find printed:
+          # REPO_ROOT may be absolute (a fixture tree), and every consumer
+          # compares these against paths written in a doc.
+          normalize_relpath "" "${f#"${root%/}/"}"
+        done | LC_ALL=C sort
+  )
+
+  [[ -n "$found" ]] || return 1
+  printf '%s\n' "$found"
+}
+
+# catalog_meta FILE  ->  "<id><US><description>"
+# 1 = no declaration, 2 = malformed declaration.
+catalog_meta() {
+  local file="$1" out rc
+  [[ -r "$file" ]] || return 3
+  out=$(awk '
+    NR == 1 && /^#!/ { next }
+    /^[[:space:]]*$/ { next }
+    !/^[[:space:]]*#/ { exit }
+    {
+      line = $0
+      if (!match(line, /^[[:space:]]*#[[:space:]]*catalog:[[:space:]]*/)) next
+      line = substr(line, RSTART + RLENGTH)
+      if (!match(line, /^[A-Za-z0-9][A-Za-z0-9_-]*/)) { print "MALFORMED"; exit }
+      id = substr(line, RSTART, RLENGTH)
+      rest = substr(line, RSTART + RLENGTH)
+      # Accept an em dash or a plain hyphen as the separator; require one, so a
+      # declaration that lost its description cannot read as a long id.
+      if (sub(/^[[:space:]]*(—|-)[[:space:]]*/, "", rest) != 1) { print "MALFORMED"; exit }
+      sub(/[[:space:]]+$/, "", rest)
+      if (rest == "") { print "MALFORMED"; exit }
+      printf "OK\037%s\037%s\n", id, rest
+      exit
+    }
+  ' "$file")
+  rc=$?
+  (( rc == 0 )) || return 3
+  case "$out" in
+    OK*) printf '%s\n' "${out#OK$'\037'}" ;;
+    MALFORMED) return 2 ;;
+    *) return 1 ;;
+  esac
+}
+
+# catalog_row PATH DESCRIPTION
+catalog_row() {
+  local path="$1" desc="$2" name target rel
+  name="${path##*/}"
+  rel="${path#"$CATALOG_SCRIPTS_DIR/"}"
+  target=$(normalize_relpath ".." "$rel")
+  # The link text is escaped for the same reason the description is: an
+  # unescaped pipe splits the row, and the split regenerates identically.
+  name="${name//|/\\|}"
+  desc="${desc//|/\\|}"
+  printf '| [%s](%s) | %s |\n' "$name" "$target" "$desc"
 }
 
 # normalize_relpath BASE TARGET

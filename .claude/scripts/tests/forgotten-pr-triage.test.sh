@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for forgotten-pr-triage.sh (issue #657).
+# catalog: tests — Tests for `forgotten-pr-triage.sh`
 # Stubs `gh` with fixture JSON/values; runs inside a real temp git repo with a
 # file-based `origin` remote carrying refs/pull/<N>/head refs, so the
 # supersession ("already in main") check exercises the real `git fetch` +

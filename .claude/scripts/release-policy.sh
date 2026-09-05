@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # release-policy.sh — Resolve a repo's agent-initiated TestFlight release policy (issue #1169).
+# catalog: release-cadence — Resolve a repo's release policy (default off) and derive the `auto` build interval from its own run history
 #
 # Reads `.claude/release-policy.json` from the repo's DEFAULT BRANCH via the
 # GitHub contents API and emits a normalized policy as single-line JSON. When

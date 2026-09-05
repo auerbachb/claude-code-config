@@ -2,6 +2,8 @@
 
 Mechanism behind `candidate-ownership.sh` and the sweep `/pm` runs at Step 1B.5 (cold start) and Step 3.4 (refill). Not auto-loaded; `pm/SKILL.md` carries the binding behavior, this file carries the reasoning and the reader set.
 
+`/wave` Step 2 item 4 runs the **same** sweep over its own candidate pool (issue #1460), so the two skills share one implementation instead of maintaining parallel bookkeeping. `wave/SKILL.md` carries that caller's binding behavior; everything below is common to both.
+
 ## The problem
 
 A fresh `/pm` rebuilds the board from GitHub and refills the pipeline without being asked — that is the inline-dispatch default (issue #1190), and it is what makes yesterday's follow-ups get picked up. But GitHub is not the whole board. In-flight work also lives in other conversation threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state still on disk.
@@ -9,6 +11,15 @@ A fresh `/pm` rebuilds the board from GitHub and refills the pipeline without be
 The only per-item guard was the claim gate, and `issue-claim.sh` deliberately ages a claim out after `CLAIM_STALE_HOURS` — a stale claim is re-picked with a *warning*, not a block, because a dead thread must not poison an issue forever. That is the right default in isolation and the wrong one when the "dead" thread is merely parked. It is also the exact shape that shipped issue #652 twice, as PR #661 and PR #673.
 
 Even when `/pm` did hold back, it could only say "claimed by someone" — not *which* thread, what state it stopped in, or how to wake it. And when the owning thread was gone for good, its half-done work sat until a stale claim was re-picked and redone from zero, orphaning whatever the dead thread had already pushed.
+
+## Callers
+
+| Caller | Where | What it does with `adopt` |
+|---|---|---|
+| `/pm` | Step 1B.5 (cold start), Step 3.4 (refill) | takes the claim over and dispatches from surviving state |
+| `/wave` | Step 2 item 4 — normally over the `in-progress`-labelled intersection of its candidate pool, widening to the **whole** pool whenever that label index is untrustworthy: the `gh issue list` query failed, or it came back full and may therefore be truncated | **excludes and hands to `/pm`** — a wave admits only work that can start now, and `/wave` never launches, claims, or writes state (its Execution boundary) |
+
+`dispatch` and `skip` mean the same thing in both. `/wave` diverging on `adopt` alone is deliberate: adoption is a claim write plus a resume decision, and `/wave` makes neither. Before #1460 `/wave` ran its own weaker filter — it dropped `claimed`/`unknown` and treated `stale` as warn-and-proceed — so a candidate `/pm` correctly skipped as owned by a live paused thread could still be admitted to a wave. That is the pre-#1431 posture and the shape that shipped issue #652 twice.
 
 ## The three-way branch
 
@@ -45,6 +56,12 @@ The sweep adds **no new registry**. It reads the same sources `/wave` Step 2 and
 The three **pause** slots are read with `--get-json`, not `--get` (issue #1629): raw output prints the same bare `null` for an absent slot, a stored JSON `null`, and a slot corrupted into the JSON string `"null"`, so the sweep would report a damaged board as "nothing parked". `--get-json` keeps the JSON type, and the corrupt slot classifies `unreadable` and is named. The non-pause rows stay on `--get`, whose consumers want the raw scalar.
 
 Each of those also has to be addressed at its **repo-scoped** path. `session-state.sh` transparently rewrites only a leading `.prs` or `.root_repo` into the active repo's scope; everything else is read literally. `execution-pause.sh` writes solely to `.repos[<key>].execution_pauses[<session>]`, so a top-level `.execution_pauses` read matches nothing and every `/end` and `/pause` launch gate is invisible to the sweep — the same trap the `.pause` / `.background_tasks` rows above avoid, and one a passing test suite will not catch unless a negative control pins the top-level shape as *not* the contract.
+
+### The chip-offer census is that reader set, not a second one
+
+Issue #1431 asked for the ownership sources to be shared with "`/wave`'s exclusions and the chip-offer registry census". The exclusions half is `/wave` Step 2 item 4, above. The census half is **closed as already covered** (issue #1460): `chip-offer-registry.sh` has no `census` subcommand and nothing consumes one, and the nearest existing thing — `/wave`'s `IN_FLIGHT` count — already reads this same set (Active Work rows, `issue-maker-*-log.json` chips, distinct open PRs) under the same repo-scoping and the same yours-vs-collaborator attribution rule from issue #732, which `active-work-cap.sh` shares byte for byte. Adding a subcommand with no consumer would create the parallel bookkeeping system #1431 was written to prevent, so the correct action was to record the decision rather than build the machinery.
+
+One consequence is worth stating: sweep drops never enter `IN_FLIGHT`. The count measures *your* pipelines competing for reviewer slots, and an issue another thread owns — or a collaborator's claim — consumes none of yours.
 
 ## The owned-resumable upgrade
 

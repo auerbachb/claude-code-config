@@ -1,5 +1,6 @@
 #!/bin/bash
 # publish-agent-symlinks.test.sh — Tests for .claude/scripts/publish-agent-symlinks.sh
+# catalog: tests — Tests for `publish-agent-symlinks.sh` against a throwaway `HOME`
 # Issue #1197: agents symlink leg publishes on existing installs from session start
 #
 # Each test creates a temporary HOME with a fake skills-worktree structure,

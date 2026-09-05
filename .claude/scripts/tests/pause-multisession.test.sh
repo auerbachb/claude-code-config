@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for per-session pause records and resume receipts, issue #1576.
+# catalog: tests — Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts
 #
 # THE BUG
 #   `.repos[<key>].pause` and `.repos[<key>].resume` were repo SINGLETONS. Two

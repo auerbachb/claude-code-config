@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-required-contexts.test.sh — Offline integration tests for issue
+# catalog: tests — Tests that `merge-gate.sh` blocks when every branch-protection required context is absent from HEAD
 # #1361: merge-gate.sh scored a clean pass when every branch-protection required
 # context was ABSENT from HEAD.
 #

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-authorship.test.sh — the issue #733 authorship guard in merge-gate.sh.
+# catalog: tests — Tests the authorship guard in `merge-gate.sh`
 # Runs the REAL merge-gate.sh (+ real ci-status.sh / check-runs-dedup.sh /
 # session-state.sh siblings); only `gh` is stubbed on PATH. Requires jq.
 # Run from repo root: bash .claude/scripts/tests/merge-gate-authorship.test.sh

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for spend-telemetry-report.sh (issue #710).
+# catalog: tests — Tests for `spend-telemetry-report.sh` against a stub log in a temp `HOME`
 #
 # Runs against a stub log in a temp HOME — real ~/.claude/spend-telemetry.log
 # is never read or written. Fixtures build their own premise.

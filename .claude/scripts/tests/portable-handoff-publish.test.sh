@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for canonical /end handoff publication (issue #1311).
+# catalog: tests — Tests canonical `/end` handoff publication
 
 set -uo pipefail
 

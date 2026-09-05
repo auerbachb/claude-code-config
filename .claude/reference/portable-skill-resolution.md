@@ -215,6 +215,7 @@ routing or safety behavior rather than merely reducing output quality.
 | `merge-gate.sh`, `merge-sequence.sh` | pr-monitor-and-manage | fallback | required | Merge decisions must never run on a guessed gate. |
 | `repo-root.sh` | start-issue, pr-monitor-and-manage | fallback | optional | Inline `git worktree list` fallback exists. |
 | `pm-config-get.sh` | pm, wave | fallback **script**, repo-local **data** | optional | See below. |
+| `candidate-ownership.sh` | pm, wave | fallback | optional | Read-only ownership sweep (#1431, #1460). Missing → both callers fall back to claim-gate-only; it never blocks dispatch or a wave. |
 
 `pm-config-get.sh` is the one split case: the *script* resolves through the
 fallback list like any other, but the data it reads (`.claude/pm-config.md`) is

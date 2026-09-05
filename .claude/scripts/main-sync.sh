@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # main-sync.sh — Sync a repo's local `main` with `origin/main`.
+# catalog: trust-worktree-repo — Sync a repo's local main branch with `origin/main`
 #
 # PURPOSE
 #   Centralizes the "sync local main" sequence used in `/merge` Step 5b,

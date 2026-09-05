@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # GNU-vs-BSD `date` fallback ORDER across the repo (issue #1587).
+# catalog: tests — Pins every shipped `date -r` fallback chain GNU-first (#1587) — a GNU-semantics `date` shim plus an epoch-named decoy file prove each fixed site reads the epoch, not a filename, with per-site negative controls, structural order checks on the already-GNU-first sites, and the deliberate BSD-first negative-control fixture in `overrun-check-tzdata.test.sh` pinned as such
 #
 # WHY THIS SUITE EXISTS
 #

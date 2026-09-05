@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for portable-handoff-lint.sh — the enforceable half of issue #901.
+# catalog: tests — Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff
 #
 # The issue's requirement is that portability be "testable, not aspirational",
 # so these tests do two jobs:

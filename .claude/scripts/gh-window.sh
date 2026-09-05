@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # gh-window.sh — GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax)
+# catalog: scheduling-monitoring — GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax)
 #
 # PURPOSE:
 #   Compute a $DAYS-ago window in both a date-only form (YYYY-MM-DD — for
@@ -44,7 +45,8 @@ set -u
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
 usage() {
-  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 err() {

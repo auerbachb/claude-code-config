@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # reply-thread.sh — Post a reviewer-aware reply to a PR review thread.
+# catalog: review-threads-diffs — Post a reviewer-aware reply to a PR review thread (inline endpoint, PR-level fallback)
 #
 # Tries the inline reply endpoint first — the PR-scoped route
 # pulls/{pr}/comments/{id}/replies; on 404 falls back to a PR-level comment.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for churn-hotspots.sh (issue #755).
+# catalog: tests — Tests for `churn-hotspots.sh`
 #
 # Fully hermetic: builds real temp git repos with squash-style subjects, stubs
 # `gh` on PATH, and points HOME at a temp dir so session-state reads are seeded

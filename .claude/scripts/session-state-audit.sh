@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # session-state-audit.sh — audit + guarded repair for ~/.claude/session-state.json
+# catalog: session-state-locking — Audit and guarded repair of `~/.claude/session-state.json`
 # (issue #651).
 #
 # PURPOSE

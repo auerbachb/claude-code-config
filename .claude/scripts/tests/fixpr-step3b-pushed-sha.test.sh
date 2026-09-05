@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Static guard: /fixpr Step 3b asks about the SHA it just PUSHED (issue #1517).
+# catalog: tests — Static guard that `/fixpr` Step 3b passes the post-push `PUSHED_SHA` to `bugbot-refused-head.sh`, not the pre-push `HEAD_SHA`
 #
 # WHAT IS UNDER TEST
 #   Step 3b runs AFTER Step 3's push. It consults bugbot-refused-head.sh to skip

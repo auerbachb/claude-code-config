@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # check-runs-dedup.test.sh — Offline unit tests for check-runs-dedup.sh (issue #675).
+# catalog: tests — Tests for `check-runs-dedup.sh`
 #
 # The helper is pure stdin -> stdout, so these need no gh stub and no network.
 # Run from repo root: bash .claude/scripts/tests/check-runs-dedup.test.sh

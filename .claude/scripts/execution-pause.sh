@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # execution-pause.sh — Session-scoped, repo-scoped background-launch gate.
+# catalog: session-state-locking — Arm, inspect, or explicitly clear a repo/session-scoped background-launch gate
 #
 # USAGE
 #   execution-pause.sh [--repo owner/name] --activate --session ID

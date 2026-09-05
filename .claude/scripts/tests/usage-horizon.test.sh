@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # usage-horizon.test.sh — coverage for .claude/scripts/usage-horizon.sh (issue #1427).
+# catalog: tests — Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip
 #
 # Covers the acceptance-criteria matrix:
 #   - threshold matrix, with and without a known limit

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # chip-offer-registry.sh — Repo-scoped, lifecycle-aware chip offer registry.
+# catalog: backlog-pm — Repo-scoped, lifecycle-aware registry of chip offers across all emitters, with an atomic reservation at the creation boundary
 #
 # PURPOSE
 #   Tracks chip offers from every canonical chip emitter (enumerated once under

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate.sh — Verify the merge gate for a PR (CR / BugBot / Greptile / CodeAnt).
+# catalog: merge-gate-sequencing — Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus)
 #
 # Implements the authoritative gate defined in .claude/rules/cr-merge-gate.md:
 #   - CR path       : 1 explicit CodeRabbit OR CodeAnt APPROVED on current HEAD SHA

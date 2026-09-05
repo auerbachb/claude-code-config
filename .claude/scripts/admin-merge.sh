@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # admin-merge.sh — Generate (and, only when the USER opts in, run) the
 # toggle-merge-toggle bypass for a protected branch on a SOLO-OWNER repo.
+# catalog: merge-gate-sequencing — Generate or execute the solo-owner branch-protection bypass
 #
 # Background (issue #451): on a solo-owner repo where the user is the sole admin
 # and CodeRabbit / CodeAnt are the only required reviewers, a merge can stall on

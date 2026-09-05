@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # polling-state-gate.sh — Procedural gate for CodeRabbit polling (issue #315).
+# catalog: pr-state-polling — CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle
 #
 # Enforces before and during polling:
 #   1) A handoff file exists at the path handoff-state.sh resolves for this PR —

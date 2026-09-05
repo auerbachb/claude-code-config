@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Guards the >=420s bound floor for checkpoint-handoff.test.sh (issue #1505).
+# catalog: tests — Pins the ≥420s bound floor for the slow `checkpoint-handoff.test.sh` (#1505) — its banner is emitted before any fixture work and names a floor ≥420, and no runner, CI job, or other file applies a smaller bound that would cover it
 #
 # THE FAILURE THIS PREVENTS
 #   checkpoint-handoff.test.sh builds a throwaway git repository per case, so it

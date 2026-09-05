@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # portable-handoff-lint.sh — enforce the portability contract of a handoff
 # document produced by /end (issue #901).
+# catalog: utilities — Enforce portable handoff structure, working-copy identity, cross-agent resume guidance, and freedom from harness-only references
 #
 # PURPOSE
 #   The whole value of a portable handoff is that an agent which has never

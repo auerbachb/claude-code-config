@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for polling-state-gate.sh repo scoping (issue #647).
+# catalog: tests — Tests for `polling-state-gate.sh`
 #
 # The bug: ~/.claude/session-state.json is shared across concurrent sessions, so
 # the single global .root_repo is owned by whichever session wrote last. The gate

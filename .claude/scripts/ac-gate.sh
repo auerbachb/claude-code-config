@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ac-gate.sh — CI gate: fail a PR that has unchecked acceptance-criteria boxes.
+# catalog: merge-gate-sequencing — CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption
 #
 # Reads the PR body and applies a two-stage check:
 #

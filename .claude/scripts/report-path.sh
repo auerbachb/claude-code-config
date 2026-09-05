@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # report-path.sh — Choose a report destination that cannot overwrite a prior one.
+# catalog: utilities — Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first
 #
 # PURPOSE
 #   A monthly audit writes one report per run. Both /review-stack-audit and

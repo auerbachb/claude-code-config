@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-gate-codeant-run-marker.test.sh — Regression tests for issue #1365:
+# catalog: tests — Tests that CodeAnt pre-analysis approval stubs do not score as review coverage in `merge-gate.sh`
 # CodeAnt pre-analysis approval STUBS scored as review coverage.
 #
 # Observed live on auerbachb/still-point PR #676, HEAD bb7d4e2, 2026-08-26.

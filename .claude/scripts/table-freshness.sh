@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # table-freshness.sh — hourly freshness floor on the "Running now" table.
+# catalog: scheduling-monitoring — Hourly floor on "Running now" table freshness during active rounds — the complementary bound to the silence ceiling; mechanism in `.claude/reference/time-estimates.md` §"Table freshness"
 #
 # PURPOSE
 #   The silence ceiling (bgwork-ceiling.sh) bounds how long a thread can go

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # merge-gate-ci-dedup.test.sh — Offline integration tests proving merge-gate.sh
 # stops blocking on superseded check-runs (issue #675).
+# catalog: tests — Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh`
 #
 # merge-gate.sh does not classify CI itself; it delegates to ci-status.sh via
 # --check-runs-stdin. These tests assert the deduped verdict actually reaches the

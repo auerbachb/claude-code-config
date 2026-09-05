@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # credit-budget.sh — Daily Anthropic credit budget guard (issue #1289).
+# catalog: token-measurement — Evaluate the daily autonomous-dispatch credit budget against authoritative usage signals only — never a local estimate
 #
 # PURPOSE
 #   Evaluate the daily autonomous-dispatch credit budget against authoritative
