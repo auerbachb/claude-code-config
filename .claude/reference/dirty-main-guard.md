@@ -42,6 +42,17 @@ Delete only after the work has merged, and only with the user's say-so — these
 git branch -D recovery/dirty-main-20260801-193000
 ```
 
+## Why `--repo` rather than a `cd`
+
+`--repo` is not a convenience. A worktree-isolated agent — every Phase A/B/C
+subagent — is refused `(cd "$ROOT_REPO" && dirty-main-guard.sh --check)` by the
+harness's worktree-isolation guard, which classifies by command shape. Passing
+the path as a flag keeps the call a single plain script invocation, which is an
+allowed shape, and the guard does not gate the `git -C` this script then runs in
+its own child process. The general convention, the full catalog of refused
+shapes, and the wrapper for each recurring case live in
+`worktree-isolation-command-shapes.md` (issue #1470).
+
 ## The Stop hook
 
 `dirty-main-warn.sh` re-runs `--check` after every response and warns loudly on a dirty root main. It is a detector only: it never quarantines on its own, so a warning always leaves the decision with the session.

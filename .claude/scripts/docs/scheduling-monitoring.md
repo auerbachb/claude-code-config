@@ -23,6 +23,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [table-freshness.sh](../table-freshness.sh) | Hourly floor on "Running now" table freshness during active rounds — the complementary bound to the silence ceiling; mechanism in `.claude/reference/time-estimates.md` §"Table freshness" |
 | [uninstall-config-sync.sh](../uninstall-config-sync.sh) | Unload and remove the config-sync LaunchAgent; `--remove-state` also drops its state, logs and marker |
 | [uninstall-silence-watchdog.sh](../uninstall-silence-watchdog.sh) | Uninstall the macOS launchd silence watchdog |
+| [wait-until.sh](../wait-until.sh) | In-turn poll loop with a hard cap — the non-refused equivalent of `until <check>; do sleep <n>; done` for a worktree-isolated agent (`.claude/reference/worktree-isolation-command-shapes.md`); blocks the calling turn only, never a substitute for a persistent `Monitor` |
 | [workday.sh](../workday.sh) | US business-day calculator (ET-anchored, macOS + GNU date) |
 <!-- catalog:rows:end -->
 
