@@ -585,6 +585,18 @@ expect "free-text escape treated as permission to resume fails" 1 \
   'free-text-escape answer keeps the stop' \
   let_free_text_resume_work
 
+# The block that counts is the one under "## Model-guard preamble". Relocating
+# it verbatim to another section leaves the marker in the file — and the
+# whole-file count still sees exactly one — but the canonical section no longer
+# carries the preamble a reader is sent to.
+relocate_guard_block_out_of_section() {
+  mutate .claude/reference/chip-launching.md '/^## Model-guard preamble$/s/.*/## Model-guard notes/'
+}
+
+expect "guard block outside its canonical section fails" 1 \
+  'block not found or empty under the "## Model-guard preamble" section' \
+  relocate_guard_block_out_of_section
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

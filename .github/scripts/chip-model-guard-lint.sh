@@ -90,8 +90,19 @@ count_guard_blocks() {  # count_guard_blocks FILE -> number of MODEL GUARD fence
   ' "$1"
 }
 
+# Extraction is anchored to the canonical section, not merely to the marker:
+# the block that counts is the one under "## Model-guard preamble". Together
+# with the exactly-one count above, a marker-bearing fence anywhere else is an
+# error rather than a stand-in. What no textual check can do is tell a
+# conforming block from a conforming block — a replacement that satisfies every
+# assertion in this position IS the preamble, by definition.
+GUARD_SECTION_HEADING='^## Model-guard preamble'
+
 extract_guard_block() {  # extract_guard_block FILE -> the MODEL GUARD fenced block
-  awk '
+  awk -v heading="$GUARD_SECTION_HEADING" '
+    $0 ~ heading { insec = 1; next }
+    /^## / { insec = 0 }
+    !insec { next }
     /^```/ {
       if (inb) { if (buf ~ /MODEL GUARD:/) { printf "%s", buf; exit } ; inb = 0; buf = "" }
       else { inb = 1; buf = "" }
@@ -110,7 +121,7 @@ GUARD_BLOCK_FILE=""
 require_guard_pattern() {
   local pattern="$1" label="$2"
   if [[ ! -s "$GUARD_BLOCK_FILE" ]]; then
-    echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD preamble block not found or empty — cannot verify ${label}"
+    echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD preamble block not found or empty under the \"## Model-guard preamble\" section — cannot verify ${label}"
     errors=$((errors + 1))
     return
   fi
