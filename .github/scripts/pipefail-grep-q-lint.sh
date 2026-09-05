@@ -207,9 +207,13 @@ FNR == 1 {
     next
   }
   # `(^|[^<])` keeps a here-string (`<<<"$var"`) from being misread as a
-  # quoted heredoc opener — that would skip the rest of the file.
-  if (match(raw, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"')/)) {
-    tag = substr(raw, RSTART, RLENGTH)
+  # quoted heredoc opener — that would skip the rest of the file. The opener
+  # is looked for in the DECOMMENTED line for the same reason: a commented-out
+  # `# cat <<'"'"'EOF'"'"'` opens nothing, and treating it as one would mute
+  # every live pipeline after it.
+  opener_line = decomment(raw)
+  if (match(opener_line, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"')/)) {
+    tag = substr(opener_line, RSTART, RLENGTH)
     gsub(/^[^<]*<<-?[[:space:]]*/, "", tag)
     gsub(/["'"'"']/, "", tag)
     in_literal_heredoc = 1

@@ -195,6 +195,13 @@ printf '%s\n' "$big" |
   grep -q needle || echo missing
 FIX
 
+expect "a commented-out heredoc opener does not mute the rest of the file" 1 'extra\.sh:4:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+# cat > "$stub" <<'STUB'
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
