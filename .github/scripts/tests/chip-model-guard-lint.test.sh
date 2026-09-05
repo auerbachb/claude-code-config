@@ -438,6 +438,177 @@ expect "family rule re-requiring exact strings (substring intact) fails" 1 \
   'family-level comparison rule' \
   readd_string_equality_after_family_rule
 
+# --- #1398: the mismatch branch is a menu -----------------------------------
+# Every case below degrades the menu contract while LEAVING ITS VOCABULARY IN
+# PLACE, so a looser keyword check would pass each one and prove nothing. That
+# is the same discipline the family-comparison cases above follow.
+
+# The tool name survives in the sentence; only the instruction to use it goes.
+revert_menu_to_typed_reply() {
+  mutate .claude/reference/chip-launching.md \
+    's/Surface the choice with AskUserQuestion/Report both models and wait for a typed reply (AskUserQuestion optional)/'
+}
+
+expect "mismatch branch reverted to a typed reply fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  revert_menu_to_typed_reply
+
+# Both options survive, but neither is marked recommended — the menu still
+# renders and the user loses the steer ask-menu.md requires.
+drop_recommended_suffix() {
+  mutate .claude/reference/chip-launching.md \
+    's/ — continue (Recommended)"/ — continue"/'
+}
+
+expect "switched-confirm option without the (Recommended) suffix fails" 1 \
+  'switched-confirm option, recommended-first suffix' \
+  drop_recommended_suffix
+
+# A one-option menu is not a choice: without the proceed-on-current path the
+# only way past the guard is to claim a switch that may not have happened.
+drop_proceed_option() {
+  mutate .claude/reference/chip-launching.md '/"Continue on {RUNNING_FAMILY} anyway"/d'
+}
+
+expect "menu missing the proceed-on-current-model option fails" 1 \
+  'proceed-on-current-model option' \
+  drop_proceed_option
+
+# The label substitutes the full model string instead of the family, which the
+# decision record rules out for labels (the QUESTION text carries full names).
+substitute_full_model_in_label() {
+  mutate .claude/reference/chip-launching.md \
+    's/"Switched to {RECOMMENDED_FAMILY} — continue/"Switched to {RECOMMENDED_MODEL} — continue/'
+}
+
+expect "option label substituting a full model instead of a family fails" 1 \
+  'switched-confirm option, recommended-first suffix' \
+  substitute_full_model_in_label
+
+# Trusting the click is the failure this loop exists to prevent: a click cannot
+# switch the model, so an unverified confirm is an unchecked override.
+trust_the_click() {
+  mutate .claude/reference/chip-launching.md \
+    's/re-check the family you are running: if it now matches, state/take the user at their word and state/'
+}
+
+expect "confirm answer trusted without re-verification fails" 1 \
+  'confirm-answer re-verification' \
+  trust_the_click
+
+# The prose branch survives verbatim, but its trigger stops being "the tool is
+# unavailable" and becomes discretionary — which makes the menu skippable.
+make_fallback_discretionary() {
+  mutate .claude/reference/chip-launching.md \
+    's/Fallback, when AskUserQuestion is unavailable (headless runs): report, in one/Alternatively, if you would rather not ask: report, in one/'
+}
+
+expect "prose fallback made discretionary rather than headless-only fails" 1 \
+  'headless prose fallback for the mismatch branch' \
+  make_fallback_discretionary
+
+# Wholesale deletion of the mismatch branch, with every explanatory paragraph
+# left standing. Measured: the pre-#1398 whole-file lint also catches this one
+# (5 errors), because these anchors are quoted labels and imperative sentences
+# that appear nowhere in the prose. It is kept as a plain regression test, and
+# the block-scoping claim is carried by the NEXT case, which the whole-file
+# lint provably does not catch.
+delete_mismatch_branch_keep_prose() {
+  mutate .claude/reference/chip-launching.md \
+    '/^- Mismatch (different family)/,/is the recommended path instead\./d'
+}
+
+expect "mismatch branch deleted while its prose survives fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  delete_mismatch_branch_keep_prose
+
+# The discriminating case for block scoping: the instruction leaves the fence
+# and reappears as commentary underneath it, so the bytes a chip actually ships
+# no longer carry it while the phrase is still somewhere in the file. Verified
+# against the pre-#1398 script: whole-file greps report OK here (exit 0), and
+# only the block-scoped check fails it. That delta is the whole reason
+# require_guard_pattern exists.
+move_menu_instruction_out_of_fence() {
+  mutate .claude/reference/chip-launching.md \
+    's/^  STOP\. Do no other work\. Surface the choice with AskUserQuestion — one$/  STOP. Do no other work. Report both models and wait. (Threads should/'
+  append_line .claude/reference/chip-launching.md \
+    'Commentary: Surface the choice with AskUserQuestion — one question naming both.'
+}
+
+expect "menu instruction moved out of the fence into prose fails" 1 \
+  'mismatch-branch AskUserQuestion vehicle' \
+  move_menu_instruction_out_of_fence
+
+# A check that cannot run must never report OK (the silent-pass shape): with no
+# fenced preamble at all, every block-scoped assertion has to fail loudly.
+strip_preamble_fence() {
+  mutate .claude/reference/chip-launching.md '/^```text$/,/^```$/{ /MODEL GUARD/!d; }'
+}
+
+expect "unextractable preamble block fails loudly rather than passing" 1 \
+  'MODEL GUARD preamble block not found or empty|Missing required' \
+  strip_preamble_fence
+
+# A second marker-bearing fence makes "the block" ambiguous: the extractor takes
+# the first, so a well-formed example could vouch for a rotted original.
+add_second_guard_block() {
+  append_line .claude/reference/chip-launching.md \
+    '```text
+MODEL GUARD: Your very first action — illustrative copy for documentation.
+```'
+}
+
+expect "a second MODEL GUARD fenced block fails" 1 \
+  'Expected exactly one fenced MODEL GUARD block, found 2' \
+  add_second_guard_block
+
+# "exactly these two options" is a contract a presence check cannot enforce:
+# every asserted phrase survives while the menu grows a path nobody reasoned
+# about.
+add_third_menu_option() {
+  mutate .claude/reference/chip-launching.md \
+    's/^    2\. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model\.$/    2. "Continue on {RUNNING_FAMILY} anyway" — proceed on the current model.\
+    3. "Relaunch this thread on {RECOMMENDED_FAMILY}" — start over./'
+}
+
+expect "a third menu option fails even with every phrase intact" 1 \
+  'must offer exactly two numbered options, found 3' \
+  add_third_menu_option
+
+# The stop failing open: any typed reply becomes permission to resume.
+let_free_text_resume_work() {
+  mutate .claude/reference/chip-launching.md \
+    's/and if it does not resolve the mismatch the STOP still stands, so ask again/and treat it as permission to resume work, so continue/'
+}
+
+expect "free-text escape treated as permission to resume fails" 1 \
+  'free-text-escape answer keeps the stop' \
+  let_free_text_resume_work
+
+# The block that counts is the one under "## Model-guard preamble". Relocating
+# it verbatim to another section leaves the marker in the file — and the
+# whole-file count still sees exactly one — but the canonical section no longer
+# carries the preamble a reader is sent to.
+relocate_guard_block_out_of_section() {
+  mutate .claude/reference/chip-launching.md '/^## Model-guard preamble$/s/.*/## Model-guard notes/'
+}
+
+expect "guard block outside its canonical section fails" 1 \
+  'block not found or empty under the "## Model-guard preamble" section' \
+  relocate_guard_block_out_of_section
+
+# A heading that merely STARTS with the canonical text is a different section:
+# under a prefix match it would open the real one and hand the checks whatever
+# block it contains.
+suffix_the_section_heading() {
+  mutate .claude/reference/chip-launching.md \
+    '/^## Model-guard preamble$/s/.*/## Model-guard preamble — example/'
+}
+
+expect "section heading with a suffix does not open the canonical section" 1 \
+  'block not found or empty under the "## Model-guard preamble" section' \
+  suffix_the_section_heading
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

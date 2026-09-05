@@ -65,6 +65,74 @@ is_resolver_emitter() {
   return 1
 }
 
+# The MODEL GUARD preamble is SHIPPED BYTES — the fenced block a chip payload
+# copies verbatim. The prose around it is commentary about those bytes, and the
+# two must never be interchangeable to the lint: a paragraph that explains the
+# menu is not an instruction the launched thread receives. So every assertion
+# about what the preamble SAYS runs against the extracted block, not the file.
+# A whole-file grep would let the explanatory paragraphs stand in for a deleted
+# instruction — the same substitution the co-occurrence tightening (#802) closed
+# for placement phrases, seen one level up.
+# Exactly one fenced block may carry the marker. The extractor takes the first
+# one, so a SECOND marker-bearing block — a doc example, a quoted variant —
+# would let the checks pass against something that is not the shipped preamble
+# while the real one rots. Counting is the cheap way to keep "the block" a
+# definite article.
+count_guard_blocks() {  # count_guard_blocks FILE -> number of MODEL GUARD fenced blocks
+  awk '
+    /^```/ {
+      if (inb) { if (buf ~ /MODEL GUARD:/) { n++ } ; inb = 0; buf = "" }
+      else { inb = 1; buf = "" }
+      next
+    }
+    inb { buf = buf $0 "\n" }
+    END { print n + 0 }
+  ' "$1"
+}
+
+# Extraction is anchored to the canonical section, not merely to the marker:
+# the block that counts is the one under "## Model-guard preamble". Together
+# with the exactly-one count above, a marker-bearing fence anywhere else is an
+# error rather than a stand-in. What no textual check can do is tell a
+# conforming block from a conforming block — a replacement that satisfies every
+# assertion in this position IS the preamble, by definition.
+# End-anchored: "## Model-guard preamble — example" is a DIFFERENT section, and
+# a prefix match would let it open the canonical one.
+GUARD_SECTION_HEADING='^## Model-guard preamble$'
+
+extract_guard_block() {  # extract_guard_block FILE -> the MODEL GUARD fenced block
+  awk -v heading="$GUARD_SECTION_HEADING" '
+    $0 ~ heading { insec = 1; next }
+    /^## / { insec = 0 }
+    !insec { next }
+    /^```/ {
+      if (inb) { if (buf ~ /MODEL GUARD:/) { printf "%s", buf; exit } ; inb = 0; buf = "" }
+      else { inb = 1; buf = "" }
+      next
+    }
+    inb { buf = buf $0 "\n" }
+  ' "$1"
+}
+
+GUARD_BLOCK_FILE=""
+
+# Like require_pattern, but scoped to the preamble block and annotated against
+# the document the reader edits. An empty extraction is an ERROR, never a pass:
+# a check that cannot run has proven nothing, and reporting OK there would be
+# exactly the silent-failure shape these lints exist to catch.
+require_guard_pattern() {
+  local pattern="$1" label="$2"
+  if [[ ! -s "$GUARD_BLOCK_FILE" ]]; then
+    echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD preamble block not found or empty under the \"## Model-guard preamble\" section — cannot verify ${label}"
+    errors=$((errors + 1))
+    return
+  fi
+  if ! grep -qE "$pattern" "$GUARD_BLOCK_FILE"; then
+    echo "::error file=${CHIP_LAUNCHING}::Missing required ${label} (expected /${pattern}/ inside the MODEL GUARD preamble block)"
+    errors=$((errors + 1))
+  fi
+}
+
 errors=0
 
 usage() {
@@ -98,8 +166,18 @@ require_file "$CLAUDE_MD" || true
 
 # --- 1. chip-launching.md contract ---------------------------------------
 if [[ -f "$CHIP_LAUNCHING" ]]; then
+  # The marker check stays file-wide: it is what LOCATES the block, so it has to
+  # run before there is a block to scope to.
   require_pattern "$CHIP_LAUNCHING" 'MODEL GUARD:' 'MODEL GUARD preamble marker'
-  require_pattern "$CHIP_LAUNCHING" 'Your very first action' 'guard first-action text'
+  GUARD_BLOCK_FILE=$(mktemp -t chip-guard-block.XXXXXX)
+  trap 'rm -f "$GUARD_BLOCK_FILE"' EXIT
+  extract_guard_block "$CHIP_LAUNCHING" > "$GUARD_BLOCK_FILE"
+  guard_block_count=$(count_guard_blocks "$CHIP_LAUNCHING")
+  if (( guard_block_count != 1 )); then
+    echo "::error file=${CHIP_LAUNCHING}::Expected exactly one fenced MODEL GUARD block, found ${guard_block_count} — the assertions below scope to the first, so a second one would let them pass against a block no chip ships"
+    errors=$((errors + 1))
+  fi
+  require_guard_pattern 'Your very first action' 'guard first-action text'
   # The guard compares FAMILIES, not strings (#837). Chips stay clickable
   # indefinitely, so ones emitted before the versionless rename still name a
   # version; a reword back to string equality would make every one of them a
@@ -113,24 +191,58 @@ if [[ -f "$CHIP_LAUNCHING" ]]; then
   # not the keyword.
   #
   # Scope of that promise: these anchors catch an inversion written INTO the
-  # asserted sentence. No line-oriented pattern can catch a contradiction
-  # planted in a different sentence of the same file, and none of these claims
-  # to — that residual case is what review is for.
+  # asserted sentence, and block scoping keeps prose outside the fence from
+  # standing in for any of them. No line-oriented pattern can catch a
+  # contradiction planted in a DIFFERENT sentence of the same block, and none
+  # of these claims to — that residual case is what review is for.
   #
   # The trailing em dash is load-bearing, not incidental punctuation: it pins
   # the phrase to the family list that follows, so "Compare families only, and
   # the exact model strings must match," cannot satisfy the check by keeping
   # the substring.
-  require_pattern "$CHIP_LAUNCHING" 'Compare families only —' 'family-level comparison rule'
-  require_pattern "$CHIP_LAUNCHING" 'old-style version qualifier: ignore it on either side' \
+  require_guard_pattern 'Compare families only —' 'family-level comparison rule'
+  require_guard_pattern 'old-style version qualifier: ignore it on either side' \
     'version-qualifier-is-noise rule'
   # Anchored to the Match branch specifically: {FAMILY} loose in the document
   # does not prove the MATCH branch reports a family, and the mismatch branch
   # deliberately still reports full model names (see the decision record).
   # Bracket expressions, not \{ — literal braces are unambiguous this way under
   # both GNU and BSD ERE, where \{ shades into interval-expression territory.
-  require_pattern "$CHIP_LAUNCHING" 'Match \(same family\): state "Running on [{]FAMILY[}]' \
+  require_guard_pattern 'Match \(same family\): state "Running on [{]FAMILY[}]' \
     'family self-report in match branch'
+  # The mismatch branch is a clickable menu, not a typed reply (#1398). Each
+  # element the menu contract turns on is asserted separately, for the same
+  # reason the family rules above are: one assertion would leave the rest free
+  # to be dropped in a reword, and the whole point of the menu is that a
+  # mismatch resolves in one click with the recommended path first.
+  require_guard_pattern 'Surface the choice with AskUserQuestion' \
+    'mismatch-branch AskUserQuestion vehicle'
+  # Both option labels are pinned WITH their placeholders: the labels are
+  # family-level by contract (see the decision record), so a label rewritten to
+  # substitute a full model string must not satisfy the check.
+  require_guard_pattern '"Switched to [{]RECOMMENDED_FAMILY[}] — continue \(Recommended\)"' \
+    'switched-confirm option, recommended-first suffix'
+  require_guard_pattern '"Continue on [{]RUNNING_FAMILY[}] anyway"' \
+    'proceed-on-current-model option'
+  # A click cannot switch the model, so the confirm answer is verified rather
+  # than trusted. Without this the menu degrades into an unchecked override.
+  require_guard_pattern 're-check the family you are running' \
+    'confirm-answer re-verification'
+  require_guard_pattern 'when AskUserQuestion is unavailable \(headless runs\)' \
+    'headless prose fallback for the mismatch branch'
+  # The free-text escape is a third answer the menu always offers, so the
+  # preamble has to say what it means. Without this the thread is free to treat
+  # any typed reply as permission and resume, which is the stop failing open.
+  require_guard_pattern 'if it does not resolve the mismatch the STOP still stands' \
+    'free-text-escape answer keeps the stop'
+  # "exactly these two options" is a contract, and presence checks cannot see a
+  # THIRD one added beside them — an extra option is how a menu grows a path
+  # nobody reasoned about. Count the numbered labels in the block.
+  guard_option_count=$(grep -cE '^ +[0-9]+\. "' "$GUARD_BLOCK_FILE" || true)
+  if [[ -s "$GUARD_BLOCK_FILE" ]] && (( guard_option_count != 2 )); then
+    echo "::error file=${CHIP_LAUNCHING}::MODEL GUARD menu must offer exactly two numbered options, found ${guard_option_count} — see \"exactly these two options\" in the preamble"
+    errors=$((errors + 1))
+  fi
   require_pattern "$CHIP_LAUNCHING" 'six canonical emitters' 'canonical emitters preamble'
   require_pattern "$CHIP_LAUNCHING" 'first line of the `prompt`' 'first-line placement rule'
   require_pattern "$CHIP_LAUNCHING" 'no blank line' 'no-blank-line placement rule'
