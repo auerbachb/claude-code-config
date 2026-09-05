@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # worktree-status.sh — Report a worktree's own HEAD SHA and current branch.
+# catalog: trust-worktree-repo — Report one worktree's own HEAD SHA, branch, detached state and root in a single call — the non-refused replacement for a `git -C <wt> …; git -C <wt> …` pair (`.claude/reference/worktree-isolation-command-shapes.md`); every git call wall-clock bounded
 #
 # PURPOSE
 #   Replaces the two-command pair

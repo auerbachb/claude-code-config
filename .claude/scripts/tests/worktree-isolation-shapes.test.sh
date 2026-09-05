@@ -2,6 +2,7 @@
 # Offline tests for the two wrappers that make issue #1470's refused command
 # shapes reachable from a worktree-isolated agent: worktree-status.sh (case 1)
 # and wait-until.sh (case 2).
+# catalog: tests — Tests `worktree-status.sh` and `wait-until.sh` — the issue #1470 command shapes
 #
 # WHY THIS SUITE EXISTS
 #

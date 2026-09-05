@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # wait-until.sh — Poll a check command until it succeeds, with a hard cap.
+# catalog: scheduling-monitoring — In-turn poll loop with a hard cap — the non-refused equivalent of `until <check>; do sleep <n>; done` for a worktree-isolated agent (`.claude/reference/worktree-isolation-command-shapes.md`); blocks the calling turn only, never a substitute for a persistent `Monitor`
 #
 # PURPOSE
 #   The non-refused equivalent of the shape the sleep blocker itself recommends:
