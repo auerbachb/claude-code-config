@@ -1146,60 +1146,53 @@ NEW_HITS=$(( PRIOR_HITS + 1 ))
 MAX_LIMIT_HITS=3  # mirrors max_pipeline_failures range; not currently user-configurable
 ```
 
-**Adopt an existing pre-emptive park rather than opening a second one (#1428).** A real kill can land while 2D.7 has already parked the board pre-emptively. Both paths write these same fields, so the reactive write below would otherwise overwrite `parked_until` **and** null the wake identity pair — stranding a live probe Monitor that nothing can name to `TaskStop`. Before writing, stop whatever wake is already armed; the vendor reset time this signal carries is strictly better information than 2D.7's probe bound, so the reactive record then wins on content:
+**Claim the park slot rather than overwriting one (#1428, #1622).** A real kill can land while 2D.7 — or a subagent-running thread (`subagent-thread-limit-park.md` §2) — has already parked the board. Every one of those paths writes these same fields, so a plain write here would replace `parked_until` and the cause and null the wake identity pair, stranding a live Monitor that nothing can name to `TaskStop`. So the reactive path does not write a park; it **claims** one, by the same compare-and-set on `limit_cause` that 2D.7 Step 3 and the subagent leg already use. `limit_cause` is null until exactly one path claims it, and the whole record rides that single compare (`--cas` composed with `--set`, #1445), so there is no window between owning the slot and finishing the metadata:
 
-<!-- test-anchor: pm-day-2d6-adopt-wake -->
-
-```bash
-# Race with 2D.7: a wake may already be armed. Stop it BEFORE the write nulls its ID.
-# `TaskStop` here is the harness tool, not a binary — the one non-shell call in this
-# block. Everything else runs as written.
-ADOPT_ABORT=false
-PRIOR_WAKE_RC=0
-PRIOR_WAKE_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id") || PRIOR_WAKE_RC=$?
-if [ "$PRIOR_WAKE_RC" -ne 0 ] && [ "$PRIOR_WAKE_RC" -ne 3 ]; then
-  # Only rc 3 (no state file has ever been written) proves there is no wake. Every
-  # other failure is a read we could not make, and a lock timeout is likeliest exactly
-  # when a fleet is contending for this file. Falling through to the write would null
-  # the ID of a Monitor that may well be ticking — the irreversible mistake named below.
-  echo "Parked (usage limit) — could not read the wake registry (rc=$PRIOR_WAKE_RC); not replacing the park. Resume manually."
-  ADOPT_ABORT=true
-elif [ -n "$PRIOR_WAKE_ID" ] && [ "$PRIOR_WAKE_ID" != null ]; then
-  if ! TaskStop "$PRIOR_WAKE_ID"; then
-    echo "Parked (usage limit) — could not stop the armed wake $PRIOR_WAKE_ID; keeping its identity and not replacing the park. Resume manually."
-    ADOPT_ABORT=true
-  fi
-fi
-```
-
-**A failed `TaskStop` — or an unreadable registry — aborts the replacement** rather than proceeding: the same rule 2D.4 teardown already applies. Nulling `limit_resume_task_id` for a Monitor that is still ticking is the one irreversible mistake available here: the ID exists nowhere else, so the wake becomes unstoppable, and it would then fire a resume against a park record that has meanwhile been rewritten. Keeping the old identity leaves the existing (still valid) wake in charge, which is the safe side of the trade.
-
-`ADOPT_ABORT` carries that decision rather than a bare `return`: this block is not a function body, and at top level `return` prints an error and **execution continues** — straight into the write it was meant to prevent. The flag is checked below, where the guard actually has to bite.
-
-On a confirmed stop, write the park record, tagging its cause so recovery can tell the two apart:
+<!-- test-anchor: pm-day-2d6-park-claim -->
 
 ```bash
-if [ "$ADOPT_ABORT" = true ]; then
-  :   # guard fired above — no write, no wake, message already surfaced
+PARK_CLAIM_RC=0
+if ! [[ "${NEW_HITS:-}" =~ ^[0-9]+$ ]]; then
+  # The thrash guard is only a guard if the counter is a number. An unset NEW_HITS
+  # writes an empty string, which the `[[ =~ ^[0-9]+$ ]] || PRIOR_HITS=0` coercion
+  # above then reads back as a reset streak — so MAX_LIMIT_HITS could never bite.
+  # Same guard, same reason, as 2D.7 Step 3.
+  echo "PARK_CLAIM=error rc=hits"
 else
-STATE_WRITE_RC=0
-"$SESSION_STATE_SH" \
-  --set ".repos[\"$REPO_KEY\"].day.parked_until=\"$PARKED_UNTIL\"" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"$LIMIT_KIND\"" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
-  --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
-  --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" || STATE_WRITE_RC=$?
-# If the write failed, the park metadata is not durable — do not arm a Monitor.
-if [[ "$STATE_WRITE_RC" -ne 0 ]]; then
-  echo "Parked (usage limit) — state write failed (rc=$STATE_WRITE_RC); not arming auto-wake. Resume manually."
-  ADOPT_ABORT=true   # EXIT this section — do not arm a Monitor
-fi
+  # ONE invocation, one lock hold, all-or-nothing (#1445): the cause CAS gates the
+  # six metadata writes riding with it, so a competing park either loses this
+  # compare (exit 7, nothing written) or already owns the record. There is no
+  # interleaving that leaves half of ours mixed into half of theirs. Every --set
+  # path is a SIBLING of the CAS path under `.day`; naming an ancestor of it is a
+  # usage error (exit 2), not a write.
+  "$SESSION_STATE_SH" \
+    --cas ".repos[\"$REPO_KEY\"].day.limit_cause=\"reactive\"" --expect null \
+    --set ".repos[\"$REPO_KEY\"].day.parked_until=\"$PARKED_UNTIL\"" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_kind=\"$LIMIT_KIND\"" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+    --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=$NEW_HITS" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
+    --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
+    >/dev/null 2>&1 || PARK_CLAIM_RC=$?
+  case "$PARK_CLAIM_RC" in
+    0) echo "PARK_CLAIM=won" ;;
+    7) echo "PARK_CLAIM=adopted" ;;   # 2D.7, or a subagent thread, parked first
+    *) echo "PARK_CLAIM=error rc=$PARK_CLAIM_RC" ;;
+  esac
 fi
 ```
 
-**Thrash guard.** If `ADOPT_ABORT` is `true` — an unreadable registry, a failed `TaskStop`, or a failed state write — arm nothing and stop here. Likewise if `HITS_RC` is unreadable (non-zero and non-3): the fail-closed exits above handle those paths. If `NEW_HITS >= MAX_LIMIT_HITS`, stay parked permanently and notify, with no auto-wake:
+- **`won`** → the slot is ours. Continue to the thrash guard and the wake below.
+- **`adopted`** (exit 7) → a park already exists and the path that opened it owns the wake. **Adopt it:** write nothing further, arm no Monitor, and do **not** `TaskStop` anything — that wake belongs to the surviving record, and stopping it would leave a park with no wake at all. The wind-down already run above is not wasted: a kill has landed, so the board belongs stopped either way. One line, then stop this section — `Parked (usage limit) — the board is already parked; adopting that park and its wake.`
+- **`error`** (any other rc, `rc=hits` included) → fail closed exactly as the unreadable-count branch above does: park nothing, arm nothing, and say so in one line naming the rc — `Parked (usage limit) — park record could not be written (rc={RC}); not arming auto-wake. Resume manually.`
+
+**Why nulling the identity pair on a win is a safe no-op.** A win means `limit_cause` was null, and every path that publishes a wake identity — the auto-wake below, 2D.7 Step 4, the subagent leg's §4 — writes `limit_cause` **before** it publishes. A null cause therefore proves no wake is armed, so the two nulls in the claim restate a resting value rather than orphaning a Monitor.
+
+**The one record that pair-without-cause can survive on is already wakeless.** `limit_resume_task_id` predates `limit_cause` in the schema (#1288 vs #1428), so a `session-state.json` last written by a pre-#1428 skill can carry a live-looking identity pair with no cause at all, and this CAS wins against it. That is still not a stranding, for two independent reasons. A record that old is by construction *cross-session* — its Monitor died with the session that armed it, so there is nothing left for a `TaskStop` to name and nothing for the nulls to orphan. And the identity pair is not how a park is recovered: 2D.1(b+) and 2D.5 re-arm from `parked_until`, `limit_kind`, `limit_cause` and `limit_probe_fires_remaining`, never from `limit_resume_task_id`, which exists solely to stop a Monitor that is live *in this session*. The win also replaces `parked_until` with the reset time from the kill that just fired — a fresher bound than the stale one it retires — and arms this section's own wake over it. So the invariant the paragraph above states for in-session paths is not merely unbroken by legacy state; legacy state is the case where nulling the pair is most obviously free.
+
+**Why the `TaskStop`-before-write guard is gone (#1622).** It used to stop whatever wake was armed before the reactive write nulled its ID, on the reasoning that a vendor reset time beats 2D.7's probe bound and so the reactive record should win on content. Under `--expect null` that sequence is not merely redundant, it is incompatible: a claim lost *after* a successful stop would have killed a wake the surviving park still needed, with no ID left anywhere to re-arm it. Whichever path claims `limit_cause` first now owns the record, and the loser adopts — the same contract 2D.7 and the subagent leg already keep. Rationale: `.claude/reference/pm-day-mode.md`.
+
+**Thrash guard.** Only a `won` claim reaches this point — `adopted` and `error` both stop above, as does an unreadable `HITS_RC` (non-zero and non-3). If `NEW_HITS >= MAX_LIMIT_HITS`, stay parked permanently and notify, with no auto-wake:
 
 > Parked (usage limit) — {NEW_HITS} consecutive limit hits on resume; staying parked to avoid a hot loop. Resume manually when the window reopens.
 
