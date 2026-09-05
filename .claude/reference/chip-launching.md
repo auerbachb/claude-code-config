@@ -115,13 +115,27 @@ never evidence of a mismatch.
   naming the family you are running — not the possibly-qualified string you
   read) and proceed immediately — no further prompts.
 - Mismatch (different family), in EITHER direction (under- or over-powered):
-  STOP. Do no other work. Report, in one message, the model you are actually
-  running as and the model recommended above, then wait. Resume only on an
-  explicit user reply (e.g. "continue anyway"), proceeding on the current
-  model — switching models and relaunching is the recommended path instead.
+  STOP. Do no other work. Surface the choice with AskUserQuestion — one
+  question naming BOTH models in full, the one you are running as and the one
+  recommended above (each carries its family), with exactly these two options,
+  recommended first, labelled by family:
+    1. "Switched to {RECOMMENDED} — continue (Recommended)" — the user has
+       switched the picker. On this answer, re-check the family you are
+       running: if it now matches, state "Running on {FAMILY} as recommended."
+       and proceed; if it still differs, surface this same question again.
+    2. "Continue on {RUNNING} anyway" — proceed on the current model.
+  Clicking an option does not change the model — it records the user's
+  decision, so switching stays a picker action the menu only confirms.
+  Fallback, when AskUserQuestion is unavailable (headless runs): report, in one
+  message, the model you are actually running as and the model recommended
+  above, then wait. Resume only on an explicit user reply (e.g. "continue
+  anyway"), proceeding on the current model — switching models and relaunching
+  is the recommended path instead.
 This is a best-effort self-report: no runtime API exists to introspect the
 active model, so the check relies on the model naming itself accurately.
 ```
+
+**Why a menu — and what a click can and cannot do (#1398).** A mismatch has exactly two plausible answers, so it is the shape `ask-menu.md` reserves for a clickable menu: recommended option first, carrying the literal `" (Recommended)"` suffix, prose fallback in headless runs. **No agent-side model-switch API is known today** — a thread cannot set its own model any more than it can read it back (the best-effort self-report above). So the switched-confirm option *confirms a user-driven switch*; it does not perform one, and the guard re-verifies rather than trusting the click. What the menu buys is that both resolutions cost one action instead of a switch-type-send round trip. If a harness affordance for switching ever appears, wire it into that option; until then the menu's job is resolution, not auto-switch. The re-verify-and-re-ask loop is what keeps the confirm honest when the user clicks it without having switched. Two options are deliberate: `ask-menu.md` already supplies a built-in "Other" free-text escape for anything else (relaunching on a fresh thread, aborting), so a third slot would buy nothing. The menu is the **launched thread's runtime behavior**, not payload text — the preamble bytes above are what every chip and fallback block ships, identically.
 
 **Why family-level:** the guard exists to catch a thread running at the wrong *tier*, and tier is the family — a bare family name already resolves to the newest non-legacy model of that family ("Model and effort lines" above), so two versions inside one family are the same recommendation, and stopping between them reports a disagreement that does not exist.
 
@@ -438,3 +452,5 @@ A chip-launched thread sees its estimate in the `prompt` payload but has no mech
 ## Fallback mode
 
 When chip mode is unavailable, output is **byte-identical to the chip `prompt`**: full fenced blocks, every existing fence and label contract preserved (`/prompt`'s mandatory `~~~` outer fence and first-line `**Model:**` label especially), model-guard preamble included. This redefines the pre-#601 baseline of "byte-for-byte identical to pre-chip behavior" — the guard is a universal addition, not a chip-only one, so fallback output gained it rather than the chip `prompt` and fallback block diverging. See `chip-model-guard-decision.md` for the full trade-off. Fallback remains the *baseline* representation, not a degraded variant — a CLI thread simply receives the same content a chip-mode session would.
+
+**Not to be confused with the guard's own headless fallback (#1398).** Fallback *mode* is about how this emitter delivers the payload; the guard's prose fallback is about how the **launched** thread surfaces a mismatch once it has one. They are independent axes: the preamble bytes are identical in both delivery modes, and the thread that reads them chooses the menu or the prose based on whether `AskUserQuestion` is available to *it*. A block printed in fallback mode and pasted into an interactive thread therefore still gets the menu.
