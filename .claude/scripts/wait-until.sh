@@ -295,11 +295,14 @@ trim() { # value
 }
 
 START="$(date -u +%s 2>/dev/null || true)"
-if [[ -z "$START" ]]; then
-  # An unreadable clock cannot be allowed to mean "no cap" — inside (( )) an
-  # empty variable is 0, so elapsed would never grow and the loop would run
-  # forever. Fail closed and say so.
-  echo "wait-until.sh: could not read the clock (date -u +%s), so the ${TIMEOUT}s cap could not be enforced — refusing to poll unbounded" >&2
+# Non-empty is not enough: a clock that answers with anything but digits is as
+# unusable as one that answers with nothing. `$(( ))` reads a bare word as an
+# unset name worth 0, so a garbage reading would quietly place START at the
+# epoch and make ELAPSED enormous (instant cap) or, on an arithmetic error,
+# leave it stale forever (no cap). Both are the bound silently vanishing, which
+# is the failure this family of scripts exists to prevent, so require digits.
+if [[ ! "$START" =~ ^[0-9]+$ ]]; then
+  echo "wait-until.sh: could not read the clock (date -u +%s gave '${START}'), so the ${TIMEOUT}s cap could not be enforced — refusing to poll unbounded" >&2
   exit 2
 fi
 
@@ -314,8 +317,9 @@ STATE="no check has completed yet"
 refresh_elapsed() {
   local now
   now="$(date -u +%s 2>/dev/null || true)"
-  if [[ -z "$now" ]]; then
-    echo "wait-until.sh: could not read the clock (date -u +%s) mid-wait, so the ${TIMEOUT}s cap could not be enforced — stopping rather than polling unbounded" >&2
+  # Digits, not merely non-empty — same reasoning as the START read above.
+  if [[ ! "$now" =~ ^[0-9]+$ ]]; then
+    echo "wait-until.sh: could not read the clock (date -u +%s gave '${now}') mid-wait, so the ${TIMEOUT}s cap could not be enforced — stopping rather than polling unbounded" >&2
     exit 2
   fi
   ELAPSED=$((now - START))
@@ -333,9 +337,19 @@ cap_hit() { # reason
 while :; do
   refresh_elapsed
   REMAINING=$((TIMEOUT - ELAPSED))
-  # Only reachable after a tick has run, because TIMEOUT is a positive integer
-  # and ELAPSED is 0 on entry.
-  (( REMAINING > 0 )) || cap_hit "condition never met: $STATE"
+  # The first check is GUARANTEED, never merely likely. `date +%s` is
+  # whole-second, so START and the first reading can straddle a tick boundary
+  # and put ELAPSED at 1 before anything has run: with --timeout 1 that makes
+  # REMAINING 0 and caps the run at zero checks, contradicting the documented
+  # "the first check always runs". Anchoring on TICK instead of on the arithmetic
+  # makes the guarantee unconditional rather than a property of how fast the
+  # setup happened to be. The check still gets a positive bound (see below), so
+  # this cannot hand run_bounded a non-positive one.
+  (( REMAINING > 0 || TICK == 0 )) || cap_hit "condition never met: $STATE"
+  # run_bounded must never be handed a non-positive bound — 0 means "already
+  # expired", which would kill the guaranteed first check before it produced
+  # anything and turn the guarantee back into the zero-tick cap it just fixed.
+  (( REMAINING > 0 )) || REMAINING=1
 
   TICK=$((TICK + 1))
   LAST_RC=0
