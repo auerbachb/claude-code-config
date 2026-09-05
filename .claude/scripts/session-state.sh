@@ -804,15 +804,26 @@ def _scoped($pathmap; $unknown):
 # to the last entry, the same last-writer-wins the array already had. Any
 # non-array, non-object value (including null/absent) is left untouched, which
 # is the "refuse rather than discard" behavior migrate() uses everywhere else.
+#
+# The `_unkeyed_<index>` fallback is NOT assumed free: nothing stops a real
+# agent from carrying the literal id `_unkeyed_3`, and a migration that loses a
+# real, identified agent to an anonymous one would defeat the point of this
+# change. So the fallback appends `_` until the key is unused in the map built
+# so far. Collision the other way — a real id landing on a key an earlier
+# unkeyed entry took — stays last-writer-wins, identical to the duplicate-id
+# case above, and the record it displaces is the anonymous one.
 def _agents_map:
   if (.active_agents | type) == "array"
   then .active_agents = ( reduce (.active_agents | to_entries[]) as $e (
          {};
          if ($e.value | type) != "object" then .
          else ( (($e.value.id? // $e.value.agent?) // null) as $id
+              | . as $acc
               | (if ($id | type) == "string" and ($id | length) > 0 then $id
                  elif ($id | type) == "number" then ($id | tostring)
-                 else "_unkeyed_" + ($e.key | tostring) end) as $k
+                 else ( ("_unkeyed_" + ($e.key | tostring))
+                        | until( (. as $s | $acc | has($s)) | not; . + "_" ) )
+                 end) as $k
               | .[$k] = $e.value )
          end ) )
   else . end;

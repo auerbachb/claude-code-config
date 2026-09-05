@@ -577,7 +577,14 @@ fi
 
 **Do not add `--raw-path`.** It is a per-invocation flag, not a per-`--set` one, and a fully-spelled `.repos[...]` path already reaches the repo scope without it; passing it would send any `.prs[...]` write batched into the same call to the top level instead. Phase A Completion later fills `.pr` and copies `started_at` into `.prs["{PR_NUMBER}"].pipeline_started_at` (Step 9). Field contract: `.claude/reference/session-state-schema.json`.
 
-Record each spawned agent in `session-state.json` under its OWN key in the `active_agents` map — `--set '.active_agents["<AGENT_ID>"]={id, task, issue, pr, phase, status, launched}'`, batched into the same atomic `session-state.sh` call as the pipeline and `monitoring_active` writes above. Never `--get` the map, merge locally, and `--set` the whole value back: that read-modify-write spans two lock windows, and a sibling thread's append between them is silently discarded (issue #1631). Set `monitoring_active=true` in the same call. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
+Record each spawned agent in `session-state.json` under its OWN key in the `active_agents` map, batched into the same atomic `session-state.sh` call as the pipeline and `monitoring_active` writes above. **Build the entry as real JSON first, then interpolate it** — `--set` parses its value as JSON and *falls back to a plain string* when the parse fails, so a bare field list (`{id, task, …}`) lands as a string under the agent key and readers can no longer reach `.phase` or `.status`. The whole-field type check does not catch it, because `.active_agents` is still an object. Use the same shape `pmm-act.md` does, with the fields `id`, `task`, `issue`, `pr`, `phase`, `status`, `launched`:
+
+```bash
+ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "$TASK" --argjson issue "$ISSUE_N" \
+  --argjson pr "${PR_N:-null}" --arg launched "$NOW" \
+  '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched}')
+AGENT_SETS+=(--set ".active_agents[\"$AGENT_ID\"]=$ENTRY")
+``` Never `--get` the map, merge locally, and `--set` the whole value back: that read-modify-write spans two lock windows, and a sibling thread's append between them is silently discarded (issue #1631). Set `monitoring_active=true` in the same call. Also record the monitoring primitive state from `.claude/reference/pm-monitoring-decision.md`: use in-turn Dedicated Monitor Mode immediately. For between-turn PR fleet monitoring, point the user at `/pr-monitor-and-manage`; for explicit user "poll every N" on non-PR work, use `Monitor` per `scheduling-reliability.md`.
 
 ### 7.2: Launch announcement — the "Running now" table
 

@@ -156,6 +156,32 @@ check_eq "migration preserves the entry payload" \
 check_eq "a read does NOT rewrite the file" \
   'array' "$(jq -r '.active_agents | type' "$STATE_FILE")"
 
+# FAILS WITHOUT FIX: with a bare `_unkeyed_<index>` key, the id-less entry at
+# index 1 lands on `_unkeyed_1` and CLOBBERS the real agent that carries that
+# literal id — the migration would lose an identified agent to an anonymous
+# one, which is exactly the loss issue #1631 exists to stop (CodeAnt, PR #1637).
+seed '{"schema_version":2,"active_agents":[{"id":"_unkeyed_1","phase":"A"},{"phase":"B"}],"repos":{}}'
+UNKEYED_MAP="$(run --raw-path --get '.active_agents')"
+check_eq "an id-less entry never clobbers a real agent named _unkeyed_<index>" \
+  '["_unkeyed_1","_unkeyed_1_"]' "$(jq -c 'keys' <<<"$UNKEYED_MAP")"
+check_eq "the real agent keeps its own key and payload" \
+  'A' "$(jq -r '.["_unkeyed_1"].phase' <<<"$UNKEYED_MAP")"
+check_eq "the id-less entry survives under the disambiguated key" \
+  'B' "$(jq -r '.["_unkeyed_1_"].phase' <<<"$UNKEYED_MAP")"
+
+# Disambiguation keeps walking past an occupied suffix rather than stopping at one.
+seed '{"schema_version":2,"active_agents":[{"id":"_unkeyed_2"},{"id":"_unkeyed_2_"},{"phase":"Z"}],"repos":{}}'
+check_eq "disambiguation walks past every occupied key" \
+  '["_unkeyed_2","_unkeyed_2_","_unkeyed_2__"]' \
+  "$(run --raw-path --get '.active_agents' | jq -c 'keys')"
+
+# Duplicate REAL ids must still collapse last-writer-wins — the disambiguation
+# above applies only to the anonymous fallback, never to an identified agent.
+seed '{"schema_version":2,"active_agents":[{"id":"dup","v":1},{"id":"dup","v":2}],"repos":{}}'
+check_eq "duplicate real ids still collapse to the last entry" \
+  '{"dup":{"id":"dup","v":2}}' "$(run --raw-path --get '.active_agents' | jq -cS '.')"
+
+seed '{"schema_version":2,"active_agents":[null,{"id":"a1","pr":10},{"task":"no id"},{"agent":"b2"},"junk"],"repos":{}}'
 run --migrate >/dev/null 2>&1
 check_eq "--migrate persists the map" 'object' "$(jq -r '.active_agents | type' "$STATE_FILE")"
 BEFORE="$(jq -cS '.active_agents' "$STATE_FILE")"
