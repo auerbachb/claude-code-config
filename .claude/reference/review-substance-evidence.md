@@ -247,16 +247,69 @@ So the rule keys on the run marker instead:
 
 > A `pre_run_approval` is redeemed **iff** the same reviewer's run marker for
 > the **same SHA** reaches `done: true` **and** that reviewer left **zero
-> findings on that SHA** — no `COMMENTED`/`CHANGES_REQUESTED` review and no
-> HEAD-anchored inline comment — **and** no other disqualifier survives.
+> findings from that run** — no `COMMENTED`/`CHANGES_REQUESTED` review on the
+> SHA, and no HEAD-anchored inline comment that is either inside the run's
+> window or still unresolved — **and** no other disqualifier survives.
 
-Findings are read by **presence on the `commit_id`-scoped indexes** (`$ridx`,
-`$iidx`), never by ordering anything against the run window — the same frozen
-timestamp that motivates the rule would make an ordering test meaningless. That
-detection is deliberately *not* filtered through `fresh_review`: a `COMMENTED`
-review GitHub re-pointed onto HEAD cannot be proven to belong to this round, and
-the conservative reading of an unprovable finding is that it counts, since this
-term only ever **withholds** the redemption.
+**Review-state** findings (`$ridx`) are read by **presence on the
+`commit_id`-scoped index**, never by ordering anything against the run window —
+the same frozen `submitted_at` that motivates the rule would make an ordering
+test meaningless. That detection is deliberately *not* filtered through
+`fresh_review`: a `COMMENTED` review GitHub re-pointed onto HEAD cannot be proven
+to belong to this round, and the conservative reading of an unprovable finding is
+that it counts, since this term only ever **withholds** the redemption.
+
+#### Inline findings are scoped to the governing run (issue #1632)
+
+Counting **every** inline comment on the SHA left the gate's own stated remedy
+unreachable. Where run 1 posted findings that were all declined-with-evidence and
+**resolved**, no code change is warranted, so no new HEAD exists; the
+`@codeant-ai review` re-run then completes with zero new comments, yet the
+earlier ones keep `run_has_findings_on_head` `true` forever and no clean run can
+ever redeem the stub. Observed on PR #1612 at `da2acd8` (re-run 05:27:55→05:28:20
+with zero findings, still hollow) and PR #1627 at `d4ac833` — both fell to
+Greptile with the stickiness that brings.
+
+An inline comment on HEAD therefore counts as a finding when **either**:
+
+- its `created_at` falls inside the governing run marker's `started`→`finished`
+  window (open-ended while `finished` is empty, i.e. a run still in flight), **or**
+- its `id` is absent from `resolved_comment_ids` — the thread is unresolved, or
+  its resolution is unknown.
+
+It is excluded only when it is **both** outside the window **and** resolved.
+
+Two properties keep this from re-opening the hole it narrows. The window test is
+a **disjunct, not a fallback**, so resolving a finding the governing run itself
+posted does not launder it. And `created_at` is a legitimate ordering dimension
+where `submitted_at` is not: it stamps a distinct comment *object* at the moment
+it was posted, rather than a verdict the bot rewrites in place — and a bot that
+did freeze a comment timestamp lands on the resolution branch, not on a false
+clean. With `$runmark` null there is no window to test and every HEAD inline
+comment counts, exactly as before.
+
+#### `resolved_comment_ids` — the optional input
+
+Thread-resolution state reaches the evaluator through one optional payload key:
+
+```json
+{ "…": "…", "resolved_comment_ids": [ 2415360912, 2415360913 ] }
+```
+
+the REST comment ids (GraphQL `databaseId`) of every comment sitting in a
+resolved review thread. `merge-gate.sh` derives it from the `reviewThreads` query
+it already runs; `escalate-review.sh` derives it from `pr-state.sh`'s
+`threads.all`, which already requests `databaseId`. Neither costs an extra API
+call. Ids are stringified on both sides, so a number and its string spelling
+cannot silently miss.
+
+The key is **optional and defaults to `[]`**. An empty set makes every inline
+comment read as unresolved, which reproduces the pre-#1632 behaviour byte for
+byte — so a caller with no thread data (today: `pr-preflight.sh`, whose only use
+is deciding whether to re-trigger a bot, and which fails toward re-triggering)
+degrades toward **refusing** redemption, never toward granting it. Pinned by case
+(s4) in `tests/merge-gate-codeant-run-marker.test.sh`, the negative control that
+keeps (s1) from being vacuous.
 
 When the shape holds, both `pre_run_approval` and `no_substantive_footprint`
 leave `disqualified_by` — the completed clean run *is* the footprint, and

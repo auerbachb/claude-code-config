@@ -511,8 +511,37 @@ if [[ -z "$ISSUE_COMMENTS_JSON" ]] || ! echo "$ISSUE_COMMENTS_JSON" | jq -e . >/
 fi
 
 # Unresolved review threads via GraphQL (covers all bot authors consistently).
-if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$REPO\") { pullRequest(number: $PR_NUMBER) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { author { login } } } } } } } }" 2>/dev/null); then
+if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$REPO\") { pullRequest(number: $PR_NUMBER) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { databaseId author { login } } } } } } } }" 2>/dev/null); then
   die_api "GraphQL-reviewThreads"
+fi
+
+# REST ids of every inline comment sitting in a RESOLVED thread (issue #1632).
+# review-substance.sh uses these to keep an earlier run's declined-and-resolved
+# findings from blocking a later clean run on the same SHA. `databaseId` is the
+# REST `id` of the same comment, which is what the pulls/{N}/comments payload
+# carries, so the two join directly.
+#
+# Degrades to [] rather than failing: an empty list makes every inline comment
+# read as unresolved, which is exactly the pre-#1632 behaviour. This must never
+# become a hard error — an unusable thread payload would then block a gate it
+# can only ever make more permissive.
+#
+# The query above is unpaginated (`first: 100` threads, `first: 100` comments),
+# which is a pre-existing bound this derivation inherits rather than introduces.
+# It is safe in THIS direction: a thread or comment past the bound is simply
+# absent from the set, reads as unresolved, and therefore still counts as a
+# finding — so an over-long thread list can only ever WITHHOLD redemption. Do not
+# read that as the bound being harmless generally; the universal unresolved-
+# thread gate below reads the same payload and is permissive when truncated.
+RESOLVED_COMMENT_IDS=$(echo "$THREADS_JSON" | jq -c '
+  [ .data.repository.pullRequest.reviewThreads.nodes[]?
+    | select(.isResolved == true)
+    | .comments.nodes[]?
+    | .databaseId
+    | select(. != null) ]' 2>/dev/null || true)
+if [[ -z "$RESOLVED_COMMENT_IDS" ]] \
+    || ! echo "$RESOLVED_COMMENT_IDS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  RESOLVED_COMMENT_IDS='[]'
 fi
 
 # Runtime CODEOWNERS detection. Branch protection is repo-specific, so only
@@ -790,9 +819,14 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
     # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
     # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
     # then slurps the three values in order.
+    # resolved_comment_ids stays an --argjson: it is a bare list of integers
+    # (bounded by 100 threads x 100 comments), orders of magnitude smaller than
+    # the comment payloads, so it cannot approach ARG_MAX on its own.
     REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
       | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
-          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2]}' \
+          --argjson resolved "$RESOLVED_COMMENT_IDS" \
+          '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2],
+            resolved_comment_ids: $resolved}' \
           2>/dev/null \
       | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
     # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
