@@ -597,6 +597,18 @@ expect "guard block outside its canonical section fails" 1 \
   'block not found or empty under the "## Model-guard preamble" section' \
   relocate_guard_block_out_of_section
 
+# A heading that merely STARTS with the canonical text is a different section:
+# under a prefix match it would open the real one and hand the checks whatever
+# block it contains.
+suffix_the_section_heading() {
+  mutate .claude/reference/chip-launching.md \
+    '/^## Model-guard preamble$/s/.*/## Model-guard preamble — example/'
+}
+
+expect "section heading with a suffix does not open the canonical section" 1 \
+  'block not found or empty under the "## Model-guard preamble" section' \
+  suffix_the_section_heading
+
 if (cd "$REPO_ROOT" && bash "$LINT" >/dev/null 2>&1); then
   echo "ok   — real repo conformance is intact"
 else

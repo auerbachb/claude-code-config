@@ -96,7 +96,9 @@ count_guard_blocks() {  # count_guard_blocks FILE -> number of MODEL GUARD fence
 # error rather than a stand-in. What no textual check can do is tell a
 # conforming block from a conforming block — a replacement that satisfies every
 # assertion in this position IS the preamble, by definition.
-GUARD_SECTION_HEADING='^## Model-guard preamble'
+# End-anchored: "## Model-guard preamble — example" is a DIFFERENT section, and
+# a prefix match would let it open the canonical one.
+GUARD_SECTION_HEADING='^## Model-guard preamble$'
 
 extract_guard_block() {  # extract_guard_block FILE -> the MODEL GUARD fenced block
   awk -v heading="$GUARD_SECTION_HEADING" '
