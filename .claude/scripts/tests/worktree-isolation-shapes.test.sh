@@ -604,10 +604,29 @@ if [[ -z "$HANG_CHILD_PID" ]]; then
   # Never pass by not running: no pid means the descendant assertion did not
   # happen, which is a failure of the test, not evidence of a clean kill.
   fail "T14b: the hanging check never recorded its child pid — the descendant survivor check could not run"
-elif pgrep -f "$TMP/hangs" >/dev/null 2>&1 || kill -0 "$HANG_CHILD_PID" 2>/dev/null; then
-  fail "T14b: the hanging check (or its child) survived the kill"
 else
-  pass "T14b: and the hanging check was actually killed"
+  # Probed over a short bounded window, not once. `kill -0` succeeds while the
+  # signal is still being delivered AND while the process is a zombie awaiting
+  # reaping — and killing the wrapper reparents this child, so its reaping is
+  # asynchronous. A single immediate probe would therefore report a survivor on
+  # a run that killed the child correctly, trading the pattern-matching flake
+  # this check just removed for a timing one. The window stays bounded so a
+  # genuine survivor still fails rather than hanging the suite.
+  HANG_SURVIVED=1
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! pgrep -f "$TMP/hangs" >/dev/null 2>&1 && ! kill -0 "$HANG_CHILD_PID" 2>/dev/null; then
+      HANG_SURVIVED=0
+      break
+    fi
+    # Whole-second fallback for a sleep(1) without fractional support, matching
+    # lib/bounded-run.sh's own polling idiom.
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  if (( HANG_SURVIVED == 1 )); then
+    fail "T14b: the hanging check (or its child) survived the kill"
+  else
+    pass "T14b: and the hanging check was actually killed"
+  fi
 fi
 
 # ---- T15: usage errors ------------------------------------------------------
