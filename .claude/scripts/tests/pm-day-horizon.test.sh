@@ -350,15 +350,36 @@ else
   echo "FAIL — same-second nonces collided ('${UNIQ_TOK_A##*-}' vs '${UNIQ_TOK_B##*-}')"
 fi
 # Control: the nonce carries real entropy rather than one 15-bit `$RANDOM` draw.
-# 8 bytes of /dev/urandom render as 16 hex chars; the `$RANDOM` fallback triples
-# the draw. A single `${RANDOM}` — the pre-#1656 shape — is at most 5 digits and
-# fails this, so the check cannot pass vacuously against the old token.
+# BOTH documented paths render 16 lowercase hex chars — 8 bytes of /dev/urandom,
+# or the four `%04x`-formatted `$RANDOM` draws it falls back to — so this asserts
+# the shape itself rather than a floor that only one path clears. A single
+# `${RANDOM}` — the pre-#1656 shape — is at most 5 decimal digits and fails both
+# the width and the hex class, so the check cannot pass vacuously against the
+# old token.
 UNIQ_NONCE_A="${UNIQ_TOK_A##*-}"
-if (( ${#UNIQ_NONCE_A} >= 15 )); then
-  PASS=$((PASS + 1)); echo "ok   — control: the nonce is wider than a single \$RANDOM draw"
+if [[ "$UNIQ_NONCE_A" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — control: the nonce is 16 hex chars, not a single \$RANDOM draw"
 else
   FAIL=$((FAIL + 1))
-  echo "FAIL — control: nonce '${UNIQ_TOK_A##*-}' is too narrow to be unique"
+  echo "FAIL — control: nonce '${UNIQ_TOK_A##*-}' is not the documented 16-hex-char shape"
+fi
+# The fallback is only reachable with an unreadable /dev/urandom, which this
+# harness cannot produce — so assert the documented expression directly, and
+# prove the assertion has teeth by running the pre-fix three-decimal shape
+# through the same predicate.
+FALLBACK_NONCE=$(printf '%04x%04x%04x%04x' "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}")
+if [[ "$FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — the \$RANDOM fallback matches the same 16-hex-char shape"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — fallback nonce '$FALLBACK_NONCE' does not match the urandom shape"
+fi
+OLD_FALLBACK_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
+if [[ ! "$OLD_FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
+  PASS=$((PASS + 1)); echo "ok   — control: the pre-fix three-decimal fallback fails that shape"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — control: three-decimal fallback '$OLD_FALLBACK_NONCE' passed, so the shape check is vacuous"
 fi
 # Restore the state the rest of this section asserts against.
 seed_day_state
@@ -1129,6 +1150,39 @@ check_eq "release: an empty token fails closed" "PARK_RELEASE=error rc=token" "$
 check_eq "release token guard: the claim survives" "$NOTOK_TOK" "$(day_get park_claim_token)"
 require_text "the release is keyed on the claim token, not the timestamp or the cause" "$SKILL" \
   'Gate the release on your claim token, not on your own timestamp and not on `limit_cause`'
+
+# Exit 6 is a lock timeout and documented as retryable, so the release retries it
+# once instead of abandoning its own claim. Stub `session-state.sh` to fail the
+# first write with 6 and delegate every later call to the real script: a release
+# that retries reports `released` and leaves the record cleared, one that does not
+# reports `error rc=6` and leaves its token standing.
+RETRY_STUB_DIR="$(mktemp -d)"
+cat >"$RETRY_STUB_DIR/session-state.sh" <<STUB
+#!/usr/bin/env bash
+if [ ! -e "$RETRY_STUB_DIR/fired" ]; then : >"$RETRY_STUB_DIR/fired"; exit 6; fi
+exec "$SESSION_STATE_SH" "\$@"
+STUB
+chmod +x "$RETRY_STUB_DIR/session-state.sh"
+seed_day_state
+RETRY_TOK="$(claim_and_token)"
+RETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$REPO_KEY" \
+  PARK_CLAIM_TOKEN="$RETRY_TOK" bash -c "$BLOCK_RELEASE" 2>/dev/null | tail -1)"
+check_eq "release: a lock timeout is retried, not abandoned" "PARK_RELEASE=released" "$RETRY_OUT"
+check_eq "release retry: the record really cleared" "null" "$(day_get park_claim_token)"
+check_eq "release retry: parked_until cleared with it" "null" "$(day_get parked_until)"
+# Control: the stub fires only once, so a release that never retried would have
+# stopped at the timeout. Re-arm it against a release that cannot win anyway and
+# confirm the first call is what the stub consumed.
+rm -f "$RETRY_STUB_DIR/fired"
+seed_day_state
+NORETRY_TOK="$(claim_and_token)"
+NORETRY_OUT="$(SESSION_STATE_SH="$RETRY_STUB_DIR/session-state.sh" REPO_KEY="$REPO_KEY" \
+  PARK_CLAIM_TOKEN="not-$NORETRY_TOK" bash -c "$BLOCK_RELEASE" 2>/dev/null | tail -1)"
+check_eq "release retry: a retried non-owner still stands down" "PARK_RELEASE=superseded" "$NORETRY_OUT"
+check_eq "release retry control: the real claim survives it" "$NORETRY_TOK" "$(day_get park_claim_token)"
+rm -rf "$RETRY_STUB_DIR"
+require_text "the release retries a documented-retryable lock timeout" "$SKILL" \
+  'Exit 6 is a lock timeout and documented as retryable'
 
 # ---------------------------------------------------------------------------
 echo "== Three-valued limit_probe_fires_remaining (issue #1445) =="

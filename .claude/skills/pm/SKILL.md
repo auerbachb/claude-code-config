@@ -1332,11 +1332,20 @@ if [ "$PARK_RESET_KNOWN" = true ]; then CLAIM_FIRES=null; else CLAIM_FIRES=-1; f
 # Uniqueness has to come from the nonce, not from the timestamp and PID: those
 # two collide the moment a PID is reused inside the same second, and a single
 # `$RANDOM` leaves only 15 bits behind them. Draw 64 bits from /dev/urandom, and
-# fall back to three `$RANDOM` draws only where it is unreadable — an EMPTY
+# fall back to `$RANDOM` draws only where it is unreadable — an EMPTY
 # nonce is the one shape to avoid, since Step 3 reads an empty token as "this
 # step lost the claim" and would fail closed on a claim that actually won.
+# The fallback renders FOUR draws as fixed-width hex (`%04x` — `$RANDOM` is
+# 0-32767, so exactly four hex digits each): 60 bits, and the same 16-char
+# lowercase-hex SHAPE the /dev/urandom path produces. Both matter. The width
+# is why the fallback is not a narrower, variable-length nonce that every
+# shape assertion downstream would have to special-case — three decimal
+# draws run 3-15 characters and would sometimes read as narrower than a
+# single draw. `printf` cannot yield an empty string, so the never-empty
+# guarantee above holds on this path too.
 PARK_CLAIM_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
-[ -n "$PARK_CLAIM_NONCE" ] || PARK_CLAIM_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
+[ -n "$PARK_CLAIM_NONCE" ] || PARK_CLAIM_NONCE=$(printf '%04x%04x%04x%04x' \
+  "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}" "${RANDOM:-0}")
 PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-$PARK_CLAIM_NONCE"
 
 PARK_CLAIM_RC=0
@@ -1394,6 +1403,22 @@ else
     --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
     --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
     >/dev/null 2>&1 || PARK_RELEASE_RC=$?
+  # Exit 6 is a lock timeout and documented as retryable (`handoff-files.md`),
+  # so retry it once rather than abandoning the claim: an unretried release
+  # leaves this session's own token standing over a park nothing in this
+  # session will clear. Retrying is safe because the guard is a compare-and-set
+  # on that token — a retry after a release that did land matches nothing and
+  # reports 7 (clear nothing), never a second clobbering write. Only 6 retries;
+  # every other non-zero rc stays an error, unretried.
+  if [ "$PARK_RELEASE_RC" = "6" ]; then
+    PARK_RELEASE_RC=0
+    "$SESSION_STATE_SH" \
+      --cas ".repos[\"$REPO_KEY\"].day.park_claim_token=null" --expect "\"$PARK_CLAIM_TOKEN\"" \
+      --set ".repos[\"$REPO_KEY\"].day.parked_until=null" \
+      --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
+      --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
+      >/dev/null 2>&1 || PARK_RELEASE_RC=$?
+  fi
   case "$PARK_RELEASE_RC" in
     0) echo "PARK_RELEASE=released" ;;
     7) echo "PARK_RELEASE=superseded" ;;   # the slot is not ours any more — clear nothing
