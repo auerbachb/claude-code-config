@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Bounded evaluator-outage suppression in escalate-review.sh (issue #1465).
+# catalog: tests — Bounded evaluator-outage suppression in `escalate-review.sh` — a `review-substance.sh` outage caps the verdict at `polling_cr` for an hour instead of authorising a paid review, then resumes escalation. The inclusive 3600 s boundary is both pinned in the source and **executed**: scenario (f2) lands a run on exactly the cap by re-aiming on the overshoot the script itself reports (a fixed exactly-3600 fixture races the clock upward, and a fixed-width sweep would just encode a guess about runner speed) and fails if no probe lands, and (f3) pins the first excluded second
 #
 # THE BUG: escalate-review.sh and merge-gate.sh call the same review-substance.sh
 # evaluator. merge-gate.sh die_local()s when it is unusable; escalate-review.sh

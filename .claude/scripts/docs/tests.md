@@ -1,19 +1,20 @@
 # Tests
 
+<!-- catalog:category id=tests order=130 -->
+<!-- catalog:covers Every test under `tests/`, all offline (no network required) -->
+
 All tests live in `tests/` and run offline (no network required). Run from the repo root:
 `bash .claude/scripts/tests/<name>.test.sh`
 
-Rows are kept in `LC_ALL=C sort` order — byte order, not dictionary order, so
-`overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
-0x2D, `.` is 0x2E). The marker below opts this doc into the ordering check in
-`.github/scripts/scripts-catalog-lint.sh` (#1544). The sibling category docs
-group their rows by workflow role instead, carry no marker, and are not checked
-for order.
-
-<!-- catalog-lint: ordered -->
+Rows are generated in `LC_ALL=C sort` order — byte order, not dictionary order,
+so `overrun-check-tzdata.test.sh` comes before `overrun-check.test.sh` (`-` is
+0x2D, `.` is 0x2E). Every category doc is ordered the same way now that the rows
+are generated (#1578), which retired the per-doc `<!-- catalog-lint: ordered -->`
+opt-in of issue #1544.
 
 | Test | What it covers |
 |------|----------------|
+<!-- catalog:rows:begin -->
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
@@ -84,7 +85,6 @@ for order.
 | [overrun-check.test.sh](../tests/overrun-check.test.sh) | Tests `overrun-check.sh --readout-cells` — ET cell rendering, the pace-scaled overrun row, and the negative control proving the projected finish is floored at now |
 | [pause-multisession.test.sh](../tests/pause-multisession.test.sh) | Tests per-session pause records and resume receipts (#1576) — interleaved concurrent pause writes staying independent, the extracted `/pause-resume` Step 1 selection program returning every un-resumed record newest-first, no masking when one is marked resumed, the legacy `.pause` / `.suspend` singletons as union members rather than an empty-map else-branch, and per-session resume receipts |
 | [pm-day-horizon.test.sh](../tests/pm-day-horizon.test.sh) | Tests `/pm` day mode's usage-horizon reflex against the real fenced bash in the skill |
-| [pmm-babysit-horizon.test.sh](../tests/pmm-babysit-horizon.test.sh) | Tests the watch-only usage-horizon contract shared by `/pr-monitor-and-manage` and `/babysit-pr` (#1444) — the §8.1 posture block run over all four verdicts, the read-only park-adopt probe proving neither loop writes the shared day slot, and the wiring at each call site |
 | [pmm-wake-step-4a.test.sh](../tests/pmm-wake-step-4a.test.sh) | Tests the `--auto-check` fleet scan in `/pr-monitor-and-manage-wake` Step 4a against the real fenced bash |
 | [poll-watermarks.test.sh](../tests/poll-watermarks.test.sh) | Tests for `poll-watermarks.sh` |
 | [polling-state-gate-multirepo.test.sh](../tests/polling-state-gate-multirepo.test.sh) | Tests multi-repo isolation in `polling-state-gate.sh` |
@@ -128,6 +128,7 @@ for order.
 | [ts-normalizer-parity.test.sh](../tests/ts-normalizer-parity.test.sh) | Drift guard that `merge-gate.sh` and `escalate-review.sh` order the same timestamps identically |
 | [unset-home-contract.test.sh](../tests/unset-home-contract.test.sh) | Shared unset-`HOME` contract for `reviewer-of.sh`, `session-state.sh`, `silence-watchdog.sh`, and `script-usage-report.sh` — `--help` answers, load-bearing runs exit 8 named, no fabricated `/.claude/...` paths (issue #1434) |
 | [usage-horizon.test.sh](../tests/usage-horizon.test.sh) | Tests for `usage-horizon.sh` — threshold matrix, hysteresis, fail-closed paths, observe-then-check round trip |
+<!-- catalog:rows:end -->
 
 ## Pointing a merge-gate suite at another checkout
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ci-status.sh — Summarize CI check-run health for a commit or PR.
+# catalog: merge-gate-sequencing — Summarize CI check-run health for a commit or PR
 #
 # Implements the CI-must-pass contract from .claude/rules/cr-merge-gate.md Step 1b:
 # "all check-runs must be status=completed AND none in the blocking conclusion set".

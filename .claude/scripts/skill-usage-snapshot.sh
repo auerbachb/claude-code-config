@@ -2,6 +2,7 @@
 # skill-usage-snapshot.sh — Keep a machine-independent snapshot of the skill
 # telemetry (~/.claude/skill-usage.log + .csv) on the repo's dedicated
 # `skill-telemetry` branch, and restore from it on a fresh machine.
+# catalog: skills-telemetry — Push/restore skill telemetry to/from the repo's dedicated `skill-telemetry` branch
 #
 # STORAGE MODEL (issue #572):
 #   Live files stay in ~/.claude/ (written by skill-usage-tracker.sh). This

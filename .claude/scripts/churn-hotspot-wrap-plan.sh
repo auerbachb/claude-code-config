@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # churn-hotspot-wrap-plan.sh — Classify detector output for /wrap (Issue #1307).
+# catalog: backlog-pm — Classify churn detector JSON into `/wrap` action and suppression sets using recorded decision baselines
 #
 # The detector stays read-only and policy-free. This consumer turns its JSON
 # envelope into disjoint action sets plus the aggregate that /wrap records.

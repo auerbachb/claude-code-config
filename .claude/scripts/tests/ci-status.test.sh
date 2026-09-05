@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ci-status.test.sh — Offline unit tests for ci-status.sh check-run dedup (issue #675).
+# catalog: tests — Tests for `ci-status.sh`
 #
 # Most cases drive the `--check-runs-stdin` path with a full 40-char SHA, which
 # makes zero gh calls — no stub, no network. A separate section stubs `gh` to prove

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Detect a CodeRabbit implementation-plan comment on a GitHub issue.
+# catalog: review-escalation — Detect a substantive CodeRabbit implementation-plan comment on a GitHub issue
 #
 # Usage: cr-plan.sh <issue_number> [--poll <minutes>] [--max-age-minutes N]
 #        cr-plan.sh --help

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for ccusage-baseline.sh (issue #781).
+# catalog: tests — JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781)
 #
 # Fully hermetic: stubs the `ccusage` binary on PATH; no network access, no
 # real ccusage install required. Follows the *.test.sh stubbing pattern used

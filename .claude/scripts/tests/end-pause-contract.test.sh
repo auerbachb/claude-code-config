@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# catalog: tests — Contract tests binding the `/end` and `/pause` skills, their resume companions, and the hooks and scripts they drive
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

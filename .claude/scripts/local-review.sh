@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # local-review.sh — Run a local review CLI and emit the compact result contract.
+# catalog: review-escalation — Run a local review CLI (CodeRabbit/CodeAnt) with every false-clean check applied; emits the compact result contract
 #
 # One wrapper for the CodeRabbit / CodeAnt local-review invocations that were
 # copy-pasted inline across .claude/rules/cr-local-review.md and several skills,

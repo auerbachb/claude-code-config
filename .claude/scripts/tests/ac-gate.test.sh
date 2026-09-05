@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for ac-gate.sh (issue #1281).
+# catalog: tests — Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593)
 # Stubs `gh` with fixture PR bodies and issue states; no real GitHub calls.
 # Covers every acceptance criterion plus both real regression failures.
 # Run from repo root:

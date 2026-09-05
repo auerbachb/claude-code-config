@@ -3,6 +3,7 @@
 # handoff files had the same unlocked RMW profile session-state.json had before #639;
 # concurrent orchestrators (/babysit-pr, /pr-monitor-and-manage, Phase B) silently lost
 # each other's array appends when they all read-modify-wrote at once).
+# catalog: tests — Tests for `handoff-state.sh`
 #
 # Uses a temporary HOME so it never touches the real ~/.claude/. Requires jq.
 # Run from repo root:

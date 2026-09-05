@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # --help contract coverage for every repo script (issues #1513, #1475).
+# catalog: tests — `--help` contract for every repo script (#1513/#1475/#1528) — repo-wide smoke sweep (exit 0, non-empty, silent stderr, never ends on a bare section heading) plus heading **and** body-content assertions for the 12 scripts whose extraction was BSD-fatal or truncating, fixtures proving the checker rejects both pre-fix forms, and (Part 4) the empty-extraction guard: an extraction that yields nothing must exit non-zero and say so on stderr, asserted end-to-end and at the `END`-block level, with a pre-fix control that still exits 0
 #
 # WHY THIS SUITE EXISTS
 #

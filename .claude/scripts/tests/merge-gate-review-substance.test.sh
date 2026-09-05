@@ -2,6 +2,7 @@
 # merge-gate-review-substance.test.sh — Regression tests for issue #875:
 # merge-gate.sh must not count a bot APPROVED as review coverage when nothing
 # evidences that the reviewer actually read the commit.
+# catalog: tests — Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage
 #
 # Every case below is drawn from a real observed trace:
 #   #171 3634336 — CodeAnt APPROVED bodylen=0, status comment naming 98f0bd0

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for portable-handoff-context.sh (issue #1311).
+# catalog: tests — Tests for `portable-handoff-context.sh`
 
 set -uo pipefail
 

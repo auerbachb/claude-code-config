@@ -2,6 +2,7 @@
 # merge-gate-json-escaping.test.sh — Regression tests for issue #1219:
 # merge-gate.sh must not ship control characters in its JSON, and must build
 # every part of that JSON with jq rather than by string-concatenation.
+# catalog: tests — Tests that `merge-gate.sh` emits control-character-free JSON built with jq rather than by string concatenation
 #
 # The trace this comes from (PR #1218, HEAD baea515):
 #

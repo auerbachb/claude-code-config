@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pr-authorship.sh — Hard authorship gate for automated PR write actions (issue #733).
+# catalog: pr-state-polling — Hard authorship gate — verify the authenticated user authored a PR before any automated write
 #
 # PURPOSE
 #   The single source of truth for the question every automated PR tool must

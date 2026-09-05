@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pr-issue-ref.sh — Extract the linked issue number(s) from a PR body.
+# catalog: pr-state-polling — Extract every linked issue number from a PR body via GitHub's issue-closing keywords (one per line; `--first` for a single primary)
 #
 # Scans the PR body for any of GitHub's nine supported issue-closing keywords
 # (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`,

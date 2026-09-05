@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # resolve-review-threads.sh — Resolve unresolved PR review threads from bot reviewers.
+# catalog: review-threads-diffs — Fetch PR review threads via GraphQL, resolve them, and verify `isResolved`
 #
 # Fetches all review threads on the given PR via GraphQL, filters to unresolved
 # threads whose first-comment author matches --authors, and resolves each via

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # merge-sequence.test.sh — Offline unit tests for merge-sequence.sh (issue #756).
+# catalog: tests — Tests for `merge-sequence.sh`
 # Stubs `gh` and `pr-authorship.sh` so no network / real repo is touched.
 # Run from repo root: bash .claude/scripts/tests/merge-sequence.test.sh
 set -uo pipefail

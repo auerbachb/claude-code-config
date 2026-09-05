@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # reviewer-of.sh — Determine which reviewer (cr/bugbot/greptile) owns a PR.
+# catalog: pr-state-polling — Determine which reviewer (cr/bugbot/greptile) owns a PR; reads session-state then GitHub history
 #
 # PURPOSE
 #   Centralizes the reviewer-ownership resolution contract defined in

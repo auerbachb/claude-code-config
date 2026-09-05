@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit test for the canonical `pr-state-classify.jq` program invoked by
+# catalog: tests — Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since`
 # `pr-state.sh --since`
 # (issues #535, #557, #575, #669, #743).
 #

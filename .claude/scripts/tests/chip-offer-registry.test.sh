@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # chip-offer-registry.test.sh — Offline tests for chip-offer-registry.sh.
+# catalog: tests — Tests for `chip-offer-registry.sh` — reservation, cap exhaustion, transitions, counting, concurrent emitters, TTL expiry, and the `--help` / `--emitter` allowlist drift guard
 #
 # Tests cover:
 #   --reserve: normal, cap-exhausted (exit 7), lock timeout

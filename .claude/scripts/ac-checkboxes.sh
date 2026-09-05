@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # ac-checkboxes.sh — Test-Plan checkbox helper (extract / tick / all-pass).
+# catalog: merge-gate-sequencing — Parse and update the PR body's Test plan checkboxes
 #
 # Parse Markdown checkboxes from the PR body's `## Test plan` section (case-
 # insensitive match; also accepts `## Test Plan` and `## Acceptance Criteria`),

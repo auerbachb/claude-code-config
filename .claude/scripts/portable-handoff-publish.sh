@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # portable-handoff-publish.sh — lint and atomically update one canonical note.
+# catalog: utilities — Lint and atomically update one locked canonical manual handoff per repository/session
 
 set -uo pipefail
 

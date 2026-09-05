@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # skill-conventions-audit.sh — Static audit of skill files against repo conventions
+# catalog: skills-telemetry — Static audit that `.claude/skills/*/SKILL.md` files match repo conventions
 #
 # Adapted from affaan-m/everything-claude-code skill-comply / skill-stocktake (issue #417).
 # ECC runs LLM-driven behavioral compliance tests; we only check static conventions

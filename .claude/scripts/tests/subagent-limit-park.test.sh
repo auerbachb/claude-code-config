@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the reactive subagent-thread usage-limit park — issue #1618.
+# catalog: tests — Tests the reactive subagent-thread usage-limit park (#1618) against the real fenced bash in `.claude/reference/subagent-thread-limit-park.md` and `/go-on` — structured-signal detection with its text-only negative controls, the compare-and-set park claim and its adoption of an existing day-mode or sibling park, per-pipeline phase records, the reset-plus-2-minute wake with its thrash cap and weekly branch, stale-generation rejection, and fail-closed recovery
 #
 # WHAT IS UNDER TEST
 #   The REAL fenced bash in `.claude/reference/subagent-thread-limit-park.md`
@@ -46,6 +47,7 @@ SUBAGENT="$REPO_ROOT/.claude/skills/subagent/SKILL.md"
 PM_SKILL="$REPO_ROOT/.claude/skills/pm/SKILL.md"
 PAUSE_RESUME="$REPO_ROOT/.claude/skills/pause-resume/SKILL.md"
 SCHEMA="$REPO_ROOT/.claude/reference/session-state-schema.json"
+DAY_MODE_DOC="$REPO_ROOT/.claude/reference/pm-day-mode.md"
 RULES="$REPO_ROOT/.claude/rules"
 SESSION_STATE_SH="$REPO_ROOT/.claude/scripts/session-state.sh"
 
@@ -420,6 +422,68 @@ check_eq "  so a later park can still claim the slot" "PARK_CLAIM=won" "$OUT"
 seed_existing_park preemptive "2026-12-01T10:00:00Z" '"task-daymode"'
 release_claim
 check_eq "the release never clears someone else's park" "preemptive" "$(day_get limit_cause)"
+
+# ---------------------------------------------------------------------------
+echo "== #1622: /pm 2D.6 landing between this park's claim and its wake publish =="
+# ---------------------------------------------------------------------------
+# The residual window the ticket names. §2's CAS has won — `limit_cause` is
+# claimed — but §4 has not published yet, so `limit_resume_task_id` is still
+# null. Before #1622 /pm's reactive path read that null, concluded there was no
+# wake to stop, and wrote its whole record with a plain --set batch; the §2
+# winner then reached §4, also read null, and published. Two wakes over one
+# park. 2D.6 now claims `limit_cause` by the same compare-and-set, so the
+# interleaving costs it the slot instead of the park.
+BLOCK_PM_2D6="$(extract_skill_bash "$PM_SKILL" pm-day-2d6-park-claim)" || exit 1
+
+run_pm_2d6() {  # run_pm_2d6 <parked_until> <limit_kind> [new_hits]
+  PARKED_UNTIL="$1" LIMIT_KIND="$2" NEW_HITS="${3-1}" bash -c "$BLOCK_PM_2D6" 2>/dev/null | tail -1
+}
+PM_2D6_UNTIL="2026-12-01T10:00:00Z"   # deliberately NOT $PARK_UNTIL_FIX
+
+seed_unparked
+check_eq "the thread's §2 claim wins first" "PARK_CLAIM=won" \
+  "$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)"
+check_eq "  and §4 has not published a wake yet" "null" "$(day_get limit_resume_task_id)"
+BEFORE_2D6=$(cat "$STATE_FILE")
+check_eq "2D.6 landing inside that window adopts" "PARK_CLAIM=adopted" \
+  "$(run_pm_2d6 "$PM_2D6_UNTIL" rolling_window 5)"
+# The two paths write DIFFERENT values into every shared field, so each check
+# below distinguishes the winner's record from 2D.6's rather than matching both.
+check_eq "  the §2 winner's parked_until survives" "$PARK_UNTIL_FIX" "$(day_get parked_until)"
+check_eq "  2D.6's own timestamp was not written"  "1"               "$(day_get consecutive_limit_hits)"
+check_eq "  a lost 2D.6 claim writes nothing at all" "$BEFORE_2D6" "$(cat "$STATE_FILE")"
+
+# Now the §2 winner reaches §4. Exactly one wake may exist over this one park,
+# and it must be the owner's — the outcome #1428 / #1445 / #1622 exist for.
+OUT=$(LIMIT_MONITOR_TASK_ID='"task-owner"' WAKE_GENERATION="limit-owner" \
+      bash -c "$BLOCK_PUBLISH" 2>/dev/null | tail -1)
+check_eq "the §2 winner publishes its wake"      "WAKE_PUBLISH=ok" "$OUT"
+check_eq "  exactly one wake over one park"      "task-owner"      "$(day_get limit_resume_task_id)"
+check_eq "  and the generation is the owner's"   "limit-owner"     "$(day_get limit_resume_generation)"
+
+# Negative control for the adoption above: with the slot free, the SAME 2D.6
+# invocation wins and writes its own record. Without this, "adopted" would also
+# be the reading of a block that could never claim anything.
+seed_unparked
+check_eq "control: with the slot free, 2D.6 wins" "PARK_CLAIM=won" \
+  "$(run_pm_2d6 "$PM_2D6_UNTIL" rolling_window 5)"
+check_eq "  and 2D.6's own record landed"      "$PM_2D6_UNTIL" "$(day_get parked_until)"
+check_eq "  with its own thrash counter"       "5"             "$(day_get consecutive_limit_hits)"
+check_eq "  and its own cause"                 "reactive"      "$(day_get limit_cause)"
+# The mirror direction, closing the loop: a park 2D.6 opened is adopted by this
+# document's §2 claim, exactly as a day-mode 2D.7 park already is.
+check_eq "  a park 2D.6 opened is adopted here" "PARK_CLAIM=adopted" \
+  "$(run_claim "$PARK_UNTIL_FIX" rolling_window | tail -1)"
+check_eq "  2D.6's park survives that adoption" "$PM_2D6_UNTIL" "$(day_get parked_until)"
+
+# The mechanism is documented where the mechanism lives, not in the auto-loaded
+# corpus: pin the day-mode narrative and the schema comment.
+require_text "day-mode doc records the reactive CAS claim" "$DAY_MODE_DOC" \
+  'since #1622'
+require_text "day-mode doc states the loss semantics" "$DAY_MODE_DOC" \
+  'What a lost claim means'
+require_text "schema attributes the cause CAS to both paths" "$SCHEMA" \
+  'since #1622, 2D.6'
 
 # ---------------------------------------------------------------------------
 echo "== /go-on generation gate: a stale wake changes nothing (AC 7) =="

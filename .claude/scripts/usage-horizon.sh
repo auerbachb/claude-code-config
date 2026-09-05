@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # usage-horizon.sh — Pre-limit usage-horizon evaluator (issue #1427).
+# catalog: token-measurement — Turn the harness-injected remaining-token counter into a `clear` / `approaching` / `critical` / `unknown` verdict
 #
 # PURPOSE
 #   Turn the harness-injected in-context remaining-token counter

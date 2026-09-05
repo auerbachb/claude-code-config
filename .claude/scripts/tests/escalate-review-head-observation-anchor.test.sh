@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the HEAD-observation anchor in escalate-review.sh (issue
+# catalog: tests — Head-observation anchor tests for `escalate-review.sh` — a force-pushed older commit must not make a prior-HEAD banner or `@cursor review` trigger read as fresh
 # #1517). Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 #
 # WHAT IS UNDER TEST

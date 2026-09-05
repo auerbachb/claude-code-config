@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for session-state.sh's legacy -> per-repo migration (issue #638).
+# catalog: tests — Tests the legacy-flat → per-repo migration in `session-state.sh`
 #
 # The defect being fixed: `.prs` was a flat map keyed by bare PR number, so two
 # repos that both reached PR #84 silently overwrote each other, and `.root_repo`

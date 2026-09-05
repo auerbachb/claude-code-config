@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # local-review.test.sh — Offline unit tests for local-review.sh (issue #782).
+# catalog: tests — Tests for `local-review.sh`; every CLI is a stub, so no network and no dependence on which CLIs are installed
 #
 # Fully offline: every CLI is a stub script driven through --bin, so no network, no
 # real coderabbit/codeant invocation, and no dependence on which CLIs are installed

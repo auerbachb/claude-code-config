@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # poll-watermarks.sh — Persist and compare PR poll watermarks (issue #741).
+# catalog: pr-state-polling — Track high-water IDs for the three PR comment endpoints to detect new bot findings
 #
 # Tracks high-water IDs for all three polled comment endpoints so per-cycle
 # trigger #1 in cr-github-review.md ("new bot findings since the last poll

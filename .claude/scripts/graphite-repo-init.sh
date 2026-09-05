@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Optional: create .git/.graphite_repo_config so the Graphite Claude Code plugin
 # can auto-detect Graphite-enabled repos (see issue #397).
+# catalog: utilities — Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI
 #
 # Requires Graphite CLI (`gt`). Install: brew install withgraphite/tap/graphite
 # or npm install -g @withgraphite/graphite-cli@stable

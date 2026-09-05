@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # estimate-resolve.sh — Resolve an issue number to its estimate string.
+# catalog: backlog-pm — Resolve an issue number to its estimate string so every dispatch helper reports the same figure
 #
 # PURPOSE
 #   Used by dispatch/makespan helpers so /pm, /subagent, and /wave all show

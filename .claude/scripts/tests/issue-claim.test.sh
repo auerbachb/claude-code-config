@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for issue-claim.sh (issue #873 — claim an issue at pick time).
+# catalog: tests — Tests for `issue-claim.sh` against a stateful `gh` stub, so a claim written by one run is read back by the next
 #
 # Stubs `gh` on PATH with a STATEFUL fake issue (labels, assignees, comments,
 # timeline) so a claim written by one run is read back by the next — that

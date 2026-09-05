@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # estimate-log.sh — Record and report guess-vs-actual durations for merged PRs.
+# catalog: backlog-pm — Record and report guess-vs-actual durations for merged PRs in `~/.claude/estimate-log.jsonl`
 #
 # PURPOSE
 #   Append one JSON row per merged PR to ~/.claude/estimate-log.jsonl (never

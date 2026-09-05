@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # diff-survival-check.test.sh — Offline unit tests for diff-survival-check.sh (issue #757).
+# catalog: tests — Tests for `diff-survival-check.sh`
 #
 # Fully hermetic: every scenario builds throwaway git repos under a temp dir and
 # points --base at a LOCAL ref, so no network, no `gh`, and no real remote are

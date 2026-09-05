@@ -1,5 +1,6 @@
 #!/bin/bash
 # Fix trust flags for ALL projects in ~/.claude.json.
+# catalog: trust-worktree-repo — Fix trust flags for all projects in `~/.claude.json`
 # Usage: bash .claude/scripts/repair-trust-all.sh
 # See .claude/rules/trust-dialog-fix.md for details.
 

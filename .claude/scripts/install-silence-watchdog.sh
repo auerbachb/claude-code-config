@@ -1,5 +1,6 @@
 #!/bin/bash
 # Install the macOS launchd watchdog that monitors Claude heartbeat files.
+# catalog: scheduling-monitoring — Install the macOS launchd watchdog that monitors Claude heartbeat files
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true

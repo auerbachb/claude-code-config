@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline BugBot failure and response classification tests for escalate-review.sh.
+# catalog: tests — BugBot failure and response-classification tests for `escalate-review.sh`
 # Shared fixtures live in tests/lib/escalate-review-fixtures.sh.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/escalate-review-fixtures.sh

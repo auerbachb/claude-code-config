@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # repo-root.sh — Resolve the absolute path of the main (root) worktree.
+# catalog: trust-worktree-repo — Resolve the absolute path of the root (main) worktree (every git call wall-clock bounded; exit 3 on timeout)
 #
 # PURPOSE
 #   Centralizes the "first-entry-in-`git worktree list`" pattern used across

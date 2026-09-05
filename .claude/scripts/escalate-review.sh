@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # escalate-review.sh — Deterministic CR→BugBot→Greptile escalation verdict.
+# catalog: review-escalation — Run the CR→BugBot→Greptile escalation gate; emits a single deterministic `STATUS=` verdict — see `--help`
 #
 # PURPOSE
 #   Implements the per-cycle reviewer escalation gate documented in
