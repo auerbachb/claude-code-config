@@ -767,6 +767,55 @@ with open(path) as f:
     d = json.load(f)
 sys.exit(1 if d.get("restart_recommended") is not None else 0)
 PY
+# A tripped publisher still owes the RESUME-path restart signal (CodeAnt, PR
+# #1640). The two assertions above cover the startup path, where the trip is
+# recorded and the marker is merely left alone. On a resume the marker is not
+# read-only: leg 3 WRITES the categories whose links a publisher repointed, and
+# it is the only thing that ever reports a repoint under an unchanged HEAD — a
+# later scheduled tick sees a stable HEAD and the links already in place. A trip
+# cuts the publisher after an unknown subset of its links landed, so the hook
+# must claim that publisher's whole category set rather than harvest a killed
+# child's block-buffered stdout, which can be empty precisely when links did
+# change. The fixture seeds a marker holding only "skills", so claude-md and
+# rules appearing proves the claim ran rather than the seed being echoed back.
+STALLR="$P15/stallr"
+build_publish_fixture "$STALLR" '#!/bin/sh
+sleep 60
+'
+printf '{"source":"resume"}' \
+  | HOME="$STALLR/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=2 \
+    bash "$STALLR/tree/.claude/hooks/session-start-sync.sh" >/dev/null 2>&1 || true
+python3 - "$STALLR/home/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume whose skill publisher tripped its bound did not record that publisher's categories — links it repointed before the kill are forever-silent (CodeAnt, PR #1640)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+with open(path) as f:
+    cats = json.load(f).get("restart_recommended", {}).get("categories") or []
+sys.exit(0 if {"claude-md", "rules"} <= set(cats) else 1)
+PY
+
+# Negative control for the claim: a HEALTHY publisher on the same resume path
+# must NOT claim categories it never touched. Without this, the assertion above
+# would pass for a hook that unconditionally claimed every category on every
+# run, which would make the restart signal meaningless rather than honest.
+OKPR="$P15/okpr"
+build_publish_fixture "$OKPR" '#!/bin/sh
+echo "  alpha — creating symlink"
+exit 0
+'
+printf '{"source":"resume"}' \
+  | HOME="$OKPR/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
+    bash "$OKPR/tree/.claude/hooks/session-start-sync.sh" >/dev/null 2>&1 || true
+python3 - "$OKPR/home/.claude/sync-restart-recommended.json" <<'PY' || fail "a healthy resume publisher claimed claude-md/rules it never printed — the trip claim is firing unconditionally (CodeAnt, PR #1640)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+with open(path) as f:
+    cats = json.load(f).get("restart_recommended", {}).get("categories") or []
+sys.exit(1 if {"claude-md", "rules"} & set(cats) else 0)
+PY
 rm -rf "$P15"
 
 # --- 16. The capture pair is handed over on a wedged child (CodeAnt, PR #1640) -

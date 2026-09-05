@@ -527,6 +527,20 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
       # cover exactly those links.
       errors="${errors:+$errors; }${label} symlink publish failed: $(_bound_trip_reason) — aborted before the lock staleness window could dispossess this run"
       _publish_incomplete=1
+      # That unknown subset still owes the resume-path restart signal (leg 3),
+      # which is the ONLY thing that ever reports links repointed under an
+      # unchanged HEAD — a later scheduled tick sees a stable HEAD and the links
+      # already in place. Reading $CAPTURE here would not recover the subset
+      # honestly: the child's stdout is a FILE, so it is block-buffered, and a
+      # kill can drop every change line already written — silence would read as
+      # "changed nothing" precisely when the publish was cut mid-write. So claim
+      # the label's WHOLE category set instead. That is the same conservative
+      # direction the marker clear takes: a duplicate restart reminder, never a
+      # lost one. (CodeAnt, PR #1640.)
+      case "$label" in
+        skill) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills claude-md rules" ;;
+        agent) _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }agents" ;;
+      esac
       return 0
     fi
     out="$(cat "$CAPTURE" 2>/dev/null)" || out=""
