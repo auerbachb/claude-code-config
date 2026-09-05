@@ -834,6 +834,85 @@ for needle in 'owned-resumable upgrade' 'Liveness fails toward surfacing' \
     "$(grep -qF -- "$needle" "$REF" && echo true || echo false)"
 done
 
+############################################################################
+# `/wave` is the sweep's second caller (issue #1460). Before it, `/wave` ran its
+# own weaker filter — drop `claimed`/`unknown`, treat `stale` as
+# warn-and-proceed — so a candidate `/pm` skipped as owned by a live paused
+# thread could still be admitted to a wave. These assert the wiring the same way
+# the `/pm` block above does; `/wave` has no backing script to black-box.
+echo
+echo "== (11) /wave wiring and output contract =="
+WAVE_SKILL="$REPO_ROOT/.claude/skills/wave/SKILL.md"
+check_eq "wave/SKILL.md exists" "true" \
+  "$([[ -f "$WAVE_SKILL" ]] && echo true || echo false)"
+in_wave() { grep -qF -- "$1" "$WAVE_SKILL" && echo true || echo false; }
+
+WAVE_NEEDLES_FILE="$TMP/wave-needles.txt"
+cat > "$WAVE_NEEDLES_FILE" <<'NEEDLES'
+CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
+DEGRADED: candidate-ownership.sh not found
+"$CANDIDATE_OWNERSHIP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"}
+| `skip` (`owned_live`) |
+| `adopt` (`owned_dead`) |
+sweep degraded: {SWEEP_ERR}; using claim gate only
+- **#88** — owned by {owner_label} ({state}); resume with {resume_route}
+- **#91** — owner thread no longer live ({reason}); handed to `/pm` for adoption
+NEEDLES
+while IFS= read -r needle; do
+  [[ -z "$needle" ]] && continue
+  check_eq "wave/SKILL.md contains: $needle" "true" "$(in_wave "$needle")"
+done < "$WAVE_NEEDLES_FILE"
+# Negative control for in_wave(): a string that is certainly absent must read
+# false. Without it every assertion above would pass vacuously if the grep or
+# the path were wrong.
+check_eq "in_wave() control" "false" "$(in_wave 'candidate-ownership.sh --claim')"
+
+# The regression this issue closes: the retired posture must be GONE, not merely
+# joined by the new text. A file that still says stale is not an exclusion would
+# satisfy every `contains` assertion above while behaving exactly as before.
+check_eq "wave/SKILL.md no longer keeps a stale claim as a non-exclusion" "false" \
+  "$(in_wave '`stale` is **not** an exclusion')"
+# Negative control for that absence check: a string that IS present must read
+# true through the same grep, or "absent" would just mean "grep never matches".
+check_eq "in_wave() absence-check control" "true" "$(in_wave 'in-progress')"
+
+# `/wave` must not take a claim over — adoption is `/pm`'s job (Execution
+# boundary). Assert the SHAPE of every claim-gate invocation, not one literal
+# string: a single needle would miss a quoted, path-resolved, or reworded call,
+# and `--claim` also appears in /wave's prose ABOUT what issue-claim.sh does,
+# which is not a call /wave makes. Grep the invocation lines instead — every
+# line that invokes the resolved variable — and require all of them to read.
+# Match every resolved-variable form, not just the bare one: `"$ISSUE_CLAIM"`
+# and `"${ISSUE_CLAIM}"` are the same call, and a needle that saw only the first
+# would report "no write flags" about a file full of them.
+#
+# Line-based on purpose. /wave is a PROSE skill: its claim-gate fallback is an
+# inline code span inside a sentence, not a fenced command block, so there is no
+# block marker to anchor to. The failure direction is also the safe one — a
+# future prose line naming the variable without `--check` FAILS this check
+# (noisy, visible, one edit to fix) rather than hiding a write flag.
+claim_call_lines() { grep -E -- '"\$\{?ISSUE_CLAIM\}?"' "$WAVE_SKILL"; }
+WAVE_CLAIM_CALLS="$(claim_call_lines | grep -c . || true)"
+# Control first: with zero invocation lines both assertions below pass
+# vacuously, so a renamed variable would read as "no writes" forever.
+check_eq "wave/SKILL.md does invoke the claim gate at all" "true" \
+  "$( (( ${WAVE_CLAIM_CALLS:-0} > 0 )) && echo true || echo false )"
+check_eq "and every \$ISSUE_CLAIM invocation in wave/SKILL.md is a --check read" "0" \
+  "$(claim_call_lines | grep -cv -- '--check' || true)"
+check_eq "and none carries a write flag" "0" \
+  "$(claim_call_lines | grep -cE -- '--(claim|release)( |$|`)' || true)"
+
+# Same shape for the sweep itself: /wave must invoke candidate-ownership.sh as
+# the read-only helper it is. The script has no write path at all, so a write
+# flag here would be a caller inventing one — and /wave's whole divergence from
+# /pm is that it never takes a claim over.
+sweep_call_lines() { grep -E -- '"\$\{?CANDIDATE_OWNERSHIP\}?"' "$WAVE_SKILL"; }
+WAVE_SWEEP_CALLS="$(sweep_call_lines | grep -c . || true)"
+check_eq "wave/SKILL.md does invoke the sweep at all" "true" \
+  "$( (( ${WAVE_SWEEP_CALLS:-0} > 0 )) && echo true || echo false )"
+check_eq "and no \$CANDIDATE_OWNERSHIP invocation carries a write flag" "0" \
+  "$(sweep_call_lines | grep -cE -- '--(claim|release|set)( |$|`)' || true)"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ "$FAIL" -eq 0 ]] || exit 1

@@ -34,6 +34,7 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
 ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
@@ -44,6 +45,7 @@ Read `chip-launching.md` the same way — `$HOME/.claude/skills-worktree/.claude
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable`, and stop before offering any chip. A `/wave` that cannot read its own routing gate is exactly the run that fans out one thread per issue (#1189); refusing is the safe failure.
 - `ISSUE_CLAIM` empty → **optional**. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — claim filter skipped, in-flight detection is PR-only` and continue with Step 2's other filters.
+- `CANDIDATE_OWNERSHIP` empty → **optional**. Print `DEGRADED: candidate-ownership.sh not found (checked all three paths) — ownership sweep skipped; a candidate paused in another thread may be re-offered here` and fall back to claim-gate-only behavior in Step 2 item 4. **Never block a wave on this** — the sweep exists to stop duplicate work, and a sweep that cannot run must not also stop the work it was meant to protect. `/wave` launches nothing either way, so the cost of the fallback is a re-offer the user can decline, not a duplicate implementation.
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo Wave override unavailable` and use `CEILING` as computed. An *absent* `.claude/pm-config.md` in a repo that has the script is a normal state, not a degradation — say nothing.
 - `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, sizing on the per-thread ceiling only` and drop `FREE` from the `SLOTS` formula. `/wave` still has `EFFECTIVE - IN_FLIGHT`, so the wave stays bounded; what is lost is only the cross-thread term, and a run that silently dropped it would look identical to one where the repo genuinely had headroom. A **non-zero exit** from the script is different from a missing script: it means a count source could not be read, so treat it as `FREE = 0` and defer, rather than sizing as if nothing were in flight (`active-work-cap.md` "Resolution order and failure behavior").
 
@@ -110,22 +112,84 @@ Start from the ranked order and remove, in this sequence:
 
    **Filter on the chip's repo, not just its number.** These logs are written one per capture thread and span *every* repo worked in, so an unfiltered read mixes `owner/other-repo#42` into a wave for this repo — where it would both suppress a legitimate `#42` here and consume an `IN_FLIGHT` slot that `FREE` (Step 6) scopes to this repo alone. The `select` on `.url` above is what keeps the two counts talking about the same thing. An entry with no usable `url` cannot be attributed and is **not** dropped from the candidate set — a bare number is not evidence that *this* repo's issue was offered.
 3. **Already in flight on GitHub (dedup — any author).** Drop any issue referenced by a closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) in an open PR body — local (`#N`) and cross-repo (`owner/repo#N`) forms both, **regardless of who authored the PR**: you don't want to start work a collaborator is already doing. Reuse the open-PR data `/pm` already fetched (it carries the `author` field); do not re-query. As you drop each one, note whether the covering PR is **yours** (`author.login` equals your authenticated login — `$GH_USER`, else `gh api user --jq .login`) or a **collaborator's** — only your own feed the ceiling count below.
-4. **Already claimed by another thread (no PR yet).** Item 3 only sees issues that have reached a PR; a thread that picked an issue twenty minutes ago and is still planning is invisible to it. Consult the claim instead (issue #873). **Batch the lookup** — one call for the whole backlog, then the helper only for the intersection, because a candidate without the label cannot hold a claim:
+4. **Already owned by another thread (no PR yet).** Item 3 only sees issues that have reached a PR; a thread that picked an issue twenty minutes ago and is still planning is invisible to it, and so is a coding thread that parked itself mid-issue. Consult the **shared ownership sweep** — the same `candidate-ownership.sh`, the same reader set, and the same `dispatch`/`skip`/`adopt` contract `/pm` runs at Steps 1B.5 and 3.4 (issues #873, #1431, #1460). **Batch the lookup** — one label query for the whole backlog, then one sweep call for the intersection, because a candidate without the label cannot hold a claim:
 
    ```bash
-   CLAIMED=$(gh issue list --label in-progress --state open --limit 100 --json number --jq '.[].number')
-   # then, only for candidates whose number appears in $CLAIMED:
-   "$ISSUE_CLAIM" <N> --check   # $ISSUE_CLAIM from Step 0; empty → the DEGRADED line there, then skip this filter
+   CLAIM_LIMIT=200
+   CLAIM_RC=0
+   CLAIMED=$(gh issue list --label in-progress --state open --limit "$CLAIM_LIMIT" --json number --jq '.[].number') || CLAIM_RC=$?
+   # A FAILED query returns the SAME empty string as "nothing is claimed", and an
+   # empty index means an empty intersection means the sweep never runs at all —
+   # the guard disabled by a network blip, silently. Read the exit status, not
+   # the output: any non-zero widens to the whole pool, exactly like truncation.
+   if (( CLAIM_RC != 0 )); then CLAIM_INDEX_TRUNCATED=true; fi
+   # A FULL page may be a TRUNCATED one. `gh issue list` has no --paginate, so a
+   # count equal to the limit means the claim index may be short — and a claimed
+   # candidate missing from it reads as unlabelled, which is the one direction
+   # this filter must never fail in. Sweep the whole candidate pool instead.
+   if [[ "$(printf '%s\n' "$CLAIMED" | grep -c .)" -ge "$CLAIM_LIMIT" ]]; then
+     CLAIM_INDEX_TRUNCATED=true   # pre-filter abandoned for this run
+   fi
+   # CANDIDATE_NUMS: the pool as it stands after items 1-3. OWNED_CANDIDATES is
+   # what the sweep actually runs on — the labelled intersection normally, and
+   # the WHOLE pool when the index is untrustworthy, since a short index would
+   # otherwise shrink the sweep to nothing exactly when it is needed most.
+   OWNED_CANDIDATES=()
+   for n in ${CANDIDATE_NUMS[@]+"${CANDIDATE_NUMS[@]}"}; do
+     # Here-string, not `printf | grep -q`: under `set -o pipefail` grep exits at
+     # the first match and the producer takes SIGPIPE, so the MATCHING case can
+     # return non-zero and a claimed candidate would read as unclaimed.
+     if [[ "${CLAIM_INDEX_TRUNCATED:-false}" == true ]] \
+        || grep -qxF -- "$n" <<<"$CLAIMED"; then
+       OWNED_CANDIDATES+=("$n")
+     fi
+   done
+   SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
+   if [[ -n "$CANDIDATE_OWNERSHIP" && ${#OWNED_CANDIDATES[@]} -gt 0 ]]; then
+     SWEEP_ARGS=(${OWNED_CANDIDATES[@]+"${OWNED_CANDIDATES[@]}"} --json)
+     # Liveness needs a session listing, and no CLI enumerates Claude sessions —
+     # it comes from the harness. Without one, liveness is `indeterminate`, which
+     # resolves to live, so every owner is surfaced rather than taken over.
+     # CLAUDE_SESSION_LISTING is the script's own documented env input; seed the
+     # local name from it so a harness that exported only the env var still gets
+     # a readability check rather than silently falling through to no listing.
+     : "${SESSION_LISTING_PATH:=${CLAUDE_SESSION_LISTING:-}}"
+     if [[ -n "${SESSION_LISTING_PATH:-}" && -r "${SESSION_LISTING_PATH:-}" ]]; then
+       SWEEP_ARGS+=(--sessions "$SESSION_LISTING_PATH")
+     fi
+     SWEEP_ERRFILE="$(mktemp)"
+     SWEEP="$("$CANDIDATE_OWNERSHIP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"} 2>"$SWEEP_ERRFILE")" || SWEEP_RC=$?
+     SWEEP_ERR="$(cat "$SWEEP_ERRFILE")"; rm -f "$SWEEP_ERRFILE"
+   fi
    ```
 
-   The label is a safe pre-filter because `issue-claim.sh` maintains it as a **superset** of the claim: `--claim` writes the label before the claim comment and rolls the label back if the comment fails, and `--release` deletes the comment before removing the label. So a claim that exists at all carries the label at every intermediate point — there is no "comment but no label" state for this filter to miss.
+   The label is a safe pre-filter because `issue-claim.sh` maintains it as a **superset** of the claim: `--claim` writes the label before the claim comment and rolls the label back if the comment fails, and `--release` deletes the comment before removing the label. So a claim that exists at all carries the label at every intermediate point — there is no "comment but no label" state for this filter to miss. It is also the cheap half of the pair: the sweep is the expensive per-candidate call, so it only ever runs on the intersection. **The pre-filter is an optimisation, never the guard** — when the index comes back full it may have been cut off, and when the query *failed* it is empty for a reason that has nothing to do with claims, so `/wave` widens to the full candidate pool in both cases rather than trusting a list that may be missing exactly the claim it needed to see. Say which happened in one line (`claim index truncated` / `claim index query failed (rc=N)`), because a widened sweep is slower and the user should know why. Sweeping a few extra unclaimed candidates costs one call; a truncated index costs a duplicate implementation.
 
-   Drop a candidate whose verdict is `claimed` (exit 1) or `unknown` (exit 4), naming the claim as the reason. `unknown` is treated exactly as `claimed` — it never reads as permission. `stale` is **not** an exclusion: keep the candidate and surface the stale warning alongside it.
+   Branch per candidate on the sweep's `action` field — `/pm`'s three-way contract, with one `/wave`-shaped difference on `adopt`:
 
-   Respect issue #732 the same way item 3 does: a **collaborator's** fresh claim drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten.
+   | `action` | `/wave` does |
+   |---|---|
+   | `dispatch` | keep the candidate in the pool — the common case, and still the answer for `unclaimed`, `mine`, and a **bare** stale claim |
+   | `skip` (`owned_live`) | drop it, naming `owner_label`, `state`, and `resume_route` from the sweep JSON — never a bare "claimed". **Never** resume, message, or write the owning thread's state: a human parked it, and running the same work in two places is how duplicates get shipped |
+   | `adopt` (`owned_dead`) | drop it too, and say it is handed to `/pm` for adoption. A wave admits only work that can start now; adoption is a claim write plus a resume decision, and `/wave` makes neither — it never launches anything (Execution boundary) |
+
+   **Branch on `action`, never on `verdict`.** The two do not always agree, and the disagreement is deliberate: a candidate whose owner session is dead but whose claim the takeover path cannot re-stamp — claim verdict `claimed`, `unknown`, or `unavailable` — reports `verdict: owned_dead` with `action: skip`. It is a **skip**, not an adoption candidate, and `/wave` reports it with the sweep's own `reason` (which names what blocked the takeover) rather than calling it live. Reading `verdict` instead would hand `/pm` a candidate it is not allowed to adopt.
+
+   **The sweep replaces the old "`stale` is not an exclusion" posture, and that replacement is the whole point** (issue #1460). A stale claim with surviving state behind it — a park marker, an execution pause, a linked open PR, a phase handoff — is **owned**, and which owned verdict it gets follows the owner's liveness: `owned_live` when the owning session is open, paused, or unresolvable, so it is skipped with its owner named instead of warned about and re-offered; `owned_dead` when that session is archived or absent from a listing that was read, so it leaves the wave and is handed to `/pm` for adoption. Either way it stops being re-offered as startable work — re-offering it is the duplicate-shipping shape issue #652 produced. A stale claim with *nothing* behind it still comes back `dispatch` and is still admitted, so the stale window keeps doing its job: a genuinely dead thread cannot park an issue forever.
+
+   **Degradation has two layers, both matching `/pm`, and neither ever blocks a wave:**
+
+   - `CANDIDATE_OWNERSHIP` empty → the Step 0 `DEGRADED` line, then fall back to claim-gate-only over the same candidate set: `"$ISSUE_CLAIM" <N> --check`, read on **every** documented exit, not just the two happy ones — exit `0` keeps the candidate (`unclaimed`, `mine`, `stale`), exit `1` drops it as claimed, exit `4` drops it as `unknown`, and exits `2` (usage) and `3` (not_found) drop it too, each naming which happened (`claim gate unreadable (rc=N)`). `unknown` is treated exactly as `claimed` — it never reads as permission — and a gate that errored is in the same position: "we failed to look" is not permission either, and treating an unenumerated exit as startable is how a typo in this call quietly re-admits every owned candidate. `ISSUE_CLAIM` empty too → its own Step 0 line, and this filter is skipped entirely.
+   - Sweep present but `SWEEP_RC` non-zero, or empty output with candidates present → the ownership filter is *off* for this tick. Say so per candidate, quoting `SWEEP_ERR` — `` `#N` — sweep degraded: {SWEEP_ERR}; using claim gate only`` — and fall back to that same claim-gate-only path. Discarding the error and continuing would let a usage error silently disable the whole guard, which is the failure this sweep exists to prevent.
+   - A candidate the sweep *did* answer but with a non-empty `degraded[]` falls back to claim-gate-only **for that candidate alone**, named the same way (`sweep degraded: {degraded[0]}; using claim gate only`). A read failure is never a silent skip of the whole sweep, and it never marks a candidate owned by itself.
+
+   Respect issue #732 the same way item 3 does: a **collaborator's** claim — or an owner that is a collaborator's thread — drops the issue as context, but it never counts toward *your* `IN_FLIGHT` ceiling and is never overwritten. The `IN_FLIGHT` formula below is items 1–3 only, so a sweep-dropped candidate never enters the ceiling count.
+
 5. **Explicitly blocked labels.** Drop `blocked`, `on-hold`, `wontfix`, `duplicate` (`/pm` 1B.4 already excludes these — this is a cheap re-check, not a re-ranking).
 
 Every issue removed here is **silent** — it is not a wave exclusion and does not appear in the excluded list (Step 9). The excluded list is for issues that were genuine candidates and lost on independence or cap.
+
+   **One carve-out: ownership drops from item 4 are reported, not silent** (issue #1460). Items 1–3 are silent because the user can already see why — the chip they were offered, the PR that is open. An ownership drop is the opposite: the evidence lives in another thread's state, on this machine, where nothing surfaces it. "`#N` is missing from your wave" with no reason is how a parked thread gets re-picked by hand five minutes later, and naming the owner and resume route costs one line and turns the drop into an action. Sweep-degraded candidates are named for the same reason: the filter was off, and a wave that silently dropped its own guard looks identical to one where nothing was owned.
 
 Record `IN_FLIGHT` = the number of **distinct in-flight pipelines of yours**: each Active Work row from (1), each issue-maker chip from (2), and each **distinct open PR you authored** that covers one or more issues dropped in (3) **and is not already the PR backing an Active Work row counted in (1)**. Count PRs, not issue rows — a single PR that closes several issues is **one** pipeline consuming **one** reviewer slot, not several — and cross-reference PR numbers against (1) so a PR that closed one issue already tracked in Active Work *and* covers another still-candidate issue is not counted twice (once as its Active Work row, once as its (3) contribution). Step 6 subtracts it. Collaborator-covered issues are still dropped from candidates (they are already being worked), but they **never count toward your ceiling**: a collaborator's backlog must not consume your slots (issue #732 — count only your own PRs; shared-budget contention is at most FYI context, never a gate). Offered-but-unstarted issues of yours count toward it deliberately: a chip the user clicks a minute from now consumes the same reviewer budget as one already running, and the point of the cap is to avoid discovering that after the fact.
 
@@ -285,6 +349,11 @@ Batch makespan: 1.5 h–3 h · binding: parallel-work · plan on ~8:45 PM ET
 - **#38** — blocked by #42, which is in this wave
 - **#70** — footprint undeclared; can't rule out overlap with #55
 - **#71** — cap reached (2 slots; 2 already in flight)
+- **#88** — owned by {owner_label} ({state}); resume with {resume_route}
+- **#91** — owner thread no longer live ({reason}); handed to `/pm` for adoption from {adopt.from} #{adopt.pr}
+- **#92** — owner thread no longer live ({reason}); handed to `/pm` for adoption from branch at phase {adopt.phase}
+- **#94** — owner thread no longer live ({reason}); adoption blocked by the claim gate — not handed on
+- **#93** — sweep degraded: {degraded[0]}; claim gate says claimed
 ```
 
 **Batch makespan:** Resolve `makespan.sh` and `estimate-resolve.sh` (Step 0 candidate order). For each inline wave issue, call `estimate-resolve.sh <N>` and capture both stdout and exit code:
@@ -300,7 +369,7 @@ Rules for this block:
 
 - **Annotate rows the armed deadline will decline** (issue #1525). When `.repos["<key>"].window.deadline_epoch` is set — by `/pm --window` or a declared leave time (`/leave-by`) — compare each offered issue's `plan on N` bound against the time remaining — **in seconds, on Step 7's inclusive condition** (`BOUND_MIN * 60 >= REMAINING_SEC`), so an exact fit annotates exactly as it will decline — and append the decline reason to any row that cannot finish, reusing `/subagent` Step 7's wording: `— cannot finish before {clock}`. **Render `{clock}` from `deadline_epoch` with Step 7's own formatter** (`TZ='America/New_York' date -j -f '%s' "$DEADLINE_EPOCH" +'%-I:%M %p ET' 2>/dev/null || TZ='America/New_York' date -d "@$DEADLINE_EPOCH" +'%-I:%M %p ET'`) — never a literal time. A wave that warns about a 7:00 PM deadline the user never set is worse than no warning, and two surfaces printing different clocks for one deadline is worse still. This is a **warning, not a gate**: `/wave` never launches, so the real decline fires in `/subagent`, and an annotated issue still appears in the wave rather than moving to the excluded list. Annotating it here is what stops the user running a `/subagent` line whose first pipeline is refused a second later. **An issue whose bound will not resolve is annotated too** — `— unestimated; /subagent will decline this while a deadline is armed` — because Step 7 fails closed on an unknown duration, so an unestimated row is exactly as certain to be refused as an over-running one. Use **Step 7's own classification**, not a catch-all: `estimate-resolve.sh` exit 2 is genuinely `unestimated`, while exits 3 and 4 are the resolver failing and carry that reason instead (`estimate lookup failed (rc=N)`) — collapsing a broken tool into "this issue has no estimate" sends the user to edit an issue body that was never the problem. Either way, **no clock**: there is no projected finish to compare, so naming one would invent a comparison that was never made. No armed deadline — the literal `null`, or exit 3 — means no annotation. An **unreadable** read and a readable-but-**malformed** one (any non-`null` value failing Step 7's epoch validation) are each annotated once for the wave rather than per row, and they say which happened — `deadline state unreadable — /subagent may decline these` for a failed read, `deadline state malformed — /subagent may decline these` for a value that read fine and is not an epoch. Both are annotated because `/subagent` fails closed on either and declines every launch, so a silent wave here would be immediately contradicted by the dispatch it recommends; naming which one lets the user tell a lock timeout from corrupt state. Never invent a deadline, a clock time, or a per-issue decline reason from an unreadable read, and never let one exclude an issue: `/wave` still offers the whole set.
 - **Inline is the default row shape** (#1229). `recommended inline` rows carry no `**Model:**` / `**Effort:**` lines — an inline pipeline picks its own model at spawn time, so there is no picker for the user to set. Only a `chip offered` row carries them, and every such row **names its `/subagent` Step 4 criterion on its rationale line**; a chip row without one is a bug (`chip-launching.md`). "Recommended" is the honest word: `/wave` names the set, the user's `/subagent` starts it (Execution boundary).
-- **Every candidate that reached Step 5 appears exactly once** — in the wave or in the excluded list. Issues dropped in Step 2 (already offered, already in flight, blocked-labelled) appear in neither; they were never candidates.
+- **Every candidate that reached Step 5 appears exactly once** — in the wave or in the excluded list. Issues dropped in Step 2 (already offered, already in flight, blocked-labelled) appear in neither; they were never candidates. **Item 4's ownership drops are the one Step 2 exception** and appear here with the sweep's own words: `skip` reads as owned-by-another-thread and names `owner_label`, `state`, and `resume_route`; `adopt` says the owner thread is no longer live and that the candidate is handed to `/pm`, because `/wave` never takes a claim over itself — quote the sweep's own `reason` rather than writing “archived”, since `owned_dead` also covers a session simply absent from the listing. **Name only the surviving state that exists:** `#{adopt.pr}` belongs on an `adopt.from: pr` row and nowhere else — `adopt.from: branch` carries no PR number and names `{adopt.phase}` instead, and `adopt.from: null` means nothing survived, so the row says the adoption reduces to a fresh start. Printing `#null` is worse than printing nothing. **A dead owner whose claim blocks the takeover is not an adoption row at all** — `verdict: owned_dead` with `action: skip` gets its own line saying adoption is blocked and quoting the sweep's `reason`, with **no** resume route and **no** hand-off to `/pm`: nothing there is startable by anyone until the claim ages out, and offering a route that would be refused is worse than saying so; a sweep-degraded candidate says the filter fell back to the claim gate **and what that gate then decided**. A degraded candidate the claim gate *drops* is an exclusion and belongs in this list; a degraded candidate the gate *keeps* is still in the wave, so it carries the same note as a row annotation on its wave entry instead — an issue cannot be both offered and excluded, and printing the degradation in the excluded list while the issue sits in the wave above is exactly that contradiction. These are bookkeeping lines only — `/wave` adds no claim write, no takeover call, and no cross-skill dispatch behind them.
 - **One line, one reason** per exclusion. The reason names the *specific* blocker or surface — "overlaps #M" without saying on what is not a reason. Never emit a bare "excluded".
 - Omit the `### Excluded from this wave` heading entirely when nothing was excluded.
 - Flag circular dependency pairs on their own line: "**#80 / #81** — circular dependency; needs human resolution."
