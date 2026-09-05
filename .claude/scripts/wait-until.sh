@@ -67,8 +67,8 @@
 #      check is bounded by the time remaining, so a check that hangs is killed
 #      at the cap instead of blocking the caller past it (see THE CHECK IS
 #      BOUNDED TOO below).
-#   5  Environment — a required helper or lib/bounded-run.sh is missing, so
-#      nothing was polled.
+#   5  Environment — a required helper or lib/bounded-run.sh is missing, or the
+#      capture files could not be created, so nothing was polled.
 #   70 --help header extraction produced no output (internal defect).
 #
 # THE CHECK IS BOUNDED TOO
@@ -264,8 +264,19 @@ if [[ -n "${HOME:-}" ]]; then
     2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 fi
 
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/wait-until.XXXXXX")"
-CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/wait-until-err.XXXXXX")"
+# Both capture files are REQUIRED, so a failed mktemp stops the run here. Left
+# unchecked it fails OPEN in the worst possible way: CAPTURE is empty, every
+# redirection in run_bounded fails, the check never actually executes, and the
+# loop polls that non-event all the way to the cap and reports exit 4 — "the
+# condition was never met" — for a run in which nothing was ever tested. A
+# script whose whole job is to fail closed must not report a timeout it never
+# measured. Exit 5 (environment) with the reason instead.
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/wait-until.XXXXXX" 2>/dev/null || true)"
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/wait-until-err.XXXXXX" 2>/dev/null || true)"
+if [[ -z "$CAPTURE" || -z "$CAPTURE_ERR" || ! -w "$CAPTURE" || ! -w "$CAPTURE_ERR" ]]; then
+  echo "wait-until.sh: could not create the capture files under ${TMPDIR:-/tmp} (mktemp failed or the result is not writable), so the check's output could not be read and nothing was polled — free space or fix TMPDIR and retry" >&2
+  exit 5
+fi
 
 heartbeat() { # tick, elapsed, state
   [[ "$QUIET" -eq 1 ]] && return 0
