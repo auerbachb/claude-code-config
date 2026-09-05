@@ -526,6 +526,34 @@ ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/dir-interp" 2>&1 >/dev/null)
 check_eq "T13c: a DIRECTORY named as the interpreter exits 3, not a cap timeout" "3" "$RC"
 check_contains "T13c: and names it as not an executable file" "not an executable file" "$ERROUT"
 
+# --argv0 takes a separate value like -u does, so its value must not be offered
+# as the interpreter: the blame would land on the wrong word and refuse a check
+# whose real interpreter is fine.
+cat > "$TMP/env-argv0" <<'EOF'
+#!/usr/bin/env --argv0 myname definitely-not-a-real-interp-1470
+exit 0
+EOF
+chmod +x "$TMP/env-argv0"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/env-argv0" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: --argv0 consumes its value and reaches the interpreter (3)" "3" "$RC"
+check_contains "T13c: and blames the interpreter" "definitely-not-a-real-interp-1470" "$ERROUT"
+check_not_contains "T13c: not --argv0's value" "myname" "$ERROUT"
+
+# An option the walk does NOT know must end the walk, not advance past it: there
+# is no way to tell from the token whether a value follows, and guessing invents
+# an exit 3 for a check that runs. Enumerating every option env may ever grow is
+# not a contract this script can hold, so the unknown case fails open.
+cat > "$TMP/env-unknown-opt" <<'EOF'
+#!/usr/bin/env --block-signal definitely-not-a-real-interp-1470
+exit 0
+EOF
+chmod +x "$TMP/env-unknown-opt"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 2 -- "$TMP/env-unknown-opt" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: an unknown env option ends the walk rather than guessing (4)" "4" "$RC"
+check_not_contains "T13c: and invents no launch failure from it" "could not be launched" "$ERROUT"
+
 # Positive control — without it, a walk that resolved EVERY env shebang to
 # "missing" would pass every case above while refusing every real check.
 #

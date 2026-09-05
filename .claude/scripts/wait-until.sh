@@ -278,13 +278,32 @@ if [[ "${CMD[0]}" == */* ]]; then
       while (( WU_I < ${#WU_ENV_TOKENS[@]} )); do
         case "${WU_ENV_TOKENS[WU_I]}" in
           --) WU_I=$(( WU_I + 1 )); break ;;
+          # -S's argument IS the command line, so the word after it is the
+          # interpreter — step over the flag only, never over its value.
           -S|--split-string) WU_I=$(( WU_I + 1 )) ;;
           # Rewrite rather than advance: the joined form carries the command
           # line in its own token. The value is strictly shorter each pass, so
           # this cannot spin.
           --split-string=*) WU_ENV_TOKENS[WU_I]="${WU_ENV_TOKENS[WU_I]#*=}" ;;
-          -u|--unset|-C|--chdir) WU_I=$(( WU_I + 2 )) ;;
-          -*|*=*) WU_I=$(( WU_I + 1 )) ;;
+          # Options taking a SEPARATE value: the value goes with the flag, or it
+          # gets offered as the interpreter and refuses a launchable check.
+          -u|--unset|-C|--chdir|--argv0|-P) WU_I=$(( WU_I + 2 )) ;;
+          # Value-LESS options, listed by name rather than matched by shape —
+          # shape cannot tell `-i` from `--argv0`, and that is the whole bug.
+          -i|-0|-v|--ignore-environment|--null|--debug|--default-signal|--list-signals)
+            WU_I=$(( WU_I + 1 )) ;;
+          # A joined long option carries its own value in the same token.
+          --?*=*) WU_I=$(( WU_I + 1 )) ;;
+          # ANY OTHER option is one this walk does not know, and there is no way
+          # to tell from the token whether a value follows it. Advancing by one
+          # would offer that value as the interpreter — the false exit 3 that
+          # refuses a check which runs perfectly well, which is the costly
+          # direction here. Enumerating every option env may ever grow is not a
+          # contract this script can hold, so an unknown one ends the walk and
+          # the check is skipped, in the same fail-open direction as the rest.
+          -*) WU_I=${#WU_ENV_TOKENS[@]}; break ;;
+          # VAR=value, an environment assignment env applies before the command.
+          *=*) WU_I=$(( WU_I + 1 )) ;;
           *) break ;;
         esac
       done
