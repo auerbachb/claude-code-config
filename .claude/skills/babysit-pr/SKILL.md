@@ -580,7 +580,7 @@ PR_MERGED=$(jq -r '(.state == "MERGED")' <<<"$PR_NOW")
 
 Only classes `merge-ready` (→ `/wrap`), `conflicting` (→ `/fixpr` in safe-only mode **or** terminate), and `has-recoverable-blockers` (→ `/fixpr`) dispatch.
 
-**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed tick is **not** a terminal state and **not** a `hard-blocked` classification: the watcher stays armed, `blocker_streak` still counts it as a blocker-state tick (no forward progress was made), and `--max-iter` still bounds the wait exactly as it does for a bot that never answers. T5's frozen-state terminate (`digest_streak >= 9`) is **not** relaxed either, and both bounds can expire before the window reopens — `--max-iter` first at its default `6`. That is deliberate: a watcher is not the right thing to keep armed across an arbitrarily long closed window, and a terminated watch is re-armed with one `/babysit-pr <PR>`. T5's "the hold releases itself" therefore means *while the watcher is still armed*; it is not a promise to outlast the window.
+**Horizon gate (issue #1444), checked before every dispatch below.** With `WATCH_LAUNCH_OK=false` (T1a verdict `approaching`, `unknown`, or `critical`), the `has-recoverable-blockers` and `conflicting` routes dispatch nothing this tick — the class stands, the blocker is reported on the heartbeat with the verdict as its reason, and the next tick re-consults. With `WATCH_FINISH_OK=false` (`critical` only), the `merge-ready` `/wrap` route is suppressed too, so a `critical` tick dispatches nothing at all. A suppressed tick is **not** a terminal state and **not** a `hard-blocked` classification: the watcher stays armed, `blocker_streak` still counts it as a blocker-state tick (no forward progress was made), and `--max-iter` still bounds the wait exactly as it does for a bot that never answers. T5's frozen-state terminate (`digest_streak >= 9`) is **not** relaxed either, and both bounds can expire before the window reopens — `--max-iter` first at its default `6`, since T5 counts a suppressed tick as a blocker-state tick whatever its class. That is deliberate: a watcher is not the right thing to keep armed across an arbitrarily long closed window, and a terminated watch is re-armed with one `/babysit-pr <PR>`. T5's "the hold releases itself" therefore means *while the watcher is still armed*; it is not a promise to outlast the window.
 
 #### T4: `conflicting` dispatch
 
@@ -715,7 +715,7 @@ fi
 
 **Revert to base cadence on any state change** (digest differs → `STREAK` reset to 1 → `cadence_effective_minutes` returns to `BASE_MIN`).
 
-**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **and** the digest did not change (no forward progress). Increment `blocker_streak` on such ticks; reset to `0` on `merge-ready`/`merged` or on any digest change. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
+**Blocker-streak** (drives `--max-iter` termination): a tick is a *blocker-state tick* when the digest did not change (no forward progress) **and** either `CLASS` ∈ {`has-recoverable-blockers`, `waiting-on-bots`} **or** the horizon gate suppressed this tick's dispatch (T4, `WATCH_LAUNCH_OK=false` or `WATCH_FINISH_OK=false`). The suppressed clause is what makes `--max-iter` a real bound on a hold: without it a `critical` tick on a `merge-ready` PR would take the `merge-ready` reset below, zero the streak every tick, and leave the watcher held until the frozen-state terminate alone stopped it. Increment `blocker_streak` on such ticks; reset to `0` on any digest change, and on `merge-ready`/`merged` **only when the tick actually dispatched** — a held `merge-ready` tick did no work and resets nothing. A `conflicting` tick that successfully auto-resolved and pushed counts as forward progress — reset `blocker_streak` to `0` (the new SHA will change the digest on the next tick); `conflict_streak` is NOT reset by a SHA change, only by a non-`conflicting` tick (any class other than `conflicting`).
 
 **Conflict-streak** bookkeeping per tick:
 - `CLASS == conflicting` and dispatch status was `CONFLICTS` (complex hunk, aborted): `conflict_streak` was already incremented in T4 dispatch; tick terminates via T-END (no T5 persist needed).
@@ -738,6 +738,28 @@ Persist all non-cadence counters atomically, then increment the tick count. `$DI
 
 ```bash
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# HORIZON_HELD_SINCE is the JSON value the write below stores: the stamp is set
+# on the FIRST consecutive `critical` tick, carried unchanged through the ones
+# after it, and cleared the moment the verdict leaves `critical`. Compute it
+# here rather than describing it — an unassigned variable under `set -u` aborts
+# the tick, and without `set -u` it silently stores nothing (#1444, #1653).
+PREV_HELD=$("$SESSION_STATE_SH" --get ".prs[\"$PR\"].babysit.horizon_held_since" 2>/dev/null || echo "")
+if [[ "${HORIZON_STATUS:-unknown}" != "critical" ]]; then
+  HELD_RAW=""                                   # any non-critical verdict clears it
+elif [[ -n "$PREV_HELD" && "$PREV_HELD" != "null" ]]; then
+  HELD_RAW="$PREV_HELD"                         # already held — keep the original stamp
+else
+  HELD_RAW="$NOW"                               # first consecutive critical tick
+fi
+# jq -n --arg produces a correctly quoted JSON string (or the literal null),
+# so a stamp never reaches --set as a bare unquoted token.
+if [[ -n "$HELD_RAW" ]]; then
+  HORIZON_HELD_SINCE=$(jq -cn --arg v "$HELD_RAW" '$v')
+else
+  HORIZON_HELD_SINCE=null
+fi
+
 "$SESSION_STATE_SH" \
   --set ".prs[\"$PR\"].digest=$DIGEST" \
   --set ".prs[\"$PR\"].digest_streak=$STREAK" \
@@ -749,7 +771,7 @@ NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   --set ".prs[\"$PR\"].babysit.last_tick_at=$NOW"
 ```
 
-`HORIZON_HELD_SINCE` is the JSON value to persist, computed just above this write: on a `critical` tick it is the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string, otherwise `"$NOW"`; on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
+`HORIZON_HELD_SINCE` is computed by the block above rather than assumed: on a `critical` tick it reuses the existing `.prs["<PR>"].babysit.horizon_held_since` when that is already a non-null string and stamps `"$NOW"` otherwise, and on every other verdict it is the literal `null`. Both fields are this watcher's own bookkeeping — nothing outside `.prs["<PR>"].babysit` is written on any verdict (#1444).
 
 **Re-arm cadence only when it crosses a tier boundary.** Before comparing cadences, read the exact
 current `babysit.monitor_task_id` on every tick. A missing ID while active is degraded teardown: set

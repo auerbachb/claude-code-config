@@ -395,6 +395,20 @@ require_text "babysit widens its own cadence on critical" "$BABYSIT" 'HORIZON_HO
 # review).
 require_text "  without exempting itself from the frozen-state terminate" \
   "$BABYSIT" 'digest_streak >= 9.. is \*\*not\*\* relaxed'
+# --max-iter only bounds a hold if a suppressed tick counts, and a suppressed
+# merge-ready tick must not take the merge-ready reset (#1653 review).
+require_text "  counting a suppressed tick toward --max-iter whatever its class" \
+  "$BABYSIT" 'the horizon gate suppressed this tick.s dispatch'
+require_text "  and not letting a held merge-ready tick reset the streak" \
+  "$BABYSIT" 'only when the tick actually dispatched'
+# horizon_held_since must be COMPUTED, not merely described: an unassigned
+# variable aborts under set -u and stores nothing without it (#1653 review).
+require_text "  computing HORIZON_HELD_SINCE rather than describing it" \
+  "$BABYSIT" 'HELD_RAW="\$NOW"'
+require_text "  carrying the stamp across consecutive critical ticks" \
+  "$BABYSIT" 'HELD_RAW="\$PREV_HELD"'
+require_text "  and JSON-quoting it instead of passing a bare token" \
+  "$BABYSIT" 'HORIZON_HELD_SINCE=\$\(jq -cn --arg v "\$HELD_RAW"'
 require_text "  only ever widening" "$BABYSIT" 'EFFECTIVE_MIN < HORIZON_HOLD_MIN'
 require_text "  and persisting the verdict in its own namespace" \
   "$BABYSIT" 'babysit\.horizon_status'
