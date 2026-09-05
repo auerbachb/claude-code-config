@@ -550,7 +550,7 @@ else
       # neutral for scenarios (a)-(j), which never assert that line.
       # CI still runs the base copy; (k)'s contract coverage carries regardless.
       PASS=$((PASS + 1)); echo "ok   — $(basename "$f") drifts from $BASE_REF only by the script-usage.log guard reorder (behavior-neutral; CI runs the base copy)"
-    elif [[ -n "$drift" ]] && printf '%s\n' "$ACK_HELPER_DRIFT" | grep -qF "$f $base_hash $tree_hash"; then
+    elif [[ -n "$drift" ]] && grep -qF "$f $base_hash $tree_hash" <<<"$ACK_HELPER_DRIFT"; then
       PASS=$((PASS + 1)); echo "ok   — $(basename "$f") drift from $BASE_REF is acknowledged for this exact base (see ACK_HELPER_DRIFT; CI runs the base copy, so (k) carries the contract until this merges)"
     else
       check_eq "$(basename "$f") is identical to $BASE_REF (else update this suite: CI runs the base copy)" \

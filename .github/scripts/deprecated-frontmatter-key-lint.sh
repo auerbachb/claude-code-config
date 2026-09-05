@@ -219,7 +219,7 @@ RESTRICTED_AGENTS=(
 for agent_file in "${RESTRICTED_AGENTS[@]}"; do
   require_file "$agent_file" || continue
   fm="$(awk 'NR==1 && /^---/{in_fm=1; next} in_fm && /^---/{exit} in_fm{print}' "$agent_file")"
-  if ! printf '%s\n' "$fm" | grep -qE '^tools:'; then
+  if ! grep -qE '^tools:' <<<"$fm"; then
     echo "::error file=${agent_file}::Canary: ${agent_file} no longer declares a 'tools:' restriction in frontmatter. Any prose audit command greping '^allowed-tools:' would silently report this agent as unrestricted (fail-open defect, issue #864). Restore the 'tools:' key."
     errors=$((errors + 1))
   fi

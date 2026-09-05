@@ -178,7 +178,7 @@ BODY_JSON_FILE="$TMPDIR_AC/body.json"
 # otherwise silently mutate the body on every `--tick`/`--all-pass` write-back.
 if ! gh pr view "$PR_NUMBER" --json body >"$BODY_JSON_FILE" 2>"$BODY_ERR_FILE"; then
   BODY_ERR=$(cat "$BODY_ERR_FILE")
-  if printf '%s' "$BODY_ERR" | grep -qiE 'could not resolve|not found|no pull request'; then
+  if grep -qiE 'could not resolve|not found|no pull request' <<<"$BODY_ERR"; then
     echo "ERROR: PR #$PR_NUMBER not found" >&2
     exit 3
   fi

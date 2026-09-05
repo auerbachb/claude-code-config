@@ -532,7 +532,7 @@ case "$MECHANISM_USED" in
     # input (required on longlove and inventory, optional on skingod). Try with
     # it, then once without, so a workflow that declares none still dispatches.
     OUT=$(gh workflow run "$WF" -R "$REPO" -f reason="$DISPATCH_REASON" 2>&1) || TRIGGER_RC=$?
-    if [ "$TRIGGER_RC" -ne 0 ] && printf '%s' "$OUT" | grep -qiE 'unexpected inputs?|invalid input|input.*reason|reason.*not.*(defined|expected|accepted)'; then
+    if [ "$TRIGGER_RC" -ne 0 ] && grep -qiE 'unexpected inputs?|invalid input|input.*reason|reason.*not.*(defined|expected|accepted)' <<<"$OUT"; then
       # Only this failure shape proves the dispatch was REJECTED rather than
       # possibly-accepted-then-lost, so only this one is safe to retry.
       TRIGGER_RC=0

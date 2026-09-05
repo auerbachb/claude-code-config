@@ -134,7 +134,7 @@ m = re.match(r"^---\s*\n.*?\n---\s*\n", text, re.DOTALL)
 print(text[m.end():] if m else text)
 PY
 )"
-  if ! printf '%s' "$body" | grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)'; then
+  if ! grep -qiE '(exit criteria|STOP|## exit|when done|zero uncollapsed|merge gate|do not exit)' <<<"$body"; then
     warn "${skill_name}: body may lack explicit exit/stop criteria"
   fi
 }

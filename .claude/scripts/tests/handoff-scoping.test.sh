@@ -36,7 +36,7 @@ check() {
 # same reason on the input side.
 check_contains() {
   local desc="$1"; local pattern="$2"; local actual="$3"
-  if printf '%s\n' "$actual" | grep -qE -- "$pattern"; then ok "$desc"
+  if grep -qE -- "$pattern" <<<"$actual"; then ok "$desc"
   else fail "$desc (expected pattern '$pattern' not found in: '$actual')"; fi
 }
 
@@ -330,7 +330,7 @@ else fail "file NOT created at lowercase path"; fi
 # On macOS (case-insensitive filesystem), [[ -d "${HANDOFF_DIR}/AuerbachB" ]]
 # returns true even when only auerbachb/ exists, because the filesystem treats
 # the two names as identical.  ls -1 + grep -qx matches the literal entry name.
-if ! ls -1 "${HANDOFF_DIR}" | grep -qx 'AuerbachB'; then
+if ! grep -qx 'AuerbachB' <<<"$(ls -1 "${HANDOFF_DIR}")"; then
   ok "no mixed-case directory created"
 else fail "mixed-case directory AuerbachB/ was erroneously created"; fi
 
@@ -362,7 +362,7 @@ if [[ -f "${MIG3_DIR}/auerbachb/skingod/pr-301-handoff.json" ]]; then
 else fail "mixed-case owner_repo NOT migrated to lowercase path"; fi
 
 # Same case-insensitive-filesystem caveat as test 10: use ls -1 + grep -qx.
-if ! ls -1 "${MIG3_DIR}" | grep -qx 'AuerbachB'; then
+if ! grep -qx 'AuerbachB' <<<"$(ls -1 "${MIG3_DIR}")"; then
   ok "no mixed-case directory created during migration"
 else fail "migration created a mixed-case directory AuerbachB/"; fi
 

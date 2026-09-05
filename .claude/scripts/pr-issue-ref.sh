@@ -237,7 +237,7 @@ if [[ "$ALL_MODE" -eq 1 ]]; then
             printf '%s\n' "$_issue_part"
           fi
         done || true)"
-  elif printf '%s\n' "$BODY" | grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+'; then
+  elif grep -qiE '(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+#[0-9]+' <<<"$BODY"; then
     # Current repo unknown AND the body carries qualified refs: refuse rather
     # than guess. Including them lets `Closes other/repo#99` false-collide with
     # a local tracking issue #99 (a wrong rejection); excluding them lets a

@@ -78,7 +78,8 @@ expect "well-formed generated catalog passes" 0 \
 case_num=$((case_num + 1))
 help_dir="${TMP_ROOT}/case${case_num}"
 make_catalog_fixture "$help_dir"
-if (cd "$help_dir" && bash "$LINT" --help | grep -q 'Usage:'); then
+help_output=$(cd "$help_dir" && bash "$LINT" --help) && help_status=0 || help_status=$?
+if [ "$help_status" -eq 0 ] && grep -q 'Usage:' <<<"$help_output"; then
   echo "ok   — --help prints usage and exits 0"
 else
   echo "FAIL — --help prints usage and exits 0"
