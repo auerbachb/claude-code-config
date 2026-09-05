@@ -15,7 +15,7 @@ Pause marker fields live under nested `.pmm.*`. Existing runtime fields
 |-------|------|-----------|---------|
 | `.pmm.stop_requested` | boolean | `-stop`, failed arm rollback | main tick gate, `-wake` |
 | `.pmm.paused_at` | ISO-8601 string | Main skill Pause step 4 | Step 0a, `-wake` Step 2 |
-| `.pmm.pause_cause` | `"usage_horizon"` \| `"stable_frozen"` \| `"empty_fleet"` \| `"idle"` | Main skill Pause step 4 | `-wake` Step 3.5, for its status line only — that step re-consults the horizon on every cause (#1444) |
+| `.pmm.pause_cause` | `"usage_horizon"` \| `"stable_frozen"` \| `"empty_fleet"` \| `"idle"` (\| `"unspecified"` — a routing bug, never assigned deliberately) | Assigned by the Step 7 route; written by main skill Pause step 4 | `-wake` Step 3.5, for its status line only — that step re-consults the horizon on every cause (#1444) |
 | `.pmm.fleet_at_pause` | `[{pr, head_sha, state}]` | Main skill Pause step 4 (built in step 3) | `-wake` Step 4a |
 | `.pmm.config_at_pause` | object | Main skill Pause step 4 (built in step 3) | Step 0a, `-wake` Step 4a, `-wake` Step 4b |
 
@@ -135,12 +135,20 @@ CONFIG_AT_PAUSE=$(jq -nc \
 > batch below mirrors that block — update both together.
 
 ```bash
-# PAUSE_CAUSE names the route that reached this pause: `usage_horizon` (Step 7
-# route 3), `stable_frozen`, `empty_fleet`, or `idle`. It is PMM's own
-# bookkeeping in PMM's own namespace, and it is REPORTING-ONLY: the wake path
-# re-consults the horizon before teardown on EVERY cause, so this value routes
-# nothing there and reads only into its status line. Nothing under
-# .repos["<key>"].day.* is written here on any route (#1444).
+# PAUSE_CAUSE is assigned by the Step 7 route that reached this pause, and by
+# nothing else: route 3 sets `usage_horizon`, route 4 `stable_frozen`, route 5
+# `empty_fleet`, route 6 `idle`. It is PMM's own bookkeeping in PMM's own
+# namespace, and it is REPORTING-ONLY: the wake path re-consults the horizon
+# before teardown on EVERY cause, so this value routes nothing there and reads
+# only into its status line. Nothing under .repos["<key>"].day.* is written here
+# on any route (#1444). An unset value means the routing above did not assign
+# one, which is a bug — but a pause must still leave a marker a resume can find,
+# so normalise and warn rather than abort a half-finished teardown.
+case "${PAUSE_CAUSE:-}" in
+  usage_horizon|stable_frozen|empty_fleet|idle) ;;
+  *) echo "[PMM] pause reached with no route-assigned cause ('${PAUSE_CAUSE:-}') — recording 'unspecified'" >&2
+     PAUSE_CAUSE=unspecified ;;
+esac
 "$SESSION_STATE_SH" \
   --set ".pmm.paused_at=\"$NOW\"" \
   --set ".pmm.pause_cause=\"$PAUSE_CAUSE\"" \

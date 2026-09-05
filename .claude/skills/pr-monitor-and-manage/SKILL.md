@@ -367,14 +367,14 @@ Classification is done and nothing has been dispatched yet, which is the only pl
 
 **Run `subagent-thread-limit-park.md` §7.1's gate block, then §8.1's posture block** — resolve that document through the `.claude/reference/` candidate order in Step 00 and run the blocks it holds rather than re-deriving either branch here. Feed §7.1 the counter the **harness** printed into this turn's context (`<total_tokens>N tokens left</total_tokens>`, refreshed after every tool result) and nothing else: never a figure derived from the transcript, from this thread's own accounting, or remembered from an earlier tick. An absent counter is an absent reading, which is `unknown`. §8.1 then maps the verdict onto this tick:
 
-| `HORIZON_STATUS` | New `phase-a-fixer` dispatch (5c) | Rebase (5a/5b) and `/wrap` (5d) | This tick ends with |
+| `HORIZON_STATUS` | Pre-flight (5.0) and new `phase-a-fixer` dispatch (5c) | Rebase (5a/5b) and `/wrap` (5d) | This tick ends with |
 |------------------|-----------------------------------|----------------------------------|---------------------|
 | `clear` | normal | normal | Step 7's ordinary routing |
 | `approaching` | **suppressed** (`WATCH_LAUNCH_OK=false`) | normal (`WATCH_FINISH_OK=true`) | Step 7's ordinary routing, heartbeat carries the runway |
 | `unknown` | **suppressed** | normal | Step 7's ordinary routing, heartbeat says the verdict was unreadable |
 | `critical` | suppressed | **suppressed** | **Step 7's horizon stand-down route** |
 
-**Why merges and rebases survive `approaching` and `unknown`.** They finish work already in the fleet; a fresh fixer subagent starts new background work. §7.2 draws exactly that line for pipelines (running ones continue, A→B and B→C successors still run, only a new pipeline is barred), and a merge-ready PR is this skill's equivalent of a successor: barring it strands a PR one merge from done for the length of a park. `critical` stops both because the loop itself is standing down.
+**Why merges and rebases survive `approaching` and `unknown`.** They finish work already in the fleet; a fresh fixer subagent — or a pre-flight that engages four reviewers on a PR nobody is about to merge — starts new background work. §7.2 draws exactly that line for pipelines (running ones continue, A→B and B→C successors still run, only a new pipeline is barred), and a merge-ready PR is this skill's equivalent of a successor: barring it strands a PR one merge from done for the length of a park. `critical` stops both because the loop itself is standing down.
 
 **PMM never claims a park (§8).** It watches PRs other loops launched, so it has no pipeline phase to record and nothing a park's wake could resume. `WATCH_PARK_SEEN` is a **read-only** probe of `.repos["<key>"].day.limit_cause`, used only to say in the stand-down line whether a park is already open. Never run `session-state.sh --cas` on `limit_cause` and never `--set` anything under `.repos["<key>"].day.*` from this skill — on any verdict, including `critical`.
 
@@ -424,11 +424,11 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
-**Horizon gate (issue #1444), applied before every dispatch in this step:** `WATCH_LAUNCH_OK=false` skips Step 5c entirely — no new `phase-a-fixer` is spawned, and each held PR keeps its `fixpr` verdict for the next tick rather than being reclassified. `WATCH_FINISH_OK=false` additionally skips Steps 5a/5b/5b′/5d, so a `critical` tick dispatches nothing at all. **In-flight work is never touched by either flag**: Step 2.5 still aggregates prior-tick exit reports, Step 5e's Dedicated Monitor Mode still runs, and a fixer already working keeps working — suppressing a *launch* is the whole intervention, and stopping a healthy subagent mid-push is the over-reaction the landing window exists to avoid. A held tick sets `TICK_HAD_ACTION=false`, which is correct: nothing was dispatched, so the idle counter should see an idle tick.
+**Horizon gate (issue #1444), applied before every dispatch in this step:** `WATCH_LAUNCH_OK=false` skips Step 5.0 **and** Step 5c entirely — no pre-flight runs and no new `phase-a-fixer` is spawned, and each held PR keeps its `fixpr` verdict for the next tick rather than being reclassified. Step 5.0 is on this list because `pr-preflight.sh` flips drafts ready and engages four reviewers: that starts a fresh round of bot reviews and CI, which is new work by the same measure Step 5c is. The skip costs nothing — pre-flight is idempotent, so the first `clear` tick runs it in full — and it does not strand a merge: under `approaching` a `merge-ready` PR still reaches Step 5d without a trigger. `WATCH_FINISH_OK=false` additionally skips Steps 5a/5b/5b′/5d, so a `critical` tick dispatches nothing at all. **In-flight work is never touched by either flag**: Step 2.5 still aggregates prior-tick exit reports, Step 5e's Dedicated Monitor Mode still runs, and a fixer already working keeps working — suppressing a *launch* is the whole intervention, and stopping a healthy subagent mid-push is the over-reaction the landing window exists to avoid. A held tick sets `TICK_HAD_ACTION=false`, which is correct: nothing was dispatched, so the idle counter should see an idle tick.
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
 
-Run shared `pr-preflight.sh` once per discovered PR (skip `gone`/`error`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
+**Skipped whole when `WATCH_LAUNCH_OK=false`** (Step 3.7 verdict `approaching`, `unknown`, or `critical`) — say so in the heartbeat so a held pre-flight is not read as "every reviewer was already fresh". Otherwise: run shared `pr-preflight.sh` once per discovered PR (skip `gone`/`error`). Flips draft PRs to ready and engages all four conditionally-triggered reviewers on the current HEAD SHA. Same script `/fixpr` Step 0c and `/babysit-pr` T1b use — PMM never reimplements draft-flip or trigger logic.
 
 ```bash
 PREFLIGHT_SH=""
@@ -557,16 +557,16 @@ fi
    missing/null ID or generation is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
    impossible, and abort. Do not publish a pause marker or arm another task. This guard runs even
    when the fleet is empty or the idle threshold was reached.
-3. **Usage-horizon stand-down** — Step 3.7 returned `WATCH_STAND_DOWN=true` (verdict `critical`) → **Pause** with reason `"usage horizon critical"` and `.pmm.pause_cause="usage_horizon"`, written in the same atomic batch as the pause marker. It sits above the three convergence routes because it is about the account, not the fleet: a `critical` verdict on a busy, progressing fleet must still stand the poll down, and every route below it would leave the Monitor armed. It never claims a park — `WATCH_PARK_SEEN` only decides which clause the line below carries (`subagent-thread-limit-park.md` §8.1):
+3. **Usage-horizon stand-down** — Step 3.7 returned `WATCH_STAND_DOWN=true` (verdict `critical`) → set `PAUSE_CAUSE=usage_horizon` and **Pause** with reason `"usage horizon critical"`, so `.pmm.pause_cause="usage_horizon"` is written in the same atomic batch as the pause marker. It sits above the three convergence routes because it is about the account, not the fleet: a `critical` verdict on a busy, progressing fleet must still stand the poll down, and every route below it would leave the Monitor armed. It never claims a park — `WATCH_PARK_SEEN` only decides which clause the line below carries (`subagent-thread-limit-park.md` §8.1):
 
    ```text
    [$TS] PMM standing down — usage horizon critical, adopting the park already open for <owner/repo>; resume with /pr-monitor-and-manage-wake
    ```
 
    With `WATCH_PARK_SEEN=false` say `no park open — nothing dispatched` in place of the adopting clause; with `unreadable` say the park slot could not be read. Arm **no** auto-wake re-scan on this route even when `--auto-wake` is set: a re-scan that ticks every hour into a closed window is the polling this route exists to stop, and `/pr-monitor-and-manage-wake` re-consults the horizon before it resumes anything.
-4. **Stable-state freeze** — `STREAK >= 9` → **Pause** with reason `"stable-frozen ($STREAK unchanged ticks)"`. This route is independent of `--idle-pause-after`; the shared scheduling contract requires the poll to stop at nine identical state digests, even when a custom idle threshold is higher.
-5. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait).
-6. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
+4. **Stable-state freeze** — `STREAK >= 9` → set `PAUSE_CAUSE=stable_frozen` and **Pause** with reason `"stable-frozen ($STREAK unchanged ticks)"`. This route is independent of `--idle-pause-after`; the shared scheduling contract requires the poll to stop at nine identical state digests, even when a custom idle threshold is higher.
+5. **Empty fleet** — `PR_COUNT == 0` from Step 2 → set `PAUSE_CAUSE=empty_fleet` and **immediate Pause** with reason `empty fleet` (no 3-tick wait).
+6. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → set `PAUSE_CAUSE=idle` and **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
 7. Otherwise → **verify or re-arm the Monitor** (below).
 
 Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and dropped from the actionable fleet; the idle counter handles convergence when nothing actionable remains.
@@ -672,12 +672,20 @@ config build, pause marker write, auto-wake re-scan, summary line): `references/
 
 <!-- pmm-canonical: pause-marker-write:start -->
 ```bash
-# PAUSE_CAUSE names the route that reached this pause: `usage_horizon` (Step 7
-# route 3), `stable_frozen`, `empty_fleet`, or `idle`. It is PMM's own
-# bookkeeping in PMM's own namespace, and it is REPORTING-ONLY: the wake path
-# re-consults the horizon before teardown on EVERY cause, so this value routes
-# nothing there and reads only into its status line. Nothing under
-# .repos["<key>"].day.* is written here on any route (#1444).
+# PAUSE_CAUSE is assigned by the Step 7 route that reached this pause, and by
+# nothing else: route 3 sets `usage_horizon`, route 4 `stable_frozen`, route 5
+# `empty_fleet`, route 6 `idle`. It is PMM's own bookkeeping in PMM's own
+# namespace, and it is REPORTING-ONLY: the wake path re-consults the horizon
+# before teardown on EVERY cause, so this value routes nothing there and reads
+# only into its status line. Nothing under .repos["<key>"].day.* is written here
+# on any route (#1444). An unset value means the routing above did not assign
+# one, which is a bug — but a pause must still leave a marker a resume can find,
+# so normalise and warn rather than abort a half-finished teardown.
+case "${PAUSE_CAUSE:-}" in
+  usage_horizon|stable_frozen|empty_fleet|idle) ;;
+  *) echo "[PMM] pause reached with no route-assigned cause ('${PAUSE_CAUSE:-}') — recording 'unspecified'" >&2
+     PAUSE_CAUSE=unspecified ;;
+esac
 "$SESSION_STATE_SH" \
   --set ".pmm.paused_at=\"$NOW\"" \
   --set ".pmm.pause_cause=\"$PAUSE_CAUSE\"" \

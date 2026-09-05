@@ -319,7 +319,14 @@ require_text "PMM consults before it acts (Step 3.7)" "$PMM" '## Step 3\.7: Usag
 require_text "  running §7.1 and §8.1 rather than a third copy" \
   "$PMM" '§7\.1.s gate block, then §8\.1.s posture block'
 require_text "  suppressing new fixer dispatch on WATCH_LAUNCH_OK=false" \
-  "$PMM" 'WATCH_LAUNCH_OK=false. skips Step 5c'
+  "$PMM" 'WATCH_LAUNCH_OK=false. skips Step 5\.0 \*\*and\*\* Step 5c'
+# The pre-flight engages four reviewers, so it is a START, not a poll (#1653
+# review). Held on the same flag as 5c, and named in the 3.7 verdict table so
+# the two cannot drift apart.
+require_text "  pre-flight is held on the same flag" \
+  "$PMM" 'Skipped whole when .WATCH_LAUNCH_OK=false'
+require_text "  and the 3.7 table names it alongside 5c" \
+  "$PMM" 'Pre-flight \(5\.0\) and new .phase-a-fixer. dispatch \(5c\)'
 require_text "  and leaving in-flight subagents alone" \
   "$PMM" 'In-flight work is never touched'
 require_text "  standing down on critical through its OWN pause" \
@@ -329,6 +336,16 @@ require_text "  and arming no re-scan on that route" "$PMM" 'Arm \*\*no\*\* auto
 refute_text "PMM never claims the park slot" "$PMM" 'session-state\.sh --cas .*limit_cause'
 require_text "  and says so explicitly" "$PMM" 'PMM never claims a park'
 require_text "the pause marker carries the cause" "$PMM" '\.pmm\.pause_cause=\\"\$PAUSE_CAUSE\\"'
+# ...and PAUSE_CAUSE is actually assigned by each route, not left unbound (#1653
+# review). All four routes, plus the normalising guard that keeps a routing bug
+# from writing an empty cause into the marker.
+for route in 'PAUSE_CAUSE=usage_horizon' 'PAUSE_CAUSE=stable_frozen' 'PAUSE_CAUSE=empty_fleet' 'PAUSE_CAUSE=idle'; do
+  require_text "  route assigns $route" "$PMM" "$route"
+done
+require_text "  and an unassigned cause is normalised, not written empty" \
+  "$PMM" 'PAUSE_CAUSE=unspecified'
+require_text "  same guard mirrored in the lifecycle reference" \
+  "$PMM_LIFECYCLE" 'PAUSE_CAUSE=unspecified'
 require_text "  mirrored in the lifecycle reference" "$PMM_LIFECYCLE" '\.pmm\.pause_cause=\\"\$PAUSE_CAUSE\\"'
 require_text "  and documented in the marker schema" "$PMM_LIFECYCLE" '\| .\.pmm\.pause_cause. \|'
 require_text "resume clears the cause with the rest of the marker" \
@@ -345,7 +362,27 @@ require_text "  and refusing to park further on unknown" \
 # babysit: same contract, its own namespace, its own cadence hold.
 require_text "babysit resolves usage-horizon.sh" \
   "$BABYSIT" 'USAGE_HORIZON_SH=\$\(resolve_script usage-horizon\.sh'
-require_text "babysit consults between T2 and T3" "$BABYSIT" '### T2\.5\. Usage-horizon consult'
+require_text "babysit consults before its pre-flight" "$BABYSIT" '### T1a\. Usage-horizon consult'
+# Ordering is the whole point: T1b flips drafts and engages four reviewers, so a
+# verdict read after it has already spent the runway (#1653 review).
+require_text "  and says why that ordering is load-bearing" \
+  "$BABYSIT" "before T1b.s pre-flight"
+require_text "  with the pre-flight held on WATCH_LAUNCH_OK" \
+  "$BABYSIT" 'WATCH_LAUNCH_OK:-true.. != .true'
+# Prose can claim the ordering while the sections sit the other way round, so
+# assert the line numbers, not the sentence. Both greps must match: an empty
+# line number would make a "<" comparison compare nothing and pass vacuously.
+babysit_t1a=$(grep -n '^### T1a\. Usage-horizon consult' "$BABYSIT" | cut -d: -f1)
+babysit_t1b=$(grep -n '^### T1b\. Pre-flight' "$BABYSIT" | cut -d: -f1)
+check_eq "  both babysit section headers are present exactly once" "1 1" \
+  "$(printf '%s' "$babysit_t1a" | grep -c . ) $(printf '%s' "$babysit_t1b" | grep -c . )"
+if [[ "$babysit_t1a" =~ ^[0-9]+$ && "$babysit_t1b" =~ ^[0-9]+$ ]] && (( babysit_t1a < babysit_t1b )); then
+  BABYSIT_ORDER=before
+else
+  BABYSIT_ORDER="T1a=${babysit_t1a:-none} T1b=${babysit_t1b:-none}"
+fi
+check_eq "  consult section physically precedes the pre-flight section" \
+  "before" "$BABYSIT_ORDER"
 require_text "  running §7.1 and §8.1 rather than a third copy" \
   "$BABYSIT" '§7\.1.s gate block, then §8\.1.s posture block'
 require_text "  keeping /wrap landable on approaching" \
@@ -353,6 +390,11 @@ require_text "  keeping /wrap landable on approaching" \
 require_text "  and never orphaning an in-flight dispatch" \
   "$BABYSIT" 'In-flight dispatch is never orphaned'
 require_text "babysit widens its own cadence on critical" "$BABYSIT" 'HORIZON_HOLD_MIN'
+# A hold does not exempt the watcher from its own termination bounds, and the
+# skill must say so rather than promising a hold that outlasts the watch (#1653
+# review).
+require_text "  without exempting itself from the frozen-state terminate" \
+  "$BABYSIT" 'digest_streak >= 9.. is \*\*not\*\* relaxed'
 require_text "  only ever widening" "$BABYSIT" 'EFFECTIVE_MIN < HORIZON_HOLD_MIN'
 require_text "  and persisting the verdict in its own namespace" \
   "$BABYSIT" 'babysit\.horizon_status'

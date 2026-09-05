@@ -922,7 +922,11 @@ one*. `USAGE_HORIZON_SH` unresolved holds `unknown`, which never reads as
 
 **Start versus finish, the same split §7.2 makes.** `approaching` and `unknown`
 stop a loop from *starting* new background work — a fresh `phase-a-fixer`, a new
-`/fixpr` dispatch — and leave *finishing* work alone. `/wrap` on a PR that is
+`/fixpr` dispatch, and the shared `pr-preflight.sh` step, which flips a draft ready
+and engages four reviewers and so starts a round of bot reviews and CI as surely as a
+dispatch does — and leave *finishing* work alone. A caller therefore has to read this
+verdict **before** its pre-flight step, not after it, or the runway is spent before the
+gate is consulted. `/wrap` on a PR that is
 already merge-ready, and a rebase of a PR already in the fleet, are finishing:
 barring them would strand a PR one merge from done for the length of a park,
 which is the outcome the landing window in §7.4 exists to prevent. Only
@@ -1042,7 +1046,7 @@ the pipelines it recorded, and it recorded none of these.
 - `.claude/reference/usage-limit-signal-audit-2026-07.md` — why no hook receives
   an approaching-limit signal, and what the recorder can and cannot supply.
 - `.claude/scripts/usage-horizon.sh --help` — the verdict contract §7.1 consumes.
-- `.claude/skills/pr-monitor-and-manage/SKILL.md` Step 3.7 / Step 7,
+- `.claude/skills/pr-monitor-and-manage/SKILL.md` Step 3.7 / Step 5 / Step 7,
   `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3.5, and
-  `.claude/skills/babysit-pr/SKILL.md` T2.5 / T4 / T5 — the three call sites of
+  `.claude/skills/babysit-pr/SKILL.md` T1a / T1b / T4 / T5 — the four call sites of
   §8.1's watch-only contract (#1444).
