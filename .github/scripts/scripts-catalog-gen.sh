@@ -442,6 +442,19 @@ while IFS=$'\037' read -r c_id c_order c_title c_covers c_rel; do
     errors=$((errors + 1))
     continue
   fi
+  # Two regions of the same kind in one doc would each be filled with the SAME
+  # rows block, listing every script twice — and `--check` would not see it,
+  # because regeneration reproduces the duplication byte for byte. A guard that
+  # cannot detect the drift it exists to detect has to refuse the input instead.
+  dup_kinds=$(printf '%s\n' "$kinds" | LC_ALL=C sort | uniq -d)
+  if [[ -n "$dup_kinds" ]]; then
+    while IFS= read -r dk; do
+      [[ -z "$dk" ]] && continue
+      echo "::error file=${c_rel}::more than one <!-- catalog:rows:begin kind=${dk} --> region — each kind may appear at most once per doc, or every row would be emitted into both"
+      errors=$((errors + 1))
+    done <<< "$dup_kinds"
+    continue
+  fi
   block_dir="$TMPDIR_GEN/blocks/$c_id"
   mkdir -p "$block_dir"
   while IFS= read -r kind; do

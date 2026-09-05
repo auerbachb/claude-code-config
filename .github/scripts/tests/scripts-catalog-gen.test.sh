@@ -375,6 +375,34 @@ sed 's/id=tests order=20/id=extra order=30/' "$dir/.claude/scripts/docs/extra.md
 expect "a new category doc surfaces as exemption drift" 1 \
   'churn-hotspot-exemptions\.json::committed catalog region is stale' "$dir" --check
 
+# --- duplicate rows regions ------------------------------------------------
+# Two regions of the same kind in one doc would each be filled with the same
+# rows, listing every script twice — and --check could never report it, because
+# regeneration reproduces the duplication exactly. The generator refuses instead.
+new_case
+awk '
+  /<!-- catalog:rows:begin -->/ && !done {
+    print; print "<!-- catalog:rows:end -->"
+    print ""
+    print "| Script | Purpose |"
+    print "|--------|---------|"
+    print "<!-- catalog:rows:begin -->"
+    done = 1
+    next
+  }
+  { print }
+' "$dir/.claude/scripts/docs/tools.md" > "$dir/tmp" && mv "$dir/tmp" "$dir/.claude/scripts/docs/tools.md"
+expect "a second region of the same kind is refused" 1 \
+  'more than one <!-- catalog:rows:begin kind=sh --> region' "$dir" --check
+expect "the same duplication is refused by --write too" 1 \
+  'more than one <!-- catalog:rows:begin kind=sh --> region' "$dir" --write
+
+# NEGATIVE CONTROL: two regions of DIFFERENT kinds is the normal shape every
+# category doc with Python helpers already uses, and must stay accepted —
+# otherwise the check above could pass by rejecting every multi-region doc.
+new_case
+expect "two regions of different kinds are still accepted" 0 'no drift' "$dir" --check
+
 # --- out-of-scope files need no declaration -------------------------------
 new_case
 printf '#!/usr/bin/env bash\n' > "$dir/.claude/scripts/lib/new-helper.sh"
