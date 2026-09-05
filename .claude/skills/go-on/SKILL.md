@@ -215,10 +215,14 @@ fi
 # level up — a pre-upgrade board becomes unreachable the moment any keyed record
 # exists.
 # `null` — the literal jq text for "this slot holds nothing" — is the ONLY
-# absent value. An EMPTY string is not absent: `--get` prints nothing for a slot
-# that holds the JSON string `""`, and that is a damaged slot, so the empty read
-# must survive to `parse` and classify `unreadable` rather than being coerced
-# here (issue #1611).
+# absent value, and because the slots are read with `--get-json` (issue #1629)
+# that text is unambiguously JSON null: a slot corrupted into the STRING "null"
+# arrives quoted as `"null"`, so `parse` yields a string and `slot_class` names
+# it `unreadable` instead of reading it as "nothing parked". Raw `--get` printed
+# the same four characters for both and could not express the difference.
+# An EMPTY string is likewise not absent: every successful `--get-json` read
+# prints some JSON, so nothing at all is a damaged read, and it must survive to
+# `parse` and classify `unreadable` rather than being coerced here (issue #1611).
 PAUSES_RAW="null"
 LEGACY_PAUSE_RAW="null"
 LEGACY_SUSPEND_RAW="null"
@@ -231,7 +235,9 @@ if [[ -z "$SESSION_STATE_SH" || -z "$REPO_KEY" ]]; then
   PAUSE_SLOTS_UNREADABLE="pauses pause suspend"
 else
   for PAUSE_SLOT in pauses pause suspend; do
-    SLOT_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].$PAUSE_SLOT" 2>/dev/null)
+    # --get-json keeps each slot's JSON type on the wire (issue #1629); exit
+    # codes are identical to --get, so the rc mapping below is unchanged.
+    SLOT_RAW=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].$PAUSE_SLOT" 2>/dev/null)
     SLOT_RC=$?
     if (( SLOT_RC == 3 )); then SLOT_RAW="null"   # no state file — the absence probe A already saw
     elif (( SLOT_RC != 0 )); then
@@ -280,11 +286,15 @@ PAUSE_PROBE=$(jq -c -n \
   # A value that will not parse is a DAMAGED slot — caught HERE, inside the slot,
   # so it classifies as `unreadable` rather than aborting the program and taking
   # the other two with it. The caught value is a string, which slot_class already
-  # calls unreadable. An EMPTY read parses no better than any other non-JSON text
-  # and is damaged for the same reason: `--get` prints nothing for a slot holding
-  # the JSON string `""`, so special-casing `""` to null would report exactly that
-  # corrupt slot as "nothing parked" (issue #1611). Only the caller's literal
-  # `null` — a genuinely absent slot, or one already named above — is absent.
+  # calls unreadable. Because the caller reads with `--get-json` (issue #1629),
+  # a slot holding the JSON string `"null"` arrives quoted and parses to a
+  # STRING — unreadable, named — while a genuinely absent slot arrives as bare
+  # `null` and parses to JSON null. A slot holding `""` arrives as `""` and
+  # parses to the empty string: also unreadable. An EMPTY read parses no better
+  # than any other non-JSON text and is damaged for the same reason, so
+  # special-casing `""` to null would report exactly that corrupt slot as
+  # "nothing parked" (issue #1611). Only the caller's literal `null` — a
+  # genuinely absent slot, or one already named above — is absent.
   def parse: try fromjson catch "unparseable";
   # Only a `present` slot contributes records; a damaged one contributes none
   # and is reported by name instead.

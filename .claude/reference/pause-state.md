@@ -58,7 +58,7 @@ other.
 }
 ```
 
-**Visibility:** Like `refill` and `day`, this map is **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo` out of the repo block). Read it with an explicit `--get .repos["<key>"].pauses`. A caller who uses `--session-view` will see the pause state as absent even when one is armed.
+**Visibility:** Like `refill` and `day`, this map is **invisible to `session-state.sh --session-view`** (that projection lifts only `.prs` and `.root_repo` out of the repo block). Read it with an explicit `--get-json .repos["<key>"].pauses` — `--get-json`, not `--get`, because raw output cannot tell an absent slot from one corrupted into the JSON string `"null"` (issue #1629). A caller who uses `--session-view` will see the pause state as absent even when one is armed.
 
 ### One record per session, not one block per repo (issue #1576)
 
@@ -150,7 +150,8 @@ keyed record could still be dispatched.
 
 **Only the literal `null` is absent — an empty read is damaged.** The classifier
 sees a slot's *value*, but every reader gets that value through
-`session-state.sh --get`, which prints **nothing** (rc=0, empty stdout) for a slot
+`session-state.sh`, and the mode it reads with decides how much of the value
+survives the trip. Raw `--get` prints **nothing** (rc=0, empty stdout) for a slot
 holding the JSON string `""`. Each reader used to fold that empty read back into
 `null` before the classifier ran — `${VAR:-null}` in `/go-on`, `[[ -z "$v" ]]` in
 the sweep's `pause_slot_arg`, `[[ -n "$1" ]]` in `/pause-resume`'s
@@ -158,12 +159,28 @@ the sweep's `pause_slot_arg`, `[[ -n "$1" ]]` in `/pause-resume`'s
 `parse`. A slot holding `""` is neither a map of records nor a record, so
 reporting it absent is the same "corrupt board read as nothing parked" masking
 this contract exists to prevent. The empty read now survives to the classifier as
-a JSON string and lands on `unreadable`. The readers therefore reserve the
-literal `null` for the two cases that really are absent-or-already-named: a `--get`
-on a missing path (which prints `null`), and `rc=3` (no state file has ever been
-written). A read that failed some *other* way is handed `null` too, because its
-caller has already named that slot — passing the empty read on instead would name
-the same slot a second time.
+a JSON string and lands on `unreadable`.
+
+**Pause slots are read with `--get-json`, never `--get` (issue #1629).** Fixing
+the `""` half in the readers left a half the readers could not reach: raw `--get`
+prints the bare text `null` for an absent path, for a stored JSON `null`, *and*
+for a slot corrupted into the JSON **string** `"null"`. Reserving that text for
+"absent" is the only signal raw output offers, so a slot holding `"null"` was
+structurally invisible — read as "nothing parked" with no reader bug to fix.
+`--get-json` prints `jq -c` output instead: the corrupt slot arrives quoted as
+`"null"`, parses as a JSON string, and `slot_class` names it `unreadable`, while
+an absent slot still arrives as bare `null`. Same guards, same scoping, same
+migration, same exit codes — 3 for no state file, 4 for a jq parse error — so
+only the wire format changes. All three readers (`/pause-resume` Step 1,
+`/go-on` probe B, `candidate-ownership.sh`) use it for `.pauses`, `.pause`, and
+`.suspend`; their non-pause slot reads stay on `--get`, whose consumers want the
+raw scalar.
+
+The readers therefore reserve the literal `null` for the two cases that really
+are absent-or-already-named: a `--get-json` on a missing path (which prints
+`null`), and `rc=3` (no state file has ever been written). A read that failed
+some *other* way is handed `null` too, because its caller has already named that
+slot — passing the empty read on instead would name the same slot a second time.
 
 Probe B is the one reader whose *verdict* is tri-state rather than a record list,
 so it takes the boundary explicitly: a surviving slot's un-resumed record is

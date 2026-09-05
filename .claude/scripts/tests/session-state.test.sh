@@ -763,6 +763,136 @@ sb_run '._field_types.pr_nested = "oops"' --repo test/repo \
 check_eq "schema tri-state: string pr_nested degrades the whole-map scan too" "0" "$?"
 
 echo
+echo "== --get-json: four stored shapes stay distinct (issue #1629) =="
+# Raw --get is lossy by contract: an absent path, a stored JSON null, and a
+# stored JSON STRING "null" all print the same four characters, and a stored ""
+# prints nothing. Every pause-source reader compares stdout to the literal
+# `null` to mean "absent", so a slot corrupted into the string "null" was read
+# as "nothing parked" — a damaged board reported as an empty one.
+#
+# NEGATIVE CONTROL FIRST: assert the conflation --get really does produce, so
+# the --get-json assertions below are measured against a demonstrated defect
+# rather than an assumed one. These --get rows must keep passing forever: the
+# raw mode is the default and every existing caller depends on it.
+reset_state
+SEED_KEY="test/getjson"
+jq -n --arg k "$SEED_KEY" '{repos: {($k): {
+  jnull: null, snull: "null", empty: "", rec: {"s1":{"active":true}}, num: 7 }}}' \
+  > "$STATE_FILE"
+gj() { run --raw-path --get-json ".repos[\"$SEED_KEY\"].$1"; }
+gr() { run --raw-path --get      ".repos[\"$SEED_KEY\"].$1"; }
+
+check_eq "--get conflates a stored JSON null with absent"       "null" "$(gr jnull)"
+check_eq "--get conflates the STRING \"null\" with absent"      "null" "$(gr snull)"
+check_eq "--get prints nothing for a slot holding \"\""         ""     "$(gr empty)"
+check_eq "--get on a genuinely absent path also prints null"    "null" "$(gr nope)"
+# The defect stated as one assertion: three genuinely different stored values,
+# one indistinguishable output.
+check_eq "--get: absent, JSON null and the string \"null\" are one output" "1" \
+  "$([[ "$(gr nope)" == "$(gr jnull)" && "$(gr jnull)" == "$(gr snull)" ]] && echo 1 || echo 0)"
+
+# --get-json separates them. Fails against the pre-change tree, where the flag
+# is an unknown-flag usage error (exit 2) and every row below reads empty.
+check_eq "--get-json prints bare null for a stored JSON null"   "null"   "$(gj jnull)"
+check_eq "--get-json prints a QUOTED \"null\" for the string"   '"null"' "$(gj snull)"
+check_eq "--get-json prints \"\" for a slot holding the empty string" '""' "$(gj empty)"
+check_eq "--get-json prints bare null for an absent path"       "null"   "$(gj nope)"
+check_eq "--get-json: the string \"null\" is distinct from absent" "1" \
+  "$([[ "$(gj snull)" != "$(gj nope)" ]] && echo 1 || echo 0)"
+check_eq "--get-json: the empty string is distinct from absent"  "1" \
+  "$([[ "$(gj empty)" != "$(gj nope)" ]] && echo 1 || echo 0)"
+# An absent path and a stored JSON null still coincide — as they do in jq
+# itself. The distinction this mode owes its callers is absent-vs-CORRUPT.
+check_eq "--get-json still reads an absent path as the stored JSON null" "1" \
+  "$([[ "$(gj nope)" == "$(gj jnull)" ]] && echo 1 || echo 0)"
+
+# Structured and scalar values keep their JSON form (compact, one line).
+check_eq "--get-json emits compact JSON for an object" '{"s1":{"active":true}}' "$(gj rec)"
+check_eq "--get-json emits a number unquoted"          "7"                      "$(gj num)"
+check_eq "--get still pretty-prints an object (unchanged)" "1" \
+  "$(gr rec | grep -c '"s1": {')"
+
+echo
+echo "== --get-json: exit codes match --get exactly =="
+reset_state
+run --get-json '.anything' >/dev/null 2>&1
+check_eq "missing state file exits 3 (same as --get)" "3" "$?"
+run --get '.anything' >/dev/null 2>&1
+check_eq "…and --get still exits 3 there too" "3" "$?"
+
+printf '%s' '{' > "$STATE_FILE"
+run --get-json '.anything' >/dev/null 2>&1
+check_eq "unparseable state file exits 4 (same as --get)" "4" "$?"
+run --get '.anything' >/dev/null 2>&1
+check_eq "…and --get still exits 4 there too" "4" "$?"
+
+printf '%s' '[1,2]' > "$STATE_FILE"
+run --get-json '.[0]' >/dev/null 2>&1
+check_eq "non-object top-level state file exits 4" "4" "$?"
+
+reset_state
+OUT=$(run --get-json 2>&1); RC=$?
+check_eq "--get-json with no jq path is a usage error (exit 2)" "2" "$RC"
+check_eq "…and the message names --get-json, not --get" "1" \
+  "$(grep -c -- '--get-json requires a jq path' <<<"$OUT")"
+OUT=$(run --get-json '.a' --get-json '.b' 2>&1); RC=$?
+check_eq "--get-json twice is a usage error (exit 2)" "2" "$RC"
+check_eq "…and names --get-json" "1" "$(grep -c -- '--get-json may only be given once' <<<"$OUT")"
+OUT=$(run --get '.a' --get-json '.b' 2>&1); RC=$?
+check_eq "--get + --get-json together is a usage error (exit 2)" "2" "$RC"
+check_eq "…and says they are mutually exclusive" "1" \
+  "$(grep -c -- '--get and --get-json are mutually exclusive' <<<"$OUT")"
+OUT=$(run --get-json '.a' --session-view 2>&1); RC=$?
+check_eq "--get-json + --session-view is a usage error (exit 2)" "2" "$RC"
+OUT=$(run 2>&1); RC=$?
+check_eq "the no-mode usage message advertises --get-json" "1" \
+  "$(grep -c -- '--get-json' <<<"$OUT")"
+
+echo
+echo "== --get-json: shares every --get guard, not a parallel copy =="
+# Repo scoping: an unprefixed .prs path is rewritten into the active repo's
+# scope for --get-json exactly as it is for --get.
+reset_state
+run --repo org/a --set '.prs["84"].phase=B' >/dev/null
+check_eq "--get-json is repo-scoped like --get" '"B"' "$(run --repo org/a --get-json '.prs["84"].phase')"
+check_eq "…and the raw mode still prints it unquoted" "B" "$(run --repo org/a --get '.prs["84"].phase')"
+check_eq "--get-json on another repo's scope reads absent" "null" \
+  "$(run --repo org/b --get-json '.prs["84"].phase')"
+
+# Field-type self-heal (issue #625): a corrupt known top-level field returns a
+# safe default with exit 0 — and that default must be valid JSON in this mode.
+reset_state
+jq -n '{active_agents: "corrupt-string"}' > "$STATE_FILE"
+OUT=$(run --get-json '.active_agents' 2>/dev/null); RC=$?
+check_eq "--get-json inherits the field-type self-heal default" "{}" "$OUT"
+check_eq "…still exiting 0" "0" "$RC"
+check_eq "…and the default parses as JSON" "0" "$(printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; echo $?)"
+
+# Legacy-layout migration runs in memory for both modes.
+reset_state
+jq -n '{prs: {"84": {phase: "A", owner_repo: "org/legacy"}}}' > "$STATE_FILE"
+check_eq "--get-json sees a legacy entry through the in-memory migration" '"A"' \
+  "$(run --repo org/legacy --get-json '.prs["84"].phase')"
+check_eq "…and the read did not rewrite the file" "1" \
+  "$(jq -e 'has("prs")' "$STATE_FILE" >/dev/null && echo 1 || echo 0)"
+
+echo
+echo "== --get-json: the pause-slot shapes the readers must tell apart =="
+# The end-to-end reason this mode exists. Seeded exactly as a damaged pause
+# board looks, read exactly as the three readers now read it.
+reset_state
+PK="org/pause"
+jq -n --arg k "$PK" '{repos: {($k): {pauses: "null"}}}' > "$STATE_FILE"
+SLOT_JSON="$(run --raw-path --get-json ".repos[\"$PK\"].pauses")"
+check_eq "a pauses slot corrupted to the string \"null\" reads as a JSON string" \
+  "string" "$(printf '%s' "$SLOT_JSON" | jq -r 'type')"
+check_eq "…so it is NOT the absent value the readers key on" "1" \
+  "$([[ "$SLOT_JSON" != "null" ]] && echo 1 || echo 0)"
+jq -n --arg k "$PK" '{repos: {($k): {pauses: null}}}' > "$STATE_FILE"
+check_eq "a genuinely absent pauses slot still reads as JSON null" "null" \
+  "$(run --raw-path --get-json ".repos[\"$PK\"].pauses" | jq -r 'type')"
+
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -eq 0 ]]; then
   echo "OK: session-state.sh field-type contract tests passed"
