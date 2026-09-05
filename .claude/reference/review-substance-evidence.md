@@ -203,8 +203,31 @@ recorded run is disqualified **`pre_run_approval`** (`done` false, or
 `submitted_at < started`; the bound is the run *start* because CodeAnt stamps
 `finished` after posting its verdict). `pre_run_approval` is deliberately not
 suppressed by `external_evidence_on_head` — in the reported trace the
-suppressing evidence *was* the marker comment — and a malformed or HEAD-less
+suppressing evidence *was* the marker comment — and an unparseable or HEAD-less
 payload degrades to the pre-#1365 verdict rather than blocking.
+
+**A row whose timestamps are not timestamps is unusable, not merely blank**
+(CodeRabbit review of PR #1635). Every compare here is lexicographic, so garbage
+does not fail — it *sorts*: `started: "zz"` canonicalised to `"zzZ"`, which every
+real timestamp sorts before, and that inverted two guards at once. `pre_run` read
+every approval as predating the run, and the issue #1632 window disjunct below
+matched nothing, withdrawing the term that stops a resolved finding the governing
+run itself posted from being laundered — so redemption was granted off a record
+that never described a real run. `canon_marker_ts` now blanks any value that is
+not an ISO-8601 datetime (seconds optional, either zone spelling), and the row
+carries a separate `ts_unusable` flag distinguishing **supplied-but-garbage** from
+**omitted**. The two must not be conflated: an omitted `started` is the documented
+pre-#1365 degrade, while a garbage one is a record actively claiming something
+unreadable. `ts_unusable` therefore forces `pre_run_approval` (an unreadable
+record cannot place the approval inside or outside its own run, and the
+conservative reading of an unprovable ordering is the blocking one) and
+independently bars `redeemed_by_clean_run`, matching the standing rule that an
+absent or unparseable run record never redeems. Blanking rather than *dropping*
+the row is deliberate — dropping would take an in-flight (`done: false`) row out
+of `run_marker_head` entirely, turning a blocking in-flight verdict into no
+verdict at all. Pinned by cases (s5)/(s5a)/(s5b) in
+`tests/merge-gate-codeant-run-marker.test.sh`, with (s5c)/(s5d) as the positive
+controls that keep the check from rejecting timestamps rather than garbage.
 
 **Row selection is by content, never by list position** (issue #1419). The
 first cut took `| last`, believing the payload appends in touch order; live
@@ -247,16 +270,80 @@ So the rule keys on the run marker instead:
 
 > A `pre_run_approval` is redeemed **iff** the same reviewer's run marker for
 > the **same SHA** reaches `done: true` **and** that reviewer left **zero
-> findings on that SHA** — no `COMMENTED`/`CHANGES_REQUESTED` review and no
-> HEAD-anchored inline comment — **and** no other disqualifier survives.
+> findings from that run** — no `COMMENTED`/`CHANGES_REQUESTED` review on the
+> SHA, and no HEAD-anchored inline comment that is either inside the run's
+> window or still unresolved — **and** no other disqualifier survives.
 
-Findings are read by **presence on the `commit_id`-scoped indexes** (`$ridx`,
-`$iidx`), never by ordering anything against the run window — the same frozen
-timestamp that motivates the rule would make an ordering test meaningless. That
-detection is deliberately *not* filtered through `fresh_review`: a `COMMENTED`
-review GitHub re-pointed onto HEAD cannot be proven to belong to this round, and
-the conservative reading of an unprovable finding is that it counts, since this
-term only ever **withholds** the redemption.
+**Review-state** findings (`$ridx`) are read by **presence on the
+`commit_id`-scoped index**, never by ordering anything against the run window —
+the same frozen `submitted_at` that motivates the rule would make an ordering
+test meaningless. That detection is deliberately *not* filtered through
+`fresh_review`: a `COMMENTED` review GitHub re-pointed onto HEAD cannot be proven
+to belong to this round, and the conservative reading of an unprovable finding is
+that it counts, since this term only ever **withholds** the redemption.
+
+#### Inline findings are scoped to the governing run (issue #1632)
+
+Counting **every** inline comment on the SHA left the gate's own stated remedy
+unreachable. Where run 1 posted findings that were all declined-with-evidence and
+**resolved**, no code change is warranted, so no new HEAD exists; the
+`@codeant-ai review` re-run then completes with zero new comments, yet the
+earlier ones keep `run_has_findings_on_head` `true` forever and no clean run can
+ever redeem the stub. Observed on PR #1612 at `da2acd8` (re-run 05:27:55→05:28:20
+with zero findings, still hollow) and PR #1627 at `d4ac833` — both fell to
+Greptile with the stickiness that brings.
+
+An inline comment on HEAD therefore counts as a finding when **either**:
+
+- its `created_at` falls inside the governing run marker's `started`→`finished`
+  window (open-ended while `finished` is empty, i.e. a run still in flight), **or**
+- its `id` is absent from `resolved_comment_ids` — the thread is unresolved, or
+  its resolution is unknown.
+
+It is excluded only when it is **both** outside the window **and** resolved.
+
+Two properties keep this from re-opening the hole it narrows. The window test is
+a **disjunct, not a fallback**, so resolving a finding the governing run itself
+posted does not launder it. And `created_at` is a legitimate ordering dimension
+where `submitted_at` is not: it stamps a distinct comment *object* at the moment
+it was posted, rather than a verdict the bot rewrites in place — and a bot that
+did freeze a comment timestamp lands on the resolution branch, not on a false
+clean. With `$runmark` null there is no window to test and every HEAD inline
+comment counts, exactly as before.
+
+#### `resolved_comment_ids` — the optional input
+
+Thread-resolution state reaches the evaluator through one optional payload key:
+
+```json
+{ "…": "…", "resolved_comment_ids": [ 2415360912, 2415360913 ] }
+```
+
+the REST comment ids (GraphQL `databaseId`) of every comment sitting in a
+resolved review thread. `merge-gate.sh` derives it from the `reviewThreads` query
+it already runs; `escalate-review.sh` derives it from `pr-state.sh`'s
+`threads.all`, which already requests `databaseId`. Neither costs an extra API
+call. Ids are stringified on both sides, so a number and its string spelling
+cannot silently miss.
+
+Both derivations inherit their caller's existing pagination bound rather than
+introducing one — `merge-gate.sh` reads an unpaginated `reviewThreads(first: 100)
+{ comments(first: 100) }` query (tracked separately as issue #1634), and
+`escalate-review.sh` reads whatever `pr-state.sh` put in `threads.all`. So
+"every comment" is bounded in practice: a thread or comment past the cap is
+simply **absent** from the set, reads as unresolved, and therefore still counts
+as a finding. Truncation can only ever WITHHOLD redemption, never grant it — the
+same safe direction as the `[]` default below. Do not generalize that to the
+bound being harmless: the universal unresolved-thread gate in `merge-gate.sh`
+reads the same payload and is *permissive* when truncated.
+
+The key is **optional and defaults to `[]`**. An empty set makes every inline
+comment read as unresolved, which reproduces the pre-#1632 behaviour byte for
+byte — so a caller with no thread data (today: `pr-preflight.sh`, whose only use
+is deciding whether to re-trigger a bot, and which fails toward re-triggering)
+degrades toward **refusing** redemption, never toward granting it. Pinned by case
+(s4) in `tests/merge-gate-codeant-run-marker.test.sh`, the negative control that
+keeps (s1) from being vacuous.
 
 When the shape holds, both `pre_run_approval` and `no_substantive_footprint`
 leave `disqualified_by` — the completed clean run *is* the footprint, and

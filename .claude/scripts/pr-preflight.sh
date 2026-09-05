@@ -471,6 +471,14 @@ fi
 # Degradation: if REVIEW_SUBSTANCE_SH is unavailable or fails, leave
 # PREFLIGHT_REVIEW_EVIDENCE as "{}" — review_object_engaged() degrades to
 # "engaged" (fail toward silence) in that case.
+#
+# `resolved_comment_ids` (issue #1632) is deliberately NOT supplied here. This
+# script fetches no review-thread data, and its only consumer of the verdict is
+# review_object_engaged(), which decides whether to RE-TRIGGER a bot. Omitting
+# the key means an earlier run's resolved findings still count, so a redeemable
+# approval reads as not-coverage and the bot is re-triggered — which is the
+# documented remedy for that state anyway. It fails toward noise, never toward a
+# laundered gate. Add a reviewThreads fetch here if that ever stops being true.
 PREFLIGHT_REVIEW_EVIDENCE="{}"
 if [[ -n "${REVIEW_SUBSTANCE_SH:-}" && -n "$HEAD_SHA" ]]; then
   # Merge each endpoint's pages explicitly before building the payload (issue #1226).
