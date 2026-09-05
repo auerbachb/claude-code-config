@@ -36,6 +36,7 @@ Slot order is fixed. Slots with nothing to say are omitted, not padded — an om
 - **Never per-phase.** A pipeline that runs Phase A → B → C emits one wrap-up at the end, not one per phase.
 - **Never repeated on later conversational turns.** Once emitted for a task, follow-up turns answer what was asked; they do not re-render the wrap-up. A genuinely new task earns its own.
 - The `merged PR #N` always-emit line is a **separate, unchanged** exception (`CLAUDE.md` item #3). It fires at the merge moment, carries no timestamp prefix, and is neither replaced by nor folded into the wrap-up.
+- **The two sit at different layers, so both firing is correct, not a contract breach.** `/wrap`'s "exactly one line, then nothing else" silent default (`wrap/SKILL.md` §Silent default) governs `/wrap`'s **own** output. The wrap-up is the **task's** terminal message, emitted by the thread once `/wrap` has returned — so a task that ends in a clean merge legitimately shows `merged PR #N` and then one wrap-up.
 
 ### Length and timestamp
 

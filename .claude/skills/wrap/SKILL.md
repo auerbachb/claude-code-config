@@ -939,6 +939,8 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 On a clean run, print exactly one line — `merged PR #N` — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
 
+This bounds `/wrap`'s **own** output only. The thread's single end-of-task wrap-up (`.claude/reference/final-wrapup-format.md`) is a task-level always-emit exception under `CLAUDE.md` #3, emitted after `/wrap` returns — it is not `/wrap` output, and it does not violate this default.
+
 Print **only** items that need an explicit decision from the user, one terse line each:
 
 - **Blocker or stop condition** → the Blocker path below. Mandatory — silence must never swallow a stop.
