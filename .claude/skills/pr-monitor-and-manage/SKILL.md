@@ -557,16 +557,16 @@ fi
    missing/null ID or generation is degraded state: set `.pmm.stop_requested=true`, report that exact teardown is
    impossible, and abort. Do not publish a pause marker or arm another task. This guard runs even
    when the fleet is empty or the idle threshold was reached.
-3. **Usage-horizon stand-down** — Step 3.7 returned `WATCH_STAND_DOWN=true` (verdict `critical`) → set `PAUSE_CAUSE=usage_horizon` and **Pause** with reason `"usage horizon critical"`, so `.pmm.pause_cause="usage_horizon"` is written in the same atomic batch as the pause marker. It sits above the three convergence routes because it is about the account, not the fleet: a `critical` verdict on a busy, progressing fleet must still stand the poll down, and every route below it would leave the Monitor armed. It never claims a park — `WATCH_PARK_SEEN` only decides which clause the line below carries (`subagent-thread-limit-park.md` §8.1):
+3. **Usage-horizon stand-down** — Step 3.7 returned `WATCH_STAND_DOWN=true` (verdict `critical`) → **Pause** with reason `"usage horizon critical"`, setting `PAUSE_CAUSE=usage_horizon` so `.pmm.pause_cause="usage_horizon"` is written in the same atomic batch as the pause marker. It sits above the three convergence routes because it is about the account, not the fleet: a `critical` verdict on a busy, progressing fleet must still stand the poll down, and every route below it would leave the Monitor armed. It never claims a park — `WATCH_PARK_SEEN` only decides which clause the line below carries (`subagent-thread-limit-park.md` §8.1):
 
    ```text
    [$TS] PMM standing down — usage horizon critical, adopting the park already open for <owner/repo>; resume with /pr-monitor-and-manage-wake
    ```
 
    With `WATCH_PARK_SEEN=false` say `no park open — nothing dispatched` in place of the adopting clause; with `unreadable` say the park slot could not be read. Arm **no** auto-wake re-scan on this route even when `--auto-wake` is set: a re-scan that ticks every hour into a closed window is the polling this route exists to stop, and `/pr-monitor-and-manage-wake` re-consults the horizon before it resumes anything.
-4. **Stable-state freeze** — `STREAK >= 9` → set `PAUSE_CAUSE=stable_frozen` and **Pause** with reason `"stable-frozen ($STREAK unchanged ticks)"`. This route is independent of `--idle-pause-after`; the shared scheduling contract requires the poll to stop at nine identical state digests, even when a custom idle threshold is higher.
-5. **Empty fleet** — `PR_COUNT == 0` from Step 2 → set `PAUSE_CAUSE=empty_fleet` and **immediate Pause** with reason `empty fleet` (no 3-tick wait).
-6. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → set `PAUSE_CAUSE=idle` and **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`.
+4. **Stable-state freeze** — `STREAK >= 9` → **Pause** with reason `"stable-frozen ($STREAK unchanged ticks)"`, setting `PAUSE_CAUSE=stable_frozen`. This route is independent of `--idle-pause-after`; the shared scheduling contract requires the poll to stop at nine identical state digests, even when a custom idle threshold is higher.
+5. **Empty fleet** — `PR_COUNT == 0` from Step 2 → **immediate Pause** with reason `empty fleet` (no 3-tick wait), setting `PAUSE_CAUSE=empty_fleet`.
+6. **Idle streak** — `pmm_idle_streak >= PMM_IDLE_PAUSE_AFTER` → **Pause** with reason `"$PMM_IDLE_PAUSE_AFTER idle ticks"`, setting `PAUSE_CAUSE=idle`.
 7. Otherwise → **verify or re-arm the Monitor** (below).
 
 Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and dropped from the actionable fleet; the idle counter handles convergence when nothing actionable remains.
