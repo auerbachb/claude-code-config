@@ -251,9 +251,16 @@ chip_entry() {  # number, repo-slug ("" = no url), status, task-id ("null" = non
      + (if $r == "" then {} else {url: "https://github.com/\($r)/issues/\($n)"} end)'
 }
 
-set_pipelines() {  # $1 = active_agents JSON array
+# $1 is an array of agent records, for readability at the call sites — it is
+# written to disk in the keyed-map shape `.active_agents` has carried since
+# issue #1631, so every case below exercises the real shape rather than the
+# legacy array the migration would rescue.
+set_pipelines() {  # $1 = active_agents JSON array of records
   jq -cn --argjson a "$1" --arg k "$SLUG" \
-    '{repos: {($k): {prs: {}}}, active_agents: $a}' > "$HOME/.claude/session-state.json"
+    '{repos: {($k): {prs: {}}},
+      active_agents: (reduce ($a | to_entries[]) as $e ({};
+        .[($e.value.id // ("_unkeyed_" + ($e.key | tostring)))] = $e.value))}' \
+    > "$HOME/.claude/session-state.json"
 }
 
 run() { ( cd "$FIXTURE_REPO" && "$SCRIPT" "$@" ); }

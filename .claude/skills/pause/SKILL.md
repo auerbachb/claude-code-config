@@ -359,7 +359,7 @@ Gather the complete picture of what is in flight. For authorship reasons (`safet
 Collect:
 
 1. **Open PRs** — `gh pr list --state open --author "@me"` from the current repo.
-2. **Running subagents** — `active_agents` from `session-state.sh --session-view`. Treat the list as a candidate list, not a fact: an agent in the list may have already completed and written its handoff.
+2. **Running subagents** — the `active_agents` map (keyed by agent id) from `session-state.sh --session-view`. Treat its values as a candidate list, not a fact: an agent in the list may have already completed and written its handoff.
 3. **Worktree branches with uncommitted or unpushed work** — check each local worktree for staged/unstaged changes and commits not yet on the remote.
 
 With no `session-state.sh` resolved, collection is limited to what `gh pr list` returns. Report "could not read what was running" for subagents and worktrees rather than "nothing was running".

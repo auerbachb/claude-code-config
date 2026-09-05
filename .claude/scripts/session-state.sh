@@ -12,12 +12,15 @@
 #
 #   Multiple --set flags merge into ONE atomic write (not N sequential writes),
 #   so callers can mutate several paths in a single transaction without a
-#   partial-write race window between them.
+#   partial-write race window between them. `--remove-agent` joins that same
+#   write (issue #1631) so an agent record can be dropped without the
+#   read-filter-write idiom that used to lose a sibling thread's entries.
 #
 # USAGE
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
 #   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
+#   session-state.sh --remove-agent <agent-id> [--remove-agent ...] [--set ...]
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
 #   session-state.sh --migrate [--dry-run]
@@ -121,10 +124,10 @@
 #                      origin). The projection, applied to the migrated document:
 #                        • .prs        = .repos[<key>].prs // {}   (this repo only)
 #                        • .root_repo  = .repos[<key>].root_repo // null
-#                        • .active_agents = the global array with every entry
+#                        • .active_agents = the global map with every entry
 #                          that belongs to a DIFFERENT repo removed. Attribution,
 #                          in order: an explicit .owner_repo on the entry wins
-#                          (kept iff it equals <key>) — the array has no repo
+#                          (kept iff it equals <key>) — entries carry no repo
 #                          field today, but honoring it here means stamping it at
 #                          the write sites later needs no reader change. Absent
 #                          that, an entry with no .pr is kept (unattributable);
@@ -181,6 +184,24 @@
 #                      Auto-updates `.last_updated` to the current ISO 8601
 #                      timestamp on every write — matches the pattern in
 #                      greptile-budget.sh and reviewer-of.sh.
+#
+#   --remove-agent <id>  Delete one key from the `.active_agents` map
+#                      (issue #1631). May be repeated, and composes with --set
+#                      and --cas: every assignment and deletion in one
+#                      invocation lands in the SAME jq pipeline, under the same
+#                      lock hold, in one atomic mv. Deletions are applied
+#                      BEFORE assignments regardless of flag order, so a
+#                      same-key `--remove-agent X --set '.active_agents["X"]=…'`
+#                      always means REPLACE and the assignment survives; for
+#                      different keys the order is immaterial. Removing an id
+#                      that is not present is a no-op that still exits 0, so a
+#                      caller draining an agent twice never has to probe first.
+#                      This is the ONLY supported way to drop an agent record.
+#                      The old idiom — `--get '.active_agents'`, filter locally,
+#                      `--set` the whole value back — spans two lock windows,
+#                      so a sibling thread's append between the read and the
+#                      write is silently discarded; that is the loss #1631
+#                      fixes and why the field is now a keyed map.
 #
 # EXIT STATUS
 #   0  Success — value printed (--get) or write completed (--set). A --get on
@@ -770,14 +791,62 @@ def _scoped($pathmap; $unknown):
   | del(.prs) | del(.root_repo)
   | .schema_version = 2;
 
+# active_agents array -> map keyed by agent id (issue #1631). The array was
+# not addressable per entry, so every writer replaced the whole value and two
+# threads racing that read-modify-write dropped each other live agents. As a
+# map each writer touches only its own key. Applied to EVERY read and write
+# pipeline, and independent of the .prs/.root_repo migration above: it is a
+# different field, so it also runs on the branch that refuses a corrupt
+# legacy document. In memory for --get/--session-view; persisted by the next
+# write or by --migrate. No schema_version bump is needed, because unlike
+# flat->scoped this migration is self-detecting by type and idempotent.
+#
+# `null` and other non-object elements are DROPPED (one observed clobber left
+# `[null, {...}]` on disk). An entry with no usable `.id` keeps a stable
+# `_unkeyed_<index>` key rather than being discarded. `.agent` is honored as a
+# secondary key source because live entries written before this change carry
+# that field instead of `.id`. The two are tried in order for the first USABLE
+# key — a non-empty string or a number — NOT the first non-null one: `//` falls
+# through only on null and false, so an entry carrying `id: ""` (or an object,
+# or an array) would have shadowed a perfectly good `.agent` and landed under
+# `_unkeyed_` instead (CodeAnt, PR #1637). Duplicate ids collapse
+# to the last entry, the same last-writer-wins the array already had. Any
+# non-array, non-object value (including null/absent) is left untouched, which
+# is the "refuse rather than discard" behavior migrate() uses everywhere else.
+#
+# The `_unkeyed_<index>` fallback is NOT assumed free: nothing stops a real
+# agent from carrying the literal id `_unkeyed_3`, and a migration that loses a
+# real, identified agent to an anonymous one would defeat the point of this
+# change. So the fallback appends `_` until the key is unused in the map built
+# so far. Collision the other way — a real id landing on a key an earlier
+# unkeyed entry took — stays last-writer-wins, identical to the duplicate-id
+# case above, and the record it displaces is the anonymous one.
+def _agents_map:
+  if (.active_agents | type) == "array"
+  then .active_agents = ( reduce (.active_agents | to_entries[]) as $e (
+         {};
+         if ($e.value | type) != "object" then .
+         else ( ( [ $e.value.id?, $e.value.agent? ]
+                  | map(select((type == "string" and length > 0) or type == "number"))
+                  | map(tostring) | first ) as $id
+              | . as $acc
+              | (if $id != null then $id
+                 else ( ("_unkeyed_" + ($e.key | tostring))
+                        | until( (. as $s | $acc | has($s)) | not; . + "_" ) )
+                 end) as $k
+              | .[$k] = $e.value )
+         end ) )
+  else . end;
+
 def migrate($pathmap; $unknown):
-  if (.prs != null and (.prs | type) != "object")
-     or (.root_repo != null and (.root_repo | type) != "string")
-  then .
-  elif (.prs != null) or (.root_repo != null)
-  then _scoped($pathmap; $unknown)
-  else (.schema_version // 2) as $v | .schema_version = $v
-  end;
+  ( if (.prs != null and (.prs | type) != "object")
+       or (.root_repo != null and (.root_repo | type) != "string")
+    then .
+    elif (.prs != null) or (.root_repo != null)
+    then _scoped($pathmap; $unknown)
+    else (.schema_version // 2) as $v | .schema_version = $v
+    end )
+  | _agents_map;
 '
 
 # True when the document carries legacy top-level keys whose shape we refuse
@@ -1261,6 +1330,53 @@ add_write_assignment() {
   pr_record_write_target "$scoped_path"
 }
 
+# Append one `del(.active_agents[<id>])` stage per --remove-agent to the shared
+# write pipeline (issue #1631), and register `active_agents` with the field-type
+# contract so the deletion is checked exactly like an assignment. Called from
+# both write blocks right after their assignment loops, so a --remove-agent
+# batched with --set or gated by --cas commits in the same atomic write.
+#
+# The id goes in through `--arg`, never string interpolation: agent ids are
+# caller data, and a jq program built by concatenating them would be an
+# injection surface. `.active_agents` is a genuinely global field, so the path
+# is written literally rather than through scope_path().
+#
+# Deleting a key that is not present is a no-op — jq's del() on a missing key
+# returns the object unchanged — so a caller draining an agent it already
+# removed still exits 0 rather than having to probe first.
+#
+# The seed makes an absent map an empty object, so the field-type contract
+# registered below sees an object rather than the `null` an absent field
+# reports; without it, the first --remove-agent against a fresh state file
+# would be rejected as a type violation for doing nothing. A value that is
+# present but NOT an object is passed through untouched on purpose: del() on a
+# string would abort the pipeline with exit 5, whereas leaving it alone lets
+# the contract reject it with exit 4 and the message that names the field.
+#
+# The seed tests `== null` rather than using `// {}`: jq's alternative operator
+# treats `false` as empty too, so `// {}` would quietly heal a corrupt `false`
+# into a valid empty map — a write that reports success while discarding the
+# evidence, and the one value that would slip past the contract this stage
+# deliberately defers to.
+add_remove_agent_stages() {
+  local i id_var stage
+  [[ "${#REMOVE_AGENTS[@]}" -gt 0 ]] || return 0
+  for i in "${!REMOVE_AGENTS[@]}"; do
+    id_var="__rmagent$i"
+    JQ_ARGS+=(--arg "$id_var" "${REMOVE_AGENTS[$i]}")
+    stage=".active_agents = ((if .active_agents == null then {} else .active_agents end) | if type == \"object\" then del(.[\$$id_var]) else . end)"
+    if [[ -z "$JQ_FILTER" ]]; then
+      JQ_FILTER="$stage"
+    else
+      JQ_FILTER="$JQ_FILTER | $stage"
+    fi
+  done
+  case " $TOUCHED_KNOWN_FIELDS " in
+    *" active_agents "*) ;;
+    *) TOUCHED_KNOWN_FIELDS="$TOUCHED_KNOWN_FIELDS active_agents" ;;
+  esac
+}
+
 # --- arg parsing ---
 MODE=""
 GET_PATH=""
@@ -1278,6 +1394,10 @@ CAS_PATH=""
 CAS_VALUE=""
 CAS_EXPECT=""
 CAS_EXPECT_SET=0
+# For --remove-agent: agent ids to delete from the `.active_agents` map
+# (issue #1631). Kept as data, never interpolated into a jq program — each id
+# is bound to its own `--arg` at write time.
+REMOVE_AGENTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1371,6 +1491,23 @@ while [[ $# -gt 0 ]]; do
       SET_VALUES+=("${local_arg#*=}")
       shift 2
       ;;
+    --remove-agent)
+      # Deleting one key from `.active_agents` (issue #1631). It composes with
+      # --set and --cas exactly as they compose with each other, and rides the
+      # SAME write path they do — one lock hold, one migration stage, one
+      # field-type check, one atomic mv. There is deliberately no second
+      # implementation of that machinery here: #1283 taught that a parallel
+      # write path drifts from the one it copied.
+      if [[ -n "$MODE" && "$MODE" != "set" && "$MODE" != "cas" ]]; then
+        die_usage "--remove-agent cannot be combined with --$MODE"
+      fi
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        die_usage "--remove-agent requires an agent id"
+      fi
+      [[ "$MODE" == "cas" ]] || MODE="set"
+      REMOVE_AGENTS+=("$2")
+      shift 2
+      ;;
     --cas)
       # See the --set branch: these two compose (issue #1445). --cas itself is
       # still at most once — the composition adds --set writes to one compare,
@@ -1421,7 +1558,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-  die_usage "one of --get, --set, --cas, --session-view, --repo-key or --migrate is required"
+  die_usage "one of --get, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
 fi
 
 # --cas requires --expect; --expect without --cas is a usage error.
@@ -1674,9 +1811,9 @@ migrate(\$__pathmap; \$__unknown)"
 | ([ (.repos // {}) | to_entries[] | select(.key != \$__rk and .key != \$__unknown) | (.value.prs // {}) | keys[] ]) as \$otherpr
 | .prs = (\$mine.prs // {})
 | .root_repo = (\$mine.root_repo // null)
-| .active_agents = ((.active_agents // [])
-    | if type != \"array\" then [] else . end
-    | map(select(type == \"object\"
+| .active_agents = ((.active_agents // {})
+    | if type != \"object\" then {} else . end
+    | with_entries(select(.value | type == \"object\"
         and (
         if (.owner_repo != null) then (.owner_repo == \$__rk)
         elif (.pr == null) then true
@@ -1824,6 +1961,12 @@ if [[ "$MODE" == "cas" ]]; then
   TOUCHED_NESTED_CHECKS=""
   WHOLE_ENTRY_PATHS=""
   WHOLE_MAP_PATHS=""
+  # BEFORE every assignment in this pipeline — the CAS target included, not just
+  # the composed --set writes. Staging removes after the CAS assignment left
+  # `--cas '.active_agents["X"]=...' --remove-agent X` deleting the record it had
+  # just written (CodeAnt, PR #1637). See the --set path below for why the order
+  # is fixed rather than following flag order.
+  add_remove_agent_stages
   add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
   # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
   # with no composed writes — unlike the --set block below, which cannot be
@@ -1878,7 +2021,10 @@ fi
 # ============================================================================
 # --set
 # ============================================================================
-if [[ "${#SET_PATHS[@]}" -eq 0 ]]; then
+# A --remove-agent-only invocation reaches this block with no --set pairs
+# (issue #1631) — it is a write with one del() stage and no assignments, which
+# is why the guard counts both accumulators rather than SET_PATHS alone.
+if [[ "${#SET_PATHS[@]}" -eq 0 && "${#REMOVE_AGENTS[@]}" -eq 0 ]]; then
   die_usage "--set requires at least one <jq-path>=<value>"
 fi
 
@@ -1929,9 +2075,21 @@ TOUCHED_KNOWN_FIELDS=""
 TOUCHED_NESTED_CHECKS=""
 WHOLE_ENTRY_PATHS=""
 WHOLE_MAP_PATHS=""
-for i in "${!SET_PATHS[@]}"; do
-  add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
-done
+# Deletions are staged BEFORE assignments, and that order is FIXED — it does
+# not follow flag order (CodeAnt, PR #1637). The stages are built from two
+# separate arrays, so argv position is not recoverable here; staging removes
+# last silently deleted a record the caller had just assigned in the same
+# invocation, which is the loss issue #1631 exists to stop arriving through the
+# drain path. Front-loading them makes a same-key
+# `--remove-agent X --set '.active_agents["X"]=…'` mean REPLACE in either flag
+# order — the caller's explicit assignment always survives. Different keys are
+# unaffected either way, which is every other composed call.
+add_remove_agent_stages
+if [[ "${#SET_PATHS[@]}" -gt 0 ]]; then
+  for i in "${!SET_PATHS[@]}"; do
+    add_write_assignment "${SET_PATHS[$i]}" "${SET_VALUES[$i]}" "v$i"
+  done
+fi
 
 # Append the .last_updated refresh — done in jq (not bash) so it shares the
 # atomic write. Use UTC ISO 8601 to match `(now | todate)` semantics in
@@ -1939,7 +2097,11 @@ done
 # but emitting from bash keeps the path injection-free.
 LAST_UPDATED="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 JQ_ARGS+=(--arg __last_updated "$LAST_UPDATED")
-JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+if [[ -z "$JQ_FILTER" ]]; then
+  JQ_FILTER=".last_updated = \$__last_updated"
+else
+  JQ_FILTER="$JQ_FILTER | .last_updated = \$__last_updated"
+fi
 
 # Migrate first, in the same atomic write (issue #638). A write through this
 # helper is therefore what permanently heals a legacy flat file — the scoped

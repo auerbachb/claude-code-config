@@ -218,11 +218,11 @@ run_in_background: true
 - The verbatim `MINDSET:` block from `.claude/rules/safety.md`
 - The verbatim `SKILLS:` block from `.claude/rules/skill-first.md`
 
-**Record all of this tick's spawns in ONE single write, after every Agent call has been issued — never one read-modify-write per PR.** `session-state.sh` has no cross-process lock; if each parallel spawn ran its own independent `--get` → append → `--set` cycle, two spawns' read-modify-write windows can interleave and the second writer's `--set` clobbers the first writer's append. Since the parent is a single sequential thread even when it fires N Agent tool calls in one message, build every new entry first, then issue exactly one `session-state.sh` call for the whole batch:
+**Record all of this tick's spawns in ONE single write, after every Agent call has been issued.** `.active_agents` is a map keyed by agent id (issue #1631), so each spawn writes only its own key — a sibling thread's entries are structurally untouchable, and the old `--get` → append → `--set`-the-whole-array idiom that lost them is gone. Batching is still the rule: one call per tick is one atomic write and one lock acquisition instead of N. Build every entry first, then issue exactly one `session-state.sh` call for the whole batch:
 
 ```bash
 NOW=$(date -u +%FT%TZ)
-NEW_ENTRIES='[]'
+AGENT_SETS=()
 IN_FLIGHT_SETS=()
 # ONE loop per spawned PR — build that PR's entry AND its --set argument together,
 # each using ONLY that PR's own head_sha. Never hoist head_sha into a shared
@@ -234,18 +234,18 @@ for N in $SPAWNED_PR_NUMS; do
   # (issue #1492) and a two-line value would break the `jq --argjson` below.
   ISSUE_N=$("$PR_ISSUE_REF_SH" --first "$N" 2>/dev/null || echo null)
   AGENT_ID="pmm-fix-$N"
-  ENTRY=$(jq -n --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
+  # -c is load-bearing: the entry is interpolated into a --set argument below,
+  # and jq's default pretty-print would embed newlines in it.
+  ENTRY=$(jq -n -c --arg id "$AGENT_ID" --arg task "PMM fix PR #$N" --argjson issue "$ISSUE_N" \
     --argjson pr "$N" --arg launched "$NOW" --arg head_sha "$N_HEAD_SHA" \
     '{id:$id, task:$task, issue:$issue, pr:$pr, phase:"A", status:"spawned", launched:$launched, head_sha:$head_sha}')
-  NEW_ENTRIES=$(jq --argjson entry "$ENTRY" '. + [$entry]' <<<"$NEW_ENTRIES")
+  # Targeted per-key write — never a whole-map `--set '.active_agents=...'`.
+  AGENT_SETS+=(--set ".active_agents[\"$AGENT_ID\"]=$ENTRY")
   IN_FLIGHT_SETS+=(--set ".pmm_in_flight.\"$N\"={\"skill\":\"phase-a-fixer\",\"status\":\"active\",\"dispatched_at\":\"$NOW\",\"head_sha\":\"$N_HEAD_SHA\",\"agent_id\":\"$AGENT_ID\"}")
 done
 
-# After the loop — ONE read of the current array, ONE append of the whole batch, ONE write:
-CURRENT_AGENTS=$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo null)
-[ "$CURRENT_AGENTS" = "null" ] && CURRENT_AGENTS='[]'
-UPDATED_AGENTS=$(jq --argjson entries "$NEW_ENTRIES" '. + $entries' <<<"$CURRENT_AGENTS")
-"$SESSION_STATE_SH" --set ".active_agents=$UPDATED_AGENTS" "${IN_FLIGHT_SETS[@]}"
+# After the loop — ONE write carrying every per-key agent assignment plus the locks.
+"$SESSION_STATE_SH" ${AGENT_SETS[@]+"${AGENT_SETS[@]}"} ${IN_FLIGHT_SETS[@]+"${IN_FLIGHT_SETS[@]}"}
 ```
 
 Set Subagent column to `spawned` immediately for every PR in this batch; transition to `working` once each subagent reports activity (first tool call or ~30s elapsed).
@@ -319,7 +319,7 @@ If any **blocking** fix subagents are active this tick (per the shared gate idio
 
 **PMM's own monitor loop (~60s cadence — replaces, not layers on, `monitor-mode.md`'s checklist):**
 
-1. **Poll active subagent statuses — ownership-aware drain.** Each ~60s cycle, read `active_agents` and partition the Phase A entries gating deferred PRs into **PMM-owned** (`id` starts with `pmm-fix-`) and **foreign** (any other `id`) sets.
+1. **Poll active subagent statuses — ownership-aware drain.** Each ~60s cycle, read `active_agents` (a map keyed by agent id — iterate its values) and partition the Phase A entries gating deferred PRs into **PMM-owned** (`id` starts with `pmm-fix-`) and **foreign** (any other `id`) sets.
 
    **PMM-owned entries:** Transition Subagent column: `spawned` → `working` → `complete` / `failed`. On completion (success, exhaustion, or crash), proceed to item 2 below.
 

@@ -66,7 +66,7 @@
 #             It is deduplicated against (a) by issue number.
 #        Offered-but-not-yet-accepted work COUNTS: twenty offered batches invite
 #        twenty starts, which was the observed failure mode.
-#     3. Running inline pipelines not yet at PR — `active_agents` entries with
+#     3. Running inline pipelines not yet at PR — `active_agents` values with
 #        no `.pr`, read through `session-state.sh --session-view` (which
 #        already drops other repos' entries and keeps unattributable ones).
 #
@@ -1112,7 +1112,10 @@ count_live_chips() {
   printf '%s' "$n"
 }
 
-# Inline pipelines not yet at PR: active_agents entries with no `.pr`.
+# Inline pipelines not yet at PR: active_agents values with no `.pr`. The field
+# is a map keyed by agent id since issue #1631; `.active_agents[]?` iterates an
+# object's values exactly as it iterated the array's elements, so the filter
+# below is shape-agnostic and needed no change.
 # Also extracts the issue numbers of those entries for cross-source dedup
 # (#1285 self-referential count fix). Sets globals _PIPELINE_COUNT_OUT and
 # _PIPELINE_ISSUE_NUMS_OUT from a single session-state read so no TOCTOU
@@ -1147,8 +1150,9 @@ load_pipeline_source() {
   fi
 
   # `active_agents` records what was LAUNCHED, not what is still alive
-  # (monitor-mode.md) — the parent removes an entry on completion, so a session
-  # that crashed mid-phase leaves one behind. There is no lifecycle/status
+  # (monitor-mode.md) — the parent removes an entry (`session-state.sh
+  # --remove-agent <id>`) on completion, so a session that crashed mid-phase
+  # leaves one behind. There is no lifecycle/status
   # field on these entries to filter on (the schema is id/task/issue/pr/phase/
   # launched/last_seen_at), so staleness is judged by the newest timestamp the
   # entry carries. An orphan pins capacity forever and blocks ALL new work,

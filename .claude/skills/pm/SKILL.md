@@ -217,8 +217,11 @@ LIST_RC=$?
 ```bash
 # Session-wide orchestration state — SCOPED to the invoking repo (issue #687).
 # --session-view projects the whole state file down to THIS repo's `.prs`,
-# `.root_repo`, and the `.active_agents` that belong here; other repos never
-# appear in the default view. Repo resolution reuses session-state.sh's
+# `.root_repo`, and the `.active_agents` map entries that belong here; another
+# repo's PRs, and the agents attributable to them, never appear in the default
+# view. Attribution is by `.owner_repo`, else `.pr`: an entry carrying NEITHER
+# is unattributable, so the projection keeps it rather than guessing — treat
+# such an entry as "possibly foreign", not as this repo's. Repo resolution reuses session-state.sh's
 # precedence (--repo / $CLAUDE_SESSION_REPO / cwd origin, per #638). NEVER use
 # `--get .` here — it dumps every repo's state and is the leak this scoping fixes.
 SESSION_VIEW=$("$SESSION_STATE_SH" --session-view 2>/dev/null || echo "NO_SESSION_STATE")

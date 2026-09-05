@@ -287,10 +287,23 @@ check_lacks "agent" "$OUT" "corrupt session-state.json: no agent segment invente
 check_lacks "watcher" "$OUT" "corrupt session-state.json: no watcher segment invented"
 
 # A wrong-typed active_agents must not be counted or crash the render.
-write_state '{"schema_version":2,"active_agents":"not-an-array","repos":{}}'
+write_state '{"schema_version":2,"active_agents":"not-a-map","repos":{}}'
 run_sl "$(session_json "$REPO")"
 check_eq 0 "$RC" "wrong-typed active_agents: exit 0"
 check_lacks "agent" "$OUT" "wrong-typed active_agents: no agent segment"
+
+# active_agents is a MAP keyed by agent id since issue #1631. Counting it with
+# the array-only helper the render used before would silently report zero while
+# agents were live — a false "nothing running" is worse than no segment at all.
+# FAILS WITHOUT FIX: `arrlen` returns 0 for an object, so the segment vanishes.
+write_state '{"schema_version":2,
+  "active_agents":{"a11":{"id":"a11","pr":11,"phase":"A"},
+                   "a12":{"id":"a12","pr":12,"phase":"B"}},
+  "polling_jobs":[], "pmm_active":false,
+  "repos":{"test/repo":{"prs":{"11":{},"12":{}}}}}'
+run_sl "$(session_json "$REPO")"
+check_eq 0 "$RC" "map-shaped active_agents: exit 0"
+check_contains "· 2 agents" "$OUT" "map-shaped active_agents: both entries counted"
 
 # --------------------------------------------------------------------------
 # 9. No sibling session-state.sh — the counts are unavailable, not fatal.

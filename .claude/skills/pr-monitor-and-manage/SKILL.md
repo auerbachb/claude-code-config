@@ -265,7 +265,7 @@ For each completed PMM-owned subagent, run steps 1-3 **unconditionally first** (
 
 1. Parse the Structured Exit Report. No exit report → surface `failed` in the Subagent column.
 2. Clean up the Phase A worktree: `git worktree remove <path> --force` (or `git worktree prune` on failure).
-3. Remove this agent's `active_agents` record and clear its `pmm_in_flight[N]` lock (scope to `id == "pmm-fix-$N"`, not a blanket filter).
+3. Remove this agent's `active_agents` record and clear its `pmm_in_flight[N]` lock in one write: `"$SESSION_STATE_SH" --remove-agent "pmm-fix-$N" --set ".pmm_in_flight.\"$N\"=null"`. Never read-filter-write the whole map — that is what dropped a sibling thread's live agents before issue #1631.
 
 Then branch on OUTCOME:
 - `pushed_fixes` / `no_findings` → verify push SHA; run Step 5b dismiss helper + Step 5b′ owning-bot re-trigger.
@@ -395,7 +395,7 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 ## Step 5: Act on the verdicts (after the table)
 
-**Shared gate idiom:** a blocking Phase A `active_agents` row blocks rebase, `/wrap`, and fix-dispatch gates. PMM-owned (`pmm-fix-` prefix) — blocking until drained by Step 2.5/5e. Foreign — blocking only while not stale (`PMM_LOCK_STALE_SECS` default 3600s with no progress evidence). All gate checks use this idiom consistently.
+**Shared gate idiom:** a blocking Phase A `active_agents` entry (the field is a map keyed by agent id) blocks rebase, `/wrap`, and fix-dispatch gates. PMM-owned (`pmm-fix-` prefix) — blocking until drained by Step 2.5/5e. Foreign — blocking only while not stale (`PMM_LOCK_STALE_SECS` default 3600s with no progress evidence). All gate checks use this idiom consistently.
 
 Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
@@ -506,7 +506,7 @@ valid base cadence, including a custom base longer than 15m.
 IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
 [ "$IDLE_PREV" = null ] && IDLE_PREV=0
 ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
-  <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '[]')")
+  <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '{}')")
 HELD_COUNT=0
 [ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
 if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
