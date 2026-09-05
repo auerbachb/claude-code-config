@@ -32,7 +32,7 @@ Respawn permissions: crash asks, exhaustion auto, limit-parked neither — it pa
 
 ## Liveness
 
-Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist.
+Routine per-tick heartbeats are removed; liveness and output rules: `scheduling-reliability.md` §Mandatory Pre-Exit Checklist. Drain-time closing message: `final-wrapup-format.md`.
 
 ## File-Write Status Updates (MANDATORY)
 

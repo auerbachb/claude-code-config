@@ -18,6 +18,7 @@ Context: the 5-minute heartbeat was the floor set by Issue #851. Issue #1253 rem
 
 - Print nothing unless the message requires user action or input.
 - When a message is needed: ≤2 lines, required action or decision first.
-- Suppressed surfaces: progress narration, per-tick heartbeats, file lists, per-phase status, completion reports, end-of-run summaries.
+- Suppressed surfaces: progress narration, per-tick heartbeats, file lists, per-phase status, interim completion reports.
+- **Amended by Issue #1396:** "end-of-run summaries" is no longer a blanket suppression. One end-of-task wrap-up per task is an always-emit exception, in the shape defined by `final-wrapup-format.md`. Interim and per-phase completion reports stay suppressed exactly as decided here; the amendment sanctions the single terminal message a task already had to carry, not a new reporting surface.
 - Opt-in surfaces (unchanged): `/recap`, `/standup`, `--verbose`, "summarize".
 - Decision points always surface: blockers, ambiguous calls, permission requests, subagent failures.
