@@ -32,7 +32,7 @@ Slot order is fixed — the blocked-ending slot below is its one sanctioned over
 
 ### Emit exactly once, at terminal state
 
-- Terminal state = **the whole of what the user asked for** has landed — that work merged, blocked pending a decision, or the question answered. It is a property of the request, not of any one worker finishing: a monitor whose subagents have all completed (`monitor-mode.md` §Dedicated Monitor Mode exit), a phase boundary, and one PR of a fleet merging while the rest still run are each an ending, and none of them is terminal.
+- Terminal state = **the whole of what the user asked for** has landed — that work merged, blocked pending a decision, or the question answered. The test is always the request's completeness, never a worker's: a monitor whose subagents have all completed (`monitor-mode.md` §Dedicated Monitor Mode exit), a phase boundary, and one PR of a fleet merging while others still run each finish a unit of work without finishing the request, so none of the three triggers a wrap-up.
 - **Never per-phase.** A pipeline that runs Phase A → B → C emits one wrap-up at the end, not one per phase.
 - **Never repeated on later conversational turns.** Once emitted for a task, follow-up turns answer what was asked; they do not re-render the wrap-up. A genuinely new task earns its own.
 - The `merged PR #N` always-emit line is a **separate, unchanged** exception (`CLAUDE.md` item #3). It fires at the merge moment, carries no timestamp prefix, and is neither replaced by nor folded into the wrap-up.
