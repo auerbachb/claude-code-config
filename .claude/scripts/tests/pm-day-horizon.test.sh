@@ -328,11 +328,40 @@ run_release() {   # run_release <token>
 
 seed_day_state
 CLAIM_TOK="$(claim_and_token)"
-if [[ "$CLAIM_TOK" =~ ^park-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]]; then
+if [[ "$CLAIM_TOK" =~ ^park-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]+$ ]]; then
   PASS=$((PASS + 1)); echo "ok   — claim mints a unique claim token ($CLAIM_TOK)"
 else
   FAIL=$((FAIL + 1)); echo "FAIL — claim minted no usable token (got '$CLAIM_TOK')"
 fi
+# Uniqueness is the property the token exists for, and neither of the first two
+# halves can supply it: a reused PID inside the same second agrees on both, which
+# is exactly the collision the nonce has to close (#1656 review). Mint a second
+# claim and compare the NONCE halves — this harness runs each claim in its own
+# `bash -c`, so `$$` differs here and comparing whole tokens would pass on the
+# PID alone, proving nothing about the nonce.
+UNIQ_TOK_A="$CLAIM_TOK"
+seed_day_state
+UNIQ_TOK_B="$(claim_and_token)"
+if [[ -n "$UNIQ_TOK_B" && "${UNIQ_TOK_A##*-}" != "${UNIQ_TOK_B##*-}" ]]; then
+  PASS=$((PASS + 1)); echo "ok   — same-second claims mint different nonces"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — same-second nonces collided ('${UNIQ_TOK_A##*-}' vs '${UNIQ_TOK_B##*-}')"
+fi
+# Control: the nonce carries real entropy rather than one 15-bit `$RANDOM` draw.
+# 8 bytes of /dev/urandom render as 16 hex chars; the `$RANDOM` fallback triples
+# the draw. A single `${RANDOM}` — the pre-#1656 shape — is at most 5 digits and
+# fails this, so the check cannot pass vacuously against the old token.
+UNIQ_NONCE_A="${UNIQ_TOK_A##*-}"
+if (( ${#UNIQ_NONCE_A} >= 15 )); then
+  PASS=$((PASS + 1)); echo "ok   — control: the nonce is wider than a single \$RANDOM draw"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL — control: nonce '${UNIQ_TOK_A##*-}' is too narrow to be unique"
+fi
+# Restore the state the rest of this section asserts against.
+seed_day_state
+CLAIM_TOK="$(claim_and_token)"
 check_eq "claim persists its token"       "$CLAIM_TOK"     "$(day_get park_claim_token)"
 check_eq "claim persists rolling_window"  "rolling_window" "$(day_get limit_kind)"
 check_eq "record: writes on a park it still owns" "PARK_RECORD=written" "$(run_record false "$CLAIM_TOK" | tail -1)"

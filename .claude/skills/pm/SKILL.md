@@ -1329,7 +1329,15 @@ if [ "$PARK_RESET_KNOWN" = true ]; then CLAIM_FIRES=null; else CLAIM_FIRES=-1; f
 # equally null under a SECOND pre-emptive claim that reused a slot ours was
 # released from. The token is unique per claim, so every later mutation of this
 # record can compare against it and a stale one matches nothing.
-PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+# Uniqueness has to come from the nonce, not from the timestamp and PID: those
+# two collide the moment a PID is reused inside the same second, and a single
+# `$RANDOM` leaves only 15 bits behind them. Draw 64 bits from /dev/urandom, and
+# fall back to three `$RANDOM` draws only where it is unreadable — an EMPTY
+# nonce is the one shape to avoid, since Step 3 reads an empty token as "this
+# step lost the claim" and would fail closed on a claim that actually won.
+PARK_CLAIM_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+[ -n "$PARK_CLAIM_NONCE" ] || PARK_CLAIM_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
+PARK_CLAIM_TOKEN="park-$(date -u +%Y%m%dT%H%M%SZ)-$$-$PARK_CLAIM_NONCE"
 
 PARK_CLAIM_RC=0
 if [ "$PARK_EPOCH" -le "$NOW_EPOCH" ]; then
