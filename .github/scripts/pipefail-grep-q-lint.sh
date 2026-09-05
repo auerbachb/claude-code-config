@@ -53,7 +53,12 @@
 # finding. Bodies of quoted heredocs (`<<'EOF'`) are skipped for the same
 # reason. Double-quoted strings are NOT stripped: the repo's assert helpers
 # `eval` their double-quoted condition string in the pipefail shell, so a
-# pipeline inside one is live code.
+# pipeline inside one is live code (`assert "x" "printf '%s' \"\$out\" | grep
+# -q y"` was a real flake site). The cost is a false positive on data that
+# merely LOOKS like a pipeline — `echo "text | grep -q x"` — which is fixed in
+# one edit with the waiver below; the miss it would otherwise trade for flakes
+# CI at random. Lexically the two are indistinguishable, so the lint errs
+# toward the finding.
 #
 # === Opt-out marker ===
 #
