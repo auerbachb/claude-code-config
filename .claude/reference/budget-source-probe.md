@@ -103,19 +103,54 @@ is the failure mode `classifier-override-patterns-source-specific` records.
 **Written by:** `.claude/hooks/usage-limit-record.sh` on every
 `StopFailure error == "rate_limit"` event.
 
-**What it tells you:** A turn ended because the account hit its usage limit.
-The record carries `recorded_at` (ISO timestamp) and `reason: "rate_limit"`.
-It does **not** carry a dollar amount — it is a binary post-hoc signal.
+**What it tells you:** A turn ended because the account hit *a* usage limit.
+The record carries `recorded_at` (ISO timestamp), `reason: "rate_limit"`, and —
+since issue #1633 — `limit_kind` and `reset_at`. It does **not** carry a dollar
+amount; it is a binary post-hoc signal.
 
-**How credit-budget.sh uses it:** Read `~/.claude/usage-limit-events.jsonl`
-and filter for events where `recorded_at` falls within the current ET calendar
-day (keyed as `TZ='America/New_York' date +'%Y-%m-%d'`). If any such event
-exists, the day's remaining budget is treated as **unknown-spent** and the
-script returns `reached`.
+**What counts as an overage signal (issue #1633).** `reason: "rate_limit"` says
+a limit was hit. It does **not** say which one, and the two possibilities are
+opposite facts about the account:
+
+| `limit_kind` | Means | Counts as overage? |
+|---|---|---|
+| `plan_window` | A plan wall — rolling 5-hour or weekly. The account is **on plan** and paid nothing per token. | **No** |
+| `overage` | Wording that names credits or a spend limit as exhausted (`credit balance is too low`, `out of credits`, `insufficient credits`, `spending limit`). | **Yes** |
+| `unclassified` | Wording matching neither set. Not evidence of spend. | **No** |
+
+The classification is made once, at write time, by
+`.claude/scripts/lib/usage-limit-classify.sh` — the single parser both the hook
+and the gate use, so the two can never drift. Its precedence is deliberate: a
+message stating **when the window reopens** is `plan_window` whatever else it
+says, because credit balances do not reset on a clock, and upsell wording
+("purchase credits") is never an overage signal, because it appears **on** plan
+walls. Reading an invitation to spend as proof of spend is the inversion that
+produced #1633 — four weekly-limit hits before 07:15Z on 2026-09-04 froze
+autonomous dispatch for the whole ET day and reported a $25 credit budget as
+spent while nothing had been spent.
+
+**How credit-budget.sh uses it:** Read `~/.claude/usage-limit-events.jsonl` and
+collect every `rate_limit` event whose `recorded_at` falls within the current
+ET calendar day (keyed as `TZ='America/New_York' date +'%Y-%m-%d'`). An event
+returns `reached` only when **both** hold:
+
+1. its kind is `overage` — read from `limit_kind`, or, for legacy records
+   written before that field existed, classified from
+   `last_assistant_message` through the same library; **and**
+2. its reset time, when one is known, has **not** passed. A window the message
+   says has already reopened never gates, whatever its kind. Absence of a
+   parseable reset time is never read as a reopening.
+
+If no event satisfies both, the script returns `ok`.
 
 **Limitations:** Post-hoc only — the signal arrives after the limit is hit, not
 before. No dollar amount is available. The hook may not fire if the session was
-killed before the hook could write.
+killed before the hook could write. The kind is derived from vendor prose, so
+new wording lands as `unclassified`, which does not gate: this probe
+under-detects overage rather than over-detecting it, on the deliberate ground
+that no overage-shaped record has ever been observed in this log while the
+false freeze has been observed and reproduced. `/pm` 2D.6's weekly-cap park is
+the separate, explicit mechanism that stops work on a plan wall.
 
 ### Probe 2 — Anthropic usage surface via browser MCP (manual / non-automatic)
 
@@ -154,8 +189,11 @@ degrades as follows:
 | Signal state | `credit-budget.sh` exits | Dispatch posture |
 |---|---|---|
 | No `rate_limit` event this ET day | `0` (`ok`) | Dispatch proceeds normally |
-| A `rate_limit` event recorded this ET day | `1` (`reached`) | Land near-done work; park until next ET day |
+| Only `plan_window` / `unclassified` events this ET day | `0` (`ok`) | Dispatch proceeds normally — a plan wall is not credit spend (#1633) |
+| An `overage` event whose stated reset time has already passed | `0` (`ok`) | Dispatch proceeds normally — the window reopened |
+| An `overage` event recorded this ET day, window not reopened | `1` (`reached`) | Land near-done work; park until next ET day |
 | Probe 1 unreadable (file missing, corrupt, unwritable) | `2` (`unknown`) | Conservative: finish in-flight, start nothing new |
+| Classifier library missing | `5` | Loud failure, not a verdict — the gate cannot tell the kinds apart, and both silent alternatives are wrong |
 
 Probe 0 is **model-mediated**, so it degrades on its own axis — a session that
 never observed a reading is indistinguishable from one whose reading went
