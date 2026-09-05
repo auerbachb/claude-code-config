@@ -232,9 +232,27 @@ detect_static() {
                   attributed: (.key != $unknown) })
         ),
         type_violations: (
+          # `active_agents` holding an ARRAY is the pre-#1631 shape, not
+          # corruption: session-state.sh migrates it to a keyed map on the next
+          # read or write. It is reported under legacy_keys instead. Letting it
+          # through here would put it in the --heal-types set, which resets a
+          # wrong-typed field to its contract-empty value — turning a legacy
+          # array of LIVE agents into `{}`. That is the exact data loss #1631
+          # exists to stop, arriving through the repair tool.
           [ ($top | to_entries[]
              | select($doc[.key] != null and ($doc[.key] | type) != .value)
+             | select((.key != "active_agents") or (($doc[.key] | type) != "array"))
              | { path: ".\(.key)", found: ($doc[.key] | type), want: .value, scope: null, pr: null }) ]
+          # A `null` (or otherwise non-object) VALUE inside the active_agents
+          # map (issue #1631). One observed whole-array clobber left
+          # `[null, {...}]` on disk; `map(.name)` tolerated it but a stricter
+          # reader would not. Carries `agent` so the heal below can drop that
+          # one key instead of resetting the whole field over its siblings.
+          + [ ($doc.active_agents // {})
+              | select(type == "object") | to_entries[]
+              | select((.value | type) != "object")
+              | { path: ".active_agents[\"\(.key)\"]", found: (.value | type),
+                  want: "object", scope: null, pr: null, agent: .key } ]
           + [ ($doc.repos // {}) | to_entries[] as $r
               | select(($r.value | type) == "object")
               | ($r.value.prs // {}) | to_entries[] as $p
@@ -262,7 +280,11 @@ detect_static() {
         ),
         legacy_keys: (
           [ (if $doc.prs != null then "prs" else empty end),
-            (if $doc.root_repo != null then "root_repo" else empty end) ]
+            (if $doc.root_repo != null then "root_repo" else empty end),
+            # Pre-#1631 array shape — healed by `--migrate`, never by
+            # `--heal-types` (see the type_violations carve-out above).
+            (if ($doc.active_agents | type) == "array"
+             then "active_agents (array)" else empty end) ]
         ),
         schema_version: ($doc.schema_version // null),
         total_prs: ( [ ($doc.repos // {})[]
@@ -567,17 +589,42 @@ REVALIDATED="$(jq -c -n \
               or ((($e.wrap_sweep.needs_decision? // []) | length) == 0) ) )) ),
     # A heal target must still be the wrong type — another writer may have
     # already healed it, in which case resetting it would discard real data.
-    heals: ( $heals | map(select(
-        if .scope == null then
-          ( ($d[(.path | ltrimstr("."))] // null) as $v
-            | $v != null and ($v | type) != .want )
+    heals: ( $heals | map(. as $h | select(
+        # An active_agents map entry (issue #1631) is addressed by key, not by
+        # top-level field name. `has` rather than `// null`: the offending value
+        # is usually literally `null`, which a default would make indistinguish-
+        # able from "another writer already removed it".
+        #
+        # The element is bound to $h before use for the reason the LOST check
+        # below documents: inside `has(f)` / `index(f)`, `.` is the value being
+        # queried, not the element being selected, so a bare `.agent` would
+        # resolve against the map and die with "Cannot check whether object has
+        # a null key" — a failure that aborts the whole re-validation.
+        if $h.agent != null then
+          ( ($d.active_agents // {}) as $m
+            | ($m | type) == "object" and ($m | has($h.agent))
+              and (($m[$h.agent] | type) != "object") )
+        # `has` rather than `// null` for the same reason the agent branch
+        # above uses it, plus one more: the `//` operator treats `false` as EMPTY, so
+        # `$d.active_agents // null` yields null for a literal `false` and the
+        # heal is dropped as "already repaired" while the invalid value stays
+        # on disk and --heal-types reports success (CodeAnt, PR #1637). `false`
+        # fails no other guard either — `false != null` is true, so detection
+        # reports the violation and only the repair silently declines it. Every
+        # branch is bound to a variable before `has`, because inside `has(f)`
+        # `.` is the value being queried, not the heal element.
+        elif .scope == null then
+          ( (.path | ltrimstr(".")) as $f | .want as $want
+            | ($d | has($f)) and ($d[$f] != null) and (($d[$f] | type) != $want) )
         elif .pr == null then
-          ( ($d.repos[.scope] // null) as $v | $v != null and ($v | type) != .want )
+          ( .scope as $s | .want as $want
+            | (($d.repos // {}) | has($s)) and ($d.repos[$s] != null)
+              and (($d.repos[$s] | type) != $want) )
         else
-          ( entry(.scope; .pr) as $e
-            | $e != null
-            and ( ($e[(.path | split(".") | last)] // null) as $v
-                  | $v != null and ($v | type) != .want ) )
+          ( (.path | split(".") | last) as $f | .want as $want
+            | entry(.scope; .pr) as $e
+            | $e != null and ($e | has($f)) and ($e[$f] != null)
+              and (($e[$f] | type) != $want) )
         end )) )
   }')" || die_error "could not re-validate the repair plan under the lock — $STATE_FILE left unmodified (backup: $BACKUP)"
 
@@ -624,7 +671,12 @@ if ! jq \
     | reduce $heals[] as $h (
         .;
         ( (if $h.want == "array" then [] else {} end) as $empty
-          | if $h.scope == null then .[($h.path | ltrimstr("."))] = $empty
+          # An active_agents entry heals by DROPPING its own key. Resetting the
+          # whole field to `{}` the way every other heal resets its target would
+          # discard every valid sibling agent — the same loss issue #1631 fixed
+          # in the writers, arriving through the repair tool instead.
+          | if $h.agent != null then del(.active_agents[$h.agent])
+            elif $h.scope == null then .[($h.path | ltrimstr("."))] = $empty
             elif $h.pr == null then .repos[$h.scope] = $empty
             else .repos[$h.scope].prs[$h.pr][($h.path | split(".") | last)] = $empty
             end )
@@ -673,7 +725,14 @@ fi
 
 NEW_VIOLATIONS="$(jq -r --argjson top "$FIELD_TYPES_TOP" --argjson nested "$FIELD_TYPES_NESTED" '
   . as $doc
-  | ( [ $top | to_entries[] | select($doc[.key] != null and ($doc[.key] | type) != .value) | ".\(.key)" ]
+  | ( [ $top | to_entries[] | select($doc[.key] != null and ($doc[.key] | type) != .value)
+        | select((.key != "active_agents") or (($doc[.key] | type) != "array"))
+        | ".\(.key)" ]
+    # Same per-entry pass detection runs (issue #1631), so a repair that left
+    # a null agent value behind — or introduced one — is counted here too and
+    # cannot slip past the "no new violations" gate by not being looked for.
+    + [ ($doc.active_agents // {}) | select(type == "object") | to_entries[]
+        | select((.value | type) != "object") | ".active_agents[\"\(.key)\"]" ]
     + [ ($doc.repos // {}) | to_entries[] as $r
         | select(($r.value | type) == "object")
         | ($r.value.prs // {}) | to_entries[] as $p

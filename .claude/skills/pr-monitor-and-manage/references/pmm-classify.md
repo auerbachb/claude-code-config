@@ -191,12 +191,12 @@ Step 5c's parallel-dispatch decisions (skip-if-in-flight, cap slots) are pure re
 For every PR whose base verdict is `fixpr`:
 
 1. **In-flight check.** Refine to `awaiting fix subagent` if a **blocking** Phase A `active_agents` entry exists for this PR (per Step 5's shared gate idiom — foreign entries past `PMM_LOCK_STALE_SECS` with no progress evidence are non-blocking), OR if `pmm_in_flight[N]` has an active lock for the same PR **that is not stale** — apply the same `PMM_LOCK_STALE_SECS` (default 3600s) staleness rule Step 5d uses for `/wrap` locks. A stale lock (e.g. a `wrap` lock left over from a crashed parent, on a PR now reclassified `fixpr`) is broken here too, not just in Step 5d — otherwise a stale non-`phase-a-fixer` lock can block fix dispatch forever with no path to clear it.
-2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active **PMM-spawned** fix subagents (`id` prefixed `pmm-fix-` — excludes Phase A agents spawned by other workflows sharing the same `active_agents` array) and compute remaining slots:
+2. **Cap check.** Among the PRs still `fixpr` after step 1, count currently active **PMM-spawned** fix subagents (`id` prefixed `pmm-fix-` — excludes Phase A agents spawned by other workflows sharing the same `active_agents` map) and compute remaining slots. `.[]` iterates a map's values exactly as it iterated the array's elements, so the filter is unchanged from the pre-#1631 shape; only the empty-state fallback moved from `[]` to `{}`:
 
    ```bash
    ACTIVE_COUNT=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed")
      and ((.id // "") | startswith("pmm-fix-")))] | length' \
-     <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '[]')")
+     <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '{}')")
    SLOTS=$(( PMM_MAX_PARALLEL - ACTIVE_COUNT ))
    (( SLOTS < 0 )) && SLOTS=0
    ```

@@ -103,7 +103,7 @@ SET_ARGS=(
 "$SESSION_STATE_SH" "${SET_ARGS[@]}"
 ```
 
-Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in `active_agents` (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
+Leave `pmm_in_flight`, `pmm_digest`, `pmm_digest_streak`, and `pmm_idle_streak` in place as an audit trail — they are harmless once `pmm_active=false`, and a later `/pr-monitor-and-manage` re-invocation re-evaluates them against live PR state on its first tick. Do **not** touch `cr_hourly`, `greptile_daily`, `prs`, `active_agents`, or any non-`pmm_*` field. Note any PMM-owned entries still in the `active_agents` map (phase-a-fixer fix subagents) in the final summary — they may continue running until they exit on their own.
 
 ## Step 5: Final summary
 

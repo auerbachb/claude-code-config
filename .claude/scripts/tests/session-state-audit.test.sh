@@ -179,7 +179,7 @@ echo
 echo "== --heal-types resets containers and refuses to invent a number =="
 OUT=$(run --apply --heal-types --offline 2>&1); RC=$?
 check_eq "heal run exits 0" "0" "$RC"
-check_eq "array-typed field healed to []" "[]" "$(jq -c '.active_agents' "$STATE_FILE")"
+check_eq "object-typed field healed to {}" "{}" "$(jq -c '.active_agents' "$STATE_FILE")"
 check_eq "object-typed nested field healed to {}" "{}" \
   "$(jq -c '.repos["org/alpha"].prs["10"].last_cron_action' "$STATE_FILE")"
 check_eq "number-typed field left alone (no safe empty value to invent)" '"3"' \
@@ -194,6 +194,96 @@ check_eq "backup still holds the PRE-repair (corrupt) value" '"(.active_agents /
 cp "$BACKUP_PATH" "$STATE_FILE"
 check_eq "backup restores by plain copy" '"(.active_agents // [] | map(select(.pr != 71)))"' \
   "$(jq -c '.active_agents' "$STATE_FILE")"
+rm -f "$HOME"/.claude/session-state.json.bak.*
+
+echo
+echo "== active_agents map: a null entry is a violation, healed key-by-key (issue #1631) =="
+# FAILS WITHOUT FIX: without the per-entry pass, a `null` value under an
+# active_agents key is invisible — `.active_agents` itself is a valid object,
+# so the whole-field check passes and the corruption stays on disk.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "active_agents": {
+    "live-a": { "id": "live-a", "phase": "B" },
+    "clobbered": null,
+    "live-b": { "id": "live-b", "phase": "C" },
+    "wrong-type": "a bare string"
+  },
+  "repos": {}
+}
+JSON
+OUT=$(run --offline --json 2>/dev/null)
+check_eq "detects a null value under an active_agents key" "1" \
+  "$(jq -r '[.type_violations[] | select(.path == ".active_agents[\"clobbered\"]" and .found == "null")] | length' <<<"$OUT")"
+check_eq "detects a non-object value under an active_agents key" "1" \
+  "$(jq -r '[.type_violations[] | select(.path == ".active_agents[\"wrong-type\"]" and .found == "string")] | length' <<<"$OUT")"
+check_eq "the whole field is NOT reported — only the offending keys" "0" \
+  "$(jq -r '[.type_violations[] | select(.path == ".active_agents")] | length' <<<"$OUT")"
+
+run --apply --heal-types --offline >/dev/null 2>&1
+check_eq "heal drops only the offending keys" '["live-a","live-b"]' \
+  "$(jq -c '.active_agents | keys' "$STATE_FILE")"
+check_eq "heal preserved a valid sibling verbatim" '{"id":"live-b","phase":"C"}' \
+  "$(jq -c '.active_agents["live-b"]' "$STATE_FILE")"
+rm -f "$HOME"/.claude/session-state.json.bak.*
+
+echo
+echo "== active_agents legacy ARRAY is a migration, never a --heal-types reset (issue #1631) =="
+# FAILS WITHOUT FIX (of the carve-out): with the array reported as a plain
+# type violation, --heal-types resets the field to {} and every live agent in
+# it is gone — the exact loss #1631 exists to stop, arriving through the
+# repair tool instead of through a racing writer.
+cat > "$STATE_FILE" <<'JSON'
+{
+  "schema_version": 2,
+  "active_agents": [ { "id": "still-running", "phase": "B" } ],
+  "repos": {}
+}
+JSON
+OUT=$(run --offline --json 2>/dev/null)
+check_eq "a legacy array is not a type violation" "0" \
+  "$(jq -r '[.type_violations[] | select(.path | startswith(".active_agents"))] | length' <<<"$OUT")"
+check_eq "a legacy array is reported as a legacy key instead" "1" \
+  "$(jq -r '[.legacy_keys[] | select(. == "active_agents (array)")] | length' <<<"$OUT")"
+run --apply --heal-types --offline >/dev/null 2>&1
+check_eq "--heal-types did not reset the legacy array to {}" '[{"id":"still-running","phase":"B"}]' \
+  "$(jq -c '.active_agents' "$STATE_FILE")"
+rm -f "$HOME"/.claude/session-state.json.bak.*
+
+echo
+echo "== a FALSE container value is healed, not silently declined (issue #1631) =="
+# FAILS WITHOUT FIX: the heal re-validation read the target as `$d[$f] // null`,
+# and jq's `//` treats `false` as EMPTY — so a literal `false` looked like
+# "another writer already repaired it", the heal was dropped from the plan, and
+# --heal-types exited reporting success with the invalid value still on disk.
+# `false` trips no other guard: `false != null` is true, so detection reports
+# the violation correctly and only the repair declines it (CodeAnt, PR #1637).
+write_state
+jq '.active_agents = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+OUT=$(run --offline --json 2>/dev/null)
+check_eq "a false active_agents IS reported as a type violation" "boolean" \
+  "$(jq -r '[.type_violations[] | select(.path == ".active_agents")][0].found' <<<"$OUT")"
+run --apply --heal-types --offline >/dev/null 2>&1
+check_eq "--heal-types actually resets a false active_agents to {}" '{}' \
+  "$(jq -c '.active_agents' "$STATE_FILE")"
+
+# The `.pr == null` and per-PR branches carry the same `has`-based fix, but a
+# false-valued REPO scope cannot be pinned end-to-end here: the LOST integrity
+# check that runs before the write does `.repos[$r].prs` unguarded and dies with
+# "Cannot index boolean with string" first, so the repair aborts (file left
+# untouched, backup kept) for a reason unrelated to the heal plan. That crash is
+# a separate pre-existing defect in a different code path; tracked separately
+# rather than widened into this issue. What IS pinned is that the abort is loud
+# and non-destructive, which is the property that matters for a repair tool.
+write_state
+jq '.repos["auerbachb/claude-code-config"] = false' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+BEFORE_FALSE_SCOPE="$(cat "$STATE_FILE")"
+OUT=$(run --apply --heal-types --offline 2>&1); RC=$?
+check_eq "a false repo scope aborts the repair rather than half-writing" \
+  "nonzero" "$([[ "$RC" -ne 0 ]] && echo nonzero || echo "zero($RC)")"
+check_eq "the aborted repair left the file byte-identical" \
+  "$BEFORE_FALSE_SCOPE" "$(cat "$STATE_FILE")"
 rm -f "$HOME"/.claude/session-state.json.bak.*
 
 echo

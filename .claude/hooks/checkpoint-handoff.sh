@@ -396,7 +396,7 @@ fi
 AGENTS_COUNT=""
 if SESSION_STATE_SH=$(resolve_script session-state.sh); then
   AGENTS_COUNT=$("$SESSION_STATE_SH" --session-view 2>/dev/null \
-                   | jq -r '(.active_agents // []) | length' 2>/dev/null)
+                   | jq -r '(.active_agents // {}) | length' 2>/dev/null)
   [[ "$AGENTS_COUNT" =~ ^[0-9]+$ ]] || AGENTS_COUNT=""
 fi
 

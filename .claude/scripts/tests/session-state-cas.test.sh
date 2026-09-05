@@ -273,12 +273,13 @@ check_eq "state file byte-unchanged after a rejected whole-entry --cas" "$BEFORE
   "$(cat "$STATE_FILE")"
 
 reset_state
-run --raw-path --set '.active_agents=[]'
+# active_agents is object-typed since issue #1631.
+run --raw-path --set '.active_agents={}'
 BEFORE_DOC="$(cat "$STATE_FILE")"
-TOP_OUT=$(run --raw-path --cas '.active_agents=not-an-array' --expect '[]' 2>&1); TOP_RC=$?
-check_eq "string-for-array top-level field via --cas rejected (exit 4)" "4" "$TOP_RC"
+TOP_OUT=$(run --raw-path --cas '.active_agents=not-a-map' --expect '{}' 2>&1); TOP_RC=$?
+check_eq "string-for-object top-level field via --cas rejected (exit 4)" "4" "$TOP_RC"
 check_eq "error names active_agents and both types" "1" \
-  "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$TOP_OUT")"
+  "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$TOP_OUT")"
 check_eq "state file byte-unchanged after a rejected top-level --cas" "$BEFORE_DOC" \
   "$(cat "$STATE_FILE")"
 
@@ -623,13 +624,13 @@ check_eq "a --cas with no --set companions still writes" "claimed" \
 # The field-type contract reaches every assignment in the batch, not just the
 # CAS target — one wrong-typed companion rejects the WHOLE invocation.
 reset_state
-run --raw-path --set '.active_agents=[]'
+run --raw-path --set '.active_agents={}'
 BEFORE_DOC="$(cat "$STATE_FILE")"
 COMP_TYPE_OUT=$(run --raw-path --cas '.slot="claimed"' --expect null \
-  --set '.active_agents=not-an-array' 2>&1); COMP_TYPE_RC=$?
+  --set '.active_agents=not-a-map' 2>&1); COMP_TYPE_RC=$?
 check_eq "wrong-typed companion rejects the whole composed write (exit 4)" "4" "$COMP_TYPE_RC"
 check_eq "composed type rejection names the companion field" "1" \
-  "$(grep -c "field '.active_agents' would become type 'string' but must be 'array'" <<<"$COMP_TYPE_OUT")"
+  "$(grep -c "field '.active_agents' would become type 'string' but must be 'object'" <<<"$COMP_TYPE_OUT")"
 check_eq "composed type rejection left the file byte-unchanged" "$BEFORE_DOC" "$(cat "$STATE_FILE")"
 check_eq "composed type rejection did not write the CAS target" "null" \
   "$(jq -r '.slot // "null"' "$STATE_FILE")"
