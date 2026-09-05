@@ -32,7 +32,8 @@
 #       preflight, and a positive control proves the option walk still LAUNCHES
 #       the shebangs it resolves rather than refusing them all.
 #
-# Requires git. No network. Run from anywhere:
+# Requires git. No network. Cases needing an env(1) that supports -S probe for
+# it and skip rather than fail. Run from anywhere:
 #   bash .claude/scripts/tests/worktree-isolation-shapes.test.sh
 set -uo pipefail
 
@@ -499,17 +500,55 @@ check_eq "T13c: -u consumes its value and still reaches the interpreter (3)" "3"
 check_contains "T13c: and blames the interpreter" "definitely-not-a-real-interp-1470" "$ERROUT"
 check_not_contains "T13c: and never mistakes -u's value for the command" "WU_TEST_UNSET_1470" "$ERROUT"
 
+# An interpreter that `env -S` would resolve through QUOTING is one this walk
+# has not resolved: the split is plain whitespace, so `-S 'my interp' arg` would
+# offer the leading `'my` as the name. Refusing on that invents a launch failure
+# for a check that runs fine, so the walk drops the token and skips — the wait
+# then ends at the cap (4), never at 3.
+cat > "$TMP/env-dash-s-quoted" <<'EOF'
+#!/usr/bin/env -S 'my interp' arg
+exit 0
+EOF
+chmod +x "$TMP/env-dash-s-quoted"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 2 -- "$TMP/env-dash-s-quoted" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: a QUOTED -S interpreter is skipped, not guessed at (4, not 3)" "4" "$RC"
+check_not_contains "T13c: and no launch failure is invented for it" "could not be launched" "$ERROUT"
+
+# The interpreter gets the same regular-file test as the command itself (T13b):
+# a DIRECTORY carries the execute bit, so a bare -x would pass one through to
+# exec and poll it to a cap timeout.
+mkdir -p "$TMP/interp-dir"
+printf '#!%s\nexit 0\n' "$TMP/interp-dir" > "$TMP/dir-interp"
+chmod +x "$TMP/dir-interp"
+RC=0; ERROUT=""
+ERROUT="$("$WAIT" --interval 1 --timeout 3 -- "$TMP/dir-interp" 2>&1 >/dev/null)" || RC=$?
+check_eq "T13c: a DIRECTORY named as the interpreter exits 3, not a cap timeout" "3" "$RC"
+check_contains "T13c: and names it as not an executable file" "not an executable file" "$ERROUT"
+
 # Positive control — without it, a walk that resolved EVERY env shebang to
-# "missing" would pass both cases above while refusing every real check.
-cat > "$TMP/env-dash-s-ok" <<'EOF'
+# "missing" would pass every case above while refusing every real check.
+#
+# Guarded by a runtime probe: `env -S` is GNU coreutils >= 8.30 and the BSDs,
+# so an older toolchain would fail this for platform reasons rather than for a
+# defect — the same reason T7b skips a filesystem that will not keep a tab. The
+# NEGATIVE cases above need no probe: they never reach exec, deciding on the
+# shebang text alone. Plain `#!/usr/bin/env bash` launching is covered
+# unconditionally by T12 and T13b, so a skip here never leaves the launch path
+# untested.
+if env -S 'true' >/dev/null 2>&1; then
+  cat > "$TMP/env-dash-s-ok" <<'EOF'
 #!/usr/bin/env -S bash -e
 printf ready
 EOF
-chmod +x "$TMP/env-dash-s-ok"
-RC=0; OUT=""
-OUT="$("$WAIT" --interval 1 --timeout 10 -- "$TMP/env-dash-s-ok" 2>/dev/null)" || RC=$?
-check_eq "T13c: positive control — env -S with a real interpreter still runs (0)" "0" "$RC"
-check_eq "T13c: and its stdout is relayed verbatim" "ready" "$OUT"
+  chmod +x "$TMP/env-dash-s-ok"
+  RC=0; OUT=""
+  OUT="$("$WAIT" --interval 1 --timeout 10 -- "$TMP/env-dash-s-ok" 2>/dev/null)" || RC=$?
+  check_eq "T13c: positive control — env -S with a real interpreter still runs (0)" "0" "$RC"
+  check_eq "T13c: and its stdout is relayed verbatim" "ready" "$OUT"
+else
+  pass "T13c: SKIP — this env(1) has no -S, so the positive control cannot run here"
+fi
 
 # ---- T14: a cap smaller than one interval still costs exactly one check ------
 echo 0 > "$STUB_STATE"

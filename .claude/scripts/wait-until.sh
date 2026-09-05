@@ -240,7 +240,13 @@ if [[ "${CMD[0]}" == */* ]]; then
     WU_SHEBANG="${WU_SHEBANG#\#!}"
     WU_SHEBANG="${WU_SHEBANG#"${WU_SHEBANG%%[![:space:]]*}"}"
     WU_INTERP="${WU_SHEBANG%%[[:space:]]*}"
-    if [[ -n "$WU_INTERP" && "$WU_INTERP" == /* && ! -x "$WU_INTERP" ]]; then
+    # -f as well as -x, matching the check on the command itself above: a
+    # DIRECTORY carries the execute bit (that is traverse permission), so a bare
+    # -x would pass one through to exec, which fails 126 and polls to a cap
+    # timeout — the launch failure this preflight exists to name, arriving as
+    # the timeout it exists to prevent.
+    if [[ -n "$WU_INTERP" && "$WU_INTERP" == /* ]] \
+       && { [[ ! -f "$WU_INTERP" ]] || [[ ! -x "$WU_INTERP" ]]; }; then
       echo "wait-until.sh: the check command could not be launched — ${CMD[0]} names interpreter '$WU_INTERP', which is not an executable file" >&2
       exit 3
     fi
@@ -285,6 +291,16 @@ if [[ "${CMD[0]}" == */* ]]; then
       if (( WU_I < ${#WU_ENV_TOKENS[@]} )); then
         WU_ENV_ARG="${WU_ENV_TOKENS[WU_I]}"
       fi
+      # `env -S` honours quoting, escapes and ${VAR} expansion; the split above
+      # is plain whitespace. So a token carrying any of that syntax is one this
+      # walk has NOT resolved — `-S 'my interp' arg` really names an interpreter
+      # with a space in it, and reading the leading `'my` as the name would refuse
+      # a check that launches perfectly well. Drop it and skip, in the same
+      # fail-open direction as the rest of the walk: a missed launch failure
+      # costs a cap timeout, an invented one costs a working check.
+      case "$WU_ENV_ARG" in
+        *[\'\"\\\$]*) WU_ENV_ARG="" ;;
+      esac
       if [[ -n "$WU_ENV_ARG" && "$WU_ENV_ARG" != -* && "$WU_ENV_ARG" != */* ]] \
          && ! command -v "$WU_ENV_ARG" >/dev/null 2>&1; then
         echo "wait-until.sh: the check command could not be launched — ${CMD[0]} asks env for interpreter '$WU_ENV_ARG', which is not on PATH" >&2
