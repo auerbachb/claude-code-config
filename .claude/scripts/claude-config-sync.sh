@@ -867,6 +867,13 @@ fi
 PUBLISH_STDOUT=""
 PUBLISH_STDERR=""
 PUBLISH_TIMED_OUT=0
+# Whether the last publisher call was DECLINED (never started) rather than cut
+# short by its bound. Tracked as an explicit flag, not inferred from
+# PUBLISH_STDERR, because that variable is overwritten with the child's own
+# stderr after a bounded run — a publisher whose stderr happened to begin with
+# "declined:" would otherwise have a real timeout reported as a decline
+# (CodeRabbit, PR #1640). This mirrors _bound_declined in session-start-sync.sh.
+PUBLISH_DECLINED=0
 # The bound actually applied to the last call — the region-clamped value, which
 # is what a failure message must name rather than the per-call ceiling.
 PUBLISH_LAST_BOUND="${PUBLISH_BOUND_SECS:-0}"
@@ -875,6 +882,7 @@ run_publisher() {
   PUBLISH_STDOUT=""
   PUBLISH_STDERR=""
   PUBLISH_TIMED_OUT=0
+  PUBLISH_DECLINED=0
   if (( GIT_BOUND_AVAILABLE == 0 )); then
     # Refuse rather than run unbounded while holding the lock — the same stance
     # git_sync takes above, against the same lock, for the same reason: without
@@ -884,6 +892,7 @@ run_publisher() {
     # run's own commit_json is refused by state_lock_assert_held so the restart
     # marker it owed never lands.
     PUBLISH_TIMED_OUT=1
+    PUBLISH_DECLINED=1
     PUBLISH_LAST_BOUND=0
     PUBLISH_STDERR="declined: bounded-run.sh unavailable — refusing to run unbounded while holding the config-sync lock"
     return 124
@@ -899,6 +908,7 @@ run_publisher() {
     # Starting it is what lets the lock go stale under a live holder, and a
     # recorded failure is strictly better than a silently surrendered mutex.
     PUBLISH_TIMED_OUT=1
+    PUBLISH_DECLINED=1
     PUBLISH_STDERR="declined: only ${region_left}s left of the ${_publish_region_budget}s lock-held publish budget"
     return 124
   fi
@@ -913,7 +923,7 @@ run_publisher() {
 # git calls: a call that ran out of time "exceeded its Ns bound", one that never
 # started was "declined". Both are recorded failures either way.
 _publish_trip_reason() {
-  if [[ "${PUBLISH_STDERR:-}" == declined:* ]]; then
+  if (( ${PUBLISH_DECLINED:-0} == 1 )); then
     printf '%s' "$PUBLISH_STDERR"
   else
     printf 'exceeded its %ss bound' "${PUBLISH_LAST_BOUND:-$PUBLISH_BOUND_SECS}"

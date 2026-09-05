@@ -1223,6 +1223,14 @@ test_25_publisher_is_bounded_inside_the_lock() {
     "contains \"\$publisher_body\" 'region_left < _PUBLISH_MIN_BOUND_SECS'"
   assert "a missing bound declines rather than running unbounded under the lock" \
     "contains \"\$publisher_body\" 'refusing to run unbounded'"
+  # A decline must be recognised by an explicit flag, never by matching the
+  # child's own stderr: run_publisher overwrites PUBLISH_STDERR with captured
+  # child stderr, so a publisher whose stderr began with "declined:" would have
+  # a real timeout reported as a decline (CodeRabbit, PR #1640).
+  assert "a decline is tracked by a flag, not inferred from child stderr" \
+    "[ -n \"\$(grep 'PUBLISH_DECLINED=1' '$SYNC')\" ]"
+  assert "and the trip reason tests that flag rather than the stderr text" \
+    "[ -z \"\$(grep -A2 '^_publish_trip_reason()' '$SYNC' | grep 'PUBLISH_STDERR.*==.*declined')\" ]"
   assert "the publish region reserves room for the rest of the locked pass" \
     "[ -n \"\$(grep '_publish_region_budget=' '$SYNC')\" ]"
   # The functional leg below stalls the SKILL publisher only, so on its own it
