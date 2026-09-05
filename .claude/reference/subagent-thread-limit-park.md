@@ -918,9 +918,134 @@ and write nothing, so every loop may honour them independently and none of them
 can collide. Only `critical` touches durable state, and only `critical` is
 arbitrated by the compare-and-set above.
 
-**Scope note.** #1444's skills are deliberately **not** changed here; this
-section is the shared decision record both issues cite, and #1444 implements the
-"honour and adopt only" row for its two loops.
+**Scope note.** §8 is the shared decision record both issues cite. §8.1 below
+holds issue #1444's half of it: the contract `/pr-monitor-and-manage` and
+`/babysit-pr` follow to honour a horizon verdict without ever claiming a park.
+
+### 8.1 Honour-and-adopt — the watch-only loop contract (#1444)
+
+**Who this is.** A loop that dispatches recovery on PRs it did not launch:
+`/pr-monitor-and-manage` (rediscovers your open PRs each tick) and
+`/babysit-pr` (watches one PR). Neither holds an issue claim, a queue, or a
+phase record, so neither has anything of its own to record in a park — §8's
+launch-ownership principle, applied.
+
+**The consult is §7.1's, unchanged.** Run the §7.1 gate block, resolved through
+the caller's own candidate order; do not re-derive the branch and do not keep a
+second copy of it. It yields `HORIZON_STATUS` and, with it, `HORIZON_PARK` —
+which a watch-only loop reads as *a park is warranted*, never as *I may claim
+one*. `USAGE_HORIZON_SH` unresolved holds `unknown`, which never reads as
+`clear`.
+
+**Start versus finish, the same split §7.2 makes.** `approaching` and `unknown`
+stop a loop from *starting* new background work — a fresh `phase-a-fixer`, a new
+`/fixpr` dispatch, and the shared `pr-preflight.sh` step, which flips a draft ready
+and engages four reviewers and so starts a round of bot reviews and CI as surely as a
+dispatch does — and leave *finishing* work alone. A caller therefore has to read this
+verdict **before** its pre-flight step, not after it, or the runway is spent before the
+gate is consulted. `/wrap` on a PR that is
+already merge-ready, and a rebase of a PR already in the fleet, are finishing:
+barring them would strand a PR one merge from done for the length of a park,
+which is the outcome the landing window in §7.4 exists to prevent. Only
+`critical` stops both.
+
+| Verdict | Start new dispatch | Finish in-flight work | Own loop | Writes |
+|---------|--------------------|-----------------------|----------|--------|
+| `clear` | yes | yes | continues | none |
+| `approaching` | **no** | yes | continues, names the runway | none |
+| `unknown` | **no** | yes | continues, says the verdict was unreadable | **none, ever** |
+| `critical` | no | no | **stands down** | its own namespace only |
+
+**`critical` — stand down, adopt, never claim.** The loop stops dispatching and
+stands its own poll down in its own namespace: `/pr-monitor-and-manage` takes
+its existing Pause route (`.pmm.*`, cause `usage_horizon`), `/babysit-pr` widens
+its own cadence (`.prs["<N>"].babysit.*`). It then *reads* the shared repo slot
+to say whether a park is already open, and reports which it saw. It never runs
+`--cas` on `limit_cause`, never `--set` on `.repos["<key>"].day.*`, and never
+arms a wake — the park's owner already armed one, and where no park exists the
+absence is a fact to report, not a slot to fill.
+
+**Why read-only adoption is enough, and why a third claimant would not be.** A
+watch-only loop's entire contribution to a park would be a record with no
+pipelines in it and a wake that resumes a poll the user can restart with one
+command. Against that, a third claimant on one repo's slot adds interleavings to
+a compare-and-set that §8 keeps small on purpose. The precedent is the same one
+`bgwork-ceiling.sh` and `credit-budget.sh` set: one machine-wide signal, many
+independent readers, each standing down its own work.
+
+<!-- test-anchor: watchonly-horizon-posture -->
+
+```bash
+# Inputs:  HORIZON_STATUS (from §7.1's gate block), SESSION_STATE_SH, REPO_KEY.
+# Outputs: WATCH_LAUNCH_OK   — may this loop START new background work?
+#          WATCH_FINISH_OK   — may it finish work already in flight (/wrap, rebase)?
+#          WATCH_STAND_DOWN  — must it stand its own poll down this tick?
+#          WATCH_PARK_SEEN   — true | false | unreadable (READ-ONLY probe)
+#          WATCH_IDLE_REASON — the heartbeat phrase, empty only on `clear`.
+# This block writes NOTHING. A watch-only loop honours a park; it never claims
+# one, so there is no --cas here and no --set on .repos["<key>"].day.* anywhere
+# in this contract.
+case "${HORIZON_STATUS:-unknown}" in
+  clear)       WATCH_LAUNCH_OK=true;  WATCH_FINISH_OK=true;  WATCH_STAND_DOWN=false; WATCH_IDLE_REASON="" ;;
+  approaching) WATCH_LAUNCH_OK=false; WATCH_FINISH_OK=true;  WATCH_STAND_DOWN=false; WATCH_IDLE_REASON="paused (horizon approaching)" ;;
+  critical)    WATCH_LAUNCH_OK=false; WATCH_FINISH_OK=false; WATCH_STAND_DOWN=true;  WATCH_IDLE_REASON="paused (horizon critical)" ;;
+  # Every other value — including a verdict this contract does not know — is
+  # `unknown`, and `unknown` is a posture: it starts nothing, parks nothing, and
+  # is never read as `clear` (§7.3).
+  *)           WATCH_LAUNCH_OK=false; WATCH_FINISH_OK=true;  WATCH_STAND_DOWN=false; WATCH_IDLE_REASON="paused (horizon unknown)" ;;
+esac
+# The adopt probe runs only where it can change what the loop SAYS — on a
+# stand-down. Its failure is reported, never converted into a verdict: a park
+# that cannot be read is not a park that is absent.
+WATCH_PARK_SEEN=false
+if [ "$WATCH_STAND_DOWN" = true ]; then
+  WATCH_PARK_SEEN=unreadable
+  if [ -n "${SESSION_STATE_SH:-}" ] && [ -n "${REPO_KEY:-}" ]; then
+    _PARK_RC=0
+    # ONE `--get-json` of the whole `.day` object, not a field at a time: 2D.7
+    # claims `parked_until` in its Step 1 and takes `limit_cause` only when it
+    # finishes the record (§8), so a probe that read `limit_cause` alone would
+    # report "no park open" during the window where a park is half-assembled —
+    # and two separate reads could straddle that window and disagree with each
+    # other. `--get-json` also keeps an absent slot distinguishable from the
+    # JSON string "null" that a raw `--get` flattens them both into.
+    _PARK_DAY=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) || _PARK_RC=$?
+    # rc 3 is "no state file has ever been written" — a real, readable absence.
+    # Any other non-zero is unreadable state and stays unreadable.
+    if [ "$_PARK_RC" -eq 3 ]; then
+      WATCH_PARK_SEEN=false
+    elif [ "$_PARK_RC" -eq 0 ]; then
+      # Either field non-null is an open park. jq's own failure (malformed
+      # payload) is unreadable, never "absent" — same rule as a failed read.
+      if printf '%s' "${_PARK_DAY:-null}" | jq -e '(.limit_cause // null) != null or (.parked_until // null) != null' >/dev/null 2>&1; then
+        WATCH_PARK_SEEN=true
+      elif printf '%s' "${_PARK_DAY:-null}" | jq -e 'type == "object" or type == "null"' >/dev/null 2>&1; then
+        WATCH_PARK_SEEN=false
+      fi
+    fi
+  fi
+fi
+printf 'WATCH_LAUNCH_OK=%s\nWATCH_FINISH_OK=%s\nWATCH_STAND_DOWN=%s\nWATCH_PARK_SEEN=%s\nWATCH_IDLE_REASON=%s\n' \
+  "$WATCH_LAUNCH_OK" "$WATCH_FINISH_OK" "$WATCH_STAND_DOWN" "$WATCH_PARK_SEEN" "$WATCH_IDLE_REASON"
+```
+
+**Chat surface.** One always-emit line on stand-down, folded into the loop's own
+heartbeat rather than added beside it:
+
+```text
+[Sat Sep 5 04:31 AM ET] PMM standing down — usage horizon critical, adopting the park already open for auerbachb/claude-code-config; resume with /pr-monitor-and-manage-wake
+```
+
+With `WATCH_PARK_SEEN=false`, say `no park open — nothing dispatched` in place
+of the adopting clause; with `unreadable`, say the park slot could not be read.
+On `approaching` / `unknown` the loop's existing heartbeat carries
+`WATCH_IDLE_REASON` and nothing else changes.
+
+**Resuming.** A stood-down watch-only loop resumes on its own route — for
+`/pr-monitor-and-manage`, `/pr-monitor-and-manage-wake`, which re-runs this
+consult before it resumes and stays parked while the verdict is still
+`critical`. Nothing here is resumed by the park owner's wake: the owner resumes
+the pipelines it recorded, and it recorded none of these.
 
 ---
 
@@ -938,4 +1063,7 @@ section is the shared decision record both issues cite, and #1444 implements the
 - `.claude/reference/usage-limit-signal-audit-2026-07.md` — why no hook receives
   an approaching-limit signal, and what the recorder can and cannot supply.
 - `.claude/scripts/usage-horizon.sh --help` — the verdict contract §7.1 consumes.
-- Issue #1444 — the `/pr-monitor-and-manage` / `/babysit-pr` half of §8's decision.
+- `.claude/skills/pr-monitor-and-manage/SKILL.md` Step 3.7 / Step 5 / Step 7,
+  `.claude/skills/pr-monitor-and-manage-wake/SKILL.md` Step 3.5, and
+  `.claude/skills/babysit-pr/SKILL.md` T1a / T1b / T4 / T5 — the four call sites of
+  §8.1's watch-only contract (#1444).
