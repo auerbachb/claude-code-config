@@ -220,6 +220,20 @@ printf '%s\n' "$big" | grep -q needle
 STUB
 FIX
 
+expect "a <<EOF inside a quoted argument does not open a heredoc" 1 'extra\.sh:4:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' 'documentation: <<EOF'
+printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "an arithmetic shift (<< 2) does not open a heredoc" 1 'extra\.sh:4:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+n=$(( 1 << 2 ))
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
