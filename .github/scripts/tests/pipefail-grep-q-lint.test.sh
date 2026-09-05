@@ -188,6 +188,13 @@ cd "$dir";set -o pipefail
 printf '%s\n' "$big" | grep -q needle
 FIX
 
+expect "a pipeline continued by a newline after | is a finding" 1 'extra\.sh:3:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$big" |
+  grep -q needle || echo missing
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -427,13 +434,16 @@ rm -f "$PLANT"; PLANT=""
 echo
 echo "=== Part 3: the hazard is real ==="
 
-# 200k short lines (~400 KiB) — far past any pipe buffer, so printf cannot
-# finish before grep -q reads its first block, matches on line 1, and exits;
-# what is left of printf's output then hits a closed pipe. Many LINES, not one
-# long one: grep must read a whole line before it can match, so a single
-# newline-free blob would be consumed in full and never reproduce the race.
+# 2M short lines (~4 MiB) — past even the LARGEST pipe capacity a runner can
+# have (Linux caps pipe-max-size at 1 MiB by default; macOS pipes hold 64 KiB),
+# so printf can never finish before grep -q reads its first block, matches on
+# line 1, and exits; what is left of printf's output then hits a closed pipe.
+# That makes the non-zero result a property of the sizes, not of scheduling.
+# Many LINES, not one long one: grep must read a whole line before it can
+# match, so a single newline-free blob would be consumed in full and never
+# reproduce the race.
 BIGFILE="${TMP_ROOT}/big.txt"
-awk 'BEGIN { for (i = 0; i < 200000; i++) print "x" }' > "$BIGFILE"
+awk 'BEGIN { for (i = 0; i < 2000000; i++) print "x" }' > "$BIGFILE"
 
 # Each probe runs in its own bash so the pipefail in force is exactly the one
 # under test, and so a SIGPIPE death cannot take this test process with it.

@@ -234,11 +234,17 @@ FNR == 1 {
     }
   }
 
-  # --- line continuation: `producer \` + `| grep -q x` is ONE pipeline ----
-  # Accumulate backslash-continued lines into a single logical line and
-  # report a finding at the line where that logical line began.
+  # --- line continuation: `producer \` + `| grep -q x` is ONE pipeline, and
+  # so is `producer |` + newline + `grep -q x` (a newline after `|`, `|&`,
+  # `&&` or `||` continues the command). Accumulate either shape into a
+  # single logical line and report at the line where that logical line began.
   if (line ~ /\\$/) {
     joined = joined substr(line, 1, length(line) - 1) " "
+    if (join_start == 0) join_start = FNR
+    next
+  }
+  if (line ~ /(\|&?|&&)[[:space:]]*$/) {
+    joined = joined line " "
     if (join_start == 0) join_start = FNR
     next
   }
@@ -296,7 +302,12 @@ END {
 }
 '
 
-xargs -0 awk "$scan_awk" < "$FILES_NORM" > "$SCAN_OUT"
+# A file that vanished or cannot be read makes awk (and so xargs) exit
+# non-zero; a scan that skipped input must never be reported as clean.
+if ! xargs -0 awk "$scan_awk" < "$FILES_NORM" > "$SCAN_OUT"; then
+  echo "::error::pipefail-grep-q-lint: the scan itself failed (awk/xargs exited non-zero) — refusing to report a result from a partial scan"
+  exit 1
+fi
 
 errors=0
 scanned=0
