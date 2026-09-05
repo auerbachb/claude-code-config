@@ -145,6 +145,12 @@ usage_error() {
 NORMALIZED_INT=0
 require_positive_int() { # flag, value
   [[ "$2" =~ ^[0-9]+$ ]] || usage_error "$1 requires a positive integer (got '$2')"
+  # All-digits is not the same as representable. Past 2^63 bash arithmetic wraps
+  # silently, so a long digit string can pass a `> 0` test as a completely
+  # different — even negative — number and set a bound nobody asked for. Ten
+  # digits is far beyond any sane interval or timeout and stays clear of the
+  # wrap, matching how the other entry points in this repo bound their counts.
+  (( ${#2} <= 10 )) || usage_error "$1 is too large to be a sane bound (got '$2'; at most 10 digits)"
   (( 10#$2 > 0 )) || usage_error "$1 must be greater than zero (got '$2')"
   NORMALIZED_INT=$((10#$2))
 }
@@ -228,12 +234,25 @@ if [[ "${CMD[0]}" == */* ]]; then
   if [[ "$WU_SHEBANG" == '#!'* ]]; then
     WU_SHEBANG="${WU_SHEBANG#\#!}"
     WU_SHEBANG="${WU_SHEBANG#"${WU_SHEBANG%%[![:space:]]*}"}"
-    # Field 1 is the interpreter; a `/usr/bin/env foo` form defers to env, which
-    # resolves foo itself, so only the leading word is ours to check.
     WU_INTERP="${WU_SHEBANG%%[[:space:]]*}"
     if [[ -n "$WU_INTERP" && "$WU_INTERP" == /* && ! -x "$WU_INTERP" ]]; then
       echo "wait-until.sh: the check command could not be launched — ${CMD[0]} names interpreter '$WU_INTERP', which is not an executable file" >&2
       exit 3
+    fi
+    # `/usr/bin/env foo` defers to env, but env can only fail the same way one
+    # step later: a missing foo is still an exec failure that the loop would
+    # report as a cap timeout. env resolves it on PATH, so resolve it here the
+    # same way. Only a bare name is checked — an absolute argument was already
+    # covered above, and anything with a slash is env's own business.
+    if [[ "$WU_INTERP" == */env ]]; then
+      WU_ENV_ARG="${WU_SHEBANG#"$WU_INTERP"}"
+      WU_ENV_ARG="${WU_ENV_ARG#"${WU_ENV_ARG%%[![:space:]]*}"}"
+      WU_ENV_ARG="${WU_ENV_ARG%%[[:space:]]*}"
+      if [[ -n "$WU_ENV_ARG" && "$WU_ENV_ARG" != -* && "$WU_ENV_ARG" != */* ]] \
+         && ! command -v "$WU_ENV_ARG" >/dev/null 2>&1; then
+        echo "wait-until.sh: the check command could not be launched — ${CMD[0]} asks env for interpreter '$WU_ENV_ARG', which is not on PATH" >&2
+        exit 3
+      fi
     fi
   fi
 elif ! command -v "${CMD[0]}" >/dev/null 2>&1; then
@@ -405,6 +424,17 @@ while :; do
   # discards BOUNDED_TIMED_OUT and turns a bounded failure back into a silent
   # one. run_bounded truncates both capture files itself.
   run_bounded "$REMAINING" "${CMD[@]}" || LAST_RC=$?
+
+  # run_bounded kills the check and raises this when IT cannot read the clock.
+  # Left unread, that arrives as an ordinary failed tick and the loop polls on to
+  # exit 4 — a cap timeout reported by a run whose bound was never enforceable.
+  # This script already exits 2 at both of its own clock reads; the bound's clock
+  # failing is the same condition seen one level down, so it gets the same answer
+  # rather than being laundered into a timeout.
+  if [[ "$BOUNDED_CLOCK_UNREADABLE" -eq 1 ]]; then
+    echo "wait-until.sh: lib/bounded-run.sh could not read the clock while bounding the check, so the ${TIMEOUT}s cap could not be enforced — stopping rather than polling unbounded" >&2
+    exit 2
+  fi
 
   if [[ "$BOUNDED_TIMED_OUT" -eq 1 ]]; then
     refresh_elapsed
