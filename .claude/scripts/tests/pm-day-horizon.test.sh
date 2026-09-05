@@ -374,6 +374,11 @@ else
   FAIL=$((FAIL + 1))
   echo "FAIL — fallback nonce '$FALLBACK_NONCE' does not match the urandom shape"
 fi
+# The fallback branch is unreachable in this harness, so the line above models the
+# skill's expression rather than running it. Anchor the model to the source, or a
+# changed SKILL.md fallback leaves this suite green while asserting nothing.
+require_text "the documented fallback is the four-draw %04x form this shape check models" "$SKILL" \
+  '%04x%04x%04x%04x'
 OLD_FALLBACK_NONCE="${RANDOM:-0}${RANDOM:-0}${RANDOM:-0}"
 if [[ ! "$OLD_FALLBACK_NONCE" =~ ^[0-9a-f]{16}$ ]]; then
   PASS=$((PASS + 1)); echo "ok   — control: the pre-fix three-decimal fallback fails that shape"
