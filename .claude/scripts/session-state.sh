@@ -804,7 +804,11 @@ def _scoped($pathmap; $unknown):
 # `[null, {...}]` on disk). An entry with no usable `.id` keeps a stable
 # `_unkeyed_<index>` key rather than being discarded. `.agent` is honored as a
 # secondary key source because live entries written before this change carry
-# that field instead of `.id`. Duplicate ids collapse
+# that field instead of `.id`. The two are tried in order for the first USABLE
+# key — a non-empty string or a number — NOT the first non-null one: `//` falls
+# through only on null and false, so an entry carrying `id: ""` (or an object,
+# or an array) would have shadowed a perfectly good `.agent` and landed under
+# `_unkeyed_` instead (CodeAnt, PR #1637). Duplicate ids collapse
 # to the last entry, the same last-writer-wins the array already had. Any
 # non-array, non-object value (including null/absent) is left untouched, which
 # is the "refuse rather than discard" behavior migrate() uses everywhere else.
@@ -821,10 +825,11 @@ def _agents_map:
   then .active_agents = ( reduce (.active_agents | to_entries[]) as $e (
          {};
          if ($e.value | type) != "object" then .
-         else ( (($e.value.id? // $e.value.agent?) // null) as $id
+         else ( ( [ $e.value.id?, $e.value.agent? ]
+                  | map(select((type == "string" and length > 0) or type == "number"))
+                  | map(tostring) | first ) as $id
               | . as $acc
-              | (if ($id | type) == "string" and ($id | length) > 0 then $id
-                 elif ($id | type) == "number" then ($id | tostring)
+              | (if $id != null then $id
                  else ( ("_unkeyed_" + ($e.key | tostring))
                         | until( (. as $s | $acc | has($s)) | not; . + "_" ) )
                  end) as $k
@@ -1955,10 +1960,13 @@ if [[ "$MODE" == "cas" ]]; then
   TOUCHED_NESTED_CHECKS=""
   WHOLE_ENTRY_PATHS=""
   WHOLE_MAP_PATHS=""
-  add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
-  # BEFORE the assignments — see the --set path below for why deletions are
-  # staged first rather than in flag order.
+  # BEFORE every assignment in this pipeline — the CAS target included, not just
+  # the composed --set writes. Staging removes after the CAS assignment left
+  # `--cas '.active_agents["X"]=...' --remove-agent X` deleting the record it had
+  # just written (CodeAnt, PR #1637). See the --set path below for why the order
+  # is fixed rather than following flag order.
   add_remove_agent_stages
+  add_write_assignment "$CAS_PATH" "$CAS_VALUE" "__casnew"
   # Guarded because an empty SET_PATHS is the NORMAL case here — a plain --cas
   # with no composed writes — unlike the --set block below, which cannot be
   # reached with zero assignments. Index expansion of an empty array is fine on

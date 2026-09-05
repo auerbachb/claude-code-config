@@ -169,6 +169,15 @@ check_eq "the real agent keeps its own key and payload" \
 check_eq "the id-less entry survives under the disambiguated key" \
   'B' "$(jq -r '.["_unkeyed_1_"].phase' <<<"$UNKEYED_MAP")"
 
+# FAILS WITHOUT FIX: `.id // .agent` falls through only on null/false, so an
+# entry carrying an EMPTY or wrong-typed `.id` shadowed a perfectly good
+# `.agent` and landed under `_unkeyed_` (CodeAnt, PR #1637). The two sources are
+# now tried for the first USABLE key — non-empty string or number.
+seed '{"schema_version":2,"active_agents":[{"id":"","agent":"real-a"},{"id":{},"agent":"real-b"},{"id":[],"agent":"real-c"},{"id":false,"agent":"real-d"},{"id":0,"agent":"ignored"}],"repos":{}}'
+check_eq "an unusable .id falls through to .agent instead of _unkeyed_" \
+  '["0","real-a","real-b","real-c","real-d"]' \
+  "$(run --raw-path --get '.active_agents' | jq -c 'keys')"
+
 # Disambiguation keeps walking past an occupied suffix rather than stopping at one.
 seed '{"schema_version":2,"active_agents":[{"id":"_unkeyed_2"},{"id":"_unkeyed_2_"},{"phase":"Z"}],"repos":{}}'
 check_eq "disambiguation walks past every occupied key" \
@@ -255,6 +264,16 @@ run --raw-path --set ".active_agents[\"respawn\"]=$(agent_json respawn B)" --rem
   >/dev/null 2>&1
 check_eq "same-key assign+remove is order-insensitive: assignment still wins" \
   'B' "$(jq -r '.active_agents.respawn.phase' "$STATE_FILE")"
+
+# FAILS WITHOUT FIX: the CAS TARGET assignment was staged before the removes even
+# after the composed --set writes were moved, so a --cas whose own target is the
+# agent key deleted the record it had just written (CodeAnt, PR #1637).
+seed "$(jq -n -c --argjson a "$(agent_json cx A)" \
+  '{schema_version:2, active_agents:{cx:$a}, repos:{}}')"
+run --raw-path --cas ".active_agents[\"cx\"]=$(agent_json cx B)" \
+  --expect "$(agent_json cx A)" --remove-agent cx >/dev/null 2>&1
+check_eq "a --cas target on the agent key survives a same-key --remove-agent" \
+  'B' "$(jq -r '.active_agents.cx.phase' "$STATE_FILE")"
 
 # Different keys are unaffected by the staging order — the common case.
 seed '{"schema_version":2,"active_agents":{"gone":{"id":"gone"},"stays":{"id":"stays"}},"repos":{}}'
