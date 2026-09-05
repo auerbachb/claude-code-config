@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# catalog: tests — Tests the watch-only usage-horizon contract shared by /pr-monitor-and-manage and /babysit-pr (#1444)
+# catalog: tests — Tests the watch-only usage-horizon contract shared by `/pr-monitor-and-manage` and `/babysit-pr` (#1444) — the §8.1 posture block run over all four verdicts, the read-only park-adopt probe proving neither loop writes the shared day slot, and the wiring at each call site
 #
 # Tests the honour-and-adopt usage-horizon contract for the two watch-only
 # loops — issue #1444.
