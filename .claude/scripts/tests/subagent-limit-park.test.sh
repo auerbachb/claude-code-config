@@ -1204,12 +1204,17 @@ require_text "pm-monitoring-decision separates polling from parking" \
 # AC 5: both out-of-scope notes now name what is in scope.
 require_text "/pm 2D.7 names the newly in-scope loops" \
   "$PM_SKILL" 'Now in scope elsewhere'
-require_text "  and still excludes #1444's two loops" \
+# #1444 moved PMM and babysit from "out of scope" to "readers only". Assert the
+# NEW sentence and refute the old one — a presence-only check on the section
+# would still pass if the out-of-scope claim came back beside the new text.
+require_text "  and names #1444's two loops as readers only" \
+  "$PM_SKILL" 'Also in scope, as readers only \(#1444\)'
+refute_text "  and no longer calls them out of scope" \
   "$PM_SKILL" 'Still out of scope'
 refute_text "  and no longer calls the monitor-mode reflex an unfiled follow-up" \
   "$PM_SKILL" 'is a named follow-up, not part of this change'
 require_text "pm-day-mode.md's scope boundary is updated" \
-  "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'Scope boundary \(updated by #1619\)'
+  "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'Scope boundary \(updated by #1619, then #1444\)'
 refute_text "  and no longer says the follow-up is unfiled" \
   "$REPO_ROOT/.claude/reference/pm-day-mode.md" 'a named follow-up to be filed once this lands'
 

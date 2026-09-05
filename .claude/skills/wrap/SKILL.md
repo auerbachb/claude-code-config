@@ -361,7 +361,7 @@ Do NOT use `--delete-branch`. The current worktree is still checked out on the f
 
 ### Step 2.5: Sync root repo main (aggressive reset)
 
-**Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`.
+**Both helpers take `--repo "$ROOT_REPO"`; neither may be wrapped in a `cd`.** A worktree-isolated Phase C agent — the caller on the normal A/B/C merge path — is refused both `(cd "$ROOT_REPO" && …)` ("too complex to verify that it stays inside the worktree") and `git -C "$ROOT_REPO" …`. A plain script call is an allowed shape, so passing the path as a flag is what makes this step reachable at all; the earlier `cd` form made every Phase C merge take the degraded branch below and leave root `main` unsynced (issue #1411). Keep the two calls symmetric — do not reintroduce a `cd`. Full catalog of refused vs allowed shapes, and the wrapper for each recurring case: `.claude/reference/worktree-isolation-command-shapes.md` (issue #1470).
 
 ```bash
 ROOT_REPO=$([[ -n "$REPO_ROOT_SH" ]] && "$REPO_ROOT_SH" 2>/dev/null || true)
