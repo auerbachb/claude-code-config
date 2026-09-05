@@ -17,6 +17,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [silence-watchdog.sh](../silence-watchdog.sh) | External launchd watchdog that checks heartbeat files when Claude is stalled (macOS only) |
 | [off-peak-minute.sh](../off-peak-minute.sh) | Deterministic per-repo off-peak cron minute selector for CronCreate jobs |
 | [gh-window.sh](../gh-window.sh) | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
+| [wait-until.sh](../wait-until.sh) | In-turn poll loop with a hard cap — the non-refused equivalent of `until <check>; do sleep <n>; done` for a worktree-isolated agent (`.claude/reference/worktree-isolation-command-shapes.md`); blocks the calling turn only, never a substitute for a persistent `Monitor` |
 | [workday.sh](../workday.sh) | US business-day calculator (ET-anchored, macOS + GNU date) |
 | [overrun-check.sh](../overrun-check.sh) | Per-pipeline planning-bound breach check for the monitor loop; emits one alert line on the first breach only |
 | [session-scheduling-reconcile.sh](../session-scheduling-reconcile.sh) | Session-start reconciliation of durable scheduling state — purge dead in-memory job bookkeeping, surface the on-disk records that survived |
