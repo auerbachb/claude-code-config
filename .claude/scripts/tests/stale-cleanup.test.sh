@@ -600,7 +600,7 @@ check_eq "T14: every WORKTREES iteration carries an empty-array guard" \
 # The abort only reproduces on bash < 4.4, so the runtime half runs only where
 # such a bash exists (macOS) and is skipped elsewhere, e.g. CI on bash 5.
 BASH32=""
-if [[ -x /bin/bash ]] && /bin/bash --version 2>/dev/null | head -1 | grep -q 'version 3\.'; then
+if [[ -x /bin/bash ]] && grep -q 'version 3\.' <<<"$(/bin/bash --version 2>/dev/null | head -1)"; then
   BASH32=/bin/bash
 fi
 if [[ -z "$BASH32" ]]; then
@@ -800,12 +800,12 @@ HELP_OUT="$(bash "$SUT" --help 2>/dev/null)"
 # line — the bounded call spans several lines, so a line-anchored match would
 # report "unbounded" for a reflow (it did exactly that when #1509 landed).
 GH_FN="$(awk '/^gh_pr_page\(\) \{/ { inside = 1 } inside { print } inside && /^\}/ { exit }' "$SUT")"
-if printf '%s' "$GH_FN" | grep -q 'gh pr list --search'; then
+if grep -q 'gh pr list --search' <<<"$GH_FN"; then
   pass "T17: control — the open-PR gh invocation is present in gh_pr_page"
 else
   fail "T17: control — no 'gh pr list --search' invocation in gh_pr_page; the guards below have no premise"
 fi
-if printf '%s' "$GH_FN" | grep -q 'run_bounded'; then
+if grep -q 'run_bounded' <<<"$GH_FN"; then
   pass "T17: the open-PR gh invocation runs under run_bounded (issue #1509)"
 else
   fail "T17: the open-PR gh invocation is unbounded again — the --help claims below are now false (issue #1509)"
@@ -818,7 +818,7 @@ else
 fi
 
 # T17a — the false single-network-call claim must not come back.
-if printf '%s' "$HELP_OUT" | grep -q 'the one NETWORK call'; then
+if grep -q 'the one NETWORK call' <<<"$HELP_OUT"; then
   fail "T17a: --help still claims 'the one NETWORK call' — gh pr list is a second one"
 else
   pass "T17a: --help no longer claims a single network call"
@@ -830,14 +830,14 @@ fi
 # text this guard exists to catch — the same vacuous-pass trap the pre-#1509
 # draft of T17c fell into with a bare search for "unbounded".
 check_contains "T17b: --help names the open-PR query" "gh pr list" "$HELP_OUT"
-if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS'; then
+if grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS' <<<"$(grep -i 'gh pr list' <<<"$HELP_OUT")"; then
   pass "T17c: --help ties the open-PR query to the bound that holds it"
 else
   fail "T17c: --help mentions gh pr list but never names STALE_CLEANUP_GH_TIMEOUT_SECS"
 fi
 # T17e — and the superseded disclosure must not survive alongside it: no line
 # may still describe the open-PR query as unbounded.
-if printf '%s' "$HELP_OUT" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
+if grep -qi 'unbounded' <<<"$(grep -i 'gh pr list' <<<"$HELP_OUT")"; then
   fail "T17e: --help still calls the open-PR query unbounded (issue #1509 bounded it)"
 else
   pass "T17e: --help no longer calls the open-PR query unbounded"
@@ -850,7 +850,7 @@ PREFIX_SUT="$TMP/stale-cleanup-prefix.sh"
 sed -e 's/the network DELETION, `git push origin --delete`/the one NETWORK call, `git push origin --delete`/' \
     "$SUT" > "$PREFIX_SUT"
 PREFIX_HELP="$(bash "$PREFIX_SUT" --help 2>/dev/null)"
-if printf '%s' "$PREFIX_HELP" | grep -q 'the one NETWORK call'; then
+if grep -q 'the one NETWORK call' <<<"$PREFIX_HELP"; then
   pass "T17d: negative control — T17a's assertion does fire on the pre-fix wording"
 else
   fail "T17d: negative control — the pre-fix wording was not reproduced, so T17a proves nothing"
@@ -860,12 +860,12 @@ PREFIX_SUT_GH="$TMP/stale-cleanup-prefix-gh.sh"
 sed -e 's/`gh pr list` (fetch_open_prs) runs under STALE_CLEANUP_GH_TIMEOUT_SECS and/`gh pr list` (fetch_open_prs) is the only network call that runs UNBOUNDED and/' \
     "$SUT" > "$PREFIX_SUT_GH"
 PREFIX_HELP_GH="$(bash "$PREFIX_SUT_GH" --help 2>/dev/null)"
-if printf '%s' "$PREFIX_HELP_GH" | grep -i 'gh pr list' | grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS'; then
+if grep -q 'STALE_CLEANUP_GH_TIMEOUT_SECS' <<<"$(grep -i 'gh pr list' <<<"$PREFIX_HELP_GH")"; then
   fail "T17f: negative control — T17c passes on the pre-#1509 header too, so it proves nothing"
 else
   pass "T17f: negative control — T17c's assertion goes red on the pre-#1509 header"
 fi
-if printf '%s' "$PREFIX_HELP_GH" | grep -i 'gh pr list' | grep -qi 'unbounded'; then
+if grep -qi 'unbounded' <<<"$(grep -i 'gh pr list' <<<"$PREFIX_HELP_GH")"; then
   pass "T17f: negative control — T17e's assertion does fire on the pre-#1509 header"
 else
   fail "T17f: negative control — the pre-#1509 disclosure was not reproduced, so T17e proves nothing"
@@ -955,7 +955,7 @@ if git -C "$REPO_T18" show-ref --verify --quiet refs/heads/issue-901-t18-openpr;
 else
   fail "T18a: fail-closed — the open-PR branch was deleted"
 fi
-if printf '%s' "$OUT" | grep -q 'removed:'; then
+if grep -q 'removed:' <<<"$OUT"; then
   fail "T18a: fail-closed — a deletion was reported despite refusing to classify"
 else
   pass "T18a: fail-closed — nothing was reported removed"
@@ -1727,7 +1727,7 @@ check_json "T22: control — a plain locked marker's reason is still named" \
   "$OUT" '.skipped_registrations | any(.id == "wtN-plainlock" and (.reason | test("plainlock")))'
 OUT_TEXT="$(cd "$REPO_N" && "$SUT" --check 2>&1)"
 check_contains "T22: the text report withholds it too" "no-canary" \
-  "$(printf '%s' "$OUT_TEXT" | grep -q 'TOPSECRET-CANARY' && echo leaked || echo no-canary)"
+  "$(grep -q 'TOPSECRET-CANARY' <<<"$OUT_TEXT" && echo leaked || echo no-canary)"
 
 echo ""
 if (( SKIP > 0 )); then

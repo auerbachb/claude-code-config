@@ -308,7 +308,7 @@ FAKE_RUNS_JSON="$OLD_BUILD" FAKE_TRIGGER="label:release:ios" FAKE_DEFERRED="" \
   run --repo solo/app --apply --phase now
 expect_rc 3 "a label-only repo cannot be cut by the sweep (exit 3)"
 expect_field '.decision' 'blocked' "label-only sweep reports blocked"
-if printf '%s' "$OUT" | grep -q 'next merge'; then ok "the blocker explains it ships on the next merge"
+if grep -q 'next merge' <<<"$OUT"; then ok "the blocker explains it ships on the next merge"
 else bad "the blocker explains it ships on the next merge (out: $OUT)"; fi
 
 # 11. Without --apply nothing is written and nothing is triggered.

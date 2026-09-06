@@ -202,7 +202,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   # whitespace after it. Accepting only '^## ' let an indented '## Test Plan'
   # go unrecognised, so its unchecked boxes bypassed the gate entirely — and it
   # diverged from ac-checkboxes.sh, which accepts the indented forms.
-  if printf '%s' "$line" | grep -qE '^[[:space:]]{0,3}##[[:space:]]'; then
+  if grep -qE '^[[:space:]]{0,3}##[[:space:]]' <<<"$line"; then
     # Strip leading indent, the '##' marker, surrounding whitespace. Case is
     # preserved: the exemption heading is matched case-sensitively below.
     heading="$(printf '%s' "$line" | sed -E 's/^[[:space:]]{0,3}##[[:space:]]+//; s/[[:space:]]*$//')"
@@ -242,7 +242,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   fi
 
   # --- unchecked box detection (`- [ ]` with optional leading whitespace) ---
-  if printf '%s' "$line" | grep -qE '^[[:space:]]*-[[:space:]]\[ \]'; then
+  if grep -qE '^[[:space:]]*-[[:space:]]\[ \]' <<<"$line"; then
     case "$STATE" in
       ac|testplan|malformed_postmerge)
         HAS_UNCHECKED_INSCOPE=1
@@ -255,7 +255,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 
   # --- tracking issue line (only counts inside the exemption section) ---
   if [[ "$STATE" == "postmerge" ]]; then
-    if printf '%s' "$line" | grep -qE '^[[:space:]]*Tracking issue:[[:space:]]*#[0-9]+'; then
+    if grep -qE '^[[:space:]]*Tracking issue:[[:space:]]*#[0-9]+' <<<"$line"; then
       TRACKING_ISSUE="$(printf '%s' "$line" | grep -oE '#[0-9]+' | head -1 | grep -oE '[0-9]+')"
     fi
   fi
@@ -305,7 +305,7 @@ if [[ -n "$PENDING_SECTIONS" ]]; then
       CLOSED_REFS_LOADED=1
     fi
 
-    if [[ -n "$CLOSED_REFS" ]] && printf '%s\n' "$CLOSED_REFS" | grep -qxF -- "$SECTION_TRACKING"; then
+    if [[ -n "$CLOSED_REFS" ]] && grep -qxF -- "$SECTION_TRACKING" <<<"$CLOSED_REFS"; then
       echo "AC gate: FAIL — PR #$PR_NUM tracking issue #$SECTION_TRACKING is an issue this PR closes." >&2
       echo "This is the PR #588 pattern: when this PR merges, issue #$SECTION_TRACKING closes automatically" >&2
       echo "and the deferred work is sealed inside a closed issue." >&2

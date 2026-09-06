@@ -91,7 +91,7 @@ case "$ARGS" in
     echo "${FAKE_OWNER_REPO:-solo/repo}"; exit 0 ;;
   *"pr view "*"headRefOid"*)
     # Reject baseRefOid in the field list (gh 2.48.0 does not support it)
-    if echo "$ARGS" | grep -q 'baseRefOid'; then
+    if grep -q 'baseRefOid' <<<"$ARGS"; then
       echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1
     fi
     # Allow injecting a gh error for error-classification tests
@@ -163,10 +163,10 @@ expect_field() {  # expect_field <jq-filter> <want> <desc>
   if [[ "$got" == "$2" ]]; then ok "$3"; else bad "$3 (field $1 = '$got', want '$2'; out: $OUT)"; fi
 }
 grep_ok() {    # grep_ok <pattern> <desc>
-  if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
+  if grep -q "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output: $OUT)"; fi
 }
 grep_absent() {  # grep_absent <pattern> <desc> — asserts pattern is NOT in $OUT
-  if printf '%s\n' "$OUT" | grep -q "$1"; then bad "$2 (pattern '$1' found but should be absent; output: $OUT)"; else ok "$2"; fi
+  if grep -q "$1" <<<"$OUT"; then bad "$2 (pattern '$1' found but should be absent; output: $OUT)"; else ok "$2"; fi
 }
 
 # 1. Green PR, clean BEHIND, base delta does NOT touch PR files → safe (exit 0),

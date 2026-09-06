@@ -63,8 +63,8 @@ cleanup() {
     # the normal path, so only reach for prune when it did not: that keeps the
     # safety net for a control directory that vanished under us without firing a
     # repo-wide sweep on every green run.
-    if git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
-         | grep -qxF "worktree $CTRL_DIR"; then
+    if grep -qxF "worktree $CTRL_DIR" \
+         <<<"$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null)"; then
       git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1
     fi
   fi

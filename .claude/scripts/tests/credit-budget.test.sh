@@ -495,7 +495,7 @@ check_eq "$OLD_RENDER" "DECOY-MTIME" \
 # never masks code that breaks it.
 for f in "$SCRIPT" "$LIB"; do
   CODE_ONLY="$(sed 's/#.*$//' "$f")"
-  if printf '%s' "$CODE_ONLY" | grep -Eq 'ccusage|tokens_used|cost_usd|price_per|estimate_(tokens|cost)'; then
+  if grep -Eq 'ccusage|tokens_used|cost_usd|price_per|estimate_(tokens|cost)' <<<"$CODE_ONLY"; then
     bad "$(basename "$f") gained a local token/cost estimation path"
   else
     ok "$(basename "$f") performs no local token/cost estimation"

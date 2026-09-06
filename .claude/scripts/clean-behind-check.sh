@@ -278,7 +278,7 @@ REPO="${OWNER_REPO#*/}"
 RC=0
 PR_JSON=$(gh pr view "$PR_NUMBER" --json number,state,headRefOid,baseRefName,mergeStateStatus,mergeable,files 2>&1) || RC=$?
 if [[ "$RC" -ne 0 ]]; then
-  if echo "$PR_JSON" | grep -qiE 'no pull request|could not resolve to a pullrequest'; then
+  if grep -qiE 'no pull request|could not resolve to a pullrequest' <<<"$PR_JSON"; then
     echo "ERROR: PR #$PR_NUMBER not found in $OWNER_REPO." >&2
     exit 3
   else

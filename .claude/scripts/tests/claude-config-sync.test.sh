@@ -167,7 +167,7 @@ assert "claude-config-sync.sh is executable" "[ -x '$SYNC' ]"
 assert "--help exits 0 with no stderr and real content" \
   "out=\$(bash '$SYNC' --help 2>'$HELP_ERR'); [ \$? -eq 0 ] && [ ! -s '$HELP_ERR' ] && [ \${#out} -gt 200 ]"
 assert "--help documents the flags and the exit-code contract" \
-  "out=\$(bash '$SYNC' --help 2>/dev/null); case \"\$out\" in *--json*--quiet*) : ;; *) false ;; esac && printf '%s' \"\$out\" | grep -q 'EXIT CODES'"
+  "out=\$(bash '$SYNC' --help 2>/dev/null); case \"\$out\" in *--json*--quiet*) : ;; *) false ;; esac && grep -q 'EXIT CODES' <<<\"\$out\""
 assert "unknown argument is a usage error (exit 2)" \
   "bash '$SYNC' --nope >/dev/null 2>&1; [ \$? -eq 2 ]"
 
@@ -235,7 +235,7 @@ test_1_stale_machine() {
   assert "marker is owner-only (600)" \
     "[ \"\$(file_mode '$home/.claude/sync-restart-recommended.json')\" = '600' ]"
   assert "statusline renders the restart badge" \
-    "printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'restart'"
+    "grep -q 'restart' <<<\"\$(printf '{}' | HOME='$home' bash '$STATUSLINE')\""
 
   section "Test 3: an immediate re-run is a no-op"
 
@@ -284,7 +284,7 @@ test_1_stale_machine() {
   assert "run with a shadowing user-owned link still exits ok" \
     "[ \"\$(printf '%s' \"\$out3a\" | jq -r .outcome)\" = 'ok' ]"
   assert "the advisory is reported as a warning" \
-    "printf '%s' \"\$out3a\" | jq -r '.warnings[]?' | grep -q 'user-owned symlink'"
+    "grep -q 'user-owned symlink' <<<\"\$(jq -r '.warnings[]?' <<<\"\$out3a\")\""
   assert "the advisory did NOT become a restart recommendation" \
     "[ \"\$(printf '%s' \"\$out3a\" | jq -r .restart_recommended)\" = 'false' ]"
   assert "the user-owned link was left exactly as it was" \
@@ -307,15 +307,15 @@ test_1_stale_machine() {
   hook_out="$(printf '{"source":"startup"}' | HOME="$home" bash "$HOOK" 2>/dev/null)"
 
   assert "hook surfaced the restart notice" \
-    "printf '%s' \"\$hook_out\" | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'RESTART RECOMMENDED'"
+    "grep -q 'RESTART RECOMMENDED' <<<\"\$(jq -r '.hookSpecificOutput.additionalContext // \"\"' <<<\"\$hook_out\")\""
   # (setup) the premise — without a reported error the assertions below would be
   # testing the success path by accident.
   assert "(setup) this startup's sync region did report an error" \
-    "printf '%s' \"\$hook_out\" | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'Config sync encountered errors'"
+    "grep -q 'Config sync encountered errors' <<<\"\$(jq -r '.hookSpecificOutput.additionalContext // \"\"' <<<\"\$hook_out\")\""
   assert "restart portion survives a startup whose sync failed" \
     "jq -e '(.restart_recommended // null) != null' '$home/.claude/sync-restart-recommended.json'"
   assert "statusline still shows the restart badge" \
-    "printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'restart'"
+    "grep -q 'restart' <<<\"\$(printf '{}' | HOME='$home' bash '$STATUSLINE')\""
   # Surfacing and clearing are independent: the notice was delivered above even
   # though the marker stays, so nothing is suppressed by declining to clear.
   assert "the failure portion was not invented by the clear path" \
@@ -347,7 +347,7 @@ test_4_failure_and_recovery() {
   assert "a failing run exits non-zero" \
     "HOME='$home' bash '$SYNC' --json >/dev/null 2>&1; [ \$? -eq 1 ]"
   assert "the error text names the fetch failure" \
-    "printf '%s' \"\$out1\" | jq -r .error | grep -q 'fetch failed'"
+    "grep -q 'fetch failed' <<<\"\$(jq -r .error <<<\"\$out1\")\""
   assert "first failure counts 1" \
     "[ \"\$(printf '%s' \"\$out1\" | jq -r .consecutive_failures)\" = '1' ]"
   assert "second failure counts 2" \
@@ -365,11 +365,11 @@ test_4_failure_and_recovery() {
   assert "failure notice names the streak" \
     "jq -e '.sync_failure.consecutive_failures >= 3' '$home/.claude/sync-restart-recommended.json'"
   assert "failure message reads as 'failing for N day(s)'" \
-    "jq -r .sync_failure.message '$home/.claude/sync-restart-recommended.json' | grep -q 'failing for'"
+    "grep -q 'failing for' <<<\"\$(jq -r .sync_failure.message '$home/.claude/sync-restart-recommended.json')\""
   assert "statusline shows the sync-failing badge" \
-    "printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'sync failing'"
+    "grep -q 'sync failing' <<<\"\$(printf '{}' | HOME='$home' bash '$STATUSLINE')\""
   assert "a session start surfaces the failure notice" \
-    "printf '{\"source\":\"startup\"}' | HOME='$home' bash '$HOOK' 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'CONFIG SYNC FAILING'"
+    "grep -q 'CONFIG SYNC FAILING' <<<\"\$(printf '{\"source\":\"startup\"}' | HOME='$home' bash '$HOOK' 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // \"\"')\""
 
   # Recover.
   git -C "$wt" remote set-url origin "$origin_url" >/dev/null 2>&1
@@ -384,7 +384,7 @@ test_4_failure_and_recovery() {
   assert "the failure portion of the marker is gone" \
     "[ ! -f '$home/.claude/sync-restart-recommended.json' ] || jq -e '(.sync_failure // null) == null' '$home/.claude/sync-restart-recommended.json'"
   assert "statusline no longer shows the sync-failing badge" \
-    "! printf '{}' | HOME='$home' bash '$STATUSLINE' | grep -q 'sync failing'"
+    "! grep -q 'sync failing' <<<\"\$(printf '{}' | HOME='$home' bash '$STATUSLINE')\""
 
   rm -rf "$tmp"
 }
@@ -420,7 +420,7 @@ test_5_lock_overlap() {
   assert "outcome is reported as skipped, never silently ok" \
     "[ \"\$(printf '%s' \"\$out\" | jq -r .outcome)\" = 'skipped' ]"
   assert "the skip reason is stated" \
-    "printf '%s' \"\$out\" | jq -r .error | grep -q 'holds the lock'"
+    "grep -q 'holds the lock' <<<\"\$(jq -r .error <<<\"\$out\")\""
   assert "the worktree was NOT touched while the lock was held" \
     "[ \"\$(git -C '$wt' rev-parse HEAD)\" = '$before' ]"
   assert "no symlinks were published during the skip" \
@@ -434,7 +434,7 @@ test_5_lock_overlap() {
   local hook_out
   hook_out="$(printf '{"source":"startup"}' | HOME="$home" CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT=1 bash "$HOOK" 2>/dev/null)"
   assert "the session-start hook reports its own clean skip" \
-    "printf '%s' \"\$hook_out\" | jq -r '.hookSpecificOutput.additionalContext // \"\"' | grep -q 'holds the lock'"
+    "grep -q 'holds the lock' <<<\"\$(jq -r '.hookSpecificOutput.additionalContext // \"\"' <<<\"\$hook_out\")\""
   assert "the hook left the worktree untouched while the lock was held" \
     "[ \"\$(git -C '$wt' rev-parse HEAD)\" = '$before' ]"
 
@@ -714,11 +714,11 @@ test_9_state_commit_failure_is_reported() {
     chflags nouchg "$state" 2>/dev/null
 
     assert "the run names the CONSEQUENCE, not just the failed write" \
-      "printf '%s' \"\$out\" | grep -q 'state not persisted'"
+      "grep -q 'state not persisted' <<<\"\$out\""
     assert "the degradation is also recorded as a durable event" \
       "grep -q 'state_commit_failed' '$logs/claude-config-sync-events.jsonl'"
     assert "(control) the next healthy run says no such thing" \
-      "out2=\$(HOME='$home' bash '$SYNC' 2>&1); ! printf '%s' \"\$out2\" | grep -q 'state not persisted'"
+      "out2=\$(HOME='$home' bash '$SYNC' 2>&1); ! grep -q 'state not persisted' <<<\"\$out2\""
   else
     # Non-Darwin (or a filesystem without user flags): the runtime injection is
     # unavailable, so assert the wiring instead of silently claiming a pass.
@@ -817,7 +817,7 @@ test_11_root_repo_lookup_survives_sigpipe() {
   assert "no wiping fallback remains on the ROOT_REPO_HINT assignment" \
     "! grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT=' '$SYNC'"
   assert "(control) the guard would still see such a fallback if one existed" \
-    "printf 'X=\"\$(cmd)\" || ROOT_REPO_HINT=\"\"\n' | grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT='"
+    "grep -qE '^[^#]*\\|\\| ROOT_REPO_HINT=' <<<'X=\"\$(cmd)\" || ROOT_REPO_HINT=\"\"'"
 }
 
 # ── Test 12: newly created skill links recommend a restart with no SHA move ──
@@ -917,7 +917,7 @@ test_13_fetch_is_bounded_inside_the_lock() {
   assert "it reports a failed outcome" \
     "[ \"\$(printf '%s' \"\$out\" | jq -r .outcome)\" = 'failed' ]"
   assert "and names the bound it exceeded, not a generic git error" \
-    "printf '%s' \"\$out\" | grep -q 'exceeded its 2s bound'"
+    "grep -q 'exceeded its 2s bound' <<<\"\$out\""
   assert "the failure is durable in the log" \
     "grep -q 'exceeded its 2s bound' '$home/.claude/logs/claude-config-sync.log'"
 
@@ -1268,9 +1268,9 @@ test_25_publisher_is_bounded_inside_the_lock() {
   assert "it reports a failed outcome" \
     "[ \"\$(printf '%s' \"\$out\" | jq -r .outcome)\" = 'failed' ]"
   assert "and names the bound it exceeded, not a generic publisher error" \
-    "printf '%s' \"\$out\" | grep -q 'exceeded its 2s bound'"
+    "grep -q 'exceeded its 2s bound' <<<\"\$out\""
   assert "the failure names the publisher that stalled" \
-    "printf '%s' \"\$out\" | grep -q 'publish-skill-symlinks.sh'"
+    "grep -q 'publish-skill-symlinks.sh' <<<\"\$out\""
   assert "the failure is durable in the log" \
     "grep -q 'exceeded its 2s bound' '$home/.claude/logs/claude-config-sync.log'"
 

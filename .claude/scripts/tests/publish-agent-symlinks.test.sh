@@ -87,7 +87,7 @@ test_1_creates_agents_dir_and_symlinks() {
   assert "phase-a-fixer.md points into the worktree" \
     "[ \"\$(readlink '$tmp_home/.claude/agents/phase-a-fixer.md')\" = '$fake_wt/.claude/agents/phase-a-fixer.md' ]"
   assert "Restart caveat in output (directory was just created)" \
-    "printf '%s' \"\$output\" | grep -q 'Restart your Claude Code session'"
+    "grep -q 'Restart your Claude Code session' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -115,13 +115,13 @@ test_2_user_owned_symlink_preserved() {
   assert "User-owned symlink still points to the user's target" \
     "[ \"\$(readlink '$tmp_home/.claude/agents/phase-a-fixer.md')\" = '$user_target' ]"
   assert "Output reports user-owned symlink left alone" \
-    "printf '%s' \"\$output\" | grep -q 'user-owned symlink'"
+    "grep -q 'user-owned symlink' <<<\"\$output\""
   # Non-conflicting agent is still published
   assert "phase-b-reviewer.md (non-conflicting) is symlinked" \
     "[ -L '$tmp_home/.claude/agents/phase-b-reviewer.md' ]"
   # No restart caveat because agents dir already existed
   assert "No restart caveat (agents dir pre-existed)" \
-    "! printf '%s' \"\$output\" | grep -q 'Restart your Claude Code session'"
+    "! grep -q 'Restart your Claude Code session' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -149,9 +149,9 @@ test_3_idempotent() {
   assert "Symlink target unchanged after second run" \
     "[ \"\$(readlink '$tmp_home/.claude/agents/phase-a-fixer.md')\" = '$target_before' ]"
   assert "No 'creating' or 'updating' in second-run output (true no-op)" \
-    "! printf '%s' \"\$output\" | grep -qiE '(creating|updating|migrating)'"
+    "! grep -qiE '(creating|updating|migrating)' <<<\"\$output\""
   assert "No restart caveat on second run (agents dir already existed)" \
-    "! printf '%s' \"\$output\" | grep -q 'Restart your Claude Code session'"
+    "! grep -q 'Restart your Claude Code session' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }
@@ -184,7 +184,7 @@ test_4_stale_symlink_pruned() {
   assert "Remaining agent symlink still intact" \
     "[ -L '$tmp_home/.claude/agents/phase-a-fixer.md' ]"
   assert "Prune reported in output" \
-    "printf '%s' \"\$output\" | grep -q 'stale symlink'"
+    "grep -q 'stale symlink' <<<\"\$output\""
 
   cleanup "$tmp_home"
 }

@@ -289,7 +289,7 @@ printf '%s' "$CANDIDATES_JSON" | jq -c ".[0:$CHECK_LIMIT][]" | while IFS= read -
   ' "$TMP/openprs.json")
 
   HAS_COMMIT_REF=0
-  if git log --since="$SINCE_DATE" --oneline --grep="#$NUM" 2>/dev/null | grep -q .; then
+  if COMMIT_REFS=$(git log --since="$SINCE_DATE" --oneline --grep="#$NUM" 2>/dev/null) && [[ -n "$COMMIT_REFS" ]]; then
     HAS_COMMIT_REF=1
   fi
 

@@ -264,7 +264,7 @@ case "$LOG_PATH" in *//*) bad "log_path contains a doubled slash: $LOG_PATH" ;; 
 # --------------------------------------------------------------------------
 BIN="$(make_stub codeant-summary "$CA_CLEAN" '' 0)"
 SUMMARY="$("$SUT" --tool codeant --bin "$BIN" --log-dir "$LOGS" --format summary 2>/dev/null)"
-if printf '%s' "$SUMMARY" | grep -q '^codeant: ok=true findings=0 verified=true'; then
+if grep -q '^codeant: ok=true findings=0 verified=true' <<<"$SUMMARY"; then
   ok "--format summary emits the one-line human shape"
 else bad "--format summary shape wrong: $SUMMARY"; fi
 check_eq 1 "$(printf '%s\n' "$SUMMARY" | wc -l | tr -d ' ')" "--format summary is a single line"
@@ -327,7 +327,7 @@ run --tool coderabbit --bin "$CHATTY" --timeout 30 --max-duration 3
 ELAPSED=$(( $(date -u +%s) - START ))
 check_eq 4 "$RC" "never-finishing chatty CLI exits 4"
 check_eq "timeout" "$(field .failure_mode)" "ceiling reports failure_mode timeout"
-if field .relevant_error | grep -q -- '--max-duration'; then
+if grep -q -- '--max-duration' <<<"$(field .relevant_error)"; then
   ok "ceiling names --max-duration in relevant_error"
 else bad "ceiling error text does not name --max-duration: $(field .relevant_error)"; fi
 if (( ELAPSED < 20 )); then ok "ceiling kills promptly (${ELAPSED}s)"; else bad "ceiling took ${ELAPSED}s"; fi

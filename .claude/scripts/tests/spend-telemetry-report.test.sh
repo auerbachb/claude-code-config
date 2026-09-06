@@ -32,16 +32,17 @@ reset() { rm -f "$LOG" "$HOME/.claude/script-usage.log"; }
 reset
 out="$(run_report)"
 [[ $? -eq 0 ]] || fail "exits non-zero on missing log"
-echo "$out" | grep -q "No telemetry log" || fail "missing log message absent: $out"
+grep -q "No telemetry log" <<<"$out" || fail "missing log message absent: $out"
 echo "PASS: missing log exits 0 with message"
 
 # Test 2: --help exits 0 and prints usage
-out="$(run_report --help)"
-[[ $? -eq 0 ]] || fail "--help exits non-zero"
-echo "$out" | grep -qi "spend-telemetry-report" || fail "--help output missing script name"
-echo "$out" | grep -q -- "--days" || fail "--help output missing --days option"
-echo "$out" | grep -q -- "--help" || fail "--help output missing --help option"
-echo "$out" | grep -q "EXIT STATUS" || fail "--help output missing EXIT STATUS section"
+if ! out="$(run_report --help)"; then
+  fail "--help exits non-zero"
+fi
+grep -qi "spend-telemetry-report" <<<"$out" || fail "--help output missing script name"
+grep -q -- "--days" <<<"$out" || fail "--help output missing --days option"
+grep -q -- "--help" <<<"$out" || fail "--help output missing --help option"
+grep -q "EXIT STATUS" <<<"$out" || fail "--help output missing EXIT STATUS section"
 echo "PASS: --help works"
 
 # Test 3: unknown argument exits 2
@@ -69,20 +70,20 @@ printf '%s\tsubagent_stop\tinline\topus\tphase-a-fixer\tsess-1\tagent-1\t1500\n'
 
 out="$(run_report)"
 # Output format: "**Total events:** 3 (thread: 2, inline: 1)"
-echo "$out" | grep -q "Total events.*3" || fail "total event count wrong: $out"
-echo "$out" | grep -q "thread" || fail "thread row missing: $out"
-echo "$out" | grep -q "inline" || fail "inline row missing: $out"
+grep -q "Total events.*3" <<<"$out" || fail "total event count wrong: $out"
+grep -q "thread" <<<"$out" || fail "thread row missing: $out"
+grep -q "inline" <<<"$out" || fail "inline row missing: $out"
 echo "PASS: basic table has correct totals"
 
 # Test 7: token columns show n/a when tokens field is empty
 out="$(run_report)"
-echo "$out" | grep -q "n/a" || fail "n/a not shown for missing tokens: $out"
+grep -q "n/a" <<<"$out" || fail "n/a not shown for missing tokens: $out"
 echo "PASS: n/a shown for empty token fields"
 
 # Test 8: token sum appears when tokens are present
 # The inline record has 1500 tokens; check it appears in output
 out="$(run_report)"
-echo "$out" | grep -q "1.5K\|1500" || fail "token sum not shown: $out"
+grep -q "1.5K\|1500" <<<"$out" || fail "token sum not shown: $out"
 echo "PASS: token sum appears in output"
 
 # Test 9: --days windowing — future records included, old records excluded
@@ -94,12 +95,12 @@ printf '%s\tsession_start\tthread\tsonnet\tsession\tsess-new\t\t\n' "$TODAY" >> 
 
 out="$(run_report --days 7)"
 # Windowed section should exist
-echo "$out" | grep -q "Last 7 day" || fail "--days 7 section missing: $out"
+grep -q "Last 7 day" <<<"$out" || fail "--days 7 section missing: $out"
 # All-time section should have 2 records
-echo "$out" | grep -q "Total events.*2" || fail "all-time total wrong: $out"
+grep -q "Total events.*2" <<<"$out" || fail "all-time total wrong: $out"
 # Windowed section should have exactly 1 event (sess-old excluded)
 windowed_total="$(echo "$out" | awk '/Last 7 day/{found=1} found && /Total events/{print; exit}')"
-echo "$windowed_total" | grep -q "Total events.*1" || fail "windowed total should be 1 (old record excluded): $windowed_total"
+grep -q "Total events.*1" <<<"$windowed_total" || fail "windowed total should be 1 (old record excluded): $windowed_total"
 echo "PASS: --days windowing present"
 
 # Test 10: malformed lines are tolerated (no crash)
@@ -109,7 +110,7 @@ printf 'also-bad\n' >> "$LOG"
 printf '%s\tsession_start\tthread\topus\tsession\tsess-1\t\t\n' "$NOW" >> "$LOG"
 rc=0; out="$(run_report)" || rc=$?
 [[ $rc -eq 0 ]] || fail "malformed lines cause non-zero exit (rc=$rc)"
-echo "$out" | grep -q "Total events.*1" || fail "only valid line should count: $out"
+grep -q "Total events.*1" <<<"$out" || fail "only valid line should count: $out"
 echo "PASS: malformed lines tolerated"
 
 # Test 11: inline agent-type inventory section appears
@@ -118,9 +119,9 @@ printf '%s\tsubagent_stop\tinline\topus\tphase-a-fixer\tsess-1\tagent-1\t\n' "$N
 printf '%s\tsubagent_stop\tinline\tsonnet\tpm-worker\tsess-1\tagent-2\t\n' "$NOW" >> "$LOG"
 printf '%s\tsubagent_stop\tinline\topus\tphase-a-fixer\tsess-2\tagent-3\t\n' "$NOW" >> "$LOG"
 out="$(run_report)"
-echo "$out" | grep -q "Inline agent-type inventory" || fail "inventory section missing: $out"
-echo "$out" | grep -q "phase-a-fixer" || fail "phase-a-fixer missing from inventory: $out"
-echo "$out" | grep -q "pm-worker" || fail "pm-worker missing from inventory: $out"
+grep -q "Inline agent-type inventory" <<<"$out" || fail "inventory section missing: $out"
+grep -q "phase-a-fixer" <<<"$out" || fail "phase-a-fixer missing from inventory: $out"
+grep -q "pm-worker" <<<"$out" || fail "pm-worker missing from inventory: $out"
 echo "PASS: inline agent-type inventory appears"
 
 # Test 12: invocations to script-usage.log
@@ -140,10 +141,10 @@ printf '%s\tsession_start\tthread\topus\tsession\tsess-1\t\t\n' "$NOW" >> "$LOG"
 out="$(run_report)"
 # If we strip the n/a rendering (simulated by checking it IS there), the test passes.
 # Simulated inversion: pretend n/a was replaced with "0"
-if echo "$out" | grep -q "| 0 |"; then
+if grep -q "| 0 |" <<<"$out"; then
   fail "revert-verify: n/a replaced with 0 (logic broken)"
 fi
-echo "$out" | grep -q "n/a" || fail "revert-verify: n/a not rendered for empty tokens"
+grep -q "n/a" <<<"$out" || fail "revert-verify: n/a not rendered for empty tokens"
 echo "PASS: revert-verify confirms n/a rendering is required"
 
 echo ""

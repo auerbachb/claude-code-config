@@ -125,7 +125,7 @@ smoke_verdict() {
   [ -s "$ERRF" ] && tags="$tags stderr"
   # A heading is a line at column 0 in caps — body lines are always indented,
   # and prose sentences carry lowercase.
-  if printf '%s\n' "$last" | grep -qE '^[A-Z][A-Z0-9 /&_.:()#-]*$'; then
+  if grep -qE '^[A-Z][A-Z0-9 /&_.:()#-]*$' <<<"$last"; then
     tags="$tags bare-head"
   fi
 

@@ -761,15 +761,15 @@ resolve_reviewer() {
     } | sort -u
   )
 
-  if echo "$authors" | grep -q '^greptile-apps\[bot\]$'; then
+  if grep -q '^greptile-apps\[bot\]$' <<<"$authors"; then
     echo "greptile"; return
   fi
   # Only return bugbot when cursor[bot] is the sole AI reviewer — if coderabbitai[bot]
   # or codeant-ai[bot] is present, use the CR path (BugBot auto-triggers on every push).
   # CR→BugBot escalation is tracked via session-state, not the live scan.
-  if echo "$authors" | grep -q '^cursor\[bot\]$' \
-    && ! echo "$authors" | grep -q '^coderabbitai\[bot\]$' \
-    && ! echo "$authors" | grep -q '^codeant-ai\[bot\]$'; then
+  if grep -q '^cursor\[bot\]$' <<<"$authors" \
+    && ! grep -q '^coderabbitai\[bot\]$' <<<"$authors" \
+    && ! grep -q '^codeant-ai\[bot\]$' <<<"$authors"; then
     echo "bugbot"; return
   fi
   echo "cr"

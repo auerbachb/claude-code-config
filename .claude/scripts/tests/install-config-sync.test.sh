@@ -92,9 +92,9 @@ assert "the plist template exists" "[ -f '$TEMPLATE' ]"
 assert "template carries all three placeholders" \
   "grep -q '__SHELL__' '$TEMPLATE' && grep -q '__SCRIPT_PATH__' '$TEMPLATE' && grep -q '__HOME__' '$TEMPLATE'"
 assert "template sets RunAtLoad (survives reboot / runs at login)" \
-  "grep -A1 '<key>RunAtLoad</key>' '$TEMPLATE' | grep -q '<true/>'"
+  "grep -q '<true/>' <<<\"\$(grep -A1 '<key>RunAtLoad</key>' '$TEMPLATE')\""
 assert "template sets StartInterval (periodic + sleep catch-up)" \
-  "grep -A1 '<key>StartInterval</key>' '$TEMPLATE' | grep -qE '<integer>[0-9]+</integer>'"
+  "grep -qE '<integer>[0-9]+</integer>' <<<\"\$(grep -A1 '<key>StartInterval</key>' '$TEMPLATE')\""
 # The template must itself be a valid plist — a placeholder inside <integer>
 # would break that, which is why the interval substitution is anchored instead.
 if command -v plutil >/dev/null 2>&1; then
@@ -105,11 +105,11 @@ fi
 assert "install --help exits 0 with no stderr" \
   "out=\$(bash '$INSTALL' --help 2>'$INSTALL_ERR'); [ \$? -eq 0 ] && [ ! -s '$INSTALL_ERR' ] && [ -n \"\$out\" ]"
 assert "install --help documents --interval and the exit-code contract" \
-  "out=\$(bash '$INSTALL' --help 2>/dev/null); printf '%s' \"\$out\" | grep -q -- '--interval' && printf '%s' \"\$out\" | grep -q 'EXIT CODES'"
+  "out=\$(bash '$INSTALL' --help 2>/dev/null); grep -q -- '--interval' <<<\"\$out\" && grep -q 'EXIT CODES' <<<\"\$out\""
 assert "uninstall --help exits 0 with no stderr" \
   "out=\$(bash '$UNINSTALL' --help 2>'$UNINSTALL_ERR'); [ \$? -eq 0 ] && [ ! -s '$UNINSTALL_ERR' ] && [ -n \"\$out\" ]"
 assert "uninstall --help documents --remove-state and the exit-code contract" \
-  "out=\$(bash '$UNINSTALL' --help 2>/dev/null); printf '%s' \"\$out\" | grep -q -- '--remove-state' && printf '%s' \"\$out\" | grep -q 'EXIT CODES'"
+  "out=\$(bash '$UNINSTALL' --help 2>/dev/null); grep -q -- '--remove-state' <<<\"\$out\" && grep -q 'EXIT CODES' <<<\"\$out\""
 
 # ── Test 1: one command renders and bootstraps the LaunchAgent ───────────────
 
@@ -127,7 +127,7 @@ test_1_install_renders_plist() {
   rc=$?
 
   assert "install exits 0" "[ $rc -eq 0 ]"
-  assert "install reports PASS" "printf '%s' \"\$out\" | grep -q '^PASS:'"
+  assert "install reports PASS" "grep -q '^PASS:' <<<\"\$out\""
   assert "the LaunchAgent plist was written" "[ -f '$plist' ]"
   assert "no placeholder survives substitution" \
     "! grep -qE '__(SHELL|SCRIPT_PATH|HOME)__' '$plist'"
@@ -135,9 +135,9 @@ test_1_install_renders_plist() {
     "grep -q 'claude-config-sync.sh' '$plist'"
   assert "plist runs it with --quiet" "grep -q '<string>--quiet</string>' '$plist'"
   assert "plist keeps RunAtLoad true" \
-    "grep -A1 '<key>RunAtLoad</key>' '$plist' | grep -q '<true/>'"
+    "grep -q '<true/>' <<<\"\$(grep -A1 '<key>RunAtLoad</key>' '$plist')\""
   assert "plist defaults to an hourly StartInterval" \
-    "grep -A1 '<key>StartInterval</key>' '$plist' | grep -q '<integer>3600</integer>'"
+    "grep -q '<integer>3600</integer>' <<<\"\$(grep -A1 '<key>StartInterval</key>' '$plist')\""
   assert "log paths land under the throwaway HOME" \
     "grep -q '$home/.claude/logs/config-sync-stdout.log' '$plist'"
   assert "the log directory was created" "[ -d '$home/.claude/logs' ]"
@@ -181,7 +181,7 @@ test_2_prefers_worktree_copy() {
   assert "plist points into the skills worktree" \
     "grep -q '$home/.claude/skills-worktree/.claude/scripts/claude-config-sync.sh' '$plist'"
   assert "install says which copy it chose" \
-    "printf '%s' \"\$out\" | grep -q 'skills worktree'"
+    "grep -q 'skills worktree' <<<\"\$out\""
 
   rm -rf "$root"
 }
@@ -202,7 +202,7 @@ test_3_interval_option() {
 
   assert "install with --interval exits 0" "[ $rc -eq 0 ]"
   assert "StartInterval reflects the override" \
-    "grep -A1 '<key>StartInterval</key>' '$plist' | grep -q '<integer>900</integer>'"
+    "grep -q '<integer>900</integer>' <<<\"\$(grep -A1 '<key>StartInterval</key>' '$plist')\""
   # The substitution is anchored to the StartInterval key, so no other integer
   # sharing the default value may be rewritten.
   assert "no stray <integer>900</integer> anywhere else in the plist" \
@@ -249,14 +249,14 @@ test_4_uninstall() {
   rc=$?
 
   assert "uninstall exits 0" "[ $rc -eq 0 ]"
-  assert "uninstall reports PASS" "printf '%s' \"\$out\" | grep -q '^PASS:'"
+  assert "uninstall reports PASS" "grep -q '^PASS:' <<<\"\$out\""
   assert "the plist is gone" "[ ! -f '$plist' ]"
   assert "both bootout spellings were tried" \
     "[ \"\$(grep -c '^bootout ' '$root/launchctl.log')\" -ge 2 ]"
   assert "state is retained by default" \
     "[ -f '$home/.claude/logs/claude-config-sync-state.json' ]"
   assert "retained state is announced" \
-    "printf '%s' \"\$out\" | grep -q 'State retained'"
+    "grep -q 'State retained' <<<\"\$out\""
 
   # Reinstall then remove with --remove-state.
   PATH="$root/bin:$PATH" HOME="$home" LAUNCHCTL_LOG="$root/launchctl.log" \
@@ -295,7 +295,7 @@ test_5_uninstall_failure_is_loud() {
 
   assert "uninstall exits 1 when the job is still listed" "[ $rc -eq 1 ]"
   assert "the failure is stated on stderr" \
-    "printf '%s' \"\$out\" | grep -q 'still appears in launchctl list'"
+    "grep -q 'still appears in launchctl list' <<<\"\$out\""
 
   rm -rf "$root"
 }
@@ -323,9 +323,9 @@ test_8_lookalike_label_is_not_our_job() {
   rc=$?
 
   assert "the stub really emitted the lookalike, not our label" \
-    "printf '%s' \"\$lookalike\" | grep -q -- '-test\$'"
+    "grep -q -- '-test\$' <<<\"\$lookalike\""
   assert "install does not report success on a lookalike-only listing" \
-    "[ $rc -ne 0 ] || ! printf '%s' \"\$out\" | grep -q 'verified'"
+    "[ $rc -ne 0 ] || ! grep -q 'verified' <<<\"\$out\""
 
   # Uninstall with only the lookalike listed: our job is absent, so the
   # still-listed failure path (test 5) must NOT fire.
@@ -335,7 +335,7 @@ test_8_lookalike_label_is_not_our_job() {
 
   assert "uninstall exits 0 — the lookalike is not our job" "[ $rc -eq 0 ]"
   assert "uninstall does not claim our job is still listed" \
-    "! printf '%s' \"\$out\" | grep -q 'still appears in launchctl list'"
+    "! grep -q 'still appears in launchctl list' <<<\"\$out\""
 
   rm -rf "$root"
 }
@@ -353,7 +353,7 @@ test_6_platform_guard() {
         bash "$INSTALL" 2>&1)"
   rc=$?
   assert "installer exits 1 on a non-Darwin host" "[ $rc -eq 1 ]"
-  assert "installer says it is macOS-only" "printf '%s' \"\$out\" | grep -q 'macOS-only'"
+  assert "installer says it is macOS-only" "grep -q 'macOS-only' <<<\"\$out\""
   assert "installer wrote no plist" \
     "[ ! -f '$home/Library/LaunchAgents/${LABEL}.plist' ]"
   assert "installer called no launchctl" "[ ! -s '$root/launchctl.log' ]"
@@ -363,7 +363,7 @@ test_6_platform_guard() {
   rc=$?
   assert "uninstaller no-ops with exit 0 on a non-Darwin host" "[ $rc -eq 0 ]"
   assert "uninstaller says there is nothing to remove" \
-    "printf '%s' \"\$out\" | grep -q 'macOS-only'"
+    "grep -q 'macOS-only' <<<\"\$out\""
 
   # The guard must sit before any $HOME expansion (issue #1430's lesson), so it
   # holds even with HOME unset.
@@ -371,7 +371,7 @@ test_6_platform_guard() {
   rc=$?
   assert "uninstaller still exits 0 with HOME unset on a non-Darwin host" "[ $rc -eq 0 ]"
   assert "and takes the documented guard path rather than aborting on unset HOME" \
-    "printf '%s' \"\$out\" | grep -q 'macOS-only'"
+    "grep -q 'macOS-only' <<<\"\$out\""
 
   rm -rf "$root"
 }
@@ -452,13 +452,13 @@ test_9_enable_failure_fails_install() {
 
   assert "install exits 1 when launchctl enable is refused" "[ $rc -eq 1 ]"
   assert "the install does not report PASS" \
-    "! printf '%s' \"\$out\" | grep -q '^PASS'"
+    "! grep -q '^PASS' <<<\"\$out\""
   assert "the disabled-but-loaded state is named" \
-    "printf '%s' \"\$out\" | grep -q 'loaded but disabled'"
+    "grep -q 'loaded but disabled' <<<\"\$out\""
   assert "launchctl's own error is surfaced" \
-    "printf '%s' \"\$out\" | grep -q 'stub: enable refused'"
+    "grep -q 'stub: enable refused' <<<\"\$out\""
   assert "recovery instructions name the enable command" \
-    "printf '%s' \"\$out\" | grep -q 'launchctl enable '"
+    "grep -q 'launchctl enable ' <<<\"\$out\""
 
   # kickstart refused — the job is loaded AND enabled, so the interval still
   # fires. A warning, not a failure.
@@ -468,9 +468,9 @@ test_9_enable_failure_fails_install() {
 
   assert "install still exits 0 when only kickstart is refused" "[ $rc -eq 0 ]"
   assert "the install still reports PASS" \
-    "printf '%s' \"\$out\" | grep -q '^PASS'"
+    "grep -q '^PASS' <<<\"\$out\""
   assert "the skipped immediate run is warned about, not swallowed" \
-    "printf '%s' \"\$out\" | grep -q '^WARN: launchctl kickstart'"
+    "grep -q '^WARN: launchctl kickstart' <<<\"\$out\""
 
   rm -rf "$root"
 }
@@ -508,9 +508,9 @@ test_9b_uninstall_fails_closed_when_list_unverifiable() {
         LAUNCHCTL_FAIL_CMD=list bash "$UNINSTALL" 2>&1)" || rc=$?
   assert "uninstall exits 1 when 'launchctl list' itself fails" "[ $rc -eq 1 ]"
   assert "and reports the unverifiable unload" \
-    "printf '%s' \"\$out\" | grep -q 'could not verify the unload'"
+    "grep -q 'could not verify the unload' <<<\"\$out\""
   assert "(control) no PASS was printed on the unverified path" \
-    "! printf '%s' \"\$out\" | grep -q 'PASS:'"
+    "! grep -q 'PASS:' <<<\"\$out\""
   rm -rf "$root"
 }
 
@@ -542,9 +542,9 @@ test_10_unreadable_worktree_script_falls_back() {
   # text asserts below would pass vacuously without this.
   assert "the fallback install succeeds (exit 0)" "[ $rc -eq 0 ]"
   assert "the install did not select the unreadable worktree copy" \
-    "! printf '%s' \"\$out\" | grep -q 'skills worktree (pinned to main)'"
+    "! grep -q 'skills worktree (pinned to main)' <<<\"\$out\""
   assert "it fell back to this checkout and said so" \
-    "printf '%s' \"\$out\" | grep -q 'no skills worktree yet'"
+    "grep -q 'no skills worktree yet' <<<\"\$out\""
 
   chmod 644 "$wt_script" 2>/dev/null || true
   rm -rf "$root"

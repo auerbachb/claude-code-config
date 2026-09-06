@@ -199,7 +199,7 @@ case "$REVIEWER" in
     # fallback, but we keep it consistent on inline too.
     # Word-boundary-aware match: a substring like `foo@coderabbitaix` must
     # NOT suppress the prepend — only a standalone @mention counts as present.
-    if ! printf '%s' "$BODY" | grep -qiE '(^|[^[:alnum:]_])@coderabbitai([^[:alnum:]_]|$)'; then
+    if ! grep -qiE '(^|[^[:alnum:]_])@coderabbitai([^[:alnum:]_]|$)' <<<"$BODY"; then
       BODY="@coderabbitai $BODY"
     fi
     ;;
@@ -238,7 +238,7 @@ if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" \
   BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 
-if ! printf '%s' "$BODY" | grep -q '[^[:space:]]'; then
+if ! grep -q '[^[:space:]]' <<<"$BODY"; then
   echo "ERROR: --body is empty or whitespace-only after reviewer transformation" >&2
   exit 2
 fi
@@ -289,7 +289,7 @@ if [[ -z "$PR_NUMBER" ]]; then
     # transient outage into exit 3 would tell the caller the comment has no
     # resolvable PR when the API was simply unreachable.
     RESOLVE_ERR_TEXT=$(cat "$RESOLVE_ERR")
-    if printf '%s' "$RESOLVE_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+    if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$RESOLVE_ERR_TEXT"; then
       echo "ERROR: could not resolve PR number from comment $COMMENT_ID — comment not found: $RESOLVE_ERR_TEXT" >&2
       echo "       Pass --pr N to skip the lookup." >&2
       exit 3
@@ -346,7 +346,7 @@ fi
 # "HTTP 404: Not Found (...)". stdout may be empty or contain a partial body.
 INLINE_ERR_TEXT=$(cat "$INLINE_ERR")
 IS_404=0
-if printf '%s' "$INLINE_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$INLINE_ERR_TEXT"; then
   IS_404=1
 fi
 
@@ -395,7 +395,7 @@ fi
 
 # Fallback failed — classify via stderr.
 FALLBACK_ERR_TEXT=$(cat "$FALLBACK_ERR")
-if printf '%s' "$FALLBACK_ERR_TEXT" | grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)'; then
+if grep -qE 'HTTP 404|404:.*Not Found|Not Found \(HTTP 404\)' <<<"$FALLBACK_ERR_TEXT"; then
   echo "ERROR: both inline and fallback returned 404 — PR $PR_NUMBER or comment $COMMENT_ID not found" >&2
   exit 3
 fi

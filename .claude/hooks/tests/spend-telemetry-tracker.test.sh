@@ -86,11 +86,11 @@ expect_lines 1 "startup writes one line"
 # Verify log format contract: ISO8601Z TAB session_start TAB thread TAB opus TAB session TAB sess-abc TAB (empty) TAB (empty)
 line="$(cat "$LOG")"
 [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ]] || fail "timestamp format wrong: $line"
-echo "$line" | cut -f2 | grep -qx "session_start" || fail "event_type wrong: $line"
-echo "$line" | cut -f3 | grep -qx "thread" || fail "exec_type wrong: $line"
-echo "$line" | cut -f4 | grep -qx "opus" || fail "model_tier wrong (expected opus): $line"
-echo "$line" | cut -f5 | grep -qx "session" || fail "agent_type wrong: $line"
-echo "$line" | cut -f6 | grep -qx "sess-abc" || fail "session_id wrong: $line"
+[[ "$(cut -f2 <<<"$line")" == "session_start" ]] || fail "event_type wrong: $line"
+[[ "$(cut -f3 <<<"$line")" == "thread" ]] || fail "exec_type wrong: $line"
+[[ "$(cut -f4 <<<"$line")" == "opus" ]] || fail "model_tier wrong (expected opus): $line"
+[[ "$(cut -f5 <<<"$line")" == "session" ]] || fail "agent_type wrong: $line"
+[[ "$(cut -f6 <<<"$line")" == "sess-abc" ]] || fail "session_id wrong: $line"
 
 echo "PASS: startup writes one formatted line"
 
@@ -116,7 +116,7 @@ echo "PASS: clear is skipped"
 reset_log
 run_session "$(session_payload startup sess-s claude-sonnet-4-5-20251022)" > /dev/null
 line="$(cat "$LOG")"
-echo "$line" | cut -f4 | grep -qx "sonnet" || fail "model_tier wrong for sonnet: $line"
+[[ "$(cut -f4 <<<"$line")" == "sonnet" ]] || fail "model_tier wrong for sonnet: $line"
 echo "PASS: sonnet tier extracted"
 
 # Test 6: unknown model maps to raw/unknown
@@ -148,20 +148,20 @@ reset_log
 run_subagent "$(subagent_payload sess-abc agent-1 phase-a-fixer "")" > /dev/null
 expect_lines 1 "subagent_stop writes one line"
 line="$(cat "$LOG")"
-echo "$line" | cut -f2 | grep -qx "subagent_stop" || fail "event_type wrong: $line"
-echo "$line" | cut -f3 | grep -qx "inline" || fail "exec_type wrong: $line"
+[[ "$(cut -f2 <<<"$line")" == "subagent_stop" ]] || fail "event_type wrong: $line"
+[[ "$(cut -f3 <<<"$line")" == "inline" ]] || fail "exec_type wrong: $line"
 # Model tier from frontmatter: phase-a-fixer -> opus
-echo "$line" | cut -f4 | grep -qx "opus" || fail "model_tier wrong for phase-a-fixer: $line"
-echo "$line" | cut -f5 | grep -qx "phase-a-fixer" || fail "agent_type wrong: $line"
-echo "$line" | cut -f6 | grep -qx "sess-abc" || fail "session_id wrong: $line"
-echo "$line" | cut -f7 | grep -qx "agent-1" || fail "agent_id wrong: $line"
+[[ "$(cut -f4 <<<"$line")" == "opus" ]] || fail "model_tier wrong for phase-a-fixer: $line"
+[[ "$(cut -f5 <<<"$line")" == "phase-a-fixer" ]] || fail "agent_type wrong: $line"
+[[ "$(cut -f6 <<<"$line")" == "sess-abc" ]] || fail "session_id wrong: $line"
+[[ "$(cut -f7 <<<"$line")" == "agent-1" ]] || fail "agent_id wrong: $line"
 echo "PASS: subagent_stop writes one formatted inline line with opus tier"
 
 # Test 10: pm-worker maps to sonnet
 reset_log
 run_subagent "$(subagent_payload sess-abc agent-2 pm-worker "")" > /dev/null
 line="$(cat "$LOG")"
-echo "$line" | cut -f4 | grep -qx "sonnet" || fail "pm-worker tier wrong: $line"
+[[ "$(cut -f4 <<<"$line")" == "sonnet" ]] || fail "pm-worker tier wrong: $line"
 echo "PASS: pm-worker maps to sonnet"
 
 # Test 11: unknown agent_type maps to unknown tier
