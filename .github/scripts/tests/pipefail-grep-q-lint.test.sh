@@ -274,6 +274,16 @@ END.txt
 printf '%s\n' "$big" | grep -q needle
 FIX
 
+expect "a backslash-quoted delimiter (<<\END.txt) delimits on END.txt" 1 'extra\.sh:7:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+value="$(cat <<\END.txt
+payload
+END.txt
+)"
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail

@@ -218,10 +218,12 @@ function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
         j++
       } else if (c != "" && c !~ /[[:space:];|&<>()]/) {
         # An unquoted delimiter is a whole shell WORD (`END.txt`, `EOF-1`): it
-        # runs to whitespace or a metacharacter, and quote characters inside it
-        # are removed, exactly as bash does.
+        # runs to whitespace or a metacharacter; quote characters inside it are
+        # removed and a backslash quotes the character after it (`<<\END.txt`
+        # delimits on `END.txt`), exactly as bash does.
         while (j <= n && substr(s, j, 1) !~ /[[:space:];|&<>()]/) {
           c = substr(s, j, 1)
+          if (c == "\\") { j++; c = substr(s, j, 1); if (c == "") break; tag = tag c; j++; continue }
           if (c != "\047" && c != "\"") tag = tag c
           j++
         }
