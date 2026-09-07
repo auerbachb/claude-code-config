@@ -18,6 +18,7 @@ opt-in of issue #1544.
 | [ac-gate.test.sh](../tests/ac-gate.test.sh) | Tests for `ac-gate.sh` — all exit codes, message assertions, both real regression failures (PR #588 / PR #593) |
 | [active-work-cap.test.sh](../tests/active-work-cap.test.sh) | Tests for `active-work-cap.sh` — cap resolution, the three count sources, and fail-loud read errors |
 | [admin-merge.test.sh](../tests/admin-merge.test.sh) | Tests for `admin-merge.sh` |
+| [ai-quotas-setup.test.sh](../tests/ai-quotas-setup.test.sh) | Tests `ai-quotas-setup.sh` — the add/remove/relogin/list registry contract, two same-provider accounts staying logged in independently, the macOS Keychain probe against a stub `security` that fails loudly if a credential VALUE is ever requested, the leak assertions (no token/password/cookie and no fixture secret in the config), and the fail-closed paths where a login runs but leaves no visible credential |
 | [background-task-registry.test.sh](../tests/background-task-registry.test.sh) | Tests exact-ID registration, terminal transitions, stale fail-closed behavior, and concurrent writes |
 | [backlog-health.test.sh](../tests/backlog-health.test.sh) | Tests for `backlog-health.sh` |
 | [backlog-staleness.test.sh](../tests/backlog-staleness.test.sh) | Tests for `backlog-staleness.sh` |
