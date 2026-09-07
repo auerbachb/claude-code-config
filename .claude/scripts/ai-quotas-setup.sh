@@ -542,16 +542,28 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
   return 1
 }
 
+# Both results go into globals and NOTHING onto stdout (Greptile). The status
+# used to be printed, which forced every caller to invoke this through
+# `$(...)` — a subshell, where the CRED_DETAIL that `credential_present` sets
+# is discarded along with it. The caller then read the parent's still-empty
+# CRED_DETAIL, so every NOTE column rendered as `-` and every JSON `detail` came
+# out empty, hiding exactly the diagnostics this pair exists to surface: a
+# missing credential file, an unreachable Keychain, a deleted item. It is the
+# same subshell trap `discover_keychain_service` documents above.
+ACCOUNT_STATUS=""
+
 account_status() { # <provider> <profile_dir> <keychain_service|"">
+  ACCOUNT_STATUS=""
+  CRED_DETAIL=""
   if [[ "$1" == "cursor" ]]; then
     CRED_DETAIL="slot reserved; login arrives in increment 3"
-    printf 'not-yet-supported'
+    ACCOUNT_STATUS="not-yet-supported"
     return 0
   fi
   if credential_present "$@"; then
-    printf 'ok'
+    ACCOUNT_STATUS="ok"
   else
-    printf 'needs-login'
+    ACCOUNT_STATUS="needs-login"
   fi
 }
 
@@ -595,20 +607,45 @@ profile_dir_for() { # <label> <provider>
 
 ensure_profile_dir() { # <dir>
   mkdir -p "$PROFILE_ROOT" || die 5 "could not create profile root: $PROFILE_ROOT"
-  mkdir -p "$1" || die 5 "could not create profile directory: $1"
   # The label is already restricted so it cannot climb out of PROFILE_ROOT,
   # but a pre-existing SYMLINK at the label or provider component is a second
   # way out: `mkdir -p` follows it, and the profile — with the credential the
   # login is about to write into it — lands somewhere else entirely. So the
   # containment is checked on the PHYSICAL path (`pwd -P` resolves every
-  # link), not on the string. This runs before any login, so a redirected
-  # profile never receives a credential; a symlink that stays inside the root
-  # is left alone, because it does not move anything out.
-  local phys root_phys
-  phys="$( (cd -P "$1" 2>/dev/null && pwd -P) || true )"
+  # link), not on the string. A symlink that stays inside the root is left
+  # alone, because it does not move anything out.
+  #
+  # The check runs BEFORE anything is created (Greptile). Creating the profile
+  # first and refusing afterwards still let `mkdir -p` deposit the provider
+  # directory at the symlink's external destination — no credential, but a
+  # refused operation had already written outside the configured root. A link
+  # can only redirect through a component that already exists, so resolving
+  # the deepest EXISTING ancestor and re-attaching the components still to be
+  # created answers the same question without creating any of them.
+  local root_phys probe rest="" phys
   root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
-  [[ -n "$phys" && -n "$root_phys" ]] \
-    || die 5 "could not resolve the profile directory or its root: $1"
+  [[ -n "$root_phys" ]] || die 5 "could not resolve the profile root: $PROFILE_ROOT"
+  probe="$1"
+  while [[ ! -d "$probe" ]]; do
+    rest="$(basename "$probe")${rest:+/$rest}"
+    probe="$(dirname "$probe")"
+    [[ "$probe" != "/" && "$probe" != "." && "$probe" != "$1" ]] || break
+  done
+  phys="$( (cd -P "$probe" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys" ]] || die 5 "could not resolve the profile directory or its root: $1"
+  [[ -z "$rest" ]] || phys="$phys/$rest"
+  case "$phys" in
+    "$root_phys"/*) : ;;
+    *) die 5 "profile directory $1 resolves to $phys, outside the profile root $root_phys (a symlink in the path?) — refusing to run a login against it" ;;
+  esac
+
+  mkdir -p "$1" || die 5 "could not create profile directory: $1"
+  # Re-check what was actually created. The pre-creation check answers the
+  # question for the tree as it stood a moment ago; this one answers it for
+  # the directory the login is about to be pointed at. Both run before any
+  # login, so a redirected profile never receives a credential.
+  phys="$( (cd -P "$1" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys" ]] || die 5 "could not resolve the profile directory or its root: $1"
   case "$phys" in
     "$root_phys"/*) : ;;
     *) die 5 "profile directory $1 resolves to $phys, outside the profile root $root_phys (a symlink in the path?) — refusing to run a login against it" ;;
@@ -661,6 +698,38 @@ discover_keychain_service() { # <before-list> <after-list>
   NEW_KEYCHAIN_SERVICE="$added"
 }
 
+# Chooses which service name this profile's credential_ref should carry after a
+# login, given what this profile was already known to use and what appeared in
+# the Keychain while the login ran.
+#
+# A KNOWN item that the Keychain still holds WINS over one that merely appeared
+# (Greptile). The keychain-observation note above is the reason: a login against
+# a profile that already has an item rewrites that item in place, so OUR login
+# contributes nothing to the before/after diff — and anything that did appear
+# was created by some other login running at the same time. `discover_keychain_
+# service` refuses two or more such items as ambiguous, but exactly one is
+# indistinguishable from an ordinary first login, and adopting it would rebind
+# this account to another account's credential. `credential_present` cannot
+# catch that: the foreign item does exist, so the account would go on reporting
+# `ok` while pointing at the wrong credential.
+#
+# The item that appeared is taken only when this profile has no live item to
+# keep — nothing recorded anywhere, or what was recorded is gone from the
+# Keychain, which is what re-keying an account actually looks like.
+resolve_keychain_service() { # <profile_dir> <recorded-service|""> <appeared-service|"">
+  local known="$2"
+  [[ -n "$known" ]] || known="$(recall_keychain_service "$1")"
+  if [[ -n "$known" ]] && keychain_service_exists "$known"; then
+    printf '%s' "$known"
+    return 0
+  fi
+  if [[ -n "$3" ]]; then
+    printf '%s' "$3"
+    return 0
+  fi
+  printf '%s' "$known"
+}
+
 action_add() {
   local provider="$ARG_PROVIDER" label="$ARG_LABEL"
   local config dir service="" before="" after=""
@@ -692,10 +761,7 @@ action_add() {
       if [[ "$NEW_KEYCHAIN_AMBIGUOUS" -eq 1 ]]; then
         die 1 "more than one keychain item appeared while this login ran (a concurrent login?), so which one belongs to '${label}' cannot be told apart; nothing was registered. Re-run this add on its own."
       fi
-      service="$NEW_KEYCHAIN_SERVICE"
-      if [[ -z "$service" ]]; then
-        service="$(recall_keychain_service "$dir")"
-      fi
+      service="$(resolve_keychain_service "$dir" "" "$NEW_KEYCHAIN_SERVICE")"
     fi
     if ! credential_present "$provider" "$dir" "$service"; then
       die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); nothing was registered. Re-run, or use 'add ${provider} ${label} --no-login' to reserve the slot."
@@ -787,11 +853,7 @@ action_relogin() {
     if [[ "$NEW_KEYCHAIN_AMBIGUOUS" -eq 1 ]]; then
       die 1 "more than one keychain item appeared while this login ran (a concurrent login?), so which one belongs to '${ARG_LABEL}' cannot be told apart; '${ARG_LABEL}' is unchanged. Re-run this relogin on its own."
     fi
-    if [[ -n "$NEW_KEYCHAIN_SERVICE" ]]; then
-      service="$NEW_KEYCHAIN_SERVICE"
-    elif [[ -z "$service" ]]; then
-      service="$(recall_keychain_service "$dir")"
-    fi
+    service="$(resolve_keychain_service "$dir" "$service" "$NEW_KEYCHAIN_SERVICE")"
   fi
   if ! credential_present "$provider" "$dir" "$service"; then
     die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); '${ARG_LABEL}' is unchanged"
@@ -838,7 +900,9 @@ action_list() {
     label="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].label // ""')"
     dir="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir // ""')"
     service="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].credential_ref.service // ""')"
-    status="$(account_status "$provider" "$dir" "$service")"
+    # Called bare, never through `$(...)`: both results come back in globals.
+    account_status "$provider" "$dir" "$service"
+    status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \

@@ -132,6 +132,33 @@ grep -Fxq "$svc" "$STUB_KEYCHAIN_DB" 2>/dev/null || printf '%s\n' "$svc" >> "$ST
 exit 0
 EOF
 
+cat > "$BIN/claude-keychain-stable-plus-foreign" <<'EOF'
+#!/usr/bin/env bash
+# The account's OWN item is rewritten in place (so it contributes nothing to
+# the before/after diff) while ONE unrelated item appears — a concurrent login
+# by a different account. From inside this run's snapshots that is exactly one
+# new service name, which is indistinguishable from an ordinary first login and
+# so is NOT refused as ambiguous.
+printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-<unset>}" "$*" >> "$STUB_CALL_LOG"
+svc="Claude Code-credentials-STABLE01"
+grep -Fxq "$svc" "$STUB_KEYCHAIN_DB" 2>/dev/null || printf '%s\n' "$svc" >> "$STUB_KEYCHAIN_DB"
+foreign="Claude Code-credentials-FOREIGN9"
+grep -Fxq "$foreign" "$STUB_KEYCHAIN_DB" 2>/dev/null || printf '%s\n' "$foreign" >> "$STUB_KEYCHAIN_DB"
+exit 0
+EOF
+
+cat > "$BIN/claude-keychain-rekey" <<'EOF'
+#!/usr/bin/env bash
+# The account's existing item is GONE and one new item takes its place — what
+# re-keying an account actually looks like. The new item is this login's, so it
+# must be adopted.
+printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-<unset>}" "$*" >> "$STUB_CALL_LOG"
+grep -Fxv "Claude Code-credentials-STABLE01" "$STUB_KEYCHAIN_DB" > "$STUB_KEYCHAIN_DB.tmp" 2>/dev/null || :
+mv "$STUB_KEYCHAIN_DB.tmp" "$STUB_KEYCHAIN_DB"
+printf '%s\n' "Claude Code-credentials-REKEYED1" >> "$STUB_KEYCHAIN_DB"
+exit 0
+EOF
+
 cat > "$BIN/codex-file" <<EOF
 #!/usr/bin/env bash
 printf '%s\t%s\n' "\${CODEX_HOME:-<unset>}" "\$*" >> "\$STUB_CALL_LOG"
@@ -264,6 +291,24 @@ status_of() { # <label> [<provider>]
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .status'
+}
+
+detail_of() { # <label> [<provider>]
+  local label="$1" provider="${2:-}"
+  HOME="$CASE_DIR/home" AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" \
+    AI_QUOTAS_PLATFORM="${PLATFORM_UNDER_TEST:-Linux}" \
+    AI_QUOTAS_SECURITY_BIN="$BIN/security" \
+    AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
+    AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+    "$SCRIPT" list --json 2>/dev/null \
+    | jq -r --arg l "$label" --arg p "$provider" \
+        '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .detail'
+}
+
+service_of() { # <label>
+  jq -r --arg l "$1" \
+    '.accounts[] | select(.label == $l) | .credential_ref.service // ""' \
+    "$CONFIG" 2>/dev/null || echo "READ-ERROR"
 }
 
 PLATFORM_UNDER_TEST="Linux"
@@ -704,6 +749,15 @@ if [[ -e "$OUTSIDE/claude/.credentials.json" ]]; then
 else
   ok "no credential was written outside the profile root"
 fi
+# The refusal must also leave no DIRECTORY behind (Greptile). Checking only for
+# the credential file passes even when `mkdir -p` followed the symlink first and
+# the containment check refused afterwards — a refused operation that had
+# already written outside the configured root.
+if [[ -d "$OUTSIDE/claude" ]]; then
+  bad "the refused add still created a directory outside the profile root"
+else
+  ok "the refused add created no directory outside the profile root"
+fi
 
 # Control(+): a symlink that stays INSIDE the root moves nothing out, so it is
 # left alone. Without this the check above could pass by refusing every
@@ -739,6 +793,64 @@ jq 'del(.accounts[0].added_at)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$
 check_eq "$(status_of goodref@example.com)" "ok" "control(+): a row with a valid credential_ref and no added_at still reads"
 PLATFORM_UNDER_TEST="Linux"
 CLAUDE_BIN_UNDER_TEST=""
+
+# A relogin against a profile that already has a Keychain item rewrites that
+# item in place, so this login adds nothing to the before/after diff. If ONE
+# unrelated item appears in the same window — a concurrent login by a different
+# account — it is not ambiguous by count, and adopting it would rebind this
+# account to another account's credential. `credential_present` cannot catch
+# that: the foreign item does exist, so the account would still report `ok`.
+# The discriminating assertion is the SERVICE NAME in the config, not the exit
+# code: the pre-fix script exits 0 here too, having recorded the wrong one.
+new_case "relogin-foreign-keychain-item"
+PLATFORM_UNDER_TEST="Darwin"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain-stable"
+run add claude owner@example.com
+check_eq "$RC" "0" "the initial add records this profile's own keychain item"
+check_eq "$(service_of owner@example.com)" "Claude Code-credentials-STABLE01" \
+  "the recorded service is the profile's own item"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain-stable-plus-foreign"
+run relogin owner@example.com
+check_eq "$RC" "0" "a relogin alongside another account's login still succeeds"
+check_eq "$(service_of owner@example.com)" "Claude Code-credentials-STABLE01" \
+  "the relogin keeps its own item rather than adopting the one that appeared"
+check_eq "$(status_of owner@example.com)" "ok" "and the account still reads ok"
+PLATFORM_UNDER_TEST="Linux"
+CLAUDE_BIN_UNDER_TEST=""
+
+# Control(+): when the recorded item is GONE and one new item took its place,
+# that new item IS this login's and must be adopted. Without this the check
+# above could pass by never adopting an appeared item at all, which would
+# silently strand every genuine re-key on a dead service name.
+new_case "relogin-rekeyed-keychain-item"
+PLATFORM_UNDER_TEST="Darwin"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain-stable"
+run add claude rekey@example.com
+check_eq "$(service_of rekey@example.com)" "Claude Code-credentials-STABLE01" \
+  "control(+): the initial add records the original item"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain-rekey"
+run relogin rekey@example.com
+check_eq "$RC" "0" "control(+): a re-key relogin exits 0"
+check_eq "$(service_of rekey@example.com)" "Claude Code-credentials-REKEYED1" \
+  "control(+): the replacement item is adopted when the recorded one is gone"
+PLATFORM_UNDER_TEST="Linux"
+CLAUDE_BIN_UNDER_TEST=""
+
+# `account_status` reports through globals, so its CRED_DETAIL must survive to
+# the caller. Called through `$(...)` it would not: the note is set in a
+# subshell that is discarded before the next line reads it, and every NOTE
+# column and JSON `detail` renders empty — hiding exactly the diagnostic the
+# user needs to know WHY an account is not logged in.
+new_case "status-detail-survives"
+CODEX_BIN_UNDER_TEST="$BIN/codex-nothing"
+run add codex nodetail@example.com --no-login
+check_eq "$RC" "0" "a reserved codex slot registers"
+check_eq "$(status_of nodetail@example.com)" "needs-login" "and reads as needs-login"
+check_eq "$(detail_of nodetail@example.com)" "no auth.json in profile" \
+  "the JSON detail carries the reason rather than an empty string"
+run list
+check_contains "$OUT" "no auth.json in profile" "the table NOTE column carries it too"
+CODEX_BIN_UNDER_TEST=""
 
 # --- 14. config file mode ----------------------------------------------------
 
