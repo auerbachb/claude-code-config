@@ -169,9 +169,15 @@ grep -q 'compact result contract' <<<"$HELP" \
 # actually stopped the suite never surfaces anywhere a reader looks.
 FIX="$(new_fixture unparseable)"
 add_suite "$FIX" .claude/scripts/tests/a.test.sh 'echo "PASS: alpha assertion"' 0
+# The suite writes a marker file before its unterminated quote. bash executes
+# every complete command ahead of a parse fault, so the marker exists if and
+# only if the suite was allowed to run — a side effect on disk, independent of
+# whether the runner captured the suite's stdout anywhere.
+EXEC_MARKER="$FIX/broken-suite-executed.marker"
 {
   echo '#!/usr/bin/env bash'
   echo 'echo "FAIL — misleading last line before the abort"'
+  echo ": > \"$EXEC_MARKER\""
   echo "UNTERMINATED='never closed"
 } > "$FIX/.claude/scripts/tests/broken.test.sh"
 
@@ -191,11 +197,36 @@ if printf '%s' "$OUT" | jq -e '.relevant_error | test("misleading last line")' >
 else
   ok "bash runner: relevant_error no longer blames the last line before the abort"
 fi
-# And the suite must not have run at all — a half-executed suite can leave side effects.
-if grep -q 'misleading last line' "$FIX/logs"/*.log 2>/dev/null; then
-  bad "bash runner: the unparseable suite was executed despite failing bash -n"
+# And the suite must not have run at all — a half-executed suite can leave side
+# effects. Probe that directly: the marker is a file the suite itself creates,
+# so its absence proves non-execution no matter what the runner did or did not
+# capture. The log grep below is the weaker, output-shaped half — it would pass
+# vacuously if the runner ever stopped writing suite output to the log, which is
+# exactly the hole a side-effect probe closes.
+if [ -e "$EXEC_MARKER" ]; then
+  bad "bash runner: the unparseable suite ran — it created its side-effect marker"
 else
-  ok "bash runner: the unparseable suite was never executed"
+  ok "bash runner: the unparseable suite left no side effect on disk"
+fi
+# Guard the output probe against its own vacuous pass: with no log file, the
+# glob matches nothing and the grep below reports "not executed" for free.
+if ls "$FIX/logs"/*.log >/dev/null 2>&1; then
+  ok "bash runner: the run wrote a log, so the output probe reads real evidence"
+  if grep -q 'misleading last line' "$FIX/logs"/*.log 2>/dev/null; then
+    bash_runner_grep_status=0
+  else
+    bash_runner_grep_status=$?
+  fi
+  # Only status 1 means "searched the log and found nothing". Anything above
+  # that is grep failing to read the log at all, which must not be counted as
+  # evidence of non-execution.
+  case "$bash_runner_grep_status" in
+    0) bad "bash runner: the unparseable suite was executed despite failing bash -n" ;;
+    1) ok  "bash runner: the unparseable suite printed nothing into the run log" ;;
+    *) bad "bash runner: could not read the run log (grep exit $bash_runner_grep_status)" ;;
+  esac
+else
+  bad "bash runner: no run log was written — the output probe would pass vacuously"
 fi
 # A green run must not pay for the pre-check with a false failure.
 check_eq 2 "$(printf '%s' "$OUT" | jq -r '.total')" "bash runner: the parse-checked run still counts every suite"
