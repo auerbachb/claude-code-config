@@ -685,6 +685,36 @@ check_eq "$RC" "0" "an override carrying a wildcard still registers"
 check_contains "$(cat "$STUB_CALL_LOG")" "/login *" "the override reaches claude as written"
 check_not_contains "$(cat "$STUB_CALL_LOG")" "decoy-one" "the wildcard is not expanded against the working directory"
 
+# A symlink planted at the label component is the one way out of PROFILE_ROOT
+# that the label restriction does not cover: `mkdir -p` follows it, and the
+# login would then write its credential outside the root. The discriminating
+# assertion is the OUTSIDE directory — a refusal that still deposited a
+# credential there would be no refusal at all.
+new_case "profile-dir-symlink-escape"
+OUTSIDE="$CASE_DIR/outside"
+mkdir -p "$OUTSIDE"
+mkdir -p "$PROFILES"
+ln -s "$OUTSIDE" "$PROFILES/escapee@example.com"
+run add claude escapee@example.com
+check_eq "$RC" "5" "a profile path that resolves outside the profile root exits 5"
+check_contains "$OUT" "outside the profile root" "the message names the containment failure"
+check_eq "$(account_count)" "READ-ERROR" "nothing was registered"
+if [[ -e "$OUTSIDE/claude/.credentials.json" ]]; then
+  bad "a credential was written outside the profile root"
+else
+  ok "no credential was written outside the profile root"
+fi
+
+# Control(+): a symlink that stays INSIDE the root moves nothing out, so it is
+# left alone. Without this the check above could pass by refusing every
+# symlink, which is a different (and more hostile) rule than the one intended.
+new_case "profile-dir-symlink-inside"
+mkdir -p "$PROFILES/real-home"
+ln -s "$PROFILES/real-home" "$PROFILES/inside@example.com"
+run add claude inside@example.com
+check_eq "$RC" "0" "control(+): a symlink that stays inside the root is accepted"
+check_eq "$(status_of inside@example.com)" "ok" "control(+): and the account lists as ok"
+
 # --- 14. config file mode ----------------------------------------------------
 
 new_case "mode"

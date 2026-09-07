@@ -583,7 +583,25 @@ profile_dir_for() { # <label> <provider>
 }
 
 ensure_profile_dir() { # <dir>
+  mkdir -p "$PROFILE_ROOT" || die 5 "could not create profile root: $PROFILE_ROOT"
   mkdir -p "$1" || die 5 "could not create profile directory: $1"
+  # The label is already restricted so it cannot climb out of PROFILE_ROOT,
+  # but a pre-existing SYMLINK at the label or provider component is a second
+  # way out: `mkdir -p` follows it, and the profile — with the credential the
+  # login is about to write into it — lands somewhere else entirely. So the
+  # containment is checked on the PHYSICAL path (`pwd -P` resolves every
+  # link), not on the string. This runs before any login, so a redirected
+  # profile never receives a credential; a symlink that stays inside the root
+  # is left alone, because it does not move anything out.
+  local phys root_phys
+  phys="$( (cd -P "$1" 2>/dev/null && pwd -P) || true )"
+  root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys" && -n "$root_phys" ]] \
+    || die 5 "could not resolve the profile directory or its root: $1"
+  case "$phys" in
+    "$root_phys"/*) : ;;
+    *) die 5 "profile directory $1 resolves to $phys, outside the profile root $root_phys (a symlink in the path?) — refusing to run a login against it" ;;
+  esac
   # Tighten the whole chain we create, not just the leaf: a world-readable
   # parent is how a per-account profile stops being isolated.
   chmod 700 "$PROFILE_ROOT" 2>/dev/null || true
