@@ -138,8 +138,8 @@ Worked, so the arithmetic is checkable rather than asserted — Standard: `{lo}`
 The round counts track the measured distribution rather than being picked: the
 3-round median sits inside Standard, the 7-round p75 is Heavy's ceiling, and Light's
 1–2 covers the 16 of 35 attended PRs that merged in two commits or fewer. Standard's
-`{hi}` of 180 min likewise brackets the measured 122-min median and 185-min mean,
-where the retired seed value of 90 sat below both.
+`{hi}` of 180 min likewise clears the measured 122-min median and sits 5 min under
+the 185-min mean, where the retired seed value of 90 sat well below both.
 
 **Tier vocabulary** is identical to `tier-inference.md` (issue-maker) and `/prompt`
 Step 5: Heavy / Standard / Light, evaluated using the same signals.
