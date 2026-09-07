@@ -200,8 +200,124 @@ Config writes go through the shared `state-lock.sh` advisory lock and
 macOS Keychain probe — against stubs, without touching a real login, keychain, or
 account. They are not meant for normal use.
 
+## The reader — `/quotas` and `ai-quotas.sh` (increment 2, #1667)
+
+`ai-quotas.sh` reads the registry above and prints one row per account per window:
+account, provider, window, used %, remaining %, reset time in `America/New_York`, a
+countdown, a status, and a note. `--five-hour` adds the short windows that arrive in the
+same payload; `--account <label>` narrows the run; `--json` emits the same rows as
+objects. Flags and exit codes: `ai-quotas.sh --help`.
+
+**Display only, and the reader enforces it structurally: it opens no state file for
+writing at all.** Not `session-state.json`, not `credit-budget.sh`'s inputs
+(`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`, the
+`credit_budget` state key), not any dispatch gate. A `needs-login` or `rate-limited` row
+is a missing number, never a verdict about whether work may proceed —
+`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" is the authority, and the
+rolled-back `/quota` skill (#499) is the precedent for what gating on locally-read
+numbers costs. Two surfaces legitimately gate dispatch: the user-configured
+`daily_credit_budget_usd` budget and the #1427 usage-horizon counter. This is a third,
+observational one, and it stays that way.
+
+### JSON row shape
+
+`provider`, `label`, `reported_email`, `window`, `used_pct`, `remaining_pct`,
+`resets_at_epoch`, `resets_at_et`, `status` — plus `countdown`, `detail`, `source`
+(which path produced the row), and `plan`. A figure this reader could not obtain is
+`null`, never `0`: a zero would read as "no usage yet", which is the opposite of "we
+don't know".
+
+### Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | Figures were read for that window. |
+| `needs-login` | No usable credential for that profile; the note carries the exact `/quotas-setup relogin <label> <provider>` command. |
+| `rate-limited` | The provider answered 429; the note carries the retry window when the response named one. |
+| `unreachable` | Network failure, or a response shape this reader does not recognise — in which case the note prints the top-level keys it actually saw. |
+| `unsupported` | Cursor, until increment 3 (#1668). |
+
+Each account is read independently: one failure takes down its own row and nothing else.
+
+### Claude reader
+
+Reads that profile's live OAuth access token — the Keychain item named by
+`credential_ref.service` on macOS (`security find-generic-password -w`, the one place in
+this toolset that asks for a value), or `<profile_dir>/.credentials.json` elsewhere —
+and calls `GET https://api.anthropic.com/api/oauth/usage` with:
+
+| Header | Value | Why |
+|--------|-------|-----|
+| `Authorization` | `Bearer <token>` | passed to `curl` **through a config on stdin** (`-K -`), never in argv, so the token never appears in `ps` |
+| `anthropic-beta` | `oauth-2025-04-20` | the endpoint's beta gate |
+| `User-Agent` | `claude-code/<installed version>` | **required** — without it the endpoint answers 429 indefinitely, which looks like a rate limit and is really a missing header |
+
+The version comes from the installed `claude` CLI (override: `AI_QUOTAS_CLAUDE_VERSION`).
+When it cannot be resolved the reader still sends a plausible User-Agent rather than
+none, and any 429 that follows names the unresolved version in the note — the known
+cause is the first thing the row should point at.
+
+Windows rendered: `seven_day`, `seven_day_opus` when present, and `five_hour` under
+`--five-hour`. `utilization` is treated as a percent; a *fractional* value at or below 1
+is scaled by 100 (an integer `1` stays 1 %, because an integer percent is never
+fractional). `resets_at` is accepted as ISO-8601 or as epoch seconds.
+
+**A shape this reader does not recognise prints the keys it saw, not 0 %.** The endpoint
+is undocumented; the failure mode worth engineering against is a silent zero that reads
+as "plenty left".
+
+Anthropic's Feb 2026 credential policy scopes subscription OAuth tokens to Claude Code
+and Claude.ai. Owner's call (2026-09-07): a single user reading their own usage figures
+is within the spirit of that policy — the reader is read-only, borrows the token in
+place, and never routes model traffic through it.
+
+### Codex reader
+
+Preferred path: `codex app-server` under that account's `CODEX_HOME`, JSON-RPC
+`initialize` → `initialized` → `account/rateLimits/read`. The requests go in over a
+**FIFO**, not a plain pipe: a pipe closes stdin as soon as the last request is written
+and the server shuts down having answered only `initialize` (measured). The reader polls
+for the reply and kills the server the moment it lands, so a healthy account costs a
+round trip rather than the whole bound.
+
+The response is `result.rateLimits`: `primary` and `secondary`, each
+`{usedPercent, windowDurationMins, resetsAt}` (epoch seconds), plus `planType` and
+`accountId`.
+
+**The weekly window is chosen by `windowDurationMins == 10080`, across both slots, never
+by position.** Measured 2026-09-07 on a Pro account: the weekly figures arrive in
+`primary` with `secondary` null. Reading `secondary` as "the weekly one" reports the
+wrong window on some plans and looks exactly like a right answer. A response carrying
+only one window is valid and is rendered; when `--five-hour` finds no short window, the
+row says so rather than vanishing.
+
+Fallback path, only when app-server is unavailable (no CLI, no answer within the bound,
+or no rate limits in the reply): `GET https://chatgpt.com/backend-api/wham/usage` with
+the `auth.json` bearer (again via `curl -K -`) and the `ChatGPT-Account-Id` header. Every
+row records which path produced it, so a silently degraded read is visible.
+
+`reported_email` comes from the `id_token` claim in `auth.json`. The JWT is decoded for
+that one claim inside the reader; the token itself never leaves the function.
+
+### Test seams
+
+`AI_QUOTAS_CONFIG`, `AI_QUOTAS_CURL_BIN`, `AI_QUOTAS_SECURITY_BIN`,
+`AI_QUOTAS_CLAUDE_BIN`, `AI_QUOTAS_CODEX_BIN`, `AI_QUOTAS_CLAUDE_VERSION`,
+`AI_QUOTAS_PLATFORM`, `AI_QUOTAS_ANTHROPIC_URL`, `AI_QUOTAS_CHATGPT_URL`,
+`AI_QUOTAS_HTTP_TIMEOUT`, `AI_QUOTAS_CODEX_TIMEOUT`, and `AI_QUOTAS_NOW` (a fixed clock,
+so countdown assertions do not drift) let
+`.claude/scripts/tests/ai-quotas.test.sh` drive every path against stubs — no live
+account, network, or keychain. They are not meant for normal use.
+
+### Increment boundary
+
+This reader ends at Claude and Codex. Cursor rows print `unsupported` until #1668 adds a
+`cursor` reader, and no row carries an overage cost until #1669 adds that column. Both
+are additive: a new provider is a new `read_<provider>_account` function feeding the same
+`emit_row`, and an overage figure is a new field on that row.
+
 ## Symlink
 
-Per `.claude/rules/skill-symlinks.md`, `/quotas-setup` is symlinked into
-`~/.claude/skills/` through the skills worktree **after** the PR merges — never before,
+Per `.claude/rules/skill-symlinks.md`, `/quotas-setup` and `/quotas` are symlinked into
+`~/.claude/skills/` through the skills worktree **after** their PRs merge — never before,
 and never directly to the root repo.
