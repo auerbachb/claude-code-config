@@ -385,8 +385,8 @@ Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skil
    `time-estimates.md` (candidate order:
    `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
    `$HOME/.claude/reference/`, then `.claude/reference/`): Light →
-   `Est: 15–30 min · plan on 30`; Standard → `Est: 45–90 min · plan on 90`;
-   Heavy → `Est: 90–180 min · plan on 180`.
+   `Est: 60–90 min · plan on 90`; Standard → `Est: 120–180 min · plan on 180`;
+   Heavy → `Est: 210–300 min · plan on 300`.
 3. **Inline fallback:** if `time-estimates.md` does not resolve, use the same values
    directly. Print `DEGRADED: time-estimates.md not found (checked all three paths) —
    using inline fallback` once, then continue. Never omit the estimate line.

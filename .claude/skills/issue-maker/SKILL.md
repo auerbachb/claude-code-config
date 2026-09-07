@@ -306,8 +306,8 @@ order: `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
 tier; adjust only when scope clearly warrants it and state the reason in one sentence.
 If `time-estimates.md` does not resolve, print
 `DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
-and use: Light `Est: 15–30 min · plan on 30`, Standard `Est: 45–90 min · plan on 90`,
-Heavy `Est: 90–180 min · plan on 180`. Never omit this section.
+and use: Light `Est: 60–90 min · plan on 90`, Standard `Est: 120–180 min · plan on 180`,
+Heavy `Est: 210–300 min · plan on 300`. Never omit this section.
 
 Optional sections, appended when relevant:
 

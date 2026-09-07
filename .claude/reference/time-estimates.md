@@ -2,9 +2,10 @@
 
 > This document is the single source of truth for capture-time estimates. All three
 > skills — `/issue-maker`, `/prompt`, `/start-issue` — share this table and format.
-> The seed table below is replaced by measured actuals as history accumulates —
-> see [`estimate-actuals.md`](estimate-actuals.md) for the current recalibrated table
-> (regenerated via `estimate-log.sh --rollup`).
+> The tier table below is derived from measured merge history by the formula in
+> "The Rounds-Based Estimate", and is re-tuned as history accumulates —
+> see [`estimate-actuals.md`](estimate-actuals.md) for the current measured minutes
+> and rounds per tier (regenerated via `estimate-log.sh --rollup`).
 
 ## Format
 
@@ -17,14 +18,14 @@ Est: {lo}–{hi} min · plan on {bound}
   Always equals `{hi}`.
 - Both values are plain integers separated by an en-dash (`–`, U+2013).
 
-**Example:** `Est: 45–90 min · plan on 90`
+**Example:** `Est: 120–180 min · plan on 180`
 
 **Machine-parse pattern:** `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$`
 
 Group 1 = lo, Group 2 = hi, Group 3 = planning bound. A valid estimate requires Group 1 < Group 2 (lower bound < upper bound) and
 Group 3 == Group 2 (planning bound must equal upper bound). Reject lines where either
 constraint fails — e.g. `Est: 30–15 min · plan on 15` (inverted bounds) or
-`Est: 15–30 min · plan on 90` (mismatched planning bound) are both malformed. Later increments
+`Est: 60–90 min · plan on 180` (mismatched planning bound) are both malformed. Later increments
 (dispatch makespan, actuals logging) read estimates from issue bodies using this pattern.
 
 ## Measurement Window
@@ -44,21 +45,115 @@ single attended pipeline:
 - **Out of scope:** overnight / unattended queuing, multi-agent parallel dispatch,
   cross-timezone handoffs. The unattended margin is increment 4's concern.
 
-## Tier → Time Seed Table
+## The Rounds-Based Estimate
 
-| Tier | Range | Planning bound | Estimate line |
-|------|-------|---------------|---------------|
-| **Light** | 15–30 min | 30 min | `Est: 15–30 min · plan on 30` |
-| **Standard** | 45–90 min | 90 min | `Est: 45–90 min · plan on 90` |
-| **Heavy** | 90–180 min | 180 min | `Est: 90–180 min · plan on 180` |
+An estimate is **coding time plus review-and-CI rounds**, never coding time alone:
+
+```text
+est = coding + rounds × 30, rounded up to the nearest 30-minute multiple
+```
+
+A **round** is one push-to-push cycle: fix, push, wait for the AI reviewers and CI to
+report on the new SHA. Its cost is roughly fixed and largely independent of how big
+the change is, which is why a flat per-round unit prices a pipeline better than
+scaling the coding guess. `{lo}` applies the tier's low coding figure and low round
+count, `{hi}` applies both highs, and `{bound}` is `{hi}` as always. Both terms are
+multiples of 30 and the result is rounded up to a 30-minute multiple, so every
+published value is a whole number of half-hours.
+
+The two terms divide the pipeline at PR open: `coding` prices claim → PR open, and
+`rounds × 30` prices PR open → merge. That split is what makes the estimate
+recalibratable — the measurement below sees only the second stretch, so it re-tunes
+the round counts without touching the coding figures.
+
+### Measured inputs
+
+Measured **2026-09-07** over the **40 most recently merged PRs** in this repo, of
+which **35 were attended** — open-to-merge under 10 hours (`gh pr list --state merged
+--limit 40 --json number,createdAt,mergedAt,commits`; `--limit` above 40 trips the
+GraphQL node cap). That 10-hour cut is an **attendance filter for this derivation
+only — not the rollup's outlier rule**: `estimate-log.sh` flags at
+`actual_min > bound × 3` and *keeps* flagged rows in its quantiles. The two are
+computed over different populations and are not expected to agree; the
+reconciliation below gives both figures side by side.
+
+| Input | Measured (n=35) |
+|-------|-----------------|
+| Rounds per PR (PR total commit count, the round proxy) | median **3**, mean **4.3**, p75 **7** |
+| Minutes per round (open-to-merge ÷ commits) | median **38.5** |
+| Open-to-merge wall clock | median **122 min**, mean **185 min**, p75 **288 min** |
+
+**The round count is a proxy, and the 30-minute unit is set to match it.** A PR's
+total commit count includes the pre-open implementation commit, so it runs about one
+high as a count of review-and-CI cycles; correspondingly, dividing total open-to-merge
+time by that count gives 38.5 min per "round" only because it spreads the pre-open
+work across them. Pricing the proxy's rounds at the stricter 30 min re-centres the
+two errors against each other, and the coding term carries what is left. What makes
+this safe rather than sloppy is that `estimate-log.sh` measures rounds the *same* way,
+so the table and the rollup that re-tunes it never drift onto different yardsticks.
+
+**Reconciliation with `estimate-log.jsonl`.** The log reports a much lower median —
+164 rows for this repo spanning PRs 1256–1662, attended median **61.67 min** (140 rows
+under the same 10-hour cut) and median **2** rounds against the 40-PR sample's 122 min
+and 3. Applying the log's *own* rule instead of the attendance cut — flag at
+`bound × 3`, keep the flagged rows — raises that to the **75.25 min** the published
+rollup carries on its `Unknown` row over all 163 such rows. Both figures are correct
+for their population; the gap is the excluded long tail, not a disagreement. That is a
+window difference,
+not a contradiction, and the direction is the tell: the log reaches back over four
+times as far, so it is dominated by the older, smaller, one-commit PRs that the recent
+window has largely stopped producing. Both samples start at `pr_created` (only 3 of
+the 164 rows carry a claim comment), so they measure the same stretch of the pipeline.
+
+**The recent 40-PR window is therefore the calibration base**, because it reflects the
+review stack we actually run today rather than an average over the one we used to. The
+log is the instrument for re-tuning, not for the initial derivation: as claim-comment
+starts accumulate and the rows age out, `estimate-log.sh --rollup` reports measured
+rounds beside measured minutes per tier, and the round counts below are re-tuned from
+that table rather than re-derived by hand.
+
+**Re-tune from the rounds column, not by dividing the minutes column.** The rollup's
+minutes span **claim → merge** (`pr_created` fallback, which is what all but 3 of the
+current rows use), so they price the whole pipeline and are the right comparison for
+`{bound}` — which is also claim → merge. They are *not* the open → merge stretch the
+30-minute per-round unit was derived from, so `minutes ÷ rounds` off that table
+overstates the per-round cost by roughly the coding term. The gap is invisible today,
+because `pr_created` starts make the two spans identical; it opens exactly as claim
+comments accumulate. Re-tune the **round counts** from the rounds column; re-derive
+the per-round unit only from an open → merge measurement like the one above. When the log's attended round median rises
+to meet the recent window's, the two samples have converged and the log alone suffices.
+
+## Tier → Time Table
+
+| Tier | Coding | Rounds | Range | Planning bound | Estimate line |
+|------|--------|--------|-------|---------------|---------------|
+| **Light** | 30 min | 1–2 | 60–90 min | 90 min | `Est: 60–90 min · plan on 90` |
+| **Standard** | 30–60 min | 3–4 | 120–180 min | 180 min | `Est: 120–180 min · plan on 180` |
+| **Heavy** | 60–90 min | 5–7 | 210–300 min | 300 min | `Est: 210–300 min · plan on 300` |
+
+Worked, so the arithmetic is checkable rather than asserted — Standard: `{lo}` =
+30 + 3×30 = 120, `{hi}` = 60 + 4×30 = 180. Heavy: `{lo}` = 60 + 5×30 = 210,
+`{hi}` = 90 + 7×30 = 300.
+
+The round counts track the measured distribution rather than being picked: the
+3-round median sits inside Standard, the 7-round p75 is Heavy's ceiling, and Light's
+1–2 covers the 16 of 35 attended PRs that merged in two commits or fewer. Standard's
+`{hi}` of 180 min likewise clears the measured 122-min median and sits 5 min under
+the 185-min mean, where the retired seed value of 90 sat well below both.
 
 **Tier vocabulary** is identical to `tier-inference.md` (issue-maker) and `/prompt`
 Step 5: Heavy / Standard / Light, evaluated using the same signals.
 
 **Default:** use the table row for the issue's tier. Do not adjust unless scope
 clearly warrants it — e.g., a Standard-tier issue touching a single well-understood
-file may be closer to Light (15–30 min). State the reason in one sentence when
+file may be closer to Light (60–90 min). State the reason in one sentence when
 adjusting; never adjust silently.
+
+**Estimate lines inside the rendering examples** further down this file — and the
+matching examples in `/board`, `/leave-by`, and `/subagent` — are illustrative inputs
+chosen to exercise the on-track, overrun, merged and queued branches. They are not
+tier-table rows and are deliberately not maintained against the table above; changing
+them would break the arithmetic each example teaches.
 
 ## Usage by Skill
 
@@ -99,7 +194,7 @@ The reviewer-throughput floor uses **5 reviews/hour** — the CodeRabbit Pro cap
 
 ### Unestimated issues
 
-An issue with no `## Estimate` section and no complexity tier label resolves to `unestimated`. `makespan.sh` uses the Standard-tier fallback (45/90 min) for unestimated issues so the batch always has a result; the count of fallbacks is noted in the output line. `estimate-resolve.sh` exits 2 and prints `unestimated` for fully unresolved issues — never a blocker for dispatch.
+An issue with no `## Estimate` section and no complexity tier label resolves to `unestimated`. `makespan.sh` uses the Standard-tier fallback (120/180 min) for unestimated issues so the batch always has a result; the count of fallbacks is noted in the output line. `estimate-resolve.sh` exits 2 and prints `unestimated` for fully unresolved issues — never a blocker for dispatch.
 
 ### Output format
 

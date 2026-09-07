@@ -17,10 +17,15 @@
 #       Reconstruct rows for already-merged PRs. Uses the claude-claim comment
 #       timestamp as the start time; falls back to PR createdAt with
 #       start_source flagged. Idempotent: skips PRs already in the log.
+#       Then sweeps the log for rows missing the "rounds" field (written before
+#       that field existed) and patches each in place with the fetched round
+#       count. The sweep is driven off the log, not off --limit, because the
+#       rows needing it are the oldest ones — outside any newest-first window.
 #       Default: the current repo; default limit: 50.
 #
 #   --rollup [--output FILE]
-#       Read the log; compute per-tier median and ~P90; render a reference doc.
+#       Read the log; compute per-tier median and ~P90 for both minutes and
+#       rounds; render a reference doc.
 #       Default output: .claude/reference/estimate-actuals.md (in cwd repo).
 #
 # LOG FILE: ~/.claude/estimate-log.jsonl  (one JSON object per line)
@@ -36,10 +41,21 @@
 #     "claim_ts":     <ISO-8601 UTC>,    # when work started
 #     "merge_ts":     <ISO-8601 UTC>,    # when PR merged
 #     "actual_min":   <number>,          # wall-clock minutes (float)
+#     "rounds":       <number | null>,   # commits on the PR between open and merge
 #     "start_source": <"claim_comment"|"pr_created">,
 #     "repo":         <"owner/repo">,
 #     "outlier":      <boolean>          # actual_min > est_bound * 3 (unattended flag)
 #   }
+#
+#   "rounds" is the PR's total commit count, used as a proxy for the review-and-CI
+#   rounds the estimate formula prices at 30 min each (time-estimates.md). It is a
+#   proxy in two directions: it counts the pre-open implementation commit(s), and it
+#   counts two commits when one fix lands as two. A push-event count would be tighter
+#   but is not available from the PR object. Both biases are acceptable because the
+#   tier table was calibrated from this same measure — proxy and table share one
+#   yardstick. Rows written before this field existed carry null and are excluded
+#   from the rounds statistic only — never from the minutes statistic. `--backfill`
+#   sweeps the log and patches those rows in place.
 #
 # USAGE
 #   estimate-log.sh --append <pr_number> [--repo owner/repo]
@@ -268,13 +284,20 @@ parse_estimate_from_body() {
     return
   fi
 
-  # Infer tier from the standard table
+  # Infer tier from the tier table in time-estimates.md.
+  #
+  # Both the current rounds-based rows AND the retired seed rows are recognised:
+  # issues filed before the recalibration still carry the old Est: line verbatim,
+  # and dropping their mapping would silently reclassify every historical row as
+  # "Unknown" — collapsing the per-tier rollup this table exists to produce.
+  # The retired pairs are unambiguous (no current row reuses either bound), so
+  # keeping them costs nothing.
   local tier="null"
-  if [[ "$lo" -eq 15 && "$hi" -eq 30 ]]; then
+  if [[ "$lo" -eq 60 && "$hi" -eq 90 ]] || [[ "$lo" -eq 15 && "$hi" -eq 30 ]]; then
     tier="Light"
-  elif [[ "$lo" -eq 45 && "$hi" -eq 90 ]]; then
+  elif [[ "$lo" -eq 120 && "$hi" -eq 180 ]] || [[ "$lo" -eq 45 && "$hi" -eq 90 ]]; then
     tier="Standard"
-  elif [[ "$lo" -eq 90 && "$hi" -eq 180 ]]; then
+  elif [[ "$lo" -eq 210 && "$hi" -eq 300 ]] || [[ "$lo" -eq 90 && "$hi" -eq 180 ]]; then
     tier="Heavy"
   fi
 
@@ -449,6 +472,113 @@ append_row() {
 }
 
 # ---------------------------------------------------------------------------
+# Patch the "rounds" field into an existing row, in place, under the lock.
+# Only rows whose rounds is absent/null are touched, so a re-run is a no-op and
+# a measured value is never overwritten.
+# Returns 0 on a successful patch, 1 when there was nothing to patch, 5 on error.
+# ---------------------------------------------------------------------------
+patch_row_rounds() {
+  local pr_num="$1"
+  local repo="$2"
+  local rounds="$3"
+
+  [[ -f "$LOG_FILE" ]] || return 1
+  [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || return 1
+
+  if ! acquire_lock; then
+    echo "estimate-log.sh: WARN: could not acquire log lock to patch PR #$pr_num" >&2
+    return 5
+  fi
+
+  local tmp
+  if ! tmp=$(mktemp "$(dirname "$LOG_FILE")/.estimate-log-tmp-XXXXXX"); then
+    release_lock
+    echo "estimate-log.sh: WARN: could not create temp file to patch PR #$pr_num" >&2
+    return 5
+  fi
+  # shellcheck disable=SC2064
+  trap "release_lock; rm -f '$tmp'" EXIT
+
+  # Fence the read-modify-write. `acquire_lock`'s age-based reaper can hand the
+  # lock to a second writer while this one still believes it holds it — harmless
+  # for an append (one atomic short write), but this path REPLACES the whole
+  # file, so a lost race would discard the other writer's rows. Snapshot the log
+  # now and re-verify both the checksum and our lock token immediately before the
+  # mv; either mismatch aborts with the log untouched.
+  local fence_before
+  fence_before=$(cksum < "$LOG_FILE" 2>/dev/null || echo "unreadable")
+
+  local patched=0 write_rc=0 line updated
+  # `|| [[ -n "$line" ]]` so a final line with no trailing newline is still read.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if printf '%s' "$line" \
+         | jq -e --argjson pr "$pr_num" --arg repo "$repo" \
+              'select(.pr == $pr and .repo == $repo and (.rounds // null) == null)' \
+              >/dev/null 2>&1 \
+       && updated=$(printf '%s' "$line" | jq -c --argjson r "$rounds" '.rounds = $r' 2>/dev/null); then
+      printf '%s\n' "$updated" >> "$tmp" || { write_rc=5; break; }
+      patched=1
+      continue
+    fi
+    # Every other line is copied through byte-for-byte — including malformed
+    # ones, which this mode must preserve rather than quietly drop.
+    printf '%s\n' "$line" >> "$tmp" || { write_rc=5; break; }
+  done < "$LOG_FILE"
+
+  if [[ $write_rc -ne 0 ]]; then
+    rm -f "$tmp"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: write failed while patching PR #$pr_num; log left unmodified" >&2
+    return 5
+  fi
+
+  if [[ $patched -eq 0 ]]; then
+    rm -f "$tmp"; release_lock; trap - EXIT
+    return 1
+  fi
+
+  # Row-count guard: a rewrite that loses or gains a row is a corruption, not a
+  # patch. `grep -c ''` counts a final unterminated line, which `wc -l` does not.
+  local before after
+  before=$(grep -c '' "$LOG_FILE" 2>/dev/null || echo 0)
+  after=$(grep -c '' "$tmp" 2>/dev/null || echo 0)
+  if [[ "$before" -ne "$after" ]]; then
+    rm -f "$tmp"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: rounds patch for PR #$pr_num would change the row count ($before -> $after); log left unmodified" >&2
+    return 5
+  fi
+
+  # Fence check — see the snapshot above. Both conditions must still hold.
+  #
+  # Deliberately strict: ANY change to the log aborts, including a legitimate
+  # concurrent --append. That is the right trade here because the patch is
+  # idempotent and retried by the next sweep, while a lost append is gone for
+  # good. The residual window between this check and the mv is microseconds and
+  # cannot be closed by a mkdir lock; closing it properly means liveness-checked
+  # lock ownership for every writer, which is a change to the shared append path
+  # rather than to this one. What the fence guarantees is the property that
+  # matters: on a lost race this path refuses and warns instead of clobbering.
+  local fence_after held_token
+  fence_after=$(cksum < "$LOG_FILE" 2>/dev/null || echo "unreadable")
+  held_token=$(cat "$LOG_LOCK/token" 2>/dev/null || echo "")
+  if [[ "$fence_before" == "unreadable" || "$fence_after" != "$fence_before" \
+        || "$held_token" != "$LOCK_TOKEN" ]]; then
+    rm -f "$tmp"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: log changed or lock ownership lost while patching PR #$pr_num; log left unmodified" >&2
+    return 5
+  fi
+
+  if ! mv "$tmp" "$LOG_FILE"; then
+    rm -f "$tmp"; release_lock; trap - EXIT
+    echo "estimate-log.sh: WARN: could not replace $LOG_FILE while patching PR #$pr_num" >&2
+    return 5
+  fi
+
+  release_lock
+  trap - EXIT
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Build one row JSON for a merged PR
 # Returns JSON on stdout; prints WARN to stderr on soft errors; exits non-zero
 # on hard errors.
@@ -462,10 +592,23 @@ build_row() {
   pr_json=$(gh api "repos/$repo/pulls/$pr_num" 2>/dev/null) \
     || { echo "estimate-log.sh: WARN: could not fetch PR #$pr_num from $repo" >&2; return 3; }
 
-  local merged_at state pr_created_at
+  local merged_at state pr_created_at rounds
   merged_at=$(printf '%s' "$pr_json" | jq -r '.merged_at // ""')
   state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
   pr_created_at=$(printf '%s' "$pr_json" | jq -r '.created_at // ""')
+  # Round count = the PR's TOTAL commit count, used as the round proxy. Already
+  # in this response, so no extra API call.
+  #
+  # Name it honestly: this is not a count of post-open review rounds. It includes
+  # the pre-open implementation commit(s), so for our one-commit-then-open flow it
+  # runs about one high. That bias is deliberate and harmless because it is
+  # SYMMETRIC: the tier table in time-estimates.md was calibrated from this same
+  # measure over the same kind of sample, so the published bounds and the measured
+  # column are on one yardstick. Swapping in a stricter post-open count would make
+  # the rollup disagree with the table it exists to re-tune.
+  # `// ""` rather than `// 0`: a missing field must read as "unmeasured" (null),
+  # never as a measured zero, which would drag the median.
+  rounds=$(printf '%s' "$pr_json" | jq -r '.commits // ""')
 
   if [[ -z "$merged_at" || "$merged_at" == "null" ]]; then
     echo "estimate-log.sh: WARN: PR #$pr_num is not merged (state=$state merged_at=$merged_at)" >&2
@@ -528,6 +671,9 @@ build_row() {
   local hi_val="null";    [[ "$hi" != "null" && "$hi" =~ ^[0-9]+$ ]]    && hi_val="$hi"
   local bound_val="null"; [[ "$bound" != "null" && "$bound" =~ ^[0-9]+$ ]] && bound_val="$bound"
 
+  # A PR always has >= 1 commit, so 0 is as invalid as a non-numeric value here.
+  local rounds_val="null"; [[ "$rounds" =~ ^[1-9][0-9]*$ ]] && rounds_val="$rounds"
+
   jq -cn \
     --argjson pr        "$pr_num" \
     --argjson issue     "$issue_json_val" \
@@ -538,6 +684,7 @@ build_row() {
     --arg     claim_ts  "$claim_ts" \
     --arg     merge_ts  "$merged_at" \
     --argjson actual_min "$actual_min" \
+    --argjson rounds    "$rounds_val" \
     --arg     start_source "$start_source" \
     --arg     repo      "$repo" \
     --argjson outlier   "$outlier" \
@@ -551,6 +698,7 @@ build_row() {
       claim_ts:     $claim_ts,
       merge_ts:     $merge_ts,
       actual_min:   $actual_min,
+      rounds:       $rounds,
       start_source: $start_source,
       repo:         $repo,
       outlier:      $outlier
@@ -607,11 +755,12 @@ mode_backfill() {
   local pr_numbers
   pr_numbers=$(printf '%s' "$prs_json" | jq -r '.[].number')
 
-  local appended=0 skipped=0 failed=0
+  local appended=0 skipped=0 failed=0 patched=0 patch_failed=0
   while IFS= read -r pr_num; do
     [[ -z "$pr_num" ]] && continue
 
-    # Skip if already in log (fast path)
+    # Already in log: skip. Rows predating the "rounds" field are handled by the
+    # sweep after this loop, not here — see the comment there.
     if pr_in_log "$pr_num" "$repo"; then
       (( skipped++ )) || true
       continue
@@ -633,7 +782,46 @@ mode_backfill() {
     fi
   done <<< "$pr_numbers"
 
-  echo "estimate-log.sh: backfill done — appended=$appended skipped=$skipped failed=$failed" >&2
+  # -------------------------------------------------------------------------
+  # Rounds sweep: patch every row for this repo whose "rounds" is absent/null.
+  #
+  # Driven off the LOG, not off `gh pr list`, and deliberately NOT bounded by
+  # --limit: the rows needing a patch are the OLDEST ones, so a limit sized for
+  # discovery (which walks newest-first) is exactly the window that never
+  # reaches them — a row 200 merges back would stay unmeasured forever behind a
+  # --limit 50. --limit still governs discovery and append, unchanged.
+  #
+  # A patch failure is NOT counted in `failed` and does not change the exit
+  # code: it leaves the row exactly as it was before the sweep.
+  # -------------------------------------------------------------------------
+  local stale_prs=""
+  if [[ -f "$LOG_FILE" ]]; then
+    stale_prs=$(jq -r -R --arg repo "$repo" \
+      'fromjson? | select(.repo == $repo and (.rounds // null) == null) | .pr' \
+      "$LOG_FILE" 2>/dev/null | sort -un || true)
+  fi
+
+  if [[ -n "$stale_prs" ]]; then
+    local stale_count
+    stale_count=$(printf '%s\n' "$stale_prs" | grep -c '' || true)
+    echo "estimate-log.sh: patching rounds for $stale_count row(s) missing it ..." >&2
+    local stale_pr existing_rounds
+    while IFS= read -r stale_pr; do
+      [[ "$stale_pr" =~ ^[0-9]+$ ]] || continue
+      existing_rounds=$(gh api "repos/$repo/pulls/$stale_pr" --jq '.commits // empty' \
+        2>/dev/null || true)
+      if [[ "$existing_rounds" =~ ^[1-9][0-9]*$ ]] \
+         && patch_row_rounds "$stale_pr" "$repo" "$existing_rounds"; then
+        (( patched++ )) || true
+        echo "  patched rounds for PR #$stale_pr (rounds=$existing_rounds)" >&2
+      else
+        (( patch_failed++ )) || true
+        echo "  WARN: could not patch rounds for PR #$stale_pr" >&2
+      fi
+    done <<< "$stale_prs"
+  fi
+
+  echo "estimate-log.sh: backfill done — appended=$appended skipped=$skipped patched=$patched patch_failed=$patch_failed failed=$failed" >&2
 
   [[ $failed -eq 0 ]] || return 3
   return 0
@@ -687,11 +875,23 @@ mode_rollup() {
             else ($s[$lo_i] * ($hi_i - $idx) + $s[$hi_i] * ($idx - $lo_i))
             end
         end;
-    group_by(.tier) | map({
+    group_by(.tier) | map(
+      # Rounds are measured over the rows that carry the field. Rows predating it
+      # hold null and are dropped from THIS statistic only — never from the
+      # minutes statistic, and never coerced to 0, which would drag the median.
+      ([.[] | select(.rounds != null) | .rounds]) as $rounds |
+      {
       tier:          (.[0].tier // "Unknown"),
       count:         length,
       median:        (percentile(0.5; [.[].actual_min]) | . * 100 | round | . / 100),
       p90:           (percentile(0.9; [.[].actual_min]) | . * 100 | round | . / 100),
+      rounds_median: (if ($rounds | length) > 0
+                      then (percentile(0.5; $rounds) | . * 10 | round | . / 10)
+                      else null end),
+      rounds_p90:    (if ($rounds | length) > 0
+                      then (percentile(0.9; $rounds) | . * 10 | round | . / 10)
+                      else null end),
+      rounds_count:  ($rounds | length),
       outlier_count: ([.[] | select(.outlier == true)] | length)
     })
   ')
@@ -716,24 +916,40 @@ mode_rollup() {
     printf '> Source: `~/.claude/estimate-log.jsonl` (%s rows for `%s`).\n' \
       "$row_count" "$repo"
     printf '> Regenerate: `estimate-log.sh --rollup --repo %s`\n\n' "$repo"
-    printf 'This table supplements the seed values in [`time-estimates.md`](time-estimates.md)\n'
-    printf 'with medians measured from this repo'\''s real merge history.\n'
-    printf 'The seed table remains authoritative for tiers with fewer than ~5 rows.\n\n'
+    printf 'This table is the measured counterpart to the tier table in\n'
+    printf '[`time-estimates.md`](time-estimates.md), whose values come from\n'
+    printf '`est = coding + rounds × 30`. Re-tune a tier'\''s **round count** from the\n'
+    printf 'rounds column below rather than by hand. Do **not** derive the 30-min\n'
+    printf 'per-round unit as minutes ÷ rounds off this table: the minutes span\n'
+    printf 'claim → merge (`pr_created` fallback), so they are the right comparison\n'
+    printf 'for the planning bound but include the coding term the per-round unit\n'
+    printf 'excludes. That unit is re-derived only from an open → merge measurement.\n'
+    printf 'The published tier table stays authoritative for tiers with fewer than ~5 rows.\n\n'
 
     printf '## Recalibrated Tier → Time Table\n\n'
-    printf '| Tier | Measured Median | ~P90 | Rows | Outliers |\n'
-    printf '|------|----------------|------|------|----------|\n'
+    printf '| Tier | Measured Median | ~P90 | Measured Rounds (median) | Rounds ~P90 | Rows | Rows w/ rounds | Outliers |\n'
+    printf '|------|----------------|------|--------------------------|-------------|------|----------------|----------|\n'
     printf '%s' "$stats_json" | jq -r '
       def fmt(x): if x == null then "—" else (x | tostring) + " min" end;
-      .[] | "| \(.tier) | \(fmt(.median)) | \(fmt(.p90)) | \(.count) | \(.outlier_count) |"
+      def fmt_r(x): if x == null then "—" else (x | tostring) end;
+      .[] | "| \(.tier) | \(fmt(.median)) | \(fmt(.p90)) | \(fmt_r(.rounds_median)) | \(fmt_r(.rounds_p90)) | \(.count) | \(.rounds_count) | \(.outlier_count) |"
     '
 
-    printf '\n> **Outliers**: actual duration exceeded planning bound × 3 (likely\n'
+    printf '\n> **Rounds** = the PR total commit count, the proxy for the review-and-CI\n'
+    printf '> rounds `time-estimates.md` prices at 30 min each. It counts the pre-open\n'
+    printf '> implementation commit too, so it runs about one high — the same way the\n'
+    printf '> tier table was calibrated, so the two stay comparable. Same rows,\n'
+    printf '> same outlier rule as the minutes columns: outliers are included in the\n'
+    printf '> quantiles and flagged rather than dropped. **Rows w/ rounds** is the\n'
+    printf '> subset carrying a measured round count — rows written before the field\n'
+    printf '> existed show `—` here and still count in the minutes columns. Run\n'
+    printf '> `estimate-log.sh --backfill` to patch them.\n>\n'
+    printf '> **Outliers**: actual duration exceeded planning bound × 3 (likely\n'
     printf '> unattended/overnight). Included in quantiles; flagged for visibility.\n\n'
 
     printf '## Recent Guesses vs. Actuals\n\n'
-    printf '| PR | Issue | Tier | Estimate | Actual | Δ | Source |\n'
-    printf '|----|-------|------|----------|--------|---|--------|\n'
+    printf '| PR | Issue | Tier | Estimate | Actual | Rounds | Δ | Source |\n'
+    printf '|----|-------|------|----------|--------|--------|---|--------|\n'
 
     local has_recent
     has_recent=$(printf '%s' "$recent_rows" | jq 'length')
@@ -746,14 +962,23 @@ mode_rollup() {
         def delta(row): if (row.est_bound != null and row.actual_min != null)
           then ((row.actual_min - row.est_bound) * 10 | round | . / 10 | tostring) + " min"
           else "—" end;
-        .[] | "| #\(.pr) | \(if .issue then "#\(.issue)" else "—" end) | \(.tier // "—") | \(fmt_est(.)) | \(fmt_min(.actual_min))\(outlier_flag(.)) | \(delta(.)) | \(.start_source) |"
+        .[] | "| #\(.pr) | \(if .issue then "#\(.issue)" else "—" end) | \(.tier // "—") | \(fmt_est(.)) | \(fmt_min(.actual_min))\(outlier_flag(.)) | \(.rounds // "—") | \(delta(.)) | \(.start_source) |"
       '
     else
-      printf '| (no rows with estimates yet) | | | | | | |\n'
+      printf '| (no rows with estimates yet) | | | | | | | |\n'
     fi
 
-    printf '\n> ⚠ Outlier: actual exceeded planning bound × 3 (likely includes unattended time).\n'
-    printf '>\n'
+    # The outlier legend explains the ⚠ marker, so emit it only when a row
+    # actually carries one. Printed unconditionally it reads as an assertion
+    # about the rows above — false, and misleading, on a table with no outliers.
+    local recent_outliers
+    recent_outliers=$(printf '%s' "$recent_rows" \
+      | jq '[.[] | select(.outlier == true)] | length' 2>/dev/null || echo 0)
+    printf '\n'
+    if [[ "$recent_outliers" -gt 0 ]]; then
+      printf '> ⚠ Outlier: actual exceeded planning bound × 3 (likely includes unattended time).\n'
+      printf '>\n'
+    fi
     printf '> **Δ** = actual − planning bound. Negative = completed under budget.\n'
     printf '>\n'
     printf '> **Source**: `claim_comment` = accurate start (issue claim marker);\n'

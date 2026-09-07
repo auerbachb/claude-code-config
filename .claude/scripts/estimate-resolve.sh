@@ -10,10 +10,10 @@
 #   estimate-resolve.sh <issue_number> [--repo owner/repo]
 #
 # STDOUT (one line)
-#   "Est: 45–90 min · plan on 90"   — from ## Estimate section (exit 0)
-#   "Est: 15–30 min · plan on 30"   — tier-table fallback: Light (exit 1)
-#   "Est: 45–90 min · plan on 90"   — tier-table fallback: Standard (exit 1)
-#   "Est: 90–180 min · plan on 180" — tier-table fallback: Heavy (exit 1)
+#   "Est: 120–180 min · plan on 180" — from ## Estimate section (exit 0)
+#   "Est: 60–90 min · plan on 90"    — tier-table fallback: Light (exit 1)
+#   "Est: 120–180 min · plan on 180" — tier-table fallback: Standard (exit 1)
+#   "Est: 210–300 min · plan on 300" — tier-table fallback: Heavy (exit 1)
 #   "unestimated"                    — no section and no tier label (exit 2)
 #
 # EXIT CODES
@@ -28,10 +28,10 @@
 #   ^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$
 #   The separator is an en-dash (U+2013), not a hyphen.
 #
-# TIER TABLE (from time-estimates.md)
-#   Light    → Est: 15–30 min · plan on 30
-#   Standard → Est: 45–90 min · plan on 90
-#   Heavy    → Est: 90–180 min · plan on 180
+# TIER TABLE (from time-estimates.md — rounds-based: coding + rounds × 30)
+#   Light    → Est: 60–90 min · plan on 90      (30 min coding + 1–2 rounds)
+#   Standard → Est: 120–180 min · plan on 180   (30–60 min coding + 3–4 rounds)
+#   Heavy    → Est: 210–300 min · plan on 300   (60–90 min coding + 5–7 rounds)
 #
 # DEPENDENCIES
 #   - gh (authenticated)
@@ -99,11 +99,11 @@ tier_to_estimate() {
   local tier="$1"
   case "$(printf '%s' "$tier" | tr '[:upper:]' '[:lower:]')" in
     light|quick)
-      printf 'Est: 15\xe2\x80\x9330 min \xc2\xb7 plan on 30' ;;
+      printf 'Est: 60\xe2\x80\x9390 min \xc2\xb7 plan on 90' ;;
     standard|medium)
-      printf 'Est: 45\xe2\x80\x9390 min \xc2\xb7 plan on 90' ;;
+      printf 'Est: 120\xe2\x80\x93180 min \xc2\xb7 plan on 180' ;;
     heavy)
-      printf 'Est: 90\xe2\x80\x93180 min \xc2\xb7 plan on 180' ;;
+      printf 'Est: 210\xe2\x80\x93300 min \xc2\xb7 plan on 300' ;;
     *)
       return 1 ;;
   esac
