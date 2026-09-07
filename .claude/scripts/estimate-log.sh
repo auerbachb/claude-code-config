@@ -918,9 +918,12 @@ mode_rollup() {
     printf '> Regenerate: `estimate-log.sh --rollup --repo %s`\n\n' "$repo"
     printf 'This table is the measured counterpart to the tier table in\n'
     printf '[`time-estimates.md`](time-estimates.md), whose values come from\n'
-    printf '`est = coding + rounds × 30`. The two columns that feed that formula back\n'
-    printf 'are the measured minutes and the measured rounds below; re-tune a tier'\''s\n'
-    printf 'round count from this table rather than by hand.\n'
+    printf '`est = coding + rounds × 30`. Re-tune a tier'\''s **round count** from the\n'
+    printf 'rounds column below rather than by hand. Do **not** derive the 30-min\n'
+    printf 'per-round unit as minutes ÷ rounds off this table: the minutes span\n'
+    printf 'claim → merge (`pr_created` fallback), so they are the right comparison\n'
+    printf 'for the planning bound but include the coding term the per-round unit\n'
+    printf 'excludes. That unit is re-derived only from an open → merge measurement.\n'
     printf 'The published tier table stays authoritative for tiers with fewer than ~5 rows.\n\n'
 
     printf '## Recalibrated Tier → Time Table\n\n'

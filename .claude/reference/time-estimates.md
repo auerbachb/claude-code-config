@@ -69,9 +69,13 @@ the round counts without touching the coding figures.
 ### Measured inputs
 
 Measured **2026-09-07** over the **40 most recently merged PRs** in this repo, of
-which **35 were attended** — open-to-merge under 10 hours, the same outlier rule the
-actuals rollup applies to minutes (`gh pr list --state merged --limit 40 --json
-number,createdAt,mergedAt,commits`; `--limit` above 40 trips the GraphQL node cap):
+which **35 were attended** — open-to-merge under 10 hours (`gh pr list --state merged
+--limit 40 --json number,createdAt,mergedAt,commits`; `--limit` above 40 trips the
+GraphQL node cap). That 10-hour cut is an **attendance filter for this derivation
+only — not the rollup's outlier rule**: `estimate-log.sh` flags at
+`actual_min > bound × 3` and *keeps* flagged rows in its quantiles. The two are
+computed over different populations and are not expected to agree; the
+reconciliation below gives both figures side by side.
 
 | Input | Measured (n=35) |
 |-------|-----------------|
@@ -89,8 +93,13 @@ this safe rather than sloppy is that `estimate-log.sh` measures rounds the *same
 so the table and the rollup that re-tunes it never drift onto different yardsticks.
 
 **Reconciliation with `estimate-log.jsonl`.** The log reports a much lower median —
-164 rows for this repo spanning PRs 1256–1662, attended median **60 min** and median
-**2** rounds against the 40-PR sample's 122 min and 3. That is a window difference,
+164 rows for this repo spanning PRs 1256–1662, attended median **61.67 min** (140 rows
+under the same 10-hour cut) and median **2** rounds against the 40-PR sample's 122 min
+and 3. Applying the log's *own* rule instead of the attendance cut — flag at
+`bound × 3`, keep the flagged rows — raises that to the **75.25 min** the published
+rollup carries on its `Unknown` row over all 163 such rows. Both figures are correct
+for their population; the gap is the excluded long tail, not a disagreement. That is a
+window difference,
 not a contradiction, and the direction is the tell: the log reaches back over four
 times as far, so it is dominated by the older, smaller, one-commit PRs that the recent
 window has largely stopped producing. Both samples start at `pr_created` (only 3 of
@@ -101,7 +110,17 @@ review stack we actually run today rather than an average over the one we used t
 log is the instrument for re-tuning, not for the initial derivation: as claim-comment
 starts accumulate and the rows age out, `estimate-log.sh --rollup` reports measured
 rounds beside measured minutes per tier, and the round counts below are re-tuned from
-that table rather than re-derived by hand. When the log's attended round median rises
+that table rather than re-derived by hand.
+
+**Re-tune from the rounds column, not by dividing the minutes column.** The rollup's
+minutes span **claim → merge** (`pr_created` fallback, which is what all but 3 of the
+current rows use), so they price the whole pipeline and are the right comparison for
+`{bound}` — which is also claim → merge. They are *not* the open → merge stretch the
+30-minute per-round unit was derived from, so `minutes ÷ rounds` off that table
+overstates the per-round cost by roughly the coding term. The gap is invisible today,
+because `pr_created` starts make the two spans identical; it opens exactly as claim
+comments accumulate. Re-tune the **round counts** from the rounds column; re-derive
+the per-round unit only from an open → merge measurement like the one above. When the log's attended round median rises
 to meet the recent window's, the two samples have converged and the log alone suffices.
 
 ## Tier → Time Table
