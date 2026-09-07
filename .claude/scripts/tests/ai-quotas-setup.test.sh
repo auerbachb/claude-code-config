@@ -637,6 +637,54 @@ check_eq "$RC" "0" "control(+): a future minor schema_version is accepted"
 check_eq "$(jq -r '.schema_version' "$CONFIG")" "1.7" "the newer minor version is preserved, not downgraded"
 check_eq "$(jq -r '.future_field' "$CONFIG")" "keep me" "unknown top-level fields survive a write"
 
+# A row that is missing `profile_dir` is refused, not walked. Read back
+# through `jq -r` the absent field becomes the STRING "null", and that string
+# reaches `mkdir -p` and `chmod 700 "$(dirname …)"` — creating `./null` and
+# chmodding the CURRENT DIRECTORY to 700. `./null` in the working directory is
+# the discriminating artifact: it exists only if the malformed row was walked.
+new_case "malformed-account-row"
+printf '{"schema_version":"1.0","accounts":[{"provider":"claude","label":"broken@example.com"}]}\n' > "$CONFIG"
+CWD_PROBE="$CASE_DIR/cwd-probe"
+mkdir -p "$CWD_PROBE"
+PREV_PWD="$PWD"
+cd "$CWD_PROBE" || exit 1
+run relogin broken@example.com
+cd "$PREV_PWD" || exit 1
+check_eq "$RC" "5" "an account row missing profile_dir exits 5"
+check_contains "$OUT" "profile_dir" "the message names the field the row is missing"
+if [[ -e "$CWD_PROBE/null" ]]; then
+  bad "the malformed row was walked — 'null' was created in the working directory"
+else
+  ok "the malformed row never reached mkdir/chmod in the working directory"
+fi
+
+# Control(+): a well-formed row in the same shape still works, so the refusal
+# above is the shape check firing rather than relogin being broken outright.
+new_case "malformed-account-row-control"
+run add claude wellformed@example.com
+check_eq "$RC" "0" "control(+): a well-formed row registers"
+run relogin wellformed@example.com
+check_eq "$RC" "0" "control(+): and relogin on it exits 0"
+
+# The documented argv-list override is SPLIT but never GLOBBED. Splitting is
+# the point — it is an argument list, not one word — but an unquoted expansion
+# would also expand `*` against the working directory and hand `claude` an
+# argv nobody wrote.
+new_case "login-args-not-globbed"
+GLOB_DIR="$CASE_DIR/globdir"
+mkdir -p "$GLOB_DIR"
+: > "$GLOB_DIR/decoy-one"
+: > "$GLOB_DIR/decoy-two"
+PREV_PWD="$PWD"
+cd "$GLOB_DIR" || exit 1
+export AI_QUOTAS_CLAUDE_LOGIN_ARGS='/login *'
+run add claude globby@example.com
+unset AI_QUOTAS_CLAUDE_LOGIN_ARGS
+cd "$PREV_PWD" || exit 1
+check_eq "$RC" "0" "an override carrying a wildcard still registers"
+check_contains "$(cat "$STUB_CALL_LOG")" "/login *" "the override reaches claude as written"
+check_not_contains "$(cat "$STUB_CALL_LOG")" "decoy-one" "the wildcard is not expanded against the working directory"
+
 # --- 14. config file mode ----------------------------------------------------
 
 new_case "mode"

@@ -262,8 +262,24 @@ read_config() {
   raw="$(cat "$CONFIG_FILE")" || die 5 "could not read config: $CONFIG_FILE"
   # An unparseable config is never overwritten — the user's registry is not
   # ours to discard on a parse error.
-  printf '%s' "$raw" | jq -e 'type == "object" and (.accounts | type == "array")' >/dev/null 2>&1 \
-    || die 5 "config is not valid ai-quotas JSON, refusing to touch it: $CONFIG_FILE"
+  # Every account is checked for SHAPE, not just the envelope. A row missing
+  # `profile_dir` reads back as the string "null" through `jq -r`, and that
+  # string then reaches `mkdir -p` and `chmod 700 "$(dirname …)"` — which
+  # creates `./null` and chmods the CURRENT DIRECTORY to 700. Refusing the
+  # config is the same answer this function already gives an unparseable one.
+  # The check stays deliberately structural: it requires the three fields to
+  # be non-empty strings and does NOT enumerate provider values, so a `1.x`
+  # config written by a newer tool that knows a fourth provider is still
+  # accepted, exactly as the major-version rule below promises.
+  printf '%s' "$raw" | jq -e '
+      type == "object"
+      and (.accounts | type == "array")
+      and (.accounts | all(
+            type == "object"
+            and (.provider    | type == "string" and length > 0)
+            and (.label       | type == "string" and length > 0)
+            and (.profile_dir | type == "string" and length > 0)))' >/dev/null 2>&1 \
+    || die 5 "config is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir — refusing to touch it: $CONFIG_FILE"
   # Forward compatibility is by MAJOR version: a `1.x` config written by a
   # newer tool may carry fields this one does not know, and preserving them is
   # a jq-level property of every write below. A different major means the
@@ -443,9 +459,12 @@ run_login() { # <provider> <profile_dir>
       echo "${SELF_NAME}: when the login finishes, exit the session (/exit or Ctrl-D) to continue."
       local -a claude_args=()
       if [[ -n "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ]]; then
-        # Deliberately unquoted: the override is an argument LIST, not one word.
-        # shellcheck disable=SC2206
-        claude_args=(${AI_QUOTAS_CLAUDE_LOGIN_ARGS})
+        # The override is an argument LIST, so it is split on whitespace — but
+        # `read -a` is used rather than an unquoted expansion because splitting
+        # is wanted and PATHNAME EXPANSION is not: an unquoted `*` or `?` in the
+        # value would glob against the current directory and silently hand
+        # `claude` an argv nobody wrote. `read` splits and never globs.
+        read -r -a claude_args <<< "${AI_QUOTAS_CLAUDE_LOGIN_ARGS}"
       fi
       CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
       ;;
