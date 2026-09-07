@@ -583,6 +583,33 @@ check_eq "$RC" "0" "control(+): one new keychain item still registers normally"
 PLATFORM_UNDER_TEST="Linux"
 CLAUDE_BIN_UNDER_TEST=""
 
+# A sidecar the script cannot write is a real degradation, not a nothing: the
+# add still succeeds (the credential is verified and the row is genuine), but a
+# LATER re-add of this label would then fail closed with no visible cause. The
+# assertion is that the failure is reported at the moment it happens. The path
+# is blocked by occupying it with a directory rather than by permissions —
+# ensure_profile_dir chmods the parent back to 700 on every run, so a
+# permission-based block would be undone before the write is attempted, and the
+# test would pass for the wrong reason.
+new_case "sidecar-unwritable"
+PLATFORM_UNDER_TEST="Darwin"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain"
+mkdir -p "$PROFILES/blocked@example.com/.keychain-service-claude"
+run add claude blocked@example.com
+check_eq "$RC" "0" "an unwritable sidecar does not fail the add"
+check_contains "$OUT" "could not remember the keychain service name" "the failed sidecar write is reported, not swallowed"
+check_eq "$(account_count)" "1" "the account is still registered when the sidecar could not be written"
+check_eq "$(status_of blocked@example.com)" "ok" "and it lists as ok — the credential is what decides that"
+
+# Control(+): the same stub with the path free writes the sidecar silently, so
+# the warning above is the write failing, not the Darwin path warning always.
+run add claude unblocked@example.com
+check_eq "$RC" "0" "control(+): the same login with a writable path exits 0"
+check_not_contains "$OUT" "could not remember the keychain service name" "control(+): a successful sidecar write warns about nothing"
+
+PLATFORM_UNDER_TEST="Linux"
+CLAUDE_BIN_UNDER_TEST=""
+
 # --- 13. an unparseable config is never overwritten --------------------------
 
 new_case "bad-config"

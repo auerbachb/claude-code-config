@@ -121,6 +121,12 @@ beside the profile at the original login. The sidecar is never trusted on its ow
 status probe still asks the Keychain whether that item exists, so a stale sidecar yields
 `needs-login`, never a false `ok`.
 
+A sidecar that cannot be written does **not** fail the `add` — the credential itself is
+already verified, and the row is genuine — but it is never silent either: the tool warns
+on stderr at the moment the write (or its `chmod 600`) fails. Without that warning, the
+cost lands much later and looks unexplained, as a re-add of that same label failing
+closed for a reason nothing on screen accounts for.
+
 **An ambiguous snapshot is refused, not guessed.** If two logins overlap, more than one
 item can appear between one run's snapshots. Picking the first would bind an account to
 another account's credential — a wrong answer that looks exactly like a right one — so

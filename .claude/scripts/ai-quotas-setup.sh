@@ -328,12 +328,27 @@ keychain_sidecar_path() { # <profile_dir>
   printf '%s/.keychain-service-%s' "$(dirname "$1")" "$(basename "$1")"
 }
 
+# A failed sidecar write is not fatal — the credential itself is already
+# verified and the account is genuinely registered — but it is never SILENT.
+# The sidecar is the only record of the observed service name, so losing it
+# turns a later re-add of this profile (after `remove` left the directory and
+# its Keychain item in place) into a fail-closed error with no visible cause.
+# Warning here is what makes that later refusal explicable. The file is
+# created under `umask 077` BEFORE the name goes into it, so it is never
+# briefly group- or world-readable; the chmod that follows tightens a file
+# that already existed with a looser mode, and its own failure is reported
+# too — the doc promises a mode-600 sidecar, so a silently looser one would
+# make that promise false.
 remember_keychain_service() { # <profile_dir> <service>
   [[ -n "${2:-}" ]] || return 0
   local f
   f="$(keychain_sidecar_path "$1")"
-  printf '%s\n' "$2" > "$f" 2>/dev/null || return 0
-  chmod 600 "$f" 2>/dev/null || true
+  if ! ( umask 077; : > "$f" ) 2>/dev/null || ! printf '%s\n' "$2" > "$f" 2>/dev/null; then
+    echo "${SELF_NAME}: warning: could not remember the keychain service name at ${f} — the account IS registered, but re-adding this label after a 'remove' will fail closed and need a fresh login." >&2
+    return 0
+  fi
+  chmod 600 "$f" 2>/dev/null ||
+    echo "${SELF_NAME}: warning: could not chmod 600 ${f} — it holds a service name, never a credential value, but tighten it by hand." >&2
 }
 
 recall_keychain_service() { # <profile_dir>
