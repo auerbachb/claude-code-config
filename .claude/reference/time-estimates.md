@@ -49,7 +49,7 @@ single attended pipeline:
 
 An estimate is **coding time plus review-and-CI rounds**, never coding time alone:
 
-```
+```text
 est = coding + rounds × 30, rounded up to the nearest 30-minute multiple
 ```
 
