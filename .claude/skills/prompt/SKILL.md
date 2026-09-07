@@ -327,8 +327,8 @@ or the line is missing or fails validation, derive from the issue's `issue_tier`
 `$HOME/.claude/reference/`, then `.claude/reference/`). If none of the three candidates
 resolves, print exactly:
 `DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
-then use: Light `Est: 15–30 min · plan on 30`, Standard `Est: 45–90 min · plan on 90`,
-Heavy `Est: 90–180 min · plan on 180`. Never omit the estimate. Each per-issue prompt block carries its own `{estimate-line}`
+then use: Light `Est: 60–90 min · plan on 90`, Standard `Est: 120–180 min · plan on 180`,
+Heavy `Est: 210–300 min · plan on 300`. Never omit the estimate. Each per-issue prompt block carries its own `{estimate-line}`
 derived from that issue's `issue_tier` (the per-issue tier from Step 4 classification —
 computed for every issue, including subagent candidates, before partitioning; always
 available here). The batch-level Tier Recommendation shows the

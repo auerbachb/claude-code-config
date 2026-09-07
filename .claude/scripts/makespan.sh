@@ -24,13 +24,13 @@
 #
 # JSON INPUT SCHEMA
 #   { "issues": [
-#       { "num": 42, "est_lo": 45, "est_hi": 90, "deps": [] },
-#       { "num": 55, "est_lo": 45, "est_hi": 90, "deps": [42] },
+#       { "num": 42, "est_lo": 120, "est_hi": 180, "deps": [] },
+#       { "num": 55, "est_lo": 120, "est_hi": 180, "deps": [42] },
 #       { "num": null, "est_lo": null, "est_hi": null, "deps": [] }
 #   ] }
 #
 #   - est_lo / est_hi: minutes (integers); null = unestimated
-#     -> unestimated issues use the Standard-tier fallback (45/90 min)
+#     -> unestimated issues use the Standard-tier fallback (120/180 min)
 #   - deps: list of issue nums that must finish before this one starts
 #
 # OPTIONS
@@ -66,9 +66,10 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
 # ---------------------------------------------------------------------------
 DEFAULT_CEILING=4   # subagent-orchestration.md: keep 3-4 active CR-polled PRs max
 DEFAULT_CR_RATE=5   # cr-github-review.md Rate Limits: 5 reviews/hour per developer
-# Standard-tier fallback for unestimated issues (time-estimates.md tier table)
-FALLBACK_LO=45
-FALLBACK_HI=90
+# Standard-tier fallback for unestimated issues (time-estimates.md tier table:
+# rounds-based, 30-60 min coding + 3-4 review/CI rounds x 30 min)
+FALLBACK_LO=120
+FALLBACK_HI=180
 
 # ---------------------------------------------------------------------------
 # Parse arguments

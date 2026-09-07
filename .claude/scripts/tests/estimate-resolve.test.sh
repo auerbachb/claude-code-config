@@ -93,7 +93,14 @@ export GH_ARGV_FILE="$TMP/gh-argv"
 # ---- fixtures ---------------------------------------------------------------
 EN_DASH=$(printf '\xe2\x80\x93')
 MIDDLE_DOT=$(printf '\xc2\xb7')
+# Body-supplied estimate. Deliberately a RETIRED seed value (the pre-#1670
+# 90–180 Heavy row): a body line is echoed verbatim on the exit-0 path, so this
+# fixture also proves that recalibrating the tier table did not stop older
+# issues' estimate lines from parsing.
 EST_LINE="Est: 90${EN_DASH}180 min ${MIDDLE_DOT} plan on 180"
+# The current Heavy tier-table row (time-estimates.md), used on the exit-1
+# label-fallback path.
+HEAVY_ROW="Est: 210${EN_DASH}300 min ${MIDDLE_DOT} plan on 300"
 
 write_fixture() {  # write_fixture <path> <body> <labels-json>
   jq -n --arg body "$2" --argjson labels "$3" '{body: $body, labels: $labels}' > "$1"
@@ -190,7 +197,7 @@ check_eq "--repo before the number reaches gh unchanged" \
 # =============================================================================
 run_script env GH_ISSUE_JSON="$TMP/issue-heavy-label.json" bash "$SCRIPT" 42 || true
 check_eq "tier fallback exits 1" "1" "$RC"
-check_eq "tier fallback prints the Heavy row" "$EST_LINE" "$OUT"
+check_eq "tier fallback prints the Heavy row" "$HEAVY_ROW" "$OUT"
 
 run_script env GH_ISSUE_JSON="$TMP/issue-bare.json" bash "$SCRIPT" 42 || true
 check_eq "unestimated exits 2" "2" "$RC"
