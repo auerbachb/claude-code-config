@@ -174,7 +174,20 @@ echo "=== Part 2 — section headings AND body content for the 12 fixed scripts 
 # same way (fixed-string containment). Every section of every fixed script gets
 # a heading needle AND a body needle — the truncation family proved a heading
 # needle alone passes on output whose content is gone.
-CONTENT_TABLE="$(cat <<'CONTENT_EOF'
+#
+# Read via `read -d ''` rather than `CONTENT_TABLE="$(cat <<'CONTENT_EOF' … )"`.
+# bash 3.2 — macOS's /bin/bash, and what this suite is parsed by on a developer
+# machine — scans `$( … )` with a naive extractor that counts parentheses in the
+# RAW text and does not know a here-document is in there. Four needles below
+# carry an opening `(` with no `)` (they are prose excerpts, e.g. "- jq
+# (available at /usr/bin/jq"), so that extractor stayed four levels deep, walked
+# straight past the closing `)"`, and consumed the rest of the file — surfacing
+# as an unterminated-quote error hundreds of lines later (issue #1675). Keeping
+# the here-document at the top level sidesteps the extractor entirely, so a
+# future needle may contain any character. `read` returns non-zero at EOF with
+# no NUL delimiter while still assigning, hence the `|| :`; the `%$'\n'` strips
+# the trailing newline that `$( … )` used to strip.
+IFS= read -r -d '' CONTENT_TABLE <<'CONTENT_EOF' || :
 audit-skill-usage.sh :: head :: PURPOSE:
 audit-skill-usage.sh :: body :: Reads .claude/data/skill-usage.json and reports skills
 audit-skill-usage.sh :: head :: USAGE:
@@ -354,7 +367,7 @@ usage-horizon.sh :: body :: observation log, mode 600
 usage-horizon.sh :: head :: DEPENDENCIES
 usage-horizon.sh :: body :: - shasum or sha256sum
 CONTENT_EOF
-)"
+CONTENT_TABLE="${CONTENT_TABLE%$'\n'}"
 
 # Cache each script's --help once; the table walks it many times.
 CURRENT=""
