@@ -515,7 +515,7 @@ if [[ -n "$DEADLINE_EPOCH" && "$DEADLINE_EPOCH" -gt 0 ]]; then
 fi
 ```
 
-1. For each ranked candidate, call `estimate-resolve.sh <N>` to get `est_lo`/`est_hi`; unestimated issues use the Standard fallback (45/90 min).
+1. For each ranked candidate, call `estimate-resolve.sh <N>` to get `est_lo`/`est_hi`; unestimated issues use the Standard fallback (120/180 min — the canonical value `makespan.sh` applies, `time-estimates.md` §Unestimated issues).
 2. Build the batch JSON and pipe to `makespan.sh`. If `makespan_hi <= EFFECTIVE_WINDOW_MIN` (freshly recomputed above), the full batch fits — proceed to dispatch.
 3. If `makespan_hi > effective_window_min`, drop the **lowest-ranked** candidate and recompute. Repeat until the remaining batch fits or only one issue remains. If that single remaining issue **still** exceeds the window, do **not** dispatch anything — emit a no-fit message instead: `No batch fits in the remaining window ({EFFECTIVE_WINDOW_MIN} min). Suggest a longer window or a narrower selection.` and list all exclusions.
 4. Each dropped issue is an **exclusion** — name it with the math:

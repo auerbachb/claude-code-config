@@ -965,8 +965,17 @@ mode_rollup() {
       printf '| (no rows with estimates yet) | | | | | | | |\n'
     fi
 
-    printf '\n> ⚠ Outlier: actual exceeded planning bound × 3 (likely includes unattended time).\n'
-    printf '>\n'
+    # The outlier legend explains the ⚠ marker, so emit it only when a row
+    # actually carries one. Printed unconditionally it reads as an assertion
+    # about the rows above — false, and misleading, on a table with no outliers.
+    local recent_outliers
+    recent_outliers=$(printf '%s' "$recent_rows" \
+      | jq '[.[] | select(.outlier == true)] | length' 2>/dev/null || echo 0)
+    printf '\n'
+    if [[ "$recent_outliers" -gt 0 ]]; then
+      printf '> ⚠ Outlier: actual exceeded planning bound × 3 (likely includes unattended time).\n'
+      printf '>\n'
+    fi
     printf '> **Δ** = actual − planning bound. Negative = completed under budget.\n'
     printf '>\n'
     printf '> **Source**: `claim_comment` = accurate start (issue claim marker);\n'
