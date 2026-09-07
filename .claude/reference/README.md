@@ -16,6 +16,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 
 - `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
 - `admin-merge-auto-plain.md` — mechanism and contracts for the one `admin-merge.sh --auto-plain` shape Claude may execute itself; plain vs protection-modifying shape distinction (#754)
+- `ai-quotas.md` — `~/.claude/ai-quotas.json` schema, per-account profile layout, where each provider keeps its credential (and why the macOS Keychain suffix is observed rather than derived), the exact per-provider re-login commands, and the display-only boundary for `/quotas-setup` (#1666)
 - `cli-tool-defaults.md` — installed service CLIs (vercel, neonctl, railway, cloudinary) and common commands; CLI-first over web dashboards
 - `churn-hotspots.md` — detector/classifier division, calibration, thresholds, and closed/no-cost suppression policy for churn hotspots (Issues #755 and #1307)
 - `churn-hotspot-baselines.json` — file-and-issue keyed score snapshots consumed by `churn-hotspot-wrap-plan.sh`, which `/wrap` invokes for its 2× material-growth gate (Issue #1307)
