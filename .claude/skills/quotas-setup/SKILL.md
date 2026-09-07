@@ -79,7 +79,10 @@ later.
 ## Step 3 — Adding an account
 
 `add` creates the isolated profile directory, launches that provider's own login
-against it, verifies a credential appeared, and only then records the account.
+against it, verifies a credential appeared, and only then records the account. Two
+cases record without a login and are the only ones: `cursor`, whose login arrives in
+increment 3, and any provider run with `--no-login`, which reserves the slot on
+purpose. Both list as their honest status rather than `ok`.
 
 - **`claude`** — a per-account `CLAUDE_CONFIG_DIR` under
   `~/.claude/ai-quotas/profiles/<label>/claude`, then `claude` run against it. A bare
