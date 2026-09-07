@@ -161,6 +161,45 @@ grep -q 'compact result contract' <<<"$HELP" \
   && ok "bash runner: --help documents the compact contract" \
   || bad "bash runner: --help does not mention the contract"
 
+# --- 7. An unparseable suite is reported AS a parse error (issue #1675) --
+# The fixture prints a plausible-looking FAIL line BEFORE its unterminated
+# quote, exactly as help-output.test.sh did. bash executes every complete
+# command ahead of a parse fault, so without the `bash -n` pre-check the runner
+# captures that line and reports it as the failure — the syntax error that
+# actually stopped the suite never surfaces anywhere a reader looks.
+FIX="$(new_fixture unparseable)"
+add_suite "$FIX" .claude/scripts/tests/a.test.sh 'echo "PASS: alpha assertion"' 0
+{
+  echo '#!/usr/bin/env bash'
+  echo 'echo "FAIL — misleading last line before the abort"'
+  echo "UNTERMINATED='never closed"
+} > "$FIX/.claude/scripts/tests/broken.test.sh"
+
+OUT="$(RUN_TESTS_LOG_DIR="$FIX/logs" bash "$FIX/.github/scripts/run-hook-tests.sh" --json 2>"$FIX/err.txt")"
+RC=$?
+check_eq 1 "$RC" "bash runner: an unparseable suite fails the run"
+check_eq ".claude/scripts/tests/broken.test.sh" \
+  "$(printf '%s' "$OUT" | jq -r '.failed_tests[0]')" "bash runner: unparseable suite is named in failed_tests"
+if printf '%s' "$OUT" | jq -e '.relevant_error | test("does not parse")' >/dev/null; then
+  ok "bash runner: relevant_error reports a parse failure as a parse failure"
+else
+  bad "bash runner: relevant_error did not name the parse failure"
+fi
+# The discriminating half: the pre-fix runner reported the line below instead.
+if printf '%s' "$OUT" | jq -e '.relevant_error | test("misleading last line")' >/dev/null; then
+  bad "bash runner: relevant_error still blames the last line printed before the abort"
+else
+  ok "bash runner: relevant_error no longer blames the last line before the abort"
+fi
+# And the suite must not have run at all — a half-executed suite can leave side effects.
+if grep -q 'misleading last line' "$FIX/logs"/*.log 2>/dev/null; then
+  bad "bash runner: the unparseable suite was executed despite failing bash -n"
+else
+  ok "bash runner: the unparseable suite was never executed"
+fi
+# A green run must not pay for the pre-check with a false failure.
+check_eq 2 "$(printf '%s' "$OUT" | jq -r '.total')" "bash runner: the parse-checked run still counts every suite"
+
 # ==========================================================================
 # run-python-tests.sh
 # ==========================================================================
