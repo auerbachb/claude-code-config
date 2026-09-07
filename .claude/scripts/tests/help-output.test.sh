@@ -208,8 +208,8 @@ estimate-resolve.sh :: head :: EXIT CODES
 estimate-resolve.sh :: body :: 0  resolved from ## Estimate section in issue body
 estimate-resolve.sh :: head :: PARSE PATTERN (from time-estimates.md)
 estimate-resolve.sh :: body :: plan\s+on\s+
-estimate-resolve.sh :: head :: TIER TABLE (from time-estimates.md)
-estimate-resolve.sh :: body :: Est: 15
+estimate-resolve.sh :: head :: TIER TABLE (from time-estimates.md — rounds-based: coding + rounds × 30)
+estimate-resolve.sh :: body :: Est: 60–90 min · plan on 90
 estimate-resolve.sh :: head :: DEPENDENCIES
 estimate-resolve.sh :: body :: - gh (authenticated)
 makespan.sh :: head :: PURPOSE
