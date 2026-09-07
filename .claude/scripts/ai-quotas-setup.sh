@@ -270,7 +270,14 @@ read_config() {
   # The check stays deliberately structural: it requires the three fields to
   # be non-empty strings and does NOT enumerate provider values, so a `1.x`
   # config written by a newer tool that knows a fourth provider is still
-  # accepted, exactly as the major-version rule below promises.
+  # accepted, exactly as the major-version rule below promises. `credential_ref`
+  # is optional (only macOS claude accounts carry one), but WHEN PRESENT its
+  # shape is checked too: `relogin` reads `.credential_ref.service` through
+  # `jq -r`, and a `credential_ref` that is a string rather than an object makes
+  # jq abort with "Cannot index string" — which under `set -e` surfaces as jq's
+  # error instead of this script's, telling the user nothing about their config.
+  # `added_at` is deliberately NOT required: nothing reads it, and demanding it
+  # would refuse a `1.x` config from a newer tool that stopped writing it.
   printf '%s' "$raw" | jq -e '
       type == "object"
       and (.accounts | type == "array")
@@ -278,8 +285,12 @@ read_config() {
             type == "object"
             and (.provider    | type == "string" and length > 0)
             and (.label       | type == "string" and length > 0)
-            and (.profile_dir | type == "string" and length > 0)))' >/dev/null 2>&1 \
-    || die 5 "config is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir — refusing to touch it: $CONFIG_FILE"
+            and (.profile_dir | type == "string" and length > 0)
+            and ((has("credential_ref") | not)
+                 or (.credential_ref
+                     | type == "object"
+                       and (.service | type == "string" and length > 0)))))' >/dev/null 2>&1 \
+    || die 5 "config is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir, and any credential_ref must be an object with a non-empty string service — refusing to touch it: $CONFIG_FILE"
   # Forward compatibility is by MAJOR version: a `1.x` config written by a
   # newer tool may carry fields this one does not know, and preserving them is
   # a jq-level property of every write below. A different major means the

@@ -715,6 +715,31 @@ run add claude inside@example.com
 check_eq "$RC" "0" "control(+): a symlink that stays inside the root is accepted"
 check_eq "$(status_of inside@example.com)" "ok" "control(+): and the account lists as ok"
 
+# A `credential_ref` of the wrong TYPE is refused by this script rather than
+# by jq. `relogin` reads `.credential_ref.service` through `jq -r`, and jq
+# aborts with "Cannot index string" on a string-valued ref — an error that
+# names jq's problem, not the user's config.
+new_case "malformed-credential-ref"
+printf '{"schema_version":"1.0","accounts":[{"provider":"claude","label":"badref@example.com","profile_dir":"%s/badref@example.com/claude","credential_ref":"Claude Code-credentials"}]}\n' "$PROFILES" > "$CONFIG"
+run relogin badref@example.com
+check_eq "$RC" "5" "a credential_ref of the wrong type exits 5"
+check_contains "$OUT" "credential_ref" "the message names credential_ref rather than leaking a jq error"
+check_not_contains "$OUT" "Cannot index" "the jq error never reaches the user"
+
+# Control(+): a well-formed credential_ref in the same position is accepted,
+# so the refusal above is the type check firing rather than the field being
+# rejected outright. `added_at` is absent here on purpose — nothing reads it,
+# and requiring it would refuse a config from a newer 1.x writer.
+new_case "credential-ref-control"
+PLATFORM_UNDER_TEST="Darwin"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-keychain"
+run add claude goodref@example.com
+check_eq "$RC" "0" "control(+): an add that records a credential_ref exits 0"
+jq 'del(.accounts[0].added_at)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+check_eq "$(status_of goodref@example.com)" "ok" "control(+): a row with a valid credential_ref and no added_at still reads"
+PLATFORM_UNDER_TEST="Linux"
+CLAUDE_BIN_UNDER_TEST=""
+
 # --- 14. config file mode ----------------------------------------------------
 
 new_case "mode"
