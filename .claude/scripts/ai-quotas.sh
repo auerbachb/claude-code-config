@@ -298,8 +298,18 @@ read_config() {
             type == "object"
             and (.provider    | type == "string" and length > 0)
             and (.label       | type == "string" and length > 0)
-            and (.profile_dir | type == "string" and length > 0)))' >/dev/null 2>&1 \
-    || die 5 "registry is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir: $CONFIG_FILE"
+            and (.profile_dir | type == "string" and length > 0)
+            # credential_ref is optional, but when present it must be the
+            # object the Keychain lookup indexes. A string here makes that
+            # lookup a jq type error, the service reads back empty, and the row
+            # says `needs-login` — blaming the ACCOUNT for a broken REGISTRY,
+            # which is the exact confusion the checks above exist to prevent.
+            and ((.credential_ref | type) as $t
+                 | $t == "null"
+                   or ($t == "object"
+                       and (.credential_ref.service
+                            | . == null or (type == "string" and length > 0))))))' >/dev/null 2>&1 \
+    || die 5 "registry is not valid ai-quotas JSON — every account needs a non-empty string provider, label, and profile_dir, and any credential_ref must be an object whose service (if present) is a non-empty string: $CONFIG_FILE"
   local found_major
   found_major="$(printf '%s' "$raw" | jq -r '(.schema_version // "1.0") | tostring | split(".")[0]')"
   if [[ "$found_major" != "$SCHEMA_MAJOR" ]]; then
@@ -1012,6 +1022,11 @@ if [[ "$JSON" -eq 1 ]]; then
   exit 0
 fi
 
+# Rendered ONCE, to a file, so the no-`column` fallback prints the same table
+# unaligned rather than something else entirely. Piping into `column` and
+# falling back to `cat "$ROWS"` printed the TSV header over the raw JSON rows —
+# a fallback that does not degrade the output but replaces it.
+TABLE="$TMP/table.tsv"
 {
   printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tREMAIN\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
   jq -r '
@@ -1031,10 +1046,8 @@ fi
          (.detail | if . == null or . == "" then empty else . end) ]
        | join("; ") | if . == "" then "-" else . end)
     ] | @tsv' "$ROWS"
-} | column -t -s $'\t' 2>/dev/null || {
-  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tREMAIN\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
-  cat "$ROWS"
-}
+} > "$TABLE"
+column -t -s $'\t' "$TABLE" 2>/dev/null || cat "$TABLE"
 
 echo
 echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."

@@ -400,6 +400,25 @@ jq '.schema_version = "2.0"' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CON
 run
 check_eq "$RC" "5" "a different schema major exits 5 rather than being guessed at"
 
+# A credential_ref of the wrong SHAPE is a broken registry too. Left unchecked
+# it reaches the Keychain lookup as a jq type error, the service reads back
+# empty, and the row says `needs-login` — blaming the account for the config.
+reset_state
+CR1="$PROFILES/claude-one@example.com/claude"; mkdir -p "$CR1"
+write_config "$(account_json claude claude-one@example.com "$CR1")"
+jq '.accounts[0].credential_ref = "Claude Code-credentials"' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run
+check_eq "$RC" "5" "a credential_ref that is a string, not an object, exits 5"
+check_not_contains "$OUT" "needs-login" \
+  "control(-): and is not reported as an account that needs a re-login"
+# The shape the reader actually indexes is still accepted, or the check above
+# would pass on a reader that rejected every credential_ref.
+reset_state
+write_config "$(account_json claude claude-one@example.com "$CR1")"
+jq '.accounts[0].credential_ref = {service: "Claude Code-credentials"}' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run
+check_eq "$RC" "0" "control(+): a well-formed credential_ref object is still accepted"
+
 # --- 5. the acceptance table: two claude + two codex accounts ----------------
 
 reset_state
@@ -652,6 +671,31 @@ check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not a
   "control(-): a spaced id is not reported as a timeout"
 check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
   "control(+): the figures are the fixture's 71, not the HTTP body's 11"
+
+# --- 12b. no `column` degrades the table, it does not replace it ------------
+# The fallback for a missing `column` printed the TSV header and then `cat` of
+# the ROW FILE — which holds JSON objects, not the rendered columns. That is not
+# an unaligned table, it is a different output wearing the table's header.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+# A `column` that always fails is what "column is unavailable" looks like from
+# the script's side, without removing it from the sandbox PATH wholesale.
+printf '#!/usr/bin/env bash\nexit 127\n' > "$BIN/column"
+chmod +x "$BIN/column"
+saved_path="$PATH"
+PATH="$BIN:$PATH"
+run
+PATH="$saved_path"
+rm -f "$BIN/column"
+check_eq "$RC" "0" "a missing column does not fail the run"
+check_contains "$OUT" "ACCOUNT" "the fallback still prints the table header"
+check_contains "$OUT" "codex-one@example.com" "and the account's row"
+check_not_contains "$OUT" '"provider"' \
+  "control(-): and does NOT print the raw JSON rows under that header"
+check_not_contains "$OUT" '{' \
+  "control(-): no JSON object survives into the table output at all"
 
 # --- 13b. one window is one row, even when it stands in for the weekly one ---
 # A plan reporting a single sub-weekly window is valid input, and the weekly
