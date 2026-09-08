@@ -1,6 +1,6 @@
 ---
 name: issue-maker
-description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 6-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, and prints the issue URL as the closing line of every create/update. After the last issue is filed, offers to run the whole batch inline via /subagent — say yes to execute right here, no to keep issues filed with a chip available on request. Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
+description: Capture-only thread mode for drafting and opening well-structured GitHub issues. Puts the thread into issue-capture mode — the only job is creating, editing, and closing issues (no implementation, no worktrees, no /start-issue). Auto-opens issues (no approval gate) and reports back a concise summary plus the scope calls it made as decision points; creates canonical 7-section bodies with functional-first tone, runs dedup search, auto-applies validated labels, supports batch + cross-references, closes every filing with a summary table (issue, increment, what it delivers, model, estimate), and prints the issue URL as the closing line of every create/update. After the last issue is filed, offers — when the repo-wide active-work cap has headroom — to run the whole batch inline via /subagent; say yes to execute right here, no to keep issues filed with a chip available on request. Supports /update <N> <statement>, natural-language edit-in-place, and retract. Invoke as `/issue-maker [rapid-fire] [--export-prompt]`.
 triggers:
   - open an issue
   - new issue
@@ -47,7 +47,7 @@ The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: o
 
 **Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, a word is so ambiguous the body cannot be written without it, or the sizing check would need **more than 5 increments** (Step 8's cap — the one case where the count itself is the question). Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm. A sizing split *within* the cap is not one of these: file the chain and report it (Step 9a).
 
-**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the closing URL, optionally a one-line summary, without the decision-points elaboration. It still auto-applies labels, still emits the 6-section body, still prints the closing URL. **It also still runs the full reflection pass, sizing check included** — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain.
+**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the canonical summary table (Step 9a), optionally a one-line summary, then the closing URL as the final line — without the decision-points elaboration. It still auto-applies labels, still emits the 7-section body, still prints the summary table, still prints the closing URL. **Of the report's three parts, the decision points are the only one rapid-fire trims** — the table is always on, in both modes. **It also still runs the full reflection pass, sizing check included** — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain.
 
 Rapid-fire keeps exactly **two hard bars in the create flow**, and neither is a scope question — both are "this would create a mess that's tedious to undo," which is why the leaner mode keeps them:
 
@@ -230,7 +230,7 @@ For each issue the user describes (see Step 6 for batches):
 4. **Title** — concise, **≤70 characters**. If it would exceed 70, auto-trim and note the trim in the decision points.
 5. **Labels** (Step 7, auto-applied) and **cross-references** (Step 8).
 6. **Create automatically** — no full-body reprint, no "Create this issue? (Y/n/edit)" gate. Record in the log (Step 9).
-7. **Report + print the URL** — emit the concise summary + decision points (Step 9a) and **print the URL as the closing line** (Step 9).
+7. **Report + print the URL** — emit the concise summary + decision points (Step 9a) and **print the URL as the closing line** (Step 9). The **canonical summary table** (Step 9a) closes the filing: immediately, for a single issue; once after the last member, for a batch or a chain.
 
 **The hand-off is not part of this per-issue loop.** Step 9c fires **once, after the last issue of the batch is filed** (Step 6) — never after the first. Emitting it mid-batch offers a launch the user can click before the remaining issues exist, and a hand-off that has already been clicked cannot absorb them (Step 9c's refresh rule covers only an *unclicked* offer). A single-issue session reaches "after the last issue" immediately, so nothing is delayed there.
 
@@ -368,7 +368,9 @@ ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
 
 ## Step 6: Batch input
 
-If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → auto-create → report) **sequentially**, one `gh issue create` per issue. After the batch, print a summary table (number, title, labels, URL) — each URL still a clickable link.
+If the user describes multiple issues in one message (a numbered/bulleted list, or a `batch:` prefix), treat each as its own issue: run the full per-issue flow (reflect → dedup → draft → labels → auto-create → report) **sequentially**, one `gh issue create` per issue. After the last issue of the batch is filed, print the **canonical summary table defined in Step 9a** — one row per issue, in filing order, columns and derivations exactly as that step defines them. Print it once for the whole batch, not once per create.
+
+**Order within a batch, so the closing-line rule stays unambiguous.** Each create prints its own `Created #N: …` URL line as the batch proceeds; those are **intermediate** lines, and only the **last** issue's URL line closes the batch response. For that last issue alone, hold its URL line back until after the table: the response ends **table, then final URL**, so the table is never emitted after the closing line and no URL is printed twice.
 
 **Every issue is still created; the session hands them off once.** Since [#1229](https://github.com/auerbachb/claude-code-config/issues/1229), Step 9c emits **one batch hand-off per capture session** covering every open issue filed in it — not one chip per issue, and not `FREE` chips out of N. A batch of six issues yields six issues and **one** hand-off. Resolve `active-work-cap.sh` to the first executable of `$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh`, `$HOME/.claude/scripts/active-work-cap.sh`, `.claude/scripts/active-work-cap.sh` — this repo may carry no `.claude/` directory — and read its census **once per session**: the default output line gives `CAP`, `ACTIVE`, and `FREE` together, all of which the deferral message below needs (`chip-launching.md` "Repo-wide active-work cap").
 
@@ -429,6 +431,8 @@ This is the existing `- Depends on #N` phrasing above, reused deliberately rathe
 
 After **every** create — and after every update/close — append/refresh the session log and **print the GitHub issue URL as a clickable markdown link as the final line of the response.** This rule is absolute: the link is never buried in prose, never mid-paragraph — it is the closing line.
 
+**Two orderings sit under that rule, and neither weakens it.** (a) In a batch or chain, each create's URL line is **intermediate** output and only the **last** issue's URL closes the response (Step 6). (b) The summary table (Step 9a) is emitted **immediately before** that final URL, never after it. So the response still ends with an issue URL in every case — what varies is only which URL, and what precedes it.
+
 Build the labels as a JSON array from the accepted labels (the same set passed via `--label` flags in Step 5/7), then record the issue through the `set_log` helper:
 
 ```bash
@@ -438,11 +442,14 @@ LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(len
 
 set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
                       created_at:$ts, status:"open", chip_task_id:null, chain:$chain,
-                      tier:$tier}]' \
+                      tier:$tier, delivers:$delivers, est_bound:($bound|tonumber)}]' \
   --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
-  --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER"
+  --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER" \
+  --arg delivers "$DELIVERS" --arg bound "$EST_BOUND"
 ```
+
+**`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 3, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time.
 
 **`CHAIN_JSON` — `null` for an ordinary issue, an object for an increment.** A standalone ask sets `CHAIN_JSON=null` and nothing below applies. An increment records which chain it belongs to and where it sits:
 
@@ -455,16 +462,58 @@ CHAIN_JSON=$(jq -nc --arg id "$CHAIN_ID" --argjson i "$POSITION" --argjson n "$T
 
 **`chain_id` is what makes the chain recoverable.** Sibling detection (Step 4), the queued-successor note (Step 9c), and retraction (Step 12) all resolve membership by matching `chain_id` in `$LOG` — never by theme text or position number, which collide across unrelated chains and cannot survive a re-worded title. It also survives compaction: the log is re-read in Step 1, so a chain interrupted mid-filing is still identifiable afterwards, which in-context memory alone would not give you.
 
-### Step 9a: The post-create report — summary + decision points
+### Step 9a: The post-create report — summary + decision points + the summary table
 
-The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. Emit it **immediately after logging the issue** — before the hand-off (Step 9c) and before the closing URL. Two short parts:
+The report is what replaces the old draft-reprint-and-approve gate, and it is the safety valve that makes auto-filing low-risk. It has three parts, on **two different cadences**: parts 1 and 2 are **per issue** — emit them immediately after logging that issue, before the hand-off (Step 9c) and before its closing URL — while part 3, the summary table, is **per filing** and lands once, at the end. For a single issue the two cadences coincide and all three parts appear together; in a batch or chain, each member gets parts 1 and 2 as it is filed and the table arrives once, after the last one. An early member of a batch is never expected to carry the table.
 
 1. **Summary (1–3 sentences).** What issue you just opened, in plain functional terms — the same voice as the body's lead sections, not a section-by-section readout.
 2. **Decision points (1–3 sentences).** The actual calls you made that the user might want to revisit — scope you narrowed or expanded, a split you considered but did *not* make, **a sizing split you did make**, assumptions you encoded, the labels you auto-applied, a weak-duplicate pointer (Step 4). **Name the concrete call** (e.g. *"scoped to the create flow only; assumed rapid-fire keeps its narrower dedup bar; applied `skill`, `enhancement`"*), never boilerplate like "made some scope decisions." If you genuinely made no non-obvious call, say so in one line rather than padding.
 
    **A sizing split is a decision point like any other** — report it once, on the chain head, naming the count and *why* the ask exceeded one pipeline: *"sized as a 4-increment chain because one pipeline can't land hero, services page, contact form, and SEO metadata as one reviewable PR."* Say what the increments are and that they're linked; the user re-cuts the chain with `/update` or `close` if the boundaries are wrong. Successor increments do not each repeat the split rationale.
 
-Close by reminding the user the issue is cheap to change — a wrong call is one `/update #N …` or `close #N` away. This report is emitted **in addition to**, never in place of, the closing URL line (Step 9). **Rapid-fire** emits a terser version instead: the closing URL, optionally a one-line summary, and no decision-points elaboration.
+3. **The summary table (always, no exceptions).** Every filing closes with the canonical table defined below. It is the part of the report that actually gets read — one glance says what was filed, in what order, on which model, and how much calendar time to block. Parts 1 and 2 are per-issue; this part closes the **filing** (see "Emitted once per filing" below), so in a batch or chain it appears once, after the last member, rather than after each create.
+
+#### The canonical summary table (the one shape)
+
+**This is the skill's only issue-table format.** Step 6's batch summary, the running tally (Step 9), and the exported prompt (Step 13) all render *this* table; no second column set exists anywhere in the skill. Everywhere inside the skill, **cite this definition rather than restating the shape** — Step 13 is the single deliberate exception, because an exported prompt lands where this file cannot be read. Five columns, in this order:
+
+| Column | Contents |
+|--------|----------|
+| `#` | The issue as a clickable link — `[Issue #N](url)`. The `Issue #` prefix is `CLAUDE.md`'s GitHub-reference rule, which binds inside link text too. |
+| `Increment` | `{i}/{n}` for a chain member (the Step 5 marker), `—` for a standalone issue or a member of an unrelated batch. |
+| `Delivers` | One plain-English clause, functional voice — what the issue gets you, not how. Not the title restated verbatim. |
+| `Model` | The bare family name for the issue's tier (below). |
+| `Est` | The issue's planning bound at 30-minute granularity (below). |
+
+**Emitted once per filing, always.** A filing is one single issue, one batch, or one chain — so a single filed issue produces a **one-row** table, and a batch or chain produces **one row per member**, printed once after the last member is filed rather than re-printed and re-grown after each create. There is no mode, size, or shape in which the table is skipped: it is the closing summary of every filing this skill makes.
+
+**It never displaces the closing URL line.** The table is emitted **in addition to** the `Created #N: …` closing line (Step 9), which stays the final line of the response. A table row's link is a summary, not the closing line.
+
+**`Model` — the bare family name for the inferred tier.** Read `ISSUE_TIER` for that row's issue, already inferred in Step 3 sub-step 3, and take the model its tier maps to in `references/tier-inference.md` — that file owns the mapping; do not restate it here. Per-row, never the session's `BATCH_TIER` — that running maximum belongs to the Step 9c offer, and using it here would report a Light issue as Opus work. **Never a version number or an API token** — the same bare-family-names bar Step 9b states.
+
+**`Est` — the body's `plan on` bound, rendered at 30-minute granularity.** Read the `{bound}` from that issue's `## Estimate` line (`Est: {lo}–{hi} min · plan on {bound}`, Step 5) and render the bound alone; the range stays in the body, because the table exists to block calendar time. Two steps, in this order:
+
+1. **Round up to the next multiple of 30** if the bound is not already one — `45` becomes `60`. The tier bounds in `time-estimates.md` are all multiples of 30 already, so this bites only when Step 5's scope adjustment produced something else. Rounding *up*: the column is a planning bound, and rounding down under-books the day.
+2. **Render the rounded value**, taking the first case that matches:
+   - **Under 60 minutes → `30min`** — the only sub-hour value that survives step 1. (`0h30` reads worse.)
+   - **A whole number of hours → `{h}h`** — `180` → `3h`, `300` → `5h`.
+   - **A trailing half hour → `{h}h30`** — `90` → `1h30`, `210` → `3h30`.
+
+**Reading the bound never rewrites it.** The table consumes the `## Estimate` line as filed; the body's own `Est:` line keeps the exact machine-parse shape `time-estimates.md` fixes (`^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$`), which `/pm` and `/subagent` parse. Whatever the seed values are — issue #1670 recalibrated them to a rounds-based figure — this table only reads the bound and is agnostic to how it was computed.
+
+**Chains get a total row.** A chain is one theme delivered in sequence, so a final row sums the `plan on` bounds of every increment (in minutes) and renders the sum with the same rule above, so the whole theme's planning bound is visible at a glance. The row leaves `#` and `Increment` empty, labels itself `**Chain total**` in `Delivers`, leaves `Model` empty, and carries the bolded total in `Est`. A **batch of unrelated issues gets no total row** — independent asks that will not be worked as one sequence have no meaningful joint bound.
+
+A chain filed as two increments, each Standard (`plan on 180`):
+
+```markdown
+| # | Increment | Delivers | Model | Est |
+|---|-----------|----------|-------|-----|
+| [Issue #1670](https://github.com/auerbachb/claude-code-config/issues/1670) | 1/2 | Rounds-based `Est:` formula so estimates track real merge time | Opus | 3h |
+| [Issue #1671](https://github.com/auerbachb/claude-code-config/issues/1671) | 2/2 | Always-on summary table with Model and Est columns | Opus | 3h |
+| | | **Chain total** | | **6h** |
+```
+
+Close by reminding the user the issue is cheap to change — a wrong call is one `/update #N …` or `close #N` away. This report is emitted **in addition to**, never in place of, the closing URL line (Step 9). **Rapid-fire** emits a terser version, in this order: the table, optionally a one-line summary, then the closing URL as the final line — and no decision-points elaboration. **Rapid-fire trims the decision points, never the table** — the table is the leanest part of the report and the reason the leaner mode is still readable. In both modes the closing URL is last: nothing in this report, the table included, is ever emitted after it.
 
 Tone precedent: `/wrap`'s terse "here's what I decided — flag anything wrong" framing and `issue-planning.md`'s number/title/rationale/link quartet. Keep the whole report to a few lines; its value is signal density, not length.
 
@@ -600,7 +649,7 @@ The merge-authority bullet is the shared contract from `chip-launching.md` "Merg
 
 If the user asks to "print the full prompt for #N", re-emit that issue's complete block verbatim (Model line + guard preamble included) — same as `chip-launching.md` "Print-on-demand replay".
 
-**Print the full issue for #N (on demand).** Because default mode no longer reprints the body at create time, the whole body is available on request instead: when the user asks to **"print the full issue for #N"** (or "show me the whole body of #N"), re-emit that issue's complete 6-section canonical body, sourced from GitHub as the source of truth so the reprint always matches what was filed:
+**Print the full issue for #N (on demand).** Because default mode no longer reprints the body at create time, the whole body is available on request instead: when the user asks to **"print the full issue for #N"** (or "show me the whole body of #N"), re-emit that issue's complete body **exactly as filed**, sourced from GitHub as the source of truth so the reprint always matches what is actually on the issue. Reprint what is there rather than asserting a shape: an issue this skill created carries the canonical 7 sections, but one opened elsewhere may not, and the reprint never implies otherwise.
 
 ```bash
 gh issue view "$N" --repo "$REPO" --json body --jq .body
@@ -614,7 +663,7 @@ Closing line format:
 Created #N: [<owner>/<repo>#N — <title>](<ISSUE_URL>)
 ```
 
-**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — a compact table of number / title / labels / status / chip. The compaction recap in Step 1 reads the same log.
+**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — rendered as the **canonical summary table from Step 9a** (`#`, `Increment`, `Delivers`, `Model`, `Est`), one row per open issue in filing order — including a `**Chain total**` row for each open chain it covers, since it is the same table under the same rules — so the tally and the post-filing table are the same object rather than two competing shapes. Anything closed or retracted since is named in one line beneath the table instead of earning columns of its own. Every cell comes from the log record above — `delivers`, `tier`, and `est_bound` are stored there for exactly this reason — so the tally survives compaction; a row missing one renders `—` (Step 10's backfill rule), never a guess. The compaction recap in Step 1 reads the same log.
 
 ---
 
@@ -648,10 +697,13 @@ A first-class command for adding information to an existing issue **without leav
    set_log 'if any(.issues[]; .number == ($n|tonumber))
             then (.issues[] | select(.number == ($n|tonumber)) | .edited_at) = $ts
             else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
-                              created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null}] end' \
+                              created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null,
+                              chain:null, tier:null, delivers:null, est_bound:null}] end' \
      --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" \
      --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
    ```
+
+   **A backfilled entry carries nulls for the summary-table fields, and the tally shows that honestly.** An issue opened elsewhere was never drafted here, so this thread inferred no tier and read no estimate. Record `null` rather than guessing: the running tally renders `—` in `Delivers`, `Model`, or `Est` for any row whose log entry lacks that value — one rule for all three, no per-column fallback. A fabricated tier would read as a genuine inference — the row would claim Opus work on no evidence — which is worse than an empty cell.
 
    **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create. This also means `/update` can never cause the reverse double-offer (`/wave` or `/pm` already offered a chip for this issue, then someone edits it here via `/update`): the step above never *reads* an existing `chip_task_id` to decide anything, and the only value it ever *writes* is `null` (when backfilling a minimal entry for an issue this thread's log didn't already track) — never a live one, so it has no way to spawn a competing chip.
 
@@ -733,7 +785,9 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 ## Step 13: Portable-prompt emission (`--export-prompt`)
 
-When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 6-section body, dedup, refusal of workflow-advancing actions until acceptance, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
+When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 7-section body, dedup, refusal of workflow-advancing actions until acceptance, **the always-on summary table**, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
+
+**The summary table ships in the export written out, not cited.** A portable session has no Step 9a to read, so the prompt must state the shape itself: every filing closes with a table whose columns are `#`, `Increment`, `Delivers`, `Model`, `Est` — one row for a single issue, one row per member for a batch or chain, printed once after the last member and always in addition to the closing URL line. Write out each derivation too: `#` is a clickable `[Issue #N](url)` link; `Increment` is `{i}/{n}` for a chain member and `—` otherwise; `Delivers` is one plain-English functional clause; `Model` is the **bare family name** for that issue's inferred tier (`Opus` for Heavy or Standard, `Sonnet` for Light) and never a version number or API token; `Est` is the `plan on` bound from the body's `## Estimate` line rendered at 30-minute granularity — `30min` under an hour, `{h}h` on the hour, `{h}h30` on the half hour, rounding a non-multiple up — read without rewriting the body's `Est:` line. State the chain total row as well, with its scope: **chains only** — a final row summing every increment's bound, rendered by the same rule, labeled `**Chain total**` in `Delivers`, with `#`, `Increment`, and `Model` left blank — and say that a batch of unrelated issues gets no total row. State that the table is always on and that rapid-fire trims the decision points, never the table.
 
 **The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and one offer covering the whole chain in order.
 
@@ -749,8 +803,8 @@ Both modes **auto-open** the issue — no draft reprint, no approval gate — an
 
 | Mode | Upfront questions | Create | Post-create report | Labels | Dedup pause | Chain cap (Step 8) |
 |------|-------------------|--------|--------------------|--------|-------------|--------------------|
-| **default** | none (blocking ask only on a genuinely undecidable call) | auto-open | summary + decision points (Step 9a) | auto-apply validated | strong **or** exact match | asks above 5 |
-| **rapid-fire** | none on scope or ambiguity — only its two hard bars (dedup, chain cap) | auto-open | terser — closing URL, optional one-liner | auto-apply validated | exact title match only | asks above 5, tersely |
+| **default** | none (blocking ask only on a genuinely undecidable call) | auto-open | summary + decision points + summary table (Step 9a) | auto-apply validated | strong **or** exact match | asks above 5 |
+| **rapid-fire** | none on scope or ambiguity — only its two hard bars (dedup, chain cap) | auto-open | terser — summary table, closing URL, optional one-liner | auto-apply validated | exact title match only | asks above 5, tersely |
 
 Mode is stored in `.mode` in the session log and persists across compaction — both on first invocation (seeded from `/issue-maker rapid-fire`, Step 1) and on an explicit switch. A switch is a log write, not just an in-memory note, so compaction recovery reads the right mode:
 
@@ -758,7 +812,7 @@ Mode is stored in `.mode` in the session log and persists across compaction — 
 set_log '.mode = $v' --arg v rapid-fire   # or: --arg v default
 ```
 
-Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Neither mode ever suspends the closing-line URL rule or the 6-section body shape.
+Switch with `"switch to rapid-fire mode"` / `"switch to default mode"`. Neither mode ever suspends the closing-line URL rule or the 7-section body shape.
 
 ---
 
@@ -777,9 +831,9 @@ ln -s "$HOME/.claude/skills-worktree/.claude/skills/issue-maker" "$HOME/.claude/
 ## Usage examples
 
 - `/issue-maker` — enter capture mode; describe an issue and the skill auto-opens it, then reports a concise summary + the scope calls it made as decision points.
-- `/issue-maker rapid-fire` — leaner capture mode: same auto-open, terser report (URL only), dedup blocks only on an exact title match.
+- `/issue-maker rapid-fire` — leaner capture mode: same auto-open, same mandatory summary table, terser report (table + closing URL, no decision points), dedup blocks only on an exact title match.
 - `/update 449 "add an edge case for empty input"` — fetch #449, classify the statement, propose a diff/comment, confirm, apply, print the link.
 - `"also add a Test Plan item to #312"` — natural-language edit-in-place.
 - `"scratch that, close #318"` — retract.
-- `"print the full issue for #312"` — re-emit #312's complete 6-section body (fetched from GitHub).
+- `"print the full issue for #312"` — re-emit #312's complete body as filed (fetched from GitHub).
 - `/issue-maker --export-prompt` — emit a portable capture-mode prompt for use elsewhere.
