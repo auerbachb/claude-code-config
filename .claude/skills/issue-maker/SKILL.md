@@ -449,7 +449,7 @@ set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
   --arg delivers "$DELIVERS" --arg bound "$EST_BOUND"
 ```
 
-**`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 3, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time.
+**`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 3, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time. Because they are persisted rather than re-derived, a later `/update` that changes the delivered scope or the estimate has to write them back — Step 10 sub-step 6 owns that refresh.
 
 **`CHAIN_JSON` — `null` for an ordinary issue, an object for an increment.** A standalone ask sets `CHAIN_JSON=null` and nothing below applies. An increment records which chain it belongs to and where it sits:
 
@@ -691,17 +691,28 @@ A first-class command for adding information to an existing issue **without leav
    gh issue comment "$N" --repo "$REPO" --body "$COMMENT" # comment
    ```
    Use the fetch → modify → write-whole-body pattern (`gh issue edit --body` replaces the entire body — never truncate the existing content).
-6. **Record** `edited_at` on the log entry and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
+6. **Record** `edited_at` on the log entry — **plus any summary-table field the edit actually changed** — and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
 
    ```bash
+   # DELIVERS / EST_BOUND: re-read from the body you just wrote, and set ONLY
+   # when this edit changed them — empty string means "unchanged, leave the
+   # stored value alone". EST_BOUND is the `plan on` bound in minutes.
+   # Both are `${VAR:-}`: unlike Step 9's create path they are normally UNSET
+   # here, and a bare "$DELIVERS" would abort the whole update under `set -u`.
    set_log 'if any(.issues[]; .number == ($n|tonumber))
-            then (.issues[] | select(.number == ($n|tonumber)) | .edited_at) = $ts
+            then (.issues[] | select(.number == ($n|tonumber))) |=
+                   (.edited_at = $ts
+                    | if $delivers == "" then . else .delivers = $delivers end
+                    | if $bound == "" then . else .est_bound = ($bound|tonumber) end)
             else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
                               created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null,
                               chain:null, tier:null, delivers:null, est_bound:null}] end' \
      --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" \
-     --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+     --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+     --arg delivers "${DELIVERS:-}" --arg bound "${EST_BOUND:-}"
    ```
+
+   **An edit that changes what the issue delivers, or its estimate, must refresh those two fields — otherwise the running tally reports create-time values as current.** The log is the tally's source of truth after compaction (Step 9), so a `delivers`/`est_bound` left at its filing-time value survives as a confident-looking row that no longer matches the issue. Refresh on the two edits that move them: a body edit that changes the `## Estimate` line (re-read the `plan on` bound) or that materially changes the delivered scope (re-state the one-clause `Delivers`, `|` escaped as `\|`). A comment-only update and an AC clarification that moves neither leave both empty and change nothing. `tier` is deliberately not refreshed here — re-inferring a model tier is a fresh reflection pass (Step 3), not a byproduct of an append; if an edit genuinely re-sizes the work, that is the split conversation in sub-step 3, not a silent field rewrite.
 
    **A backfilled entry carries nulls for the summary-table fields, and the tally shows that honestly.** An issue opened elsewhere was never drafted here, so this thread inferred no tier and read no estimate. Record `null` rather than guessing: the running tally renders `—` in `Delivers`, `Model`, or `Est` for any row whose log entry lacks that value — one rule for all three, no per-column fallback. A fabricated tier would read as a genuine inference — the row would claim Opus work on no evidence — which is worse than an empty cell.
 
