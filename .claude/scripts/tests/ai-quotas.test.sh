@@ -322,7 +322,7 @@ run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
         AI_QUOTAS_SECURITY_BIN="$BIN/security" \
         AI_QUOTAS_CODEX_BIN="$BIN/codex" \
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
-        AI_QUOTAS_CODEX_TIMEOUT="10" \
+        AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
@@ -640,6 +640,54 @@ check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not a
   "control(-): a spaced id is not reported as a timeout"
 check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
   "control(+): the figures are the fixture's 71, not the HTTP body's 11"
+
+# --- 14c. an unusable timeout is refused, not used --------------------------
+# `[[ -lt ]]` is arithmetic: `abc` evaluates to 0, so the app-server loop makes
+# ZERO passes and the row degrades to the HTTP fallback reporting "did not
+# answer within abcs" — a silent fallback wearing a timeout's clothes. `08` is
+# arithmetically invalid (8 is not an octal digit) and bash says so on stderr.
+# Neither is a timeout, so the reader must refuse the value and keep its
+# default rather than bounding anything with it.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+jq -n --argjson week "$WEEK_RESET" \
+  '{rate_limits: {planType: "pro",
+                  primary: {usedPercent: 11, windowDurationMins: 10080, resetsAt: $week},
+                  secondary: null}}' > "$STUB_CHATGPT_BODY"
+for bad_timeout in abc 08 0; do
+  # Exported, not prefixed: a `VAR=x func` prefix leaks past the call in bash,
+  # so the next case would inherit it and stop testing what it names.
+  export AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE="$bad_timeout"
+  run --json
+  unset AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE
+  check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
+    "AI_QUOTAS_CODEX_TIMEOUT='$bad_timeout' is refused, so app-server is still waited for"
+  check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
+    "control(+): and the figures are still the app-server fixture's, not the HTTP body's"
+  check_contains "$ERR" "not a positive integer" \
+    "and the refusal is stated on stderr rather than applied silently"
+done
+# A usable override is still honoured — or the checks above would pass on a
+# reader that ignored the variable altogether.
+export AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE="7"
+run --json
+unset AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE
+check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
+  "control(+): a valid timeout is accepted"
+check_not_contains "$ERR" "not a positive integer" \
+  "control(-): and a valid timeout draws no refusal"
+# An EMPTY value is not a wrong value: `${VAR:-20}` cannot tell it from unset,
+# and "you left it unset" is not something to warn about. It takes the default
+# silently, and the refusal above stays reserved for values someone meant.
+export AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE=""
+run --json
+unset AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE
+check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
+  "an empty timeout takes the default"
+check_not_contains "$ERR" "not a positive integer" \
+  "control(-): and is not refused — empty is indistinguishable from unset"
 
 # --- 14b. --five-hour must not mask an unreadable codex payload -------------
 # A payload with no windows at all is an unrecognised SHAPE. Rendering "this

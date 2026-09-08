@@ -97,6 +97,11 @@
 #   AI_QUOTAS_CHATGPT_URL     Codex HTTP fallback endpoint.
 #   AI_QUOTAS_HTTP_TIMEOUT    Per-request wall-clock bound, seconds (15).
 #   AI_QUOTAS_CODEX_TIMEOUT   app-server response bound, seconds (20).
+#                             Both must be a positive integer with no leading
+#                             zero. Anything else is refused on stderr and the
+#                             default is used, because a value arithmetic
+#                             cannot read makes the bound it governs elapse
+#                             instantly and report itself as a timeout.
 #   AI_QUOTAS_NOW             Epoch seconds to treat as "now" (countdowns).
 #   Every one of these exists so .claude/scripts/tests/ai-quotas.test.sh can
 #   drive each path against stubs without a live account, network, or
@@ -191,8 +196,25 @@ SECURITY_BIN="${AI_QUOTAS_SECURITY_BIN:-security}"
 CURL_BIN="${AI_QUOTAS_CURL_BIN:-curl}"
 ANTHROPIC_URL="${AI_QUOTAS_ANTHROPIC_URL:-https://api.anthropic.com/api/oauth/usage}"
 CHATGPT_URL="${AI_QUOTAS_CHATGPT_URL:-https://chatgpt.com/backend-api/wham/usage}"
-HTTP_TIMEOUT="${AI_QUOTAS_HTTP_TIMEOUT:-15}"
-CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT:-20}"
+# Both timeouts end up in arithmetic (`[[ -lt ]]`) or in curl's --max-time, and
+# an unusable value fails in a way that looks like the thing it bounds: `abc`
+# evaluates to 0 in arithmetic context, so the app-server loop never runs a
+# single pass and the row reports "did not answer within abcs" — a silent
+# degradation to the HTTP fallback, wearing a timeout's clothes. `08` is worse
+# still: arithmetic reads a leading zero as octal, `8` is not an octal digit,
+# and bash prints its own error. Neither is a real timeout, so refuse the value
+# and say so rather than bounding the wait with it.
+positive_int_or_default() { # <value> <default> <env-var-name>
+  case "$1" in
+    "" | *[!0-9]*) ;;   # empty, or not all digits
+    0*) ;;              # leading zero: 0 and 00 are not positive, 08 is not octal
+    *) printf '%s' "$1"; return 0 ;;   # all digits, starts 1-9, so >= 1
+  esac
+  warn "$3='$1' is not a positive integer number of seconds — using ${2}s"
+  printf '%s' "$2"
+}
+HTTP_TIMEOUT="$(positive_int_or_default "${AI_QUOTAS_HTTP_TIMEOUT:-15}" 15 AI_QUOTAS_HTTP_TIMEOUT)"
+CODEX_TIMEOUT="$(positive_int_or_default "${AI_QUOTAS_CODEX_TIMEOUT:-20}" 20 AI_QUOTAS_CODEX_TIMEOUT)"
 SCHEMA_MAJOR="1"
 # Last-resort User-Agent version, used only when the `claude` CLI cannot be
 # found AND AI_QUOTAS_CLAUDE_VERSION is unset. The endpoint rejects a request
