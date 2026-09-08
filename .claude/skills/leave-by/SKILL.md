@@ -275,6 +275,37 @@ if [[ "$NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]]; then
     NO_DEADLINE_RC=0
     "$SESSION_STATE_SH" --set "$ND_SET" >/dev/null 2>&1 || NO_DEADLINE_RC=$?
   fi
+  # RETIRE A SPENT WINDOW TOO, or "no deadline today" declines every launch (issue #1679).
+  # This branch is reachable only when the elicitation gate found the deadline ABSENT or
+  # EXPIRED — an unexpired one takes that gate's `deadline already armed` skip and never
+  # asks. So a `.window` still sitting here is spent, and the decline gate cannot tell
+  # spent from live: an expired epoch is still a valid epoch, so `REMAINING_SEC` goes
+  # negative and `BOUND_MIN * 60 >= REMAINING_SEC` declines EVERY pipeline. The user
+  # answered "no deadline today" and would watch the whole board refuse to start.
+  # Re-read and re-check expiry rather than trusting the gate's read: identity is the
+  # deadline, exactly as in Step 8.6, so a window armed by someone else in the gap
+  # carries a future epoch, fails this test, and is left alone.
+  ND_WINDOW_RC=0
+  ND_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ND_WINDOW_RC=$?
+  if [ "$ND_WINDOW_RC" -eq 6 ]; then
+    ND_WINDOW_RC=0
+    ND_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || ND_WINDOW_RC=$?
+  fi
+  ND_WINDOW_EPOCH=$(printf '%s' "$ND_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
+  if [ "$ND_WINDOW_RC" -eq 0 ] \
+     && printf '%s' "$ND_WINDOW_EPOCH" | grep -Eq '^[1-9][0-9]{0,10}$' \
+     && [ "$ND_WINDOW_EPOCH" -le "$(date -u +%s)" ]; then
+    ND_CAS_RC=0
+    "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+      --expect "$ND_WINDOW" >/dev/null 2>&1 || ND_CAS_RC=$?
+    if [ "$ND_CAS_RC" -eq 6 ]; then
+      ND_CAS_RC=0
+      "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+        --expect "$ND_WINDOW" >/dev/null 2>&1 || ND_CAS_RC=$?
+    fi
+    # rc 7 = the window moved on under us, which needs no clearing. Anything else leaves
+    # the spent window in place and is worth the same one line as an unwritten marker.
+  fi
 else
   NO_DEADLINE_RC=9
 fi
@@ -288,6 +319,14 @@ written.
 `lead_minutes` is `null` here on purpose — no lead was resolved because no deadline was armed, and
 the launch gate's default of 30 covers the field's absence anyway. The marker suppresses **only the
 question**; it declines nothing and gates nothing.
+
+**That last clause is only true because the spent `.window` is retired alongside it.** The marker
+lives in `.leave`, but the thing the launch gate reads is `.window.deadline_epoch` — so leaving a
+spent deadline behind would make "no deadline today" the most restrictive answer on the menu,
+declining every pipeline in the repo for the rest of the day while the user believes they just
+removed the constraint. The clear is narrowed twice over: it fires only on this branch (reached
+only when the gate saw no live deadline), and only when a fresh re-read still shows an epoch in the
+past. A `/pm --window` armed in the gap carries a future epoch and is left untouched.
 
 ## Step 1: Normalize the phrase to a canonical window string
 
@@ -977,8 +1016,16 @@ elif [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; t
   else
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
       --expect "$CAS_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?
+    # Exit 6 is a retryable lock timeout, retried HERE rather than described beside the
+    # block. Left to prose, a moment's ordinary contention falls through to the
+    # retire-nothing tail and strands the SPENT deadline armed — which declines every
+    # later launch in this repo, the exact outcome this retirement exists to prevent.
+    if [ "$WINDOW_CAS_RC" -eq 6 ]; then
+      WINDOW_CAS_RC=0
+      "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
+        --expect "$CAS_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?
+    fi
   fi
-  # retry once on 6 (lock timeout), then:
   if [ "$WINDOW_CAS_RC" -eq 0 ] || [ "$WINDOW_CAS_RC" -eq 7 ]; then
     "$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"
   fi   # any other code: retire NOTHING and report the still-armed window

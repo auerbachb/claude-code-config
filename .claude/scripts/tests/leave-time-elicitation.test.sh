@@ -451,8 +451,21 @@ if [ -n "$ND_BLOCK" ]; then
       *'"active":false'*) : ;;
       *) fail 'declining a deadline must write active:false — a true here reads as a live wind-down' ;;
     esac
+    # ARMING a window is banned; RETIRING a spent one is required (issue #1679). The two
+    # are opposite operations on the same path, so the ban is on the arming shape — a
+    # `--set .window={…}` carrying a deadline — not on the path appearing at all. Banning
+    # the path outright is what would forbid the spent-window clear below, and a "no
+    # deadline today" that leaves an expired deadline armed declines every later launch.
     case "$WRITE" in
-      *'.window'*) fail 'declining a deadline must arm NO window' ;;
+      *'--set .repos["org/repo"].window={'*) fail 'declining a deadline must arm NO window' ;;
+      *) : ;;
+    esac
+    # The clear itself must be a CAS to null, never a bare --set: `.window` is shared with
+    # /pm planning deadlines, so an unconditional write is how this retires somebody
+    # else's live window on its way out.
+    case "$WRITE" in
+      *'--set .repos["org/repo"].window=null'*)
+        fail 'the spent-window clear must be a --cas, not an unconditional --set' ;;
       *) : ;;
     esac
     case "$WRITE" in
@@ -460,6 +473,19 @@ if [ -n "$ND_BLOCK" ]; then
       *) fail "the written marker must be the computed epoch (got: $WRITE)" ;;
     esac
   fi
+
+  # The spent-window clear must EXIST, and must be gated on the deadline being in the past.
+  # Without it "no deadline today" is the most restrictive answer on the menu: the launch
+  # gate reads .window.deadline_epoch, an expired epoch is still a valid epoch, so
+  # REMAINING_SEC goes negative and every pipeline is declined (issue #1679, round 3).
+  case "$ND_BLOCK" in
+    *'--cas ".repos[\"$REPO_KEY\"].window=null"'*) : ;;
+    *) fail 'the no-deadline branch must retire a SPENT window, or it declines every later launch' ;;
+  esac
+  case "$ND_BLOCK" in
+    *'-le "$(date -u +%s)"'*) : ;;
+    *) fail 'the spent-window clear must be gated on the deadline being in the past, never unconditional' ;;
+  esac
 
   # A failed write is reported, never silently treated as "don't ask again".
   ND_FAIL=$(

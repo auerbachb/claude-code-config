@@ -1143,8 +1143,13 @@ require_text "$LEAVE_SKILL" 'window-cas-exit-codes' \
 # only after its `deadline_epoch` matched the one 8.2 validated (issue #1679). `.window` gained
 # a mutable sub-key, so byte-equality with the older snapshot would lose the CAS to an
 # unrelated launch-decision write and strand a spent deadline armed.
+# The anchor is the CAS's exit-6 RETRY guard, not the CAS line itself: since the retry
+# landed, `--expect "$CAS_WINDOW" … || WINDOW_CAS_RC=$?` appears twice in this section and
+# is no longer a unique marker. The retry guard occurs once, and anchoring on it asserts
+# something stronger anyway — the whole CAS attempt, retry included, resolves before the
+# deactivation, so a lock timeout cannot leave active=false over a window we still own.
 require_order "$LEAVE_SKILL" '## Step 8:' \
-  '--expect "$CAS_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?' \
+  'if [ "$WINDOW_CAS_RC" -eq 6 ]; then' \
   '"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"' \
   '8.6 must resolve the window CAS before marking the declaration inactive'
 require_text "$LEAVE_SKILL" '[ "$CAS_DEADLINE" != "$RETIRE_DEADLINE" ]' \
