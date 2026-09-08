@@ -184,15 +184,27 @@ while IFS= read -r line; do
       ;;
     *'"initialized"'*) : ;;
     *'account/rateLimits/read'*)
-      printf '{"id":2,"result":%s}\n' "$(cat "$fixture")"
-      # A SECOND id:2 line, so the reader's "take the first match" really is
-      # exercised rather than assumed from a single-line stream. It pins the
-      # SELECTION; it does not reproduce the SIGPIPE timing that motivated
-      # moving that selection inside jq (measured: with payloads this small
-      # jq finishes writing before `head` closes the pipe, so the old
+      # JSON permits whitespace around the name separator. STUB_CODEX_SPACED_ID
+      # makes this stub emit the equally-valid `"id" : 2` so the reader's match
+      # is exercised against a serialization it does not itself produce. It
+      # governs BOTH lines below: leaving the duplicate compact would let a
+      # reader that only matches the compact form pass on that line, and the
+      # case would assert nothing.
+      #
+      # Each branch emits a SECOND id:2 line, so the reader's "take the first
+      # match" really is exercised rather than assumed from a single-line
+      # stream. It pins the SELECTION; it does not reproduce the SIGPIPE timing
+      # that motivated moving that selection inside jq (measured: with payloads
+      # this small jq finishes writing before `head` closes the pipe, so the old
       # `| head -n 1` under `pipefail` passed here too). The jq-only form is
       # kept because it cannot depend on that timing at all.
-      printf '{"id":2,"result":{"note":"duplicate response"}}\n'
+      if [[ -n "${STUB_CODEX_SPACED_ID:-}" ]]; then
+        printf '{"id" : 2, "result" : %s}\n' "$(cat "$fixture")"
+        printf '{"id" : 2, "result" : %s}\n' '{"note":"duplicate response"}'
+      else
+        printf '{"id":2,"result":%s}\n' "$(cat "$fixture")"
+        printf '{"id":2,"result":%s}\n' '{"note":"duplicate response"}'
+      fi
       ;;
     *) echo "STUB-CODEX: unexpected request: $line" >&2; exit 95 ;;
   esac
@@ -604,12 +616,42 @@ check_contains "$(field_of codex-one@example.com "7-day" detail)" "exited withou
 check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not answer within" \
   "control(-): the timeout wording is not used for a server that exited"
 
+# --- 14a. a spaced `"id" : 2` is the same response, not a timeout ------------
+# JSON puts no constraint on whitespace around the name separator, so a server
+# is free to answer `"id" : 2`. A reader that matches only the compact form
+# reads a perfectly good answer as silence, burns the whole CODEX_TIMEOUT, and
+# degrades to the HTTP fallback with a timeout note — a wrong number's worth of
+# wrong, reported as if the server had hung.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+# The fallback body is deliberately DIFFERENT from the fixture, so an answer
+# read off the HTTP path could not be mistaken for the app-server's.
+jq -n --argjson week "$WEEK_RESET" \
+  '{rate_limits: {planType: "pro",
+                  primary: {usedPercent: 11, windowDurationMins: 10080, resetsAt: $week},
+                  secondary: null}}' > "$STUB_CHATGPT_BODY"
+STUB_CODEX_SPACED_ID=1 run --json
+unset STUB_CODEX_SPACED_ID
+check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
+  "a spaced \`\"id\" : 2\` is still read off app-server, not fallen back on"
+check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not answer within" \
+  "control(-): a spaced id is not reported as a timeout"
+check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
+  "control(+): the figures are the fixture's 71, not the HTTP body's 11"
+
 # --- 14b. --five-hour must not mask an unreadable codex payload -------------
 # A payload with no windows at all is an unrecognised SHAPE. Rendering "this
 # plan reports no short window" for it would state a fact about the plan
 # nobody established, and would mark the read successful — so the flag would
 # SUPPRESS the unreachable row the same payload produces without it.
 
+# This case is about the HTTP payload, so it has to be the HTTP path that runs.
+# Removing the fixture here rather than inheriting test 14's removal is what
+# keeps the premise the case's own: with app-server answering, the reader never
+# reaches the body below and all three checks pass on the wrong path.
+rm -f "$X1/rate-limits.json"
 jq -n '{something_else: {}, other: 1}' > "$STUB_CHATGPT_BODY"
 run --json --five-hour
 check_eq "$(rows_for codex-one@example.com)" "unreachable" \

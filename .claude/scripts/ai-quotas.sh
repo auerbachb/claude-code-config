@@ -665,6 +665,11 @@ CODEX_FAIL_REASON=""
 codex_app_server_read() { # <profile_dir> <codex_bin>
   local dir="$1" bin="$2"
   local fifo="$TMP/codex.fifo" out="$TMP/codex.out" waited=0 srv=0
+  # JSON permits whitespace on BOTH sides of the name separator, so a server
+  # that writes `"id" : 2` is as valid as the compact `"id":2` we send. Matching
+  # only the compact form makes a healthy account look like a timeout and sends
+  # the reader down the HTTP fallback, so tolerate either.
+  local id2_re='"id"[[:space:]]*:[[:space:]]*2'
   CODEX_RESULT_FILE=""
   # The three ways this can fail are three different things to fix — a
   # crashed CLI, a hung one, and a broken temp dir — and a single "did not
@@ -696,7 +701,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
 
   local exited_early=0
   while [[ "$waited" -lt "$CODEX_TIMEOUT" ]]; do
-    if grep -q '"id":[[:space:]]*2' "$out" 2>/dev/null; then break; fi
+    if grep -q "$id2_re" "$out" 2>/dev/null; then break; fi
     if ! kill -0 "$srv" 2>/dev/null; then exited_early=1; break; fi
     sleep 1
     waited=$(( waited + 1 ))
@@ -706,7 +711,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   kill "$srv" 2>/dev/null || true
   wait "$srv" 2>/dev/null || true
 
-  if grep -q '"id":[[:space:]]*2' "$out" 2>/dev/null; then
+  if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
     CODEX_RESULT_FILE="$out"
     return 0

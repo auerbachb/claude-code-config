@@ -209,7 +209,11 @@ same payload; `--account <label>` narrows the run; `--json` emits the same rows 
 objects. Flags and exit codes: `ai-quotas.sh --help`.
 
 **Display only, and the reader enforces it structurally: it opens no state file for
-writing at all.** Not `session-state.json`, not `credit-budget.sh`'s inputs
+writing.** Its one write is the append-only telemetry line every script here emits to
+`~/.claude/script-usage.log` (script name and the action word `read`, never the
+arguments — those carry the account label). Nothing reads that log back into a decision,
+so it is a log, not state. What the reader never opens for writing is the state that
+could gate work: not `session-state.json`, not `credit-budget.sh`'s inputs
 (`~/.claude/usage-limit-events.jsonl`, `~/.claude/usage-limit-last.json`, the
 `credit_budget` state key), not any dispatch gate. A `needs-login` or `rate-limited` row
 is a missing number, never a verdict about whether work may proceed —
