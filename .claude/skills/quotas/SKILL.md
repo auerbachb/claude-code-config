@@ -77,13 +77,18 @@ and exit codes live in `"$AI_QUOTAS_SH" --help` — do not restate them here.
 Columns: account, provider, window-or-pool, used %, remaining %, reset time in Eastern,
 a countdown, status, and a note. The **account** column shows the email the provider
 itself reports; when that differs from the registered label the note says
-`registered as <label>`, which is how a mislabelled account becomes visible.
+`registered as <label>`, which is how a mislabelled account becomes visible. **Cursor
+rows carry no such email** — the dashboard response has none — so a Cursor row shows the
+registered label and can never carry a `registered as` note. Absence of that note on a
+Cursor row says nothing about whether the label is right.
 
 The third column is the **pool** where a provider has pools and the window otherwise. A
-Cursor account contributes **two** rows — `cursor-models` (Composer, Cursor Grok, and
-anything Auto routes there) and `other-models` (third-party models at API price) — both
-against the same monthly billing cycle. Two rows for one account is expected, not a
-duplicate.
+Cursor account normally contributes **two** rows — `cursor-models` (Composer, Cursor
+Grok, and anything Auto routes there) and `other-models` (third-party models at API
+price) — both against the same monthly billing cycle. Two rows for one account is
+expected, not a duplicate. A pool whose percentage the response omits or reports
+unreadably is left out rather than shown as `0`, so **one** row is possible; the pool
+that is missing is the one there is no figure for.
 
 Each row succeeds or fails on its own. One account's failure never suppresses the rest,
 so a table with a broken row is a complete answer, not a partial one.
@@ -93,7 +98,7 @@ so a table with a broken row is a complete answer, not a partial one.
 | `ok` | Figures were read | the numbers |
 | `needs-login` | No usable credential for that profile | the exact `/quotas-setup relogin <label> <provider>` command in the note |
 | `rate-limited` | The provider answered 429 | when to retry; the note carries the window |
-| `unreachable` | Network failure, a missing runtime or browser driver, or a response shape this reader does not recognise (the note prints the keys it saw) | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
+| `unreachable` | Nothing answered: a network failure, a missing runtime or browser driver, a helper that crashed, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
 | `unreadable` | The response arrived but changed shape; the note names the keys seen | that the figure is unknown, and that the reader needs updating |
 | `unsupported` | A provider this reader does not know | that it is not covered |
 

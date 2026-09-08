@@ -76,11 +76,11 @@
 'use strict';
 
 const DEFAULT_URL = 'https://cursor.com/dashboard/spending';
-// Matched against the URL's PATH ONLY, as a suffix — so a query string or a
-// host change does not stop it matching, while a different path that merely
-// CONTAINS this string (a proxy at /debug/api/dashboard/get-current-period-usage-v2,
-// say) does not match by accident. A substring test over the whole URL would
-// do both wrong.
+// Matched against the URL's PATH ONLY, and EXACTLY — so a query string does
+// not stop it matching, while no other path matches by accident: not a longer
+// one (`…-v2`) and not a prefixed one (`/debug/api/dashboard/get-current-
+// period-usage`), either of which a suffix test would accept. A substring test
+// over the whole URL would be looser still. See pathIs().
 const DEFAULT_ENDPOINT = '/api/dashboard/get-current-period-usage';
 const PLAN_ENDPOINT = '/api/dashboard/get-plan-info';
 // Landing on any of these means the saved session is gone, and there is no
@@ -89,6 +89,12 @@ const LOGIN_URL_MARKERS = ['/login', '/sign-in', '/signin', '/authenticate', 'au
 
 const DEFAULT_READ_TIMEOUT_MS = 20000;
 const DEFAULT_LOGIN_TIMEOUT_MS = 300000;
+// An upper bound on --timeout-ms, not a style preference. `[1-9][0-9]*`
+// accepts a digit string of any length, and Number() turns a long enough one
+// into Infinity — a "bound" no wait can ever reach, i.e. the unbounded run
+// this helper's bound exists to prevent, arriving through the argument that
+// was supposed to shorten it. A day is far past any legitimate value here.
+const MAX_TIMEOUT_MS = 86400000;
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -138,6 +144,11 @@ function parseArgs(argv) {
     // itself as a timeout — a degradation wearing a timeout's clothes.
     if (!/^[1-9][0-9]*$/.test(opts.timeoutMs)) usage('--timeout-ms must be a positive integer of milliseconds');
     opts.timeoutMs = Number(opts.timeoutMs);
+    // The regex above passes any length of digits; the range check is what
+    // keeps the parsed value a real deadline (see MAX_TIMEOUT_MS).
+    if (!Number.isSafeInteger(opts.timeoutMs) || opts.timeoutMs > MAX_TIMEOUT_MS) {
+      usage('--timeout-ms must be between 1 and ' + MAX_TIMEOUT_MS + ' milliseconds');
+    }
   } else {
     opts.timeoutMs = opts.mode === 'login' ? DEFAULT_LOGIN_TIMEOUT_MS : DEFAULT_READ_TIMEOUT_MS;
   }
@@ -170,24 +181,36 @@ function loadPlaywright() {
 
 // ms since the epoch, as the payload sends it — a decimal STRING today, but a
 // number is accepted too rather than betting the reset column on the type.
-function msToEpochSeconds(value) {
+// The one place a payload value becomes a number, because there is exactly one
+// way to get this wrong and it is silent: `Number('')` and `Number(' ')` are
+// `0`, not NaN. A blank `autoPercentUsed` would therefore pass every finite
+// check and render as `0 %` — "plenty left" — which is the precise opposite of
+// "we do not know", and the bash reader, which only rejects NON-numeric
+// strings, would pass it straight through. A blank field is an ABSENT figure.
+function toNumberOrNull(value) {
   if (value === null || value === undefined) return null;
-  const n = typeof value === 'number' ? value : Number(String(value).trim());
-  if (!Number.isFinite(n) || n <= 0) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const s = String(value).trim();
+  if (s === '') return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function msToEpochSeconds(value) {
+  const n = toNumberOrNull(value);
+  if (n === null || n <= 0) return null;
   return Math.floor(n / 1000);
 }
 
 function centsToUsd(value) {
-  if (value === null || value === undefined) return null;
-  const n = typeof value === 'number' ? value : Number(String(value).trim());
-  if (!Number.isFinite(n)) return null;
+  const n = toNumberOrNull(value);
+  if (n === null) return null;
   return Math.round(n) / 100;
 }
 
 function asPercent(value) {
-  if (value === null || value === undefined) return null;
-  const n = typeof value === 'number' ? value : Number(String(value).trim());
-  if (!Number.isFinite(n) || n < 0) return null;
+  const n = toNumberOrNull(value);
+  if (n === null || n < 0) return null;
   return n;
 }
 
@@ -236,17 +259,22 @@ function normalise(payload) {
   };
 }
 
-// True when `url`'s path ends with `suffix`. A URL this helper cannot parse is
-// not a match — better a timeout that says "the dashboard never asked" than a
-// figure read off a response nobody identified.
-function pathEndsWith(url, suffix) {
+// True when `url`'s path IS `wanted` — an exact path comparison, deliberately
+// not a suffix one. A suffix test also matches `/debug/api/dashboard/
+// get-current-period-usage`, `/mock/...`, or anything else a proxy, a preview
+// deployment, or a future rewrite can hang in front of the real path, and this
+// helper would read quota figures off whatever answered there. A URL it cannot
+// parse is likewise not a match — better a timeout that says "the dashboard
+// never asked" than a figure read off a response nobody identified. The query
+// string is ignored, because `pathname` excludes it.
+function pathIs(url, wanted) {
   let pathname;
   try {
     pathname = new URL(url).pathname;
   } catch (err) {
     return false;
   }
-  return pathname === suffix || pathname.endsWith(suffix);
+  return pathname === wanted;
 }
 
 function looksLikeLoginUrl(url) {
@@ -319,7 +347,7 @@ async function main() {
     const onResponse = async (response) => {
       const url = response.url();
       try {
-        if (pathEndsWith(url, opts.endpoint)) {
+        if (pathIs(url, opts.endpoint)) {
           if (response.status() === 401 || response.status() === 403) {
             sawUnauthorized = response.status();
             return;
@@ -350,7 +378,7 @@ async function main() {
               }
             }
           }
-        } else if (pathEndsWith(url, PLAN_ENDPOINT) && response.status() === 200 && planName === null) {
+        } else if (pathIs(url, PLAN_ENDPOINT) && response.status() === 200 && planName === null) {
           const body = await response.json();
           const info = body && body.planInfo;
           if (info && typeof info.planName === 'string') planName = info.planName;
@@ -507,7 +535,7 @@ async function main() {
 // and runs nothing. Executed directly, it runs. Without this guard a test that
 // merely imported the file would launch a browser.
 if (require.main !== module) {
-  module.exports = { normalise, pathEndsWith, msToEpochSeconds, centsToUsd, asPercent };
+  module.exports = { normalise, pathIs, msToEpochSeconds, centsToUsd, asPercent };
 } else {
   runMain();
 }

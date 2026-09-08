@@ -227,6 +227,25 @@ printf '{"status":"needs-login","detail":"the login did not complete in time"}\n
 exit 0
 EOF
 
+# The same abandoned login, but one that got far enough to leave partial
+# browser state behind. That is the branch where the rollback cannot simply
+# rmdir the new profile — it has to move that state aside instead of deleting
+# it, the same refusal to destroy a profile the retirement itself embodies.
+cat > "$BIN/node-login-abandoned-dirty" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
+done
+if [[ -n "$dir" ]]; then
+  mkdir -p "$dir/Default"
+  printf 'PARTIAL-LOGIN-STATE\n' > "$dir/Default/Preferences"
+fi
+printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
+exit 0
+EOF
+
 cat > "$BIN/security" <<'EOF'
 #!/usr/bin/env bash
 # Stub macOS security(1) over a flat file of service names.
@@ -586,6 +605,57 @@ fi
 FAKE_CURSOR_HELPER="$SAVED_HELPER"
 check_eq "$(status_of keepme@example.com cursor)" "ok" \
   "the account still reads ok after the refused relogin"
+
+# A relogin that RUNS and then fails must also cost the user nothing. The
+# dependency check above cannot help here — the profile has already been moved
+# aside by the time the login gives up — so the retirement is rolled back. The
+# marker is the discriminating assertion: without the rollback the account
+# points at a fresh empty profile and reads needs-login, while the message
+# still claims it is unchanged.
+new_case "cursor-relogin-rollback"
+run add cursor rollback@example.com
+check_eq "$RC" "0" "add cursor for the failed-relogin case exits 0"
+CURSOR_DIR="$PROFILES/rollback@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run relogin rollback@example.com
+check_eq "$RC" "1" "a relogin whose login is abandoned exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the original profile was put back — the failed relogin destroyed nothing"
+else
+  bad "the failed relogin left the account pointing at a new empty profile"
+fi
+check_contains "$OUT" "put back" "and the message says the previous session was restored"
+check_eq "$(status_of rollback@example.com cursor)" "ok" \
+  "the account still reads ok after the failed relogin"
+LEFTOVER="$(find "$PROFILES/rollback@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$LEFTOVER" "0" "and no orphan retirement directory is left behind"
+
+# The other rollback branch: a login that got far enough to leave partial state
+# in the new profile. `rmdir` refuses a non-empty directory, so that state is
+# moved aside rather than deleted — the previous session still comes back, and
+# nothing the abandoned login wrote is destroyed.
+new_case "cursor-relogin-rollback-partial"
+run add cursor dirty@example.com
+check_eq "$RC" "0" "add cursor for the partial-state rollback case exits 0"
+CURSOR_DIR="$PROFILES/dirty@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned-dirty"
+run relogin dirty@example.com
+check_eq "$RC" "1" "a relogin that leaves partial state and fails exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the original profile came back even though the new one was not empty"
+else
+  bad "the partial state blocked the rollback and the original profile is gone"
+fi
+check_eq "$(status_of dirty@example.com cursor)" "ok" \
+  "the account still reads ok after the partial-state failure"
+FAILED_DIRS="$(find "$PROFILES/dirty@example.com" -maxdepth 1 -type d -name 'cursor.failed-login-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$FAILED_DIRS" "1" "the abandoned login's partial state was kept, not deleted"
+check_contains "$(cat "$PROFILES/dirty@example.com"/cursor.failed-login-*/Default/Preferences 2>/dev/null)" \
+  "PARTIAL-LOGIN-STATE" "and it is the state that login actually wrote"
 
 # A missing helper is reported, never worked around.
 new_case "cursor-helper-missing"

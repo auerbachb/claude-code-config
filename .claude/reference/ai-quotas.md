@@ -437,9 +437,12 @@ account still reports.
 
 #### Headless vs headed
 
-The read runs **headless**. Bot protection on cursor.com was not encountered on the
-captured account; if it appears, the documented fallback is a headed-but-minimised run —
-drop `headless: true` in the helper and say so here, per the issue's note.
+The read runs **headless**, because the helper passes `headless: opts.mode === 'read'` to
+`launchPersistentContext` — there is no `headless: true` literal to remove. Bot
+protection on cursor.com was not encountered on the captured account; if it appears, the
+documented fallback is a headed run. `--mode login` already is one, so confirm the
+symptom by re-running the helper that way; to make a normal READ headed, change that
+expression and say so here, per the issue's note.
 
 #### One name to keep clear
 

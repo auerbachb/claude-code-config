@@ -97,9 +97,15 @@ records without a login: `--no-login`, which reserves the slot on purpose and li
   there the normal way; the helper waits until the dashboard's usage endpoint answers,
   which is the only proof the session landed. It needs Node 20+ (Playwright's own floor) and a one-time
   `npm install --prefix .claude/scripts/lib && npx --prefix .claude/scripts/lib playwright install chromium`;
-  without it the helper is missing and `add`/`relogin` exit `6` naming that command.
+  without it the login fails and exits `1`, printing the install command it needs — relay
+  that and retry. Exit `6` is the different failure of node or the helper FILE being
+  missing; it prints the manual `node … --mode login` command instead.
   A `relogin` **moves the previous profile aside** (to `<dir>.retired-<timestamp>`,
-  printed) and starts fresh rather than layering a second session over a stale one.
+  printed) and starts fresh rather than layering a second session over a stale one. If
+  that relogin then FAILS, the move is rolled back: the message says the previous session
+  was put back and the account still works. Where it says the session could **not** be put
+  back, relay the `.retired-<timestamp>` path it names and the instruction to move that
+  directory back — that is the only case where a failed relogin needs the user to act.
 
 The login is interactive and blocking. Tell the user it is about to open, and let it
 run — a magic link or SSO round trip can take a minute. Adding a second account of the

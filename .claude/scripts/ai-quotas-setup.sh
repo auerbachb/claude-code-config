@@ -906,13 +906,76 @@ action_remove() {
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
 }
 
+# Undo the retirement performed by action_relogin when the login that followed
+# it did not succeed. Without this, "'<label>' is unchanged" is false in the
+# way that matters most: the registry row is untouched, but the account now
+# points at a fresh EMPTY profile, so the very next `/quotas` reports
+# `needs-login` for a session that was working a minute ago. A failed relogin
+# must cost the user nothing.
+#
+# Returns 0 when the previous session is back at <dir>, 1 otherwise. Callers
+# word their message from that answer rather than assuming either outcome.
+restore_retired_profile() { # <dir> <retired>
+  local dir="$1" retired="$2" failed
+  [[ -d "$retired" ]] || return 1
+  # <dir> ABSENT means someone else took it — this run created it a moment ago
+  # (ensure_profile_dir) and has not touched it since, so the only way it is
+  # gone is a concurrent relogin retiring it in turn. Restoring here would drop
+  # a stale session into a path another login is actively writing, which is
+  # worse than leaving this one retired. Refuse; the caller's message then
+  # names the retirement instead of claiming a restore that did not happen.
+  [[ -e "$dir" ]] || return 1
+  # rmdir refuses a non-empty directory, which is exactly the test wanted: an
+  # aborted login usually leaves nothing, and where it DID leave partial state
+  # that state is moved aside rather than deleted — the same refusal to destroy
+  # a profile that made the retirement a move in the first place.
+  if ! rmdir "$dir" 2>/dev/null; then
+    failed="${dir}.failed-login-$(date -u +%Y%m%d-%H%M%S)"
+    [[ ! -e "$failed" ]] || failed="${failed}-$$"
+    [[ ! -e "$failed" ]] || return 1
+    mv "$dir" "$failed" 2>/dev/null || return 1
+  fi
+  # `mv olddir existingdir` moves INSIDE the target, so this runs only once
+  # <dir> is gone — the clearing above is a precondition, not a tidy-up.
+  [[ ! -e "$dir" ]] || return 1
+  mv "$retired" "$dir" 2>/dev/null || return 1
+  return 0
+}
+
+# Set while a retirement is OUTSTANDING — between the profile being moved aside
+# and the relogin either succeeding or giving up. Cleared on success.
+RELOGIN_PENDING_DIR=""
+RELOGIN_PENDING_RETIRED=""
+
+# Rollback runs from an EXIT trap rather than from each failure branch, because
+# the branches are not the whole exposure: `ensure_profile_dir` runs AFTER the
+# move and exits through `die` from inside itself, with no return value the
+# caller could test. Hanging the rollback off the two login failures would
+# leave that one path uncovered — and a rollback that covers all but one exit
+# is precisely the one a user eventually meets. The trap covers every exit in
+# the window, expected or not.
+#
+# The message is derived from what the restore ACHIEVED, never from what it
+# attempted: telling someone their session was put back when it was not is
+# worse than saying nothing.
+relogin_rollback_trap() {
+  local code=$? dir retired
+  [[ -n "$RELOGIN_PENDING_RETIRED" ]] || return "$code"
+  dir="$RELOGIN_PENDING_DIR"
+  retired="$RELOGIN_PENDING_RETIRED"
+  # Cleared FIRST, so a failure inside the restore cannot re-enter this trap.
+  RELOGIN_PENDING_DIR=""
+  RELOGIN_PENDING_RETIRED=""
+  if restore_retired_profile "$dir" "$retired"; then
+    echo "${SELF_NAME}: the relogin did not finish, so the previous session was put back at ${dir} — the account still works." >&2
+  else
+    echo "${SELF_NAME}: the relogin did not finish and the previous session could NOT be put back automatically; it is at ${retired} — move that directory back to ${dir} to recover it." >&2
+  fi
+  return "$code"
+}
+
 action_relogin() {
   local config index entry dir provider service="" before="" after=""
-  # Appended to every failure message after a cursor profile has been moved
-  # aside. Without it "'<label>' is unchanged" is a half-truth: the registry
-  # row is unchanged, but the working session is no longer where the account
-  # points, and the user has no way to know it is recoverable.
-  local retired_note=""
   config="$(read_config)"
   index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
   entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
@@ -962,8 +1025,12 @@ action_relogin() {
       fi
     fi
     if mv "$dir" "$retired" 2>/dev/null; then
+      # Armed in the SAME step as the move: any exit from here on rolls the
+      # retirement back (see relogin_rollback_trap).
+      RELOGIN_PENDING_DIR="$dir"
+      RELOGIN_PENDING_RETIRED="$retired"
+      trap relogin_rollback_trap EXIT
       echo "${SELF_NAME}: previous cursor profile moved aside to ${retired} (delete it when you no longer want it)."
-      retired_note=" The previous session was moved aside to ${retired}; restore it by moving that directory back to ${dir}."
     else
       die 5 "could not move the existing cursor profile aside at ${dir}; '${ARG_LABEL}' is unchanged"
     fi
@@ -974,7 +1041,7 @@ action_relogin() {
     before="$(keychain_claude_services)"
   fi
   if ! run_login "$provider" "$dir"; then
-    die 1 "the ${provider} login did not complete; '${ARG_LABEL}' is unchanged.${retired_note}"
+    die 1 "the ${provider} login did not complete; the registry row for '${ARG_LABEL}' was not touched."
   fi
   if [[ "$provider" == "claude" ]]; then
     after="$(keychain_claude_services)"
@@ -985,8 +1052,13 @@ action_relogin() {
     service="$(resolve_keychain_service "$dir" "$service" "$NEW_KEYCHAIN_SERVICE")"
   fi
   if ! credential_present "$provider" "$dir" "$service"; then
-    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); '${ARG_LABEL}' is unchanged.${retired_note}"
+    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); the registry row for '${ARG_LABEL}' was not touched."
   fi
+  # The login produced a credential, so the new profile is the one to keep:
+  # disarm the rollback before anything downstream can exit through the trap
+  # and undo a session that actually landed.
+  RELOGIN_PENDING_DIR=""
+  RELOGIN_PENDING_RETIRED=""
   if [[ "$provider" == "claude" ]]; then
     remember_keychain_service "$dir" "$service"
   fi

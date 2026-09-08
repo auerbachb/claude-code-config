@@ -271,13 +271,19 @@ if [[ -n "$NODE_REAL" ]]; then
     const t = (name, cond) => out.push((cond ? "PASS " : "FAIL ") + name);
 
     t("a query string still matches the endpoint path",
-      m.pathEndsWith("https://cursor.com/api/dashboard/get-current-period-usage?x=1",
-                     "/api/dashboard/get-current-period-usage"));
+      m.pathIs("https://cursor.com/api/dashboard/get-current-period-usage?x=1",
+               "/api/dashboard/get-current-period-usage"));
     t("a longer path does not match",
-      !m.pathEndsWith("https://cursor.com/api/dashboard/get-current-period-usage-v2",
-                      "/api/dashboard/get-current-period-usage"));
+      !m.pathIs("https://cursor.com/api/dashboard/get-current-period-usage-v2",
+                "/api/dashboard/get-current-period-usage"));
+    // The reason the match is exact rather than a suffix: anything mounted in
+    // front of the real path would otherwise hand this reader its quota
+    // figures.
+    t("a prefixed path does not match",
+      !m.pathIs("https://cursor.com/debug/api/dashboard/get-current-period-usage",
+                "/api/dashboard/get-current-period-usage"));
     t("an unparseable url does not match",
-      !m.pathEndsWith("not a url", "/api/dashboard/get-current-period-usage"));
+      !m.pathIs("not a url", "/api/dashboard/get-current-period-usage"));
 
     const good = m.normalise({
       billingCycleStart: "1787933374000",
@@ -303,6 +309,22 @@ if [[ -n "$NODE_REAL" ]]; then
       partial.ok === true && partial.row.pools.length === 1
         && partial.row.pools[0].used_pct === 12.5);
 
+    // Number("") is 0, not NaN — so a blank field is the one input that can
+    // slip a figure nobody measured past every finite check and render as
+    // "plenty left". Blank and whitespace are asserted separately because
+    // trimming is what makes the second reach the first.
+    const blank = m.normalise({ planUsage: { autoPercentUsed: "", apiPercentUsed: 42 } });
+    t("a blank pool percentage is omitted, not read as 0",
+      blank.ok === true && blank.row.pools.length === 1
+        && blank.row.pools[0].pool === "other-models");
+    const spaces = m.normalise({ planUsage: { autoPercentUsed: "   ", apiPercentUsed: 42 } });
+    t("a whitespace-only pool percentage is omitted too",
+      spaces.ok === true && spaces.row.pools.length === 1);
+    t("a blank dollar figure is null, not $0.00",
+      m.centsToUsd("") === null && m.centsToUsd("   ") === null);
+    t("and a real one still converts",
+      m.centsToUsd("197210") === 1972.1 && m.asPercent("49.5") === 49.5);
+
     process.stdout.write(out.join("\n"));
   ' "$HELPER" 2>&1)"
   while IFS= read -r js_line; do
@@ -313,6 +335,39 @@ if [[ -n "$NODE_REAL" ]]; then
       *) bad "helper: unexpected output from the node assertions: $js_line" ;;
     esac
   done <<< "$JS_OUT"
+
+  # Argument parsing happens before playwright is loaded, so these run on a
+  # machine with no browser driver installed. A digit string long enough to
+  # reach Infinity must be REJECTED, not accepted as a deadline no wait can
+  # cross — the failure mode the range check exists for.
+  if "$NODE_REAL" "$HELPER" --profile-dir /nonexistent \
+       --timeout-ms 99999999999999999999999 >/dev/null 2>&1; then
+    bad "helper: an Infinity-sized --timeout-ms is rejected"
+  else
+    check_eq "$?" "2" "helper: an Infinity-sized --timeout-ms is a usage error"
+  fi
+  # One past the cap, and still a safe integer — so this value reaches the
+  # RANGE branch rather than being caught by the safe-integer test above. A
+  # fixture the earlier branch would reject anyway would pass for the wrong
+  # reason and leave the cap itself unexercised.
+  if "$NODE_REAL" "$HELPER" --profile-dir /nonexistent \
+       --timeout-ms 86400001 >/dev/null 2>&1; then
+    bad "helper: a --timeout-ms one past the cap is rejected"
+  else
+    check_eq "$?" "2" "helper: a --timeout-ms one past the cap is a usage error"
+  fi
+  # The control: the cap itself is ACCEPTED, so the bound rejects "too large"
+  # rather than everything. It is skipped where playwright is installed — there
+  # a successful parse goes on to open a browser and wait out the bound just
+  # given it, which at the cap is a day. With no driver the helper reports
+  # `unreachable` and exits 0 the instant parsing succeeds, so exit 0 is proof
+  # the value was accepted and nothing is launched.
+  if "$NODE_REAL" -e 'require("playwright")' >/dev/null 2>&1; then
+    echo "note — playwright is installed; skipping the cap-accepted control (it would open a browser)"
+  else
+    "$NODE_REAL" "$HELPER" --profile-dir /nonexistent --timeout-ms 86400000 >/dev/null 2>&1
+    check_eq "$?" "0" "control(+): the cap value itself is accepted"
+  fi
 else
   echo "note — node not installed; skipping the helper's own unit assertions"
 fi
