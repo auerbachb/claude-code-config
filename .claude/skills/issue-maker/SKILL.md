@@ -206,7 +206,7 @@ Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.m
 
 **Never write a batch-wide filter that selects on `status` alone.** `(.issues[] | select(.status == "open") | …)` reaches every open row in the file. That was correct only while the log was assumed session-private; when two conversations shared one log on 2026-08-26 it overwrote a foreign session's `chip_task_id` (issue #1369). Per-issue writes scoped by `.number` (Steps 10 and 12) and top-level scalars (`.mode`, `.offer_accepted`, `.delivery_mode`, `.reg_tid`) are already narrow and need no change; every *batch* write goes through `mine`.
 
-**`.number` alone is narrow, not unique — so what a per-issue write *puts* in the row decides whether it also needs `same_repo`.** Two repos sharing one log can both hold an issue `#42`. Bumping `edited_at` on both is harmless, which is why Step 10's selector was left at `.number`. Writing *content* there is not: Step 10 also refreshes `delivers` and `est_bound`, and an unscoped write would show another repo's `Delivers` text in this thread's tally as if it were ours. So that step matches the row by `.number` (keeping the timestamp behavior) and guards the two content fields with `same_repo`. A row with no attributable url fails that guard and keeps its stored values — the same under-reach the writer rule above requires.
+**`.number` alone is narrow, not unique.** Two repos sharing one log can both hold an issue `#42`, so Step 10 pairs `.number` with `same_repo` in **both** its existence check and its row selector, and Step 12's close does the same. Guarding only the write is not enough: an unscoped *existence* check enters the update branch on a foreign row, bumps that row, and never backfills this repo's — leaving the issue you just edited missing from the tally entirely. Scoping both predicates means a log holding only a foreign `#42` falls through to the backfill branch and this repo gets its own row. A row with no attributable url matches neither predicate, so it is left untouched — the same under-reach the writer rule above requires.
 
 ---
 
@@ -667,7 +667,7 @@ Closing line format:
 Created #N: [<owner>/<repo>#N — <title>](<ISSUE_URL>)
 ```
 
-**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — rendered as the **canonical summary table from Step 9a** (`#`, `Increment`, `Delivers`, `Model`, `Est`), one row per open issue in filing order — including a `**Chain total**` row for each open chain it covers, since it is the same table under the same rules — so the tally and the post-filing table are the same object rather than two competing shapes. Anything closed or retracted since is named in one line beneath the table instead of earning columns of its own. Every cell comes from the log record above — `delivers`, `tier`, and `est_bound` are stored there for exactly this reason — so the tally survives compaction; a row missing one renders `—` (Step 10's backfill rule), never a guess. The compaction recap in Step 1 reads the same log.
+**Running tally:** the log is the source of truth for "issues opened in this thread." Surface a tally after every 5 issues and on explicit request — rendered as the **canonical summary table from Step 9a** (`#`, `Increment`, `Delivers`, `Model`, `Est`), one row per open issue in filing order — including a `**Chain total**` row for each open chain it covers, since it is the same table under the same rules. **Rows come from `mine`, not from every open row** (`set_log`'s selector above): "issues opened in this thread" means this repo's, and a shared log otherwise renders another repo's URL, `Delivers`, `Model`, and `Est` here as if they were ours — the read-side counterpart of the write scoping — so the tally and the post-filing table are the same object rather than two competing shapes. Anything closed or retracted since is named in one line beneath the table instead of earning columns of its own. Every cell comes from the log record above — `delivers`, `tier`, and `est_bound` are stored there for exactly this reason — so the tally survives compaction; a row missing one renders `—` (Step 10's backfill rule), never a guess. The compaction recap in Step 1 reads the same log.
 
 ---
 
@@ -703,13 +703,11 @@ A first-class command for adding information to an existing issue **without leav
    # stored value alone". EST_BOUND is the `plan on` bound in minutes.
    # Both are `${VAR:-}`: unlike Step 9's create path they are normally UNSET
    # here, and a bare "$DELIVERS" would abort the whole update under `set -u`.
-   set_log "$MINE_DEF"'if any(.issues[]; .number == ($n|tonumber))
-            then (.issues[] | select(.number == ($n|tonumber))) |=
+   set_log "$MINE_DEF"'if any(.issues[]; .number == ($n|tonumber) and same_repo)
+            then (.issues[] | select(.number == ($n|tonumber) and same_repo)) |=
                    (.edited_at = $ts
-                    | if same_repo then
-                        ( if $delivers == "" then . else .delivers = $delivers end
-                        | if $bound == "" then . else .est_bound = ($bound|tonumber) end )
-                      else . end)
+                    | if $delivers == "" then . else .delivers = $delivers end
+                    | if $bound == "" then . else .est_bound = ($bound|tonumber) end)
             else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
                               created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null,
                               chain:null, tier:null, delivers:null, est_bound:null}] end' \
@@ -790,10 +788,10 @@ gh issue close "$N" --repo "$REPO" --comment "Retracted via /issue-maker — not
 # Flip status to closed and clear chip_task_id only if the dismiss above succeeded (or found none to dismiss).
 # $CHIP_RESULT is empty on success/no-op (clears the field), or the still-live $TASK_ID string on genuine
 # dismiss failure (--arg, not --argjson: a bare task-id string isn't valid JSON on its own).
-set_log '(.issues[] | select(.number == ($n|tonumber)) | .status) = "closed" |
-         (.issues[] | select(.number == ($n|tonumber)) | .chip_task_id) =
+set_log "$MINE_DEF"'(.issues[] | select(.number == ($n|tonumber) and same_repo) | .status) = "closed" |
+         (.issues[] | select(.number == ($n|tonumber) and same_repo) | .chip_task_id) =
            (if $chip == "" then null else $chip end)' \
-  --arg n "$N" --arg chip "${CHIP_RESULT:-}"
+  --arg n "$N" --arg chip "${CHIP_RESULT:-}" --arg repo "$REPO"
 ```
 
 Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may still be clickable)"* only in the genuine-failure case above. Issue link as the closing line either way.
@@ -804,7 +802,7 @@ Then print: *"Issue #N closed."* — append *"(chip withdrawal failed — it may
 
 When invoked with `--export-prompt`, **do not create anything** — instead emit a standalone, paste-in prompt that codifies the same capture-mode behavior (reflection surfaced as a post-create decision-points report + LLM pass-through rationale, auto-open with no approval gate, functional-first tone, 7-section body, dedup, refusal of workflow-advancing actions until acceptance, **the always-on summary table**, closing-line URL rule). This lets the user carry the same discipline into a repo or thread where this skill isn't installed. Output the prompt in a fenced block and stop.
 
-**The summary table ships in the export written out, not cited.** A portable session has no Step 9a to read, so the prompt must state the shape itself: every filing closes with a table whose columns are `#`, `Increment`, `Delivers`, `Model`, `Est` — one row for a single issue, one row per member for a batch or chain, printed once after the last member and always in addition to the closing URL line. Write out each derivation too: `#` is a clickable `[Issue #N](url)` link; `Increment` is `{i}/{n}` for a chain member and `—` otherwise; `Delivers` is one plain-English functional clause; `Model` is the **bare family name** for that issue's inferred tier (`Opus` for Heavy or Standard, `Sonnet` for Light) and never a version number or API token; `Est` is the `plan on` bound from the body's `## Estimate` line rendered at 30-minute granularity — `30min` under an hour, `{h}h` on the hour, `{h}h30` on the half hour, rounding a non-multiple up — read without rewriting the body's `Est:` line. State the chain total row as well, with its scope: **chains only** — a final row summing every increment's bound, rendered by the same rule, labeled `**Chain total**` in `Delivers`, with `#`, `Increment`, and `Model` left blank — and say that a batch of unrelated issues gets no total row. State that the table is always on and that rapid-fire trims the decision points, never the table.
+**The summary table ships in the export written out, not cited.** A portable session has no Step 9a to read, so the prompt must state the shape itself: every filing closes with a table whose columns are `#`, `Increment`, `Delivers`, `Model`, `Est` — one row for a single issue, one row per member for a batch or chain, printed once after the last member and always in addition to the closing URL line. Write out each derivation too: `#` is a clickable `[Issue #N](url)` link; `Increment` is `{i}/{n}` for a chain member and `—` otherwise; `Delivers` is one plain-English functional clause, kept to a single line with any `|` escaped as `\|` (a raw pipe or newline splits the row); `Model` is the **bare family name** for that issue's inferred tier (`Opus` for Heavy or Standard, `Sonnet` for Light) and never a version number or API token; `Est` is the `plan on` bound from the body's `## Estimate` line rendered at 30-minute granularity — `30min` under an hour, `{h}h` on the hour, `{h}h30` on the half hour, rounding a non-multiple up — read without rewriting the body's `Est:` line. State the chain total row as well, with its scope: **chains only** — a final row summing every increment's bound, rendered by the same rule, labeled `**Chain total**` in `Delivers`, with `#`, `Increment`, and `Model` left blank — and say that a batch of unrelated issues gets no total row. State that the table is always on and that rapid-fire trims the decision points, never the table.
 
 **The sizing check ships in the export with its bar written out, not cited.** Everywhere else in this skill the bar is a citation to `/subagent` Step 4 criterion 3, because that criterion travels with the installed skill. The export is for a thread that has *no* `/subagent` to read, so a citation there would dangle — state the bar in the prompt itself (one Phase A/B/C pipeline, one reviewable PR, one review cycle, a bounded slice), along with the increment-chain shape it triggers: ordered increments, a boundary line on each ("this increment ends at…", and the final one's terminal variant naming nothing deferred past it), `- Depends on #prev` links, a 5-increment cap that stops before filing, and one offer covering the whole chain in order.
 
