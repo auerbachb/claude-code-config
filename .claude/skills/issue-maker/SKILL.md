@@ -188,7 +188,9 @@ done
 set_log() { "$SET_LOG" "$LOG" "$@"; }
 
 # Repo-scoped row selector for batch-wide writes. Defines a jq function `mine`
-# that matches only this session's own open rows. Concatenate it in front of a
+# that matches only this session's own open rows, plus the bare boolean
+# `same_repo` it is built from — for a write that must stay per-repo without
+# `mine`'s open-status constraint (Step 10). Concatenate it in front of a
 # filter — `set_log "$MINE_DEF"'(.issues[] | mine | …)' --arg repo "$REPO"` —
 # and always pass `--arg repo "$REPO"` alongside.
 #
@@ -197,12 +199,14 @@ set_log() { "$SET_LOG" "$LOG" "$@"; }
 # attributable url matches NOTHING here: the readers over-count an
 # unattributable row (safe for a cap), while a writer must under-reach (safe
 # for someone else's data).
-MINE_DEF='def mine: select(.status == "open" and ($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); '
+MINE_DEF='def same_repo: (($repo | length) > 0 and (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) == ($repo | ascii_downcase))); def mine: select(.status == "open" and same_repo); '
 ```
 
 Examples used below: `set_log '.target_repo = $v' --arg v "$REPO"`, `set_log '.mode = $v' --arg v rapid-fire`, and the create/close updates in Steps 9 and 12.
 
 **Never write a batch-wide filter that selects on `status` alone.** `(.issues[] | select(.status == "open") | …)` reaches every open row in the file. That was correct only while the log was assumed session-private; when two conversations shared one log on 2026-08-26 it overwrote a foreign session's `chip_task_id` (issue #1369). Per-issue writes scoped by `.number` (Steps 10 and 12) and top-level scalars (`.mode`, `.offer_accepted`, `.delivery_mode`, `.reg_tid`) are already narrow and need no change; every *batch* write goes through `mine`.
+
+**`.number` alone is narrow, not unique — so what a per-issue write *puts* in the row decides whether it also needs `same_repo`.** Two repos sharing one log can both hold an issue `#42`. Bumping `edited_at` on both is harmless, which is why Step 10's selector was left at `.number`. Writing *content* there is not: Step 10 also refreshes `delivers` and `est_bound`, and an unscoped write would show another repo's `Delivers` text in this thread's tally as if it were ours. So that step matches the row by `.number` (keeping the timestamp behavior) and guards the two content fields with `same_repo`. A row with no attributable url fails that guard and keeps its stored values — the same under-reach the writer rule above requires.
 
 ---
 
@@ -699,15 +703,17 @@ A first-class command for adding information to an existing issue **without leav
    # stored value alone". EST_BOUND is the `plan on` bound in minutes.
    # Both are `${VAR:-}`: unlike Step 9's create path they are normally UNSET
    # here, and a bare "$DELIVERS" would abort the whole update under `set -u`.
-   set_log 'if any(.issues[]; .number == ($n|tonumber))
+   set_log "$MINE_DEF"'if any(.issues[]; .number == ($n|tonumber))
             then (.issues[] | select(.number == ($n|tonumber))) |=
                    (.edited_at = $ts
-                    | if $delivers == "" then . else .delivers = $delivers end
-                    | if $bound == "" then . else .est_bound = ($bound|tonumber) end)
+                    | if same_repo then
+                        ( if $delivers == "" then . else .delivers = $delivers end
+                        | if $bound == "" then . else .est_bound = ($bound|tonumber) end )
+                      else . end)
             else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:[],
                               created_at:$ts, edited_at:$ts, status:"open", chip_task_id:null,
                               chain:null, tier:null, delivers:null, est_bound:null}] end' \
-     --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" \
+     --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" --arg repo "$REPO" \
      --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
      --arg delivers "${DELIVERS:-}" --arg bound "${EST_BOUND:-}"
    ```
