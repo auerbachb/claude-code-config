@@ -190,6 +190,43 @@ fi
 exit 0
 EOF
 
+# --- stubs: the cursor login (node + the Playwright helper) ------------------
+# `add cursor` / `relogin cursor` resolve node through AI_QUOTAS_NODE_BIN and
+# the helper through AI_QUOTAS_CURSOR_HELPER. Both are stubbed, so no browser
+# is ever launched and CI needs neither node nor playwright.
+#
+# The helper file itself only has to EXIST — the script checks it is readable
+# before invoking the login, and the fake node ignores its content.
+FAKE_CURSOR_HELPER="$TMP/fake-ai-quotas-cursor.js"
+printf '// stub — the fake node never reads this\n' > "$FAKE_CURSOR_HELPER"
+export FAKE_CURSOR_HELPER
+
+# A successful login: writes the cookie store a real Chromium persistent
+# context would leave behind, then prints the helper's ok verdict.
+cat > "$BIN/node-login-ok" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
+done
+if [[ -n "$dir" ]]; then
+  mkdir -p "$dir/Default/Network"
+  printf 'SQLite format 3\0STUB-COOKIE-STORE\n' > "$dir/Default/Network/Cookies"
+fi
+printf '{"status":"ok","source":"network"}\n'
+exit 0
+EOF
+
+# A login the user abandoned. Exits 0 with a NON-ok verdict — the shape that
+# catches a caller reading the exit status instead of the verdict.
+cat > "$BIN/node-login-abandoned" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
+exit 0
+EOF
+
 cat > "$BIN/security" <<'EOF'
 #!/usr/bin/env bash
 # Stub macOS security(1) over a flat file of service names.
@@ -253,6 +290,7 @@ new_case() { # <name>
   PLATFORM_UNDER_TEST="Linux"
   CLAUDE_BIN_UNDER_TEST=""
   CODEX_BIN_UNDER_TEST=""
+  NODE_BIN_UNDER_TEST=""
   CASE_DIR="$TMP/case-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-')"
   rm -rf "$CASE_DIR"
   mkdir -p "$CASE_DIR/home/.claude"
@@ -270,6 +308,8 @@ run() { # <args...>  — never aborts the suite; sets OUT and RC
         AI_QUOTAS_SECURITY_BIN="$BIN/security" \
         AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
         AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+        AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+        AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
         "$SCRIPT" "$@" 2>&1)"
   RC=$?
 }
@@ -288,6 +328,8 @@ status_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .status'
@@ -300,6 +342,8 @@ detail_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .detail'
@@ -444,21 +488,122 @@ run add codex loggedout@example.com
 check_eq "$RC" "1" "control(-): no auth.json and a failing status exits 1"
 check_eq "$(account_count)" "READ-ERROR" "control(-): and nothing was registered"
 
-# --- 7. cursor is recorded but not yet supported -----------------------------
+# --- 7. cursor logs in through the browser helper (issue #1668) --------------
 
 new_case "cursor"
 run add cursor cursoruser@example.com
 check_eq "$RC" "0" "add cursor exits 0"
 if [[ -d "$PROFILES/cursoruser@example.com/cursor" ]]; then
-  ok "cursor browser-profile slot is reserved on disk"
+  ok "the cursor browser profile is created on disk"
 else
-  bad "cursor browser-profile slot was not created"
+  bad "the cursor browser profile was not created"
 fi
 check_eq "$(account_count)" "1" "cursor account is recorded"
-check_eq "$(status_of cursoruser@example.com cursor)" "not-yet-supported" "cursor lists as not-yet-supported"
-check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" "cursor add launches no login command"
-run relogin cursoruser@example.com
-check_eq "$RC" "3" "relogin on cursor is refused until increment 3"
+check_eq "$(status_of cursoruser@example.com cursor)" "ok" \
+  "a completed cursor login lists as ok"
+check_contains "$(cat "$STUB_CALL_LOG")" "--mode login" \
+  "the cursor login ran headed (--mode login), not as a headless read"
+check_contains "$(cat "$STUB_CALL_LOG")" "$PROFILES/cursoruser@example.com/cursor" \
+  "and it ran against this account's own profile directory"
+
+# The verdict decides, not the exit status. This stub exits 0 while reporting
+# `needs-login` — the exact shape that would register a phantom account if the
+# caller read `$?` instead of the JSON the helper prints.
+new_case "cursor-abandoned"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run add cursor quitter@example.com
+check_eq "$RC" "1" "a cursor login the user abandoned exits 1"
+check_eq "$(account_count)" "READ-ERROR" "and nothing is registered"
+check_contains "$OUT" "did not complete" "the message says the login did not complete"
+
+# No session value may reach stdout, stderr, or the config — the stub writes a
+# recognisable cookie store, so this is a real detector rather than a fixture
+# that could not have failed.
+new_case "cursor-no-leak"
+run add cursor leaky@example.com
+check_not_contains "$OUT" "STUB-COOKIE-STORE" \
+  "no cookie-store content reaches the tool output"
+check_not_contains "$(cat "$CONFIG")" "STUB-COOKIE-STORE" \
+  "and none of it reaches the config"
+check_eq "$(jq -r '[.accounts[0] | paths | map(tostring) | join(".")] | map(select(test("cookie"; "i"))) | length' "$CONFIG")" "0" \
+  "no key in the cursor account entry is cookie-shaped"
+
+# relogin REPLACES the profile rather than layering a second session onto it.
+new_case "cursor-relogin"
+run add cursor recur@example.com
+check_eq "$RC" "0" "add cursor for the relogin case exits 0"
+CURSOR_DIR="$PROFILES/recur@example.com/cursor"
+printf 'stale\n' > "$CURSOR_DIR/STALE-MARKER"
+run relogin recur@example.com
+check_eq "$RC" "0" "relogin on a cursor account exits 0"
+if [[ -e "$CURSOR_DIR/STALE-MARKER" ]]; then
+  bad "relogin layered the new session over the old profile (the stale marker survived)"
+else
+  ok "relogin started a fresh profile — the previous one was moved aside"
+fi
+check_contains "$OUT" "moved aside" "and it says where the previous profile went"
+check_eq "$(status_of recur@example.com cursor)" "ok" "the account is ok again after relogin"
+
+# A second relogin inside the same whole second must not land INSIDE the first
+# retirement: `mv olddir existingdir` succeeds by nesting, so the profile would
+# be somewhere other than where the message says.
+printf 'stale2\n' > "$CURSOR_DIR/STALE-MARKER-2"
+run relogin recur@example.com
+check_eq "$RC" "0" "a second back-to-back relogin exits 0"
+# Asserted by SHAPE, not by counting: whether the two stamps collide depends on
+# which side of a second boundary the run lands, so a count would pass for the
+# wrong reason half the time. Nesting has one unmistakable signature —
+# `cursor.retired-<stamp>/cursor` — and that is what is checked.
+NESTED="$(find "$PROFILES/recur@example.com" -maxdepth 2 -mindepth 2 -type d -name cursor 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$NESTED" "0" "no retirement was moved inside an earlier one"
+if [[ -e "$CURSOR_DIR/STALE-MARKER-2" ]]; then
+  bad "the second relogin did not replace the profile"
+else
+  ok "and the second relogin started a fresh profile too"
+fi
+
+# Deleting the session flips the account back, which is the other half of the
+# status contract: presence of the cookie store is the whole signal.
+rm -rf "$CURSOR_DIR/Default"
+check_eq "$(status_of recur@example.com cursor)" "needs-login" \
+  "deleting the browser session flips the cursor account to needs-login"
+
+# A relogin that CANNOT run must not cost the user the session that still
+# works: the dependency check has to happen before the profile is moved aside.
+new_case "cursor-relogin-no-helper"
+run add cursor keepme@example.com
+check_eq "$RC" "0" "add cursor for the missing-helper relogin case exits 0"
+CURSOR_DIR="$PROFILES/keepme@example.com/cursor"
+SAVED_HELPER="$FAKE_CURSOR_HELPER"
+FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
+run relogin keepme@example.com
+check_eq "$RC" "6" "a relogin with no helper exits 6"
+if [[ -s "$CURSOR_DIR/Default/Network/Cookies" ]]; then
+  ok "and the working profile is still there — the refused relogin destroyed nothing"
+else
+  bad "the refused relogin moved the working profile aside anyway"
+fi
+FAKE_CURSOR_HELPER="$SAVED_HELPER"
+check_eq "$(status_of keepme@example.com cursor)" "ok" \
+  "the account still reads ok after the refused relogin"
+
+# A missing helper is reported, never worked around.
+new_case "cursor-helper-missing"
+SAVED_HELPER="$FAKE_CURSOR_HELPER"
+FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
+run add cursor nohelper@example.com
+check_eq "$RC" "6" "a missing cursor helper exits 6 (the login tool was not found)"
+check_contains "$OUT" "missing" "and says the helper is missing"
+FAKE_CURSOR_HELPER="$SAVED_HELPER"
+
+# --no-login still reserves a cursor slot without opening anything.
+new_case "cursor-no-login"
+run add cursor later@example.com --no-login
+check_eq "$RC" "0" "add cursor --no-login exits 0"
+check_eq "$(status_of later@example.com cursor)" "needs-login" \
+  "a reserved cursor slot reports needs-login"
+check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" \
+  "control(-): --no-login launched no browser at all"
 
 # --- 8. credential disappears -> needs-login; relogin restores it ------------
 

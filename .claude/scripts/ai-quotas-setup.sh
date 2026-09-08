@@ -33,8 +33,7 @@
 # ACTIONS
 #   list      Default when no action is given. Prints one row per registered
 #             account with its status: `ok` (a credential is present),
-#             `needs-login` (none visible — run `relogin`), or
-#             `not-yet-supported` (cursor, until increment 3). On a readable
+#             `needs-login` (none visible — run `relogin`). On a readable
 #             config it exits 0 whatever the statuses say — listing is a
 #             report, never a gate. The one non-zero list is exit 5, when the
 #             config itself is unreadable, unparseable, or written by a
@@ -61,8 +60,13 @@
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
-#   cursor    Browser-profile slot only. Increment 3 performs the login; until
-#             then `list` reports `not-yet-supported` and `relogin` refuses.
+#   cursor    Per-account browser profile, logged in by opening a real
+#             browser window on it through `lib/ai-quotas-cursor.js`
+#             (Playwright). Cursor has no login CLI and no individual usage
+#             API, so the saved session IS the credential; it stays inside
+#             the profile directory and is never read by this script. A
+#             `relogin` MOVES the old profile aside and starts a fresh one
+#             rather than layering a second session over it.
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
@@ -83,8 +87,14 @@
 #                           shortcut is preferred.
 #   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
 #                           selects the Keychain probe.
-#   The last four exist so the test suite can exercise every path against
-#   stubs without touching a real login, a real keychain, or a real account.
+#   AI_QUOTAS_NODE_BIN      Path to node (the cursor login helper's runtime).
+#   AI_QUOTAS_CURSOR_HELPER Path to lib/ai-quotas-cursor.js.
+#   AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS
+#                           How long the headed cursor login waits for the
+#                           dashboard to answer (helper default: 5 minutes).
+#   Every override from AI_QUOTAS_CLAUDE_BIN down exists so the test suite can
+#   exercise each path against stubs — no real login, keychain, browser, or
+#   account. They are not meant for normal use.
 #
 # OUTPUT
 #   stdout: the account table, or a JSON array with `--json`.
@@ -102,8 +112,8 @@
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
 #       profile directory or config write failed.
-#   6   The provider's login CLI could not be found. The exact command to run
-#       by hand is printed.
+#   6   The provider's login CLI could not be found — for `cursor`, node or
+#       the Playwright helper. The exact command to run by hand is printed.
 #   7   Config write lock unavailable (timeout) or broken mid-update; the
 #       config is unchanged.
 #   70  --help header extraction produced no output (internal defect).
@@ -111,7 +121,8 @@
 # DEPENDENCIES
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
-#   - the provider's own CLI, only for `add` / `relogin`
+#   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
+#     is Node 20+ plus the Playwright pinned in .claude/scripts/lib
 
 set -euo pipefail
 # Telemetry logs the ACTION ONLY, never the full argument list. Every other
@@ -396,6 +407,12 @@ keychain_service_exists() { # <service>
 
 provider_bin() { # <provider> -> path on stdout, or empty + exit 1
   local provider="$1" override="" candidate
+  # What to look for on PATH. It is the provider name for every provider that
+  # ships its own CLI — and deliberately NOT for cursor: `command -v cursor`
+  # finds the EDITOR launcher on any machine with Cursor installed, and
+  # handing that to the login step would open an IDE instead of the browser
+  # profile, then report the login as having run.
+  local lookup="$provider"
   local -a candidates=()
   case "$provider" in
     claude)
@@ -414,6 +431,16 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
         "/Applications/ChatGPT.app/Contents/Resources/codex"
       )
       ;;
+    cursor)
+      # Cursor has no login CLI. Its "login binary" is node, which runs the
+      # Playwright helper that opens a real browser window for the user.
+      override="${AI_QUOTAS_NODE_BIN:-}"
+      lookup="node"
+      candidates=(
+        "/opt/homebrew/bin/node"
+        "/usr/local/bin/node"
+      )
+      ;;
     *) return 1 ;;
   esac
   if [[ -n "$override" ]]; then
@@ -421,7 +448,7 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
     printf '%s' "$override"
     return 0
   fi
-  if candidate="$(command -v "$provider" 2>/dev/null)" && [[ -n "$candidate" ]]; then
+  if candidate="$(command -v "$lookup" 2>/dev/null)" && [[ -n "$candidate" ]]; then
     printf '%s' "$candidate"
     return 0
   fi
@@ -434,11 +461,18 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
   return 1
 }
 
+# Where the Playwright helper lives. A missing helper is reported, never
+# worked around: a "login" that silently did nothing would leave the account
+# reading `needs-login` forever with no explanation on screen.
+cursor_helper_path() {
+  printf '%s' "${AI_QUOTAS_CURSOR_HELPER:-$SELF_DIR/lib/ai-quotas-cursor.js}"
+}
+
 manual_login_command() { # <provider> <profile_dir>
   case "$1" in
     claude) printf 'CLAUDE_CONFIG_DIR=%q claude %s' "$2" "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ;;
     codex)  printf 'CODEX_HOME=%q codex login' "$2" ;;
-    cursor) printf '(cursor login arrives in increment 3)' ;;
+    cursor) printf 'node %q --profile-dir %q --mode login' "$(cursor_helper_path)" "$2" ;;
   esac
 }
 
@@ -480,6 +514,35 @@ run_login() { # <provider> <profile_dir>
       CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
+    cursor)
+      # A visible browser on this account's own persistent profile. The user
+      # logs in to cursor.com the normal way; the helper waits until the
+      # dashboard's usage endpoint answers, which is the only proof the
+      # session actually landed, then closes and prints its verdict.
+      #
+      # The verdict is INSPECTED, not inferred from the exit status: the
+      # helper exits 0 for every outcome it models, including
+      # `needs-login`, so treating a clean exit as a successful login would
+      # record an account whose session never arrived.
+      local helper cursor_out
+      helper="$(cursor_helper_path)"
+      if [[ ! -r "$helper" ]]; then
+        echo "${SELF_NAME}: the cursor login helper is missing at ${helper}." >&2
+        echo "${SELF_NAME}: reinstall it from the repo, then re-run this login." >&2
+        exit 6
+      fi
+      echo "${SELF_NAME}: a browser window will open on this account's profile — log in to cursor.com there."
+      cursor_out="$("$bin" "$helper" --profile-dir "$dir" --mode login \
+                     ${AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS:+--timeout-ms "$AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS"} \
+                     2>/dev/null)" || true
+      if printf '%s' "$cursor_out" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+        return 0
+      fi
+      local why
+      why="$(printf '%s' "$cursor_out" | jq -r '.detail // ""' 2>/dev/null || true)"
+      echo "${SELF_NAME}: the cursor login did not complete${why:+ (${why})}." >&2
+      return 1
+      ;;
   esac
 }
 
@@ -534,7 +597,30 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       return 1
       ;;
     cursor)
-      CRED_DETAIL="login arrives in increment 3"
+      # Chromium keeps its cookie store in one of three places depending on
+      # the build, so all three are checked rather than betting the status on
+      # one of them.
+      # PRESENCE ONLY — the file is never opened, so no session value passes
+      # through this tool.
+      #
+      # And presence is deliberately a weaker claim than the other providers
+      # make: a cookie store exists as soon as a browser has run on this
+      # profile, logged in or not. It is enough for the two things `list`
+      # must get right — a completed login reads `ok`, and deleting the
+      # cookies reads `needs-login` — and the note says plainly that only
+      # `/quotas` proves the session still works. Running the headless read
+      # here instead would put a 30-second browser start behind every `list`.
+      local cookie_db
+      for cookie_db in \
+        "$dir/Default/Network/Cookies" \
+        "$dir/Default/Cookies" \
+        "$dir/Cookies"; do
+        if [[ -s "$cookie_db" ]]; then
+          CRED_DETAIL="browser profile present; /quotas confirms the session is live"
+          return 0
+        fi
+      done
+      CRED_DETAIL="no browser session in profile"
       return 1
       ;;
   esac
@@ -555,11 +641,6 @@ ACCOUNT_STATUS=""
 account_status() { # <provider> <profile_dir> <keychain_service|"">
   ACCOUNT_STATUS=""
   CRED_DETAIL=""
-  if [[ "$1" == "cursor" ]]; then
-    CRED_DETAIL="slot reserved; login arrives in increment 3"
-    ACCOUNT_STATUS="not-yet-supported"
-    return 0
-  fi
   if credential_present "$@"; then
     ACCOUNT_STATUS="ok"
   else
@@ -744,9 +825,7 @@ action_add() {
   dir="$(profile_dir_for "$label" "$provider")"
   ensure_profile_dir "$dir"
 
-  if [[ "$provider" == "cursor" ]]; then
-    echo "${SELF_NAME}: cursor browser-profile slot reserved at $dir (login arrives in increment 3)."
-  elif [[ $NO_LOGIN -eq 1 ]]; then
+  if [[ $NO_LOGIN -eq 1 ]]; then
     echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
   else
     if [[ "$provider" == "claude" ]]; then
@@ -829,6 +908,11 @@ action_remove() {
 
 action_relogin() {
   local config index entry dir provider service="" before="" after=""
+  # Appended to every failure message after a cursor profile has been moved
+  # aside. Without it "'<label>' is unchanged" is a half-truth: the registry
+  # row is unchanged, but the working session is no longer where the account
+  # points, and the user has no way to know it is recoverable.
+  local retired_note=""
   config="$(read_config)"
   index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
   entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
@@ -836,8 +920,53 @@ action_relogin() {
   provider="$(printf '%s' "$entry" | jq -r '.provider')"
   service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
 
-  if [[ "$provider" == "cursor" ]]; then
-    die 3 "cursor login arrives in increment 3 — nothing to re-run for '$ARG_LABEL' yet"
+  # A Cursor relogin REPLACES the profile rather than logging in on top of it
+  # (issue #1668). Layering a second login over a half-expired session is how
+  # a profile ends up holding two partial sessions and answering with
+  # whichever one the browser picks — a state no status probe can describe.
+  # The move is to a timestamped sibling, not a delete: an unrecoverable wipe
+  # of a working login is exactly what `remove` refuses to do, and the same
+  # reasoning applies here. The path is printed so it can be deleted by hand.
+  if [[ "$provider" == "cursor" && -d "$dir" ]]; then
+    # Dependencies FIRST. Moving the profile aside and only then discovering
+    # that node or the helper is missing costs the user the session that was
+    # still working — an unrecoverable-feeling failure caused entirely by the
+    # order of two checks. `run_login` performs the same two checks a moment
+    # later; doing them here is what makes this branch safe to enter.
+    if ! provider_bin cursor >/dev/null 2>&1 || [[ ! -r "$(cursor_helper_path)" ]]; then
+      echo "${SELF_NAME}: node or the cursor login helper is missing, so this relogin cannot run." >&2
+      echo "${SELF_NAME}: '${ARG_LABEL}' is unchanged and its existing profile was left in place." >&2
+      echo "  $(manual_login_command cursor "$dir")" >&2
+      exit 6
+    fi
+    # Declared and assigned separately: `local x="$(cmd)"` makes the assignment
+    # always succeed, masking a failing `date` behind a name that then reads
+    # `.retired-` with nothing after it — every relogin colliding on one path.
+    local retired
+    retired="${dir}.retired-$(date -u +%Y%m%d-%H%M%S)"
+    if [[ "$retired" == "${dir}.retired-" ]]; then
+      die 5 "could not read the clock to name the retired cursor profile; '${ARG_LABEL}' is unchanged"
+    fi
+    # The stamp is whole-SECOND, so two relogins in the same second would
+    # collide — and `mv olddir existingdir` does not fail there, it moves the
+    # profile INSIDE the earlier retirement. The second one would vanish from
+    # where its message says it went. Disambiguate rather than overwrite.
+    if [[ -e "$retired" ]]; then
+      local suffix=2
+      while [[ -e "${retired}-${suffix}" && "$suffix" -lt 100 ]]; do
+        suffix=$(( suffix + 1 ))
+      done
+      retired="${retired}-${suffix}"
+      if [[ -e "$retired" ]]; then
+        die 5 "could not find a free path to retire the cursor profile at ${dir}; '${ARG_LABEL}' is unchanged"
+      fi
+    fi
+    if mv "$dir" "$retired" 2>/dev/null; then
+      echo "${SELF_NAME}: previous cursor profile moved aside to ${retired} (delete it when you no longer want it)."
+      retired_note=" The previous session was moved aside to ${retired}; restore it by moving that directory back to ${dir}."
+    else
+      die 5 "could not move the existing cursor profile aside at ${dir}; '${ARG_LABEL}' is unchanged"
+    fi
   fi
 
   ensure_profile_dir "$dir"
@@ -845,7 +974,7 @@ action_relogin() {
     before="$(keychain_claude_services)"
   fi
   if ! run_login "$provider" "$dir"; then
-    die 1 "the ${provider} login did not complete; '${ARG_LABEL}' is unchanged"
+    die 1 "the ${provider} login did not complete; '${ARG_LABEL}' is unchanged.${retired_note}"
   fi
   if [[ "$provider" == "claude" ]]; then
     after="$(keychain_claude_services)"
@@ -856,7 +985,7 @@ action_relogin() {
     service="$(resolve_keychain_service "$dir" "$service" "$NEW_KEYCHAIN_SERVICE")"
   fi
   if ! credential_present "$provider" "$dir" "$service"; then
-    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); '${ARG_LABEL}' is unchanged"
+    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); '${ARG_LABEL}' is unchanged.${retired_note}"
   fi
   if [[ "$provider" == "claude" ]]; then
     remember_keychain_service "$dir" "$service"

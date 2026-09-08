@@ -335,6 +335,8 @@ run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
         AI_QUOTAS_CODEX_BIN="$BIN/codex" \
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
+        AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-absent}" \
+        AI_QUOTAS_CURSOR_HELPER="${CURSOR_HELPER_UNDER_TEST:-$TMP/no-such-helper.js}" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
@@ -599,7 +601,12 @@ check_contains "$(field_of claude-one@example.com "7-day" detail)" "quota_summar
   "the note prints the top-level keys it actually saw"
 anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
 
-# --- 13. cursor is unsupported, not broken -----------------------------------
+# --- 13. a broken cursor account degrades alone ------------------------------
+#
+# The cursor READER has its own suite (ai-quotas-cursor.test.sh, issue #1668);
+# what belongs here is the property this file is about — per-row isolation.
+# With no helper on disk the cursor account cannot be read, and the assertion
+# is that it says so in its own row and takes nothing else down with it.
 
 reset_state
 CUR="$PROFILES/cursor-one@example.com/cursor"; mkdir -p "$CUR"
@@ -609,10 +616,20 @@ write_config \
   "$(account_json codex codex-one@example.com "$X1")"
 run --json
 check_eq "$RC" "0" "a cursor row does not fail the run"
-check_eq "$(rows_for cursor-one@example.com)" "unsupported" "the cursor row reads unsupported"
-check_contains "$(field_of cursor-one@example.com "7-day" detail)" "not yet" \
-  "and says 'not yet' rather than pretending to a figure"
+check_eq "$(rows_for cursor-one@example.com)" "unreachable" \
+  "an unreadable cursor helper reads unreachable"
+check_eq "$(field_of cursor-one@example.com "billing-cycle" used_pct)" "null" \
+  "and reports no figure rather than 0 %"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "helper is missing" \
+  "the note names what is actually missing"
 check_eq "$(rows_for codex-one@example.com)" "ok" "the codex row beside it still renders"
+
+# An unknown provider is what `unsupported` is for now that cursor is read.
+reset_state
+write_config "$(account_json weirdprovider someone@example.com "$PROFILES/x")"
+run --json
+check_eq "$RC" "0" "an unknown provider does not fail the run"
+check_eq "$(rows_for someone@example.com)" "unsupported" "and reads unsupported"
 
 # --- 14. the codex HTTP fallback, and only when app-server is unavailable ----
 

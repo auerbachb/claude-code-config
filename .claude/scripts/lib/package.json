@@ -1,0 +1,13 @@
+{
+  "name": "claude-config-script-lib",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node dependencies for .claude/scripts helpers. Today: playwright, for ai-quotas-cursor.js (issue #1668). The version is pinned EXACTLY — a browser driver that floats is a reader whose behaviour changes without a commit.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
