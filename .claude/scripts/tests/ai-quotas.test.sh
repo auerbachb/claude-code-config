@@ -721,6 +721,29 @@ check_contains "$(field_of codex-one@example.com "5-hour" detail)" "no 7-day win
 check_not_contains "$(field_of codex-one@example.com "5-hour" detail)" "reports no short window" \
   "control(-): and does not also claim the plan reports no short window"
 
+# --- 13c. a short window is labelled from its duration, never assumed 5-hour -
+# `--five-hour` names the FLAG, not a promise about the window that comes back.
+# With two sub-weekly windows and no weekly one, the weekly row takes the longer
+# (its longest-window fallback) and the short row takes what is left — and each
+# is labelled from its own windowDurationMins. Calling a 60-minute window
+# "5-hour" would put a real number under a heading that is wrong, which is the
+# failure the whole selector exists to avoid.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com \
+  "$(jq -n --argjson five "$FIVE_RESET" \
+     '{rateLimits: {limitId: "codex", planType: "pro",
+                    primary: {usedPercent: 41, windowDurationMins: 300, resetsAt: $five},
+                    secondary: {usedPercent: 12, windowDurationMins: 60, resetsAt: $five}}}')")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+run --json --five-hour
+check_eq "$(field_of codex-one@example.com "5-hour" used_pct)" "41" \
+  "the 300-minute window is the 5-hour row"
+check_eq "$(field_of codex-one@example.com "1-hour" used_pct)" "12" \
+  "and the 60-minute window is labelled 1-hour from its own duration"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.window == "5-hour")] | length')" "1" \
+  "control(-): the shorter window is not also emitted as a second 5-hour row"
+
 # --- 14d. cleanup is bounded when the server outlives SIGTERM ---------------
 # SIGTERM is a request the real `codex app-server` may decline. An unconditional
 # `wait` after it blocks until the process feels like exiting — at CLEANUP,
