@@ -341,8 +341,17 @@ holding `finishes by deadline` or `parks` per row. It is an added column, never 
 the reader comparing "what is running" against "what survives the deadline" should not have to
 reconcile two shapes.
 
-The verdict is computed, not judged, and it reads the **same projected finish the row already
-displays** — the on-track `start + bound` while a row is inside its bound, and the pace-scaled
+**One case short-circuits the comparison: a row the user chose to launch anyway.** When
+`.window.launch_decisions[<issue>].decision` is `launch_anyway` **and** that record's
+`deadline_epoch` equals the armed one, the verdict is `parks` regardless of the row's projected
+finish (issue #1679). The user answered `/subagent` Step 7's overrun menu by taking a pipeline that
+will be parked resumably rather than one that lands — reading it back as `finishes by deadline`
+would launder a deliberate park into a promise. The deadline equality is load-bearing: a record
+naming a *previous* `deadline_epoch` was an answer about a different clock and is ignored, so a
+re-declared later time lets the row be judged normally again.
+
+For every other row the verdict is computed, not judged, and it reads the **same projected finish
+the row already displays** — the on-track `start + bound` while a row is inside its bound, and the pace-scaled
 revised finish once it is over (the `Projected end` rules above). `finishes by deadline` when that
 effective projected finish is at or before `deadline_epoch`. Comparing the original bound instead
 would let an overrun row claim `finishes by deadline` while its own `Projected end` cell shows a

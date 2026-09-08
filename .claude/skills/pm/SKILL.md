@@ -1835,6 +1835,13 @@ A failed `refill.scope` read (`SCOPE_RC` of 4, 6, or anything else non-zero but 
 
 **This gate binds autonomous dispatch only** — day mode and refill. An explicit user request in chat always proceeds regardless of budget state; prepend a one-line note: `[budget spent/unknown today] Proceeding at your request.` Do not block, downgrade, or ask permission for an in-chat request.
 
+**The armed-deadline gate is `/subagent` Step 7's, including its questions (issue #1679).** Step 7
+owns the leave-time elicitation before a thread's first new-pipeline launch and the attended overrun
+menu; this step delegates to it and adds no second elicitation, no second deadline field, and no
+second decline check. **Neither question ever fires from `/pm day` or `/pm --window`**: a day-mode
+tick is unattended by construction, and `--window` already armed `.window` in Step 0b, so Step 7's
+"already armed" branch skips it.
+
 **Do not add a second budget pause mechanism.** `credit-budget.sh` is the single evaluation point. Re-read it per pick (same pattern as the refill.paused re-read), not once per tick. A budget state change between the tick read and the per-pick read cancels remaining launches for that tick.
 
 **A non-null `$SCOPE` constrains both refill sources** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, queued or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.

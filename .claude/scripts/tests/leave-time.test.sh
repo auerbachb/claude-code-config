@@ -318,11 +318,20 @@ STUB_STATE_ARGS="$TMP/session-state-args.txt"
 cat >"$STUB_STATE" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_STATE_ARGS_FILE:-/dev/null}"
-# `-` not `:-`: an empty STUB_DEADLINE is a deliberate test input (an empty read),
-# and `:-` would silently rewrite it to `null` — turning the empty-read case into
-# the absent case and passing the assertion vacuously.
-printf '%s\n' "${STUB_DEADLINE-null}"
-exit "${STUB_STATE_RC:-0}"
+# DISPATCH ON THE PATH, and fail loudly on anything else. The gate reads TWO fields
+# now (issue #1679) — the deadline and the lead minutes that place the pause point —
+# and a catch-all branch would serve the deadline fixture to the lead read, silently
+# turning a six-digit epoch into a rejected lead that falls back to 30. The gate
+# would then pass every assertion below while never reading `lead_minutes` at all.
+case "$*" in
+  # `-` not `:-`: an empty STUB_DEADLINE is a deliberate test input (an empty read),
+  # and `:-` would silently rewrite it to `null` — turning the empty-read case into
+  # the absent case and passing the assertion vacuously.
+  *window.deadline_epoch) printf '%s\n' "${STUB_DEADLINE-null}"; exit "${STUB_STATE_RC:-0}" ;;
+  *leave.lead_minutes)    printf '%s\n' "${STUB_LEAD-null}";     exit "${STUB_LEAD_RC:-0}" ;;
+esac
+printf 'session-state stub: unexpected argv: %s\n' "$*" >&2
+exit 99
 STUB
 chmod +x "$STUB_STATE"
 
@@ -340,10 +349,13 @@ chmod +x "$STUB_EST_SH"
 
 run_decline() {
   # $1 = deadline value, $2 = state rc, $3 = estimate string, $4 = estimate helper path,
-  # $5 = optional estimate-resolver exit code, $6 = optional fixed `now` epoch
+  # $5 = optional estimate-resolver exit code, $6 = optional fixed `now` epoch,
+  # $7 = optional persisted lead_minutes (default 30 — the value /leave-by Step 2's
+  #      cascade falls back to), $8 = optional lead-read exit code
   (
     set -euo pipefail
     export STUB_DEADLINE="$1" STUB_STATE_RC="$2" STUB_EST="$3" STUB_EST_RC="${5:-0}"
+    export STUB_LEAD="${7-30}" STUB_LEAD_RC="${8:-0}"
     export STUB_STATE_ARGS_FILE="$STUB_STATE_ARGS" STUB_EST_ARGS_FILE="$STUB_EST_ARGS"
     # Freeze the clock when asked, so a boundary case tests the boundary rather than
     # however many milliseconds elapsed between the fixture and the block.
@@ -363,10 +375,16 @@ run_decline() {
   ) 2>/dev/null
 }
 
+# The pause point the gate is supposed to be planning against (issue #1679), computed
+# here from the SAME inputs so a fixture states its intent rather than a magic number.
+pause_point() { printf '%s\n' "$(( $1 - $2 * 60 ))"; }
+
 if [ -n "$DECLINE_BLOCK" ]; then
   group_start
-  FAR=$(( $(date -u +%s) + 6 * 3600 ))   # 6 h of runway
-  NEAR=$(( $(date -u +%s) + 30 * 60 ))   # 30 min of runway
+  # Every figure below is a DEADLINE; the gate plans against `deadline - lead` (30 min
+  # by default), so `NEAR` carries 90 min of clock but only 60 min of usable runway.
+  FAR=$(( $(date -u +%s) + 6 * 3600 ))   # 6 h of clock -> 5.5 h of runway
+  NEAR=$(( $(date -u +%s) + 90 * 60 ))   # 90 min of clock -> 60 min of runway
   PAST=$(( $(date -u +%s) - 600 ))
 
   OUT=$(run_decline "null" 0 "Est: 90–180 min · plan on 180" "$STUB_EST_SH")
@@ -387,18 +405,54 @@ if [ -n "$DECLINE_BLOCK" ]; then
   OUT=$(run_decline "$PAST" 0 "Est: 15–20 min · plan on 20" "$STUB_EST_SH")
   [ "$OUT" = "true|plan on 20 min" ] || fail "a deadline already passed must decline everything (got: $OUT)"
 
-  # The strict boundary, on a frozen clock: a bound landing exactly ON the deadline
-  # leaves zero runway for the wind-down and must decline, while one second of slack
-  # must still launch. Both sides are asserted — a one-sided boundary test passes
-  # equally well against a gate that declines everything.
+  # The strict boundary, on a frozen clock: a bound landing exactly ON the PAUSE POINT
+  # leaves zero slack for the wind-down that starts there and must decline, while one
+  # second past it must still launch. Both sides are asserted — a one-sided boundary
+  # test passes equally well against a gate that declines everything.
   FIXED_NOW=1787439600
-  EXACT=$(( FIXED_NOW + 20 * 60 ))
+  # Deadline placed so that `deadline - 30 min` lands exactly 20 min from now. If the
+  # gate ever regressed to comparing the RAW deadline, this bound (20 min against 50
+  # minutes of raw clock) would launch and the assertion below would catch it.
+  EXACT=$(( FIXED_NOW + 20 * 60 + 30 * 60 ))
+  [ "$(pause_point "$EXACT" 30)" = "$(( FIXED_NOW + 20 * 60 ))" ] \
+    || fail 'fixture error: EXACT does not place the pause point 20 min out'
   OUT=$(run_decline "$EXACT" 0 "Est: 15–20 min · plan on 20" "$STUB_EST_SH" 0 "$FIXED_NOW")
   [ "$OUT" = "true|plan on 20 min" ] \
-    || fail "a bound exactly equal to the remaining time must decline (got: $OUT)"
+    || fail "a bound exactly equal to the time left to the pause point must decline (got: $OUT)"
   OUT=$(run_decline "$(( EXACT + 1 ))" 0 "Est: 15–20 min · plan on 20" "$STUB_EST_SH" 0 "$FIXED_NOW")
   [ "$OUT" = "false|" ] \
-    || fail "one second of slack past the bound must still launch (got: $OUT)"
+    || fail "one second of slack past the pause point must still launch (got: $OUT)"
+
+  # The subtraction is REAL, and it reads the persisted lead. Same deadline, same bound,
+  # three lead values: the verdict has to move with the lead or the pause point is not
+  # being computed from `.leave.lead_minutes` at all.
+  LEAD_DEADLINE=$(( FIXED_NOW + 60 * 60 ))   # one hour of raw clock
+  OUT=$(run_decline "$LEAD_DEADLINE" 0 "Est: 30–45 min · plan on 45" "$STUB_EST_SH" 0 "$FIXED_NOW" 5)
+  [ "$OUT" = "false|" ] \
+    || fail "a 5-min lead leaves 55 min and must launch a 45-min bound (got: $OUT)"
+  OUT=$(run_decline "$LEAD_DEADLINE" 0 "Est: 30–45 min · plan on 45" "$STUB_EST_SH" 0 "$FIXED_NOW" 30)
+  [ "$OUT" = "true|plan on 45 min" ] \
+    || fail "a 30-min lead leaves 30 min and must decline a 45-min bound (got: $OUT)"
+  # An absent, malformed, below-range, or unreadable lead resolves to the documented 30
+  # — never to zero, which would silently restore planning against the raw deadline.
+  # EVERY value here is discriminating against this deadline and bound: accepted as
+  # written it would leave >= 45 min and LAUNCH, so only the fallback declines.
+  while IFS=' ' read -r BAD_LEAD BAD_LEAD_RC; do
+    [ -n "$BAD_LEAD" ] || continue
+    # `< /dev/null`: the extracted block runs real commands, and any one of them reading
+    # stdin would swallow the rest of the heredoc below — silently shortening the case
+    # list to whatever the first iteration left behind.
+    OUT=$(run_decline "$LEAD_DEADLINE" 0 "Est: 30–45 min · plan on 45" "$STUB_EST_SH" 0 "$FIXED_NOW" \
+            "$BAD_LEAD" "$BAD_LEAD_RC" < /dev/null)
+    [ "$OUT" = "true|plan on 45 min" ] \
+      || fail "an unusable lead ('$BAD_LEAD', rc=$BAD_LEAD_RC) must fall back to 30, not to 0 (got: $OUT)"
+  done <<'BADLEADS'
+null 0
+abc 0
+0 0
+4 0
+5 6
+BADLEADS
 
   # Fail-closed cases: unknown duration and unknown deadline both decline.
   OUT=$(run_decline "$FAR" 0 "unestimated" "$STUB_EST_SH")
@@ -469,9 +523,16 @@ if [ -n "$DECLINE_BLOCK" ]; then
   if [ ! -s "$STUB_STATE_ARGS" ]; then
     fail 'the decline gate never invoked session-state.sh — it cannot be reading the armed deadline'
   else
-    ST_BAD=$(grep -vcxF -- '--get .repos["org/repo"].window.deadline_epoch' "$STUB_STATE_ARGS" || true)
+    ST_BAD=$(grep -vcxE -- '^--get \.repos\["org/repo"\]\.(window\.deadline_epoch|leave\.lead_minutes)$' \
+      "$STUB_STATE_ARGS" || true)
     [ "$ST_BAD" = "0" ] || fail \
-      "the gate must read .repos[REPO_KEY].window.deadline_epoch ($ST_BAD call(s) differed: $(sort -u "$STUB_STATE_ARGS" | paste -sd'|' -))"
+      "the gate must read only .repos[REPO_KEY].window.deadline_epoch and .leave.lead_minutes ($ST_BAD call(s) differed: $(sort -u "$STUB_STATE_ARGS" | paste -sd'|' -))"
+    # Both reads must actually happen. Accepting the union above would pass a gate that
+    # never asked for the lead at all and silently kept planning against the deadline.
+    grep -qxF -- '--get .repos["org/repo"].window.deadline_epoch' "$STUB_STATE_ARGS" \
+      || fail 'the gate never read .repos[REPO_KEY].window.deadline_epoch'
+    grep -qxF -- '--get .repos["org/repo"].leave.lead_minutes' "$STUB_STATE_ARGS" \
+      || fail 'the gate never read .repos[REPO_KEY].leave.lead_minutes — the pause point cannot be derived'
   fi
   if [ ! -s "$STUB_EST_ARGS" ]; then
     fail 'the decline gate never invoked estimate-resolve.sh — it cannot be bounding the work'
@@ -707,8 +768,12 @@ require_text "$LEAVE_SKILL" 'A failed invalidation is a STOP' \
 # value must be the whole object; expecting deadline_epoch there can never compare equal, so the
 # CAS loses every time and the spent deadline stays armed while LOOKING guarded — the same
 # "declines every pipeline in this repo" failure, reintroduced by the guard meant to prevent it.
-require_text "$LEAVE_SKILL" 'the expected value must be the **whole window object**' \
+require_text "$LEAVE_SKILL" 'the expected value must be a **whole window object**' \
   'the retirement CAS must expect the whole window object, not a scalar under it'
+# ...and specifically the FRESH one, since `.window` gained a mutable sub-key (issue #1679):
+# expecting the pre-/pause snapshot loses the CAS to an unrelated launch-decision write.
+require_text "$LEAVE_SKILL" 'Identity is carried by `deadline_epoch`, equality by the fresh object' \
+  'the retirement CAS must separate window IDENTITY (the deadline) from write atomicity (the object)'
 require_text "$PAUSE_RESUME_SKILL" 'the WHOLE window object' \
   'the pause-resume retirement CAS must expect the whole window object, not a scalar under it'
 # And the captures must actually bind the object, not the scalar the prose warns against.
@@ -1074,10 +1139,21 @@ require_text "$LEAVE_SKILL" 'window-cas-exit-codes' \
 # ORDER, not prose: `.window` is cleared BEFORE `.leave.active=false`, so a lock
 # timeout cannot leave active=false over a window this declaration still owns.
 # Section-scoped and positional - a sentence saying "window first" survives a swap.
+# The CAS now expects CAS_WINDOW — the object re-read immediately before the write, admitted
+# only after its `deadline_epoch` matched the one 8.2 validated (issue #1679). `.window` gained
+# a mutable sub-key, so byte-equality with the older snapshot would lose the CAS to an
+# unrelated launch-decision write and strand a spent deadline armed.
+# The anchor is the CAS's exit-6 RETRY guard, not the CAS line itself: since the retry
+# landed, `--expect "$CAS_WINDOW" … || WINDOW_CAS_RC=$?` appears twice in this section and
+# is no longer a unique marker. The retry guard occurs once, and anchoring on it asserts
+# something stronger anyway — the whole CAS attempt, retry included, resolves before the
+# deactivation, so a lock timeout cannot leave active=false over a window we still own.
 require_order "$LEAVE_SKILL" '## Step 8:' \
-  '--expect "$RETIRE_WINDOW"' \
+  'if [ "$WINDOW_CAS_RC" -eq 6 ]; then' \
   '"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"' \
   '8.6 must resolve the window CAS before marking the declaration inactive'
+require_text "$LEAVE_SKILL" '[ "$CAS_DEADLINE" != "$RETIRE_DEADLINE" ]' \
+  'the retirement CAS must identify the window by its deadline, not by object equality'
 require_order "$LEAVE_SKILL" '## Step 11:' \
   '--expect "$RECOVERY_WINDOW"' \
   '"$SESSION_STATE_SH" --set ".repos[\"$REPO_KEY\"].leave.active=false"' \
