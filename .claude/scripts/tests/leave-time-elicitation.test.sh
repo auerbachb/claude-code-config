@@ -400,6 +400,21 @@ if [ -n "${STUB_FLAKE_ONCE_FILE:-}" ] && [ ! -f "$STUB_FLAKE_ONCE_FILE" ]; then
   : >"$STUB_FLAKE_ONCE_FILE"
   exit 6
 fi
+# READS succeed and return a plausible object; STUB_SET_RC models the WRITE's outcome
+# only. The suppression branch now reads `.leave` before CAS-ing it (issue #1679), so a
+# stub that applied the write's failure code to the read too would make every
+# "failed write surfaces its code" case fail on the read instead and never reach the
+# write under test. STUB_GET_RC exists for the cases that DO want an unreadable read.
+case "$1" in
+  --get|--get-json)
+    if [ -n "${STUB_GET_RC:-}" ] && [ "${STUB_GET_RC}" -ne 0 ]; then exit "$STUB_GET_RC"; fi
+    case "$2" in
+      *.window) printf '%s\n' "${STUB_WINDOW_JSON:-null}" ;;
+      *) printf '%s\n' "${STUB_LEAVE_JSON:-{\"active\":false\}}" ;;
+    esac
+    exit 0
+    ;;
+esac
 exit "${STUB_SET_RC:-0}"
 STUB
 chmod +x "$STUB_ND"
@@ -443,9 +458,22 @@ if [ -n "$ND_BLOCK" ]; then
     fail 'the no-deadline path never wrote state'
   else
     WRITE="$(cat "$STUB_ND_ARGS")"
+    # A CAS, not a bare --set: this replaces `.leave` WHOLESALE, so an explicit
+    # declaration landing between the entry guard and this write would be erased —
+    # deadline, checkin_epoch, and the winddown_task_id that is the only handle on its
+    # live Monitor (issue #1679, round 4).
     case "$WRITE" in
-      *'--set .repos["org/repo"].leave='*) : ;;
-      *) fail "the marker must be written to .repos[KEY].leave (got: $WRITE)" ;;
+      *'--cas .repos["org/repo"].leave='*) : ;;
+      *) fail "the marker must be CAS-written to .repos[KEY].leave (got: $WRITE)" ;;
+    esac
+    case "$WRITE" in
+      *'--expect'*) : ;;
+      *) fail 'the .leave replacement must carry an --expect snapshot, or it is not a CAS' ;;
+    esac
+    case "$WRITE" in
+      *'--set .repos["org/repo"].leave='*)
+        fail 'the .leave replacement must not also be written unconditionally' ;;
+      *) : ;;
     esac
     case "$WRITE" in
       *'"active":false'*) : ;;
@@ -661,38 +689,19 @@ fi
 # ---------------------------------------------------------------------------
 # Part 4b — the planning-only marker, and the `false`-is-not-absent trap
 # ---------------------------------------------------------------------------
-MARKER_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-elicit-planning-only-marker)" \
-  || { fail 'could not extract the /leave-by planning-only marker write'; MARKER_BLOCK=""; }
+# The marker rides in Step 5's `.leave` literal and is written NOWHERE ELSE. A follow-up
+# `--set …leave.winddown_scheduled=false` is a blind sub-key write: an explicit declaration
+# replacing `.leave` in the gap would be stamped `false`, and Step 11 would then skip the
+# Monitor that successor legitimately armed (issue #1679, round 4). Assert the absence.
+if grep -q 'leave-by-elicit-planning-only-marker' "$ROOT/$LEAVE_SKILL"; then
+  fail 'the standalone planning-only re-assert must be gone — Step 5 publishes the flag atomically'
+fi
+grep -q -- '--set ".repos\[\\"\$REPO_KEY\\"\].leave.winddown_scheduled=false"' "$ROOT/$LEAVE_SKILL" \
+  && fail 'a blind winddown_scheduled sub-key write can stamp false onto a successor declaration'
 
+MARKER_BLOCK=nonempty
 if [ -n "$MARKER_BLOCK" ]; then
   group_start
-  MARKER_ARGS="$TMP/marker-args.txt"
-  : >"$MARKER_ARGS"
-  MARKER_OUT=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE="$MARKER_ARGS" STUB_SET_RC=0 STUB_FLAKE_ONCE_FILE=""
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    eval "$MARKER_BLOCK"
-    printf '%s\n' "$PLANNING_ONLY_RC"
-  )
-  [ "$MARKER_OUT" = "0" ] || fail "the planning-only marker write must report rc 0 (got: $MARKER_OUT)"
-  grep -qxF -- '--set .repos["org/repo"].leave.winddown_scheduled=false' "$MARKER_ARGS" \
-    || fail "the elicitation path must mark the record planning-only (wrote: $(cat "$MARKER_ARGS"))"
-
-  MARKER_FLAKE="$TMP/marker-flake-once"
-  rm -f "$MARKER_FLAKE"
-  MARKER_RETRY=$(
-    set -euo pipefail
-    export STUB_ARGS_FILE=/dev/null STUB_SET_RC=0 STUB_FLAKE_ONCE_FILE="$MARKER_FLAKE"
-    SESSION_STATE_SH="$STUB_ND"
-    REPO_KEY="org/repo"
-    eval "$MARKER_BLOCK"
-    printf '%s\n' "$PLANNING_ONLY_RC"
-  )
-  [ "$MARKER_RETRY" = "0" ] \
-    || fail "a lock timeout on the marker write must be retried once (got: $MARKER_RETRY)"
-  rm -f "$MARKER_FLAKE"
 
   # The trap this marker is most likely to die of: jq's `// empty` reads a literal `false`
   # as absent, so the one value that must suppress re-arming would read as "no marker".
@@ -740,7 +749,25 @@ if [ -n "$MARKER_BLOCK" ]; then
     *) fail 'an unset WINDDOWN_SCHEDULED must default to true, or explicit declarations stop arming' ;;
   esac
 
-  ok_group 'planning-only marker: written and retried, and read without folding false into absent'
+  # A whole-object `--expect` on `.window` can lose to a `launch_decisions` write that never
+  # touched `deadline_epoch`. Treating that loss as ownership loss leaves the spent deadline
+  # armed and declines every later launch — the very outcome the deadline-identity comparison
+  # was added to prevent, reintroduced by the guard meant to make the clear safe. Both window
+  # CAS sites must re-read on exit 7 and retry while the deadline still matches.
+  for PAIR in 'RECHECK_DEADLINE:RETIRE_DEADLINE' 'ND_RECHECK_EPOCH:ND_WINDOW_EPOCH'; do
+    RECHECK_VAR="${PAIR%%:*}"; AGAINST_VAR="${PAIR##*:}"
+    grep -Fq "\"\$$RECHECK_VAR\" = \"\$$AGAINST_VAR\"" "$ROOT/$LEAVE_SKILL" \
+      || fail "a window CAS losing on exit 7 must re-read and compare $RECHECK_VAR against $AGAINST_VAR before standing down"
+  done
+  # Bounded: one re-read and one retry, never a loop that spins against real churn. A
+  # `while` keyed on either CAS rc would retry forever under sustained contention and hang
+  # the wind-down, so assert the retry is a plain `if` at both sites.
+  [ "$(grep -c 'RECHECK' "$ROOT/$LEAVE_SKILL")" -ge 4 ] \
+    || fail 'both window CAS sites need the exit-7 re-read, not just one'
+  [ "$(grep -cE 'while +\[ +"\$(WINDOW_CAS_RC|ND_CAS_RC)"' "$ROOT/$LEAVE_SKILL")" -eq 0 ] \
+    || fail 'the exit-7 CAS retry must be a single `if`, not an unbounded `while` loop'
+
+  ok_group 'planning-only marker: published atomically by Step 5, never re-asserted blindly'
 fi
 
 # ---------------------------------------------------------------------------
