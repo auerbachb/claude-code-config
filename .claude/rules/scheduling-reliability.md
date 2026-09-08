@@ -8,20 +8,21 @@ This file covers between-turn polling. **Background work in flight is a polling 
 
 ## Tool Selection Decision Tree
 
-| User request / context | Primitive | Why |
-|------------------------|-----------|-----|
-| Recurring: "poll/check/watch every N", "keep running /skill" | **persistent `Monitor`** | The only primitive with positive idle-liveness evidence (#914, #924) |
-| Wall-clock cadence, ≥3 concurrent polls | **persistent `Monitor`** | One out-of-turn process can emit each tick independently |
-| One-shot "wake me in N minutes" | `ScheduleWakeup` | Single tick only |
-| Declared leave time ("I need to leave at 7 PM", "hard stop at 5:30") | **`/leave-by`** — arms the window, then one persistent `Monitor` (an already-due check-in runs inline, arming none) | Wall-clock wind-down, not a poll |
-| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` | Backstop, not a poll |
+| User request / context | Primitive |
+|------------------------|-----------|
+| Recurring: "poll/check/watch every N", "keep running /skill" | **persistent `Monitor`** |
+| Wall-clock cadence, ≥3 concurrent polls | **persistent `Monitor`** |
+| One-shot "wake me in N minutes" | `ScheduleWakeup` — single tick only |
+| Declared leave time ("I'm out at 7 PM") | **`/leave-by`** — arms the window; declared also arms a `Monitor`, elicited none |
+| Background work in flight (subagent, background process, watcher) | **ceiling watch** — `bgwork-ceiling.sh --arm-command` → `Monitor` |
 
 ## Declared Leave Times
 
 Routing only — `/leave-by` owns the source gate, countermand, and check-in wording; do not restate them here.
 
 - Route a wall-clock stop stated in chat to `/leave-by`, from **any** orchestration thread. Arming one is not becoming a `/pm` thread. Only a live user message arms, changes, or cancels one; a message during the runway **re-plans**.
-- The deadline is repo-scoped (`.window.deadline_epoch`); read it through `session-state.sh` and decline over-running pipelines at every launch (`/subagent` Step 7, `phase-protocols.md` §Launch gate).
+- **With none armed, ask** (#1679): attended threads elicit it via `/leave-by --elicit` before the first new-pipeline launch; an overrun asks once per issue per deadline. Never headless, in `/pm day`/`--window`, or at phase transitions.
+- The deadline is repo-scoped (`.window.deadline_epoch`); read it through `session-state.sh` and decline over-running pipelines at every launch (`/subagent` Step 7, `phase-protocols.md` §Launch gate) against the pause point `deadline_epoch − lead_minutes×60`.
 - **At session start and after compaction, recover it explicitly** — `--session-view` projects no `.leave`, so an unrecovered declaration dies with its Monitor and the wind-down never fires. Run `/leave-by` Step 11 whenever `.repos["<key>"].leave` exists.
 
 Mechanism and rationale: `.claude/reference/leave-time.md`.

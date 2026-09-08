@@ -371,6 +371,61 @@ persist a pending transition. Apply both gates again to all A→A, A→B, B→B,
 B→C, queued-head, and refill launches. Only `/end-resume` or
 `/pause-resume` may clear the execution gate.
 
+- **Before the thread's first new-pipeline launch, ask when the laptop closes (issue #1679).** The
+  deadline machinery below only bites if a deadline exists, and until now one existed only when the
+  user volunteered it. So the gate asks — once, and only when the answer can actually come from a
+  live user.
+
+  **Bind `ATTENDED` first.** It is `true` only when `AskUserQuestion` is genuinely available **and**
+  this launch is not a `/pm day` tick, a `/pm --window` run, a probe/auto-wake path, or any other
+  headless or non-interactive invocation. Anything you cannot positively confirm is `false`: an
+  unattended session that stops to ask is an unattended session that stalls, which is strictly worse
+  than the silent behaviour this replaces. (`/pm --window` is also covered by the "already armed"
+  branch below — Step 0b armed `.window` before dispatch — so it is skipped twice over.)
+
+  <!-- test-anchor: subagent-step7-leave-elicitation-gate -->
+
+  ```bash
+  ELICIT_LEAVE_TIME=false
+  ELICIT_SKIP_REASON=""
+  ELICIT_NOW=$(date -u +%s)
+  ELICIT_WINDOW_RC=0
+  ELICIT_DEADLINE=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window.deadline_epoch" 2>/dev/null) \
+    || ELICIT_WINDOW_RC=$?
+  ELICIT_ND_RC=0
+  ELICIT_NO_DEADLINE_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.no_deadline_until" 2>/dev/null) \
+    || ELICIT_ND_RC=$?
+  if [[ "${ATTENDED:-false}" != "true" ]]; then
+    # Not a failure — a SKIP. The decline gate below still runs, unchanged.
+    ELICIT_SKIP_REASON="unattended"
+  elif [[ "$ELICIT_WINDOW_RC" -ne 0 && "$ELICIT_WINDOW_RC" -ne 3 ]]; then
+    # Unreadable is not absent, here as everywhere: a lock timeout can hide an armed
+    # deadline, and asking for one the repo already has would overwrite a live plan
+    # with a guess. rc 3 (no state file yet) IS absent and does elicit.
+    ELICIT_SKIP_REASON="deadline state unreadable (rc=$ELICIT_WINDOW_RC)"
+  elif [[ "$ELICIT_DEADLINE" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_DEADLINE > ELICIT_NOW )); then
+    # Armed AND unexpired. A deadline already in the past is spent, not armed, and asks again.
+    ELICIT_SKIP_REASON="deadline already armed"
+  elif [[ "$ELICIT_ND_RC" -ne 0 && "$ELICIT_ND_RC" -ne 3 ]]; then
+    ELICIT_SKIP_REASON="no-deadline marker unreadable (rc=$ELICIT_ND_RC)"
+  elif [[ "$ELICIT_NO_DEADLINE_UNTIL" =~ ^[1-9][0-9]{0,10}$ ]] && (( ELICIT_NO_DEADLINE_UNTIL > ELICIT_NOW )); then
+    # "No deadline today", still inside the ET day it was written for.
+    ELICIT_SKIP_REASON="no deadline today"
+  else
+    ELICIT_LEAVE_TIME=true
+  fi
+  ```
+
+  On `ELICIT_LEAVE_TIME`, invoke **`/leave-by --elicit`** (Step 0e) and let it own the menu, the
+  normalization, and every write; when it returns, **re-read `.window` and `.leave`** and continue
+  into the decline gate below with the fresh values. Never parse the answer here and never write
+  `.window` from this skill — one parser, one deadline home.
+
+  **No separate "already asked" flag exists, deliberately.** The repo-scoped state *is* the record:
+  an armed unexpired deadline or an unexpired `no_deadline_until` suppresses the question, and an
+  expired deadline or a new ET day brings it back. A session flag would need recovering after every
+  compaction and would still ask twice from two threads on the same repo.
+
 - **Then check the armed deadline — one pipeline at a time (issue #1525).** A planning window set by
   `/pm --window` or a leave time set by `/leave-by` writes one `deadline_epoch`; a pipeline whose
   planning bound cannot finish before it does not start. This is a **per-issue** check — the batch
@@ -406,9 +461,31 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     # arithmetic outright. Only canonical decimal is accepted.
     LAUNCH_DECLINED=true; DECLINE_REASON="deadline malformed"
   elif [[ "$DEADLINE_RC" -eq 0 && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
+    # The gate plans against the PAUSE POINT, not the raw deadline (issue #1679): the
+    # wind-down has to happen BEFORE the user leaves, so the last useful moment to still
+    # be working is `deadline - lead`. A pipeline projected to land at 6:59 for a 7:00
+    # stop is one that is still merging while the laptop is closing.
+    #
+    # `lead_minutes` is read from the SAME persisted field /leave-by Step 4 computed
+    # `checkin_epoch` from, so the gate's pause point and the check-in's instant cannot
+    # disagree. `deadline_epoch` itself stays RAW — the check-in renders `By {H:MM} ET`
+    # from it, and a pre-shortened stored value would misreport the time the user named.
+    LEAD_RC=0
+    LEAD_MIN_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.lead_minutes" 2>/dev/null) \
+      || LEAD_RC=$?
+    LEAD_MIN=30
+    # Absent, null, unreadable, or out of /leave-by Step 2's [5,240] range all resolve to
+    # the documented default rather than declining: unlike the deadline, a missing lead is
+    # not a missing constraint — 30 is the value the cascade itself falls back to, so the
+    # gate stays conservative (it still subtracts) instead of failing closed on a knob.
+    if [[ "$LEAD_RC" -eq 0 && "$LEAD_MIN_RAW" =~ ^[1-9][0-9]{0,2}$ ]] \
+       && (( 10#$LEAD_MIN_RAW >= 5 )) && (( 10#$LEAD_MIN_RAW <= 240 )); then
+      LEAD_MIN=$((10#$LEAD_MIN_RAW))
+    fi
+    PAUSE_POINT_EPOCH=$(( DEADLINE_EPOCH - LEAD_MIN * 60 ))
     # Compare in SECONDS. Truncating the remainder to whole minutes first would make
     # the comparison drift by up to 59 s in whichever direction the truncation fell.
-    REMAINING_SEC=$(( DEADLINE_EPOCH - $(date -u +%s) ))
+    REMAINING_SEC=$(( PAUSE_POINT_EPOCH - $(date -u +%s) ))
     BOUND_MIN=""; EST_RC=0
     if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
       EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
@@ -427,8 +504,9 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     elif [[ -z "$BOUND_MIN" ]]; then
       LAUNCH_DECLINED=true; DECLINE_REASON="unestimated"
     elif (( BOUND_MIN * 60 >= REMAINING_SEC )); then
-      # `>=`, not `>`: an exact fit lands ON the deadline, leaving zero runway for the
-      # wind-down that has to happen before it.
+      # `>=`, not `>`: an exact fit lands ON the pause point, leaving zero slack for the
+      # wind-down that starts there. The rule is unchanged — only what it is measured
+      # against moved from the deadline to `deadline - lead`.
       LAUNCH_DECLINED=true; DECLINE_REASON="plan on ${BOUND_MIN} min"
     fi
   fi
@@ -450,6 +528,129 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   failed read, and `Declined #61 (deadline malformed) — deadline state is not a valid epoch` for a
   read that succeeded and returned nonsense. Apply
   this check at every launch point that already re-applies those gates.
+
+  **In an attended session, an OVERRUN decline is a question, not a verdict (issue #1679).** Only
+  the overrun reason — `plan on N min` — becomes a menu. The other four (`unestimated`,
+  `deadline unreadable`, `deadline malformed`, `estimate lookup failed`) stay silent declines: they
+  are missing or broken inputs, not choices, and a menu offering to launch through one would ask the
+  user to authorize a decision nobody can evaluate. Headless sessions keep the single-line silent
+  decline for every reason, unchanged.
+
+  <!-- test-anchor: subagent-step7-overrun-decision -->
+
+  ```bash
+  OVERRUN_ASK=false
+  OVERRUN_DECISION=""
+  # ATTENDED gates the QUESTION, never the record. A decision the user already made is
+  # theirs on every later cycle, and most of those cycles are unattended — gating the read
+  # on attendance is how "Launch anyway" gets honoured once and then quietly forgotten,
+  # leaving the issue declined forever by the very monitor loop meant to act on it.
+  if [[ "$LAUNCH_DECLINED" == true && "$DECLINE_REASON" == "plan on "* \
+        && "$DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,10}$ ]]; then
+    DECISION_RC=0
+    DECISION_JSON=$("$SESSION_STATE_SH" \
+      --get-json ".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]" 2>/dev/null) \
+      || DECISION_RC=$?
+    if [[ "$DECISION_RC" -ne 0 && "$DECISION_RC" -ne 3 ]]; then
+      # Unreadable is not "never asked". Asking again on an unreadable record would nag
+      # every monitor cycle — the exact behaviour the record exists to stop — so the
+      # decline that is already standing holds, and nothing is asked.
+      #
+      # Its OWN value, never a borrowed "skip": "we could not read the record" and "the
+      # user chose to skip" are different facts, and writing the second when only the
+      # first is true makes a failed read indistinguishable from an answer in every
+      # report that quotes this variable. It is not in the write allow-list either, so
+      # a fabricated answer can never reach state.
+      OVERRUN_DECISION="unreadable"
+    else
+      # The recorded answer counts ONLY against the deadline it was given for. A bare
+      # decision would keep applying after the user re-declared a different time, which
+      # is an answer about a clock that no longer exists.
+      OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
+        --argjson d "$DEADLINE_EPOCH" \
+        'if type == "object" and .deadline_epoch == $d and (.decision == "skip" or .decision == "launch_anyway")
+         then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
+      # No record yet: ask only if someone is there to answer. Unattended, the decline
+      # simply stands — today's behaviour, unchanged.
+      if [[ -z "$OVERRUN_DECISION" && "${ATTENDED:-false}" == "true" ]]; then OVERRUN_ASK=true; fi
+    fi
+  fi
+  # A recorded (or re-asked and answered) `launch_anyway` is the ONLY thing that reopens
+  # the gate, and it reopens it for this issue alone. Written as an `if`, not a
+  # `[[ … ]] && { … }`: the short-circuit form returns 1 whenever the test is false, and
+  # this is the block's last statement — so under a `set -e` caller the common case
+  # (no recorded decision) would abort the launch path instead of falling through it.
+  if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+    LAUNCH_DECLINED=false; DECLINE_REASON=""
+  fi
+  ```
+
+  On `OVERRUN_ASK`, present **one** `AskUserQuestion` (`ask-menu.md`) naming the issue, its bound,
+  and the pause-point clock, with exactly these options in this order:
+
+  | Option label | Effect |
+  |---|---|
+  | `Skip for now (Recommended)` | The decline stands: the issue stays queued, exactly as today |
+  | `Launch anyway — parks at the pause point` | Launch this pipeline; the check-in renders its row `parks` |
+  | `Change my leave time` | Route to `/leave-by` Step 9's re-declaration path, then Steps 1–7, then re-run this gate against the new deadline |
+
+  Record the answer **before acting on it**, one key at a time so a concurrent sibling's entry is
+  never dropped, and only for `skip` / `launch_anyway` (a `Change my leave time` answer records
+  nothing — the new deadline re-arms the question by itself):
+
+  <!-- test-anchor: subagent-step7-overrun-record -->
+
+  ```bash
+  DECISION_WRITE_RC=0
+  # The allow-list is IN the block, not only in the sentence above it: `Change my leave
+  # time` is an answer about the deadline, not about this issue, and persisting it here
+  # would leave a record no reader recognises — one that suppresses the ask for this
+  # issue forever while meaning nothing to the gate or the check-in.
+  if [[ "$OVERRUN_DECISION" == "skip" || "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+    # Bound to a variable so the retry re-sends the IDENTICAL write, not a re-interpolated
+    # near-copy carrying a second `date` call's timestamp.
+    DECISION_SET=".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]={\"decision\":\"${OVERRUN_DECISION}\",\"deadline_epoch\":${DEADLINE_EPOCH},\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    "$SESSION_STATE_SH" --set "$DECISION_SET" >/dev/null 2>&1 || DECISION_WRITE_RC=$?
+    # Exit 6 is a retryable lock timeout, retried here rather than described beside the block.
+    if [[ "$DECISION_WRITE_RC" -eq 6 ]]; then
+      DECISION_WRITE_RC=0
+      "$SESSION_STATE_SH" --set "$DECISION_SET" >/dev/null 2>&1 || DECISION_WRITE_RC=$?
+    fi
+  fi
+  ```
+
+  Capture that exit code rather than letting the write run bare. Unguarded, a failed `--set` aborts
+  the whole launch path under `set -e` — the user answers the menu and the pipeline neither launches
+  nor reports why — and the one line below has no status to name.
+
+  **Then re-apply the reopen to the answer you just recorded**, exactly as the block does for a
+  record read back from state:
+
+  <!-- test-anchor: subagent-step7-overrun-reopen -->
+
+  ```bash
+  if [[ "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+    LAUNCH_DECLINED=false; DECLINE_REASON=""
+  fi
+  ```
+
+  The block above ran **before** the menu existed, so its reopen saw only the *stored* decision —
+  `LAUNCH_DECLINED` is still `true` at this point on every freshly-asked issue. Skipping this second
+  application is the failure mode where the user clicks "Launch anyway", the answer is dutifully
+  recorded, and nothing launches until the next monitor cycle happens to read the record back.
+
+  **The record is what keeps the monitor loop from nagging.** Step 8 re-applies this whole gate
+  every cycle; without a persisted answer the same menu would fire every 60 seconds. A non-zero
+  `DECISION_WRITE_RC` is therefore worth one line naming it — the decision holds for this launch,
+  but the question will come back on the next cycle. `launch_anyway` **does not move the deadline and does not promise the pipeline
+  lands**: it is read back by `/leave-by` Step 8.3 to force that row's `By {H:MM} ET` verdict to
+  `parks` (`time-estimates.md` §"Deadline variant"), which is the honest reading of the choice the
+  user made.
+
+  **The overrun ask is per-issue, and it is not an elicitation point for anything else.** Phase
+  transitions (A→B, B→C, replacement respawns) keep `phase-protocols.md`'s existing behaviour: they
+  re-apply the gate including the pause-point comparison and any recorded decision, and they never
+  ask.
 
   **A decline is per-issue, not per-round — but it does not promote anything.** Any *independent*
   issue still eligible on its own bound launches as usual; the gate never stops the round. A queued
@@ -730,6 +931,12 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    rather than counting them here, since a fixed count in a second place is how
    this list came to omit the deadline. When any one is closed or declined,
    persist the pending transition and continue without launching it.
+   **Apply a recorded overrun decision silently** (issue #1679): re-applying Step 7's
+   gate to a successor or a queued head reads `window.launch_decisions[<issue>]` and
+   honours a record matching the current `deadline_epoch` — `skip` keeps it queued,
+   `launch_anyway` launches — **without re-asking**. Only a changed `deadline_epoch`
+   re-arms the question, and a **phase transition never elicits a leave time** at all;
+   `ELICIT_LEAVE_TIME` is a new-pipeline concern.
    - Parse the Structured Exit Report from its output.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.

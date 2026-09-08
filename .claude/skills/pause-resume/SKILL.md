@@ -882,7 +882,13 @@ above:
 - **Deadline still in the future** → the leave time **still applies**, and this resume is an
   ordinary mid-afternoon return, not a withdrawal. Keep `leave.active=true`, keep `.window`, and
   **re-arm the wind-down** for the remaining time with a **fresh generation**, publishing the new
-  identity pair exactly as `/leave-by` Step 6 does. **Branch on `checkin_epoch` the way Step 11's
+  identity pair exactly as `/leave-by` Step 6 does — **unless `leave.winddown_scheduled` is
+  explicitly `false`** (issue #1679), which marks a leave time *elicited* by the launch gate rather
+  than declared: it is a planning deadline only, and never had a Monitor to restore. Keep the
+  deadline, re-arm nothing, and say so in the resume line. Only a literal `false` suppresses —
+  absent and `null` are every explicitly declared leave time, which must keep re-arming, so read
+  the field with a test that does not fold `false` into "absent" (`/leave-by` Step 11 shows the
+  jq form). **Branch on `checkin_epoch` the way Step 11's
   table does, rather than re-arming blindly:** a check-in that already fired leaves `checkin_epoch`
   in the past, and arming a Monitor for a past instant clamps the sleep to one second and winds the
   board down again seconds after the user asked for it back. `checkin_epoch` in the future → re-arm
