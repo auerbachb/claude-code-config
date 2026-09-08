@@ -421,14 +421,31 @@ countdown() { # <epoch>
 # the table renders as `-` and nobody mistakes for zero usage.
 emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan>
   local used="${5:-}" resets="${6:-}"
+  # `account_label`, not `label`: `label` is a jq KEYWORD (`label $out | …`), and
+  # while jq 1.7 accepts it after `$`, nothing in this repo pins a jq version —
+  # the dependency list says "jq". A keyword-named binding is free to rename and
+  # not worth betting every row on.
+  #
+  # The append is checked. Every provider path funnels through here, so a jq
+  # program that fails to build a row would otherwise leave `$ROWS` empty and
+  # the run would still exit 0 — an empty table, or `[]` under --json, reported
+  # as a successful read. That is the report saying "no accounts" when it means
+  # "I could not build a row", which is the one thing a display-only tool must
+  # never do.
+  #
+  # Built into a file rather than a `$(…)` capture: bash 3.2 — the fleet's
+  # primary shell — scans command substitutions by counting parens, and this jq
+  # program is full of them.
+  local rowf="$TMP/row.json"
+  : > "$rowf"
   jq -nc \
-    --arg provider "$1" --arg label "$2" --arg email "$3" --arg window "$4" \
+    --arg provider "$1" --arg account_label "$2" --arg email "$3" --arg window "$4" \
     --arg used "$used" --arg resets "$resets" \
     --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-}" \
     --arg et "$(epoch_to_et "$resets")" --arg in "$(countdown "$resets")" \
     '{provider: $provider,
-      label: $label,
-      reported_email: (if $email == "" then $label else $email end),
+      label: $account_label,
+      reported_email: (if $email == "" then $account_label else $email end),
       window: $window,
       used_pct: (if $used == "" then null else (try ($used | tonumber) catch null) end),
       remaining_pct: (if $used == "" then null
@@ -439,7 +456,13 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       status: $status,
       detail: $detail,
       source: (if $source == "" then null else $source end),
-      plan: (if $plan == "" then null else $plan end)}' >> "$ROWS"
+      plan: (if $plan == "" then null else $plan end)}' > "$rowf" 2>/dev/null
+  if [[ ! -s "$rowf" ]]; then
+    ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
+    warn "internal defect: could not build the $1 row for ${2} — this account is missing from the report"
+    return 1
+  fi
+  cat "$rowf" >> "$ROWS"
 }
 
 relogin_hint() { # <provider> <label>
@@ -971,6 +994,7 @@ COUNT="$(printf '%s' "$CONFIG" | jq '.accounts | length' 2>/dev/null || true)"
 [[ "$COUNT" =~ ^[0-9]+$ ]] || die 5 "could not count the accounts in $CONFIG_FILE"
 
 MATCHED=0
+ROW_BUILD_FAILURES=0
 resolve_claude_version
 
 for (( i = 0; i < COUNT; i++ )); do
@@ -1015,6 +1039,14 @@ if [[ "$MATCHED" -eq 0 ]]; then
     echo "List the registered accounts with: /quotas-setup list"
   fi
   exit 0
+fi
+
+# Accounts matched the filter but nothing survived row-building: the report has
+# nothing to say and no honest way to say it, because `[]` and a bare header
+# both read as "no accounts". Exit 70 — the same internal-defect status the
+# --help extraction failure uses — rather than emitting a successful nothing.
+if [[ ! -s "$ROWS" ]]; then
+  die 70 "row builder produced no rows for $MATCHED matched account(s) (${ROW_BUILD_FAILURES} failed) — refusing to print an empty report as a successful read"
 fi
 
 if [[ "$JSON" -eq 1 ]]; then

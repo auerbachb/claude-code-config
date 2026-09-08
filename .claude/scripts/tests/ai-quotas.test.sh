@@ -672,6 +672,44 @@ check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not a
 check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
   "control(+): the figures are the fixture's 71, not the HTTP body's 11"
 
+# --- 12c. a row that cannot be built is never a successful empty report -----
+# Every provider path funnels through emit_row. If its jq program cannot build a
+# row, the old code appended nothing and the run still exited 0 — an empty table,
+# or `[]` under --json, presented as a successful read. That is the report saying
+# "no accounts" when it means "I could not build a row", and for a display-only
+# tool whose whole output is a claim about accounts, it is the worst shape the
+# failure could take. A jq that always fails is what that looks like from the
+# script's side.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+run --json
+check_eq "$RC" "0" "control(+): the same registry reports normally with a working jq"
+check_eq "$(printf '%s' "$OUT" | jq 'length')" "1" "control(+): and yields a row"
+
+# Fails ONLY the `-nc` invocation, which in this script is emit_row and nothing
+# else. A jq that fails outright would be caught by the registry checks long
+# before any row is built, and this case would pass without ever reaching the
+# guard it is named for.
+real_jq="$(command -v jq)"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'for a in "$@"; do [[ "$a" == "-nc" ]] && exit 91; done\n'
+  printf 'exec %s "$@"\n' "$real_jq"
+} > "$BIN/jq"
+chmod +x "$BIN/jq"
+saved_path="$PATH"
+PATH="$BIN:$PATH"
+run --json
+PATH="$saved_path"
+rm -f "$BIN/jq"
+check_eq "$RC" "70" "a row that cannot be built exits 70, not 0 with an empty report"
+check_not_contains "$OUT" "[]" \
+  "control(-): and does not print an empty JSON array as if the read succeeded"
+check_contains "$ERR" "could not build" \
+  "and names the account whose row was lost"
+
 # --- 12b. no `column` degrades the table, it does not replace it ------------
 # The fallback for a missing `column` printed the TSV header and then `cat` of
 # the ROW FILE — which holds JSON objects, not the rendered columns. That is not
