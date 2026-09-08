@@ -473,6 +473,19 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
     LEAD_RC=0
     LEAD_MIN_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.lead_minutes" 2>/dev/null) \
       || LEAD_RC=$?
+    # Exit 6 is a documented, RETRYABLE lock timeout — retry once, the same as every other
+    # read in this family. This retry is load-bearing rather than cosmetic: the fallback
+    # below is only conservative when the CONFIGURED lead is <= 30. A user who set
+    # `--lead 60` and loses this read to a moment's contention gets a pause point 30
+    # minutes LATER than the real one, so the gate admits a pipeline projected to land
+    # after the wind-down has already started — declining is the safe direction here, and
+    # silently reading the wrong lead is the unsafe one. Retrying first means the default
+    # is reached only when the knob is genuinely absent, not merely momentarily locked.
+    if [ "$LEAD_RC" -eq 6 ]; then
+      LEAD_RC=0
+      LEAD_MIN_RAW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].leave.lead_minutes" 2>/dev/null) \
+        || LEAD_RC=$?
+    fi
     LEAD_MIN=30
     # Absent, null, unreadable, or out of /leave-by Step 2's [5,240] range all resolve to
     # the documented default rather than declining: unlike the deadline, a missing lead is

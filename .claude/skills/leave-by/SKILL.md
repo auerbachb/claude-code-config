@@ -169,8 +169,22 @@ Rationale: `.claude/reference/leave-time.md` §"Asking for the time instead of w
 
 **Skipping Step 6 is not enough on its own — mark the record, or recovery re-arms it.** Step 11
 and `/pause-resume` Step 5 both restore a wind-down from `leave.active` plus the two epochs, with
-no way to tell "the Monitor died with its session" from "no Monitor was ever meant to exist". So
-after Steps 1–5, write the marker:
+no way to tell "the Monitor died with its session" from "no Monitor was ever meant to exist".
+
+**Export the marker BEFORE Step 1 runs**, so Step 5's `.leave` literal publishes it in the same
+`--set` as `active:true`:
+
+<!-- test-anchor: leave-by-elicit-planning-only-preset -->
+
+```bash
+WINDDOWN_SCHEDULED=false   # consumed by Step 5's .leave literal; every other path defaults true
+```
+
+That atomic write — not the re-assert below — is what leaves no window for a concurrent recovery
+to read an armed-looking record with no marker on it. Set it here, as an assignment rather than an
+instruction to remember, because a marker that depends on a later step running is exactly the
+marker that goes missing. Then re-assert it after Steps 1–5, because the flag is the one field
+here whose loss is silent and whose write is worth being able to observe and retry:
 
 <!-- test-anchor: leave-by-elicit-planning-only-marker -->
 
@@ -415,7 +429,7 @@ NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ARM_RC=0
 "$SESSION_STATE_SH" \
   --set ".repos[\"$REPO_KEY\"].window={\"deadline_epoch\":${DEADLINE_EPOCH},\"window_minutes\":${WINDOW_MINUTES},\"effective_window_min\":${EFFECTIVE_WINDOW_MIN},\"set_at\":\"${NOW_ISO}\"}" \
-  --set ".repos[\"$REPO_KEY\"].leave={\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null}" \
+  --set ".repos[\"$REPO_KEY\"].leave={\"active\":true,\"declared_at\":\"${NOW_ISO}\",\"deadline_epoch\":null,\"checkin_epoch\":${CHECKIN_EPOCH},\"lead_minutes\":${LEAD_MIN},\"source_window_str\":$(printf '%s' "$WINDOW_STR" | jq -R .),\"winddown_task_id\":null,\"winddown_generation\":null,\"winddown_scheduled\":${WINDDOWN_SCHEDULED:-true}}" \
   2>/dev/null || ARM_RC=$?
 # The window object this declaration just armed, for the Step 6 rollback CAS. Read it back
 # rather than reconstructing it, so the expected value is byte-for-byte what is stored.
@@ -431,6 +445,16 @@ ARM_DECLARED_AT="$NOW_ISO"
 there finds an explicit "not here" rather than a stale number, and the schema comment says where the
 real one lives. `source_window_str` is the only field carrying user text, so it is encoded with
 `jq -R`, never interpolated.
+
+**`winddown_scheduled` is written HERE, in the same object as `active:true`** (issue #1679). Step
+0e's elicited branch sets `WINDDOWN_SCHEDULED=false` before reaching this step; every other caller
+leaves it unset and takes the `:-true` default. It has to ride along in this literal rather than
+follow as a second write, because between an `active:true` that says "a wind-down is live" and a
+later marker that says "no Monitor was ever meant to exist", the record reads as the former — and
+Step 11 or `/pause-resume` Step 5 landing in that gap arms a check-in the user never asked for.
+One `--set` of the whole object leaves no gap to land in. The same reasoning as Step 6's
+"publish the generation BEFORE arming": the field a later reader validates against must never be
+absent while the flag that invites the read is already true.
 
 A non-zero `ARM_RC` (retry once on exit `6`, a lock timeout) → arm no Monitor, print
 `Leave time not set — state write failed (rc=$ARM_RC).`, and stop. Writing state before arming is
@@ -930,10 +954,26 @@ elif [ -n "$RETIRE_DECLARED_AT" ] && [ "$HOLDER_AT" = "$RETIRE_DECLARED_AT" ]; t
   RETIRE_DEADLINE=$(printf '%s' "$RETIRE_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
   CAS_WINDOW_RC=0
   CAS_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || CAS_WINDOW_RC=$?
+  # Exit 6 is a documented, RETRYABLE lock timeout — retry it here, in the block, the
+  # same way Step 8.4's `LAUNCH_DECISIONS` read and the planning-only marker do. Left
+  # unretried, a moment's ordinary contention is enough to reach the unreadable branch.
+  if [ "$CAS_WINDOW_RC" -eq 6 ]; then
+    CAS_WINDOW_RC=0
+    CAS_WINDOW=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].window") || CAS_WINDOW_RC=$?
+  fi
   CAS_DEADLINE=$(printf '%s' "$CAS_WINDOW" | jq -r '.deadline_epoch // empty' 2>/dev/null)
   WINDOW_CAS_RC=0
-  if [ "$CAS_WINDOW_RC" -ne 0 ] || [ -z "$RETIRE_DEADLINE" ] || [ "$CAS_DEADLINE" != "$RETIRE_DEADLINE" ]; then
-    WINDOW_CAS_RC=7   # someone else's window now, or unreadable — the ownership-loss path
+  if [ "$CAS_WINDOW_RC" -ne 0 ]; then
+    # UNREADABLE IS NOT OWNERSHIP LOSS (issue #1525's rule, applied here). Exit 7's
+    # premise is that someone else's window sits there, which licenses clearing
+    # `leave.active` and leaving `.window` alone. A read that FAILED proves neither:
+    # folding it into 7 clears `active` while the deadline stays armed, leaving an
+    # ownerless deadline that declines every launch for the rest of the day — the
+    # exact shape Step 6's `PUBLISH_RC=5` branch exists to avoid. Retire NOTHING and
+    # report the still-armed window instead.
+    WINDOW_CAS_RC=5
+  elif [ -z "$RETIRE_DEADLINE" ] || [ "$CAS_DEADLINE" != "$RETIRE_DEADLINE" ]; then
+    WINDOW_CAS_RC=7   # someone else's window now — the genuine ownership-loss path
   else
     "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].window=null" \
       --expect "$CAS_WINDOW" >/dev/null 2>&1 || WINDOW_CAS_RC=$?
@@ -954,6 +994,16 @@ retires somebody else's planning deadline on its way out. The deadline compariso
 `--cas … --expect "$CAS_WINDOW"` narrows the write to exactly the window 8.6 was winding down; a
 mismatched deadline, or the CAS's own exit `7`, both mean the window moved on and is no longer
 this declaration's to clear.
+
+**A failed re-read is not a mismatched deadline.** The three outcomes are distinct and only two of
+them retire anything: a deadline that *differs* is somebody else's window (`7` — clear `.leave`,
+leave `.window`), a deadline that *matches* is ours (`0` — clear both), and a read that *failed*
+establishes neither (`5` — clear nothing, report). Collapsing the third into `7` is the same
+mistake Step 6 spells out for `winddown_generation`: it takes the branch whose whole premise is
+that another owner exists, so it clears `leave.active` on evidence it never obtained and leaves
+the deadline armed with nobody left to retire it — every later launch declined against a window
+that no longer has an owner. The `-eq 6` retry above absorbs ordinary lock contention first, so
+reaching `5` means the store is genuinely unreadable and the honest answer is to say so.
 
 > **`--expect` is compared against the value at the `--cas` path.** The path here is `.window`, so
 > the expected value must be a **whole window object**, never its `deadline_epoch`: expecting a

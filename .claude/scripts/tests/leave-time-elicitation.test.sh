@@ -684,6 +684,36 @@ if [ -n "$MARKER_BLOCK" ]; then
   [ "$(printf '%s' '{"winddown_scheduled":false}' | jq -r '.winddown_scheduled // empty')" = "" ] \
     || fail 'control failed: `// empty` was expected to swallow a literal false'
 
+  # The marker must ride in Step 5's `.leave` literal, not only in the re-assert above.
+  # A record carrying active:true with the field still absent reads as "arm as usual" to
+  # Step 11 and /pause-resume Step 5, so a recovery landing between the two writes arms a
+  # check-in the user never asked for (issue #1679, CodeAnt/Graphite round 2).
+  PRESET_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-elicit-planning-only-preset)" \
+    || { fail 'the elicited branch must preset WINDDOWN_SCHEDULED before Step 1'; PRESET_BLOCK=""; }
+  # Blank it on failure before the guard, so a partial extraction can never reach `eval`
+  # and turn a missing-anchor failure into a confusing shell error (same idiom as MARKER_BLOCK).
+  if [ -n "$PRESET_BLOCK" ]; then
+    PRESET_VAL=$(
+      set -euo pipefail
+      eval "$PRESET_BLOCK"
+      printf '%s\n' "$WINDDOWN_SCHEDULED"
+    )
+    [ "$PRESET_VAL" = "false" ] \
+      || fail "the elicited preset must set WINDDOWN_SCHEDULED=false (got: $PRESET_VAL)"
+  fi
+
+  ARM_BLOCK="$(extract_skill_bash "$ROOT/$LEAVE_SKILL" leave-by-arm-state)" \
+    || { fail 'could not extract the /leave-by arm-state block'; ARM_BLOCK=""; }
+  case "$ARM_BLOCK" in
+    *'\"winddown_scheduled\":${WINDDOWN_SCHEDULED:-true}'*) : ;;
+    *) fail 'Step 5 must publish winddown_scheduled inside the .leave literal, defaulting to true' ;;
+  esac
+  # The default must keep every non-elicited caller arming as before.
+  case "$ARM_BLOCK" in
+    *'WINDDOWN_SCHEDULED:-true'*) : ;;
+    *) fail 'an unset WINDDOWN_SCHEDULED must default to true, or explicit declarations stop arming' ;;
+  esac
+
   ok_group 'planning-only marker: written and retried, and read without folding false into absent'
 fi
 
