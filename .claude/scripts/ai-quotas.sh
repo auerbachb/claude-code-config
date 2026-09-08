@@ -730,8 +730,24 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
   done
 
   exec 3>&-
+  # Bounded reap, same reasoning as lib/bounded-run.sh's: SIGTERM is a request
+  # the real `codex app-server` is free to ignore, and SIGKILL is QUEUED rather
+  # than effective against a process wedged in uninterruptible I/O. An
+  # unconditional `wait` would then block forever HERE — at cleanup, after the
+  # answer is already in hand — and hang a report whose whole contract is that
+  # it comes back. So escalate TERM to KILL, poll a finite window for the exit,
+  # and give up on the status rather than the report. init reaps the orphan.
   kill "$srv" 2>/dev/null || true
-  wait "$srv" 2>/dev/null || true
+  local reap=0 gone=0
+  while [[ "$reap" -lt 4 ]]; do
+    if ! kill -0 "$srv" 2>/dev/null; then gone=1; break; fi
+    [[ "$reap" -eq 1 ]] && kill -9 "$srv" 2>/dev/null
+    sleep 1
+    reap=$(( reap + 1 ))
+  done
+  # `kill -0` succeeds on a zombie, so only wait once the process is really
+  # gone — that call returns immediately and reaps it.
+  [[ "$gone" -eq 1 ]] && wait "$srv" 2>/dev/null
 
   if grep -q "$id2_re" "$out" 2>/dev/null; then
     CODEX_FAIL_REASON=""
@@ -755,7 +771,7 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
 codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note>]
   local label="$1" email="$2" snap="$3" source="$4"
   local note="${5:-}"
-  local plan weekly five rendered=0 weekly_ok=0 used resets dur
+  local plan weekly five rendered=0 weekly_ok=0 weekly_is_short=0 used resets dur
 
   plan="$(jq -r '.planType // empty' "$snap" 2>/dev/null || true)"
   weekly="$(jq -c '[.primary, .secondary] | map(select(. != null))
@@ -779,6 +795,7 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       window="7-day"
     elif [[ "$dur" =~ ^[0-9]+$ ]]; then
       window="$(( dur / 60 ))-hour"
+      weekly_is_short=1
       detail="${note:+${note}; }no 7-day window reported; showing the longest window this plan reports"
     else
       window="window"
@@ -790,7 +807,14 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
   fi
 
   if [[ "$FIVE_HOUR" -eq 1 ]]; then
-    five="$(jq -c '[.primary, .secondary] | map(select(. != null))
+    # Exclude the slot the weekly row already rendered. When a plan reports one
+    # window and it is shorter than a week, the weekly selector's
+    # longest-window fallback renders THAT window; without this exclusion the
+    # short selector picks the same slot again and `--five-hour` prints one
+    # window as two rows differing only in the note.
+    five="$(jq -c --argjson shown "${weekly:-null}" \
+                  '[.primary, .secondary] | map(select(. != null))
+                   | map(select(. != $shown))
                    | map(select(.windowDurationMins != null and .windowDurationMins < 10080))
                    | sort_by(.windowDurationMins) | first // empty' "$snap" 2>/dev/null || true)"
     if [[ -n "$five" ]]; then
@@ -801,6 +825,12 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       [[ -n "$dur" && "$dur" != "300" ]] && flabel="$(( dur / 60 ))-hour"
       emit_row codex "$label" "$email" "$flabel" "$used" "$resets" ok "$note" "$source" "$plan"
       rendered=1
+    elif [[ "$weekly_is_short" -eq 1 ]]; then
+      # The only sub-weekly window this plan reports is the row above, which
+      # already carries its real duration and says why it is standing in for a
+      # weekly one. Printing it again would duplicate it; claiming the plan
+      # reports no short window would contradict the row directly above it.
+      :
     elif [[ "$weekly_ok" -eq 1 ]]; then
       # A single-window response is valid, not an error — say so instead of
       # dropping the row the flag promised. Gated on the weekly row having

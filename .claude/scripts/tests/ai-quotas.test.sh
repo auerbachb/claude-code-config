@@ -172,6 +172,14 @@ case "${1:-}" in
   app-server) : ;;
   *) echo "STUB-CODEX: unexpected subcommand '${1:-}'" >&2; exit 93 ;;
 esac
+# STUB_CODEX_IGNORE_TERM models a server that does not honour SIGTERM: it
+# ignores the signal and, once the reader closes the pipe, lingers instead of
+# exiting. The linger is BOUNDED so a reader that waits unconditionally shows up
+# as a slow test rather than a suite that never returns — a test whose failure
+# mode is a hang cannot report anything.
+if [[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]]; then
+  trap '' TERM INT
+fi
 fixture="${CODEX_HOME}/rate-limits.json"
 if [[ ! -s "$fixture" ]]; then
   echo "STUB-CODEX: no app-server fixture for $CODEX_HOME" >&2
@@ -209,6 +217,10 @@ while IFS= read -r line; do
     *) echo "STUB-CODEX: unexpected request: $line" >&2; exit 95 ;;
   esac
 done
+# EOF on the pipe is the reader closing it, which normally ends this stub. In
+# ignore-term mode it lingers instead, so the reader's cleanup has something
+# that outlives SIGTERM to reap.
+[[ -n "${STUB_CODEX_IGNORE_TERM:-}" ]] && sleep 30
 exit 0
 EOF
 
@@ -640,6 +652,57 @@ check_not_contains "$(field_of codex-one@example.com "7-day" detail)" "did not a
   "control(-): a spaced id is not reported as a timeout"
 check_eq "$(field_of codex-one@example.com "7-day" used_pct)" "71" \
   "control(+): the figures are the fixture's 71, not the HTTP body's 11"
+
+# --- 13b. one window is one row, even when it stands in for the weekly one ---
+# A plan reporting a single sub-weekly window is valid input, and the weekly
+# selector's longest-window fallback renders it as the weekly row. The short
+# selector must not then pick the SAME slot: that prints one window as two rows
+# differing only in the note, which reads as two windows.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com \
+  "$(jq -n --argjson five "$FIVE_RESET" \
+     '{rateLimits: {limitId: "codex", planType: "pro",
+                    primary: {usedPercent: 33, windowDurationMins: 300, resetsAt: $five},
+                    secondary: null}}')")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+run --json --five-hour
+check_eq "$RC" "0" "a single-short-window plan is not an error"
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.label == "codex-one@example.com")] | length')" "1" \
+  "one reported window renders exactly one row under --five-hour"
+check_eq "$(field_of codex-one@example.com "5-hour" used_pct)" "33" \
+  "and it is the window the payload actually reported"
+check_contains "$(field_of codex-one@example.com "5-hour" detail)" "no 7-day window reported" \
+  "the row says it is standing in for a weekly one"
+check_not_contains "$(field_of codex-one@example.com "5-hour" detail)" "reports no short window" \
+  "control(-): and does not also claim the plan reports no short window"
+
+# --- 14d. cleanup is bounded when the server outlives SIGTERM ---------------
+# SIGTERM is a request the real `codex app-server` may decline. An unconditional
+# `wait` after it blocks until the process feels like exiting — at CLEANUP,
+# after the answer is already in hand — so a report whose whole contract is that
+# it comes back would hang holding the result. Cleanup must escalate to SIGKILL
+# and give up on the status rather than on the report.
+#
+# The stub lingers 30s in this mode, so the regression shows up as elapsed time.
+# Asserting a ceiling well under that linger is what makes this discriminating:
+# with the bound the run is a few seconds, without it the run inherits the 30.
+
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+export STUB_CODEX_IGNORE_TERM=1
+term_t0="$(date +%s)"
+run --json
+term_elapsed=$(( $(date +%s) - term_t0 ))
+unset STUB_CODEX_IGNORE_TERM
+check_eq "$(field_of codex-one@example.com "7-day" source)" "app-server" \
+  "a server that ignores SIGTERM still yields its answer"
+if [[ "$term_elapsed" -lt 15 ]]; then
+  ok "and cleanup is bounded — the run took ${term_elapsed}s, not the stub's 30s linger"
+else
+  bad "cleanup was not bounded: the run took ${term_elapsed}s, inheriting the stub's linger"
+fi
 
 # --- 14c. an unusable timeout is refused, not used --------------------------
 # `[[ -lt ]]` is arithmetic: `abc` evaluates to 0, so the app-server loop makes
