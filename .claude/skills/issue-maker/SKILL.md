@@ -43,11 +43,53 @@ The bar is **`/subagent` Step 4 criterion 3 — the subagent-fit sizing bar**: o
 
 **Judge from the body, not the labels.** What the ask itself describes decides sizing — how many independently shippable deliverables it names, how many surfaces it spans. A `size:*` or `complexity:*` label, where one exists, is a **tie-break only**: it can settle a genuinely balanced call, never overrule what the description plainly says.
 
+**The second trigger: time (issue #1680).** The deliverable count is not the only way an ask can be too much of one thing. **A planning bound above `SPLIT_OVER_MIN` is a split trigger in its own right**, and it fires even when the ask names exactly one deliverable. The comparison is **strict `>`** — a bound of exactly 180 is not over 180 and changes nothing.
+
+Read both knobs from the one place that owns them rather than typing a number into this skill (`pm-config.md` `## Budget`; cascade and ranges in `split-thresholds.sh --help`):
+
+<!-- test-anchor: issue-maker-sizing-time-trigger -->
+```bash
+SPLIT_THRESHOLDS=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/split-thresholds.sh" \
+  "$HOME/.claude/scripts/split-thresholds.sh" \
+  ".claude/scripts/split-thresholds.sh"; do
+  [ -x "$candidate" ] && { SPLIT_THRESHOLDS="$candidate"; break; }
+done
+SPLIT_OVER_MIN=180; INCREMENT_BOUND_MIN=120   # documented shipped defaults
+if [ -n "$SPLIT_THRESHOLDS" ]; then
+  # ONE read, both knobs. They must be coherent with each other (the slice bound
+  # strictly below the split line), and two reads could in principle straddle a
+  # config edit and produce a pair the helper would have rejected as one.
+  # Parsed with jq, never `eval`: eval would execute whatever the helper printed.
+  THRESHOLDS_JSON=$("$SPLIT_THRESHOLDS" --json 2>/dev/null) || THRESHOLDS_JSON=""
+  S=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.split_over_min // empty' 2>/dev/null) || S=""
+  B=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.increment_bound_min // empty' 2>/dev/null) || B=""
+  # Both or neither: a half-applied pair is the incoherent state the helper's own
+  # gate exists to prevent, so a partial read keeps BOTH documented defaults.
+  if [ -n "$S" ] && [ -n "$B" ] \
+     && [ -z "${S//[0-9]/}" ] && [ -z "${B//[0-9]/}" ] && [ "$B" -lt "$S" ]; then
+    SPLIT_OVER_MIN="$S"; INCREMENT_BOUND_MIN="$B"
+  else
+    # Resolved-but-unusable is a DIFFERENT failure from not-found, and it gets its
+    # own line: falling back to the defaults in silence here would hide a broken
+    # helper behind numbers that look deliberate.
+    echo "DEGRADED: split-thresholds.sh returned no usable thresholds — using defaults 180/120" >&2
+  fi
+else
+  echo "DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120" >&2
+fi
+```
+
+**Where the bound comes from at capture time.** You are drafting the estimate in this same pass (Step 5's `## Estimate`), so the bound is the one you are about to publish. Two things put a bound above the line. The ordinary one is **Heavy**, whose 300 already clears it with no adjustment at all — so a Heavy ask reaches the split question by default. The other is an explicit move past Heavy: the `XL` row (`Est: 180–360 min · plan on 360`), a `size:XL` / `size:XXL` label as tie-break, or a recalibrated actual. Standard's 180 and Light's 90 never fire it. **Never infer XL from description keywords** ("full day", "whole subsystem"): `tier-inference.md` tops out at Heavy deliberately, and keyword-inferred length would force splits on asks that have no seam to split on.
+
+**What the time trigger does — and the one case where it declines.** With a **natural seam**, it behaves exactly like the deliverable trigger: file an ordered increment chain (Step 5 for the body, Step 8 for the links and the 5-increment cap, Step 9a for the report), each increment carrying its own `## Estimate` with a bound **at or under `INCREMENT_BOUND_MIN`**. With **no obvious seam**, do **not** force one: file the single issue carrying its long estimate line, and report the long estimate as a decision point (Step 9a) naming the bound and that no clean seam was found. A chain with a broken seam — increments that are not independently mergeable — costs more than one long pipeline, so reporting beats forcing here.
+
 **Fails the bar → file a chain, not a monolith** — an ordered set of increment issues, each independently mergeable and each saying where its slice ends (Step 5 for the body, Step 8 for the links and the 5-increment cap, Step 9a for the report, Step 9c for the hand-off). **Clears the bar → nothing changes.** Small asks are untouched: no chain, no commentary, no mention of sizing at all.
 
 **Where the reflection goes.** In default mode you make these calls yourself and **report them as decision points after filing** (Step 9a) — the user reads what you decided and can `/update #N` or `close #N` in one step if a call was wrong (issues are cheap to change). Ask up front **only** when a call is genuinely blocking: the ask spans two clearly separate issues and filing one combined issue would be actively wrong, a word is so ambiguous the body cannot be written without it, or the sizing check would need **more than 5 increments** (Step 8's cap — the one case where the count itself is the question). Bias hard toward filing and reporting — a blocking question is the rare exception, not the rhythm. A sizing split *within* the cap is not one of these: file the chain and report it (Step 9a).
 
-**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the canonical summary table (Step 9a), optionally a one-line summary, then the closing URL as the final line — without the decision-points elaboration. It still auto-applies labels, still emits the 7-section body, still prints the summary table, still prints the closing URL. **Of the report's three parts, the decision points are the only one rapid-fire trims** — the table is always on, in both modes. **It also still runs the full reflection pass, sizing check included** — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain.
+**Rapid-fire override (leaner escape hatch).** Rapid-fire — per thread (`/issue-maker rapid-fire`, `"switch to rapid-fire mode"`) or per issue (`"just file it"`, `"skip the commentary"`) — is now the *leaner* of two auto-opening modes, not "the one without the gate" (default has no gate either). It never asks about **scope or ambiguity** — not even on a genuinely ambiguous call — and emits a terser report: the canonical summary table (Step 9a), optionally a one-line summary, then the closing URL as the final line — without the decision-points elaboration. It still auto-applies labels, still emits the 7-section body, still prints the summary table, still prints the closing URL. **Of the report's three parts, the decision points are the only one rapid-fire trims** — the table is always on, in both modes. **It also still runs the full reflection pass, sizing check included — both of its triggers, deliverable count and time** (#1680) — rapid-fire trades away *report verbosity*, never a judgment, so an oversized ask still becomes an increment chain. Its terser report is where the difference shows: a seamless long ask still files as one issue and still carries the long estimate line, but the decision point naming that estimate is trimmed with the rest of the elaboration.
 
 Rapid-fire keeps exactly **two hard bars in the create flow**, and neither is a scope question — both are "this would create a mess that's tedious to undo," which is why the leaner mode keeps them:
 
@@ -311,7 +353,9 @@ tier; adjust only when scope clearly warrants it and state the reason in one sen
 If `time-estimates.md` does not resolve, print
 `DEGRADED: time-estimates.md not found (checked all three paths) — using inline fallback`
 and use: Light `Est: 60–90 min · plan on 90`, Standard `Est: 120–180 min · plan on 180`,
-Heavy `Est: 210–300 min · plan on 300`. Never omit this section.
+Heavy `Est: 210–300 min · plan on 300`, XL `Est: 180–360 min · plan on 360`. Never omit
+this section. XL is in that list so a **deliberate** upward adjustment survives the
+degraded path — it is never a tier the inference picks (`tier-inference.md`).
 
 Optional sections, appended when relevant:
 
@@ -348,6 +392,8 @@ If the title still exceeds 70 after all three, the theme itself is too long — 
 The boundary line is what keeps a pipeline from scope-creeping across the whole theme — without it, an agent picking up increment 1 has nothing telling it to stop at the hero. Write the boundary in concrete terms ("ends at a static hero and layout shell — no services content, no form"), never as a vague "part 1 of the work." Never point the last increment at a successor that will not exist.
 
 Everything else is unchanged: the same functional-first tone, the same seven sections (including `## Estimate` — use the increment's own tier), the same labels, the same capture-mode footer.
+
+**Every increment's own bound must be at or under `INCREMENT_BOUND_MIN`** (default 120 — resolved by the block in the top-level rule's sizing check, never typed in). Against the seed table that means the **Light** row, `Est: 60–90 min · plan on 90`. This binds chains from *either* trigger, not just the time one: a slice that needs the Standard row's 180 is a slice cut too coarse — re-cut the boundary rather than publishing an over-bound increment, and if it genuinely cannot be cut finer, say so in the decision points rather than letting the number slide.
 
 **Capture-mode footer:** append a trailing line to every created body so capture-mode issues are identifiable:
 
@@ -507,7 +553,9 @@ The report is what replaces the old draft-reprint-and-approve gate, and it is th
 
 **Chains get a total row.** A chain is one theme delivered in sequence, so a final row sums the `plan on` bounds of every increment (in minutes) and renders the sum with the same rule above, so the whole theme's planning bound is visible at a glance. The row leaves `#` and `Increment` empty, labels itself `**Chain total**` in `Delivers`, leaves `Model` empty, and carries the bolded total in `Est`. A **batch of unrelated issues gets no total row** — independent asks that will not be worked as one sequence have no meaningful joint bound.
 
-A chain filed as two increments, each Standard (`plan on 180`):
+A chain filed as two increments, each Standard (`plan on 180`) — a real chain from before
+the `INCREMENT_BOUND_MIN` rule above, kept because it is what the rendering teaches; a chain
+filed today would carry Light-tier increments:
 
 ```markdown
 | # | Increment | Delivers | Model | Est |

@@ -130,6 +130,7 @@ to meet the recent window's, the two samples have converged and the log alone su
 | **Light** | 30 min | 1–2 | 60–90 min | 90 min | `Est: 60–90 min · plan on 90` |
 | **Standard** | 30–60 min | 3–4 | 120–180 min | 180 min | `Est: 120–180 min · plan on 180` |
 | **Heavy** | 60–90 min | 5–7 | 210–300 min | 300 min | `Est: 210–300 min · plan on 300` |
+| **XL** | — | — | 180–360 min | 360 min | `Est: 180–360 min · plan on 360` |
 
 Worked, so the arithmetic is checkable rather than asserted — Standard: `{lo}` =
 30 + 3×30 = 120, `{hi}` = 60 + 4×30 = 180. Heavy: `{lo}` = 60 + 5×30 = 210,
@@ -142,7 +143,44 @@ The round counts track the measured distribution rather than being picked: the
 the 185-min mean, where the retired seed value of 90 sat well below both.
 
 **Tier vocabulary** is identical to `tier-inference.md` (issue-maker) and `/prompt`
-Step 5: Heavy / Standard / Light, evaluated using the same signals.
+Step 5: Heavy / Standard / Light, evaluated using the same signals. **XL is not one of
+them** — see below.
+
+### The XL row — a bound marker, not a rounds row (issue #1680)
+
+Light, Standard and Heavy are derived from `coding + rounds × 30`. **XL is not**, which
+is why its Coding and Rounds cells are empty rather than filled with a guess. It exists
+for one job: letting a body *say* that its planning bound is above three hours, so the
+time trigger can be read off the issue rather than inferred. `180–360` is the honest
+shape of "we know this is over three hours and we do not know by how much".
+
+**The row is fixed, and does not track `SPLIT_OVER_MIN`.** Its numbers coincide with that
+knob's default (`pm-config.md` `## Budget`) because both were chosen against the same
+three-hour line — not because one is computed from the other. Retuning the knob does not
+move this row, and must not: a published `Est:` line is a historical record that
+`estimate-log.sh` classifies by exact `{lo}/{hi}` pair, so a row that floated with a
+config value would silently re-tier every issue filed under a previous setting and make
+the rollup uninterpretable. The threshold decides *when the trigger fires*; the
+vocabulary decides *what a body can say*. Keeping them independent is what lets a repo
+raise the threshold to 300 without invalidating a single estimate already written down.
+
+It is a normal estimate line and needs no parser exception: `180 < 360` and
+`bound == 360`, so the machine-parse pattern above is unchanged. `estimate-resolve.sh`
+echoes it verbatim, `estimate-log.sh` maps `180/360` to tier `XL`, and `makespan.sh`
+sums it like any other pair of finite integers.
+
+**Two consequences worth stating plainly:**
+
+- **XL is never inferred from a description.** Description-based classification tops out
+  at Heavy (`tier-inference.md`), so a big-sounding ask stays Heavy. XL is set only by an
+  explicit upward adjustment (with the one-sentence reason the Default paragraph above
+  already requires), a `size:XL` / `size:XXL` label, or a recalibrated actual
+  (`estimate-actuals.md`). Keyword-inferring it would force splits on single-seam issues
+  whose slices are not independently mergeable.
+- **XL is not the only row that trips the split trigger.** The trigger is `bound >
+  SPLIT_OVER_MIN`, strictly — so Heavy's 300 fires it too, and Standard's 180 does not
+  (that is the boundary case: exactly 180 is not "over 180"). XL widens what the
+  vocabulary can *express*; it is not the definition of "too long".
 
 **Default:** use the table row for the issue's tier. Do not adjust unless scope
 clearly warrants it — e.g., a Standard-tier issue touching a single well-understood

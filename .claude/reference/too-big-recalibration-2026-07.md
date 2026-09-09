@@ -289,3 +289,61 @@ That residual sampling-cap case is recorded rather than fixed. Fixing it means g
 The same honesty Phase 3 and the #784 run applied: **this is reasoning, not measurement.** The prediction is that threads-per-merged-PR falls further and that criterion-3 routing disappears from PM transcripts. [#710](https://github.com/auerbachb/claude-code-config/issues/710) is still the instrument that would show it, and still does not exist. Until it does, this section records why the change is sound — never that it worked.
 
 One risk is worth naming rather than burying: **decomposition quality is now load-bearing.** A bad split produces three issues with vague acceptance criteria instead of one honest big one, and the failure is quiet — three pipelines each build something plausible and the theme never coheres. Step 5.1's first sub-step is the guard (articulate the split before filing; if you cannot, route out and say why), but it is a judgment guard, not a mechanical one. If bad splits show up in practice, tightening that guard is the fix, not reverting the remedy.
+
+## Amendment — criterion 3 gains a time trigger (2026-09-08)
+
+**Issue:** [#1680](https://github.com/auerbachb/claude-code-config/issues/1680). **Related:** [#1679](https://github.com/auerbachb/claude-code-config/issues/1679) (the leave-time overrun ask this trigger adds an option to), [#1192](https://github.com/auerbachb/claude-code-config/issues/1192) (the capture-time reading of the bar), [#1193](https://github.com/auerbachb/claude-code-config/issues/1193) (the amendment above).
+
+### What changed, precisely
+
+**Criterion 3 now fails on two independent grounds, and the remedy is the same for both.** The old ground is unchanged: several independently shippable deliverables. The new one is time — **a planning bound strictly above `SPLIT_OVER_MIN` (default 180 minutes)**, which fires even when the issue names exactly one deliverable. Both file the same increment chain, and each increment now carries a bound at or under `INCREMENT_BOUND_MIN` (default 120).
+
+A decomposition verdict names which trigger fired — `criterion 3 (time)` or `criterion 3 (deliverables)`, or both — with the bound quoted, so the claim is checkable rather than asserted.
+
+Criteria 1 and 2 are untouched and still win when they fire alongside criterion 3, for the reason the 2026-08-22 amendment gives: splitting only helps when the pieces are better than the whole.
+
+### Why the deliverable count alone was not enough
+
+The bar asked "can one pipeline land this as one reviewable PR?" and answered it by counting things shipped. That reading is silent about a single-deliverable issue that takes five hours. Such an issue clears the bar, takes the top-tier estimate, and enters the queue as one indivisible block — which is exactly the shape that collides with a declared leave time. Once #1679's deadline gate is armed, a pipeline that cannot finish before the pause point does not start, so a long issue at the head of the queue means the thread does nothing for the rest of the afternoon while two hours of mergeable work sat available.
+
+The vocabulary was silent too: the seed table topped out at 180, so an issue could not even *say* it was over three hours. The `XL` row exists to end that silence and nothing more.
+
+### Decisions taken, with the alternative rejected
+
+| Decision | Alternative rejected | Why |
+|---|---|---|
+| An explicit `XL` row, `Est: 180–360 min · plan on 360` | A documented upward adjustment of Heavy | Heavy's bound is a fixed table value the rollup re-tunes; letting it float would make "Heavy" name two different numbers and break the recalibration loop. XL is a normal `{lo}–{hi}` line, so both parsers and `makespan.sh` accept it with a tier-name mapping and no pattern change. |
+| XL is a **bound marker**, not a rounds-derived row | Derive it from `coding + rounds × 30` like the other three | There is no measured population above Heavy to derive from — inventing coding and round figures for it would be a guess wearing arithmetic's clothes. Its `{lo}` is the split line and its `{hi}` is twice it, which says exactly what is known: over three hours, by an unknown margin. This is why its Coding and Rounds cells are empty. |
+| Never infer XL from description keywords | An XL row in `tier-inference.md` triggered by "full day", "whole subsystem" | A keyword-inferred length would force splits on single-seam issues whose slices are not independently mergeable — the coherence risk below. The signal is read from an explicit upward adjustment, a `size:XL`/`size:XXL` label, or a recalibrated actual. |
+| Strict `>` at the threshold | `>=` | `plan on 180` is the Standard row — the ordinary size of a full issue. Splitting the modal case is not what "too long" was meant to catch, and a boundary that fires on the most common value is a trigger with no off state. |
+| Both thresholds are `pm-config.md` knobs read through `split-thresholds.sh` | Constants in the three skill files | Three copies of a number drift, and the number is the whole policy. One owner, one cascade (env → config → default), one place to retune. |
+| ≤ 120 min per increment, admitting only the Light row | Allow the Standard row's 180 | 120 keeps a slice inside one attended sitting and clear of the 30-minute wind-down, so a chain's head is startable in the runway a leave time leaves — which is the case that motivated the trigger. A slice needing 180 is cut too coarse; that is a boundary to re-cut, not a bound to raise. |
+| The time trigger decomposes inline and never routes to a thread | Route long issues out, as pre-#1193 criterion 3 did | Unchanged from the 2026-08-22 amendment and for the same reason: the pieces are subagent-fit, so routing the whole out converts several small pipelines into one large thread. A long issue is *more* of that argument, not less. |
+| A conditional `Split and start the first increment now` option on #1679's overrun menu | Always offer it; or split automatically on an overrun decline | Below the split line there is nothing to split into, so an unconditional option would offer a worse shape. Automatic splitting would file issues without being asked — the menu exists because the user is present, and filing is the one effect on that menu that is not confined to this session. |
+| `split` is recorded but never reopens the parent's gate | Treat it like `launch_anyway` | The parent becomes tracking-only the moment it decomposes; it is not a pipeline to admit. The head is a different issue and re-runs the gate on its own bound — which is the point, since a 90-minute head fits a runway a 360-minute parent could not. |
+
+### Heavy already clears the line, and that is intended
+
+With the 2026-09-07 recalibration Heavy's bound is 300, so **every Heavy issue fires the time trigger** — XL is not a precondition. This is the correct reading of the rule rather than an accident of the table: Heavy is 3.5–5 hours of claim-to-merge, which is what "over three hours" means. What XL adds is the ability to say "longer than Heavy" at all.
+
+The practical consequence to watch is volume: if Heavy is common in a backlog, most of it now reaches the split question. The check-in is sub-step 1 of Step 5.1 — no articulable seam, no chain — so the expected outcome for a coherent Heavy issue is that it is *considered* and then started whole, with the long estimate reported. If that consideration turns out to be noise rather than signal, `SPLIT_OVER_MIN` is the knob, and raising it to 300 is a one-line config change rather than a rule revision.
+
+### Consequences elsewhere
+
+Everything below had to move together, and the list is the maintenance contract for the next change to any of it:
+
+- **`time-estimates.md`** — the `XL` row plus the section explaining why it is not rounds-derived and never inferred.
+- **`estimate-resolve.sh`** — an `xl` arm in `tier_to_estimate()`, and label matching for `complexity:xl` / `tier:xl` / `size:xl` / `size:xxl`, checked **before** heavy so an issue carrying both labels resolves to the larger claim.
+- **`estimate-log.sh`** — `lo == 180 && hi == 360` maps to tier `XL`; the rollup groups by tier generically and needed no change.
+- **`makespan.sh`** — no arithmetic change; every tier is a pair of finite integers to it.
+- **`pm-config.md` `## Budget`** — `SPLIT_OVER_MIN` and `INCREMENT_BOUND_MIN`, with the reject-and-fall-back-to-default contract every knob there follows, plus the incoherent-pair rule (a slice bound at or above the split line would make every slice its own trigger).
+- **`split-thresholds.sh`** — the sole owner of both defaults and the cascade.
+- **The three trigger sites** — `/issue-maker`'s sizing check (capture), `/subagent` Step 4 criterion 3 and Step 5.1 (pick), `/start-issue` Step 7's routing gate (pick).
+- **`/subagent` Step 7 and `/leave-by` Step 8.3** — the overrun menu's split option and the rule that a `split` record never forces a `parks` verdict.
+- **`tier-inference.md`** — how the `> 180` signal is read, and the explicit statement that description-based classification tops out at Heavy.
+
+### What this does not claim
+
+The same caveat as every section above: **reasoning, not measurement.** 180 is the owner's stated line, not a derived one, and 120 is chosen against the wind-down lead rather than against measured increment durations — no such measurement exists yet, because increments filed under this rule are what would produce it. `estimate-log.sh --rollup` will eventually report an `XL` row and a population of ≤120-minute increments; until it does, both numbers are policy, which is exactly why they are knobs.
+
+The risk named in the 2026-08-22 amendment gets sharper here rather than lighter. Decomposition quality was already load-bearing; a **time**-triggered split is the case where it is most likely to fail, because the trigger supplies no seam — it says the issue is long, never where to cut. That is why the remedy declines rather than forces when no seam is articulable, at capture and at pick alike. If chains with broken seams show up in practice, the fix is a stricter decline, not a lower threshold.

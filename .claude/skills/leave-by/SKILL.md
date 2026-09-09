@@ -855,6 +855,13 @@ elif ! printf '%s' "$LAUNCH_DECISIONS" | jq -e \
 fi
 ```
 
+**`launch_anyway` is the only decision that forces a verdict, and `split` must never be added to
+it** (#1680). A `split` record is written against a **parent** that decomposed: the parent is
+tracking-only from that moment and renders no pipeline row at all, while the head increment that
+did launch is a different issue with its own shorter bound, judged on that bound like any other
+started row. Forcing `parks` on it would assert an overrun the split exists to avoid — the option
+files a chain precisely so something *finishes* before the deadline.
+
 **The deadline equality is the whole point.** A bare `decision == "launch_anyway"` would keep
 forcing `parks` after the user re-declared a later time that the pipeline now comfortably beats —
 the verdict column asserting a park nothing predicts. The single retry on exit `6` above is the

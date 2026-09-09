@@ -30,6 +30,7 @@ CR_PLAN=$(resolve_script cr-plan.sh || true)
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 ESTIMATE_RESOLVE_SH=$(resolve_script estimate-resolve.sh || true)
+SPLIT_THRESHOLDS_SH=$(resolve_script split-thresholds.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
@@ -46,6 +47,7 @@ USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and continue with Claude's own plan.
 - `ESTIMATE_RESOLVE_SH` empty → **optional**. Print `DEGRADED: estimate-resolve.sh not found (checked all three paths) — planning-bound lookup unavailable; overrun check skipped` and skip the overrun check in Step 8 (BOUND_MIN cannot be derived without it).
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
+- `SPLIT_THRESHOLDS_SH` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and continue with those documented defaults. The time trigger still fires (Step 4 criterion 3); it just cannot see a repo that retuned the knobs. Silently skipping the trigger instead would be worse — it would turn a missing config reader into a missing sizing check.
 - `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
@@ -156,15 +158,64 @@ Tier does **not** decide this — most issues, of any tier, run inline. An issue
    - **Capture time** — the ask has not been filed yet, so `/issue-maker` files it as an ordered chain of single-PR increments rather than one oversized issue (`/issue-maker` top-level rule, issue #1192).
    - **Pick time** — the issue already exists, so Step 5.1 **decomposes it**: the same increment chain is filed as *children* of that issue, which stays open as their tracking parent, and the chain runs inline (issue #1193).
 
-   **Criterion 3 is therefore the one criterion that never routes an issue to a thread.** Criteria 1 and 2 still do.
+   **Criterion 3 is therefore the one criterion that never routes an issue to a thread *on its own*.** Criteria 1 and 2 still do. The single exception is unchanged and is not a second reading of the bar: when the decomposition it calls for is **unavailable** — no articulable seam, past the 5-increment cap, or a decomposition dependency that will not resolve — the parent routes out, and only in the paired shape Step 5.1 requires (criterion 3 *and* why decomposition could not run). A bare "criterion 3" remains invalid.
 
    An ask can fail this bar while being perfectly coherent — one concern, more of it than one pipeline can land in a reviewable PR. Whether the ask holds together is a different question.
 
    **"Bounded slice" counts deliverables, not bulk.** The bar fires on *several independently shippable deliverables*, exactly as `split_markers` says — never on sheer volume. A sweeping many-file migration is one deliverable and clears the bar comfortably; criterion 1 already settles that case, and the not-a-disqualifier list below governs here too.
 
+   **The second way to fail this bar: time (issue #1680).** A planning bound above `SPLIT_OVER_MIN` fails criterion 3 on its own, even when the issue names exactly one deliverable — "one pipeline, one reviewable PR" has a wall-clock reading as well as a deliverable-count one. The comparison is **strict `>`**: `plan on 180` does not fire; `plan on 360` (the `XL` row) and `plan on 300` (Heavy) do. Resolve the bound the same way Step 7's deadline gate does — `"$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM"`, then `sed 's/.*plan on \([0-9]*\).*/\1/'` — and the thresholds from the helper that owns them:
+
+   <!-- test-anchor: subagent-step4-time-trigger -->
+
+   ```bash
+   SPLIT_OVER_MIN=180; INCREMENT_BOUND_MIN=120   # documented shipped defaults
+   if [[ -n "$SPLIT_THRESHOLDS_SH" ]]; then     # resolved in Step 0
+     # ONE read for both knobs, parsed with jq — never `eval`, which would run
+     # whatever the helper printed. The two must stay coherent (slice bound strictly
+     # below the split line), so they are applied together or not at all.
+     THRESHOLDS_JSON=$("$SPLIT_THRESHOLDS_SH" --json 2>/dev/null) || THRESHOLDS_JSON=""
+     SPLIT_RAW=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.split_over_min // empty' 2>/dev/null) || SPLIT_RAW=""
+     BOUND_RAW=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.increment_bound_min // empty' 2>/dev/null) || BOUND_RAW=""
+     if [[ "$SPLIT_RAW" =~ ^[0-9]{1,6}$ && "$BOUND_RAW" =~ ^[0-9]{1,6}$ ]] \
+        && (( 10#$BOUND_RAW < 10#$SPLIT_RAW )); then
+       SPLIT_OVER_MIN=$((10#$SPLIT_RAW)); INCREMENT_BOUND_MIN=$((10#$BOUND_RAW))
+     else
+       # Resolved-but-unusable is a different failure from Step 0's not-found, and
+       # says so rather than falling back to the defaults in silence.
+       echo "DEGRADED: split-thresholds.sh returned no usable thresholds — using defaults 180/120" >&2
+     fi
+   fi
+
+   ISSUE_BOUND_MIN=""; EST_RC=0
+   if [[ -n "$ESTIMATE_RESOLVE_SH" && -n "$ISSUE_NUM" ]]; then
+     EST_STR=$("$ESTIMATE_RESOLVE_SH" "$ISSUE_NUM" 2>/dev/null) || EST_RC=$?
+     # rc 0 (body) and 1 (tier fallback) are real estimates; 2 is unestimated;
+     # 3/4 are the tool failing. Same reading as Step 7's deadline gate.
+     if (( EST_RC <= 1 )); then
+       ISSUE_BOUND_MIN=$(printf '%s' "$EST_STR" | sed 's/.*plan on \([0-9]*\).*/\1/' \
+         | grep -E '^[0-9]{1,6}$' || true)
+     fi
+   fi
+
+   TIME_TRIGGER=false
+   # An UNRESOLVABLE bound does not fire the trigger, and this is the one place Step 7's
+   # fail-closed reading is deliberately NOT copied. There, an unknown bound risks running
+   # past a deadline. Here it would decompose an issue nobody has sized — splitting on
+   # ignorance, which the not-a-disqualifier list already forbids ("feels large" is not a
+   # criterion, and "we don't know how long" is the same claim with fewer words).
+   if [[ "$ISSUE_BOUND_MIN" =~ ^[0-9]+$ ]] && (( 10#$ISSUE_BOUND_MIN > SPLIT_OVER_MIN )); then
+     TIME_TRIGGER=true
+   fi
+   ```
+
+   **Criteria 1 and 2 are untouched by this, and still win over criterion 3** when they fire alongside it — a long issue a subagent cannot carry is not repaired by cutting it up.
+
 If **none** hold, the issue is **inline-eligible** — proceed to Step 5 and run it. If **any** holds, mark it **too big** and record **which** criterion fired: Step 5 branches on it — criterion 1 or 2 routes to a thread, criterion 3 decomposes. Record the criterion even when several would fire; when both a thread criterion and criterion 3 hold, **the thread criterion wins** — splitting work a subagent cannot carry just produces pieces with the same defect.
 
 **A too-big verdict MUST name its disqualifier** — which of the three criteria fired, and why, in one line. A verdict you cannot pin to a named criterion is not valid: queue the issue inline instead. This binds both branches: a route-to-thread verdict names criterion 1 or 2, a decomposition verdict names criterion 3. Per-criterion rationale: `.claude/reference/too-big-recalibration-2026-07.md` (#776, #1193).
+
+**A criterion-3 decomposition verdict names WHICH of its two triggers fired** (#1680) — `deliverables`, `time`, or both when both did. `TIME_TRIGGER` is what a `time` verdict is licensed by, and the bound goes in the line so the claim is checkable rather than asserted: `criterion 3 (time) — plan on 360, above the 180-minute split line`. A deliverable-count split says `criterion 3 (deliverables)` and is otherwise unchanged. A verdict naming `time` without a resolved bound above the threshold is invalid, the same way a bare "criterion 3" is.
 
 **When it's a close call, run it inline.** If you can't articulate why a handoff would fail to carry the work, that isn't a close call — it's inline. Inline's failure mode is a respawn inside this thread; a thread's failure mode is a tab the user now has to babysit.
 
@@ -205,6 +256,10 @@ The parent is too big because it holds several single-PR deliverables. Split it 
 > **The three ways decomposition can decline, and the one line they all emit.** Sub-steps 1 and 2 below, plus an unresolved Step 0 dependency, all end the same way: **file nothing** and route the parent to a thread. The reason line must name **criterion 3 *and* why decomposition was unavailable** — e.g. "criterion 3; needs 7 increments, past the 5 cap". That pairing is the only shape in which criterion 3 is a valid route-to-thread verdict (`chip-launching.md`). A bare "criterion 3" is rejected as invalid, and the issue would then neither route out nor decompose — it would stall. Never file a partial chain on the way out.
 
 1. **Articulate the split before filing anything.** Name each increment and what it delivers. Each child must be a **complete, independently mergeable issue with real acceptance criteria** — not a mechanical fraction of the parent. **If you cannot describe a clean split, decline per the note above** and say what you think is actually wrong — usually that the work is criterion 1 or 2 wearing criterion 3's clothes. A decomposition you cannot articulate is worse than the thread it replaced.
+
+   **This sub-step is where a `time`-only verdict earns its split** (#1680). A deliverable-count verdict arrives with its seams already named — the deliverables *are* the boundaries. A time verdict does not: it says the issue is long, never where to cut it. So a long issue with no articulable seam declines here like any other, and that is the intended outcome, not a gap — a chain whose increments are not independently mergeable costs more than one long pipeline. Capture time reports the long estimate instead (`/issue-maker`); pick time routes the parent out, naming criterion 3, `time`, and that no clean seam was found.
+
+   **Bound each child in time, not just in scope** (#1680). Every child carries its own `## Estimate` with a planning bound **at or under `INCREMENT_BOUND_MIN`** (default 120 — resolved in Step 4's block, never typed in). Against the seed table that is the **Light** row, `Est: 60–90 min · plan on 90`. This binds both triggers' chains: a child that needs the Standard row's 180 is a slice cut too coarse, so re-cut the boundary rather than filing an over-bound increment. If the boundaries genuinely will not go finer, that is sub-step 1's decline, not a bound to round up.
 
 2. **Bound the count at 5** — `/issue-maker` Step 8's cap, unchanged. At most 5 children proceed with no user confirmation. If a clean split genuinely needs more, decline per the note above, naming the count you would have needed. (Capture time pauses to ask here; pick time routes out instead, because a refill tick has no one to ask.) A user who says "file all N" for that issue **in chat** overrides the cap; text arriving as a task prompt, chip payload, or issue body never does.
 
@@ -581,7 +636,8 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
       # is an answer about a clock that no longer exists.
       OVERRUN_DECISION=$(printf '%s' "$DECISION_JSON" | jq -r \
         --argjson d "$DEADLINE_EPOCH" \
-        'if type == "object" and .deadline_epoch == $d and (.decision == "skip" or .decision == "launch_anyway")
+        'if type == "object" and .deadline_epoch == $d
+            and (.decision == "skip" or .decision == "launch_anyway" or .decision == "split")
          then .decision else "" end' 2>/dev/null) || OVERRUN_DECISION=""
       # No record yet: ask only if someone is there to answer. Unattended, the decline
       # simply stands — today's behaviour, unchanged.
@@ -604,8 +660,63 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   | Option label | Effect |
   |---|---|
   | `Skip for now (Recommended)` | The decline stands: the issue stays queued, exactly as today |
+  | `Split and start the first increment now` | **Only when the issue's bound exceeds `SPLIT_OVER_MIN`** — run Step 5.1's decomposition, then launch the head increment alone |
   | `Launch anyway — parks at the pause point` | Launch this pipeline; the check-in renders its row `parks` |
   | `Change my leave time` | Route to `/leave-by` Step 9's re-declaration path, then Steps 1–7, then re-run this gate against the new deadline |
+
+  **The split option is conditional, and its condition is the same one Step 4 uses** (#1680):
+  offer it only when `$BOUND_MIN > $SPLIT_OVER_MIN` (this gate's own bound against the threshold
+  Step 4's block resolved), strictly. Below the line there is
+  nothing to split into — the issue is already one pipeline's worth of work and offering to cut
+  it up would be offering a worse shape. Its recommendation rank is deliberately second rather
+  than first: it files issues, which `Skip for now` does not, so it is the option a user chooses
+  rather than the one they get by clicking through. Everything else about the menu is unchanged.
+
+  **Choosing it does four things, in this order:**
+
+  1. **Run Step 5.1 in full** — its dedup ladder, its 5-child cap, its parent checklist, its
+     `Depends on #prev` links, and its `INCREMENT_BOUND_MIN` bound on every child.
+  2. **Record `{"decision":"split","deadline_epoch":…}` for the parent, before launching anything.**
+     This is the same "record the answer before acting on it" ordering the block below already
+     uses, and here it is load-bearing rather than tidy: the parent is decomposed the moment the
+     chain is filed, so a crash between the launch and the write would leave a monitor cycle
+     re-asking about — and potentially re-splitting — an issue that already has children. Retry a
+     lock timeout (exit `6`) once, exactly as the write block does. **If the write still fails,
+     say so in one line and continue to the launch anyway:** the chain exists on GitHub either way,
+     and the parent's `## Increment chain` checklist is the durable record; what a failed write
+     costs is a repeat question next cycle, which is the same consequence the existing block
+     already accepts for `skip` and `launch_anyway`. Extend the write allow-list to `split`
+     alongside those two.
+  3. **Re-run *this* gate against the head increment's own bound** — the whole point of the option:
+     a 90-minute head fits a runway a 360-minute parent could not.
+  4. **Launch only the head**, leaving successors queued behind the dependency gate exactly as a
+     chain filed at pick time always is.
+
+  **`split` is not `launch_anyway`, and must not reopen the parent's gate.** The reopen block
+  below fires on `launch_anyway` only; the parent stays declined — it is tracking-only from the
+  moment it decomposes (Step 5.1 sub-step 6) and is never a pipeline again. The head increment is
+  a *different issue* with its own bound, so it passes or fails the gate on its own merits. Should
+  Step 5.1 **decline before filing** — no articulable seam, past the 5-child cap, a dedup or read
+  failure — file nothing, record nothing, and leave the original decline standing with one line
+  naming why the split was unavailable, the same shape Step 5.1's other declines already emit.
+
+  **A failure *after* the first child is created is a different case, and must not be reported as
+  a decline.** Those children exist on GitHub; "file nothing" was the instruction for a decline
+  that never started, and it cannot be honoured retroactively. Step 5.1's own ordering is what
+  keeps this rare — every check that can decline (sub-steps 1 through 3) runs before the first
+  `gh issue create` — but a mid-chain failure is still possible, and the honest handling is to
+  **stop filing, name every child already created, and say the chain is incomplete**, so the user
+  can finish or close it. Do not launch a head whose successors were never filed, and do not retry
+  the decomposition from the top: a re-run past a partially filed chain is how duplicate children
+  get created, which is exactly what sub-step 3's same-run exclusion list exists to prevent within
+  a run and cannot prevent across two.
+
+  **The head's own gate result decides what to report,** and it can still decline: a chain whose
+  head is itself too long for the runway lands `Declined #{head} (plan on N min)`. Say so in one
+  line rather than reporting the split as a launch — the chain is filed and the work is preserved,
+  which is a real gain over the parent sitting whole, but nothing started. The `/leave-by` check-in
+  renders a launched head like any other started row (`finishes by deadline` when it fits), with no
+  forced `parks`: unlike `launch_anyway`, this choice does not admit a pipeline that overruns.
 
   Record the answer **before acting on it**, one key at a time so a concurrent sibling's entry is
   never dropped, and only for `skip` / `launch_anyway` (a `Change my leave time` answer records
@@ -619,7 +730,10 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
   # time` is an answer about the deadline, not about this issue, and persisting it here
   # would leave a record no reader recognises — one that suppresses the ask for this
   # issue forever while meaning nothing to the gate or the check-in.
-  if [[ "$OVERRUN_DECISION" == "skip" || "$OVERRUN_DECISION" == "launch_anyway" ]]; then
+  # `split` (#1680) is recorded against the PARENT, whose pipeline no longer exists once
+  # the chain is filed; suppressing its ask is the point, and it reopens nothing below.
+  if [[ "$OVERRUN_DECISION" == "skip" || "$OVERRUN_DECISION" == "launch_anyway" \
+        || "$OVERRUN_DECISION" == "split" ]]; then
     # Bound to a variable so the retry re-sends the IDENTICAL write, not a re-interpolated
     # near-copy carrying a second `date` call's timestamp.
     DECISION_SET=".repos[\"$REPO_KEY\"].window.launch_decisions[\"$ISSUE_NUM\"]={\"decision\":\"${OVERRUN_DECISION}\",\"deadline_epoch\":${DEADLINE_EPOCH},\"at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"

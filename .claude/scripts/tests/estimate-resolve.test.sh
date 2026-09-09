@@ -218,6 +218,104 @@ run_script env GH_FAIL=1 GH_ISSUE_JSON="$TMP/issue-bare.json" bash "$SCRIPT" 42 
 check_eq "gh failure exits 4" "4" "$RC"
 check_contains "gh failure surfaces the underlying error" "HTTP 500" "$ERR"
 
+# =============================================================================
+# 4. The XL row and the strict boundary at the split line (issue #1680).
+#
+# The time trigger fires on `bound > SPLIT_OVER_MIN` (default 180), strictly.
+# This script does not evaluate that comparison — it produces the bound the
+# comparison reads — so what is asserted here is that the bound each input
+# yields is the one the trigger needs to see. Every case runs a REAL value
+# through the script; none asserts on a fixture the non-XL path would have
+# accepted anyway.
+# =============================================================================
+XL_ROW="Est: 180${EN_DASH}360 min ${MIDDLE_DOT} plan on 360"
+STANDARD_ROW="Est: 120${EN_DASH}180 min ${MIDDLE_DOT} plan on 180"
+
+write_fixture "$TMP/issue-xl-body.json" \
+  "$(printf '## Background\n\nA long one.\n\n## Estimate\n\n%s\n' "$XL_ROW")" '[]'
+write_fixture "$TMP/issue-size-xl-label.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"size:XL"}]'
+write_fixture "$TMP/issue-size-xxl-label.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"size:XXL"}]'
+# Both labels at once: the owner said "bigger than Heavy" and Heavy's 300 would
+# silently discard that claim, so XL must win the priority chain.
+write_fixture "$TMP/issue-xl-and-heavy-labels.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"complexity:heavy"},{"name":"size:XL"}]'
+# The boundary fixture: `plan on 180` EXACTLY. Deliberately the Standard row —
+# the modal size of a full issue — because that is the value a `>=` boundary
+# would wrongly split.
+write_fixture "$TMP/issue-standard-180.json" \
+  "$(printf '## Background\n\nOrdinary.\n\n## Estimate\n\n%s\n' "$STANDARD_ROW")" '[]'
+
+bound_of() {  # bound_of <line> — extract `plan on N` exactly as the callers do
+  printf '%s' "$1" | sed 's/.*plan on \([0-9]*\).*/\1/'
+}
+
+# ---- 4a. The XL line resolves unchanged (boundary: above the line) ----------
+run_script env GH_ISSUE_JSON="$TMP/issue-xl-body.json" bash "$SCRIPT" 1680 || true
+check_eq "4a XL body line exits 0" "0" "$RC"
+check_eq "4a XL body line is echoed verbatim" "$XL_ROW" "$OUT"
+check_eq "4a XL bound is 360, above the 180 split line" "360" "$(bound_of "$OUT")"
+
+# ---- 4b. size:XL / size:XXL fall back to the XL row ------------------------
+run_script env GH_ISSUE_JSON="$TMP/issue-size-xl-label.json" bash "$SCRIPT" 42 || true
+check_eq "4b size:XL label exits 1 (tier fallback)" "1" "$RC"
+check_eq "4b size:XL label yields the XL row" "$XL_ROW" "$OUT"
+
+run_script env GH_ISSUE_JSON="$TMP/issue-size-xxl-label.json" bash "$SCRIPT" 42 || true
+check_eq "4b size:XXL label exits 1 (tier fallback)" "1" "$RC"
+check_eq "4b size:XXL label yields the XL row" "$XL_ROW" "$OUT"
+
+run_script env GH_ISSUE_JSON="$TMP/issue-xl-and-heavy-labels.json" bash "$SCRIPT" 42 || true
+check_eq "4b XL beats Heavy when both labels are present" "$XL_ROW" "$OUT"
+check_not_contains "4b XL+Heavy does not resolve to the Heavy row" "300" "$OUT"
+
+# Labels are matched WHOLE, not as substrings. `size:xlarge` CONTAINS `size:xl`,
+# so a substring match would resolve a label whose owner never asked for XL to
+# the 360-minute row — and, downstream, would fire the split trigger on it.
+# `complexity:heavyweight` is the same defect on the pre-existing heavy check.
+write_fixture "$TMP/issue-size-xlarge-label.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"size:xlarge"}]'
+run_script env GH_ISSUE_JSON="$TMP/issue-size-xlarge-label.json" bash "$SCRIPT" 42 || true
+check_eq "4b size:xlarge is NOT size:xl — exits 2, unestimated" "2" "$RC"
+check_eq "4b size:xlarge does not resolve to the XL row" "unestimated" "$OUT"
+
+write_fixture "$TMP/issue-heavyweight-label.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"complexity:heavyweight"}]'
+run_script env GH_ISSUE_JSON="$TMP/issue-heavyweight-label.json" bash "$SCRIPT" 42 || true
+check_eq "4b complexity:heavyweight is NOT complexity:heavy" "unestimated" "$OUT"
+
+# A label carrying a comma must not split into two names — which is why the
+# label list is newline-delimited rather than comma-delimited.
+write_fixture "$TMP/issue-comma-label.json" \
+  "$(printf '## Background\n\nNo estimate section here.\n')" \
+  '[{"name":"needs triage, maybe"},{"name":"size:XL"}]'
+run_script env GH_ISSUE_JSON="$TMP/issue-comma-label.json" bash "$SCRIPT" 42 || true
+check_eq "4b a comma inside another label does not break matching" "$XL_ROW" "$OUT"
+
+# ---- 4c. `plan on 180` exactly stays Standard and does NOT become XL -------
+# The boundary is strict `>`: 180 is not above 180. A `>=` reading would make
+# this the split trigger's most common false positive.
+run_script env GH_ISSUE_JSON="$TMP/issue-standard-180.json" bash "$SCRIPT" 42 || true
+check_eq "4c plan-on-180 body exits 0" "0" "$RC"
+check_eq "4c plan-on-180 body is echoed verbatim, not upgraded" "$STANDARD_ROW" "$OUT"
+check_eq "4c plan-on-180 bound is exactly 180 (boundary excluded)" "180" "$(bound_of "$OUT")"
+if [[ "$(bound_of "$OUT")" -gt 180 ]]; then
+  FAIL=$((FAIL + 1)); echo "FAIL — 4c boundary value must NOT be above the split line"
+else
+  PASS=$((PASS + 1)); echo "ok   — 4c boundary value is not above the split line (strict >)"
+fi
+
+# The Heavy row clears the line too — XL is not a precondition for the trigger.
+run_script env GH_ISSUE_JSON="$TMP/issue-heavy-label.json" bash "$SCRIPT" 42 || true
+check_eq "4c Heavy's 300 is above the split line (boundary inclusive of Heavy)" \
+  "300" "$(bound_of "$OUT")"
+
 echo
 echo "estimate-resolve.test.sh: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

@@ -273,6 +273,7 @@ This creates **one canonical planning document** the coding agent can work from.
 - **Any other thread** — the common front-door case → **this thread codes the issue**, in the worktree Step 6 just created. Bootstrap a one-row `## Active Work` table (`/pm` 3.2's schema, Thread `Inline`) so the work is tracked, then continue from the ready-to-code block below. No chip and no second tab: the thread that ran `/start-issue` is the thread that lands the issue.
 
   Direct coding rather than `/subagent #N` is deliberate *here* and only here: `/subagent`'s phases spawn with `isolation: "worktree"`, so they provision a second worktree and leave the branch Step 6 just checked out orphaned. Both branches are inline; the shape follows what the thread is already doing.
+- **The picked issue's planning bound exceeds `SPLIT_OVER_MIN`** (#1680) → this is `/subagent` Step 4 criterion 3's **time** trigger, and it fires here for the same reason it fires there: the ready-to-code summary is about to hand over a monolith that one attended sitting cannot land. **Ask for a seam before starting it as one issue.** With a clean seam, take the Step 5.1 decomposition path — file the increment chain, adopt the head, and say in one line which bound tripped it (`plan on 360, above the 180-minute split line`). **With no clean seam, start the monolith** and say that too, naming the bound and that no seam was available — a chain with a broken seam costs more than one long pipeline (`/subagent` Step 5.1 sub-step 1), so this branch is the designed outcome rather than a failure to split. **It does not route the issue out**, and the difference from `/subagent` Step 5.1's no-seam decline is deliberate: that decline exists because a refill tick has no one to ask, while `/start-issue` is always execution-capable and adopts the issue in this thread. Criterion 3 alone is never a valid route-to-thread verdict on any surface (`chip-launching.md`), so there is no chip to emit here — only a long issue, started with its length stated. The comparison is **strict `>`**, so `plan on 180` starts normally and this bullet never fires. The bound is the `{estimate-line}` this step already resolves (see "Estimate" below); the threshold comes from `split-thresholds.sh --split-over`, resolved through the standard candidate order and falling back to its documented 180 with a one-line `DEGRADED:` note. Either way this is a routing choice, not a chip: the decomposition and its head both run in this thread.
 - **A named `/subagent` Step 4 disqualifier** → the issue is too big for a subagent, so it goes to a separate thread via the chip/fallback path below, **naming which criterion fired in one line**. Normally that is criterion 1 or 2: since #1193 criterion 3 decomposes into an inline increment chain instead, so naming it alone is not a valid verdict — it routes out only when it also names why decomposition was unavailable (`chip-launching.md` "PM-context inline gate"). This is the only structural reason a chip survives, and a chip with no nameable criterion is a bug.
 
 **When the chip path applies, check availability** per `.claude/reference/chip-launching.md`, then branch. The handoff content is the same in both delivery modes — only how it reaches the user differs:
@@ -375,8 +376,16 @@ Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skil
    machine-parse pattern `^Est:\s+(\d+)–(\d+)\s+min\s+·\s+plan\s+on\s+(\d+)$` with
    Group 1 < Group 2 and Group 3 == Group 2. If valid, echo it verbatim. If the
    section is present but the line is missing or fails validation, fall through to
-   the tier fallback (step 2).
-2. **Tier fallback:** if no `## Estimate` is present, infer the Heavy/Standard/Light
+   the label/tier fallbacks below.
+2. **Label fallback (before the tier fallback):** whenever step 1 did not produce a line —
+   the `## Estimate` section absent, **or** present with a missing or invalid `Est:` line —
+   and the issue carries `size:XL` or `size:XXL` (matched whole, case-insensitively —
+   `size:xlarge` is a different label), the estimate is the XL row,
+   `Est: 180–360 min · plan on 360`. This mirrors `estimate-resolve.sh`'s label
+   priority exactly, and it must: `/pm` and `/subagent` read that script, so a
+   different answer here would give the same issue two estimates depending on which
+   surface asked.
+3. **Tier fallback:** if steps 1 and 2 both produced nothing, infer the Heavy/Standard/Light
    tier from the issue's signals using the same rules as `tier-inference.md` (Heavy:
    `touches_rules`, `touches_claude_md`, `has_orchestration_keywords`, or
    `file_count > 5`; Standard: not Heavy and `file_count` 2–5, `ac_count > 3`, or
@@ -386,10 +395,17 @@ Each `{REASON}` is a short phrase naming the dominant driver (e.g. `rules + skil
    `$HOME/.claude/skills-worktree/.claude/reference/time-estimates.md`, then
    `$HOME/.claude/reference/`, then `.claude/reference/`): Light →
    `Est: 60–90 min · plan on 90`; Standard → `Est: 120–180 min · plan on 180`;
-   Heavy → `Est: 210–300 min · plan on 300`.
-3. **Inline fallback:** if `time-estimates.md` does not resolve, use the same values
+   Heavy → `Est: 210–300 min · plan on 300`. **The fallback never produces XL**
+   (`Est: 180–360 min · plan on 360`): that row is read from a body or a
+   `size:XL`/`size:XXL` label, never inferred from signals (`time-estimates.md`
+   "The XL row").
+4. **Inline fallback:** if `time-estimates.md` does not resolve, use the same values
    directly. Print `DEGRADED: time-estimates.md not found (checked all three paths) —
    using inline fallback` once, then continue. Never omit the estimate line.
+5. **Feed the resolved bound to the time trigger** in Step 7's routing gate — the
+   `plan on {bound}` figure from whichever branch above produced the line. A bound
+   above `SPLIT_OVER_MIN` routes to decomposition instead of starting the monolith
+   (#1680).
 
 ### Execution boundary
 

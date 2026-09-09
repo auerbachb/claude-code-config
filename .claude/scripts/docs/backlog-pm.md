@@ -23,6 +23,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [issue-dedup.sh](../issue-dedup.sh) | Score open issues against keywords to find duplicate candidates before filing |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
+| [split-thresholds.sh](../split-thresholds.sh) | Resolve `SPLIT_OVER_MIN` / `INCREMENT_BOUND_MIN` (env → pm-config.md `## Budget` → shipped defaults) so every capture- and pick-time sizing surface reads one figure |
 | [window-plan.sh](../window-plan.sh) | Parse a user-stated planning window ("until 5:00 PM", "overnight") into canonical machine values |
 <!-- catalog:rows:end -->
 

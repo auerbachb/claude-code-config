@@ -14,6 +14,7 @@
 #   "Est: 60–90 min · plan on 90"    — tier-table fallback: Light (exit 1)
 #   "Est: 120–180 min · plan on 180" — tier-table fallback: Standard (exit 1)
 #   "Est: 210–300 min · plan on 300" — tier-table fallback: Heavy (exit 1)
+#   "Est: 180–360 min · plan on 360" — tier-table fallback: XL (exit 1)
 #   "unestimated"                    — no section and no tier label (exit 2)
 #
 # EXIT CODES
@@ -32,6 +33,17 @@
 #   Light    → Est: 60–90 min · plan on 90      (30 min coding + 1–2 rounds)
 #   Standard → Est: 120–180 min · plan on 180   (30–60 min coding + 3–4 rounds)
 #   Heavy    → Est: 210–300 min · plan on 300   (60–90 min coding + 5–7 rounds)
+#   XL       → Est: 180–360 min · plan on 360   (a bound marker, NOT a rounds row:
+#              it says only "over three hours". Set by an explicit upward
+#              adjustment or a size:XL / size:XXL label, never inferred from a
+#              description — time-estimates.md "The XL row".)
+#
+#   These are FIXED published rows and are deliberately NOT derived from
+#   SPLIT_OVER_MIN (pm-config.md). That knob decides when the split trigger
+#   fires; this table decides what an estimate line can say. Deriving the row
+#   from the knob would re-tier every already-published estimate whenever a repo
+#   retuned it, and estimate-log.sh classifies historical rows by exact
+#   {lo}/{hi} pair — so the rollup would silently stop matching them.
 #
 # DEPENDENCIES
 #   - gh (authenticated)
@@ -104,6 +116,8 @@ tier_to_estimate() {
       printf 'Est: 120\xe2\x80\x93180 min \xc2\xb7 plan on 180' ;;
     heavy)
       printf 'Est: 210\xe2\x80\x93300 min \xc2\xb7 plan on 300' ;;
+    xl|xxl)
+      printf 'Est: 180\xe2\x80\x93360 min \xc2\xb7 plan on 360' ;;
     *)
       return 1 ;;
   esac
@@ -186,15 +200,40 @@ fi
 # ---------------------------------------------------------------------------
 # Strategy 2: Tier-table fallback from labels
 # ---------------------------------------------------------------------------
-LABELS=$(printf '%s' "$ISSUE_JSON" | jq -r '[.labels[].name] | join(",")' | tr '[:upper:]' '[:lower:]')
+# Newline-delimited, not comma-delimited: a GitHub label may contain a comma but
+# never a newline, so this is the one separator that cannot appear inside a name.
+LABELS=$(printf '%s' "$ISSUE_JSON" | jq -r '[.labels[].name] | join("\n")' | tr '[:upper:]' '[:lower:]')
+LABELS_DELIM=$'\n'"$LABELS"$'\n'
+
+# has_label <name>... — true when the issue carries any of these labels, matched
+# WHOLE. A substring match is not good enough: `size:xl` is a substring of
+# `size:xlarge`, `complexity:heavy` of `complexity:heavyweight`, and either would
+# silently resolve a differently-named label to a tier its owner never chose.
+# Pure bash `case`, deliberately not a pipe into grep: `grep -q` exits on its
+# first match, and under `set -o pipefail` the SIGPIPE'd producer can fail a
+# pipeline whose consumer succeeded.
+has_label() {
+  local candidate
+  for candidate in "$@"; do
+    case "$LABELS_DELIM" in
+      *$'\n'"$candidate"$'\n'*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 TIER_ESTIMATE=""
-# Check complexity labels in priority order (heavy wins over standard wins over light)
-if printf '%s' "$LABELS" | grep -q 'complexity:heavy\|tier:heavy'; then
+# Check complexity labels in priority order (XL wins over heavy wins over standard
+# wins over light). XL is checked first deliberately: an issue carrying BOTH
+# `size:XL` and `complexity:heavy` is one whose owner said "bigger than Heavy",
+# and resolving it to Heavy's 300 would silently discard the larger claim.
+if has_label complexity:xl tier:xl size:xl size:xxl; then
+  TIER_ESTIMATE=$(tier_to_estimate xl)
+elif has_label complexity:heavy tier:heavy; then
   TIER_ESTIMATE=$(tier_to_estimate heavy)
-elif printf '%s' "$LABELS" | grep -q 'complexity:medium\|complexity:standard\|tier:standard\|tier:medium'; then
+elif has_label complexity:medium complexity:standard tier:standard tier:medium; then
   TIER_ESTIMATE=$(tier_to_estimate standard)
-elif printf '%s' "$LABELS" | grep -q 'complexity:light\|complexity:quick\|tier:light\|tier:quick'; then
+elif has_label complexity:light complexity:quick tier:light tier:quick; then
   TIER_ESTIMATE=$(tier_to_estimate light)
 fi
 
