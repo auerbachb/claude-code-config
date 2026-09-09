@@ -1,11 +1,12 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, or asking which accounts are logged in. Gives each account an isolated login profile. Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, or asking which accounts are logged in. Gives each account an isolated login profile — a config dir for Claude, a CODEX_HOME for Codex, a browser profile for Cursor. Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
   - add another Claude account
   - add a Codex account
+  - add a Cursor account
   - which AI accounts are logged in
   - re-login my AI account
 argument-hint: "[list [--json] | add <claude|codex|cursor> <label> [--no-login] | remove <label> [provider] | relogin <label> [provider]]"
@@ -28,10 +29,10 @@ isolated login profile, and report which are reachable.
 > list.
 
 > **No credential ever passes through you.** Every login is the provider's own
-> interactive flow (magic link, SSO, CAPTCHA). The helper launches it and waits — it
-> never types, reads, prints, or stores a password, token, or cookie, and neither do
-> you. If a login needs the user's hands, say so and stop; do not offer to type
-> credentials.
+> interactive flow (magic link, SSO, CAPTCHA) — for Cursor, a real browser window on
+> that account's own profile. The helper launches it and waits — it never types, reads,
+> prints, or stores a password, token, or cookie, and neither do you. If a login needs
+> the user's hands, say so and stop; do not offer to type credentials.
 
 ## Step 1 — Resolve the helper
 
@@ -79,10 +80,9 @@ later.
 ## Step 3 — Adding an account
 
 `add` creates the isolated profile directory, launches that provider's own login
-against it, verifies a credential appeared, and only then records the account. Two
-cases record without a login and are the only ones: `cursor`, whose login arrives in
-increment 3, and any provider run with `--no-login`, which reserves the slot on
-purpose. Both list as their honest status rather than `ok`.
+against it, verifies a credential appeared, and only then records the account. One case
+records without a login: `--no-login`, which reserves the slot on purpose and lists as
+`needs-login` rather than `ok`.
 
 - **`claude`** — a per-account `CLAUDE_CONFIG_DIR` under
   `~/.claude/ai-quotas/profiles/<label>/claude`, then `claude` run against it. A bare
@@ -91,9 +91,21 @@ purpose. Both list as their honest status rather than `ok`.
   Ctrl-D) once the login completes. Do **not** substitute `claude auth login` (no such
   subcommand) or `claude setup-token` (it prints a token instead of storing one).
 - **`codex`** — a per-account `CODEX_HOME` under `…/<label>/codex`, then `codex login`.
-- **`cursor`** — a browser-profile directory under `…/<label>/cursor` is reserved and
-  recorded. **No login happens in this increment**; `list` reports the account as
-  `not-yet-supported` until increment 3 adds it.
+- **`cursor`** — a Chromium profile under `…/<label>/cursor`, logged in by opening a
+  real browser window on it (Playwright, through `.claude/scripts/lib/ai-quotas-cursor.js`).
+  Tell the user a window is about to open and that they should log in to cursor.com
+  there the normal way; the helper waits until the dashboard's usage endpoint answers,
+  which is the only proof the session landed. It needs Node 20+ (Playwright's own floor) and a one-time
+  `npm install --prefix .claude/scripts/lib && npx --prefix .claude/scripts/lib playwright install chromium`;
+  without it the login fails and exits `1`, printing the install command it needs — relay
+  that and retry. Exit `6` is the different failure of node or the helper FILE being
+  missing; it prints the manual `node … --mode login` command instead.
+  A `relogin` **moves the previous profile aside** (to `<dir>.retired-<timestamp>`,
+  printed) and starts fresh rather than layering a second session over a stale one. If
+  that relogin then FAILS, the move is rolled back: the message says the previous session
+  was put back and the account still works. Where it says the session could **not** be put
+  back, relay the `.retired-<timestamp>` path it names and the instruction to move that
+  directory back — that is the only case where a failed relogin needs the user to act.
 
 The login is interactive and blocking. Tell the user it is about to open, and let it
 run — a magic link or SSO round trip can take a minute. Adding a second account of the
@@ -109,8 +121,9 @@ credential.
 - Exit `3` — a usage problem: unknown provider, malformed label, or a
   `(provider, label)` pair already registered. Report it; for an already-registered
   pair the fix is `relogin`, not a second `add`.
-- Exit `6` — the provider's CLI is not installed. The helper prints the exact manual
-  login command; relay it and stop.
+- Exit `6` — the provider's login tool is not installed: its CLI, or for `cursor` Node
+  or the Playwright helper. The helper prints the exact manual command; relay it and
+  stop.
 
 **STOP conditions for every action, `list` included:**
 
@@ -134,7 +147,6 @@ After any action, run `list` and show the table. Each account reports as:
 |--------|---------|------------|
 | `ok` | A credential is present for that profile | nothing |
 | `needs-login` | No credential is visible | `relogin <label>` |
-| `not-yet-supported` | Cursor, until increment 3 | nothing — expected |
 
 On a readable config `list` exits `0` whatever the statuses say. It is a report, never a
 gate: a `needs-login` row does not block anything, and you must not treat it as a reason
@@ -150,4 +162,5 @@ wrote, which is all anyone needs.
 ## Reference
 
 Config schema, the exact per-provider re-login commands, where each provider keeps its
-credential, and the increment boundary: `.claude/reference/ai-quotas.md`.
+credential, how the Cursor browser profile is installed and replaced, and the increment
+boundary: `.claude/reference/ai-quotas.md`.

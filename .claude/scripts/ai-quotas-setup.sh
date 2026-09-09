@@ -33,8 +33,7 @@
 # ACTIONS
 #   list      Default when no action is given. Prints one row per registered
 #             account with its status: `ok` (a credential is present),
-#             `needs-login` (none visible — run `relogin`), or
-#             `not-yet-supported` (cursor, until increment 3). On a readable
+#             `needs-login` (none visible — run `relogin`). On a readable
 #             config it exits 0 whatever the statuses say — listing is a
 #             report, never a gate. The one non-zero list is exit 5, when the
 #             config itself is unreadable, unparseable, or written by a
@@ -61,8 +60,13 @@
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
-#   cursor    Browser-profile slot only. Increment 3 performs the login; until
-#             then `list` reports `not-yet-supported` and `relogin` refuses.
+#   cursor    Per-account browser profile, logged in by opening a real
+#             browser window on it through `lib/ai-quotas-cursor.js`
+#             (Playwright). Cursor has no login CLI and no individual usage
+#             API, so the saved session IS the credential; it stays inside
+#             the profile directory and is never read by this script. A
+#             `relogin` MOVES the old profile aside and starts a fresh one
+#             rather than layering a second session over it.
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
@@ -83,8 +87,14 @@
 #                           shortcut is preferred.
 #   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
 #                           selects the Keychain probe.
-#   The last four exist so the test suite can exercise every path against
-#   stubs without touching a real login, a real keychain, or a real account.
+#   AI_QUOTAS_NODE_BIN      Path to node (the cursor login helper's runtime).
+#   AI_QUOTAS_CURSOR_HELPER Path to lib/ai-quotas-cursor.js.
+#   AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS
+#                           How long the headed cursor login waits for the
+#                           dashboard to answer (helper default: 5 minutes).
+#   Every override from AI_QUOTAS_CLAUDE_BIN down exists so the test suite can
+#   exercise each path against stubs — no real login, keychain, browser, or
+#   account. They are not meant for normal use.
 #
 # OUTPUT
 #   stdout: the account table, or a JSON array with `--json`.
@@ -102,16 +112,18 @@
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
 #       profile directory or config write failed.
-#   6   The provider's login CLI could not be found. The exact command to run
-#       by hand is printed.
-#   7   Config write lock unavailable (timeout) or broken mid-update; the
-#       config is unchanged.
+#   6   The provider's login CLI could not be found — for `cursor`, node or
+#       the Playwright helper. The exact command to run by hand is printed.
+#   7   Contention, refused rather than raced; nothing is changed. Either the
+#       config write lock was unavailable (timeout) or broken mid-update, or a
+#       `relogin` found another relogin already running for the same account.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
-#   - the provider's own CLI, only for `add` / `relogin`
+#   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
+#     is Node 20+ plus the Playwright pinned in .claude/scripts/lib
 
 set -euo pipefail
 # Telemetry logs the ACTION ONLY, never the full argument list. Every other
@@ -396,6 +408,12 @@ keychain_service_exists() { # <service>
 
 provider_bin() { # <provider> -> path on stdout, or empty + exit 1
   local provider="$1" override="" candidate
+  # What to look for on PATH. It is the provider name for every provider that
+  # ships its own CLI — and deliberately NOT for cursor: `command -v cursor`
+  # finds the EDITOR launcher on any machine with Cursor installed, and
+  # handing that to the login step would open an IDE instead of the browser
+  # profile, then report the login as having run.
+  local lookup="$provider"
   local -a candidates=()
   case "$provider" in
     claude)
@@ -414,6 +432,16 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
         "/Applications/ChatGPT.app/Contents/Resources/codex"
       )
       ;;
+    cursor)
+      # Cursor has no login CLI. Its "login binary" is node, which runs the
+      # Playwright helper that opens a real browser window for the user.
+      override="${AI_QUOTAS_NODE_BIN:-}"
+      lookup="node"
+      candidates=(
+        "/opt/homebrew/bin/node"
+        "/usr/local/bin/node"
+      )
+      ;;
     *) return 1 ;;
   esac
   if [[ -n "$override" ]]; then
@@ -421,7 +449,7 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
     printf '%s' "$override"
     return 0
   fi
-  if candidate="$(command -v "$provider" 2>/dev/null)" && [[ -n "$candidate" ]]; then
+  if candidate="$(command -v "$lookup" 2>/dev/null)" && [[ -n "$candidate" ]]; then
     printf '%s' "$candidate"
     return 0
   fi
@@ -434,11 +462,18 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
   return 1
 }
 
+# Where the Playwright helper lives. A missing helper is reported, never
+# worked around: a "login" that silently did nothing would leave the account
+# reading `needs-login` forever with no explanation on screen.
+cursor_helper_path() {
+  printf '%s' "${AI_QUOTAS_CURSOR_HELPER:-$SELF_DIR/lib/ai-quotas-cursor.js}"
+}
+
 manual_login_command() { # <provider> <profile_dir>
   case "$1" in
     claude) printf 'CLAUDE_CONFIG_DIR=%q claude %s' "$2" "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ;;
     codex)  printf 'CODEX_HOME=%q codex login' "$2" ;;
-    cursor) printf '(cursor login arrives in increment 3)' ;;
+    cursor) printf 'node %q --profile-dir %q --mode login' "$(cursor_helper_path)" "$2" ;;
   esac
 }
 
@@ -480,6 +515,35 @@ run_login() { # <provider> <profile_dir>
       CLAUDE_CONFIG_DIR="$dir" "$bin" ${claude_args[@]+"${claude_args[@]}"}
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
+    cursor)
+      # A visible browser on this account's own persistent profile. The user
+      # logs in to cursor.com the normal way; the helper waits until the
+      # dashboard's usage endpoint answers, which is the only proof the
+      # session actually landed, then closes and prints its verdict.
+      #
+      # The verdict is INSPECTED, not inferred from the exit status: the
+      # helper exits 0 for every outcome it models, including
+      # `needs-login`, so treating a clean exit as a successful login would
+      # record an account whose session never arrived.
+      local helper cursor_out
+      helper="$(cursor_helper_path)"
+      if [[ ! -r "$helper" ]]; then
+        echo "${SELF_NAME}: the cursor login helper is missing at ${helper}." >&2
+        echo "${SELF_NAME}: reinstall it from the repo, then re-run this login." >&2
+        exit 6
+      fi
+      echo "${SELF_NAME}: a browser window will open on this account's profile — log in to cursor.com there."
+      cursor_out="$("$bin" "$helper" --profile-dir "$dir" --mode login \
+                     ${AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS:+--timeout-ms "$AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS"} \
+                     2>/dev/null)" || true
+      if printf '%s' "$cursor_out" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+        return 0
+      fi
+      local why
+      why="$(printf '%s' "$cursor_out" | jq -r '.detail // ""' 2>/dev/null || true)"
+      echo "${SELF_NAME}: the cursor login did not complete${why:+ (${why})}." >&2
+      return 1
+      ;;
   esac
 }
 
@@ -534,7 +598,30 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       return 1
       ;;
     cursor)
-      CRED_DETAIL="login arrives in increment 3"
+      # Chromium keeps its cookie store in one of three places depending on
+      # the build, so all three are checked rather than betting the status on
+      # one of them.
+      # PRESENCE ONLY — the file is never opened, so no session value passes
+      # through this tool.
+      #
+      # And presence is deliberately a weaker claim than the other providers
+      # make: a cookie store exists as soon as a browser has run on this
+      # profile, logged in or not. It is enough for the two things `list`
+      # must get right — a completed login reads `ok`, and deleting the
+      # cookies reads `needs-login` — and the note says plainly that only
+      # `/quotas` proves the session still works. Running the headless read
+      # here instead would put a 30-second browser start behind every `list`.
+      local cookie_db
+      for cookie_db in \
+        "$dir/Default/Network/Cookies" \
+        "$dir/Default/Cookies" \
+        "$dir/Cookies"; do
+        if [[ -s "$cookie_db" ]]; then
+          CRED_DETAIL="browser profile present; /quotas confirms the session is live"
+          return 0
+        fi
+      done
+      CRED_DETAIL="no browser session in profile"
       return 1
       ;;
   esac
@@ -555,11 +642,6 @@ ACCOUNT_STATUS=""
 account_status() { # <provider> <profile_dir> <keychain_service|"">
   ACCOUNT_STATUS=""
   CRED_DETAIL=""
-  if [[ "$1" == "cursor" ]]; then
-    CRED_DETAIL="slot reserved; login arrives in increment 3"
-    ACCOUNT_STATUS="not-yet-supported"
-    return 0
-  fi
   if credential_present "$@"; then
     ACCOUNT_STATUS="ok"
   else
@@ -744,9 +826,7 @@ action_add() {
   dir="$(profile_dir_for "$label" "$provider")"
   ensure_profile_dir "$dir"
 
-  if [[ "$provider" == "cursor" ]]; then
-    echo "${SELF_NAME}: cursor browser-profile slot reserved at $dir (login arrives in increment 3)."
-  elif [[ $NO_LOGIN -eq 1 ]]; then
+  if [[ $NO_LOGIN -eq 1 ]]; then
     echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
   else
     if [[ "$provider" == "claude" ]]; then
@@ -827,6 +907,220 @@ action_remove() {
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
 }
 
+# Undo the retirement performed by action_relogin when the login that followed
+# it did not succeed. Without this, "'<label>' is unchanged" is false in the
+# way that matters most: the registry row is untouched, but the account now
+# points at a fresh EMPTY profile, so the very next `/quotas` reports
+# `needs-login` for a session that was working a minute ago. A failed relogin
+# must cost the user nothing.
+#
+# Returns 0 when the previous session is back at <dir>, 1 otherwise. Callers
+# word their message from that answer rather than assuming either outcome.
+restore_retired_profile() { # <dir> <retired>
+  local dir="$1" retired="$2" failed
+  [[ -d "$retired" ]] || return 1
+  # <dir> ABSENT means someone else took it — this run created it a moment ago
+  # (ensure_profile_dir) and has not touched it since, so the only way it is
+  # gone is a concurrent relogin retiring it in turn. Restoring here would drop
+  # a stale session into a path another login is actively writing, which is
+  # worse than leaving this one retired. Refuse; the caller's message then
+  # names the retirement instead of claiming a restore that did not happen.
+  [[ -e "$dir" ]] || return 1
+  # rmdir refuses a non-empty directory, which is exactly the test wanted: an
+  # aborted login usually leaves nothing, and where it DID leave partial state
+  # that state is moved aside rather than deleted — the same refusal to destroy
+  # a profile that made the retirement a move in the first place.
+  if ! rmdir "$dir" 2>/dev/null; then
+    failed="${dir}.failed-login-$(date -u +%Y%m%d-%H%M%S)"
+    [[ ! -e "$failed" ]] || failed="${failed}-$$"
+    [[ ! -e "$failed" ]] || return 1
+    mv "$dir" "$failed" 2>/dev/null || return 1
+  fi
+  # `mv olddir existingdir` moves INSIDE the target, so this runs only once
+  # <dir> is gone — the clearing above is a precondition, not a tidy-up.
+  [[ ! -e "$dir" ]] || return 1
+  mv "$retired" "$dir" 2>/dev/null || return 1
+  return 0
+}
+
+# Set while a retirement is OUTSTANDING — between the profile being moved aside
+# and the relogin either succeeding or giving up. Cleared on success.
+RELOGIN_PENDING_DIR=""
+RELOGIN_PENDING_RETIRED=""
+
+# Set while THIS process owns the relogin slot for a profile directory.
+RELOGIN_SLOT_MARKER=""
+
+# Refuse a second concurrent relogin for the same profile rather than letting
+# both run (CodeAnt, PR #1689). The exposure is specific to the replace path:
+# once the first relogin has moved the profile aside and recreated it, the
+# second sees an ordinary-looking directory at <dir> and retires THAT — the
+# fresh profile the first one's browser is actively writing into. Both then
+# believe they own <dir>, and whichever finishes last writes the registry row,
+# so the account ends up naming a profile holding someone else's half-written
+# session. No status probe can describe that state, which is the same reason
+# the replace exists at all.
+#
+# DETECT AND REFUSE, not a lock held across the login — the same call this
+# script already makes for the overlapping-keychain case above. A login is an
+# unbounded interactive flow (magic link, SSO), so any lock covering it outlives
+# every staleness ceiling we have and gets broken mid-login anyway, which is
+# worse than no lock: it looks serialized and is not.
+#
+# `mkdir` is the whole mechanism — it is atomic and it FAILS when the path
+# exists, so exactly one caller can win. The holder's PID is recorded so a
+# relogin killed hard (a lost terminal, a reboot mid-login) leaves a marker that
+# the next run can prove dead and take over, instead of a permanent refusal the
+# user has no documented way out of.
+#
+# The slot lives in a FLAT directory under the profile root, not as a sibling of
+# the profile itself (CodeRabbit, local review). A sibling has to be created
+# through the label and provider components of the profile path, and those are
+# exactly the components `ensure_profile_dir` refuses to `mkdir -p` through
+# until it has proved on the physical path that no symlink redirects them out of
+# the root. Claiming here would have to either repeat that proof or run before
+# it. Keying on the label instead puts the marker one component below the root
+# that `ensure_profile_dir` itself creates unconditionally — and it means a
+# relogin whose profile tree was deleted claims its slot and goes on to recreate
+# the profile, rather than reporting contention it never raced for.
+# The pid write FAILS THE CLAIM rather than being tolerated (CodeRabbit, local
+# review). A marker whose pid cannot be read is treated as a live holder by the
+# check above — deliberately, since guessing "probably dead" is what the whole
+# guard exists to avoid — so silently keeping a marker this run could not stamp
+# would convert a transient write error into a permanent, unexplained refusal of
+# every future relogin for the account. Removing it and failing loudly leaves
+# the account exactly as it was.
+write_slot_pid() { # <marker> — 0 when the pid is on disk and readable
+  local marker="$1"
+  printf '%s\n' "$$" > "${marker}/pid" 2>/dev/null || return 1
+  [[ "$(cat "${marker}/pid" 2>/dev/null || true)" == "$$" ]] || return 1
+  return 0
+}
+
+claim_relogin_slot() { # <label> <provider> — sets RELOGIN_SLOT_MARKER
+  local key slots marker recover holder=""
+  # One flat component: the label is already restricted from climbing out of
+  # the root, and this narrows it further rather than trusting that alone.
+  key="$(printf '%s__%s' "$1" "$2" | tr -c 'A-Za-z0-9._@+-' '_')"
+  slots="$PROFILE_ROOT/.relogin-slots"
+  mkdir -p "$slots" || die 5 "could not create the relogin slot directory: $slots"
+  # Owner-only, like the profile root and every profile under it (CodeRabbit,
+  # local review). These hold pids rather than credentials, but the mode is set
+  # here rather than left to the ambient umask so the whole tree answers the
+  # same way regardless of the shell the relogin was started from.
+  chmod 700 "$slots" 2>/dev/null || true
+  marker="$slots/$key"
+  if ! mkdir "$marker" 2>/dev/null; then
+    [[ -d "$marker" ]] || die 5 "could not claim the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    # Alive, or unreadable — either way this is not ours to take. An unreadable
+    # PID is treated as alive on purpose: guessing "probably dead" is how two
+    # logins end up sharing a profile, which is the outcome being prevented.
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      die 7 "another relogin for '${ARG_LABEL}' is already running${holder:+ (pid ${holder})}; '${ARG_LABEL}' is unchanged — wait for it to finish, or remove ${marker} if you are sure it is not."
+    fi
+    # The holder is gone, so this run may take the slot over — but the takeover
+    # is itself a read-modify-write on a shared path, and racing it unguarded
+    # reintroduces the bug in a subtler form (CodeAnt/CodeRabbit, PR #1689): two
+    # recoveries both find the marker dead, the first replaces it and starts a
+    # login, and the second then moves that LIVE marker aside and claims the
+    # slot on top of it. So the recovery takes its own atomic claim first.
+    recover="${marker}.recovering"
+    if ! mkdir "$recover" 2>/dev/null; then
+      # Refused, never broken. This guard covers a handful of non-blocking
+      # filesystem calls and nothing else — no login, no network, no lock wait —
+      # so there is no legitimate "it is just slow" case to wait out, and
+      # breaking it would only re-open the race it exists to close. A guard left
+      # by a process killed inside those few syscalls is cleared by hand, which
+      # the message says.
+      die 7 "another relogin for '${ARG_LABEL}' is recovering this slot right now; '${ARG_LABEL}' is unchanged — re-run it in a moment, or remove ${recover} if no other relogin is running."
+    fi
+    # Re-read UNDER the guard. The pid read above is only a fast path: between
+    # it and here, the dead holder's slot may have been taken over by a relogin
+    # that is now very much alive, and taking it from that one is the exact
+    # outcome being prevented.
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 7 "another relogin for '${ARG_LABEL}' claimed this slot while this one was recovering an abandoned marker; '${ARG_LABEL}' is unchanged — re-run it on its own."
+    fi
+    # Replaced rather than reused, so the marker this run goes on to own is one
+    # it created, not one it inherited and cannot vouch for.
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mv "$marker" "${marker}.stale.$$" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not retire the abandoned relogin marker at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mkdir "$marker" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not claim the relogin slot at ${marker} after retiring the abandoned one; '${ARG_LABEL}' is unchanged"
+    fi
+    if ! write_slot_pid "$marker"; then
+      rm -rf "$marker" 2>/dev/null || true
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    # Released only once the new marker carries this run's pid: a competing
+    # recovery that acquires the guard next must see a LIVE holder, not the
+    # empty marker it would otherwise feel entitled to take.
+    rmdir "$recover" 2>/dev/null || true
+    RELOGIN_SLOT_MARKER="$marker"
+    return 0
+  fi
+  if ! write_slot_pid "$marker"; then
+    rm -rf "$marker" 2>/dev/null || true
+    die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+  fi
+  RELOGIN_SLOT_MARKER="$marker"
+}
+
+release_relogin_slot() {
+  [[ -n "$RELOGIN_SLOT_MARKER" ]] || return 0
+  local marker="$RELOGIN_SLOT_MARKER"
+  RELOGIN_SLOT_MARKER=""
+  rm -f "${marker}/pid" 2>/dev/null || true
+  # `rmdir` first, then force. A marker that somehow holds more than the pid
+  # file would survive the rmdir, and a surviving marker with no readable pid is
+  # read as a LIVE holder by the next claim — so tolerating the failure here
+  # would lock the account out of every future relogin (CodeRabbit, local
+  # review). The path is this run's own slot marker under the profile root,
+  # never a profile: releasing it can destroy nothing a login depends on.
+  rmdir "$marker" 2>/dev/null || rm -rf "$marker" 2>/dev/null || true
+}
+
+# Rollback runs from an EXIT trap rather than from each failure branch, because
+# the branches are not the whole exposure: `ensure_profile_dir` runs AFTER the
+# move and exits through `die` from inside itself, with no return value the
+# caller could test. Hanging the rollback off the two login failures would
+# leave that one path uncovered — and a rollback that covers all but one exit
+# is precisely the one a user eventually meets. The trap covers every exit in
+# the window, expected or not.
+#
+# The message is derived from what the restore ACHIEVED, never from what it
+# attempted: telling someone their session was put back when it was not is
+# worse than saying nothing.
+relogin_rollback_trap() {
+  local code=$? dir retired
+  if [[ -n "$RELOGIN_PENDING_RETIRED" ]]; then
+    dir="$RELOGIN_PENDING_DIR"
+    retired="$RELOGIN_PENDING_RETIRED"
+    # Cleared FIRST, so a failure inside the restore cannot re-enter this trap.
+    RELOGIN_PENDING_DIR=""
+    RELOGIN_PENDING_RETIRED=""
+    if restore_retired_profile "$dir" "$retired"; then
+      echo "${SELF_NAME}: the relogin did not finish, so the previous session was put back at ${dir} — the account still works." >&2
+    else
+      echo "${SELF_NAME}: the relogin did not finish and the previous session could NOT be put back automatically; it is at ${retired} — move that directory back to ${dir} to recover it." >&2
+    fi
+  fi
+  # Released LAST, and unconditionally: the slot has to outlive the rollback,
+  # or a waiting relogin could claim the profile while this one is still
+  # putting the previous session back into it.
+  release_relogin_slot
+  return "$code"
+}
+
 action_relogin() {
   local config index entry dir provider service="" before="" after=""
   config="$(read_config)"
@@ -836,8 +1130,65 @@ action_relogin() {
   provider="$(printf '%s' "$entry" | jq -r '.provider')"
   service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
 
-  if [[ "$provider" == "cursor" ]]; then
-    die 3 "cursor login arrives in increment 3 — nothing to re-run for '$ARG_LABEL' yet"
+  # Claimed BEFORE the replace test below, not inside it. A cursor relogin whose
+  # profile directory is missing takes the ordinary login path, and two of those
+  # racing land two sessions in one freshly created profile just as surely — the
+  # `-d "$dir"` branch is where the damage is loudest, not where it starts. The
+  # trap is armed in the same step as the claim so no exit can leak the slot.
+  claim_relogin_slot "$ARG_LABEL" "$provider"
+  trap relogin_rollback_trap EXIT
+
+  # A Cursor relogin REPLACES the profile rather than logging in on top of it
+  # (issue #1668). Layering a second login over a half-expired session is how
+  # a profile ends up holding two partial sessions and answering with
+  # whichever one the browser picks — a state no status probe can describe.
+  # The move is to a timestamped sibling, not a delete: an unrecoverable wipe
+  # of a working login is exactly what `remove` refuses to do, and the same
+  # reasoning applies here. The path is printed so it can be deleted by hand.
+  if [[ "$provider" == "cursor" && -d "$dir" ]]; then
+    # Dependencies FIRST. Moving the profile aside and only then discovering
+    # that node or the helper is missing costs the user the session that was
+    # still working — an unrecoverable-feeling failure caused entirely by the
+    # order of two checks. `run_login` performs the same two checks a moment
+    # later; doing them here is what makes this branch safe to enter.
+    if ! provider_bin cursor >/dev/null 2>&1 || [[ ! -r "$(cursor_helper_path)" ]]; then
+      echo "${SELF_NAME}: node or the cursor login helper is missing, so this relogin cannot run." >&2
+      echo "${SELF_NAME}: '${ARG_LABEL}' is unchanged and its existing profile was left in place." >&2
+      echo "  $(manual_login_command cursor "$dir")" >&2
+      exit 6
+    fi
+    # Declared and assigned separately: `local x="$(cmd)"` makes the assignment
+    # always succeed, masking a failing `date` behind a name that then reads
+    # `.retired-` with nothing after it — every relogin colliding on one path.
+    local retired
+    retired="${dir}.retired-$(date -u +%Y%m%d-%H%M%S)"
+    if [[ "$retired" == "${dir}.retired-" ]]; then
+      die 5 "could not read the clock to name the retired cursor profile; '${ARG_LABEL}' is unchanged"
+    fi
+    # The stamp is whole-SECOND, so two relogins in the same second would
+    # collide — and `mv olddir existingdir` does not fail there, it moves the
+    # profile INSIDE the earlier retirement. The second one would vanish from
+    # where its message says it went. Disambiguate rather than overwrite.
+    if [[ -e "$retired" ]]; then
+      local suffix=2
+      while [[ -e "${retired}-${suffix}" && "$suffix" -lt 100 ]]; do
+        suffix=$(( suffix + 1 ))
+      done
+      retired="${retired}-${suffix}"
+      if [[ -e "$retired" ]]; then
+        die 5 "could not find a free path to retire the cursor profile at ${dir}; '${ARG_LABEL}' is unchanged"
+      fi
+    fi
+    if mv "$dir" "$retired" 2>/dev/null; then
+      # Armed in the SAME step as the move: any exit from here on rolls the
+      # retirement back (see relogin_rollback_trap).
+      RELOGIN_PENDING_DIR="$dir"
+      RELOGIN_PENDING_RETIRED="$retired"
+      trap relogin_rollback_trap EXIT
+      echo "${SELF_NAME}: previous cursor profile moved aside to ${retired} (delete it when you no longer want it)."
+    else
+      die 5 "could not move the existing cursor profile aside at ${dir}; '${ARG_LABEL}' is unchanged"
+    fi
   fi
 
   ensure_profile_dir "$dir"
@@ -845,7 +1196,7 @@ action_relogin() {
     before="$(keychain_claude_services)"
   fi
   if ! run_login "$provider" "$dir"; then
-    die 1 "the ${provider} login did not complete; '${ARG_LABEL}' is unchanged"
+    die 1 "the ${provider} login did not complete; the registry row for '${ARG_LABEL}' was not touched."
   fi
   if [[ "$provider" == "claude" ]]; then
     after="$(keychain_claude_services)"
@@ -856,8 +1207,13 @@ action_relogin() {
     service="$(resolve_keychain_service "$dir" "$service" "$NEW_KEYCHAIN_SERVICE")"
   fi
   if ! credential_present "$provider" "$dir" "$service"; then
-    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); '${ARG_LABEL}' is unchanged"
+    die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); the registry row for '${ARG_LABEL}' was not touched."
   fi
+  # The login produced a credential, so the new profile is the one to keep:
+  # disarm the rollback before anything downstream can exit through the trap
+  # and undo a session that actually landed.
+  RELOGIN_PENDING_DIR=""
+  RELOGIN_PENDING_RETIRED=""
   if [[ "$provider" == "claude" ]]; then
     remember_keychain_service "$dir" "$service"
   fi

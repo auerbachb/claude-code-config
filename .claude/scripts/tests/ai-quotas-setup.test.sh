@@ -190,6 +190,62 @@ fi
 exit 0
 EOF
 
+# --- stubs: the cursor login (node + the Playwright helper) ------------------
+# `add cursor` / `relogin cursor` resolve node through AI_QUOTAS_NODE_BIN and
+# the helper through AI_QUOTAS_CURSOR_HELPER. Both are stubbed, so no browser
+# is ever launched and CI needs neither node nor playwright.
+#
+# The helper file itself only has to EXIST — the script checks it is readable
+# before invoking the login, and the fake node ignores its content.
+FAKE_CURSOR_HELPER="$TMP/fake-ai-quotas-cursor.js"
+printf '// stub — the fake node never reads this\n' > "$FAKE_CURSOR_HELPER"
+export FAKE_CURSOR_HELPER
+
+# A successful login: writes the cookie store a real Chromium persistent
+# context would leave behind, then prints the helper's ok verdict.
+cat > "$BIN/node-login-ok" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
+done
+if [[ -n "$dir" ]]; then
+  mkdir -p "$dir/Default/Network"
+  printf 'SQLite format 3\0STUB-COOKIE-STORE\n' > "$dir/Default/Network/Cookies"
+fi
+printf '{"status":"ok","source":"network"}\n'
+exit 0
+EOF
+
+# A login the user abandoned. Exits 0 with a NON-ok verdict — the shape that
+# catches a caller reading the exit status instead of the verdict.
+cat > "$BIN/node-login-abandoned" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
+exit 0
+EOF
+
+# The same abandoned login, but one that got far enough to leave partial
+# browser state behind. That is the branch where the rollback cannot simply
+# rmdir the new profile — it has to move that state aside instead of deleting
+# it, the same refusal to destroy a profile the retirement itself embodies.
+cat > "$BIN/node-login-abandoned-dirty" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
+dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
+done
+if [[ -n "$dir" ]]; then
+  mkdir -p "$dir/Default"
+  printf 'PARTIAL-LOGIN-STATE\n' > "$dir/Default/Preferences"
+fi
+printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
+exit 0
+EOF
+
 cat > "$BIN/security" <<'EOF'
 #!/usr/bin/env bash
 # Stub macOS security(1) over a flat file of service names.
@@ -253,6 +309,7 @@ new_case() { # <name>
   PLATFORM_UNDER_TEST="Linux"
   CLAUDE_BIN_UNDER_TEST=""
   CODEX_BIN_UNDER_TEST=""
+  NODE_BIN_UNDER_TEST=""
   CASE_DIR="$TMP/case-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-')"
   rm -rf "$CASE_DIR"
   mkdir -p "$CASE_DIR/home/.claude"
@@ -270,6 +327,8 @@ run() { # <args...>  — never aborts the suite; sets OUT and RC
         AI_QUOTAS_SECURITY_BIN="$BIN/security" \
         AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
         AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+        AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+        AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
         "$SCRIPT" "$@" 2>&1)"
   RC=$?
 }
@@ -288,6 +347,8 @@ status_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .status'
@@ -300,6 +361,8 @@ detail_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
+    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
+    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .detail'
@@ -444,21 +507,306 @@ run add codex loggedout@example.com
 check_eq "$RC" "1" "control(-): no auth.json and a failing status exits 1"
 check_eq "$(account_count)" "READ-ERROR" "control(-): and nothing was registered"
 
-# --- 7. cursor is recorded but not yet supported -----------------------------
+# --- 7. cursor logs in through the browser helper (issue #1668) --------------
 
 new_case "cursor"
 run add cursor cursoruser@example.com
 check_eq "$RC" "0" "add cursor exits 0"
 if [[ -d "$PROFILES/cursoruser@example.com/cursor" ]]; then
-  ok "cursor browser-profile slot is reserved on disk"
+  ok "the cursor browser profile is created on disk"
 else
-  bad "cursor browser-profile slot was not created"
+  bad "the cursor browser profile was not created"
 fi
 check_eq "$(account_count)" "1" "cursor account is recorded"
-check_eq "$(status_of cursoruser@example.com cursor)" "not-yet-supported" "cursor lists as not-yet-supported"
-check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" "cursor add launches no login command"
-run relogin cursoruser@example.com
-check_eq "$RC" "3" "relogin on cursor is refused until increment 3"
+check_eq "$(status_of cursoruser@example.com cursor)" "ok" \
+  "a completed cursor login lists as ok"
+check_contains "$(cat "$STUB_CALL_LOG")" "--mode login" \
+  "the cursor login ran headed (--mode login), not as a headless read"
+check_contains "$(cat "$STUB_CALL_LOG")" "$PROFILES/cursoruser@example.com/cursor" \
+  "and it ran against this account's own profile directory"
+
+# The verdict decides, not the exit status. This stub exits 0 while reporting
+# `needs-login` — the exact shape that would register a phantom account if the
+# caller read `$?` instead of the JSON the helper prints.
+new_case "cursor-abandoned"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run add cursor quitter@example.com
+check_eq "$RC" "1" "a cursor login the user abandoned exits 1"
+check_eq "$(account_count)" "READ-ERROR" "and nothing is registered"
+check_contains "$OUT" "did not complete" "the message says the login did not complete"
+
+# No session value may reach stdout, stderr, or the config — the stub writes a
+# recognisable cookie store, so this is a real detector rather than a fixture
+# that could not have failed.
+new_case "cursor-no-leak"
+run add cursor leaky@example.com
+check_not_contains "$OUT" "STUB-COOKIE-STORE" \
+  "no cookie-store content reaches the tool output"
+check_not_contains "$(cat "$CONFIG")" "STUB-COOKIE-STORE" \
+  "and none of it reaches the config"
+check_eq "$(jq -r '[.accounts[0] | paths | map(tostring) | join(".")] | map(select(test("cookie"; "i"))) | length' "$CONFIG")" "0" \
+  "no key in the cursor account entry is cookie-shaped"
+
+# relogin REPLACES the profile rather than layering a second session onto it.
+new_case "cursor-relogin"
+run add cursor recur@example.com
+check_eq "$RC" "0" "add cursor for the relogin case exits 0"
+CURSOR_DIR="$PROFILES/recur@example.com/cursor"
+printf 'stale\n' > "$CURSOR_DIR/STALE-MARKER"
+run relogin recur@example.com
+check_eq "$RC" "0" "relogin on a cursor account exits 0"
+if [[ -e "$CURSOR_DIR/STALE-MARKER" ]]; then
+  bad "relogin layered the new session over the old profile (the stale marker survived)"
+else
+  ok "relogin started a fresh profile — the previous one was moved aside"
+fi
+check_contains "$OUT" "moved aside" "and it says where the previous profile went"
+check_eq "$(status_of recur@example.com cursor)" "ok" "the account is ok again after relogin"
+
+# A second relogin inside the same whole second must not land INSIDE the first
+# retirement: `mv olddir existingdir` succeeds by nesting, so the profile would
+# be somewhere other than where the message says.
+printf 'stale2\n' > "$CURSOR_DIR/STALE-MARKER-2"
+run relogin recur@example.com
+check_eq "$RC" "0" "a second back-to-back relogin exits 0"
+# Asserted by SHAPE, not by counting: whether the two stamps collide depends on
+# which side of a second boundary the run lands, so a count would pass for the
+# wrong reason half the time. Nesting has one unmistakable signature —
+# `cursor.retired-<stamp>/cursor` — and that is what is checked.
+NESTED="$(find "$PROFILES/recur@example.com" -maxdepth 2 -mindepth 2 -type d -name cursor 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$NESTED" "0" "no retirement was moved inside an earlier one"
+if [[ -e "$CURSOR_DIR/STALE-MARKER-2" ]]; then
+  bad "the second relogin did not replace the profile"
+else
+  ok "and the second relogin started a fresh profile too"
+fi
+
+# Deleting the session flips the account back, which is the other half of the
+# status contract: presence of the cookie store is the whole signal.
+rm -rf "$CURSOR_DIR/Default"
+check_eq "$(status_of recur@example.com cursor)" "needs-login" \
+  "deleting the browser session flips the cursor account to needs-login"
+
+# A relogin that CANNOT run must not cost the user the session that still
+# works: the dependency check has to happen before the profile is moved aside.
+new_case "cursor-relogin-no-helper"
+run add cursor keepme@example.com
+check_eq "$RC" "0" "add cursor for the missing-helper relogin case exits 0"
+CURSOR_DIR="$PROFILES/keepme@example.com/cursor"
+SAVED_HELPER="$FAKE_CURSOR_HELPER"
+FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
+run relogin keepme@example.com
+check_eq "$RC" "6" "a relogin with no helper exits 6"
+if [[ -s "$CURSOR_DIR/Default/Network/Cookies" ]]; then
+  ok "and the working profile is still there — the refused relogin destroyed nothing"
+else
+  bad "the refused relogin moved the working profile aside anyway"
+fi
+FAKE_CURSOR_HELPER="$SAVED_HELPER"
+check_eq "$(status_of keepme@example.com cursor)" "ok" \
+  "the account still reads ok after the refused relogin"
+
+# A relogin that RUNS and then fails must also cost the user nothing. The
+# dependency check above cannot help here — the profile has already been moved
+# aside by the time the login gives up — so the retirement is rolled back. The
+# marker is the discriminating assertion: without the rollback the account
+# points at a fresh empty profile and reads needs-login, while the message
+# still claims it is unchanged.
+new_case "cursor-relogin-rollback"
+run add cursor rollback@example.com
+check_eq "$RC" "0" "add cursor for the failed-relogin case exits 0"
+CURSOR_DIR="$PROFILES/rollback@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run relogin rollback@example.com
+check_eq "$RC" "1" "a relogin whose login is abandoned exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the original profile was put back — the failed relogin destroyed nothing"
+else
+  bad "the failed relogin left the account pointing at a new empty profile"
+fi
+check_contains "$OUT" "put back" "and the message says the previous session was restored"
+check_eq "$(status_of rollback@example.com cursor)" "ok" \
+  "the account still reads ok after the failed relogin"
+LEFTOVER="$(find "$PROFILES/rollback@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$LEFTOVER" "0" "and no orphan retirement directory is left behind"
+
+# The other rollback branch: a login that got far enough to leave partial state
+# in the new profile. `rmdir` refuses a non-empty directory, so that state is
+# moved aside rather than deleted — the previous session still comes back, and
+# nothing the abandoned login wrote is destroyed.
+new_case "cursor-relogin-rollback-partial"
+run add cursor dirty@example.com
+check_eq "$RC" "0" "add cursor for the partial-state rollback case exits 0"
+CURSOR_DIR="$PROFILES/dirty@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned-dirty"
+run relogin dirty@example.com
+check_eq "$RC" "1" "a relogin that leaves partial state and fails exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the original profile came back even though the new one was not empty"
+else
+  bad "the partial state blocked the rollback and the original profile is gone"
+fi
+check_eq "$(status_of dirty@example.com cursor)" "ok" \
+  "the account still reads ok after the partial-state failure"
+FAILED_DIRS="$(find "$PROFILES/dirty@example.com" -maxdepth 1 -type d -name 'cursor.failed-login-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$FAILED_DIRS" "1" "the abandoned login's partial state was kept, not deleted"
+check_contains "$(cat "$PROFILES/dirty@example.com"/cursor.failed-login-*/Default/Preferences 2>/dev/null)" \
+  "PARTIAL-LOGIN-STATE" "and it is the state that login actually wrote"
+
+# Two relogins for one account must not both run (CodeAnt, PR #1689). The
+# second would retire the fresh profile the first one's browser is writing
+# into, and whichever finished last would point the registry row at a profile
+# holding the other one's half-written session. A live holder is REFUSED, and
+# the refusal has to cost the working profile nothing — the same standard the
+# dependency check above is held to.
+new_case "cursor-relogin-concurrent-refused"
+run add cursor busy@example.com
+check_eq "$RC" "0" "add cursor for the concurrent-relogin case exits 0"
+CURSOR_DIR="$PROFILES/busy@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+# $$ is this suite's own pid, so the recorded holder is genuinely alive — the
+# refusal is being proven for a live holder, not for an unparseable one.
+SLOT_DIR="$PROFILES/.relogin-slots/busy@example.com__cursor"
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$$" > "${SLOT_DIR}/pid"
+run relogin busy@example.com
+check_eq "$RC" "7" "a relogin racing a live one exits 7"
+check_contains "$OUT" "already running" "and says another relogin holds the account"
+check_contains "$OUT" "is unchanged" "and states the account was not touched"
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the working profile is untouched — the refused relogin retired nothing"
+else
+  bad "the refused relogin moved the working profile aside anyway"
+fi
+RACE_RETIRED="$(find "$PROFILES/busy@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$RACE_RETIRED" "0" "and left no retirement directory behind"
+if [[ -d "${SLOT_DIR}" ]]; then
+  ok "and the live holder's slot marker was left alone"
+else
+  bad "the refused relogin deleted the running relogin's slot marker"
+fi
+check_eq "$(status_of busy@example.com cursor)" "ok" \
+  "the account still reads ok after the refused relogin"
+rm -rf "${SLOT_DIR}"
+
+# The other half of the same guard: a relogin killed hard (lost terminal,
+# reboot mid-login) leaves a marker no one owns. Refusing forever on a dead
+# holder would be a permanent lockout with no documented way out, so a holder
+# this run can PROVE is gone is taken over rather than waited on.
+new_case "cursor-relogin-abandoned-slot-taken-over"
+run add cursor stale@example.com
+check_eq "$RC" "0" "add cursor for the abandoned-slot case exits 0"
+CURSOR_DIR="$PROFILES/stale@example.com/cursor"
+# A pid that has been reaped: started and waited for, so it is not running and
+# the kernel has not had the chance to hand the number to anything else.
+( exit 0 ) & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+SLOT_DIR="$PROFILES/.relogin-slots/stale@example.com__cursor"
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$DEAD_PID" > "${SLOT_DIR}/pid"
+run relogin stale@example.com
+check_eq "$RC" "0" "a relogin inheriting an abandoned slot runs and exits 0"
+check_eq "$(status_of stale@example.com cursor)" "ok" \
+  "and the account is logged in again afterwards"
+if [[ -d "${SLOT_DIR}" ]]; then
+  bad "the finished relogin left its slot marker behind — the next one would be refused"
+else
+  ok "and the finished relogin released the slot"
+fi
+STALE_LEFTOVER="$(find "$PROFILES/.relogin-slots" -maxdepth 1 -type d -name 'stale@example.com__cursor.stale.*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$STALE_LEFTOVER" "0" "and cleaned up the abandoned marker it displaced"
+
+# The slot is released on the FAILURE path too (CodeRabbit, local review). A
+# relogin that gives up still holds the slot until its trap runs, and a slot
+# leaked there would refuse every later attempt for the account — turning one
+# failed login into a permanently unrepairable one. The retry is the assertion
+# that matters: it has to succeed outright, not by recovering an abandoned
+# marker, which is a path with its own guard and its own failure modes.
+new_case "cursor-relogin-failure-releases-slot"
+run add cursor freed@example.com
+check_eq "$RC" "0" "add cursor for the slot-release case exits 0"
+SLOT_DIR="$PROFILES/.relogin-slots/freed@example.com__cursor"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run relogin freed@example.com
+check_eq "$RC" "1" "the relogin whose login is abandoned exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -d "$SLOT_DIR" ]]; then
+  bad "the failed relogin leaked its slot marker — the account could never be relogged in"
+else
+  ok "the failed relogin released its slot marker"
+fi
+run relogin freed@example.com
+check_eq "$RC" "0" "and the next relogin runs straight away, with no slot to recover"
+check_eq "$(status_of freed@example.com cursor)" "ok" \
+  "and the account is logged in again"
+
+# Recovering an abandoned slot is itself serialized (CodeRabbit, local review).
+# Two recoveries both finding the marker dead is the subtle re-entry of the same
+# bug: the first replaces the marker and starts a login, the second moves that
+# now-LIVE marker aside and claims the slot on top of it. A recovery already in
+# progress is refused, not waited out and not broken.
+new_case "cursor-relogin-recovery-serialized"
+run add cursor recover@example.com
+check_eq "$RC" "0" "add cursor for the serialized-recovery case exits 0"
+CURSOR_DIR="$PROFILES/recover@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+SLOT_DIR="$PROFILES/.relogin-slots/recover@example.com__cursor"
+( exit 0 ) & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$DEAD_PID" > "${SLOT_DIR}/pid"
+# A recovery already under way, staged exactly as a competing run leaves it:
+# the dead marker still in place, the recovery guard taken.
+mkdir -p "${SLOT_DIR}.recovering"
+run relogin recover@example.com
+check_eq "$RC" "7" "a relogin racing another run's slot recovery exits 7"
+check_contains "$OUT" "recovering this slot" "and says a recovery is in progress"
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the working profile is untouched — the refused recovery retired nothing"
+else
+  bad "the refused recovery moved the working profile aside anyway"
+fi
+if [[ -d "${SLOT_DIR}.recovering" ]]; then
+  ok "and the in-progress recovery guard was left alone, not broken"
+else
+  bad "the refused relogin broke the guard it was supposed to respect"
+fi
+rm -rf "${SLOT_DIR}.recovering" "${SLOT_DIR}"
+
+# The slot must not depend on the profile tree still being there (CodeRabbit,
+# local review). A user who deleted the profile directory is in the one state a
+# relogin exists to fix; reporting contention there would refuse the repair over
+# a race that never happened.
+new_case "cursor-relogin-deleted-profile-tree"
+run add cursor gone@example.com
+check_eq "$RC" "0" "add cursor for the deleted-tree case exits 0"
+rm -rf "$PROFILES/gone@example.com"
+run relogin gone@example.com
+check_eq "$RC" "0" "a relogin whose profile tree was deleted still runs and exits 0"
+check_eq "$(status_of gone@example.com cursor)" "ok" \
+  "and the account is logged in again afterwards"
+
+# A missing helper is reported, never worked around.
+new_case "cursor-helper-missing"
+SAVED_HELPER="$FAKE_CURSOR_HELPER"
+FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
+run add cursor nohelper@example.com
+check_eq "$RC" "6" "a missing cursor helper exits 6 (the login tool was not found)"
+check_contains "$OUT" "missing" "and says the helper is missing"
+FAKE_CURSOR_HELPER="$SAVED_HELPER"
+
+# --no-login still reserves a cursor slot without opening anything.
+new_case "cursor-no-login"
+run add cursor later@example.com --no-login
+check_eq "$RC" "0" "add cursor --no-login exits 0"
+check_eq "$(status_of later@example.com cursor)" "needs-login" \
+  "a reserved cursor slot reports needs-login"
+check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" \
+  "control(-): --no-login launched no browser at all"
 
 # --- 8. credential disappears -> needs-login; relogin restores it ------------
 

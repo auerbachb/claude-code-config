@@ -25,7 +25,8 @@ credential in turn.
 This registry is increment 1 of four (#1666 → #1667 → #1668 → #1669). It ends at a
 registered, validated account list. **No usage figure is read here.** Increment 2 adds
 `/quotas` and `.claude/scripts/ai-quotas.sh`, which read the config below and report
-each account's remaining allowance; increment 3 adds the Cursor browser login. Keep the
+each account's remaining allowance; increment 3 (#1668) makes the Cursor slot live — the
+browser login plus the two-pool reader documented at the end of this file. Keep the
 schema simple — a reader that has to guess is a reader that reports the wrong number.
 
 ## Config file
@@ -79,9 +80,34 @@ require the provider as a second argument rather than guessing which row was mea
 ```
 ~/.claude/ai-quotas/profiles/<label>/claude    # CLAUDE_CONFIG_DIR for that account
 ~/.claude/ai-quotas/profiles/<label>/codex     # CODEX_HOME for that account
-~/.claude/ai-quotas/profiles/<label>/cursor    # browser profile (reserved; login in increment 3)
+~/.claude/ai-quotas/profiles/<label>/cursor    # Chromium persistent user-data dir
 ~/.claude/ai-quotas/profiles/<label>/.keychain-service-claude   # mode 600; see below
+~/.claude/ai-quotas/profiles/.relogin-slots/<label>__<provider> # relogin slot; see below
 ```
+
+### Relogin slots
+
+`relogin` claims `.relogin-slots/<label>__<provider>` — an empty directory holding a
+`pid` file — for the whole run, and refuses (**exit 7**) when another relogin already
+holds it. Two relogins for one account must not overlap: a Cursor relogin replaces the
+profile, so the second would retire the fresh profile the first one's browser is writing
+into, and whichever finished last would point the registry row at a profile holding the
+other one's half-written session.
+
+The slot is a flat key under the profile root rather than a sibling of the profile,
+because a sibling would have to be created through the label and provider components —
+the ones `ensure_profile_dir` refuses to create through until it has proved on the
+physical path that no symlink redirects them out of the root.
+
+A relogin killed hard leaves a marker no one owns. The next run reads the recorded pid,
+and a holder it can **prove** is gone (`kill -0` fails) is taken over; a live one, or one
+whose pid cannot be read, is refused — guessing "probably dead" is the outcome the slot
+exists to prevent. That takeover is itself serialized by a `<slot>.recovering` guard,
+which is refused rather than broken: it covers a handful of non-blocking filesystem calls
+and nothing else, so there is no slow case to wait out.
+
+Both paths are cleared by hand if a crash ever leaves one behind — the refusal message
+names the exact directory to delete once you have confirmed no relogin is running.
 
 The `.keychain-service-<provider>` sidecar holds the **name** of the Keychain item the
 provider's login created for that profile — never a value, never a secret. It is written
@@ -99,7 +125,7 @@ must never destroy a working login. Delete it by hand if that is what you mean.
 | `claude` (macOS) | Keychain generic password, service `Claude Code-credentials-<suffix>` | `security find-generic-password -s "<service>"` — **never** `-w`, so no value is requested. The service is looked up by the name recorded at login time. |
 | `claude` (other) | `<profile_dir>/.credentials.json` | file present and non-empty |
 | `codex` | `<profile_dir>/auth.json` | file present and non-empty; if it is absent, `CODEX_HOME=<profile_dir> codex login status` is consulted and a zero exit counts as logged in. Its output is discarded, so no account detail is printed. |
-| `cursor` | browser session (increment 3) | always `not-yet-supported` until then |
+| `cursor` | a Chromium persistent user-data dir — the saved session IS the credential | the cookie store is present and non-empty (`<dir>/Default/Network/Cookies`, `<dir>/Default/Cookies`, or `<dir>/Cookies`, depending on the build). **Presence only** — the file is never opened. |
 
 ### The Keychain suffix is observed, never derived
 
@@ -141,8 +167,6 @@ ceiling that would then let another writer break it mid-login anyway.
 |--------|---------|
 | `ok` | The provider's own credential artifact is present for that profile. |
 | `needs-login` | It is not — run `relogin`. Also what a `--no-login` reserved slot reports. |
-| `not-yet-supported` | Cursor, until increment 3. |
-
 On a readable config `list` always exits `0` whatever the statuses say — it is a report,
 not a gate, and a `needs-login` row is not a failure. The one way `list` exits non-zero
 is exit `5`, when the config itself cannot be read (missing `jq`, unparseable file, or a
@@ -163,8 +187,18 @@ CLAUDE_CONFIG_DIR="$HOME/.claude/ai-quotas/profiles/<label>/claude" claude
 # codex
 CODEX_HOME="$HOME/.claude/ai-quotas/profiles/<label>/codex" codex login
 
-# cursor — increment 3; there is no command yet
+# cursor — a headed browser on this account's own profile. Log in to
+# cursor.com in the window it opens; the helper waits until the dashboard's
+# usage endpoint answers, which is the only proof the session actually landed.
+node .claude/scripts/lib/ai-quotas-cursor.js \
+  --profile-dir "$HOME/.claude/ai-quotas/profiles/<label>/cursor" --mode login
 ```
+
+A Cursor `relogin` **moves the old profile aside** to `<dir>.retired-<timestamp>` and
+starts a fresh one, rather than logging in on top of it: layering a second session over
+a half-expired one leaves a profile holding both, answering with whichever the browser
+picks — a state no status probe can describe. The retired path is printed; delete it by
+hand when you no longer want it.
 
 Both are interactive: they open the provider's normal magic-link or SSO flow. The tool
 launches the command and waits; it never types or reads credentials. If the CLI is not
@@ -185,11 +219,11 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 |------|---------|
 | 0 | Action completed (`list` exits 0 for any account status, on a readable config). |
 | 1 | The login ran but left no visible credential; **nothing was recorded**. |
-| 3 | Usage error — bad action/provider/label, duplicate pair, an ambiguous label, or `relogin` on a `cursor` account (there is nothing to run until increment 3). |
+| 3 | Usage error — bad action/provider/label, duplicate pair, or an ambiguous label. |
 | 4 | No account matches that label. |
 | 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). |
-| 6 | The provider's login CLI was not found; the manual command is printed. |
-| 7 | The config write lock timed out or was broken mid-update; config unchanged. |
+| 6 | The provider's login CLI was not found — for `cursor`, node or the Playwright helper; the manual command is printed. |
+| 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
 
 Config writes go through the shared `state-lock.sh` advisory lock and
 `state_lock_commit`, so a concurrent `add` cannot lose the other's row.
@@ -227,9 +261,19 @@ observational one, and it stays that way.
 
 `provider`, `label`, `reported_email`, `window`, `used_pct`, `remaining_pct`,
 `resets_at_epoch`, `resets_at_et`, `status` — plus `countdown`, `detail`, `source`
-(which path produced the row), and `plan`. A figure this reader could not obtain is
-`null`, never `0`: a zero would read as "no usage yet", which is the opposite of "we
-don't know".
+(which path produced the row), `plan`, and the pool fields `pool`, `used_usd`,
+`included_usd`, `plan_used_usd`, `plan_included_usd`. Every row declares all of them;
+the last five are `null` on providers with no such notion, so `--json` has ONE shape
+whatever produced it. A figure this reader could not obtain is `null`, never `0`: a
+zero would read as "no usage yet", which is the opposite of "we don't know".
+
+The table's third column shows the **pool** where a provider has pools and the window
+otherwise. A Cursor account contributes two rows for one window, so printing the window
+there would render them as two identical lines differing only in a percentage.
+
+Providers add fields through `emit_row`'s optional 11th argument — a JSON object merged
+over the base row — rather than a second renderer. That is how the Cursor pools landed,
+and how #1669's overage column will.
 
 ### Statuses
 
@@ -238,8 +282,9 @@ don't know".
 | `ok` | Figures were read for that window. |
 | `needs-login` | No usable credential for that profile; the note carries the exact `/quotas-setup relogin <label> <provider>` command. |
 | `rate-limited` | The provider answered 429; the note carries the retry window when the response named one. |
-| `unreachable` | Network failure, or a response shape this reader does not recognise — in which case the note prints the top-level keys it actually saw. |
-| `unsupported` | Cursor, until increment 3 (#1668). |
+| `unreachable` | Network failure, a missing driver or runtime, or a response shape this reader does not recognise — in which case the note prints the top-level keys it actually saw. |
+| `unreadable` | The response arrived but its shape changed. The note names the keys actually seen. Never a figure, never `0 %`. |
+| `unsupported` | A provider this reader does not know. |
 
 Each account is read independently: one failure takes down its own row and nothing else.
 
@@ -303,6 +348,136 @@ row records which path produced it, so a silently degraded read is visible.
 `reported_email` comes from the `id_token` claim in `auth.json`. The JWT is decoded for
 that one claim inside the reader; the token itself never leaves the function.
 
+### Cursor reader (#1668)
+
+Cursor is the one provider with **no individual usage API**: the Admin and Analytics
+APIs are Enterprise-only, and the legacy token call returns request counts from a
+pricing model Ultra no longer uses. The only reliable source is the logged-in dashboard,
+so the reader drives it.
+
+`.claude/scripts/lib/ai-quotas-cursor.js` launches Chromium through Playwright's
+`launchPersistentContext` on that account's profile directory — headless for a read,
+headed for a login — loads `https://cursor.com/dashboard/spending`, and captures the
+response the page itself requests. The bash side never touches the browser: it runs the
+helper under the same wall-clock bound as every other local probe
+(`AI_QUOTAS_CURSOR_TIMEOUT`, 30s) and turns its one JSON verdict into rows.
+
+**No cookie or session value leaves the profile directory.** The session is used in
+place by the browser; the helper serialises a fixed set of numeric fields plus the
+payload's top-level key names, and never a header, a cookie, or a body verbatim.
+
+#### The captured endpoint
+
+Recorded from the live Spending tab on **2026-09-08** (an Ultra account), not guessed.
+Loading `/dashboard/spending` issues these, all `POST` with a `{}` body, authenticated
+by the session cookie alone:
+
+| Request | What it carries |
+|---------|-----------------|
+| `POST https://cursor.com/api/dashboard/get-current-period-usage` | **the two pools** and the billing cycle — the one the reader matches on |
+| `POST https://cursor.com/api/dashboard/get-plan-info` | `planInfo.planName`, `includedAmountCents`, `price`, `billingCycleEnd` |
+| `POST https://cursor.com/api/dashboard/get-monthly-billing-cycle` | `startDateEpochMillis`, `endDateEpochMillis` |
+| `POST https://cursor.com/api/dashboard/get-credit-grants-balance` | credit grants (empty on this plan) |
+| `POST https://cursor.com/api/dashboard/get-client-visible-credit-grants` | as above |
+| `POST https://cursor.com/api/dashboard/get-sand-usage-status` | the Grok Bot pool, out of scope here |
+
+Nothing else on that page is an API call — the dashboard is a Next.js app whose other
+fetches are RSC payloads for its own routes. The reader matches the first URL as a path
+**suffix**, so a host or query-string change does not silently stop matching; override
+it with `--endpoint` if the path itself ever moves.
+
+#### The response, and what each row takes from it
+
+```json
+{ "billingCycleStart": "1787933374000",
+  "billingCycleEnd":   "1790611774000",
+  "planUsage": { "totalSpend": 197210, "includedSpend": 40000, "bonusSpend": 157210,
+                 "limit": 40000, "remainingBonus": false,
+                 "autoPercentUsed": 49.02333333333333,
+                 "apiPercentUsed": 100,
+                 "totalPercentUsed": 56.34571428571429 },
+  "spendLimitUsage": { "totalSpend": 100750, "individualLimit": 100000,
+                       "individualUsed": 100750, "limitType": "user" },
+  "displayMessage": "…", "autoBucketModels": ["composer-2.5", "cursor-grok-4.5", …] }
+```
+
+(Figures above are the shape as captured, with the account's own numbers left in place
+as a worked example of the units.) Dollar amounts are **integer cents**; the cycle
+bounds are epoch **milliseconds as strings**.
+
+| Row / field | Source |
+|-------------|--------|
+| `pool: "cursor-models"` → `used_pct` | `planUsage.autoPercentUsed` — the "Cursor Models" bar (Composer, Cursor Grok; Auto draws here) |
+| `pool: "other-models"` → `used_pct` | `planUsage.apiPercentUsed` — the "Other Models" bar (third-party models at API price) |
+| `resets_at_*`, `countdown` | `billingCycleEnd`, milliseconds ÷ 1000, rendered in `America/New_York` |
+| `plan` | `planInfo.planName` from `get-plan-info` (best effort; absent is not a failure) |
+| `plan_used_usd`, `plan_included_usd` | `planUsage.totalSpend` and `planUsage.limit`, cents ÷ 100 |
+| `window` | `billing-cycle` on both rows |
+
+`used_pct` is rounded to one decimal, with a bare `.0` dropped, so the table shows `49`
+where the dashboard shows `49% used`. `remaining_pct` is derived from the same rounded
+number, so the two can never disagree.
+
+#### Why `used_usd` and `included_usd` are null
+
+**The response carries no per-pool dollar split, and neither does the Spending tab** —
+it renders the two pools as percentage bars. The only dollars in the payload are
+plan-wide (`totalSpend`, `limit`, `includedSpend`, `bonusSpend`) and the on-demand block.
+
+So the two fields the issue names are declared on every row and left `null`, with the
+plan-wide figures reported as what they are in `plan_used_usd` / `plan_included_usd` and
+named in the note. Dividing a plan-wide total across two pools by their percentages
+would produce a per-pool figure **Cursor never sent** — a wrong answer that looks exactly
+like a right one, which is the failure every other reader in this file is built to
+avoid. If Cursor ever adds the split, it becomes two more fields on the same rows.
+
+`spendLimitUsage` is the on-demand overage — `individualUsed` of `individualLimit`, in
+cents. It is deliberately **not** rendered here: that is #1669's column.
+
+#### Statuses
+
+| Verdict | When |
+|---------|------|
+| `ok` | the usage response was read; two rows follow |
+| `needs-login` | no profile directory, a redirect to a login page, or HTTP 401/403 from the endpoint. The note carries the exact `/quotas-setup relogin <label> cursor` command. |
+| `unreadable` | the response arrived but its shape changed, or the helper printed something that is not a verdict. The note names the keys actually seen — **never a figure, never 0 %**. |
+| `unreachable` | no Node, no helper on disk, Playwright or the browser binary missing, the page would not load, or the bound elapsed. The note names which. |
+
+A pool whose percentage the helper could not parse is **omitted from its list**, so the
+account reports the pool it could read and never invents the other.
+
+#### Install
+
+Playwright is pinned to an exact version in `.claude/scripts/lib/package.json` — a
+browser driver that floats is a reader whose behaviour changes without a commit. Install
+it and the browser binary once per machine (`node_modules/` is gitignored):
+
+```bash
+npm install --prefix .claude/scripts/lib
+npx --prefix .claude/scripts/lib playwright install chromium
+```
+
+Absent, every Cursor row reads `unreachable` naming exactly that command, and every other
+account still reports.
+
+#### Headless vs headed
+
+The read runs **headless**, because the helper passes `headless: opts.mode === 'read'` to
+`launchPersistentContext` — there is no `headless: true` literal to remove. Bot
+protection on cursor.com was not encountered on the captured account; if it appears, the
+documented fallback is a headed run. `--mode login` already is one, so confirm the
+symptom by re-running the helper that way; to make a normal READ headed, change that
+expression and say so here, per the issue's note.
+
+#### One name to keep clear
+
+`ai-quotas.sh` names its own clock `report_now_epoch`, **not** `now_epoch`. The latter
+belongs to `lib/bounded-run.sh`, which the script sources; a same-named function defined
+afterwards silently replaces the library's for the rest of the run. Since `run_bounded`
+reads that clock twice to decide whether a child has overrun, a frozen `AI_QUOTAS_NOW`
+made both reads equal and every wall-clock bound in the script vanish — invisibly, and
+precisely under the test suite where the bounds are asserted. Do not rename it back.
+
 ### Test seams
 
 `AI_QUOTAS_CONFIG`, `AI_QUOTAS_CURL_BIN`, `AI_QUOTAS_SECURITY_BIN`,
@@ -315,10 +490,10 @@ account, network, or keychain. They are not meant for normal use.
 
 ### Increment boundary
 
-This reader ends at Claude and Codex. Cursor rows print `unsupported` until #1668 adds a
-`cursor` reader, and no row carries an overage cost until #1669 adds that column. Both
-are additive: a new provider is a new `read_<provider>_account` function feeding the same
-`emit_row`, and an overage figure is a new field on that row.
+Provider coverage is complete at #1668: Claude, Codex, and Cursor. No row carries an
+overage cost until #1669 adds that column — an additive change, a new field on the row
+through the same extra-JSON argument the Cursor pools use. The `spendLimitUsage` block
+of the captured Cursor response (above) is where that figure comes from.
 
 ## Symlink
 

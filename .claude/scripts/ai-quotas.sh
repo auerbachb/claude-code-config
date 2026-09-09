@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas.sh — report each registered AI account's remaining allowance
 # (issue #1667).
-# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, remaining %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint) and `codex` (`codex app-server`, HTTP fallback); display only, never a dispatch or spend gate
+# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, remaining %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), and `cursor` (the dashboard's own usage response, read through a saved browser session); display only, never a dispatch or spend gate
 #
 # PURPOSE
 #   The owner runs several premium AI subscriptions side by side and drains
@@ -57,8 +57,16 @@
 #                   `auth.json` bearer and `ChatGPT-Account-Id` header only
 #                   when app-server is unavailable, and says which path a row
 #                   came from.
-#   cursor          Nothing yet — every cursor row reports `unsupported`
-#                   until increment 3 (issue #1668) adds the reader.
+#   cursor          A saved browser session, not a token: Cursor exposes no
+#                   individual usage API. `lib/ai-quotas-cursor.js` drives a
+#                   headless Playwright browser on that account's persistent
+#                   profile directory, loads the dashboard's Spending tab, and
+#                   reads the response the page itself requests —
+#                   POST https://cursor.com/api/dashboard/get-current-period-usage,
+#                   an endpoint CAPTURED from the live dashboard on
+#                   2026-09-08, not guessed. Two rows come back per account,
+#                   `cursor-models` and `other-models`. No cookie or session
+#                   value ever leaves the profile directory.
 #
 # WINDOW SELECTION
 #   The weekly Codex window is chosen by `windowDurationMins == 10080`,
@@ -71,18 +79,24 @@
 #   stdout: the table (default) or a JSON array (--json). Each JSON row
 #           carries provider, label, reported_email, window, used_pct,
 #           remaining_pct, resets_at_epoch, resets_at_et, status, plus
-#           detail, source, and plan.
+#           detail, source, plan, pool, used_usd, included_usd,
+#           plan_used_usd, and plan_included_usd. The last five are `null` on
+#           providers that have no such notion, so the shape never varies.
+#           The table's third column shows the POOL where a provider has
+#           pools and the window otherwise.
 #   stderr: one-line per-account diagnostics.
 #
 #   Statuses are per row, and one failing account never stops the others:
 #     ok            figures were read
-#     needs-login   no usable credential — the exact `/quotas-setup relogin`
-#                   command is in the row's note
+#     needs-login   no usable credential or saved session — the exact
+#                   `/quotas-setup relogin` command is in the row's note
 #     rate-limited  the provider answered 429; the retry window is in the note
-#     unreachable   network failure, or a response this reader did not
-#                   recognise (its top-level keys are printed rather than a
-#                   silent 0 %)
-#     unsupported   cursor, until increment 3
+#     unreachable   network failure, a missing driver, or a response this
+#                   reader did not recognise (its top-level keys are printed
+#                   rather than a silent 0 %)
+#     unreadable    the response arrived but its shape changed; the note names
+#                   the keys actually seen. Never a figure, never 0 %.
+#     unsupported   a provider this reader does not know
 #
 # ENVIRONMENT (overrides; the defaults are what you want)
 #   AI_QUOTAS_CONFIG          Account registry path.
@@ -96,6 +110,13 @@
 #   AI_QUOTAS_ANTHROPIC_URL   Claude usage endpoint.
 #   AI_QUOTAS_CHATGPT_URL     Codex HTTP fallback endpoint.
 #   AI_QUOTAS_HTTP_TIMEOUT    Per-request wall-clock bound, seconds (15).
+#   AI_QUOTAS_NODE_BIN        Path to node (the cursor helper's runtime).
+#   AI_QUOTAS_CURSOR_HELPER   Path to lib/ai-quotas-cursor.js.
+#   AI_QUOTAS_CURSOR_TIMEOUT  Cursor browser-read bound, seconds (30). The
+#                             helper's own bound is set a few seconds shorter
+#                             so it can print its verdict before this one
+#                             elapses; a value under 8 raises this bound
+#                             rather than shrinking the helper's below 5s.
 #   AI_QUOTAS_CODEX_TIMEOUT   app-server response bound, seconds (20).
 #                             Both must be a positive integer with no leading
 #                             zero. Anything else is refused on stderr and the
@@ -109,7 +130,7 @@
 #
 # EXIT STATUS
 #   0   The report was produced. A `needs-login`, `rate-limited`,
-#       `unreachable`, or `unsupported` ROW is not a failure: this is a
+#       `unreachable`, `unreadable`, or `unsupported` ROW is not a failure: this is a
 #       report, never a gate, so it must not be read as a verdict about
 #       whether work may proceed.
 #   3   Usage error — unknown flag, or --account without a label.
@@ -122,6 +143,12 @@
 #   - macOS security(1) for the Keychain credential path
 #   - the `codex` CLI for the preferred Codex path (the HTTP fallback needs
 #     only curl)
+#   - Node 20+ and Playwright for the Cursor path — `.claude/scripts/lib`
+#     pins the version; install with
+#     `npm install --prefix .claude/scripts/lib` then
+#     `npx --prefix .claude/scripts/lib playwright install chromium`.
+#     Absent, cursor rows read `unreachable` naming that command; every other
+#     account still reports.
 #   - .claude/scripts/lib/bounded-run.sh (sibling library) for the local CLI
 #     probes, which must not hang the report
 #
@@ -215,6 +242,10 @@ positive_int_or_default() { # <value> <default> <env-var-name>
 }
 HTTP_TIMEOUT="$(positive_int_or_default "${AI_QUOTAS_HTTP_TIMEOUT:-15}" 15 AI_QUOTAS_HTTP_TIMEOUT)"
 CODEX_TIMEOUT="$(positive_int_or_default "${AI_QUOTAS_CODEX_TIMEOUT:-20}" 20 AI_QUOTAS_CODEX_TIMEOUT)"
+# A headless browser start plus a dashboard load is slower than an HTTP call
+# and slower than app-server; 30s leaves room for a cold profile without
+# letting one Cursor account hold the whole report open.
+CURSOR_TIMEOUT="$(positive_int_or_default "${AI_QUOTAS_CURSOR_TIMEOUT:-30}" 30 AI_QUOTAS_CURSOR_TIMEOUT)"
 SCHEMA_MAJOR="1"
 # Last-resort User-Agent version, used only when the `claude` CLI cannot be
 # found AND AI_QUOTAS_CLAUDE_VERSION is unset. The endpoint rejects a request
@@ -324,7 +355,17 @@ read_config() {
 # reach `(( e - NOW ))`, where bash errors and the arithmetic yields 0 — so
 # every reset would read as already elapsed and every row would say `reset`.
 # A bad override falls back to the real clock and says so once.
-now_epoch() {
+#
+# NAMED `report_now_epoch`, NOT `now_epoch`. lib/bounded-run.sh — sourced
+# above — exports its own `now_epoch`, and a function defined here after the
+# source silently REPLACES it for the rest of the run. That is not a style
+# point: bounded-run.sh reads the clock twice to decide whether a child has
+# run past its bound, so a frozen AI_QUOTAS_NOW would make both reads equal,
+# `now - start` permanently 0, and EVERY wall-clock bound in this script
+# vanish — under the test suite, which is exactly where the bounds are
+# asserted. A collision between a sourced library and its caller has no
+# symptom until the day something hangs.
+report_now_epoch() {
   if [[ -n "${AI_QUOTAS_NOW:-}" ]]; then
     if [[ "$AI_QUOTAS_NOW" =~ ^[0-9]+$ ]]; then printf '%s' "$AI_QUOTAS_NOW"; return 0; fi
     warn "ignoring AI_QUOTAS_NOW='${AI_QUOTAS_NOW}' — not epoch seconds; using the real clock"
@@ -332,7 +373,7 @@ now_epoch() {
   date -u +%s
 }
 
-NOW="$(now_epoch)"
+NOW="$(report_now_epoch)"
 # The clock is load-bearing for every countdown; without it the reader would
 # quietly report `reset` for everything.
 [[ "$NOW" =~ ^[0-9]+$ ]] || die 5 "could not read the current time from date(1)"
@@ -410,8 +451,9 @@ countdown() { # <epoch>
 }
 
 # --- row model ---------------------------------------------------------------
-# One shape for every provider, so #1668's cursor reader and #1669's overage
-# column add a field rather than a second renderer.
+# One shape for every provider. #1668's cursor reader added its fields through
+# the optional extra-JSON argument below rather than a second renderer, and
+# #1669's overage column lands the same way.
 
 # Every numeric conversion below is guarded. A bare `tonumber` on an
 # unexpected value — a percentage that arrived as "64%", a reset that arrived
@@ -419,8 +461,22 @@ countdown() { # <epoch>
 # would vanish from a report whose entire promise is that every account gets
 # one. A value this reader cannot turn into a number becomes `null`, which
 # the table renders as `-` and nobody mistakes for zero usage.
-emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan>
+emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan> [<extra-json>]
   local used="${5:-}" resets="${6:-}"
+  # Optional 11th argument: a JSON OBJECT merged over the base row, which is
+  # how a provider adds a field without forking the renderer (the cursor pool
+  # rows use it, and #1669's overage column will). Validated here rather than
+  # trusted: a malformed value would abort jq, and an aborted jq writes no
+  # row at all — the account would vanish from a report whose whole promise
+  # is one row per account.
+  local extra="{}"
+  if [[ $# -ge 11 && -n "${11:-}" ]]; then
+    if printf '%s' "${11}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      extra="${11}"
+    else
+      warn "internal defect: ignoring a non-object extra field set on the $1 row for ${2}"
+    fi
+  fi
   # `account_label`, not `label`: `label` is a jq KEYWORD (`label $out | …`), and
   # while jq 1.7 accepts it after `$`, nothing in this repo pins a jq version —
   # the dependency list says "jq". A keyword-named binding is free to rename and
@@ -443,6 +499,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
     --arg used "$used" --arg resets "$resets" \
     --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-}" \
     --arg et "$(epoch_to_et "$resets")" --arg in "$(countdown "$resets")" \
+    --argjson extra "$extra" \
     '{provider: $provider,
       label: $account_label,
       reported_email: (if $email == "" then $account_label else $email end),
@@ -456,7 +513,17 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       status: $status,
       detail: $detail,
       source: (if $source == "" then null else $source end),
-      plan: (if $plan == "" then null else $plan end)}' > "$rowf" 2>/dev/null
+      plan: (if $plan == "" then null else $plan end),
+      # Declared on EVERY row, null where the provider has no such notion, so
+      # --json has one shape whatever produced it. A consumer forced to test
+      # whether a key exists before reading it is a consumer that will
+      # eventually read a partial row as a complete one.
+      pool: null,
+      used_usd: null,
+      included_usd: null,
+      plan_used_usd: null,
+      plan_included_usd: null}
+     + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
     warn "internal defect: could not build the $1 row for ${2} — this account is missing from the report"
@@ -982,6 +1049,179 @@ read_codex_account() { # <label> <profile_dir>
   return 0
 }
 
+# --- cursor ------------------------------------------------------------------
+
+# Cursor publishes no individual usage API, so the figures come from the
+# logged-in dashboard through a saved browser session. This function does no
+# browsing itself: it shells out to lib/ai-quotas-cursor.js, which owns
+# Playwright and prints ONE JSON verdict. Everything about a cookie stays
+# inside the profile directory and the browser — nothing here reads, prints,
+# or copies a session value.
+CURSOR_WINDOW="billing-cycle"
+
+cursor_node_bin() {
+  local override="${AI_QUOTAS_NODE_BIN:-}" candidate
+  if [[ -n "$override" ]]; then
+    [[ -x "$override" ]] && { printf '%s' "$override"; return 0; }
+    return 1
+  fi
+  if candidate="$(command -v node 2>/dev/null)" && [[ -n "$candidate" ]]; then
+    printf '%s' "$candidate"; return 0
+  fi
+  # A minimal PATH makes a bare `command -v` lie on this fleet, so the known
+  # install locations are checked by absolute path rather than assumed absent.
+  for candidate in "/opt/homebrew/bin/node" "/usr/local/bin/node"; do
+    [[ -x "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+# `$1` dollars, or "unknown" — used only in the note, never as a figure.
+cursor_usd() { # <number|null|"">
+  local v="${1:-}"
+  [[ -n "$v" && "$v" != "null" ]] || { printf 'unknown'; return 0; }
+  printf '$%s' "$v"
+}
+
+read_cursor_account() { # <label> <profile_dir>
+  local label="$1" dir="$2"
+  local node helper out status detail keys pools count i
+  local start_epoch end_epoch plan_name plan_used plan_included source note extra
+  local pool used
+
+  helper="${AI_QUOTAS_CURSOR_HELPER:-$SELF_DIR/lib/ai-quotas-cursor.js}"
+  if [[ ! -r "$helper" ]]; then
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreachable \
+      "the cursor helper is missing at ${helper} — reinstall it from the repo" "" ""
+    return 0
+  fi
+  if ! node="$(cursor_node_bin)"; then
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreachable \
+      "no node found (PATH, AI_QUOTAS_NODE_BIN, and the known install paths were all checked) — the cursor reader needs Node 20+" "" ""
+    return 0
+  fi
+  if [[ ! -d "$dir" ]]; then
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" needs-login \
+      "no browser profile at ${dir} — run: $(relogin_hint cursor "$label")" "" ""
+    return 0
+  fi
+
+  # Bounded like every other local probe: a browser that never finishes
+  # loading must not hold a five-account report open.
+  # The helper's own bound is set SHORTER than the bash bound, with a few
+  # seconds of headroom. Given the same number, the helper would still be
+  # closing its browser and serialising its verdict when the outer probe
+  # killed it — so an honest `needs-login` or `unreadable` row would be
+  # replaced by "the helper did not finish", every time the read ran long.
+  local helper_secs=$(( CURSOR_TIMEOUT - 3 ))
+  [[ "$helper_secs" -ge 5 ]] || helper_secs=5
+  # The outer bound is derived from the FLOORED helper bound, not from
+  # CURSOR_TIMEOUT alone. With a configured 5-8s the floor raises helper_secs
+  # back to 5 and the subtraction above buys nothing — outer and inner would
+  # be equal, or the inner would be the larger of the two, and the headroom
+  # this pair exists to create would silently be zero.
+  local outer_secs=$(( helper_secs + 3 ))
+  [[ "$CURSOR_TIMEOUT" -gt "$outer_secs" ]] && outer_secs="$CURSOR_TIMEOUT"
+  if ! probe "$outer_secs" "$node" "$helper" \
+       --profile-dir "$dir" --mode read --timeout-ms "$(( helper_secs * 1000 ))"; then
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreachable \
+      "the cursor helper did not finish within ${outer_secs}s" "" ""
+    return 0
+  fi
+  out="$PROBE_OUT"
+
+  # The helper's contract is one JSON object. Anything else — an empty run, a
+  # stack trace, a stray log line — is a broken helper, and saying so beats
+  # rendering the account as though it had answered.
+  if ! printf '%s' "$out" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreadable \
+      "the cursor helper printed no JSON verdict this reader understands" "" ""
+    return 0
+  fi
+
+  status="$(printf '%s' "$out" | jq -r '.status')"
+  detail="$(printf '%s' "$out" | jq -r '.detail // ""')"
+  source="$(printf '%s' "$out" | jq -r '.source // ""')"
+
+  case "$status" in
+    needs-login)
+      emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" needs-login \
+        "${detail:-the saved browser session is gone} — run: $(relogin_hint cursor "$label")" "$source" ""
+      return 0 ;;
+    unreadable)
+      keys="$(printf '%s' "$out" | jq -r '(.keys_seen // []) | join(", ")')"
+      emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreadable \
+        "${detail:-the usage response changed shape}${keys:+; keys seen: ${keys}}" "$source" ""
+      return 0 ;;
+    ok) ;;
+    *)
+      emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreachable \
+        "${detail:-the cursor helper reported ${status}}" "$source" ""
+      return 0 ;;
+  esac
+
+  pools="$(printf '%s' "$out" | jq -c '.pools // []')"
+  count="$(printf '%s' "$pools" | jq 'length' 2>/dev/null || echo 0)"
+  if [[ ! "$count" =~ ^[0-9]+$ || "$count" -eq 0 ]]; then
+    # `ok` with no pool is the helper contradicting itself. Reporting it as a
+    # shape problem is the only honest reading; rendering nothing would drop
+    # the account silently.
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreadable \
+      "the cursor helper reported ok but carried no pool figures" "$source" ""
+    return 0
+  fi
+
+  end_epoch="$(printf '%s' "$out" | jq -r 'if .billing_cycle_end_epoch == null then "" else (.billing_cycle_end_epoch | tostring) end')"
+  # Anything that is not epoch seconds becomes "no reset reported" — the table
+  # renders that as `-`. A value date(1) cannot read would otherwise format as
+  # nothing while the countdown said `reset`, i.e. "your cycle already rolled".
+  [[ "$end_epoch" =~ ^[0-9]+$ ]] || end_epoch=""
+  start_epoch="$(printf '%s' "$out" | jq -r 'if .billing_cycle_start_epoch == null then "" else (.billing_cycle_start_epoch | tostring) end')"
+  [[ "$start_epoch" =~ ^[0-9]+$ ]] || start_epoch=""
+  plan_name="$(printf '%s' "$out" | jq -r '.plan_name // ""')"
+  plan_used="$(printf '%s' "$out" | jq -r 'if .plan_used_usd == null then "" else (.plan_used_usd | tostring) end')"
+  plan_included="$(printf '%s' "$out" | jq -r 'if .plan_included_usd == null then "" else (.plan_included_usd | tostring) end')"
+
+  # Said on every pool row, because it is the one thing a reader of this table
+  # would otherwise get wrong: the dashboard's own response reports the pools
+  # as PERCENTAGES, and the only dollars in it are plan-wide. Dividing those
+  # dollars across the two pools would manufacture a figure Cursor never sent.
+  note="billing cycle"
+  [[ -z "$start_epoch" ]] || note="$note since $(epoch_to_et "$start_epoch")"
+  note="${note}; plan-wide spend $(cursor_usd "$plan_used") of $(cursor_usd "$plan_included") included"
+  note="${note}; this response reports the pools as percent only, so per-pool dollars are unavailable"
+
+  for (( i = 0; i < count; i++ )); do
+    pool="$(printf '%s' "$pools" | jq -r --argjson i "$i" '.[$i].pool // ""')"
+    used="$(printf '%s' "$pools" | jq -r --argjson i "$i" \
+      'if .[$i].used_pct == null then "" else (.[$i].used_pct | tostring) end')"
+    [[ -n "$pool" ]] || pool="pool-${i}"
+    # One decimal, with a bare `.0` dropped: the payload carries full float
+    # precision (49.02333…), the dashboard shows `49%`, and a table column is
+    # not the place for fourteen digits. Rounding happens ONCE, here, so the
+    # JSON row and the table can never disagree — and `remaining_pct`, which
+    # emit_row derives as `100 - used`, comes out of the same number.
+    # VALIDATED before rounding, not after. awk coerces a non-numeric value to
+    # 0, so `"n/a"` — or any string a future helper version put here — would
+    # round to `0.0` and render as `0 %`: a figure nobody measured, reading as
+    # "plenty left". A value this reader cannot recognise as a number becomes
+    # empty, which emit_row turns into `null` and the table shows as `-`.
+    case "$used" in
+      "") ;;
+      *[!0-9.]* | *.*.* | .) used="" ;;
+      *) used="$(awk -v v="$used" 'BEGIN { s = sprintf("%.1f", v); sub(/\.0$/, "", s); print s }' 2>/dev/null || printf '%s' "$used")" ;;
+    esac
+    extra="$(jq -nc --arg pool "$pool" --arg pu "$plan_used" --arg pi "$plan_included" \
+      '{pool: $pool,
+        plan_used_usd: (if $pu == "" then null else (try ($pu | tonumber) catch null) end),
+        plan_included_usd: (if $pi == "" then null else (try ($pi | tonumber) catch null) end)}' \
+      2>/dev/null || printf '{}')"
+    emit_row cursor "$label" "" "$CURSOR_WINDOW" "$used" "$end_epoch" ok \
+      "$note" "$source" "$plan_name" "$extra"
+  done
+  return 0
+}
+
 # --- main --------------------------------------------------------------------
 
 # Bare call: see read_config's own note on why this must not be a `$(…)`.
@@ -1014,13 +1254,10 @@ for (( i = 0; i < COUNT; i++ )); do
   case "$PROVIDER" in
     claude) read_claude_account "$LABEL" "$DIR" "$SERVICE" ;;
     codex)  read_codex_account "$LABEL" "$DIR" ;;
-    cursor)
-      emit_row cursor "$LABEL" "" "7-day" "" "" unsupported \
-        "not yet — the Cursor reader arrives in increment 3 (issue #1668)" "" ""
-      ;;
+    cursor) read_cursor_account "$LABEL" "$DIR" ;;
     *)
       emit_row "$PROVIDER" "$LABEL" "" "7-day" "" "" unsupported \
-        "this reader knows claude and codex; '${PROVIDER}' is not one of them" "" ""
+        "this reader knows claude, codex, and cursor; '${PROVIDER}' is not one of them" "" ""
       ;;
   esac
 done
@@ -1066,7 +1303,11 @@ TABLE="$TMP/table.tsv"
     def dash: if . == null or . == "" then "-" else . end;
     [ .reported_email,
       .provider,
-      .window,
+      # The pool name when the provider has pools, the window otherwise. A
+      # Cursor account contributes TWO rows for one window, so printing the
+      # window here would render them as two identical lines differing only
+      # in a percentage — the reader could not tell which pool was which.
+      (.pool // .window),
       (.used_pct | pct),
       (.remaining_pct | pct),
       (.resets_at_et | dash),
