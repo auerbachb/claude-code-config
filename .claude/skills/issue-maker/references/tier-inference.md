@@ -58,12 +58,14 @@ explicit:
 | Source | What it looks like |
 |--------|--------------------|
 | An upward adjustment you make deliberately | The `XL` row in `time-estimates.md` (`Est: 180–360 min · plan on 360`), stated with the one-sentence reason the "never adjust silently" rule already requires |
-| A `size:XL` / `size:XXL` label | A tie-break, on the same footing as `complexity:*` — it settles a balanced call, never overrules the description |
+| A `complexity:XL` / `tier:XL` / `size:XL` / `size:XXL` label | A tie-break, on the same footing as `complexity:*` — it settles a balanced call, never overrules the description. All four, because that is the set `estimate-resolve.sh` and `/start-issue` resolve to the XL row; a shorter list here would give one issue two estimates |
 | A recalibrated actual | `estimate-actuals.md`, once measured history says this shape of work runs long |
 
-**Heavy already clears the line.** Heavy's bound is 300, so a Heavy issue trips
-the time trigger without any XL involvement — XL widens what the vocabulary can
-*say*, it is not what "too long" means.
+**Heavy already clears the line** at the shipped threshold. Heavy's bound is 300,
+so at the default 180 a Heavy issue trips the time trigger without any XL
+involvement — XL widens what the vocabulary can *say*, it is not what "too long"
+means. The comparison is strict against the resolved `SPLIT_OVER_MIN`, though, so
+a knob raised to 300 stops Heavy firing; the trigger is the knob, never the tier.
 
 **Why keywords are excluded.** A keyword-driven XL would split single-seam
 issues whose slices are not independently mergeable, which costs more than one

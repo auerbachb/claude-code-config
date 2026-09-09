@@ -324,7 +324,7 @@ The vocabulary was silent too: the seed table topped out at 180, so an issue cou
 
 ### Heavy already clears the line, and that is intended
 
-With the 2026-09-07 recalibration Heavy's bound is 300, so **every Heavy issue fires the time trigger** — XL is not a precondition. This is the correct reading of the rule rather than an accident of the table: Heavy is 3.5–5 hours of claim-to-merge, which is what "over three hours" means. What XL adds is the ability to say "longer than Heavy" at all.
+With the 2026-09-07 recalibration Heavy's bound is 300, so **at the shipped threshold every Heavy issue fires the time trigger** — XL is not a precondition. (The comparison is strict against the resolved `SPLIT_OVER_MIN`, so the knob raised to 300 stops Heavy firing — which is the tuning lever this section closes on.) This is the correct reading of the rule rather than an accident of the table: Heavy is 3.5–5 hours of claim-to-merge, which is what "over three hours" means. What XL adds is the ability to say "longer than Heavy" at all.
 
 The practical consequence to watch is volume: if Heavy is common in a backlog, most of it now reaches the split question. The check-in is sub-step 1 of Step 5.1 — no articulable seam, no chain — so the expected outcome for a coherent Heavy issue is that it is *considered* and then, on a surface that can adopt it, started whole with the long estimate reported. `/subagent` is the exception named in the table above: unattended, it routes that parent to a thread instead, naming criterion 3 and the missing seam. If that consideration turns out to be noise rather than signal, `SPLIT_OVER_MIN` is the knob, and raising it to 300 is a one-line config change rather than a rule revision.
 
