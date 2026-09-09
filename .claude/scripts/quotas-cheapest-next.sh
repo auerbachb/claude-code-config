@@ -515,7 +515,20 @@ def usd_text:
 # Identifies the ACCOUNT a candidate row belongs to, so two windows reported
 # by one account can be recognised as one account. Input is a candidate
 # ({idx, row, remaining}), not a bare row.
-def account_key: "\(.row.provider // "") \(.row.label // "")";
+def account_key: "\(.row.provider // "") \(.row.label // "")";
+
+# The candidate's window expressed in HOURS when it is an hourly sub-window,
+# and null when it is not. The reader DERIVES these labels from the reported
+# duration (`$(( dur / 60 ))-hour`), so the set is open — `5-hour`, but also
+# `1-hour` and `3-hour` — and matching the shape is the only way to catch all
+# of them. `7-day`, `billing-cycle`, a bare `window`, and anything
+# unrecognised come back null: not sub-windows, so they rank normally. Guarded
+# with `test` before splitting, so a non-matching label returns null instead
+# of erroring the whole document.
+def sub_window_hours:
+  ((.row.window // "") | tostring) as $w
+  | if ($w | test("^[0-9]+-hour$")) then ($w | split("-") | .[0] | tonumber)
+    else null end;
 
 def window_phrase:
   if . == "7-day" then "weekly"
@@ -588,19 +601,44 @@ def overage_for($row):
 # nothing at all; it is never a reason to guess cheap.
 #
 # A SUB-WINDOW is not an account. `--five-hour` adds a SECOND row for the same
-# Claude account, and ranking the two independently lets a roomy five-hour row
-# win while that account's week is spent — the hint would name an account the
-# weekly cap stops you working on. The long window governs, so a five-hour row
-# drops out of the RANKING whenever its own account also reported a longer
-# one. It stays in `$readable` and can still fire the trigger: a drained
-# five-hour window is worth a hint, it is just never the answer.
+# account, and ranking the two independently lets a roomy short window win
+# while that account's week is spent — the hint would name an account the
+# weekly cap stops you working on. The longest window governs.
+#
+# Matched by SHAPE, not by the one literal: the reader derives Codex labels
+# from the reported duration (`$(( dur / 60 ))-hour`), so `1-hour` and
+# `3-hour` are as much sub-windows as `5-hour`, and testing for the literal
+# would let them through. Two rules, in order:
+#   * an account that reported a non-hourly window (`7-day`, `billing-cycle`)
+#     ranks on that one; every hourly row of that account drops out.
+#   * an account reporting ONLY hourly windows — a Codex plan with no weekly
+#     window — ranks on its LONGEST one, so a 1-hour row never displaces the
+#     same account's 3-hour row.
+# Dropped rows stay in `$readable` and can still fire the trigger: a drained
+# short window is worth a hint, it is just never the answer.
 | ([ $readable[]
-     | select((.row.window // "") != "5-hour")
-     | account_key ] | unique) as $has_long
+     | . as $c
+     | select(($c | sub_window_hours) == null)
+     | ($c | account_key) ] | unique) as $has_long
+| ([ $readable[]
+     | . as $c
+     | ($c | sub_window_hours) as $h
+     | select($h != null)
+     | {k: ($c | account_key), h: $h} ]
+   | group_by(.k)
+   | map({key: .[0].k, value: (map(.h) | max)})
+   | from_entries) as $longest_sub
 | [ $readable[]
     | select((.row.overage? // null) != null)
-    | select(((.row.window // "") != "5-hour")
-             or (account_key as $k | ($has_long | index($k)) == null))
+    # Bound BEFORE the lookups: inside `index(…)` and `$longest_sub[…]` the
+    # input is no longer this candidate, so building either key there would
+    # read `.row` off the wrong value.
+    | . as $cand
+    | ($cand | account_key) as $key
+    | ($cand | sub_window_hours) as $hrs
+    | select($hrs == null
+             or (($has_long | index($key)) == null
+                 and $hrs == ($longest_sub[$key] // $hrs)))
   ] as $cands
 
 # The TRIGGER: at least one readable row at or below the threshold. Inclusive

@@ -528,6 +528,25 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label != null')" "true" \
 check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "7-day" \
   "naming a governing window"
 
+# Sub-windows are matched by SHAPE, not by the `5-hour` literal. The reader
+# derives Codex labels from the reported duration, so `1-hour` and `3-hour` are
+# just as much sub-windows — testing for the one literal would let them rank
+# against their own account's weekly row.
+run "$(rows "$(row codex a 7-day 2 ok)" \
+             "$(row codex a 1-hour 95 ok)" \
+             "$(row claude c 7-day 70 ok)")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label')" "c" \
+  "a roomy 1-hour window does not win for an account whose week is spent"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "7-day" \
+  "and the recommendation still names a governing window"
+
+# An account reporting ONLY hourly windows — a Codex plan with no weekly one —
+# ranks on its LONGEST, so a roomy 1-hour row cannot displace the 3-hour row
+# that actually describes what is left.
+run "$(rows "$(row codex a 3-hour 8 ok)" "$(row codex a 1-hour 99 ok)")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "3-hour" \
+  "an all-hourly account ranks on its longest window, not its shortest"
+
 # --- summary -----------------------------------------------------------------
 
 echo
