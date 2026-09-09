@@ -161,12 +161,15 @@ write_config() { # <account-json…>
 }
 
 OUT=""
+DOC=""
 ERR=""
 RC=0
 
-run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
+run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
   local errf="$TMP/run.err"
   OUT="$(HOME="$CASE_HOME" \
+        CLAUDE_QUOTAS_STATE_DIR="$CASE_HOME/.claude/quotas" \
+        CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT="20" \
         STUB_VERDICT="$VERDICT" \
         NODE_LOG="$NODE_LOG" \
         AI_QUOTAS_CONFIG="$CONFIG" \
@@ -178,6 +181,18 @@ run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
+  # #1669 changed --json from a bare row ARRAY to a DOCUMENT — {schema_version,
+  # threshold_pct, basis, rows, cheapest_next}. Every assertion here is about
+  # the Cursor rows, so the document is kept whole in DOC and OUT is narrowed
+  # to `.rows`; same treatment, and same reasoning, as ai-quotas.test.sh.
+  #
+  # Narrowed ONLY when the output really is that document, so a table run or a
+  # failed --json run reaches the assertions exactly as the script wrote it.
+  DOC=""
+  if printf '%s' "$OUT" | jq -e 'type == "object" and has("rows") and has("cheapest_next")' >/dev/null 2>&1; then
+    DOC="$OUT"
+    OUT="$(printf '%s' "$DOC" | jq -c '.rows')"
+  fi
 }
 
 # One field of the row for one POOL. The two Cursor rows share a window, so

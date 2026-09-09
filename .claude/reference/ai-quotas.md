@@ -10,6 +10,13 @@ upstream harness signals, per `.claude/rules/safety.md` §"Anthropic Quota & Spe
 Authority". This registry answers "which accounts exist and can I reach them", nothing
 more.
 
+**Distinct wallet.** This file governs the owner's **AI coding-assistant subscriptions** —
+Claude Max, ChatGPT Pro / Codex, Cursor Ultra — including what continuing past their caps
+costs (§"Overage — what continuing costs"). `.claude/reference/pricing-matrix.md` is the
+separate **review-stack** wallet: CodeRabbit, BugBot, Greptile, CodeAnt. The two are never
+mixed, and no price is copied between them — a figure that appears in both files is a
+figure that will be updated in one of them and silently stale in the other.
+
 ## Why per-account profiles at all
 
 Five prepaid premium subscriptions cost far less than overage on any one of them, so the
@@ -26,7 +33,8 @@ This registry is increment 1 of four (#1666 → #1667 → #1668 → #1669). It e
 registered, validated account list. **No usage figure is read here.** Increment 2 adds
 `/quotas` and `.claude/scripts/ai-quotas.sh`, which read the config below and report
 each account's remaining allowance; increment 3 (#1668) makes the Cursor slot live — the
-browser login plus the two-pool reader documented at the end of this file. Keep the
+browser login plus the two-pool reader documented later in this file; increment 4 (#1669)
+adds the overage column and the cheapest-next hint and **closes the chain**. Keep the
 schema simple — a reader that has to guess is a reader that reports the wrong number.
 
 ## Config file
@@ -239,8 +247,9 @@ account. They are not meant for normal use.
 `ai-quotas.sh` reads the registry above and prints one row per account per window:
 account, provider, window, used %, remaining %, reset time in `America/New_York`, a
 countdown, a status, and a note. `--five-hour` adds the short windows that arrive in the
-same payload; `--account <label>` narrows the run; `--json` emits the same rows as
-objects. Flags and exit codes: `ai-quotas.sh --help`.
+same payload; `--account <label>` narrows the run; `--json` emits a document carrying
+those rows (§"Output" under "Overage" below — it was a bare array before #1669). Flags and
+exit codes: `ai-quotas.sh --help`.
 
 **Display only, and the reader enforces it structurally: it opens no state file for
 writing.** Its one write is the append-only telemetry line every script here emits to
@@ -273,7 +282,22 @@ there would render them as two identical lines differing only in a percentage.
 
 Providers add fields through `emit_row`'s optional 11th argument — a JSON object merged
 over the base row — rather than a second renderer. That is how the Cursor pools landed,
-and how #1669's overage column will.
+and how #1669's Cursor spend-limit and Codex reset-balance fields land.
+
+#### Fields added at #1669
+
+`overage`, `spend_limit_used_usd`, `spend_limit_usd`, and the two speculative Codex live
+figures `free_resets_remaining` and `credits_remaining_usd` are declared on **every** row
+alongside the pool fields, `null` where the provider has no such notion.
+`codex_live_overage` **drops** a key it cannot read as a plain number, so without those
+declarations the field would be present on some Codex rows and absent everywhere else —
+the "test whether the key exists before reading it" shape the one-shape promise exists to
+prevent. `overage` is
+filled in after every row is built, by `quotas-cheapest-next.sh` — the price of continuing
+is a property of the provider and the reset watermark, not of any single read. Declaring
+it in `emit_row` is what makes a run where that helper is unavailable emit the same keys,
+with `null` where a price would be. §"Overage — what continuing costs" has the rest, and
+§"Output" there describes the document `--json` now emits.
 
 ### Statuses
 
@@ -432,7 +456,13 @@ like a right one, which is the failure every other reader in this file is built 
 avoid. If Cursor ever adds the split, it becomes two more fields on the same rows.
 
 `spendLimitUsage` is the on-demand overage — `individualUsed` of `individualLimit`, in
-cents. It is deliberately **not** rendered here: that is #1669's column.
+cents. Since #1669 the helper reports it as `spend_limit_used_usd` / `spend_limit_usd`
+(cents ÷ 100), and both Cursor rows carry the pair: it is **one spend limit for the
+account**, not a per-pool one, so splitting it across the pools would manufacture a figure
+Cursor never sent — the same reason the plan-wide dollars are not divided. It renders in
+the overage column as `on-demand $1007.50 of $1000`; a payload without the block leaves both
+fields `null` and the column falls back to the checked-in `on-demand` label, because a
+missing block must not read as `$0 spent`.
 
 #### Statuses
 
@@ -484,16 +514,175 @@ precisely under the test suite where the bounds are asserted. Do not rename it b
 `AI_QUOTAS_CLAUDE_BIN`, `AI_QUOTAS_CODEX_BIN`, `AI_QUOTAS_CLAUDE_VERSION`,
 `AI_QUOTAS_PLATFORM`, `AI_QUOTAS_ANTHROPIC_URL`, `AI_QUOTAS_CHATGPT_URL`,
 `AI_QUOTAS_HTTP_TIMEOUT`, `AI_QUOTAS_CODEX_TIMEOUT`, and `AI_QUOTAS_NOW` (a fixed clock,
-so countdown assertions do not drift) let
-`.claude/scripts/tests/ai-quotas.test.sh` drive every path against stubs — no live
-account, network, or keychain. They are not meant for normal use.
+so countdown assertions do not drift — and, since #1669, the ET month the reset watermark
+is read against) let `.claude/scripts/tests/ai-quotas.test.sh` drive every path against
+stubs — no live account, network, or keychain. They are not meant for normal use.
+
+`AI_QUOTAS_CHEAPEST_BIN` (the path to `quotas-cheapest-next.sh`),
+`CLAUDE_QUOTAS_STATE_DIR` (the reset watermark's directory), and
+`CLAUDE_QUOTAS_PM_CONFIG` (the `pm-config.md` supplying the threshold knob) join them at
+#1669. `CLAUDE_QUOTAS_PM_CONFIG` exists because `repo-root.sh` resolves from the script's
+own directory, so no choice of working directory keeps a suite from reading this repo's
+real `pm-config.md`: a test asserting "the default is 20" would in fact be reading the
+repo's `= 20`, passing for the wrong reason and going on passing if the default changed.
+`AI_QUOTAS_CHEAPEST_BIN` is used **exclusively** when set — no fall-through to the
+portable search — because a seam that falls back finds the repo copy through the relative
+candidate whenever the caller is standing in a checkout, which is the only place anyone
+runs the suite: the "helper unavailable" path could never then be exercised.
 
 ### Increment boundary
 
-Provider coverage is complete at #1668: Claude, Codex, and Cursor. No row carries an
-overage cost until #1669 adds that column — an additive change, a new field on the row
-through the same extra-JSON argument the Cursor pools use. The `spendLimitUsage` block
-of the captured Cursor response (above) is where that figure comes from.
+Provider coverage is complete at #1668: Claude, Codex, and Cursor. #1669 adds the
+overage column and the cheapest-next hint below, and **closes the chain** — the tracker
+ends there, with nothing deferred past it.
+
+## Overage — what continuing costs (increment 4, #1669)
+
+`/quotas` answers "how much is left". At the end of a drained week the next question is
+"what does it cost to keep going, and where". `.claude/scripts/quotas-cheapest-next.sh`
+owns that answer: it annotates each row with an `overage` object and, when at least one
+account is at or below the threshold, names the cheapest account to continue on.
+
+**Informational only.** The hint **never switches accounts, never purchases anything, and
+never gates dispatch.** It is a third observational surface, exactly like the table it
+sits under — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority" holds the
+authority, and the rolled-back `/quota` skill (#499) is the precedent for what gating on
+locally-read numbers costs. Buying a Codex reset, enabling Claude usage credits, and
+raising a Cursor spend limit are the account owner's actions, taken in the provider's own
+UI. No script here does any of them.
+
+### The table
+
+**These prices are only as fresh as their `last verified` dates.** Re-check them when a
+row looks wrong; a stale table produces a confident hint about a price that moved.
+
+| Provider | Overage | What it buys | Source | Last verified |
+|----------|---------|--------------|--------|---------------|
+| **ChatGPT Pro / Codex** | `1 free reset`, then `~$90/reset` | An instant reset restores the 5-hour **and** weekly allowances at once and starts a new weekly period on the next request — it pulls the normal weekly allowance forward rather than adding a separate entitlement. Free resets are **promotional and offer-dependent**, not a standing plan entitlement: at the last check OpenAI described one free reset to start on eligible plans plus resets banked from referrals, with eligibility, delivery, expiry, and future availability all varying by account, region, and plan — and an expired banked reset is not restored or reissued. Buying one is available to Plus and Pro personal accounts from Settings → Usage or the Codex app. **Credits are the other lever** — a balance bought from the same screen. | [help.openai.com — paid weekly Work and Codex rate limit resets](https://help.openai.com/en/articles/20001507-paid-weekly-work-and-codex-rate-limit-resets); [credits](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-freegopluspro-sora) | 2026-09-09 |
+| **Claude Max** | `API rate` | Extra usage continues at **standard API rates** once usage credits are enabled; auto-reload for the credit balance is a Console billing setting. Metered — you pay for the work actually done. | [support.claude.com — using Claude Code with your Pro or Max plan](https://support.claude.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan); rates at [claude.com/pricing#api](https://claude.com/pricing#api) | 2026-09-09 |
+| **Cursor Ultra** | `on-demand` | Once the included monthly usage is spent, extra usage continues at the **standard model API rates** as pay-as-you-go. Metered, per pool, against the spend limit the account sets. | [cursor.com/docs/account/pricing](https://cursor.com/docs/account/pricing) | 2026-09-09 |
+
+**The `~$90` figure is owner-reported (2026-09-07), not published.** OpenAI's help page
+documents the reset product and states that available amounts and prices vary by account,
+region, and plan; it prints no figure. The label says `~` for that reason, and the source
+URL above is the product page, not a price list. The **one free reset per month** cadence
+is likewise the owner's observation, not a documented grant — which is exactly why the
+watermark below records a reset as *used* rather than counting down from an assumed
+monthly allowance, and why a live figure in the payload would outrank it. If the
+promotion ends, the watermark keeps working: it goes on saying "no reset recorded this
+month", and the account owner, who is the one who sees the offer, is the one who decides.
+
+### Preferring a live figure
+
+A checked-in table is a fallback. Where a provider's own response carries the number, the
+live one wins and the row says so in `overage.figure_source`:
+
+| Row field | Provider source | Renders as |
+|-----------|-----------------|------------|
+| `spend_limit_used_usd`, `spend_limit_usd` | Cursor's `spendLimitUsage.individualUsed` / `.individualLimit`, cents ÷ 100 — the on-demand block of the captured response documented above | `on-demand $1007.50 of $1000`, `figure_source: "live"` |
+| `free_resets_remaining` | Codex — **speculative**. No captured `account/rateLimits/read` payload has ever carried it; the reader looks for `freeResetsRemaining`, `free_resets_remaining`, and `resets.freeRemaining` and contributes **nothing** when none is a plain number | `2 free resets`, `figure_source: "live"` |
+| `credits_remaining_usd` | Codex — speculative on the same terms (`creditBalanceUsd`, `credits.balanceUsd`) | reported in the `overage` object, not yet in the label |
+
+The Codex lookups are a hook, not an observation, and they are written so that being wrong
+costs nothing: a key that is absent, or present with a value that is not a plain number,
+leaves the watermark to answer. A bare `tonumber` there would turn `"n/a"` into `0` and
+render `0 free resets` — a figure nobody sent, pointing straight at a paid reset. If
+OpenAI ships the balance under a third name, add it in `codex_live_overage` and here.
+
+### The Codex reset watermark
+
+`~/.claude/quotas/codex-reset.json` (override the directory with
+`CLAUDE_QUOTAS_STATE_DIR`), written **only** by an explicit
+`quotas-cheapest-next.sh --record-codex-reset [YYYY-MM-DD]`:
+
+```json
+{"schema_version": "1.0", "month": "2026-09", "used_on": "2026-09-07",
+ "recorded_at": "2026-09-09T18:41:02Z"}
+```
+
+A `month` equal to the current **Eastern** month means the free reset is spent, and the
+row prices the next one at `~$90/reset`. Any other month, or no file, means one is
+available. `--codex-reset-status` prints the verdict; `AI_QUOTAS_NOW` freezes the month
+for tests.
+
+**The read fails soft, in the safe direction.** A missing, unreadable, or malformed file
+degrades to "one free reset assumed" (`figure_source: "assumed"`) with a warning — never
+to an error, and never to "already spent". The latter is the reading that steers the hint
+toward a $90 purchase, and it must not come from a parse failure.
+
+### The threshold knob
+
+`quotas_cheapest_next_threshold_pct` in `.claude/pm-config.md` `## Budget` — integer
+percent `0`–`100`, default **20**. Precedence, most specific first: `--threshold <pct>` on
+the invocation, then `CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT`, then the config value,
+then the default.
+
+**The two bad-value paths differ, deliberately.** An unparseable value from the **env
+override or the config file** is reported on stderr and replaced by the default — the same
+fail-soft handling `usage-horizon.sh` gives its knobs, because a typo in a config file
+must not abort a display-only report. An unparseable **`--threshold`** is a usage error:
+`die_usage`, **exit 3**, nothing printed. Someone who just typed the flag is present to
+retype it, and silently substituting 20 for what they meant would answer a different
+question than the one they asked. The config file itself is
+resolved through `repo-root.sh` unless `CLAUDE_QUOTAS_PM_CONFIG` names one directly (see
+§"Test seams"); a run that resolves no repo simply skips that rung.
+
+The threshold is the **trigger**, not the filter: once any readable row sits at or below
+it — **inclusive**, because an account exactly on the line is the case the hint exists for
+— every `ok` row with a readable figure competes, including the drained one. Continuing
+where you are, at API rate, is a legitimate answer.
+
+### How the ranking works, and what it does not claim
+
+**The units do not convert.** A Codex reset buys a fixed week at a flat price; Claude and
+Cursor overage is metered per unit of work. The ranking is over *what continuing costs
+you*, not over dollars, and every verdict carries a `basis` string saying so — printed
+under the hint, and present in `--json`:
+
+1. **Included quota you have already paid for** — a row still above the threshold. Ordered by remaining percentage, highest first.
+2. **A banked free Codex reset** — no money, but it spends the one you have.
+3. **Metered overage** — Claude's API rate, Cursor's on-demand: you pay for the work actually done.
+4. **A flat-fee reset** — a fixed price for a week you may not use.
+
+Only rows with `status: "ok"` and a readable `remaining_pct` are candidates. A
+`needs-login` account is never recommended however much it claims to have left — its
+overage price is still reported, because the price does not depend on whether the read
+succeeded.
+
+### Output
+
+The table gains an **OVERAGE** column between REMAIN and RESETS (ET), showing that row's
+`overage.label` and `-` where no price is known. When the hint fires, three lines follow
+the table: `Cheapest to continue on: <label> (<reason>)`, the basis, and the
+informational-only restatement.
+
+`--json` changed shape at #1669, from a bare row **array** to a **document**:
+
+```json
+{"schema_version": "1.0", "threshold_pct": 20, "basis": "…",
+ "rows": [ … ], "cheapest_next": {"label": …, "reason": …, "basis": …, "overage": … }}
+```
+
+`cheapest_next` is a property of the whole report rather than of any row, and an array had
+nowhere to put it. `schema_version` is there so a consumer can tell the two apart rather
+than inferring it from the JSON type. The "no accounts registered" and "no account
+matched" exits emit the **same** document with an empty `rows` — never a bare `[]`,
+because a consumer forced to special-case emptiness is a consumer that will eventually
+read a partial answer as a complete one.
+
+Each row's `overage` object carries `label`, `base_label` (the table's generic wording,
+which the hint's prose uses), `kind` (`metered` or `reset`), `detail`, `source`,
+`last_verified`, `cost_rank`, and `figure_source` — `live`, `watermark`, `assumed`, or
+`table`. A provider this script has no prices for gets `overage: null`, never a guess.
+
+### When the helper is unavailable
+
+`ai-quotas.sh` resolves `quotas-cheapest-next.sh` sibling-first, then through the standard
+three-candidate portable lookup (`AI_QUOTAS_CHEAPEST_BIN` overrides all of them, and is
+used exclusively when set). Missing or failing, the run says `DEGRADED:` **once** on
+stderr and reports without prices or a hint — every row still renders, `overage` is `null`
+on each, `cheapest_next` is `null`, and the exit status is still `0`. A missing price is a
+missing number, never a verdict about whether work may proceed.
 
 ## Symlink
 
