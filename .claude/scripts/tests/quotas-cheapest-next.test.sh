@@ -375,6 +375,16 @@ run "$(rows "$(row cursor cu billing-cycle 0 ok '{"spend_limit_used_usd": 10.5, 
 check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" 'on-demand $10.50 of $20' \
   "a value with one decimal renders as two, and a whole dollar renders bare"
 
+# NO configured on-demand limit reports as `individualLimit: 0`, which is a
+# number and not a null — so a presence-only test renders "on-demand $0.00 of
+# $0", the shape of a limit spent to the last cent. The generic label is the
+# honest answer, and the row must not claim a live figure it does not have.
+run "$(rows "$(row cursor cu billing-cycle 0 ok '{"spend_limit_used_usd": 0, "spend_limit_usd": 0}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "on-demand" \
+  "a zero on-demand limit falls back to the generic label, never to '\$0 of \$0'"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.figure_source')" "table" \
+  "and is not marked live"
+
 # A value that is not a number contributes NOTHING. A `tonumber`-style
 # coercion would turn "n/a" into 0 and render "0 free resets" — a figure
 # nobody sent, pointing straight at a paid reset.
@@ -405,8 +415,21 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.figure_source')" "watermark" \
   "and the verdict is attributed to the watermark"
 check_eq "$(printf '%s' "$OUT" | jq -r '.used_on')" "2026-09-07" "with the date it was used"
 
-# A watermark from a PREVIOUS month is spent history, not this month's answer.
+# Backfilling an older month must not erase a newer record: this month's reset
+# really was spent, and forgetting it would offer a free one that is gone.
 run_mode --record-codex-reset "2026-08-30"
+check_eq "$RC" "5" "backfilling an older month over a newer record is refused"
+check_contains "$ERR" "refusing to replace" "saying what it refused"
+check_eq "$(jq -r '.month' "$STATE_DIR/codex-reset.json")" "$FROZEN_MONTH" \
+  "and the newer month's watermark is still the one on disk"
+run_mode --codex-reset-status
+check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "false" \
+  "so the spent reset stays spent"
+
+# A watermark from a PREVIOUS month is spent history, not this month's answer.
+reset_state
+run_mode --record-codex-reset "2026-08-30"
+check_eq "$RC" "0" "recording an earlier month with nothing newer on disk succeeds"
 run_mode --codex-reset-status
 check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "true" \
   "a reset recorded in an earlier month leaves this month's free one available"

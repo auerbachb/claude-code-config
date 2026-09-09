@@ -1044,6 +1044,29 @@ check_contains "$ERR" "DEGRADED" "and that degradation is stated too"
 check_contains "$ERR" "boom" "with the helper's own message passed through"
 check_contains "$OUT" "codex-one@example.com" "every account still reports"
 
+# A helper that reports SUCCESS while dropping the rows is the dangerous
+# shape: the document is well-formed, so a shape-only check passes it, and the
+# populated account list prints as no accounts at all with exit 0. The row
+# count is what catches it — and the message must not blame an exit code that
+# was zero.
+cat > "$TMP/empty-rows-cheapest.sh" <<'EMPTY_ROWS_HELPER'
+#!/usr/bin/env bash
+cat >/dev/null
+echo '{"schema_version":"1.0","threshold_pct":20,"basis":"x","rows":[],"cheapest_next":null}'
+EMPTY_ROWS_HELPER
+chmod +x "$TMP/empty-rows-cheapest.sh"
+CHEAPEST_BIN_OVERRIDE="$TMP/empty-rows-cheapest.sh"
+run
+check_eq "$RC" "0" "a helper that drops every row does not fail the report"
+check_contains "$ERR" "DEGRADED" "the dropped rows are stated as a degradation"
+check_not_contains "$ERR" "failed (exit" "and are not reported as an exit-code failure"
+check_contains "$OUT" "claude-one@example.com" "every account still reports"
+check_contains "$OUT" "codex-one@example.com" "including the second one"
+run --json
+CHEAPEST_BIN_OVERRIDE=""
+check_eq "$(printf '%s' "$DOC" | jq -r '.rows | length')" "2" \
+  "--json carries the real rows rather than the helper's empty array"
+
 # --- 15. no credential value reaches stdout, stderr, or any log --------------
 # Cumulative and last, so it covers every case above.
 

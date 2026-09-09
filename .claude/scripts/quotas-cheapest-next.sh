@@ -130,8 +130,9 @@
 # EXIT STATUS
 #   0   A document was written (or the watermark was recorded).
 #   3   Usage error — unknown flag, a bad --threshold, a bad date.
-#   5   The tool cannot run: `jq` missing, stdin was not a JSON array, or the
-#       watermark could not be written.
+#   5   The tool cannot run: `jq` missing, stdin was not a JSON array, the
+#       watermark could not be written, or writing it would replace a recorded
+#       month with an older one.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
@@ -384,7 +385,7 @@ read_codex_watermark() {
 }
 
 record_codex_reset() {
-  local day="${1:-}" month tmp
+  local day="${1:-}" month tmp existing
   [[ -n "$day" ]] || day="$(et_today)"
   [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die_usage "--record-codex-reset takes a YYYY-MM-DD date (got '${day}')"
   month="${day%-*}"
@@ -397,6 +398,18 @@ record_codex_reset() {
   now_month="$(et_month)"
   if [[ "$month" != "$now_month" ]]; then
     warn "recording a reset for ${month}, which is not the current month (${now_month}) — this month's free reset stays available"
+  fi
+  # One slot, so a write is a replacement. Backfilling an OLDER month over a
+  # newer record would erase the only evidence that the newer month's free
+  # reset was spent, and the next report would go on offering one — the
+  # expensive direction, arrived at by forgetting. Refuse, keep what is on
+  # disk, and say how to override deliberately.
+  if [[ -r "$RESET_FILE" ]]; then
+    existing="$(jq -r 'if type == "object" and (.month | type == "string") then .month else empty end' \
+      "$RESET_FILE" 2>/dev/null || true)"
+    if [[ -n "$existing" && "$month" < "$existing" ]]; then
+      die 5 "refusing to replace the recorded ${existing} watermark with an older month (${month}) — ${existing}'s reset would read as unspent again; remove ${RESET_FILE} first if that is what you mean"
+    fi
   fi
   mkdir -p "$STATE_DIR" 2>/dev/null || die 5 "could not create ${STATE_DIR}"
   tmp="${RESET_FILE}.tmp.$$"
@@ -509,7 +522,12 @@ def overage_for($row):
     elif ($row.provider? // "") == "cursor" then
       (field($row; "spend_limit_used_usd")) as $used
       | (field($row; "spend_limit_usd")) as $limit
-      | if $used != null and $limit != null then
+      # A POSITIVE limit, not merely a present one. An account with no
+      # on-demand limit configured reports `individualLimit: 0`, which is a
+      # number, and rendering it would print "on-demand $0.00 of $0.00" as a
+      # live figure — indistinguishable from a limit that has been spent to
+      # the last cent. No limit is the generic label's case.
+      | if $used != null and $limit != null and $limit > 0 then
           $t + {label: "on-demand \($used | usd_text) of \($limit | usd_text)",
                 base_label: $t.label,
                 spend_limit_used_usd: $used,

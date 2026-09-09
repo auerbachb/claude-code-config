@@ -1393,23 +1393,39 @@ fi
 # accounts", and never to a silent table missing a column it promised.
 DOC="$TMP/doc.json"
 annotate_rows() { # <rows-json-file>
-  local src="$1" rc=0
+  local src="$1" rc=0 want
   : > "$DOC"
   if [[ -n "$CHEAPEST_SH" ]]; then
+    # How many rows went in. The helper annotates rows one-for-one, so the
+    # count is the one guarantee that can be checked exactly — and checking it
+    # is what keeps a helper that answers `{"rows": [], ...}` from passing a
+    # shape-only test and printing a populated account list as no accounts at
+    # all, successfully.
+    want="$(jq 'length' "$src" 2>/dev/null || true)"
+    [[ "$want" =~ ^[0-9]+$ ]] || want=""
     "$CHEAPEST_SH" < "$src" > "$DOC" 2>"$TMP/cheapest.err" || rc=$?
     # The FULL documented shape, not just `.rows`. A partial document — rows
     # present, `cheapest_next` missing — would pass a looser check and then be
     # read for a hint that was never there, so the run would silently print no
     # hint and call it "no account is low". Degrading says which it was.
-    if [[ "$rc" -eq 0 && -s "$DOC" ]] &&
-       jq -e 'type == "object" and (.rows | type == "array") and has("cheapest_next")' \
+    if [[ "$rc" -eq 0 && -s "$DOC" && -n "$want" ]] &&
+       jq -e --argjson want "$want" \
+         'type == "object" and (.rows | type == "array")
+          and (.rows | length) == $want and has("cheapest_next")' \
          "$DOC" >/dev/null 2>&1; then
       # The helper writes its own warnings (an unreadable watermark, a bad
       # knob) to stderr; pass them through rather than swallowing them.
       [[ ! -s "$TMP/cheapest.err" ]] || cat "$TMP/cheapest.err" >&2
       return 0
     fi
-    warn "DEGRADED: quotas-cheapest-next.sh failed (exit ${rc}) — reporting without overage prices or a cheapest-next hint"
+    # Which failure it was, in the message. "failed (exit 0)" would send the
+    # reader hunting an exit code that never happened, when what actually went
+    # wrong is the document the helper wrote while reporting success.
+    if [[ "$rc" -ne 0 ]]; then
+      warn "DEGRADED: quotas-cheapest-next.sh failed (exit ${rc}) — reporting without overage prices or a cheapest-next hint"
+    else
+      warn "DEGRADED: quotas-cheapest-next.sh exited 0 but did not write a {rows, cheapest_next} document carrying all ${want:-the input} rows — reporting without overage prices or a cheapest-next hint"
+    fi
     [[ ! -s "$TMP/cheapest.err" ]] || sed 's/^/  /' "$TMP/cheapest.err" >&2
   elif [[ -n "${AI_QUOTAS_CHEAPEST_BIN:-}" ]]; then
     # An override that does not resolve is a CONFIGURATION problem, and saying
