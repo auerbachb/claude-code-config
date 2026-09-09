@@ -857,9 +857,10 @@ fi
 
 **`launch_anyway` is the only decision that forces a verdict, and `split` must never be added to
 it** (#1680). A `split` record is written against a **parent** that decomposed: the parent is
-tracking-only from that moment and renders no pipeline row at all, while the head increment that
-did launch is a different issue with its own shorter bound, judged on that bound like any other
-started row. Forcing `parks` on it would assert an overrun the split exists to avoid — the option
+tracking-only from that moment and renders no pipeline row at all, while the head increment is a
+different issue with its own shorter bound, judged on that bound like any other started row **when
+its own gate admits it** — a head the gate still declines was never launched and renders no row
+either, which is the reason `split` cannot carry a verdict of its own. Forcing `parks` on it would assert an overrun the split exists to avoid — the option
 files a chain precisely so something *finishes* before the deadline.
 
 **The deadline equality is the whole point.** A bare `decision == "launch_anyway"` would keep
