@@ -687,6 +687,14 @@ B→C, queued-head, and refill launches. Only `/end-resume` or
      costs is a repeat question next cycle, which is the same consequence the existing block
      already accepts for `skip` and `launch_anyway`. Extend the write allow-list to `split`
      alongside those two.
+
+     **A repeat question is the whole cost only because the checklist is also read back.** Before
+     this gate offers the menu for any issue, read the issue body: a parent already carrying a
+     `## Increment chain` section is decomposed and tracking-only (sub-step 6), so decline it as
+     tracking-only rather than re-offering the split — it is not a pipeline to admit, whether or
+     not its `split` record survived. Without that read a lost write is not one repeat question
+     but a second chain: Step 5.1 sub-step 3's same-run exclusion list cannot see children a
+     previous run filed, so only its dedup ladder would stand between them.
   3. **Re-run *this* gate against the head increment's own bound** — the whole point of the option:
      a 90-minute head fits a runway a 360-minute parent could not.
   4. **Launch only the head**, leaving successors queued behind the dependency gate exactly as a
