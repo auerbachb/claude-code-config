@@ -104,6 +104,14 @@
 #
 #     {"schema_version":"1.0","month":"2026-09","used_on":"2026-09-07", …}
 #
+#   ONE RECORD, NOT ONE PER ACCOUNT. The file carries no account dimension, so
+#   recording a reset marks the free reset spent for EVERY Codex account that
+#   falls back to the watermark — accounts reporting a live figure are
+#   unaffected, because a live figure is preferred over it. Owners running more
+#   than one Codex account should read the verdict as "a reset was used
+#   somewhere this month", not as a per-account balance. Issue #1696 tracks
+#   keying it by account.
+#
 #   A watermark whose `month` is the current ET month means the free reset is
 #   spent. Any other month, or no file at all, means one is available. The
 #   read FAILS SOFT: a missing, unreadable, or malformed file degrades to "one
@@ -504,6 +512,11 @@ def usd_text:
 
 # The window as a person says it. The row's `7-day` is a duration; "weekly" is
 # what the owner calls it, and the hint is prose, not a field dump.
+# Identifies the ACCOUNT a candidate row belongs to, so two windows reported
+# by one account can be recognised as one account. Input is a candidate
+# ({idx, row, remaining}), not a bare row.
+def account_key: "\(.row.provider // "") \(.row.label // "")";
+
 def window_phrase:
   if . == "7-day" then "weekly"
   elif . == "billing-cycle" then "monthly"
@@ -573,7 +586,22 @@ def overage_for($row):
 # model ("continues at …, metered per unit of work") that nothing here
 # established. An unknown price is a reason to name someone else, or to say
 # nothing at all; it is never a reason to guess cheap.
-| [ $readable[] | select((.row.overage? // null) != null) ] as $cands
+#
+# A SUB-WINDOW is not an account. `--five-hour` adds a SECOND row for the same
+# Claude account, and ranking the two independently lets a roomy five-hour row
+# win while that account's week is spent — the hint would name an account the
+# weekly cap stops you working on. The long window governs, so a five-hour row
+# drops out of the RANKING whenever its own account also reported a longer
+# one. It stays in `$readable` and can still fire the trigger: a drained
+# five-hour window is worth a hint, it is just never the answer.
+| ([ $readable[]
+     | select((.row.window // "") != "5-hour")
+     | account_key ] | unique) as $has_long
+| [ $readable[]
+    | select((.row.overage? // null) != null)
+    | select(((.row.window // "") != "5-hour")
+             or (account_key as $k | ($has_long | index($k)) == null))
+  ] as $cands
 
 # The TRIGGER: at least one readable row at or below the threshold. Inclusive
 # on purpose — an account sitting exactly on the line is the case the hint

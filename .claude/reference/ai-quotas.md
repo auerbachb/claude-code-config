@@ -610,6 +610,21 @@ degrades to "one free reset assumed" (`figure_source: "assumed"`) with a warning
 to an error, and never to "already spent". The latter is the reading that steers the hint
 toward a $90 purchase, and it must not come from a parse failure.
 
+**One record, not one per account.** The file carries no account dimension, so recording a
+reset marks the free reset spent for *every* Codex account that falls back to the
+watermark. Accounts reporting a live free-reset figure are unaffected — a live figure is
+preferred over the watermark. With more than one Codex account registered, read the
+verdict as "a reset was used somewhere this month", not as a per-account balance. Keying
+it by account is issue #1696.
+
+**Backfilling an older month is refused.** The file holds one slot, so recording an August
+reset over a September record would erase the only evidence September's reset was spent
+and the next report would offer one that is gone. `--record-codex-reset` reads the
+existing record first and exits 5 rather than replacing it with a strictly older month,
+naming the file to remove if the overwrite is deliberate. The date is also round-tripped
+through `date`, so `2026-99-99` and `2026-02-31` are rejected: a banked `2026-99` sorts
+after every real month and would otherwise block every later recording permanently.
+
 ### The threshold knob
 
 `quotas_cheapest_next_threshold_pct` in `.claude/pm-config.md` `## Budget` — integer

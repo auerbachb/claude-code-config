@@ -496,6 +496,38 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].detail')" "a note" \
 check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].used_pct')" "96" \
   "including the figures the table renders"
 
+# --- 13. a five-hour sub-window never wins its own account's ranking ---------
+# `--five-hour` adds a SECOND row for the same account. Ranked independently,
+# the roomy five-hour row wins while that account's week is spent, and the hint
+# names an account the weekly cap stops you working on.
+
+reset_state
+run "$(rows "$(row claude a 7-day 2 ok)" \
+             "$(row claude a 5-hour 90 ok)" \
+             "$(row codex c 7-day 70 ok)")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label')" "c" \
+  "a roomy five-hour window does not win for an account whose week is spent"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "7-day" \
+  "and the recommendation names a governing window, never the sub-window"
+
+# The exclusion is scoped to the account that reported a longer window. An
+# account whose five-hour row is its ONLY row still competes — dropping it
+# would silently shrink the field instead of ranking it.
+run "$(rows "$(row claude a 7-day 2 ok)" "$(row claude b 5-hour 88 ok)")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label')" "b" \
+  "a five-hour row that is an account's only window still competes"
+
+# Triggering is still the wider population: a drained five-hour window fires
+# the hint even though it can never be the answer.
+run "$(rows "$(row claude a 7-day 80 ok)" \
+             "$(row claude a 5-hour 3 ok)" \
+             "$(row codex c 7-day 70 ok)")"
+check_contains "$OUT" "cheapest_next" "a drained five-hour window still fires the hint"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.label != null')" "true" \
+  "and the hint names some account rather than going silent"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "7-day" \
+  "naming a governing window"
+
 # --- summary -----------------------------------------------------------------
 
 echo
