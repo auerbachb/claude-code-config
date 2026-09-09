@@ -385,9 +385,23 @@ read_codex_watermark() {
 }
 
 record_codex_reset() {
-  local day="${1:-}" month tmp existing
+  local day="${1:-}" month tmp existing canon
   [[ -n "$day" ]] || day="$(et_today)"
   [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die_usage "--record-codex-reset takes a YYYY-MM-DD date (got '${day}')"
+  # The SHAPE is not the date. `2026-99-99` and `2026-02-31` both match the
+  # pattern above, and a month like `2026-99` sorts after every real one — so
+  # once written it would out-rank, and permanently block, every later
+  # recording under the older-month refusal below. Round-trip it through
+  # `date` instead: GNU rejects an impossible date outright, BSD normalises it
+  # (`2026-02-31` comes back `2026-03-03`), and the equality catches both.
+  # Noon pins the time-of-day so no zone can move the answer across midnight.
+  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
+    canon="$(date -d "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
+  else
+    canon="$(date -j -f '%Y-%m-%d %H:%M:%S' "${day} 12:00:00" '+%Y-%m-%d' 2>/dev/null || true)"
+  fi
+  [[ "$canon" == "$day" ]] ||
+    die_usage "--record-codex-reset takes a real calendar date (got '${day}')"
   month="${day%-*}"
   # Recording a month other than the current one is allowed — a reset used
   # last week and remembered late is the ordinary case — but it is SAID,

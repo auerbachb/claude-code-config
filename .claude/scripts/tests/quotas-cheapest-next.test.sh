@@ -437,6 +437,20 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.free_reset_available')" "true" \
 run_mode --record-codex-reset "not-a-date"
 check_eq "$RC" "3" "a malformed --record-codex-reset date exits 3"
 
+# Shape is not date. `2026-99-99` matches YYYY-MM-DD and yields month
+# `2026-99`, which sorts after every real month — written once, it would
+# out-rank and permanently block every later recording under the older-month
+# refusal. `2026-02-31` is the quieter version of the same hole.
+reset_state
+run_mode --record-codex-reset "2026-99-99"
+check_eq "$RC" "3" "an impossible month exits 3 rather than banking a month that outranks every real one"
+run_mode --record-codex-reset "2026-02-31"
+check_eq "$RC" "3" "a day that does not exist in that month exits 3"
+check_eq "$(ls "$STATE_DIR"/codex-reset.json 2>/dev/null || echo none)" "none" \
+  "and neither one leaves a watermark behind"
+run_mode --record-codex-reset "2026-09-07"
+check_eq "$RC" "0" "a real date on the same path still records"
+
 # FAIL SOFT, and in the safe direction. A corrupt file must not read as "you
 # already spent it": that reading is the one that steers the hint toward a $90
 # purchase, and it would be steering on a parse failure.
