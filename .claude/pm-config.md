@@ -41,6 +41,9 @@ daily_credit_budget_usd = 25
 
 LEAVE_LEAD_TIME_MIN = 30
 
+SPLIT_OVER_MIN = 180
+INCREMENT_BOUND_MIN = 120
+
 usage_horizon_approaching_pct = 25
 usage_horizon_critical_pct    = 10
 usage_horizon_floor_tokens    = 2000000
@@ -53,6 +56,10 @@ usage_horizon_reading_ttl_s   = 1800
 - **Gates autonomous dispatch only** — explicit user requests in chat always proceed with a one-line budget note. Day mode and refill respect this cap; interactive work does not.
 - **LEAVE_LEAD_TIME_MIN** — minutes before a declared leave time at which the thread posts its check-in and starts winding down (issue #1525). Must be an **integer in [5, 240]**; an out-of-range or unparseable value is rejected on stderr and falls back to the default rather than being clamped — a 2-minute lead is a wind-down that cannot finish, and a 10-hour one fires before the work does. **`CLAUDE_LEAVE_LEAD_TIME_MIN` env overrides** when set, and an explicit `--lead Nm` on the invocation beats both. Read by **`/leave-by`** via `pm-config-get.sh --section Budget`, same env → config → code-default cascade as `STALL_MARGIN_MIN`.
 - **Default 30** — the motivating case: told at 3 PM that the desk is empty at 7, the thread checks in at 6:30. Long enough for `/pause` to land a PR that is one merge away, short enough that the last half-hour is not spent idle. Whether it should scale with fleet size is open (issue #1525 notes).
+- **SPLIT_OVER_MIN** — the planning bound, in minutes, **above which** an issue is split into an increment chain instead of being started whole (issue #1680). The comparison is **strict `>`**: a bound of exactly this value does not trigger. Must be an **integer in [30, 960]**; an out-of-range or unparseable value is reported on stderr and falls back to the default rather than being clamped. **`CLAUDE_SPLIT_OVER_MIN` env overrides** when set. Read by **`/issue-maker`** (capture-time sizing check), **`/subagent`** (Step 4 criterion 3, Step 7's overrun menu) and **`/start-issue`** (ready-to-code summary) via `.claude/scripts/split-thresholds.sh`, which owns the env → config → default cascade.
+- **Default 180** — three hours is the owner's stated line for "too long to start as one block". It is also where a pipeline stops fitting an afternoon: the measured claim-to-merge P90 for this repo is around 6 hours, so an issue planned above 3 h routinely outlives the window a leave time leaves open, and a deadline-armed thread then declines it and does nothing rather than landing two hours of mergeable work.
+- **INCREMENT_BOUND_MIN** — the planning bound, in minutes, each increment of a split must fit **at or under**. Must be an **integer in [15, 480]** and **strictly below `SPLIT_OVER_MIN`**; an incoherent pair (a slice bound at or above the split line, which would make every slice its own split trigger) is reported and **both** knobs fall back to the shipped defaults, the same way an inverted usage-horizon pair does. **`CLAUDE_INCREMENT_BOUND_MIN` env overrides** when set. Same reader and same cascade as `SPLIT_OVER_MIN`.
+- **Default 120** — two hours keeps a slice inside a single attended sitting and clear of the 30-minute `LEAVE_LEAD_TIME_MIN` wind-down, so a chain's head is startable in the runway a declared leave time leaves. Against the seed table in `time-estimates.md` that admits the **Light** row (`plan on 90`) and excludes the Standard row (`plan on 180`): an increment that genuinely needs 180 minutes is a slice cut too coarse, not a reason to raise the knob.
 
 ### Usage horizon (window runway)
 

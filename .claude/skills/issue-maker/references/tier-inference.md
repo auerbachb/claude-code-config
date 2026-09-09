@@ -37,6 +37,40 @@ silently land on the cheapest tier instead of the safe Standard default.
 (thin bodies, terse rapid-fire captures) — the safer choice absent a strong
 signal either way.
 
+## The `> 180` signal is read, never inferred (issue #1680)
+
+The sizing check's time trigger fires on a planning bound above `SPLIT_OVER_MIN`
+(default 180). **This table never produces that signal from how big an ask
+sounds** — which is a narrower claim than "never from description text", and the
+narrower one is the true one: `has_orchestration_keywords` reads description
+text and reaches Heavy, whose 300 clears the line (see "Heavy already clears the
+line" below). Classification tops out at **Heavy**, and it reaches Heavy only
+through the triggers in the table above — `touches_rules`, `touches_claude_md`,
+`has_orchestration_keywords`, `file_count > 5`. **Sounding big is not one of
+them.** An ask described as "a full day of work" or "the whole subsystem", with
+none of those signals present, classifies on whatever signals it does carry and
+falls to the documented **Standard** default when they are sparse — exactly as
+it did before the trigger existed. There is no XL row here and none is coming.
+
+A bound above the line reaches the trigger from one of three places, all of them
+explicit:
+
+| Source | What it looks like |
+|--------|--------------------|
+| An upward adjustment you make deliberately | The `XL` row in `time-estimates.md` (`Est: 180–360 min · plan on 360`), stated with the one-sentence reason the "never adjust silently" rule already requires |
+| A `complexity:XL` / `tier:XL` / `size:XL` / `size:XXL` label | A tie-break, on the same footing as `complexity:*` — it settles a balanced call, never overrules the description. All four, because that is the set `estimate-resolve.sh` and `/start-issue` resolve to the XL row; a shorter list here would give one issue two estimates |
+| A recalibrated actual | `estimate-actuals.md`, once measured history says this shape of work runs long |
+
+**Heavy already clears the line** at the shipped threshold. Heavy's bound is 300,
+so at the default 180 a Heavy issue trips the time trigger without any XL
+involvement — XL widens what the vocabulary can *say*, it is not what "too long"
+means. The comparison is strict against the resolved `SPLIT_OVER_MIN`, though, so
+a knob raised to 300 stops Heavy firing; the trigger is the knob, never the tier.
+
+**Why keywords are excluded.** A keyword-driven XL would split single-seam
+issues whose slices are not independently mergeable, which costs more than one
+long pipeline (`too-big-recalibration-2026-07.md`, the 2026-09-08 amendment).
+
 Model values are bare family names; effort values are picker labels — never a
 version number, never a bare API token (`chip-launching.md` "Model and effort
 lines").

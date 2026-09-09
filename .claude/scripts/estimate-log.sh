@@ -34,7 +34,7 @@
 #   {
 #     "pr":           <number>,
 #     "issue":        <number | null>,
-#     "tier":         <"Light"|"Standard"|"Heavy"|null>,
+#     "tier":         <"Light"|"Standard"|"Heavy"|"XL"|null>,
 #     "est_lo":       <number | null>,   # minutes, lower bound
 #     "est_hi":       <number | null>,   # minutes, upper bound
 #     "est_bound":    <number | null>,   # planning bound (equals est_hi)
@@ -299,6 +299,10 @@ parse_estimate_from_body() {
     tier="Standard"
   elif [[ "$lo" -eq 210 && "$hi" -eq 300 ]] || [[ "$lo" -eq 90 && "$hi" -eq 180 ]]; then
     tier="Heavy"
+  elif [[ "$lo" -eq 180 && "$hi" -eq 360 ]]; then
+    # XL (issue #1680) — the "above the split line" bound marker, not a
+    # rounds-derived row. It has no retired predecessor pair to recognise.
+    tier="XL"
   fi
 
   printf '%s %s %s %s\n' "$lo" "$hi" "$bound" "$tier"

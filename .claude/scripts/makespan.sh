@@ -31,6 +31,8 @@
 #
 #   - est_lo / est_hi: minutes (integers); null = unestimated
 #     -> unestimated issues use the Standard-tier fallback (120/180 min)
+#     -> every tier in time-estimates.md is just a pair of finite integers here,
+#        XL (180/360) included; no tier is special-cased by this model
 #   - deps: list of issue nums that must finish before this one starts
 #
 # OPTIONS

@@ -125,6 +125,7 @@ opt-in of issue #1544.
 | [skill-conventions-audit.test.sh](../tests/skill-conventions-audit.test.sh) | Tests for `skill-conventions-audit.sh` |
 | [skill-usage-merge.test.sh](../tests/skill-usage-merge.test.sh) | Tests for `skill-usage-merge.sh` |
 | [spend-telemetry-report.test.sh](../tests/spend-telemetry-report.test.sh) | Tests for `spend-telemetry-report.sh` against a stub log in a temp `HOME` |
+| [split-thresholds.test.sh](../tests/split-thresholds.test.sh) | Tests for `split-thresholds.sh`: the env → pm-config.md → default cascade per knob, reject-and-fall-back (never clamp) on out-of-range and non-integer values, the incoherent-pair rule that resets BOTH knobs, exact-key config matching, and the output modes |
 | [stale-cleanup.test.sh](../tests/stale-cleanup.test.sh) | Tests for `stale-cleanup.sh` |
 | [state-lock.test.sh](../tests/state-lock.test.sh) | Tests for `state-lock.sh` |
 | [statusline.test.sh](../tests/statusline.test.sh) | Tests for `statusline.sh` |
