@@ -657,6 +657,139 @@ check_eq "$FAILED_DIRS" "1" "the abandoned login's partial state was kept, not d
 check_contains "$(cat "$PROFILES/dirty@example.com"/cursor.failed-login-*/Default/Preferences 2>/dev/null)" \
   "PARTIAL-LOGIN-STATE" "and it is the state that login actually wrote"
 
+# Two relogins for one account must not both run (CodeAnt, PR #1689). The
+# second would retire the fresh profile the first one's browser is writing
+# into, and whichever finished last would point the registry row at a profile
+# holding the other one's half-written session. A live holder is REFUSED, and
+# the refusal has to cost the working profile nothing — the same standard the
+# dependency check above is held to.
+new_case "cursor-relogin-concurrent-refused"
+run add cursor busy@example.com
+check_eq "$RC" "0" "add cursor for the concurrent-relogin case exits 0"
+CURSOR_DIR="$PROFILES/busy@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+# $$ is this suite's own pid, so the recorded holder is genuinely alive — the
+# refusal is being proven for a live holder, not for an unparseable one.
+SLOT_DIR="$PROFILES/.relogin-slots/busy@example.com__cursor"
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$$" > "${SLOT_DIR}/pid"
+run relogin busy@example.com
+check_eq "$RC" "7" "a relogin racing a live one exits 7"
+check_contains "$OUT" "already running" "and says another relogin holds the account"
+check_contains "$OUT" "is unchanged" "and states the account was not touched"
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the working profile is untouched — the refused relogin retired nothing"
+else
+  bad "the refused relogin moved the working profile aside anyway"
+fi
+RACE_RETIRED="$(find "$PROFILES/busy@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$RACE_RETIRED" "0" "and left no retirement directory behind"
+if [[ -d "${SLOT_DIR}" ]]; then
+  ok "and the live holder's slot marker was left alone"
+else
+  bad "the refused relogin deleted the running relogin's slot marker"
+fi
+check_eq "$(status_of busy@example.com cursor)" "ok" \
+  "the account still reads ok after the refused relogin"
+rm -rf "${SLOT_DIR}"
+
+# The other half of the same guard: a relogin killed hard (lost terminal,
+# reboot mid-login) leaves a marker no one owns. Refusing forever on a dead
+# holder would be a permanent lockout with no documented way out, so a holder
+# this run can PROVE is gone is taken over rather than waited on.
+new_case "cursor-relogin-abandoned-slot-taken-over"
+run add cursor stale@example.com
+check_eq "$RC" "0" "add cursor for the abandoned-slot case exits 0"
+CURSOR_DIR="$PROFILES/stale@example.com/cursor"
+# A pid that has been reaped: started and waited for, so it is not running and
+# the kernel has not had the chance to hand the number to anything else.
+( exit 0 ) & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+SLOT_DIR="$PROFILES/.relogin-slots/stale@example.com__cursor"
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$DEAD_PID" > "${SLOT_DIR}/pid"
+run relogin stale@example.com
+check_eq "$RC" "0" "a relogin inheriting an abandoned slot runs and exits 0"
+check_eq "$(status_of stale@example.com cursor)" "ok" \
+  "and the account is logged in again afterwards"
+if [[ -d "${SLOT_DIR}" ]]; then
+  bad "the finished relogin left its slot marker behind — the next one would be refused"
+else
+  ok "and the finished relogin released the slot"
+fi
+STALE_LEFTOVER="$(find "$PROFILES/.relogin-slots" -maxdepth 1 -type d -name 'stale@example.com__cursor.stale.*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$STALE_LEFTOVER" "0" "and cleaned up the abandoned marker it displaced"
+
+# The slot is released on the FAILURE path too (CodeRabbit, local review). A
+# relogin that gives up still holds the slot until its trap runs, and a slot
+# leaked there would refuse every later attempt for the account — turning one
+# failed login into a permanently unrepairable one. The retry is the assertion
+# that matters: it has to succeed outright, not by recovering an abandoned
+# marker, which is a path with its own guard and its own failure modes.
+new_case "cursor-relogin-failure-releases-slot"
+run add cursor freed@example.com
+check_eq "$RC" "0" "add cursor for the slot-release case exits 0"
+SLOT_DIR="$PROFILES/.relogin-slots/freed@example.com__cursor"
+NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+run relogin freed@example.com
+check_eq "$RC" "1" "the relogin whose login is abandoned exits 1"
+NODE_BIN_UNDER_TEST=""
+if [[ -d "$SLOT_DIR" ]]; then
+  bad "the failed relogin leaked its slot marker — the account could never be relogged in"
+else
+  ok "the failed relogin released its slot marker"
+fi
+run relogin freed@example.com
+check_eq "$RC" "0" "and the next relogin runs straight away, with no slot to recover"
+check_eq "$(status_of freed@example.com cursor)" "ok" \
+  "and the account is logged in again"
+
+# Recovering an abandoned slot is itself serialized (CodeRabbit, local review).
+# Two recoveries both finding the marker dead is the subtle re-entry of the same
+# bug: the first replaces the marker and starts a login, the second moves that
+# now-LIVE marker aside and claims the slot on top of it. A recovery already in
+# progress is refused, not waited out and not broken.
+new_case "cursor-relogin-recovery-serialized"
+run add cursor recover@example.com
+check_eq "$RC" "0" "add cursor for the serialized-recovery case exits 0"
+CURSOR_DIR="$PROFILES/recover@example.com/cursor"
+printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
+SLOT_DIR="$PROFILES/.relogin-slots/recover@example.com__cursor"
+( exit 0 ) & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+mkdir -p "${SLOT_DIR}"
+printf '%s\n' "$DEAD_PID" > "${SLOT_DIR}/pid"
+# A recovery already under way, staged exactly as a competing run leaves it:
+# the dead marker still in place, the recovery guard taken.
+mkdir -p "${SLOT_DIR}.recovering"
+run relogin recover@example.com
+check_eq "$RC" "7" "a relogin racing another run's slot recovery exits 7"
+check_contains "$OUT" "recovering this slot" "and says a recovery is in progress"
+if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
+  ok "the working profile is untouched — the refused recovery retired nothing"
+else
+  bad "the refused recovery moved the working profile aside anyway"
+fi
+if [[ -d "${SLOT_DIR}.recovering" ]]; then
+  ok "and the in-progress recovery guard was left alone, not broken"
+else
+  bad "the refused relogin broke the guard it was supposed to respect"
+fi
+rm -rf "${SLOT_DIR}.recovering" "${SLOT_DIR}"
+
+# The slot must not depend on the profile tree still being there (CodeRabbit,
+# local review). A user who deleted the profile directory is in the one state a
+# relogin exists to fix; reporting contention there would refuse the repair over
+# a race that never happened.
+new_case "cursor-relogin-deleted-profile-tree"
+run add cursor gone@example.com
+check_eq "$RC" "0" "add cursor for the deleted-tree case exits 0"
+rm -rf "$PROFILES/gone@example.com"
+run relogin gone@example.com
+check_eq "$RC" "0" "a relogin whose profile tree was deleted still runs and exits 0"
+check_eq "$(status_of gone@example.com cursor)" "ok" \
+  "and the account is logged in again afterwards"
+
 # A missing helper is reported, never worked around.
 new_case "cursor-helper-missing"
 SAVED_HELPER="$FAKE_CURSOR_HELPER"

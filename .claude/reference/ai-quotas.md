@@ -82,7 +82,32 @@ require the provider as a second argument rather than guessing which row was mea
 ~/.claude/ai-quotas/profiles/<label>/codex     # CODEX_HOME for that account
 ~/.claude/ai-quotas/profiles/<label>/cursor    # Chromium persistent user-data dir
 ~/.claude/ai-quotas/profiles/<label>/.keychain-service-claude   # mode 600; see below
+~/.claude/ai-quotas/profiles/.relogin-slots/<label>__<provider> # relogin slot; see below
 ```
+
+### Relogin slots
+
+`relogin` claims `.relogin-slots/<label>__<provider>` — an empty directory holding a
+`pid` file — for the whole run, and refuses (**exit 7**) when another relogin already
+holds it. Two relogins for one account must not overlap: a Cursor relogin replaces the
+profile, so the second would retire the fresh profile the first one's browser is writing
+into, and whichever finished last would point the registry row at a profile holding the
+other one's half-written session.
+
+The slot is a flat key under the profile root rather than a sibling of the profile,
+because a sibling would have to be created through the label and provider components —
+the ones `ensure_profile_dir` refuses to create through until it has proved on the
+physical path that no symlink redirects them out of the root.
+
+A relogin killed hard leaves a marker no one owns. The next run reads the recorded pid,
+and a holder it can **prove** is gone (`kill -0` fails) is taken over; a live one, or one
+whose pid cannot be read, is refused — guessing "probably dead" is the outcome the slot
+exists to prevent. That takeover is itself serialized by a `<slot>.recovering` guard,
+which is refused rather than broken: it covers a handful of non-blocking filesystem calls
+and nothing else, so there is no slow case to wait out.
+
+Both paths are cleared by hand if a crash ever leaves one behind — the refusal message
+names the exact directory to delete once you have confirmed no relogin is running.
 
 The `.keychain-service-<provider>` sidecar holds the **name** of the Keychain item the
 provider's login created for that profile — never a value, never a secret. It is written
@@ -198,7 +223,7 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 | 4 | No account matches that label. |
 | 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). |
 | 6 | The provider's login CLI was not found — for `cursor`, node or the Playwright helper; the manual command is printed. |
-| 7 | The config write lock timed out or was broken mid-update; config unchanged. |
+| 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
 
 Config writes go through the shared `state-lock.sh` advisory lock and
 `state_lock_commit`, so a concurrent `add` cannot lose the other's row.

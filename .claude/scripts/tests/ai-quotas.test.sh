@@ -324,6 +324,15 @@ OUT=""
 ERR=""
 RC=0
 
+# The cursor node/helper paths below are PINNED, not overridable (CodeAnt, PR
+# #1689). They used to read `${NODE_BIN_UNDER_TEST:-…}` and
+# `${CURSOR_HELPER_UNDER_TEST:-…}`, but nothing in THIS suite ever sets either
+# hook — so their only reachable effect was an ambient export from whatever
+# environment the suite was launched in, which would point the cursor cases at a
+# real node and a real helper and let assertions written for the
+# missing-dependency path go to the network or open a browser. The suites that
+# genuinely vary node (ai-quotas-cursor, ai-quotas-setup) set their own hook and
+# reset it between cases; this one has no reason to.
 run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
   local errf="$TMP/run.err"
   OUT="$(HOME="$CASE_HOME" \
@@ -335,8 +344,8 @@ run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
         AI_QUOTAS_CODEX_BIN="$BIN/codex" \
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
-        AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-absent}" \
-        AI_QUOTAS_CURSOR_HELPER="${CURSOR_HELPER_UNDER_TEST:-$TMP/no-such-helper.js}" \
+        AI_QUOTAS_NODE_BIN="$BIN/node-absent" \
+        AI_QUOTAS_CURSOR_HELPER="$TMP/no-such-helper.js" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"

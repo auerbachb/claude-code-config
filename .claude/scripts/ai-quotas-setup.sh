@@ -114,8 +114,9 @@
 #       profile directory or config write failed.
 #   6   The provider's login CLI could not be found — for `cursor`, node or
 #       the Playwright helper. The exact command to run by hand is printed.
-#   7   Config write lock unavailable (timeout) or broken mid-update; the
-#       config is unchanged.
+#   7   Contention, refused rather than raced; nothing is changed. Either the
+#       config write lock was unavailable (timeout) or broken mid-update, or a
+#       `relogin` found another relogin already running for the same account.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
@@ -947,6 +948,147 @@ restore_retired_profile() { # <dir> <retired>
 RELOGIN_PENDING_DIR=""
 RELOGIN_PENDING_RETIRED=""
 
+# Set while THIS process owns the relogin slot for a profile directory.
+RELOGIN_SLOT_MARKER=""
+
+# Refuse a second concurrent relogin for the same profile rather than letting
+# both run (CodeAnt, PR #1689). The exposure is specific to the replace path:
+# once the first relogin has moved the profile aside and recreated it, the
+# second sees an ordinary-looking directory at <dir> and retires THAT — the
+# fresh profile the first one's browser is actively writing into. Both then
+# believe they own <dir>, and whichever finishes last writes the registry row,
+# so the account ends up naming a profile holding someone else's half-written
+# session. No status probe can describe that state, which is the same reason
+# the replace exists at all.
+#
+# DETECT AND REFUSE, not a lock held across the login — the same call this
+# script already makes for the overlapping-keychain case above. A login is an
+# unbounded interactive flow (magic link, SSO), so any lock covering it outlives
+# every staleness ceiling we have and gets broken mid-login anyway, which is
+# worse than no lock: it looks serialized and is not.
+#
+# `mkdir` is the whole mechanism — it is atomic and it FAILS when the path
+# exists, so exactly one caller can win. The holder's PID is recorded so a
+# relogin killed hard (a lost terminal, a reboot mid-login) leaves a marker that
+# the next run can prove dead and take over, instead of a permanent refusal the
+# user has no documented way out of.
+#
+# The slot lives in a FLAT directory under the profile root, not as a sibling of
+# the profile itself (CodeRabbit, local review). A sibling has to be created
+# through the label and provider components of the profile path, and those are
+# exactly the components `ensure_profile_dir` refuses to `mkdir -p` through
+# until it has proved on the physical path that no symlink redirects them out of
+# the root. Claiming here would have to either repeat that proof or run before
+# it. Keying on the label instead puts the marker one component below the root
+# that `ensure_profile_dir` itself creates unconditionally — and it means a
+# relogin whose profile tree was deleted claims its slot and goes on to recreate
+# the profile, rather than reporting contention it never raced for.
+# The pid write FAILS THE CLAIM rather than being tolerated (CodeRabbit, local
+# review). A marker whose pid cannot be read is treated as a live holder by the
+# check above — deliberately, since guessing "probably dead" is what the whole
+# guard exists to avoid — so silently keeping a marker this run could not stamp
+# would convert a transient write error into a permanent, unexplained refusal of
+# every future relogin for the account. Removing it and failing loudly leaves
+# the account exactly as it was.
+write_slot_pid() { # <marker> — 0 when the pid is on disk and readable
+  local marker="$1"
+  printf '%s\n' "$$" > "${marker}/pid" 2>/dev/null || return 1
+  [[ "$(cat "${marker}/pid" 2>/dev/null || true)" == "$$" ]] || return 1
+  return 0
+}
+
+claim_relogin_slot() { # <label> <provider> — sets RELOGIN_SLOT_MARKER
+  local key slots marker recover holder=""
+  # One flat component: the label is already restricted from climbing out of
+  # the root, and this narrows it further rather than trusting that alone.
+  key="$(printf '%s__%s' "$1" "$2" | tr -c 'A-Za-z0-9._@+-' '_')"
+  slots="$PROFILE_ROOT/.relogin-slots"
+  mkdir -p "$slots" || die 5 "could not create the relogin slot directory: $slots"
+  # Owner-only, like the profile root and every profile under it (CodeRabbit,
+  # local review). These hold pids rather than credentials, but the mode is set
+  # here rather than left to the ambient umask so the whole tree answers the
+  # same way regardless of the shell the relogin was started from.
+  chmod 700 "$slots" 2>/dev/null || true
+  marker="$slots/$key"
+  if ! mkdir "$marker" 2>/dev/null; then
+    [[ -d "$marker" ]] || die 5 "could not claim the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    # Alive, or unreadable — either way this is not ours to take. An unreadable
+    # PID is treated as alive on purpose: guessing "probably dead" is how two
+    # logins end up sharing a profile, which is the outcome being prevented.
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      die 7 "another relogin for '${ARG_LABEL}' is already running${holder:+ (pid ${holder})}; '${ARG_LABEL}' is unchanged — wait for it to finish, or remove ${marker} if you are sure it is not."
+    fi
+    # The holder is gone, so this run may take the slot over — but the takeover
+    # is itself a read-modify-write on a shared path, and racing it unguarded
+    # reintroduces the bug in a subtler form (CodeAnt/CodeRabbit, PR #1689): two
+    # recoveries both find the marker dead, the first replaces it and starts a
+    # login, and the second then moves that LIVE marker aside and claims the
+    # slot on top of it. So the recovery takes its own atomic claim first.
+    recover="${marker}.recovering"
+    if ! mkdir "$recover" 2>/dev/null; then
+      # Refused, never broken. This guard covers a handful of non-blocking
+      # filesystem calls and nothing else — no login, no network, no lock wait —
+      # so there is no legitimate "it is just slow" case to wait out, and
+      # breaking it would only re-open the race it exists to close. A guard left
+      # by a process killed inside those few syscalls is cleared by hand, which
+      # the message says.
+      die 7 "another relogin for '${ARG_LABEL}' is recovering this slot right now; '${ARG_LABEL}' is unchanged — re-run it in a moment, or remove ${recover} if no other relogin is running."
+    fi
+    # Re-read UNDER the guard. The pid read above is only a fast path: between
+    # it and here, the dead holder's slot may have been taken over by a relogin
+    # that is now very much alive, and taking it from that one is the exact
+    # outcome being prevented.
+    holder="$(cat "${marker}/pid" 2>/dev/null || true)"
+    if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 7 "another relogin for '${ARG_LABEL}' claimed this slot while this one was recovering an abandoned marker; '${ARG_LABEL}' is unchanged — re-run it on its own."
+    fi
+    # Replaced rather than reused, so the marker this run goes on to own is one
+    # it created, not one it inherited and cannot vouch for.
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mv "$marker" "${marker}.stale.$$" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not retire the abandoned relogin marker at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    rm -rf "${marker}.stale.$$" 2>/dev/null || true
+    if ! mkdir "$marker" 2>/dev/null; then
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not claim the relogin slot at ${marker} after retiring the abandoned one; '${ARG_LABEL}' is unchanged"
+    fi
+    if ! write_slot_pid "$marker"; then
+      rm -rf "$marker" 2>/dev/null || true
+      rmdir "$recover" 2>/dev/null || true
+      die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+    fi
+    # Released only once the new marker carries this run's pid: a competing
+    # recovery that acquires the guard next must see a LIVE holder, not the
+    # empty marker it would otherwise feel entitled to take.
+    rmdir "$recover" 2>/dev/null || true
+    RELOGIN_SLOT_MARKER="$marker"
+    return 0
+  fi
+  if ! write_slot_pid "$marker"; then
+    rm -rf "$marker" 2>/dev/null || true
+    die 5 "could not record this run's pid in the relogin slot at ${marker}; '${ARG_LABEL}' is unchanged"
+  fi
+  RELOGIN_SLOT_MARKER="$marker"
+}
+
+release_relogin_slot() {
+  [[ -n "$RELOGIN_SLOT_MARKER" ]] || return 0
+  local marker="$RELOGIN_SLOT_MARKER"
+  RELOGIN_SLOT_MARKER=""
+  rm -f "${marker}/pid" 2>/dev/null || true
+  # `rmdir` first, then force. A marker that somehow holds more than the pid
+  # file would survive the rmdir, and a surviving marker with no readable pid is
+  # read as a LIVE holder by the next claim — so tolerating the failure here
+  # would lock the account out of every future relogin (CodeRabbit, local
+  # review). The path is this run's own slot marker under the profile root,
+  # never a profile: releasing it can destroy nothing a login depends on.
+  rmdir "$marker" 2>/dev/null || rm -rf "$marker" 2>/dev/null || true
+}
+
 # Rollback runs from an EXIT trap rather than from each failure branch, because
 # the branches are not the whole exposure: `ensure_profile_dir` runs AFTER the
 # move and exits through `die` from inside itself, with no return value the
@@ -960,17 +1102,22 @@ RELOGIN_PENDING_RETIRED=""
 # worse than saying nothing.
 relogin_rollback_trap() {
   local code=$? dir retired
-  [[ -n "$RELOGIN_PENDING_RETIRED" ]] || return "$code"
-  dir="$RELOGIN_PENDING_DIR"
-  retired="$RELOGIN_PENDING_RETIRED"
-  # Cleared FIRST, so a failure inside the restore cannot re-enter this trap.
-  RELOGIN_PENDING_DIR=""
-  RELOGIN_PENDING_RETIRED=""
-  if restore_retired_profile "$dir" "$retired"; then
-    echo "${SELF_NAME}: the relogin did not finish, so the previous session was put back at ${dir} — the account still works." >&2
-  else
-    echo "${SELF_NAME}: the relogin did not finish and the previous session could NOT be put back automatically; it is at ${retired} — move that directory back to ${dir} to recover it." >&2
+  if [[ -n "$RELOGIN_PENDING_RETIRED" ]]; then
+    dir="$RELOGIN_PENDING_DIR"
+    retired="$RELOGIN_PENDING_RETIRED"
+    # Cleared FIRST, so a failure inside the restore cannot re-enter this trap.
+    RELOGIN_PENDING_DIR=""
+    RELOGIN_PENDING_RETIRED=""
+    if restore_retired_profile "$dir" "$retired"; then
+      echo "${SELF_NAME}: the relogin did not finish, so the previous session was put back at ${dir} — the account still works." >&2
+    else
+      echo "${SELF_NAME}: the relogin did not finish and the previous session could NOT be put back automatically; it is at ${retired} — move that directory back to ${dir} to recover it." >&2
+    fi
   fi
+  # Released LAST, and unconditionally: the slot has to outlive the rollback,
+  # or a waiting relogin could claim the profile while this one is still
+  # putting the previous session back into it.
+  release_relogin_slot
   return "$code"
 }
 
@@ -982,6 +1129,14 @@ action_relogin() {
   dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
   provider="$(printf '%s' "$entry" | jq -r '.provider')"
   service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
+
+  # Claimed BEFORE the replace test below, not inside it. A cursor relogin whose
+  # profile directory is missing takes the ordinary login path, and two of those
+  # racing land two sessions in one freshly created profile just as surely — the
+  # `-d "$dir"` branch is where the damage is loudest, not where it starts. The
+  # trap is armed in the same step as the claim so no exit can leak the slot.
+  claim_relogin_slot "$ARG_LABEL" "$provider"
+  trap relogin_rollback_trap EXIT
 
   # A Cursor relogin REPLACES the profile rather than logging in on top of it
   # (issue #1668). Layering a second login over a half-expired session is how
