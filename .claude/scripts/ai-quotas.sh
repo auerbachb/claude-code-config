@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas.sh — report each registered AI account's remaining allowance
 # (issue #1667).
-# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, remaining %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), and `cursor` (the dashboard's own usage response, read through a saved browser session); display only, never a dispatch or spend gate
+# catalog: token-measurement — Read every account registered by `/quotas-setup` and print one row per usage window — used %, reset time in Eastern, and a countdown — for `claude` (Anthropic OAuth usage endpoint), `codex` (`codex app-server`, HTTP fallback), and `cursor` (the dashboard's own usage response, read through a saved browser session), recording each reading to `~/.claude/ai-quotas-history.jsonl`; display only, never a dispatch or spend gate
 #
 # PURPOSE
 #   The owner runs several premium AI subscriptions side by side and drains
@@ -28,7 +28,7 @@
 #   output at any verbosity.
 #
 # USAGE
-#   ai-quotas.sh [--json] [--five-hour] [--account <label>]
+#   ai-quotas.sh [--json] [--five-hour] [--account <label>] [--quiet]
 #   ai-quotas.sh --help | -h
 #
 #   --json         Emit one JSON object per row instead of the table.
@@ -38,10 +38,51 @@
 #                  decision turns on.
 #   --account <label>
 #                  Restrict the run to accounts registered under <label>.
+#   --quiet        Unattended run. Records this run's snapshots as
+#                  `scheduled` rather than `manual`, and drops the table's
+#                  trailing advisory prose (the cheapest-next block, the
+#                  display-only footer) because nobody is reading it live.
+#                  It does NOT silence stderr: the launchd log is the only
+#                  place a broken unattended read can be noticed, and a
+#                  scheduled reader that fails silently is a history file
+#                  with a hole in it and nothing saying why. This is the flag
+#                  the LaunchAgent `/quotas-setup schedule install` writes
+#                  uses; `AI_QUOTAS_SOURCE=scheduled` does the same for a
+#                  caller that cannot pass a flag.
+#
+# HISTORY — ONE SNAPSHOT PER ROW PER RUN (#1700)
+#   Every run appends one JSON line per SUCCESSFULLY READ row to
+#   ~/.claude/ai-quotas-history.jsonl (mode 600, created on first write):
+#
+#     {"ts","provider","label","nickname","window","used_pct",
+#      "resets_at_epoch","source"}
+#
+#   `ts` is this run's UTC ISO-8601 instant, identical on every row of one
+#   run, so a run is a group rather than a scatter of near-equal times.
+#   `window` is the row's POOL where the provider has pools and its window
+#   otherwise — the same value the table's third column shows — which is what
+#   makes a Cursor account's two pool rows two distinct series instead of two
+#   readings of one. `source` is `manual` unless --quiet or
+#   AI_QUOTAS_SOURCE=scheduled says otherwise.
+#
+#   A row that did NOT produce a figure appends NOTHING — no line with a null
+#   percentage, which a later reader would have to tell apart from a real 0 %.
+#   The whole append is best-effort: a history file that cannot be written
+#   warns once and changes neither the table nor the exit status. History is
+#   a record, never a gate; nothing in this repo reads it to decide whether
+#   work may proceed (.claude/rules/safety.md §"Anthropic Quota & Spend
+#   Authority"). The burn-rate projection in #1701 is its first reader.
+#
+#   The table ends with a LAST SNAPSHOT line naming the most recent
+#   `scheduled` snapshot — `stale (>1 day)` past 24 h, `none yet` when the
+#   daily job has never run — and --json carries the same instant in
+#   `last_scheduled_snapshot_at`.
 #
 # WHAT IT READS
 #   Accounts        ~/.claude/ai-quotas.json, written by ai-quotas-setup.sh.
 #                   Schema and profile layout: .claude/reference/ai-quotas.md.
+#                   Each account's optional `nickname` is what the table's
+#                   ACCOUNT column shows; without one it shows the label.
 #   claude          The account's live OAuth access token — macOS Keychain
 #                   item named by the registry's `credential_ref.service`, or
 #                   `<profile_dir>/.credentials.json` elsewhere — then
@@ -90,17 +131,26 @@
 #
 # OUTPUT
 #   stdout: the table (default) or a JSON OBJECT (--json). Each JSON row
-#           carries provider, label, reported_email, window, used_pct,
-#           remaining_pct, resets_at_epoch, resets_at_et, status, plus
-#           detail, source, plan, pool, used_usd, included_usd,
+#           carries provider, label, nickname, reported_email, window,
+#           used_pct, remaining_pct, resets_at_epoch, resets_at_et, status,
+#           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
-#           spend_limit_usd, and overage. All but the first nine are `null` on
-#           providers that have no such notion, so the shape never varies.
+#           spend_limit_usd, and overage. Every row DECLARES all of them, so
+#           the shape never varies; the ones after `status` are `null` on
+#           providers that have no such notion, and `nickname` is `null` on any
+#           account the owner has not named.
 #           The table's third column shows the POOL where a provider has
 #           pools and the window otherwise.
 #
+#           The table has no REMAIN column (#1700): it was `100 - USED` on
+#           every row, and the width it cost is what a five-account table
+#           needs to stay inside 100 columns. `remaining_pct` is STILL on
+#           every JSON row — dropping a derived column from the display is
+#           not a reason to break a consumer that already reads the field.
+#
 #           `--json` emits {"schema_version","threshold_pct","basis","rows",
-#           "cheapest_next"} — an object, NOT the bare array increments
+#           "cheapest_next","last_scheduled_snapshot_at"} — an object, NOT
+#           the bare array increments
 #           #1667/#1668 emitted. `cheapest_next` is a top-level property of
 #           the whole report rather than of any one row, so an array had
 #           nowhere to put it; `schema_version` is there so a consumer can
@@ -123,6 +173,15 @@
 #
 # ENVIRONMENT (overrides; the defaults are what you want)
 #   AI_QUOTAS_CONFIG          Account registry path.
+#   AI_QUOTAS_HISTORY         Snapshot history path
+#                             (~/.claude/ai-quotas-history.jsonl).
+#   AI_QUOTAS_SOURCE          `manual` (default) or `scheduled`, the value
+#                             written into each snapshot's `source`. --quiet
+#                             sets `scheduled`; an unrecognised value is
+#                             refused on stderr and `manual` is used, because
+#                             a source nobody can interpret makes an
+#                             unattended reading indistinguishable from a
+#                             hand-run one.
 #   AI_QUOTAS_CURL_BIN        Path to curl.
 #   AI_QUOTAS_SECURITY_BIN    Path to macOS security(1).
 #   AI_QUOTAS_CLAUDE_BIN      Path to the `claude` CLI (User-Agent version).
@@ -227,6 +286,7 @@ warn() { echo "${SELF_NAME}: $1" >&2; }
 
 JSON=0
 FIVE_HOUR=0
+QUIET=0
 ACCOUNT_FILTER=""
 
 while [[ $# -gt 0 ]]; do
@@ -234,6 +294,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) print_help; exit 0 ;;
     --json) JSON=1; shift ;;
     --five-hour) FIVE_HOUR=1; shift ;;
+    --quiet) QUIET=1; shift ;;
     --account)
       [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--account requires a label"
       ACCOUNT_FILTER="$2"; shift 2 ;;
@@ -252,6 +313,28 @@ if [[ -z "$_HOME" && -z "${AI_QUOTAS_CONFIG:-}" ]]; then
 fi
 
 CONFIG_FILE="${AI_QUOTAS_CONFIG:-${_HOME}/.claude/ai-quotas.json}"
+# Empty means "no history this run". Reached only when HOME is unset AND no
+# explicit path was given — the same combination read_config tolerates because
+# AI_QUOTAS_CONFIG was supplied. Resolving it to `/.claude/…` instead would
+# aim every snapshot at the filesystem root and warn once per run about a path
+# the caller never chose.
+HISTORY_FILE="${AI_QUOTAS_HISTORY:-}"
+if [[ -z "$HISTORY_FILE" && -n "$_HOME" ]]; then
+  HISTORY_FILE="${_HOME}/.claude/ai-quotas-history.jsonl"
+fi
+# `manual` unless this run says otherwise. The flag wins over the environment
+# so the LaunchAgent's argv is the readable record of what the job does, and
+# an unrecognised AI_QUOTAS_SOURCE is REFUSED rather than written through: a
+# history whose `source` holds arbitrary strings cannot answer "when did the
+# unattended job last run", which is the one question the footer exists for.
+SNAPSHOT_SOURCE="manual"
+if [[ -n "${AI_QUOTAS_SOURCE:-}" ]]; then
+  case "$AI_QUOTAS_SOURCE" in
+    manual|scheduled) SNAPSHOT_SOURCE="$AI_QUOTAS_SOURCE" ;;
+    *) warn "ignoring AI_QUOTAS_SOURCE='${AI_QUOTAS_SOURCE}' — expected 'manual' or 'scheduled'; recording this run as manual" ;;
+  esac
+fi
+[[ "$QUIET" -eq 0 ]] || SNAPSHOT_SOURCE="scheduled"
 PLATFORM="${AI_QUOTAS_PLATFORM:-$(uname -s 2>/dev/null || echo unknown)}"
 SECURITY_BIN="${AI_QUOTAS_SECURITY_BIN:-security}"
 CURL_BIN="${AI_QUOTAS_CURL_BIN:-curl}"
@@ -495,6 +578,14 @@ countdown() { # <epoch>
 # would vanish from a report whose entire promise is that every account gets
 # one. A value this reader cannot turn into a number becomes `null`, which
 # the table renders as `-` and nobody mistakes for zero usage.
+# The nickname of the account currently being read (#1700). A GLOBAL rather
+# than a twelfth positional argument: every provider path calls emit_row from
+# several places, some of them error paths, and threading one more argument
+# through all of them is how a `needs-login` row ends up as the only row in
+# the table with no nickname. The main loop sets it once per account and
+# clears it, so a row emitted outside that loop simply has none.
+ROW_NICKNAME=""
+
 emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan> [<extra-json>]
   local used="${5:-}" resets="${6:-}"
   # Optional 11th argument: a JSON OBJECT merged over the base row, which is
@@ -532,10 +623,16 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
     --arg provider "$1" --arg account_label "$2" --arg email "$3" --arg window "$4" \
     --arg used "$used" --arg resets "$resets" \
     --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-}" \
+    --arg nickname "$ROW_NICKNAME" \
     --arg et "$(epoch_to_et "$resets")" --arg in "$(countdown "$resets")" \
     --argjson extra "$extra" \
     '{provider: $provider,
       label: $account_label,
+      # The short name the owner chose, or null. Declared on every row like
+      # every other optional field, so `.nickname // .reported_email` is a
+      # complete rule for "what do I call this account" and no consumer has
+      # to test whether the key is there.
+      nickname: (if $nickname == "" then null else $nickname end),
       reported_email: (if $email == "" then $account_label else $email end),
       window: $window,
       used_pct: (if $used == "" then null else (try ($used | tonumber) catch null) end),
@@ -1344,6 +1441,26 @@ for (( i = 0; i < COUNT; i++ )); do
   fi
   MATCHED=$(( MATCHED + 1 ))
 
+  # `// ""` covers both an absent key and an explicit null, and a nickname
+  # that is not a string is dropped rather than stringified: `jq -r` would
+  # render `{"a":1}` into the ACCOUNT column verbatim, and a column showing
+  # a JSON fragment is worse than one showing the label.
+  #
+  # Control characters are dropped on READ as well, not only refused on write.
+  # `/quotas-setup nick` rejects them, but this reader accepts any compatible
+  # `1.x` registry — a hand-edited one, or one written by a future sibling —
+  # and the value goes straight into a terminal table: a tab splits the
+  # columns, a newline forges a row, and an escape sequence is executed by the
+  # terminal rather than shown. Tested by `explode` rather than a regex so a
+  # NUL is covered like any other. The fallback is the same one an absent
+  # nickname takes, so the ACCOUNT column shows the label — silently, matching
+  # the non-string case directly above.
+  ROW_NICKNAME="$(printf '%s' "$CONFIG" | jq -r --argjson i "$i" \
+    '.accounts[$i].nickname // ""
+     | if type == "string"
+         and ((explode | map(select(. < 32 or . == 127)) | length) == 0)
+       then . else "" end' 2>/dev/null || true)"
+
   # Every account is read on its own. A provider that fails takes its row
   # down with it and nothing else — which is the whole point of a report
   # across five subscriptions.
@@ -1357,6 +1474,9 @@ for (( i = 0; i < COUNT; i++ )); do
       ;;
   esac
 done
+# Cleared with the loop that owns it, so nothing emitted later can inherit the
+# last account's nickname.
+ROW_NICKNAME=""
 
 # --- overage annotation (#1669) ----------------------------------------------
 #
@@ -1444,6 +1564,200 @@ annotate_rows() { # <rows-json-file>
   return 0
 }
 
+# --- snapshot history (#1700) ------------------------------------------------
+#
+# A RECORD, NEVER A GATE. Nothing in this repo reads this file to decide
+# whether work may proceed, and nothing may start: quota and spend authority
+# stays with Anthropic's own in-app UI and upstream harness signals
+# (.claude/rules/safety.md §"Anthropic Quota & Spend Authority"). The
+# burn-rate projection in #1701 is its first and only reader.
+#
+# EVERY FAILURE HERE IS NON-FATAL AND LOUD. A history file that cannot be
+# written changes neither the table nor the exit status — a display tool that
+# started failing because its optional log was unwritable would be a gate by
+# accident — but it never fails silently either, because a hole in the record
+# with nothing saying why is exactly what #1701 would misread as a quiet day.
+
+epoch_to_utc_iso() { # <epoch>
+  local e="${1:-}"
+  [[ -n "$e" ]] || return 0
+  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
+    date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  else
+    date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
+  fi
+}
+
+# One `ts` for the whole run, taken from the SAME clock every countdown in
+# this report was measured against — so a frozen AI_QUOTAS_NOW freezes the
+# snapshot too, and a run's rows group by an exact equality rather than by
+# "within a second or so of each other".
+append_history() { # <doc-json-file>
+  [[ -n "$HISTORY_FILE" ]] || return 0
+  local ts dir tmp
+  ts="$(epoch_to_utc_iso "$NOW")"
+  if [[ -z "$ts" ]]; then
+    warn "could not format this run's timestamp — nothing was recorded to $HISTORY_FILE"
+    return 0
+  fi
+  dir="$(dirname "$HISTORY_FILE")"
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    warn "could not create ${dir} — nothing was recorded to $HISTORY_FILE"
+    return 0
+  fi
+  tmp="$TMP/history.jsonl"
+  : > "$tmp"
+  # A row with no figure appends NOTHING. A line carrying a null `used_pct`
+  # would be indistinguishable, three months later, from a genuine reading —
+  # and the projection reading it would average a failure in as a 0.
+  #
+  # `window` takes the POOL where a provider has pools, which is the same
+  # value the table's third column shows. Without it a Cursor account's two
+  # rows land as two readings of one series per run, and a burn rate computed
+  # over them is the average of two unrelated pools.
+  if ! jq -c --arg ts "$ts" --arg source "$SNAPSHOT_SOURCE" '
+        .rows[]
+        | select(.status == "ok" and .used_pct != null)
+        | {ts: $ts,
+           provider: .provider,
+           label: .label,
+           nickname: .nickname,
+           window: (.pool // .window),
+           used_pct: .used_pct,
+           resets_at_epoch: .resets_at_epoch,
+           source: $source}' "$1" > "$tmp" 2>/dev/null; then
+    warn "could not build this run's snapshot lines — the report is unaffected, but nothing was recorded to $HISTORY_FILE"
+    return 0
+  fi
+  # Every row failed to read. Not an error and not worth a warning: the
+  # statuses in the table already say so, row by row.
+  [[ -s "$tmp" ]] || return 0
+  # A SYMLINK is refused before anything else, and before the create below —
+  # every other test here follows one. `-f` is true for a link to a regular
+  # file, so without this the chmod would retarget an unrelated file's mode
+  # and the append would write quota JSON into it; `-e` is FALSE for a
+  # dangling link, so the create branch would follow it and bring its target
+  # into existence. Neither is something a tool whose contract is that it
+  # writes nothing that matters may do to a path it did not choose.
+  if [[ -L "$HISTORY_FILE" ]]; then
+    warn "$HISTORY_FILE is a symbolic link — nothing was recorded, and neither the link nor its target was touched"
+    return 0
+  fi
+  # Created through a 077 umask so the file is never briefly world-readable
+  # between creation and the mode being set — the same reasoning the config
+  # writer uses for its temp file.
+  if [[ ! -e "$HISTORY_FILE" ]]; then
+    if ! ( umask 077; : >> "$HISTORY_FILE" ) 2>/dev/null; then
+      warn "could not create $HISTORY_FILE — nothing was recorded"
+      return 0
+    fi
+  fi
+  # A path that exists but is not a regular file is refused BEFORE the chmod.
+  # `chmod 600` on a DIRECTORY succeeds and strips its execute bit, making it
+  # unusable — so a history path occupied by a directory would be silently
+  # mutated by a tool whose whole contract is that it writes nothing that
+  # matters.
+  if [[ ! -f "$HISTORY_FILE" ]]; then
+    warn "$HISTORY_FILE exists but is not a regular file — nothing was recorded, and its mode was left alone"
+    return 0
+  fi
+  # The mode is settled BEFORE any content lands, not after. The umask above
+  # already covers a file this run creates; what this covers is a file that
+  # was already there with a looser mode — tightening it afterwards would mean
+  # this run appended readings to a world-readable file first.
+  # A chmod this run could not apply STOPS the append. Recording readings into
+  # a file whose permissions we failed to secure is worse than not recording
+  # them: the history is documented as mode 600, and a consumer reading it back
+  # is entitled to that. The run itself still exits 0 — this is a record, not a
+  # gate — and the warning says what to fix.
+  if ! chmod 600 "$HISTORY_FILE" 2>/dev/null; then
+    warn "could not set mode 600 on $HISTORY_FILE — nothing was recorded; check its permissions"
+    return 0
+  fi
+  # ONE append of the whole block, not one per row. A `/quotas` run by hand
+  # while the LaunchAgent happens to fire is the ordinary case, and appending
+  # once keeps that block contiguous instead of interleaving it row by row
+  # with the other run's.
+  #
+  # This is a NARROWING of the window, not atomicity, and the difference
+  # matters to whoever next reads this. `cat` writes in buffer-sized chunks;
+  # a block larger than one chunk becomes several O_APPEND writes, and a
+  # concurrent appender can land between them. What that costs is bounded:
+  # O_APPEND advances the offset atomically per write, so the two runs never
+  # overwrite each other and no line written on an earlier day can be damaged
+  # — the only casualty is the pair of records straddling a chunk boundary,
+  # which arrive torn and which `last_scheduled_snapshot_at` and every other
+  # reader already DROP via `fromjson?`. A lost reading self-heals at the next
+  # run; the history has no unique data in any single line. A lock would buy
+  # those two records at the price of a stale-lock failure mode on a file
+  # whose entire contract is that it never blocks the report it decorates.
+  if ! cat "$tmp" >> "$HISTORY_FILE" 2>/dev/null; then
+    warn "could not append this run's snapshots to $HISTORY_FILE"
+    return 0
+  fi
+  return 0
+}
+
+# The `ts` of the most recent `scheduled` snapshot, or nothing.
+last_scheduled_snapshot_at() {
+  [[ -n "$HISTORY_FILE" && -r "$HISTORY_FILE" ]] || return 0
+  # `fromjson?` DROPS a line it cannot parse instead of aborting the program.
+  # A run killed mid-append can leave one torn line, and one torn line must
+  # not cost the footer every good line written before it. The `type` guard is
+  # the other half: `fromjson?` catches only the PARSE error, so a line holding
+  # a bare `5` parses fine and then aborts jq on `.source`.
+  #
+  # The NEWEST `ts`, not the last line. A run stamps every one of its rows
+  # with the clock it started on, so file order is append-completion order,
+  # not reading order: a slow run that started at 09:00 and finished at 09:05
+  # lands AFTER a quick one that started at 09:02, and `tail -n 1` would then
+  # report 09:00 as the latest snapshot — an hour of drift near the staleness
+  # boundary, from a footer whose whole job is to say when the job last ran.
+  # `sort` is exact here rather than approximate: these are fixed-width UTC
+  # `%Y-%m-%dT%H:%M:%SZ` strings, which order lexicographically.
+  jq -R -r 'fromjson?
+            | select(type == "object" and .source == "scheduled")
+            | .ts // empty' \
+    "$HISTORY_FILE" 2>/dev/null | sort | tail -n 1 || true
+}
+
+# `LAST SNAPSHOT: <time> (scheduled)`, `… — stale (>1 day)`, or `none yet`.
+snapshot_footer() { # <iso|"">
+  local iso="$1" e et
+  if [[ -z "$iso" ]]; then
+    printf 'LAST SNAPSHOT: none yet — install the daily job with: /quotas-setup schedule install'
+    return 0
+  fi
+  e="$(iso_to_epoch "$iso")"
+  if [[ -z "$e" ]]; then
+    # A recorded timestamp this reader cannot parse is shown verbatim rather
+    # than dropped: "none yet" would be a lie about a job that did run.
+    printf 'LAST SNAPSHOT: %s (scheduled)' "$iso"
+    return 0
+  fi
+  et="$(epoch_to_et "$e")"
+  [[ -n "$et" ]] || et="$iso"
+  if [[ $(( NOW - e )) -gt 86400 ]]; then
+    printf 'LAST SNAPSHOT: %s (scheduled) — stale (>1 day)' "$et"
+  else
+    printf 'LAST SNAPSHOT: %s (scheduled)' "$et"
+  fi
+}
+
+# Adds `last_scheduled_snapshot_at` to the document. Called on EVERY exit that
+# emits one, including the two empty ones, so --json has a single shape.
+stamp_snapshot_field() {
+  local iso stamped="$TMP/doc.stamped.json"
+  iso="$(last_scheduled_snapshot_at)"
+  if jq --arg v "$iso" \
+      '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end)}' \
+      "$DOC" > "$stamped" 2>/dev/null && [[ -s "$stamped" ]]; then
+    mv "$stamped" "$DOC" 2>/dev/null || warn "could not stamp last_scheduled_snapshot_at onto the report"
+  else
+    warn "could not stamp last_scheduled_snapshot_at onto the report"
+  fi
+}
+
 # The two "nothing to report" exits emit the SAME document as a full run, with
 # an empty `rows` array — not a bare `[]`. A consumer that reads `.rows` on a
 # populated run and gets a top-level array here would have to special-case
@@ -1454,7 +1768,7 @@ printf '[]' > "$EMPTY_ROWS"
 
 if [[ "$COUNT" -eq 0 ]]; then
   if [[ "$JSON" -eq 1 ]]; then
-    annotate_rows "$EMPTY_ROWS"; cat "$DOC"
+    annotate_rows "$EMPTY_ROWS"; stamp_snapshot_field; cat "$DOC"
   else
     echo "No accounts registered yet."
     echo "Register one with: /quotas-setup add <claude|codex|cursor> <label>"
@@ -1464,7 +1778,7 @@ fi
 
 if [[ "$MATCHED" -eq 0 ]]; then
   if [[ "$JSON" -eq 1 ]]; then
-    annotate_rows "$EMPTY_ROWS"; cat "$DOC"
+    annotate_rows "$EMPTY_ROWS"; stamp_snapshot_field; cat "$DOC"
   else
     echo "No registered account matches --account '${ACCOUNT_FILTER}'."
     echo "List the registered accounts with: /quotas-setup list"
@@ -1484,6 +1798,13 @@ ROWS_JSON="$TMP/rows.json"
 jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the rows into an array"
 annotate_rows "$ROWS_JSON"
 
+# Recorded BEFORE the footer is read, so a scheduled run's own snapshot is the
+# one its `last_scheduled_snapshot_at` names. Reading first would make every
+# unattended run report the PREVIOUS day's time — a footer permanently one day
+# behind, and one that reads `stale` on a job that just succeeded.
+append_history "$DOC"
+stamp_snapshot_field
+
 if [[ "$JSON" -eq 1 ]]; then
   cat "$DOC"
   exit 0
@@ -1495,12 +1816,19 @@ fi
 # a fallback that does not degrade the output but replaces it.
 TABLE="$TMP/table.tsv"
 {
-  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tREMAIN\tOVERAGE\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
+  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tOVERAGE\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
   jq -r '
     def pct: if . == null then "-" else "\(.)%" end;
     def dash: if . == null or . == "" then "-" else . end;
     .rows[] |
-    [ .reported_email,
+    [ # The nickname when the owner set one, the provider-reported email
+      # otherwise (#1700). A five-account table of full subscription emails
+      # is what pushed this table past 100 columns; `GPT LM` is also simply
+      # what the owner calls the account. The label is still reachable —
+      # the note below says `registered as <label>` whenever it differs from
+      # the reported email, so a nickname can shorten a row without hiding
+      # which registry entry produced it.
+      (.nickname // .reported_email),
       .provider,
       # The pool name when the provider has pools, the window otherwise. A
       # Cursor account contributes TWO rows for one window, so printing the
@@ -1508,7 +1836,10 @@ TABLE="$TMP/table.tsv"
       # in a percentage — the reader could not tell which pool was which.
       (.pool // .window),
       (.used_pct | pct),
-      (.remaining_pct | pct),
+      # No REMAIN column (#1700): it was `100 - USED` on every row, so it
+      # carried no information the reader did not already have, and the width
+      # it cost is what a five-account table needs to stay inside 100
+      # columns. `remaining_pct` is still on every --json row.
       # What continuing past this cap costs. `-` when no price is known — a
       # provider this reader has no table row for, or a run where the helper
       # was unavailable — never a blank that reads as "free".
@@ -1516,9 +1847,24 @@ TABLE="$TMP/table.tsv"
       (.resets_at_et | dash),
       (.countdown | dash),
       .status,
+      # ACTIONABLE TEXT ONLY (#1700). `plan pro` and `via app-server` are
+      # provenance — which subscription tier answered, which of the two Codex
+      # read paths did — and on an `ok` row there is nothing to do about
+      # either. Together they were the widest thing on a healthy row, and the
+      # columns they cost are what a five-account table needs to stay inside
+      # 100. Both are still on every --json row, which is where you go when a
+      # number looks wrong. What stays here is what the reader must act on:
+      # the mislabelled-account warning, and the detail belonging to the row
+      # — a relogin command, a retry window, the keys an unreadable response
+      # actually had. The note on a failing row is therefore as long as the
+      # instruction it carries; truncating a relogin command to save columns
+      # would trade the one line worth printing for the merely tidy ones.
+      #
+      # NO APOSTROPHES ANYWHERE IN THIS jq PROGRAM. It is a single-quoted
+      # shell string, so one apostrophe in a comment closes it, and the jq
+      # source after that point is parsed by bash — which reports a syntax
+      # error a hundred lines away from the comment that caused it.
       ([ (if .label != .reported_email then "registered as \(.label)" else empty end),
-         (.plan | if . == null then empty else "plan \(.)" end),
-         (.source | if . == null then empty else "via \(.)" end),
          (.detail | if . == null or . == "" then empty else . end) ]
        | join("; ") | if . == "" then "-" else . end)
     ] | @tsv' "$DOC"
@@ -1529,9 +1875,12 @@ column -t -s $'\t' "$TABLE" 2>/dev/null || cat "$TABLE"
 # when at least one account is at or below the threshold. Nothing prints while
 # every account still has room, because a suggestion nobody needs is a
 # suggestion that trains the reader to ignore the line.
-HINT="$(jq -r 'if .cheapest_next == null then empty
-               else "Cheapest to continue on: \(.cheapest_next.label) (\(.cheapest_next.reason))" end' \
-  "$DOC" 2>/dev/null || true)"
+HINT=""
+if [[ "$QUIET" -eq 0 ]]; then
+  HINT="$(jq -r 'if .cheapest_next == null then empty
+                 else "Cheapest to continue on: \(.cheapest_next.label) (\(.cheapest_next.reason))" end' \
+    "$DOC" 2>/dev/null || true)"
+fi
 if [[ -n "$HINT" ]]; then
   echo
   echo "$HINT"
@@ -1541,6 +1890,16 @@ if [[ -n "$HINT" ]]; then
   echo "  Informational only — it never switches accounts, never buys anything, and never gates dispatch."
 fi
 
-echo
-echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
+# When the unattended job last ran. Printed on EVERY table, including a run
+# with no history at all — "none yet" is the answer that sends the owner to
+# `schedule install`, and a footer that appears only once history exists would
+# hide exactly the state worth acting on. Suppressed under --quiet with the
+# rest of the trailing prose: the scheduled run IS the snapshot, so telling
+# its own log when it last ran says nothing.
+if [[ "$QUIET" -eq 0 ]]; then
+  echo
+  printf '%s\n' "$(snapshot_footer "$(last_scheduled_snapshot_at)")"
+  echo
+  echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
+fi
 exit 0

@@ -29,13 +29,16 @@ credential in turn.
 
 ## Increment boundary
 
-This registry is increment 1 of four (#1666 → #1667 → #1668 → #1669). It ends at a
-registered, validated account list. **No usage figure is read here.** Increment 2 adds
-`/quotas` and `.claude/scripts/ai-quotas.sh`, which read the config below and report
-each account's remaining allowance; increment 3 (#1668) makes the Cursor slot live — the
-browser login plus the two-pool reader documented later in this file; increment 4 (#1669)
-adds the overage column and the cheapest-next hint and **closes the chain**. Keep the
-schema simple — a reader that has to guess is a reader that reports the wrong number.
+This registry is increment 1 of six (#1666 → #1667 → #1668 → #1669 → #1700 → #1701). It
+ends at a registered, validated account list. **No usage figure is read here.** Increment
+2 adds `/quotas` and `.claude/scripts/ai-quotas.sh`, which read the config below and
+report each account's remaining allowance; increment 3 (#1668) makes the Cursor slot
+live — the browser login plus the two-pool reader documented later in this file;
+increment 4 (#1669) adds the overage column and the cheapest-next hint; increment 5
+(#1700) records every reading to a history file, adds the daily unattended snapshot,
+nicknames, and the compact table; increment 6 (#1701) reads that history for a burn rate
+and a days-left projection, and **closes the chain**. Keep the schema simple — a reader
+that has to guess is a reader that reports the wrong number.
 
 ## Config file
 
@@ -66,6 +69,7 @@ schema simple — a reader that has to guess is a reader that reports the wrong 
 | `accounts[].provider` | yes | `claude`, `codex`, or `cursor`. |
 | `accounts[].label` | yes | What the user typed — for these accounts, the subscription email. Unique per provider; it names the profile directory, so it must start with a letter or digit, may then contain letters, digits and `. _ @ + -`, and is capped at 128 characters (no slashes, nothing that could climb out of the profile root). |
 | `accounts[].profile_dir` | yes | Absolute path to this account's isolated profile. |
+| `accounts[].nickname` | no | Short display name (#1700), set by `add … --nick <name>` or `nick <label> <name>`. `/quotas` shows it in place of the label. Max 32 characters; no tabs, newlines, control characters, or leading/trailing spaces — it is rendered into a tab-separated table, and a tab in it would split the row into columns that no longer line up with their headers. Clearing it (`nick <label> ""`) **deletes the key** rather than storing `""`. Enforced on **read** as well as on write: the reader accepts any compatible `1.x` registry — hand-edited, or written by a future sibling — and a nickname carrying a control character is dropped there too, falling back to the label exactly as an absent one does. |
 | `accounts[].added_at` | yes | UTC ISO-8601 registration timestamp. |
 | `accounts[].credential_ref` | no | macOS + `claude` only. The **name** of the Keychain item the login created — `{"kind":"macos-keychain","service":"…"}`. A name, never a value. |
 
@@ -268,7 +272,7 @@ observational one, and it stays that way.
 
 ### JSON row shape
 
-`provider`, `label`, `reported_email`, `window`, `used_pct`, `remaining_pct`,
+`provider`, `label`, `nickname`, `reported_email`, `window`, `used_pct`, `remaining_pct`,
 `resets_at_epoch`, `resets_at_et`, `status` — plus `countdown`, `detail`, `source`
 (which path produced the row), `plan`, and the pool fields `pool`, `used_usd`,
 `included_usd`, `plan_used_usd`, `plan_included_usd`. Every row declares all of them;
@@ -533,8 +537,10 @@ runs the suite: the "helper unavailable" path could never then be exercised.
 ### Increment boundary
 
 Provider coverage is complete at #1668: Claude, Codex, and Cursor. #1669 adds the
-overage column and the cheapest-next hint below, and **closes the chain** — the tracker
-ends there, with nothing deferred past it.
+overage column and the cheapest-next hint below. #1700 adds the snapshot history, the
+daily unattended job, nicknames, and the compact table — everything needed to answer
+"how did this account get here"; #1701 reads that history and **closes the chain** with
+a burn rate and a days-left projection.
 
 ## Overage — what continuing costs (increment 4, #1669)
 
@@ -698,6 +704,225 @@ used exclusively when set). Missing or failing, the run says `DEGRADED:` **once*
 stderr and reports without prices or a hint — every row still renders, `overage` is `null`
 on each, `cheapest_next` is `null`, and the exit status is still `0`. A missing price is a
 missing number, never a verdict about whether work may proceed.
+
+## Snapshot history, the daily job, nicknames (increment 5, #1700)
+
+`/quotas` answered "where does each account stand **now**". A single reading cannot tell
+"used 57 % over six days" from "used 57 % since yesterday", so this increment records
+every reading, takes one unattended reading a day so quiet days leave no hole, and
+narrows the table enough to read five accounts at a glance.
+
+**History is display data, exactly like the table it comes from.** Nothing in this repo
+reads `ai-quotas-history.jsonl` to decide whether work may proceed, and nothing may
+start: no dispatch gate, no pause, no model downgrade, no input to `credit-budget.sh`.
+Quota and spend authority stays with Anthropic's own in-app UI and upstream harness
+signals — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority", with the
+rolled-back `/quota` skill (#499) as the precedent for what gating on locally-read
+numbers costs. The projection in #1701 is the file's first and only reader, and it is a
+projection printed to a human, not a verdict.
+
+### The history file
+
+- **Path** `~/.claude/ai-quotas-history.jsonl` (override with `AI_QUOTAS_HISTORY`)
+- **Mode** `600`, created through a `077` umask so it is never briefly world-readable
+- **Format** JSON Lines: one object per line, append-only, never rewritten
+
+Every run of `ai-quotas.sh` appends one line per **successfully read** row:
+
+```json
+{"ts":"2026-09-10T13:00:04Z","provider":"codex","label":"admin@localmovers.com",
+ "nickname":"GPT LM","window":"7-day","used_pct":71,"resets_at_epoch":1789200000,
+ "source":"scheduled"}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ts` | UTC ISO-8601 instant of the RUN, identical on every line the run appends — so a run is a group, not a scatter of near-equal times. |
+| `provider` | `claude`, `codex`, or `cursor`. |
+| `label` | The registry label, which is the stable key across renames of the nickname. |
+| `nickname` | The nickname at the time of the reading, or `null`. Recorded rather than looked up later, so a renamed account keeps its old readings labelled the way they were shown. |
+| `window` | The row's **pool** where the provider has pools, its window otherwise — the same value the table's third column shows. This is what makes a Cursor account's two pool rows two distinct series rather than two readings of one; a burn rate computed without it would average two unrelated pools. |
+| `used_pct` | The percentage the row reported. Never `null` — a row without a figure appends nothing at all. |
+| `resets_at_epoch` | When that window resets, or `null`. A series crossing a reset is what tells a projection where one cycle ended. |
+| `source` | `manual` for a hand-run `/quotas`, `scheduled` for the unattended job (`--quiet`, or `AI_QUOTAS_SOURCE=scheduled`). An unrecognised `AI_QUOTAS_SOURCE` is refused on stderr and the run records `manual`. |
+
+**A failed row appends nothing.** No line with a null percentage: three months later such
+a line is indistinguishable from a genuine reading, and a projection averaging it would
+treat a failure as a `0`. The statuses in the table already say which accounts did not
+read.
+
+**Every failure here is non-fatal and loud.** An unwritable history file changes neither
+the table nor the exit status — a display tool that started failing because its optional
+log was unwritable would be a gate by accident — but it always says so on stderr, because
+a hole in the record with nothing explaining it is exactly what a projection would
+misread as a quiet day.
+
+**No retention policy, deliberately.** CodeRabbit proposed one during local review and
+it was declined for this increment: the daily job writes one line per account per day —
+five accounts is under 400 KB a year — and a projection over a longer history is strictly
+better than one over a truncated one, so the first thing a retention rule would delete is
+the data #1701 exists to use. Revisit it if the file ever becomes large enough to notice,
+which at this rate is years away.
+
+**Concurrency.** The whole run's lines are appended in ONE `cat >>`, not one write per
+row. A hand-run `/quotas` while the LaunchAgent happens to fire is the ordinary case, and
+appending once keeps that block contiguous instead of interleaving it row by row with the
+other run's. This narrows the window; it is not atomicity, and the distinction is the
+point. `cat` writes in buffer-sized chunks, so a block larger than one chunk becomes
+several `O_APPEND` writes and a concurrent appender can land between them. The cost is
+bounded: `O_APPEND` advances the offset atomically per write, so the two runs never
+overwrite each other and nothing written on an earlier day can be damaged — the only
+casualty is the pair of records straddling a chunk boundary, which arrive torn. Readers
+use `fromjson?` per line and skip what does not parse, so a torn line (from this, or from
+a run killed mid-append) costs only itself, and the next run records again. A lock was
+declined for the same reason a retention policy was: it would buy those two records at
+the price of a stale-lock failure mode on a file whose whole contract is that it never
+blocks the report it decorates.
+
+**Reading order is not append order.** Every row of a run carries the clock that run
+*started* on, while its position in the file is where the run *finished* — so a slow run
+that began at 09:00 and appended at 09:05 sits after a quick one that began at 09:02. The
+`LAST SNAPSHOT` footer therefore takes the newest `ts`, not the last line; the timestamps
+are fixed-width UTC `%Y-%m-%dT%H:%M:%SZ`, so ordering them is a lexicographic sort.
+`/quotas-setup schedule status` keeps its own copy of that lookup and sorts identically —
+two commands answering "when did the job last run" differently is worse than either
+answer being wrong. Anything else reading this file for a latest value owes itself the
+same care.
+
+**The history path is never followed through a symlink.** `-f` is true for a link to a
+regular file and `-e` is false for a dangling one, so the plain tests would have let the
+`chmod 600` retarget an unrelated file's mode, the append write quota JSON into it, and a
+dangling link bring its target into existence. A symlink at that path is refused outright,
+with a warning, before the create, the mode check, or the append — the run still exits 0,
+because this is a record and not a gate.
+
+### The daily unattended job
+
+`/quotas-setup schedule install` writes `~/Library/LaunchAgents/com.claude.ai-quotas.plist`
+(override with `AI_QUOTAS_LAUNCH_AGENT`) and loads it.
+
+| Plist key | Value |
+|-----------|-------|
+| `Label` | `com.claude.ai-quotas` — also the launchctl service name. |
+| `ProgramArguments` | The absolute path to `ai-quotas.sh`, then `--json --quiet`. |
+| `RunAtLoad` | `true`, so installing it takes a reading immediately rather than waiting for tomorrow. |
+| `StartCalendarInterval` | `Hour` **9**, `Minute` 0, local time. `--hour <0-23>` (or `AI_QUOTAS_SCHEDULE_HOUR`) changes it. |
+| `StandardOutPath` / `StandardErrorPath` | `~/.claude/ai-quotas/launchd.log` (override with `AI_QUOTAS_LAUNCHD_LOG`). |
+| `EnvironmentVariables` | `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` and `HOME`, plus `AI_QUOTAS_CONFIG` and `AI_QUOTAS_HISTORY` when the installing shell had them set. |
+
+**Why 09:00.** launchd runs a missed calendar job at the next wake rather than skipping
+it, but a reading taken hours late is a reading attributed to the wrong day; 09:00 is
+late enough that the Mac is normally awake and early enough that the day's usage has not
+yet accumulated, so consecutive snapshots measure a day apart rather than a day plus
+however long the owner slept in.
+
+**Why the explicit `PATH`.** launchd hands a job a minimal environment — typically
+`/usr/bin:/bin:/usr/sbin:/sbin`. Every tool the reader needs beyond the base system lives
+in Homebrew's prefix: `jq`, `codex`, and `node` are all under `/opt/homebrew/bin` on this
+Mac (`/usr/local/bin` on Intel). Without it the scheduled run finds no `jq`, exits 5, and
+writes a hole in the history every night.
+
+**Why the path overrides are carried.** `AI_QUOTAS_CONFIG` and `AI_QUOTAS_HISTORY` each
+override a `HOME`-derived default, so a shell that has one set gets it honoured by every
+command the owner types — `schedule install`, `schedule status`, `/quotas` itself — while
+a job that did not inherit it would resolve the default instead. The result would be two
+history files, each looking complete, neither holding every reading. `AI_QUOTAS_PROFILE_ROOT`
+is deliberately *not* carried: the reader never consults it, taking each account's
+`profile_dir` from the registry (already absolute), so passing it would advertise an
+effect it does not have.
+
+**Why a re-install can report the previous definition.** launchd holds a job by label,
+not by path. `schedule install` boots the old job out before bootstrapping the new plist,
+but when the bootout does not take, neither `bootstrap` nor the legacy `load -w` can
+replace it — and `launchctl list` keeps answering "loaded", because something under that
+label is. The install says so explicitly rather than reporting success: the plist on disk
+is the new one and takes effect at the next login, but until then the job running is the
+one loaded before the install, at the old hour and the old reader path.
+
+**Why launchd and not cron, and not a Claude scheduler.** The reader needs this user's
+login context: the Keychain items the `claude` login created, the per-account
+`CODEX_HOME` directories, the Cursor browser profile. A per-user LaunchAgent runs inside
+exactly that context. A cron line or an agent-side scheduler would run the same reader
+with none of it and record `needs-login` every day — not a gap in the history but a
+history full of confident wrong answers. The `mcp__scheduled-tasks__*` scheduler is
+declined for the same reason it is declined elsewhere
+(`.claude/reference/cross-session-durability.md`), plus this one.
+
+**The scheduled run never opens a headed browser.** The Cursor reader stays headless; a
+missing or expired session yields a `needs-login` row, never a prompt and never a window
+appearing on the owner's desktop at 09:00. Per #1668's caveat, a headless Cursor read can
+also meet bot protection under launchd; when it does, the run records Claude and Codex
+and the Cursor row reads `unreachable` or `unreadable` — which, appending nothing, is the
+correct outcome rather than a fabricated figure.
+
+**Which copy of the reader gets scheduled.** The plist must outlive any checkout, so the
+path is resolved `~/.claude/skills-worktree/.claude/scripts/ai-quotas.sh`, then
+`~/.claude/scripts/ai-quotas.sh`, then the script's own sibling — and choosing the
+sibling prints a warning naming the problem, because a LaunchAgent pointing into a
+worktree keeps working until that worktree is removed and then fails every night into a
+log nobody reads. `AI_QUOTAS_READER_BIN` overrides all three and is used **exclusively**
+when set, for the same reason `AI_QUOTAS_CHEAPEST_BIN` is: a seam that falls back finds
+the repo copy whenever the caller stands in a checkout, so the "reader unresolvable" path
+could never be exercised from the one place the suite runs.
+
+`schedule remove` runs `launchctl bootout gui/$(id -u)/com.claude.ai-quotas` (falling back
+to `launchctl unload -w`) and deletes the plist; the recorded history is left alone.
+`schedule status` reports the plist as present or absent, the job as loaded or not, the
+log path, and the `ts` of the most recent `scheduled` snapshot. On a host that is not
+macOS all three print one line and exit **2**.
+
+`install` is idempotent: it boots out an already-loaded job before bootstrapping the new
+plist, because `bootstrap` refuses a label launchd already holds and a re-install without
+that would leave the OLD definition running while the new plist sat on disk looking
+installed. Where `bootstrap` is unavailable it falls back to `launchctl load -w`.
+
+### Nicknames and the compact table
+
+`add <provider> <label> --nick <name>` and `nick <label> <name> [<provider>]` store
+`nickname` in the registry; `/quotas` prints it in the ACCOUNT column in place of the
+provider-reported email. The note still says `registered as <label>` whenever the label
+differs from the reported email, so a nickname shortens a row without hiding which
+registry entry produced it.
+
+The table dropped **REMAIN** (it was `100 - USED` on every row) and the NOTE column now
+carries **actionable text only** — the mislabelled-account warning and the row's detail.
+`plan pro` and `via app-server` moved to `--json`: they are provenance, there is nothing
+to do about either on an `ok` row, and together they were the widest thing on a healthy
+one. `remaining_pct`, `plan`, and `source` are all still on every `--json` row —
+dropping a derived column from the display is not a reason to break a consumer.
+
+**The 100-column budget.** Five accounts with nicknames of about a dozen characters and
+rows reading `ok` render at 98 columns, which the suite asserts by measuring the widest
+line of an actual five-account render rather than by eyeballing a fixture. Two things can
+legitimately exceed it, and both should: the note on a **failing** row is as long as the
+instruction it carries, because truncating a `/quotas-setup relogin` command to save
+columns trades the one line worth printing for the merely tidy ones; and a Cursor
+`on-demand $1007.50 of $1000` overage label carries live dollars nobody would want
+abbreviated.
+
+Under the table, `LAST SNAPSHOT` names the most recent **scheduled** snapshot —
+`stale (>1 day)` past 24 hours, `none yet` (with the install command) when the job has
+never run. Manual snapshots deliberately do not count: the line is about whether the
+unattended job is working. `--json` carries the same instant in
+`last_scheduled_snapshot_at`, on every document including the two empty ones, so there is
+nothing for a consumer to special-case. `--quiet` drops the footer and the cheapest-next
+prose — under the unattended job they would only tell the job log about itself — but it
+does **not** silence stderr, because the log is the only place a broken scheduled read
+can be noticed.
+
+### Test seams added at #1700
+
+`AI_QUOTAS_HISTORY` and `AI_QUOTAS_SOURCE` on the reader; `AI_QUOTAS_LAUNCH_AGENT`,
+`AI_QUOTAS_LAUNCHCTL_BIN`, `AI_QUOTAS_READER_BIN`, `AI_QUOTAS_LAUNCHD_LOG`,
+`AI_QUOTAS_HISTORY`, and `AI_QUOTAS_SCHEDULE_HOUR` on the setup script. The plist, the job
+log, and the history file otherwise resolve from `HOME`, which the suites already
+redirect — so no case can touch the real `~/Library/LaunchAgents` or the owner's own
+registry.
+
+> **No apostrophes inside the reader's `jq` programs.** They are single-quoted shell
+> strings, and one apostrophe in a jq comment closes the string; bash then parses the jq
+> source and reports a syntax error a hundred lines from the comment that caused it.
+> A comment reading "the row's detail" cost a full test-suite round to find.
 
 ## Symlink
 
