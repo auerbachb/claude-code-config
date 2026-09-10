@@ -504,7 +504,7 @@ NOW="$(report_now_epoch)"
 # exist the reset column silently shows that file's timestamp. Asking the
 # tool which dialect it is removes the coincidence from the answer.
 DATE_IS_GNU=0
-if date --version 2>/dev/null | grep -qi 'GNU coreutils'; then
+if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
   DATE_IS_GNU=1
 fi
 
