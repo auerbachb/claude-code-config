@@ -304,9 +304,46 @@ EOF
 # the definition loaded BEFORE the install, so `list` keeps answering "loaded"
 # — the shape an install must not report as success. A failed bootout leaves
 # the state file in place precisely so that stays true.
+#
+# The stub also CHECKS the arguments it is given rather than accepting any
+# label, domain, or path. A fake whose default is success absorbs a call it
+# was never taught about: an install that bootstrapped the wrong plist, or
+# booted out a domain-less label, would pass every assertion here and fail
+# only on a real Mac. The checks are on SHAPE, not on per-case values, so they
+# stay true as cases are added: a domain is `gui/<uid>`, a bootout target is
+# that plus a label, and a path handed to bootstrap/load/unload must be a
+# plist that actually exists at the moment it is passed. A violation exits 91,
+# distinct from the unrecognised-call 90, and says which rule was broken.
 cat > "$BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "$*" >> "$STUB_LAUNCHCTL_LOG"
+stub_die() { echo "STUB-LAUNCHCTL: $1" >&2; exit 91; }
+stub_check_domain() { # <domain>
+  [[ "$1" =~ ^gui/[0-9]+$ ]] || stub_die "expected a gui/<uid> domain, got: $1"
+}
+stub_check_service() { # <domain/label>
+  [[ "$1" =~ ^gui/[0-9]+/[A-Za-z0-9._-]+$ ]] \
+    || stub_die "expected a gui/<uid>/<label> service target, got: $1"
+}
+stub_check_plist() { # <path>
+  [[ "$1" == *.plist ]] || stub_die "expected a .plist path, got: $1"
+  [[ -f "$1" ]] || stub_die "handed a plist path that does not exist: $1"
+}
+case "${1:-}" in
+  bootstrap)
+    [[ $# -eq 3 ]] || stub_die "bootstrap takes a domain and a path, got: $*"
+    stub_check_domain "$2"; stub_check_plist "$3" ;;
+  bootout)
+    [[ $# -eq 2 ]] || stub_die "bootout takes one service target, got: $*"
+    stub_check_service "$2" ;;
+  load|unload)
+    [[ "${2:-}" == "-w" ]] || stub_die "$1 is expected with -w, got: $*"
+    [[ $# -eq 3 ]] || stub_die "$1 -w takes one path, got: $*"
+    stub_check_plist "$3" ;;
+  print)
+    [[ $# -eq 2 ]] || stub_die "print takes one service target, got: $*"
+    stub_check_service "$2" ;;
+esac
 case "${1:-}" in
   list|print)
     [[ -f "$STUB_LAUNCHCTL_STATE" ]] && exit 0
@@ -1436,6 +1473,15 @@ check_eq "$(printf '%s' "$PLIST_BODY" | grep -c 'AI_QUOTAS_PROFILE_ROOT' || true
 check_eq "$(printf '%s' "$PLIST_BODY" | grep -c 'AI_QUOTAS_HISTORY' || true)" "0" \
   "and an unset AI_QUOTAS_HISTORY is left out rather than written empty"
 check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "bootstrap gui/" "the job is loaded through bootstrap"
+# Naming the PATH, not just the verb. A bootstrap handed the wrong plist fails,
+# the legacy `load -w` then loads the right one, and every other assertion here
+# still passes — so without this the install could be bootstrapping something
+# that does not exist and nothing in this suite would say so.
+# Compared EXACTLY, not by substring: a path with anything appended to it
+# contains the right one, so `check_contains` here would accept the very
+# mistake this assertion exists to catch.
+check_eq "$(grep 'launchctl bootstrap' "$STUB_LAUNCHCTL_LOG" | tail -n 1 | awk '{print $NF}')" \
+  "$PLIST" "and bootstrap is handed exactly the plist that was just installed"
 check_contains "$OUT" "is loaded" "and the run says so"
 check_eq "$(ls -l "$PLIST" | cut -c1-10)" "-rw-r--r--" "the plist is mode 644"
 
