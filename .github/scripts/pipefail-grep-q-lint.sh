@@ -212,20 +212,22 @@ function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
       while (j <= n && substr(s, j, 1) ~ /[[:space:]]/) j++
       c = substr(s, j, 1)
       tag = ""
-      if (c == "\047" || c == "\"") {
-        j++
-        while (j <= n && substr(s, j, 1) != c) { tag = tag substr(s, j, 1); j++ }
-        j++
-      } else if (c != "" && c !~ /[[:space:];|&<>()]/) {
-        # An unquoted delimiter is a whole shell WORD (`END.txt`, `EOF-1`): it
-        # runs to whitespace or a metacharacter; quote characters inside it are
-        # removed and a backslash quotes the character after it (`<<\END.txt`
-        # delimits on `END.txt`), exactly as bash does.
-        while (j <= n && substr(s, j, 1) !~ /[[:space:];|&<>()]/) {
+      if (c != "" && c !~ /[[:space:];|&<>()]/) {
+        # The delimiter is a whole shell WORD, read the way bash reads one:
+        # it runs to whitespace or a metacharacter, quote characters are
+        # removed, a backslash quotes the character after it (`<<\END.txt`
+        # delimits on `END.txt`), and — the part a naive scan gets wrong — a
+        # metacharacter INSIDE quotes is part of the word, so `<<E"OF;X"`
+        # delimits on `EOF;X`, not `EOF`. Quoted or not makes no difference
+        # to what is skipped: both body kinds are queued.
+        wq = ""
+        while (j <= n) {
           c = substr(s, j, 1)
+          if (wq != "") { if (c == wq) wq = ""; else tag = tag c; j++; continue }
+          if (c ~ /[[:space:];|&<>()]/) break
           if (c == "\\") { j++; c = substr(s, j, 1); if (c == "") break; tag = tag c; j++; continue }
-          if (c != "\047" && c != "\"") tag = tag c
-          j++
+          if (c == "\047" || c == "\"") { wq = c; j++; continue }
+          tag = tag c; j++
         }
       }
       if (tag != "") out = out (out == "" ? "" : "\037") dash tag

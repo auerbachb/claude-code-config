@@ -301,6 +301,15 @@ set -uo pipefail
 printf '%s\n' "$big" | /usr/bin/grep -q needle
 FIX
 
+expect "a quoted metacharacter inside a heredoc delimiter (<<E\"OF;X\") does not swallow the file" 1 'extra\.sh:6:' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+cat <<E"OF;X"
+payload
+EOF;X
+printf '%s\n' "$big" | grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
