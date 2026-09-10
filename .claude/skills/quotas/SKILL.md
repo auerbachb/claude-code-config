@@ -11,7 +11,7 @@ triggers:
   - how much Cursor credit is left
   - which account is cheapest to keep working on
   - what does it cost to keep going past my cap
-argument-hint: "[--json] [--five-hour] [--account <label>]"
+argument-hint: "[--json] [--five-hour] [--account <label>] [--quiet]"
 model: sonnet
 allowed-tools:
   - Read
@@ -30,6 +30,13 @@ what continuing past it would cost — one row per account per window.
 > not treat "cheapest to continue on" as an instruction to re-route work. The prices it
 > quotes are a checked-in table with `last verified` dates, so it is only as fresh as
 > those dates.
+
+> **The recorded history is display data too.** Every run appends one line per readable
+> row to `~/.claude/ai-quotas-history.jsonl`. **No dispatch gate reads that file**, and
+> none may start: it is not an input to `credit-budget.sh`, not a reason to pause, defer,
+> downgrade, or re-route anything. It exists so a later run can say how fast an account
+> is being drained, and that answer is printed to the owner, never acted on. Do not
+> hand-edit it, and do not compute your own verdict from it.
 
 > **Display only — never a gate.** Nothing this skill produces may gate dispatch, pause
 > work, downgrade a model, defer a launch, or feed `credit-budget.sh`. Quota and spend
@@ -78,6 +85,12 @@ reading a credential by hand is exactly what this design forbids.
 | about one account | `"$AI_QUOTAS_SH" --account <label>` |
 | for machine-readable rows | `"$AI_QUOTAS_SH" --json` |
 | "what does continuing cost", "which is cheapest" | `"$AI_QUOTAS_SH"` — the Overage column and the trailing hint are part of the default table |
+| "when did the daily job last run" | `"$AI_QUOTAS_SH"` — the `LAST SNAPSHOT` line under the table answers it |
+
+`--quiet` is the **unattended** flag: it marks the run's snapshots `scheduled` and drops
+the trailing prose. It belongs to the LaunchAgent `/quotas-setup schedule install`
+writes — do not pass it on a run you are doing for the user, or a hand-run reading will
+be recorded as the daily job and the staleness warning will stop meaning anything.
 
 Weekly rows are the default because the weekly cap is what the switching decision turns
 on; the five-hour figures arrive in the same payload and are one flag away. Flag detail
@@ -85,9 +98,13 @@ and exit codes live in `"$AI_QUOTAS_SH" --help` — do not restate them here.
 
 ## Step 3 — Read the table
 
-Columns: account, provider, window-or-pool, used %, remaining %, **overage**, reset time
-in Eastern, a countdown, status, and a note. The **account** column shows the email the provider
-itself reports; when that differs from the registered label the note says
+Columns: account, provider, window-or-pool, used %, **overage**, reset time in Eastern, a
+countdown, status, and a note. There is **no REMAIN column** — it was `100 - USED` on
+every row, and the width it cost is what a five-account table needs to fit a normal
+terminal; `remaining_pct` is still on every `--json` row if you want it. The **account**
+column shows the account's nickname when one is set (`/quotas-setup nick <label> <name>`)
+and the email the provider itself reports otherwise; when the label differs from that
+email the note says
 `registered as <label>`, which is how a mislabelled account becomes visible. **Cursor
 rows carry no such email** — the dashboard response has none — so a Cursor row shows the
 registered label and can never carry a `registered as` note. Absence of that note on a
@@ -148,6 +165,21 @@ overage before a flat fee: `.claude/reference/ai-quotas.md` §"Overage — what 
 costs". `.claude/reference/pricing-matrix.md` is a **different wallet** — the review
 stack — and its numbers never apply here.
 
+## Step 3c — The LAST SNAPSHOT line
+
+Under the table, one line says when the **unattended daily job** last took a reading:
+
+| It says | It means | What to tell the user |
+|---------|----------|-----------------------|
+| `LAST SNAPSHOT: <time> (scheduled)` | The job ran within the last day | nothing — this is the normal case |
+| `… — stale (>1 day)` | Over 24 h since the last unattended reading | the job may not be running; `/quotas-setup schedule status` says whether it is loaded |
+| `LAST SNAPSHOT: none yet` | The job has never run | offer `/quotas-setup schedule install` — without it, days nobody runs `/quotas` leave holes in the record |
+
+A hand-run `/quotas` does **not** satisfy this line, deliberately: it is about whether the
+unattended job is working. `stale` and `none yet` are not blockers — they say a future
+projection will have gaps, nothing more, and nothing about them may pause or re-route
+work.
+
 ## Step 4 — Report
 
 Show the table. Lead with the answer the user asked for — usually which account has the
@@ -173,8 +205,15 @@ Cursor dashboard endpoint captured from the live Spending tab (and why the Curso
 carry percentages rather than per-pool dollars), the overage table with its sources and
 `last verified` dates, and the display-only boundary: `.claude/reference/ai-quotas.md`.
 
+The snapshot history schema (`~/.claude/ai-quotas-history.jsonl`), the LaunchAgent the
+daily job runs from, and the display-only rule that keeps both out of every dispatch
+gate: the same reference, §"Snapshot history, the daily job, nicknames".
+
 `--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
-cheapest_next}` — not the bare row array it emitted before #1669. Read the rows from
+cheapest_next, last_scheduled_snapshot_at}` — not the bare row array it emitted before
+#1669. Every row carries `nickname` (`null` when unset) and still carries
+`remaining_pct`, `plan`, and `source` even though the table no longer shows them. Read
+the rows from
 `.rows`; `cheapest_next` is `null` unless the hint fired. The "no accounts registered"
 and "no account matched" exits emit that same object with an empty `rows`, and a run
 whose pricing helper was unavailable emits it with `threshold_pct` and `basis` `null` and

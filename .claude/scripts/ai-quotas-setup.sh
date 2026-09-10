@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts (`claude`/`codex`/`cursor`) and their isolated per-account login profiles in `~/.claude/ai-quotas.json`, and report which ones are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts (`claude`/`codex`/`cursor`) and their isolated per-account login profiles in `~/.claude/ai-quotas.json`, name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -25,9 +25,11 @@
 #
 # USAGE
 #   ai-quotas-setup.sh [list] [--json]
-#   ai-quotas-setup.sh add <provider> <label> [--no-login]
+#   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
+#   ai-quotas-setup.sh nick <label> <name> [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
+#   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
 #   ai-quotas-setup.sh --help | -h
 #
 # ACTIONS
@@ -43,11 +45,29 @@
 #             is the provider's own (magic link, SSO, CAPTCHA); this script
 #             launches it and waits — it never types or reads credentials.
 #             Refuses a (provider, label) pair that is already registered.
+#             `--nick <name>` records a short display name in the same step.
+#   nick      Set (or clear, with an empty name) an already-registered
+#             account's short display name. `/quotas` shows it in place of
+#             the label, which is what keeps a five-account table of full
+#             subscription emails inside 100 columns.
 #   remove    Drop an account from the config. The profile directory is LEFT
 #             ON DISK and its path is printed: removing a registry row must
 #             never destroy a working login. Delete it yourself if you mean to.
 #   relogin   Re-run the provider's login against an already-registered
 #             account's existing profile directory, then re-verify.
+#   schedule  macOS only (exit 2 elsewhere). Manage the LaunchAgent that takes
+#             one unattended usage reading a day, so the history `/quotas`
+#             records has no holes on days nobody ran it:
+#               install  write ~/Library/LaunchAgents/com.claude.ai-quotas.plist
+#                        and load it. Runs `ai-quotas.sh --json --quiet` at
+#                        09:00 local (--hour changes it) and once on load,
+#                        logging to ~/.claude/ai-quotas/launchd.log.
+#               remove   bootout the job and delete the plist.
+#               status   report loaded / not loaded, the plist path, and when
+#                        the last unattended snapshot was taken.
+#             The job is a RECORDER, never a gate: it reads figures and
+#             appends them, and nothing in this repo consults them to decide
+#             whether work may proceed.
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
@@ -72,10 +92,29 @@
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
 #   Profiles  ~/.claude/ai-quotas/profiles/<label>/<provider>/   (mode 700)
 #   Both live under ~/.claude/, never in a worktree (hook-storage rule).
+#   Agent     ~/Library/LaunchAgents/com.claude.ai-quotas.plist  (mode 644,
+#             macOS only, written by `schedule install`)
+#   Job log   ~/.claude/ai-quotas/launchd.log
+#   History   ~/.claude/ai-quotas-history.jsonl — written by ai-quotas.sh,
+#             read here only to answer `schedule status`.
 #
 # ENVIRONMENT (overrides; the defaults are what you want)
 #   AI_QUOTAS_CONFIG        Config file path.
 #   AI_QUOTAS_PROFILE_ROOT  Profile directory root.
+#   AI_QUOTAS_LAUNCH_AGENT  Path of the LaunchAgent plist `schedule` writes.
+#   AI_QUOTAS_LAUNCHCTL_BIN Path to launchctl.
+#   AI_QUOTAS_READER_BIN    Path to ai-quotas.sh to put in the plist. Used
+#                           EXCLUSIVELY when set, for the same reason
+#                           AI_QUOTAS_CHEAPEST_BIN is in the reader: a seam
+#                           that falls back to the portable search finds the
+#                           repo copy whenever the caller stands in a
+#                           checkout, so the "reader unresolvable" path could
+#                           never be exercised from the one place the suite
+#                           runs.
+#   AI_QUOTAS_HISTORY       Snapshot history path, read by `schedule status`.
+#   AI_QUOTAS_LAUNCHD_LOG   Path the job's stdout/stderr are directed to.
+#   AI_QUOTAS_SCHEDULE_HOUR Default hour for `schedule install` when --hour
+#                           is not given (0-23; the built-in default is 9).
 #   AI_QUOTAS_CLAUDE_BIN    Path to the `claude` CLI.
 #   AI_QUOTAS_CODEX_BIN     Path to the `codex` CLI.
 #   AI_QUOTAS_SECURITY_BIN  Path to macOS `security(1)`.
@@ -106,9 +145,14 @@
 #       an ambiguous one (two keychain items appeared across it, so the item
 #       belonging to this account cannot be told apart). Nothing recorded.
 #       Re-run, or use `add --no-login` to reserve the slot anyway.
+#   2   `schedule` on a host that is not macOS. launchd is the only scheduler
+#       that can reach this user's Keychain, CODEX_HOME directories, and
+#       browser profiles, so there is nothing to install elsewhere — and a
+#       cron line that ran the reader without them would record `needs-login`
+#       every day and call it history.
 #   3   Usage error: bad action, provider, or label; already-registered pair;
 #       an ambiguous label that matches more than one provider.
-#   4   No account matches the given label (remove / relogin).
+#   4   No account matches the given label (remove / relogin / nick).
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
 #       profile directory or config write failed.
@@ -152,6 +196,21 @@ PLATFORM="${AI_QUOTAS_PLATFORM:-$(uname -s 2>/dev/null || echo unknown)}"
 SECURITY_BIN="${AI_QUOTAS_SECURITY_BIN:-security}"
 KEYCHAIN_SERVICE_PREFIX="Claude Code-credentials"
 
+# --- the daily unattended snapshot (#1700) -----------------------------------
+# One reverse-DNS label, fixed, because it is also the launchctl service name
+# a user types by hand and the key `schedule remove` boots out.
+LAUNCH_LABEL="com.claude.ai-quotas"
+LAUNCH_AGENT_FILE="${AI_QUOTAS_LAUNCH_AGENT:-${_HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist}"
+LAUNCHCTL_BIN="${AI_QUOTAS_LAUNCHCTL_BIN:-launchctl}"
+LAUNCHD_LOG="${AI_QUOTAS_LAUNCHD_LOG:-${_HOME}/.claude/ai-quotas/launchd.log}"
+HISTORY_FILE="${AI_QUOTAS_HISTORY:-${_HOME}/.claude/ai-quotas-history.jsonl}"
+# 09:00 local. Late enough that the Mac is normally awake — launchd runs a
+# missed calendar job at the next wake rather than skipping it, but a reading
+# taken hours late is a reading attributed to the wrong day — and early enough
+# that a day's usage has not yet accumulated, so consecutive snapshots measure
+# a day apart rather than a day plus however long the owner slept in.
+SCHEDULE_HOUR_DEFAULT="9"
+
 # --- help / usage ------------------------------------------------------------
 
 print_help() {
@@ -189,6 +248,10 @@ JSON=0
 NO_LOGIN=0
 ARG_PROVIDER=""
 ARG_LABEL=""
+ARG_NICK=""
+NICK_GIVEN=0
+ARG_HOUR=""
+SCHEDULE_OP=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -196,6 +259,19 @@ while [[ $# -gt 0 ]]; do
     -h|--help) print_help; exit 0 ;;
     --json)    JSON=1; shift ;;
     --no-login) NO_LOGIN=1; shift ;;
+    # NICK_GIVEN, not `-n "$ARG_NICK"`: `--nick ""` is the documented way to
+    # clear a nickname, and a flag whose "was it passed" test is the emptiness
+    # of its value cannot tell clearing apart from not asking.
+    --nick)
+      [[ $# -ge 2 ]] || die_usage "--nick requires a name (pass '' to clear one)"
+      ARG_NICK="$2"; NICK_GIVEN=1; shift 2 ;;
+    --nick=*) ARG_NICK="${1#--nick=}"; NICK_GIVEN=1; shift ;;
+    --hour)
+      [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--hour requires an hour (0-23)"
+      ARG_HOUR="$2"; shift 2 ;;
+    --hour=*) ARG_HOUR="${1#--hour=}"
+      [[ -n "$ARG_HOUR" ]] || die_usage "--hour requires an hour (0-23)"
+      shift ;;
     --) shift; while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done ;;
     -*) die_usage "unknown flag: $1" ;;
     *)  POSITIONAL+=("$1"); shift ;;
@@ -225,8 +301,38 @@ case "$ACTION" in
       ARG_PROVIDER="${POSITIONAL[2]}"
     fi
     ;;
+  nick)
+    # The name is POSITIONAL here — `nick <label> <name>` reads the way the
+    # user says it — while `add` takes the same value through `--nick`,
+    # because `add <provider> <label> <name>` would be three bare words in a
+    # row and the first mis-ordering would register an account under a
+    # nickname.
+    # Refused rather than resolved: with both `nick <label> <name>` and
+    # `--nick <other>` on one line, the positional below would silently
+    # overwrite the flag, and the account would end up named the one the user
+    # did not read last.
+    [[ $NICK_GIVEN -eq 0 ]] \
+      || die_usage "nick takes the name as its second argument — do not also pass --nick"
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 4 ]] \
+      || die_usage "nick requires <label> <name> [<provider>] (pass '' as the name to clear one)"
+    ARG_LABEL="${POSITIONAL[1]}"
+    ARG_NICK="${POSITIONAL[2]}"
+    NICK_GIVEN=1
+    if [[ ${#POSITIONAL[@]} -eq 4 ]]; then
+      ARG_PROVIDER="${POSITIONAL[3]}"
+    fi
+    ;;
+  schedule)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] \
+      || die_usage "schedule requires one of: install, remove, status"
+    SCHEDULE_OP="${POSITIONAL[1]}"
+    case "$SCHEDULE_OP" in
+      install|remove|status) ;;
+      *) die_usage "unknown schedule operation: $SCHEDULE_OP (expected install, remove, status)" ;;
+    esac
+    ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, add, remove, relogin)"
+    die_usage "unknown action: $ACTION (expected list, add, nick, remove, relogin, schedule)"
     ;;
 esac
 
@@ -235,6 +341,14 @@ if [[ $JSON -eq 1 && "$ACTION" != "list" ]]; then
 fi
 if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
   die_usage "--no-login applies to add only"
+fi
+if [[ $NICK_GIVEN -eq 1 && "$ACTION" != "add" && "$ACTION" != "nick" ]]; then
+  die_usage "--nick applies to add only (use 'nick <label> <name>' on an existing account)"
+fi
+# One check, not two: SCHEDULE_OP is set only by the `schedule` action, so
+# `!= install` already covers every other action as well.
+if [[ -n "$ARG_HOUR" && "$SCHEDULE_OP" != "install" ]]; then
+  die_usage "--hour applies to 'schedule install' only"
 fi
 
 # --- validation --------------------------------------------------------------
@@ -249,9 +363,44 @@ valid_label() { # <label>
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._@+-]*$ ]] && [[ ${#1} -le 128 ]]
 }
 
+# A nickname is DISPLAY text, so it is allowed the space in `GPT LM` that a
+# label — which becomes a directory name — is not. What it may not contain is
+# anything that would corrupt the surface it is displayed on: a tab or newline
+# splits the reader's TSV row into columns that no longer line up with their
+# headers, and a control character can rewrite the terminal around it. The
+# 32-character cap is the table's, not an arbitrary one: the ACCOUNT column is
+# the widest thing on a five-account row and a nickname longer than the email
+# it replaces defeats the point.
+valid_nickname() { # <nickname>
+  # LC_ALL=C for the duration: bash matches bracket RANGES by the current
+  # LC_COLLATE order, and in some locales `[$'\001'-$'\037']` does not cover
+  # the C0 characters it names — the guard would then pass a control character
+  # straight into the table it exists to protect. `local` on LC_ALL both
+  # re-initialises the locale here and restores it on return.
+  local LC_ALL=C
+  [[ ${#1} -le 32 ]] || return 1
+  # Printable ASCII and above, excluding the C0 range and DEL. `$'…'` ranges
+  # keep this readable under LC_ALL variation, where a bracket expression
+  # like [[:print:]] can accept a control character in some locales.
+  case "$1" in
+    *[$'\t\n\r']*) return 1 ;;
+    *[$'\001'-$'\037']*) return 1 ;;
+    *$'\177'*) return 1 ;;
+  esac
+  # Leading or trailing whitespace is refused rather than trimmed: a name that
+  # renders identically to another one is a name the owner cannot tell apart
+  # in `list`.
+  [[ "$1" != " "* && "$1" != *" " ]] || return 1
+  return 0
+}
+
 if [[ -n "$ARG_PROVIDER" ]]; then
   valid_provider "$ARG_PROVIDER" \
     || die_usage "unknown provider: $ARG_PROVIDER (expected claude, codex, or cursor)"
+fi
+if [[ $NICK_GIVEN -eq 1 && -n "$ARG_NICK" ]]; then
+  valid_nickname "$ARG_NICK" \
+    || die_usage "invalid nickname (max 32 characters, no tabs, newlines, control characters, or leading/trailing spaces)"
 fi
 if [[ -n "$ARG_LABEL" ]]; then
   valid_label "$ARG_LABEL" \
@@ -859,7 +1008,9 @@ action_add() {
     --arg profile_dir "$dir" \
     --arg added_at "$now" \
     --arg service "$service" \
+    --arg nickname "$ARG_NICK" \
     '{provider: $provider, label: $label, profile_dir: $profile_dir, added_at: $added_at}
+     + (if $nickname == "" then {} else {nickname: $nickname} end)
      + (if $service == "" then {} else {credential_ref: {kind: "macos-keychain", service: $service}} end)')"
 
   state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
@@ -878,7 +1029,54 @@ action_add() {
   write_config "$config"
   state_lock_release || true
 
-  echo "${SELF_NAME}: registered ${provider} account '${label}' (profile: ${dir})."
+  if [[ -n "$ARG_NICK" ]]; then
+    echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (profile: ${dir})."
+  else
+    echo "${SELF_NAME}: registered ${provider} account '${label}' (profile: ${dir})."
+  fi
+}
+
+# Set or clear an existing account's short display name. Registry-only: it
+# touches no profile directory, runs no login, and reads no credential.
+action_nick() {
+  local config index provider label
+
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  # Re-resolved under the lock for the same reason `remove` re-resolves: the
+  # index read a moment ago may name a different row now, and writing by a
+  # stale index renames the wrong account.
+  index="$(match_indices "$config" "$ARG_LABEL" "${ARG_PROVIDER:-$provider}" | head -n 1)"
+  if [[ -z "$index" ]]; then
+    state_lock_release || true
+    die 4 "no account registered with label '$ARG_LABEL' (removed by another process?)"
+  fi
+  # Both label AND provider re-read from the LOCKED config, so the confirmation
+  # describes the row that was actually written rather than the one the
+  # pre-lock lookup saw.
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  # An empty name DELETES the key rather than storing `""`. A reader asking
+  # `.nickname // .label` would answer correctly either way, but one asking
+  # `has("nickname")` would not, and the config should not carry a field whose
+  # only meaning is "there isn't one".
+  config="$(printf '%s' "$config" | jq --argjson i "$index" --arg nickname "$ARG_NICK" '
+    .accounts[$i] = (if $nickname == ""
+                     then (.accounts[$i] | del(.nickname))
+                     else (.accounts[$i] + {nickname: $nickname}) end)')" \
+    || { state_lock_release || true; die 5 "could not update the account entry"; }
+  write_config "$config"
+  state_lock_release || true
+
+  if [[ -n "$ARG_NICK" ]]; then
+    echo "${SELF_NAME}: ${provider} account '${label}' is now shown as \"${ARG_NICK}\"."
+  else
+    echo "${SELF_NAME}: ${provider} account '${label}' no longer has a nickname; /quotas will show its label."
+  fi
 }
 
 action_remove() {
@@ -1235,6 +1433,312 @@ action_relogin() {
   echo "${SELF_NAME}: ${provider} account '${ARG_LABEL}' is logged in again."
 }
 
+# --- the daily unattended snapshot (#1700) -----------------------------------
+#
+# WHY launchd AND NOT cron, AND NOT A CLAUDE SCHEDULER. The reader needs this
+# user's login context — the Keychain items the `claude` login created, the
+# per-account CODEX_HOME directories, the Cursor browser profile. A per-user
+# LaunchAgent runs inside exactly that context. A cron line or an agent-side
+# scheduler would run the same reader with none of it and record `needs-login`
+# every day, which is not a gap in the history: it is a history full of
+# confident wrong answers.
+#
+# The job is a RECORDER. It reads figures and appends them. Nothing in this
+# repo consults them to decide whether work may proceed — quota and spend
+# authority stays with Anthropic's own in-app UI and upstream harness signals
+# (.claude/rules/safety.md §"Anthropic Quota & Spend Authority").
+
+require_macos() { # <operation>
+  [[ "$PLATFORM" == "Darwin" ]] && return 0
+  echo "${SELF_NAME}: schedule $1 needs macOS launchd (this host reports '${PLATFORM}') — no daily snapshot job is installed here." >&2
+  exit 2
+}
+
+# Every path this section touches derives from HOME — the LaunchAgent, the job
+# log, the history file — and HOME may legitimately be unset here, because the
+# top of the script accepts that as long as AI_QUOTAS_CONFIG and
+# AI_QUOTAS_PROFILE_ROOT are both given. With it unset the agent resolves to
+# `/Library/LaunchAgents/com.claude.ai-quotas.plist`, a MACHINE-WIDE location,
+# and the log and history to `/.claude/…`. A per-user job aimed at a system
+# path is not a degraded outcome to warn about; it is one to refuse. The plist
+# also has to carry a real HOME for the reader to resolve anything at all.
+require_schedule_home() { # <operation>
+  [[ -n "$_HOME" ]] && return 0
+  die 5 "HOME is unset, and every schedule path — the LaunchAgent, its log, the history file — derives from it; refusing to aim a per-user job at a system path. Set HOME and re-run 'schedule $1'."
+}
+
+# The path that goes INTO the plist. It has to outlive this checkout: a plist
+# pointing into a worktree keeps working until the worktree is removed and then
+# fails every night, logging to a file nobody reads. So the durable
+# ~/.claude/ locations are preferred over the sibling copy, and choosing the
+# sibling is said out loud rather than assumed to be fine.
+resolve_reader_bin() {
+  local candidate
+  if [[ -n "${AI_QUOTAS_READER_BIN:-}" ]]; then
+    # Used EXCLUSIVELY when set — no fall-through to the search. A seam that
+    # falls back finds the repo copy through the sibling candidate whenever
+    # the caller stands in a checkout, which is the only place the suite runs,
+    # so the "reader unresolvable" path could never be exercised.
+    if [[ -x "$AI_QUOTAS_READER_BIN" ]]; then
+      printf '%s' "$AI_QUOTAS_READER_BIN"
+      return 0
+    fi
+    die 5 "AI_QUOTAS_READER_BIN names '${AI_QUOTAS_READER_BIN}', which is not executable — refusing to schedule a job that cannot run"
+  fi
+  for candidate in \
+    "${_HOME}/.claude/skills-worktree/.claude/scripts/ai-quotas.sh" \
+    "${_HOME}/.claude/scripts/ai-quotas.sh"; do
+    if [[ -x "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
+  done
+  if [[ -x "$SELF_DIR/ai-quotas.sh" ]]; then
+    echo "${SELF_NAME}: scheduling the reader at $SELF_DIR/ai-quotas.sh — the durable copies under ~/.claude/ are not there yet, and a job pointing into a checkout stops working the day that checkout is removed. Re-run 'schedule install' once the skills worktree is in place." >&2
+    printf '%s' "$SELF_DIR/ai-quotas.sh"
+    return 0
+  fi
+  die 5 "ai-quotas.sh not found (checked ~/.claude/skills-worktree/.claude/scripts, ~/.claude/scripts, and $SELF_DIR) — nothing to schedule"
+}
+
+# `&` first: escaping it after `<` would re-escape the ampersand this function
+# just introduced and turn `<` into `&amp;lt;`.
+xml_escape() { # <text>
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Digits only, then compared in base 10 EXPLICITLY. `--hour 09` is a perfectly
+# reasonable thing to type, and bash arithmetic reads a leading zero as octal —
+# where `09` is not a valid digit at all, so the comparison fails with bash
+# error text instead of accepting nine in the morning.
+valid_hour() { # <hour>
+  case "$1" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  [[ ${#1} -le 2 ]] || return 1
+  local h
+  h=$(( 10#$1 ))
+  [[ "$h" -ge 0 && "$h" -le 23 ]]
+}
+
+launch_uid() { id -u 2>/dev/null || true; }
+
+# 0 when launchd holds the job. `list` is asked first because it answers with
+# an exit status and nothing else; `print` is the modern spelling and is tried
+# second so a future launchctl that drops `list` still reports correctly.
+agent_is_loaded() {
+  local uid
+  "$LAUNCHCTL_BIN" list "$LAUNCH_LABEL" >/dev/null 2>&1 && return 0
+  uid="$(launch_uid)"
+  [[ -n "$uid" ]] || return 1
+  "$LAUNCHCTL_BIN" print "gui/${uid}/${LAUNCH_LABEL}" >/dev/null 2>&1
+}
+
+# bootout, then the legacy unload. Neither failing is fatal on its own: the
+# job may simply not be loaded, which is the state the caller wanted anyway.
+# Returns 0 when the job is gone afterwards.
+agent_unload() {
+  local uid
+  uid="$(launch_uid)"
+  if [[ -n "$uid" ]]; then
+    "$LAUNCHCTL_BIN" bootout "gui/${uid}/${LAUNCH_LABEL}" >/dev/null 2>&1 || true
+  fi
+  agent_is_loaded || return 0
+  "$LAUNCHCTL_BIN" unload -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || true
+  # `agent_is_loaded && return 1` would be the same thing to read and a
+  # different thing to run: under `set -e` an `A && B` whose A fails makes the
+  # COMPOUND fail, which exits the script. It never fired here only because
+  # both call sites happen to invoke this function inside a tested context,
+  # where errexit is suspended — a property of the callers, not of this code.
+  if agent_is_loaded; then
+    return 1
+  fi
+  return 0
+}
+
+action_schedule_install() {
+  local reader uid hour plist_dir tmp rc=0
+  require_macos install
+  require_schedule_home install
+
+  hour="${ARG_HOUR:-${AI_QUOTAS_SCHEDULE_HOUR:-$SCHEDULE_HOUR_DEFAULT}}"
+  valid_hour "$hour" || die_usage "invalid hour: ${hour} (expected 0-23)"
+  # Normalised before it reaches the plist: `<integer>09</integer>` is not what
+  # a property list means by an integer.
+  hour=$(( 10#$hour ))
+
+  # `die` inside a command substitution exits the SUBSHELL, so the abort on an
+  # unresolvable reader rests entirely on `set -e` being in force at this call
+  # site. Checked explicitly as well: a `set +e` introduced anywhere above would
+  # otherwise turn "no reader found" into an empty path written confidently into
+  # a plist, and a LaunchAgent with an empty program fails every night into a
+  # log nobody reads.
+  reader="$(resolve_reader_bin)" || exit $?
+  [[ -n "$reader" ]] || die 5 "could not resolve which ai-quotas.sh to schedule"
+
+  plist_dir="$(dirname "$LAUNCH_AGENT_FILE")"
+  mkdir -p "$plist_dir" || die 5 "could not create $plist_dir"
+  mkdir -p "$(dirname "$LAUNCHD_LOG")" || die 5 "could not create the log directory for $LAUNCHD_LOG"
+
+  # PATH is spelled out because launchd gives a job a minimal one — typically
+  # /usr/bin:/bin:/usr/sbin:/sbin — and every tool this reader needs beyond
+  # the base system lives in Homebrew's prefix: `codex`, `node`, and `jq` are
+  # all under /opt/homebrew/bin on this Mac (/usr/local/bin on Intel). Without
+  # it the scheduled run finds no `jq`, exits 5, and writes a history file
+  # with a hole in it every single night.
+  #
+  # HOME is passed for the same reason: the reader resolves the registry, the
+  # profiles, and the history file from it, and a LaunchAgent's environment
+  # does not necessarily carry the one this shell has.
+  tmp="$(mktemp "${plist_dir}/.ai-quotas-plist.XXXXXX")" || die 5 "could not create a temp file in $plist_dir"
+  cat > "$tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$(xml_escape "$reader")</string>
+        <string>--json</string>
+        <string>--quiet</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>${hour}</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$(xml_escape "$LAUNCHD_LOG")</string>
+    <key>StandardErrorPath</key>
+    <string>$(xml_escape "$LAUNCHD_LOG")</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>$(xml_escape "$_HOME")</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+  # The heredoc write is CHECKED, not assumed. A failed or truncated write —
+  # a full disk is the ordinary cause — would otherwise be installed as a
+  # plist, and launchd rejects a malformed one silently at load time.
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; die 5 "could not write the plist to $tmp"; }
+  # Validated BEFORE it is installed, where plutil exists. launchd rejects a
+  # malformed plist silently at load time, so an escaping failure — a path
+  # carrying a character this writer did not anticipate — would otherwise
+  # present as a job that is installed, reports no error, and never runs.
+  if command -v plutil >/dev/null 2>&1; then
+    if ! plutil -lint "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      die 5 "the generated plist is not valid property-list XML — refusing to install a job launchd would silently reject (paths involved: ${reader}, ${LAUNCHD_LOG})"
+    fi
+  fi
+  chmod 644 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod the plist"; }
+  mv "$tmp" "$LAUNCH_AGENT_FILE" || { rm -f "$tmp"; die 5 "could not install $LAUNCH_AGENT_FILE"; }
+
+  # An already-loaded job is booted out first: bootstrap refuses a label
+  # launchd already holds, so a re-install without this would leave the OLD
+  # definition running while the new plist sat on disk looking installed.
+  agent_unload || true
+  uid="$(launch_uid)"
+  if [[ -n "$uid" ]]; then
+    "$LAUNCHCTL_BIN" bootstrap "gui/${uid}" "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || rc=$?
+  else
+    rc=1
+  fi
+  # The fallback's own status is deliberately NOT captured: `agent_is_loaded`
+  # below is the authority on whether the job is loaded, and a second status
+  # variable nobody consults is how a script grows a check that looks like one
+  # and is not. `bootstrap` is the modern spelling; `load -w` is what an older
+  # launchctl understands.
+  if [[ "$rc" -ne 0 ]]; then
+    "$LAUNCHCTL_BIN" load -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || true
+  fi
+
+  echo "${SELF_NAME}: wrote ${LAUNCH_AGENT_FILE}"
+  echo "${SELF_NAME}: it runs ${reader} --json --quiet at ${hour}:00 local and once on load; output goes to ${LAUNCHD_LOG}"
+  if agent_is_loaded; then
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} is loaded."
+  else
+    # NOT a die: the plist is installed and correct, and it will load at the
+    # next login even if this bootstrap did not take. Saying so beats
+    # reporting a failure the user cannot act on.
+    echo "${SELF_NAME}: the plist is installed but launchctl did not report the job as loaded — it will load at your next login, or run: ${LAUNCHCTL_BIN} bootstrap gui/\$(id -u) ${LAUNCH_AGENT_FILE}" >&2
+  fi
+  echo "${SELF_NAME}: the job records usage readings; it never gates, pauses, or re-routes work."
+}
+
+action_schedule_remove() {
+  local unloaded=0
+  require_macos remove
+  require_schedule_home remove
+
+  agent_unload && unloaded=1
+  if [[ -e "$LAUNCH_AGENT_FILE" ]]; then
+    # A plain file, never a tree, and never through a wildcard — the path is
+    # fixed by LAUNCH_LABEL or given explicitly.
+    rm -f "$LAUNCH_AGENT_FILE" || die 5 "could not delete $LAUNCH_AGENT_FILE"
+    echo "${SELF_NAME}: deleted ${LAUNCH_AGENT_FILE}"
+  else
+    echo "${SELF_NAME}: no plist at ${LAUNCH_AGENT_FILE} — nothing to delete."
+  fi
+  if [[ "$unloaded" -eq 1 ]]; then
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} is not loaded."
+  else
+    echo "${SELF_NAME}: launchctl still reports ${LAUNCH_LABEL} as loaded; run: ${LAUNCHCTL_BIN} bootout gui/\$(id -u)/${LAUNCH_LABEL}" >&2
+  fi
+  echo "${SELF_NAME}: the history already recorded at ${HISTORY_FILE} was left alone."
+}
+
+action_schedule_status() {
+  local last=""
+  require_macos status
+  require_schedule_home status
+
+  if [[ -e "$LAUNCH_AGENT_FILE" ]]; then
+    echo "PLIST: ${LAUNCH_AGENT_FILE} (present)"
+  else
+    echo "PLIST: ${LAUNCH_AGENT_FILE} (absent — install with: ${SELF_NAME} schedule install)"
+  fi
+  if agent_is_loaded; then
+    echo "JOB:   ${LAUNCH_LABEL} loaded"
+  else
+    echo "JOB:   ${LAUNCH_LABEL} not loaded"
+  fi
+  echo "LOG:   ${LAUNCHD_LOG}"
+
+  # `fromjson?` drops a line it cannot parse rather than aborting, so one torn
+  # line from a run killed mid-append does not cost the answer. The `type`
+  # guard is the other half of that: `fromjson?` catches only the PARSE error,
+  # so a line holding a bare `5` parses fine and then aborts jq on `.source`.
+  if [[ -r "$HISTORY_FILE" ]]; then
+    last="$(jq -R -r 'fromjson?
+                      | select(type == "object" and .source == "scheduled")
+                      | .ts // empty' \
+      "$HISTORY_FILE" 2>/dev/null | tail -n 1 || true)"
+  fi
+  if [[ -n "$last" ]]; then
+    echo "LAST SNAPSHOT: ${last} (scheduled)"
+  else
+    echo "LAST SNAPSHOT: none yet"
+  fi
+  echo
+  echo "Display and configuration only — the job records readings and never gates dispatch."
+}
+
+action_schedule() {
+  case "$SCHEDULE_OP" in
+    install) action_schedule_install ;;
+    remove)  action_schedule_remove ;;
+    status)  action_schedule_status ;;
+  esac
+}
+
 action_list() {
   local config count
   config="$(read_config)"
@@ -1250,10 +1754,15 @@ action_list() {
     return 0
   fi
 
-  local rows="" json_rows="[]" i provider label dir service status detail
+  local rows="" json_rows="[]" i provider label nickname dir service status detail
   for (( i = 0; i < count; i++ )); do
     provider="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].provider // ""')"
     label="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].label // ""')"
+    # A non-string nickname is dropped rather than stringified, for the same
+    # reason the reader drops it: a column showing a JSON fragment is worse
+    # than one showing a dash.
+    nickname="$(printf '%s' "$config" | jq -r --argjson i "$i" \
+      '.accounts[$i].nickname // "" | if type == "string" then . else "" end')"
     dir="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].profile_dir // ""')"
     service="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].credential_ref.service // ""')"
     # Called bare, never through `$(...)`: both results come back in globals.
@@ -1263,11 +1772,13 @@ action_list() {
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
-        --arg status "$status" --arg detail "$detail" \
-        '. += [{provider: $provider, label: $label, profile_dir: $profile_dir,
+        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" \
+        '. += [{provider: $provider, label: $label,
+                nickname: (if $nickname == "" then null else $nickname end),
+                profile_dir: $profile_dir,
                 status: $status, detail: $detail}]')"
     else
-      rows+="$(printf '%s\t%s\t%s\t%s\t%s' "$provider" "$label" "$status" "${detail:--}" "$dir")"$'\n'
+      rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi
   done
 
@@ -1277,10 +1788,10 @@ action_list() {
   fi
 
   {
-    printf 'PROVIDER\tLABEL\tSTATUS\tNOTE\tPROFILE_DIR\n'
+    printf 'PROVIDER\tLABEL\tNICKNAME\tSTATUS\tNOTE\tPROFILE_DIR\n'
     printf '%s' "$rows"
   } | column -t -s $'\t' 2>/dev/null || {
-    printf 'PROVIDER\tLABEL\tSTATUS\tNOTE\tPROFILE_DIR\n'
+    printf 'PROVIDER\tLABEL\tNICKNAME\tSTATUS\tNOTE\tPROFILE_DIR\n'
     printf '%s' "$rows"
   }
   echo
@@ -1288,8 +1799,10 @@ action_list() {
 }
 
 case "$ACTION" in
-  list)    action_list ;;
-  add)     action_add ;;
-  remove)  action_remove ;;
-  relogin) action_relogin ;;
+  list)     action_list ;;
+  add)      action_add ;;
+  nick)     action_nick ;;
+  remove)   action_remove ;;
+  relogin)  action_relogin ;;
+  schedule) action_schedule ;;
 esac

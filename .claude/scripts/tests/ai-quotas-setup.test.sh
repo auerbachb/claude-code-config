@@ -285,6 +285,38 @@ esac
 exit 1
 EOF
 
+# --- stub: launchctl ---------------------------------------------------------
+# launchd, modelled as one state file. `bootstrap`/`load` create it,
+# `bootout`/`unload` remove it, `list`/`print` report it — which is the whole
+# of the contract `schedule` depends on.
+#
+# HARD-FAILS on a subcommand it does not recognise (exit 90), so a `schedule`
+# that starts calling something new reddens the suite instead of quietly
+# treating an unknown call as a failed one and taking a fallback path.
+#
+# STUB_LAUNCHCTL_BOOTSTRAP_FAILS drives the fallback deliberately: the modern
+# `bootstrap` spelling is refused, and the legacy `load -w` must then be what
+# gets the job loaded.
+cat > "$BIN/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'launchctl %s\n' "$*" >> "$STUB_LAUNCHCTL_LOG"
+case "${1:-}" in
+  list|print)
+    [[ -f "$STUB_LAUNCHCTL_STATE" ]] && exit 0
+    exit 113
+    ;;
+  bootstrap)
+    if [[ "${STUB_LAUNCHCTL_BOOTSTRAP_FAILS:-0}" == "1" ]]; then exit 5; fi
+    : > "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
+  load)
+    : > "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
+  bootout|unload)
+    rm -f "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
+esac
+echo "STUB-LAUNCHCTL: unrecognised call: $*" >&2
+exit 90
+EOF
+
 chmod +x "$BIN"/*
 
 # --- harness -----------------------------------------------------------------
@@ -293,10 +325,15 @@ export STUB_CALL_LOG="$TMP/calls.log"
 export STUB_KEYCHAIN_DB="$TMP/keychain.db"
 export STUB_KEYCHAIN_SEQ="$TMP/keychain.seq"
 export STUB_SECURITY_VALUE_REQUESTS="$TMP/security-value-requests.log"
+export STUB_LAUNCHCTL_LOG="$TMP/launchctl.log"
+export STUB_LAUNCHCTL_STATE="$TMP/launchctl.loaded"
+export STUB_LAUNCHCTL_BOOTSTRAP_FAILS=0
 : > "$STUB_CALL_LOG"
 : > "$STUB_KEYCHAIN_DB"
 printf '0\n' > "$STUB_KEYCHAIN_SEQ"
 : > "$STUB_SECURITY_VALUE_REQUESTS"
+: > "$STUB_LAUNCHCTL_LOG"
+rm -f "$STUB_LAUNCHCTL_STATE"
 
 OUT=""
 RC=0
@@ -310,6 +347,8 @@ new_case() { # <name>
   CLAUDE_BIN_UNDER_TEST=""
   CODEX_BIN_UNDER_TEST=""
   NODE_BIN_UNDER_TEST=""
+  READER_BIN_UNDER_TEST=""
+  STUB_LAUNCHCTL_BOOTSTRAP_FAILS=0
   CASE_DIR="$TMP/case-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-')"
   rm -rf "$CASE_DIR"
   mkdir -p "$CASE_DIR/home/.claude"
@@ -317,6 +356,8 @@ new_case() { # <name>
   PROFILES="$CASE_DIR/profiles"
   : > "$STUB_CALL_LOG"
   : > "$STUB_KEYCHAIN_DB"
+  : > "$STUB_LAUNCHCTL_LOG"
+  rm -f "$STUB_LAUNCHCTL_STATE"
 }
 
 run() { # <args...>  — never aborts the suite; sets OUT and RC
@@ -329,8 +370,25 @@ run() { # <args...>  — never aborts the suite; sets OUT and RC
         AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
         AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
         AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
+        AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
+        AI_QUOTAS_READER_BIN="${READER_BIN_UNDER_TEST-}" \
+        STUB_LAUNCHCTL_BOOTSTRAP_FAILS="${STUB_LAUNCHCTL_BOOTSTRAP_FAILS:-0}" \
         "$SCRIPT" "$@" 2>&1)"
   RC=$?
+}
+
+# The plist, the job log, and the history file all resolve from HOME, so every
+# `schedule` case is already confined to the case directory — nothing here can
+# touch the real ~/Library/LaunchAgents or the owner's own registry.
+plist_path() { printf '%s' "$CASE_DIR/home/Library/LaunchAgents/com.claude.ai-quotas.plist"; }
+history_path() { printf '%s' "$CASE_DIR/home/.claude/ai-quotas-history.jsonl"; }
+nickname_of() { # <label>
+  jq -r --arg l "$1" '.accounts[] | select(.label == $l) | .nickname // "<none>"' \
+    "$CONFIG" 2>/dev/null || echo "READ-ERROR"
+}
+has_nickname_key() { # <label>
+  jq -r --arg l "$1" '[.accounts[] | select(.label == $l) | has("nickname")] | first | tostring' \
+    "$CONFIG" 2>/dev/null || echo "READ-ERROR"
 }
 
 account_count() {
@@ -1215,7 +1273,242 @@ check_eq "$(dir_mode "$PROFILES")" "drwx------" "the profile root is mode 700"
 check_eq "$(dir_mode "$PROFILES/mode@example.com")" "drwx------" "the per-label directory is mode 700"
 check_eq "$(dir_mode "$PROFILES/mode@example.com/claude")" "drwx------" "the per-account profile directory is mode 700"
 
-# --- 15. no case, anywhere, asked for a credential value ---------------------
+# --- 15. nicknames (#1700) ---------------------------------------------------
+#
+# A nickname is what `/quotas` prints in place of a full subscription email,
+# so what matters here is that it reaches the registry intact, that clearing
+# one REMOVES the key rather than storing an empty string, and that a value
+# which would corrupt the table it is displayed in is refused rather than
+# stored and rendered.
+
+new_case "nick-add"
+run add codex gpt-lm@example.com --nick "GPT LM"
+check_eq "$RC" "0" "add --nick exits 0"
+check_eq "$(nickname_of gpt-lm@example.com)" "GPT LM" "add --nick records the nickname"
+check_contains "$OUT" "GPT LM" "and the confirmation names it"
+run list
+check_contains "$OUT" "NICKNAME" "the list table has a nickname column"
+check_contains "$OUT" "GPT LM" "showing the nickname"
+run list --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].nickname')" "GPT LM" "list --json carries the nickname"
+
+new_case "nick-absent"
+run add codex plain@example.com
+check_eq "$RC" "0" "an add without --nick exits 0"
+check_eq "$(has_nickname_key plain@example.com)" "false" \
+  "control(-): an account registered without one carries no nickname key at all"
+run list --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].nickname | tostring')" "null" \
+  "and list --json reports it as null rather than omitting the key"
+
+new_case "nick-set"
+run add codex later@example.com
+run nick later@example.com "GPT Personal"
+check_eq "$RC" "0" "nick on an existing account exits 0"
+check_eq "$(nickname_of later@example.com)" "GPT Personal" "and records the new name"
+run nick later@example.com "GPT Renamed"
+check_eq "$(nickname_of later@example.com)" "GPT Renamed" "a second nick replaces the first"
+run nick later@example.com ""
+check_eq "$RC" "0" "clearing a nickname exits 0"
+check_eq "$(has_nickname_key later@example.com)" "false" \
+  "and DELETES the key rather than storing an empty string"
+check_contains "$OUT" "no longer has a nickname" "saying so"
+
+new_case "nick-errors"
+run add codex nickerr@example.com
+run nick nosuch@example.com "Whatever"
+check_eq "$RC" "4" "nick on an unregistered label exits 4"
+run nick nickerr@example.com "$(printf 'has\ta tab')"
+check_eq "$RC" "3" "a nickname containing a tab is refused (it would split the table row)"
+check_eq "$(has_nickname_key nickerr@example.com)" "false" "and nothing was written"
+run nick nickerr@example.com "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+check_eq "$RC" "3" "a nickname over 32 characters is refused"
+# A bare control character — one that a terminal would act on rather than
+# print. Bracket ranges are matched by LC_COLLATE, so this passes only if the
+# check forces the C collation it was written for.
+run nick nickerr@example.com "$(printf 'esc\033[2Jhere')"
+check_eq "$RC" "3" "a nickname containing a control character is refused"
+check_eq "$(has_nickname_key nickerr@example.com)" "false" "and nothing was written for it either"
+run nick nickerr@example.com
+check_eq "$RC" "3" "nick without a name is a usage error"
+run remove nickerr@example.com --nick "Nope"
+check_eq "$RC" "3" "--nick is refused on an action that has no use for it"
+run nick nickerr@example.com "Positional" --nick "Flag"
+check_eq "$RC" "3" "giving the name both ways at once is refused rather than silently resolved"
+check_eq "$(has_nickname_key nickerr@example.com)" "false" "and neither name was written"
+run nick nickerr@example.com "Fine Name"
+check_eq "$RC" "0" "control(+): an ordinary name on the same account still succeeds"
+check_eq "$(nickname_of nickerr@example.com)" "Fine Name" "and lands in the registry"
+
+# Two providers, one label: the same ambiguity `remove` and `relogin` refuse.
+new_case "nick-ambiguous"
+run add claude both@example.com
+run add codex both@example.com
+run nick both@example.com "Ambiguous"
+check_eq "$RC" "3" "an ambiguous label is refused rather than guessed at"
+check_contains "$OUT" "name the provider" "and says how to disambiguate"
+run nick both@example.com "Just Codex" codex
+check_eq "$RC" "0" "naming the provider resolves it"
+check_eq "$(jq -r '.accounts[] | select(.provider == "codex") | .nickname // "<none>"' "$CONFIG")" \
+  "Just Codex" "the codex row got the name"
+check_eq "$(jq -r '.accounts[] | select(.provider == "claude") | .nickname // "<none>"' "$CONFIG")" \
+  "<none>" "control(-): and the claude row of the same label did not"
+
+# --- 16. the daily unattended snapshot job (#1700) ---------------------------
+#
+# Every assertion below reads the plist that was actually written and the
+# launchctl calls that were actually made. The PATH assertion is the one that
+# would go unnoticed in production for weeks: launchd hands a job a minimal
+# PATH, and the reader needs Homebrew for `jq`, `codex`, and `node`.
+
+new_case "schedule-unsupported"
+PLATFORM_UNDER_TEST="Linux"
+run schedule install
+check_eq "$RC" "2" "schedule install on a non-macOS host exits 2"
+check_contains "$OUT" "launchd" "saying which scheduler it needs"
+check_eq "$(test -e "$(plist_path)" && echo present || echo absent)" "absent" \
+  "and writes no plist"
+run schedule remove
+check_eq "$RC" "2" "schedule remove exits 2 there too"
+run schedule status
+check_eq "$RC" "2" "and schedule status"
+
+new_case "schedule-install"
+PLATFORM_UNDER_TEST="Darwin"
+run schedule install
+check_eq "$RC" "0" "schedule install exits 0 on macOS"
+PLIST="$(plist_path)"
+check_eq "$(test -f "$PLIST" && echo present || echo absent)" "present" "it writes the plist"
+PLIST_BODY="$(cat "$PLIST" 2>/dev/null || true)"
+check_contains "$PLIST_BODY" "<string>com.claude.ai-quotas</string>" "carrying the job label"
+check_contains "$PLIST_BODY" "ai-quotas.sh" "the reader it runs"
+# This case has no ~/.claude copy under its isolated HOME, so resolution falls
+# through to the sibling in the checkout — which must SAY so, because a plist
+# pointing into a worktree keeps working until that worktree is removed.
+check_contains "$OUT" "scheduling the reader at" \
+  "and says out loud when the copy it scheduled is the one in this checkout"
+check_contains "$PLIST_BODY" "<string>--json</string>" "with --json"
+check_contains "$PLIST_BODY" "<string>--quiet</string>" "and --quiet, which is what marks the snapshots scheduled"
+check_contains "$PLIST_BODY" "<key>RunAtLoad</key>" "RunAtLoad, so installing it takes a reading immediately"
+check_contains "$PLIST_BODY" "<key>StartCalendarInterval</key>" "a calendar interval"
+check_contains "$PLIST_BODY" "<integer>9</integer>" "at the documented default hour"
+check_contains "$PLIST_BODY" "launchd.log" "and a log path for both streams"
+check_contains "$PLIST_BODY" "/opt/homebrew/bin" \
+  "the PATH names Homebrew — launchd gives a job a minimal one, and jq, codex and node all live there"
+check_contains "$PLIST_BODY" "<key>HOME</key>" "and HOME, which the reader resolves every path from"
+check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "bootstrap gui/" "the job is loaded through bootstrap"
+check_contains "$OUT" "is loaded" "and the run says so"
+check_eq "$(ls -l "$PLIST" | cut -c1-10)" "-rw-r--r--" "the plist is mode 644"
+
+# The plist must be valid property-list XML, not merely a string that contains
+# the right words. Skipped rather than faked where plutil is unavailable.
+if command -v plutil >/dev/null 2>&1; then
+  if plutil -lint "$PLIST" >/dev/null 2>&1; then
+    ok "the plist parses as a property list (plutil -lint)"
+  else
+    bad "the plist does not parse as a property list (plutil -lint)"
+  fi
+else
+  ok "SKIP: plutil unavailable — plist XML validity not checked"
+fi
+
+run schedule status
+check_eq "$RC" "0" "schedule status exits 0"
+check_contains "$OUT" "(present)" "reporting the plist as present"
+check_contains "$OUT" "loaded" "and the job as loaded"
+check_contains "$OUT" "LAST SNAPSHOT: none yet" "with no snapshot recorded yet"
+
+# A history holding only MANUAL lines must still read as "none yet": the
+# footer is about the unattended job, and a hand-run /quotas is not it.
+printf '%s\n' '{"ts":"2026-09-08T20:00:00Z","provider":"codex","label":"a@b.c","nickname":null,"window":"7-day","used_pct":10,"resets_at_epoch":null,"source":"manual"}' \
+  > "$(history_path)"
+run schedule status
+check_contains "$OUT" "LAST SNAPSHOT: none yet" "control(-): manual snapshots do not count as the job having run"
+# A line that PARSES but is not an object, ahead of the real one: `fromjson?`
+# catches only the parse error, so a bare number reaches `.source` and would
+# abort jq, taking the good line below down with it.
+printf '5\n' >> "$(history_path)"
+printf '%s\n' '{"ts":"2026-09-09T09:00:00Z","provider":"codex","label":"a@b.c","nickname":null,"window":"7-day","used_pct":11,"resets_at_epoch":null,"source":"scheduled"}' \
+  >> "$(history_path)"
+run schedule status
+check_contains "$OUT" "LAST SNAPSHOT: 2026-09-09T09:00:00Z" "a scheduled snapshot is reported with its time"
+
+run schedule remove
+check_eq "$RC" "0" "schedule remove exits 0"
+check_eq "$(test -e "$PLIST" && echo present || echo absent)" "absent" "the plist is deleted"
+check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "bootout gui/" "the job is booted out"
+run schedule status
+check_contains "$OUT" "(absent" "status then reports the plist as absent"
+check_contains "$OUT" "not loaded" "and the job as not loaded"
+check_contains "$OUT" "LAST SNAPSHOT: 2026-09-09T09:00:00Z" \
+  "control(+): removing the job leaves the history it already recorded alone"
+
+new_case "schedule-hour"
+PLATFORM_UNDER_TEST="Darwin"
+run schedule install --hour 3
+check_eq "$RC" "0" "schedule install --hour exits 0"
+check_contains "$(cat "$(plist_path)")" "<integer>3</integer>" "and writes the hour it was given"
+# `09` is a reasonable thing to type and bash reads a leading zero as octal,
+# where 9 is not a digit at all — so this passes only if the comparison and the
+# plist value are both forced to base 10.
+run schedule install --hour 09
+check_eq "$RC" "0" "a zero-padded hour is accepted"
+check_contains "$(cat "$(plist_path)")" "<integer>9</integer>" \
+  "and reaches the plist as a plain integer, not as 09"
+run schedule install --hour 24
+check_eq "$RC" "3" "an out-of-range hour is a usage error"
+run schedule install --hour abc
+check_eq "$RC" "3" "and so is a non-numeric one"
+run schedule status --hour 4
+check_eq "$RC" "3" "--hour is refused on an operation that does not schedule anything"
+
+# bootstrap is the modern spelling and legacy launchctl does not have it. When
+# it is refused the job must still end up loaded through `load -w`, or every
+# install on an older system silently produces a plist nothing ever runs.
+new_case "schedule-bootstrap-fallback"
+PLATFORM_UNDER_TEST="Darwin"
+STUB_LAUNCHCTL_BOOTSTRAP_FAILS=1
+run schedule install
+check_eq "$RC" "0" "an install whose bootstrap is refused still exits 0"
+check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "load -w" "it falls back to the legacy load"
+check_contains "$OUT" "is loaded" "and the job really is loaded afterwards"
+
+# A reader path that does not resolve must stop BEFORE a plist is written: a
+# LaunchAgent pointing at a missing script fails silently every night.
+new_case "schedule-reader-missing"
+PLATFORM_UNDER_TEST="Darwin"
+READER_BIN_UNDER_TEST="$CASE_DIR/no-such-reader.sh"
+run schedule install
+check_eq "$RC" "5" "an unresolvable reader fails the install"
+check_eq "$(test -e "$(plist_path)" && echo present || echo absent)" "absent" \
+  "and no plist is left behind pointing at nothing"
+check_eq "$(grep -c 'bootstrap\|load' "$STUB_LAUNCHCTL_LOG" || true)" "0" \
+  "control(-): nothing was loaded either"
+
+# HOME unset is ACCEPTED by this script when both path overrides are given, and
+# every schedule path derives from HOME — so without this guard the LaunchAgent
+# would resolve to `/Library/LaunchAgents/…`, a machine-wide location. Driven
+# through `env -u HOME` rather than `run`, which sets HOME by construction.
+new_case "schedule-home-unset"
+SCHEDULE_NOHOME_OUT="$(env -u HOME \
+  AI_QUOTAS_CONFIG="$CONFIG" \
+  AI_QUOTAS_PROFILE_ROOT="$PROFILES" \
+  AI_QUOTAS_PLATFORM="Darwin" \
+  AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
+  "$SCRIPT" schedule install 2>&1)" && SCHEDULE_NOHOME_RC=0 || SCHEDULE_NOHOME_RC=$?
+check_eq "$SCHEDULE_NOHOME_RC" "5" "schedule install with HOME unset is refused"
+check_contains "$SCHEDULE_NOHOME_OUT" "HOME is unset" "saying why"
+check_eq "$(test -e /Library/LaunchAgents/com.claude.ai-quotas.plist && echo present || echo absent)" \
+  "absent" "control(-): and nothing was written to the machine-wide LaunchAgents directory"
+
+new_case "schedule-usage"
+PLATFORM_UNDER_TEST="Darwin"
+run schedule
+check_eq "$RC" "3" "schedule with no operation is a usage error"
+run schedule bogus
+check_eq "$RC" "3" "and an unknown operation is too"
+
+# --- 17. no case, anywhere, asked for a credential value ---------------------
 # Cumulative, so it runs last: the stub records every `-w` request across the
 # whole suite, and asserting here covers the cases that come after the
 # keychain block as well.

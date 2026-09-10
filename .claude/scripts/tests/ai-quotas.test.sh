@@ -67,12 +67,13 @@ check_not_contains() { # <haystack> <needle> <label>
 # Credential-SHAPED secrets. These are what make the leak assertions real.
 CLAUDE_SECRET="sk-ant-oat01-FAKE-TOKEN-9Z8Y7X"
 CODEX_SECRET="FAKE-CODEX-ACCESS-TOKEN-5W4V3U"
-# A JWT whose payload is {"email":"codex-one@example.com"} — the reader has
-# to base64url-decode the middle segment to render the reported email, and
-# must not print the token itself.
+# The header of the id_token each codex profile carries. The payload is built
+# per profile by `seed_codex_profile` from that account's own email — the
+# reader has to base64url-decode the middle segment to render the reported
+# email, and must not print the token itself. `eyJ` is what the leak
+# assertions scan for, so this prefix is load-bearing: a real JWT starts with
+# exactly these characters.
 CODEX_JWT_HEADER="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-CODEX_JWT_PAYLOAD="$(printf '{"email":"codex-one@example.com"}' | jq -Rr '@base64' | tr -d '=' | tr '/+' '_-')"
-CODEX_JWT="${CODEX_JWT_HEADER}.${CODEX_JWT_PAYLOAD}.FAKESIG"
 
 # Frozen clock: 2026-09-08T20:00:00Z — a Tuesday, 4:00 PM EDT.
 NOW=1788897600
@@ -292,13 +293,24 @@ seed_claude_profile() { # <label> <keychain-service|"">
   printf '%s' "$dir"
 }
 
-seed_codex_profile() { # <label> <snapshot-json|"">
+# The reported email is derived from the profile, not shared across them: a
+# fixture where every codex account claims to be codex-one@example.com makes
+# each extra account look MISLABELLED to the reader, which decorates its row
+# with a `registered as <label>` note no real account would carry. Building the
+# JWT from the argument leaves the default byte-identical to the shared one
+# these cases used before, so every existing caller and every leak assertion is
+# unaffected.
+seed_codex_profile() { # <label> <snapshot-json|""> [<reported-email>]
   local label="$1"
   local snapshot="$2"
+  local email="${3:-codex-one@example.com}"
+  local payload jwt
+  payload="$(printf '{"email":"%s"}' "$email" | jq -Rr '@base64' | tr -d '=' | tr '/+' '_-')"
+  jwt="${CODEX_JWT_HEADER}.${payload}.FAKESIG"
   local dir="$PROFILES/$label/codex"
   mkdir -p "$dir"
   if [[ -n "$snapshot" ]]; then
-    jq -n --arg t "$CODEX_SECRET" --arg id "$CODEX_JWT" \
+    jq -n --arg t "$CODEX_SECRET" --arg id "$jwt" \
       '{auth_mode:"chatgpt", tokens:{id_token:$id, access_token:$t, account_id:"acct-123"}}' \
       > "$dir/auth.json"
     printf '%s' "$snapshot" > "$dir/rate-limits.json"
@@ -1116,6 +1128,234 @@ fi
 # a reader that sent no Authorization header at all.
 check_contains "$(cat "$STUB_CURL_STDIN" 2>/dev/null || true)" "Authorization: Bearer" \
   "control(+): the Authorization header really was sent — on stdin, not in argv"
+
+# --- 17. snapshot history, nicknames, and the compact table (#1700) ----------
+#
+# The history file is what the burn-rate projection in #1701 reads, so what is
+# asserted here is its SHAPE and its honesty: one line per row that actually
+# produced a figure, nothing at all for a row that did not, the source of the
+# run, and a mode that keeps it to this user. The compact table is asserted by
+# MEASURING it — a five-account render whose widest line has to fit inside 100
+# columns — rather than by eyeballing a fixture.
+
+HISTORY="$CASE_HOME/.claude/ai-quotas-history.jsonl"
+
+history_lines() { cat "$HISTORY" 2>/dev/null || true; }
+history_count() { history_lines | grep -c . || true; }
+
+utc_iso() { # <epoch>
+  date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || true
+}
+
+# The table only, from its header to the blank line that follows it. The
+# advisory prose under it is deliberately excluded: the display-only sentence
+# is a fixed hundred-plus-column sentence, and measuring it would turn the
+# width assertion into a statement about that sentence rather than the table.
+table_only() { # <output>
+  printf '%s\n' "$1" | awk '/^ACCOUNT /{f=1} f && /^[[:space:]]*$/{exit} f {print}'
+}
+
+widest_line() { # <text>
+  printf '%s\n' "$1" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }'
+}
+
+# --- 17a. one line per successfully read row per run -------------------------
+
+overage_case 40 50
+run
+check_eq "$RC" "0" "a run that records history still exits 0"
+check_eq "$(history_count)" "2" "one snapshot line per row is appended"
+run
+check_eq "$(history_count)" "4" "a second run APPENDS its own set rather than replacing the first"
+check_eq "$(history_lines | jq -s 'length' 2>/dev/null || echo PARSE-ERROR)" "4" \
+  "every line parses as JSON — the file really is JSONL"
+check_eq "$(ls -l "$HISTORY" | cut -c1-10)" "-rw-------" "the history file is mode 600"
+
+# The exact field set #1701 will read, asserted as a sorted key list rather
+# than field by field, so a key silently added or dropped fails here instead
+# of in the consumer six weeks later.
+check_eq "$(history_lines | tail -n 1 | jq -r '[keys_unsorted[]] | sort | join(",")')" \
+  "label,nickname,provider,resets_at_epoch,source,ts,used_pct,window" \
+  "a snapshot carries exactly the documented fields"
+check_eq "$(history_lines | tail -n 1 | jq -r '.ts')" "2026-09-08T20:00:00Z" \
+  "the snapshot timestamp is the run clock, not a second-order guess at it"
+check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .used_pct' | tail -n 1)" "50" \
+  "the recorded percentage is the one the row reported"
+check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .window' | tail -n 1)" "7-day" \
+  "and the window it was reported for"
+check_eq "$(history_lines | jq -r '.source' | sort -u | tr '\n' ' ' | sed 's/ $//')" "manual" \
+  "a hand-run /quotas records its snapshots as manual"
+
+# --- 17b. a row that could not be read appends NOTHING -----------------------
+#
+# Discriminating on purpose: the config holds one account that reads and one
+# that cannot, so "no line for the failed row" cannot pass by the file simply
+# being empty.
+
+reset_state
+C_OK="$(seed_claude_profile claude-one@example.com "Claude Code-credentials-AAA")"
+X_BAD="$(seed_codex_profile codex-nologin@example.com "")"
+write_config \
+  "$(account_json claude claude-one@example.com "$C_OK" "Claude Code-credentials-AAA")" \
+  "$(account_json codex codex-nologin@example.com "$X_BAD")"
+run
+check_eq "$RC" "0" "a failed row does not fail the run"
+check_contains "$OUT" "needs-login" "control(+): the failing account really did fail"
+check_eq "$(history_count)" "1" "a row with no figure appends no snapshot line"
+check_eq "$(history_lines | jq -r '.provider')" "claude" \
+  "control(+): the row that did read appended exactly one"
+
+# --- 17c. --quiet is the unattended run --------------------------------------
+
+overage_case 40 50
+run --quiet
+check_eq "$RC" "0" "--quiet exits 0"
+check_eq "$(history_lines | jq -r '.source' | sort -u | tr '\n' ' ' | sed 's/ $//')" "scheduled" \
+  "--quiet records its snapshots as scheduled"
+check_contains "$OUT" "OVERAGE" "control(+): --quiet still prints the report itself"
+check_not_contains "$OUT" "Display only" "--quiet drops the trailing advisory prose"
+check_not_contains "$OUT" "LAST SNAPSHOT" \
+  "and the snapshot footer, which under --quiet would only tell the job log about itself"
+
+# --- 17d. the LAST SNAPSHOT footer -------------------------------------------
+
+overage_case 40 50
+run
+check_contains "$OUT" "LAST SNAPSHOT: none yet" \
+  "with no scheduled snapshot the footer says none yet — manual lines do not count"
+run --quiet
+run
+check_not_contains "$OUT" "none yet" "once the unattended job has run the footer names its time"
+check_contains "$OUT" "LAST SNAPSHOT: Tue Sep 8" \
+  "and names it in Eastern, like every other time in the table"
+check_not_contains "$OUT" "stale" "a snapshot taken now is not stale"
+
+overage_case 40 50
+mkdir -p "$(dirname "$HISTORY")"
+# A torn line FIRST, then the real one: a run killed mid-append leaves exactly
+# this, and one unparseable line must not cost the footer the lines around it.
+printf 'this line is not json\n' > "$HISTORY"
+# And a line that PARSES but is not an object. `fromjson?` catches only the
+# parse error, so a bare number reaches `.source` and aborts jq — which would
+# take the good line below down with it.
+printf '5\n' >> "$HISTORY"
+jq -nc --arg ts "$(utc_iso $(( NOW - 3 * 86400 )))" \
+  '{ts: $ts, provider: "codex", label: "codex-one@example.com", nickname: null,
+    window: "7-day", used_pct: 10, resets_at_epoch: null, source: "scheduled"}' >> "$HISTORY"
+run
+check_contains "$OUT" "stale (>1 day)" "a scheduled snapshot older than a day reads as stale"
+check_contains "$OUT" "LAST SNAPSHOT: Sat Sep 5" \
+  "control(+): neither the torn line nor the non-object one stopped the good one being read"
+
+# --- 17e. nicknames ----------------------------------------------------------
+
+overage_case 40 50
+NICKED="$TMP/nicked.json"
+jq '.accounts = [.accounts[] | if .provider == "codex" then . + {nickname: "GPT LM"} else . end]' \
+  "$CONFIG" > "$NICKED" && mv "$NICKED" "$CONFIG"
+run
+check_contains "$OUT" "GPT LM" "the table shows the nickname"
+check_not_contains "$OUT" "codex-one@example.com" "in place of the address it replaces"
+check_contains "$OUT" "claude-one@example.com" \
+  "control(+): an account with no nickname still shows its address"
+run --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "codex") | .nickname')" "GPT LM" \
+  "--json carries the nickname on the row"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "claude") | .nickname')" "null" \
+  "and null — not a missing key — on a row without one"
+check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .nickname' | tail -n 1)" "GPT LM" \
+  "the snapshot records the nickname alongside the label"
+
+# --- 17f. last_scheduled_snapshot_at is on every document --------------------
+
+overage_case 40 50
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r 'has("last_scheduled_snapshot_at") | tostring')" "true" \
+  "--json declares last_scheduled_snapshot_at"
+check_eq "$(printf '%s' "$DOC" | jq -r '.last_scheduled_snapshot_at | tostring')" "null" \
+  "null before the unattended job has ever run"
+run --quiet
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r '.last_scheduled_snapshot_at')" "2026-09-08T20:00:00Z" \
+  "and the instant of the last scheduled snapshot once it has"
+
+reset_state
+write_config
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r 'has("last_scheduled_snapshot_at") | tostring')" "true" \
+  "the no-accounts document has the same shape — nothing for a consumer to special-case"
+
+# --- 17g. the compact table fits five accounts in 100 columns ----------------
+
+# One claude and four codex accounts, each reporting its OWN address, so no row
+# carries a `registered as` note that a real five-account registry would not
+# have. Only one claude account: the anthropic stub answers from a single
+# shared body, so a second one would report the first account address and
+# reintroduce exactly the artificial note this fixture exists to avoid.
+#
+# The nicknames are the length nicknames actually are — the owner uses `GPT LM`
+# and `GPT Personal` — because the ACCOUNT column is sized by the longest one,
+# and a fixture with 30-character nicknames would be measuring the fixture.
+reset_state
+FIVE_SNAP="$(codex_snapshot_primary_weekly)"
+C_A="$(seed_claude_profile claude-one@example.com "Claude Code-credentials-AAA")"
+X_A="$(seed_codex_profile codex-one@example.com "$FIVE_SNAP" codex-one@example.com)"
+X_B="$(seed_codex_profile codex-two@example.com "$FIVE_SNAP" codex-two@example.com)"
+X_C="$(seed_codex_profile codex-three@example.com "$FIVE_SNAP" codex-three@example.com)"
+X_D="$(seed_codex_profile codex-four@example.com "$FIVE_SNAP" codex-four@example.com)"
+write_config \
+  "$(account_json claude claude-one@example.com "$C_A" "Claude Code-credentials-AAA" | jq '. + {nickname: "Claude Work"}')" \
+  "$(account_json codex codex-one@example.com "$X_A" | jq '. + {nickname: "GPT LM"}')" \
+  "$(account_json codex codex-two@example.com "$X_B" | jq '. + {nickname: "GPT Personal"}')" \
+  "$(account_json codex codex-three@example.com "$X_C" | jq '. + {nickname: "GPT Spare"}')" \
+  "$(account_json codex codex-four@example.com "$X_D" | jq '. + {nickname: "GPT Extra"}')"
+run
+check_eq "$RC" "0" "a five-account table exits 0"
+check_not_contains "$OUT" "REMAIN" "the compact table has no REMAIN column"
+check_contains "$OUT" "USED" "and still has USED"
+FIVE_TABLE="$(table_only "$OUT")"
+# The control comes FIRST: a width measured over a table that never rendered
+# would pass for the emptiest possible reason.
+check_eq "$(printf '%s\n' "$FIVE_TABLE" | grep -c '7-day' || true)" "5" \
+  "control(+): all five accounts really are in the measured table"
+# Second control: the measured table must be the CLEAN five-account case. A
+# `registered as` note is a fixture artifact here (the stub bodies are shared),
+# and if one crept back it would widen the table for a reason no real registry
+# has — the width assertion below would then be failing, or passing, on the
+# strength of a fake note.
+check_not_contains "$FIVE_TABLE" "registered as" \
+  "control(-): no row is decorated with a mislabelled-account note"
+FIVE_WIDTH="$(widest_line "$FIVE_TABLE")"
+if [[ "$FIVE_WIDTH" -le 100 && "$FIVE_WIDTH" -gt 0 ]]; then
+  ok "the five-account table fits in 100 columns (widest line: ${FIVE_WIDTH})"
+else
+  bad "the five-account table does not fit in 100 columns (widest line: ${FIVE_WIDTH})"
+fi
+check_eq "$(history_count)" "5" "and every one of the five rows was recorded"
+
+# --- 17h. history never changes the exit status ------------------------------
+#
+# The history path is made unwritable by occupying it with a DIRECTORY rather
+# than by permissions: this suite may run as a user for whom a mode-000 file is
+# still writable, and the assertion would then pass without ever reaching the
+# failure it claims to test.
+
+overage_case 40 50
+rm -rf "$HISTORY"
+mkdir -p "$HISTORY"
+BLOCKED_MODE_BEFORE="$(ls -ld "$HISTORY" | cut -c1-10)"
+run
+check_eq "$RC" "0" "an unwritable history file does not fail the report"
+check_contains "$OUT" "OVERAGE" "and the table still renders in full"
+check_contains "$ERR" "$HISTORY" "the failure is named on stderr rather than swallowed"
+# `chmod 600` on a directory SUCCEEDS and strips its execute bit, making it
+# unusable. A display tool must not mutate a path it merely failed to write to,
+# so the mode is asserted unchanged rather than assumed.
+check_eq "$(ls -ld "$HISTORY" | cut -c1-10)" "$BLOCKED_MODE_BEFORE" \
+  "and the directory occupying that path is left exactly as it was"
+rm -rf "$HISTORY"
 
 # --- summary -----------------------------------------------------------------
 
