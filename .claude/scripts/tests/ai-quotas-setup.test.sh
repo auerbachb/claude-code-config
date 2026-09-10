@@ -1344,6 +1344,14 @@ check_eq "$RC" "3" "a nickname over 32 characters is refused"
 run nick nickerr@example.com "$(printf 'esc\033[2Jhere')"
 check_eq "$RC" "3" "a nickname containing a control character is refused"
 check_eq "$(has_nickname_key nickerr@example.com)" "false" "and nothing was written for it either"
+# Padding is REFUSED, not trimmed. A rule the reference and the skill both
+# state, and one a well-meaning trim would quietly replace: two nicknames that
+# render identically are two the owner cannot tell apart in `list`.
+run nick nickerr@example.com " Padded"
+check_eq "$RC" "3" "a nickname with a leading space is refused rather than trimmed"
+run nick nickerr@example.com "Padded "
+check_eq "$RC" "3" "and one with a trailing space too"
+check_eq "$(has_nickname_key nickerr@example.com)" "false" "with nothing written for either"
 run nick nickerr@example.com
 check_eq "$RC" "3" "nick without a name is a usage error"
 run remove nickerr@example.com --nick "Nope"

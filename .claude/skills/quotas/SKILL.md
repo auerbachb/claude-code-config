@@ -210,8 +210,8 @@ daily job runs from, and the display-only rule that keeps both out of every disp
 gate: the same reference, §"Snapshot history, the daily job, nicknames".
 
 `--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
-cheapest_next, last_scheduled_snapshot_at}` — not the bare row array it emitted before
-#1669. Every row carries `nickname` (`null` when unset) and still carries
+cheapest_next, last_scheduled_snapshot_at}` — not the bare row array it emitted
+before #1669. Every row carries `nickname` (`null` when unset) and still carries
 `remaining_pct`, `plan`, and `source` even though the table no longer shows them. Read
 the rows from
 `.rows`; `cheapest_next` is `null` unless the hint fired. The "no accounts registered"
