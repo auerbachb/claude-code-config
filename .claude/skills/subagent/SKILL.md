@@ -249,7 +249,7 @@ Apply Step 4's verdict per issue. **Being too big is not a failure.** Every issu
 
 The parent is too big because it holds several single-PR deliverables. Split it into those deliverables, file them as children, and run them inline as one ordered chain.
 
-**Reuse the capture-time machinery — do not invent a second one.** The increment shape is already defined by `/issue-maker` for the capture-time reading of this same bar (#1192): **Step 5** for the increment body (title `{Parent theme} {i}/{n}: {what this slice delivers}`, the standard 6-section body, and the mandatory `## Acceptance Criteria` boundary line — with the final increment's terminal variant), **Step 8** for the `- Depends on #<previous increment>` links and the 5-increment cap, **Step 9a** for the report shape.
+**Reuse the capture-time machinery — do not invent a second one.** The increment shape is already defined by `/issue-maker` for the capture-time reading of this same bar (#1192): **Step 5** for the increment body (title `{Parent theme} {i}/{n}: {what this slice delivers}`, the standard 7-section body, and the mandatory `## Acceptance Criteria` boundary line — with the final increment's terminal variant), **Step 8** for the `- Depends on #<previous increment>` links and the 5-increment cap, **Step 9a** for the report shape.
 
 > **Read those steps and apply them here — never invoke `/issue-maker` itself.** That skill puts the whole thread into capture-only mode (no implementation, no worktrees), which would shut down the very pipeline this decomposition exists to feed.
 

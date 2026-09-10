@@ -596,8 +596,8 @@ search may not even have indexed yet.
 
 ### Body shape
 
-Reuse `/issue-maker`'s canonical 6-section body (Background, Problem, Proposed
-solution, Acceptance Criteria, Test Plan, Notes / Open questions), its
+Reuse `/issue-maker`'s canonical 7-section body (Background, Problem, Proposed
+solution, Acceptance Criteria, Test Plan, Notes / Open questions, Estimate), its
 label-intersection rule (apply only labels that already exist in the repo), and
 its closing-URL convention (the issue URL is the last line of the report entry).
 Include the marker comment, the verdict, the one-line reason, and the harness
