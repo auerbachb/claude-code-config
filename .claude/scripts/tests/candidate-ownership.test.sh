@@ -668,6 +668,41 @@ sweep 413
 check_eq "owned" "true" "$(field 413 '.owned')"
 check_eq "skip" "skip" "$(field 413 '.action')"
 
+# A claim holder is an arbitrary token — `resolve_holder` fills it from
+# `CLAUDE_CLAIM_HOLDER` or a `host:/path` fallback, never necessarily a session
+# id. Running session-id normalization over one let a FOREIGN holder that merely
+# normalized alike read as self, and a self-match here skips the foreign-
+# ownership guard entirely: the stranger's claimed issue would be dispatched.
+echo "-- (4o) a foreign holder is not normalized into this thread --"
+scenario "(4o) foreign holder differing only by a scheme prefix"
+export FAKE_CLAIM_414="claimed:local_selfsession:alice"
+sweep 414
+check_eq "still owned by the stranger" "true" "$(field 414 '.owned')"
+check_eq "and skipped, not dispatched" "skip" "$(field 414 '.action')"
+check_contains "reported as a foreign claim" "fresh claim held by" \
+  "$(field 414 '.evidence | join("|")')"
+check_not_contains "and not self-attributed" "held by this thread" \
+  "$(field 414 '.evidence | join("|")')"
+
+echo "-- (4p) nor by case alone --"
+scenario "(4p) foreign holder differing only by case"
+export FAKE_CLAIM_415="claimed:SELFSESSION:alice"
+sweep 415
+check_eq "still owned by the stranger" "true" "$(field 415 '.owned')"
+check_not_contains "and not self-attributed" "held by this thread" \
+  "$(field 415 '.evidence | join("|")')"
+
+# Positive control for the OTHER half of the split: a SESSION id still gets the
+# scheme-prefix normalization (scenario 3g covers the background-task path; this
+# one proves the exact-holder tightening did not take it away from claims that
+# genuinely are this thread's).
+echo "-- (4q) control: this thread's own exact session id still self-attributes --"
+scenario "(4q) self claim under the bare session id"
+export FAKE_CLAIM_416="claimed:selfsession:alice"
+sweep 416
+check_eq "not owned by ourselves" "false" "$(field 416 '.owned')"
+check_eq "dispatchable" "dispatch" "$(field 416 '.action')"
+
 ############################################################################
 # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>],
 # and session-state.sh rewrites just `.prs`/`.root_repo` into repo scope — so

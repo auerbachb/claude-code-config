@@ -305,6 +305,51 @@ fi
 
 ############################################################################
 echo
+echo "== (5) a listing that filled its own limit is refused as possibly truncated =="
+# RAW_LISTING holds 2 records; asking for 2 is indistinguishable from a cut
+# page. A cut page hides live owners, and a hidden owner classifies dead ->
+# adopt, so the block must not use it.
+run_blocks "export SESSION_LISTING_RAW_PATH='$RAW_LISTING'
+export SESSION_LISTING_LIMIT=2"
+OUT_JSON="$(sweep_json)"
+check_not_contains "a possibly-truncated listing is not forwarded" \
+  "--sessions" "$(cat "$ARGV_LOG")"
+check_contains "and the truncation is named, not swallowed" \
+  "possibly truncated" "$RUN_OUT"
+check_eq "surface-and-skip, not adopt" "skip" \
+  "$(printf '%s' "$OUT_JSON" | jq -r '.action')"
+
+# Negative control: the SAME listing under a limit it did not fill is used.
+# Without this, (5) would pass even if the block had simply stopped working.
+run_blocks "export SESSION_LISTING_RAW_PATH='$RAW_LISTING'
+export SESSION_LISTING_LIMIT=500"
+OUT_JSON="$(sweep_json)"
+check_contains "an unfilled limit still forwards the listing" \
+  "--sessions" "$(cat "$ARGV_LOG")"
+check_not_contains "and reports no degradation" "DEGRADED:" "$RUN_OUT"
+check_eq "so the archived owner still reaches adopt" "adopt" \
+  "$(printf '%s' "$OUT_JSON" | jq -r '.action')"
+
+############################################################################
+echo
+echo "== (6) an unknown CLAUDE_SESSION_ID degrades rather than self-adopting =="
+# With no session id there is no self-record to append, and `list_sessions`
+# excludes the caller — so forwarding the listing would let this thread's own
+# work classify dead -> adopt, the exact failure the append prevents.
+run_blocks "export SESSION_LISTING_RAW_PATH='$RAW_LISTING'
+export CLAUDE_SESSION_ID=''"
+OUT_JSON="$(sweep_json)"
+check_not_contains "a self-recordless listing is not forwarded" \
+  "--sessions" "$(cat "$ARGV_LOG")"
+check_contains "and the reason names the missing session id" \
+  "CLAUDE_SESSION_ID is unset" "$RUN_OUT"
+check_eq "liveness indeterminate" "indeterminate" \
+  "$(printf '%s' "$OUT_JSON" | jq -r '.liveness')"
+check_eq "surface-and-skip, not adopt" "skip" \
+  "$(printf '%s' "$OUT_JSON" | jq -r '.action')"
+
+############################################################################
+echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [ "$FAIL" -gt 0 ]; then
   echo "FAILED: /pm ownership-sweep wiring tests" >&2

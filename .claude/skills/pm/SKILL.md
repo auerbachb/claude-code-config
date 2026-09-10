@@ -539,30 +539,50 @@ fi
 **Get the session listing first — it is what makes `adopt` reachable (issue #1459).** Liveness is resolved against a listing of this harness's sessions, and no CLI enumerates them: the source is the **deferred** MCP tool `mcp__ccd_session_mgmt__list_sessions`. Deferred means its schema is not loaded, so calling it straight away fails — load it once per thread, then call it:
 
 1. `ToolSearch` with `select:mcp__ccd_session_mgmt__list_sessions`.
-2. Call it with `include_archived: true` and a `limit` above the board size (the default 20 truncates a busy day, and a session truncated out of the listing reads as *absent* — which classifies **dead**).
-3. Write the returned array **verbatim** to a file and export its path as `SESSION_LISTING_RAW_PATH`, then run the block below. It validates the JSON, appends this thread's own record, and sets `SESSION_LISTING_PATH`.
+2. Call it with `include_archived: true` and an explicit `limit` far above the number of sessions on the machine — not merely above the board size, which counts issues rather than sessions. The default 20 truncates a busy day, and a session truncated out of the listing reads as *absent*, which classifies **dead** -> adopt. Use `limit: 500` and export the same number as `SESSION_LISTING_LIMIT` so the block can detect a listing that still came back full.
+3. Write the returned array **verbatim** to a file and export its path as `SESSION_LISTING_RAW_PATH`, then run the block below. It validates the JSON, refuses a listing it cannot vouch for, appends this thread's own record, and sets `SESSION_LISTING_PATH`.
 
 <!-- test-anchor: pm-1b5-session-listing -->
 ```bash
 SESSION_LISTING_PATH=""
+SESSION_LISTING_SKIP="mcp__ccd_session_mgmt__list_sessions unavailable or unreadable"
 if [[ -n "${SESSION_LISTING_RAW_PATH:-}" && -r "${SESSION_LISTING_RAW_PATH:-}" ]] \
    && jq -e 'type == "array"' "$SESSION_LISTING_RAW_PATH" >/dev/null 2>&1; then
-  # An explicit XXXXXX template, not `mktemp -t <name>`: GNU mktemp rejects a
-  # `-t` template with no X's ("too few X's"), so the BSD-only spelling would
-  # fail outright on Linux and take the listing — and adoption — down with it.
-  SESSION_LISTING_PATH="$(mktemp "${TMPDIR:-/tmp}/pm-session-listing.XXXXXX")"
+  SESSION_LISTING_SKIP=""
+  # A listing that came back exactly as long as the limit we asked for is a
+  # listing that may have been CUT at that limit, and a session cut out of it
+  # reads as absent -> dead -> adopt. There is no way to tell a full page from a
+  # complete one, so an unverifiable listing is not used at all: degrading costs
+  # a surfaced line, trusting it costs a duplicate implementation.
+  if [[ -n "${SESSION_LISTING_LIMIT:-}" ]] \
+     && jq -e --argjson lim "${SESSION_LISTING_LIMIT}" 'length >= $lim' \
+          "$SESSION_LISTING_RAW_PATH" >/dev/null 2>&1; then
+    SESSION_LISTING_SKIP="listing returned ${SESSION_LISTING_LIMIT} records at the ${SESSION_LISTING_LIMIT} limit — possibly truncated; re-call with a higher limit"
   # `list_sessions` EXCLUDES the calling session, and a session absent from a
-  # listing that WAS read classifies `dead` -> adopt. Append this thread's own
-  # record so the sweep can never adopt work this very thread is running.
-  if ! jq -c --arg id "${CLAUDE_SESSION_ID:-}" \
-       'if $id == "" then . else . + [{sessionId:$id, title:"this /pm thread",
-                                       isArchived:false, isRunning:true}] end' \
-       "$SESSION_LISTING_RAW_PATH" > "$SESSION_LISTING_PATH"; then
-    rm -f "$SESSION_LISTING_PATH"; SESSION_LISTING_PATH=""
+  # listing that WAS read classifies `dead` -> adopt. This thread's own record
+  # is appended so the sweep can never adopt work this very thread is running —
+  # which means an unknown `CLAUDE_SESSION_ID` cannot produce a usable listing:
+  # forwarding one without the self-record is exactly the self-adoption the
+  # append exists to prevent, so it degrades instead.
+  elif [[ -z "${CLAUDE_SESSION_ID:-}" ]]; then
+    SESSION_LISTING_SKIP="CLAUDE_SESSION_ID is unset — this thread's own record cannot be added, so the listing could classify this thread's work as dead"
+  fi
+  if [[ -z "$SESSION_LISTING_SKIP" ]]; then
+    # An explicit XXXXXX template, not `mktemp -t <name>`: GNU mktemp rejects a
+    # `-t` template with no X's ("too few X's"), so the BSD-only spelling would
+    # fail outright on Linux and take the listing — and adoption — down with it.
+    SESSION_LISTING_PATH="$(mktemp "${TMPDIR:-/tmp}/pm-session-listing.XXXXXX")"
+    if ! jq -c --arg id "$CLAUDE_SESSION_ID" \
+         '. + [{sessionId:$id, title:"this /pm thread",
+                isArchived:false, isRunning:true}]' \
+         "$SESSION_LISTING_RAW_PATH" > "$SESSION_LISTING_PATH"; then
+      rm -f "$SESSION_LISTING_PATH"; SESSION_LISTING_PATH=""
+      SESSION_LISTING_SKIP="could not build the listing file"
+    fi
   fi
 fi
 if [[ -z "$SESSION_LISTING_PATH" ]]; then
-  echo "DEGRADED: no session listing (mcp__ccd_session_mgmt__list_sessions unavailable or unreadable) — liveness indeterminate; owned candidates are surfaced, never adopted"
+  echo "DEGRADED: no session listing (${SESSION_LISTING_SKIP:-unusable}) — liveness indeterminate; owned candidates are surfaced, never adopted"
 fi
 ```
 

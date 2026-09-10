@@ -799,16 +799,41 @@ note_state() {
   return 0
 }
 
-is_self() { # is_self <holder-or-session-token>
+# Self-attribution comes in two flavors, and they must not share one predicate.
+# A CLAIM HOLDER is an arbitrary token: `resolve_holder` fills it from
+# `CLAUDE_CLAIM_HOLDER` or a `host:/path` fallback, so it is not a session id
+# and must NOT be run through session-id normalization. That normalization
+# strips a scheme prefix and folds case, which over arbitrary tokens makes any
+# two that merely normalize alike read as the same thread — and a self-match
+# here is the dangerous direction: it sets CLAIM_IS_SELF, which SKIPS the
+# foreign-ownership guard and lets a stranger's claimed issue be dispatched.
+# Exact compare only, against both spellings this thread can legitimately have
+# written: the holder `resolve_holder` produces now, and its session id (a claim
+# written under the other token — the mismatch scenario 4m covers).
+is_self_holder() { # is_self_holder <claim-holder-token>
   local tok="$1"
   [[ -z "$tok" ]] && return 1
   [[ "$tok" == "$HOLDER" ]] && return 0
   [[ -n "$SELF_SESSION" && "$tok" == "$SELF_SESSION" ]] && return 0
-  # Same scheme-prefix mismatch the liveness lookup normalizes away: a stored
-  # `local_<uuid>` against a bare `$CLAUDE_SESSION_ID` would otherwise read as a
-  # foreign thread, and this thread would surface — or adopt — its own work.
-  [[ -n "$SELF_SESSION" ]] \
-    && [[ "$(norm_session_id "$tok")" == "$(norm_session_id "$SELF_SESSION")" ]] \
+  return 1
+}
+
+# A SESSION ID is the population `norm_session_id` was written for, so it adds
+# the scheme-prefix normalization the liveness lookup uses: the harness spells
+# this thread `local_<id>` while the state files store the bare id (#1459), and
+# an unnormalized miss makes this thread's own background task or resume marker
+# read as a foreign thread's — surfacing, or adopting, its own work.
+# It compares against `$SELF_SESSION` alone, never `$HOLDER`: the widening runs
+# both ways, and a session id matched against an arbitrary `CLAUDE_CLAIM_HOLDER`
+# string would read a foreign thread's background task as this one's. When no
+# claim holder is configured `$HOLDER` IS `$CLAUDE_SESSION_ID`, so that arm was
+# only ever a duplicate of this one; when one is configured it was a false
+# positive waiting to happen.
+is_self_session() { # is_self_session <session-id>
+  local tok="$1"
+  [[ -z "$tok" || -z "$SELF_SESSION" ]] && return 1
+  [[ "$tok" == "$SELF_SESSION" ]] && return 0
+  [[ "$(norm_session_id "$tok")" == "$(norm_session_id "$SELF_SESSION")" ]] \
     && return 0
   return 1
 }
@@ -896,13 +921,13 @@ for ISSUE in "${CANDIDATES[@]}"; do
   fi
 
   # Decide self-attribution BEFORE the claim can confer ownership. `mine` is the
-  # gate's own verdict; `is_self` additionally catches a claim this thread wrote
+  # gate's own verdict; `is_self_holder` additionally catches a claim this thread wrote
   # under a different token than the one `resolve_holder` produces now (a session
   # id where the holder is `CLAUDE_CLAIM_HOLDER`, or vice versa). Appending
   # "held by this thread" AFTER setting OWNED left the flag standing, so a thread
   # skipped its own claimed work as if a stranger held it.
   CLAIM_IS_SELF=0
-  if [[ "$CLAIM_VERDICT" == "mine" ]] || is_self "$CLAIM_HOLDER"; then
+  if [[ "$CLAIM_VERDICT" == "mine" ]] || is_self_holder "$CLAIM_HOLDER"; then
     CLAIM_IS_SELF=1
   fi
 
@@ -1057,7 +1082,7 @@ for ISSUE in "${CANDIDATES[@]}"; do
       BG_SESSION="$(printf '%s' "$BG_HIT" | jq -r '.session_id // ""')"
       BG_LABEL="$(printf '%s' "$BG_HIT" | jq -r '.name // .work_item // ""')"
       BG_RECOVERY="$(printf '%s' "$BG_HIT" | jq -r '.recovery_path // ""')"
-      if is_self "$BG_SESSION"; then
+      if is_self_session "$BG_SESSION"; then
         add_evidence "background task $BG_LABEL belongs to this session — not foreign ownership"
       else
         OWNED=1
@@ -1117,7 +1142,7 @@ for ISSUE in "${CANDIDATES[@]}"; do
     # a title is not in the name, so ids are the documented fallback label
     # (issue #1431 "Notes / Open questions").
     MF_SESSION="$MP_SESSION"
-    if is_self "$MF_SESSION"; then
+    if is_self_session "$MF_SESSION"; then
       add_evidence "resume marker $MF_BASE belongs to this session — not foreign ownership"
       continue
     fi
