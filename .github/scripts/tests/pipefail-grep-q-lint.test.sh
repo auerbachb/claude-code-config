@@ -212,7 +212,7 @@ set -uo pipefail
 printf '%s\n' "$big" | egrep -q needle
 FIX
 
-expect "| grep -q inside an UNQUOTED heredoc body is not a finding" 0 'OK' <<'FIX'
+expect "a grep -q pipeline inside an UNQUOTED heredoc body is not a finding" 0 'OK' <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
 cat > "$stub" <<STUB
@@ -310,7 +310,18 @@ EOF;X
 printf '%s\n' "$big" | grep -q needle
 FIX
 
-expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
+expect "a quoted \"set +o pipefail;\" is text, not a toggle — the live pipeline after it is found" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+echo "set +o pipefail; nothing"; printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "a quoted ; does not split a segment (the pipeline stays in the armed segment)" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set -o pipefail; msg="a; b"; printf '%s\n' "$msg" | grep -q needle
+FIX
+
+expect "a pipe-both (|&) into grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
 "$SCRIPT" |& grep -q 'warning' && echo warned
@@ -389,14 +400,14 @@ grep -q needle <<<"$big" || echo missing
 grep -q needle <<<"$(producer --flag)" || echo missing
 FIX
 
-expect "| grep -q inside single quotes is data, not code" 0 'OK' <<'FIX'
+expect "a grep -q pipeline inside single quotes is data, not code" 0 'OK' <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
 check "never leaks" sh -c '! printf "%s" "$1" | grep -q ghp_SECRET' _ "$DOC"
 classify 'until gh api x | grep -q true; do sleep 60; done'
 FIX
 
-expect "| grep -q inside a quoted heredoc body is not a finding" 0 'OK' <<'FIX'
+expect "a grep -q pipeline inside a quoted heredoc body is not a finding" 0 'OK' <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
 cat > "$stub" <<'STUB'

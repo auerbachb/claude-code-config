@@ -238,6 +238,44 @@ function opener_tags(s,    i, n, c, sq, dq, arith, j, tag, dash, out) {
   return out
 }
 
+# Split a logical line on its command separators — `;`, `&&`, `||`, `&` —
+# but only where they are OUTSIDE double quotes (single-quoted spans were
+# already blanked by the caller). A `;` inside `"set +o pipefail; x"` is text,
+# not a separator, and splitting on it would let a quoted string disarm the
+# scan for a live pipeline later on the same line. Fills segs[1..n], returns n.
+function split_segments(s, segs,    i, n, c, dq, cur, k) {
+  n = length(s); dq = 0; cur = ""; k = 0
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\" && i < n) { cur = cur c substr(s, i + 1, 1); i++; continue }
+    if (c == "\"") { dq = !dq; cur = cur c; continue }
+    if (!dq) {
+      if (c == ";") { segs[++k] = cur; cur = ""; continue }
+      if (c == "&" && substr(s, i + 1, 1) == "&") { segs[++k] = cur; cur = ""; i++; continue }
+      if (c == "|" && substr(s, i + 1, 1) == "|") { segs[++k] = cur; cur = ""; i++; continue }
+      if (c == "&") { segs[++k] = cur; cur = ""; continue }
+    }
+    cur = cur c
+  }
+  segs[++k] = cur
+  return k
+}
+
+# Blank out double-quoted spans (with `\"` honoured). Used ONLY for the
+# pipefail-toggle test: a toggle is a bare command, never quoted text, so
+# `echo "set +o pipefail"` must not read as a toggle. Pipeline matching keeps
+# the quoted text, because the assert helpers eval their double-quoted strings.
+function strip_double_quoted(s,    i, n, c, dq, out) {
+  n = length(s); dq = 0; out = ""
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\" && i < n) { if (!dq) out = out c substr(s, i + 1, 1); i++; continue }
+    if (c == "\"") { dq = !dq; out = out c; continue }
+    if (!dq) out = out c
+  }
+  return out
+}
+
 FNR == 1 {
   hd_n = 0            # heredoc bodies still to skip, queued by the opener line
   hd_i = 1
@@ -330,20 +368,24 @@ FNR == 1 {
   # order is. Combined (`-euo pipefail`) and separated (`-e -o pipefail`)
   # spellings both count. `|&` is a pipe for this purpose, so it is folded to
   # `|` first and never mistaken for a `&` separator. Single-quoted spans were
-  # blanked above, so a `;` inside one cannot split a segment.
+  # blanked above and double-quoted spans are honoured by the splitter, so a
+  # `;` inside either cannot split a segment, and a quoted "set +o pipefail"
+  # is text, not a toggle.
   work = strip_single_quoted(line)
   gsub(/\|&/, "|", work)
-  nseg = split(work, segs, /;|&&|\|\||&/)
+  delete segs
+  nseg = split_segments(work, segs)
   for (si = 1; si <= nseg; si++) {
     seg = segs[si]
-    if (seg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
+    tseg = strip_double_quoted(seg)
+    if (tseg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
       if (!scanning) {
         scanning = 1
         if (!counted) { counted = 1; files_scanned++ }
       }
       continue
     }
-    if (seg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
+    if (tseg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
       scanning = 0
       continue
     }
