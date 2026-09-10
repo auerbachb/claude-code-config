@@ -882,6 +882,139 @@ Body:
 
 > **Note on `subagent_type`:** Do NOT set `subagent_type: "phase-a-fixer"` here. The `/subagent` skill's "Phase A" does **initial implementation** of a new issue (no PR exists yet), but `.claude/agents/phase-a-fixer.md` is designed for **fixing existing review findings** on an already-open PR — its workflow references findings, review threads, and push replies that don't apply to green-field implementation. Let this Agent call fall back to the default general-purpose agent; the harness injects the project CLAUDE.md + `.claude/rules/*.md` into general-purpose spawns (verified — see `.claude/reference/token-efficiency-audit-2026-07.md` §FU-1). If rules are absent from your context at session start, read `CLAUDE.md` and `.claude/rules/*.md` before proceeding.
 
+### 7.0: Record the round's membership (once, at dispatch)
+
+**Run this before the first spawn**, once Step 6.0b has assembled the round and
+before the launch loop promotes anything. It is the round's own membership list —
+distinct from 7.1's per-pipeline launch record, which only ever describes issues
+that have already started.
+
+`.repos["<key>"].pipelines` cannot answer "which issues are in this round": it is
+append-only across sessions and a queued issue has no entry at all until its turn.
+So the round is written down here, once, and any thread — a `/board` run from a
+sibling thread, this thread after a compaction — renders the round exactly instead
+of guessing from timestamps (`/board` Step 3; contract in
+`.claude/reference/session-state-schema.json` `_round_comment`).
+
+<!-- test-anchor: subagent-step7-round-membership-write -->
+
+```bash
+REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
+# Same `_unknown` normalisation as 7.3: --repo-key never returns empty, so an
+# emptiness test alone is dead code and the record would land in a scope no
+# reader ever looks at.
+[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
+
+# ROUND_MEMBERS is CALLER-DECLARED and you assign it right here: every issue in
+# the round in Step 6.0b's execution order — chain heads launching now AND the
+# issues queued behind them or behind the ceiling. Issue numbers as STRINGS,
+# because that is the key type `pipelines` uses and a reader joins the two
+# without coercing either side. Build it with jq; never concatenate JSON by hand.
+ROUND_ISSUES=(<every issue number in this round, execution order>)
+ROUND_MEMBERS=$(printf '%s\n' "${ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
+ROUND_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+# The SAME session identity every other render site uses (7.3's TF_SESSION), so
+# the record says WHOSE round it is. It is an attribution, not a lock: the block
+# is repo-keyed on purpose — a session-keyed one would hide the round from the
+# `/board` in another thread that this whole field exists to serve.
+ROUND_SESSION="${CLAUDE_SESSION_ID:-default}"
+
+# Read before write, as 7.1 does — but the two cases are not the same, so the
+# comparison is what decides, never the mere presence of a record:
+#   * the recorded members are the SAME SET as the round being dispatched now
+#     -> this is that same round re-entered (a resumed dispatch, a re-run of
+#     this step). Leave it: `dispatched_at` must keep naming the ORIGINAL
+#     dispatch, and rewriting it would move the round's own start.
+#   * anything else -> the record describes a DIFFERENT round whose teardown
+#     never ran. A stale round describing the current board is worse than no
+#     record, so replace it wholesale rather than merging two rounds into one.
+#
+# SET EQUALITY, not "every issue dispatched now is already a member". A subset
+# test reads a STALE SUPERSET as the same round — dispatch #1604 alone while a
+# dead round's [#1500,#1501,#1604] is still on disk, and /board would render two
+# retired issues as this round's queue. Equality is the identity check; a
+# containment test is not one.
+# The WHOLE block is read, not just `members`: it is also the compare value for
+# the CAS below, and comparing on a sub-field would let a sibling's write slip
+# through the gap between this read and that write.
+EXISTING_ROUND=$("$SESSION_STATE_SH" \
+  --get-json ".repos[\"$REPO_KEY\"].round" 2>/dev/null) || EXISTING_ROUND=null
+[[ -z "$EXISTING_ROUND" ]] && EXISTING_ROUND=null
+#
+# Attribution is part of the identity, exactly as it is at teardown: equal
+# members recorded by ANOTHER session are that thread's round, not this one's
+# re-entry — two threads can be handed the same issue list (a re-picked queue, a
+# duplicated batch), and preserving there would leave this round attributed to a
+# session that is not running it. An absent `session` is a pre-attribution
+# record and matches, so nothing written before this field churns.
+WRITE_ROUND=true
+if printf '%s' "$EXISTING_ROUND" | jq -e --arg me "$ROUND_SESSION" --argjson now "$ROUND_MEMBERS" \
+     '(.members? // null | type == "array")
+      and (((.members - $now) | length) == 0)
+      and ((($now - .members) | length) == 0)
+      and ((.session // $me) == $me)' >/dev/null 2>&1; then
+  WRITE_ROUND=false
+fi
+
+if [[ -z "$REPO_KEY" ]]; then
+  echo 'DEGRADED: repo key unresolved — round membership not recorded; /board in another thread renders no queued rows and an approximate delivered count'
+elif [[ "$WRITE_ROUND" == true ]]; then
+  # --cas, not --set. `.round` is ONE slot per repo, and two orchestration
+  # threads can dispatch into the same repo at once (the reason `table_render`
+  # is session-keyed at all). A bare --set would let this thread's round land on
+  # top of a sibling's between the read above and the write here, and the loser
+  # would then tear down a record it does not own. The compare closes that gap:
+  # the write applies only if `.round` is still exactly what was read.
+  #
+  # Assign the WHOLE block, so a replaced round cannot inherit the previous
+  # one's `dispatched_at` or leave its members behind.
+  # Replacing a round recorded by ANOTHER session is visible, never silent. It
+  # is still the right default: the common cause is a dead thread whose teardown
+  # never ran, and refusing would leave that corpse describing every future round
+  # this repo dispatches. Reporting it is what makes the rare live-collision
+  # case diagnosable instead of invisible.
+  PREV_SESSION=$(printf '%s' "$EXISTING_ROUND" | jq -r '.session? // empty' 2>/dev/null)
+  if [[ -n "$PREV_SESSION" && "$PREV_SESSION" != "$ROUND_SESSION" ]]; then
+    echo "NOTE: replacing a round recorded by session $PREV_SESSION for this repo — its board falls back to pre-#1604 rendering"
+  fi
+  CAS_RC=0
+  "$SESSION_STATE_SH" \
+    --cas ".repos[\"$REPO_KEY\"].round={\"members\":${ROUND_MEMBERS},\"dispatched_at\":\"${ROUND_NOW}\",\"session\":\"${ROUND_SESSION}\"}" \
+    --expect "$EXISTING_ROUND" || CAS_RC=$?
+  if [[ "$CAS_RC" -eq 7 ]]; then
+    # CAS LOSS is not a failure to retry into: another dispatcher recorded a
+    # round in the gap, and that record is as valid as this one. Overwriting it
+    # is the one outcome the compare exists to prevent, so say so and leave the
+    # winner's record standing — this round's rows still render; only its queued
+    # and delivered rows fall back for readers elsewhere.
+    echo 'DEGRADED: another dispatch recorded a round for this repo first — this round is not recorded, and its record was left untouched'
+  elif [[ "$CAS_RC" -ne 0 ]]; then
+    echo "DEGRADED: round membership not recorded (rc=$CAS_RC) — /board in another thread renders no queued rows and an approximate delivered count"
+  fi
+fi
+```
+
+**Do not report a failure here as a blocker, and never retry a CAS loss.** The round
+dispatches either way; the only cost is that a `/board` run elsewhere falls back to
+its pre-#1604 behaviour, which the `DEGRADED:` line above already names. A loss
+specifically means a sibling thread got there first — re-reading and writing again
+would be a race this thread wins by being slower, which is exactly the ownership
+theft the compare prevents. One repo, one recorded round, first writer keeps it.
+
+**A losing dispatcher still dispatches — deliberately.** This record is *display*
+state: it decides whether a `/board` elsewhere prints exact queued and delivered rows
+or falls back to the pre-#1604 behaviour. Gating the launch on it would let a display
+record refuse real work, which is the same trade the freshness clock already refuses
+("A `--note-rendered` that fails is not fatal", 7.3). So the loser's contract is
+narrow and complete: it launches normally, its running rows still render everywhere
+from `pipelines`, it owns **no** record — and Step 8's teardown will therefore find a
+round that is not its own and leave it alone. The one thing a loser must never do is
+write or clear `.round`; everything else about its round is unchanged.
+
+And **do not re-write this record on a refill** — Step 8 promotes a queued member by
+writing that issue's own `started_at`, and that alone flips the row from the derived
+queued view to the running view. `members` describes the round, not what has started.
+
 ### 7.1: Record each pipeline's launch time (once, at spawn)
 
 The Start column must survive every later tick **and a context compaction**, so the launch timestamp is written to durable state at spawn and never recomputed afterwards — **including on a respawn**, since a replacement Phase A re-enters this path (Step 9) and must inherit the original pipeline's Start rather than restart its clock. Key it by **issue** number: no PR exists yet at spawn, and queued issues never get one until their turn.
@@ -1004,9 +1137,11 @@ TF_SESSION="${CLAUDE_SESSION_ID:-default}"
 
 # ACTIVE_COUNT is CALLER-DECLARED, and YOU assign it right here: the number of
 # rows in the table just printed that are running or queued, excluding any
-# already in a terminal state. Nothing can derive it for you — no durable field
-# tracks queued issues and `.repos[...].pipelines` is append-only — which is
-# exactly why the floor takes it as an argument. Substitute the integer below;
+# already in a terminal state. 7.0's `.round.members` now records the round
+# durably, but it still cannot derive THIS number: excluding the terminal rows
+# needs a live merge-state read per member, which is exactly the work the
+# freshness clock exists to avoid, and `.repos[...].pipelines` is append-only.
+# So the count stays an argument. Substitute the integer below;
 # leaving the placeholder unsubstituted is caught by the guard that follows.
 ACTIVE_COUNT=<running + queued rows in the table above>
 
@@ -1245,7 +1380,64 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
        --repo "$REPO_KEY" --session "$TF_SESSION" --surface subagent-round-end \
        || echo 'DEGRADED: terminal board not recorded — floor may fire at an idle thread'
    fi
+
    ```
+
+   **Same teardown, second half: clear 7.0's round-membership record.** It is what
+   `/board` reads for exact queued and delivered rows, so a record left behind
+   describes a round that no longer exists — the next `/board`, in this thread or any
+   other, would render a finished round as the current one. There is no `--unset`;
+   `null` **is** the cleared state, and an absent block reads as "no recorded round",
+   which is exactly right for a repo between rounds.
+
+   **Clear only the round this thread owns.** `.round` is one slot per repo, so a
+   sibling thread may have started a **new** round here while this one was finishing;
+   an unconditional clear would delete a live round's queue and the sibling would
+   never know. Two guards, and both are needed: the membership on disk must still be
+   the round that just ended, and the CAS must still see the exact block that was
+   read.
+
+   <!-- test-anchor: subagent-step8-round-teardown-clear -->
+
+   ```bash
+   # ENDED_MEMBERS = the round that just ended, as 7.0 recorded it: the same
+   # issue-number strings, as a JSON array. You know it from the terminal board
+   # you just emitted; it is re-derived here rather than remembered because a
+   # compaction wipes 7.0's shell variables.
+   ENDED_MEMBERS=$(printf '%s\n' "${ENDED_ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
+   ROUND_SESSION="${CLAUDE_SESSION_ID:-default}"
+   ON_DISK=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].round" 2>/dev/null) || ON_DISK=null
+   [[ -z "$ON_DISK" ]] && ON_DISK=null
+   if [[ -n "$REPO_KEY" && "$ON_DISK" != null ]]; then
+     # Membership AND attribution: same set, and either no recorded session (a
+     # round written before the field carried one) or this thread's own. A
+     # sibling's round can coincide on neither count without being ours.
+     if printf '%s' "$ON_DISK" | jq -e --arg me "$ROUND_SESSION" --argjson ended "$ENDED_MEMBERS" \
+          '(.members? // null | type == "array")
+           and (((.members - $ended) | length) == 0)
+           and ((($ended - .members) | length) == 0)
+           and ((.session // $me) == $me)' >/dev/null 2>&1; then
+       CLEAR_RC=0
+       "$SESSION_STATE_SH" --cas ".repos[\"$REPO_KEY\"].round=null" \
+         --expect "$ON_DISK" || CLEAR_RC=$?
+       if [[ "$CLEAR_RC" -eq 7 ]]; then
+         echo 'DEGRADED: the round record changed while this round was being torn down — left as-is rather than clearing another dispatch'
+       elif [[ "$CLEAR_RC" -ne 0 ]]; then
+         echo "DEGRADED: round membership not cleared (rc=$CLEAR_RC) — /board may render this finished round as the current one"
+       fi
+     else
+       # A different round is on disk — a sibling thread's, or one this thread
+       # never owned. Not ours to clear; its own teardown will.
+       : # deliberately silent: this is correct behaviour, not a degradation
+     fi
+   fi
+   ```
+
+   **Only the round's END clears it.** A refill inside a live round writes the
+   promoted issue's `started_at` (7.1) and nothing else: `members` still describes
+   the same round, and the promoted issue simply stops matching /board's "member
+   with no `started_at`" queued test. Clearing on a refill would delete the queue
+   the board is reading.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
 
 ### Permitted activities in monitor mode:

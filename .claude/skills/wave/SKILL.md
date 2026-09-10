@@ -320,6 +320,8 @@ Immediately after each successful spawn — before printing anything else — wr
 
 An unrecorded chip cannot be dismissed later — recording is what makes withdrawal possible at all, not bookkeeping.
 
+**`/wave` writes no round-membership record, and that is not an omission (issue #1604).** The durable round record — `.repos["<key>"].round.members`/`dispatched_at`, which `/board` reads for exact queued and delivered rows — belongs to whoever **dispatches** a round, and `/wave` dispatches nothing (Execution boundary): a chip is an offer the user may never click, and an inline recommendation is started by the user's own `/subagent`, which performs the write there and then. Writing one here would record a round that does not exist, and writing one *as well* would be a double-write racing `/subagent`'s. If `/wave` ever gains a path that launches pipelines itself, that path writes the record at its own dispatch, in `/subagent` Step 7.0's shape and with the same read-before-write guard.
+
 **Inline rows are deliberately *not* recorded here, and that is not the same gap.** `/wave` only *recommends* inline execution; the user's `/subagent` is what starts it, and that is what marks the rows `Inline` (Execution boundary — writing `Inline` for an issue `/wave` merely named would claim work that has not started). The asymmetry is safe because the two re-run hazards are different: re-spawning a chip creates a **second live offer** for one issue, which is why Step 2 case 1 must see it; re-printing an inline recommendation creates nothing, so an unchanged wave on a re-run is correct rather than duplicated. `IN_FLIGHT` is unaffected either way — Step 2 derives it from your own open PRs, and an issue nobody has started is genuinely not in flight.
 
 ---
