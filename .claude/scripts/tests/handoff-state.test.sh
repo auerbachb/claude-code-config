@@ -911,7 +911,7 @@ check_eq "exit-code discovery found the literal codes (fail-closed)" "6" \
 UNDOCUMENTED_CODES=""
 while IFS= read -r _code; do
   [[ -z "$_code" ]] && continue
-  printf '%s\n' "$EXIT_BLOCK" | grep -qE "^ +${_code}  " \
+  grep -qE "^ +${_code}  " <<<"$EXIT_BLOCK" \
     || UNDOCUMENTED_CODES="$UNDOCUMENTED_CODES $_code"
 done <<< "$EXIT_CODES"
 check_eq "--help EXIT CODES documents every literal exit code" "" "$UNDOCUMENTED_CODES"

@@ -56,7 +56,7 @@ launchctl bootstrap "$GUI_DOMAIN" "$INSTALLED_PLIST"
 launchctl enable "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 launchctl kickstart -k "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 
-if launchctl list | grep -q "$LABEL"; then
+if LAUNCHD_LIST=$(launchctl list) && grep -q "$LABEL" <<<"$LAUNCHD_LIST"; then
   echo "PASS: $LABEL is running."
   echo "Verify with: launchctl list | grep claude-silence-watchdog"
 else

@@ -419,7 +419,7 @@ OUT=$(run_wake 1 weekly $(( $(date -u +%s) + 3*86400 )))
 check_eq "weekly cap: parked with NO Monitor" "weekly" "$(field "$OUT" WAKE)"
 check_eq "  and no generation is minted"      ""       "$(field "$OUT" WAKE_GENERATION)"
 check_true "  one line naming the manual resume" \
-  "$( printf '%s' "$OUT" | grep -q 'weekly cap reached' && echo true || echo false )"
+  "$( grep -q 'weekly cap reached' <<<"$OUT" && echo true || echo false )"
 
 # Publication: one CAS from null, so a wake armed inside the shutdown window
 # supersedes ours instead of being overwritten.

@@ -925,7 +925,7 @@ fetch_open_prs
 has_open_pr() {
   local b="$1"
   [[ -z "$OPEN_PR_BRANCHES" ]] && return 1
-  printf '%s\n' "$OPEN_PR_BRANCHES" | grep -Fxq "$b"
+  grep -Fxq "$b" <<<"$OPEN_PR_BRANCHES"
 }
 
 # Resolve "where am I right now?" so we never delete the caller's own worktree
@@ -1044,7 +1044,7 @@ fi
 is_branch_checked_out() {
   local b="$1"
   [[ -z "$CHECKED_OUT_BRANCHES" ]] && return 1
-  printf '%s\n' "$CHECKED_OUT_BRANCHES" | grep -Fxq "$b"
+  grep -Fxq "$b" <<<"$CHECKED_OUT_BRANCHES"
 }
 
 # Classify each worktree. Stale ⇔ not main, not the caller's, no uncommitted

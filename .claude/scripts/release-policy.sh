@@ -204,7 +204,7 @@ if [ "$API_RC" -ne 0 ] || [ -z "$RAW" ]; then
   # A 404 means the repo never opted in. Anything else (rate limit, auth,
   # network) means the policy was never READ — the same inert outcome, but a
   # different fact, and reporting it as "off by default" hides an outage.
-  if [ "$API_RC" -ne 0 ] && [ -n "$API_ERR" ] && ! printf '%s' "$API_ERR" | grep -qiE '404|not found'; then
+  if [ "$API_RC" -ne 0 ] && [ -n "$API_ERR" ] && ! grep -qiE '404|not found' <<<"$API_ERR"; then
     emit 1 "could not read $POLICY_PATH in $REPO — treating as off, but this is a lookup failure, not an opt-out: $API_ERR" \
       '{"policy_source":"unreadable"}'
   fi

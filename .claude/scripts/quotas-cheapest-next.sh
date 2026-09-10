@@ -335,7 +335,7 @@ RESET_FILE="$STATE_DIR/codex-reset.json"
 # form would be a coincidence of the same kind — it works only as long as BSD
 # keeps rejecting it. Ask the tool what it is.
 DATE_IS_GNU=0
-if date --version 2>/dev/null | grep -qi 'GNU coreutils'; then
+if grep -qi 'GNU coreutils' <<<"$(date --version 2>/dev/null)"; then
   DATE_IS_GNU=1
 fi
 

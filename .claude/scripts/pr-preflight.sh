@@ -568,7 +568,9 @@ login_fresh_on_head() {
   # freshness test would fail and we would trigger all four bots on every tick.
   # Degrade to pre-#576 PR-wide presence instead — fail toward silence.
   if [[ -z "$HEAD_SHA" ]]; then
-    cut -d"$US" -f1 "$ARTIFACTS_TMP" | grep -qxF -- "$login" && return 0
+    local first_col
+    first_col=$(cut -d"$US" -f1 "$ARTIFACTS_TMP") || return 1
+    grep -qxF -- "$login" <<<"$first_col" && return 0
     return 1
   fi
 

@@ -354,18 +354,18 @@ AUTHORS="$(sort -u "$AUTHORS_TMP")"
 # over anything else (sticky); bugbot only when cursor is the sole AI reviewer
 # among CR-path bots (CodeAnt without CodeRabbit still uses the cr path — #408);
 # otherwise cr if CodeRabbit or CodeAnt has activity.
-if printf '%s\n' "$AUTHORS" | grep -q '^greptile-apps\[bot\]$'; then
+if grep -q '^greptile-apps\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "greptile"
   exit 0
 fi
-if printf '%s\n' "$AUTHORS" | grep -q '^cursor\[bot\]$' \
-   && ! printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
-   && ! printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
+if grep -q '^cursor\[bot\]$' <<<"$AUTHORS" \
+   && ! grep -q '^coderabbitai\[bot\]$' <<<"$AUTHORS" \
+   && ! grep -q '^codeant-ai\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "bugbot"
   exit 0
 fi
-if printf '%s\n' "$AUTHORS" | grep -q '^coderabbitai\[bot\]$' \
-   || printf '%s\n' "$AUTHORS" | grep -q '^codeant-ai\[bot\]$'; then
+if grep -q '^coderabbitai\[bot\]$' <<<"$AUTHORS" \
+   || grep -q '^codeant-ai\[bot\]$' <<<"$AUTHORS"; then
   printf '%s\n' "cr"
   exit 0
 fi

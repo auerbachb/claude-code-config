@@ -362,7 +362,7 @@ if [[ -n "$PR_ARG" ]]; then
   fi
   if ! PR_JSON=$(gh pr view "$PR_ARG" --json number,headRefName,headRefOid,state,url,mergeStateStatus,mergeable,reviewDecision 2>&1); then
     # Distinguish "not found" (404) from other gh errors
-    if echo "$PR_JSON" | grep -qiE 'not found|could not resolve|no pull request'; then
+    if grep -qiE 'not found|could not resolve|no pull request' <<<"$PR_JSON"; then
       echo "ERROR: PR #$PR_ARG not found" >&2
       exit 4
     fi
@@ -377,7 +377,7 @@ else
     exit 3
   fi
   if ! PR_JSON=$(gh pr view --json number,headRefName,headRefOid,state,url,mergeStateStatus,mergeable,reviewDecision 2>&1); then
-    if echo "$PR_JSON" | grep -qiE 'no pull requests|not found|could not resolve'; then
+    if grep -qiE 'no pull requests|not found|could not resolve' <<<"$PR_JSON"; then
       echo "ERROR: no PR found for branch $BRANCH" >&2
       exit 4
     fi

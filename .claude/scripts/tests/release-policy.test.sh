@@ -66,7 +66,7 @@ run() { OUT="$("$SUT" "$@" 2>&1)"; RC=$?; }
 expect_rc()    { if [[ "$RC" -eq "$1" ]]; then ok "$2"; else bad "$2 (got rc=$RC: $OUT)"; fi; }
 expect_field() { local got; got="$(jq -r "$1" <<<"$OUT" 2>/dev/null)"
                  if [[ "$got" == "$2" ]]; then ok "$3"; else bad "$3 ($1 = '$got', want '$2'; out: $OUT)"; fi; }
-grep_ok()      { if printf '%s\n' "$OUT" | grep -q "$1"; then ok "$2"; else bad "$2 (output: $OUT)"; fi; }
+grep_ok()      { if grep -q "$1" <<<"$OUT"; then ok "$2"; else bad "$2 (output: $OUT)"; fi; }
 
 # Build a run entry RELATIVE TO NOW: mkrun <days_ago> <minutes> <status> <conclusion>
 # Relative, not absolute, so the 90-day recency window keeps meaning the same
@@ -276,7 +276,7 @@ expect_rc 4 "dispatching a workflow outside release_workflows fails closed (exit
 FAKE_WORKFLOWS="$WORKFLOWS_DEFAULT" run --detect --repo solo/app
 expect_rc 0 "detect finds the TestFlight workflow"
 grep_ok "mobile-testflight.yml" "detect names the TestFlight workflow"
-if printf '%s\n' "$OUT" | grep -q 'app-store'; then bad "detect excludes the App Store workflow"; else ok "detect excludes the App Store workflow"; fi
+if grep -q 'app-store' <<<"$OUT"; then bad "detect excludes the App Store workflow"; else ok "detect excludes the App Store workflow"; fi
 
 FAKE_WORKFLOWS=$'ci.yml\nlint.yml' run --detect --repo solo/app
 expect_rc 3 "a repo with no TestFlight workflow reports no pipeline (exit 3)"

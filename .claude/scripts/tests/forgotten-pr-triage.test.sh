@@ -46,7 +46,7 @@ check_contains() {
 check_line() {
   # Exact whole-line match (anchored) — stronger than substring check_contains.
   local desc="$1" line="$2" hay="$3"
-  if printf '%s\n' "$hay" | grep -Fxq "$line"; then
+  if grep -Fxq "$line" <<<"$hay"; then
     pass "$desc"
   else
     fail "$desc (missing exact line '$line')"

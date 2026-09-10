@@ -18,7 +18,7 @@ required=(
 )
 
 content=$(cat || true)
-if ! printf '%s\n' "$content" | grep -qx 'EXIT_REPORT'; then
+if ! grep -qx 'EXIT_REPORT' <<<"$content"; then
   echo "verify-exit-report-block: missing EXIT_REPORT header line" >&2
   exit 1
 fi

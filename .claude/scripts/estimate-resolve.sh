@@ -168,8 +168,8 @@ if [[ -n "$EST_LINE" ]]; then
   # Structural check: the line must contain the key words in order.
   # An additional canonical-format gate below rejects lines that use non-canonical
   # separators (e.g. a plain hyphen instead of en-dash, or no middle dot).
-  if printf '%s' "$EST_LINE" | \
-       grep -qE '^Est:[[:space:]]+[0-9]+[^0-9]+[0-9]+[[:space:]]+min[[:space:]].*plan[[:space:]]+on[[:space:]]+[0-9]+'; then
+  if grep -qE '^Est:[[:space:]]+[0-9]+[^0-9]+[0-9]+[[:space:]]+min[[:space:]].*plan[[:space:]]+on[[:space:]]+[0-9]+' \
+       <<<"$EST_LINE"; then
     # Extract all digit runs positionally to avoid UTF-8 en-dash byte fragility.
     # Canonical format: "Est: {lo}–{hi} min · plan on {bound}"
     # The en-dash (U+2013, UTF-8: \xe2\x80\x93) is non-digit so yields three numbers.
@@ -187,8 +187,8 @@ if [[ -n "$EST_LINE" ]]; then
     _MIDDLE_DOT=$(printf '\xc2\xb7')
     if [[ -n "$LO" && -n "$HI" && -n "$BOUND" && \
           "$LO" -lt "$HI" && "$BOUND" -eq "$HI" ]] && \
-       printf '%s' "$EST_LINE" | grep -qF "$_EN_DASH" && \
-       printf '%s' "$EST_LINE" | grep -qF "$_MIDDLE_DOT"; then
+       grep -qF "$_EN_DASH" <<<"$EST_LINE" && \
+       grep -qF "$_MIDDLE_DOT" <<<"$EST_LINE"; then
       printf '%s\n' "$EST_LINE"
       exit 0
     fi

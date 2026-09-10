@@ -44,7 +44,7 @@ if [[ "$remove_state" == true ]]; then
   rm -f "$STATE_FILE"
 fi
 
-if launchctl list | grep -q "$LABEL"; then
+if LAUNCHD_LIST=$(launchctl list) && grep -q "$LABEL" <<<"$LAUNCHD_LIST"; then
   echo "FAIL: ${LABEL} still appears in launchctl list." >&2
   exit 1
 fi

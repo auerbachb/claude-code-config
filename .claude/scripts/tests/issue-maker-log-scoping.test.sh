@@ -169,7 +169,7 @@ else
 fi
 
 STDERR_A="$(run_block "$H_A" "claude=3003|start=T3" "$BLOCK_RESOLVE" 2>&1 >/dev/null)"
-if printf '%s' "$STDERR_A" | grep -q 'CLAUDE_SESSION_ID is unset'; then
+if grep -q 'CLAUDE_SESSION_ID is unset' <<<"$STDERR_A"; then
   ok "A4: the derived-key fallback warns on stderr — it never happens silently"
 else
   fail "A4: no fallback warning emitted (stderr: $STDERR_A)"
@@ -180,7 +180,7 @@ fi
 seed_log "$H_A/.claude/handoffs/issue-maker-fallback-collide-log.json" "owner/other" "[]"
 STDERR_COLLIDE="$(HOME="$H_A" CLAUDE_SESSION_ID="fallback-collide" \
   "$H_A/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null)"
-if printf '%s' "$STDERR_COLLIDE" | grep -q "records session_id 'seeded'"; then
+if grep -q "records session_id 'seeded'" <<<"$STDERR_COLLIDE"; then
   ok "A5: collision backstop warns when the resolved log names another session"
 else
   fail "A5: collision backstop silent (stderr: $STDERR_COLLIDE)"
@@ -284,7 +284,7 @@ if [[ "$TARGET_AFTER" == "auerbachb/still-point" ]]; then
 else
   fail "C1: target_repo flipped to '$TARGET_AFTER'"
 fi
-if printf '%s' "$STDERR_C" | grep -q 'refusing to retarget'; then
+if grep -q 'refusing to retarget' <<<"$STDERR_C"; then
   ok "C2: the retarget guard warns on stderr, naming the refusal"
 else
   fail "C2: no retarget warning (stderr: $STDERR_C)"
@@ -313,7 +313,7 @@ RETARGET_CORRUPT="LOG='$LOG_C3'
 $BLOCK_HELPER
 $(printf '%s\n' "$BLOCK_RETARGET" | sed "s|^REPO=\"<owner/repo the user supplied>\"$|REPO=\"auerbachb/claude-code-config\"|")"
 STDERR_C3="$(run_block "$H_C3" "claude=1001|start=T1" "$RETARGET_CORRUPT" 2>&1 >/dev/null)"
-if printf '%s' "$STDERR_C3" | grep -q 'could not read' && [[ "$CORRUPT_BEFORE" == "$(cat "$LOG_C3")" ]]; then
+if grep -q 'could not read' <<<"$STDERR_C3" && [[ "$CORRUPT_BEFORE" == "$(cat "$LOG_C3")" ]]; then
   ok "C4: an unreadable log refuses the retarget rather than treating the failed check as zero"
 else
   fail "C4: unreadable log did not fail closed (stderr: $STDERR_C3)"
@@ -482,7 +482,7 @@ BAD_LOG="$H_F/.claude/handoffs/issue-maker-fallback-corrupt-log.json"
 printf '{ this is not json' > "$BAD_LOG"
 STDERR_BAD="$(HOME="$H_F" CLAUDE_SESSION_ID="fallback-corrupt" \
   "$H_F/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null)"
-if printf '%s' "$STDERR_BAD" | grep -q 'could not read session_id'; then
+if grep -q 'could not read session_id' <<<"$STDERR_BAD"; then
   ok "F3: a corrupt log warns that ownership could NOT be verified"
 else
   fail "F3: corrupt log silently skipped the collision backstop (stderr: $STDERR_BAD)"
@@ -502,7 +502,7 @@ OK_LOG="$H_F/.claude/handoffs/issue-maker-fallback-nosid-log.json"
 printf '{"schema_version":"1","issues":[]}' > "$OK_LOG"
 STDERR_OK="$(HOME="$H_F" CLAUDE_SESSION_ID="fallback-nosid" \
   "$H_F/.claude/skills/issue-maker/scripts/resolve-log.sh" 2>&1 >/dev/null)"
-if printf '%s' "$STDERR_OK" | grep -q 'could not read session_id'; then
+if grep -q 'could not read session_id' <<<"$STDERR_OK"; then
   fail "F5: a valid log with no session_id wrongly warned (stderr: $STDERR_OK)"
 else
   ok "F5: a valid log with no session_id stays quiet — the new warning is read-failure only"
@@ -530,7 +530,7 @@ fi
 # A third, still-different identity — so this exercises the adoption path again
 # rather than the pointer marker G_KEY_2 just published.
 G_ERR="$(resolve_key "$H_G" "claude=9003|start=Tue Sep  2 09:15:00 2026" "$G_ANCHOR" err)"
-if printf '%s' "$G_ERR" | grep -q "kept its ORIGINAL key '$G_KEY_1'"; then
+if grep -q "kept its ORIGINAL key '$G_KEY_1'" <<<"$G_ERR"; then
   ok "G2: adoption after drift is announced on stderr, naming the retained key"
 else
   fail "G2: no drift note emitted (stderr: $G_ERR)"
@@ -599,8 +599,8 @@ if [[ "$AMBIG_KEY" == "fallback-bbbbbbbbbbbbbbbbbbbb" ]]; then
 else
   fail "G7: ambiguity resolved to '$AMBIG_KEY' instead of the newest-epoch key"
 fi
-if printf '%s' "$AMBIG_ERR" | grep -q 'imk-older' && printf '%s' "$AMBIG_ERR" | grep -q 'imk-newer' \
-   && printf '%s' "$AMBIG_ERR" | grep -q 'DIFFERENT keys'; then
+if grep -q 'imk-older' <<<"$AMBIG_ERR" && grep -q 'imk-newer' <<<"$AMBIG_ERR" \
+   && grep -q 'DIFFERENT keys' <<<"$AMBIG_ERR"; then
   ok "G8: the ambiguity WARN names every candidate marker rather than picking silently"
 else
   fail "G8: ambiguity was not warned about by name (stderr: $AMBIG_ERR)"
@@ -641,7 +641,7 @@ fi
 MISSING_LOG="$TMP_DIR/no-such-session-log.json"
 SETLOG_ERR="$("$SET_LOG" "$MISSING_LOG" '.mode = $v' --arg v rapid-fire 2>&1 >/dev/null)"
 SETLOG_RC=$?
-if [[ $SETLOG_RC -ne 0 ]] && printf '%s' "$SETLOG_ERR" | grep -q "$MISSING_LOG"; then
+if [[ $SETLOG_RC -ne 0 ]] && grep -q "$MISSING_LOG" <<<"$SETLOG_ERR"; then
   ok "G13: set-log.sh on a missing path exits non-zero and names the path"
 else
   fail "G13: set-log.sh missing-path failure was quiet (rc=$SETLOG_RC stderr: $SETLOG_ERR)"

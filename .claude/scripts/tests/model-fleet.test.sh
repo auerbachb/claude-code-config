@@ -45,7 +45,7 @@ check_fails() {
   fi
   # `--` before the pattern: several expected messages start with `--flag`,
   # which grep would otherwise parse as its own option.
-  if ! printf '%s' "$out" | grep -qE -- "$want_re"; then
+  if ! grep -qE -- "$want_re" <<<"$out"; then
     fail "$desc (rc $rc as expected, but message did not match /$want_re/)"
     return
   fi

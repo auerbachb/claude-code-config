@@ -879,10 +879,10 @@ for ISSUE in "${CANDIDATES[@]}"; do
     esac
   fi
 
-  if [[ -n "$LABELED_NUMS" ]] && printf '%s\n' "$LABELED_NUMS" | grep -qx "$ISSUE"; then
+  if [[ -n "$LABELED_NUMS" ]] && grep -qx "$ISSUE" <<<"$LABELED_NUMS"; then
     add_evidence "in-progress label present on #$ISSUE"
   fi
-  if [[ -n "$OFFERED_NUMS" ]] && printf '%s\n' "$OFFERED_NUMS" | grep -qx "$ISSUE"; then
+  if [[ -n "$OFFERED_NUMS" ]] && grep -qx "$ISSUE" <<<"$OFFERED_NUMS"; then
     add_evidence "active-work-cap: #$ISSUE is already offered work"
   fi
 
@@ -1093,7 +1093,7 @@ for ISSUE in "${CANDIDATES[@]}"; do
 
   # -- paused PR fleet -------------------------------------------------------------
   if (( FLEET_PAUSED )) && [[ -n "$LINKED_PR" ]]; then
-    if printf '%s\n' "$FLEET_PRS" | grep -qx "$LINKED_PR"; then
+    if grep -qx "$LINKED_PR" <<<"$FLEET_PRS"; then
       OWNED=1
       FLEET_OWNED=1
       RESUMABLE=1

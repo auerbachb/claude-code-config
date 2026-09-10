@@ -113,8 +113,8 @@ else
   fail "coverage >= 0.6 — got $(top_coverage)"
 fi
 # Guard the premise: a title-only search would have missed it.
-if printf '%s' "$(jq -r '.[] | select(.number == 638) | .title' "$WORK/open.json")" \
-   | grep -qi "polling-state-gate"; then
+if grep -qi "polling-state-gate" \
+     <<<"$(jq -r '.[] | select(.number == 638) | .title' "$WORK/open.json")"; then
   fail "fixture premise broken — #638's title mentions polling-state-gate"
 else
   ok "premise holds: #638's title shares none of the finding's distinctive terms"
