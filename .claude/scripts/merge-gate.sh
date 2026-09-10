@@ -533,7 +533,14 @@ fi
 # The page fold goes through a pipe, never `--argjson`: a long-lived PR's thread
 # list is large enough to blow the jq command line (ARG_MAX — issues #1557/#1565).
 # `printf` is a shell builtin writing to a pipe, so no exec limit applies.
-THREADS_NODES='[]'
+#
+# Each page's `nodes` array is validated and stashed as its OWN element of
+# THREADS_PAGE_NODES, and the pages are concatenated ONCE after the walk. Folding
+# into a single accumulator variable per page would re-serialize and re-parse the
+# whole thread list on every iteration — quadratic in page count, and the
+# transient shell values grow with it. Here every page is parsed exactly twice
+# (validate, then the single final `add`), so the walk stays linear.
+THREADS_PAGE_NODES=('[]')   # seeded: "${arr[@]}" on an empty array trips `set -u`
 THREADS_CURSOR="null"   # -F (not -f) types this as a real GraphQL null on page 1
 THREADS_PAGES=0
 # Runaway guard: 200 pages is 20,000 threads, orders of magnitude past any real
@@ -562,13 +569,14 @@ while :; do
   # "no more pages" (the single-page response shape every merge-gate test stub
   # in this repo emits), but a PRESENT value that is not a boolean is fatal —
   # a string "false" would otherwise end the walk on a page that had more.
-  if ! THREADS_NODES=$(printf '%s\n%s\n' "$THREADS_NODES" "$THREADS_PAGE" \
-      | jq -cs 'if (.[1].data.repository.pullRequest.reviewThreads.nodes | type) == "array"
-                then .[0] + .[1].data.repository.pullRequest.reviewThreads.nodes
-                else error("reviewThreads.nodes is not an array") end' 2>/dev/null) \
-      || [[ -z "$THREADS_NODES" ]]; then
+  if ! THREADS_PAGE_ARRAY=$(printf '%s' "$THREADS_PAGE" \
+      | jq -c 'if (.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
+               then .data.repository.pullRequest.reviewThreads.nodes
+               else error("reviewThreads.nodes is not an array") end' 2>/dev/null) \
+      || [[ -z "$THREADS_PAGE_ARRAY" ]]; then
     die_api "GraphQL-reviewThreads page parse"
   fi
+  THREADS_PAGE_NODES+=("$THREADS_PAGE_ARRAY")
   THREADS_PAGES=$((THREADS_PAGES + 1))
   if ! THREADS_HAS_NEXT=$(printf '%s' "$THREADS_PAGE" \
       | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage as $h
@@ -587,10 +595,12 @@ while :; do
     die_api "GraphQL-reviewThreads hasNextPage without endCursor"
   fi
 done
-# Re-wrap into the single-response shape every consumer already reads, so
-# pagination stays confined to this block.
-if ! THREADS_JSON=$(printf '%s\n' "$THREADS_NODES" \
-    | jq -c '{data: {repository: {pullRequest: {reviewThreads: {nodes: .}}}}}' 2>/dev/null) \
+# Concatenate every page ONCE, and re-wrap into the single-response shape every
+# consumer already reads, so pagination stays confined to this block. `-s` slurps
+# the page arrays into an array-of-arrays; `add` flattens one level, preserving
+# page order. Still a pipe, never `--argjson`, for the same ARG_MAX reason.
+if ! THREADS_JSON=$(printf '%s\n' "${THREADS_PAGE_NODES[@]}" \
+    | jq -cs '{data: {repository: {pullRequest: {reviewThreads: {nodes: (add // [])}}}}}' 2>/dev/null) \
     || [[ -z "$THREADS_JSON" ]]; then
   die_api "GraphQL-reviewThreads assembly"
 fi
