@@ -1735,7 +1735,9 @@ fi
 
 # The projection is applied IN PLACE over $DOC, and only when the helper wrote
 # back the report it was given: every row, and every field that already carried
-# a value returned unchanged. A projection may only FILL BLANKS. Anything else
+# a value returned unchanged. A projection may only fill THE SEVEN BLANKS IT
+# OWNS — a figure appearing in `overage` or a reset this run could not read did
+# not come from any provider, and the table has no way to say so. Anything else
 # leaves $DOC exactly as it was — every projection field already null — and
 # says DEGRADED once. Counting rows alone is not enough, because the helper is
 # an ARBITRARY EXECUTABLE: AI_QUOTAS_FORECAST_BIN points this at anything on
@@ -1767,7 +1769,15 @@ apply_forecast() {
   fi
   if [[ "$rc" -eq 0 && -s "$out" && -n "$want" ]] &&
      jq -e --slurpfile sent "$DOC" \
-       '($sent[0]) as $i
+       '# The ONLY fields this helper is here to write. A blank anywhere else —
+        # `overage`, already null on every row when the cheapest-next helper
+        # degraded, or a reset this run could not read — is a blank the
+        # projection has no business filling: a figure appearing there did not
+        # come from any provider and nothing downstream could tell.
+        ["usage_start_epoch", "usage_start_is_floor", "usage_start_day",
+         "usage_start_display", "pct_per_day", "days_left",
+         "days_left_note"] as $writable
+        | ($sent[0]) as $i
         | . as $o
         | ($o | type) == "object"
           and ($o.rows | type) == "array"
@@ -1781,17 +1791,25 @@ apply_forecast() {
           # would leave the field off the document altogether, and the one
           # report shape a consumer can rely on is the reason it was declared
           # null rather than omitted in the first place.
+          # The KEY SET is identical, top level and every row. `keys` sorts, so
+          # this is set equality: nothing dropped, and nothing added either —
+          # every field the projection writes is already declared on the row,
+          # so a key that was not sent has no legitimate way to come back.
+          and ($o | keys) == ($i | keys)
+          # Nothing outside the rows is writable at all: the projection is a
+          # per-row property, so schema_version, the threshold and basis and
+          # cheapest_next come back exactly as they went out.
           and (($i | del(.rows) | to_entries)
-               | all(. as $e
-                     | ($o | has($e.key))
-                       and ($e.value == null or $o[$e.key] == $e.value)))
+               | all(. as $e | $o[$e.key] == $e.value))
           and ([range(0; $i.rows | length)]
                | all(. as $ix
-                     | ($i.rows[$ix] | to_entries)
-                     | all(. as $e
-                           | ($o.rows[$ix] | has($e.key))
-                             and ($e.value == null
-                                  or $o.rows[$ix][$e.key] == $e.value))))' \
+                     | ($o.rows[$ix] | type) == "object"
+                       and ($o.rows[$ix] | keys) == ($i.rows[$ix] | keys)
+                       and (($i.rows[$ix] | to_entries)
+                            | all(. as $e
+                                  | ($e.value == null
+                                     and ($writable | index($e.key)) != null)
+                                    or $o.rows[$ix][$e.key] == $e.value))))' \
        "$out" >/dev/null 2>&1; then
     [[ ! -s "$TMP/forecast.err" ]] || cat "$TMP/forecast.err" >&2
     mv "$out" "$DOC" 2>/dev/null || warn "DEGRADED: could not apply the projection to this report"

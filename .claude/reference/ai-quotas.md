@@ -1060,10 +1060,17 @@ That seam is also the reason the reader cannot take the helper's word for what c
 checked against the one that was sent: same rows, and every field that already **carried a
 value** — `schema_version`, the threshold and basis, `cheapest_next`, and on each row the
 provider, label, status and the figure itself — returned unchanged. A field that was
-`null` on the way in is one the helper is there to fill, and only those may change. Every
-key has to come back either way: a blank the helper **deleted** instead of filling would
-leave the field off the document, and one report shape whatever ran is exactly why those
-fields are declared `null` on rows nothing was projected for.
+`null` on the way in is one the helper is there to fill — and only the **seven** it owns:
+`usage_start_epoch`, `usage_start_is_floor`, `usage_start_day`, `usage_start_display`,
+`pct_per_day`, `days_left`, `days_left_note`. A figure appearing in `overage` (null on
+every row whenever the cheapest-next helper degraded) came from no provider, and the
+table has no way to say so.
+
+The key set is identical besides, top level and every row. A blank the helper **deleted**
+instead of filling would leave the field off the document, and one report shape whatever
+ran is exactly why those fields are declared `null` on rows nothing was projected for; a
+key that was never **sent** has no legitimate way back, because every value the projection
+writes already has a null waiting for it.
 
 Counting rows is not enough. A same-length document that dropped `schema_version` or a
 row's `provider`, or that rewrote a `used_pct` this run actually measured, is well-formed,

@@ -1503,7 +1503,12 @@ check_contains "$ERR" "LEFT" "and which columns lost their figures because of it
 # which is what a helper that half-ran would leave.
 check_contains "$(table_only "$OUT")" "%/DAY" \
   "the columns are still there, so the table has one shape either way"
-check_eq "$(printf '%s' "$OUT" | awk '/^ACCOUNT /{next} /^[[:space:]]*$/{exit} {print $4}' | sort -u | tr -d '\n')" "-" \
+# The column is found by NAME in the header rather than counted to. Reading a
+# fixed field number would keep passing against whatever ends up fourth after
+# the next column change, and reading from $OUT rather than the table would let
+# a DEGRADED line printed above it supply the value being asserted on.
+check_eq "$(table_only "$OUT" | awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "START") c = i; next }
+                                     c { print $c }' | sort -u | tr -d '\n')" "-" \
   "control(-): and every START cell is a dash rather than a figure nobody computed"
 FORECAST_BIN_OVERRIDE=""
 check_contains "$OUT" "OVERAGE" "the rest of the table still renders"
@@ -1580,6 +1585,39 @@ check_eq "$(printf '%s' "$DOC" | jq -r \
   "and every row still HAS pct_per_day, because the document was discarded whole"
 check_eq "$(field_of claude-one@example.com "7-day" pct_per_day)" "null" \
   "carrying it as null — the shape a consumer gets when nothing was projected"
+
+# Filling a blank the projection does NOT own. `overage` is null on every row
+# whenever the cheapest-next helper degraded, and a price appearing in it did
+# not come from any provider — the report would state a dollar figure nobody
+# read, in the column owners use to choose what to spend next, with exit 0.
+# Only the seven fields the projection declares may be written.
+cat > "$TMP/foreign-field-forecast.sh" <<'FOREIGN_FIELD_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(.overage = "$42.00" | . + {pct_per_day: 7.5})'
+FOREIGN_FIELD_FORECAST
+chmod +x "$TMP/foreign-field-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/foreign-field-forecast.sh"
+run
+check_eq "$RC" "0" "a helper that fills a field it does not own does not fail the report"
+check_contains "$ERR" "DEGRADED" "filling a blank outside the projection is a degradation"
+check_not_contains "$OUT" "42.00" "and the fabricated figure never reaches the table"
+
+# A field the report never declared. Every value the projection writes has a
+# null already waiting for it on the row, so a key that was not sent has no
+# legitimate way back — and a --json consumer reading a field this reader never
+# promised is reading whatever the helper felt like saying.
+cat > "$TMP/extra-field-forecast.sh" <<'EXTRA_FIELD_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(. + {pct_per_day: 7.5, projected_spend_usd: 99})'
+EXTRA_FIELD_FORECAST
+chmod +x "$TMP/extra-field-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/extra-field-forecast.sh"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r \
+  '.rows | map(has("projected_spend_usd")) | any | tostring')" "false" \
+  "a field the report never declared does not reach --json"
+check_eq "$(field_of claude-one@example.com "7-day" pct_per_day)" "null" \
+  "and the projection that arrived with it is discarded whole"
 
 # Rows that are not objects at all. The comparison the check runs against each
 # row is only defined over objects, so the arm that matters is what happens
