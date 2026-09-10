@@ -287,7 +287,7 @@ minutes earlier that the search has not indexed yet.
 
 ### Body and never-silent
 
-Use `/issue-maker`'s canonical 6-section body, its label-intersection rule (only
+Use `/issue-maker`'s canonical 7-section body, its label-intersection rule (only
 labels that already exist), and its closing-URL convention. Include the marker,
 the code, the severity, the observed-vs-expected pair from the finding, and the
 window measured. Footer: `_Captured via /review-stack-audit._`
