@@ -1471,6 +1471,16 @@ printf '%s\n' '{"ts":"2026-09-09T09:00:00Z","provider":"codex","label":"a@b.c","
   >> "$(history_path)"
 run schedule status
 check_contains "$OUT" "LAST SNAPSHOT: 2026-09-09T09:00:00Z" "a scheduled snapshot is reported with its time"
+# An OLDER scheduled line appended after the newer one — what a slow run
+# finishing behind a quick one leaves, since a row carries the clock its run
+# started on. `status` must agree with the reader's own footer about which
+# reading is the latest; two commands answering that differently is worse
+# than either being wrong.
+printf '%s\n' '{"ts":"2026-09-07T09:00:00Z","provider":"codex","label":"a@b.c","nickname":null,"window":"7-day","used_pct":9,"resets_at_epoch":null,"source":"scheduled"}' \
+  >> "$(history_path)"
+run schedule status
+check_contains "$OUT" "LAST SNAPSHOT: 2026-09-09T09:00:00Z" \
+  "and it is the NEWEST scheduled reading, not whichever line landed last"
 
 run schedule remove
 check_eq "$RC" "0" "schedule remove exits 0"

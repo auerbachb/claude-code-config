@@ -1207,6 +1207,40 @@ check_eq "$(history_count)" "1" "a row with no figure appends no snapshot line"
 check_eq "$(history_lines | jq -r '.provider')" "claude" \
   "control(+): the row that did read appended exactly one"
 
+# --- 17b-ii. a history path that is a symlink is refused ---------------------
+#
+# `-f` and `-e` both FOLLOW a link, so without an explicit check the chmod
+# would retarget an unrelated file's mode and the append would write quota
+# JSON into it — and a DANGLING link would be followed into existence.
+
+overage_case 40 50
+SYMLINK_TARGET="$TMP/not-the-history.txt"
+printf 'pre-existing content\n' > "$SYMLINK_TARGET"
+chmod 644 "$SYMLINK_TARGET"
+mkdir -p "$(dirname "$HISTORY")"
+rm -f "$HISTORY"
+ln -s "$SYMLINK_TARGET" "$HISTORY"
+run
+check_eq "$RC" "0" "a symlinked history path does not fail the run"
+check_contains "$ERR" "symbolic link" "it says why nothing was recorded, on stderr like every other warn"
+check_eq "$(cat "$SYMLINK_TARGET")" "pre-existing content" \
+  "the link target is not written to"
+check_eq "$(ls -l "$SYMLINK_TARGET" | cut -c1-10)" "-rw-r--r--" \
+  "and its mode is left alone — the chmod never reached it"
+
+# The dangling half of the same rule: `-e` is false for a link to nothing, so
+# the create branch would bring the target into existence.
+overage_case 40 50
+DANGLING_TARGET="$TMP/never-created.jsonl"
+rm -f "$DANGLING_TARGET"
+mkdir -p "$(dirname "$HISTORY")"
+rm -f "$HISTORY"
+ln -s "$DANGLING_TARGET" "$HISTORY"
+run
+check_eq "$RC" "0" "a dangling symlink does not fail the run either"
+check_eq "$(test -e "$DANGLING_TARGET" && echo created || echo absent)" "absent" \
+  "and its target is not created"
+
 # --- 17c. --quiet is the unattended run --------------------------------------
 
 overage_case 40 50
@@ -1285,6 +1319,39 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "claude") | .n
   "and null — not a missing key — on a row without one"
 check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .nickname' | tail -n 1)" "GPT LM" \
   "the snapshot records the nickname alongside the label"
+
+# `nick` refuses control characters, but this reader accepts any compatible
+# 1.x registry — a hand-edited one, or one a future sibling wrote — and the
+# value goes straight into a terminal table. A tab splits the columns, a
+# newline forges a row, and an escape sequence is executed rather than shown.
+overage_case 40 50
+NICK_HOSTILE="$TMP/hostile-nick.json"
+jq '.accounts = [.accounts[]
+      | if .provider == "codex" then . + {nickname: "col\tsplit"} else . end]' \
+  "$CONFIG" > "$NICK_HOSTILE" && mv "$NICK_HOSTILE" "$CONFIG"
+# The fixture builds its own premise: a nickname that did not actually contain
+# a tab would pass every assertion below for the wrong reason.
+check_eq "$(jq -r '[.accounts[].nickname // empty | explode[] | select(. == 9)] | length' "$CONFIG")" "1" \
+  "premise: the registry really does hold a nickname with a tab in it"
+run
+check_eq "$RC" "0" "a registry nickname holding a control character does not fail the run"
+check_not_contains "$OUT" "col	split" "the raw value never reaches the table"
+check_contains "$OUT" "codex-one@example.com" \
+  "which falls back to the label, exactly as an absent nickname does"
+run --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "codex") | .nickname')" "null" \
+  "control(+): --json carries it as null, the same shape an account with no nickname has"
+
+overage_case 40 50
+NICK_ESC="$TMP/esc-nick.json"
+jq '.accounts = [.accounts[]
+      | if .provider == "codex" then . + {nickname: "esc[2Jhere"} else . end]' \
+  "$CONFIG" > "$NICK_ESC" && mv "$NICK_ESC" "$CONFIG"
+check_eq "$(jq -r '[.accounts[].nickname // empty | explode[] | select(. == 27)] | length' "$CONFIG")" "1" \
+  "premise: and one holding a real escape character"
+run
+check_not_contains "$OUT" "esc" "an escape sequence is dropped rather than handed to the terminal"
+check_contains "$OUT" "codex-one@example.com" "control(+): that row fell back to its label too"
 
 # --- 17f. last_scheduled_snapshot_at is on every document --------------------
 

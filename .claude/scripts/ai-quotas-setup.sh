@@ -1745,11 +1745,18 @@ action_schedule_status() {
   # line from a run killed mid-append does not cost the answer. The `type`
   # guard is the other half of that: `fromjson?` catches only the PARSE error,
   # so a line holding a bare `5` parses fine and then aborts jq on `.source`.
+  #
+  # `sort` before `tail`, for the reason the reader's own footer does it: rows
+  # carry the clock their run STARTED on and land where it FINISHED, so a slow
+  # run appending after a quick one leaves an older ts on the last line. This
+  # sibling has to agree with `/quotas` about which reading is the latest —
+  # two commands answering the same question differently is worse than either
+  # answer being wrong. Fixed-width UTC, so the sort is exact.
   if [[ -r "$HISTORY_FILE" ]]; then
     last="$(jq -R -r 'fromjson?
                       | select(type == "object" and .source == "scheduled")
                       | .ts // empty' \
-      "$HISTORY_FILE" 2>/dev/null | tail -n 1 || true)"
+      "$HISTORY_FILE" 2>/dev/null | sort | tail -n 1 || true)"
   fi
   if [[ -n "$last" ]]; then
     echo "LAST SNAPSHOT: ${last} (scheduled)"

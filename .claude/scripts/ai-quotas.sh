@@ -1445,8 +1445,21 @@ for (( i = 0; i < COUNT; i++ )); do
   # that is not a string is dropped rather than stringified: `jq -r` would
   # render `{"a":1}` into the ACCOUNT column verbatim, and a column showing
   # a JSON fragment is worse than one showing the label.
+  #
+  # Control characters are dropped on READ as well, not only refused on write.
+  # `/quotas-setup nick` rejects them, but this reader accepts any compatible
+  # `1.x` registry — a hand-edited one, or one written by a future sibling —
+  # and the value goes straight into a terminal table: a tab splits the
+  # columns, a newline forges a row, and an escape sequence is executed by the
+  # terminal rather than shown. Tested by `explode` rather than a regex so a
+  # NUL is covered like any other. The fallback is the same one an absent
+  # nickname takes, so the ACCOUNT column shows the label — silently, matching
+  # the non-string case directly above.
   ROW_NICKNAME="$(printf '%s' "$CONFIG" | jq -r --argjson i "$i" \
-    '.accounts[$i].nickname // "" | if type == "string" then . else "" end' 2>/dev/null || true)"
+    '.accounts[$i].nickname // ""
+     | if type == "string"
+         and ((explode | map(select(. < 32 or . == 127)) | length) == 0)
+       then . else "" end' 2>/dev/null || true)"
 
   # Every account is read on its own. A provider that fails takes its row
   # down with it and nothing else — which is the whole point of a report
@@ -1619,6 +1632,17 @@ append_history() { # <doc-json-file>
   # Every row failed to read. Not an error and not worth a warning: the
   # statuses in the table already say so, row by row.
   [[ -s "$tmp" ]] || return 0
+  # A SYMLINK is refused before anything else, and before the create below —
+  # every other test here follows one. `-f` is true for a link to a regular
+  # file, so without this the chmod would retarget an unrelated file's mode
+  # and the append would write quota JSON into it; `-e` is FALSE for a
+  # dangling link, so the create branch would follow it and bring its target
+  # into existence. Neither is something a tool whose contract is that it
+  # writes nothing that matters may do to a path it did not choose.
+  if [[ -L "$HISTORY_FILE" ]]; then
+    warn "$HISTORY_FILE is a symbolic link — nothing was recorded, and neither the link nor its target was touched"
+    return 0
+  fi
   # Created through a 077 umask so the file is never briefly world-readable
   # between creation and the mode being set — the same reasoning the config
   # writer uses for its temp file.

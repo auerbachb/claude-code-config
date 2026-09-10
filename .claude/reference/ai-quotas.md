@@ -69,7 +69,7 @@ that has to guess is a reader that reports the wrong number.
 | `accounts[].provider` | yes | `claude`, `codex`, or `cursor`. |
 | `accounts[].label` | yes | What the user typed — for these accounts, the subscription email. Unique per provider; it names the profile directory, so it must start with a letter or digit, may then contain letters, digits and `. _ @ + -`, and is capped at 128 characters (no slashes, nothing that could climb out of the profile root). |
 | `accounts[].profile_dir` | yes | Absolute path to this account's isolated profile. |
-| `accounts[].nickname` | no | Short display name (#1700), set by `add … --nick <name>` or `nick <label> <name>`. `/quotas` shows it in place of the label. Max 32 characters; no tabs, newlines, control characters, or leading/trailing spaces — it is rendered into a tab-separated table, and a tab in it would split the row into columns that no longer line up with their headers. Clearing it (`nick <label> ""`) **deletes the key** rather than storing `""`. |
+| `accounts[].nickname` | no | Short display name (#1700), set by `add … --nick <name>` or `nick <label> <name>`. `/quotas` shows it in place of the label. Max 32 characters; no tabs, newlines, control characters, or leading/trailing spaces — it is rendered into a tab-separated table, and a tab in it would split the row into columns that no longer line up with their headers. Clearing it (`nick <label> ""`) **deletes the key** rather than storing `""`. Enforced on **read** as well as on write: the reader accepts any compatible `1.x` registry — hand-edited, or written by a future sibling — and a nickname carrying a control character is dropped there too, falling back to the label exactly as an absent one does. |
 | `accounts[].added_at` | yes | UTC ISO-8601 registration timestamp. |
 | `accounts[].credential_ref` | no | macOS + `claude` only. The **name** of the Keychain item the login created — `{"kind":"macos-keychain","service":"…"}`. A name, never a value. |
 
@@ -784,7 +784,17 @@ blocks the report it decorates.
 that began at 09:00 and appended at 09:05 sits after a quick one that began at 09:02. The
 `LAST SNAPSHOT` footer therefore takes the newest `ts`, not the last line; the timestamps
 are fixed-width UTC `%Y-%m-%dT%H:%M:%SZ`, so ordering them is a lexicographic sort.
-Anything else reading this file for a latest value owes itself the same care.
+`/quotas-setup schedule status` keeps its own copy of that lookup and sorts identically —
+two commands answering "when did the job last run" differently is worse than either
+answer being wrong. Anything else reading this file for a latest value owes itself the
+same care.
+
+**The history path is never followed through a symlink.** `-f` is true for a link to a
+regular file and `-e` is false for a dangling one, so the plain tests would have let the
+`chmod 600` retarget an unrelated file's mode, the append write quota JSON into it, and a
+dangling link bring its target into existence. A symlink at that path is refused outright,
+with a warning, before the create, the mode check, or the append — the run still exits 0,
+because this is a record and not a gate.
 
 ### The daily unattended job
 
