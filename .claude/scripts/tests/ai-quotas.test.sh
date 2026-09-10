@@ -1509,6 +1509,107 @@ FORECAST_BIN_OVERRIDE=""
 check_contains "$OUT" "OVERAGE" "the rest of the table still renders"
 check_contains "$OUT" "40%" "including every figure that was read"
 
+# A projection may only FILL BLANKS. The dangerous shape here is a helper that
+# returns the RIGHT NUMBER OF ROWS while dropping fields off them: a row-count
+# check passes it, and the report prints missing the very fields a consumer
+# reads it for, with exit 0. AI_QUOTAS_FORECAST_BIN points this at anything on
+# disk, so the reader has to survive it rather than trust the repo copy.
+#
+# The pass-through stub is the CONTROL, and it goes first. Without it a
+# rejection below could not be attributed to the dropped field — a stub
+# mechanism that simply never produced an accepted document would fail the
+# same way and the assertion would pass for the wrong reason.
+cat > "$TMP/passthrough-forecast.sh" <<'PASSTHROUGH_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(. + {pct_per_day: 7.5, days_left: 8.0, usage_start_is_floor: false})'
+PASSTHROUGH_FORECAST
+chmod +x "$TMP/passthrough-forecast.sh"
+overage_case 40 50
+FORECAST_BIN_OVERRIDE="$TMP/passthrough-forecast.sh"
+run --json
+check_eq "$(field_of claude-one@example.com "7-day" pct_per_day)" "7.5" \
+  "control(+): a helper that only fills blanks has its projection applied"
+run
+check_not_contains "$ERR" "DEGRADED" \
+  "control(+): and nothing is reported as degraded"
+
+# Same length, every projection field filled — but `provider` is gone off each
+# row, and the top-level `schema_version` with it.
+cat > "$TMP/stripping-forecast.sh" <<'STRIPPING_FORECAST'
+#!/usr/bin/env bash
+jq 'del(.schema_version)
+    | .rows |= map(del(.provider) + {pct_per_day: 7.5, days_left: 8.0})'
+STRIPPING_FORECAST
+chmod +x "$TMP/stripping-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/stripping-forecast.sh"
+run
+check_eq "$RC" "0" "a helper that strips fields off the report does not fail it"
+check_contains "$ERR" "DEGRADED" "the stripped report is stated as a degradation"
+check_not_contains "$ERR" "failed (exit" \
+  "and is not reported as an exit-code failure, because the exit was zero"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r '.schema_version')" "1.0" \
+  "schema_version survives, because the stripped document was discarded whole"
+check_eq "$(field_of claude-one@example.com "7-day" provider)" "claude" \
+  "and so does every row's provider"
+check_eq "$(printf '%s' "$DOC" | jq -r \
+  '.rows[] | select(.label == "claude-one@example.com") | .pct_per_day | tostring')" "null" \
+  "with no figure from a document that could not be trusted to carry the rest"
+
+# Overwriting a MEASURED figure is the same failure wearing different clothes:
+# the document is complete, so a field-presence check passes it, and the table
+# prints a usage percentage this run never read.
+# DELETING a blank is not filling it. A helper that drops `pct_per_day` off
+# every row rather than computing one returns a document whose every surviving
+# field matches — and a check that excused null-valued keys from having to come
+# back would take it, leaving `--json` consumers a row where the field is
+# ABSENT rather than null. One shape either way is the whole reason these
+# fields are declared null on rows nothing was projected for.
+cat > "$TMP/deleting-forecast.sh" <<'DELETING_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(del(.pct_per_day))'
+DELETING_FORECAST
+chmod +x "$TMP/deleting-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/deleting-forecast.sh"
+run
+check_eq "$RC" "0" "a helper that deletes a blank instead of filling it does not fail the report"
+check_contains "$ERR" "DEGRADED" "the deleted field is stated as a degradation"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r \
+  '.rows | map(has("pct_per_day")) | all | tostring')" "true" \
+  "and every row still HAS pct_per_day, because the document was discarded whole"
+check_eq "$(field_of claude-one@example.com "7-day" pct_per_day)" "null" \
+  "carrying it as null — the shape a consumer gets when nothing was projected"
+
+# Rows that are not objects at all. The comparison the check runs against each
+# row is only defined over objects, so the arm that matters is what happens
+# when it is not: the run has to end in the SAME discard-and-degrade as every
+# other malformed answer, rather than in an error escaping to the terminal or
+# a report built on rows nobody can read.
+cat > "$TMP/scalar-rows-forecast.sh" <<'SCALAR_ROWS_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map("gone")'
+SCALAR_ROWS_FORECAST
+chmod +x "$TMP/scalar-rows-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/scalar-rows-forecast.sh"
+run
+check_eq "$RC" "0" "rows that are not objects do not fail the report"
+check_contains "$ERR" "DEGRADED" "they degrade like any other answer that cannot be trusted"
+check_contains "$OUT" "claude-one@example.com" "and every account still reports from the rows this run built"
+
+cat > "$TMP/overwriting-forecast.sh" <<'OVERWRITING_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(.used_pct = 99 | . + {pct_per_day: 7.5})'
+OVERWRITING_FORECAST
+chmod +x "$TMP/overwriting-forecast.sh"
+FORECAST_BIN_OVERRIDE="$TMP/overwriting-forecast.sh"
+run
+FORECAST_BIN_OVERRIDE=""
+check_eq "$RC" "0" "a helper that rewrites a figure it was given does not fail the report"
+check_contains "$ERR" "DEGRADED" "that rewrite is a degradation too"
+check_contains "$OUT" "40%" "and the figure this run actually read is what prints"
+check_not_contains "$OUT" "99%" "never the one the helper substituted"
+
 # --- 17h. history never changes the exit status ------------------------------
 #
 # The history path is made unwritable by occupying it with a DIRECTORY rather

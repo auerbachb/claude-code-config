@@ -1734,10 +1734,14 @@ else
 fi
 
 # The projection is applied IN PLACE over $DOC, and only when the helper wrote
-# a document carrying every row it was given. Anything else leaves $DOC exactly
-# as it was — every projection field already null — and says DEGRADED once. A
-# partial document silently swallowing rows would print a five-account report
-# as a three-account one, successfully.
+# back the report it was given: every row, and every field that already carried
+# a value returned unchanged. A projection may only FILL BLANKS. Anything else
+# leaves $DOC exactly as it was — every projection field already null — and
+# says DEGRADED once. Counting rows alone is not enough, because the helper is
+# an ARBITRARY EXECUTABLE: AI_QUOTAS_FORECAST_BIN points this at anything on
+# disk, and a same-length document that dropped schema_version, cheapest_next,
+# or a row's provider and status would print a report missing the very fields
+# a consumer reads it for, successfully.
 apply_forecast() {
   local rc=0 want out="$TMP/forecast.json"
   want="$(jq '.rows | length' "$DOC" 2>/dev/null || true)"
@@ -1762,8 +1766,32 @@ apply_forecast() {
     AI_QUOTAS_NOW="$NOW" "$FORECAST_SH" < "$DOC" > "$out" 2>"$TMP/forecast.err" || rc=$?
   fi
   if [[ "$rc" -eq 0 && -s "$out" && -n "$want" ]] &&
-     jq -e --argjson want "$want" \
-       'type == "object" and (.rows | type == "array") and (.rows | length) == $want' \
+     jq -e --slurpfile sent "$DOC" \
+       '($sent[0]) as $i
+        | . as $o
+        | ($o | type) == "object"
+          and ($o.rows | type) == "array"
+          and ($o.rows | length) == ($i.rows | length)
+          # A projection may only FILL BLANKS. Every field this report already
+          # carried with a value — schema_version, the threshold and basis,
+          # cheapest_next, and on each row the provider, label, status and the
+          # figure itself — has to come back unchanged; a field that was null
+          # on the way in is one the helper is here to fill. PRESENCE is
+          # required either way: a null the helper deleted instead of filling
+          # would leave the field off the document altogether, and the one
+          # report shape a consumer can rely on is the reason it was declared
+          # null rather than omitted in the first place.
+          and (($i | del(.rows) | to_entries)
+               | all(. as $e
+                     | ($o | has($e.key))
+                       and ($e.value == null or $o[$e.key] == $e.value)))
+          and ([range(0; $i.rows | length)]
+               | all(. as $ix
+                     | ($i.rows[$ix] | to_entries)
+                     | all(. as $e
+                           | ($o.rows[$ix] | has($e.key))
+                             and ($e.value == null
+                                  or $o.rows[$ix][$e.key] == $e.value))))' \
        "$out" >/dev/null 2>&1; then
     [[ ! -s "$TMP/forecast.err" ]] || cat "$TMP/forecast.err" >&2
     mv "$out" "$DOC" 2>/dev/null || warn "DEGRADED: could not apply the projection to this report"
@@ -1772,7 +1800,7 @@ apply_forecast() {
   if [[ "$rc" -ne 0 ]]; then
     warn "DEGRADED: quotas-forecast.sh failed (exit ${rc}) — reporting with no figures in the START, %/DAY and LEFT columns"
   else
-    warn "DEGRADED: quotas-forecast.sh exited 0 but did not write a document carrying all ${want:-the input} rows — reporting with no figures in the START, %/DAY and LEFT columns"
+    warn "DEGRADED: quotas-forecast.sh exited 0 but did not write back the report it was given — all ${want:-the input} rows, every recorded figure unchanged — so the projection was discarded; reporting with no figures in the START, %/DAY and LEFT columns"
   fi
   [[ ! -s "$TMP/forecast.err" ]] || sed 's/^/  /' "$TMP/forecast.err" >&2
   return 0

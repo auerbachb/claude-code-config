@@ -1053,6 +1053,26 @@ The reader passes both through explicitly rather than letting them be inherited:
 projection that read a different history, or a different instant, than the table above it
 would disagree with the table it decorates.
 
+### A projection may only fill blanks
+
+That seam is also the reason the reader cannot take the helper's word for what came back.
+`AI_QUOTAS_FORECAST_BIN` points it at an arbitrary executable, so the returned document is
+checked against the one that was sent: same rows, and every field that already **carried a
+value** — `schema_version`, the threshold and basis, `cheapest_next`, and on each row the
+provider, label, status and the figure itself — returned unchanged. A field that was
+`null` on the way in is one the helper is there to fill, and only those may change. Every
+key has to come back either way: a blank the helper **deleted** instead of filling would
+leave the field off the document, and one report shape whatever ran is exactly why those
+fields are declared `null` on rows nothing was projected for.
+
+Counting rows is not enough. A same-length document that dropped `schema_version` or a
+row's `provider`, or that rewrote a `used_pct` this run actually measured, is well-formed,
+passes a shape check, and prints a report missing or misstating the fields a consumer
+reads it for — with exit 0. Any such document is discarded **whole**: `$DOC` stays exactly
+as it was, the three projection columns keep their `-`, and stderr says `DEGRADED` once.
+Half a projection is not better than none, because nothing downstream could tell which
+half it got.
+
 ## Symlink
 
 Per `.claude/rules/skill-symlinks.md`, `/quotas-setup` and `/quotas` are symlinked into
