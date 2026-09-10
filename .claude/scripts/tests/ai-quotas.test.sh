@@ -339,6 +339,12 @@ RC=0
 # Empty means "let ai-quotas.sh resolve the helper itself". Only the
 # degradation cases in section 16 set it.
 CHEAPEST_BIN_OVERRIDE=""
+# Same contract for the projection helper (#1701): empty means the reader
+# resolves its own sibling, which is what every case below wants — the three
+# columns are part of the table now, so a suite that stubbed them out would
+# stop measuring the table the owner sees. Section 17i sets it to exercise the
+# unavailable-helper path.
+FORECAST_BIN_OVERRIDE=""
 
 # The cursor node/helper paths below are PINNED, not overridable (CodeAnt, PR
 # #1689). They used to read `${NODE_BIN_UNDER_TEST:-…}` and
@@ -363,6 +369,7 @@ run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
         AI_QUOTAS_CHEAPEST_BIN="${CHEAPEST_BIN_OVERRIDE-}" \
+        AI_QUOTAS_FORECAST_BIN="${FORECAST_BIN_OVERRIDE-}" \
         AI_QUOTAS_NODE_BIN="$BIN/node-absent" \
         AI_QUOTAS_CURSOR_HELPER="$TMP/no-such-helper.js" \
         "$SCRIPT" "$@" 2>"$errf")"
@@ -1177,8 +1184,14 @@ check_eq "$(ls -l "$HISTORY" | cut -c1-10)" "-rw-------" "the history file is mo
 # than field by field, so a key silently added or dropped fails here instead
 # of in the consumer six weeks later.
 check_eq "$(history_lines | tail -n 1 | jq -r '[keys_unsorted[]] | sort | join(",")')" \
-  "label,nickname,provider,resets_at_epoch,source,ts,used_pct,window" \
+  "label,nickname,provider,resets_at_epoch,source,ts,used_pct,window,window_start_epoch" \
   "a snapshot carries exactly the documented fields"
+# The window this reading belongs to, recorded rather than re-derived later
+# (#1701). A weekly Codex window is its reset minus its own reported duration,
+# which is the figure the projection places every other reading against.
+check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .window_start_epoch' | tail -n 1)" \
+  "$(( WEEK_RESET - 604800 ))" \
+  "and the start of the window it was reported for"
 check_eq "$(history_lines | tail -n 1 | jq -r '.ts')" "2026-09-08T20:00:00Z" \
   "the snapshot timestamp is the run clock, not a second-order guess at it"
 check_eq "$(history_lines | jq -r 'select(.provider == "codex") | .used_pct' | tail -n 1)" "50" \
@@ -1419,6 +1432,82 @@ else
   bad "the five-account table does not fit in 100 columns (widest line: ${FIVE_WIDTH})"
 fi
 check_eq "$(history_count)" "5" "and every one of the five rows was recorded"
+
+# --- 17i. the burn-rate projection reaches the table and --json (#1701) ------
+#
+# The reader does not compute the pace — quotas-forecast.sh does, and its own
+# suite covers the arithmetic. What is asserted here is the WIRING: that the
+# window start each provider derives is recorded and handed over, that the
+# three columns reach the table, that the fields reach --json, and that a run
+# without the helper degrades to a table missing exactly those three columns
+# rather than to a broken one.
+
+reset_state
+overage_case 40 50
+run
+check_contains "$OUT" "START" "the table has a START column"
+check_contains "$OUT" "%/DAY" "and a %/DAY column"
+check_contains "$OUT" "LEFT" "and a LEFT column"
+check_not_contains "$OUT" "PROVIDER" "the PROVIDER column is gone"
+check_not_contains "$OUT" "STATUS" "and so is the STATUS column"
+# The reset cell is the collapsed form now: a weekday and a time, no date and
+# no zone — the countdown beside it and the ET in the heading say the rest.
+check_not_contains "$(table_only "$OUT")" "EDT" \
+  "the table prints the reset without its date and zone"
+check_contains "$(table_only "$OUT")" "8:00 PM" "keeping the weekday and the time"
+# The window this reader placed the reading in is the reset minus the window
+# length the payload reported — the figure every projection is measured from.
+run --json
+check_eq "$(field_of claude-one@example.com "7-day" window_start_epoch)" \
+  "$(( WEEK_RESET - 604800 ))" "a claude weekly row carries its window start"
+check_eq "$(field_of codex-one@example.com "7-day" window_start_epoch)" \
+  "$(( WEEK_RESET - 604800 ))" "and so does a codex one, from its reported duration"
+# 40 % of a week that opened 4d19h ago, projected to a rate and a runway. The
+# exact figures are the forecast suite's business; what matters here is that
+# they are NUMBERS on the row rather than nulls, which is what a run with no
+# projection would leave.
+check_eq "$(printf '%s' "$OUT" | jq -r \
+  '.[] | select(.label == "claude-one@example.com") | .pct_per_day | type')" "number" \
+  "--json carries pct_per_day as a number"
+check_eq "$(field_of claude-one@example.com "7-day" usage_start_is_floor)" "true" \
+  "the first run of a window is a floor start — nothing recorded reaches back further"
+# The only snapshot is this run own reading, so the start is TODAY — day 5 of
+# a window that opened 4d19h ago — carrying the <= that says usage may have
+# begun earlier and nothing recorded can rule it out.
+# GNU form first: GNU date reads `-r` as a FILENAME, so the BSD form tried
+# first would print an unrelated file's weekday on the day one is named for
+# this epoch second. BSD rejects `-d` outright, so this order never misreads.
+ET_TODAY="$(TZ=America/New_York date -d "@$NOW" '+%a' 2>/dev/null \
+  || TZ=America/New_York date -r "$NOW" '+%a' 2>/dev/null)"
+check_eq "$(field_of claude-one@example.com "7-day" usage_start_display)" \
+  "<=${ET_TODAY} d5" \
+  "and the cell says so with a <= prefix on the day of the reading"
+# The long reset string is still on the row even though the table shortened it.
+check_contains "$(field_of claude-one@example.com "7-day" resets_at_et)" "EDT" \
+  "--json keeps the full reset string"
+
+# A helper that does not resolve degrades to a table without those three
+# columns — and says so. Pointed at a path that is not executable, because the
+# reader uses AI_QUOTAS_FORECAST_BIN exclusively: a fall-through would find the
+# repo copy and this case could never be exercised from inside a checkout.
+overage_case 40 50
+FORECAST_BIN_OVERRIDE="$TMP/no-such-quotas-forecast.sh"
+run
+check_eq "$RC" "0" "an unavailable projection helper does not fail the report"
+check_contains "$ERR" "DEGRADED" "it says DEGRADED on stderr"
+check_contains "$ERR" "$FORECAST_BIN_OVERRIDE" \
+  "naming the path it could not use, so the reader is not sent hunting three others"
+check_contains "$ERR" "LEFT" "and which columns lost their figures because of it"
+# The COLUMNS stay — one table shape whatever ran, with the same `-` every
+# other unknown in this table uses. What must not survive is a FIGURE in them,
+# which is what a helper that half-ran would leave.
+check_contains "$(table_only "$OUT")" "%/DAY" \
+  "the columns are still there, so the table has one shape either way"
+check_eq "$(printf '%s' "$OUT" | awk '/^ACCOUNT /{next} /^[[:space:]]*$/{exit} {print $4}' | sort -u | tr -d '\n')" "-" \
+  "control(-): and every START cell is a dash rather than a figure nobody computed"
+FORECAST_BIN_OVERRIDE=""
+check_contains "$OUT" "OVERAGE" "the rest of the table still renders"
+check_contains "$OUT" "40%" "including every figure that was read"
 
 # --- 17h. history never changes the exit status ------------------------------
 #

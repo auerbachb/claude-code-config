@@ -11,6 +11,8 @@ triggers:
   - how much Cursor credit is left
   - which account is cheapest to keep working on
   - what does it cost to keep going past my cap
+  - how fast am I burning through this week
+  - how many days of quota do I have left
 argument-hint: "[--json] [--five-hour] [--account <label>] [--quiet]"
 model: sonnet
 allowed-tools:
@@ -31,12 +33,14 @@ what continuing past it would cost — one row per account per window.
 > quotes are a checked-in table with `last verified` dates, so it is only as fresh as
 > those dates.
 
-> **The recorded history is display data too.** Every run appends one line per readable
-> row to `~/.claude/ai-quotas-history.jsonl`. **No dispatch gate reads that file**, and
-> none may start: it is not an input to `credit-budget.sh`, not a reason to pause, defer,
-> downgrade, or re-route anything. It exists so a later run can say how fast an account
-> is being drained, and that answer is printed to the owner, never acted on. Do not
-> hand-edit it, and do not compute your own verdict from it.
+> **The recorded history is display data too, and so is the projection over it.** Every
+> run appends one line per readable row to `~/.claude/ai-quotas-history.jsonl`, and the
+> START / %/DAY / LEFT columns are read back out of it. **No dispatch gate reads that
+> file or those columns**, and none may start: they are not an input to
+> `credit-budget.sh`, not a reason to pause, defer, downgrade, or re-route anything. The
+> projection says how fast an account is being drained, and that answer is printed to
+> the owner, never acted on. Do not hand-edit the file, and do not compute your own
+> verdict from it.
 
 > **Display only — never a gate.** Nothing this skill produces may gate dispatch, pause
 > work, downgrade a model, defer a launch, or feed `credit-budget.sh`. Quota and spend
@@ -98,10 +102,15 @@ and exit codes live in `"$AI_QUOTAS_SH" --help` — do not restate them here.
 
 ## Step 3 — Read the table
 
-Columns: account, provider, window-or-pool, used %, **overage**, reset time in Eastern, a
-countdown, status, and a note. There is **no REMAIN column** — it was `100 - USED` on
-every row, and the width it cost is what a five-account table needs to fit a normal
-terminal; `remaining_pct` is still on every `--json` row if you want it. The **account**
+Columns: account, window-or-pool, used %, **start**, **%/day**, **left**, **overage**,
+reset (weekday and time, Eastern), a countdown, and a note. There is **no REMAIN column**
+and, since #1701, **no PROVIDER and no STATUS column** — REMAIN was `100 - USED` on every
+row, PROVIDER repeated what the account name already says, and the status word now
+**leads the note** on any row that is not `ok` (`needs-login; /quotas-setup relogin …`),
+which is where the instruction about it already lived. The width they cost is what a
+five-account table needs to fit a normal terminal. `remaining_pct`, `provider`, and
+`status` are still on every `--json` row if you want them, as is the full `resets_at_et`
+string the reset column now shortens. The **account**
 column shows the account's nickname when one is set (`/quotas-setup nick <label> <name>`)
 and the email the provider itself reports otherwise; when the label differs from that
 email the note says
@@ -120,6 +129,9 @@ that is missing is the one there is no figure for.
 
 Each row succeeds or fails on its own. One account's failure never suppresses the rest,
 so a table with a broken row is a complete answer, not a partial one.
+
+The status of a row is the **first thing in its note** when it is not `ok`, and it is on
+every `--json` row as `status` — that is the field to branch on:
 
 | Status | Meaning | What to tell the user |
 |--------|---------|-----------------------|
@@ -164,6 +176,33 @@ watermark, and how the ranking orders included quota before a free reset before 
 overage before a flat fee: `.claude/reference/ai-quotas.md` §"Overage — what continuing
 costs". `.claude/reference/pricing-matrix.md` is a **different wallet** — the review
 stack — and its numbers never apply here.
+
+## Step 3b-ii — The burn-rate columns (START, %/DAY, LEFT)
+
+Three columns say how fast each cap is going, read from the recorded history plus this
+run's own reading:
+
+| Column | Reads as |
+|--------|----------|
+| `START` | `Wed d3` — usage was first recorded on day 3 of this window, a Wednesday. `<=Tue d2` means the record does not reach back to the window start, so usage may have begun **earlier**: the day shown is the latest it can have been, and the rate is computed from the window start. |
+| `%/DAY` | The pace: used percent over days since that start, one decimal. |
+| `LEFT` | Days of runway at that pace — or `resets first`, meaning the window comes back before the account runs out. |
+
+`-` in any of them means there is nothing to project: no window to place the reading in,
+no usage yet, a reading whose window has already reset, or a row that did not read. It
+never means zero usage. A `DEGRADED:` line on stderr naming `quotas-forecast.sh` means
+the projection helper was unavailable for that run — the three columns are then `-` on
+every row, and no other column is affected.
+
+The numbers are an **estimate over day-granularity readings**, and a window with one
+recorded day behind it is a straight line drawn through one point. Say so when you relay
+a `LEFT` figure on a floor (`<=`) row; do not present it as a deadline.
+
+**Restating the boundary at the point of use:** this projection is **informational
+only**. It never gates dispatch, never pauses, defers, or downgrades work, never
+re-routes anything to another account, and never feeds `credit-budget.sh`. "Two days
+left on this account" is a sentence for the owner, not an instruction to you — answer the
+question and stop.
 
 ## Step 3c — The LAST SNAPSHOT line
 
@@ -212,7 +251,11 @@ gate: the same reference, §"Snapshot history, the daily job, nicknames".
 `--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
 cheapest_next, last_scheduled_snapshot_at}` — not the bare row array it emitted
 before #1669. Every row carries `nickname` (`null` when unset) and still carries
-`remaining_pct`, `plan`, and `source` even though the table no longer shows them. Read
+`remaining_pct`, `provider`, `resets_at_et`, `plan`, and `source` even though the table
+no longer shows them, plus the #1701 fields: `window_start_epoch`, `resets_at_et_short`,
+`usage_start_epoch`, `usage_start_is_floor`, `usage_start_day`, `usage_start_display`,
+`pct_per_day`, `days_left`, and `days_left_note`. **`days_left` is a number or `null`,
+never the table's `resets first` wording** — that lives in `days_left_note`. Read
 the rows from
 `.rows`; `cheapest_next` is `null` unless the hint fired. The "no accounts registered"
 and "no account matched" exits emit that same object with an empty `rows`, and a run

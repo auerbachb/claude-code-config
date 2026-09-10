@@ -55,7 +55,7 @@
 #   ~/.claude/ai-quotas-history.jsonl (mode 600, created on first write):
 #
 #     {"ts","provider","label","nickname","window","used_pct",
-#      "resets_at_epoch","source"}
+#      "resets_at_epoch","window_start_epoch","source"}
 #
 #   `ts` is this run's UTC ISO-8601 instant, identical on every row of one
 #   run, so a run is a group rather than a scatter of near-equal times.
@@ -64,6 +64,15 @@
 #   makes a Cursor account's two pool rows two distinct series instead of two
 #   readings of one. `source` is `manual` unless --quiet or
 #   AI_QUOTAS_SOURCE=scheduled says otherwise.
+#
+#   `window_start_epoch` (#1701) is when the window that reading belongs to
+#   OPENED — `resets_at − 7 days` for a Claude week, `resets_at −
+#   windowDurationMins × 60` for Codex, the billing-cycle start for Cursor,
+#   null where this reader could not place it. Recorded rather than re-derived
+#   later: the reset time can move, and a line carrying its own window start
+#   can be assigned to a cycle months on without knowing what the window
+#   length was then. Lines written before #1701 have no such field; the
+#   projection derives one from the window label where it can.
 #
 #   A row that did NOT produce a figure appends NOTHING — no line with a null
 #   percentage, which a later reader would have to tell apart from a real 0 %.
@@ -129,13 +138,47 @@
 #   INFORMATIONAL ONLY, like everything else here. The hint never switches an
 #   account, never purchases anything, and never gates dispatch.
 #
+# THE BURN-RATE PROJECTION (#1701)
+#   Three more columns say how fast each cap is going: START (the first day of
+#   the window any usage was recorded, as a weekday plus `d<N>`), %/DAY, and
+#   LEFT (days of runway at that pace, `resets first` when the window comes
+#   back sooner). They come from quotas-forecast.sh, over the history file
+#   above plus this run own reading — so the very first run projects too. A
+#   START cell prefixed `<=` means the record does not reach back to the
+#   window start: usage may have begun earlier, and the rate is then computed
+#   from the window start, which is the slowest pace the record supports.
+#
+#   `-` in those columns means there is nothing to project: no window to place
+#   the reading in, no usage yet, a reading whose window has already reset, or
+#   a row that did not read. Absent or broken, the helper leaves every one of
+#   them `-` and says DEGRADED once on stderr — the columns stay, so the table
+#   has one shape either way, and no other column is affected.
+#
+#   INFORMATIONAL ONLY, exactly like the hint above. A pace is printed to the
+#   owner and acted on by nobody: it gates no dispatch, pauses no work, and
+#   feeds no budget.
+#
+#   To make room, the table drops the PROVIDER column (the account name
+#   already says which subscription it is), folds STATUS into the NOTE — the
+#   status word now LEADS the note on any row that is not `ok`, where the
+#   instruction about it already lived — shows the reset as a weekday and time
+#   rather than a full date with a zone, and drops the countdown's `in `
+#   prefix. `provider`, `status`, and the long `resets_at_et` are all still on
+#   every --json row.
+#
 # OUTPUT
 #   stdout: the table (default) or a JSON OBJECT (--json). Each JSON row
 #           carries provider, label, nickname, reported_email, window,
-#           used_pct, remaining_pct, resets_at_epoch, resets_at_et, status,
+#           used_pct, remaining_pct, resets_at_epoch, resets_at_et,
+#           resets_at_et_short, status,
 #           plus detail, source, plan, pool, used_usd, included_usd,
 #           plan_used_usd, plan_included_usd, spend_limit_used_usd,
-#           spend_limit_usd, and overage. Every row DECLARES all of them, so
+#           spend_limit_usd, overage, window_start_epoch, and the projection
+#           fields usage_start_epoch, usage_start_is_floor, usage_start_day,
+#           usage_start_display, pct_per_day, days_left, and days_left_note.
+#           `days_left` is a NUMBER or null — never the table's `resets first`
+#           wording, which lives in `days_left_note`.
+#           Every row DECLARES all of them, so
 #           the shape never varies; the ones after `status` are `null` on
 #           providers that have no such notion, and `nickname` is `null` on any
 #           account the owner has not named.
@@ -198,6 +241,13 @@
 #                             hint" rather than falling back to a search,
 #                             which is what makes the unavailable-helper path
 #                             testable from inside a checkout.
+#   AI_QUOTAS_FORECAST_BIN    Path to quotas-forecast.sh. Used EXCLUSIVELY
+#                             when set, for the same reason
+#                             AI_QUOTAS_CHEAPEST_BIN is: a value that is not
+#                             executable degrades the run to "no projection"
+#                             rather than falling back to a search, which is
+#                             what makes the unavailable-helper path testable
+#                             from inside a checkout.
 #   AI_QUOTAS_NODE_BIN        Path to node (the cursor helper's runtime).
 #   AI_QUOTAS_CURSOR_HELPER   Path to lib/ai-quotas-cursor.js.
 #   AI_QUOTAS_CURSOR_TIMEOUT  Cursor browser-read bound, seconds (30). The
@@ -249,6 +299,9 @@
 #   ai-quotas-setup.sh --help           registering and re-logging in accounts
 #   quotas-cheapest-next.sh --help      the overage prices, the threshold
 #                                       knob, and the Codex reset watermark
+#   quotas-forecast.sh --help           the burn-rate projection: how the
+#                                       usage start, the daily rate, and the
+#                                       days-left cap are computed
 
 set -uo pipefail
 
@@ -543,6 +596,44 @@ epoch_to_et() { # <epoch>
   fi
 }
 
+# `Thu 8:00 PM` — the same instant, for the table (#1701). The date is dropped
+# because the IN countdown beside it already says how far away it is, and the
+# zone because the column heading says ET; what a reader needs from that cell
+# is which day and what time. The full string is still on every --json row.
+epoch_to_et_short() { # <epoch>
+  local e="${1:-}"
+  [[ -n "$e" && "$e" != "null" ]] || return 0
+  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
+    TZ='America/New_York' date -d "@$e" '+%a %-I:%M %p' 2>/dev/null || true
+  else
+    TZ='America/New_York' date -r "$e" '+%a %-I:%M %p' 2>/dev/null || true
+  fi
+}
+
+# `{"window_start_epoch": N}` merged into a provider's extra object, or that
+# object unchanged when this row has no window to place. Both arguments must be
+# plain integers: a reset this reader could not parse, or a duration the
+# payload did not report, means the window START is unknown — and a projection
+# over a window nobody established is a guess dressed as a measurement.
+with_window_start() { # <extra-json> <resets_epoch|""> <span_seconds|"">
+  local extra="${1:-}" resets="${2:-}" span="${3:-}" start
+  # An empty or non-object extra becomes `{}` rather than reaching jq as one:
+  # a merge onto a value that is not an object aborts the program, and an
+  # aborted jq here would cost the row its window start AND every field the
+  # caller had already put in that object.
+  [[ -n "$extra" ]] || extra="{}"
+  printf '%s' "$extra" | jq -e 'type == "object"' >/dev/null 2>&1 || extra="{}"
+  if [[ ! "$resets" =~ ^[0-9]+$ || ! "$span" =~ ^[0-9]+$ || "$span" -eq 0 ]]; then
+    printf '%s' "$extra"; return 0
+  fi
+  start=$(( resets - span ))
+  # A window whose start lands at or before the epoch is not a window; it is
+  # arithmetic on a reset time this reader misread.
+  if [[ "$start" -le 0 ]]; then printf '%s' "$extra"; return 0; fi
+  printf '%s' "$extra" | jq -c --argjson ws "$start" '. + {window_start_epoch: $ws}' 2>/dev/null \
+    || printf '%s' "$extra"
+}
+
 # "in 2d 4h" / "in 4h 12m" / "in 37m" / "reset" once the moment has passed.
 # A reset timestamp as either provider may report it — epoch seconds today,
 # an ISO-8601 string if either payload ever changes shape — reduced to epoch
@@ -624,7 +715,8 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
     --arg used "$used" --arg resets "$resets" \
     --arg status "$7" --arg detail "${8:-}" --arg source "${9:-}" --arg plan "${10:-}" \
     --arg nickname "$ROW_NICKNAME" \
-    --arg et "$(epoch_to_et "$resets")" --arg in "$(countdown "$resets")" \
+    --arg et "$(epoch_to_et "$resets")" --arg et_short "$(epoch_to_et_short "$resets")" \
+    --arg in "$(countdown "$resets")" \
     --argjson extra "$extra" \
     '{provider: $provider,
       label: $account_label,
@@ -640,6 +732,14 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
                       else ((try ($used | tonumber) catch null) | if . == null then null else 100 - . end) end),
       resets_at_epoch: (if $resets == "" then null else (try ($resets | tonumber) catch null) end),
       resets_at_et: (if $et == "" then null else $et end),
+      # The same instant, collapsed to weekday and time (#1701). The table
+      # shows this one: three new projection columns had to come from
+      # somewhere, and `Thu Sep 10 8:00 PM EDT` spends eleven columns saying
+      # what `Thu 8:00 PM` says, with the countdown beside it and the zone in
+      # the column heading. The FULL string stays on every --json row, because
+      # narrowing a display is not a reason to take a field away from a
+      # consumer that already reads it.
+      resets_at_et_short: (if $et_short == "" then null else $et_short end),
       countdown: (if $in == "" then null else $in end),
       status: $status,
       detail: $detail,
@@ -670,7 +770,26 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       # row — exactly the "test whether the key exists before reading it"
       # shape the note above exists to prevent.
       free_resets_remaining: null,
-      credits_remaining_usd: null}
+      credits_remaining_usd: null,
+      # #1701. `window_start_epoch` is the one figure only the PROVIDER PATH
+      # knows — a Claude week is `resets_at - 7 days`, a Codex window is
+      # `resets_at - windowDurationMins`, a Cursor cycle starts where the
+      # dashboard says — so each path supplies it through the extra object and
+      # this default covers every row that has no window to place.
+      window_start_epoch: null,
+      # The projection itself is filled in AFTER every row is built, by
+      # quotas-forecast.sh, for the same reason `overage` is: it is a property
+      # of the recorded history rather than of this read. Declaring the fields
+      # here is what makes a run where that helper is unavailable emit the same
+      # keys, with `null` where a pace would be — never a row missing a key a
+      # consumer was told to expect.
+      usage_start_epoch: null,
+      usage_start_is_floor: null,
+      usage_start_day: null,
+      usage_start_display: null,
+      pct_per_day: null,
+      days_left: null,
+      days_left_note: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -783,15 +902,21 @@ normalize_pct() { # <value>
     | if type == "number" then (. * 10 | round / 10) else . end' 2>/dev/null || true
 }
 
-claude_window_row() { # <label> <email> <body-file> <json-key> <window-label>
-  local label="$1" email="$2" body="$3" key="$4" window="$5"
-  local util resets_raw used resets
+# <span-seconds> is the window's LENGTH, which the payload does not report:
+# Anthropic names the window in the key (`seven_day`, `five_hour`) and gives
+# only its end. Passed by the caller that chose the key rather than derived
+# from the label here, so a new window arrives as one call site with its own
+# length instead of a string this function has to recognise.
+claude_window_row() { # <label> <email> <body-file> <json-key> <window-label> <span-seconds>
+  local label="$1" email="$2" body="$3" key="$4" window="$5" span="${6:-}"
+  local util resets_raw used resets extra
   util="$(jq -c --arg k "$key" '.[$k].utilization // empty' "$body" 2>/dev/null || true)"
   [[ -n "$util" ]] || return 1
   resets_raw="$(jq -r --arg k "$key" '.[$k].resets_at // empty' "$body" 2>/dev/null || true)"
   used="$(normalize_pct "$util")"
   resets="$(to_epoch_maybe "$resets_raw")"
-  emit_row claude "$label" "$email" "$window" "$used" "$resets" ok "" "oauth-usage" ""
+  extra="$(with_window_start "{}" "$resets" "$span")"
+  emit_row claude "$label" "$email" "$window" "$used" "$resets" ok "" "oauth-usage" "" "$extra"
   return 0
 }
 
@@ -872,10 +997,10 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
           | first // empty)' "$body" 2>/dev/null || true)"
 
   local rendered=0
-  claude_window_row "$label" "$email" "$body" "seven_day" "7-day" && rendered=1
-  claude_window_row "$label" "$email" "$body" "seven_day_opus" "7-day (opus)" && rendered=1
+  claude_window_row "$label" "$email" "$body" "seven_day" "7-day" 604800 && rendered=1
+  claude_window_row "$label" "$email" "$body" "seven_day_opus" "7-day (opus)" 604800 && rendered=1
   if [[ "$FIVE_HOUR" -eq 1 ]]; then
-    claude_window_row "$label" "$email" "$body" "five_hour" "5-hour" && rendered=1
+    claude_window_row "$label" "$email" "$body" "five_hour" "5-hour" 18000 && rendered=1
   fi
 
   if [[ "$rendered" -eq 0 ]]; then
@@ -1084,7 +1209,13 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       window="window"
       detail="${note:+${note}; }this plan did not report the window's duration"
     fi
-    emit_row codex "$label" "$email" "$window" "$used" "$resets" ok "$detail" "$source" "$plan" "$live"
+    # The window LENGTH is the one thing Codex does report, so the start is a
+    # subtraction rather than a guess — and it is skipped exactly where the
+    # duration was missing, which is the `window` case above.
+    local wspan=""
+    [[ ! "$dur" =~ ^[0-9]+$ ]] || wspan=$(( dur * 60 ))
+    emit_row codex "$label" "$email" "$window" "$used" "$resets" ok "$detail" "$source" "$plan" \
+      "$(with_window_start "$live" "$resets" "$wspan")"
     rendered=1
     weekly_ok=1
   fi
@@ -1106,7 +1237,10 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       dur="$(printf '%s' "$five" | jq -r '.windowDurationMins // empty')"
       local flabel="5-hour"
       [[ -n "$dur" && "$dur" != "300" ]] && flabel="$(( dur / 60 ))-hour"
-      emit_row codex "$label" "$email" "$flabel" "$used" "$resets" ok "$note" "$source" "$plan" "$live"
+      local fspan=""
+      [[ ! "$dur" =~ ^[0-9]+$ ]] || fspan=$(( dur * 60 ))
+      emit_row codex "$label" "$email" "$flabel" "$used" "$resets" ok "$note" "$source" "$plan" \
+        "$(with_window_start "$live" "$resets" "$fspan")"
       rendered=1
     elif [[ "$weekly_is_short" -eq 1 ]]; then
       # The only sub-weekly window this plan reports is the row above, which
@@ -1401,9 +1535,14 @@ read_cursor_account() { # <label> <profile_dir>
       *[!0-9.]* | *.*.* | .) used="" ;;
       *) used="$(awk -v v="$used" 'BEGIN { s = sprintf("%.1f", v); sub(/\.0$/, "", s); print s }' 2>/dev/null || printf '%s' "$used")" ;;
     esac
+    # Cursor is the one provider that reports its window START directly: the
+    # billing cycle has a start date in the same payload, so nothing is
+    # derived from the end. A cycle whose start the response omitted leaves
+    # the field null, exactly as an unparseable one does.
     extra="$(jq -nc --arg pool "$pool" --arg pu "$plan_used" --arg pi "$plan_included" \
-      --arg su "$spend_used" --arg sl "$spend_limit" \
+      --arg su "$spend_used" --arg sl "$spend_limit" --arg ws "$start_epoch" \
       '{pool: $pool,
+        window_start_epoch: (if $ws == "" then null else (try ($ws | tonumber) catch null) end),
         plan_used_usd: (if $pu == "" then null else (try ($pu | tonumber) catch null) end),
         plan_included_usd: (if $pi == "" then null else (try ($pi | tonumber) catch null) end),
         spend_limit_used_usd: (if $su == "" then null else (try ($su | tonumber) catch null) end),
@@ -1564,6 +1703,81 @@ annotate_rows() { # <rows-json-file>
   return 0
 }
 
+# --- burn-rate projection (#1701) --------------------------------------------
+#
+# The pace — where usage started in this window, how much a day it is going,
+# how long that leaves — is a property of the RECORDED HISTORY rather than of
+# this read, so it lands the same way the overage prices do: a helper over the
+# finished document, with the fields already declared on every row so a run
+# without the helper emits the same shape.
+#
+# INFORMATIONAL ONLY, like everything else here. It never gates dispatch,
+# never pauses or defers work, and never feeds `credit-budget.sh`
+# (.claude/rules/safety.md §"Anthropic Quota & Spend Authority"; the #499
+# rollback is the precedent).
+#
+# Resolved exactly as quotas-cheapest-next.sh is, including the
+# used-EXCLUSIVELY override: a seam that fell through to the search would find
+# the repo copy whenever the caller happened to be standing in a checkout, so
+# the "helper unavailable" case could never be exercised where the suite runs.
+FORECAST_SH=""
+if [[ -n "${AI_QUOTAS_FORECAST_BIN:-}" ]]; then
+  [[ -x "$AI_QUOTAS_FORECAST_BIN" ]] && FORECAST_SH="$AI_QUOTAS_FORECAST_BIN"
+else
+  for _f in "$SELF_DIR/quotas-forecast.sh" \
+            "${_HOME}/.claude/skills-worktree/.claude/scripts/quotas-forecast.sh" \
+            "${_HOME}/.claude/scripts/quotas-forecast.sh" \
+            ".claude/scripts/quotas-forecast.sh"; do
+    if [[ -x "$_f" ]]; then FORECAST_SH="$_f"; break; fi
+  done
+  unset _f
+fi
+
+# The projection is applied IN PLACE over $DOC, and only when the helper wrote
+# a document carrying every row it was given. Anything else leaves $DOC exactly
+# as it was — every projection field already null — and says DEGRADED once. A
+# partial document silently swallowing rows would print a five-account report
+# as a three-account one, successfully.
+apply_forecast() {
+  local rc=0 want out="$TMP/forecast.json"
+  want="$(jq '.rows | length' "$DOC" 2>/dev/null || true)"
+  [[ "$want" =~ ^[0-9]+$ ]] || want=""
+  if [[ -z "$FORECAST_SH" ]]; then
+    if [[ -n "${AI_QUOTAS_FORECAST_BIN:-}" ]]; then
+      warn "DEGRADED: AI_QUOTAS_FORECAST_BIN names '${AI_QUOTAS_FORECAST_BIN}', which is not executable — reporting with no figures in the START, %/DAY and LEFT columns"
+    else
+      warn "DEGRADED: quotas-forecast.sh not found (checked the script's own directory and all three portable paths) — reporting with no figures in the START, %/DAY and LEFT columns"
+    fi
+    return 0
+  fi
+  : > "$out"
+  # The history path and the clock are passed EXPLICITLY rather than inherited:
+  # a run under AI_QUOTAS_HISTORY or a frozen AI_QUOTAS_NOW must project over
+  # the same file and the same instant this report was built from, or the
+  # projection would describe a different history than the table above it.
+  if [[ -n "$HISTORY_FILE" ]]; then
+    AI_QUOTAS_NOW="$NOW" "$FORECAST_SH" --history "$HISTORY_FILE" \
+      < "$DOC" > "$out" 2>"$TMP/forecast.err" || rc=$?
+  else
+    AI_QUOTAS_NOW="$NOW" "$FORECAST_SH" < "$DOC" > "$out" 2>"$TMP/forecast.err" || rc=$?
+  fi
+  if [[ "$rc" -eq 0 && -s "$out" && -n "$want" ]] &&
+     jq -e --argjson want "$want" \
+       'type == "object" and (.rows | type == "array") and (.rows | length) == $want' \
+       "$out" >/dev/null 2>&1; then
+    [[ ! -s "$TMP/forecast.err" ]] || cat "$TMP/forecast.err" >&2
+    mv "$out" "$DOC" 2>/dev/null || warn "DEGRADED: could not apply the projection to this report"
+    return 0
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    warn "DEGRADED: quotas-forecast.sh failed (exit ${rc}) — reporting with no figures in the START, %/DAY and LEFT columns"
+  else
+    warn "DEGRADED: quotas-forecast.sh exited 0 but did not write a document carrying all ${want:-the input} rows — reporting with no figures in the START, %/DAY and LEFT columns"
+  fi
+  [[ ! -s "$TMP/forecast.err" ]] || sed 's/^/  /' "$TMP/forecast.err" >&2
+  return 0
+}
+
 # --- snapshot history (#1700) ------------------------------------------------
 #
 # A RECORD, NEVER A GATE. Nothing in this repo reads this file to decide
@@ -1625,6 +1839,12 @@ append_history() { # <doc-json-file>
            window: (.pool // .window),
            used_pct: .used_pct,
            resets_at_epoch: .resets_at_epoch,
+           # When the window this reading belongs to OPENED (#1701). Recorded
+           # rather than re-derived at read time: the reset time can move, and
+           # a line that carries its own window start can be assigned to a
+           # cycle months later without knowing what the window length was
+           # then. Null on a row whose window this reader could not place.
+           window_start_epoch: .window_start_epoch,
            source: $source}' "$1" > "$tmp" 2>/dev/null; then
     warn "could not build this run's snapshot lines — the report is unaffected, but nothing was recorded to $HISTORY_FILE"
     return 0
@@ -1803,6 +2023,12 @@ annotate_rows "$ROWS_JSON"
 # unattended run report the PREVIOUS day's time — a footer permanently one day
 # behind, and one that reads `stale` on a job that just succeeded.
 append_history "$DOC"
+# AFTER the append, so the file the projection reads already holds this run.
+# It does not depend on that — the live rows are projected in memory, which is
+# what makes the first run and a run whose append failed still report a pace —
+# but a history that lags the report it decorates is a needless difference
+# between what the table says and what the file records.
+apply_forecast
 stamp_snapshot_field
 
 if [[ "$JSON" -eq 1 ]]; then
@@ -1816,10 +2042,14 @@ fi
 # a fallback that does not degrade the output but replaces it.
 TABLE="$TMP/table.tsv"
 {
-  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tOVERAGE\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
+  printf '%s\n' 'ACCOUNT	WINDOW	USED	START	%/DAY	LEFT	OVERAGE	RESETS (ET)	IN	NOTE'
   jq -r '
     def pct: if . == null then "-" else "\(.)%" end;
     def dash: if . == null or . == "" then "-" else . end;
+    # One decimal, always — `25` and `25.0` in one column read as different
+    # kinds of number, and the projection is an estimate in every cell.
+    def one_dp: if . == null then "-"
+                else (tostring | if test("\\.") then . else . + ".0" end) end;
     .rows[] |
     [ # The nickname when the owner set one, the provider-reported email
       # otherwise (#1700). A five-account table of full subscription emails
@@ -1828,8 +2058,13 @@ TABLE="$TMP/table.tsv"
       # the note below says `registered as <label>` whenever it differs from
       # the reported email, so a nickname can shorten a row without hiding
       # which registry entry produced it.
+      #
+      # No PROVIDER column (#1701). It was a fixed-width column repeating
+      # what the account name already tells the owner — the same trade #1700
+      # made when it dropped REMAIN — and the ten columns it cost are what
+      # the three projection columns needed to keep a five-account table
+      # inside 100. `provider` is still on every --json row.
       (.nickname // .reported_email),
-      .provider,
       # The pool name when the provider has pools, the window otherwise. A
       # Cursor account contributes TWO rows for one window, so printing the
       # window here would render them as two identical lines differing only
@@ -1840,13 +2075,33 @@ TABLE="$TMP/table.tsv"
       # carried no information the reader did not already have, and the width
       # it cost is what a five-account table needs to stay inside 100
       # columns. `remaining_pct` is still on every --json row.
+      #
+      # The projection (#1701), in three columns: when usage started in this
+      # window, how much a day it has been going, and how many days that
+      # leaves. A `-` in any of them is the same `-` every other unknown in
+      # this table uses — no window to place the reading in, no usage yet, or
+      # a row that did not read — and never a zero, which would read as
+      # "nothing is being spent". A START cell prefixed `<=` means the record
+      # does not reach back to the window start, so usage may have begun
+      # earlier: the day shown is the latest it can have been.
+      (.usage_start_display | dash),
+      (.pct_per_day | one_dp),
+      # `resets first` is not a number of days, so it lives in a note rather
+      # than in `days_left`, and the cell prints the note when there is one:
+      # the window comes back before the pace runs the account out.
+      (if .days_left != null then (.days_left | one_dp)
+       else (.days_left_note | dash) end),
       # What continuing past this cap costs. `-` when no price is known — a
       # provider this reader has no table row for, or a run where the helper
       # was unavailable — never a blank that reads as "free".
       (.overage.label? | dash),
-      (.resets_at_et | dash),
-      (.countdown | dash),
-      .status,
+      # Weekday and time only (#1701) — the date and the zone are what the
+      # countdown beside it and the column heading already say. The full
+      # string is on every --json row as `resets_at_et`.
+      (.resets_at_et_short // .resets_at_et | dash),
+      # Without its `in ` prefix, which the heading supplies. `reset` — the
+      # word this prints once the moment has passed — is unchanged.
+      (.countdown | dash | sub("^in "; "")),
       # ACTIONABLE TEXT ONLY (#1700). `plan pro` and `via app-server` are
       # provenance — which subscription tier answered, which of the two Codex
       # read paths did — and on an `ok` row there is nothing to do about
@@ -1864,7 +2119,17 @@ TABLE="$TMP/table.tsv"
       # shell string, so one apostrophe in a comment closes it, and the jq
       # source after that point is parsed by bash — which reports a syntax
       # error a hundred lines away from the comment that caused it.
-      ([ (if .label != .reported_email then "registered as \(.label)" else empty end),
+      #
+      # No STATUS column either (#1701), for the same width reason — and
+      # because it was never the whole answer on its own: what a reader does
+      # about `needs-login` is in the note beside it. The status WORD now
+      # leads the note on any row that is not `ok`, so the vocabulary is
+      # unchanged and the two are read as one sentence rather than as two
+      # columns that must be crossed. An `ok` row says nothing, which is what
+      # `ok` was worth. `status` is still on every --json row, and it is
+      # still the field to branch on.
+      ([ (if (.status // "ok") != "ok" then .status else empty end),
+         (if .label != .reported_email then "registered as \(.label)" else empty end),
          (.detail | if . == null or . == "" then empty else . end) ]
        | join("; ") | if . == "" then "-" else . end)
     ] | @tsv' "$DOC"
