@@ -1,6 +1,6 @@
 ---
 name: quotas
-description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, and Cursor (two monthly usage pools, reported as percent used, read through a saved browser session). Display only — it never gates dispatch, pauses work, or feeds any budget.
+description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, what continuing past a drained cap costs on each provider, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, and Cursor (two monthly usage pools, reported as percent used, read through a saved browser session). Display only — it never switches accounts, never buys anything, and never gates dispatch.
 triggers:
   - quotas
   - how much quota is left
@@ -9,6 +9,8 @@ triggers:
   - am I close to the weekly limit
   - check my Claude, Codex and Cursor usage
   - how much Cursor credit is left
+  - which account is cheapest to keep working on
+  - what does it cost to keep going past my cap
 argument-hint: "[--json] [--five-hour] [--account <label>]"
 model: sonnet
 allowed-tools:
@@ -18,8 +20,16 @@ allowed-tools:
   - Bash
 ---
 
-Report how much of each registered account's allowance is gone and when it comes back,
-one row per account per window.
+Report how much of each registered account's allowance is gone, when it comes back, and
+what continuing past it would cost — one row per account per window.
+
+> **The cheapest-next hint never acts.** It **never switches accounts, never purchases
+> anything, and never gates dispatch.** It names an account and stops. Buying a Codex
+> reset, enabling Claude usage credits, and raising a Cursor spend limit are the owner's
+> actions, taken in the provider's own UI — do not offer to perform any of them, and do
+> not treat "cheapest to continue on" as an instruction to re-route work. The prices it
+> quotes are a checked-in table with `last verified` dates, so it is only as fresh as
+> those dates.
 
 > **Display only — never a gate.** Nothing this skill produces may gate dispatch, pause
 > work, downgrade a model, defer a launch, or feed `credit-budget.sh`. Quota and spend
@@ -67,6 +77,7 @@ reading a credential by hand is exactly what this design forbids.
 | "include the five-hour windows" | `"$AI_QUOTAS_SH" --five-hour` |
 | about one account | `"$AI_QUOTAS_SH" --account <label>` |
 | for machine-readable rows | `"$AI_QUOTAS_SH" --json` |
+| "what does continuing cost", "which is cheapest" | `"$AI_QUOTAS_SH"` — the Overage column and the trailing hint are part of the default table |
 
 Weekly rows are the default because the weekly cap is what the switching decision turns
 on; the five-hour figures arrive in the same payload and are one flag away. Flag detail
@@ -74,8 +85,8 @@ and exit codes live in `"$AI_QUOTAS_SH" --help` — do not restate them here.
 
 ## Step 3 — Read the table
 
-Columns: account, provider, window-or-pool, used %, remaining %, reset time in Eastern,
-a countdown, status, and a note. The **account** column shows the email the provider
+Columns: account, provider, window-or-pool, used %, remaining %, **overage**, reset time
+in Eastern, a countdown, status, and a note. The **account** column shows the email the provider
 itself reports; when that differs from the registered label the note says
 `registered as <label>`, which is how a mislabelled account becomes visible. **Cursor
 rows carry no such email** — the dashboard response has none — so a Cursor row shows the
@@ -105,6 +116,38 @@ so a table with a broken row is a complete answer, not a partial one.
 A `needs-login`, `rate-limited`, `unreachable`, or `unreadable` row is **not** a reason
 to pause, re-route, or decline work. It means one number is unavailable, nothing more.
 
+## Step 3b — The Overage column and the cheapest-next line
+
+The **OVERAGE** column is what continuing PAST that row's cap costs: `1 free reset` or
+`~$90/reset` on Codex, `API rate` on Claude, `on-demand` (or `on-demand $1007.50 of $1000`
+when Cursor reported the figure) on Cursor. `-` means no price is known — an unrecognised
+provider, or a run where the helper was unavailable and said `DEGRADED:` on stderr. It
+never means free.
+
+When **at least one** account is at or below the threshold (default 20 % remaining), three
+lines follow the table:
+
+```
+Cheapest to continue on: codex-one@example.com (60 % weekly left, 1 free reset this month)
+  Approximate: a Codex reset buys a fixed week at a flat price, while Claude and Cursor
+  overage is metered per unit of work — the units do not convert. …
+  Informational only — it never switches accounts, never buys anything, and never gates dispatch.
+```
+
+Relay all three, or none. Repeat the recommendation without its basis and a reader takes
+it for a price comparison, which it is not — the units genuinely do not convert.
+
+**Restating the boundary at the point of use:** this line is a suggestion for the owner,
+not an instruction for you. Do not switch accounts, do not offer to buy a reset or enable
+credits, and do not let it change what work you dispatch or defer. Nothing prints at all
+when every account still has room, and that silence is the normal case.
+
+Prices, their sources and `last verified` dates, the threshold knob, the Codex reset
+watermark, and how the ranking orders included quota before a free reset before metered
+overage before a flat fee: `.claude/reference/ai-quotas.md` §"Overage — what continuing
+costs". `.claude/reference/pricing-matrix.md` is a **different wallet** — the review
+stack — and its numbers never apply here.
+
 ## Step 4 — Report
 
 Show the table. Lead with the answer the user asked for — usually which account has the
@@ -127,5 +170,13 @@ most room this week and when the drained one resets — then the rows. If every 
 Registry schema, where each provider keeps its credential, which endpoint each reader
 calls, why the Codex weekly window is chosen by duration rather than position, the
 Cursor dashboard endpoint captured from the live Spending tab (and why the Cursor rows
-carry percentages rather than per-pool dollars), and the display-only boundary:
-`.claude/reference/ai-quotas.md`.
+carry percentages rather than per-pool dollars), the overage table with its sources and
+`last verified` dates, and the display-only boundary: `.claude/reference/ai-quotas.md`.
+
+`--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
+cheapest_next}` — not the bare row array it emitted before #1669. Read the rows from
+`.rows`; `cheapest_next` is `null` unless the hint fired. The "no accounts registered"
+and "no account matched" exits emit that same object with an empty `rows`, and a run
+whose pricing helper was unavailable emits it with `threshold_pct` and `basis` `null` and
+`overage` `null` on every row — one shape in every case, so there is nothing to
+special-case.

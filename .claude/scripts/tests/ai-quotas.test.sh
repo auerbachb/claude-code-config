@@ -321,8 +321,12 @@ account_json() { # <provider> <label> <dir> [<service>]
 }
 
 OUT=""
+DOC=""
 ERR=""
 RC=0
+# Empty means "let ai-quotas.sh resolve the helper itself". Only the
+# degradation cases in section 16 set it.
+CHEAPEST_BIN_OVERRIDE=""
 
 # The cursor node/helper paths below are PINNED, not overridable (CodeAnt, PR
 # #1689). They used to read `${NODE_BIN_UNDER_TEST:-…}` and
@@ -333,9 +337,11 @@ RC=0
 # missing-dependency path go to the network or open a browser. The suites that
 # genuinely vary node (ai-quotas-cursor, ai-quotas-setup) set their own hook and
 # reset it between cases; this one has no reason to.
-run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
+run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
   local errf="$TMP/run.err"
   OUT="$(HOME="$CASE_HOME" \
+        CLAUDE_QUOTAS_STATE_DIR="$CASE_HOME/.claude/quotas" \
+        CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT="${QUOTAS_THRESHOLD_OVERRIDE-20}" \
         AI_QUOTAS_CONFIG="$CONFIG" \
         AI_QUOTAS_PLATFORM="Darwin" \
         AI_QUOTAS_NOW="$NOW" \
@@ -344,11 +350,28 @@ run() { # <args…> — never aborts the suite; sets OUT, ERR, RC
         AI_QUOTAS_CODEX_BIN="$BIN/codex" \
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
+        AI_QUOTAS_CHEAPEST_BIN="${CHEAPEST_BIN_OVERRIDE-}" \
         AI_QUOTAS_NODE_BIN="$BIN/node-absent" \
         AI_QUOTAS_CURSOR_HELPER="$TMP/no-such-helper.js" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
+  # #1669 changed --json from a bare row ARRAY to a DOCUMENT — {schema_version,
+  # threshold_pct, basis, rows, cheapest_next} — because `cheapest_next` is a
+  # property of the whole report and an array had nowhere to put it. Nearly
+  # every assertion in this suite is about the rows, so the document is kept
+  # whole in DOC and OUT is narrowed to `.rows`; the overage and hint cases
+  # assert against DOC.
+  #
+  # Narrowed ONLY when the output really is that document. A table run, or a
+  # --json run that failed and printed a message, must reach the assertions
+  # exactly as the script wrote it — a rewrite that "helpfully" applies to
+  # everything is how an assertion starts passing against text nobody emitted.
+  DOC=""
+  if printf '%s' "$OUT" | jq -e 'type == "object" and has("rows") and has("cheapest_next")' >/dev/null 2>&1; then
+    DOC="$OUT"
+    OUT="$(printf '%s' "$DOC" | jq -c '.rows')"
+  fi
 }
 
 rows_for() { # <label> — one status per line, in row order
@@ -398,7 +421,14 @@ run
 check_eq "$RC" "0" "an empty registry exits 0"
 check_contains "$OUT" "No accounts registered yet." "and says so"
 run --json
-check_eq "$OUT" "[]" "--json on an empty registry is an empty array"
+check_eq "$OUT" "[]" "--json on an empty registry carries no rows"
+# The empty exits emit the SAME document as a populated run (#1669) — not a
+# bare `[]`. A consumer that had to special-case emptiness is a consumer that
+# will eventually read a partial answer as a complete one.
+check_eq "$(printf '%s' "$DOC" | jq -r 'type')" "object" \
+  "and it is still the document object, not a bare array"
+check_eq "$(printf '%s' "$DOC" | jq -r '.cheapest_next | tostring')" "null" \
+  "with no cheapest-next hint, because there is nothing to compare"
 
 # --- 4. a broken registry is a broken TOOL, not a verdict --------------------
 
@@ -904,6 +934,139 @@ run --json
 check_eq "$(rows_for codex-one@example.com)" "unreachable" \
   "control(+): the same payload is unreachable without the flag too"
 
+# --- 16. the overage column and the cheapest-next hint (#1669) ---------------
+# The issue's own worked example: one Claude account at 5 % remaining, one
+# Codex account at 60 %. The Codex account should win — it still has room AND
+# the month's free reset is unspent — and the hint should say both.
+#
+# Discriminating on purpose: the Claude account is the one at 5 %, so a
+# selector that simply picked the FIRST row, or the one with the least left,
+# would name it and fail here.
+
+overage_case() { # <claude-used-pct> <codex-used-pct>
+  reset_state
+  jq -n --argjson week "$WEEK_RESET" --argjson five "$FIVE_RESET" --argjson u "$1" \
+    '{account: {email_address: "claude-one@example.com"},
+      five_hour: {utilization: 12, resets_at: ($five | todate)},
+      seven_day: {utilization: $u, resets_at: ($week | todate)}}' > "$STUB_ANTHROPIC_BODY"
+  local snap
+  snap="$(jq -n --argjson week "$WEEK_RESET" --argjson u "$2" \
+    '{rateLimits: {limitId: "codex", planType: "pro",
+                   primary: {usedPercent: $u, windowDurationMins: 10080, resetsAt: $week},
+                   secondary: null}}')"
+  C1="$(seed_claude_profile claude-one@example.com "Claude Code-credentials-AAA")"
+  X1="$(seed_codex_profile codex-one@example.com "$snap")"
+  write_config \
+    "$(account_json claude claude-one@example.com "$C1" "Claude Code-credentials-AAA")" \
+    "$(account_json codex codex-one@example.com "$X1")"
+}
+
+overage_case 95 40
+run
+check_eq "$RC" "0" "the drained-Claude / roomy-Codex table exits 0"
+check_contains "$OUT" "OVERAGE" "the table has an Overage column"
+check_contains "$OUT" "API rate" "the claude row prices its overage at the API rate"
+check_contains "$OUT" "1 free reset" "and the codex row shows the month's free reset"
+check_contains "$OUT" \
+  "Cheapest to continue on: codex-one@example.com (60 % weekly left, 1 free reset this month)" \
+  "and the hint names the codex account, with both reasons"
+check_contains "$OUT" "never switches accounts" \
+  "and says at the point of use that it never switches, buys, or gates"
+check_not_contains "$OUT" "Cheapest to continue on: claude-one@example.com" \
+  "control(-): the account at 5 % is not offered as the cheapest one"
+
+run --json
+check_eq "$(printf '%s' "$OUT" | jq -r '[.[] | select(.overage != null)] | length')" "2" \
+  "--json carries an overage object on every row"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "claude") | .overage.label')" \
+  "API rate" "the claude row's overage label is the API rate"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "codex") | .overage.label')" \
+  "1 free reset" "the codex row's overage label is the free reset"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "codex") | .overage.last_verified')" \
+  "2026-09-09" "and every priced row carries the date its price was verified"
+check_contains "$(printf '%s' "$OUT" | jq -r '.[] | select(.provider == "codex") | .overage.source')" \
+  "help.openai.com" "and the source URL that price came from"
+check_eq "$(printf '%s' "$DOC" | jq -r '.cheapest_next.provider')" "codex" \
+  "--json carries cheapest_next at the top level"
+check_eq "$(printf '%s' "$DOC" | jq -r '.threshold_pct')" "20" \
+  "and the threshold it was decided against"
+check_contains "$(printf '%s' "$DOC" | jq -r '.cheapest_next.basis')" "do not convert" \
+  "and states its basis rather than pretending the units match"
+
+# Every account well above the threshold: nothing prints. A hint offered when
+# nobody needs one is a line the reader learns to skip.
+overage_case 10 20
+run
+check_eq "$RC" "0" "with every account above the threshold the run still exits 0"
+check_contains "$OUT" "OVERAGE" "the overage column is still rendered"
+check_not_contains "$OUT" "Cheapest to continue on:" \
+  "but no cheapest-next line is printed"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r '.cheapest_next | tostring')" "null" \
+  "and --json reports cheapest_next as null"
+
+# Boundary: exactly AT the threshold fires it. An account sitting on the line
+# is the case the hint exists for, and a strict comparison would stay silent.
+overage_case 80 40
+run
+check_contains "$OUT" "Cheapest to continue on:" \
+  "an account exactly at the threshold fires the hint (boundary inclusive)"
+
+# The helper going missing degrades the report; it never fails it, and never
+# silently drops a column the header still promises. Driven through the
+# AI_QUOTAS_CHEAPEST_BIN seam rather than by chmod-ing the real script, so an
+# interrupted suite cannot leave a repo file non-executable behind it.
+overage_case 95 40
+CHEAPEST_BIN_OVERRIDE="$TMP/no-such-cheapest.sh"
+run
+check_eq "$RC" "0" "an unavailable cheapest-next helper does not fail the report"
+check_contains "$ERR" "DEGRADED" "and the degradation is stated on stderr"
+check_contains "$OUT" "claude-one@example.com" "every account still reports"
+check_contains "$OUT" "OVERAGE" "the column header is still printed"
+check_not_contains "$OUT" "Cheapest to continue on:" \
+  "and no hint is invented without prices to base it on"
+run --json
+check_eq "$(printf '%s' "$DOC" | jq -r '[.rows[] | select(.overage == null)] | length')" "2" \
+  "--json still declares overage on every row, as null"
+check_eq "$(printf '%s' "$DOC" | jq -r '.cheapest_next | tostring')" "null" \
+  "and cheapest_next is null, not absent"
+
+# A helper that RUNS and fails is a different failure from one that is
+# missing, and it must degrade the same way rather than emitting the empty
+# document its broken output would otherwise produce.
+printf '#!/usr/bin/env bash\necho "boom" >&2\nexit 1\n' > "$TMP/broken-cheapest.sh"
+chmod +x "$TMP/broken-cheapest.sh"
+CHEAPEST_BIN_OVERRIDE="$TMP/broken-cheapest.sh"
+run
+CHEAPEST_BIN_OVERRIDE=""
+check_eq "$RC" "0" "a cheapest-next helper that exits non-zero does not fail the report"
+check_contains "$ERR" "DEGRADED" "and that degradation is stated too"
+check_contains "$ERR" "boom" "with the helper's own message passed through"
+check_contains "$OUT" "codex-one@example.com" "every account still reports"
+
+# A helper that reports SUCCESS while dropping the rows is the dangerous
+# shape: the document is well-formed, so a shape-only check passes it, and the
+# populated account list prints as no accounts at all with exit 0. The row
+# count is what catches it — and the message must not blame an exit code that
+# was zero.
+cat > "$TMP/empty-rows-cheapest.sh" <<'EMPTY_ROWS_HELPER'
+#!/usr/bin/env bash
+cat >/dev/null
+echo '{"schema_version":"1.0","threshold_pct":20,"basis":"x","rows":[],"cheapest_next":null}'
+EMPTY_ROWS_HELPER
+chmod +x "$TMP/empty-rows-cheapest.sh"
+CHEAPEST_BIN_OVERRIDE="$TMP/empty-rows-cheapest.sh"
+run
+check_eq "$RC" "0" "a helper that drops every row does not fail the report"
+check_contains "$ERR" "DEGRADED" "the dropped rows are stated as a degradation"
+check_not_contains "$ERR" "failed (exit" "and are not reported as an exit-code failure"
+check_contains "$OUT" "claude-one@example.com" "every account still reports"
+check_contains "$OUT" "codex-one@example.com" "including the second one"
+run --json
+CHEAPEST_BIN_OVERRIDE=""
+check_eq "$(printf '%s' "$DOC" | jq -r '.rows | length')" "2" \
+  "--json carries the real rows rather than the helper's empty array"
+
 # --- 15. no credential value reaches stdout, stderr, or any log --------------
 # Cumulative and last, so it covers every case above.
 
@@ -923,7 +1086,16 @@ check_not_contains "$COMBINED" "$CLAUDE_SECRET" "the claude token value never re
 check_not_contains "$COMBINED" "$CODEX_SECRET" "the codex token value never reaches the output"
 
 run --json --five-hour
-COMBINED="$OUT
+# The WHOLE document, not just the rows: the overage annotation and the
+# cheapest-next hint copy a label and a reason out of a row, and a leak that
+# only reached those would pass an assertion scoped to `.rows`.
+#
+# DOC is asserted non-empty FIRST. A grep for secrets over an empty string
+# finds none, so a run that produced no document at all would score a clean
+# leak check — the scan passing because there was nothing to scan.
+check_eq "$(printf '%s' "$DOC" | jq -r 'if (.rows | length) > 0 then "populated" else "empty" end' 2>/dev/null)" \
+  "populated" "control(+): the --json document under the leak scan actually has rows in it"
+COMBINED="$DOC
 $ERR"
 check_eq "$(printf '%s' "$COMBINED" | grep -cE 'Bearer|sk-ant|eyJ' || true)" "0" \
   "and none appears in --json output either"

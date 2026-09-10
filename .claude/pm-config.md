@@ -49,6 +49,8 @@ usage_horizon_critical_pct    = 10
 usage_horizon_floor_tokens    = 2000000
 usage_horizon_hysteresis_pct  = 3
 usage_horizon_reading_ttl_s   = 1800
+
+quotas_cheapest_next_threshold_pct = 20
 ```
 
 - **daily_credit_budget_usd** — owner's stated daily Anthropic credit overage tolerance (USD). User-editable; window is an ET calendar day. **`CLAUDE_DAILY_CREDIT_BUDGET_USD` env overrides** when set. Read via `.claude/scripts/credit-budget.sh`. This wallet covers Anthropic credit spend **only** — third-party reviewer-tool costs are tracked separately in `pricing-matrix.md`.
@@ -74,6 +76,14 @@ Five knobs turning the harness-injected in-context remaining-token counter into 
 **Consuming the verdict — `/pm` day mode (#1428).** Three further values shape what day mode *does* with a verdict, and they are **env-only** — deliberately not `ini` keys here, because nothing reads this file for them and a knob that silently does nothing is worse than no knob: `CLAUDE_HORIZON_PARK_WINDOW_MINUTES` (default **2** — the landing window the pre-emptive park gives `/pause`; `0` selects exact reactive-park parity), `CLAUDE_HORIZON_PROBE_CADENCE_MINUTES` (default **30**), and `CLAUDE_HORIZON_PROBE_MAX_FIRES` (default **12**) — the bounded probe wake used when a park has no known reset time. Contract: `/pm` Step 2D.7; rationale: `.claude/reference/pm-day-mode.md`.
 
 **These knobs gate horizon verdicts only.** They never authorize local token estimation — `usage-horizon.sh` compares an upstream-supplied number and has no code path that could consume an estimate (`.claude/rules/safety.md` §"Anthropic Quota & Spend Authority"; `.claude/reference/budget-source-probe.md` §"Probe 0").
+
+### Quota tracker — cheapest-next threshold (display only)
+
+One knob, read by **`.claude/scripts/quotas-cheapest-next.sh`** behind `/quotas` (issue #1669). **It gates nothing.** Unlike every other value in this section it feeds no dispatch decision at all: it decides only whether a display-only hint is printed under a table.
+
+- **quotas_cheapest_next_threshold_pct** — integer percent `0`–`100`, default **20**. Env: **`CLAUDE_QUOTAS_CHEAPEST_NEXT_THRESHOLD_PCT`**; an explicit `--threshold <pct>` on the invocation beats both. An unparseable value **here or in the env** is reported on stderr and replaced by the default; an unparseable **`--threshold`** is a usage error instead (exit `3`), because whoever just typed the flag is there to retype it. An account **at or below** this share of its allowance remaining makes it worth naming the cheapest account to continue on; above it, nothing prints. Inclusive on purpose — an account sitting exactly on the line is the case the hint exists for.
+- **Default 20** — a fifth of a weekly cap is roughly a day of the owner's throughput: late enough that the switching question is real, early enough to answer it before the cap actually bites. Chosen with the issue; no measurement claims it is optimal.
+- **Informational only, and structurally so.** The hint never switches accounts, never purchases anything, and never gates dispatch — `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority", and the rolled-back `/quota` skill (#499) for what gating on locally-read numbers cost. Overage prices and their sources: `.claude/reference/ai-quotas.md` §"Overage — what continuing costs" (a **different wallet** from `pricing-matrix.md`, which prices the review stack).
 
 ## Infrastructure
 

@@ -75,15 +75,38 @@
 #   Reading position instead of duration reports the wrong window on half
 #   the plans, and it looks exactly like a right answer.
 #
+# OVERAGE AND THE CHEAPEST-NEXT HINT (#1669)
+#   Every row also carries what continuing PAST that cap costs — `1 free
+#   reset`, `~$90/reset`, `API rate`, `on-demand $1007.50 of $1000` — and when
+#   at least one account is at or below the remaining threshold (default 20 %)
+#   the table ends with `Cheapest to continue on: <label> (<reason>)`. Both
+#   come from quotas-cheapest-next.sh, which owns the checked-in price table,
+#   the threshold knob, and the Codex reset watermark; run it with --help for
+#   those. Absent or broken, this script says DEGRADED once and reports
+#   without prices or a hint — it never guesses at one.
+#
+#   INFORMATIONAL ONLY, like everything else here. The hint never switches an
+#   account, never purchases anything, and never gates dispatch.
+#
 # OUTPUT
-#   stdout: the table (default) or a JSON array (--json). Each JSON row
+#   stdout: the table (default) or a JSON OBJECT (--json). Each JSON row
 #           carries provider, label, reported_email, window, used_pct,
 #           remaining_pct, resets_at_epoch, resets_at_et, status, plus
 #           detail, source, plan, pool, used_usd, included_usd,
-#           plan_used_usd, and plan_included_usd. The last five are `null` on
+#           plan_used_usd, plan_included_usd, spend_limit_used_usd,
+#           spend_limit_usd, and overage. All but the first nine are `null` on
 #           providers that have no such notion, so the shape never varies.
 #           The table's third column shows the POOL where a provider has
 #           pools and the window otherwise.
+#
+#           `--json` emits {"schema_version","threshold_pct","basis","rows",
+#           "cheapest_next"} — an object, NOT the bare array increments
+#           #1667/#1668 emitted. `cheapest_next` is a top-level property of
+#           the whole report rather than of any one row, so an array had
+#           nowhere to put it; `schema_version` is there so a consumer can
+#           tell the two apart instead of inferring it from the JSON type.
+#           The "no accounts" and "no account matched" exits emit the same
+#           object with an empty `rows`, never a bare `[]`.
 #   stderr: one-line per-account diagnostics.
 #
 #   Statuses are per row, and one failing account never stops the others:
@@ -110,6 +133,12 @@
 #   AI_QUOTAS_ANTHROPIC_URL   Claude usage endpoint.
 #   AI_QUOTAS_CHATGPT_URL     Codex HTTP fallback endpoint.
 #   AI_QUOTAS_HTTP_TIMEOUT    Per-request wall-clock bound, seconds (15).
+#   AI_QUOTAS_CHEAPEST_BIN    Path to quotas-cheapest-next.sh. Used
+#                             EXCLUSIVELY when set — a value that is not
+#                             executable degrades the run to "no prices, no
+#                             hint" rather than falling back to a search,
+#                             which is what makes the unavailable-helper path
+#                             testable from inside a checkout.
 #   AI_QUOTAS_NODE_BIN        Path to node (the cursor helper's runtime).
 #   AI_QUOTAS_CURSOR_HELPER   Path to lib/ai-quotas-cursor.js.
 #   AI_QUOTAS_CURSOR_TIMEOUT  Cursor browser-read bound, seconds (30). The
@@ -123,7 +152,9 @@
 #                             default is used, because a value arithmetic
 #                             cannot read makes the bound it governs elapse
 #                             instantly and report itself as a timeout.
-#   AI_QUOTAS_NOW             Epoch seconds to treat as "now" (countdowns).
+#   AI_QUOTAS_NOW             Epoch seconds to treat as "now" (countdowns, and
+#                             the ET month the reset watermark is read
+#                             against).
 #   Every one of these exists so .claude/scripts/tests/ai-quotas.test.sh can
 #   drive each path against stubs without a live account, network, or
 #   keychain. They are not meant for normal use.
@@ -153,9 +184,12 @@
 #     probes, which must not hang the report
 #
 # SEE ALSO
-#   .claude/reference/ai-quotas.md   registry schema, reader contract
-#   .claude/skills/quotas/SKILL.md   the /quotas surface
-#   ai-quotas-setup.sh --help        registering and re-logging in accounts
+#   .claude/reference/ai-quotas.md      registry schema, reader contract, the
+#                                       overage table with its sources
+#   .claude/skills/quotas/SKILL.md      the /quotas surface
+#   ai-quotas-setup.sh --help           registering and re-logging in accounts
+#   quotas-cheapest-next.sh --help      the overage prices, the threshold
+#                                       knob, and the Codex reset watermark
 
 set -uo pipefail
 
@@ -522,7 +556,24 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       used_usd: null,
       included_usd: null,
       plan_used_usd: null,
-      plan_included_usd: null}
+      plan_included_usd: null,
+      # #1669. `overage` is filled in AFTER every row is built, by
+      # quotas-cheapest-next.sh, because the price of continuing is a property
+      # of the provider and the reset watermark rather than of this read — and
+      # declaring it here means a run where that helper is unavailable still
+      # emits the same keys, with `null` where the price would be. The two
+      # spend-limit fields carry the Cursor on-demand block
+      # (`spendLimitUsage`), and are null on every other provider.
+      overage: null,
+      spend_limit_used_usd: null,
+      spend_limit_usd: null,
+      # The two speculative Codex live figures. `codex_live_overage` DROPS a
+      # key it could not read as a plain number, so without these defaults the
+      # field would be present on some Codex rows and absent on every other
+      # row — exactly the "test whether the key exists before reading it"
+      # shape the note above exists to prevent.
+      free_resets_remaining: null,
+      credits_remaining_usd: null}
      + $extra' > "$rowf" 2>/dev/null
   if [[ ! -s "$rowf" ]]; then
     ROW_BUILD_FAILURES=$(( ROW_BUILD_FAILURES + 1 ))
@@ -868,12 +919,47 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
 # carries WHY app-server was skipped: `source: http` says which path ran, but
 # not what went wrong with the preferred one, and a silently degraded read is
 # the thing worth surfacing.
+# A LIVE overage figure from the rate-limits payload, when one is there.
+#
+# No captured Codex payload has ever carried either key — the reset balance
+# lives in the ChatGPT usage UI, not in `account/rateLimits/read`. This is a
+# hook, not an observation, and it is written so that being wrong costs
+# nothing: a key that is absent, or present with a value that is not a plain
+# number, contributes NOTHING to the row, and the month watermark in
+# quotas-cheapest-next.sh answers instead. What it must never do is invent a
+# balance — hence the explicit numeric guard rather than a bare `tonumber`.
+# If OpenAI ships the figure under a third name, add it here and to
+# .claude/reference/ai-quotas.md; until then the fallback is the answer.
+codex_live_overage() { # <snapshot-json-file>
+  # Type-guarded at every step. `.resets.freeRemaining` on a payload whose
+  # `resets` is an array or a number is a jq TYPE ERROR, which aborts the
+  # program — and while the `|| printf '{}'` below catches that, an error path
+  # is a poor way to express "this key was not there". `obj` narrows to an
+  # object first, so an unexpected shape reads as absent, which is what it is.
+  jq -c '
+    def as_num: if type == "number" then .
+                elif type == "string" and test("^[0-9]+(\\.[0-9]+)?$") then tonumber
+                else null end;
+    def obj: if type == "object" then . else {} end;
+    (. | obj) as $s
+    | {free_resets_remaining:
+         (($s.freeResetsRemaining // $s.free_resets_remaining
+           // ($s.resets | obj | .freeRemaining) // null) | as_num),
+       credits_remaining_usd:
+         (($s.creditBalanceUsd // ($s.credits | obj | .balanceUsd) // null) | as_num)}
+    | with_entries(select(.value != null))' "$1" 2>/dev/null \
+    || printf '{}'
+}
+
 codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note>]
   local label="$1" email="$2" snap="$3" source="$4"
   local note="${5:-}"
   local plan weekly five rendered=0 weekly_ok=0 weekly_is_short=0 used resets dur
+  local live
 
   plan="$(jq -r '.planType // empty' "$snap" 2>/dev/null || true)"
+  live="$(codex_live_overage "$snap")"
+  printf '%s' "$live" | jq -e 'type == "object"' >/dev/null 2>&1 || live="{}"
   weekly="$(jq -c '[.primary, .secondary] | map(select(. != null))
                    | (map(select(.windowDurationMins == 10080)) | first)
                      // (map(select(.windowDurationMins != null))
@@ -901,7 +987,7 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       window="window"
       detail="${note:+${note}; }this plan did not report the window's duration"
     fi
-    emit_row codex "$label" "$email" "$window" "$used" "$resets" ok "$detail" "$source" "$plan"
+    emit_row codex "$label" "$email" "$window" "$used" "$resets" ok "$detail" "$source" "$plan" "$live"
     rendered=1
     weekly_ok=1
   fi
@@ -923,7 +1009,7 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       dur="$(printf '%s' "$five" | jq -r '.windowDurationMins // empty')"
       local flabel="5-hour"
       [[ -n "$dur" && "$dur" != "300" ]] && flabel="$(( dur / 60 ))-hour"
-      emit_row codex "$label" "$email" "$flabel" "$used" "$resets" ok "$note" "$source" "$plan"
+      emit_row codex "$label" "$email" "$flabel" "$used" "$resets" ok "$note" "$source" "$plan" "$live"
       rendered=1
     elif [[ "$weekly_is_short" -eq 1 ]]; then
       # The only sub-weekly window this plan reports is the row above, which
@@ -941,7 +1027,7 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
       # `--five-hour` would suppress the unrecognised-shape row that the same
       # payload produces without the flag.
       emit_row codex "$label" "$email" "5-hour" "" "" ok \
-        "${note:+${note}; }this plan reports no short window" "$source" "$plan"
+        "${note:+${note}; }this plan reports no short window" "$source" "$plan" "$live"
       rendered=1
     fi
   fi
@@ -1087,6 +1173,7 @@ read_cursor_account() { # <label> <profile_dir>
   local label="$1" dir="$2"
   local node helper out status detail keys pools count i
   local start_epoch end_epoch plan_name plan_used plan_included source note extra
+  local spend_used spend_limit
   local pool used
 
   helper="${AI_QUOTAS_CURSOR_HELPER:-$SELF_DIR/lib/ai-quotas-cursor.js}"
@@ -1181,6 +1268,12 @@ read_cursor_account() { # <label> <profile_dir>
   plan_name="$(printf '%s' "$out" | jq -r '.plan_name // ""')"
   plan_used="$(printf '%s' "$out" | jq -r 'if .plan_used_usd == null then "" else (.plan_used_usd | tostring) end')"
   plan_included="$(printf '%s' "$out" | jq -r 'if .plan_included_usd == null then "" else (.plan_included_usd | tostring) end')"
+  # The on-demand block (#1669). Plan-wide like the two above — it is one
+  # spend limit for the account, not a per-pool one — so both rows carry the
+  # same pair, and the overage column says `on-demand` when the helper did not
+  # report it rather than showing a dollar figure nobody sent.
+  spend_used="$(printf '%s' "$out" | jq -r 'if .spend_limit_used_usd == null then "" else (.spend_limit_used_usd | tostring) end')"
+  spend_limit="$(printf '%s' "$out" | jq -r 'if .spend_limit_usd == null then "" else (.spend_limit_usd | tostring) end')"
 
   # Said on every pool row, because it is the one thing a reader of this table
   # would otherwise get wrong: the dashboard's own response reports the pools
@@ -1212,9 +1305,12 @@ read_cursor_account() { # <label> <profile_dir>
       *) used="$(awk -v v="$used" 'BEGIN { s = sprintf("%.1f", v); sub(/\.0$/, "", s); print s }' 2>/dev/null || printf '%s' "$used")" ;;
     esac
     extra="$(jq -nc --arg pool "$pool" --arg pu "$plan_used" --arg pi "$plan_included" \
+      --arg su "$spend_used" --arg sl "$spend_limit" \
       '{pool: $pool,
         plan_used_usd: (if $pu == "" then null else (try ($pu | tonumber) catch null) end),
-        plan_included_usd: (if $pi == "" then null else (try ($pi | tonumber) catch null) end)}' \
+        plan_included_usd: (if $pi == "" then null else (try ($pi | tonumber) catch null) end),
+        spend_limit_used_usd: (if $su == "" then null else (try ($su | tonumber) catch null) end),
+        spend_limit_usd: (if $sl == "" then null else (try ($sl | tonumber) catch null) end)}' \
       2>/dev/null || printf '{}')"
     emit_row cursor "$label" "" "$CURSOR_WINDOW" "$used" "$end_epoch" ok \
       "$note" "$source" "$plan_name" "$extra"
@@ -1262,8 +1358,104 @@ for (( i = 0; i < COUNT; i++ )); do
   esac
 done
 
+# --- overage annotation (#1669) ----------------------------------------------
+#
+# The price of continuing is a property of the provider and the reset
+# watermark, not of this read, so it is computed by a helper over the finished
+# rows rather than threaded through every provider path. INFORMATIONAL ONLY:
+# it names the cheapest account to continue on and stops. It never switches an
+# account, never buys anything, and never gates dispatch
+# (.claude/rules/safety.md §"Anthropic Quota & Spend Authority"; the #499
+# rollback is the precedent).
+#
+# Resolved sibling-first, then through the standard three-candidate lookup, so
+# a copy of this script running outside a checkout still finds it.
+# AI_QUOTAS_CHEAPEST_BIN, when set, is used EXCLUSIVELY — no fall-through to
+# the search below. A seam that falls back would find the repo copy through
+# the relative candidate whenever the caller happens to be standing in a
+# checkout, so the "helper unavailable" case could never be exercised from
+# inside this repo, which is the only place anyone runs the suite.
+CHEAPEST_SH=""
+if [[ -n "${AI_QUOTAS_CHEAPEST_BIN:-}" ]]; then
+  [[ -x "$AI_QUOTAS_CHEAPEST_BIN" ]] && CHEAPEST_SH="$AI_QUOTAS_CHEAPEST_BIN"
+else
+  for _c in "$SELF_DIR/quotas-cheapest-next.sh" \
+            "${_HOME}/.claude/skills-worktree/.claude/scripts/quotas-cheapest-next.sh" \
+            "${_HOME}/.claude/scripts/quotas-cheapest-next.sh" \
+            ".claude/scripts/quotas-cheapest-next.sh"; do
+    if [[ -x "$_c" ]]; then CHEAPEST_SH="$_c"; break; fi
+  done
+  unset _c
+fi
+
+# Result in a file, and the caller checks it. A helper that fails must degrade
+# to "no prices, no hint" — never to an empty document that reads as "no
+# accounts", and never to a silent table missing a column it promised.
+DOC="$TMP/doc.json"
+annotate_rows() { # <rows-json-file>
+  local src="$1" rc=0 want
+  : > "$DOC"
+  if [[ -n "$CHEAPEST_SH" ]]; then
+    # How many rows went in. The helper annotates rows one-for-one, so the
+    # count is the one guarantee that can be checked exactly — and checking it
+    # is what keeps a helper that answers `{"rows": [], ...}` from passing a
+    # shape-only test and printing a populated account list as no accounts at
+    # all, successfully.
+    want="$(jq 'length' "$src" 2>/dev/null || true)"
+    [[ "$want" =~ ^[0-9]+$ ]] || want=""
+    "$CHEAPEST_SH" < "$src" > "$DOC" 2>"$TMP/cheapest.err" || rc=$?
+    # The FULL documented shape, not just `.rows`. A partial document — rows
+    # present, `cheapest_next` missing — would pass a looser check and then be
+    # read for a hint that was never there, so the run would silently print no
+    # hint and call it "no account is low". Degrading says which it was.
+    if [[ "$rc" -eq 0 && -s "$DOC" && -n "$want" ]] &&
+       jq -e --argjson want "$want" \
+         'type == "object" and (.rows | type == "array")
+          and (.rows | length) == $want and has("cheapest_next")' \
+         "$DOC" >/dev/null 2>&1; then
+      # The helper writes its own warnings (an unreadable watermark, a bad
+      # knob) to stderr; pass them through rather than swallowing them.
+      [[ ! -s "$TMP/cheapest.err" ]] || cat "$TMP/cheapest.err" >&2
+      return 0
+    fi
+    # Which failure it was, in the message. "failed (exit 0)" would send the
+    # reader hunting an exit code that never happened, when what actually went
+    # wrong is the document the helper wrote while reporting success.
+    if [[ "$rc" -ne 0 ]]; then
+      warn "DEGRADED: quotas-cheapest-next.sh failed (exit ${rc}) — reporting without overage prices or a cheapest-next hint"
+    else
+      warn "DEGRADED: quotas-cheapest-next.sh exited 0 but did not write a {rows, cheapest_next} document carrying all ${want:-the input} rows — reporting without overage prices or a cheapest-next hint"
+    fi
+    [[ ! -s "$TMP/cheapest.err" ]] || sed 's/^/  /' "$TMP/cheapest.err" >&2
+  elif [[ -n "${AI_QUOTAS_CHEAPEST_BIN:-}" ]]; then
+    # An override that does not resolve is a CONFIGURATION problem, and saying
+    # "checked all three portable paths" here would send the reader looking in
+    # three places this run never consulted.
+    warn "DEGRADED: AI_QUOTAS_CHEAPEST_BIN names '${AI_QUOTAS_CHEAPEST_BIN}', which is not executable — reporting without overage prices or a cheapest-next hint"
+  else
+    warn "DEGRADED: quotas-cheapest-next.sh not found (checked the script's own directory and all three portable paths) — reporting without overage prices or a cheapest-next hint"
+  fi
+  # Same document shape, minus the prices. `overage` is already null on every
+  # row (emit_row declares it), so a consumer sees one shape either way.
+  jq -n --slurpfile rows "$src" \
+    '{schema_version: "1.0", threshold_pct: null, basis: null,
+      rows: ($rows[0] // []), cheapest_next: null}' > "$DOC" 2>/dev/null \
+    || printf '{"schema_version":"1.0","threshold_pct":null,"basis":null,"rows":[],"cheapest_next":null}\n' > "$DOC"
+  return 0
+}
+
+# The two "nothing to report" exits emit the SAME document as a full run, with
+# an empty `rows` array — not a bare `[]`. A consumer that reads `.rows` on a
+# populated run and gets a top-level array here would have to special-case
+# emptiness, and the special case is exactly where a partial read gets mistaken
+# for a complete one.
+EMPTY_ROWS="$TMP/empty.json"
+printf '[]' > "$EMPTY_ROWS"
+
 if [[ "$COUNT" -eq 0 ]]; then
-  if [[ "$JSON" -eq 1 ]]; then echo "[]"; else
+  if [[ "$JSON" -eq 1 ]]; then
+    annotate_rows "$EMPTY_ROWS"; cat "$DOC"
+  else
     echo "No accounts registered yet."
     echo "Register one with: /quotas-setup add <claude|codex|cursor> <label>"
   fi
@@ -1271,7 +1463,9 @@ if [[ "$COUNT" -eq 0 ]]; then
 fi
 
 if [[ "$MATCHED" -eq 0 ]]; then
-  if [[ "$JSON" -eq 1 ]]; then echo "[]"; else
+  if [[ "$JSON" -eq 1 ]]; then
+    annotate_rows "$EMPTY_ROWS"; cat "$DOC"
+  else
     echo "No registered account matches --account '${ACCOUNT_FILTER}'."
     echo "List the registered accounts with: /quotas-setup list"
   fi
@@ -1286,8 +1480,12 @@ if [[ ! -s "$ROWS" ]]; then
   die 70 "row builder produced no rows for $MATCHED matched account(s) (${ROW_BUILD_FAILURES} failed) — refusing to print an empty report as a successful read"
 fi
 
+ROWS_JSON="$TMP/rows.json"
+jq -s '.' "$ROWS" > "$ROWS_JSON" 2>/dev/null || die 70 "could not assemble the rows into an array"
+annotate_rows "$ROWS_JSON"
+
 if [[ "$JSON" -eq 1 ]]; then
-  jq -s '.' "$ROWS"
+  cat "$DOC"
   exit 0
 fi
 
@@ -1297,10 +1495,11 @@ fi
 # a fallback that does not degrade the output but replaces it.
 TABLE="$TMP/table.tsv"
 {
-  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tREMAIN\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
+  printf 'ACCOUNT\tPROVIDER\tWINDOW\tUSED\tREMAIN\tOVERAGE\tRESETS (ET)\tIN\tSTATUS\tNOTE\n'
   jq -r '
     def pct: if . == null then "-" else "\(.)%" end;
     def dash: if . == null or . == "" then "-" else . end;
+    .rows[] |
     [ .reported_email,
       .provider,
       # The pool name when the provider has pools, the window otherwise. A
@@ -1310,6 +1509,10 @@ TABLE="$TMP/table.tsv"
       (.pool // .window),
       (.used_pct | pct),
       (.remaining_pct | pct),
+      # What continuing past this cap costs. `-` when no price is known — a
+      # provider this reader has no table row for, or a run where the helper
+      # was unavailable — never a blank that reads as "free".
+      (.overage.label? | dash),
       (.resets_at_et | dash),
       (.countdown | dash),
       .status,
@@ -1318,9 +1521,25 @@ TABLE="$TMP/table.tsv"
          (.source | if . == null then empty else "via \(.)" end),
          (.detail | if . == null or . == "" then empty else . end) ]
        | join("; ") | if . == "" then "-" else . end)
-    ] | @tsv' "$ROWS"
+    ] | @tsv' "$DOC"
 } > "$TABLE"
 column -t -s $'\t' "$TABLE" 2>/dev/null || cat "$TABLE"
+
+# The cheapest-next hint, printed ONLY when the helper returned one — i.e.
+# when at least one account is at or below the threshold. Nothing prints while
+# every account still has room, because a suggestion nobody needs is a
+# suggestion that trains the reader to ignore the line.
+HINT="$(jq -r 'if .cheapest_next == null then empty
+               else "Cheapest to continue on: \(.cheapest_next.label) (\(.cheapest_next.reason))" end' \
+  "$DOC" 2>/dev/null || true)"
+if [[ -n "$HINT" ]]; then
+  echo
+  echo "$HINT"
+  # The basis, on its own line, because the units do NOT convert and a hint
+  # that hides that is a hint that reads as a price comparison.
+  jq -r 'if .cheapest_next == null then empty else "  \(.cheapest_next.basis)" end' "$DOC" 2>/dev/null || true
+  echo "  Informational only — it never switches accounts, never buys anything, and never gates dispatch."
+fi
 
 echo
 echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."

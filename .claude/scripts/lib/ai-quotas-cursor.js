@@ -50,7 +50,14 @@
 //     "pools": [ { "pool": "cursor-models", "used_pct": <number> },
 //                { "pool": "other-models",  "used_pct": <number> } ],
 //     "plan_used_usd": <number|null>, "plan_included_usd": <number|null>,
+//     "spend_limit_used_usd": <number|null>,
+//     "spend_limit_usd": <number|null>,
 //     "plan_name": <string|null> }
+//
+//   `spend_limit_used_usd` / `spend_limit_usd` are the on-demand block
+//   (`spendLimitUsage.individualUsed` of `.individualLimit`, cents): what has
+//   already been spent past the included usage, and the ceiling set for it.
+//   #1669's overage column renders them.
 //
 //   { "status": "needs-login", "detail": "…" }        session missing/expired
 //   { "status": "unreadable",  "detail": "…",
@@ -243,12 +250,25 @@ function normalise(payload) {
   if (auto !== null) pools.push({ pool: 'cursor-models', used_pct: auto });
   if (api !== null) pools.push({ pool: 'other-models', used_pct: api });
 
+  // The on-demand block: what this account has already spent past its
+  // included usage, against the limit it set. #1669 renders it as the live
+  // Cursor overage figure. Absent or malformed leaves both fields null, and
+  // the reader falls back to the checked-in "on-demand" label — a missing
+  // block must not read as "$0 spent", which is the reassuring direction.
+  const spend = payload.spendLimitUsage && typeof payload.spendLimitUsage === 'object'
+    && !Array.isArray(payload.spendLimitUsage)
+    ? payload.spendLimitUsage
+    : null;
+
   return {
     ok: true,
     row: {
       billing_cycle_start_epoch: msToEpochSeconds(payload.billingCycleStart),
       billing_cycle_end_epoch: msToEpochSeconds(payload.billingCycleEnd),
       pools,
+      // Cents, like every other dollar figure in this payload.
+      spend_limit_used_usd: spend ? centsToUsd(spend.individualUsed) : null,
+      spend_limit_usd: spend ? centsToUsd(spend.individualLimit) : null,
       // Plan-WIDE dollars. The captured response carries no per-pool dollar
       // split — the Spending tab itself renders the two pools as percentage
       // bars — so these are reported as what they are and never divided up to

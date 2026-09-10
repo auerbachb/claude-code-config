@@ -13,6 +13,8 @@ Demand window: **2026-07-22 → 2026-08-21**, 245 merged PRs
 >
 > **No agent executes a purchase.** Everything here is a recommendation. Raising a spend cap, buying credits, changing a plan, adding a seat, or claiming a discount stays with the account owner. Nothing was changed on any dashboard to produce this document.
 >
+> **Distinct wallet.** This file is the **review-stack** wallet — CodeRabbit, BugBot, Greptile, CodeAnt. The owner's **AI coding-assistant subscriptions** (Claude Max, ChatGPT Pro / Codex, Cursor Ultra) and what continuing past their caps costs live in [`ai-quotas.md`](./ai-quotas.md) §"Overage — what continuing costs". No price is copied between the two files: a figure that appears in both is a figure that will be updated in one and silently stale in the other.
+>
 > **Redactions.** This repository is **public**. Personal email addresses read from the dashboards have been removed (#1227), matching the practice [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Redactions set in PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203): seat holders are named by role ("the account owner") or by GitHub handle. Redaction is not a rewrite — every figure, reading, and verdict below stands exactly as recorded on 2026-08-21, and the point-in-time exemption still forbids updating them. The findings survive the removal: what matters is *that* the commit-author identity holds no seat, not which addresses do.
 
 ## Executive summary
