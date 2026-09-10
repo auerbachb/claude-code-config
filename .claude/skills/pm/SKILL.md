@@ -536,6 +536,39 @@ fi
 
 **Ownership sweep (runs after ranking and window-fit selection, before dispatch).** In-flight work does not live only on GitHub — it also lives in other threads: a coding thread paused mid-issue, a PM thread that parked itself, a fleet manager waiting on its wake command, a session that died with resumable state on disk. The claim gate alone cannot see any of that, and a stale claim is re-picked with only a warning, which is how issue #652 shipped twice. Run the sweep over the selected inline-eligible candidates and branch three ways (issue #1431):
 
+**Get the session listing first — it is what makes `adopt` reachable (issue #1459).** Liveness is resolved against a listing of this harness's sessions, and no CLI enumerates them: the source is the **deferred** MCP tool `mcp__ccd_session_mgmt__list_sessions`. Deferred means its schema is not loaded, so calling it straight away fails — load it once per thread, then call it:
+
+1. `ToolSearch` with `select:mcp__ccd_session_mgmt__list_sessions`.
+2. Call it with `include_archived: true` and a `limit` above the board size (the default 20 truncates a busy day, and a session truncated out of the listing reads as *absent* — which classifies **dead**).
+3. Write the returned array **verbatim** to a file and export its path as `SESSION_LISTING_RAW_PATH`, then run the block below. It validates the JSON, appends this thread's own record, and sets `SESSION_LISTING_PATH`.
+
+<!-- test-anchor: pm-1b5-session-listing -->
+```bash
+SESSION_LISTING_PATH=""
+if [[ -n "${SESSION_LISTING_RAW_PATH:-}" && -r "${SESSION_LISTING_RAW_PATH:-}" ]] \
+   && jq -e 'type == "array"' "$SESSION_LISTING_RAW_PATH" >/dev/null 2>&1; then
+  # An explicit XXXXXX template, not `mktemp -t <name>`: GNU mktemp rejects a
+  # `-t` template with no X's ("too few X's"), so the BSD-only spelling would
+  # fail outright on Linux and take the listing — and adoption — down with it.
+  SESSION_LISTING_PATH="$(mktemp "${TMPDIR:-/tmp}/pm-session-listing.XXXXXX")"
+  # `list_sessions` EXCLUDES the calling session, and a session absent from a
+  # listing that WAS read classifies `dead` -> adopt. Append this thread's own
+  # record so the sweep can never adopt work this very thread is running.
+  if ! jq -c --arg id "${CLAUDE_SESSION_ID:-}" \
+       'if $id == "" then . else . + [{sessionId:$id, title:"this /pm thread",
+                                       isArchived:false, isRunning:true}] end' \
+       "$SESSION_LISTING_RAW_PATH" > "$SESSION_LISTING_PATH"; then
+    rm -f "$SESSION_LISTING_PATH"; SESSION_LISTING_PATH=""
+  fi
+fi
+if [[ -z "$SESSION_LISTING_PATH" ]]; then
+  echo "DEGRADED: no session listing (mcp__ccd_session_mgmt__list_sessions unavailable or unreadable) — liveness indeterminate; owned candidates are surfaced, never adopted"
+fi
+```
+
+**A missing listing degrades the sweep, it never blocks it.** With no `SESSION_LISTING_PATH`, liveness is `indeterminate`, which resolves to **live** — fail toward surfacing, never toward adopting. That direction is deliberate: surfacing a thread that turned out to be dead costs one line, adopting work a live thread is still doing costs a duplicate implementation. Headless runs, where the tool does not exist, land on surface-and-skip by construction.
+
+<!-- test-anchor: pm-1b5-ownership-sweep -->
 ```bash
 # The issue numbers about to be dispatched: the window-fit batch when a window
 # is armed (BATCH_ISSUES above), otherwise the ranked inline-eligible picks.
@@ -544,10 +577,9 @@ CANDIDATE_NUMS=(${BATCH_ISSUES[@]+"${BATCH_ISSUES[@]}"})
 SWEEP=""; SWEEP_RC=0; SWEEP_ERR=""
 if [[ -n "$CANDIDATE_OWNERSHIP" && ${#CANDIDATE_NUMS[@]} -gt 0 ]]; then
   SWEEP_ARGS=("${CANDIDATE_NUMS[@]}" --json)
-  # Liveness needs a session listing, and no CLI enumerates Claude sessions — it
-  # comes from the harness. When this thread can list sessions, write that JSON to
-  # a temp file and pass it; the `owned_dead` -> adopt branch is unreachable
-  # without it, so a dead thread's work is surfaced rather than resumed.
+  # Liveness needs the session listing built above; the `owned_dead` -> adopt
+  # branch is unreachable without it, so a dead thread's work would be surfaced
+  # rather than resumed.
   if [[ -n "${SESSION_LISTING_PATH:-}" && -r "${SESSION_LISTING_PATH:-}" ]]; then
     SWEEP_ARGS+=(--sessions "$SESSION_LISTING_PATH")
   fi
@@ -555,11 +587,17 @@ if [[ -n "$CANDIDATE_OWNERSHIP" && ${#CANDIDATE_NUMS[@]} -gt 0 ]]; then
   SWEEP="$("$CANDIDATE_OWNERSHIP" "${SWEEP_ARGS[@]}" 2>"$SWEEP_ERRFILE")" || SWEEP_RC=$?
   SWEEP_ERR="$(cat "$SWEEP_ERRFILE")"; rm -f "$SWEEP_ERRFILE"
 fi
+# The listing is a temp file this thread wrote; drop it now the sweep has read
+# it, on the degraded path too. A later tick rebuilds it from a fresh
+# `list_sessions` call rather than re-reading a snapshot that has since aged.
+if [[ -n "${SESSION_LISTING_PATH:-}" ]]; then
+  rm -f "$SESSION_LISTING_PATH"; SESSION_LISTING_PATH=""
+fi
 ```
 
 **A sweep that did not run is a named degradation, never a silent one.** `SWEEP_RC` non-zero or empty output with candidates present means the ownership filter is *off* for this tick — print the `sweep degraded` line below for every candidate, quoting `SWEEP_ERR`, and fall back to claim-gate-only. Discarding the error and continuing would let a usage error silently disable the whole guard, which is the failure mode this sweep exists to prevent.
 
-**Obtain the listing before the sweep when you can.** If this thread has a session-listing tool available (`mcp__ccd_session_mgmt__list_sessions` or equivalent), call it, write the JSON to a temp file, and set `SESSION_LISTING_PATH` to that path. Without a listing, liveness is `indeterminate`, which resolves to **live** — fail toward surfacing, never toward adopting. That direction is deliberate: surfacing a thread that turned out to be dead costs one line, adopting work a live thread is still doing costs a duplicate implementation. Each line carries `action`, and `action` is the whole contract:
+Each line carries `action`, and `action` is the whole contract:
 
 | `action` | `/pm` does |
 |---|---|
@@ -1883,6 +1921,8 @@ Refill from two sources, in this order:
 **Re-validate every pick, from either source, immediately before launching it** — the quick current-state + too-big check from 3.1 / `/subagent` Steps 4–5, **plus the 1B.5 ownership sweep** (`candidate-ownership.sh`, issue #1431). Closed, already has its own PR, now too big, or `action: skip` → skip it and take the next candidate (a failing queued pick leaves the queue; a failing backlog pick is passed over). `action: adopt` launches from the surviving state instead of a fresh start. Backlog refill reuses this validation rather than defining its own.
 
 **Read ownership per pick, not once per tick** — the same discipline as the per-pick pause re-read below, and for the same reason: another thread can park or die inside the window between a re-scan and a launch. An owned pick never stalls the refill: skip it, print its one-line surface, and take the next unowned candidate until the free slots are filled or the candidate set is exhausted.
+
+**Refresh the session listing on the tick that sweeps, not once per session (issue #1459).** The sweep here runs 1B.5's blocks unchanged — the `list_sessions` call, the temp-file write that sets `SESSION_LISTING_PATH`, then the sweep block — because a listing captured hours ago is exactly the stale input that turns a thread which died since into `live` (no adoption, work stranded) or a thread that started since into `dead` (adoption underneath a running pipeline). Re-call the tool on any tick that sweeps and rebuild the file; the tool's schema stays loaded, so only the call repeats. When it is unavailable the same `DEGRADED:` line applies and the tick falls back to surface-and-skip.
 
 **Re-read the pause in that same pre-launch check**, per pick, not once per tick. A re-scan plus a re-score is not instantaneous, and the user may have said stop inside that window — a pick validated before the stop must not launch after it. `paused: true`, or a read that fails per the table above, cancels every remaining launch this tick.
 

@@ -28,11 +28,14 @@
 # LIVENESS FAILS TOWARD SURFACING
 #   Liveness is resolved against a session listing supplied by the caller
 #   (--sessions), because no CLI enumerates Claude sessions — the listing comes
-#   from the harness. `open`/`paused` classify live; `archived` or absent from
-#   the listing classifies dead. With NO listing, or no resolvable owner session
-#   id, liveness is `indeterminate` and the owner is treated as **live**:
-#   surfacing a thread that turned out to be dead costs one line, adopting work a
-#   live thread is still doing costs a duplicate implementation.
+#   from the harness. In the Claude desktop app that source is the deferred MCP
+#   tool `mcp__ccd_session_mgmt__list_sessions`, which `/pm` Step 1B.5 loads and
+#   writes to a temp file (issue #1459). `open`/`paused`/`isRunning` classify
+#   live; `archived`/`isArchived` or absent from the listing classifies dead.
+#   With NO listing, or no resolvable owner session id, liveness is
+#   `indeterminate` and the owner is treated as **live**: surfacing a thread
+#   that turned out to be dead costs one line, adopting work a live thread is
+#   still doing costs a duplicate implementation.
 #
 # OWNED-RESUMABLE UPGRADE, AND WHAT IT DOES NOT TOUCH
 #   `issue-claim.sh` reports `stale` for a claim older than CLAIM_STALE_HOURS and
@@ -72,8 +75,15 @@
 #                      Accepts an array, or an object with a `sessions` /
 #                      `data` / `results` array. Each entry may name its id as
 #                      `id` / `session_id` / `sessionId` / `uuid`, its state as
-#                      `status` / `state`, and its title as `title` / `name` /
-#                      `summary`. Absent -> liveness `indeterminate` -> live.
+#                      `status` / `state` or the booleans `isArchived` /
+#                      `isRunning` (the shape `list_sessions` returns), and its
+#                      title as `title` / `name` / `summary`. Ids are matched
+#                      with a `local_` / `remote_` / `cloud_` / `session_`
+#                      scheme prefix normalized away on both sides, since the
+#                      listing spells a session `local_<uuid>` where every
+#                      stored owner id is the bare `<uuid>`. An owner absent
+#                      from a listing that WAS read is `dead`; no listing at
+#                      all (or an unparseable one) is `indeterminate` -> live.
 #
 # ENVIRONMENT
 #   CLAUDE_SESSION_LISTING   Path to the session listing when --sessions is unset.
@@ -218,6 +228,33 @@ resolve_holder() {
 HOLDER="$(resolve_holder)"
 SELF_SESSION="${CLAUDE_SESSION_ID:-}"
 
+# Session ids reach this script from two populations that do not agree on
+# spelling. `session-state.json` and claim records store the BARE uuid
+# (`eddd2082-…`), while the harness listing this script is fed spells the same
+# session with a scheme prefix (`local_eddd2082-…`, observed on issue #1459).
+# A raw string compare therefore misses every match, and a miss against a
+# listing we could read is read as `__absent__` -> `dead` -> **adopt** — so an
+# unnormalized id turns every live owner into an adoptable one, which is the
+# duplicate-ship failure the whole sweep exists to prevent. Normalization runs
+# on BOTH sides of every comparison, and errs toward finding the session:
+# a false match reports a live owner (one surfaced line), a false miss adopts
+# work a live thread is still doing.
+norm_session_id() { # norm_session_id <token> -> lowercased, scheme prefix stripped
+  local tok="$1" rest=""
+  tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+  case "$tok" in
+    local_*)   rest="${tok#local_}" ;;
+    remote_*)  rest="${tok#remote_}" ;;
+    cloud_*)   rest="${tok#cloud_}" ;;
+    session_*) rest="${tok#session_}" ;;
+    *)         printf '%s' "$tok"; return ;;
+  esac
+  # A token that is nothing BUT a prefix normalizes to itself: stripping it
+  # would produce the empty string, which matches every other empty id.
+  [[ -z "$rest" ]] && { printf '%s' "$tok"; return; }
+  printf '%s' "$rest"
+}
+
 # --- repo key ------------------------------------------------------------------
 # Batch-level degradation entries are appended to EVERY candidate's degraded[],
 # because a source that could not be read was not read for any of them.
@@ -271,9 +308,15 @@ if [[ -n "$SESSIONS_SRC" ]]; then
        else [] end)
       | map(select(type == "object"))
       | map({ id:     ((.id // .session_id // .sessionId // .uuid // "") | tostring),
-              status: ((.status // .state // "") | tostring | ascii_downcase),
+              status: ((.status // .state //
+                        (if .isArchived == true then "archived"
+                         elif .isRunning == true then "running"
+                         elif (has("isRunning") or has("isArchived")) then "idle"
+                         else "" end)) | tostring | ascii_downcase),
               title:  ((.title // .name // .summary // "") | tostring) })
-      | map(select(.id != ""))' 2>/dev/null || true)"
+      | map(select(.id != ""))
+      | map(. + { id_norm: (.id | ascii_downcase
+                            | sub("^(local|remote|cloud|session)_(?<r>.+)$"; .r)) })' 2>/dev/null || true)"
     if [[ -n "$SESSIONS_JSON" ]]; then
       SESSIONS_AVAILABLE=1
     else
@@ -307,8 +350,8 @@ session_status() {
   looks_like_session_id "$sid" || { printf 'indeterminate'; return; }
   (( SESSIONS_AVAILABLE )) || { printf 'indeterminate'; return; }
   local st
-  st="$(printf '%s' "$SESSIONS_JSON" | jq -r --arg id "$sid" \
-    'map(select(.id == $id)) | if length == 0 then "__absent__" else .[0].status end' 2>/dev/null || printf '__err__')"
+  st="$(printf '%s' "$SESSIONS_JSON" | jq -r --arg id "$sid" --arg idn "$(norm_session_id "$sid")" \
+    'map(select(.id == $id or .id_norm == $idn)) | if length == 0 then "__absent__" else .[0].status end' 2>/dev/null || printf '__err__')"
   case "$st" in
     __err__) printf 'indeterminate' ;;
     # Absent from a listing we could read is the archived/dead case (AC #1431).
@@ -324,8 +367,8 @@ session_title() {
   local sid="$1"
   [[ -z "$sid" ]] && return 0
   (( SESSIONS_AVAILABLE )) || return 0
-  printf '%s' "$SESSIONS_JSON" | jq -r --arg id "$sid" \
-    'map(select(.id == $id)) | if length == 0 then "" else .[0].title end' 2>/dev/null || true
+  printf '%s' "$SESSIONS_JSON" | jq -r --arg id "$sid" --arg idn "$(norm_session_id "$sid")" \
+    'map(select(.id == $id or .id_norm == $idn)) | if length == 0 then "" else .[0].title end' 2>/dev/null || true
 }
 
 # --- batched pre-pass: one read each, shared by every candidate ------------------
@@ -761,6 +804,12 @@ is_self() { # is_self <holder-or-session-token>
   [[ -z "$tok" ]] && return 1
   [[ "$tok" == "$HOLDER" ]] && return 0
   [[ -n "$SELF_SESSION" && "$tok" == "$SELF_SESSION" ]] && return 0
+  # Same scheme-prefix mismatch the liveness lookup normalizes away: a stored
+  # `local_<uuid>` against a bare `$CLAUDE_SESSION_ID` would otherwise read as a
+  # foreign thread, and this thread would surface — or adopt — its own work.
+  [[ -n "$SELF_SESSION" ]] \
+    && [[ "$(norm_session_id "$tok")" == "$(norm_session_id "$SELF_SESSION")" ]] \
+    && return 0
   return 1
 }
 

@@ -438,6 +438,59 @@ check_eq "phase a" "a" "$(field 302 '.adopt.phase')"
 check_eq "owner label from the registry entry name" "phase-a-302" "$(field 302 '.owner_label')"
 
 ############################################################################
+# The real listing shape (issue #1459). `mcp__ccd_session_mgmt__list_sessions`
+# spells a session `local_<uuid>` and carries no `status` string at all — its
+# state is the booleans `isArchived` / `isRunning` — while every owner id this
+# sweep reads out of session-state.json and claim records is the BARE uuid.
+# Pre-#1459 both halves failed: the id never matched (absent -> dead) and an
+# archived record had no recognized status word. The first of those is the
+# dangerous direction — a live thread read as dead is adopted underneath — so
+# the live case is asserted first.
+scenario "(3d) real list_sessions shape — local_ prefix and boolean status"
+export FAKE_CLAIM_310="stale:9f1c2d3e-1111-4aaa-bbbb-000000000001:alice"
+printf 'issue-310-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000001",
+                 "title":"[#310] feature work","cwd":"/w","isArchived":false,
+                 "isRunning":true,"lastActivityAt":"2026-09-10T18:00:00Z",
+                 "group":"today"}]'
+sweep 310
+check_eq "prefixed listing id matches the bare owner id — owner stays live" \
+  "live" "$(field 310 '.liveness')"
+check_eq "so a live thread's work is surfaced, never adopted" "skip" "$(field 310 '.action')"
+check_eq "verdict owned_live" "owned_live" "$(field 310 '.verdict')"
+check_eq "and the listing title names the owner" "[#310] feature work" \
+  "$(field 310 '.owner_label')"
+
+scenario "(3e) prefixed id, isArchived true — adopt"
+export FAKE_CLAIM_311="stale:9f1c2d3e-1111-4aaa-bbbb-000000000002:alice"
+printf 'issue-311-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000002",
+                 "title":"dead thread","isArchived":true,"isRunning":false,
+                 "lastActivityAt":"2026-09-01T18:00:00Z","group":"older"}]'
+sweep 311
+check_eq "isArchived:true is dead even with no status word" "dead" "$(field 311 '.liveness')"
+check_eq "and the surviving branch is adopted" "adopt" "$(field 311 '.action')"
+check_eq "from the branch" "branch" "$(field 311 '.adopt.from')"
+
+scenario "(3f) prefixed listing that does not name the owner at all"
+export FAKE_CLAIM_312="stale:9f1c2d3e-1111-4aaa-bbbb-000000000003:alice"
+printf 'issue-312-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-00000000ffff",
+                 "title":"someone else","isArchived":false,"isRunning":true}]'
+sweep 312
+check_eq "absent from a readable listing is still dead" "dead" "$(field 312 '.liveness')"
+check_eq "adopt" "adopt" "$(field 312 '.action')"
+
+scenario "(3g) this thread's OWN session id, stored with a scheme prefix"
+export FAKE_CLAIM_313="stale:otherholder:alice"
+seed_state ".background_tasks=[{\"task_id\":\"t9\",\"name\":\"phase-a-313\",\"type\":\"agent\",\"session_id\":\"local_selfsession\",\"work_item\":\"Issue #313\",\"status\":\"running\",\"recovery_path\":\"/w/issue-313\"}]"
+seed_sessions '[{"sessionId":"local_other","isArchived":false,"isRunning":true}]'
+sweep 313
+check_contains "the registry entry is attributed to this session" \
+  "belongs to this session" "$(field 313 '.evidence | join("|")')"
+check_eq "so the sweep never adopts its own in-flight work" "dispatch" "$(field 313 '.action')"
+
+############################################################################
 scenario "(4) stale claim with NO resumable state — warn-and-proceed preserved"
 export FAKE_CLAIM_401="stale:threadGone:alice"
 sweep 401
