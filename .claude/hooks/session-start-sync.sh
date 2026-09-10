@@ -31,6 +31,7 @@ errors=""
 _agents_notices=""
 _marker_notice=""   # config-sync marker text (restart recommended / sync failing)
 _skip_notice=""     # why the config-sync region was skipped this session, if it was
+_budget_notice=""   # a refused attempt to widen the hook deadline past its registration
 
 # --- Config-sync mutex (issue #1524) ---
 # The scheduled claude-config-sync.sh LaunchAgent performs the SAME worktree
@@ -96,8 +97,30 @@ _HOOK_TIMEOUT_SECS=30
 # headroom; the per-call ceilings cannot. Raising it in production would let the
 # hook outlive the registered timeout and be killed mid-git, which is the one
 # outcome the whole deadline model exists to prevent, so this knob is for tests.
+#
+# "For tests" was a COMMENT, and a comment does not survive the environment
+# (CodeAnt, PR #1709). The four ceilings below take overrides from the same
+# environment, but each bound is `min(budget left, ceiling)`, so raising one
+# cannot outlive the deadline — this variable is the only one that CAN, and it
+# is exactly as inheritable as they are. A stray export in a shell profile or a
+# CI job would therefore hand production a deadline longer than the registered
+# timeout, silently, with the kill it invites recording nothing.
+#
+# So a LOWER value is honoured unconditionally — shrinking the budget only ever
+# declines more, which is the safe direction — while RAISING it above the
+# registered timeout additionally requires CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1.
+# One inherited variable can no longer widen the deadline; the pair has to be
+# set deliberately, which is what a test does and what an environment does not.
+# A refused raise is RECORDED rather than silently clamped: a silent clamp is
+# how a test knob becomes a no-op nobody notices (issue #1698).
 if (( _bound_available == 1 )); then
+  _hook_timeout_registered="$_HOOK_TIMEOUT_SECS"
   _HOOK_TIMEOUT_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS:-}" "$_HOOK_TIMEOUT_SECS")"
+  if (( _HOOK_TIMEOUT_SECS > _hook_timeout_registered )) \
+     && [[ "${CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK:-}" != "1" ]]; then
+    _budget_notice="CONFIG SYNC: ignored CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS=${_HOOK_TIMEOUT_SECS} — a deadline above the registered ${_hook_timeout_registered}s hook timeout would let this hook be killed mid-git with nothing recorded. Kept ${_hook_timeout_registered}s; set CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1 alongside it if this is a test."
+    _HOOK_TIMEOUT_SECS="$_hook_timeout_registered"
+  fi
 fi
 # Reserved for everything after the git region: the publishers, hook
 # registration, trust repair, the marker work and the root-repo sync.
@@ -1028,6 +1051,13 @@ fi
 _config_sync_notice="$_marker_notice"
 if [[ -n "$_skip_notice" ]]; then
   _config_sync_notice="${_skip_notice}${_config_sync_notice:+
+$_config_sync_notice}"
+fi
+# The refused-raise notice goes above both: it explains that the deadline every
+# other line's declines were measured against is NOT the one the environment
+# asked for, so it has to be read first to make sense of them.
+if [[ -n "$_budget_notice" ]]; then
+  _config_sync_notice="${_budget_notice}${_config_sync_notice:+
 $_config_sync_notice}"
 fi
 if [[ -n "$_config_sync_notice" ]]; then

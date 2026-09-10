@@ -22,6 +22,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 #   CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS — the hook's own deadline. Unset here so
 #     an exported value cannot silently widen the STALL leg, whose whole value is
 #     that its bound stays tight enough to fail when the hook really stalls.
+#   CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK — the hook refuses to widen its
+#     deadline past the registered timeout without this (CodeAnt, PR #1709).
+#     Unset here for the same reason as the line above, and set explicitly on the
+#     one invocation that legitimately widens.
 #
 # Each leg that wants a deadline passes it explicitly on the invocation line.
 AMPLE_BUDGET_SECS="${CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS:-60}"
@@ -33,6 +37,7 @@ case "$AMPLE_BUDGET_SECS" in ''|*[!0-9]*) AMPLE_BUDGET_SECS=60 ;; esac
 # vacuous-pass case is reproduced by hand, and a too-small value fails the
 # control LOUDLY rather than passing it vacuously — the safe direction.
 unset CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS
+unset CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK
 
 # --- 1. Registration: must be under SessionStart in global-settings.json ---
 python3 - "$SETTINGS" <<'PY' || fail "session-start-sync.sh not found under SessionStart in global-settings.json"
@@ -770,9 +775,13 @@ exit 0
 # code change (hook-tests-macos on PR #1689, contract from issue #1593). Only
 # the CONTROL's headroom widens; the stall leg above keeps the production
 # deadline.
+# RAISE_OK is the hook's deliberate-widening pair: without it the hook refuses
+# a deadline above its registered 30s and keeps 30 (CodeAnt, PR #1709), which
+# would silently put this control back on the budget that made it flake.
 okp_out="$(printf '{"source":"startup"}' \
   | HOME="$OKP/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
     CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS="$AMPLE_BUDGET_SECS" \
+    CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1 \
     bash "$OKP/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
 # Silence must NOT read as success here (CodeAnt, PR #1640). Tolerating an
 # empty body or a bare "{}" would let a hook that stopped emitting JSON — or
@@ -818,7 +827,13 @@ tiny_out="$(printf '{"source":"startup"}' \
   | HOME="$TINY/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
     CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS=1 \
     bash "$TINY/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
-TINY_OUT="$tiny_out" python3 - <<'PY' || fail "a one-second hook deadline did not decline a bounded call — CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS is not reaching the budget, so the ample-budget control's widened deadline is a no-op (issue #1698); got: $tiny_out"
+# "Some call was declined" is too weak an assertion to carry this (CodeAnt, PR
+# #1709): a decline can come from an unrelated cause — bounded-run.sh missing,
+# the capture handover failing — and would satisfy it while the override did
+# nothing. The decline message names the deadline it measured against
+# ("only Ns left of the Ms hook budget"), so require that M is OUR value. The
+# default 30 cannot produce that string, which is what ties the pass to the knob.
+TINY_OUT="$tiny_out" python3 - <<'PY' || fail "a one-second hook deadline did not decline a bounded call AGAINST A 1s BUDGET — CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS is not reaching the budget, so the ample-budget control's widened deadline is a no-op (issue #1698); got: $tiny_out"
 import json, os, sys
 text = os.environ.get("TINY_OUT", "").strip()
 if not text or text == "{}":
@@ -827,7 +842,7 @@ try:
     ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
 except Exception:
     sys.exit(1)
-sys.exit(0 if "declined:" in ctx else 1)
+sys.exit(0 if "declined:" in ctx and "of the 1s hook budget" in ctx else 1)
 PY
 python3 - "$TINY/home/.claude/sync-restart-recommended.json" <<'PY' || fail "a one-second hook deadline cleared the restart marker despite declining its bounded calls (issue #1593, #1698)"
 import json, os, sys
@@ -837,6 +852,34 @@ if not os.path.exists(path):
 with open(path) as f:
     d = json.load(f)
 sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
+# The other half of the knob's contract: a raise WITHOUT its deliberate-widening
+# pair is refused, not honoured (CodeAnt, PR #1709). The hazard is a stray
+# exported CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS in a real session handing the
+# hook a deadline longer than the `timeout: 30` it is registered with, at which
+# point Claude kills it mid-git and nothing is recorded — the one outcome the
+# deadline model exists to prevent. Refusing has to be VISIBLE too: a silent
+# clamp would look identical to an honoured raise from inside a test, so the
+# hook says which value it ignored and the assertion reads that sentence back.
+NORAISE="$P15/noraise"
+build_publish_fixture "$NORAISE" '#!/bin/sh
+echo "  alpha — creating symlink"
+exit 0
+'
+noraise_out="$(printf '{"source":"startup"}' \
+  | HOME="$NORAISE/home" CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS=120 \
+    bash "$NORAISE/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
+NORAISE_OUT="$noraise_out" python3 - <<'PY' || fail "a 120s deadline was accepted without CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK, or was clamped silently — an inherited override must neither outlive the registered 30s hook timeout nor do so without saying it did (CodeAnt, PR #1709); got: $noraise_out"
+import json, os, sys
+text = os.environ.get("NORAISE_OUT", "").strip()
+if not text or text == "{}":
+    sys.exit(1)
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if "ignored CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS=120" in ctx else 1)
 PY
 
 # A tripped publisher still owes the RESUME-path restart signal (CodeAnt, PR
