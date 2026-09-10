@@ -284,6 +284,23 @@ END.txt
 printf '%s\n' "$big" | grep -q needle
 FIX
 
+expect "same line: enable then disable — the later toggle wins (no finding)" 0 'OK' <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+set -o pipefail; set +o pipefail; printf '%s\n' "$big" | grep -q needle || echo missing
+FIX
+
+expect "same line: disable then enable — the later toggle wins (finding)" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set +o pipefail; set -o pipefail; printf '%s\n' "$big" | grep -q needle
+FIX
+
+expect "a path-qualified grep (/usr/bin/grep -q) is a finding" 1 "$HIT" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$big" | /usr/bin/grep -q needle
+FIX
+
 expect "|& grep -q is a finding" 1 "$HIT" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail

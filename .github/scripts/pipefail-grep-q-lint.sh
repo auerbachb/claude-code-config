@@ -320,43 +320,52 @@ FNR == 1 {
 
   if (line ~ /^[[:space:]]*$/) next
 
-  # --- pipefail gate ----------------------------------------------------
-  # Tracked in source order, both directions: `set -o pipefail` arms the scan
-  # (the rest of THIS line included — `set -o pipefail; cmd | grep -q x` is
-  # live), `set +o pipefail` disarms it until the next enable. Combined
-  # (`-euo pipefail`) and separated (`-e -o pipefail`) spellings both count,
-  # and `set` may follow a control operator directly (`cd x;set -o pipefail`).
-  if (line ~ /(^|[[:space:];&|(])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
-    if (!scanning) {
-      scanning = 1
-      if (!counted) { counted = 1; files_scanned++ }
-    }
-  } else if (line ~ /(^|[[:space:];&|(])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:];&|]|$)/) {
-    scanning = 0
-    next
-  }
-  if (!scanning) next
-
+  # --- pipefail gate, per command segment ---------------------------------
+  # A logical line is split on its command separators (`;`, `&&`, `||`, `&`)
+  # and walked in SOURCE ORDER, so a toggle applies only to the segments after
+  # it: `set -o pipefail; cmd | grep -q x` is live, while
+  # `set -o pipefail; set +o pipefail; cmd | grep -q x` is not, and the reverse
+  # order is. Combined (`-euo pipefail`) and separated (`-e -o pipefail`)
+  # spellings both count. `|&` is a pipe for this purpose, so it is folded to
+  # `|` first and never mistaken for a `&` separator. Single-quoted spans were
+  # blanked above, so a `;` inside one cannot split a segment.
   work = strip_single_quoted(line)
-
-  # Every `| grep …` (not `||`, optionally `|&`) up to the end of that simple
-  # command: a separator, a redirection, or a closing paren.
-  # `grep` may carry a prefix — `LC_ALL=C grep`, `command grep`, `env grep` —
-  # or be a variant basename (`egrep`, `ggrep`, `zgrep`): same early exit,
-  # same SIGPIPE hazard.
-  while (match(work, /(^|[^|])\|&?[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*|command|builtin|env)[[:space:]]+)*[a-z]*grep([[:space:]]|$)/)) {
-    rest = substr(work, RSTART + RLENGTH)
-    args = rest
-    if (match(args, /[;&|<>()]/)) args = substr(args, 1, RSTART - 1)
-    pipes_examined++
-    if ((" " args " ") ~ /[[:space:]](-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)[[:space:]]/) {
-      if (waived_here) {
-        waived++
-      } else {
-        printf "FINDING\037%s\037%d\037grep-q\037%s\n", FILENAME, report_line, line
+  gsub(/\|&/, "|", work)
+  nseg = split(work, segs, /;|&&|\|\||&/)
+  for (si = 1; si <= nseg; si++) {
+    seg = segs[si]
+    if (seg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
+      if (!scanning) {
+        scanning = 1
+        if (!counted) { counted = 1; files_scanned++ }
       }
+      continue
     }
-    work = rest
+    if (seg ~ /(^|[[:space:](])set[[:space:]]+([^;&|]*[[:space:]])?\+[a-zA-Z]*o[[:space:]]+pipefail([[:space:]]|$)/) {
+      scanning = 0
+      continue
+    }
+    if (!scanning) continue
+
+    # Every `| grep …` in this segment, up to the end of that simple command:
+    # a redirection, a closing paren, or the end of the segment.
+    # `grep` may carry a prefix — `LC_ALL=C grep`, `command grep`, `env grep` —
+    # a path (`/usr/bin/grep`), or be a variant basename (`egrep`, `ggrep`,
+    # `zgrep`): same early exit, same SIGPIPE hazard.
+    while (match(seg, /(^|[^|])\|[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*|command|builtin|env)[[:space:]]+)*([^[:space:]|]*\/)?[a-z]*grep([[:space:]]|$)/)) {
+      rest = substr(seg, RSTART + RLENGTH)
+      args = rest
+      if (match(args, /[<>()]/)) args = substr(args, 1, RSTART - 1)
+      pipes_examined++
+      if ((" " args " ") ~ /[[:space:]](-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)[[:space:]]/) {
+        if (waived_here) {
+          waived++
+        } else {
+          printf "FINDING\037%s\037%d\037grep-q\037%s\n", FILENAME, report_line, line
+        }
+      }
+      seg = rest
+    }
   }
 }
 
