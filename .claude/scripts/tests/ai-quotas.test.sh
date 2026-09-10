@@ -1249,6 +1249,24 @@ check_contains "$OUT" "stale (>1 day)" "a scheduled snapshot older than a day re
 check_contains "$OUT" "LAST SNAPSHOT: Sat Sep 5" \
   "control(+): neither the torn line nor the non-object one stopped the good one being read"
 
+# File order is append-COMPLETION order, and every row of a run carries the
+# clock that run STARTED on — so a slow run finishing after a quick one leaves
+# an older ts on the last line. Written in exactly that order here: the newer
+# reading first, the older one appended after it.
+overage_case 40 50
+mkdir -p "$(dirname "$HISTORY")"
+jq -nc --arg ts "$(utc_iso "$NOW")" \
+  '{ts: $ts, provider: "codex", label: "codex-one@example.com", nickname: null,
+    window: "7-day", used_pct: 10, resets_at_epoch: null, source: "scheduled"}' > "$HISTORY"
+jq -nc --arg ts "$(utc_iso $(( NOW - 3 * 86400 )))" \
+  '{ts: $ts, provider: "codex", label: "codex-one@example.com", nickname: null,
+    window: "7-day", used_pct: 10, resets_at_epoch: null, source: "scheduled"}' >> "$HISTORY"
+run
+check_contains "$OUT" "LAST SNAPSHOT: Tue Sep 8" \
+  "the footer names the NEWEST scheduled reading, not whichever line landed last"
+check_not_contains "$OUT" "stale" \
+  "so a fresh reading is not reported stale because an older one was appended after it"
+
 # --- 17e. nicknames ----------------------------------------------------------
 
 overage_case 40 50

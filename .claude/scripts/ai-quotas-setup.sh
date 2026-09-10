@@ -1554,7 +1554,7 @@ agent_unload() {
 }
 
 action_schedule_install() {
-  local reader uid hour plist_dir tmp rc=0
+  local reader uid hour plist_dir tmp extra_env="" rc=0
   require_macos install
   require_schedule_home install
 
@@ -1587,6 +1587,27 @@ action_schedule_install() {
   # HOME is passed for the same reason: the reader resolves the registry, the
   # profiles, and the history file from it, and a LaunchAgent's environment
   # does not necessarily carry the one this shell has.
+  #
+  # An AI_QUOTAS_CONFIG or AI_QUOTAS_HISTORY set in THIS shell is carried in
+  # with them. Both override a HOME-derived default, so without this the
+  # commands the user runs by hand — `schedule install`, `schedule status`,
+  # and the reader itself — would honour a custom registry or history path
+  # while the nightly job silently resolved the defaults instead: two history
+  # files, each looking complete, neither holding every reading.
+  #
+  # AI_QUOTAS_PROFILE_ROOT is deliberately NOT carried. The reader never reads
+  # it — every account's `profile_dir` comes from the registry, already
+  # absolute — so passing it would advertise an effect it does not have.
+  if [[ -n "${AI_QUOTAS_CONFIG:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_CONFIG</key>
+        <string>$(xml_escape "$AI_QUOTAS_CONFIG")</string>"
+  fi
+  if [[ -n "${AI_QUOTAS_HISTORY:-}" ]]; then
+    extra_env="${extra_env}
+        <key>AI_QUOTAS_HISTORY</key>
+        <string>$(xml_escape "$AI_QUOTAS_HISTORY")</string>"
+  fi
   tmp="$(mktemp "${plist_dir}/.ai-quotas-plist.XXXXXX")" || die 5 "could not create a temp file in $plist_dir"
   cat > "$tmp" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1619,7 +1640,7 @@ action_schedule_install() {
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
-        <string>$(xml_escape "$_HOME")</string>
+        <string>$(xml_escape "$_HOME")</string>${extra_env}
     </dict>
 </dict>
 </plist>
@@ -1651,19 +1672,27 @@ PLIST
   else
     rc=1
   fi
-  # The fallback's own status is deliberately NOT captured: `agent_is_loaded`
-  # below is the authority on whether the job is loaded, and a second status
-  # variable nobody consults is how a script grows a check that looks like one
-  # and is not. `bootstrap` is the modern spelling; `load -w` is what an older
-  # launchctl understands.
+  # `bootstrap` is the modern spelling; `load -w` is what an older launchctl
+  # understands. The fallback's status IS captured, and only because of what
+  # the pair of failures means: launchd holds a job under a label, not a path,
+  # so when neither spelling took AND the label still reports loaded, the
+  # definition running tonight is the one that was loaded BEFORE this install
+  # — the old hour, the old reader — even though the new plist is on disk and
+  # `agent_is_loaded` answers yes. Reporting that as "is loaded" would be the
+  # check that looks like one and is not.
   if [[ "$rc" -ne 0 ]]; then
-    "$LAUNCHCTL_BIN" load -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 || true
+    "$LAUNCHCTL_BIN" load -w "$LAUNCH_AGENT_FILE" >/dev/null 2>&1 && rc=0
   fi
 
   echo "${SELF_NAME}: wrote ${LAUNCH_AGENT_FILE}"
   echo "${SELF_NAME}: it runs ${reader} --json --quiet at ${hour}:00 local and once on load; output goes to ${LAUNCHD_LOG}"
-  if agent_is_loaded; then
+  if agent_is_loaded && [[ "$rc" -eq 0 ]]; then
     echo "${SELF_NAME}: ${LAUNCH_LABEL} is loaded."
+  elif agent_is_loaded; then
+    # Loaded, but not by this install. NOT a die for the same reason as below
+    # — the plist on disk is correct and takes effect at the next login — but
+    # the user has to be told the job running until then is the previous one.
+    echo "${SELF_NAME}: ${LAUNCH_LABEL} reports loaded, but neither bootstrap nor load took, so the definition launchd is running is the one loaded before this install — the new plist takes effect at your next login, or run: ${LAUNCHCTL_BIN} bootout gui/\$(id -u)/${LAUNCH_LABEL} && ${LAUNCHCTL_BIN} bootstrap gui/\$(id -u) ${LAUNCH_AGENT_FILE}" >&2
   else
     # NOT a die: the plist is installed and correct, and it will load at the
     # next login even if this bootstrap did not take. Saying so beats

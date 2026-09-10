@@ -297,6 +297,13 @@ EOF
 # STUB_LAUNCHCTL_BOOTSTRAP_FAILS drives the fallback deliberately: the modern
 # `bootstrap` spelling is refused, and the legacy `load -w` must then be what
 # gets the job loaded.
+#
+# STUB_LAUNCHCTL_LOAD_FAILS and STUB_LAUNCHCTL_BOOTOUT_FAILS exist for the one
+# case neither of those reaches: a bootout that does not take, followed by a
+# bootstrap and a load that are both refused. The label is then still held by
+# the definition loaded BEFORE the install, so `list` keeps answering "loaded"
+# — the shape an install must not report as success. A failed bootout leaves
+# the state file in place precisely so that stays true.
 cat > "$BIN/launchctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "$*" >> "$STUB_LAUNCHCTL_LOG"
@@ -309,8 +316,10 @@ case "${1:-}" in
     if [[ "${STUB_LAUNCHCTL_BOOTSTRAP_FAILS:-0}" == "1" ]]; then exit 5; fi
     : > "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
   load)
+    if [[ "${STUB_LAUNCHCTL_LOAD_FAILS:-0}" == "1" ]]; then exit 5; fi
     : > "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
   bootout|unload)
+    if [[ "${STUB_LAUNCHCTL_BOOTOUT_FAILS:-0}" == "1" ]]; then exit 5; fi
     rm -f "$STUB_LAUNCHCTL_STATE"; exit 0 ;;
 esac
 echo "STUB-LAUNCHCTL: unrecognised call: $*" >&2
@@ -328,6 +337,8 @@ export STUB_SECURITY_VALUE_REQUESTS="$TMP/security-value-requests.log"
 export STUB_LAUNCHCTL_LOG="$TMP/launchctl.log"
 export STUB_LAUNCHCTL_STATE="$TMP/launchctl.loaded"
 export STUB_LAUNCHCTL_BOOTSTRAP_FAILS=0
+export STUB_LAUNCHCTL_LOAD_FAILS=0
+export STUB_LAUNCHCTL_BOOTOUT_FAILS=0
 : > "$STUB_CALL_LOG"
 : > "$STUB_KEYCHAIN_DB"
 printf '0\n' > "$STUB_KEYCHAIN_SEQ"
@@ -349,6 +360,8 @@ new_case() { # <name>
   NODE_BIN_UNDER_TEST=""
   READER_BIN_UNDER_TEST=""
   STUB_LAUNCHCTL_BOOTSTRAP_FAILS=0
+  STUB_LAUNCHCTL_LOAD_FAILS=0
+  STUB_LAUNCHCTL_BOOTOUT_FAILS=0
   CASE_DIR="$TMP/case-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-')"
   rm -rf "$CASE_DIR"
   mkdir -p "$CASE_DIR/home/.claude"
@@ -373,6 +386,8 @@ run() { # <args...>  — never aborts the suite; sets OUT and RC
         AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
         AI_QUOTAS_READER_BIN="${READER_BIN_UNDER_TEST-}" \
         STUB_LAUNCHCTL_BOOTSTRAP_FAILS="${STUB_LAUNCHCTL_BOOTSTRAP_FAILS:-0}" \
+        STUB_LAUNCHCTL_LOAD_FAILS="${STUB_LAUNCHCTL_LOAD_FAILS:-0}" \
+        STUB_LAUNCHCTL_BOOTOUT_FAILS="${STUB_LAUNCHCTL_BOOTOUT_FAILS:-0}" \
         "$SCRIPT" "$@" 2>&1)"
   RC=$?
 }
@@ -1396,6 +1411,22 @@ check_contains "$PLIST_BODY" "launchd.log" "and a log path for both streams"
 check_contains "$PLIST_BODY" "/opt/homebrew/bin" \
   "the PATH names Homebrew — launchd gives a job a minimal one, and jq, codex and node all live there"
 check_contains "$PLIST_BODY" "<key>HOME</key>" "and HOME, which the reader resolves every path from"
+# A custom registry path set in the installing shell has to reach the job too.
+# `run` sets AI_QUOTAS_CONFIG for every case, so this is the ordinary path,
+# not a contrivance: without it the nightly run would resolve the HOME default
+# while every command the user types honoured the override.
+check_contains "$PLIST_BODY" "<key>AI_QUOTAS_CONFIG</key>" \
+  "a custom registry path set at install time is carried into the job"
+check_contains "$PLIST_BODY" "<string>${CONFIG}</string>" "and it is the path this shell had"
+# The reader takes each account's profile_dir from the registry and never
+# reads AI_QUOTAS_PROFILE_ROOT, so carrying it would advertise an effect it
+# does not have. Asserted because "harmless to pass" is how it gets added back.
+check_eq "$(printf '%s' "$PLIST_BODY" | grep -c 'AI_QUOTAS_PROFILE_ROOT' || true)" "0" \
+  "but AI_QUOTAS_PROFILE_ROOT is not, because the reader never reads it"
+# Unset in this shell means absent from the plist — not written empty, which
+# would override the reader's own HOME-derived default with nothing.
+check_eq "$(printf '%s' "$PLIST_BODY" | grep -c 'AI_QUOTAS_HISTORY' || true)" "0" \
+  "and an unset AI_QUOTAS_HISTORY is left out rather than written empty"
 check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "bootstrap gui/" "the job is loaded through bootstrap"
 check_contains "$OUT" "is loaded" "and the run says so"
 check_eq "$(ls -l "$PLIST" | cut -c1-10)" "-rw-r--r--" "the plist is mode 644"
@@ -1472,6 +1503,45 @@ run schedule install
 check_eq "$RC" "0" "an install whose bootstrap is refused still exits 0"
 check_contains "$(cat "$STUB_LAUNCHCTL_LOG")" "load -w" "it falls back to the legacy load"
 check_contains "$OUT" "is loaded" "and the job really is loaded afterwards"
+
+# The shape neither spelling covers: a bootout that does not take, then a
+# bootstrap and a load that are both refused. launchd holds a job by LABEL, so
+# what is running tonight is the definition loaded before this install — the
+# old hour, the old reader — while the new plist sits on disk and `list` still
+# answers "loaded". Reporting that as a plain success is the failure this
+# case exists to catch, so the assertion is on what the run SAYS, not only on
+# the state file.
+new_case "schedule-reload-did-not-take"
+PLATFORM_UNDER_TEST="Darwin"
+run schedule install
+check_eq "$RC" "0" "a first install to load the job exits 0"
+STUB_LAUNCHCTL_BOOTOUT_FAILS=1
+STUB_LAUNCHCTL_BOOTSTRAP_FAILS=1
+STUB_LAUNCHCTL_LOAD_FAILS=1
+run schedule install --hour 4
+check_eq "$RC" "0" "a re-install whose bootout, bootstrap and load all fail still exits 0"
+check_contains "$(cat "$(plist_path)")" "<integer>4</integer>" \
+  "the new plist is on disk with the hour it was given"
+check_contains "$OUT" "loaded before this install" \
+  "but the run says the definition launchd is running is the previous one"
+check_eq "$(printf '%s' "$OUT" | grep -c 'ai-quotas is loaded\.' || true)" "0" \
+  "and does NOT report it as plainly loaded, which is what the old plist would look like"
+
+# A custom history path set in the installing shell reaches the job. Driven
+# directly rather than through `run`, which does not set AI_QUOTAS_HISTORY —
+# the point is that a var this shell HAS is carried, and one it lacks is not.
+new_case "schedule-history-override-carried"
+SCHEDULE_HIST="$CASE_DIR/custom-history.jsonl"
+SCHEDULE_HIST_OUT="$(HOME="$CASE_DIR/home" \
+  AI_QUOTAS_CONFIG="$CONFIG" \
+  AI_QUOTAS_PROFILE_ROOT="$PROFILES" \
+  AI_QUOTAS_HISTORY="$SCHEDULE_HIST" \
+  AI_QUOTAS_PLATFORM="Darwin" \
+  AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
+  "$SCRIPT" schedule install 2>&1)" && SCHEDULE_HIST_RC=0 || SCHEDULE_HIST_RC=$?
+check_eq "$SCHEDULE_HIST_RC" "0" "schedule install with a custom AI_QUOTAS_HISTORY exits 0"
+check_contains "$(cat "$(plist_path)")" "<string>${SCHEDULE_HIST}</string>" \
+  "and the job writes to that history file, not to the HOME default"
 
 # A reader path that does not resolve must stop BEFORE a plist is written: a
 # LaunchAgent pointing at a missing script fails silently every night.

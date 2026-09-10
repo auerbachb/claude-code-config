@@ -1651,9 +1651,22 @@ append_history() { # <doc-json-file>
     return 0
   fi
   # ONE append of the whole block, not one per row. A `/quotas` run by hand
-  # while the LaunchAgent happens to fire is the ordinary case, and an O_APPEND
-  # write of a block this size lands whole at the end of the file rather than
-  # interleaved line-by-line with the other run's.
+  # while the LaunchAgent happens to fire is the ordinary case, and appending
+  # once keeps that block contiguous instead of interleaving it row by row
+  # with the other run's.
+  #
+  # This is a NARROWING of the window, not atomicity, and the difference
+  # matters to whoever next reads this. `cat` writes in buffer-sized chunks;
+  # a block larger than one chunk becomes several O_APPEND writes, and a
+  # concurrent appender can land between them. What that costs is bounded:
+  # O_APPEND advances the offset atomically per write, so the two runs never
+  # overwrite each other and no line written on an earlier day can be damaged
+  # — the only casualty is the pair of records straddling a chunk boundary,
+  # which arrive torn and which `last_scheduled_snapshot_at` and every other
+  # reader already DROP via `fromjson?`. A lost reading self-heals at the next
+  # run; the history has no unique data in any single line. A lock would buy
+  # those two records at the price of a stale-lock failure mode on a file
+  # whose entire contract is that it never blocks the report it decorates.
   if ! cat "$tmp" >> "$HISTORY_FILE" 2>/dev/null; then
     warn "could not append this run's snapshots to $HISTORY_FILE"
     return 0
@@ -1669,10 +1682,19 @@ last_scheduled_snapshot_at() {
   # not cost the footer every good line written before it. The `type` guard is
   # the other half: `fromjson?` catches only the PARSE error, so a line holding
   # a bare `5` parses fine and then aborts jq on `.source`.
+  #
+  # The NEWEST `ts`, not the last line. A run stamps every one of its rows
+  # with the clock it started on, so file order is append-completion order,
+  # not reading order: a slow run that started at 09:00 and finished at 09:05
+  # lands AFTER a quick one that started at 09:02, and `tail -n 1` would then
+  # report 09:00 as the latest snapshot — an hour of drift near the staleness
+  # boundary, from a footer whose whole job is to say when the job last ran.
+  # `sort` is exact here rather than approximate: these are fixed-width UTC
+  # `%Y-%m-%dT%H:%M:%SZ` strings, which order lexicographically.
   jq -R -r 'fromjson?
             | select(type == "object" and .source == "scheduled")
             | .ts // empty' \
-    "$HISTORY_FILE" 2>/dev/null | tail -n 1 || true
+    "$HISTORY_FILE" 2>/dev/null | sort | tail -n 1 || true
 }
 
 # `LAST SNAPSHOT: <time> (scheduled)`, `… — stale (>1 day)`, or `none yet`.

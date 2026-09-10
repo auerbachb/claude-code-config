@@ -766,10 +766,25 @@ which at this rate is years away.
 
 **Concurrency.** The whole run's lines are appended in ONE `cat >>`, not one write per
 row. A hand-run `/quotas` while the LaunchAgent happens to fire is the ordinary case, and
-an `O_APPEND` write of a block this size lands whole at the end of the file rather than
-interleaved with the other run's. Readers still use `fromjson?` per line and skip what
-does not parse: a run killed mid-append can leave one torn line, and one torn line must
-not cost the lines around it.
+appending once keeps that block contiguous instead of interleaving it row by row with the
+other run's. This narrows the window; it is not atomicity, and the distinction is the
+point. `cat` writes in buffer-sized chunks, so a block larger than one chunk becomes
+several `O_APPEND` writes and a concurrent appender can land between them. The cost is
+bounded: `O_APPEND` advances the offset atomically per write, so the two runs never
+overwrite each other and nothing written on an earlier day can be damaged — the only
+casualty is the pair of records straddling a chunk boundary, which arrive torn. Readers
+use `fromjson?` per line and skip what does not parse, so a torn line (from this, or from
+a run killed mid-append) costs only itself, and the next run records again. A lock was
+declined for the same reason a retention policy was: it would buy those two records at
+the price of a stale-lock failure mode on a file whose whole contract is that it never
+blocks the report it decorates.
+
+**Reading order is not append order.** Every row of a run carries the clock that run
+*started* on, while its position in the file is where the run *finished* — so a slow run
+that began at 09:00 and appended at 09:05 sits after a quick one that began at 09:02. The
+`LAST SNAPSHOT` footer therefore takes the newest `ts`, not the last line; the timestamps
+are fixed-width UTC `%Y-%m-%dT%H:%M:%SZ`, so ordering them is a lexicographic sort.
+Anything else reading this file for a latest value owes itself the same care.
 
 ### The daily unattended job
 
@@ -783,7 +798,7 @@ not cost the lines around it.
 | `RunAtLoad` | `true`, so installing it takes a reading immediately rather than waiting for tomorrow. |
 | `StartCalendarInterval` | `Hour` **9**, `Minute` 0, local time. `--hour <0-23>` (or `AI_QUOTAS_SCHEDULE_HOUR`) changes it. |
 | `StandardOutPath` / `StandardErrorPath` | `~/.claude/ai-quotas/launchd.log` (override with `AI_QUOTAS_LAUNCHD_LOG`). |
-| `EnvironmentVariables` | `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` and `HOME`. |
+| `EnvironmentVariables` | `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` and `HOME`, plus `AI_QUOTAS_CONFIG` and `AI_QUOTAS_HISTORY` when the installing shell had them set. |
 
 **Why 09:00.** launchd runs a missed calendar job at the next wake rather than skipping
 it, but a reading taken hours late is a reading attributed to the wrong day; 09:00 is
@@ -796,6 +811,23 @@ however long the owner slept in.
 in Homebrew's prefix: `jq`, `codex`, and `node` are all under `/opt/homebrew/bin` on this
 Mac (`/usr/local/bin` on Intel). Without it the scheduled run finds no `jq`, exits 5, and
 writes a hole in the history every night.
+
+**Why the path overrides are carried.** `AI_QUOTAS_CONFIG` and `AI_QUOTAS_HISTORY` each
+override a `HOME`-derived default, so a shell that has one set gets it honoured by every
+command the owner types — `schedule install`, `schedule status`, `/quotas` itself — while
+a job that did not inherit it would resolve the default instead. The result would be two
+history files, each looking complete, neither holding every reading. `AI_QUOTAS_PROFILE_ROOT`
+is deliberately *not* carried: the reader never consults it, taking each account's
+`profile_dir` from the registry (already absolute), so passing it would advertise an
+effect it does not have.
+
+**Why a re-install can report the previous definition.** launchd holds a job by label,
+not by path. `schedule install` boots the old job out before bootstrapping the new plist,
+but when the bootout does not take, neither `bootstrap` nor the legacy `load -w` can
+replace it — and `launchctl list` keeps answering "loaded", because something under that
+label is. The install says so explicitly rather than reporting success: the plist on disk
+is the new one and takes effect at the next login, but until then the job running is the
+one loaded before the install, at the old hour and the old reader path.
 
 **Why launchd and not cron, and not a Claude scheduler.** The reader needs this user's
 login context: the Keychain items the `claude` login created, the per-account
