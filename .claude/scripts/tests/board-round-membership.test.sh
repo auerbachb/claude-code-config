@@ -280,6 +280,28 @@ CALL_COUNT=0
 [[ -f "$TMP/state.json.calls" ]] && CALL_COUNT="$(wc -l < "$TMP/state.json.calls" | tr -d '[:space:]')"
 check_eq "no write was issued at all" "0" "$CALL_COUNT"
 
+echo "-- 7b2. the SAME round, RE-PLANNED order -> members refreshed, clock kept"
+# `members` carries the queue ORDER that /board Step 3 reads back verbatim, so a
+# re-entry whose execution order changed must refresh the order — while
+# `dispatched_at` keeps naming the original dispatch, since the round did not
+# restart. Neither "leave it" nor "replace the block" does both.
+run_write '{"repos":{"owner/repo":{"round":{"members":["1604","1607","1612"],"dispatched_at":"2026-09-02T18:38:00Z","session":"sess-self"}}}}' 1612 1604 1607
+check_eq "the recorded order is the new execution order" '["1612","1604","1607"]' \
+  "$(jq -c '.repos["owner/repo"].round.members' "$TMP/state.json")"
+check_eq "the round's start did NOT move" "2026-09-02T18:38:00Z" \
+  "$(jq -r '.repos["owner/repo"].round.dispatched_at' "$TMP/state.json")"
+check_eq "attribution survives the refresh" "sess-self" \
+  "$(jq -r '.repos["owner/repo"].round.session' "$TMP/state.json")"
+check_eq "the refresh is a compare-and-set, never a plain set" "1" \
+  "$(grep -c '^CAS ' "$TMP/state.json.calls" 2>/dev/null || echo 0)"
+# Control: a set-equality identity check alone reports "same round" on this
+# fixture, which is why the order comparison had to be added beside it.
+check_eq "control: set equality alone calls the re-ordered round unchanged" "yes" \
+  "$(printf '%s' '["1604","1607","1612"]' \
+     | jq -e --argjson now '["1612","1604","1607"]' \
+       '(((. - $now) | length) == 0) and ((($now - .) | length) == 0)' >/dev/null 2>&1 \
+     && echo yes || echo no)"
+
 echo "-- 7c. a DIFFERENT round left behind -> replaced wholesale, never merged"
 run_write '{"repos":{"owner/repo":{"round":{"members":["1500","1501"],"dispatched_at":"2026-08-01T10:00:00Z"}}}}' 1604 1607
 check_eq "the stale round's members are gone" '["1604","1607"]' \
@@ -396,9 +418,21 @@ CLEAR_BLOCK="$(extract_skill_bash "$SUBAGENT_MD" subagent-step8-round-teardown-c
   echo "FAIL — could not extract the Step 8 teardown block"; FAIL=$((FAIL + 1))
   echo "== summary: $PASS passed, $FAIL failed =="; exit 1
 }
+# The block declares ENDED_ROUND_ISSUES with a caller placeholder, the same
+# shape 7.0's ROUND_ISSUES uses. Substitute it, and assert the substitution
+# landed — so a renamed variable cannot make every teardown scenario vacuous,
+# and so this suite can no longer SUPPLY the variable the shipped block forgot
+# to declare, which is what hid its no-op teardown.
 printf '%s\n' "$CLEAR_BLOCK" \
-  | sed 's/^\([[:space:]]*\)ENDED_ROUND_ISSUES\[@\]}/\1ENDED_ROUND_ISSUES[@]}/' \
+  | sed 's/^\([[:space:]]*\)ENDED_ROUND_ISSUES=(<.*$/\1ENDED_ROUND_ISSUES=(${SCENARIO_ENDED})/' \
   > "$TMP/clear-block.sh"
+check_eq "the ENDED_ROUND_ISSUES placeholder was substituted" "1" \
+  "$(grep -c 'ENDED_ROUND_ISSUES=(\${SCENARIO_ENDED})' "$TMP/clear-block.sh" || true)"
+# The shipped block must DECLARE the array itself. While it merely referenced
+# one, this suite's own preamble supplied it and every teardown assertion passed
+# against a variable a real caller never sets.
+check_eq "the shipped block declares the array rather than assuming a caller variable" "1" \
+  "$(grep -c '^[[:space:]]*ENDED_ROUND_ISSUES=(' "$TMP/clear-block.sh" || true)"
 
 run_clear() {  # run_clear <initial-state-json> <ended-issues...>
   local initial="$1"; shift
@@ -407,10 +441,10 @@ run_clear() {  # run_clear <initial-state-json> <ended-issues...>
   local issues="$*"
   {
     echo 'REPO_KEY="owner/repo"'
-    echo "ENDED_ROUND_ISSUES=($issues)"
     cat "$TMP/clear-block.sh"
   } > "$TMP/clear-run.sh"
   STUB_STATE_FILE="$TMP/state.json" \
+  SCENARIO_ENDED="$issues" \
   SESSION_STATE_SH="$TMP/session-state.sh" \
   STUB_REPO_KEY="owner/repo" \
   STUB_RACE_JSON="${STUB_RACE_JSON:-}" \
@@ -452,6 +486,23 @@ echo "-- 8d. nothing recorded -> nothing to clear, and no error"
 run_clear '{"repos":{"owner/repo":{}}}' 1604
 check_eq "an absent round is a no-op" "0" \
   "$([[ -f "$TMP/state.json.calls" ]] && wc -l < "$TMP/state.json.calls" | tr -d '[:space:]' || echo 0)"
+
+echo "-- 8e. the ended list was never supplied -> DEGRADED, and nothing is cleared"
+# An unfilled placeholder is not an empty round: "${arr[@]}" on an empty array
+# expands to ONE empty string, so the derived membership is [""], which matches
+# no record — and an unguarded block then takes the SILENT not-ours branch and
+# leaves the finished round on disk for the next /board to render as current.
+run_clear '{"repos":{"owner/repo":{"round":{"members":["1604","1607"],"dispatched_at":"2026-09-02T18:38:00Z"}}}}'
+check_eq "the unfilled list is reported rather than skipped silently" "yes" \
+  "$(grep -q 'DEGRADED: the ended round issue list was not supplied' "$TMP/out" && echo yes || echo no)"
+check_eq "no write is attempted against an unknown membership" "0" \
+  "$([[ -f "$TMP/state.json.calls" ]] && wc -l < "$TMP/state.json.calls" | tr -d '[:space:]' || echo 0)"
+check_eq "the round is left intact for a teardown that knows its members" '["1604","1607"]' \
+  "$(jq -c '.repos["owner/repo"].round.members' "$TMP/state.json")"
+# Control: the derivation itself, unguarded, yields [""] and not [] — so 8e is
+# testing the guard rather than passing because an empty list is harmless.
+check_eq "control: the unguarded derivation yields a one-empty-string array" '[""]' \
+  "$(printf '%s\n' "${UNSET_ENDED_ARRAY[@]:-}" | jq -R . | jq -s -c .)"
 
 echo
 echo "== 9. EXECUTED: /board Step 3's real queued-row derivation =="

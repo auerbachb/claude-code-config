@@ -947,18 +947,28 @@ EXISTING_ROUND=$("$SESSION_STATE_SH" \
 # duplicated batch), and preserving there would leave this round attributed to a
 # session that is not running it. An absent `session` is a pre-attribution
 # record and matches, so nothing written before this field churns.
-WRITE_ROUND=true
+WRITE_ROUND=true      # a DIFFERENT round -> replace the block wholesale
+REORDER_ONLY=false    # the SAME round, re-planned execution order
 if printf '%s' "$EXISTING_ROUND" | jq -e --arg me "$ROUND_SESSION" --argjson now "$ROUND_MEMBERS" \
      '(.members? // null | type == "array")
       and (((.members - $now) | length) == 0)
       and ((($now - .members) | length) == 0)
       and ((.session // $me) == $me)' >/dev/null 2>&1; then
   WRITE_ROUND=false
+  # Same set, same session: this round re-entered. Set equality is the right
+  # IDENTITY test — but `members` also carries ORDER, and /board Step 3 reads it
+  # back as the queue order and never re-sorts. So a re-entry whose execution
+  # order was re-planned still has to refresh that order: leaving it renders the
+  # previous ordering as this round's queue, while replacing the whole block
+  # would move `dispatched_at` off the original dispatch, the one thing
+  # re-entry must never do. Refresh `members` ALONE.
+  printf '%s' "$EXISTING_ROUND" | jq -e --argjson now "$ROUND_MEMBERS" \
+    '.members == $now' >/dev/null 2>&1 || REORDER_ONLY=true
 fi
 
 if [[ -z "$REPO_KEY" ]]; then
   echo 'DEGRADED: repo key unresolved — round membership not recorded; /board in another thread renders no queued rows and an approximate delivered count'
-elif [[ "$WRITE_ROUND" == true ]]; then
+elif [[ "$WRITE_ROUND" == true || "$REORDER_ONLY" == true ]]; then
   # --cas, not --set. `.round` is ONE slot per repo, and two orchestration
   # threads can dispatch into the same repo at once (the reason `table_render`
   # is session-keyed at all). A bare --set would let this thread's round land on
@@ -973,8 +983,17 @@ elif [[ "$WRITE_ROUND" == true ]]; then
   # never ran, and refusing would leave that corpse describing every future round
   # this repo dispatches. Reporting it is what makes the rare live-collision
   # case diagnosable instead of invisible.
+  if [[ "$REORDER_ONLY" == true ]]; then
+    # Members-only refresh: the original dispatch time is carried through
+    # unchanged, so the round's start — and every elapsed/projected figure the
+    # board derives from it — does not move. A record written before that field
+    # existed falls back to this dispatch rather than writing a null.
+    ROUND_NOW=$(printf '%s' "$EXISTING_ROUND" | jq -r '.dispatched_at? // empty' 2>/dev/null) \
+      || ROUND_NOW=""
+    [[ -z "$ROUND_NOW" ]] && ROUND_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  fi
   PREV_SESSION=$(printf '%s' "$EXISTING_ROUND" | jq -r '.session? // empty' 2>/dev/null)
-  if [[ -n "$PREV_SESSION" && "$PREV_SESSION" != "$ROUND_SESSION" ]]; then
+  if [[ "$WRITE_ROUND" == true && -n "$PREV_SESSION" && "$PREV_SESSION" != "$ROUND_SESSION" ]]; then
     echo "NOTE: replacing a round recorded by session $PREV_SESSION for this repo — its board falls back to pre-#1604 rendering"
   fi
   CAS_RC=0
@@ -1400,15 +1419,28 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    <!-- test-anchor: subagent-step8-round-teardown-clear -->
 
    ```bash
-   # ENDED_MEMBERS = the round that just ended, as 7.0 recorded it: the same
-   # issue-number strings, as a JSON array. You know it from the terminal board
-   # you just emitted; it is re-derived here rather than remembered because a
-   # compaction wipes 7.0's shell variables.
-   ENDED_MEMBERS=$(printf '%s\n' "${ENDED_ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
+   # ENDED_ROUND_ISSUES is CALLER-DECLARED and you assign it right here, exactly
+   # as 7.0's ROUND_ISSUES is: the round that just ended, in 7.0's order. You
+   # know it from the terminal board you just emitted; it is re-declared here
+   # rather than remembered because a compaction wipes 7.0's shell variables.
+   ENDED_ROUND_ISSUES=(<every issue number in the round that just ended, 7.0's order>)
+   # An unfilled placeholder is not an empty round — `"${arr[@]}"` on an unset
+   # array yields ONE empty string, so ENDED_MEMBERS would be `[""]`, no record
+   # would ever match it, and the teardown would take the silent
+   # not-ours branch below: the finished round stays on disk and the next
+   # /board renders it as the current one. Say so instead of skipping quietly.
+   if [[ "${#ENDED_ROUND_ISSUES[@]}" -eq 0 || -z "${ENDED_ROUND_ISSUES[0]:-}" ]]; then
+     echo 'DEGRADED: the ended round issue list was not supplied — round membership not cleared; the next /board may render this finished round as the current one'
+     ENDED_MEMBERS='[]'
+   else
+     # ENDED_MEMBERS = that list as 7.0 recorded it: issue-number STRINGS, as a
+     # JSON array, so the comparison below joins the two without coercing either.
+     ENDED_MEMBERS=$(printf '%s\n' "${ENDED_ROUND_ISSUES[@]}" | jq -R . | jq -s -c .)
+   fi
    ROUND_SESSION="${CLAUDE_SESSION_ID:-default}"
    ON_DISK=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].round" 2>/dev/null) || ON_DISK=null
    [[ -z "$ON_DISK" ]] && ON_DISK=null
-   if [[ -n "$REPO_KEY" && "$ON_DISK" != null ]]; then
+   if [[ -n "$REPO_KEY" && "$ON_DISK" != null && "$ENDED_MEMBERS" != '[]' ]]; then
      # Membership AND attribution: same set, and either no recorded session (a
      # round written before the field carried one) or this thread's own. A
      # sibling's round can coincide on neither count without being ours.
