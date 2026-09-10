@@ -308,11 +308,27 @@ if [[ -n "$SESSIONS_SRC" ]]; then
        else [] end)
       | map(select(type == "object"))
       | map({ id:     ((.id // .session_id // .sessionId // .uuid // "") | tostring),
-              status: ((.status // .state //
-                        (if .isArchived == true then "archived"
+              # `//` yields its left side for ANY value that is not null or
+              # false, and "" is neither — so a record carrying `status: ""`
+              # used to shadow the booleans beneath it, and an explicitly
+              # `isArchived: true` session read as an unrecognized status, i.e.
+              # live. Blank is not information: it falls through like a missing
+              # key. A non-blank word still wins, including one we do not
+              # recognize — `session_status` maps that to live on purpose, since
+              # a word we cannot read is not evidence of death.
+              # `.status` and `.state` are trimmed SEPARATELY for the same
+              # reason: chained through one `//`, a blank `.status` would shadow
+              # a perfectly good `.state` too.
+              status: (((.status // "") | tostring | ascii_downcase
+                        | sub("^\\s+"; "") | sub("\\s+$"; "")) as $status
+                       | ((.state // "") | tostring | ascii_downcase
+                          | sub("^\\s+"; "") | sub("\\s+$"; "")) as $state
+                       | if $status != "" then $status
+                         elif $state != "" then $state
+                         elif .isArchived == true then "archived"
                          elif .isRunning == true then "running"
                          elif (has("isRunning") or has("isArchived")) then "idle"
-                         else "" end)) | tostring | ascii_downcase),
+                         else "" end),
               title:  ((.title // .name // .summary // "") | tostring) })
       | map(select(.id != ""))
       | map(. + { id_norm: (.id | ascii_downcase

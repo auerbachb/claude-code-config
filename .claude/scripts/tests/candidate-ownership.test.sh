@@ -472,6 +472,48 @@ check_eq "isArchived:true is dead even with no status word" "dead" "$(field 311 
 check_eq "and the surviving branch is adopted" "adopt" "$(field 311 '.action')"
 check_eq "from the branch" "branch" "$(field 311 '.adopt.from')"
 
+# jq's `//` yields its left side for anything that is not null or false, and ""
+# is neither — so a blank `status` shadowed the booleans under it and an
+# explicitly archived session read as an unrecognized word, i.e. live. Blank
+# carries no information; it must fall through exactly like a missing key.
+echo "-- (3e2) a blank status does not shadow isArchived:true --"
+scenario "(3e2) blank status over an archived session"
+export FAKE_CLAIM_314="stale:9f1c2d3e-1111-4aaa-bbbb-000000000004:alice"
+printf 'issue-314-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000004",
+                 "title":"dead thread","status":"   ",
+                 "isArchived":true,"isRunning":false}]'
+sweep 314
+check_eq "still dead" "dead" "$(field 314 '.liveness')"
+check_eq "and still adopted" "adopt" "$(field 314 '.action')"
+
+# Control: a non-blank word we do not recognize still wins over the booleans and
+# resolves live — deliberate, since a word we cannot read is not evidence of
+# death. Without this the fix above could over-reach into that rule unnoticed.
+echo "-- (3e3) control: an unrecognized status word still reads live --"
+scenario "(3e3) unknown status word over an archived session"
+export FAKE_CLAIM_315="stale:9f1c2d3e-1111-4aaa-bbbb-000000000005:alice"
+printf 'issue-315-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000005",
+                 "title":"odd thread","status":"zorp",
+                 "isArchived":true,"isRunning":false}]'
+sweep 315
+check_eq "unknown word is not evidence of death" "live" "$(field 315 '.liveness')"
+check_eq "so it is surfaced, not adopted" "skip" "$(field 315 '.action')"
+
+# The same shadowing one level down: chained through a single `//`, a blank
+# `.status` would swallow a perfectly good `.state`, so the two are trimmed and
+# tested separately.
+echo "-- (3e4) a blank status falls through to a non-blank state --"
+scenario "(3e4) blank status, archived state"
+export FAKE_CLAIM_316="stale:9f1c2d3e-1111-4aaa-bbbb-000000000006:alice"
+printf 'issue-316-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000006",
+                 "title":"dead thread","status":"","state":"archived"}]'
+sweep 316
+check_eq "the state word is read" "dead" "$(field 316 '.liveness')"
+check_eq "and the branch is adopted" "adopt" "$(field 316 '.action')"
+
 scenario "(3f) prefixed listing that does not name the owner at all"
 export FAKE_CLAIM_312="stale:9f1c2d3e-1111-4aaa-bbbb-000000000003:alice"
 printf 'issue-312-feature\n' > "$BRANCHES_FILE"
