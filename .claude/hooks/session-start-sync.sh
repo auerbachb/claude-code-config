@@ -83,6 +83,22 @@ fi
 # The lock wait counts against the same budget, which is what makes a login
 # overlap safe: time burnt waiting shortens the calls instead of overrunning.
 _HOOK_TIMEOUT_SECS=30
+# The 30 above is the PRODUCTION deadline and mirrors the `timeout: 30`
+# registration in global-settings.json — claude-config-sync.test.sh test 16
+# reads that literal line and holds the two spellings to each other, so the
+# assignment stays a bare integer and the override is applied separately below.
+#
+# The override exists for timing-sensitive tests (issue #1698). Every bound is
+# `min(budget left, ceiling)` and `budget left` drains with wall-clock time, so
+# a slow CI runner that spends 25s bootstrapping the fixture leaves the publish
+# leg too little budget and it is DECLINED — indistinguishable, to a test, from
+# the bound genuinely tripping. Widening the deadline is what restores the
+# headroom; the per-call ceilings cannot. Raising it in production would let the
+# hook outlive the registered timeout and be killed mid-git, which is the one
+# outcome the whole deadline model exists to prevent, so this knob is for tests.
+if (( _bound_available == 1 )); then
+  _HOOK_TIMEOUT_SECS="$(normalize_bound "${CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS:-}" "$_HOOK_TIMEOUT_SECS")"
+fi
 # Reserved for everything after the git region: the publishers, hook
 # registration, trust repair, the marker work and the root-repo sync.
 _HOOK_GIT_RESERVE_SECS=9

@@ -38,6 +38,14 @@ A real critical section is milliseconds; both defaults are sized for the content
 | `CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND` | `session-start-sync.sh` | 5s | one symlink publisher |
 | `CLAUDE_CONFIG_SYNC_HOOK_ROOT_SYNC_BOUND` | `session-start-sync.sh` | 6s | the post-lock root-repo `main-sync.sh` / `pull --ff-only` leg |
 
+The deadline the ceilings are clamped against is itself overridable — **for tests only**:
+
+| Variable | Read by | Default | Bounds |
+|----------|---------|---------|--------|
+| `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS` | `session-start-sync.sh` | 30s | the whole hook run — the deadline every ceiling above is clamped to |
+
+The 30s default mirrors the `timeout: 30` registration in `global-settings.json`, and `claude-config-sync.test.sh` test 16 holds the two spellings to each other. Raising it in production only lets the hook outlive the registered timeout and be killed mid-git — the outcome the deadline model exists to prevent. It exists because a bound is `min(budget left, ceiling)` and `budget left` drains with wall-clock time, so a timing-sensitive test on a slow runner sees its call *declined* for want of budget rather than for the reason under test (issue #1698, from a `hook-tests-macos` flake on PR #1689). Test-side, `CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS` (default 60s; the macOS CI lane sets 120s) is what `session-start-sync.test.sh` passes into that knob, and it widens **only** the ample-budget control that proves the stall assertion is not vacuous — the stall leg keeps the production deadline, so it still fails when the hook genuinely stalls.
+
 The hook's post-region calls reserve only the genuinely unbounded tail (the marker `jq`, the scheduling reconcile, the JSON emission), which is what makes its 9s post-git reserve arithmetic rather than a guess: the work it covers now bounds itself.
 
 **Signal path.** `~/.claude/sync-restart-recommended.json` carries two independent portions:

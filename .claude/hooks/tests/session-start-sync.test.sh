@@ -12,6 +12,28 @@ SETUP_SCRIPT="$REPO_ROOT/setup-skills-worktree.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# --- Timing knobs for the bounded-run legs below (issue #1698) -------------
+#
+# Read the test-side knob FIRST, then drop the hook-side one from the
+# environment. The two are deliberately different variables:
+#
+#   CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS — set by CI (the macOS lane), read
+#     here, and applied to the ample-budget CONTROL only.
+#   CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS — the hook's own deadline. Unset here so
+#     an exported value cannot silently widen the STALL leg, whose whole value is
+#     that its bound stays tight enough to fail when the hook really stalls.
+#
+# Each leg that wants a deadline passes it explicitly on the invocation line.
+AMPLE_BUDGET_SECS="${CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS:-60}"
+# Default 60 — double the production 30, which is headroom for a slow runner
+# without being so large that a genuinely hung publisher would hold the suite.
+case "$AMPLE_BUDGET_SECS" in ''|*[!0-9]*) AMPLE_BUDGET_SECS=60 ;; esac
+[ "$AMPLE_BUDGET_SECS" -gt 0 ] 2>/dev/null || AMPLE_BUDGET_SECS=60
+# Deliberately NO floor above the default: setting this small is how the
+# vacuous-pass case is reproduced by hand, and a too-small value fails the
+# control LOUDLY rather than passing it vacuously — the safe direction.
+unset CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS
+
 # --- 1. Registration: must be under SessionStart in global-settings.json ---
 python3 - "$SETTINGS" <<'PY' || fail "session-start-sync.sh not found under SessionStart in global-settings.json"
 import json, sys
@@ -697,6 +719,9 @@ build_publish_fixture "$STALL" '#!/bin/sh
 sleep 60
 '
 stall_started="$(date +%s)"
+# No CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS here, deliberately: this leg runs on
+# the production 30s deadline so the `< 45` elapsed check below stays a real
+# assertion. Widening it here is what would make a genuinely stalling hook pass.
 stall_out="$(printf '{"source":"startup"}' \
   | HOME="$STALL/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=2 \
     bash "$STALL/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
@@ -737,8 +762,17 @@ build_publish_fixture "$OKP" '#!/bin/sh
 echo "  alpha — creating symlink"
 exit 0
 '
+# The control's deadline is EXPLICIT and overridable (issue #1698). A 20s
+# publish ceiling buys nothing on its own: every bound is
+# min(budget left, ceiling), and `budget left` is what the hook has left of
+# _HOOK_TIMEOUT_SECS after its own git work — so on a slow macOS runner the
+# publish leg was declined for want of budget and the control failed with no
+# code change (hook-tests-macos on PR #1689, contract from issue #1593). Only
+# the CONTROL's headroom widens; the stall leg above keeps the production
+# deadline.
 okp_out="$(printf '{"source":"startup"}' \
   | HOME="$OKP/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
+    CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS="$AMPLE_BUDGET_SECS" \
     bash "$OKP/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
 # Silence must NOT read as success here (CodeAnt, PR #1640). Tolerating an
 # empty body or a bare "{}" would let a hook that stopped emitting JSON — or
@@ -767,6 +801,44 @@ with open(path) as f:
     d = json.load(f)
 sys.exit(1 if d.get("restart_recommended") is not None else 0)
 PY
+# Wiring proof for the knob the control leans on (issue #1698). The control
+# above passes a widened deadline; if the hook ignored it, the control would
+# still pass on a fast machine and go on flaking on a slow one — a knob that
+# looks applied and does nothing. So drive the SAME healthy fixture with a
+# deliberately tiny deadline: the budget cannot cover a single bounded call, so
+# every one is declined and the marker must survive. Unlike a widened bound,
+# this direction is not timing-sensitive — budget only ever shrinks with elapsed
+# time, so a slow machine makes this leg MORE certain, never less.
+TINY="$P15/tiny"
+build_publish_fixture "$TINY" '#!/bin/sh
+echo "  alpha — creating symlink"
+exit 0
+'
+tiny_out="$(printf '{"source":"startup"}' \
+  | HOME="$TINY/home" CLAUDE_CONFIG_SYNC_HOOK_PUBLISH_BOUND=20 \
+    CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS=1 \
+    bash "$TINY/tree/.claude/hooks/session-start-sync.sh" 2>/dev/null || true)"
+TINY_OUT="$tiny_out" python3 - <<'PY' || fail "a one-second hook deadline did not decline a bounded call — CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS is not reaching the budget, so the ample-budget control's widened deadline is a no-op (issue #1698); got: $tiny_out"
+import json, os, sys
+text = os.environ.get("TINY_OUT", "").strip()
+if not text or text == "{}":
+    sys.exit(1)
+try:
+    ctx = json.loads(text)["hookSpecificOutput"]["additionalContext"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if "declined:" in ctx else 1)
+PY
+python3 - "$TINY/home/.claude/sync-restart-recommended.json" <<'PY' || fail "a one-second hook deadline cleared the restart marker despite declining its bounded calls (issue #1593, #1698)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(1)
+with open(path) as f:
+    d = json.load(f)
+sys.exit(0 if d.get("restart_recommended") is not None else 1)
+PY
+
 # A tripped publisher still owes the RESUME-path restart signal (CodeAnt, PR
 # #1640). The two assertions above cover the startup path, where the trip is
 # recorded and the marker is merely left alone. On a resume the marker is not
