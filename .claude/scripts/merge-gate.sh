@@ -512,8 +512,97 @@ if [[ -z "$ISSUE_COMMENTS_JSON" ]] || ! echo "$ISSUE_COMMENTS_JSON" | jq -e . >/
 fi
 
 # Unresolved review threads via GraphQL (covers all bot authors consistently).
-if ! THREADS_JSON=$(gh api graphql -f query="query { repository(owner: \"$OWNER\", name: \"$REPO\") { pullRequest(number: $PR_NUMBER) { reviewThreads(first: 100) { nodes { isResolved comments(first: 100) { nodes { databaseId author { login } } } } } } } }" 2>/dev/null); then
-  die_api "GraphQL-reviewThreads"
+#
+# PAGINATED (issue #1634). `reviewThreads(first: 100)` alone silently truncates
+# at the 100th thread, and the universal unresolved-thread gate below is
+# PERMISSIVE when truncated: an unresolved thread on page two is invisible, so
+# the gate reads clean on a PR that is not. Every page is accumulated here, before
+# any consumer sees the payload, so all three readers — UNRESOLVED_TOTAL, the
+# Greptile-scoped count, and RESOLVED_COMMENT_IDS — share one complete node list.
+#
+# Thread-level `comments(first: 100)` stays unpaginated on purpose: the readers
+# take only `databaseId` and `author.login`, and truncation there is safe in both
+# directions (a missing comment makes a thread read as non-Greptile, and can only
+# WITHHOLD a resolved-comment redemption; the universal gate counts the thread by
+# `isResolved` regardless).
+#
+# The loop is inline in the main script body, not a function called via $(): the
+# fail-closed `die_api` calls `exit`, which inside a command substitution would
+# only kill the subshell and let the script continue on garbage data.
+#
+# The page fold goes through a pipe, never `--argjson`: a long-lived PR's thread
+# list is large enough to blow the jq command line (ARG_MAX — issues #1557/#1565).
+# `printf` is a shell builtin writing to a pipe, so no exec limit applies.
+#
+# Each page's `nodes` array is validated and stashed as its OWN element of
+# THREADS_PAGE_NODES, and the pages are concatenated ONCE after the walk. Folding
+# into a single accumulator variable per page would re-serialize and re-parse the
+# whole thread list on every iteration — quadratic in page count, and the
+# transient shell values grow with it. Here every page is parsed exactly twice
+# (validate, then the single final `add`), so the walk stays linear.
+THREADS_PAGE_NODES=('[]')   # seeded: "${arr[@]}" on an empty array trips `set -u`
+THREADS_CURSOR="null"   # -F (not -f) types this as a real GraphQL null on page 1
+THREADS_PAGES=0
+# Runaway guard: 200 pages is 20,000 threads, orders of magnitude past any real
+# PR. Hitting it means the cursor stopped advancing, so fail closed rather than
+# spin forever against the API.
+THREADS_PAGE_CAP=200
+while :; do
+  if ! THREADS_PAGE=$(gh api graphql -f query='query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved comments(first: 100) { nodes { databaseId author { login } } } }
+        }
+      }
+    }
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$THREADS_CURSOR" 2>/dev/null); then
+    die_api "GraphQL-reviewThreads"
+  fi
+  # `nodes` must BE an array — never defaulted to []. A malformed or partial
+  # 200-OK body (GraphQL `errors` with a null `data`, a renamed field) would
+  # otherwise fold in as zero threads and read as a clean gate, which is the
+  # exact fail-open this issue exists to close. `error` makes jq exit non-zero,
+  # which routes to the same fail-closed die_api as a transport failure.
+  # `pageInfo.hasNextPage` is checked one notch looser: absent or null reads as
+  # "no more pages" (the single-page response shape every merge-gate test stub
+  # in this repo emits), but a PRESENT value that is not a boolean is fatal —
+  # a string "false" would otherwise end the walk on a page that had more.
+  if ! THREADS_PAGE_ARRAY=$(printf '%s' "$THREADS_PAGE" \
+      | jq -c 'if (.data.repository.pullRequest.reviewThreads.nodes | type) == "array"
+               then .data.repository.pullRequest.reviewThreads.nodes
+               else error("reviewThreads.nodes is not an array") end' 2>/dev/null) \
+      || [[ -z "$THREADS_PAGE_ARRAY" ]]; then
+    die_api "GraphQL-reviewThreads page parse"
+  fi
+  THREADS_PAGE_NODES+=("$THREADS_PAGE_ARRAY")
+  THREADS_PAGES=$((THREADS_PAGES + 1))
+  if ! THREADS_HAS_NEXT=$(printf '%s' "$THREADS_PAGE" \
+      | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage as $h
+               | if $h == null then false
+                 elif ($h | type) == "boolean" then $h
+                 else error("pageInfo.hasNextPage is not a boolean") end' 2>/dev/null); then
+    die_api "GraphQL-reviewThreads pageInfo parse"
+  fi
+  [[ "$THREADS_HAS_NEXT" == "true" ]] || break
+  if [[ "$THREADS_PAGES" -ge "$THREADS_PAGE_CAP" ]]; then
+    die_api "GraphQL-reviewThreads exceeded $THREADS_PAGE_CAP pages"
+  fi
+  THREADS_CURSOR=$(printf '%s' "$THREADS_PAGE" \
+    | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""' 2>/dev/null || echo "")
+  if [[ -z "$THREADS_CURSOR" || "$THREADS_CURSOR" == "null" ]]; then
+    die_api "GraphQL-reviewThreads hasNextPage without endCursor"
+  fi
+done
+# Concatenate every page ONCE, and re-wrap into the single-response shape every
+# consumer already reads, so pagination stays confined to this block. `-s` slurps
+# the page arrays into an array-of-arrays; `add` flattens one level, preserving
+# page order. Still a pipe, never `--argjson`, for the same ARG_MAX reason.
+if ! THREADS_JSON=$(printf '%s\n' "${THREADS_PAGE_NODES[@]}" \
+    | jq -cs '{data: {repository: {pullRequest: {reviewThreads: {nodes: (add // [])}}}}}' 2>/dev/null) \
+    || [[ -z "$THREADS_JSON" ]]; then
+  die_api "GraphQL-reviewThreads assembly"
 fi
 
 # REST ids of every inline comment sitting in a RESOLVED thread (issue #1632).
@@ -527,13 +616,11 @@ fi
 # become a hard error — an unusable thread payload would then block a gate it
 # can only ever make more permissive.
 #
-# The query above is unpaginated (`first: 100` threads, `first: 100` comments),
-# which is a pre-existing bound this derivation inherits rather than introduces.
-# It is safe in THIS direction: a thread or comment past the bound is simply
-# absent from the set, reads as unresolved, and therefore still counts as a
-# finding — so an over-long thread list can only ever WITHHOLD redemption. Do not
-# read that as the bound being harmless generally; the universal unresolved-
-# thread gate below reads the same payload and is permissive when truncated.
+# The thread list above is now fully paginated (issue #1634), so this set sees
+# every thread. Only the per-thread `comments(first: 100)` bound remains, and it
+# is safe in THIS direction: a comment past the bound is simply absent from the
+# set, reads as unresolved, and therefore still counts as a finding — so
+# truncation can only ever WITHHOLD redemption, never grant one.
 RESOLVED_COMMENT_IDS=$(echo "$THREADS_JSON" | jq -c '
   [ .data.repository.pullRequest.reviewThreads.nodes[]?
     | select(.isResolved == true)
@@ -816,18 +903,23 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
     fi
     # On the bugbot path: evaluator absent — REVIEW_EVIDENCE stays '{}'.
   else
-    # The three payloads are piped in, NOT passed as --argjson: a busy PR's comment
-    # JSON runs to ~1 MB and three of those on one command line can exceed ARG_MAX.
+    # The four payloads are piped in, NOT passed as --argjson: a busy PR's comment
+    # JSON runs to ~1 MB and several of those on one command line can exceed ARG_MAX.
     # printf is a shell builtin writing to a pipe, so no exec limit applies; `jq -s`
-    # then slurps the three values in order.
-    # resolved_comment_ids stays an --argjson: it is a bare list of integers
-    # (bounded by 100 threads x 100 comments), orders of magnitude smaller than
-    # the comment payloads, so it cannot approach ARG_MAX on its own.
-    REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n' "$REVIEWS_JSON" "$PR_COMMENTS_JSON" "$ISSUE_COMMENTS_JSON" \
+    # then slurps the four values in order.
+    # resolved_comment_ids joined them when the thread fetch was paginated (issue
+    # #1634): its old bound of 100 threads x 100 comments is gone, so it is no
+    # longer self-evidently too small to matter on the command line.
+    # Each payload carries a `:-[]` default. All four are already validated
+    # non-empty upstream (die_api on a parse failure; RESOLVED_COMMENT_IDS
+    # degrades to []), so the default never fires today — it is there because
+    # `jq -s` skips blank input, and one empty payload would silently SHIFT the
+    # positional reads below rather than fail, handing the evaluator issue
+    # comments as its reviews list.
+    REVIEW_EVIDENCE=$(printf '%s\n%s\n%s\n%s\n' "${REVIEWS_JSON:-[]}" "${PR_COMMENTS_JSON:-[]}" "${ISSUE_COMMENTS_JSON:-[]}" "${RESOLVED_COMMENT_IDS:-[]}" \
       | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
-          --argjson resolved "$RESOLVED_COMMENT_IDS" \
           '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2],
-            resolved_comment_ids: $resolved}' \
+            resolved_comment_ids: .[3]}' \
           2>/dev/null \
       | "$REVIEW_SUBSTANCE_SH" 2>/dev/null || true)
     # Structure, not just parseability: substance_ok reads .reviewers[<login>], and
