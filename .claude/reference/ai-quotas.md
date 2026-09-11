@@ -303,6 +303,21 @@ it in `emit_row` is what makes a run where that helper is unavailable emit the s
 with `null` where a price would be. §"Overage — what continuing costs" has the rest, and
 §"Output" there describes the document `--json` now emits.
 
+#### Fields added at #1701
+
+`window_start_epoch` (when this row's window opened), `resets_at_et_short` (the reset as
+a weekday and time, which is what the table prints now), and the seven projection fields
+`usage_start_epoch`, `usage_start_is_floor`, `usage_start_day`, `usage_start_display`,
+`pct_per_day`, `days_left`, `days_left_note`. All nine are declared on **every** row like
+everything else here, `null` where nothing could be computed — and the seven projection
+ones are filled in after every row is built, by `quotas-forecast.sh`, for the same reason
+`overage` is: a pace is a property of the recorded history rather than of this read.
+
+`days_left` is a **number or null, never the string the table prints**. When the pace
+would carry past the reset, `days_left` is `null` and `days_left_note` is `resets first`
+— a numeric field that sometimes holds prose is a field every consumer has to type-test
+before comparing, and one of them eventually will not.
+
 ### Statuses
 
 | Status | Meaning |
@@ -744,7 +759,15 @@ Every run of `ai-quotas.sh` appends one line per **successfully read** row:
 | `window` | The row's **pool** where the provider has pools, its window otherwise — the same value the table's third column shows. This is what makes a Cursor account's two pool rows two distinct series rather than two readings of one; a burn rate computed without it would average two unrelated pools. |
 | `used_pct` | The percentage the row reported. Never `null` — a row without a figure appends nothing at all. |
 | `resets_at_epoch` | When that window resets, or `null`. A series crossing a reset is what tells a projection where one cycle ended. |
+| `window_start_epoch` | When the window that reading belongs to OPENED, or `null` (#1701). Derived per provider — `resets_at − 604800` for a Claude week, `resets_at − windowDurationMins × 60` for Codex, the billing-cycle start Cursor itself reports. Recorded rather than re-derived at read time: the reset time can move, and a line carrying its own window start can be assigned to a cycle months later without knowing what the window length was then. |
 | `source` | `manual` for a hand-run `/quotas`, `scheduled` for the unattended job (`--quiet`, or `AI_QUOTAS_SOURCE=scheduled`). An unrecognised `AI_QUOTAS_SOURCE` is refused on stderr and the run records `manual`. |
+
+**Lines written before #1701 have no `window_start_epoch`,** and they stay readable: the
+projection derives a window start from the row's label and reset time (`7-day` →
+`resets_at − 7 days`) where it can, and treats the line as unusable where it cannot.
+Nothing rewrites the file to add the field — the history is append-only, and a reader
+that needs a field older lines never had is a reader that must degrade, not a reason to
+rewrite a record.
 
 **A failed row appends nothing.** No line with a null percentage: three months later such
 a line is indistinguishable from a genuine reading, and a projection averaging it would
@@ -923,6 +946,139 @@ registry.
 > strings, and one apostrophe in a jq comment closes the string; bash then parses the jq
 > source and reports a syntax error a hundred lines from the comment that caused it.
 > A comment reading "the row's detail" cost a full test-suite round to find.
+
+## Burn-rate projection (increment 6, #1701)
+
+A weekly cap that is 57 % used means something different on day two than on day six.
+This increment reads the history above and answers the question the percentage does not:
+**when did usage start in this window, how fast is it going, and how long does that
+leave.** `.claude/scripts/quotas-forecast.sh` owns the arithmetic, annotating the
+document `ai-quotas.sh --json` builds — the same row-in / row-out shape
+`quotas-cheapest-next.sh` uses, for the same reason: a pace is a property of the recorded
+history, not of any single read.
+
+**Informational only, and this is the last place the boundary needs restating.** The
+projection **never gates dispatch, never pauses, defers, or downgrades anything, and
+never feeds `credit-budget.sh`.** It is the same third observational surface the table
+and the cheapest-next hint are — `.claude/rules/safety.md` §"Anthropic Quota & Spend
+Authority" holds the authority, and the rolled-back `/quota` skill (#499) is the
+precedent for what gating on locally-read numbers costs. A days-left figure is a
+sentence printed to the owner, and the owner decides what to do with it.
+
+### The three columns
+
+| Column | What it is |
+|--------|-----------|
+| `START` | The first day of this window any usage was recorded, as the ET weekday plus `d<N>` — `Wed d3` is "day 3 of the window, a Wednesday". A `<=` prefix (`<=Tue d2`) means the record does not reach back to the window start, so usage may have begun earlier: the day shown is the **latest** it can have been. |
+| `%/DAY` | `used_pct / max(days_since_start, 1)`, one decimal. The `max` is what keeps a window whose usage started today from dividing by nothing. |
+| `LEFT` | `remaining_pct / pct_per_day` in days, one decimal — or `resets first` when that runs past the reset, because the window comes back before the account runs out. |
+
+`-` in any of the three means there is nothing to project: no window to place the reading
+in, no usage yet (a 0 % row has no pace), or a row that did not read. Never a `0`, which
+would read as "nothing is being spent".
+
+### How the series is built
+
+- **This account, this pool, this window.** History lines match on `provider`, `label`,
+  and `window` — where `window` is the row's pool when the provider has pools, exactly as
+  the history records it. A Cursor account's two pools are two series; averaging them
+  would report a pace nobody set.
+- **This window only.** A line whose `ts` falls before the window opened describes a
+  cycle that has already reset. A line that recorded its **own** `window_start_epoch` is
+  checked against this row's as well, and dropped when the two are more than half a
+  window apart — near rather than equal, because a provider may move a reset by an hour
+  inside a cycle and strict equality would then drop every earlier line and report every
+  day as a fresh floor start.
+- **A reading has to be inside its own window.** When the reset has already passed and
+  the provider is still reporting the old figure, nothing is projected: placing today in
+  that window would print `d9` of a seven-day one and measure a runway against a reset in
+  the past.
+- **Remaining is floored at zero.** Cursor percentages are not clamped at 100, and a
+  negative remainder over a positive rate would print a runway of `-0.4` days.
+- **Plus this run's own live reading**, in memory rather than from the file. That is what
+  makes the first run project at all, and what keeps a run whose history append failed
+  from silently reporting a stale pace.
+- **One reading per day, the later one winning.** Day granularity is what was asked for;
+  a rate computed over two readings an hour apart swings wildly. A hand-run `/quotas` at
+  8 pm supersedes the unattended reading at 8 am rather than competing with it.
+
+### The floor, and why the rate moves with it
+
+When the earliest snapshot **in** the window already shows usage, nothing recorded proves
+usage did not start sooner. The row is marked `usage_start_is_floor: true`, the cell gets
+its `<=`, and the rate is computed **from the window start** rather than from the
+snapshot. That is the slowest pace consistent with the record, which is the honest
+direction to be wrong in — computing from the snapshot would divide by a shorter elapsed
+time, report a faster burn, and promise a shorter runway than the evidence supports.
+
+### `<=` and `-`, not `≤` and `—`
+
+The table is aligned by `column -t`, which pads by counting **bytes** under the C locale
+this fleet runs in. A three-byte character in one cell shifts every column to its right
+on that row only, so the symbol that says "we are not sure it started this late" would be
+paid for in a table nobody can read across. `<=` says the same thing in ASCII and
+survives a pipe into anything; `-` is the marker every other unknown in this table
+already uses.
+
+### What the table gave up to fit
+
+Three columns had to come from somewhere, and a five-account table has to stay inside 100
+columns to be read at a glance:
+
+- **The PROVIDER column is gone.** It was fixed-width and repeated what the account name
+  already tells the owner — the same trade #1700 made when it dropped REMAIN. `provider`
+  is still on every `--json` row.
+- **STATUS folded into NOTE.** The status word now leads the note on any row that is not
+  `ok` (`needs-login; /quotas-setup relogin …`), which is where the instruction about it
+  already lived; an `ok` row says nothing, which is what `ok` was worth as a column. The
+  vocabulary is unchanged, the two are now read as one sentence rather than as two
+  columns that have to be crossed, and `status` is still on every `--json` row and is
+  still the field to branch on.
+- **RESETS shows a weekday and a time** (`Thu 8:00 PM`) rather than a full date with a
+  zone. The countdown beside it says how far away that is and the heading says ET.
+  `resets_at_et` keeps the long form for consumers; `resets_at_et_short` is the new field
+  the table prints.
+- **The countdown lost its `in ` prefix** — the `IN` heading supplies it.
+
+The measured promise is the **clean** five-account table, exactly as it was at #1700: a
+row carrying a relogin note, or a `resets first` cell, is wider, and always has been.
+`.claude/scripts/tests/ai-quotas.test.sh` measures it rather than eyeballing a fixture.
+
+### Test seams added at #1701
+
+`AI_QUOTAS_FORECAST_BIN` on the reader — used **exclusively** when set, like
+`AI_QUOTAS_CHEAPEST_BIN`, so the "helper unavailable" path can be exercised from inside a
+checkout — and `AI_QUOTAS_HISTORY` plus `AI_QUOTAS_NOW` on `quotas-forecast.sh` itself.
+The reader passes both through explicitly rather than letting them be inherited: a
+projection that read a different history, or a different instant, than the table above it
+would disagree with the table it decorates.
+
+### A projection may only fill blanks
+
+That seam is also the reason the reader cannot take the helper's word for what came back.
+`AI_QUOTAS_FORECAST_BIN` points it at an arbitrary executable, so the returned document is
+checked against the one that was sent: same rows, and every field that already **carried a
+value** — `schema_version`, the threshold and basis, `cheapest_next`, and on each row the
+provider, label, status and the figure itself — returned unchanged. A field that was
+`null` on the way in is one the helper is there to fill — and only the **seven** it owns:
+`usage_start_epoch`, `usage_start_is_floor`, `usage_start_day`, `usage_start_display`,
+`pct_per_day`, `days_left`, `days_left_note`. A figure appearing in `overage` (null on
+every row whenever the cheapest-next helper degraded) came from no provider, and the
+table has no way to say so.
+
+The key set is identical besides, top level and every row. A blank the helper **deleted**
+instead of filling would leave the field off the document, and one report shape whatever
+ran is exactly why those fields are declared `null` on rows nothing was projected for; a
+key that was never **sent** has no legitimate way back, because every value the projection
+writes already has a null waiting for it.
+
+Counting rows is not enough. A same-length document that dropped `schema_version` or a
+row's `provider`, or that rewrote a `used_pct` this run actually measured, is well-formed,
+passes a shape check, and prints a report missing or misstating the fields a consumer
+reads it for — with exit 0. Any such document is discarded **whole**: `$DOC` stays exactly
+as it was, the three projection columns keep their `-`, and stderr says `DEGRADED` once.
+Half a projection is not better than none, because nothing downstream could tell which
+half it got.
 
 ## Symlink
 
