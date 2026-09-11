@@ -211,7 +211,7 @@ NOW="$(now_seconds)"
 # its argument as a FILENAME, so falling through from BSD's `-r <epoch>` would
 # silently print an unrelated file's mtime on the day such a file exists.
 DATE_IS_GNU=0
-if date --version 2>/dev/null | grep -qi 'GNU coreutils'; then
+if date --version 2>/dev/null | grep -i 'GNU coreutils' >/dev/null; then
   DATE_IS_GNU=1
 fi
 
