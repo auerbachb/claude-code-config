@@ -1643,6 +1643,27 @@ chmod +x "$TMP/overwriting-forecast.sh"
 FORECAST_BIN_OVERRIDE="$TMP/overwriting-forecast.sh"
 run
 FORECAST_BIN_OVERRIDE=""
+
+# A blank may be filled only with the DOCUMENTED type. A helper that answers
+# with a structured value in a scalar slot — or a note that is not the one
+# the contract names — is rejected whole: the projection is discarded and the
+# table degrades, because the TSV renderer would otherwise print JSON into a
+# column and a --json consumer would meet an array where a number was promised.
+cat > "$TMP/badtype-forecast.sh" <<'BADTYPE_FORECAST'
+#!/usr/bin/env bash
+jq '.rows |= map(. + {pct_per_day: [], days_left: {}, usage_start_display: 7, days_left_note: "later"})'
+BADTYPE_FORECAST
+chmod +x "$TMP/badtype-forecast.sh"
+overage_case 40 50
+FORECAST_BIN_OVERRIDE="$TMP/badtype-forecast.sh"
+run
+check_eq "$RC" "0" "a projection with the wrong field types does not fail the report"
+check_contains "$ERR" "DEGRADED" "it is rejected as DEGRADED"
+check_eq "$(table_only "$OUT" | awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "%/DAY") c = i; next }
+                                     c { print $c }' | sort -u | tr -d '\n')" "-" \
+  "and no structured value reaches the %/DAY column"
+check_contains "$OUT" "40%" "while every figure that was read still prints"
+FORECAST_BIN_OVERRIDE=""
 check_eq "$RC" "0" "a helper that rewrites a figure it was given does not fail the report"
 check_contains "$ERR" "DEGRADED" "that rewrite is a degradation too"
 check_contains "$OUT" "40%" "and the figure this run actually read is what prints"

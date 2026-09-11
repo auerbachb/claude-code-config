@@ -1777,6 +1777,15 @@ apply_forecast() {
         ["usage_start_epoch", "usage_start_is_floor", "usage_start_day",
          "usage_start_display", "pct_per_day", "days_left",
          "days_left_note"] as $writable
+        # A blank may be filled only with the DOCUMENTED type for that field:
+        # a structured value in a scalar slot breaks the TSV renderer instead
+        # of degrading, and the JSON shape consumers rely on is typed.
+        | def okval($k; $v):
+            if $v == null then true
+            elif $k == "days_left_note" then $v == "resets first"
+            elif $k == "usage_start_is_floor" then ($v | type) == "boolean"
+            elif $k == "usage_start_display" then ($v | type) == "string"
+            else (($v | type) == "number" and $v >= 0) end;
         | ($sent[0]) as $i
         | . as $o
         | ($o | type) == "object"
@@ -1808,7 +1817,8 @@ apply_forecast() {
                        and (($i.rows[$ix] | to_entries)
                             | all(. as $e
                                   | ($e.value == null
-                                     and ($writable | index($e.key)) != null)
+                                     and ($writable | index($e.key)) != null
+                                     and okval($e.key; $o.rows[$ix][$e.key]))
                                     or $o.rows[$ix][$e.key] == $e.value))))' \
        "$out" >/dev/null 2>&1; then
     [[ ! -s "$TMP/forecast.err" ]] || cat "$TMP/forecast.err" >&2
