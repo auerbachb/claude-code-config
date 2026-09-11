@@ -1785,6 +1785,8 @@ apply_forecast() {
             elif $k == "days_left_note" then $v == "resets first"
             elif $k == "usage_start_is_floor" then ($v | type) == "boolean"
             elif $k == "usage_start_display" then ($v | type) == "string"
+            # One-based by the helper contract: day 0 is not a day.
+            elif $k == "usage_start_day" then (($v | type) == "number" and $v >= 1)
             else (($v | type) == "number" and $v >= 0) end;
         ($sent[0]) as $i
         | . as $o
