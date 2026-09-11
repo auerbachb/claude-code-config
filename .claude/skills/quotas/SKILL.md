@@ -1,6 +1,6 @@
 ---
 name: quotas
-description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, what continuing past a drained cap costs on each provider, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, and Cursor (two monthly usage pools, reported as percent used, read through a saved browser session). Display only — it never switches accounts, never buys anything, and never gates dispatch.
+description: Use when deciding which AI subscription to work on next — how much of each registered account's cap is gone, when each one resets, what continuing past a drained cap costs on each provider, and which need a re-login. Covers every account /quotas-setup registers — Claude, Codex, and Cursor (two monthly usage pools, reported as percent used, read with the token the Cursor IDE holds for the signed-in user). Display only — it never switches accounts, never buys anything, and never gates dispatch.
 triggers:
   - quotas
   - how much quota is left
@@ -52,11 +52,11 @@ what continuing past it would cost — one row per account per window.
 > gating agent decisions on locally-read numbers. Answer the user's question and stop.
 
 > **No credential value ever passes through you.** The helper borrows each account's
-> live token in place for one request — or, for Cursor, drives a browser on a saved
-> session that never leaves its profile directory — and never prints either. Do not run
-> a command that reads a credential out of the Keychain, a profile directory, or a
-> browser cookie store yourself, and never repeat a token, cookie, or `auth.json` body
-> into the conversation.
+> live token in place for one request — for Cursor, the token the Cursor IDE already
+> holds for the signed-in user, turned into a session cookie in memory — and never
+> prints any of them. Do not run a command that reads a credential out of the Keychain,
+> a profile directory, or the Cursor IDE's state store yourself, and never repeat a
+> token, cookie, or `auth.json` body into the conversation.
 
 ## Step 1 — Resolve the helper
 
@@ -114,10 +114,10 @@ string the reset column now shortens. The **account**
 column shows the account's nickname when one is set (`/quotas-setup nick <label> <name>`)
 and the email the provider itself reports otherwise; when the label differs from that
 email the note says
-`registered as <label>`, which is how a mislabelled account becomes visible. **Cursor
-rows carry no such email** — the dashboard response has none — so a Cursor row shows the
-registered label and can never carry a `registered as` note. Absence of that note on a
-Cursor row says nothing about whether the label is right.
+`registered as <label>`, which is how a mislabelled account becomes visible. Since #1703
+**Cursor rows carry that email too**, read from the IDE's `cursorAuth/cachedEmail`, so a
+mislabelled Cursor account is now as visible as any other — through #1668 those rows had
+no email at all and could never carry the note.
 
 The third column is the **pool** where a provider has pools and the window otherwise. A
 Cursor account normally contributes **two** rows — `cursor-models` (Composer, Cursor
@@ -136,9 +136,9 @@ every `--json` row as `status` — that is the field to branch on:
 | Status | Meaning | What to tell the user |
 |--------|---------|-----------------------|
 | `ok` | Figures were read | the numbers |
-| `needs-login` | No usable credential for that profile | the exact `/quotas-setup relogin <label> <provider>` command in the note |
+| `needs-login` | No usable credential for that profile | the exact `/quotas-setup relogin <label> <provider>` command in the note — except for **Cursor**, whose note says `open the Cursor IDE and sign in`, because that credential belongs to the IDE and no command can create it |
 | `rate-limited` | The provider answered 429 | when to retry; the note carries the window |
-| `unreachable` | Nothing answered: a network failure, a missing runtime or browser driver, a helper that crashed, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
+| `unreachable` | Nothing answered: a network failure, a missing runtime, a store that could not be read, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
 | `unreadable` | The response arrived but changed shape; the note names the keys seen | that the figure is unknown, and that the reader needs updating |
 | `unsupported` | A provider this reader does not know | that it is not covered |
 
@@ -240,8 +240,9 @@ most room this week and when the drained one resets — then the rows. If every 
 
 Registry schema, where each provider keeps its credential, which endpoint each reader
 calls, why the Codex weekly window is chosen by duration rather than position, the
-Cursor dashboard endpoint captured from the live Spending tab (and why the Cursor rows
-carry percentages rather than per-pool dollars), the overage table with its sources and
+Cursor dashboard endpoints captured from the live Spending tab (and why the Cursor rows
+carry percentages rather than per-pool dollars, and why they are now read with the IDE's
+token rather than a browser), the overage table with its sources and
 `last verified` dates, and the display-only boundary: `.claude/reference/ai-quotas.md`.
 
 The snapshot history schema (`~/.claude/ai-quotas-history.jsonl`), the LaunchAgent the

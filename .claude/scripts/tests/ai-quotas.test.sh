@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ai-quotas.test.sh — coverage for .claude/scripts/ai-quotas.sh (issue #1667).
-# catalog: tests — Tests `ai-quotas.sh` — the multi-account table and `--json` row shape, weekly-window selection by `windowDurationMins` (asserted with the weekly figures in `primary`, the shape a Pro account really returns), `--five-hour`, per-row isolation of `needs-login`/`rate-limited`/`unreachable`/`unsupported`, the unrecognised-shape path printing the keys it saw instead of 0 %, deterministic ET reset + countdown against a frozen clock, and the leak assertions that no credential value reaches stdout, stderr, or the usage log
+# catalog: tests — Tests `ai-quotas.sh` — the multi-account table and `--json` row shape, weekly-window selection by `windowDurationMins` (asserted with the weekly figures in `primary`, the shape a Pro account really returns), `--five-hour`, per-row isolation of `needs-login`/`rate-limited`/`unreachable`/`unsupported`, the unrecognised-shape path printing the keys it saw instead of 0 %, deterministic ET reset + countdown against a frozen clock, the Cursor IDE-token path against a fixture SQLite state store and a fake `curl` (two pool rows with the captured percentages and billing cycle, 401 → `needs-login` naming the IDE, 500 → `unreachable`, a signed-out IDE → `needs-login`), and the leak assertions that no credential value — the Cursor access token and its `WorkosCursorSessionToken` cookie included — reaches stdout, stderr, argv, or the usage log
 #
 # WHAT IS UNDER TEST
 #
@@ -94,6 +94,12 @@ out=""; dump=""; url=""; ua=""
 args="$*"
 case "$args" in
   *"Bearer"*) echo "STUB-CURL: a bearer token reached argv" >&2; exit 90 ;;
+  # The cursor cookie and the JWT it carries must arrive on STDIN, never in
+  # argv, or `ps` exposes them to anything running as this user (#1703). `eyJ`
+  # is the base64url of `{"`, so it catches the raw token as well as the
+  # cookie wrapper — and nothing legitimate in this argv can contain it.
+  *WorkosCursorSessionToken*) echo "STUB-CURL: a cursor session cookie reached argv" >&2; exit 90 ;;
+  *eyJ*) echo "STUB-CURL: a JWT reached argv" >&2; exit 90 ;;
 esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +107,10 @@ while [[ $# -gt 0 ]]; do
     -D) dump="$2"; shift 2 ;;
     -H) case "$2" in User-Agent:*) ua="$2" ;; esac; shift 2 ;;
     -K) shift 2 ;;
+    # Both take a value. Without this they fall to the generic `-*` below,
+    # which shifts once and leaves `POST` (or `{}`) to be captured as the URL —
+    # every cursor case would then dispatch on the wrong string.
+    -X|-d) shift 2 ;;
     -w|--max-time) shift 2 ;;
     -sS) shift ;;
     -*) shift ;;
@@ -127,6 +137,34 @@ case "$url" in
     ;;
   *chatgpt*)
     cat "$STUB_CHATGPT_BODY" > "$out"; printf '200'
+    ;;
+  *cursor.com*)
+    mode="$(cat "$STUB_CURSOR_MODE" 2>/dev/null || echo ok)"
+    # The cookie has to be HERE, on stdin, and nowhere else.
+    if ! grep -q 'WorkosCursorSessionToken=' "$STUB_CURL_STDIN" 2>/dev/null; then
+      echo "STUB-CURL: no cursor cookie arrived on stdin" >&2; exit 94
+    fi
+    # Log the derived USER ID only — the part before the %3A%3A separator.
+    sed -n 's/.*WorkosCursorSessionToken=\([^%]*\)%3A%3A.*/\1/p' "$STUB_CURL_STDIN" \
+      | head -n 1 >> "$STUB_CURSOR_UID_LOG"
+    case "$mode" in
+      ok|plan500)
+        case "$url" in
+          *get-current-period-usage)  cat "$STUB_CURSOR_USAGE" > "$out"; printf '200' ;;
+          *get-plan-info)
+            if [[ "$mode" == "plan500" ]]; then printf 'oops' > "$out"; printf '500'
+            else cat "$STUB_CURSOR_PLAN" > "$out"; printf '200'; fi ;;
+          *get-monthly-billing-cycle) cat "$STUB_CURSOR_CYCLE" > "$out"; printf '200' ;;
+          *) echo "STUB-CURL: unexpected cursor endpoint '$url'" >&2; exit 95 ;;
+        esac ;;
+      shape)
+        # HTTP 200, recognisable JSON, no pool percentages anywhere in it.
+        printf '{"somethingElse":{},"displayMessage":"hi"}' > "$out"; printf '200' ;;
+      unauth) printf '{"error":"unauthorized"}' > "$out"; printf '401' ;;
+      server) printf 'oops' > "$out"; printf '500' ;;
+      down)   echo "STUB-CURL: simulated cursor network failure" >&2; exit 7 ;;
+      *) echo "STUB-CURL: unknown cursor mode '$mode'" >&2; exit 96 ;;
+    esac
     ;;
   *)
     echo "STUB-CURL: unexpected url '$url'" >&2; exit 92 ;;
@@ -246,6 +284,15 @@ export STUB_KEYCHAIN_DB="$TMP/keychain.db"
 export STUB_ANTHROPIC_BODY="$TMP/anthropic.json"
 export STUB_ANTHROPIC_MODE="$TMP/anthropic.mode"
 export STUB_CHATGPT_BODY="$TMP/chatgpt.json"
+# Cursor IDE-token path (#1703). Three payload fixtures, a mode file, and a log
+# of the USER ID the reader derived — the user id only, never the token, so no
+# file this suite writes can make a leak assertion pass or fail for the wrong
+# reason.
+export STUB_CURSOR_USAGE="$TMP/cursor-usage.json"
+export STUB_CURSOR_PLAN="$TMP/cursor-plan.json"
+export STUB_CURSOR_CYCLE="$TMP/cursor-cycle.json"
+export STUB_CURSOR_MODE="$TMP/cursor.mode"
+export STUB_CURSOR_UID_LOG="$TMP/cursor-uid.log"
 
 CASE_HOME="$TMP/home"
 mkdir -p "$CASE_HOME/.claude"
@@ -326,6 +373,68 @@ write_config() { # <account-json…>
   printf '%s' "$acc" | jq '{schema_version: "1.0", accounts: .}' > "$CONFIG"
 }
 
+# --- cursor fixtures (#1703) -------------------------------------------------
+# A REAL sqlite3 builds a REAL state store, and the reader is pointed at it
+# through AI_QUOTAS_CURSOR_STATE_DB. sqlite3 is deliberately not stubbed: the
+# thing most likely to break here is the query and the read-only open, and a
+# fake would assert nothing about either. No test touches the real IDE store.
+# Resolved, then PROVEN executable. Defaulting a failed lookup to a hardcoded
+# path that may not exist turns "sqlite3 is missing" into a pile of unrelated
+# cursor failures several hundred lines later (CodeAnt).
+SQLITE3_REAL="$(command -v sqlite3 2>/dev/null || true)"
+[[ -n "$SQLITE3_REAL" ]] || SQLITE3_REAL="/usr/bin/sqlite3"
+[[ -x "$SQLITE3_REAL" ]] || {
+  echo "FATAL: no usable sqlite3 (checked PATH and /usr/bin/sqlite3) — the cursor cases cannot run" >&2
+  exit 1
+}
+CURSOR_DB="$TMP/cursor-state.vscdb"
+CURSOR_DB_SIGNED_OUT="$TMP/cursor-signed-out.vscdb"
+CURSOR_DB_MISSING="$TMP/no-such-cursor-state.vscdb"
+
+# The fixture `sub` carries a discriminating marker AND the `google-oauth2|`
+# prefix measured on the real account, so a reader that "strips the provider
+# prefix" by taking the segment after the final `|` fails this suite instead of
+# shipping and answering 401 (#1703).
+CURSOR_FIXTURE_SUB='google-oauth2|FIXTURE-CURSOR-USER-1703'
+b64url() { printf '%s' "$1" | base64 | tr -d '=\n' | tr '/+' '_-'; }
+CURSOR_FIXTURE_TOKEN="$(b64url '{"alg":"HS256","typ":"JWT"}').$(b64url "{\"sub\":\"${CURSOR_FIXTURE_SUB}\"}").FIXTURESIGNATURE"
+CURSOR_FIXTURE_EMAIL="cursor-fixture@example.com"
+
+build_cursor_db() { # <path> <token|"">
+  rm -f "$1"
+  # WAL, like the real IDE store (CodeRabbit). The whole read-only-without-a-
+  # copy design rests on this being a WAL database — a fixture left in the
+  # default rollback-journal mode would exercise a different open path than
+  # the one that ships, and pass without ever testing it. `journal_mode` is a
+  # persistent property of the file, so it survives the CLI closing its
+  # connection even though the -wal sidecar is checkpointed away with it.
+  "$SQLITE3_REAL" "$1" "PRAGMA journal_mode=WAL;" >/dev/null || return 1
+  "$SQLITE3_REAL" "$1" "create table ItemTable (key TEXT PRIMARY KEY, value BLOB);" || return 1
+  "$SQLITE3_REAL" "$1" \
+    "insert into ItemTable (key, value) values ('cursorAuth/cachedEmail', '${CURSOR_FIXTURE_EMAIL}');" || return 1
+  if [[ -n "${2:-}" ]]; then
+    "$SQLITE3_REAL" "$1" \
+      "insert into ItemTable (key, value) values ('cursorAuth/accessToken', '$2');" || return 1
+  fi
+  return 0
+}
+
+# Captured from the owner's live account on 2026-09-11, trimmed to the keys the
+# reader reads. Dollars are CENTS and the cycle is MILLISECONDS, exactly as the
+# dashboard sends them — a fixture that pre-converted either would let a broken
+# conversion pass.
+cursor_usage_body() {
+  cat <<'JSON'
+{"billingCycleStart":"1787933374000","billingCycleEnd":"1790611774000",
+ "planUsage":{"totalSpend":209243,"includedSpend":40000,"limit":40000,
+              "autoPercentUsed":53.034333333333336,"apiPercentUsed":100,
+              "totalPercentUsed":59.78371428571428},
+ "spendLimitUsage":{"totalSpend":100750,"individualLimit":100000,
+                    "individualUsed":100750,"limitType":"user"},
+ "displayMessage":"You have hit your usage limit"}
+JSON
+}
+
 account_json() { # <provider> <label> <dir> [<service>]
   jq -n --arg p "$1" --arg l "$2" --arg d "$3" --arg s "${4:-}" \
     '{provider: $p, label: $l, profile_dir: $d, added_at: "2026-09-07T00:00:00Z"}
@@ -346,15 +455,15 @@ CHEAPEST_BIN_OVERRIDE=""
 # unavailable-helper path.
 FORECAST_BIN_OVERRIDE=""
 
-# The cursor node/helper paths below are PINNED, not overridable (CodeAnt, PR
-# #1689). They used to read `${NODE_BIN_UNDER_TEST:-…}` and
-# `${CURSOR_HELPER_UNDER_TEST:-…}`, but nothing in THIS suite ever sets either
-# hook — so their only reachable effect was an ambient export from whatever
-# environment the suite was launched in, which would point the cursor cases at a
-# real node and a real helper and let assertions written for the
-# missing-dependency path go to the network or open a browser. The suites that
-# genuinely vary node (ai-quotas-cursor, ai-quotas-setup) set their own hook and
-# reset it between cases; this one has no reason to.
+# Which Cursor state store a case reads. Defaults to the signed-in fixture;
+# cases set it to the signed-out or missing one and reset it afterwards. It is
+# ALWAYS one of this suite's own temp paths — the real IDE store at
+# ~/Library/… is never reachable from here, because the seam is passed
+# unconditionally rather than left to fall through to the reader's default.
+CURSOR_DB_UNDER_TEST=""
+# Which sqlite3 a case resolves. Empty means the real one; a case sets it to a
+# path that does not exist to exercise the reader's missing-tool branch.
+SQLITE3_BIN_UNDER_TEST=""
 run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
   local errf="$TMP/run.err"
   OUT="$(HOME="$CASE_HOME" \
@@ -370,8 +479,8 @@ run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
         AI_QUOTAS_CHEAPEST_BIN="${CHEAPEST_BIN_OVERRIDE-}" \
         AI_QUOTAS_FORECAST_BIN="${FORECAST_BIN_OVERRIDE-}" \
-        AI_QUOTAS_NODE_BIN="$BIN/node-absent" \
-        AI_QUOTAS_CURSOR_HELPER="$TMP/no-such-helper.js" \
+        AI_QUOTAS_SQLITE3_BIN="${SQLITE3_BIN_UNDER_TEST:-$SQLITE3_REAL}" \
+        AI_QUOTAS_CURSOR_STATE_DB="${CURSOR_DB_UNDER_TEST:-$CURSOR_DB}" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
@@ -410,7 +519,23 @@ reset_state() {
   echo "ok" > "$STUB_ANTHROPIC_MODE"
   anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
   jq -n '{}' > "$STUB_CHATGPT_BODY"
+  echo "ok" > "$STUB_CURSOR_MODE"
+  : > "$STUB_CURSOR_UID_LOG"
+  CURSOR_DB_UNDER_TEST=""
+  SQLITE3_BIN_UNDER_TEST=""
+  cursor_usage_body > "$STUB_CURSOR_USAGE"
+  printf '%s' '{"planInfo":{"planName":"Ultra","includedAmountCents":40000,"price":"$200/mo","billingCycleEnd":"1790611774000"}}' > "$STUB_CURSOR_PLAN"
+  printf '%s' '{"startDateEpochMillis":"1787933374000","endDateEpochMillis":"1790611774000"}' > "$STUB_CURSOR_CYCLE"
 }
+
+# Built once: the fixture stores are immutable, and rebuilding a SQLite file
+# before every case would cost more than it proves.
+build_cursor_db "$CURSOR_DB" "$CURSOR_FIXTURE_TOKEN" \
+  || { echo "FATAL: could not build the cursor fixture DB with $SQLITE3_REAL" >&2; exit 1; }
+build_cursor_db "$CURSOR_DB_SIGNED_OUT" "" \
+  || { echo "FATAL: could not build the signed-out cursor fixture DB" >&2; exit 1; }
+rm -f "$CURSOR_DB_MISSING"
+
 reset_state
 
 echo "== ai-quotas.sh =="
@@ -659,27 +784,264 @@ check_contains "$(field_of claude-one@example.com "7-day" detail)" "quota_summar
   "the note prints the top-level keys it actually saw"
 anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
 
-# --- 13. a broken cursor account degrades alone ------------------------------
+# --- 13. the cursor IDE-token reader (#1703) ---------------------------------
 #
-# The cursor READER has its own suite (ai-quotas-cursor.test.sh, issue #1668);
-# what belongs here is the property this file is about — per-row isolation.
-# With no helper on disk the cursor account cannot be read, and the assertion
-# is that it says so in its own row and takes nothing else down with it.
+# The reader borrows the token the Cursor IDE holds, derives the dashboard
+# cookie in memory, and calls three endpoints. Everything below runs against a
+# fixture SQLite state store and the fake curl; the real IDE store is never
+# touched and no browser exists to launch.
+
+# A pool field, addressed by pool rather than by window: a cursor account
+# contributes TWO rows sharing one window, so field_of alone cannot tell
+# `cursor-models` from `other-models` and would answer with whichever came
+# first — a test that passes while reading the wrong pool.
+cursor_field() { # <label> <pool> <field>
+  printf '%s' "$OUT" | jq -r --arg l "$1" --arg p "$2" --arg f "$3" \
+    '.[] | select(.label == $l and .pool == $p) | .[$f] | if . == null then "null" else tostring end'
+}
+
+CUR="$PROFILES/cursor-one@example.com/cursor"
+seed_cursor_account() { # — the registry row; no profile directory is created
+  write_config "$(account_json cursor cursor-one@example.com "$CUR")"
+}
+
+# --- 13a. a signed-in IDE renders both pool rows -----------------------------
 
 reset_state
-CUR="$PROFILES/cursor-one@example.com/cursor"; mkdir -p "$CUR"
+seed_cursor_account
+run --json
+check_eq "$RC" "0" "a cursor account reads cleanly"
+check_eq "$(cursor_field cursor-one@example.com cursor-models status)" "ok" \
+  "the cursor-models pool reads ok"
+check_eq "$(cursor_field cursor-one@example.com other-models status)" "ok" \
+  "the other-models pool reads ok"
+# 53.034333… rounds to one decimal with a bare .0 dropped, exactly as the
+# retired helper rendered it — the display contract, unchanged by the transport.
+check_eq "$(cursor_field cursor-one@example.com cursor-models used_pct)" "53" \
+  "autoPercentUsed drives the cursor-models figure, rounded once"
+check_eq "$(cursor_field cursor-one@example.com other-models used_pct)" "100" \
+  "apiPercentUsed drives the other-models figure"
+check_eq "$(cursor_field cursor-one@example.com cursor-models remaining_pct)" "47" \
+  "remaining_pct comes off the same rounded number"
+# Cents to dollars, on every dollar field.
+check_eq "$(cursor_field cursor-one@example.com cursor-models plan_used_usd)" "2092.43" \
+  "totalSpend is read as cents"
+check_eq "$(cursor_field cursor-one@example.com cursor-models plan_included_usd)" "400" \
+  "the plan limit is read as cents"
+check_eq "$(cursor_field cursor-one@example.com other-models spend_limit_used_usd)" "1007.5" \
+  "the on-demand block is read as cents, on both rows"
+check_eq "$(cursor_field cursor-one@example.com other-models spend_limit_usd)" "1000" \
+  "as is its limit"
+# Milliseconds to epoch seconds, from get-monthly-billing-cycle.
+check_eq "$(cursor_field cursor-one@example.com cursor-models resets_at_epoch)" "1790611774" \
+  "the billing-cycle end is read as milliseconds and becomes the reset"
+check_eq "$(cursor_field cursor-one@example.com cursor-models window_start_epoch)" "1787933374" \
+  "and the cycle start becomes the window start"
+check_eq "$(cursor_field cursor-one@example.com cursor-models plan)" "Ultra" \
+  "get-plan-info supplies the plan name"
+check_eq "$(cursor_field cursor-one@example.com cursor-models reported_email)" "$CURSOR_FIXTURE_EMAIL" \
+  "the row is labelled with the IDE's cached email"
+check_eq "$(cursor_field cursor-one@example.com cursor-models source)" "ide-token" \
+  "and names the path it came from"
+
+# The cookie's user id keeps the `google-oauth2|` prefix. Stripping to the
+# segment after the final `|` is the plausible-looking mistake that answers 401
+# against the real dashboard, so it is asserted rather than assumed.
+check_eq "$(head -n 1 "$STUB_CURSOR_UID_LOG")" "$CURSOR_FIXTURE_SUB" \
+  "the cookie carries the sub claim with only a leading auth0| removed"
+check_eq "$(sort -u "$STUB_CURSOR_UID_LOG" | wc -l | tr -d ' ')" "1" \
+  "and every one of the three calls carried the same user id"
+check_eq "$(grep -c 'cursor.com/api/dashboard' "$STUB_CURL_LOG" | tr -d ' ')" "3" \
+  "all three dashboard endpoints are called"
+
+# --- 13b. the leak assertion (the ticket's own check) ------------------------
+#
+# `grep -iE 'WorkosCursorSessionToken=|eyJ'` over everything this run wrote
+# must find nothing. The fixture token really is a JWT, so `eyJ` is a live
+# tripwire here and not a formality.
+check_not_contains "$OUT" "WorkosCursorSessionToken" "no cookie reaches stdout"
+check_not_contains "$OUT" "eyJ" "no token reaches stdout"
+check_not_contains "$ERR" "WorkosCursorSessionToken" "no cookie reaches stderr"
+check_not_contains "$ERR" "eyJ" "no token reaches stderr"
+check_not_contains "$(cat "$STUB_CURL_LOG")" "eyJ" "no token reaches the curl argv log"
+LEAK_HIT="$(grep -icE 'WorkosCursorSessionToken=|eyJ' "$CASE_HOME/.claude/ai-quotas-history.jsonl" 2>/dev/null | tr -d ' ' || true)"
+check_eq "${LEAK_HIT:-0}" "0" "no token or cookie reaches the history file"
+
+# --- 13c. a rejected token says to sign in, in the IDE -----------------------
+
+reset_state
+seed_cursor_account
+echo "unauth" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$RC" "0" "a rejected cursor token does not fail the run"
+check_eq "$(rows_for cursor-one@example.com)" "needs-login" "HTTP 401 reads needs-login"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "open the Cursor IDE and sign in" \
+  "and the note says to sign in IN THE IDE, not to run a command"
+check_not_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "/quotas-setup relogin" \
+  "the relogin command is NOT offered — it cannot create this credential"
+check_eq "$(field_of cursor-one@example.com "billing-cycle" used_pct)" "null" \
+  "and no figure is invented"
+# The two enrichment calls are SKIPPED once the usage call has decided the row
+# (CodeRabbit). Three 401s per account per read is latency spent on a row that
+# will not render, against a provider that rate-limits.
+check_eq "$(grep -c 'cursor.com/api/dashboard' "$STUB_CURL_LOG" | tr -d ' ')" "1" \
+  "and the enrichment endpoints are not called after a rejected token"
+
+# --- 13d. any other non-200 is unreachable, with the status ------------------
+
+reset_state
+seed_cursor_account
+echo "server" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(rows_for cursor-one@example.com)" "unreachable" "HTTP 500 reads unreachable"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "500" \
+  "and the note carries the status code"
+check_eq "$(grep -c 'cursor.com/api/dashboard' "$STUB_CURL_LOG" | tr -d ' ')" "1" \
+  "and the enrichment endpoints are not called after a failed usage read"
+
+# --- 13e. a signed-out IDE ---------------------------------------------------
+
+reset_state
+seed_cursor_account
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
+run --json
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(rows_for cursor-one@example.com)" "needs-login" \
+  "a state store with no access token reads needs-login"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "not signed in" \
+  "and says the IDE is not signed in"
+check_eq "$(grep -c 'cursor.com' "$STUB_CURL_LOG" | tr -d ' ')" "0" \
+  "no dashboard call is made without a token"
+
+# --- 13f. no state store at all ----------------------------------------------
+
+reset_state
+seed_cursor_account
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_MISSING"
+run --json
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(rows_for cursor-one@example.com)" "needs-login" \
+  "a missing state store reads needs-login"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "open the Cursor IDE and sign in" \
+  "with the same instruction"
+
+# --- 13f2. no sqlite3 at all is unreachable, not needs-login -----------------
+#
+# Without sqlite3 this reader cannot see whether the IDE is signed in. Saying
+# `needs-login` there would tell the user to sign in again over a missing tool,
+# which is the one instruction that cannot help (CodeRabbit).
+
+reset_state
+seed_cursor_account
+SQLITE3_BIN_UNDER_TEST="$TMP/no-such-sqlite3"
+run --json
+SQLITE3_BIN_UNDER_TEST=""
+check_eq "$RC" "0" "a missing sqlite3 does not fail the run"
+check_eq "$(rows_for cursor-one@example.com)" "unreachable" \
+  "a missing sqlite3 reads unreachable, not needs-login"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "sqlite3" \
+  "and the note names the tool that is missing"
+check_eq "$(grep -c 'cursor.com' "$STUB_CURL_LOG" | tr -d ' ')" "0" \
+  "control(-): no request was made without a way to read the token"
+
+# --- 13g. a changed payload shape is unreadable, never 0 % -------------------
+
+reset_state
+seed_cursor_account
+echo "shape" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(rows_for cursor-one@example.com)" "unreadable" \
+  "HTTP 200 carrying no pool percentages reads unreadable"
+check_eq "$(field_of cursor-one@example.com "billing-cycle" used_pct)" "null" \
+  "and reports no figure rather than 0 %"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "somethingElse" \
+  "the note names the keys it actually saw"
+
+# --- 13h. an enrichment failure costs a label, not the row -------------------
+#
+# Only get-current-period-usage decides the row. A row that went unreachable
+# because a plan-NAME lookup 500'd would report a blackout it does not have.
+
+reset_state
+seed_cursor_account
+echo "plan500" > "$STUB_CURSOR_MODE"
+run --json
+check_eq "$(cursor_field cursor-one@example.com cursor-models status)" "ok" \
+  "a 500 from get-plan-info still renders the row"
+check_eq "$(cursor_field cursor-one@example.com cursor-models used_pct)" "53" \
+  "with its figures intact"
+check_eq "$(cursor_field cursor-one@example.com cursor-models plan)" "null" \
+  "and only the plan name missing"
+
+# --- 13h2. a hostile sub claim never reaches the curl config -----------------
+#
+# The cookie is handed to curl through a line-oriented, quoted config on stdin.
+# A `sub` carrying a newline does not merely corrupt the header — it ends the
+# line, and what follows is read by curl as further OPTIONS. The state store is
+# a local file this script does not own, so its shape is checked, not assumed
+# (CodeRabbit).
+
+reset_state
+seed_cursor_account
+CURSOR_DB_HOSTILE="$TMP/cursor-hostile.vscdb"
+# `"` closes the quoted value and the newline starts a fresh config directive —
+# the exact two characters the guard exists for.
+HOSTILE_SUB='evil"
+output = /dev/null'
+build_cursor_db "$CURSOR_DB_HOSTILE" \
+  "$(b64url '{"alg":"HS256","typ":"JWT"}').$(b64url "$(jq -nc --arg s "$HOSTILE_SUB" '{sub: $s}')").SIG" \
+  || bad "could not build the hostile cursor fixture"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_HOSTILE"
+run --json
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(rows_for cursor-one@example.com)" "unreadable" \
+  "a sub claim carrying a quote and a newline is refused, not sent"
+check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "will not put in a request header" \
+  "and the note says why"
+check_eq "$(grep -c 'cursor.com' "$STUB_CURL_LOG" | tr -d ' ')" "0" \
+  "control(-): no request was made at all"
+
+# --- 13h3. a cached email carrying control characters is dropped -------------
+#
+# `reported_email` goes straight into a terminal table, where a tab splits the
+# columns, a newline forges a row, and an escape sequence is executed by the
+# terminal rather than shown. It comes from the same local file the token does,
+# so it gets the invariant ROW_NICKNAME already documents (CodeRabbit).
+
+reset_state
+seed_cursor_account
+CURSOR_DB_CTRL="$TMP/cursor-ctrl-email.vscdb"
+rm -f "$CURSOR_DB_CTRL"
+"$SQLITE3_REAL" "$CURSOR_DB_CTRL" "PRAGMA journal_mode=WAL;" >/dev/null
+"$SQLITE3_REAL" "$CURSOR_DB_CTRL" "create table ItemTable (key TEXT PRIMARY KEY, value BLOB);"
+"$SQLITE3_REAL" "$CURSOR_DB_CTRL" \
+  "insert into ItemTable (key, value) values ('cursorAuth/accessToken', '${CURSOR_FIXTURE_TOKEN}');"
+# A tab and a newline, inserted as real control characters via SQLite's own
+# char() so the fixture cannot be softened by shell quoting on the way in.
+"$SQLITE3_REAL" "$CURSOR_DB_CTRL" \
+  "insert into ItemTable (key, value) values ('cursorAuth/cachedEmail', 'ev' || char(9) || 'il' || char(10) || '@example.com');"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_CTRL"
+run --json
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(cursor_field cursor-one@example.com cursor-models status)" "ok" \
+  "a control-character email does not take the row down"
+check_eq "$(cursor_field cursor-one@example.com cursor-models reported_email)" "cursor-one@example.com" \
+  "and the row falls back to the label instead of rendering it"
+
+# --- 13i. a broken cursor account degrades alone -----------------------------
+#
+# The property this file is about: per-row isolation.
+
+reset_state
 X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly)")"
 write_config \
   "$(account_json cursor cursor-one@example.com "$CUR")" \
   "$(account_json codex codex-one@example.com "$X1")"
+echo "down" > "$STUB_CURSOR_MODE"
 run --json
 check_eq "$RC" "0" "a cursor row does not fail the run"
 check_eq "$(rows_for cursor-one@example.com)" "unreachable" \
-  "an unreadable cursor helper reads unreachable"
-check_eq "$(field_of cursor-one@example.com "billing-cycle" used_pct)" "null" \
-  "and reports no figure rather than 0 %"
-check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "helper is missing" \
-  "the note names what is actually missing"
+  "a curl failure reads unreachable"
 check_eq "$(rows_for codex-one@example.com)" "ok" "the codex row beside it still renders"
 
 # An unknown provider is what `unsupported` is for now that cursor is read.

@@ -1,6 +1,6 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, or installing the daily unattended usage snapshot. Gives each account an isolated login profile — a config dir, a CODEX_HOME, or a browser profile. Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, or installing the daily unattended usage snapshot. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
@@ -32,10 +32,11 @@ isolated login profile, and report which are reachable.
 > list.
 
 > **No credential ever passes through you.** Every login is the provider's own
-> interactive flow (magic link, SSO, CAPTCHA) — for Cursor, a real browser window on
-> that account's own profile. The helper launches it and waits — it never types, reads,
-> prints, or stores a password, token, or cookie, and neither do you. If a login needs
-> the user's hands, say so and stop; do not offer to type credentials.
+> interactive flow (magic link, SSO, CAPTCHA) — and for Cursor it is not even this
+> tool's to run: the Cursor IDE holds that login. The helper launches what it can and
+> waits — it never types, reads, prints, or stores a password, token, or cookie, and
+> neither do you. If a login needs the user's hands, say so and stop; do not offer to
+> type credentials.
 
 ## Step 1 — Resolve the helper
 
@@ -98,26 +99,24 @@ records without a login: `--no-login`, which reserves the slot on purpose and li
   Ctrl-D) once the login completes. Do **not** substitute `claude auth login` (no such
   subcommand) or `claude setup-token` (it prints a token instead of storing one).
 - **`codex`** — a per-account `CODEX_HOME` under `…/<label>/codex`, then `codex login`.
-- **`cursor`** — a Chromium profile under `…/<label>/cursor`, logged in by opening a
-  real browser window on it (Playwright, through `.claude/scripts/lib/ai-quotas-cursor.js`).
-  Tell the user a window is about to open and that they should log in to cursor.com
-  there the normal way; the helper waits until the dashboard's usage endpoint answers,
-  which is the only proof the session landed. It needs Node 20+ (Playwright's own floor) and a one-time
-  `npm install --prefix .claude/scripts/lib && npx --prefix .claude/scripts/lib playwright install chromium`;
-  without it the login fails and exits `1`, printing the install command it needs — relay
-  that and retry. Exit `6` is the different failure of node or the helper FILE being
-  missing; it prints the manual `node … --mode login` command instead.
-  A `relogin` **moves the previous profile aside** (to `<dir>.retired-<timestamp>`,
-  printed) and starts fresh rather than layering a second session over a stale one. If
-  that relogin then FAILS, the move is rolled back: the message says the previous session
-  was put back and the account still works. Where it says the session could **not** be put
-  back, relay the `.retired-<timestamp>` path it names and the instruction to move that
-  directory back — that is the only case where a failed relogin needs the user to act.
+- **`cursor`** — **no profile directory and no login to launch** (#1703). The Cursor IDE
+  owns this credential, and nothing else can create it: cursor.com's sign-in page runs a
+  human-verification check that fails in every automation browser, which is why the
+  Playwright login that used to live here was removed. So `add cursor` and
+  `relogin … cursor` both mean **"open the Cursor IDE and sign in"** — tell the user
+  exactly that. Each then confirms a token is present (`sqlite3`, presence only, the
+  value never read) and exits `1` with that same instruction when the IDE is signed out;
+  relay it and retry once they have. Exit `6` is the different failure of `sqlite3`
+  being missing. One IDE holds one account, so this machine registers one Cursor
+  account — a second Cursor subscription cannot be tracked here.
+  A `relogin` no longer retires anything: signing in again in the IDE replaces the token,
+  so there is no profile to move aside and nothing to roll back.
 
-The login is interactive and blocking. Tell the user it is about to open, and let it
-run — a magic link or SSO round trip can take a minute. Adding a second account of the
-same provider never disturbs the first: each has its own profile directory and its own
-credential.
+The `claude` and `codex` logins are interactive and blocking. Tell the user one is about
+to open, and let it run — a magic link or SSO round trip can take a minute. Adding a
+second account of the same provider never disturbs the first: each has its own profile
+directory and its own credential. **Cursor is the exception on both counts** — nothing
+opens, and a second account is not possible.
 
 **STOP conditions for `add`:**
 
@@ -128,8 +127,8 @@ credential.
 - Exit `3` — a usage problem: unknown provider, malformed label, or a
   `(provider, label)` pair already registered. Report it; for an already-registered
   pair the fix is `relogin`, not a second `add`.
-- Exit `6` — the provider's login tool is not installed: its CLI, or for `cursor` Node
-  or the Playwright helper. The helper prints the exact manual command; relay it and
+- Exit `6` — the provider's login tool is not installed: its CLI, or for `cursor`
+  `sqlite3`, which reads the IDE state store. The helper prints the exact manual command; relay it and
   stop.
 
 **STOP conditions for every action, `list` included:**
@@ -182,13 +181,12 @@ last unattended reading happened.
 - **The job never gates anything.** It reads figures and appends them to
   `~/.claude/ai-quotas-history.jsonl`. Nothing consults that file to decide whether work
   may proceed, and you must not either.
-- It runs **headless**. It never opens a browser window; a Cursor account whose saved
-  session has expired records as `needs-login` and waits for a `relogin`. If bot
-  protection blocks the headless read instead, that row reads `unreachable` or
-  `unreadable`. Either way nothing is recorded for it — an unread row appends no
-  snapshot rather than a fabricated one.
+- It opens **no browser at all** (#1703 removed the last one). A Cursor IDE that is
+  signed out records as `needs-login` and waits for the user to sign in there; nothing
+  is recorded for that row — an unread row appends no snapshot rather than a fabricated
+  one.
 - **Exit `2`** on any host that is not macOS: launchd is the only scheduler with access
-  to this user's Keychain, `CODEX_HOME` directories, and browser profiles, so there is
+  to this user's Keychain, `CODEX_HOME` directories, and the Cursor IDE state store, so there is
   nothing to install elsewhere. Report the one line it prints and stop — do **not** offer
   to write a cron entry instead, which would record `needs-login` every day and call it
   history.
@@ -219,7 +217,7 @@ wrote, which is all anyone needs.
 ## Reference
 
 Config schema (including the `nickname` field and its limits), the exact per-provider
-re-login commands, where each provider keeps its credential, how the Cursor browser
-profile is installed and replaced, the LaunchAgent this skill writes — every plist key,
+re-login commands, where each provider keeps its credential, how the Cursor IDE token is
+read and why no browser is involved, the LaunchAgent this skill writes — every plist key,
 why 09:00, and why the `PATH` has to name Homebrew — and the increment boundary:
 `.claude/reference/ai-quotas.md`.

@@ -23,9 +23,10 @@ Five prepaid premium subscriptions cost far less than overage on any one of them
 working pattern is to drain one account and switch to the next. None of the providers
 supports two accounts side by side out of the box: each keeps one credential in one
 place. Giving every account its own profile directory — `CLAUDE_CONFIG_DIR` for Claude
-Code, `CODEX_HOME` for Codex, a browser profile for Cursor — is what lets all of them
-stay logged in at once, and what lets a later reader borrow each account's live
-credential in turn.
+Code, `CODEX_HOME` for Codex — is what lets all of them stay logged in at once, and what
+lets a later reader borrow each account's live credential in turn. Cursor is the
+exception, and unavoidably so: its credential belongs to the Cursor IDE, which holds
+exactly one account (#1703).
 
 ## Increment boundary
 
@@ -33,7 +34,8 @@ This registry is increment 1 of six (#1666 → #1667 → #1668 → #1669 → #17
 ends at a registered, validated account list. **No usage figure is read here.** Increment
 2 adds `/quotas` and `.claude/scripts/ai-quotas.sh`, which read the config below and
 report each account's remaining allowance; increment 3 (#1668) makes the Cursor slot
-live — the browser login plus the two-pool reader documented later in this file;
+live — the two-pool reader documented later in this file, rebuilt in #1703 on the Cursor
+IDE's own token after the browser login proved impossible to seed;
 increment 4 (#1669) adds the overage column and the cheapest-next hint; increment 5
 (#1700) records every reading to a history file, adds the daily unattended snapshot,
 nicknames, and the compact table; increment 6 (#1701) reads that history for a burn rate
@@ -92,7 +94,8 @@ require the provider as a second argument rather than guessing which row was mea
 ```
 ~/.claude/ai-quotas/profiles/<label>/claude    # CLAUDE_CONFIG_DIR for that account
 ~/.claude/ai-quotas/profiles/<label>/codex     # CODEX_HOME for that account
-~/.claude/ai-quotas/profiles/<label>/cursor    # Chromium persistent user-data dir
+                                               # cursor has NO profile directory —
+                                               # the Cursor IDE owns that login (#1703)
 ~/.claude/ai-quotas/profiles/<label>/.keychain-service-claude   # mode 600; see below
 ~/.claude/ai-quotas/profiles/.relogin-slots/<label>__<provider> # relogin slot; see below
 ```
@@ -101,10 +104,14 @@ require the provider as a second argument rather than guessing which row was mea
 
 `relogin` claims `.relogin-slots/<label>__<provider>` — an empty directory holding a
 `pid` file — for the whole run, and refuses (**exit 7**) when another relogin already
-holds it. Two relogins for one account must not overlap: a Cursor relogin replaces the
-profile, so the second would retire the fresh profile the first one's browser is writing
-into, and whichever finished last would point the registry row at a profile holding the
-other one's half-written session.
+holds it. Two relogins for one account must not overlap: both would write the registry
+row, and whichever finished last would decide what the account points at.
+
+The slot no longer guards a **profile retirement**. Through #1668 a Cursor relogin moved
+the old Chromium profile aside to `<dir>.retired-<timestamp>`, with a rollback trap to
+put it back on failure; #1703 removed all of it along with the browser. An IDE token has
+no profile to retire and no layering to prevent — signing in again in the IDE simply
+replaces it — so the slot's whole job is now refusing the concurrent run.
 
 The slot is a flat key under the profile root rather than a sibling of the profile,
 because a sibling would have to be created through the label and provider components —
@@ -137,7 +144,7 @@ must never destroy a working login. Delete it by hand if that is what you mean.
 | `claude` (macOS) | Keychain generic password, service `Claude Code-credentials-<suffix>` | `security find-generic-password -s "<service>"` — **never** `-w`, so no value is requested. The service is looked up by the name recorded at login time. |
 | `claude` (other) | `<profile_dir>/.credentials.json` | file present and non-empty |
 | `codex` | `<profile_dir>/auth.json` | file present and non-empty; if it is absent, `CODEX_HOME=<profile_dir> codex login status` is consulted and a zero exit counts as logged in. Its output is discarded, so no account detail is printed. |
-| `cursor` | a Chromium persistent user-data dir — the saved session IS the credential | the cookie store is present and non-empty (`<dir>/Default/Network/Cookies`, `<dir>/Default/Cookies`, or `<dir>/Cookies`, depending on the build). **Presence only** — the file is never opened. |
+| `cursor` | the **Cursor IDE's own login**, in its state store (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, keys `cursorAuth/accessToken` and `cursorAuth/cachedEmail`; Linux and Windows paths in the reader section). No profile directory is created. | `sqlite3 -readonly` asks whether `cursorAuth/accessToken` is a non-empty string and answers with an exit status. **Presence only** — the value is never fetched or printed. A token can be present and expired, so only `/quotas` proves it still works. |
 
 ### The Keychain suffix is observed, never derived
 
@@ -199,22 +206,19 @@ CLAUDE_CONFIG_DIR="$HOME/.claude/ai-quotas/profiles/<label>/claude" claude
 # codex
 CODEX_HOME="$HOME/.claude/ai-quotas/profiles/<label>/codex" codex login
 
-# cursor — a headed browser on this account's own profile. Log in to
-# cursor.com in the window it opens; the helper waits until the dashboard's
-# usage endpoint answers, which is the only proof the session actually landed.
-node .claude/scripts/lib/ai-quotas-cursor.js \
-  --profile-dir "$HOME/.claude/ai-quotas/profiles/<label>/cursor" --mode login
+# cursor — there is NO command. Open the Cursor IDE and sign in there.
 ```
 
-A Cursor `relogin` **moves the old profile aside** to `<dir>.retired-<timestamp>` and
-starts a fresh one, rather than logging in on top of it: layering a second session over
-a half-expired one leaves a profile holding both, answering with whichever the browser
-picks — a state no status probe can describe. The retired path is printed; delete it by
-hand when you no longer want it.
+Cursor is the exception and stays one: `add cursor` and `relogin … cursor` launch
+nothing, create no profile directory, and simply confirm afterwards that the IDE holds a
+token, printing `open the Cursor IDE and sign in` when it does not. Nothing else can
+create that credential — cursor.com refuses automation browsers (#1703).
 
-Both are interactive: they open the provider's normal magic-link or SSO flow. The tool
-launches the command and waits; it never types or reads credentials. If the CLI is not
-installed, `ai-quotas-setup.sh` exits `6` and prints exactly the command above.
+The `claude` and `codex` logins are interactive: they open the provider's normal
+magic-link or SSO flow. The tool launches the command and waits; it never types or reads
+credentials. If the CLI is not installed, `ai-quotas-setup.sh` exits `6` and prints
+exactly the command above — for `cursor` the missing tool is `sqlite3`, and the message
+says so rather than naming a `cursor` login binary that has never existed.
 
 **Two `claude` alternatives were rejected, so nobody re-introduces them.**
 `claude auth login` does not exist — there is no `auth` subcommand. `claude setup-token`
@@ -234,14 +238,15 @@ Full flags and exit codes: `ai-quotas-setup.sh --help`. Summary:
 | 3 | Usage error — bad action/provider/label, duplicate pair, or an ambiguous label. |
 | 4 | No account matches that label. |
 | 5 | Dependency or write failure (`jq` missing, config unreadable, unparseable, or written by a different schema major). |
-| 6 | The provider's login CLI was not found — for `cursor`, node or the Playwright helper; the manual command is printed. |
+| 6 | The provider's login CLI was not found — for `cursor`, `sqlite3`, which is what reads the IDE state store; the manual command is printed. |
 | 7 | Contention, refused rather than raced; nothing changed. The config write lock timed out or was broken mid-update, or a `relogin` found another relogin already running for the same account. |
 
 Config writes go through the shared `state-lock.sh` advisory lock and
 `state_lock_commit`, so a concurrent `add` cannot lose the other's row.
 
 **Test seams.** `AI_QUOTAS_CONFIG`, `AI_QUOTAS_PROFILE_ROOT`, `AI_QUOTAS_CLAUDE_BIN`,
-`AI_QUOTAS_CODEX_BIN`, `AI_QUOTAS_SECURITY_BIN`, and `AI_QUOTAS_PLATFORM` exist so
+`AI_QUOTAS_CODEX_BIN`, `AI_QUOTAS_SECURITY_BIN`, `AI_QUOTAS_SQLITE3_BIN`,
+`AI_QUOTAS_CURSOR_STATE_DB`, and `AI_QUOTAS_PLATFORM` exist so
 `.claude/scripts/tests/ai-quotas-setup.test.sh` can exercise every path — including the
 macOS Keychain probe — against stubs, without touching a real login, keychain, or
 account. They are not meant for normal use.
@@ -391,23 +396,98 @@ row records which path produced it, so a silently degraded read is visible.
 `reported_email` comes from the `id_token` claim in `auth.json`. The JWT is decoded for
 that one claim inside the reader; the token itself never leaves the function.
 
-### Cursor reader (#1668)
+### Cursor reader (#1668, rebuilt on the IDE token in #1703)
 
 Cursor is the one provider with **no individual usage API**: the Admin and Analytics
 APIs are Enterprise-only, and the legacy token call returns request counts from a
-pricing model Ultra no longer uses. The only reliable source is the logged-in dashboard,
-so the reader drives it.
+pricing model Ultra no longer uses. The only reliable source is the logged-in dashboard.
 
-`.claude/scripts/lib/ai-quotas-cursor.js` launches Chromium through Playwright's
-`launchPersistentContext` on that account's profile directory — headless for a read,
-headed for a login — loads `https://cursor.com/dashboard/spending`, and captures the
-response the page itself requests. The bash side never touches the browser: it runs the
-helper under the same wall-clock bound as every other local probe
-(`AI_QUOTAS_CURSOR_TIMEOUT`, 30s) and turns its one JSON verdict into rows.
+#### Why the browser reader is gone
 
-**No cookie or session value leaves the profile directory.** The session is used in
-place by the browser; the helper serialises a fixed set of numeric fields plus the
-payload's top-level key names, and never a header, a cookie, or a body verbatim.
+#1668 read that dashboard by driving a saved Playwright browser session. On
+**2026-09-10** the owner tried three times to seed that session on a real account and
+could not: cursor.com's sign-in page runs a human-verification check that fails inside
+any automation browser ("Can't verify the user is human"), and Google SSO refuses those
+browsers outright. The design could not get past login, so every Cursor row read
+`unreachable`. **A reader that depends on defeating a CAPTCHA is not a reader**, and it
+was removed rather than kept as a bot-check-prone opt-in — dead weight that would rot.
+It is recoverable from git history if a second Cursor account ever needs it.
+
+#### The IDE-token path
+
+`ai-quotas.sh` now borrows the token the Cursor IDE is holding anyway, exactly as the
+claude reader borrows Claude Code's:
+
+1. Read `cursorAuth/accessToken` and `cursorAuth/cachedEmail` from the `ItemTable`
+   key/value table of the IDE's state store (paths below).
+2. Decode the token's `sub` claim and build the dashboard cookie **in memory**:
+   `WorkosCursorSessionToken=<userId>%3A%3A<accessToken>`.
+3. `POST` `{}` to the three dashboard endpoints with `curl`, cookie supplied on stdin.
+
+`<userId>` is the `sub` with **only a leading `auth0|` removed**. Taking the segment
+after the final `|` instead — the obvious-looking reading — is wrong and was measured
+wrong: this account's `sub` is `google-oauth2|<id>`, and the dashboard answers 401 with
+that prefix stripped. Verified end to end against the owner's live account on
+**2026-09-11**: all three endpoints returned 200.
+
+**No browser is launched on any path**, so the daily launchd job (#1700) runs with
+`sqlite3` and `curl` alone.
+
+**One IDE holds one account**, so one machine reads one Cursor account. A second Cursor
+subscription cannot be registered here; that is a property of the IDE, not a limit of
+this tool.
+
+#### Reading the state store: read-only, never a copy
+
+The reader opens the store with `sqlite3 -readonly` and **does not copy it**. #1703's
+plan of record called for a temp copy because Cursor holds the file locked. Measured on
+this machine the store is **10 GB**, so a copy is minutes of I/O and 10 GB of disk to
+answer two key lookups — and it is unnecessary: the store is a **WAL** database, where
+readers and the writer coexist by design. With the IDE running, both queries answer in
+~15 ms (measured 2026-09-11).
+
+Two deliberate choices inside that:
+
+- **`-readonly`, not a `file:…?mode=ro` URI.** The flag takes a plain path, so the space
+  in the default macOS path — or a `?` or `#` in someone else's — needs no
+  percent-encoding to be read correctly.
+- **No `immutable=1` fallback.** It opens a WAL database while *ignoring* the WAL, which
+  returns whatever token predates the last checkpoint. A stale token is
+  indistinguishable here from a current one and fails later as a 401 — i.e. it would
+  report "signed out" about an IDE that is signed in. A read this reader cannot do
+  honestly is reported, not guessed.
+
+#### State-store paths
+
+| Platform | Path |
+|----------|------|
+| macOS | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` |
+| Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
+| Windows | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
+
+macOS is the default; the other two are reachable through `AI_QUOTAS_CURSOR_STATE_DB`.
+
+#### The token never leaves the function
+
+The token and the derived cookie live in two globals, are handed to `curl` **on stdin**
+(`-K -`) so they never reach argv and `ps` never sees them, and are cleared the moment
+the three calls return. Neither is ever printed, logged, written to the history file,
+put in a row, or copied to disk. The regression test asserts
+`grep -iE 'WorkosCursorSessionToken=|eyJ'` finds nothing in stdout, stderr, or the
+telemetry line.
+
+#### Issue #1692 re-verified against this path — 2026-09-11
+
+#1692 deferred three live-account items from #1668 because they needed a headed browser
+and a local Playwright install. Two of the three described a browser that no longer
+exists, so they are **re-scoped rather than carried forward**; measured on the owner's
+live `cursor-ultra` account:
+
+| #1692 item (as written) | Re-scoped | Result |
+|---|---|---|
+| `relogin` opens a headed browser, login completes, `list` shows `ok` | Open the Cursor IDE and sign in; `list` shows `ok` | **Verified.** `list` reports `ok` with the note `the Cursor IDE is signed in`. No browser, no profile directory. |
+| `/quotas` renders both pool rows with percentages and a matching billing-cycle reset | unchanged | **Verified live:** `cursor-models 53.2 %`, `other-models 100 %`, reset `Mon Sep 28 12:09 PM EDT`, plan `Ultra`, plan-wide spend `$2098.59 of $400`, on-demand `$1007.50 of $1000`. `used_usd`/`included_usd` stay `null` per #1689 — Cursor publishes no per-pool dollar split. Comparing those figures against the Spending tab by eye remains the owner's check; the reader takes them from the response that tab itself requests. |
+| Headless run completes in under ~20 s | The read completes promptly | **Verified:** the whole account read takes **1.1 s** (the browser path budgeted 30 s). |
 
 #### The captured endpoint
 
@@ -488,35 +568,25 @@ missing block must not read as `$0 spent`.
 | Verdict | When |
 |---------|------|
 | `ok` | the usage response was read; two rows follow |
-| `needs-login` | no profile directory, a redirect to a login page, or HTTP 401/403 from the endpoint. The note carries the exact `/quotas-setup relogin <label> cursor` command. |
-| `unreadable` | the response arrived but its shape changed, or the helper printed something that is not a verdict. The note names the keys actually seen — **never a figure, never 0 %**. |
-| `unreachable` | no Node, no helper on disk, Playwright or the browser binary missing, the page would not load, or the bound elapsed. The note names which. |
+| `needs-login` | no readable state store, the store holds no access token, or HTTP 401/403 from the endpoint. The note carries the instruction **`open the Cursor IDE and sign in`** — there is no command to run, because the credential belongs to the IDE. |
+| `unreadable` | the response arrived but its shape changed (no pool percentages, or a body that is not a JSON object), or the stored token carries no decodable `sub`. The note names the keys actually seen — **never a figure, never 0 %**. |
+| `unreachable` | no `sqlite3`, a state store `sqlite3` could not read, `curl` failed, or the usage endpoint answered any other non-200. The note names which. |
 
-A pool whose percentage the helper could not parse is **omitted from its list**, so the
+A pool whose percentage the reader could not parse is **omitted from its list**, so the
 account reports the pool it could read and never invents the other.
 
-#### Install
+The three failure modes are kept distinct on purpose: collapsing them into `needs-login`
+would tell a user to sign in again over a missing `sqlite3` or a changed payload shape —
+the one instruction that cannot possibly help.
 
-Playwright is pinned to an exact version in `.claude/scripts/lib/package.json` — a
-browser driver that floats is a reader whose behaviour changes without a commit. Install
-it and the browser binary once per machine (`node_modules/` is gitignored):
+#### Enrichment calls fail soft
 
-```bash
-npm install --prefix .claude/scripts/lib
-npx --prefix .claude/scripts/lib playwright install chromium
-```
-
-Absent, every Cursor row reads `unreachable` naming exactly that command, and every other
-account still reports.
-
-#### Headless vs headed
-
-The read runs **headless**, because the helper passes `headless: opts.mode === 'read'` to
-`launchPersistentContext` — there is no `headless: true` literal to remove. Bot
-protection on cursor.com was not encountered on the captured account; if it appears, the
-documented fallback is a headed run. `--mode login` already is one, so confirm the
-symptom by re-running the helper that way; to make a normal READ headed, change that
-expression and say so here, per the issue's note.
+Only `get-current-period-usage` decides the row: every figure rendered comes from it, and
+it carries `billingCycleStart`/`End` of its own. `get-monthly-billing-cycle` is the
+authoritative source for those bounds and `get-plan-info` supplies the plan name, so a
+non-200 from either costs a **label, not a number** — the row still renders. A row that
+went `unreachable` because a plan-*name* lookup 500'd would be reporting a blackout it
+does not have.
 
 #### One name to keep clear
 
@@ -532,7 +602,9 @@ precisely under the test suite where the bounds are asserted. Do not rename it b
 `AI_QUOTAS_CONFIG`, `AI_QUOTAS_CURL_BIN`, `AI_QUOTAS_SECURITY_BIN`,
 `AI_QUOTAS_CLAUDE_BIN`, `AI_QUOTAS_CODEX_BIN`, `AI_QUOTAS_CLAUDE_VERSION`,
 `AI_QUOTAS_PLATFORM`, `AI_QUOTAS_ANTHROPIC_URL`, `AI_QUOTAS_CHATGPT_URL`,
-`AI_QUOTAS_HTTP_TIMEOUT`, `AI_QUOTAS_CODEX_TIMEOUT`, and `AI_QUOTAS_NOW` (a fixed clock,
+`AI_QUOTAS_HTTP_TIMEOUT`, `AI_QUOTAS_CODEX_TIMEOUT`, `AI_QUOTAS_SQLITE3_BIN`,
+`AI_QUOTAS_CURSOR_STATE_DB` (a fixture SQLite DB, so no test touches the real Cursor IDE
+store), and `AI_QUOTAS_NOW` (a fixed clock,
 so countdown assertions do not drift — and, since #1669, the ET month the reset watermark
 is read against) let `.claude/scripts/tests/ai-quotas.test.sh` drive every path against
 stubs — no live account, network, or keychain. They are not meant for normal use.
@@ -864,19 +936,18 @@ one loaded before the install, at the old hour and the old reader path.
 
 **Why launchd and not cron, and not a Claude scheduler.** The reader needs this user's
 login context: the Keychain items the `claude` login created, the per-account
-`CODEX_HOME` directories, the Cursor browser profile. A per-user LaunchAgent runs inside
+`CODEX_HOME` directories, the Cursor IDE's state store. A per-user LaunchAgent runs inside
 exactly that context. A cron line or an agent-side scheduler would run the same reader
 with none of it and record `needs-login` every day — not a gap in the history but a
 history full of confident wrong answers. The `mcp__scheduled-tasks__*` scheduler is
 declined for the same reason it is declined elsewhere
 (`.claude/reference/cross-session-durability.md`), plus this one.
 
-**The scheduled run never opens a headed browser.** The Cursor reader stays headless; a
-missing or expired session yields a `needs-login` row, never a prompt and never a window
-appearing on the owner's desktop at 09:00. Per #1668's caveat, a headless Cursor read can
-also meet bot protection under launchd; when it does, the run records Claude and Codex
-and the Cursor row reads `unreachable` or `unreadable` — which, appending nothing, is the
-correct outcome rather than a fabricated figure.
+**The scheduled run opens no browser at all.** Since #1703 the Cursor read is `sqlite3`
+plus `curl` — there is no browser left to launch headed or headless, so the bot-check
+caveat #1668 carried under launchd is gone with it. A Cursor IDE that is signed out
+yields a `needs-login` row, never a prompt and never a window appearing on the owner's
+desktop at 09:00.
 
 **Which copy of the reader gets scheduled.** The plist must outlive any checkout, so the
 path is resolved `~/.claude/skills-worktree/.claude/scripts/ai-quotas.sh`, then
