@@ -265,8 +265,9 @@ run_write '{"repos":{"owner/repo":{}}}' 1604 1607 1612
 check_eq "members recorded in execution order, as strings" '["1604","1607","1612"]' \
   "$(jq -c '.repos["owner/repo"].round.members' "$TMP/state.json")"
 check_eq "dispatched_at is an ISO-8601 UTC instant" "yes" \
-  "$(jq -r '.repos["owner/repo"].round.dispatched_at' "$TMP/state.json" \
-     | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' && echo yes || echo no)"
+  "$(grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+       <<<"$(jq -r '.repos["owner/repo"].round.dispatched_at' "$TMP/state.json")" \
+     && echo yes || echo no)"
 
 echo "-- 7b. re-entry (the SAME round re-running the step) -> the record STANDS"
 run_write '{"repos":{"owner/repo":{"round":{"members":["1604","1607","1612"],"dispatched_at":"2026-09-02T18:38:00Z"}}}}' 1604 1607 1612
@@ -331,10 +332,8 @@ check_eq "control: the containment predicate would have reused the stale superse
 # Both directions of the difference must appear in 7.0's guard; either one alone
 # is a containment test wearing an equality's clothes.
 check_eq "the shipped guard subtracts in BOTH directions (set equality)" "yes" \
-  "$(sed -n "${L70},${L71}p" "$SUBAGENT_MD" \
-     | grep -qF '((.members - $now) | length) == 0' \
-     && sed -n "${L70},${L71}p" "$SUBAGENT_MD" \
-     | grep -qF '(($now - .members) | length) == 0' \
+  "$(grep -qF '((.members - $now) | length) == 0' <<<"$(sed -n "${L70},${L71}p" "$SUBAGENT_MD")" \
+     && grep -qF '(($now - .members) | length) == 0' <<<"$(sed -n "${L70},${L71}p" "$SUBAGENT_MD")" \
      && echo yes || echo no)"
 
 echo "-- 7c3. a round that GREW is a different round -> replaced"
