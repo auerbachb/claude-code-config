@@ -752,6 +752,60 @@ check_eq "$RC" "0" "control(+): the same add on Darwin exits 0"
 check_contains "$OUT" "Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
   "control(+): Darwin still resolves the macOS store path"
 
+# The singleton check is re-run UNDER THE WRITE LOCK, not only pre-flight
+# (CodeAnt). Two concurrent `add cursor` runs under different labels both clear
+# the pre-flight read, and without the second check the loser appends the very
+# duplicate row the reference doc promises cannot exist.
+#
+# The race is made deterministic through the sqlite3 seam: the presence probe
+# runs between the pre-flight read and `state_lock_acquire`, so a wrapper that
+# registers a rival cursor account there IS the competing process, landing in
+# exactly the window the lock exists to close. It then execs the real sqlite3,
+# so the probe still answers honestly and the add still reaches the lock — a
+# stub that faked the answer would prove nothing about this window.
+#
+# The rival row carries a non-empty `profile_dir` because `read_config` refuses
+# a row without one. A blank there made the loser die 5 on the config read
+# BEFORE the lock — every downstream assertion still passed, for the wrong
+# reason. The exit-code assertion is what caught it.
+new_case "cursor-singleton-under-lock"
+RIVAL="$TMP/sqlite3-registers-a-rival"
+cat > "$RIVAL" <<RIVALEOF
+#!/usr/bin/env bash
+if [[ ! -e "$TMP/rival-done" ]]; then
+  : > "$TMP/rival-done"
+  jq '.accounts += [{"provider":"cursor","label":"rival@example.com","profile_dir":"/nonexistent/rival/cursor","added_at":"2026-01-01T00:00:00Z"}]' \
+    "$CONFIG" > "$TMP/rival.json" && mv "$TMP/rival.json" "$CONFIG"
+fi
+exec "$SQLITE3_REAL" "\$@"
+RIVALEOF
+chmod +x "$RIVAL"
+rm -f "$TMP/rival-done"
+# Seeded so the config exists for the rival to append to — a claude row, so the
+# pre-flight cursor check genuinely passes and the refusal can only come from
+# the re-check under the lock.
+run add claude holder@example.com
+check_eq "$RC" "0" "the seed claude add exits 0"
+SQLITE3_BIN_UNDER_TEST="$RIVAL"
+run add cursor loser@example.com
+SQLITE3_BIN_UNDER_TEST=""
+check_eq "$RC" "3" "an add that loses the race to another cursor registration exits 3"
+check_contains "$OUT" "another process" \
+  "and says the rival registered it while this add ran"
+check_eq "$(jq '[.accounts[] | select(.provider == "cursor")] | length' "$CONFIG")" "1" \
+  "exactly one cursor account survives — the duplicate row is never appended"
+check_eq "$(jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0]' "$CONFIG")" "rival@example.com" \
+  "and it is the rival's, not the loser's"
+# control(+): the same wrapper with no rival to register lets the add through,
+# so the refusal above is the lock re-check and not the wrapper breaking sqlite3.
+new_case "cursor-singleton-under-lock-control"
+: > "$TMP/rival-done"
+SQLITE3_BIN_UNDER_TEST="$RIVAL"
+run add cursor winner@example.com
+SQLITE3_BIN_UNDER_TEST=""
+check_eq "$RC" "0" "control(+): the same wrapper without a rival registers normally"
+check_eq "$(account_count)" "1" "control(+): and the account is recorded"
+
 # A relogin against a signed-out IDE fails and registers nothing new.
 new_case "cursor-relogin-signed-out"
 run add cursor lapsed@example.com

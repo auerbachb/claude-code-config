@@ -876,6 +876,14 @@ match_indices() { # <config-json> <label> <provider|"">
     | .[].key'
 }
 
+# The label of the cursor account already registered, or empty. One expression,
+# used by BOTH the pre-flight check and the re-check under the write lock, so
+# the two can never drift into disagreeing about what "already registered"
+# means.
+cursor_label_held() { # <config-json> -> label on stdout, empty if none
+  printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""'
+}
+
 resolve_single_index() { # <config-json> <label> <provider|""> -> index on stdout
   local matches count
   matches="$(match_indices "$1" "$2" "$3")"
@@ -1044,13 +1052,15 @@ action_add() {
   # two rows with identical credentials, identical usage and identical reset.
   # The label check above cannot catch it: the labels differ, the account does
   # not. Refuse, and name the label already holding the slot.
-  if [[ "$provider" == "cursor" ]]; then
-    local cursor_held
-    cursor_held="$(printf '%s' "$config" \
-      | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""')"
-    if [[ -n "$cursor_held" ]]; then
-      die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
-    fi
+  #
+  # This is the PRE-FLIGHT half only. It fails early, before a login runs, but
+  # it is a read outside the lock and therefore racy on its own — the check and
+  # the append are re-run under the write lock below, exactly as the duplicate
+  # (provider, label) guard is.
+  local cursor_held
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
   fi
 
   dir="$(profile_dir_for "$label" "$provider")"
@@ -1115,6 +1125,15 @@ action_add() {
   if [[ -n "$(match_indices "$config" "$label" "$provider")" ]]; then
     state_lock_release || true
     die 3 "'$label' was registered for $provider by another process while this login ran"
+  fi
+  # And the cursor singleton, for the same reason (CodeAnt): two concurrent
+  # `add cursor` runs under different labels both clear the pre-flight check,
+  # and without this the second one appends a duplicate row the reference doc
+  # promises cannot exist. Re-read under the lock is what makes that promise true.
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    state_lock_release || true
+    die 3 "cursor was registered as '$cursor_held' by another process while this add ran — one Cursor IDE holds one account, so nothing was added."
   fi
   # Seed the version only when absent: a `1.x` config written by a newer tool
   # keeps its own minor, since read_config already accepted it as compatible.

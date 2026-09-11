@@ -440,7 +440,17 @@ this tool.
 `add cursor` **enforces** it (CodeAnt, PR #1711): a second cursor label exits `3` naming
 the label already holding the slot. The pre-existing duplicate guard cannot catch this
 one — it matches on `(provider, label)`, and here the labels differ while the account
-does not. Every other provider isolates accounts by profile directory, so two labels
+does not.
+
+The check runs **twice**, and the second time is the one that makes this a guarantee
+rather than a hope (CodeAnt): once pre-flight, so the refusal comes before a login runs,
+and again **under the config write lock**, because two concurrent `add cursor` runs both
+clear a pre-flight read and the loser would otherwise append the duplicate row. Both
+sites call one `cursor_label_held` expression, so they cannot drift. The `(provider,
+label)` guard has had the same pair of checks all along; this one now matches it. The
+regression test drives the race deterministically through the sqlite3 seam — the presence
+probe runs inside exactly that window — and was verified to fail, appending a second
+cursor row, with the under-lock check removed. Every other provider isolates accounts by profile directory, so two labels
 really are two accounts; cursor has no directory, so two labels are one account read
 twice, and `/quotas` would render two rows with identical usage, identical reset, and
 identical credentials.
