@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts (`claude`/`codex`/`cursor`) and their isolated per-account login profiles in `~/.claude/ai-quotas.json`, name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -80,13 +80,14 @@
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
-#   cursor    Per-account browser profile, logged in by opening a real
-#             browser window on it through `lib/ai-quotas-cursor.js`
-#             (Playwright). Cursor has no login CLI and no individual usage
-#             API, so the saved session IS the credential; it stays inside
-#             the profile directory and is never read by this script. A
-#             `relogin` MOVES the old profile aside and starts a fresh one
-#             rather than layering a second session over it.
+#   cursor    The Cursor IDE's own login (#1703). There is nothing for this
+#             script to log in to and no profile to create: Cursor has no
+#             login CLI, cursor.com refuses automation browsers outright, and
+#             the IDE already holds an access token for the signed-in user.
+#             So `add` and `relogin` mean "open the Cursor IDE and sign in",
+#             and both confirm afterwards that a token is there — presence
+#             only, through sqlite3, never reading the value. One IDE holds
+#             one account, so this machine can register one cursor account.
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
@@ -126,11 +127,10 @@
 #                           shortcut is preferred.
 #   AI_QUOTAS_PLATFORM      Platform name (default: `uname -s`). `Darwin`
 #                           selects the Keychain probe.
-#   AI_QUOTAS_NODE_BIN      Path to node (the cursor login helper's runtime).
-#   AI_QUOTAS_CURSOR_HELPER Path to lib/ai-quotas-cursor.js.
-#   AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS
-#                           How long the headed cursor login waits for the
-#                           dashboard to answer (helper default: 5 minutes).
+#   AI_QUOTAS_SQLITE3_BIN   Path to sqlite3 (reads the Cursor IDE store).
+#   AI_QUOTAS_CURSOR_STATE_DB
+#                           Path to the Cursor IDE state store, so the tests
+#                           can point at a fixture DB instead of the real one.
 #   Every override from AI_QUOTAS_CLAUDE_BIN down exists so the test suite can
 #   exercise each path against stubs — no real login, keychain, browser, or
 #   account. They are not meant for normal use.
@@ -156,8 +156,10 @@
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
 #       profile directory or config write failed.
-#   6   The provider's login CLI could not be found — for `cursor`, node or
-#       the Playwright helper. The exact command to run by hand is printed.
+#   6   The provider's login CLI could not be found. For `claude` and `codex`
+#       the exact command to run by hand is printed. For `cursor` the missing
+#       tool is sqlite3 — what reads the IDE state store, not a login CLI, so
+#       there is no manual login to print: install sqlite3 and re-run.
 #   7   Contention, refused rather than raced; nothing is changed. Either the
 #       config write lock was unavailable (timeout) or broken mid-update, or a
 #       `relogin` found another relogin already running for the same account.
@@ -167,7 +169,7 @@
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
 #   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
-#     is Node 20+ plus the Playwright pinned in .claude/scripts/lib
+#     is sqlite3(1), which ships with macOS, and the Cursor IDE itself
 
 set -euo pipefail
 # Telemetry logs the ACTION ONLY, never the full argument list. Every other
@@ -582,13 +584,15 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
       )
       ;;
     cursor)
-      # Cursor has no login CLI. Its "login binary" is node, which runs the
-      # Playwright helper that opens a real browser window for the user.
-      override="${AI_QUOTAS_NODE_BIN:-}"
-      lookup="node"
+      # Cursor has no login CLI and needs none: the Cursor IDE owns the
+      # login. The only tool this script needs for cursor is sqlite3, which
+      # reads the IDE state store to answer "is it signed in?".
+      override="${AI_QUOTAS_SQLITE3_BIN:-}"
+      lookup="sqlite3"
       candidates=(
-        "/opt/homebrew/bin/node"
-        "/usr/local/bin/node"
+        "/usr/bin/sqlite3"
+        "/opt/homebrew/bin/sqlite3"
+        "/usr/local/bin/sqlite3"
       )
       ;;
     *) return 1 ;;
@@ -611,18 +615,73 @@ provider_bin() { # <provider> -> path on stdout, or empty + exit 1
   return 1
 }
 
-# Where the Playwright helper lives. A missing helper is reported, never
-# worked around: a "login" that silently did nothing would leave the account
-# reading `needs-login` forever with no explanation on screen.
-cursor_helper_path() {
-  printf '%s' "${AI_QUOTAS_CURSOR_HELPER:-$SELF_DIR/lib/ai-quotas-cursor.js}"
+# Where the Cursor IDE keeps its login (#1703). Kept identical to the reader's
+# resolution, including the env seam, so `list` can never disagree with
+# `/quotas` about whether this machine is signed in.
+cursor_state_db() {
+  if [[ -n "${AI_QUOTAS_CURSOR_STATE_DB:-}" ]]; then
+    printf '%s' "$AI_QUOTAS_CURSOR_STATE_DB"
+    return 0
+  fi
+  # Platform-selected, and it has to stay byte-identical to the reader's copy:
+  # a divergence here is `list` and `/quotas` disagreeing about whether this
+  # machine is signed in. Windows stays on the env seam in both.
+  if [[ "$PLATFORM" == "Linux" ]]; then
+    printf '%s' "${_HOME}/.config/Cursor/User/globalStorage/state.vscdb"
+    return 0
+  fi
+  printf '%s' "${_HOME}/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+}
+
+# PRESENCE ONLY, and the value is never opened: the query asks whether the
+# access token is a non-empty string and answers with an exit status. Nothing
+# a credential could ride out on.
+#
+# Read-only rather than a copy: the store is a WAL database the IDE holds open
+# and, measured on this machine, 10 GB — copying it to answer "is there a
+# token?" would cost minutes and 10 GB of disk. `-readonly` takes a plain path,
+# so the space in the default macOS path needs no URI encoding.
+#
+# Three outcomes, not two (CodeRabbit): 0 present, 1 the IDE is signed out,
+# 2 the store could not be read at all. Collapsing 2 into 1 tells the user to
+# sign in again over a store this tool could not open — the one instruction
+# that cannot fix it, and the same distinction the reader makes.
+CURSOR_PRESENT_DETAIL=""
+cursor_token_present() { # <sqlite3-bin>
+  local bin="$1" db found
+  CURSOR_PRESENT_DETAIL=""
+  db="$(cursor_state_db)"
+  if [[ ! -r "$db" ]]; then
+    CURSOR_PRESENT_DETAIL="no readable Cursor IDE state store at ${db}"
+    return 2
+  fi
+  # `length(value) > 0`, NOT `value <> ''` (CodeRabbit). The column is declared
+  # BLOB, and SQLite never compares a blob equal to a text literal — a
+  # zero-length blob would satisfy `value <> ''` and be reported as a present
+  # token, while the reader, which checks the value it actually read, would
+  # call the same store signed out. `length()` is right for both storage
+  # classes, so the two agree.
+  found="$("$bin" -readonly "$db" \
+    "select 1 from ItemTable where key='cursorAuth/accessToken' and value is not null and length(value) > 0;" \
+    2>/dev/null)" || {
+    CURSOR_PRESENT_DETAIL="sqlite3 could not read the Cursor IDE state store at ${db}"
+    return 2
+  }
+  if [[ "$found" == "1" ]]; then
+    return 0
+  fi
+  CURSOR_PRESENT_DETAIL="the Cursor IDE is not signed in"
+  return 1
 }
 
 manual_login_command() { # <provider> <profile_dir>
   case "$1" in
     claude) printf 'CLAUDE_CONFIG_DIR=%q claude %s' "$2" "${AI_QUOTAS_CLAUDE_LOGIN_ARGS:-}" ;;
     codex)  printf 'CODEX_HOME=%q codex login' "$2" ;;
-    cursor) printf 'node %q --profile-dir %q --mode login' "$(cursor_helper_path)" "$2" ;;
+    # Not a command, because there is no command: the credential belongs to
+    # the IDE. Printed in the same slot every other provider prints one so the
+    # "log in by hand with:" line stays true for all three.
+    cursor) printf 'open the Cursor IDE and sign in' ;;
   esac
 }
 
@@ -632,12 +691,25 @@ manual_login_command() { # <provider> <profile_dir>
 run_login() { # <provider> <profile_dir>
   local provider="$1" dir="$2" bin
   if ! bin="$(provider_bin "$provider")"; then
-    echo "${SELF_NAME}: no '${provider}' CLI found (PATH, override, and known install paths all checked)." >&2
-    echo "${SELF_NAME}: install it, or log in by hand with:" >&2
-    echo "  $(manual_login_command "$provider" "$dir")" >&2
+    # For cursor the missing tool is sqlite3, not a 'cursor' CLI — naming the
+    # provider there would send the user looking for a login binary that has
+    # never existed.
+    if [[ "$provider" == "cursor" ]]; then
+      echo "${SELF_NAME}: no sqlite3 found (PATH, AI_QUOTAS_SQLITE3_BIN, and known install paths all checked)." >&2
+      echo "${SELF_NAME}: it is what reads the Cursor IDE state store; install it, then re-run." >&2
+    else
+      echo "${SELF_NAME}: no '${provider}' CLI found (PATH, override, and known install paths all checked)." >&2
+      echo "${SELF_NAME}: install it, or log in by hand with:" >&2
+      echo "  $(manual_login_command "$provider" "$dir")" >&2
+    fi
     exit 6
   fi
-  echo "${SELF_NAME}: launching ${provider} login for this profile — complete it in the window/browser it opens."
+  # Not said for cursor: nothing is launched and no window opens, because the
+  # IDE already holds that login. Announcing one anyway would leave the user
+  # waiting for a browser that is never coming.
+  if [[ "$provider" != "cursor" ]]; then
+    echo "${SELF_NAME}: launching ${provider} login for this profile — complete it in the window/browser it opens."
+  fi
   case "$provider" in
     claude)
       # The DOCUMENTED way to authenticate a specific CLAUDE_CONFIG_DIR is to
@@ -665,32 +737,24 @@ run_login() { # <provider> <profile_dir>
       ;;
     codex)  CODEX_HOME="$dir" "$bin" login ;;
     cursor)
-      # A visible browser on this account's own persistent profile. The user
-      # logs in to cursor.com the normal way; the helper waits until the
-      # dashboard's usage endpoint answers, which is the only proof the
-      # session actually landed, then closes and prints its verdict.
+      # There is no login to run. The Cursor IDE owns this credential, and it
+      # is the ONLY thing that can create one: cursor.com's sign-in page runs
+      # a human-verification check that fails inside every automation browser,
+      # which is what retired the Playwright login this replaces (#1703).
       #
-      # The verdict is INSPECTED, not inferred from the exit status: the
-      # helper exits 0 for every outcome it models, including
-      # `needs-login`, so treating a clean exit as a successful login would
-      # record an account whose session never arrived.
-      local helper cursor_out
-      helper="$(cursor_helper_path)"
-      if [[ ! -r "$helper" ]]; then
-        echo "${SELF_NAME}: the cursor login helper is missing at ${helper}." >&2
-        echo "${SELF_NAME}: reinstall it from the repo, then re-run this login." >&2
-        exit 6
-      fi
-      echo "${SELF_NAME}: a browser window will open on this account's profile — log in to cursor.com there."
-      cursor_out="$("$bin" "$helper" --profile-dir "$dir" --mode login \
-                     ${AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS:+--timeout-ms "$AI_QUOTAS_CURSOR_LOGIN_TIMEOUT_MS"} \
-                     2>/dev/null)" || true
-      if printf '%s' "$cursor_out" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+      # So this branch does the one useful thing left — check whether the IDE
+      # is already signed in, and say what to do when it is not. It reports
+      # failure rather than recording an account whose token never existed,
+      # exactly as the old branch refused to record a session that never
+      # landed. `add --no-login` still reserves the slot without the check.
+      if cursor_token_present "$bin"; then
+        echo "${SELF_NAME}: the Cursor IDE on this machine is signed in — using its token."
         return 0
       fi
-      local why
-      why="$(printf '%s' "$cursor_out" | jq -r '.detail // ""' 2>/dev/null || true)"
-      echo "${SELF_NAME}: the cursor login did not complete${why:+ (${why})}." >&2
+      # The probe's own reason, so a store this tool could not open is not
+      # reported as "you are signed out" (CodeRabbit).
+      echo "${SELF_NAME}: ${CURSOR_PRESENT_DETAIL:-the Cursor IDE on this machine is not signed in}." >&2
+      echo "${SELF_NAME}: $(manual_login_command cursor "$dir"), then re-run this command." >&2
       return 1
       ;;
   esac
@@ -747,31 +811,32 @@ credential_present() { # <provider> <profile_dir> <keychain_service|"">
       return 1
       ;;
     cursor)
-      # Chromium keeps its cookie store in one of three places depending on
-      # the build, so all three are checked rather than betting the status on
-      # one of them.
-      # PRESENCE ONLY — the file is never opened, so no session value passes
-      # through this tool.
+      # "Logged in" for cursor means "the Cursor IDE on this machine is
+      # signed in" (#1703): the credential lives in the IDE, not in a
+      # directory this tool created, so the probe asks the IDE store rather
+      # than <profile_dir>, which cursor no longer uses for anything.
       #
-      # And presence is deliberately a weaker claim than the other providers
-      # make: a cookie store exists as soon as a browser has run on this
-      # profile, logged in or not. It is enough for the two things `list`
-      # must get right — a completed login reads `ok`, and deleting the
-      # cookies reads `needs-login` — and the note says plainly that only
-      # `/quotas` proves the session still works. Running the headless read
-      # here instead would put a 30-second browser start behind every `list`.
-      local cookie_db
-      for cookie_db in \
-        "$dir/Default/Network/Cookies" \
-        "$dir/Default/Cookies" \
-        "$dir/Cookies"; do
-        if [[ -s "$cookie_db" ]]; then
-          CRED_DETAIL="browser profile present; /quotas confirms the session is live"
-          return 0
-        fi
-      done
-      CRED_DETAIL="no browser session in profile"
-      return 1
+      # PRESENCE ONLY — the token is never fetched or printed, only tested
+      # for being a non-empty string, so no credential value passes through
+      # this tool. Presence is still a weaker claim than a live read: a token
+      # can be present and expired, which is why the note says plainly that
+      # only `/quotas` proves it still works.
+      local sqlite_bin
+      if ! sqlite_bin="$(provider_bin cursor)"; then
+        CRED_DETAIL="sqlite3 unavailable, cannot see whether the Cursor IDE is signed in"
+        return 1
+      fi
+      cursor_token_present "$sqlite_bin"
+      case "$?" in
+        0)
+          CRED_DETAIL="the Cursor IDE is signed in; /quotas confirms the token still works"
+          return 0 ;;
+        *)
+          # Carries the probe's own reason, so "signed out" and "I could not
+          # read the store" do not arrive as the same sentence.
+          CRED_DETAIL="${CURSOR_PRESENT_DETAIL:-the Cursor IDE is not signed in}"
+          return 1 ;;
+      esac
       ;;
   esac
   CRED_DETAIL="unknown provider"
@@ -809,6 +874,14 @@ match_indices() { # <config-json> <label> <provider|"">
     | map(select(.value.label == $label
                  and ($provider == "" or .value.provider == $provider)))
     | .[].key'
+}
+
+# The label of the cursor account already registered, or empty. One expression,
+# used by BOTH the pre-flight check and the re-check under the write lock, so
+# the two can never drift into disagreeing about what "already registered"
+# means.
+cursor_label_held() { # <config-json> -> label on stdout, empty if none
+  printf '%s' "$1" | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""'
 }
 
 resolve_single_index() { # <config-json> <label> <provider|""> -> index on stdout
@@ -972,11 +1045,43 @@ action_add() {
     die 3 "'$label' is already registered for $provider — use 'relogin $label $provider' instead"
   fi
 
+  # cursor is a SINGLETON provider (#1703, CodeAnt). Every other provider gets
+  # its own isolated profile directory, so two labels are two accounts. cursor
+  # has no directory at all — every cursor row reads the one Cursor IDE store
+  # — so a second label registers the same account twice and /quotas renders
+  # two rows with identical credentials, identical usage and identical reset.
+  # The label check above cannot catch it: the labels differ, the account does
+  # not. Refuse, and name the label already holding the slot.
+  #
+  # This is the PRE-FLIGHT half only. It fails early, before a login runs, but
+  # it is a read outside the lock and therefore racy on its own — the check and
+  # the append are re-run under the write lock below, exactly as the duplicate
+  # (provider, label) guard is.
+  local cursor_held
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
+  fi
+
   dir="$(profile_dir_for "$label" "$provider")"
-  ensure_profile_dir "$dir"
+  # Not for cursor (#1703): its credential lives in the Cursor IDE, so this
+  # tool creates no directory for it. The registry still carries the field —
+  # the schema declares it for every account — but nothing reads it for
+  # cursor, and an empty directory nobody opens is just litter in ~/.claude.
+  if [[ "$provider" == "cursor" ]]; then
+    echo "${SELF_NAME}: cursor reads the Cursor IDE login at $(cursor_state_db) — no profile directory is created."
+  else
+    ensure_profile_dir "$dir"
+  fi
 
   if [[ $NO_LOGIN -eq 1 ]]; then
-    echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
+    # Cursor reserves a registry row, not a directory, so naming a path here
+    # would point the user at something that was never created (CodeRabbit).
+    if [[ "$provider" == "cursor" ]]; then
+      echo "${SELF_NAME}: --no-login — slot reserved; sign in to the Cursor IDE, then run 'relogin $label cursor'."
+    else
+      echo "${SELF_NAME}: --no-login — slot reserved at $dir; run 'relogin $label $provider' when ready."
+    fi
   else
     if [[ "$provider" == "claude" ]]; then
       before="$(keychain_claude_services)"
@@ -1021,6 +1126,15 @@ action_add() {
     state_lock_release || true
     die 3 "'$label' was registered for $provider by another process while this login ran"
   fi
+  # And the cursor singleton, for the same reason (CodeAnt): two concurrent
+  # `add cursor` runs under different labels both clear the pre-flight check,
+  # and without this the second one appends a duplicate row the reference doc
+  # promises cannot exist. Re-read under the lock is what makes that promise true.
+  cursor_held="$(cursor_label_held "$config")"
+  if [[ "$provider" == "cursor" && -n "$cursor_held" ]]; then
+    state_lock_release || true
+    die 3 "cursor was registered as '$cursor_held' by another process while this add ran — one Cursor IDE holds one account, so nothing was added."
+  fi
   # Seed the version only when absent: a `1.x` config written by a newer tool
   # keeps its own minor, since read_config already accepted it as compatible.
   config="$(printf '%s' "$config" | jq --argjson entry "$entry" \
@@ -1029,10 +1143,15 @@ action_add() {
   write_config "$config"
   state_lock_release || true
 
+  # What this account is READ FROM, which for cursor is not <profile_dir>: no
+  # such directory is created, so printing one would name a path the user
+  # could go looking for and never find (CodeAnt).
+  local where="profile: ${dir}"
+  [[ "$provider" != "cursor" ]] || where="reads the Cursor IDE login at $(cursor_state_db)"
   if [[ -n "$ARG_NICK" ]]; then
-    echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (profile: ${dir})."
+    echo "${SELF_NAME}: registered ${provider} account '${label}' as \"${ARG_NICK}\" (${where})."
   else
-    echo "${SELF_NAME}: registered ${provider} account '${label}' (profile: ${dir})."
+    echo "${SELF_NAME}: registered ${provider} account '${label}' (${where})."
   fi
 }
 
@@ -1105,46 +1224,6 @@ action_remove() {
   echo "${SELF_NAME}: its profile directory was left in place: ${dir}"
 }
 
-# Undo the retirement performed by action_relogin when the login that followed
-# it did not succeed. Without this, "'<label>' is unchanged" is false in the
-# way that matters most: the registry row is untouched, but the account now
-# points at a fresh EMPTY profile, so the very next `/quotas` reports
-# `needs-login` for a session that was working a minute ago. A failed relogin
-# must cost the user nothing.
-#
-# Returns 0 when the previous session is back at <dir>, 1 otherwise. Callers
-# word their message from that answer rather than assuming either outcome.
-restore_retired_profile() { # <dir> <retired>
-  local dir="$1" retired="$2" failed
-  [[ -d "$retired" ]] || return 1
-  # <dir> ABSENT means someone else took it — this run created it a moment ago
-  # (ensure_profile_dir) and has not touched it since, so the only way it is
-  # gone is a concurrent relogin retiring it in turn. Restoring here would drop
-  # a stale session into a path another login is actively writing, which is
-  # worse than leaving this one retired. Refuse; the caller's message then
-  # names the retirement instead of claiming a restore that did not happen.
-  [[ -e "$dir" ]] || return 1
-  # rmdir refuses a non-empty directory, which is exactly the test wanted: an
-  # aborted login usually leaves nothing, and where it DID leave partial state
-  # that state is moved aside rather than deleted — the same refusal to destroy
-  # a profile that made the retirement a move in the first place.
-  if ! rmdir "$dir" 2>/dev/null; then
-    failed="${dir}.failed-login-$(date -u +%Y%m%d-%H%M%S)"
-    [[ ! -e "$failed" ]] || failed="${failed}-$$"
-    [[ ! -e "$failed" ]] || return 1
-    mv "$dir" "$failed" 2>/dev/null || return 1
-  fi
-  # `mv olddir existingdir` moves INSIDE the target, so this runs only once
-  # <dir> is gone — the clearing above is a precondition, not a tidy-up.
-  [[ ! -e "$dir" ]] || return 1
-  mv "$retired" "$dir" 2>/dev/null || return 1
-  return 0
-}
-
-# Set while a retirement is OUTSTANDING — between the profile being moved aside
-# and the relogin either succeeding or giving up. Cleared on success.
-RELOGIN_PENDING_DIR=""
-RELOGIN_PENDING_RETIRED=""
 
 # Set while THIS process owns the relogin slot for a profile directory.
 RELOGIN_SLOT_MARKER=""
@@ -1287,34 +1366,17 @@ release_relogin_slot() {
   rmdir "$marker" 2>/dev/null || rm -rf "$marker" 2>/dev/null || true
 }
 
-# Rollback runs from an EXIT trap rather than from each failure branch, because
-# the branches are not the whole exposure: `ensure_profile_dir` runs AFTER the
-# move and exits through `die` from inside itself, with no return value the
-# caller could test. Hanging the rollback off the two login failures would
-# leave that one path uncovered — and a rollback that covers all but one exit
-# is precisely the one a user eventually meets. The trap covers every exit in
-# the window, expected or not.
+# Releases the relogin slot from an EXIT trap rather than from each failure
+# branch, because the branches are not the whole exposure: `ensure_profile_dir`
+# exits through `die` from inside itself, with no return value the caller could
+# test. Hanging the release off the login failures alone would leave that path
+# uncovered, and the slot would stay claimed until a later run proved the
+# holder dead. The trap covers every exit in the window, expected or not.
 #
-# The message is derived from what the restore ACHIEVED, never from what it
-# attempted: telling someone their session was put back when it was not is
-# worse than saying nothing.
-relogin_rollback_trap() {
-  local code=$? dir retired
-  if [[ -n "$RELOGIN_PENDING_RETIRED" ]]; then
-    dir="$RELOGIN_PENDING_DIR"
-    retired="$RELOGIN_PENDING_RETIRED"
-    # Cleared FIRST, so a failure inside the restore cannot re-enter this trap.
-    RELOGIN_PENDING_DIR=""
-    RELOGIN_PENDING_RETIRED=""
-    if restore_retired_profile "$dir" "$retired"; then
-      echo "${SELF_NAME}: the relogin did not finish, so the previous session was put back at ${dir} — the account still works." >&2
-    else
-      echo "${SELF_NAME}: the relogin did not finish and the previous session could NOT be put back automatically; it is at ${retired} — move that directory back to ${dir} to recover it." >&2
-    fi
-  fi
-  # Released LAST, and unconditionally: the slot has to outlive the rollback,
-  # or a waiting relogin could claim the profile while this one is still
-  # putting the previous session back into it.
+# It used to roll a retired cursor browser profile back too; that retirement is
+# gone with the browser reader (#1703), so releasing the slot is the whole job.
+relogin_slot_trap() {
+  local code=$?
   release_relogin_slot
   return "$code"
 }
@@ -1328,68 +1390,23 @@ action_relogin() {
   provider="$(printf '%s' "$entry" | jq -r '.provider')"
   service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
 
-  # Claimed BEFORE the replace test below, not inside it. A cursor relogin whose
-  # profile directory is missing takes the ordinary login path, and two of those
-  # racing land two sessions in one freshly created profile just as surely — the
-  # `-d "$dir"` branch is where the damage is loudest, not where it starts. The
-  # trap is armed in the same step as the claim so no exit can leak the slot.
+  # Two relogins racing on one profile land two sessions in it, and whichever
+  # finishes last writes the registry row. Refuse the second rather than let
+  # both run. The trap is armed in the same step as the claim so no exit can
+  # leak the slot.
   claim_relogin_slot "$ARG_LABEL" "$provider"
-  trap relogin_rollback_trap EXIT
+  trap relogin_slot_trap EXIT
 
-  # A Cursor relogin REPLACES the profile rather than logging in on top of it
-  # (issue #1668). Layering a second login over a half-expired session is how
-  # a profile ends up holding two partial sessions and answering with
-  # whichever one the browser picks — a state no status probe can describe.
-  # The move is to a timestamped sibling, not a delete: an unrecoverable wipe
-  # of a working login is exactly what `remove` refuses to do, and the same
-  # reasoning applies here. The path is printed so it can be deleted by hand.
-  if [[ "$provider" == "cursor" && -d "$dir" ]]; then
-    # Dependencies FIRST. Moving the profile aside and only then discovering
-    # that node or the helper is missing costs the user the session that was
-    # still working — an unrecoverable-feeling failure caused entirely by the
-    # order of two checks. `run_login` performs the same two checks a moment
-    # later; doing them here is what makes this branch safe to enter.
-    if ! provider_bin cursor >/dev/null 2>&1 || [[ ! -r "$(cursor_helper_path)" ]]; then
-      echo "${SELF_NAME}: node or the cursor login helper is missing, so this relogin cannot run." >&2
-      echo "${SELF_NAME}: '${ARG_LABEL}' is unchanged and its existing profile was left in place." >&2
-      echo "  $(manual_login_command cursor "$dir")" >&2
-      exit 6
-    fi
-    # Declared and assigned separately: `local x="$(cmd)"` makes the assignment
-    # always succeed, masking a failing `date` behind a name that then reads
-    # `.retired-` with nothing after it — every relogin colliding on one path.
-    local retired
-    retired="${dir}.retired-$(date -u +%Y%m%d-%H%M%S)"
-    if [[ "$retired" == "${dir}.retired-" ]]; then
-      die 5 "could not read the clock to name the retired cursor profile; '${ARG_LABEL}' is unchanged"
-    fi
-    # The stamp is whole-SECOND, so two relogins in the same second would
-    # collide — and `mv olddir existingdir` does not fail there, it moves the
-    # profile INSIDE the earlier retirement. The second one would vanish from
-    # where its message says it went. Disambiguate rather than overwrite.
-    if [[ -e "$retired" ]]; then
-      local suffix=2
-      while [[ -e "${retired}-${suffix}" && "$suffix" -lt 100 ]]; do
-        suffix=$(( suffix + 1 ))
-      done
-      retired="${retired}-${suffix}"
-      if [[ -e "$retired" ]]; then
-        die 5 "could not find a free path to retire the cursor profile at ${dir}; '${ARG_LABEL}' is unchanged"
-      fi
-    fi
-    if mv "$dir" "$retired" 2>/dev/null; then
-      # Armed in the SAME step as the move: any exit from here on rolls the
-      # retirement back (see relogin_rollback_trap).
-      RELOGIN_PENDING_DIR="$dir"
-      RELOGIN_PENDING_RETIRED="$retired"
-      trap relogin_rollback_trap EXIT
-      echo "${SELF_NAME}: previous cursor profile moved aside to ${retired} (delete it when you no longer want it)."
-    else
-      die 5 "could not move the existing cursor profile aside at ${dir}; '${ARG_LABEL}' is unchanged"
-    fi
-  fi
+  # The cursor profile-retirement dance is gone with the browser it existed
+  # for (#1703). It moved a Chromium profile aside so a second login could not
+  # layer over a half-expired session; an IDE token has no profile to retire
+  # and no layering to prevent — signing in again in the IDE simply replaces
+  # it. A cursor relogin is now a single instruction plus a presence check,
+  # which `run_login` performs.
 
-  ensure_profile_dir "$dir"
+  # Not for cursor: nothing here writes to <profile_dir> any more, so creating
+  # one would leave an empty directory the tool never reads again.
+  [[ "$provider" == "cursor" ]] || ensure_profile_dir "$dir"
   if [[ "$provider" == "claude" ]]; then
     before="$(keychain_claude_services)"
   fi
@@ -1407,11 +1424,6 @@ action_relogin() {
   if ! credential_present "$provider" "$dir" "$service"; then
     die 1 "the ${provider} login finished but left no credential this script can see (${CRED_DETAIL}); the registry row for '${ARG_LABEL}' was not touched."
   fi
-  # The login produced a credential, so the new profile is the one to keep:
-  # disarm the rollback before anything downstream can exit through the trap
-  # and undo a session that actually landed.
-  RELOGIN_PENDING_DIR=""
-  RELOGIN_PENDING_RETIRED=""
   if [[ "$provider" == "claude" ]]; then
     remember_keychain_service "$dir" "$service"
   fi

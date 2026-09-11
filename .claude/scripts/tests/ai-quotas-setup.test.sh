@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.test.sh — coverage for .claude/scripts/ai-quotas-setup.sh
 # (issue #1666).
-# catalog: tests — Tests `ai-quotas-setup.sh` — the add/remove/relogin/list registry contract, two same-provider accounts staying logged in independently, the macOS Keychain probe against a stub `security` that fails loudly if a credential VALUE is ever requested, the leak assertions (no token/password/cookie and no fixture secret in the config), and the fail-closed paths where a login runs but leaves no visible credential
+# catalog: tests — Tests `ai-quotas-setup.sh` — the add/remove/relogin/list registry contract, two same-provider accounts staying logged in independently, the macOS Keychain probe against a stub `security` that fails loudly if a credential VALUE is ever requested, the leak assertions (no token/password/cookie and no fixture secret in the config), the fail-closed paths where a login runs but leaves no visible credential, and the Cursor IDE-token model against a fixture SQLite state store (`add`/`relogin` create no profile directory and launch nothing, a signed-out IDE registers nothing, and the relogin slot still refuses a concurrent run)
 #
 # WHAT IS UNDER TEST
 #
@@ -190,61 +190,59 @@ fi
 exit 0
 EOF
 
-# --- stubs: the cursor login (node + the Playwright helper) ------------------
-# `add cursor` / `relogin cursor` resolve node through AI_QUOTAS_NODE_BIN and
-# the helper through AI_QUOTAS_CURSOR_HELPER. Both are stubbed, so no browser
-# is ever launched and CI needs neither node nor playwright.
+# --- fixtures: the Cursor IDE state store (#1703) ----------------------------
+# There is no cursor login to stub any more. `add cursor` / `relogin cursor`
+# only ask whether the Cursor IDE is signed in, by reading
+# `cursorAuth/accessToken` out of the IDE state store with sqlite3 — so what
+# this suite provides is a real fixture DB and the seam pointing at it. No
+# browser, no node, no Playwright, and the real IDE store is never touched.
 #
-# The helper file itself only has to EXIST — the script checks it is readable
-# before invoking the login, and the fake node ignores its content.
-FAKE_CURSOR_HELPER="$TMP/fake-ai-quotas-cursor.js"
-printf '// stub — the fake node never reads this\n' > "$FAKE_CURSOR_HELPER"
-export FAKE_CURSOR_HELPER
+# sqlite3 itself is NOT stubbed: the read-only open and the query are the parts
+# most likely to break, and a fake would assert nothing about either.
+# Resolved, then PROVEN executable. Defaulting a failed lookup to a hardcoded
+# path that may not exist turns "sqlite3 is missing" into a pile of unrelated
+# cursor failures several hundred lines later (CodeAnt).
+SQLITE3_REAL="$(command -v sqlite3 2>/dev/null || true)"
+[[ -n "$SQLITE3_REAL" ]] || SQLITE3_REAL="/usr/bin/sqlite3"
+[[ -x "$SQLITE3_REAL" ]] || {
+  echo "FATAL: no usable sqlite3 (checked PATH and /usr/bin/sqlite3) — the cursor cases cannot run" >&2
+  exit 1
+}
+CURSOR_DB_SIGNED_IN="$TMP/cursor-signed-in.vscdb"
+CURSOR_DB_SIGNED_OUT="$TMP/cursor-signed-out.vscdb"
+CURSOR_DB_MISSING="$TMP/no-such-cursor-state.vscdb"
 
-# A successful login: writes the cookie store a real Chromium persistent
-# context would leave behind, then prints the helper's ok verdict.
-cat > "$BIN/node-login-ok" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
-dir=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
-done
-if [[ -n "$dir" ]]; then
-  mkdir -p "$dir/Default/Network"
-  printf 'SQLite format 3\0STUB-COOKIE-STORE\n' > "$dir/Default/Network/Cookies"
-fi
-printf '{"status":"ok","source":"network"}\n'
-exit 0
-EOF
+# Token-shaped but inert. It is asserted ABSENT from the config, so it has to
+# be a value a leak would actually put there.
+CURSOR_FIXTURE_TOKEN="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJGSVhUVVJFLTE3MDMifQ.FIXTURESIGNATURE"
+CURSOR_FIXTURE_EMAIL="cursor-fixture@example.com"
 
-# A login the user abandoned. Exits 0 with a NON-ok verdict — the shape that
-# catches a caller reading the exit status instead of the verdict.
-cat > "$BIN/node-login-abandoned" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
-printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
-exit 0
-EOF
+build_cursor_db() { # <path> <token|"">
+  rm -f "$1"
+  # WAL, like the real IDE store (CodeRabbit) — the presence probe opens it
+  # read-only, and a rollback-journal fixture would exercise a different open
+  # path than the one that ships.
+  "$SQLITE3_REAL" "$1" "PRAGMA journal_mode=WAL;" >/dev/null || return 1
+  "$SQLITE3_REAL" "$1" "create table ItemTable (key TEXT PRIMARY KEY, value BLOB);" || return 1
+  "$SQLITE3_REAL" "$1" \
+    "insert into ItemTable (key, value) values ('cursorAuth/cachedEmail', '${CURSOR_FIXTURE_EMAIL}');" || return 1
+  if [[ -n "${2:-}" ]]; then
+    "$SQLITE3_REAL" "$1" \
+      "insert into ItemTable (key, value) values ('cursorAuth/accessToken', '$2');" || return 1
+  fi
+  return 0
+}
 
-# The same abandoned login, but one that got far enough to leave partial
-# browser state behind. That is the branch where the rollback cannot simply
-# rmdir the new profile — it has to move that state aside instead of deleting
-# it, the same refusal to destroy a profile the retirement itself embodies.
-cat > "$BIN/node-login-abandoned-dirty" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\t%s\n' "node" "$*" >> "$STUB_CALL_LOG"
-dir=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in --profile-dir) dir="$2"; shift 2 ;; *) shift ;; esac
-done
-if [[ -n "$dir" ]]; then
-  mkdir -p "$dir/Default"
-  printf 'PARTIAL-LOGIN-STATE\n' > "$dir/Default/Preferences"
-fi
-printf '{"status":"needs-login","detail":"the login did not complete in time"}\n'
-exit 0
-EOF
+build_cursor_db "$CURSOR_DB_SIGNED_IN" "$CURSOR_FIXTURE_TOKEN" \
+  || { echo "FATAL: could not build the cursor fixture DB with $SQLITE3_REAL" >&2; exit 1; }
+build_cursor_db "$CURSOR_DB_SIGNED_OUT" "" \
+  || { echo "FATAL: could not build the signed-out cursor fixture DB" >&2; exit 1; }
+rm -f "$CURSOR_DB_MISSING"
+
+# Which store a case reads. Always one of this suite's own temp paths — the
+# seam is passed unconditionally, so the reader can never fall through to the
+# real ~/Library/… store.
+CURSOR_DB_UNDER_TEST=""
 
 cat > "$BIN/security" <<'EOF'
 #!/usr/bin/env bash
@@ -394,7 +392,8 @@ new_case() { # <name>
   PLATFORM_UNDER_TEST="Linux"
   CLAUDE_BIN_UNDER_TEST=""
   CODEX_BIN_UNDER_TEST=""
-  NODE_BIN_UNDER_TEST=""
+  SQLITE3_BIN_UNDER_TEST=""
+  CURSOR_DB_UNDER_TEST=""
   READER_BIN_UNDER_TEST=""
   STUB_LAUNCHCTL_BOOTSTRAP_FAILS=0
   STUB_LAUNCHCTL_LOAD_FAILS=0
@@ -418,8 +417,8 @@ run() { # <args...>  — never aborts the suite; sets OUT and RC
         AI_QUOTAS_SECURITY_BIN="$BIN/security" \
         AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
         AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
-        AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
-        AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
+        AI_QUOTAS_SQLITE3_BIN="${SQLITE3_BIN_UNDER_TEST:-$SQLITE3_REAL}" \
+        AI_QUOTAS_CURSOR_STATE_DB="${CURSOR_DB_UNDER_TEST:-$CURSOR_DB_SIGNED_IN}" \
         AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
         AI_QUOTAS_READER_BIN="${READER_BIN_UNDER_TEST-}" \
         STUB_LAUNCHCTL_BOOTSTRAP_FAILS="${STUB_LAUNCHCTL_BOOTSTRAP_FAILS:-0}" \
@@ -457,8 +456,8 @@ status_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
-    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
-    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
+    AI_QUOTAS_SQLITE3_BIN="${SQLITE3_BIN_UNDER_TEST:-$SQLITE3_REAL}" \
+    AI_QUOTAS_CURSOR_STATE_DB="${CURSOR_DB_UNDER_TEST:-$CURSOR_DB_SIGNED_IN}" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .status'
@@ -471,8 +470,8 @@ detail_of() { # <label> [<provider>]
     AI_QUOTAS_SECURITY_BIN="$BIN/security" \
     AI_QUOTAS_CLAUDE_BIN="${CLAUDE_BIN_UNDER_TEST:-$BIN/claude-file}" \
     AI_QUOTAS_CODEX_BIN="${CODEX_BIN_UNDER_TEST:-$BIN/codex-file}" \
-    AI_QUOTAS_NODE_BIN="${NODE_BIN_UNDER_TEST:-$BIN/node-login-ok}" \
-    AI_QUOTAS_CURSOR_HELPER="$FAKE_CURSOR_HELPER" \
+    AI_QUOTAS_SQLITE3_BIN="${SQLITE3_BIN_UNDER_TEST:-$SQLITE3_REAL}" \
+    AI_QUOTAS_CURSOR_STATE_DB="${CURSOR_DB_UNDER_TEST:-$CURSOR_DB_SIGNED_IN}" \
     "$SCRIPT" list --json 2>/dev/null \
     | jq -r --arg l "$label" --arg p "$provider" \
         '.[] | select(.label == $l and ($p == "" or .provider == $p)) | .detail'
@@ -617,167 +616,214 @@ run add codex loggedout@example.com
 check_eq "$RC" "1" "control(-): no auth.json and a failing status exits 1"
 check_eq "$(account_count)" "READ-ERROR" "control(-): and nothing was registered"
 
-# --- 7. cursor logs in through the browser helper (issue #1668) --------------
+# --- 7. cursor reads the Cursor IDE login (issue #1703) ----------------------
+#
+# There is no login for this tool to run. `add cursor` and `relogin … cursor`
+# confirm the Cursor IDE is signed in and say "open the Cursor IDE and sign in"
+# when it is not. Nothing opens, and no profile directory is created.
 
 new_case "cursor"
 run add cursor cursoruser@example.com
-check_eq "$RC" "0" "add cursor exits 0"
-if [[ -d "$PROFILES/cursoruser@example.com/cursor" ]]; then
-  ok "the cursor browser profile is created on disk"
+check_eq "$RC" "0" "add cursor exits 0 when the IDE is signed in"
+if [[ -e "$PROFILES/cursoruser@example.com/cursor" ]]; then
+  bad "add cursor created a profile directory — the IDE owns this credential"
 else
-  bad "the cursor browser profile was not created"
+  ok "add cursor creates NO profile directory"
 fi
 check_eq "$(account_count)" "1" "cursor account is recorded"
 check_eq "$(status_of cursoruser@example.com cursor)" "ok" \
-  "a completed cursor login lists as ok"
-check_contains "$(cat "$STUB_CALL_LOG")" "--mode login" \
-  "the cursor login ran headed (--mode login), not as a headless read"
-check_contains "$(cat "$STUB_CALL_LOG")" "$PROFILES/cursoruser@example.com/cursor" \
-  "and it ran against this account's own profile directory"
+  "a signed-in IDE lists as ok"
+check_contains "$(detail_of cursoruser@example.com cursor)" "signed in" \
+  "and the note says the IDE is signed in"
+check_contains "$OUT" "no profile directory is created" \
+  "and add says so on screen"
+# The one thing that must NOT have happened.
+check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" \
+  "control(-): no provider CLI was launched for a cursor add"
 
-# The verdict decides, not the exit status. This stub exits 0 while reporting
-# `needs-login` — the exact shape that would register a phantom account if the
-# caller read `$?` instead of the JSON the helper prints.
-new_case "cursor-abandoned"
-NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+# A signed-out IDE registers nothing. The old browser path proved this by
+# reading a JSON verdict rather than an exit status; the same property holds
+# here — the presence probe decides, and it fails closed.
+new_case "cursor-signed-out"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
 run add cursor quitter@example.com
-check_eq "$RC" "1" "a cursor login the user abandoned exits 1"
+check_eq "$RC" "1" "add cursor against a signed-out IDE exits 1"
 check_eq "$(account_count)" "READ-ERROR" "and nothing is registered"
-check_contains "$OUT" "did not complete" "the message says the login did not complete"
+check_contains "$OUT" "not signed in" "the message says the IDE is not signed in"
+check_contains "$OUT" "open the Cursor IDE and sign in" \
+  "and gives the only instruction that can fix it"
+CURSOR_DB_UNDER_TEST=""
 
-# No session value may reach stdout, stderr, or the config — the stub writes a
-# recognisable cookie store, so this is a real detector rather than a fixture
-# that could not have failed.
+# Nothing about the IDE store may reach the tool's output or the config. The
+# fixture token is token-shaped, so this is a real detector rather than a
+# fixture that could not have failed.
 new_case "cursor-no-leak"
 run add cursor leaky@example.com
-check_not_contains "$OUT" "STUB-COOKIE-STORE" \
-  "no cookie-store content reaches the tool output"
-check_not_contains "$(cat "$CONFIG")" "STUB-COOKIE-STORE" \
-  "and none of it reaches the config"
-check_eq "$(jq -r '[.accounts[0] | paths | map(tostring) | join(".")] | map(select(test("cookie"; "i"))) | length' "$CONFIG")" "0" \
-  "no key in the cursor account entry is cookie-shaped"
+check_not_contains "$OUT" "$CURSOR_FIXTURE_TOKEN" \
+  "no access token reaches the tool output"
+check_not_contains "$OUT" "eyJ" \
+  "nothing JWT-shaped reaches the tool output"
+check_not_contains "$(cat "$CONFIG")" "$CURSOR_FIXTURE_TOKEN" \
+  "and no token reaches the config"
+check_eq "$(jq -r '[.accounts[0] | paths | map(tostring) | join(".")] | map(select(test("token|cookie"; "i"))) | length' "$CONFIG")" "0" \
+  "no key in the cursor account entry is token- or cookie-shaped"
+check_eq "$(jq -r '.accounts[0] | has("credential_ref") | tostring' "$CONFIG")" "false" \
+  "and credential_ref stays unset for cursor"
 
-# relogin REPLACES the profile rather than layering a second session onto it.
+# relogin is an instruction plus a presence check. It retires nothing, because
+# there is no longer a profile to retire (#1703 removed that machinery).
 new_case "cursor-relogin"
 run add cursor recur@example.com
 check_eq "$RC" "0" "add cursor for the relogin case exits 0"
-CURSOR_DIR="$PROFILES/recur@example.com/cursor"
-printf 'stale\n' > "$CURSOR_DIR/STALE-MARKER"
 run relogin recur@example.com
 check_eq "$RC" "0" "relogin on a cursor account exits 0"
-if [[ -e "$CURSOR_DIR/STALE-MARKER" ]]; then
-  bad "relogin layered the new session over the old profile (the stale marker survived)"
+check_contains "$OUT" "signed in" "and confirms the IDE holds a token"
+check_not_contains "$OUT" "moved aside" \
+  "and it does NOT claim to have moved a profile aside"
+# Searched from the profile ROOT, not from this account's directory: cursor no
+# longer has one, so a find rooted there would scan a path that does not exist,
+# print nothing, and pass no matter what the code did (CodeRabbit). The root
+# always exists, so a retirement anywhere under it is caught.
+RETIRED="$(find "$PROFILES" -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "$RETIRED" "0" "no retirement directory is created anywhere under the profile root"
+if [[ -e "$PROFILES/recur@example.com/cursor" ]]; then
+  bad "relogin created a profile directory"
 else
-  ok "relogin started a fresh profile — the previous one was moved aside"
+  ok "and relogin creates no profile directory either"
 fi
-check_contains "$OUT" "moved aside" "and it says where the previous profile went"
-check_eq "$(status_of recur@example.com cursor)" "ok" "the account is ok again after relogin"
+check_eq "$(status_of recur@example.com cursor)" "ok" "the account is ok after relogin"
 
-# A second relogin inside the same whole second must not land INSIDE the first
-# retirement: `mv olddir existingdir` succeeds by nesting, so the profile would
-# be somewhere other than where the message says.
-printf 'stale2\n' > "$CURSOR_DIR/STALE-MARKER-2"
-run relogin recur@example.com
-check_eq "$RC" "0" "a second back-to-back relogin exits 0"
-# Asserted by SHAPE, not by counting: whether the two stamps collide depends on
-# which side of a second boundary the run lands, so a count would pass for the
-# wrong reason half the time. Nesting has one unmistakable signature —
-# `cursor.retired-<stamp>/cursor` — and that is what is checked.
-NESTED="$(find "$PROFILES/recur@example.com" -maxdepth 2 -mindepth 2 -type d -name cursor 2>/dev/null | wc -l | tr -d ' ')"
-check_eq "$NESTED" "0" "no retirement was moved inside an earlier one"
-if [[ -e "$CURSOR_DIR/STALE-MARKER-2" ]]; then
-  bad "the second relogin did not replace the profile"
-else
-  ok "and the second relogin started a fresh profile too"
-fi
-
-# Deleting the session flips the account back, which is the other half of the
-# status contract: presence of the cookie store is the whole signal.
-rm -rf "$CURSOR_DIR/Default"
+# Signing out of the IDE flips the account back, which is the other half of the
+# status contract: presence of the token is the whole signal.
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
 check_eq "$(status_of recur@example.com cursor)" "needs-login" \
-  "deleting the browser session flips the cursor account to needs-login"
+  "signing out of the IDE flips the cursor account to needs-login"
+check_contains "$(detail_of recur@example.com cursor)" "not signed in" \
+  "and the note says which"
+CURSOR_DB_UNDER_TEST=""
 
-# A relogin that CANNOT run must not cost the user the session that still
-# works: the dependency check has to happen before the profile is moved aside.
-new_case "cursor-relogin-no-helper"
-run add cursor keepme@example.com
-check_eq "$RC" "0" "add cursor for the missing-helper relogin case exits 0"
-CURSOR_DIR="$PROFILES/keepme@example.com/cursor"
-SAVED_HELPER="$FAKE_CURSOR_HELPER"
-FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
-run relogin keepme@example.com
-check_eq "$RC" "6" "a relogin with no helper exits 6"
-if [[ -s "$CURSOR_DIR/Default/Network/Cookies" ]]; then
-  ok "and the working profile is still there — the refused relogin destroyed nothing"
-else
-  bad "the refused relogin moved the working profile aside anyway"
+# cursor is a SINGLETON (CodeAnt). Every other provider isolates accounts by
+# profile directory, so two labels are two accounts; cursor has no directory
+# and every row reads the one IDE store, so a second label would register the
+# same account twice and /quotas would render two rows with identical usage.
+# The pre-existing duplicate-label guard cannot catch it — the labels differ.
+new_case "cursor-singleton"
+run add cursor first@example.com
+check_eq "$RC" "0" "the first cursor add exits 0"
+run add cursor second@example.com
+check_eq "$RC" "3" "a second cursor add under a different label is refused"
+check_contains "$OUT" "first@example.com" \
+  "and the refusal names the label already holding the slot"
+check_eq "$(account_count)" "1" "nothing is registered by the refused add"
+# control(+): the refusal is about cursor being a singleton, not about adding a
+# second account at all — a different provider under a second label still works.
+run add codex alsome@example.com
+check_eq "$RC" "0" "control(+): a second account on another provider is still allowed"
+check_eq "$(account_count)" "2" "and it is recorded"
+
+# The default store path is chosen by PLATFORM, not hardcoded to macOS
+# (CodeAnt). This is the one case that must run WITHOUT the state-db env seam
+# — `run` always sets it, which is exactly what hid the hardcoded path — so it
+# invokes the script directly with the seam absent and reads the path back off
+# the line `add` prints. `--no-login` because no store exists at either path.
+run_no_db_seam() { # <platform> <args...> — sets OUT/RC, no AI_QUOTAS_CURSOR_STATE_DB
+  local plat="$1"; shift
+  OUT="$(HOME="$CASE_DIR/home" \
+        AI_QUOTAS_CONFIG="$CONFIG" \
+        AI_QUOTAS_PROFILE_ROOT="$PROFILES" \
+        AI_QUOTAS_PLATFORM="$plat" \
+        AI_QUOTAS_SECURITY_BIN="$BIN/security" \
+        AI_QUOTAS_SQLITE3_BIN="$SQLITE3_REAL" \
+        AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
+        "$SCRIPT" "$@" 2>&1)"
+  RC=$?
+}
+
+new_case "cursor-state-db-platform"
+run_no_db_seam Linux add cursor linuxuser@example.com --no-login
+check_eq "$RC" "0" "add cursor --no-login on Linux exits 0"
+check_contains "$OUT" "/.config/Cursor/User/globalStorage/state.vscdb" \
+  "a Linux platform resolves the documented Linux store path"
+check_not_contains "$OUT" "Library/Application Support/Cursor" \
+  "and does NOT name the macOS path — the bug was a signed-in Linux user reading needs-login"
+new_case "cursor-state-db-platform-darwin"
+run_no_db_seam Darwin add cursor macuser@example.com --no-login
+check_eq "$RC" "0" "control(+): the same add on Darwin exits 0"
+check_contains "$OUT" "Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
+  "control(+): Darwin still resolves the macOS store path"
+
+# The singleton check is re-run UNDER THE WRITE LOCK, not only pre-flight
+# (CodeAnt). Two concurrent `add cursor` runs under different labels both clear
+# the pre-flight read, and without the second check the loser appends the very
+# duplicate row the reference doc promises cannot exist.
+#
+# The race is made deterministic through the sqlite3 seam: the presence probe
+# runs between the pre-flight read and `state_lock_acquire`, so a wrapper that
+# registers a rival cursor account there IS the competing process, landing in
+# exactly the window the lock exists to close. It then execs the real sqlite3,
+# so the probe still answers honestly and the add still reaches the lock — a
+# stub that faked the answer would prove nothing about this window.
+#
+# The rival row carries a non-empty `profile_dir` because `read_config` refuses
+# a row without one. A blank there made the loser die 5 on the config read
+# BEFORE the lock — every downstream assertion still passed, for the wrong
+# reason. The exit-code assertion is what caught it.
+new_case "cursor-singleton-under-lock"
+RIVAL="$TMP/sqlite3-registers-a-rival"
+cat > "$RIVAL" <<RIVALEOF
+#!/usr/bin/env bash
+if [[ ! -e "$TMP/rival-done" ]]; then
+  : > "$TMP/rival-done"
+  jq '.accounts += [{"provider":"cursor","label":"rival@example.com","profile_dir":"/nonexistent/rival/cursor","added_at":"2026-01-01T00:00:00Z"}]' \
+    "$CONFIG" > "$TMP/rival.json" && mv "$TMP/rival.json" "$CONFIG"
 fi
-FAKE_CURSOR_HELPER="$SAVED_HELPER"
-check_eq "$(status_of keepme@example.com cursor)" "ok" \
-  "the account still reads ok after the refused relogin"
+exec "$SQLITE3_REAL" "\$@"
+RIVALEOF
+chmod +x "$RIVAL"
+rm -f "$TMP/rival-done"
+# Seeded so the config exists for the rival to append to — a claude row, so the
+# pre-flight cursor check genuinely passes and the refusal can only come from
+# the re-check under the lock.
+run add claude holder@example.com
+check_eq "$RC" "0" "the seed claude add exits 0"
+SQLITE3_BIN_UNDER_TEST="$RIVAL"
+run add cursor loser@example.com
+SQLITE3_BIN_UNDER_TEST=""
+check_eq "$RC" "3" "an add that loses the race to another cursor registration exits 3"
+check_contains "$OUT" "another process" \
+  "and says the rival registered it while this add ran"
+check_eq "$(jq '[.accounts[] | select(.provider == "cursor")] | length' "$CONFIG")" "1" \
+  "exactly one cursor account survives — the duplicate row is never appended"
+check_eq "$(jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0]' "$CONFIG")" "rival@example.com" \
+  "and it is the rival's, not the loser's"
+# control(+): the same wrapper with no rival to register lets the add through,
+# so the refusal above is the lock re-check and not the wrapper breaking sqlite3.
+new_case "cursor-singleton-under-lock-control"
+: > "$TMP/rival-done"
+SQLITE3_BIN_UNDER_TEST="$RIVAL"
+run add cursor winner@example.com
+SQLITE3_BIN_UNDER_TEST=""
+check_eq "$RC" "0" "control(+): the same wrapper without a rival registers normally"
+check_eq "$(account_count)" "1" "control(+): and the account is recorded"
 
-# A relogin that RUNS and then fails must also cost the user nothing. The
-# dependency check above cannot help here — the profile has already been moved
-# aside by the time the login gives up — so the retirement is rolled back. The
-# marker is the discriminating assertion: without the rollback the account
-# points at a fresh empty profile and reads needs-login, while the message
-# still claims it is unchanged.
-new_case "cursor-relogin-rollback"
-run add cursor rollback@example.com
-check_eq "$RC" "0" "add cursor for the failed-relogin case exits 0"
-CURSOR_DIR="$PROFILES/rollback@example.com/cursor"
-printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
-NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
-run relogin rollback@example.com
-check_eq "$RC" "1" "a relogin whose login is abandoned exits 1"
-NODE_BIN_UNDER_TEST=""
-if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
-  ok "the original profile was put back — the failed relogin destroyed nothing"
-else
-  bad "the failed relogin left the account pointing at a new empty profile"
-fi
-check_contains "$OUT" "put back" "and the message says the previous session was restored"
-check_eq "$(status_of rollback@example.com cursor)" "ok" \
-  "the account still reads ok after the failed relogin"
-LEFTOVER="$(find "$PROFILES/rollback@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
-check_eq "$LEFTOVER" "0" "and no orphan retirement directory is left behind"
+# A relogin against a signed-out IDE fails and registers nothing new.
+new_case "cursor-relogin-signed-out"
+run add cursor lapsed@example.com
+check_eq "$RC" "0" "add cursor for the lapsed case exits 0"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
+run relogin lapsed@example.com
+check_eq "$RC" "1" "a relogin against a signed-out IDE exits 1"
+check_contains "$OUT" "open the Cursor IDE and sign in" "and says what to do"
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(status_of lapsed@example.com cursor)" "ok" \
+  "and the account is untouched — signing back in restores it"
 
-# The other rollback branch: a login that got far enough to leave partial state
-# in the new profile. `rmdir` refuses a non-empty directory, so that state is
-# moved aside rather than deleted — the previous session still comes back, and
-# nothing the abandoned login wrote is destroyed.
-new_case "cursor-relogin-rollback-partial"
-run add cursor dirty@example.com
-check_eq "$RC" "0" "add cursor for the partial-state rollback case exits 0"
-CURSOR_DIR="$PROFILES/dirty@example.com/cursor"
-printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
-NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned-dirty"
-run relogin dirty@example.com
-check_eq "$RC" "1" "a relogin that leaves partial state and fails exits 1"
-NODE_BIN_UNDER_TEST=""
-if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
-  ok "the original profile came back even though the new one was not empty"
-else
-  bad "the partial state blocked the rollback and the original profile is gone"
-fi
-check_eq "$(status_of dirty@example.com cursor)" "ok" \
-  "the account still reads ok after the partial-state failure"
-FAILED_DIRS="$(find "$PROFILES/dirty@example.com" -maxdepth 1 -type d -name 'cursor.failed-login-*' 2>/dev/null | wc -l | tr -d ' ')"
-check_eq "$FAILED_DIRS" "1" "the abandoned login's partial state was kept, not deleted"
-check_contains "$(cat "$PROFILES/dirty@example.com"/cursor.failed-login-*/Default/Preferences 2>/dev/null)" \
-  "PARTIAL-LOGIN-STATE" "and it is the state that login actually wrote"
-
-# Two relogins for one account must not both run (CodeAnt, PR #1689). The
-# second would retire the fresh profile the first one's browser is writing
-# into, and whichever finished last would point the registry row at a profile
-# holding the other one's half-written session. A live holder is REFUSED, and
-# the refusal has to cost the working profile nothing — the same standard the
-# dependency check above is held to.
+# Two relogins for one account must not both run (CodeAnt, PR #1689). The slot
+# no longer guards a profile retirement — #1703 removed that — but it still
+# guards the registry write, and a refusal must cost the account nothing.
 new_case "cursor-relogin-concurrent-refused"
 run add cursor busy@example.com
 check_eq "$RC" "0" "add cursor for the concurrent-relogin case exits 0"
-CURSOR_DIR="$PROFILES/busy@example.com/cursor"
-printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
 # $$ is this suite's own pid, so the recorded holder is genuinely alive — the
 # refusal is being proven for a live holder, not for an unparseable one.
 SLOT_DIR="$PROFILES/.relogin-slots/busy@example.com__cursor"
@@ -787,13 +833,6 @@ run relogin busy@example.com
 check_eq "$RC" "7" "a relogin racing a live one exits 7"
 check_contains "$OUT" "already running" "and says another relogin holds the account"
 check_contains "$OUT" "is unchanged" "and states the account was not touched"
-if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
-  ok "the working profile is untouched — the refused relogin retired nothing"
-else
-  bad "the refused relogin moved the working profile aside anyway"
-fi
-RACE_RETIRED="$(find "$PROFILES/busy@example.com" -maxdepth 1 -type d -name 'cursor.retired-*' 2>/dev/null | wc -l | tr -d ' ')"
-check_eq "$RACE_RETIRED" "0" "and left no retirement directory behind"
 if [[ -d "${SLOT_DIR}" ]]; then
   ok "and the live holder's slot marker was left alone"
 else
@@ -810,7 +849,6 @@ rm -rf "${SLOT_DIR}"
 new_case "cursor-relogin-abandoned-slot-taken-over"
 run add cursor stale@example.com
 check_eq "$RC" "0" "add cursor for the abandoned-slot case exits 0"
-CURSOR_DIR="$PROFILES/stale@example.com/cursor"
 # A pid that has been reaped: started and waited for, so it is not running and
 # the kernel has not had the chance to hand the number to anything else.
 ( exit 0 ) & DEAD_PID=$!
@@ -840,10 +878,10 @@ new_case "cursor-relogin-failure-releases-slot"
 run add cursor freed@example.com
 check_eq "$RC" "0" "add cursor for the slot-release case exits 0"
 SLOT_DIR="$PROFILES/.relogin-slots/freed@example.com__cursor"
-NODE_BIN_UNDER_TEST="$BIN/node-login-abandoned"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
 run relogin freed@example.com
-check_eq "$RC" "1" "the relogin whose login is abandoned exits 1"
-NODE_BIN_UNDER_TEST=""
+check_eq "$RC" "1" "the relogin against a signed-out IDE exits 1"
+CURSOR_DB_UNDER_TEST=""
 if [[ -d "$SLOT_DIR" ]]; then
   bad "the failed relogin leaked its slot marker — the account could never be relogged in"
 else
@@ -862,8 +900,6 @@ check_eq "$(status_of freed@example.com cursor)" "ok" \
 new_case "cursor-relogin-recovery-serialized"
 run add cursor recover@example.com
 check_eq "$RC" "0" "add cursor for the serialized-recovery case exits 0"
-CURSOR_DIR="$PROFILES/recover@example.com/cursor"
-printf 'original\n' > "$CURSOR_DIR/ORIGINAL-MARKER"
 SLOT_DIR="$PROFILES/.relogin-slots/recover@example.com__cursor"
 ( exit 0 ) & DEAD_PID=$!
 wait "$DEAD_PID" 2>/dev/null || true
@@ -875,48 +911,95 @@ mkdir -p "${SLOT_DIR}.recovering"
 run relogin recover@example.com
 check_eq "$RC" "7" "a relogin racing another run's slot recovery exits 7"
 check_contains "$OUT" "recovering this slot" "and says a recovery is in progress"
-if [[ -e "$CURSOR_DIR/ORIGINAL-MARKER" ]]; then
-  ok "the working profile is untouched — the refused recovery retired nothing"
-else
-  bad "the refused recovery moved the working profile aside anyway"
-fi
 if [[ -d "${SLOT_DIR}.recovering" ]]; then
   ok "and the in-progress recovery guard was left alone, not broken"
 else
   bad "the refused relogin broke the guard it was supposed to respect"
 fi
+check_eq "$(status_of recover@example.com cursor)" "ok" \
+  "and the account is untouched by the refusal"
 rm -rf "${SLOT_DIR}.recovering" "${SLOT_DIR}"
 
 # The slot must not depend on the profile tree still being there (CodeRabbit,
-# local review). A user who deleted the profile directory is in the one state a
-# relogin exists to fix; reporting contention there would refuse the repair over
-# a race that never happened.
+# local review). For cursor there is no tree at all now, which makes the point
+# sharper rather than moot: a relogin must run regardless.
 new_case "cursor-relogin-deleted-profile-tree"
 run add cursor gone@example.com
 check_eq "$RC" "0" "add cursor for the deleted-tree case exits 0"
 rm -rf "$PROFILES/gone@example.com"
 run relogin gone@example.com
-check_eq "$RC" "0" "a relogin whose profile tree was deleted still runs and exits 0"
+check_eq "$RC" "0" "a relogin with no profile tree still runs and exits 0"
 check_eq "$(status_of gone@example.com cursor)" "ok" \
   "and the account is logged in again afterwards"
 
-# A missing helper is reported, never worked around.
-new_case "cursor-helper-missing"
-SAVED_HELPER="$FAKE_CURSOR_HELPER"
-FAKE_CURSOR_HELPER="$TMP/no-such-helper.js"
-run add cursor nohelper@example.com
-check_eq "$RC" "6" "a missing cursor helper exits 6 (the login tool was not found)"
-check_contains "$OUT" "missing" "and says the helper is missing"
-FAKE_CURSOR_HELPER="$SAVED_HELPER"
+# A missing sqlite3 is reported, never worked around: without it this tool
+# cannot see whether the IDE is signed in, and guessing either way is worse
+# than saying so. Exit 6 is the same "provider tool not found" code the old
+# missing-node/helper path used.
+new_case "cursor-sqlite3-missing"
+SQLITE3_BIN_UNDER_TEST="$TMP/no-such-sqlite3"
+run add cursor nosqlite@example.com
+check_eq "$RC" "6" "a missing sqlite3 exits 6 (the provider tool was not found)"
+check_contains "$OUT" "sqlite3" "and says which tool is missing"
+check_not_contains "$OUT" "no 'cursor' CLI found" \
+  "and does NOT send the user looking for a cursor login binary"
+SQLITE3_BIN_UNDER_TEST=""
 
-# --no-login still reserves a cursor slot without opening anything.
+# An unreadable state store is not the same as a signed-out IDE, and `list`
+# says so rather than telling the user to sign in again over a missing tool.
+new_case "cursor-state-store-missing"
+run add cursor nostore@example.com --no-login
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_MISSING"
+check_eq "$(status_of nostore@example.com cursor)" "needs-login" \
+  "an absent state store reads needs-login"
+check_contains "$(detail_of nostore@example.com cursor)" "no readable Cursor IDE state store" \
+  "and the note says the store is missing, not that the IDE is signed out"
+CURSOR_DB_UNDER_TEST=""
+
+# A store that EXISTS but is not a database is a different failure from one
+# that is absent, and from an IDE that is signed out (CodeRabbit). Without this
+# case the read-error branch of cursor_token_present ships uncovered.
+new_case "cursor-state-store-corrupt"
+run add cursor corrupt@example.com --no-login
+CURSOR_DB_CORRUPT="$TMP/cursor-corrupt.vscdb"
+printf 'this is not a SQLite database at all\n' > "$CURSOR_DB_CORRUPT"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_CORRUPT"
+check_eq "$(status_of corrupt@example.com cursor)" "needs-login" \
+  "an unreadable state store still lists (a report, never a gate)"
+check_contains "$(detail_of corrupt@example.com cursor)" "could not read" \
+  "and the note names a READ failure rather than claiming the IDE is signed out"
+CURSOR_DB_UNDER_TEST=""
+
+# A zero-length token is signed out, and the probe has to agree with the reader
+# about that. The column is declared BLOB, and SQLite never compares a blob
+# equal to a text literal — so `value <> ''` would call an empty blob a present
+# token while the reader, which checks the value it read, called it absent
+# (CodeRabbit).
+new_case "cursor-empty-token-blob"
+run add cursor emptytok@example.com --no-login
+CURSOR_DB_EMPTY_BLOB="$TMP/cursor-empty-blob.vscdb"
+rm -f "$CURSOR_DB_EMPTY_BLOB"
+"$SQLITE3_REAL" "$CURSOR_DB_EMPTY_BLOB" "PRAGMA journal_mode=WAL;" >/dev/null
+"$SQLITE3_REAL" "$CURSOR_DB_EMPTY_BLOB" "create table ItemTable (key TEXT PRIMARY KEY, value BLOB);"
+# x'' is a genuine zero-length BLOB, which is the storage class the real store
+# uses — a '' text literal here would not exercise the bug at all.
+"$SQLITE3_REAL" "$CURSOR_DB_EMPTY_BLOB" \
+  "insert into ItemTable (key, value) values ('cursorAuth/accessToken', x'');"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_EMPTY_BLOB"
+check_eq "$(status_of emptytok@example.com cursor)" "needs-login" \
+  "a zero-length BLOB token reads as signed out, not as a present token"
+CURSOR_DB_UNDER_TEST=""
+
+# --no-login still reserves a cursor slot without checking anything.
 new_case "cursor-no-login"
+CURSOR_DB_UNDER_TEST="$CURSOR_DB_SIGNED_OUT"
 run add cursor later@example.com --no-login
-check_eq "$RC" "0" "add cursor --no-login exits 0"
-check_eq "$(status_of later@example.com cursor)" "needs-login" \
-  "a reserved cursor slot reports needs-login"
+check_eq "$RC" "0" "add cursor --no-login exits 0 even with the IDE signed out"
+CURSOR_DB_UNDER_TEST=""
+check_eq "$(status_of later@example.com cursor)" "ok" \
+  "and the reserved slot reads ok once the IDE is signed in"
 check_eq "$(wc -c < "$STUB_CALL_LOG" | tr -d ' ')" "0" \
-  "control(-): --no-login launched no browser at all"
+  "control(-): --no-login launched nothing at all"
 
 # --- 8. credential disappears -> needs-login; relogin restores it ------------
 

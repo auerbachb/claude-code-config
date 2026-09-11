@@ -7,8 +7,3 @@ __pycache__/
 # Runtime lock files
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
-
-# Node deps for .claude/scripts/lib helpers (ai-quotas-cursor.js / Playwright).
-# The pinned versions live in package.json; the install itself is per-machine
-# and includes a browser binary, so it never belongs in the repo.
-.claude/scripts/lib/node_modules/
