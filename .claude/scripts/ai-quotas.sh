@@ -1786,7 +1786,7 @@ apply_forecast() {
             elif $k == "usage_start_is_floor" then ($v | type) == "boolean"
             elif $k == "usage_start_display" then ($v | type) == "string"
             else (($v | type) == "number" and $v >= 0) end;
-        | ($sent[0]) as $i
+        ($sent[0]) as $i
         | . as $o
         | ($o | type) == "object"
           and ($o.rows | type) == "array"
