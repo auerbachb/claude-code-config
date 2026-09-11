@@ -672,6 +672,42 @@ esac
 [ -z "$(grep '_run_hook_bounded --reserve "\$_HOOK_TAIL_RESERVE_SECS" --context ' "$HOOK" | grep 'holding the config-sync lock')" ] \
   || fail "the root-repo sync leg's decline message claims the config-sync lock is held, but the leg runs after the release (issue #1593)"
 
+# ...and the bound those legs get must come from the SAME deadline the
+# CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS override writes (CodeAnt, PR #1709). The
+# tiny-deadline leg further down proves the override reaches the budget, but it
+# can only ever watch the GIT legs decline: `_HOOK_GIT_RESERVE_SECS` (9) is
+# larger than `_HOOK_TAIL_RESERVE_SECS` (3), so at any instant the post-region
+# legs hold strictly MORE budget than the git region did — a deadline small
+# enough to decline publishing declines the git work first, and the only way to
+# invert that is to make the git region burn six-plus seconds of wall clock,
+# which is the timing dependence this whole test exists to remove. So pin the
+# last link of the chain STATICALLY instead: `_publish_one` runs through
+# `_run_hook_bounded` (asserted above), `_run_hook_bounded` sizes itself from
+# `_budget_remaining`, and `_budget_remaining` computes from
+# `_HOOK_TIMEOUT_SECS`. A second budget source anywhere in that chain — a
+# literal, a copied constant — would let the override reach the git legs and
+# not the publishers, which is exactly the hole a dynamic assertion cannot see.
+budget_remaining_body="$(awk '/^_budget_remaining\(\) \{/,/^\}$/' "$HOOK")"
+[ -n "$budget_remaining_body" ] \
+  || fail "could not extract the _budget_remaining body from session-start-sync.sh"
+case "$budget_remaining_body" in
+  *_HOOK_TIMEOUT_SECS*) : ;;
+  *) fail "_budget_remaining no longer derives from _HOOK_TIMEOUT_SECS — the deadline override would stop reaching the bounded calls that read it (issue #1698)" ;;
+esac
+# Comment lines are stripped before matching: this function also MENTIONS
+# _budget_remaining in a comment, so a bare substring check passes even after
+# the call itself is replaced by a literal — the guard would hold by not
+# running. Stripping can only ever remove a match, so the failure direction
+# stays loud.
+run_hook_bounded_body="$(awk '/^_run_hook_bounded\(\) \{/,/^\}$/' "$HOOK" \
+  | sed 's/^[[:space:]]*#.*$//')"
+[ -n "$run_hook_bounded_body" ] \
+  || fail "could not extract the _run_hook_bounded body from session-start-sync.sh"
+case "$run_hook_bounded_body" in
+  *'_budget_remaining "'*) : ;;
+  *) fail "_run_hook_bounded no longer sizes its bound by CALLING _budget_remaining — the publishers could be bounded against a deadline the CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS override does not reach (CodeAnt, PR #1709)" ;;
+esac
+
 # Functional fixture. The hook resolves its publishers from its OWN directory,
 # so the stub has to live in a copied hook tree rather than in the temp HOME.
 # Only the helpers the hook actually reaches are copied; register-hooks.py is
@@ -833,6 +869,17 @@ tiny_out="$(printf '{"source":"startup"}' \
 # nothing. The decline message names the deadline it measured against
 # ("only Ns left of the Ms hook budget"), so require that M is OUR value. The
 # default 30 cannot produce that string, which is what ties the pass to the knob.
+#
+# This leg watches the GIT legs decline and cannot be made to watch the PUBLISH
+# leg instead (CodeAnt, PR #1709): the git region reserves 9s where the
+# post-region legs reserve 3s, so publishing always holds strictly more budget
+# than the git work that preceded it, and any deadline small enough to decline
+# it declines the git region first. Naming "publish" here would be an assertion
+# no deadline can satisfy. The publishers' half of the chain is pinned
+# statically in the structural block above — _publish_one calls
+# _run_hook_bounded, _run_hook_bounded calls _budget_remaining, and
+# _budget_remaining computes from _HOOK_TIMEOUT_SECS — so a second budget
+# source that reached the git legs but not the publishers fails there.
 TINY_OUT="$tiny_out" python3 - <<'PY' || fail "a one-second hook deadline did not decline a bounded call AGAINST A 1s BUDGET — CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS is not reaching the budget, so the ample-budget control's widened deadline is a no-op (issue #1698); got: $tiny_out"
 import json, os, sys
 text = os.environ.get("TINY_OUT", "").strip()
