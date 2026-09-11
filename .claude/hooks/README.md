@@ -13,6 +13,8 @@ Hooks are **automatically registered** in `~/.claude/settings.json` on every ses
 2. Add the hook entry to `global-settings.json` at the repo root (use `/path/to/claude-code-config` as the path placeholder)
 3. Merge to `main` — the next session start registers it automatically
 
+`session-start-sync.sh` schedules its lock-held git work, its symlink publishers and its root-repo sync leg against one deadline, `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_SECS` (default `30`, mirroring the `timeout: 30` its `global-settings.json` entry registers). That override — and the per-call ceilings clamped inside it — exist for timing-sensitive tests on slow CI runners, not for production, where a longer deadline would only let the hook outlive the registered timeout. Because an environment variable is inherited whether or not it was meant for you, raising the deadline above `30` also requires `CLAUDE_CONFIG_SYNC_HOOK_TIMEOUT_RAISE_OK=1`; a raise without it keeps 30 and says so in the session notice. Full table and rationale: [`.claude/reference/skill-sync-hooks.md`](../reference/skill-sync-hooks.md).
+
 Shared code that hooks source (rather than run) lives in `lib/` and is deliberately absent from `global-settings.json` — registration matches by basename, so anything listed there would be executed as a hook in its own right.
 
 **Initial setup** is handled by `setup-skills-worktree.sh` (see `SETUP.md`). The ongoing sync is a safety net that catches hooks added after initial setup.

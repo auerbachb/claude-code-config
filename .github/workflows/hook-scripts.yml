@@ -73,6 +73,17 @@ jobs:
   # both jobs with no edit here.
   hook-tests-macos:
     runs-on: macos-latest
+    # session-start-sync.test.sh's ample-budget control proves its stall
+    # assertion is not vacuous by running a HEALTHY publisher inside the hook's
+    # deadline. Every bound there is min(budget left, ceiling), so a slow runner
+    # that spends the deadline on fixture git work leaves the publish leg too
+    # little budget and the control fails with no code change — it did on
+    # PR #1689, on a commit that had passed the same job 32 minutes earlier
+    # (issue #1698). These runners are the slow ones, so give the control real
+    # headroom here; the Linux job above relies on the documented 60s default.
+    # This widens the CONTROL only — the stall leg keeps the production 30s.
+    env:
+      CLAUDE_CONFIG_SYNC_TEST_AMPLE_BUDGET_SECS: "120"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
