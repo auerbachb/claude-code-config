@@ -1303,6 +1303,66 @@ invoked the command or estimating quota. Write `parked_until` and
 
 **On a successful resume** (tick completes without hitting a limit): reset `consecutive_limit_hits = 0` and clear `parked_until`, `limit_kind`, `limit_cause`, `limit_probe_fires_remaining`, `park_claim_token`, `limit_resume_task_id`, `limit_resume_generation` in one write before D5's heartbeat fires. Clearing the cause and the probe bound together with the rest is what stops a later recovery from re-arming a probe wake for a park that has already ended; clearing the token with them is what returns the slot to a state a fresh claim can win, and leaving a spent one behind would make the next claim's token indistinguishable from a stale predecessor's.
 
+**That clear is compare-and-set on the identity it read (#1663)** — the same contract `/pause-resume` Step 5's `retire_limit_park` keeps, written once in `.claude/reference/pm-day-mode.md` §"The park-retirement contract". The exposure here is the empty slot: by the time this runs `parked_until` is usually null, and a 2D.7 Step 1 claim from a sibling thread (or the subagent leg) wins that slot on `--cas parked_until --expect null` and publishes its token in the window between this step's read and its write. An unconditional clear then erases a park that had just been legitimately opened, along with its bound and its wake identity — leaving a live Monitor nothing can name to `TaskStop`.
+
+<!-- test-anchor: pm-day-d5-resume-clear -->
+
+```bash
+# ONE read, bound: the anchor and the verdict must come from the same instant, or
+# the CAS pins to a record this step never saw.
+D5_SNAPSHOT_RC=0
+D5_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) \
+  || D5_SNAPSHOT_RC=$?
+D5_CLEAR_RC=0
+if [[ "$D5_SNAPSHOT_RC" -ne 0 && "$D5_SNAPSHOT_RC" -ne 3 ]]; then
+  D5_CLEAR_RC=8                      # unreadable identity: fail closed, clear nothing
+else
+  [[ "$D5_SNAPSHOT_RC" -eq 3 ]] && D5_SNAPSHOT='{}'
+  D5_TOKEN_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.park_claim_token // null' 2>/dev/null) || D5_CLEAR_RC=8
+  D5_CAUSE_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.limit_cause // null' 2>/dev/null)      || D5_CLEAR_RC=8
+  D5_UNTIL_EXPECT=$(printf '%s' "$D5_SNAPSHOT" | jq -c '.parked_until // null' 2>/dev/null)     || D5_CLEAR_RC=8
+fi
+if [[ "$D5_CLEAR_RC" -eq 0 ]]; then
+  # Anchor precedence — token (a mid-assembly 2D.7 claim, the strongest identity
+  # because it is unique per claim), then limit_cause (a completed record), then
+  # parked_until at the value just read, null included (the no-identity record —
+  # and, here, the empty slot a fresh 2D.7 claim would take).
+  if [[ "$D5_TOKEN_EXPECT" != null ]]; then
+    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.park_claim_token"; D5_EXPECT="$D5_TOKEN_EXPECT"
+  elif [[ "$D5_CAUSE_EXPECT" != null ]]; then
+    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.limit_cause";      D5_EXPECT="$D5_CAUSE_EXPECT"
+  else
+    D5_ANCHOR=".repos[\"$REPO_KEY\"].day.parked_until";     D5_EXPECT="$D5_UNTIL_EXPECT"
+  fi
+  D5_CLEARS=()
+  for D5_FIELD in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
+                  limit_cause limit_kind park_claim_token parked_until; do
+    [[ ".repos[\"$REPO_KEY\"].day.$D5_FIELD" == "$D5_ANCHOR" ]] && continue
+    D5_CLEARS+=(--set ".repos[\"$REPO_KEY\"].day.$D5_FIELD=null")
+  done
+  # The thrash counter rides the same atomic batch (#1445): a superseded compare must
+  # leave it alone too, or a brand-new park would resume with its hit count reset.
+  "$SESSION_STATE_SH" --cas "$D5_ANCHOR=null" --expect "$D5_EXPECT" \
+    "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
+    >/dev/null 2>&1 || D5_CLEAR_RC=$?
+  if [[ "$D5_CLEAR_RC" -eq 6 ]]; then   # lock timeout — retry once, then judge
+    D5_CLEAR_RC=0
+    "$SESSION_STATE_SH" --cas "$D5_ANCHOR=null" --expect "$D5_EXPECT" \
+      "${D5_CLEARS[@]}" --set ".repos[\"$REPO_KEY\"].day.consecutive_limit_hits=0" \
+      >/dev/null 2>&1 || D5_CLEAR_RC=$?
+  fi
+fi
+case "$D5_CLEAR_RC" in
+  0) echo "RESUME_CLEAR=cleared" ;;
+  7) echo "RESUME_CLEAR=superseded" ;;   # a newer park owns the slot — nothing written
+  *) echo "RESUME_CLEAR=error rc=$D5_CLEAR_RC" ;;
+esac
+```
+
+- **`cleared`** → the park is retired and the thrash counter reset; carry on to D5's heartbeat.
+- **`superseded`** (exit 7) → a park claimed the slot after this step read it. **Nothing was written**, so its bound, kind, token and wake identity are intact and its owner runs its own recovery. Do not retry, do not `TaskStop` anything, and do not reset the counter; the board is parked again, so drop this tick's resume heartbeat and emit the park's own line instead — `Parked (usage limit) — a new park opened while this resume was landing; adopting it and its wake.`
+- **`error`** (any other rc, `8` = unreadable identity included) → fail closed: the park record is left exactly as found, in one line naming the rc — `Resume clear failed (rc={RC}) — park record left standing; resume manually if the board stays parked.`
+
 **Disarm on manual resume.** When `/pause-resume` is invoked manually while a limit-wake Monitor is armed, the skill disarms the Monitor before delegating to `/pm day resume` — see `/pause-resume` Step 5. This prevents a double resume when both paths race. **That same step retires the park** — the six fields above, one write — and has to (#1595): 2D.1(b+) and 2D.5 stay parked on a `preemptive` cause with a `0`/`-1` bound *regardless of* `parked_until` and stop recovery before 2D.2's init write, which is the only other place the park is cleared. A resume that merely restamped the sentinel could therefore never lift the park those branches tell the user to lift exactly this way.
 
 ### 2D.7: Usage-horizon pre-emptive park (#1428)

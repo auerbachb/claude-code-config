@@ -754,17 +754,26 @@ require_text "pause-resume disarm covers the probe" "$PAUSE_RESUME" 'One registr
 # manual-resume escape hatch those branches name in their own message.
 refute_text  "pause-resume never restamps the -1 sentinel" "$PAUSE_RESUME" \
   'day\.limit_probe_fires_remaining=-1'
+# Since #1663 the retire enumerates the fields it clears and generates the
+# `--set …=null` flags from that list, so the literal assignments these three
+# assertions used to match no longer appear as text. The property is unchanged —
+# the enumeration IS the clear list — and that each field actually ends up null is
+# proved functionally in `park-retire-guard.test.sh`, which runs the block.
 require_text "pause-resume clears the probe bound"  "$PAUSE_RESUME" \
-  'day\.limit_probe_fires_remaining=null'
-require_text "pause-resume clears limit_cause"      "$PAUSE_RESUME" 'day\.limit_cause=null'
-require_text "pause-resume clears parked_until"     "$PAUSE_RESUME" 'day\.parked_until=null'
+  'for field in .*limit_probe_fires_remaining'
+require_text "pause-resume clears limit_cause"      "$PAUSE_RESUME" '^ +limit_cause limit_kind'
+require_text "pause-resume clears parked_until"     "$PAUSE_RESUME" 'park_claim_token parked_until'
 require_text "pause-resume states why it retires"   "$PAUSE_RESUME" 'never restamp the .-1. sentinel'
 # The no-armed-wake branch matters on its own: /pause already nulled the task id,
 # so only this path can lift the park it left standing.
 require_text "pause-resume retires a park with no armed wake" "$PAUSE_RESUME" \
   'cleared standing usage-limit park'
+# One bound read of the whole `.day` record replaced the three per-field `--get`s
+# (#1663), so the two "could not read day.<field>" lines collapsed into one
+# fail-closed message covering all of them. `park-retire-guard.test.sh` runs the
+# block against an unreadable record and asserts nothing is cleared.
 require_text "pause-resume fails closed on an unreadable park" "$PAUSE_RESUME" \
-  'could not read day\.parked_until'
+  'could not read the day park record'
 # A weekly-cap park never arms a wake, so it reaches the no-armed-wake branch
 # too — but it is not the -1 deadlock that branch exists for, and the account is
 # still capped. Retiring it would re-arm the day loop into a live cap, which is
@@ -774,7 +783,7 @@ require_text "pause-resume retires only rolling_window parks" "$PAUSE_RESUME" \
 require_text "pause-resume leaves a weekly park standing"     "$PAUSE_RESUME" \
   'park left standing'
 require_text "pause-resume fails closed on an unreadable kind" "$PAUSE_RESUME" \
-  'could not read day\.limit_kind'
+  'PARK_READ_RC.* -ne 0 .* -ne 3'
 # A NULL kind is not a weekly cap: 2D.7 Step 1 writes parked_until and the `-1`
 # sentinel while limit_kind only arrives with Step 3, so an incomplete claim
 # reaches the retire branch with kind unset. Gating on "not rolling_window"
