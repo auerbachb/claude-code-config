@@ -108,7 +108,9 @@ records without a login: `--no-login`, which reserves the slot on purpose and li
   value never read) and exits `1` with that same instruction when the IDE is signed out;
   relay it and retry once they have. Exit `6` is the different failure of `sqlite3`
   being missing. One IDE holds one account, so this machine registers one Cursor
-  account — a second Cursor subscription cannot be tracked here.
+  account — a second Cursor subscription cannot be tracked here, and `add cursor` under a
+  second label is **refused** with exit `3` naming the label that already holds the slot
+  (two labels would otherwise render two `/quotas` rows with identical usage).
   A `relogin` no longer retires anything: signing in again in the IDE replaces the token,
   so there is no profile to move aside and nothing to roll back.
 
@@ -124,12 +126,16 @@ opens, and a second account is not possible.
   recorded. Report what the helper printed. Offer exactly two next steps: re-run the
   `add`, or `add … --no-login` to reserve the slot and log in later. Never invent an
   entry by hand.
-- Exit `3` — a usage problem: unknown provider, malformed label, or a
-  `(provider, label)` pair already registered. Report it; for an already-registered
-  pair the fix is `relogin`, not a second `add`.
+- Exit `3` — a usage problem: unknown provider, malformed label, a
+  `(provider, label)` pair already registered, or a **second `cursor` account under a
+  different label**. Report it; for an already-registered pair the fix is `relogin`, not
+  a second `add`. For the cursor refusal the message names the label already holding the
+  slot — one IDE holds one account, so a second label would report the same usage twice;
+  the fix is `relogin` on that label, or `remove` it first.
 - Exit `6` — the provider's login tool is not installed: its CLI, or for `cursor`
-  `sqlite3`, which reads the IDE state store. The helper prints the exact manual command; relay it and
-  stop.
+  `sqlite3`, which reads the IDE state store. For `claude` and `codex` the helper prints
+  the exact manual login command; relay it and stop. For `cursor` there is no manual
+  login to print — the instruction is to install `sqlite3` and re-run.
 
 **STOP conditions for every action, `list` included:**
 

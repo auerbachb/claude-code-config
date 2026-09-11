@@ -1042,6 +1042,12 @@ run --json
 check_eq "$RC" "0" "a cursor row does not fail the run"
 check_eq "$(rows_for cursor-one@example.com)" "unreachable" \
   "a curl failure reads unreachable"
+# The email was read from the LOCAL store before any request went out, so a
+# network failure has not invalidated it (CodeAnt). Discriminating on purpose:
+# the fixture email differs from the label, and an emit_row that passed "" here
+# would fall back to the label and this assertion would read it.
+check_eq "$(field_of cursor-one@example.com "billing-cycle" reported_email)" "$CURSOR_FIXTURE_EMAIL" \
+  "and the unreachable row still names the account from the local store"
 check_eq "$(rows_for codex-one@example.com)" "ok" "the codex row beside it still renders"
 
 # An unknown provider is what `unsupported` is for now that cursor is read.

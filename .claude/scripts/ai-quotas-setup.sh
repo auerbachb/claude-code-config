@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts (`claude`/`codex`/`cursor`) and their isolated per-account login profiles in `~/.claude/ai-quotas.json`, name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -156,9 +156,10 @@
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
 #       profile directory or config write failed.
-#   6   The provider's login CLI could not be found — for `cursor`, sqlite3,
-#       which is what reads the IDE state store. The exact command to run by
-#       hand is printed.
+#   6   The provider's login CLI could not be found. For `claude` and `codex`
+#       the exact command to run by hand is printed. For `cursor` the missing
+#       tool is sqlite3 — what reads the IDE state store, not a login CLI, so
+#       there is no manual login to print: install sqlite3 and re-run.
 #   7   Contention, refused rather than raced; nothing is changed. Either the
 #       config write lock was unavailable (timeout) or broken mid-update, or a
 #       `relogin` found another relogin already running for the same account.
@@ -1027,6 +1028,22 @@ action_add() {
   existing="$(match_indices "$config" "$label" "$provider")"
   if [[ -n "$existing" ]]; then
     die 3 "'$label' is already registered for $provider — use 'relogin $label $provider' instead"
+  fi
+
+  # cursor is a SINGLETON provider (#1703, CodeAnt). Every other provider gets
+  # its own isolated profile directory, so two labels are two accounts. cursor
+  # has no directory at all — every cursor row reads the one Cursor IDE store
+  # — so a second label registers the same account twice and /quotas renders
+  # two rows with identical credentials, identical usage and identical reset.
+  # The label check above cannot catch it: the labels differ, the account does
+  # not. Refuse, and name the label already holding the slot.
+  if [[ "$provider" == "cursor" ]]; then
+    local cursor_held
+    cursor_held="$(printf '%s' "$config" \
+      | jq -r '[.accounts[] | select(.provider == "cursor") | .label] | .[0] // ""')"
+    if [[ -n "$cursor_held" ]]; then
+      die 3 "cursor is already registered as '$cursor_held' — one Cursor IDE holds one account, so a second label would report the same usage twice. Use 'relogin $cursor_held cursor', or 'remove $cursor_held cursor' first."
+    fi
   fi
 
   dir="$(profile_dir_for "$label" "$provider")"

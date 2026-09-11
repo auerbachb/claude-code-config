@@ -1626,7 +1626,11 @@ read_cursor_account() { # <label>
 
   case "$code" in
     000)
-      emit_row cursor "$label" "" "$CURSOR_WINDOW" "" "" unreachable \
+      # The email came from the local store, not the network, so a curl
+      # failure has not invalidated it (CodeAnt). Every other failure branch
+      # below carries it; dropping it here would blank the account identity on
+      # exactly the rows a user is most likely to be squinting at.
+      emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" unreachable \
         "curl failed talking to ${CURSOR_API_BASE}/get-current-period-usage" "$source" ""
       return 0 ;;
     401 | 403)

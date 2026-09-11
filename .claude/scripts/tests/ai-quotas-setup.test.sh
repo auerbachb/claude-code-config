@@ -702,6 +702,25 @@ check_contains "$(detail_of recur@example.com cursor)" "not signed in" \
   "and the note says which"
 CURSOR_DB_UNDER_TEST=""
 
+# cursor is a SINGLETON (CodeAnt). Every other provider isolates accounts by
+# profile directory, so two labels are two accounts; cursor has no directory
+# and every row reads the one IDE store, so a second label would register the
+# same account twice and /quotas would render two rows with identical usage.
+# The pre-existing duplicate-label guard cannot catch it — the labels differ.
+new_case "cursor-singleton"
+run add cursor first@example.com
+check_eq "$RC" "0" "the first cursor add exits 0"
+run add cursor second@example.com
+check_eq "$RC" "3" "a second cursor add under a different label is refused"
+check_contains "$OUT" "first@example.com" \
+  "and the refusal names the label already holding the slot"
+check_eq "$(account_count)" "1" "nothing is registered by the refused add"
+# control(+): the refusal is about cursor being a singleton, not about adding a
+# second account at all — a different provider under a second label still works.
+run add codex alsome@example.com
+check_eq "$RC" "0" "control(+): a second account on another provider is still allowed"
+check_eq "$(account_count)" "2" "and it is recorded"
+
 # A relogin against a signed-out IDE fails and registers nothing new.
 new_case "cursor-relogin-signed-out"
 run add cursor lapsed@example.com

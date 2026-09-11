@@ -437,6 +437,14 @@ that prefix stripped. Verified end to end against the owner's live account on
 subscription cannot be registered here; that is a property of the IDE, not a limit of
 this tool.
 
+`add cursor` **enforces** it (CodeAnt, PR #1711): a second cursor label exits `3` naming
+the label already holding the slot. The pre-existing duplicate guard cannot catch this
+one — it matches on `(provider, label)`, and here the labels differ while the account
+does not. Every other provider isolates accounts by profile directory, so two labels
+really are two accounts; cursor has no directory, so two labels are one account read
+twice, and `/quotas` would render two rows with identical usage, identical reset, and
+identical credentials.
+
 #### Reading the state store: read-only, never a copy
 
 The reader opens the store with `sqlite3 -readonly` and **does not copy it**. #1703's
