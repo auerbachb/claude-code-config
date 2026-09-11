@@ -520,7 +520,14 @@ back on a blocked or failed launch — and any other route into these records
 takes the same claim.
 
 **Resume clears the park.** `/pause-resume` Step 5's `retire_limit_park` clears
-the six `.day` fields in one write; the resuming thread additionally clears each
+the `.day` park fields in one write — compare-and-set on the identity its single
+bound read observed (token while a 2D.7 claim is mid-assembly, `limit_cause` on a
+completed record, `parked_until` at the value read when neither is present), so a
+park that claimed the slot between that read and the write is **not** erased:
+exit `7` is superseded, the newer park and its wake are left untouched, and the
+clear is reported rather than retried (#1663; contract in
+`.claude/reference/pm-day-mode.md` §"The park-retirement contract"). The
+resuming thread additionally clears each
 `.prs["N"].usage_limit_park` / `handoff_reason` it relaunched, and resets
 `consecutive_limit_hits` to 0 once a relaunched pipeline completes a phase
 without re-hitting the limit. A record left behind would make the next

@@ -640,59 +640,182 @@ fi
 
 Nothing to re-arm (an empty board) correctly leaves the floor disarmed — that is the idle exemption, not a gap.
 
-**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind`, `park_claim_token` and the bound in one write. The token goes with them (#1596): it is non-null only while a 2D.7 claim is mid-assembly, and this resume ends the park that claim belongs to. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes:
+**Before delegating to any re-arm skill, disarm the usage-limit auto-wake Monitor if one is armed.** This prevents a double resume when the user runs `/pause-resume` manually while a limit-wake Monitor is still ticking (i.e. the rolling-window park from 2D.6 has not yet fired automatically). **One registry covers both wake shapes:** 2D.7's bounded probe Monitor (#1428) records its identity in these same fields, so the block below stops it too. **Retire the whole park record here — never restamp the `-1` sentinel** (#1595): `/pause-resume` *is* the manual resume that `/pm` 2D.1(b+) and 2D.5 name as the only way out of a `-1` park, and both of those branches stay parked on a `preemptive` cause with a `0`/`-1` bound **regardless of `parked_until`**, stopping recovery before 2D.2's init write — the only other place the park is cleared. A sentinel left standing here would leave the escape hatch its own message points at unable to open, so the resume clears `parked_until`, `limit_cause`, `limit_kind`, `park_claim_token` and the bound in one write. The token goes with them (#1596): it is non-null only while a 2D.7 claim is mid-assembly, and this resume ends the park that claim belongs to. `/pause` keeps writing `-1`, and correctly: there the park is meant to stand. When `/pause-resume` is invoked **by the Monitor itself** (not manually), it carries `--generation <id>`; validate the generation before proceeding to reject stale or duplicate wakes.
+
+**The retirement is guarded on the identity it read (#1663).** Clearing the record
+with plain `--set`s erases whatever is in the slot at write time, and the slot can
+change hands between the reads below and that write: a 2D.6 reactive park claims by
+compare-and-set on `limit_cause --expect null` and **does not require `parked_until`
+to be null**, so it can legitimately land inside the unfinished-claim window
+(`parked_until` set, cause null, token held) and have its bound and its wake identity
+wiped by a clear that was decided on the record it replaced. The shared contract for
+both cleanup sites — this one and `/pm` D5's successful-resume clear — is
+`.claude/reference/pm-day-mode.md` §"The park-retirement contract".
+
+<!-- test-anchor: pause-resume-retire-limit-park -->
 
 ```bash
 LIMIT_WAKE_RESOLVED=false
-# Retiring the park is one atomic write (#1595). This is the resume path, so the
-# park is over: leaving `limit_cause`/`limit_probe_fires_remaining` behind is what
-# makes /pm 2D.1(b+) and 2D.5 stay parked *regardless of parked_until* and stop
-# recovery before 2D.2's init write ever clears it.
-retire_limit_park() {
-  "$SESSION_STATE_SH" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_resume_task_id=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_resume_generation=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_probe_fires_remaining=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_cause=null" \
-    --set ".repos[\"$REPO_KEY\"].day.limit_kind=null" \
-    --set ".repos[\"$REPO_KEY\"].day.park_claim_token=null" \
-    --set ".repos[\"$REPO_KEY\"].day.parked_until=null"
-}
+# ONE read of the park record, bound before anything below acts on it (#1663).
+# The compare-and-set that retires the record is pinned to THIS snapshot, so a
+# claim landing afterwards loses the compare instead of being erased by it.
+# Three separate --get calls could not do that: token and cause would come from
+# different instants, and an anchor picked from one could name a record the
+# other never saw — the same one-read discipline the leave-time CAS below keeps.
+PARK_READ_RC=0
+PARK_IDENTITY_READ=false
+PARK_TOKEN_EXPECT=null
+PARK_CAUSE_EXPECT=null
+PARK_UNTIL_EXPECT=null
+LIMIT_TASK_ID=""
+PARKED_UNTIL=""
+PARK_KIND=""
+PARK_RECORD_PRESENT=false
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
-  LIMIT_TASK_RC=0
-  LIMIT_TASK_ID=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_resume_task_id" 2>/dev/null) || LIMIT_TASK_RC=$?
-  if [[ "$LIMIT_TASK_RC" -ne 0 && "$LIMIT_TASK_RC" -ne 3 ]]; then
+  PARK_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) \
+    || PARK_READ_RC=$?
+  if [[ "$PARK_READ_RC" -eq 3 ]]; then
+    PARK_IDENTITY_READ=true          # no state file has ever been written: no park to guard
+  elif [[ "$PARK_READ_RC" -eq 0 ]] \
+    && PARK_TOKEN_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.park_claim_token // null' 2>/dev/null) \
+    && PARK_CAUSE_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.limit_cause // null' 2>/dev/null) \
+    && PARK_UNTIL_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.parked_until // null' 2>/dev/null) \
+    && LIMIT_TASK_ID=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_resume_task_id // ""' 2>/dev/null) \
+    && PARKED_UNTIL=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.parked_until // ""' 2>/dev/null) \
+    && PARK_KIND=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_kind // ""' 2>/dev/null) \
+    && PARK_RECORD_PRESENT=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '
+         [.limit_resume_task_id, .limit_resume_generation,
+          .limit_probe_fires_remaining, .limit_cause, .limit_kind,
+          .park_claim_token, .parked_until]
+         | any(. != null) | tostring' 2>/dev/null); then
+    PARK_IDENTITY_READ=true
+  elif [[ "$PARK_READ_RC" -eq 0 ]]; then
+    PARK_READ_RC=4                   # the record exists but does not parse: unreadable
+  fi
+fi
+# Retiring the park is one atomic write (#1595), now compare-and-set on the identity
+# the snapshot observed (#1663). This is the resume path, so the park is over:
+# leaving `limit_cause`/`limit_probe_fires_remaining` behind is what makes
+# /pm 2D.1(b+) and 2D.5 stay parked *regardless of parked_until* and stop recovery
+# before 2D.2's init write ever clears it.
+#
+# Anchor precedence — token, then cause, then bound:
+#   * `park_claim_token` non-null: a 2D.7 claim is mid-assembly. The token is unique
+#     per claim, so it is the strongest identity available — stronger than the cause,
+#     which is a two-valued enum two different parks can share.
+#   * else `limit_cause` non-null: a completed record. Coarser than the token by
+#     construction; the residual it leaves is named in the reference contract.
+#   * else `parked_until` at the value just read (null included): the no-identity
+#     record. It still clears — that is the #1595 manual-resume escape hatch, which a
+#     guard that refused a no-identity record would deadlock shut — and `parked_until`
+#     is the one field EVERY claim shape writes, so the clear is refused only when the
+#     slot has actually changed hands, never on the record this step read.
+#
+# Exit contract: 0 cleared · 7 superseded (a newer park owns the slot; nothing was
+# written, so its bound, kind and wake identity are untouched) · 8 identity
+# unreadable, fail closed · anything else a write error. Composition is #1445: the
+# --cas gates the whole batch, so a lost compare writes none of the --set clears.
+retire_limit_park() {
+  local anchor_path anchor_expect field rc=0
+  local -a clears=()
+  # Fail closed: an unreadable identity can hide a live park, exactly as the
+  # parked_until and limit_kind reads below fail closed (#1595).
+  [[ "$PARK_IDENTITY_READ" == true ]] || return 8
+  if [[ "$PARK_TOKEN_EXPECT" != null ]]; then
+    anchor_path=".repos[\"$REPO_KEY\"].day.park_claim_token"; anchor_expect="$PARK_TOKEN_EXPECT"
+  elif [[ "$PARK_CAUSE_EXPECT" != null ]]; then
+    anchor_path=".repos[\"$REPO_KEY\"].day.limit_cause";      anchor_expect="$PARK_CAUSE_EXPECT"
+  else
+    anchor_path=".repos[\"$REPO_KEY\"].day.parked_until";     anchor_expect="$PARK_UNTIL_EXPECT"
+  fi
+  # Every field still clears; the anchor is dropped from the --set list because the
+  # CAS target already writes it null. All of them are SIBLINGS under `.day` — a --set
+  # naming a strict ancestor of the CAS path is a usage error (exit 2), not a write.
+  for field in limit_resume_task_id limit_resume_generation limit_probe_fires_remaining \
+               limit_cause limit_kind park_claim_token parked_until; do
+    [[ ".repos[\"$REPO_KEY\"].day.$field" == "$anchor_path" ]] && continue
+    clears+=(--set ".repos[\"$REPO_KEY\"].day.$field=null")
+  done
+  "$SESSION_STATE_SH" --cas "$anchor_path=null" --expect "$anchor_expect" \
+    "${clears[@]}" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 6 ]]; then   # lock timeout — retry once, as the leave-time CAS does
+    rc=0
+    "$SESSION_STATE_SH" --cas "$anchor_path=null" --expect "$anchor_expect" \
+      "${clears[@]}" >/dev/null 2>&1 || rc=$?
+  fi
+  return "$rc"
+}
+```
+
+Both call sites below go through that one guarded path and read its three-way
+outcome. **Exit 7 is not a failure**: it says a newer park owns the slot, so this
+resume wrote nothing, stops nothing further, and leaves that park's bound, kind and
+wake identity alone — its owner manages its own recovery, and stopping that owner's
+Monitor would strand a park with no wake at all, the outcome the single-slot design
+exists to prevent.
+
+<!-- test-anchor: pause-resume-limit-wake-disarm -->
+
+```bash
+if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
+  # Every value below comes from the ONE snapshot above — the wake id included
+  # (#1663). Re-reading the id here would stop the wake of whatever park holds the
+  # slot at that instant, while the CAS refuses to clear the record the snapshot
+  # saw: a newer park with its Monitor killed and its record intact, which is the
+  # stranded wake this whole single-slot design exists to prevent.
+  if [[ "$PARK_READ_RC" -ne 0 && "$PARK_READ_RC" -ne 3 ]]; then
     # Read failure: report degraded state — cannot confirm whether an auto-wake Monitor is armed.
-    echo "(DEGRADED: could not read day.limit_resume_task_id (rc=$LIMIT_TASK_RC) — recovery remains active)"
-  elif [[ "$LIMIT_TASK_RC" -eq 0 && -n "$LIMIT_TASK_ID" && "$LIMIT_TASK_ID" != "null" ]]; then
+    echo "(DEGRADED: could not read the day park record (rc=$PARK_READ_RC) — recovery remains active)"
+  elif [[ "$PARK_READ_RC" -eq 3 ]]; then
+    # No state file has ever been written: no wake, and no park to retire.
+    LIMIT_WAKE_RESOLVED=true
+  elif [[ -n "$LIMIT_TASK_ID" && "$LIMIT_TASK_ID" != "null" ]]; then
     # Only act when the field is readable and non-null
     # Stop the auto-wake before we re-arm day mode below; a successful stop clears the fields.
     if TaskStop "$LIMIT_TASK_ID" 2>/dev/null; then
-      if retire_limit_park; then
-        LIMIT_WAKE_RESOLVED=true
-        echo "(disarmed usage-limit auto-wake $LIMIT_TASK_ID)"
-      else
-        echo "(DEGRADED: auto-wake stopped but its state could not be cleared — recovery remains active)"
-      fi
+      # The stop stays FIRST and the retire second (#1663): a claim landing in
+      # between armed its own, differently-named wake, so the ID stopped here and
+      # the ID left running are distinct — and the CAS below refuses to clear the
+      # record that new wake belongs to.
+      RETIRE_RC=0
+      retire_limit_park || RETIRE_RC=$?
+      case "$RETIRE_RC" in
+        0)
+          LIMIT_WAKE_RESOLVED=true
+          echo "(disarmed usage-limit auto-wake $LIMIT_TASK_ID)"
+          ;;
+        7)
+          # Superseded: a newer park owns the slot and armed its own wake. Nothing
+          # was written; leave its bound, kind and wake identity alone.
+          LIMIT_WAKE_RESOLVED=true
+          echo "(stopped usage-limit auto-wake $LIMIT_TASK_ID; a newer usage-limit park now owns the slot — its own wake is left running and nothing was cleared)"
+          ;;
+        *)
+          echo "(DEGRADED: auto-wake stopped but its state could not be cleared (rc=$RETIRE_RC) — recovery remains active)"
+          ;;
+      esac
     else
       echo "(WARNING: could not stop usage-limit auto-wake $LIMIT_TASK_ID — recovery remains active)"
     fi
-  elif [[ "$LIMIT_TASK_RC" -eq 3 ]]; then
-    # No state file has ever been written: no wake, and no park to retire.
-    LIMIT_WAKE_RESOLVED=true
   else
     # No armed wake, but a park record can still stand: /pause stops the wake and
     # stamps `-1` without clearing the park, and 2D.7's abort/error release can
     # leave the same shape. Retire it here or this resume cannot lift the park it
-    # is the documented escape hatch for (#1595).
-    PARK_RC=0
-    PARKED_UNTIL=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.parked_until" 2>/dev/null) || PARK_RC=$?
-    if [[ "$PARK_RC" -eq 3 ]] || { [[ "$PARK_RC" -eq 0 ]] && [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == "null" ]]; }; then
+    # is the documented escape hatch for (#1595). Both values come from the same
+    # snapshot as the wake id — an unreadable record already fell into the
+    # DEGRADED branch above, which is where the old per-field reads failed closed.
+    #
+    # The fast path turns on RECORD PRESENCE, never on `parked_until` alone. A bound
+    # of null does not mean "no park": /pm 2D.1(b+) and 2D.5 keep the day parked on a
+    # `preemptive` cause with a `0`/`-1` bound *regardless of `parked_until`* — the
+    # invariant this step opens with — so a present record whose bound happens to be
+    # null is exactly a park that must be retired, not one that can be skipped.
+    # Reading a null bound as absence marked the resume resolved while leaving that
+    # cause and bound standing, which is the #1595 deadlock wearing a success message.
+    # Only a genuinely empty slot short-circuits; every present record goes through
+    # the kind check and `retire_limit_park` below.
+    if [[ "$PARK_RECORD_PRESENT" != true ]]; then
       LIMIT_WAKE_RESOLVED=true          # nothing armed and no park recorded
-    elif [[ "$PARK_RC" -ne 0 ]]; then
-      # Fail closed, exactly as the task-id read above does: an unreadable
-      # parked_until can hide a standing park.
-      echo "(DEGRADED: could not read day.parked_until (rc=$PARK_RC) — recovery remains active)"
     else
       # Only a rolling-window park may be retired here. A weekly-cap park never
       # arms a wake, so it reaches this branch too — but it is not the `-1`
@@ -701,25 +824,34 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
       # that is genuinely still in force, which is why /pm sends weekly parks to
       # manual resume in the first place. Unreadable kind fails closed the same
       # way (#1595).
-      KIND_RC=0
-      PARK_KIND=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].day.limit_kind" 2>/dev/null) || KIND_RC=$?
-      if [[ "$KIND_RC" -ne 0 && "$KIND_RC" -ne 3 ]]; then
-        echo "(DEGRADED: could not read day.limit_kind (rc=$KIND_RC) — park left standing, recovery remains active)"
-      elif [[ -n "$PARK_KIND" && "$PARK_KIND" != "null" && "$PARK_KIND" != "rolling_window" ]]; then
+      if [[ -n "$PARK_KIND" && "$PARK_KIND" != "null" && "$PARK_KIND" != "rolling_window" ]]; then
         # A genuine weekly cap. Every *complete* park writes limit_kind in the
         # same atomic write as parked_until, so a NON-NULL kind that is not
         # rolling_window is a real weekly park and must outlast this resume.
         echo "(usage-limit park left standing: limit_kind=$PARK_KIND is not rolling_window — resume when the window reopens)"
-      elif retire_limit_park; then
+      else
         # rolling_window, or a NULL kind. Null is not a weekly cap: it is 2D.7's
         # incomplete claim — Step 1 writes parked_until and the `-1` sentinel,
         # and limit_kind only arrives with Step 3 — which is precisely the
         # half-written park this retirement exists to clear. Reading null as
         # weekly would strand the one shape the escape hatch is for (#1595).
-        LIMIT_WAKE_RESOLVED=true
-        echo "(cleared standing usage-limit park)"
-      else
-        echo "(DEGRADED: standing park record could not be cleared — recovery remains active)"
+        RETIRE_RC=0
+        retire_limit_park || RETIRE_RC=$?
+        case "$RETIRE_RC" in
+          0)
+            LIMIT_WAKE_RESOLVED=true
+            echo "(cleared standing usage-limit park)"
+            ;;
+          7)
+            # Superseded: a park claimed the slot after this step read it. It owns
+            # its own bound and wake; clearing it here would orphan both (#1663).
+            LIMIT_WAKE_RESOLVED=true
+            echo "(standing park left as found: a newer usage-limit park now owns the slot — nothing was cleared)"
+            ;;
+          *)
+            echo "(DEGRADED: standing park record could not be cleared (rc=$RETIRE_RC) — recovery remains active)"
+            ;;
+        esac
       fi
     fi
   fi
