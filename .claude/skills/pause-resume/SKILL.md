@@ -670,6 +670,7 @@ PARK_UNTIL_EXPECT=null
 LIMIT_TASK_ID=""
 PARKED_UNTIL=""
 PARK_KIND=""
+PARK_RECORD_PRESENT=false
 if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
   PARK_SNAPSHOT=$("$SESSION_STATE_SH" --get-json ".repos[\"$REPO_KEY\"].day" 2>/dev/null) \
     || PARK_READ_RC=$?
@@ -681,7 +682,12 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     && PARK_UNTIL_EXPECT=$(printf '%s' "$PARK_SNAPSHOT" | jq -c '.parked_until // null' 2>/dev/null) \
     && LIMIT_TASK_ID=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_resume_task_id // ""' 2>/dev/null) \
     && PARKED_UNTIL=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.parked_until // ""' 2>/dev/null) \
-    && PARK_KIND=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_kind // ""' 2>/dev/null); then
+    && PARK_KIND=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '.limit_kind // ""' 2>/dev/null) \
+    && PARK_RECORD_PRESENT=$(printf '%s' "$PARK_SNAPSHOT" | jq -r '
+         [.limit_resume_task_id, .limit_resume_generation,
+          .limit_probe_fires_remaining, .limit_cause, .limit_kind,
+          .park_claim_token, .parked_until]
+         | any(. != null) | tostring' 2>/dev/null); then
     PARK_IDENTITY_READ=true
   elif [[ "$PARK_READ_RC" -eq 0 ]]; then
     PARK_READ_RC=4                   # the record exists but does not parse: unreadable
@@ -798,7 +804,17 @@ if [[ -n "$SESSION_STATE_SH" && -n "$REPO_KEY" ]]; then
     # is the documented escape hatch for (#1595). Both values come from the same
     # snapshot as the wake id — an unreadable record already fell into the
     # DEGRADED branch above, which is where the old per-field reads failed closed.
-    if [[ -z "$PARKED_UNTIL" || "$PARKED_UNTIL" == "null" ]]; then
+    #
+    # The fast path turns on RECORD PRESENCE, never on `parked_until` alone. A bound
+    # of null does not mean "no park": /pm 2D.1(b+) and 2D.5 keep the day parked on a
+    # `preemptive` cause with a `0`/`-1` bound *regardless of `parked_until`* — the
+    # invariant this step opens with — so a present record whose bound happens to be
+    # null is exactly a park that must be retired, not one that can be skipped.
+    # Reading a null bound as absence marked the resume resolved while leaving that
+    # cause and bound standing, which is the #1595 deadlock wearing a success message.
+    # Only a genuinely empty slot short-circuits; every present record goes through
+    # the kind check and `retire_limit_park` below.
+    if [[ "$PARK_RECORD_PRESENT" != true ]]; then
       LIMIT_WAKE_RESOLVED=true          # nothing armed and no park recorded
     else
       # Only a rolling-window park may be retired here. A weekly-cap park never

@@ -337,6 +337,54 @@ check_eq "  its bound is untouched" "2026-09-18T00:00:00Z" "$(day_get parked_unt
 check_eq "  and the resume is NOT marked resolved" "false" "$(field "$OUT" RESOLVED)"
 
 # ---------------------------------------------------------------------------
+echo "== The no-wake fast path turns on record PRESENCE, not the bound =="
+# ---------------------------------------------------------------------------
+# `/pm` 2D.1(b+) and 2D.5 keep the day parked on a `preemptive` cause with a
+# `0`/`-1` bound REGARDLESS of `parked_until` — the invariant Step 5 opens with.
+# So a present record whose bound is null is a live park, not an empty slot, and
+# skipping it here marks the resume resolved while the park it is the escape
+# hatch for (#1595) stays standing: a deadlock wearing a success message.
+seed_present_null_bound_park() {  # seed_present_null_bound_park <cause> <probe-bound>
+  jq -n --arg k "$REPO_KEY" --arg cause "$1" --argjson probe "$2" \
+    '{repos: {($k): {day: {
+      active: true, parked_until: null, limit_kind: null,
+      limit_cause: $cause, park_claim_token: null,
+      limit_probe_fires_remaining: $probe, limit_resume_task_id: null,
+      limit_resume_generation: null, consecutive_limit_hits: 2}}}}' > "$STATE_FILE"
+}
+
+for PROBE in -1 0; do
+  seed_present_null_bound_park "preemptive" "$PROBE"
+  OUT="$(run_disarm)"
+  check_eq "a present preemptive park (bound null, probe $PROBE) is retired, not skipped" \
+    "null" "$(day_get limit_cause)"
+  check_eq "  its probe bound is cleared too (probe $PROBE)" "null" "$(day_get limit_probe_fires_remaining)"
+  check_eq "  and the resume IS marked resolved (probe $PROBE)" "true" "$(field "$OUT" RESOLVED)"
+  require_text "  and it says the park was cleared (probe $PROBE)" <(printf '%s\n' "$OUT") \
+    'cleared standing usage-limit park'
+done
+
+# NEGATIVE CONTROL — the pre-fix condition, run on the identical state. If this
+# passed too, the presence check above would be proving nothing.
+seed_present_null_bound_park "preemptive" -1
+OUT="$(bash -c 'TaskStop() { return 0; }'$'\n'"$BLOCK_RETIRE"$'\n''PARKED_UNTIL_OLD="$PARKED_UNTIL"
+if [[ -z "$PARKED_UNTIL_OLD" || "$PARKED_UNTIL_OLD" == "null" ]]; then
+  echo "OLD_RESOLVED=true"
+else
+  echo "OLD_RESOLVED=false"
+fi' 2>&1)"
+check_eq "control: the pre-fix bound test calls this present park absent" "true" \
+  "$(field "$OUT" OLD_RESOLVED)"
+check_eq "control: and it would have left the cause standing" "preemptive" "$(day_get limit_cause)"
+
+# …and a genuinely empty slot still short-circuits without a spurious clear line.
+seed_empty_slot
+OUT="$(run_disarm)"
+check_eq "an empty slot is still resolved with no retire" "true" "$(field "$OUT" RESOLVED)"
+refute_text "  and says nothing about clearing a park" <(printf '%s\n' "$OUT") \
+  'cleared standing usage-limit park'
+
+# ---------------------------------------------------------------------------
 echo "== /pm D5's successful-resume clear (AC 6, AC 8) =="
 # ---------------------------------------------------------------------------
 run_d5() {  # run_d5 <interleave-snippet>
