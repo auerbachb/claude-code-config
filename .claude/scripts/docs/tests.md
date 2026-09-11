@@ -25,6 +25,7 @@ opt-in of issue #1544.
 | [backlog-health.test.sh](../tests/backlog-health.test.sh) | Tests for `backlog-health.sh` |
 | [backlog-staleness.test.sh](../tests/backlog-staleness.test.sh) | Tests for `backlog-staleness.sh` |
 | [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
+| [board-round-membership.test.sh](../tests/board-round-membership.test.sh) | Runs the real skill-embedded bash for `/subagent` Step 7.0's round-membership write and `/board` Step 3's queued-row derivation (issue #1604), plus the cross-file contracts they depend on: the schema block, the teardown clear, `/wave`'s deliberate non-write, and the reconciled "no durable field" rationale |
 | [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract |
 | [candidate-ownership.test.sh](../tests/candidate-ownership.test.sh) | Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee |
 | [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |

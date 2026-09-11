@@ -1,6 +1,6 @@
 ---
 name: board
-description: Render the canonical "Running now" table on demand, in any thread that has dispatched or is monitoring pipelines — the round's running pipelines with their phase, recorded start, projected end and what is left, recomputed live from durable state. Complete from the thread that dispatched the round, which alone holds the queue and can confirm a pre-PR row from its live agent handle; any other thread renders no queued rows at all and reports the delivered count as approximate, because round membership is not yet durable. Read-only; it never dispatches, merges, or changes a pipeline. Triggers on "/board", "show the board", "where is everything", "what's running right now", "current board".
+description: Render the canonical "Running now" table on demand, in any thread that has dispatched or is monitoring pipelines — the round's running pipelines with their phase, recorded start, projected end and what is left, recomputed live from durable state. Exact from any thread for a round the dispatcher recorded, queued and delivered rows included; only a round dispatched before that record existed falls back to no queued rows and an approximate delivered count away from the dispatching thread, which alone can also confirm a pre-PR row from its live agent handle. Read-only; it never dispatches, merges, or changes a pipeline. Triggers on "/board", "show the board", "where is everything", "what's running right now", "current board".
 triggers:
   - board
   - show the board
@@ -30,17 +30,21 @@ resolution is deliberately not special-cased here: the freshness record in Step 
 to land on the same key the armed floor watch polls, and a `/board` that resolved its
 repo differently from `/subagent` would write a record nothing reads.
 
-**Round membership is not durable, and `/board` says so rather than implying it.**
-**Running** rows reconstruct fully from state. **Queued** rows do not: nothing on
-disk records which issues are waiting (Step 3), so a thread that did not dispatch the
-round — or one whose queue a compaction took — prints none and names that gap in
-Step 4's summary line. **Completed** rows inherit the same gap from the other end:
-the dispatching thread knows exactly which merged pipelines were its round, while a
-non-dispatching thread can only bound them by timestamp and so calls its delivered
-count approximate. The board is then honest but partial, never silently short a
-row. Both gaps have one root — no durable round key — and one fix: a change to the
-dispatcher's write path rather than to this reader, so it is a follow-up, not
-something to paper over here.
+**Round membership is durable, and where it is missing `/board` says so rather than
+implying it.** The dispatcher records the whole round — launched and queued alike —
+at dispatch (`/subagent` Step 7.0 → `.repos["<key>"].round.members`), so all three
+row classes reconstruct from state for **any** thread: **Running** rows from
+`pipelines`, **Queued** rows as members with no recorded `started_at`, and
+**Completed this round** rows as members whose PR merged (Step 3). No queue in
+memory, no timestamp inference, and a compaction costs nothing.
+
+**The residual case is a round with no such record** — one dispatched before this
+field existed, or one whose write degraded. There the old behaviour stands and is
+labelled: a non-dispatching thread renders no queued rows, and bounds completed rows
+by timestamp, so it calls that delivered count approximate (Step 4's summary line).
+The board is then honest but partial, never silently short a row. The dispatching
+thread keeps one advantage in both cases — only it can confirm a **pre-PR** row from
+the live agent handle it is holding (Step 3).
 
 `/board` is symlinked globally, but its helper scripts are not, so Step 0 resolves
 each one — never a bare `.claude/scripts/…` path
@@ -153,8 +157,21 @@ fi
 # --session-view (which lifts only .prs and .root_repo out of the repo block), so
 # address it by its full path. Never `--get .` — that leaks every repo.
 PIPELINES=""
+ROUND_MEMBERS=""
 if [[ -n "$EFFECTIVE_REPO" ]]; then
   PIPELINES=$(sget ".repos[\"$EFFECTIVE_REPO\"].pipelines")
+  # The durable round record (issue #1604), written once at dispatch by
+  # `/subagent` Step 7.0 and cleared at round teardown. Same invisibility as
+  # `pipelines` — not in --session-view — so spell the path out. EMPTY IS A
+  # REAL ANSWER, and the one Step 3 branches on: a round dispatched before this
+  # field existed has none, and that is what selects the fallbacks there.
+  # --get-json, not sget: this value is an ARRAY, and `--get`'s raw mode
+  # pretty-prints it across lines, which is not something `jq` can read back.
+  ROUND_MEMBERS=$("$SESSION_STATE_SH" \
+    --get-json ".repos[\"$EFFECTIVE_REPO\"].round.members" 2>/dev/null) || ROUND_MEMBERS=""
+  # An absent path and a stored null both print `null` — both mean "no recorded
+  # round", so normalise to empty exactly as sget does for scalars.
+  [[ "$ROUND_MEMBERS" == "null" ]] && ROUND_MEMBERS=""
 fi
 ```
 
@@ -170,15 +187,24 @@ STATE=$("$SESSION_STATE_SH" --session-view --all-repos 2>/dev/null) || STATE=""
 BOARD_REPOS=$(printf '%s' "$STATE" | jq -r '.repos // {} | keys[]' 2>/dev/null)
 for RK in $BOARD_REPOS; do
   RK_PIPELINES=$(sget ".repos[\"$RK\"].pipelines")
-  # Accumulate (RK, RK_PIPELINES) pairs; `_unknown` carries no usable repo for the
-  # `gh` and estimate lookups below, so skip it rather than guessing one.
+  # The round record is repo-scoped like everything else here, so each repo
+  # brings its OWN membership — or none, independently of its neighbours.
+  RK_ROUND_MEMBERS=$("$SESSION_STATE_SH" \
+    --get-json ".repos[\"$RK\"].round.members" 2>/dev/null) || RK_ROUND_MEMBERS=""
+  [[ "$RK_ROUND_MEMBERS" == "null" ]] && RK_ROUND_MEMBERS=""
+  # Accumulate (RK, RK_PIPELINES, RK_ROUND_MEMBERS) triples; `_unknown` carries no
+  # usable repo for the `gh` and estimate lookups below, so skip it rather than
+  # guessing one.
 done
 ```
 
 **Under `--all-repos`, every repo-scoped value becomes per-row, not per-board.**
 Carry each pipeline's own repo key alongside it and use *that* key — never the
 invoking repo's — for its `gh` lookups (Step 3), its `estimate-resolve.sh --repo`
-and Issue cell (Step 4), and its freshness record (Step 5). One board spanning three repos is three repos' worth of
+and Issue cell (Step 4), its round membership (Step 3), and its freshness record
+(Step 5). Membership especially: one repo's recorded round says nothing about
+another's, so a repo with a record renders exact rows on the same board where a
+repo without one renders the fallback. One board spanning three repos is three repos' worth of
 scope, and a single `EFFECTIVE_REPO` applied across it is wrong in three different places
 at once.
 
@@ -337,28 +363,81 @@ board. Three row classes make up the round:
   **With neither signal, the pipeline is not a row and not a round member.** It is
   named instead in Step 4's summary line — and in the no-round line when it is all
   there is — so the work is never silently dropped, but a long-abandoned dispatch
-  cannot hold a round open forever or keep resetting the freshness floor. That is the
-  case a durable round key would settle; until then, naming it is the honest answer.
+  cannot hold a round open forever or keep resetting the freshness floor.
+
+  **The round record does not settle this one, and must not be read as if it did.**
+  It records *membership*, which is a fact about the dispatch; liveness is a fact
+  about right now, and an abandoned Phase A is a member of its round for as long as
+  the record stands. A pre-PR member with neither signal is therefore still not a
+  confirmed row — it is a member with unknown liveness, named rather than counted.
+  What the record does fix is the other half: the member is now known to belong to
+  *this* round, so naming it is a statement about the current board rather than about
+  anything `pipelines` ever held.
 
   There is no timeout anywhere in this rule, deliberately: staleness would need an age
   threshold, and a magic constant is what this spec avoids everywhere else. Evidence
   decides, not elapsed time.
-- **Queued** — issues filed or accepted for this round that have not launched.
-  **No durable field records them** (the same reason `table-freshness.sh` takes its
-  active count as an argument), so these come from the dispatching thread's own
-  queue. A thread that did not dispatch the round has no queue to read and prints
-  none; say so in Step 4's summary line rather than implying the round has none.
+- **Queued** — issues accepted for this round that have not launched. **Read them
+  from the durable round record** (`ROUND_MEMBERS`, Step 2): a member with **no
+  recorded `started_at`** in that repo's `pipelines` has not launched, and is a
+  queued row. Nothing else marks a queued issue — a queued issue has no `pipelines`
+  entry at all until its turn, which is precisely why membership had to be written
+  down separately.
+
+  <!-- test-anchor: board-step3-queued-from-round -->
+
+  ```bash
+  # ROW_PIPELINES and ROW_ROUND_MEMBERS are that repo's own pair (Step 2). Queue
+  # order is the recorded order — `members` is written in Step 6.0b's execution
+  # order, so it is read back as-is and never re-sorted.
+  QUEUED_ISSUES=$(jq -rn \
+    --argjson m "$ROW_ROUND_MEMBERS" \
+    --argjson p "${ROW_PIPELINES:-null}" \
+    '$m[] | select((($p // {})[.] // {}) | has("started_at") | not)' 2>/dev/null)
+  ```
+
+  **This path is exact for any thread**, not only the dispatcher: the record is on
+  disk, so a sibling thread and a post-compaction rebuild read the same queue.
+  Nothing about it needs the live agent handles — those decide *liveness* of a
+  pre-PR row (above), never *membership*.
+
+  **A recorded queue does not, by itself, open a round.** The record is durable, so
+  a thread that died mid-round leaves one behind until the next dispatch replaces
+  it or a teardown clears it — and queued members alone would then render a dead
+  round as the current one forever. Same answer as the abandoned pre-PR dispatch
+  above, and for the same reason: evidence decides. Queued rows render only when
+  that repo also shows **at least one running row or evidenced pre-PR row**; with
+  none, nothing in that repo is alive and the no-round path (below) is the honest
+  answer — naming the recorded members rather than printing a queue nobody is
+  working. Deliberately "in that repo" and not "in this round": a dispatch that
+  queues everything because the ceiling is full of a previous round's pipelines is
+  a live queue, and those pipelines are the evidence. No timeout is involved, here
+  as everywhere else in this step: a stale record is caught by what it fails to
+  show, not by its age.
+
+  **Only when that repo has no round record** (empty `ROUND_MEMBERS` — a round
+  dispatched before this field existed, or one whose write degraded) does the old
+  behaviour apply: queued rows come from the dispatching thread's own in-memory
+  queue, and a thread that did not dispatch the round prints none and says so in
+  Step 4's summary line rather than implying the round has none. `table-freshness.sh`
+  still takes its active count as an argument for a different reason — excluding
+  terminal rows needs live merge reads, which the freshness clock avoids.
 - **Completed this round** — a `.pipelines` entry whose PR is merged **and** which
   belongs to this round. Membership has a durable answer and an approximate one, and
   the board uses whichever it actually has:
 
-  **When this thread dispatched the round, membership is not a guess.** The
-  dispatching thread holds the round's issue list — the same list Step 4's queued
-  rows come from. Completed rows are then simply *those members whose PR is merged*:
-  no timestamp bound, no inference. This is the common case, because the thread that
-  renders the board on every heartbeat is the thread that dispatched it.
+  **When that repo has a round record, membership is not a guess — for any
+  thread.** `ROUND_MEMBERS` (Step 2) *is* the round's issue list, the same list the
+  queued rows come from. Completed rows are then simply *those members whose PR is
+  merged*: no timestamp bound, no inference, and no dependence on which thread
+  dispatched it. This is the ordinary case now; the two fallbacks below are what a
+  round dispatched before that record existed still gets.
 
-  **Otherwise, fall back to a timestamp bound: `mergedAt` at or after the earliest
+  **With no record, but this thread dispatched the round, membership is still not a
+  guess.** The dispatching thread holds the round's issue list in memory, and
+  completed rows are those members whose PR is merged, exactly as above.
+
+  **With no record and no dispatch, fall back to a timestamp bound: `mergedAt` at or after the earliest
   `started_at` among the running rows *of that pipeline's own repo*.** Under
   `--all-repos` the bound is per repo, like every other repo-scoped value in Step 2:
   a single board-wide bound lets one repo with a running row define a round for every
@@ -382,17 +461,19 @@ board. Three row classes make up the round:
   non-dispatching thread calls its delivered count **approximate** in Step 4's
   summary line — not a lower bound, which would claim a floor the test does not have
   — the same way it names the queued gap. Widening the window to "everything merged"
-  would print the repo's history under a round's heading, and inventing a round-start
-  timestamp is a write to the dispatcher, not a read here — the same follow-up that
-  would make queued membership durable settles both ends.
+  would print the repo's history under a round's heading. That was the fix, and it
+  landed on the dispatcher's write path rather than on this reader: the recorded
+  round now settles both ends — queued membership and the completed set — for every
+  round dispatched since, which is why this bound survives only where no record does.
 
-  **A queued-only round is the dispatching thread's case, and it needs no bound.**
-  Only that thread can see a queue at all, and for it membership is the list itself,
-  so its completed rows are exact whether or not anything is running. The timestamp
-  fallback never meets this case: a non-dispatching thread with nothing running sees
-  no queue and no running row, which is not a round at all but the no-round path
-  below. The bound reads running rows only because **queued rows have no
-  `started_at`** — that is what their em-dash clocks mean.
+  **Membership needs no bound at all.** Whoever can see the queue — any thread with a
+  round record, or the dispatching thread without one — has membership as a list, so
+  its completed rows are exact however few rows are running. What it still needs is a
+  *round*: a repo with nothing running and nothing evidenced takes the no-round path
+  below whatever its record says, so "queued-only" never reaches this section. The
+  timestamp fallback, for its part, reads running rows only because **queued rows have
+  no `started_at`** — that is what their em-dash clocks mean, and it is the same
+  absence the queued test above reads as "not launched yet".
 
   Merge state is read live and **always `--repo`-qualified**:
   `gh pr view <ROW_PR> --repo "$ROW_REPO" --json state,mergedAt` per PR in the round —
@@ -401,9 +482,14 @@ board. Three row classes make up the round:
   the number against the cwd's repo and confidently answer for a different PR.
   (`state`, never a `merged` field: `--json merged` is not a field on any `gh`.)
 
-**If there is no running row, no evidenced pre-PR row, and no queued row, there is
-no current round** — the lower bound above is undefined, so completed rows are not
-computed at all and Step 4 prints its one-line message. Evidenced pre-PR rows count
+**If there is no running row and no evidenced pre-PR row, there is no current
+round** — the lower bound above is undefined, so completed rows are not computed at
+all and Step 4 prints its one-line message. **Recorded queued members do not open a
+round on their own** (the Queued rule above): a repo whose every row is a queued
+member has nothing running and nothing evidenced, which is exactly what an abandoned
+record looks like on disk — and a durable record, unlike an in-memory queue, would
+otherwise keep a dead round current forever. A dispatching thread's own unlaunched
+queue is treated the same way, so one rule covers both. Evidenced pre-PR rows count
 here even though they are not confirmed running: they are exactly what a Phase-A-only
 round consists of, and excluding them is how a live round renders as "no active
 round". Unevidenced ones do not count — that is what keeps an abandoned dispatch from
@@ -442,6 +528,13 @@ No active round — nothing running or queued in <EFFECTIVE_REPO>; 2 pre-PR pipe
 state could not be confirmed live: #1604, #1607.
 ```
 
+A **recorded round with nothing running** reaches this path too (Step 3), and it is
+named the same way rather than printed as a queue nobody is working:
+
+```text
+No active round — nothing running in <EFFECTIVE_REPO>; a recorded round has 3 unlaunched member(s) and nothing live: #1604, #1607, #1612.
+```
+
 Those issue numbers follow the same qualification rule as the `Issue` cell: bare `#N`
 on a single-repo board, `owner/name#N` under `--all-repos`, where a bare number names
 nothing in particular.
@@ -454,6 +547,19 @@ naming one repo would be wrong or empty: under `--all-repos`, and whenever
 
 When Step 2 read nothing at all, keep it to the same single line and stay honest
 about why: `No active round — session state unreadable, treating as no round.`
+
+**"nothing queued" is a claim, and only a round record earns it.** With one, an empty
+queue is a fact read off disk — the plain line above is correct as written. **Without
+one, on a thread that did not dispatch**, the line must not assert an empty queue it
+never had access to; say what is actually known:
+
+```text
+No active round — nothing running in <EFFECTIVE_REPO>; no round on record here, so any queue is unknown from this thread.
+```
+
+The dispatching thread keeps the plain line in both cases: its own queue is the
+answer when the record is missing. Under `--all-repos` the whole board takes the
+qualified line when **any** repo that reached this path lacked a record.
 
 ### The board
 
@@ -608,8 +714,11 @@ fi
 Prose, not new columns — the same place `/subagent` reports blockers. Cover what the
 rows cannot say for themselves: anything **blocked** (`blocker`, read at the same
 per-mode `prs` path Step 3 used — `.repos["<key>"].prs["<N>"]` under `--all-repos`), and a
-count of what is running, queued, and delivered this round. On a **non-dispatching**
-thread each carries its own qualification, and they are not the same one:
+count of what is running, queued, and delivered this round.
+
+**Qualify a count only when this board actually lacked the answer.** Each of the
+three is qualified on its own terms, and the qualification is conditional — a
+qualifier stated over an exact count is as misleading as an unqualified guess:
 
 - **Running is exact** for every **PR-backed** row whose liveness was established —
   an attributed agent entry or a `prs` entry with a phase, in either case for a row
@@ -617,16 +726,22 @@ thread each carries its own qualification, and they are not the same one:
   evidence: an `.owner_repo`-attributed one renders `Phase A (unconfirmed)` and is
   named here rather than counted, and an unevidenced one is named here by issue with
   no row at all. Only the dispatching thread's live handle turns a pre-PR row into a
-  counted one (Step 3).
-- **Queued is unknown**, not zero: this thread did not dispatch the round and has no
-  queue to read, so it renders no queued rows whatsoever.
-- **Delivered is approximate**, since the timestamp fallback both misses pipelines
-  that landed before the earliest running start and can absorb a late merge from an
-  earlier round.
+  counted one (Step 3) — the one asymmetry the round record does not close, because
+  it records membership and not liveness.
+- **Queued is exact** whenever that repo had a round record: the queue came off disk
+  (Step 3), so it is the round's real queue whoever is rendering it. **It is unknown
+  — not zero — only with no record and no dispatch by this thread:** there is then no
+  queue to read, so no queued row renders at all, and the line says so.
+- **Delivered is exact** on the same condition, for the same reason: membership came
+  off disk, so the merged members *are* the round's deliveries. **It is approximate
+  only where the timestamp fallback ran**, which both misses pipelines that landed
+  before the earliest running start and can absorb a late merge from an earlier round.
 
-A dispatching thread qualifies none of them: its round membership is its own list and
-it holds its own agents, so all three counts are exact. An unknown must never render
-as a "none", and neither an approximate nor an incomplete count as a total.
+Under `--all-repos` the condition is per repo, like the record itself: a board can
+carry one repo's exact counts beside another's qualified ones, and it says which is
+which rather than qualifying the whole line. An unknown must never render as a
+"none", and neither an approximate nor an incomplete count as a total — and equally,
+an exact count must never be hedged into either.
 
 ```text
 2 running, 1 queued, 1 delivered. #1489 is over plan by 22 min; nothing blocked.
@@ -655,8 +770,10 @@ rendered non-completed count — never the invoking `EFFECTIVE_REPO` and never a
 # are excluded, and so are pipelines named only in the summary line.
 # ROW_UNCONFIRMED = the `Phase A (unconfirmed)` rows rendered for this repo. It is not
 # added to ROW_ACTIVE; it only distinguishes the two ways a 0 can arise (below).
-# Both are caller-declared because nothing can derive them: .pipelines is append-only
-# and no durable field tracks queued issues. Substitute the integers per repo; the
+# Both stay caller-declared. The round record makes MEMBERSHIP derivable, but not
+# these: proven liveness comes from the agent list, the `prs` phase, and a live merge
+# read per PR — none of which the freshness clock may do — and .pipelines is
+# append-only. Substitute the integers per repo; the
 # guard below catches an unsubstituted placeholder. Default mode: ROW_REPO is Step 2's
 # EFFECTIVE_REPO and the loop runs once.
 for ROW_REPO in <each repo whose rows this board carried>; do

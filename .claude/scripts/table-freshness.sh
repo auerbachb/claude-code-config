@@ -24,9 +24,12 @@
 #   the round-end board is terminal and the thread stays quiet: no always-on
 #   hourly pulse, which would fight the stable-state backoff design in
 #   scheduling-reliability.md. Activity is caller-declared at render time
-#   (--active N, the count of running + queued pipelines) because it is the
-#   caller that knows its queue — no durable field tracks queued issues, and
-#   .repos[...].pipelines is append-only, so it cannot answer "still active?".
+#   (--active N, the count of running + queued pipelines). Round membership IS
+#   durable now (.repos[...].round.members, issue #1604), but deriving this
+#   count from it still needs a live merge-state read per member to drop the
+#   terminal rows — exactly the work the freshness clock exists to avoid — and
+#   .repos[...].pipelines is append-only, so it cannot answer "still active?"
+#   either. The count therefore stays an argument.
 #
 # DURABILITY
 #   The render timestamp lives in ~/.claude/session-state.json at

@@ -411,6 +411,44 @@ or from "when this tick noticed the pipeline" — would move Start on every rebu
 after a context compaction, which is precisely what the recorded value prevents.
 `createdAt` stays a last-resort fallback for pipelines that predate the record.
 
+### Round membership comes from state too (issue #1604)
+
+`pipelines` answers "when did this start"; it cannot answer "which issues are in this
+round" — it is append-only across sessions, and a **queued** issue has no entry there
+at all until its turn. So the round itself is recorded once, at dispatch:
+
+| Field | Value |
+|-------|-------|
+| `.repos["<key>"].round.members` | Every issue in the round, in execution order, as issue-number **strings** — launched now and queued alike. The key type matches `pipelines`, so the two join directly |
+| `.repos["<key>"].round.dispatched_at` | ISO-8601 UTC, stamped once at dispatch and never refreshed |
+| `.repos["<key>"].round.session` | The dispatching thread's session id — attribution, so a sibling's round is never torn down by the wrong thread. Not a lock and not a key: the block stays repo-keyed, or the `/board` in another thread could not find it |
+
+**Written by the dispatcher, read by every renderer.** `/subagent` Step 7.0 writes it
+after Step 6.0b assembles the round and before the first spawn; `/wave` writes
+nothing — it dispatches nothing, and a second writer would be a double-write.
+`/subagent` Step 8 item 6 clears it to `null` at round teardown, in the same breath as
+the `--active 0` terminal board, so a finished round can never be rendered as the
+current one.
+
+**One slot per repo, so both ends compare before they write.** Two orchestration
+threads can dispatch into the same repo at once — the reason `table_render` is
+session-keyed — and a bare `--set` at either end would let one thread take the other's
+round or clear a record it never owned. The write is a `session-state.sh --cas`
+against the block as read (a loss means a sibling recorded first: report it, never
+retry into an overwrite), and the clear is a CAS that additionally fires only while
+`members` is still the round that just ended. Re-entry — the same round re-running the
+step — is decided by **set equality** of `members`, never containment: a stale
+superset left by a dead round would otherwise be adopted as a new, smaller round's
+identity.
+
+Two of the table's three row classes fall out of it, for **any** thread: a member with
+no recorded `started_at` is a **queued** row, and a member whose PR merged is a
+**completed-this-round** row. A **refill never rewrites `members`** — promoting a
+queued member writes that issue's `started_at`, and the row moves from the queued view
+to the running view because of that write alone. An absent block means no recorded
+round, which is the legacy state and the state between rounds; renderers fall back
+rather than inventing membership.
+
 ### Usage by surface
 
 | Surface | When to emit |
@@ -418,7 +456,7 @@ after a context compaction, which is precisely what the recorded value prevents.
 | `/subagent` launch (Step 7) | Immediately after the batch is filed/queued — the whole round, launched rows and queued rows alike |
 | `/subagent` heartbeat (Step 8 item 6) | Re-render every tick: Start unchanged, Remaining recomputed, queued rows flipping to started as they launch |
 | `/subagent` on-demand | Same table when the user asks "how far along?" |
-| `/board` | The same table on demand, in any orchestration thread — the named command for the question `/subagent`'s on-demand answer handles in prose (issue #1581). **Partial for a non-dispatching thread:** round membership is not durable, so a `/board` run from a thread that did not dispatch the round renders no queued rows and reports its delivered count as approximate (the timestamp fallback misses anything that merged before the earliest running start, and can absorb a late merge from an earlier round), saying so both times. Running rows rebuild fully from durable state, with merge state read live per PR (`gh pr view --json state,mergedAt`) — the one field the board does not take from disk |
+| `/board` | The same table on demand, in any orchestration thread — the named command for the question `/subagent`'s on-demand answer handles in prose (issue #1581). **Complete from any thread for a recorded round** (issue #1604): queued rows are the members with no `started_at` and delivered rows the members whose PR merged, both exact and neither qualified. **Partial only for a round with no record** — one dispatched before that field existed, or whose write degraded: a thread that did not dispatch it then renders no queued rows and reports its delivered count as approximate (the timestamp fallback misses anything that merged before the earliest running start, and can absorb a late merge from an earlier round), saying so both times. Running rows rebuild fully from durable state either way, with merge state read live per PR (`gh pr view --json state,mergedAt`) — the one field the board does not take from disk. The dispatching thread keeps one advantage in both cases: only a live agent handle confirms a **pre-PR** row, which is liveness, not membership |
 | `/pm` | **Adopted** (issue #1527). The round's progress view is this table, rendered by running `/board` rather than by a second copy of the mechanics: `/subagent` Step 7.2's launch table serves a dispatch turn whose batch *is* the round (a refill landing beside still-running pipelines renders `/board` instead, so the heading is not read against a subset), the day-mode D5 heartbeat carries it on the freshness trigger below (one line otherwise), and any progress question answers with it. `/pm` is the dispatching thread, so the board renders **complete** — its own queued rows, no `Phase A (unconfirmed)` row for a pipeline it holds a handle for, and neither count qualified. `/pm`'s Active Work table (3.2) is a separate assignment ledger, not a rival shape: it carries rows that are not pipelines (`Chip offered`, `Prompt generated`, `Active`, `Tracking`, `Deferred (cap)`) and chip handles, for which the Status vocabulary here has no cell |
 | `/pr-monitor-and-manage` | **Documented divergence** for its per-tick fleet table (below), which answers a different question; the round-progress question routes to `/board` and renders this table unaltered (issue #1527) |
 | `/leave-by` check-in | At `deadline − lead`, unprompted — this table plus the `By {H:MM} ET` column above |
