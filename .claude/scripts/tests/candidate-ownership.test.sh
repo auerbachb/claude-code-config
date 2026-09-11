@@ -438,6 +438,101 @@ check_eq "phase a" "a" "$(field 302 '.adopt.phase')"
 check_eq "owner label from the registry entry name" "phase-a-302" "$(field 302 '.owner_label')"
 
 ############################################################################
+# The real listing shape (issue #1459). `mcp__ccd_session_mgmt__list_sessions`
+# spells a session `local_<uuid>` and carries no `status` string at all — its
+# state is the booleans `isArchived` / `isRunning` — while every owner id this
+# sweep reads out of session-state.json and claim records is the BARE uuid.
+# Pre-#1459 both halves failed: the id never matched (absent -> dead) and an
+# archived record had no recognized status word. The first of those is the
+# dangerous direction — a live thread read as dead is adopted underneath — so
+# the live case is asserted first.
+scenario "(3d) real list_sessions shape — local_ prefix and boolean status"
+export FAKE_CLAIM_310="stale:9f1c2d3e-1111-4aaa-bbbb-000000000001:alice"
+printf 'issue-310-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000001",
+                 "title":"[#310] feature work","cwd":"/w","isArchived":false,
+                 "isRunning":true,"lastActivityAt":"2026-09-10T18:00:00Z",
+                 "group":"today"}]'
+sweep 310
+check_eq "prefixed listing id matches the bare owner id — owner stays live" \
+  "live" "$(field 310 '.liveness')"
+check_eq "so a live thread's work is surfaced, never adopted" "skip" "$(field 310 '.action')"
+check_eq "verdict owned_live" "owned_live" "$(field 310 '.verdict')"
+check_eq "and the listing title names the owner" "[#310] feature work" \
+  "$(field 310 '.owner_label')"
+
+scenario "(3e) prefixed id, isArchived true — adopt"
+export FAKE_CLAIM_311="stale:9f1c2d3e-1111-4aaa-bbbb-000000000002:alice"
+printf 'issue-311-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000002",
+                 "title":"dead thread","isArchived":true,"isRunning":false,
+                 "lastActivityAt":"2026-09-01T18:00:00Z","group":"older"}]'
+sweep 311
+check_eq "isArchived:true is dead even with no status word" "dead" "$(field 311 '.liveness')"
+check_eq "and the surviving branch is adopted" "adopt" "$(field 311 '.action')"
+check_eq "from the branch" "branch" "$(field 311 '.adopt.from')"
+
+# jq's `//` yields its left side for anything that is not null or false, and ""
+# is neither — so a blank `status` shadowed the booleans under it and an
+# explicitly archived session read as an unrecognized word, i.e. live. Blank
+# carries no information; it must fall through exactly like a missing key.
+echo "-- (3e2) a blank status does not shadow isArchived:true --"
+scenario "(3e2) blank status over an archived session"
+export FAKE_CLAIM_314="stale:9f1c2d3e-1111-4aaa-bbbb-000000000004:alice"
+printf 'issue-314-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000004",
+                 "title":"dead thread","status":"   ",
+                 "isArchived":true,"isRunning":false}]'
+sweep 314
+check_eq "still dead" "dead" "$(field 314 '.liveness')"
+check_eq "and still adopted" "adopt" "$(field 314 '.action')"
+
+# Control: a non-blank word we do not recognize still wins over the booleans and
+# resolves live — deliberate, since a word we cannot read is not evidence of
+# death. Without this the fix above could over-reach into that rule unnoticed.
+echo "-- (3e3) control: an unrecognized status word still reads live --"
+scenario "(3e3) unknown status word over an archived session"
+export FAKE_CLAIM_315="stale:9f1c2d3e-1111-4aaa-bbbb-000000000005:alice"
+printf 'issue-315-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000005",
+                 "title":"odd thread","status":"zorp",
+                 "isArchived":true,"isRunning":false}]'
+sweep 315
+check_eq "unknown word is not evidence of death" "live" "$(field 315 '.liveness')"
+check_eq "so it is surfaced, not adopted" "skip" "$(field 315 '.action')"
+
+# The same shadowing one level down: chained through a single `//`, a blank
+# `.status` would swallow a perfectly good `.state`, so the two are trimmed and
+# tested separately.
+echo "-- (3e4) a blank status falls through to a non-blank state --"
+scenario "(3e4) blank status, archived state"
+export FAKE_CLAIM_316="stale:9f1c2d3e-1111-4aaa-bbbb-000000000006:alice"
+printf 'issue-316-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-000000000006",
+                 "title":"dead thread","status":"","state":"archived"}]'
+sweep 316
+check_eq "the state word is read" "dead" "$(field 316 '.liveness')"
+check_eq "and the branch is adopted" "adopt" "$(field 316 '.action')"
+
+scenario "(3f) prefixed listing that does not name the owner at all"
+export FAKE_CLAIM_312="stale:9f1c2d3e-1111-4aaa-bbbb-000000000003:alice"
+printf 'issue-312-feature\n' > "$BRANCHES_FILE"
+seed_sessions '[{"sessionId":"local_9f1c2d3e-1111-4aaa-bbbb-00000000ffff",
+                 "title":"someone else","isArchived":false,"isRunning":true}]'
+sweep 312
+check_eq "absent from a readable listing is still dead" "dead" "$(field 312 '.liveness')"
+check_eq "adopt" "adopt" "$(field 312 '.action')"
+
+scenario "(3g) this thread's OWN session id, stored with a scheme prefix"
+export FAKE_CLAIM_313="stale:otherholder:alice"
+seed_state ".background_tasks=[{\"task_id\":\"t9\",\"name\":\"phase-a-313\",\"type\":\"agent\",\"session_id\":\"local_selfsession\",\"work_item\":\"Issue #313\",\"status\":\"running\",\"recovery_path\":\"/w/issue-313\"}]"
+seed_sessions '[{"sessionId":"local_other","isArchived":false,"isRunning":true}]'
+sweep 313
+check_contains "the registry entry is attributed to this session" \
+  "belongs to this session" "$(field 313 '.evidence | join("|")')"
+check_eq "so the sweep never adopts its own in-flight work" "dispatch" "$(field 313 '.action')"
+
+############################################################################
 scenario "(4) stale claim with NO resumable state — warn-and-proceed preserved"
 export FAKE_CLAIM_401="stale:threadGone:alice"
 sweep 401
@@ -614,6 +709,41 @@ export FAKE_CLAIM_413="claimed:threadOther:alice"
 sweep 413
 check_eq "owned" "true" "$(field 413 '.owned')"
 check_eq "skip" "skip" "$(field 413 '.action')"
+
+# A claim holder is an arbitrary token — `resolve_holder` fills it from
+# `CLAUDE_CLAIM_HOLDER` or a `host:/path` fallback, never necessarily a session
+# id. Running session-id normalization over one let a FOREIGN holder that merely
+# normalized alike read as self, and a self-match here skips the foreign-
+# ownership guard entirely: the stranger's claimed issue would be dispatched.
+echo "-- (4o) a foreign holder is not normalized into this thread --"
+scenario "(4o) foreign holder differing only by a scheme prefix"
+export FAKE_CLAIM_414="claimed:local_selfsession:alice"
+sweep 414
+check_eq "still owned by the stranger" "true" "$(field 414 '.owned')"
+check_eq "and skipped, not dispatched" "skip" "$(field 414 '.action')"
+check_contains "reported as a foreign claim" "fresh claim held by" \
+  "$(field 414 '.evidence | join("|")')"
+check_not_contains "and not self-attributed" "held by this thread" \
+  "$(field 414 '.evidence | join("|")')"
+
+echo "-- (4p) nor by case alone --"
+scenario "(4p) foreign holder differing only by case"
+export FAKE_CLAIM_415="claimed:SELFSESSION:alice"
+sweep 415
+check_eq "still owned by the stranger" "true" "$(field 415 '.owned')"
+check_not_contains "and not self-attributed" "held by this thread" \
+  "$(field 415 '.evidence | join("|")')"
+
+# Positive control for the OTHER half of the split: a SESSION id still gets the
+# scheme-prefix normalization (scenario 3g covers the background-task path; this
+# one proves the exact-holder tightening did not take it away from claims that
+# genuinely are this thread's).
+echo "-- (4q) control: this thread's own exact session id still self-attributes --"
+scenario "(4q) self claim under the bare session id"
+export FAKE_CLAIM_416="claimed:selfsession:alice"
+sweep 416
+check_eq "not owned by ourselves" "false" "$(field 416 '.owned')"
+check_eq "dispatchable" "dispatch" "$(field 416 '.action')"
 
 ############################################################################
 # execution-pause.sh writes ONLY to .repos[<key>].execution_pauses[<session>],

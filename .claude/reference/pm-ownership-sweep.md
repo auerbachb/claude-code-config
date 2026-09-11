@@ -74,7 +74,7 @@ Keeping this outside `issue-claim.sh` matters. That script's contract is "who ho
 
 ## Adoption needs a startable claim
 
-Adoption takes the claim over through the **existing** stale-takeover path — `issue-claim.sh <N> --claim`, which re-stamps a stale claim for the new holder. That path refuses a *fresh* foreign claim without `--allow-claimed`, and `--allow-claimed` is only ever an explicit per-issue instruction from the user in chat.
+Adoption fires only where liveness resolved **dead**, which needs a supplied session listing (§Liveness) — with no listing every owner is `live` and this whole branch is unreachable. Given one, it takes the claim over through the **existing** stale-takeover path — `issue-claim.sh <N> --claim`, which re-stamps a stale claim for the new holder. That path refuses a *fresh* foreign claim without `--allow-claimed`, and `--allow-claimed` is only ever an explicit per-issue instruction from the user in chat.
 
 Adoption is therefore available only where that path would succeed — a claim verdict `issue-claim.sh` already reports startable (`stale`, `unclaimed`, `mine`). Every other verdict is `skip` **even when the owner's session is archived**:
 
@@ -99,17 +99,33 @@ Where adoption does fire, it picks the cheapest resume point rather than always 
 
 ## Liveness fails toward surfacing
 
-No CLI enumerates Claude sessions, so liveness is resolved against a **session listing the caller supplies** (`--sessions <path>`, or `CLAUDE_SESSION_LISTING`). The script normalizes the common shapes: a bare array or an object with `sessions` / `data` / `results`, whose entries name their id as `id` / `session_id` / `sessionId` / `uuid`, their state as `status` / `state`, and their title as `title` / `name` / `summary`.
+No CLI enumerates Claude sessions, so liveness is resolved against a **session listing the caller supplies** (`--sessions <path>`, or `CLAUDE_SESSION_LISTING`). The script normalizes the common shapes: a bare array or an object with `sessions` / `data` / `results`, whose entries name their id as `id` / `session_id` / `sessionId` / `uuid`, their state as `status` / `state` or the booleans `isArchived` / `isRunning`, and their title as `title` / `name` / `summary`.
+
+### Where the listing actually comes from (issue #1459)
+
+The concrete source in the Claude desktop app is the **deferred** MCP tool `mcp__ccd_session_mgmt__list_sessions`. Deferred means its schema is not loaded, so a thread loads it once (`ToolSearch` with `select:mcp__ccd_session_mgmt__list_sessions`) and then calls it. `/pm` Step 1B.5 does exactly that, writes the returned array to a temp file, and passes it as `--sessions`; Step 3.4 re-runs the same blocks per sweeping tick, because a listing captured hours ago misclassifies both directions. Until #1459 nothing supplied a listing at all, so liveness was `indeterminate` on every real run and `owned_dead -> adopt` never fired — the sweep shipped as a surface-and-skip guard only.
+
+Each record looks like `{"sessionId","title","cwd","branch"?,"isArchived","isRunning","prNumber"?,"prState"?,"lastActivityAt","group"}`, which differs from the stored owner ids in two ways that both had to be handled:
+
+- **`sessionId` carries a `local_` prefix** (`local_1aa951b8-…`) while every owner id the sweep reads from `session-state.json`, claim records, and marker filenames is the **bare** uuid. Ids are therefore compared with a `local_` / `remote_` / `cloud_` / `session_` scheme prefix normalized away on **both** sides (`norm_session_id`, used by the liveness lookup, the title lookup, and `is_self_session`). Skipping that is not a cosmetic miss: an id that fails to match is *absent*, absent is `dead`, and `dead` is the one classification that adopts — so an unnormalized id turns every live owner into an adoptable one.
+
+  **That normalization is for session ids only** — hence the split between `is_self_session` (background-task and resume-marker owner ids, normalized) and `is_self_holder` (claim holders, exact compare). A claim holder is an arbitrary token: `resolve_holder` fills it from `CLAUDE_CLAIM_HOLDER` or a `host:/path` fallback. Normalizing one strips a prefix *and* folds case, so any two holders that merely normalize alike read as the same thread — and a self-match on the holder path runs the *opposite* risk to the liveness lookup: it sets `CLAIM_IS_SELF`, which skips the foreign-ownership guard and dispatches a stranger's claimed issue. The liveness lookup errs toward finding the session (one surfaced line); the holder check errs toward *not* finding it (`OWNED=1` → surface). Both point at surface.
+- **There is no `status` string.** State is the booleans `isArchived` / `isRunning`, mapped to `archived` / `running`, with a record that carries either key but neither flag set reading `idle` (present, so live).
+
+The call also **excludes the calling session**, and absence classifies dead — so 1B.5 appends this thread's own `$CLAUDE_SESSION_ID` record to the array before writing it. Without that, a `/pm` thread could adopt work its own background tasks are running. It follows that a listing 1B.5 cannot vouch for is not used at all, because a listing the sweep *reads* is authoritative enough to adopt on. Two cases degrade instead of forwarding:
+
+- **`CLAUDE_SESSION_ID` unset.** No self-record can be appended, so forwarding the listing is precisely the self-adoption the append prevents.
+- **The listing filled the limit it was asked for** (`length >= SESSION_LISTING_LIMIT`). A full page is indistinguishable from a page cut at the limit, and a session cut out of it is *absent* → `dead` → adopt. 1B.5 asks for `limit: 500` — a bound on sessions, not on board size, which counts issues — and refuses the result if it still comes back full.
 
 | Listed status | Classified |
 |---|---|
-| `open`, `active`, `running`, `paused`, `idle`, `live`, `suspended`, `waiting` | **live** |
-| `archived`, `deleted`, `closed`, `ended`, `dead`, `terminated`, `gone`, `expired` | **dead** |
+| `open`, `active`, `running`, `paused`, `idle`, `live`, `suspended`, `waiting`, `isRunning: true` | **live** |
+| `archived`, `deleted`, `closed`, `ended`, `dead`, `terminated`, `gone`, `expired`, `isArchived: true` | **dead** |
 | absent from a listing that was read | **dead** |
 | unrecognized status word | **live** — an unknown word is not evidence of death |
 | no listing supplied, unparseable listing, or no resolvable owner session id | **indeterminate → treated as live** |
 
-The asymmetry is deliberate. Surfacing a thread that turned out to be dead costs one line the user can ignore; adopting work a live thread is still doing costs a duplicate implementation. Headless runs, where no listing tool exists, therefore land on surface-only by construction.
+The asymmetry is deliberate. Surfacing a thread that turned out to be dead costs one line the user can ignore; adopting work a live thread is still doing costs a duplicate implementation. Headless runs, and any thread where the tool does not resolve, therefore land on surface-only by construction — `/pm` names that with a `DEGRADED:` line rather than letting the sweep look complete.
 
 ## Owner naming
 
