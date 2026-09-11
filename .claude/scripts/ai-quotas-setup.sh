@@ -623,6 +623,13 @@ cursor_state_db() {
     printf '%s' "$AI_QUOTAS_CURSOR_STATE_DB"
     return 0
   fi
+  # Platform-selected, and it has to stay byte-identical to the reader's copy:
+  # a divergence here is `list` and `/quotas` disagreeing about whether this
+  # machine is signed in. Windows stays on the env seam in both.
+  if [[ "$PLATFORM" == "Linux" ]]; then
+    printf '%s' "${_HOME}/.config/Cursor/User/globalStorage/state.vscdb"
+    return 0
+  fi
   printf '%s' "${_HOME}/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
 }
 

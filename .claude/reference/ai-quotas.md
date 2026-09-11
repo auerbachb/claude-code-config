@@ -473,7 +473,15 @@ Two deliberate choices inside that:
 | Linux | `~/.config/Cursor/User/globalStorage/state.vscdb` |
 | Windows | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` |
 
-macOS is the default; the other two are reachable through `AI_QUOTAS_CURSOR_STATE_DB`.
+macOS and Linux are **selected automatically** from `$PLATFORM` (`uname -s`, overridable
+with `AI_QUOTAS_PLATFORM`) — hardcoding the macOS path made a signed-in Linux user read
+`needs-login`, which tells them to sign in again over a path the reader was looking for in
+the wrong place (CodeAnt, PR #1711). Anything else, Windows included, falls back to the
+macOS path and is reachable through `AI_QUOTAS_CURSOR_STATE_DB`: the `%APPDATA%` path
+above is documented but nothing in this fleet or in CI can exercise it, and a guessed path
+that does not exist reads as `needs-login` — the failure the platform branch removes.
+Both `ai-quotas.sh` and `ai-quotas-setup.sh` resolve it identically, so `list` and
+`/quotas` can never disagree about whether this machine is signed in.
 
 #### The token never leaves the function
 

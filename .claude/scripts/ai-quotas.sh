@@ -1393,12 +1393,21 @@ CURSOR_API_BASE="https://cursor.com/api/dashboard"
 # fixes a missing or expired one is signing in there.
 CURSOR_SIGNIN_HINT="open the Cursor IDE and sign in"
 
-# The IDE's state store. Linux and Windows paths are documented in
-# .claude/reference/ai-quotas.md and reachable through the env seam; the
-# default is the macOS one because that is the fleet.
+# The IDE's state store, SELECTED BY PLATFORM (CodeAnt). macOS is the fleet,
+# but hardcoding its path meant a signed-in Linux user read as `needs-login` —
+# a status that tells them to sign in again, which is the one instruction that
+# cannot help. `$PLATFORM` already exists here and already decides the Keychain
+# path above, so the Linux store is picked the same way. Windows stays on the
+# env seam: its `%APPDATA%` path is documented in .claude/reference/ai-quotas.md
+# but nothing in this fleet or in CI can exercise it, and a guessed path that
+# does not exist reads as `needs-login` too — the failure this change removes.
 cursor_state_db() {
   if [[ -n "${AI_QUOTAS_CURSOR_STATE_DB:-}" ]]; then
     printf '%s' "$AI_QUOTAS_CURSOR_STATE_DB"
+    return 0
+  fi
+  if [[ "$PLATFORM" == "Linux" ]]; then
+    printf '%s' "${_HOME}/.config/Cursor/User/globalStorage/state.vscdb"
     return 0
   fi
   # `${_HOME}`, not a bare `$HOME`: this script resolves the home directory

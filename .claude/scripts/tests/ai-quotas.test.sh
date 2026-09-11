@@ -944,6 +944,41 @@ check_contains "$(field_of cursor-one@example.com "billing-cycle" detail)" "sqli
 check_eq "$(grep -c 'cursor.com' "$STUB_CURL_LOG" | tr -d ' ')" "0" \
   "control(-): no request was made without a way to read the token"
 
+# --- 13f3. the default store path follows PLATFORM ---------------------------
+#
+# The path was hardcoded to macOS, so a signed-in Linux user read `needs-login`
+# — telling them to sign in again over a path this reader was looking for in
+# the wrong place (CodeAnt). `run` always sets AI_QUOTAS_CURSOR_STATE_DB, which
+# is precisely what hid it, so this case invokes the reader with that seam
+# ABSENT and reads the path back out of the row's own detail note.
+
+run_no_db_seam() { # <platform> <args…> — sets OUT/RC, no AI_QUOTAS_CURSOR_STATE_DB
+  local plat="$1"; shift
+  OUT="$(HOME="$CASE_HOME" \
+        CLAUDE_QUOTAS_STATE_DIR="$CASE_HOME/.claude/quotas" \
+        AI_QUOTAS_CONFIG="$CONFIG" \
+        AI_QUOTAS_PLATFORM="$plat" \
+        AI_QUOTAS_NOW="$NOW" \
+        AI_QUOTAS_CURL_BIN="$BIN/curl" \
+        AI_QUOTAS_SECURITY_BIN="$BIN/security" \
+        AI_QUOTAS_SQLITE3_BIN="$SQLITE3_REAL" \
+        "$SCRIPT" "$@" 2>/dev/null)"
+  RC=$?
+}
+
+reset_state
+seed_cursor_account
+run_no_db_seam Linux --json
+check_contains "$OUT" "/.config/Cursor/User/globalStorage/state.vscdb" \
+  "a Linux platform looks for the documented Linux store path"
+check_not_contains "$OUT" "Library/Application Support/Cursor" \
+  "and not the macOS one"
+reset_state
+seed_cursor_account
+run_no_db_seam Darwin --json
+check_contains "$OUT" "Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
+  "control(+): Darwin still looks for the macOS store path"
+
 # --- 13g. a changed payload shape is unreadable, never 0 % -------------------
 
 reset_state

@@ -721,6 +721,37 @@ run add codex alsome@example.com
 check_eq "$RC" "0" "control(+): a second account on another provider is still allowed"
 check_eq "$(account_count)" "2" "and it is recorded"
 
+# The default store path is chosen by PLATFORM, not hardcoded to macOS
+# (CodeAnt). This is the one case that must run WITHOUT the state-db env seam
+# — `run` always sets it, which is exactly what hid the hardcoded path — so it
+# invokes the script directly with the seam absent and reads the path back off
+# the line `add` prints. `--no-login` because no store exists at either path.
+run_no_db_seam() { # <platform> <args...> — sets OUT/RC, no AI_QUOTAS_CURSOR_STATE_DB
+  local plat="$1"; shift
+  OUT="$(HOME="$CASE_DIR/home" \
+        AI_QUOTAS_CONFIG="$CONFIG" \
+        AI_QUOTAS_PROFILE_ROOT="$PROFILES" \
+        AI_QUOTAS_PLATFORM="$plat" \
+        AI_QUOTAS_SECURITY_BIN="$BIN/security" \
+        AI_QUOTAS_SQLITE3_BIN="$SQLITE3_REAL" \
+        AI_QUOTAS_LAUNCHCTL_BIN="$BIN/launchctl" \
+        "$SCRIPT" "$@" 2>&1)"
+  RC=$?
+}
+
+new_case "cursor-state-db-platform"
+run_no_db_seam Linux add cursor linuxuser@example.com --no-login
+check_eq "$RC" "0" "add cursor --no-login on Linux exits 0"
+check_contains "$OUT" "/.config/Cursor/User/globalStorage/state.vscdb" \
+  "a Linux platform resolves the documented Linux store path"
+check_not_contains "$OUT" "Library/Application Support/Cursor" \
+  "and does NOT name the macOS path — the bug was a signed-in Linux user reading needs-login"
+new_case "cursor-state-db-platform-darwin"
+run_no_db_seam Darwin add cursor macuser@example.com --no-login
+check_eq "$RC" "0" "control(+): the same add on Darwin exits 0"
+check_contains "$OUT" "Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
+  "control(+): Darwin still resolves the macOS store path"
+
 # A relogin against a signed-out IDE fails and registers nothing new.
 new_case "cursor-relogin-signed-out"
 run add cursor lapsed@example.com
