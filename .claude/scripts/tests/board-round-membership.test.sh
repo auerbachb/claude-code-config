@@ -102,8 +102,18 @@ L70="$(grep -n '^### 7\.0: Record the round' "$SUBAGENT_MD" | head -1 | cut -d: 
 L71="$(grep -n '^### 7\.1: Record each pipeline' "$SUBAGENT_MD" | head -1 | cut -d: -f1)"
 check_eq "7.0 precedes 7.1 in the file" "yes" \
   "$([[ -n "$L70" && -n "$L71" && "$L70" -lt "$L71" ]] && echo yes || echo no)"
+# Hoist the literal OUT of $( ... ): bash 3.2's command-substitution scanner
+# does not honor single quotes, so it reads the literal's leading `"` as opening
+# a double-quoted region and walks the `${...}` expansions inside it — at the
+# third one the substitution mis-tokenizes and `grep -cF` captures `0` although
+# the line is present, so the assertion failed on macOS /bin/bash while CI's
+# bash 5 parsed it fine (issue #1717; same family as issue #1541). A plain
+# assignment honors the single quotes on every bash, and the bytes stay
+# identical to SKILL.md's line, so the check is still exact: delete that line
+# from SKILL.md and this reads 0 under both interpreters.
+STEP70_CAS_LITERAL='--cas ".repos[\"$REPO_KEY\"].round={\"members\":${ROUND_MEMBERS},\"dispatched_at\":\"${ROUND_NOW}\",\"session\":\"${ROUND_SESSION}\"}"'
 check_eq "Step 7.0 writes the whole .round block in one compare-and-set" "1" \
-  "$(grep -cF -- '--cas ".repos[\"$REPO_KEY\"].round={\"members\":${ROUND_MEMBERS},\"dispatched_at\":\"${ROUND_NOW}\",\"session\":\"${ROUND_SESSION}\"}"' "$SUBAGENT_MD" || true)"
+  "$(grep -cF -- "$STEP70_CAS_LITERAL" "$SUBAGENT_MD" || true)"
 # Scoped to 7.0's own range: the teardown reads the same path for its own CAS,
 # so a file-wide count would pass on the wrong site alone.
 check_eq "Step 7.0 reads the whole block before writing (the CAS compare value)" "1" \
