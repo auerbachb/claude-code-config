@@ -1415,6 +1415,63 @@ check_eq "$(argv_probe 'jq -n --argjson at "$CLAUDE_TOKEN" .')" "1" \
 check_eq "$(argv_probe 'jq -n --arg ea "$CLAUDE_EXPIRES_AT_MS" .')" "0" \
   "control(-): and does not fire on a non-credential variable"
 
+# --- 12r-i. a credential with a refresh token but NO access token ------------
+#
+# The shape a partial write leaves behind: `refreshToken` present,
+# `accessToken` gone. `claude_token_for` has already loaded the refresh
+# material into its globals by the time it discovers there is no access token,
+# and this path spends it on NOTHING — no token call, no usage call — so the
+# caller emits needs-login and returns. Without the clear, the refresh token
+# would sit in those globals until the next Claude account called the function
+# or the shell exited. Reported by CodeRabbit on #1721.
+
+seed_renewal_case "$(( (NOW + 3600) * 1000 ))"
+# Drop ONLY the access token, on the JSON column of the fake keychain row, so
+# the refresh token and every other field survive exactly as a real partial
+# write would leave them.
+awk -F'\t' -v OFS='\t' '{ print $1, $2, $3 }' "$STUB_KEYCHAIN_DB" > "$TMP/pre.db"
+: > "$TMP/noaccess.db"
+while IFS=$'\t' read -r svc acct doc; do
+  printf '%s\t%s\t%s\n' "$svc" "$acct" \
+    "$(printf '%s' "$doc" | jq -c 'del(.claudeAiOauth.accessToken)')" >> "$TMP/noaccess.db"
+done < "$TMP/pre.db"
+mv -f "$TMP/noaccess.db" "$STUB_KEYCHAIN_DB"
+
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth | has("accessToken")')" "false" \
+  "control(+): the fixture item really has no access token"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.refreshToken')" "$CLAUDE_REFRESH_SECRET" \
+  "control(+): and it really does still carry the refresh token that must not linger"
+
+run --json
+check_eq "$(rows_for claude-one@example.com)" "needs-login" \
+  "a credential with no access token is needs-login"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "no OAuth access token" \
+  "and the reason survives the clear rather than being blanked with the secrets"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" \
+  "/quotas-setup relogin claude-one@example.com claude" \
+  "and it still carries the relogin command"
+check_eq "$(grep -c 'oauth/token' "$STUB_CURL_LOG" || true)" "0" \
+  "control(-): nothing was spent on the token endpoint, so nothing consumed the refresh token"
+COMBINED="$OUT
+$ERR"
+check_not_contains "$COMBINED" "$CLAUDE_REFRESH_SECRET" \
+  "and the refresh token never reaches stdout or stderr on this path"
+
+# The clear itself is in-process state, so the only level at which it is
+# observable is the source. Asserted on the IDENTIFIER, not on any prose: a
+# refactor that drops the call is what this catches.
+TOKEN_FOR_BODY="$(awk '/^claude_token_for\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$SCRIPT")"
+# Anchored to the CALL shape — a bare identifier on its own line. A plain
+# substring match is satisfied by the comment above the call, so a refactor
+# that deleted the call and left the comment would still pass.
+FORGET_CALL='^[[:space:]]*claude_forget_credentials[[:space:]]*$'
+check_eq "$(printf '%s' "$TOKEN_FOR_BODY" | grep -cE -- "$FORGET_CALL" || true)" "1" \
+  "the credential read clears its globals on the failure path that loaded them"
+check_eq "$(printf '%s\n' '  # calls claude_forget_credentials somewhere' | grep -cE -- "$FORGET_CALL" || true)" "0" \
+  "control(-): and a mere mention in a comment does not satisfy that check"
+check_eq "$(printf '%s' "$TOKEN_FOR_BODY" | grep -c 'credential store holds no OAuth access token' || true)" "1" \
+  "control(+): and the extracted body really is the function that owns that path"
+
 # --- 13. the cursor IDE-token reader (#1703) ---------------------------------
 #
 # The reader borrows the token the Cursor IDE holds, derives the dashboard

@@ -934,6 +934,13 @@ claude_token_for() { # <profile_dir> <keychain_service|"">
   esac
 
   if [[ -z "$CLAUDE_TOKEN" ]]; then
+    # A document carrying a refreshToken but no accessToken has already put
+    # the refresh material in these globals, and this path spends it on
+    # nothing: the caller emits needs-login without a single request. So it is
+    # dropped HERE rather than left live until the next Claude account calls
+    # this function or the shell exits. `claude_forget_credentials` does not
+    # touch CLAUDE_TOKEN_DETAIL, so the reason below still reaches the row.
+    claude_forget_credentials
     CLAUDE_TOKEN_DETAIL="credential store holds no OAuth access token"
     return 1
   fi

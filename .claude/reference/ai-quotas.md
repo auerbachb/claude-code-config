@@ -505,7 +505,10 @@ control that proves the scan fires on the shape it forbids. Failure notes are bu
 OAuth error **code** from RFC 6749's fixed vocabulary, never from a response body
 verbatim — an endpoint that echoed the submitted token back inside an error message would
 otherwise print it. The tokens are cleared from their globals as soon as the request they
-serve returns.
+serve returns — **and on the paths where no request happens at all**: a stored document
+carrying a `refreshToken` but no `accessToken` has already loaded the refresh material by
+the time the read fails, so that failure clears before it returns rather than leaving the
+token live until the next Claude account is read or the shell exits (CodeRabbit, #1721).
 
 ### Codex reader
 
