@@ -366,7 +366,149 @@ as "plenty left".
 Anthropic's Feb 2026 credential policy scopes subscription OAuth tokens to Claude Code
 and Claude.ai. Owner's call (2026-09-07): a single user reading their own usage figures
 is within the spirit of that policy — the reader is read-only, borrows the token in
-place, and never routes model traffic through it.
+place, and never routes model traffic through it. Renewing that same token for that same
+read is the same call, restated (2026-09-14, #1716): the renewal uses the credential
+already in the store, through Claude Code's own grant, and still routes no model traffic.
+
+### Renewing an expired access token (#1716)
+
+**The bug this removes.** On 2026-09-14 both Claude rows read `needs-login` three days
+after those profiles were logged in. Nothing was wrong with the stored credential: the
+access token had simply expired, and the thing that normally renews it — Claude Code,
+on launch — is never run on an isolated side profile. The daily snapshot job had been
+recording `needs-login` the whole time. A tracker whose rows go dark within hours of a
+login cannot feed a history or a forecast, so the reader now renews the token itself.
+
+**The stored item.** *Observed 2026-09-14, Claude Code 2.1.270. Undocumented and
+Claude Code's own — re-verify before relying on any of it.* The Keychain item named by
+`credential_ref.service` holds one JSON document:
+
+```
+claudeAiOauth.accessToken            the bearer token the usage call uses
+claudeAiOauth.refreshToken           the grant this renewal spends
+claudeAiOauth.expiresAt              MILLISECONDS since the epoch (13 digits)
+claudeAiOauth.refreshTokenExpiresAt
+claudeAiOauth.scopes[]               e.g. user:inference, user:profile, …
+claudeAiOauth.subscriptionType       e.g. "max"
+claudeAiOauth.rateLimitTier
+```
+
+Confirmed by reading only the item's **key paths** (`jq 'paths|join(".")'`), never its
+values. `expiresAt` is accepted **only when it is a number** — a store that moved it to
+a string date would otherwise compare as a string, read as "not expired" forever, and
+reproduce exactly the silent success this change removes.
+
+**The endpoint and client id.** *Observed 2026-09-14, read out of the installed Claude
+Code bundle (`strings` over `claude.app/Contents/MacOS/claude`), not guessed:*
+
+| | Value | Where it came from |
+|---|---|---|
+| Token endpoint | `https://platform.claude.com/v1/oauth/token` | `TOKEN_URL:` in the bundle's OAuth config object |
+| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` | `CLIENT_ID:` in the same object — matches the community value |
+| Request | `POST`, `Content-Type: application/json`, body `{grant_type:"refresh_token", refresh_token, client_id, scope:"<space-joined>"}` | the bundle's own refresh call |
+| Response | `{access_token, refresh_token, expires_in}`; the new expiry is `now + expires_in × 1000` ms, and an omitted `refresh_token` means **keep the stored one** | same |
+
+Seams: `AI_QUOTAS_CLAUDE_TOKEN_URL`, `AI_QUOTAS_CLAUDE_CLIENT_ID`.
+
+**When it renews.** Before the usage call when the stored `expiresAt` has passed (with a
+60 s margin, so a token cannot die mid-request), and otherwise on a 401/403 from the
+usage endpoint — **one refresh and one retry, never a loop.** A second 401 is a dead
+login, and asking again only burns the rate limit on the way to the same answer. A store
+carrying **no** expiry never triggers a refresh on that ground alone; it would cost a
+refresh per account per run.
+
+**What each failure says.** The distinction is load-bearing, because `needs-login` sends
+the owner through an interactive login and most of these are not fixable that way:
+
+| Outcome | Status | Note |
+|---|---|---|
+| Refresh rejected — an explicit `invalid_grant`/`invalid_client`/`unauthorized_client`, or HTTP 401 | `needs-login` | names the error code or status, plus the existing `/quotas-setup relogin` command |
+| HTTP 429 | `rate-limited` | names any `Retry-After`; nothing is written back |
+| Token endpoint unreachable, or any other non-200 — **a bare 400 or 403 with no OAuth error code included** | `unreachable` | names the curl exit or the HTTP status |
+| HTTP 200 carrying no `access_token` | `unreachable` | a **changed shape**, not a dead grant — a login could not fix it |
+| Renewed, but the write-back failed | `ok` | the figures were read; the row discloses that the renewal was not persisted |
+
+A bare 400 or 403 is deliberately **not** `needs-login`: 403 is what an edge proxy
+answers, and sending the owner through an interactive login over a WAF block is the
+misdiagnosis this status split exists to prevent. Only an error code from RFC 6749's
+vocabulary, or a 401 from the endpoint itself, says the grant is finished.
+
+**Two error envelopes are read, not one.** RFC 6749 §5.2 puts a bare string in `error`;
+Anthropic nests it — `{"error":{"type":"rate_limit_error","message":…}}`, *observed
+2026-09-14 on a live 429 through Cloudflare*. A reader that understood only the flat
+shape would classify a genuinely dead grant delivered in the nested one as `unreachable`
+and never tell the owner to log in again. Only the `type`/`error` **code** is ever
+quoted; the `message` beside it is not, because an endpoint that echoed the submitted
+token inside a message would otherwise print it.
+
+**429 is `rate-limited`, not `unreachable`.** The renewal endpoint really does rate-limit
+(same 2026-09-14 observation), and the reader already owns a status that says so.
+Recording a rate limit as `unreachable` would put a run of outages that never happened
+into the snapshot history the burn-rate projection reads.
+
+**Rotation makes concurrency a correctness problem, not a tidiness one.** Claude Code
+renews this same item, and the daily job can overlap a manual run. Refresh tokens
+**rotate**, so whoever renews second is holding a token the first renewal already
+invalidated. Both directions are handled:
+
+- **Before writing:** the store is re-read and the write stands down unless it still
+  holds the access token this run started from — compare-and-set, the same shape as the
+  park-retirement writes in #1596. A blind last-writer-wins store could otherwise leave
+  the item holding an already-invalidated token, and the *next* run would report
+  `needs-login` on a login nobody lost. The window is not zero (nothing here can make a
+  Keychain write atomic against another process) but it is the width of one `security`
+  call rather than of a network round trip.
+- **Before believing a rejection:** an `invalid_grant`/401 is checked against the store
+  first. If it now holds a *different* access token, somebody else renewed and this run's
+  refresh token was invalidated **by that rotation** — the login is alive, so their
+  credential is adopted and the read proceeds. Only a rejection with nothing new in the
+  store is a dead login. Losing either race costs nothing and is not reported as a
+  problem.
+
+**The write-back.** The renewed `accessToken`, `refreshToken`, and `expiresAt` are
+**merged into** the stored document — never replacing it — and written back to the same
+store, so Claude Code and this reader stay in step on one credential instead of each
+holding half a rotated pair. Everything else in the item (`scopes`, `subscriptionType`,
+`rateLimitTier`, anything a later Claude Code adds) is preserved; a write that dropped
+those would break the very client this is keeping in step.
+
+An omitted `expires_in` **deletes** the stored `expiresAt` rather than leaving the old
+one in place. Keeping it would park a past timestamp beside a freshly renewed token, and
+every later run would read that as "expired" and spend another refresh for ever; with the
+field absent the proactive check stands down and the 401 path still covers the token,
+which is the honest state — unknown.
+
+- **Keychain:** `security add-generic-password -U -a <acct> -s <service> -w`, with the
+  document on **stdin**. Three things are not optional here, all measured 2026-09-14:
+  `-w` must be **last and valueless** or the value is in argv and therefore in `ps`;
+  security(1) then asks for the value **twice** ("password data for new item:", "retype
+  password for new item:"), so it is written twice; and **no keychain may be named**,
+  because a trailing keychain argument is eaten by `-w` as the password itself — it
+  writes the *path* as the secret into the default keychain. The `acct` attribute is read
+  back off the attribute dump (`find-generic-password` **without** `-w`, so no value is
+  involved) and passed to the update, or `-U` lands a second item beside the one Claude
+  Code reads. An attribute dump this reader cannot parse an `acct` out of **refuses the
+  write** rather than guessing at the item's identity — the row then reads `ok` and
+  discloses that the renewal was not persisted.
+- **`<profile_dir>/.credentials.json`:** written to a `mktemp` sibling in the same
+  directory, `chmod 600` **before** any content lands in it, then renamed over the
+  original — atomic on the same filesystem, so a concurrent reader sees the old document
+  or the new one, never a truncated one.
+
+**Nothing is printed.** The renewal request body is built by `jq` into a 0600 file inside
+the run's 0700 temp dir and handed to `curl` as `--data-binary @<path>`, so neither token
+is in this script's argv or curl's. **Nor in `jq`'s:** the tokens reach `jq` through a
+per-command environment entry (`$ENV.AIQ_RT`), never `--arg`, because `--arg` is an
+argument like any other and argv is world-readable through `ps`. `jq` has no test seam —
+it is the real binary — so the suite asserts this at the **source** level instead, with a
+control that proves the scan fires on the shape it forbids. Failure notes are built from an HTTP status and an
+OAuth error **code** from RFC 6749's fixed vocabulary, never from a response body
+verbatim — an endpoint that echoed the submitted token back inside an error message would
+otherwise print it. The tokens are cleared from their globals as soon as the request they
+serve returns — **and on the paths where no request happens at all**: a stored document
+carrying a `refreshToken` but no `accessToken` has already loaded the refresh material by
+the time the read fails, so that failure clears before it returns rather than leaving the
+token live until the next Claude account is read or the shell exits (CodeRabbit, #1721).
 
 ### Codex reader
 
@@ -630,7 +772,10 @@ precisely under the test suite where the bounds are asserted. Do not rename it b
 `AI_QUOTAS_PLATFORM`, `AI_QUOTAS_ANTHROPIC_URL`, `AI_QUOTAS_CHATGPT_URL`,
 `AI_QUOTAS_HTTP_TIMEOUT`, `AI_QUOTAS_CODEX_TIMEOUT`, `AI_QUOTAS_SQLITE3_BIN`,
 `AI_QUOTAS_CURSOR_STATE_DB` (a fixture SQLite DB, so no test touches the real Cursor IDE
-store), and `AI_QUOTAS_NOW` (a fixed clock,
+store), `AI_QUOTAS_CLAUDE_TOKEN_URL` and `AI_QUOTAS_CLAUDE_CLIENT_ID` (#1716 — the
+renewal endpoint and client id, so the refresh cases run entirely against the fake `curl`
+and the fake `security`, and no test can renew or overwrite a real credential), and
+`AI_QUOTAS_NOW` (a fixed clock,
 so countdown assertions do not drift — and, since #1669, the ET month the reset watermark
 is read against) let `.claude/scripts/tests/ai-quotas.test.sh` drive every path against
 stubs — no live account, network, or keychain. They are not meant for normal use.

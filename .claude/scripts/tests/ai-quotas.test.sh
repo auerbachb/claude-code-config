@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ai-quotas.test.sh — coverage for .claude/scripts/ai-quotas.sh (issue #1667).
-# catalog: tests — Tests `ai-quotas.sh` — the multi-account table and `--json` row shape, weekly-window selection by `windowDurationMins` (asserted with the weekly figures in `primary`, the shape a Pro account really returns), `--five-hour`, per-row isolation of `needs-login`/`rate-limited`/`unreachable`/`unsupported`, the unrecognised-shape path printing the keys it saw instead of 0 %, deterministic ET reset + countdown against a frozen clock, the Cursor IDE-token path against a fixture SQLite state store and a fake `curl` (two pool rows with the captured percentages and billing cycle, 401 → `needs-login` naming the IDE, 500 → `unreachable`, a signed-out IDE → `needs-login`), and the leak assertions that no credential value — the Cursor access token and its `WorkosCursorSessionToken` cookie included — reaches stdout, stderr, argv, or the usage log
+# catalog: tests — Tests `ai-quotas.sh` — the multi-account table and `--json` row shape, weekly-window selection by `windowDurationMins` (asserted with the weekly figures in `primary`, the shape a Pro account really returns), `--five-hour`, per-row isolation of `needs-login`/`rate-limited`/`unreachable`/`unsupported`, the unrecognised-shape path printing the keys it saw instead of 0 %, deterministic ET reset + countdown against a frozen clock, the Cursor IDE-token path against a fixture SQLite state store and a fake `curl` (two pool rows with the captured percentages and billing cycle, 401 → `needs-login` naming the IDE, 500 → `unreachable`, a signed-out IDE → `needs-login`), the Claude token-renewal path (#1716 — an expired stored token renewed before the usage call, a 401 renewed and retried exactly once, the renewed pair written back into the same fake Keychain item with every other field preserved, a rejected grant as `needs-login`, an unreachable or shape-changed token endpoint as `unreachable`, and the same for the file-backed Linux store at mode 600), and the leak assertions that no credential value — the refresh token, the Cursor access token, and its `WorkosCursorSessionToken` cookie included — reaches stdout, stderr, argv, or the usage log
 #
 # WHAT IS UNDER TEST
 #
@@ -66,6 +66,14 @@ check_not_contains() { # <haystack> <needle> <label>
 
 # Credential-SHAPED secrets. These are what make the leak assertions real.
 CLAUDE_SECRET="sk-ant-oat01-FAKE-TOKEN-9Z8Y7X"
+# The refresh token in the same item (#1716). Credential-shaped for the same
+# reason the access token is: it makes the leak assertions real detectors of a
+# reader that echoed the renewal request or logged what it stored.
+CLAUDE_REFRESH_SECRET="sk-ant-ort01-FAKE-REFRESH-1A2B3C"
+# The `acct` attribute on the fake keychain item. The reader has to read it
+# back off the attribute dump and pass it to its update, or the write-back
+# lands a SECOND item beside the one Claude Code reads.
+CLAUDE_KEYCHAIN_ACCT="fixture-account"
 CODEX_SECRET="FAKE-CODEX-ACCESS-TOKEN-5W4V3U"
 # The header of the id_token each codex profile carries. The payload is built
 # per profile by `seed_codex_profile` from that account's own email — the
@@ -111,6 +119,15 @@ while [[ $# -gt 0 ]]; do
     # which shifts once and leaves `POST` (or `{}`) to be captured as the URL —
     # every cursor case would then dispatch on the wrong string.
     -X|-d) shift 2 ;;
+    # The refresh request's body (#1716). It arrives as `@<path>`, never as
+    # the JSON itself — the token is in the FILE, so it is not in this argv
+    # and not in `ps`. Captured so the refresh cases can assert what was sent.
+    --data-binary)
+      case "$2" in
+        @*) printf '%s' "$(cat "${2#@}" 2>/dev/null)" > "$STUB_CURL_BODY" ;;
+        *) echo "STUB-CURL: a refresh body reached argv inline" >&2; exit 97 ;;
+      esac
+      shift 2 ;;
     -w|--max-time) shift 2 ;;
     -sS) shift ;;
     -*) shift ;;
@@ -122,6 +139,62 @@ cat > "$STUB_CURL_STDIN" 2>/dev/null || true
 printf '%s\t%s\n' "$url" "$ua" >> "$STUB_CURL_LOG"
 : > "${dump:-/dev/null}"
 case "$url" in
+  # FIRST, and matched on the path rather than the host: the real token
+  # endpoint (platform.claude.com) and the real usage endpoint
+  # (api.anthropic.com) are different hosts, so a dispatch that tested the
+  # host would pass here and mis-route against the shipping defaults.
+  *oauth/token*)
+    mode="$(cat "$STUB_TOKEN_MODE" 2>/dev/null || echo ok)"
+    case "$mode" in
+      ok)
+        # A NEW access token and a ROTATED refresh token, both distinct from
+        # the seeded pair, so "did the write-back land" is answerable.
+        printf '{"access_token":"%s","refresh_token":"%s","expires_in":3600,"scope":"user:inference user:profile"}' \
+          "$STUB_NEW_ACCESS" "$STUB_NEW_REFRESH" > "$out"
+        printf '200' ;;
+      # The response that means the grant itself is dead. Anthropic answers
+      # 400 with the RFC 6749 error code, not 401.
+      invalid_grant) printf '{"error":"invalid_grant","error_description":"expired"}' > "$out"; printf '400' ;;
+      norotate)
+        # No `refresh_token` in the response: Claude Code keeps the one it
+        # already had, and so must this reader.
+        printf '{"access_token":"%s","expires_in":3600}' "$STUB_NEW_ACCESS" > "$out"
+        printf '200' ;;
+      # HTTP 200 carrying no token at all — a CHANGED SHAPE, not a dead
+      # login. Saying needs-login here would send the owner through a login
+      # that could not fix it.
+      noshape) printf '{"ok":true}' > "$out"; printf '200' ;;
+      # A renewal that does not say how long the new token lasts. The stored
+      # expiry must be DELETED, never left at its stale past value.
+      noexpiry)
+        printf '{"access_token":"%s","refresh_token":"%s"}' \
+          "$STUB_NEW_ACCESS" "$STUB_NEW_REFRESH" > "$out"
+        printf '200' ;;
+      server)  printf 'oops' > "$out"; printf '500' ;;
+      # A 403 carrying NO OAuth error code — what an edge proxy answers, not
+      # the token endpoint refusing a grant. It must not read as needs-login.
+      proxy403) printf '<html>blocked</html>' > "$out"; printf '403' ;;
+      # The real 429, captured from the live endpoint on 2026-09-14. Note the
+      # NESTED envelope: Anthropic sends {"error":{"type":…}}, not RFC 6749's
+      # flat {"error":"…"}. A reader that only understood the flat shape would
+      # misread a genuinely dead grant delivered this way.
+      ratelimit)
+        printf '{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}' > "$out"
+        printf '429' ;;
+      ratelimit_retry)
+        printf '{"error":{"type":"rate_limit_error"}}' > "$out"
+        printf 'HTTP/2 429\r\nretry-after: 900\r\n' > "${dump:-/dev/null}"
+        printf '429' ;;
+      # A dead grant in that same nested envelope. This is the case the flat-
+      # only reader would have called `unreachable`, leaving the owner never
+      # told to log in again.
+      nested_invalid_grant)
+        printf '{"error":{"type":"invalid_grant","message":"refresh token expired"}}' > "$out"
+        printf '400' ;;
+      down)    echo "STUB-CURL: simulated token-endpoint failure" >&2; exit 7 ;;
+      *) echo "STUB-CURL: unknown token mode '$mode'" >&2; exit 98 ;;
+    esac
+    ;;
   *anthropic*)
     mode="$(cat "$STUB_ANTHROPIC_MODE" 2>/dev/null || echo ok)"
     case "$mode" in
@@ -131,6 +204,18 @@ case "$url" in
                  printf 'HTTP/2 429\r\nretry-after: 1800\r\n' > "${dump:-/dev/null}"
                  printf '429' ;;
       unauth)    printf '{"error":"unauthorized"}' > "$out"; printf '401' ;;
+      # 401 on the FIRST call of a run, 200 on every call after it — the
+      # shape of a token that expired earlier than its stored expiry said
+      # (#1716). The counter is what makes "one refresh, one retry" provable:
+      # a reader that retried in a loop would still end at 200 without it.
+      unauth_once)
+        n="$(cat "$STUB_ANTHROPIC_401_COUNT" 2>/dev/null || echo 0)"
+        if [[ "$n" -lt 1 ]]; then
+          printf '%s' $(( n + 1 )) > "$STUB_ANTHROPIC_401_COUNT"
+          printf '{"error":"unauthorized"}' > "$out"; printf '401'
+        else
+          cat "$STUB_ANTHROPIC_BODY" > "$out"; printf '200'
+        fi ;;
       down)      echo "STUB-CURL: simulated network failure" >&2; exit 7 ;;
       *) echo "STUB-CURL: unknown anthropic mode '$mode'" >&2; exit 91 ;;
     esac
@@ -179,20 +264,85 @@ EOF
 # only for the services it had a right to.
 cat > "$BIN/security" <<'EOF'
 #!/usr/bin/env bash
-want=""; want_value=0
+# The DB is "service<TAB>account<TAB>value", one item per line.
+sub="${1:-}"; shift || true
+want=""; want_value=0; acct=""; update=0
+
+# A credential must never reach this argv — not on the read, and not on the
+# write-back, which is the whole reason the real call takes its value on
+# stdin. Asserted before anything is parsed.
+case "$*" in
+  *sk-ant*|*eyJ*) echo "STUB-SECURITY: a credential value reached argv" >&2; exit 90 ;;
+esac
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -s) want="${2:-}"; shift 2 ;;
+    -a) acct="${2:-}"; shift 2 ;;
+    -U) update=1; shift ;;
+    # `-w` LAST and valueless is what makes the real security(1) read the
+    # value from stdin. A `-w <value>` here would be a credential in argv and
+    # is refused above; a bare trailing `-w` is the supported shape.
     -w) want_value=1; shift ;;
     *) shift ;;
   esac
 done
 [[ -n "$want" ]] || exit 1
-printf '%s\t%s\n' "$want" "$want_value" >> "$STUB_SECURITY_LOG"
-line="$(grep -F "$want	" "$STUB_KEYCHAIN_DB" 2>/dev/null | head -n 1)"
-[[ -n "$line" ]] || exit 44
-if [[ "$want_value" -eq 1 ]]; then printf '%s\n' "${line#*	}"; fi
-exit 0
+printf '%s\t%s\t%s\n' "$sub" "$want" "$want_value" >> "$STUB_SECURITY_LOG"
+
+case "$sub" in
+  find-generic-password)
+    line="$(grep -F "$want	" "$STUB_KEYCHAIN_DB" 2>/dev/null | head -n 1)"
+    [[ -n "$line" ]] || exit 44
+    rest="${line#*	}"          # account<TAB>value
+    if [[ "$want_value" -eq 1 ]]; then
+      # Race simulation (#1716): when this service is armed, the SECOND and
+      # later value reads answer with a DIFFERENT access token — somebody else
+      # (a concurrent /quotas, or Claude Code) renewed the item while this run
+      # was at the token endpoint. The reader's write-back must stand down.
+      # The second read is precisely the compare-and-set's own re-read, which
+      # is what makes this fixture exercise it rather than merely accompany it.
+      if [[ -n "${STUB_KEYCHAIN_RACE:-}" && "$want" == "$(cat "$STUB_KEYCHAIN_RACE" 2>/dev/null)" ]]; then
+        n="$(cat "$STUB_KEYCHAIN_RACE_N" 2>/dev/null || echo 0)"
+        printf '%s' $(( n + 1 )) > "$STUB_KEYCHAIN_RACE_N"
+        if [[ "$n" -ge 1 ]]; then
+          # `gone` models the item vanishing between the read and the write —
+          # a revoked permission, a deleted item. That is a FAILURE to
+          # disclose, and must not be folded into "somebody else won".
+          if [[ "$(cat "$STUB_KEYCHAIN_RACE_MODE" 2>/dev/null || echo swap)" == "gone" ]]; then
+            exit 44
+          fi
+          printf '%s' "${rest#*	}" \
+            | jq -c --arg w "$STUB_RACE_WINNER" '.claudeAiOauth.accessToken = $w'
+          exit 0
+        fi
+      fi
+      printf '%s\n' "${rest#*	}"
+    else
+      # The attribute dump, in the layout the real tool prints — the reader
+      # parses `acct` out of it to aim its update at the same item.
+      printf 'keychain: "/fake/login.keychain-db"\n'
+      printf '    "acct"<blob>="%s"\n' "${rest%%	*}"
+      printf '    "svce"<blob>="%s"\n' "$want"
+    fi
+    exit 0 ;;
+  add-generic-password)
+    [[ "$update" -eq 1 ]] || { echo "STUB-SECURITY: add without -U would refuse an existing item" >&2; exit 91; }
+    [[ "$want_value" -eq 1 ]] || { echo "STUB-SECURITY: add-generic-password with no -w" >&2; exit 92; }
+    # The real tool asks for the value TWICE (measured 2026-09-14: "password
+    # data for new item:" then "retype password for new item:") and refuses
+    # the write when the two differ. A reader that sent it once would hang
+    # the real call waiting on the retype, so the stub insists on both.
+    IFS= read -r first || { echo "STUB-SECURITY: no value on stdin" >&2; exit 93; }
+    IFS= read -r second || { echo "STUB-SECURITY: value sent once, not retyped" >&2; exit 94; }
+    [[ "$first" == "$second" ]] || { echo "STUB-SECURITY: the two values differ" >&2; exit 95; }
+    tmp="$(mktemp)"
+    grep -v -F "$want	" "$STUB_KEYCHAIN_DB" > "$tmp" 2>/dev/null || true
+    printf '%s\t%s\t%s\n' "$want" "$acct" "$first" >> "$tmp"
+    mv -f "$tmp" "$STUB_KEYCHAIN_DB"
+    exit 0 ;;
+  *) echo "STUB-SECURITY: unexpected subcommand '$sub'" >&2; exit 96 ;;
+esac
 EOF
 
 # --- stub: codex -------------------------------------------------------------
@@ -283,6 +433,22 @@ export STUB_SECURITY_LOG="$TMP/security.log"
 export STUB_KEYCHAIN_DB="$TMP/keychain.db"
 export STUB_ANTHROPIC_BODY="$TMP/anthropic.json"
 export STUB_ANTHROPIC_MODE="$TMP/anthropic.mode"
+# Claude token renewal (#1716): the token endpoint's behaviour, the body the
+# reader sent it, and the 401-once counter.
+export STUB_TOKEN_MODE="$TMP/token.mode"
+export STUB_CURL_BODY="$TMP/curl.body"
+export STUB_ANTHROPIC_401_COUNT="$TMP/anthropic.401count"
+# The renewed pair the token endpoint hands back. Credential-SHAPED, and
+# DIFFERENT from the seeded pair, so every assertion below distinguishes "the
+# renewed token was used and stored" from "nothing happened".
+export STUB_NEW_ACCESS="sk-ant-oat01-FAKE-RENEWED-2Q3R4S"
+export STUB_NEW_REFRESH="sk-ant-ort01-FAKE-ROTATED-5T6U7V"
+# The concurrent-writer simulation: which service races, how many value reads
+# it has served, and what the OTHER writer left in the item.
+export STUB_KEYCHAIN_RACE="$TMP/keychain.race"
+export STUB_KEYCHAIN_RACE_N="$TMP/keychain.race.n"
+export STUB_KEYCHAIN_RACE_MODE="$TMP/keychain.race.mode"
+export STUB_RACE_WINNER="sk-ant-oat01-FAKE-OTHERWRITER-8W9X0Y"
 export STUB_CHATGPT_BODY="$TMP/chatgpt.json"
 # Cursor IDE-token path (#1703). Three payload fixtures, a mode file, and a log
 # of the USER ID the reader derived — the user id only, never the token, so no
@@ -327,17 +493,40 @@ codex_snapshot_both() {
                    secondary: {usedPercent: 45, windowDurationMins: 10080, resetsAt: $week}}}'
 }
 
-seed_claude_profile() { # <label> <keychain-service|"">
+# The seeded item carries the SHAPE Claude Code really writes (observed
+# 2026-09-14): a refresh token, an `expiresAt` in MILLISECONDS, `scopes`, and
+# a `subscriptionType` this reader does not read. The extra fields are not
+# decoration — they are what the write-back assertions prove was PRESERVED.
+#
+# <expires-at-ms> defaults to well in the future, so every pre-#1716 case
+# still takes the no-refresh path unchanged; the renewal cases pass a past
+# value. "" means the field is absent altogether, which is the store shape
+# that must NOT provoke a refresh on every read.
+seed_claude_profile() { # <label> <keychain-service|""> [<expires-at-ms|"">]
   # Declared separately on purpose: `local a="$1" b="$PROFILES/$a"` expands
   # every argument BEFORE any of them is assigned, so `$a` is still unset.
   local label="$1"
   local service="$2"
+  local expires="${3-$(( (NOW + 3600) * 1000 ))}"
   local dir="$PROFILES/$label/claude"
+  local doc
   mkdir -p "$dir"
   if [[ -n "$service" ]]; then
-    printf '%s\t{"claudeAiOauth":{"accessToken":"%s"}}\n' "$service" "$CLAUDE_SECRET" >> "$STUB_KEYCHAIN_DB"
+    doc="$(jq -cn --arg at "$CLAUDE_SECRET" --arg rt "$CLAUDE_REFRESH_SECRET" --arg ea "$expires" \
+      '{claudeAiOauth: ({accessToken: $at, refreshToken: $rt,
+                         scopes: ["user:inference","user:profile"],
+                         subscriptionType: "max"}
+        + (if $ea == "" then {} else {expiresAt: ($ea | tonumber)} end))}')"
+    printf '%s\t%s\t%s\n' "$service" "$CLAUDE_KEYCHAIN_ACCT" "$doc" >> "$STUB_KEYCHAIN_DB"
   fi
   printf '%s' "$dir"
+}
+
+# What the fake keychain item now holds for <service>, as JSON. The assertions
+# read it through jq rather than by substring so "the renewed pair landed"
+# and "the fields nobody touched survived" are separate questions.
+keychain_doc() { # <service>
+  grep -F "$1	" "$STUB_KEYCHAIN_DB" 2>/dev/null | head -n 1 | cut -f3-
 }
 
 # The reported email is derived from the profile, not shared across them: a
@@ -476,6 +665,8 @@ run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
         AI_QUOTAS_SECURITY_BIN="$BIN/security" \
         AI_QUOTAS_CODEX_BIN="$BIN/codex" \
         AI_QUOTAS_CLAUDE_BIN="$BIN/claude" \
+        AI_QUOTAS_CLAUDE_TOKEN_URL="https://stub.invalid/v1/oauth/token" \
+        AI_QUOTAS_CLAUDE_CLIENT_ID="fixture-client-id-1716" \
         AI_QUOTAS_CODEX_TIMEOUT="${AI_QUOTAS_CODEX_TIMEOUT_OVERRIDE-10}" \
         AI_QUOTAS_CHEAPEST_BIN="${CHEAPEST_BIN_OVERRIDE-}" \
         AI_QUOTAS_FORECAST_BIN="${FORECAST_BIN_OVERRIDE-}" \
@@ -517,6 +708,12 @@ reset_state() {
   rm -rf "$PROFILES"; mkdir -p "$PROFILES"
   rm -rf "$CASE_HOME"; mkdir -p "$CASE_HOME/.claude"
   echo "ok" > "$STUB_ANTHROPIC_MODE"
+  echo "ok" > "$STUB_TOKEN_MODE"
+  : > "$STUB_CURL_BODY"
+  : > "$STUB_KEYCHAIN_RACE"
+  printf '0' > "$STUB_KEYCHAIN_RACE_N"
+  printf 'swap' > "$STUB_KEYCHAIN_RACE_MODE"
+  printf '0' > "$STUB_ANTHROPIC_401_COUNT"
   anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
   jq -n '{}' > "$STUB_CHATGPT_BODY"
   echo "ok" > "$STUB_CURSOR_MODE"
@@ -648,9 +845,16 @@ check_eq "$(field_of claude-two@example.com "7-day" reported_email)" "claude-one
 # recorded for these two accounts — no more. The stub logs every lookup, so
 # a reader that started probing for a derived or guessed service name (the
 # thing #1666 deliberately does not do) reddens this.
-check_eq "$(cut -f1 "$STUB_SECURITY_LOG" | sort -u | tr '\n' '|')" \
+# Field 2 is the service; field 1 became the SUBCOMMAND when the stub grew a
+# write path (#1716), and field 3 is whether a value was asked for.
+check_eq "$(cut -f2 "$STUB_SECURITY_LOG" | sort -u | tr '\n' '|')" \
   "Claude Code-credentials-AAA|Claude Code-credentials-BBB|" \
   "the reader asked the keychain only for the two services the registry records"
+# And it only ever READ them here: nothing in this case is expired, so no
+# write-back is due. A reader that wrote on every read would redden this.
+check_eq "$(cut -f1 "$STUB_SECURITY_LOG" | sort -u | tr '\n' '|')" \
+  "find-generic-password|" \
+  "and only read them — an unexpired credential is never written back"
 
 # --- 6. opus adds a fifth weekly row -----------------------------------------
 
@@ -783,6 +987,490 @@ check_eq "$(field_of claude-one@example.com "7-day" used_pct)" "null" \
 check_contains "$(field_of claude-one@example.com "7-day" detail)" "quota_summary, meta" \
   "the note prints the top-level keys it actually saw"
 anthropic_body 0 > "$STUB_ANTHROPIC_BODY"
+
+# --- 12r. renewing an expired access token (#1716) ---------------------------
+#
+# The failure this section exists to prevent: both Claude rows went dark three
+# days after login because nobody had opened Claude Code on those isolated
+# profiles, so nothing refreshed their access tokens — while the stored
+# credential held a perfectly good refresh token the whole time.
+#
+# What is asserted is not just "the row says ok". It is that the reader used
+# the RENEWED token for the usage call and wrote the RENEWED pair back into
+# the same item Claude Code reads, because a renewal that is not persisted
+# costs a fresh refresh on every run and leaves the two clients holding
+# different halves of a rotated credential.
+
+SVC_R="Claude Code-credentials-RENEW"
+
+seed_renewal_case() { # <expires-at-ms|"">
+  reset_state
+  CR="$(seed_claude_profile claude-one@example.com "$SVC_R" "$1")"
+  write_config "$(account_json claude claude-one@example.com "$CR" "$SVC_R")"
+}
+
+# --- 12r-a. an expired stored token is renewed BEFORE the usage call ---------
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "an expired stored token is renewed and the row reads ok, not needs-login"
+check_eq "$(field_of claude-one@example.com "7-day" used_pct)" "64" \
+  "and the figures really were read, on the renewed token"
+
+# The usage call carried the RENEWED token, not the expired one. This is the
+# assertion that separates "refreshed" from "refreshed and then used the old
+# one anyway" — a reader that renewed into a variable nobody read would pass
+# every status check above and fail here.
+check_contains "$(cat "$STUB_CURL_STDIN")" "Authorization: Bearer $STUB_NEW_ACCESS" \
+  "the usage request carried the RENEWED access token"
+check_not_contains "$(cat "$STUB_CURL_STDIN")" "Bearer $CLAUDE_SECRET" \
+  "and never the expired one"
+
+# The renewal request itself: the stored refresh token, the configured client
+# id, and the stored scopes — sent as a BODY FILE, so none of it is in argv.
+check_eq "$(jq -r '.grant_type' "$STUB_CURL_BODY" 2>/dev/null)" "refresh_token" \
+  "the renewal is a refresh_token grant"
+check_eq "$(jq -r '.refresh_token' "$STUB_CURL_BODY" 2>/dev/null)" "$CLAUDE_REFRESH_SECRET" \
+  "it sends the refresh token from the same keychain item, never a hand-typed one"
+check_eq "$(jq -r '.client_id' "$STUB_CURL_BODY" 2>/dev/null)" "fixture-client-id-1716" \
+  "with the client id from the seam"
+check_eq "$(jq -r '.scope' "$STUB_CURL_BODY" 2>/dev/null)" "user:inference user:profile" \
+  "and the stored scopes, space-joined as the endpoint wants them"
+
+# The write-back. Read through jq, field by field, so a partial write cannot
+# pass as a whole one.
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$STUB_NEW_ACCESS" \
+  "the renewed access token was written back into the same keychain item"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.refreshToken')" "$STUB_NEW_REFRESH" \
+  "and so was the rotated refresh token"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.expiresAt')" "$(( (NOW + 3600) * 1000 ))" \
+  "the stored expiry is now + expires_in, in milliseconds"
+# Claude Code owns these. A write-back that replaced the document instead of
+# merging into it would break the very client this is keeping in step.
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.subscriptionType')" "max" \
+  "fields this reader does not read survive the write-back"
+check_eq "$(keychain_doc "$SVC_R" | jq -c '.claudeAiOauth.scopes')" '["user:inference","user:profile"]' \
+  "and so do the stored scopes"
+# One item, not two: the update carried the existing `acct` attribute.
+check_eq "$(grep -c -F "$SVC_R	" "$STUB_KEYCHAIN_DB")" "1" \
+  "the write-back UPDATED the existing item rather than adding a second one"
+check_eq "$(grep -F "$SVC_R	" "$STUB_KEYCHAIN_DB" | head -n 1 | cut -f2)" "$CLAUDE_KEYCHAIN_ACCT" \
+  "and kept its account attribute, which is what makes it the same item"
+
+# --- 12r-b. a 401 on a token the store believed good: one refresh, one retry -
+
+seed_renewal_case ""            # no stored expiry at all
+echo "unauth_once" > "$STUB_ANTHROPIC_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "a 401 on a non-expired token is renewed and retried, and the row reads ok"
+check_eq "$(field_of claude-one@example.com "7-day" used_pct)" "64" \
+  "and the retry really returned the figures"
+# Exactly three calls: usage (401), token, usage (200). A reader that looped
+# would show more, and the count is the only thing that can tell the two apart
+# once both end at 200.
+check_eq "$(grep -c . "$STUB_CURL_LOG")" "3" \
+  "exactly one refresh and one retry — never a loop"
+echo "ok" > "$STUB_ANTHROPIC_MODE"
+
+# A store with NO expiry must not provoke a refresh on every read: the
+# renewal above happened because of the 401, not because the field was
+# missing. Without this the reader would burn a refresh per account per run.
+seed_renewal_case ""
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" "a store with no expiry still reads ok"
+check_eq "$(grep -c 'oauth/token' "$STUB_CURL_LOG" || true)" "0" \
+  "and an absent expiry alone never triggers a refresh"
+
+# A token still inside its stored lifetime is used as-is.
+seed_renewal_case "$(( (NOW + 3600) * 1000 ))"
+run --json
+check_eq "$(grep -c 'oauth/token' "$STUB_CURL_LOG" || true)" "0" \
+  "a token still within its stored lifetime is used without a refresh"
+
+# --- 12r-c. a rejected grant is needs-login, with the relogin command --------
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "invalid_grant" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "needs-login" \
+  "a refresh the endpoint rejects is needs-login"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "invalid_grant" \
+  "the note names the OAuth error code it actually got back"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" \
+  "/quotas-setup relogin claude-one@example.com claude" \
+  "and carries the existing relogin command"
+# A dead grant must not be written anywhere. The item still holds what it held.
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$CLAUDE_SECRET" \
+  "a rejected refresh writes nothing back"
+
+# --- 12r-d. an unreachable token endpoint is unreachable, never needs-login --
+#
+# The distinction is the point: needs-login sends the owner through an
+# interactive login, and a login cannot fix a network that is down.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "down" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "unreachable" \
+  "a token endpoint that cannot be reached is unreachable, not needs-login"
+check_not_contains "$(field_of claude-one@example.com "7-day" detail)" "/quotas-setup relogin" \
+  "and does not tell the owner to log in over a network failure"
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "server" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "unreachable" \
+  "a 500 from the token endpoint is unreachable too"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "HTTP 500" \
+  "with the status it answered"
+
+# HTTP 200 carrying no access token is a CHANGED SHAPE, not a dead login.
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "noshape" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "unreachable" \
+  "a 200 with no access token in it is unreachable, never a silent success"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "no access token" \
+  "and says what was wrong with the response"
+
+# A bare 403 with no OAuth error code is an edge proxy, not a dead grant.
+# Sending the owner through an interactive login over a WAF block is the
+# misdiagnosis the needs-login/unreachable split exists to prevent.
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "proxy403" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "unreachable" \
+  "a 403 carrying no OAuth error code is unreachable, not a dead grant"
+check_not_contains "$(field_of claude-one@example.com "7-day" detail)" "/quotas-setup relogin" \
+  "and does not send the owner through a login a proxy block would not fix"
+
+# --- 12r-d2. a rate-limited token endpoint says rate-limited -----------------
+#
+# Measured on the live endpoint 2026-09-14: HTTP 429 through Cloudflare with
+# `{"error":{"type":"rate_limit_error"}}`. `unreachable` would record a week of
+# outages in the snapshot history that never happened, and `needs-login` would
+# send the owner through a login that fixes nothing. The reader already has the
+# status that says exactly this.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "ratelimit" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "rate-limited" \
+  "a 429 from the token endpoint reads rate-limited, not unreachable"
+check_not_contains "$(field_of claude-one@example.com "7-day" detail)" "/quotas-setup relogin" \
+  "and never tells the owner to log in over a rate limit"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$CLAUDE_SECRET" \
+  "a rate-limited refresh writes nothing back"
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "ratelimit_retry" > "$STUB_TOKEN_MODE"
+run --json
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "retry after 900s" \
+  "and a Retry-After header is reported as a duration"
+
+# --- 12r-d3. a dead grant in Anthropic's NESTED envelope is still needs-login -
+#
+# The live endpoint sends {"error":{"type":…}}, not RFC 6749's flat
+# {"error":"…"}. A reader that only understood the flat shape would call a
+# genuinely dead grant `unreachable` and never tell the owner to log in.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "nested_invalid_grant" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "needs-login" \
+  "an invalid_grant in the nested envelope is still a dead grant"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "invalid_grant" \
+  "and the note names the code it found inside that envelope"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" \
+  "/quotas-setup relogin claude-one@example.com claude" \
+  "with the relogin command"
+# The `message` beside that code is never echoed: an endpoint that put the
+# submitted token in an error string would otherwise print it.
+check_not_contains "$(field_of claude-one@example.com "7-day" detail)" "refresh token expired" \
+  "the human-readable message beside the code is not echoed"
+echo "ok" > "$STUB_TOKEN_MODE"
+
+# --- 12r-e. a response that omits refresh_token keeps the stored one ---------
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "norotate" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" "a response with no rotated refresh token still renews"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.refreshToken')" "$CLAUDE_REFRESH_SECRET" \
+  "and the stored refresh token is kept rather than blanked"
+# `norotate` also omits nothing else — expires_in IS present here, so the
+# expiry is rewritten. The DELETE case is asserted separately below, where
+# the response omits expires_in.
+echo "ok" > "$STUB_TOKEN_MODE"
+
+# --- 12r-e2. an unknown new expiry DELETES the stored one --------------------
+#
+# Leaving the old value would park a PAST timestamp beside a freshly renewed
+# token, and every later run would read that as "expired" and spend another
+# refresh for ever. Absent is the honest state: unknown.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "noexpiry" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" "a renewal with no expires_in still reads ok"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth | has("expiresAt")')" "false" \
+  "and the stale expiry is DELETED, not left behind to force a refresh every run"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$STUB_NEW_ACCESS" \
+  "control(+): the renewal itself still landed"
+echo "ok" > "$STUB_TOKEN_MODE"
+
+# --- 12r-e3. an unparseable keychain item refuses the write-back -------------
+#
+# `-a ""` does not update the existing item — it creates a SECOND one beside
+# the one Claude Code reads. Refusing is the only safe answer; the figures
+# were still read, so the row stays ok and discloses the miss.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+# Blank the account column, which is what the reader parses out of the
+# attribute dump. Done with awk on tab fields rather than a sed pattern: the
+# service name contains spaces and hyphens, and the separators are tabs.
+awk -F'\t' -v OFS='\t' '{ $2 = ""; print }' "$STUB_KEYCHAIN_DB" > "$TMP/acctless.db"
+mv -f "$TMP/acctless.db" "$STUB_KEYCHAIN_DB"
+check_eq "$(grep -F "$SVC_R	" "$STUB_KEYCHAIN_DB" | head -n 1 | cut -f2)" "" \
+  "control(+): the fixture item really has no account attribute to find"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "a write-back that cannot identify the item still reports the figures it read"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "could not be written back" \
+  "and discloses that the renewal was not persisted rather than failing silently"
+check_eq "$(grep -c -F "$SVC_R	" "$STUB_KEYCHAIN_DB")" "1" \
+  "and no second keychain item was created beside the one Claude Code reads"
+
+# --- 12r-f. the Linux path renews and rewrites the file, mode 600 ------------
+#
+# `<profile_dir>/.credentials.json` is the same credential in a different
+# store. A renewal path that only covered the Keychain would leave every Linux
+# install exactly as dark as the bug being fixed.
+
+reset_state
+LDIR="$PROFILES/linux-one/claude"
+mkdir -p "$LDIR"
+jq -n --arg at "$CLAUDE_SECRET" --arg rt "$CLAUDE_REFRESH_SECRET" \
+      --argjson ea "$(( (NOW - 60) * 1000 ))" \
+  '{claudeAiOauth: {accessToken: $at, refreshToken: $rt, expiresAt: $ea,
+                    scopes: ["user:inference"], subscriptionType: "max"}}' \
+  > "$LDIR/.credentials.json"
+chmod 600 "$LDIR/.credentials.json"
+write_config "$(account_json claude linux-one "$LDIR")"
+run --json
+check_eq "$(rows_for linux-one)" "ok" "the file-backed credential is renewed too"
+check_eq "$(jq -r '.claudeAiOauth.accessToken' "$LDIR/.credentials.json")" "$STUB_NEW_ACCESS" \
+  "and the renewed access token was written back to the file"
+check_eq "$(jq -r '.claudeAiOauth.refreshToken' "$LDIR/.credentials.json")" "$STUB_NEW_REFRESH" \
+  "along with the rotated refresh token"
+check_eq "$(jq -r '.claudeAiOauth.subscriptionType' "$LDIR/.credentials.json")" "max" \
+  "preserving the fields this reader does not read"
+# The rewrite must not widen the file. A credential world-readable after a
+# renewal is a worse outcome than the row that was being fixed.
+check_eq "$(ls -l "$LDIR/.credentials.json" | cut -c1-10)" "-rw-------" \
+  "and the rewritten file is still mode 600"
+
+# --- 12r-f2. a concurrent renewal is never clobbered -------------------------
+#
+# Claude Code renews this same item, and the daily job can overlap a manual
+# run. Refresh tokens ROTATE, so a blind last-writer-wins store can leave the
+# item holding a token the server already invalidated — and the NEXT run then
+# reads `needs-login` on a login nobody actually lost. The write-back re-reads
+# the store and stands down when it no longer holds what this run started from.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+printf '%s' "$SVC_R" > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "a renewal that lost a race still reports the figures it read"
+# The other writer's credential is what survives — ours is the stale one.
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$CLAUDE_SECRET" \
+  "and the item was NOT overwritten with this run's renewal"
+check_eq "$(grep -c 'add-generic-password' "$STUB_SECURITY_LOG" || true)" "0" \
+  "the write was not merely harmless — it never happened at all"
+# Losing a race costs nothing, so it must not be reported as a problem.
+check_eq "$(field_of claude-one@example.com "7-day" detail)" "" \
+  "losing a race to another writer is not a defect and is not disclosed"
+: > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+
+# Control: with the race disarmed, the very same fixture DOES write back — so
+# the assertions above are measuring the stand-down, not a write-back that was
+# broken for some unrelated reason.
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+run --json
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.accessToken')" "$STUB_NEW_ACCESS" \
+  "control(+): unraced, the identical fixture writes the renewal back"
+
+# A store that cannot be read at write-back time is a FAILURE, not a race.
+# Folding the two together would let a vanished item, a revoked permission, or
+# a truncated file report as "somebody else renewed" — a silent no-op wearing a
+# reassuring explanation.
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+printf '%s' "$SVC_R" > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+printf 'gone' > "$STUB_KEYCHAIN_RACE_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "an unreadable store at write-back time still reports the figures it read"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "could not be written back" \
+  "but DISCLOSES the failure rather than reporting it as a lost race"
+: > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+printf 'swap' > "$STUB_KEYCHAIN_RACE_MODE"
+
+# --- 12r-f3. invalid_grant caused by SOMEBODY ELSE renewing is not a dead login
+#
+# The other half of the rotation problem. When Claude Code (or a concurrent
+# /quotas) renews first, the refresh token THIS run holds is invalidated *by
+# that rotation*, and the endpoint answers invalid_grant. Believed at face
+# value the row says `needs-login` about an account whose credential is in the
+# store, freshly renewed and perfectly good — the exact false `needs-login`
+# this whole change exists to remove.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+printf '%s' "$SVC_R" > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+echo "invalid_grant" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "ok" \
+  "an invalid_grant explained by another writer's renewal is not needs-login"
+check_contains "$(cat "$STUB_CURL_STDIN")" "Authorization: Bearer $STUB_RACE_WINNER" \
+  "the usage call used the credential that other writer left behind"
+check_eq "$(field_of claude-one@example.com "7-day" used_pct)" "64" \
+  "and the figures were read on it"
+: > "$STUB_KEYCHAIN_RACE"
+printf '0' > "$STUB_KEYCHAIN_RACE_N"
+
+# Control: the SAME invalid_grant with nobody else writing is still a dead
+# login. Without this the check above would pass on a reader that had simply
+# stopped reporting needs-login at all.
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+echo "invalid_grant" > "$STUB_TOKEN_MODE"
+run --json
+check_eq "$(rows_for claude-one@example.com)" "needs-login" \
+  "control(-): unraced, the same invalid_grant is still a dead login"
+echo "ok" > "$STUB_TOKEN_MODE"
+
+# --- 12r-g. no credential reaches argv on the renewal path -------------------
+#
+# Both stubs hard-fail on a secret in argv (curl exit 90, security exit 90), so
+# the clean runs above are already that assertion. What is asserted here is the
+# CONTROL: that the renewal really happened, or every check in this section
+# would be passing over a code path nothing exercised.
+
+seed_renewal_case "$(( (NOW - 60) * 1000 ))"
+run --json
+check_eq "$(grep -c 'oauth/token' "$STUB_CURL_LOG" || true)" "1" \
+  "control(+): the renewal path under these assertions really did run"
+check_eq "$(grep -c 'add-generic-password' "$STUB_SECURITY_LOG" || true)" "1" \
+  "control(+): and it really did write back, exactly once"
+COMBINED="$OUT
+$ERR"
+check_not_contains "$COMBINED" "$CLAUDE_REFRESH_SECRET" \
+  "the refresh token never reaches stdout or stderr"
+check_not_contains "$COMBINED" "$STUB_NEW_REFRESH" \
+  "and neither does the rotated one"
+check_not_contains "$COMBINED" "$STUB_NEW_ACCESS" \
+  "nor the renewed access token"
+check_eq "$(printf '%s' "$COMBINED" | grep -cE 'sk-ant|eyJ|refresh_token=' || true)" "0" \
+  "and nothing token-shaped appears anywhere in the output"
+
+# --- 12r-h. no token is handed to a helper on ITS command line ---------------
+#
+# The stubs assert this for `curl` and `security`, because the reader invokes
+# them through seams the suite controls. `jq` has no seam — it is the real one
+# — so a `jq --arg rt "$CLAUDE_REFRESH_TOKEN"` would build a correct request,
+# pass every behavioural assertion above, and publish the refresh token in
+# jq's argv, where `ps` shows it to every process on the machine. Caught by
+# CodeAnt during #1716, after it had already shipped past the runtime checks.
+#
+# This is a SOURCE assertion because that is the only level at which it is
+# observable: argv is gone by the time any output exists.
+# The pattern covers `--arg` AND `--argjson`, braced and unbraced, quoted and
+# unquoted. A detector that only knew `"$VAR"` would wave through `$VAR` and
+# `"${VAR}"` — the same leak, spelled differently, which is exactly how a
+# guard stops guarding.
+ARGV_PAT='--arg(json)?[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"?\$\{?(CLAUDE_TOKEN|CLAUDE_REFRESH_TOKEN|CLAUDE_CRED_PRIOR_ACCESS|CURSOR_TOKEN)\}?"?'
+ARGV_LEAKS="$(grep -nE -- "$ARGV_PAT" "$SCRIPT" || true)"
+check_eq "$ARGV_LEAKS" "" \
+  "no credential global is passed to jq with --arg/--argjson, which would put it in argv"
+
+# Controls: the detector fires on EVERY spelling it claims to cover. A control
+# that only exercised one form would leave the other three unasserted.
+argv_probe() { printf '%s\n' "$1" | grep -cE -- "$ARGV_PAT" || true; }
+check_eq "$(argv_probe 'jq -n --arg rt "$CLAUDE_REFRESH_TOKEN" .')" "1" \
+  'control(+): the scan detects --arg with "$VAR"'
+check_eq "$(argv_probe 'jq -n --arg rt $CLAUDE_REFRESH_TOKEN .')" "1" \
+  'control(+): and unquoted $VAR'
+check_eq "$(argv_probe 'jq -n --arg at "${CLAUDE_TOKEN}" .')" "1" \
+  'control(+): and braced "${VAR}"'
+check_eq "$(argv_probe 'jq -n --argjson at "$CLAUDE_TOKEN" .')" "1" \
+  'control(+): and --argjson'
+# Control(-): it must not fire on a NON-credential variable, or it would be
+# satisfied by any jq call at all and prove nothing about secrets.
+check_eq "$(argv_probe 'jq -n --arg ea "$CLAUDE_EXPIRES_AT_MS" .')" "0" \
+  "control(-): and does not fire on a non-credential variable"
+
+# --- 12r-i. a credential with a refresh token but NO access token ------------
+#
+# The shape a partial write leaves behind: `refreshToken` present,
+# `accessToken` gone. `claude_token_for` has already loaded the refresh
+# material into its globals by the time it discovers there is no access token,
+# and this path spends it on NOTHING — no token call, no usage call — so the
+# caller emits needs-login and returns. Without the clear, the refresh token
+# would sit in those globals until the next Claude account called the function
+# or the shell exited. Reported by CodeRabbit on #1721.
+
+seed_renewal_case "$(( (NOW + 3600) * 1000 ))"
+# Drop ONLY the access token, on the JSON column of the fake keychain row, so
+# the refresh token and every other field survive exactly as a real partial
+# write would leave them.
+awk -F'\t' -v OFS='\t' '{ print $1, $2, $3 }' "$STUB_KEYCHAIN_DB" > "$TMP/pre.db"
+: > "$TMP/noaccess.db"
+while IFS=$'\t' read -r svc acct doc; do
+  printf '%s\t%s\t%s\n' "$svc" "$acct" \
+    "$(printf '%s' "$doc" | jq -c 'del(.claudeAiOauth.accessToken)')" >> "$TMP/noaccess.db"
+done < "$TMP/pre.db"
+mv -f "$TMP/noaccess.db" "$STUB_KEYCHAIN_DB"
+
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth | has("accessToken")')" "false" \
+  "control(+): the fixture item really has no access token"
+check_eq "$(keychain_doc "$SVC_R" | jq -r '.claudeAiOauth.refreshToken')" "$CLAUDE_REFRESH_SECRET" \
+  "control(+): and it really does still carry the refresh token that must not linger"
+
+run --json
+check_eq "$(rows_for claude-one@example.com)" "needs-login" \
+  "a credential with no access token is needs-login"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" "no OAuth access token" \
+  "and the reason survives the clear rather than being blanked with the secrets"
+check_contains "$(field_of claude-one@example.com "7-day" detail)" \
+  "/quotas-setup relogin claude-one@example.com claude" \
+  "and it still carries the relogin command"
+check_eq "$(grep -c 'oauth/token' "$STUB_CURL_LOG" || true)" "0" \
+  "control(-): nothing was spent on the token endpoint, so nothing consumed the refresh token"
+COMBINED="$OUT
+$ERR"
+check_not_contains "$COMBINED" "$CLAUDE_REFRESH_SECRET" \
+  "and the refresh token never reaches stdout or stderr on this path"
+
+# The clear itself is in-process state, so the only level at which it is
+# observable is the source. Asserted on the IDENTIFIER, not on any prose: a
+# refactor that drops the call is what this catches.
+TOKEN_FOR_BODY="$(awk '/^claude_token_for\(\) \{/{f=1} f{print} f && /^\}$/{exit}' "$SCRIPT")"
+# Anchored to the CALL shape — a bare identifier on its own line. A plain
+# substring match is satisfied by the comment above the call, so a refactor
+# that deleted the call and left the comment would still pass.
+FORGET_CALL='^[[:space:]]*claude_forget_credentials[[:space:]]*$'
+check_eq "$(printf '%s' "$TOKEN_FOR_BODY" | grep -cE -- "$FORGET_CALL" || true)" "1" \
+  "the credential read clears its globals on the failure path that loaded them"
+check_eq "$(printf '%s\n' '  # calls claude_forget_credentials somewhere' | grep -cE -- "$FORGET_CALL" || true)" "0" \
+  "control(-): and a mere mention in a comment does not satisfy that check"
+check_eq "$(printf '%s' "$TOKEN_FOR_BODY" | grep -c 'credential store holds no OAuth access token' || true)" "1" \
+  "control(+): and the extracted body really is the function that owns that path"
 
 # --- 13. the cursor IDE-token reader (#1703) ---------------------------------
 #
@@ -1502,7 +2190,7 @@ write_config \
 run --five-hour
 COMBINED="$OUT
 $ERR"
-check_eq "$(printf '%s' "$COMBINED" | grep -cE 'Bearer|sk-ant|eyJ' || true)" "0" \
+check_eq "$(printf '%s' "$COMBINED" | grep -cE 'Bearer|sk-ant|eyJ|refresh_token=' || true)" "0" \
   "no Bearer header, sk-ant token, or JWT appears in stdout or stderr"
 check_not_contains "$COMBINED" "$CLAUDE_SECRET" "the claude token value never reaches the output"
 check_not_contains "$COMBINED" "$CODEX_SECRET" "the codex token value never reaches the output"
@@ -1519,7 +2207,7 @@ check_eq "$(printf '%s' "$DOC" | jq -r 'if (.rows | length) > 0 then "populated"
   "populated" "control(+): the --json document under the leak scan actually has rows in it"
 COMBINED="$DOC
 $ERR"
-check_eq "$(printf '%s' "$COMBINED" | grep -cE 'Bearer|sk-ant|eyJ' || true)" "0" \
+check_eq "$(printf '%s' "$COMBINED" | grep -cE 'Bearer|sk-ant|eyJ|refresh_token=' || true)" "0" \
   "and none appears in --json output either"
 
 USAGE_LOG="$CASE_HOME/.claude/script-usage.log"
