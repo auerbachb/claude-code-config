@@ -456,7 +456,9 @@ check "policy read failure → nothing on stdout" "" "$out"
 out="$(FAKE_FILES_FAIL=1 pr_gate)"; rc=$?
 check "file listing failure → exit 4" "4" "$rc"
 check "file listing failure → nothing on stdout" "" "$out"
-FAKE_PR_MISSING=1 pr_gate >/dev/null; check "missing PR → exit 3" "3" "$?"
+out="$(FAKE_PR_MISSING=1 pr_gate)"; rc=$?
+check "missing PR → exit 3" "3" "$rc"
+check "missing PR → nothing on stdout" "" "$out"
 
 for mode in symlink nocontent; do
   out="$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_CONTENT_MODE=$mode pr_gate)"; rc=$?
