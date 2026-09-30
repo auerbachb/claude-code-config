@@ -242,21 +242,30 @@ fi
 # after the section is extracted, is what stops a fenced example that happens
 # to contain `## Review policy` (say, under `## Notes`) from being read as the
 # live section: pm-config-get.sh itself does not know about fences.
-#   Fences follow CommonMark: an opener is a run of 3+ ` or ~; a backtick run
+#   Fences follow CommonMark: an opener is a run of 3+ ` or ~ indented at most
+#   three spaces (four or more is an indented code block); a backtick run
 #   with another backtick after it on the line is an inline span, not a fence;
 #   a fence closes only on a run of the same character at least as long as its
 #   opener with nothing after it. An unclosed fence hides the rest of the file,
-#   exactly as GitHub renders it.
+#   exactly as GitHub renders it. An indented code block (4+ spaces or a tab,
+#   after a blank line or another such line) is hidden the same way.
 strip_hidden() {
   awk '
-    BEGIN { fence = 0; comment = 0 }
+    BEGIN { fence = 0; comment = 0; prev_blank = 1; in_icode = 0 }
     {
       line = $0
+      if (!fence && !comment && (line ~ /^(    |\t)/) && (prev_blank || in_icode)) {
+        in_icode = 1; print ""; next
+      }
+      in_icode = 0
+      prev_blank = (line ~ /^[ \t]*$/)
       if (fence) {
-        s = line; sub(/^[ \t]*/, "", s)
-        n = 0
-        while (substr(s, n + 1, 1) == fch) n++
-        if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
+        if (line ~ /^ ? ? ?[`~]/) {
+          s = line; sub(/^ */, "", s)
+          n = 0
+          while (substr(s, n + 1, 1) == fch) n++
+          if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
+        }
         print ""; next
       }
       if (comment) {
@@ -264,8 +273,8 @@ strip_hidden() {
         if (i == 0) { print ""; next }
         line = substr(line, i + 3); comment = 0
       }
-      if (match(line, /^[ \t]*(```+|~~~+)/)) {
-        s = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", s)
+      if (match(line, /^ ? ? ?(```+|~~~+)/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/^ */, "", s)
         info = substr(line, RSTART + RLENGTH)
         if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
           fch = substr(s, 1, 1); flen = length(s); fence = 1
@@ -417,7 +426,9 @@ parse_table() {
     {
       line = $0
       if (state == 0) {
-        if (pending != "" && is_delim(line)) {
+        # GFM also requires the delimiter row to have exactly as many cells
+        # as the header; otherwise neither line is a table.
+        if (pending != "" && is_delim(line) && split_cells(pending, hdr) == split_cells(line, dl)) {
           nh = split_cells(pending, hdr)
           for (i = 1; i <= nh; i++) {
             h = tolower(hdr[i]); gsub(/[`*_]/, "", h); h = trim(h)
@@ -571,7 +582,11 @@ glob_matches() {
   return 1
 }
 
-record() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$MATCH_TSV"; }
+# One TSV line per match. A tab inside a field (a path may legally carry one)
+# would shift the columns the summary reads, so it is shown as a space.
+record() {
+  printf '%s\t%s\t%s\t%s\n' "${1//$'\t'/ }" "${2//$'\t'/ }" "${3//$'\t'/ }" "${4//$'\t'/ }" >> "$MATCH_TSV"
+}
 
 # Labels first: whether any tier label is present decides whether unmatched
 # files fall back to `default`.
@@ -591,12 +606,10 @@ while IFS= read -r lab; do
 done < <(awk 1 "$LABELS_FILE")
 
 while IFS= read -r file; do
-  # Inline trim: a $(trim) subshell per file is thousands of forks on a
-  # large PR.
-  file="${file#"${file%%[![:space:]]*}"}"
-  file="${file%"${file##*[![:space:]]}"}"
+  # Paths are matched exactly as GitHub reports them — never trimmed. A path
+  # with leading or trailing whitespace is a different file, and trimming it
+  # could land it on a lighter tier. Only blank lines are skipped.
   [[ -n "$file" ]] || continue
-  file="${file#./}"
   hit=0
   for (( i = 0; i < N_TIERS; i++ )); do
     [[ -n "${TIER_PATHS[$i]}" ]] || continue

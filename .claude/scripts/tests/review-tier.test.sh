@@ -133,6 +133,54 @@ write_policy <<'EOF'
 EOF
 check "a tilde fence whose info string has backticks still opens" "legacy" "$(gate_for 'docs/a.md')"
 
+# Four spaces of indentation make an indented code block, not a fence: the
+# live table after it must not be swallowed by a fence that never opened.
+write_policy <<'EOF'
+    ```
+| Tier | Gate |
+|---|---|
+| default | full |
+EOF
+check "a 4-space-indented backtick run is not a fence opener" "full" "$(gate_for 'docs/a.md')"
+write_policy <<'EOF'
+```
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+    ```
+```
+
+| Tier | Gate |
+|---|---|
+| default | full |
+EOF
+check "a 4-space-indented closer does not close a fence" "full" "$(gate_for 'docs/a.md')"
+
+write_policy <<'EOF'
+Example (indented code, not live):
+
+    | Tier | Gate |
+    |---|---|
+    | default | ci-only |
+
+| Tier | Gate |
+|---|---|
+| default | full |
+EOF
+check "an indented code block table is not the live table" "full" "$(gate_for 'docs/a.md')"
+
+write_policy <<'EOF'
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+
+Tier | Gate
+--- | ---
+core | full
+EOF
+out="$(json_for 'docs/a.md')"
+check "a second table without edge pipes → invalid, full" "invalid/full" "$(jq -r '.policy + "/" + .gate' <<<"$out")"
+
 check "missing --config file → legacy" "legacy" \
   "$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>/dev/null)"
 err="$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>&1 >/dev/null)"
@@ -192,6 +240,16 @@ write_policy <<'EOF'
 Remember: a | b in prose after the table is fine.
 EOF
 check "prose containing | after the table is not refused" "ci-only" "$(gate_for 'docs/a.md')"
+
+write_policy <<'EOF'
+Gates: ci-only | full
+---|---|---
+
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+EOF
+check "a delimiter row with a different cell count does not make prose a table" "ci-only" "$(gate_for 'docs/a.md')"
 
 write_policy <<'EOF'
 Tier | Gate | Paths
@@ -265,6 +323,10 @@ check "docs-only PR → ci-only" "ci-only" "$(gate_for $'docs/a.md\nREADME.md')"
 check "leaf-only PR → ci+codeant-one-round" "ci+codeant-one-round" "$(gate_for 'src/adapters/x.ts')"
 check "docs + core mix → core wins (full)" "full" "$(gate_for $'docs/a.md\nsrc/ledger/x.ts')"
 check "trailing-slash path covers everything under it" "full" "$(gate_for 'migrations/2026/001.sql')"
+check "a path with a leading space is not trimmed onto docs/**" "full" "$(gate_for ' docs/a.txt')"
+out="$(json_for $'src/ledger/a\tb.ts')"
+check "a tab in a path keeps the match summary's columns intact" "src/ledger/a b.ts" \
+  "$(jq -r '.matches[] | select(.tier == "core") | .examples[0]' <<<"$out")"
 check "unmatched file with no default row → full" "full" "$(gate_for $'docs/a.md\nsrc/other.ts')"
 check "a file in a core dir that is also *.md is core (strictest)" "full" "$(gate_for 'src/ledger/README.md')"
 
