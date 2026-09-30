@@ -36,7 +36,8 @@
 #   - deps: list of issue nums that must finish before this one starts
 #
 # OPTIONS
-#   --ceiling N     Concurrency ceiling (default: 4; from subagent-orchestration.md)
+#   --ceiling N     Concurrency ceiling (default: 4, the PIPELINE_CEILING default;
+#                   callers pass the repo's `active-work-cap.sh --ceiling`)
 #   --cr-rate N     CodeRabbit reviews per hour (default: 5; from cr-github-review.md)
 #   --now ISO8601   Override current time for testing (default: UTC now)
 #   --json '<JSON>' Provide input JSON inline rather than via stdin
@@ -66,7 +67,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
 # ---------------------------------------------------------------------------
 # Constants (authoritative sources cited in comments)
 # ---------------------------------------------------------------------------
-DEFAULT_CEILING=4   # subagent-orchestration.md: keep 3-4 active CR-polled PRs max
+DEFAULT_CEILING=4   # PIPELINE_CEILING default (active-work-cap.sh --ceiling)
 DEFAULT_CR_RATE=5   # cr-github-review.md Rate Limits: 5 reviews/hour per developer
 # Standard-tier fallback for unestimated issues (time-estimates.md tier table:
 # rounds-based, 30-60 min coding + 3-4 review/CI rounds x 30 min)

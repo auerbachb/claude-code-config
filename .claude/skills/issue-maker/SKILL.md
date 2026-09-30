@@ -682,7 +682,7 @@ Work through these issues, in this order:
 {Increment chains only: "#{b}–#{d} are increments 2–4 of one chain behind #{a}; they land in that order."}
 
 ## Workflow
-Run `/subagent #{a} #{b} …` in this thread. It claims each issue, serializes any that overlap on a file, and drives each one A→B→C to a merged PR — keeping at most the 3–4 concurrent-pipeline ceiling in flight and queueing the rest. Any issue it judges too big for a subagent it routes to its own thread, naming the criterion; that judgment belongs here, with the code in front of you, not back in the capture thread.
+Run `/subagent #{a} #{b} …` in this thread. It claims each issue, serializes any that overlap on a file, and drives each one A→B→C to a merged PR — keeping at most the concurrent-pipeline ceiling (`PIPELINE_CEILING`, default 4) in flight and queueing the rest. Any issue it judges too big for a subagent it routes to its own thread, naming the criterion; that judgment belongs here, with the code in front of you, not back in the capture thread.
 
 If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's schema) and track the issues there. Do not open a separate thread per issue.
 

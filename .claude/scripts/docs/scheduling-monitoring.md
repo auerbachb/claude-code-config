@@ -10,7 +10,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | Script | Purpose |
 |--------|---------|
 <!-- catalog:rows:begin -->
-| [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
+| [active-work-cap.sh](../active-work-cap.sh) | Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP` and the per-thread `PIPELINE_CEILING`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters |
 | [bgwork-ceiling.sh](../bgwork-ceiling.sh) | Hard ceiling on chat silence while background work (subagents, watchers) runs |
 | [gh-window.sh](../gh-window.sh) | GitHub date-window builder (ET-anchored, macOS + GNU dual-syntax) |
 | [install-config-sync.sh](../install-config-sync.sh) | Register the per-machine config sync (`claude-config-sync.sh`) as a macOS launchd LaunchAgent — one run at login, then every `--interval` seconds |
