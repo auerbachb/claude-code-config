@@ -69,6 +69,12 @@ require_text "$FORGOTTEN" 'min(PIPELINE_CEILING, ACTIVE_WORK_CAP)' \
   '/pm-forgotten-pr merge dispatch must launch up to min(PIPELINE_CEILING, ACTIVE_WORK_CAP)'
 require_text "$FORGOTTEN" '`--cap`' \
   '/pm-forgotten-pr must read the cap as well as the ceiling'
+require_text "$PM" 'up to the **`LIMIT` concurrent-pipeline** limit' \
+  '/pm launch guidance must fill up to Step 0 LIMIT'
+require_text "$PM" 'below the effective limit (`LIMIT`, Step 0)' \
+  '/pm 3.4 refill must trigger below Step 0 LIMIT'
+require_text "$PM" '1-of-{LIMIT}' \
+  '/pm 3.4 must describe an under-filled board against LIMIT'
 reject_pattern "$PM" 'up to the \*\*`CEILING`' \
   '/pm must launch up to Step 0 LIMIT, not the raw CEILING'
 reject_pattern "$PM" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
