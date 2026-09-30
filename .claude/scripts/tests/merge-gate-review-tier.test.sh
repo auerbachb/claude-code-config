@@ -151,6 +151,12 @@ FAKE_REVIEWS="$(jq -cn --arg sha "$OLD_SHA" '[{id:2, user:{login:"codeant-ai[bot
   FAKE_PR_FILES_JSON="$LEAF_FILES" run_gate
 check_eq "0" "$RC" "codeant-one-round: a COMMENTED review on an older commit meets it"
 
+# A CHANGES_REQUESTED review also proves a round ran, and does not block by
+# itself — its findings arrive as threads, which the thread check governs.
+FAKE_REVIEWS="$(jq -cn --arg sha "$OLD_SHA" '[{id:3, user:{login:"codeant-ai[bot]", type:"Bot"}, state:"CHANGES_REQUESTED", commit_id:$sha, submitted_at:"2026-07-21T09:00:00Z", body:"2 findings"}]')" \
+  FAKE_PR_FILES_JSON="$LEAF_FILES" run_gate
+check_eq "0" "$RC" "codeant-one-round: a CHANGES_REQUESTED review on an older commit meets it without blocking"
+
 # (c) a completed CodeAnt check-run on HEAD.
 FAKE_PR_FILES_JSON="$LEAF_FILES" run_gate "$(bundle "$(cr 1 "hook-tests" success 100)" "$(cr 2 "CodeAnt AI" neutral 200 codeant-ai)")"
 check_eq "0" "$RC" "codeant-one-round: a completed CodeAnt check-run on HEAD meets it"
