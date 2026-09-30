@@ -364,11 +364,18 @@ parse_table() {
         if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
         next
       }
+      # A backtick run is an opener only when no backtick follows it on the
+      # line (CommonMark: a backtick info string may not contain one), so
+      # ```full``` is an inline code span, not a fence. Tilde info strings
+      # may contain backticks.
       if (match(line, /^[ \t]*(```+|~~~+)/)) {
         s = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", s)
-        fch = substr(s, 1, 1); flen = length(s); fence = 1
-        if (state == 1) state = 2
-        next
+        info = substr(line, RSTART + RLENGTH)
+        if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
+          fch = substr(s, 1, 1); flen = length(s); fence = 1
+          if (state == 1) state = 2
+          next
+        }
       }
       while (index(line, "<!--") > 0) {
         pre = substr(line, 1, index(line, "<!--") - 1)

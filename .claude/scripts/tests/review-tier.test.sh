@@ -111,6 +111,28 @@ write_policy <<'EOF'
 EOF
 check "a backtick line does not close a tilde fence" "legacy" "$(gate_for 'docs/a.md')"
 
+# A backtick run with another backtick after it is an inline code span, not a
+# fence opener — the table below it is live.
+write_policy <<'EOF'
+```full```
+
+```ci-only```
+
+| Tier | Gate | Paths | Labels |
+| --- | --- | --- | --- |
+| default | full | | |
+EOF
+check "inline code spans are not fence openers" "full" "$(gate_for 'docs/a.md')"
+
+write_policy <<'EOF'
+~~~ info with `backticks`
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+~~~
+EOF
+check "a tilde fence whose info string has backticks still opens" "legacy" "$(gate_for 'docs/a.md')"
+
 check "missing --config file → legacy" "legacy" \
   "$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>/dev/null)"
 err="$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>&1 >/dev/null)"
