@@ -10,7 +10,7 @@
 #   Format and resolution rules: .claude/reference/review-policy.md.
 #
 # USAGE
-#   review-tier.sh <pr_number> [--repo <owner/name>] [--config <path>] [--json]
+#   review-tier.sh <pr_number> [--repo <owner/name>] [--base <ref>] [--config <path>] [--json]
 #   review-tier.sh --files-from <file|-> [--labels <csv>] [--config <path>] [--json]
 #   review-tier.sh --help | -h
 #
@@ -19,6 +19,9 @@
 #                      the policy is read from the PR's BASE branch, so a PR
 #                      can never re-tier itself by editing pm-config.md.
 #   --repo <o/n>       Repository for PR mode (default: gh's current repo).
+#   --base <ref>       The PR's base branch, when the caller already knows it
+#                      (merge-gate.sh does). Saves a `gh pr view` on the path
+#                      where the policy turns out to be absent.
 #   --config <path>    Read the policy from this file instead (a base-branch
 #                      checkout in CI, or a fixture in tests). Deliberately a
 #                      flag only, never an environment variable: a gate that
@@ -57,7 +60,10 @@
 #   tier label is present. A label therefore classifies what the paths leave
 #   open, and can never lower a file a path already matched. The PR gets the
 #   strictest candidate gate; `tier` names the first table row carrying it.
-#   A PR with no files and no tier label gets `default`. When GitHub returns
+#   A PR with no files and no tier label gets `default`.
+#   The policy is read BEFORE the PR's files and labels are fetched: an absent
+#   or invalid policy answers without them, so a repo that declares no tiers
+#   pays for one contents read and nothing else. When GitHub returns
 #   fewer files than the PR changed (its 3000-file listing cap), `full` is
 #   added: unseen files are never assumed light.
 #
@@ -103,6 +109,7 @@ die_read() { warn "$1"; exit 4; }
 
 PR_NUMBER=""
 REPO=""
+BASE_REF=""
 CONFIG=""
 FILES_FROM=""
 LABELS_CSV=""
@@ -117,6 +124,8 @@ while [[ $# -gt 0 ]]; do
     --json) JSON=1; shift ;;
     --repo) need_value "$@"; REPO="$2"; shift 2 ;;
     --repo=*) REPO="${1#--repo=}"; [[ -n "$REPO" ]] || die_usage "--repo requires a value"; shift ;;
+    --base) need_value "$@"; BASE_REF="$2"; shift 2 ;;
+    --base=*) BASE_REF="${1#--base=}"; [[ -n "$BASE_REF" ]] || die_usage "--base requires a value"; shift ;;
     --config) need_value "$@"; CONFIG="$2"; shift 2 ;;
     --config=*) CONFIG="${1#--config=}"; [[ -n "$CONFIG" ]] || die_usage "--config requires a value"; shift ;;
     --files-from) need_value "$@"; FILES_FROM="$2"; shift 2 ;;
@@ -140,6 +149,9 @@ if [[ -z "$PR_NUMBER" && -z "$FILES_FROM" ]]; then
 fi
 if [[ -n "$PR_NUMBER" && ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   die_usage "PR number must be a positive integer (got: $PR_NUMBER)"
+fi
+if [[ -z "$PR_NUMBER" && -n "$BASE_REF" ]]; then
+  die_usage "--base is PR-mode only"
 fi
 if [[ -n "$PR_NUMBER" && $LABELS_SET -eq 1 ]]; then
   die_usage "--labels is offline-mode only; PR mode reads the PR's labels"
@@ -178,29 +190,24 @@ LABELS_FILE="$TMP_DIR/labels"
 : > "$LABELS_FILE"
 TRUNCATED=0
 UNREADABLE_NAMES=0
-BASE_REF=""
 
-if [[ -n "$PR_NUMBER" ]]; then
-  command -v gh >/dev/null 2>&1 || die_read "gh not found on PATH"
-  if [[ -z "$REPO" ]]; then
-    REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || REPO=""
-    [[ -n "$REPO" ]] || die_read "gh repo view failed — not in a git repo, or no remote"
-  fi
-
-  PR_ERR="$TMP_DIR/pr.err"
-  if ! PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName,labels,changedFiles 2>"$PR_ERR")"; then
-    if grep -qiE 'could not resolve to a pullrequest|not found|no pull requests found' "$PR_ERR" 2>/dev/null; then
+# The PR's labels, changed-file count and file listing. Deferred until the
+# policy is known to be present — see RESOLUTION in the header. Runs in the
+# main shell (never inside $(...)) so its die_read exits the script.
+fetch_pr_facts() {
+  local pr_err="$TMP_DIR/pr.err" pr_json changed listed
+  if ! pr_json="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,changedFiles 2>"$pr_err")"; then
+    if grep -qiE 'could not resolve to a pullrequest|not found|no pull requests found' "$pr_err" 2>/dev/null; then
       warn "PR #$PR_NUMBER not found in $REPO"
       exit 3
     fi
-    die_read "gh pr view #$PR_NUMBER failed: $(head -1 "$PR_ERR" 2>/dev/null)"
+    die_read "gh pr view #$PR_NUMBER failed: $(head -1 "$pr_err" 2>/dev/null)"
   fi
-  BASE_REF="$(printf '%s' "$PR_JSON" | jq -r '.baseRefName // ""')" || die_read "could not parse gh pr view output"
-  CHANGED="$(printf '%s' "$PR_JSON" | jq -r '.changedFiles // ""')" || die_read "could not parse gh pr view output"
+  changed="$(printf '%s' "$pr_json" | jq -r '.changedFiles // ""')" || die_read "could not parse gh pr view output"
   # Without a count there is no way to tell a complete listing from a
   # truncated one, and "assume complete" is the direction that loosens.
-  [[ "$CHANGED" =~ ^[0-9]+$ ]] || die_read "gh pr view returned no usable changedFiles (got: '$CHANGED')"
-  printf '%s' "$PR_JSON" | jq -r '.labels[]?.name' > "$LABELS_FILE" || die_read "could not parse PR labels"
+  [[ "$changed" =~ ^[0-9]+$ ]] || die_read "gh pr view returned no usable changedFiles (got: '$changed')"
+  printf '%s' "$pr_json" | jq -r '.labels[]?.name' > "$LABELS_FILE" || die_read "could not parse PR labels"
 
   # Paginated past GitHub's 100-per-page default. Each entry is tagged: F for
   # the file itself, P for a rename's previous path. Both are classified —
@@ -216,12 +223,33 @@ if [[ -n "$PR_NUMBER" ]]; then
   fi
   awk -F'\t' '$1 == "F" || $1 == "P" { sub(/^[^\t]*\t/, ""); print }' "$TMP_DIR/files.tagged" > "$FILES_FILE" \
     || die_read "could not read the PR file listing"
-  LISTED="$(awk -F'\t' '$1 == "F" || $1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
+  listed="$(awk -F'\t' '$1 == "F" || $1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
   UNREADABLE_NAMES="$(awk -F'\t' '$1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
   # An undershoot is GitHub's file-listing cap: the files it hid are
   # unclassified, so they are never assumed light.
-  if (( LISTED < CHANGED )); then
+  if (( listed < changed )); then
     TRUNCATED=1
+  fi
+}
+
+if [[ -n "$PR_NUMBER" ]]; then
+  command -v gh >/dev/null 2>&1 || die_read "gh not found on PATH"
+  if [[ -z "$REPO" ]]; then
+    REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || REPO=""
+    [[ -n "$REPO" ]] || die_read "gh repo view failed — not in a git repo, or no remote"
+  fi
+  # The base branch decides which policy governs, so it is the one PR fact the
+  # policy read needs up front.
+  if [[ -z "$BASE_REF" && -z "$CONFIG" ]]; then
+    PR_ERR="$TMP_DIR/pr-base.err"
+    if ! BASE_REF="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName --jq '.baseRefName' 2>"$PR_ERR")"; then
+      if grep -qiE 'could not resolve to a pullrequest|not found|no pull requests found' "$PR_ERR" 2>/dev/null; then
+        warn "PR #$PR_NUMBER not found in $REPO"
+        exit 3
+      fi
+      die_read "gh pr view #$PR_NUMBER failed: $(head -1 "$PR_ERR" 2>/dev/null)"
+    fi
+    [[ -n "$BASE_REF" ]] || die_read "gh pr view #$PR_NUMBER returned no baseRefName"
   fi
 else
   if [[ "$FILES_FROM" == "-" ]]; then
@@ -325,8 +353,9 @@ elif [[ -n "$PR_NUMBER" ]]; then
   fi
   if [[ -z "$CONTENT_JSON" ]]; then
     # 404 = the base branch carries no pm-config.md: the normal "no policy"
-    # case. Anything else is a read failure and must not read as "absent".
-    grep -q 'HTTP 404' "$CONTENT_ERR" 2>/dev/null \
+    # case (gh says "Not Found (HTTP 404)"). Anything else is a read failure
+    # and must not read as "absent".
+    grep -qE 'HTTP 404|Not Found' "$CONTENT_ERR" 2>/dev/null \
       || die_read "could not read .claude/pm-config.md at ${BASE_REF:-the default branch}: $(head -1 "$CONTENT_ERR" 2>/dev/null)"
   else
     # Only a base64 file object carries the config. A symlink, a submodule,
@@ -553,6 +582,9 @@ N_TIERS=${#TIER_NAMES[@]}
 (( N_TIERS > 0 )) || invalid "table declares no tiers"
 
 # ------------------------------------------------------------- classify -----
+
+# The policy is present and valid, so the PR's own facts are needed now.
+[[ -n "$PR_NUMBER" ]] && fetch_pr_facts
 
 MATCH_TSV="$TMP_DIR/matches.tsv"
 : > "$MATCH_TSV"
