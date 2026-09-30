@@ -72,7 +72,7 @@ CRLF line endings are stripped before parsing, so a Windows checkout reads the s
 
 ## Where the policy is read from
 
-In PR mode, the policy comes from the PR's **base branch**, through the contents API. It is read **before** the PR's files and labels are fetched, so a repo with no policy pays for that single read and nothing more. `--base <ref>` supplies the base branch when the caller already knows it, as `merge-gate.sh` does, which saves the `gh pr view` too. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself; the new policy governs PRs opened after it merges.
+In PR mode, the policy comes from the PR's **base branch**, through the contents API. It is read **before** the PR's files and labels are fetched, so a repo with no policy pays for that single read and nothing more. `--base <ref>` supplies the base branch when the caller already knows it, as `merge-gate.sh` does, which saves the `gh pr view` too. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself. Once such an edit merges, the new policy applies to every PR the gate evaluates from then on, including PRs that were already open. The policy is read fresh at each gate run, never cached per PR.
 
 `--config <path>` overrides the source. The CI workflow uses it with its base-branch checkout, and the tests use it with fixtures. It is a flag only, never an environment variable, so ambient state cannot re-point a review-enforcing consumer at a looser policy. The merge gate never passes it.
 
