@@ -91,6 +91,8 @@ A reply qualifies only when all of these hold:
 
 A `/pull/` URL never matches. Neither does a reference to another repo, or a number glued to a word or a path (`abc#12`, `a/b/c#12`). Quoted lines (`> …`) are skipped, so quoting a bot's finding cannot defer the thread on an issue number the bot wrote.
 
+Two read limits apply, both on the blocking side. Only the first 100 comments of a thread are read, so a follow-up link posted after the 100th stays unseen. An issue number has at most nine digits, which keeps it exact through `tonumber`. A link past either limit leaves the thread blocking; post the follow-up reply earlier in the thread, or resolve the thread instead.
+
 ### How a link is verified
 
 Each distinct number is looked up once per gate run through `repos/<owner>/<repo>/issues/N`, with at most 25 lookups per run. A number counts only when the object exists, has no `pull_request` key (so it is an issue, not a PR), and its `repository_url` names this repo, which rules out an issue since transferred elsewhere. The issue's open or closed state is not checked.

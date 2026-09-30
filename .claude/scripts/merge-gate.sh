@@ -1173,6 +1173,9 @@ UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
 # — a bot's own `#123` never clears its thread, and GraphQL bot logins carry no
 # `[bot]` suffix to test instead. Accepted references: `#N`,
 # `<owner>/<repo>#N` for THIS repo, and `https://github.com/<owner>/<repo>/issues/N`.
+# N is capped at nine digits so `tonumber` stays exact; a longer number simply
+# never matches, which keeps its thread blocking (fail-closed, like the
+# 100-comment read limit above).
 # A PR URL never matches, and a cross-repo reference is dropped before any
 # lookup. Quoted lines (`> …`) are ignored, so a reply that quotes a bot's
 # finding cannot defer the thread on a number the bot wrote. Each distinct number is then looked up once: it must be an issue of
