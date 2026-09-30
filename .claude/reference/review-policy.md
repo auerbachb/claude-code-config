@@ -171,7 +171,7 @@ The two-round cap on core PRs stays a process limit, not gate logic.
 
 ## BugBot triggering
 
-BugBot is the most expensive reviewer in the stack, so it is invited only when the gate is `full` or `legacy` (#1728). Every path that could invite it asks one helper first, so they cannot disagree:
+BugBot is the most expensive reviewer in the stack, so the `ci-only` and `ci+codeant-one-round` gates no longer invite it (#1728). Only one of those two recognised gates suppresses the invitation. `full`, `legacy`, a usage error, and a tier that cannot be resolved all still invite BugBot, because the helper fails open. Every path that could invite it asks one helper first, so they cannot disagree:
 
 ```bash
 .claude/scripts/bugbot-tier-excluded.sh <pr_number> [--repo owner/name] [--base <ref>]
@@ -187,7 +187,7 @@ The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is
 
 | Path | On a `ci-only` or `ci+codeant-one-round` PR |
 |---|---|
-| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`. The field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead, and `null` when nothing was skipped. |
+| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`, on real and `--dry-run` runs alike. On a real run only, the field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead: a dry run exits before that guard runs (Issue #1735). It is `null` when nothing was skipped. |
 | `pr-preflight.sh` | Gives the cursor reviewer status `skipped-tier-excluded`, which counts as clean. |
 | `/fixpr` Step 3b | Prints `[REVIEWERS] skipping @cursor review — review tier <gate> excludes BugBot`. |
 | `cursor-review-pr-comment.yml` | The `tier-check` step runs the helper from the base-branch checkout with `--repo` and `--base`. The comment step skips on `excluded=true`, and a notice annotation says why. A base branch without the helper posts. |
