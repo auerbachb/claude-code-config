@@ -6,7 +6,7 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 |---|---|---|
 | #1725 | Tier resolver | Landed |
 | #1726 | Merge gate | Landed |
-| #1727 | Deferred findings | Pending |
+| #1727 | Deferred findings | Landed |
 | #1728 | BugBot triggering | Pending |
 | #1729 | Pipeline ceiling | Pending |
 
@@ -70,6 +70,51 @@ Three consequences follow:
 
 CRLF line endings are stripped before parsing, so a Windows checkout reads the same policy as CI.
 
+## Deferred findings
+
+On the `ci-only` and `ci+codeant-one-round` tiers, a non-severe finding can be answered with a follow-up issue instead of a fix. Reply in the review thread with a link to the issue, for example `Deferred to #1234 — not severe.` The merge gate then stops counting that thread as a blocker (#1727).
+
+On `full` and `legacy`, a follow-up link changes nothing: resolve the thread or it blocks. The same holds when the tier could not be resolved. On those tiers the gate makes no issue lookups at all.
+
+"Severe" stays the agent's judgment. Fix a failing test, a security or data-integrity finding, or a contradiction with a design doc; never defer it. The gate only checks that a finding left unfixed points at a real issue.
+
+### What counts as a follow-up reply
+
+A reply qualifies only when all of these hold:
+
+- It is a comment **after** the first one in the thread. The first comment is the finding itself.
+- Its author is a GitHub user account (GraphQL `__typename` `User`): the PR author, a collaborator, or an agent posting as the user. A bot, an app, or a deleted account never qualifies, so a reviewer's own `#123` cannot clear its thread.
+- Its body references an issue in one of three forms:
+  - `#N`
+  - `<owner>/<repo>#N` naming this repo, compared case-insensitively
+  - `https://github.com/<owner>/<repo>/issues/N`
+
+A `/pull/` URL never matches. Neither does a reference to another repo, or a number glued to a word or a path (`abc#12`, `a/b/c#12`). Quoted lines (`> …`) are skipped, so quoting a bot's finding cannot defer the thread on an issue number the bot wrote.
+
+### How a link is verified
+
+Each distinct number is looked up once per gate run through `repos/<owner>/<repo>/issues/N`, with at most 25 lookups per run. A number counts only when the object exists, has no `pull_request` key (so it is an issue, not a PR), and its `repository_url` names this repo, which rules out an issue since transferred elsewhere. The issue's open or closed state is not checked.
+
+| Lookup result | Thread | Extra `missing` reason |
+|---|---|---|
+| An issue of this repo | Deferred | None |
+| A PR, a 404 or 410, or a transferred issue | Blocks | None |
+| Any other failure, a malformed response, or a number past the 25-lookup cap | Blocks | `follow-up issue #N could not be verified — its review thread stays blocking (issue #1727)` |
+
+A thread with several links is deferred as soon as one of them verifies, and a failed lookup on another link then adds no reason. Every doubt keeps the thread blocking, and a lookup failure never reads as "no such issue".
+
+### What the gate reports
+
+- `unresolved_thread_count` counts only the **blocking** threads on these two tiers. `/wrap`'s threads-only branch keys off it, so a deferred thread never sends a merge-ready PR to `/fixpr`. On `full` and `legacy` it still counts every unresolved thread.
+- The `missing` reason keeps its exact text, `N unresolved review thread(s) — resolve via GraphQL before merge`, with N the blocking count.
+- `deferred_thread_count` is the number of deferred threads, always `0` off these tiers.
+- `deferred_issues` is the sorted, de-duplicated list of the verified issue numbers that deferred a thread, and `[]` when there are none.
+- A stderr line names the deferred issues, so the deferral is never silent.
+
+Only the blocker count changes. The Greptile P0 check still sees a deferred thread as unresolved, and so does the list of resolved comments that `review-substance.sh` reads. A deferral clears a blocker; it is never review evidence.
+
+GitHub's own **Require conversation resolution** branch-protection setting is separate. When a repo turns it on, GitHub still refuses the merge until the thread is resolved.
+
 ## Where the policy is read from
 
 In PR mode, the policy comes from the PR's **base branch**, through the contents API. It is read **before** the PR's files and labels are fetched, so a repo with no policy pays for that single read and nothing more. `--base <ref>` supplies the base branch when the caller already knows it, as `merge-gate.sh` does, which saves the `gh pr view` too. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself. Once such an edit merges, the new policy applies to every PR the gate evaluates from then on, including PRs that were already open. The policy is read fresh at each gate run, never cached per PR.
@@ -117,7 +162,7 @@ The run never ends up less strict than legacy.
 
 The remaining increments cover the rest:
 
-- **#1727:** a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers.
+- **#1727** (landed): a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers. See [Deferred findings](#deferred-findings).
 - **#1728:** BugBot is invited only on `full` and `legacy`.
 
 The two-round cap on core PRs stays a process limit, not gate logic.

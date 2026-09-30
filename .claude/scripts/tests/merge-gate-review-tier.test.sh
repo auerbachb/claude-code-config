@@ -15,6 +15,11 @@
 #   - the policy comes from the base branch only: an environment variable
 #     cannot re-point it
 #   - `review_tier` output shape
+#   - deferred findings (issue #1727): on the two lighter tiers a human reply
+#     linking an issue of this repo clears its thread; `full`/`legacy` never
+#     defer; a bot reply, a PR number, another repo, a 404, and a failed
+#     lookup all keep the thread blocking; `deferred_thread_count` and
+#     `deferred_issues` shape; one lookup per number per run
 #
 # Built on tests/lib/merge-gate-test-fixtures.sh without editing it: the fixture's
 # fake gh is kept as gh.base, and a wrapper answers only the calls the tier
@@ -46,6 +51,21 @@ case "$ARGS" in
     case "$ARGS" in *" --paginate "*) ;; *) echo "fake gh: files call must paginate" >&2; exit 96 ;; esac
     jq -r "$(jq_arg "$@")" <<<"${FAKE_PR_FILES_JSON:-[]}"
     exit 0 ;;
+  *" api repos/solo/repo/issues/"*)
+    # Follow-up-issue lookups (issue #1727). FAKE_ISSUE_KINDS maps a number to
+    # issue | pr | fail; anything else is a 404. Every lookup is logged.
+    N="${ARGS##* api repos/solo/repo/issues/}"; N="${N%% *}"
+    if [[ "$N" =~ ^[0-9]+$ ]]; then
+      [[ -n "${FAKE_ISSUE_LOG:-}" ]] && echo "$N" >> "$FAKE_ISSUE_LOG"
+      KINDS="${FAKE_ISSUE_KINDS:-}"; [[ -z "$KINDS" ]] && KINDS='{}'
+      case "$(jq -r --arg n "$N" '.[$n] // "absent"' <<<"$KINDS")" in
+        issue) jq -cn --argjson n "$N" '{number:$n, repository_url:"https://api.github.com/repos/solo/repo"}'; exit 0 ;;
+        pr)    jq -cn --argjson n "$N" '{number:$n, repository_url:"https://api.github.com/repos/solo/repo", pull_request:{url:"x"}}'; exit 0 ;;
+        moved) jq -cn --argjson n "$N" '{number:$n, repository_url:"https://api.github.com/repos/solo/elsewhere"}'; exit 0 ;;
+        fail)  echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;
+        *)     echo '{"message":"Not Found"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      esac
+    fi ;;
   *graphql*)
     if [[ -n "${FAKE_THREADS:-}" ]]; then
       jq -cn --argjson nodes "$FAKE_THREADS" \
@@ -97,7 +117,7 @@ check_eq "yes"    "$(has_missing "$NEED_APPROVAL")"            "legacy: the revi
 check_eq "legacy" "$(echo "$OUT" | jq -r '.review_tier.gate')" "legacy: review_tier.gate"
 check_eq "absent" "$(echo "$OUT" | jq -r '.review_tier.policy')" "legacy: review_tier.policy"
 check_eq "null"   "$(echo "$OUT" | jq -r '.review_tier.tier')" "legacy: review_tier.tier is null"
-check_eq "review_tier" "$(echo "$OUT" | jq -r 'keys_unsorted | last')" "review_tier is appended after every existing key"
+check_eq "review_tier" "$(echo "$OUT" | jq -r 'keys_unsorted | .[-3]')" "review_tier is appended after every pre-#1726 key"
 check_eq "no"     "$(has_missing "review tier")"               "legacy: no tier reason added"
 
 # ------------------------------------------------------------- ci-only -----
@@ -206,6 +226,114 @@ unset FAKE_PM_CONFIG
 CLAUDE_REVIEW_POLICY_FILE="$LENIENT" FAKE_PR_FILES_JSON="$CORE_FILES" run_gate
 check_eq "legacy" "$(echo "$OUT" | jq -r '.review_tier.gate')" "CLAUDE_REVIEW_POLICY_FILE cannot re-point the gate"
 check_eq "1"      "$RC"                                        "…and the approval requirement stands"
+
+# ------------------------------------ deferred findings (issue #1727) ------
+# A bot finding plus one reply. $1 = the reply author's GraphQL __typename,
+# $2 = its login, $3 = its body. GraphQL bot logins carry no `[bot]` suffix.
+thread() {
+  jq -cn --arg t "$1" --arg l "$2" --arg b "$3" '{isResolved:false, comments:{nodes:[
+    {databaseId:7, body:"Consider renaming this helper.", author:{login:"coderabbitai", __typename:"Bot"}},
+    {databaseId:8, body:$b, author:{login:$l, __typename:$t}}]}}'
+}
+threads() { printf '[%s]' "$(IFS=,; echo "$*")"; }
+lookups() { # the issue numbers looked up since the last reset, comma-joined
+  if [[ -s "$FAKE_ISSUE_LOG" ]]; then paste -sd, "$FAKE_ISSUE_LOG"; fi
+}
+reset_log() { : > "$FAKE_ISSUE_LOG"; }
+field() { echo "$OUT" | jq -c "$1"; }
+THREAD_REASON="1 unresolved review thread(s) — resolve via GraphQL before merge"
+has_exact() { # exact missing[] entry
+  echo "$OUT" | jq -e --arg s "$1" '(.missing // []) | index($s) != null' >/dev/null && echo yes || echo no
+}
+CODEANT_ROUND="$(jq -cn --arg sha "$OLD_SHA" '[{id:2, user:{login:"codeant-ai[bot]", type:"Bot"}, state:"COMMENTED", commit_id:$sha, submitted_at:"2026-07-21T09:00:00Z", body:"2 findings"}]')"
+export FAKE_PM_CONFIG="$POLICY"
+export FAKE_ISSUE_LOG="$TMP/issue-lookups.log"
+export FAKE_ISSUE_KINDS='{"12":"issue","13":"pr","14":"fail","16":"moved","21":"issue"}'
+HUMAN_DEFER="$(threads "$(thread User solouser "Deferred to #12 — not severe.")")"
+
+# ci-only: a human reply linking an issue clears the thread.
+reset_log; FAKE_THREADS="$HUMAN_DEFER" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "0"    "$RC"                                "deferred ci-only: human 'Deferred to #12' → gate met"
+check_eq "0"    "$(field '.unresolved_thread_count')" "deferred ci-only: unresolved_thread_count is the blocking count"
+check_eq "1"    "$(field '.deferred_thread_count')"   "deferred ci-only: deferred_thread_count"
+check_eq "[12]" "$(field '.deferred_issues')"         "deferred ci-only: deferred_issues"
+check_eq "12"   "$(lookups)"                          "deferred ci-only: the issue was verified"
+
+# ci+codeant-one-round: the same, once CodeAnt's round is in.
+reset_log; FAKE_REVIEWS="$CODEANT_ROUND" FAKE_THREADS="$HUMAN_DEFER" FAKE_PR_FILES_JSON="$LEAF_FILES" run_gate
+check_eq "0"    "$RC"                                "deferred codeant-one-round: human 'Deferred to #12' → gate met"
+check_eq "1"    "$(field '.deferred_thread_count')"   "deferred codeant-one-round: deferred_thread_count"
+check_eq "[12]" "$(field '.deferred_issues')"         "deferred codeant-one-round: deferred_issues"
+
+# full and legacy: a follow-up link changes nothing, and nothing is looked up.
+reset_log; FAKE_THREADS="$HUMAN_DEFER" FAKE_PR_FILES_JSON="$CORE_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")"       "deferred full: the thread still blocks, reason unchanged"
+check_eq "1"   "$(field '.unresolved_thread_count')" "deferred full: unresolved_thread_count unchanged"
+check_eq "0"   "$(field '.deferred_thread_count')"   "deferred full: deferred_thread_count is 0"
+check_eq "[]"  "$(field '.deferred_issues')"         "deferred full: deferred_issues is []"
+check_eq ""    "$(lookups)"                          "deferred full: no issue lookup"
+reset_log; FAKE_PM_CONFIG="" FAKE_THREADS="$HUMAN_DEFER" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "legacy" "$(field '.review_tier.gate' | tr -d '"')" "deferred legacy: fixture resolves to legacy"
+check_eq "yes" "$(has_exact "$THREAD_REASON")"       "deferred legacy: the thread still blocks"
+check_eq "0"   "$(field '.deferred_thread_count')"   "deferred legacy: deferred_thread_count is 0"
+check_eq ""    "$(lookups)"                          "deferred legacy: no issue lookup"
+
+# Replies that never qualify.
+reset_log; FAKE_THREADS="$(threads "$(thread Bot coderabbitai "Tracked in #12.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a bot reply linking an issue blocks"
+check_eq ""    "$(lookups)"                    "deferred: a bot reply is never looked up"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #13.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")"        "deferred: #N naming a PR blocks"
+check_eq "13"  "$(lookups)"                           "deferred: the PR number was checked"
+check_eq "no"  "$(has_missing "could not be verified")" "deferred: a PR is a clean no, not a lookup failure"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to other/repo#12.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a cross-repo owner/repo#N blocks"
+check_eq ""    "$(lookups)"                    "deferred: a cross-repo reference is never looked up"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "See https://github.com/other/repo/issues/12")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a cross-repo issue URL blocks"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "See https://github.com/solo/repo/pull/12")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a /pull/ URL blocks"
+check_eq ""    "$(lookups)"                    "deferred: a /pull/ URL is never looked up"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #14.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "1"   "$RC"                                              "deferred: an issue lookup failure blocks"
+check_eq "yes" "$(has_exact "$THREAD_REASON")"                    "deferred: lookup failure leaves the thread blocking"
+check_eq "yes" "$(has_missing "follow-up issue #14 could not be verified")" "deferred: lookup failure has its own reason"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #15.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")"          "deferred: a 404 blocks"
+check_eq "no"  "$(has_missing "could not be verified")" "deferred: a 404 is a clean no, not a lookup failure"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #16.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")"          "deferred: an issue transferred to another repo blocks"
+check_eq "no"  "$(has_missing "could not be verified")" "deferred: a transferred issue is a clean no, not a lookup failure"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "> Same root cause as #12.
+
+Will fix in the next push.")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a number only inside a quoted line blocks"
+check_eq ""    "$(lookups)"                    "deferred: a quoted number is never looked up"
+reset_log; FAKE_THREADS="$(jq -cn '[{isResolved:false, comments:{nodes:[{databaseId:7, body:"Tracked in #12", author:{login:"solouser", __typename:"User"}}]}}]')" \
+  FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a link in the finding itself (no reply) blocks"
+reset_log; FAKE_THREADS="$(jq -cn '[{isResolved:false, comments:{nodes:[{databaseId:7, author:{login:"coderabbitai"}}, {databaseId:8, body:"Deferred to #12", author:{login:"solouser"}}]}}]')" \
+  FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "yes" "$(has_exact "$THREAD_REASON")" "deferred: a reply with no author __typename blocks"
+
+# The other accepted forms, and a mixed page.
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to Solo/Repo#12")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "0" "$RC" "deferred: same-repo owner/repo#N (any case) qualifies"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Tracked in https://github.com/solo/repo/issues/12#issuecomment-1")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "0" "$RC" "deferred: the issue URL form qualifies"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #14 and #21")")" FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "0"    "$RC"                          "deferred: one verified issue suffices even if another lookup fails"
+check_eq "[21]" "$(field '.deferred_issues')"  "deferred: deferred_issues lists only verified issues"
+reset_log; FAKE_THREADS="$(threads "$(thread User solouser "Deferred to #12")" "$(thread User reviewer2 "Also #12")" "$(thread User solouser "Will fix.")")" \
+  FAKE_PR_FILES_JSON="$DOCS_FILES" run_gate
+check_eq "1"    "$RC"                                "deferred: one undeferred thread still blocks"
+check_eq "yes"  "$(has_exact "$THREAD_REASON")"      "deferred: the thread reason is byte-identical, with the blocking count"
+check_eq "1"    "$(field '.unresolved_thread_count')" "deferred: unresolved_thread_count counts only the blocking thread"
+check_eq "2"    "$(field '.deferred_thread_count')"   "deferred: deferred_thread_count counts both deferred threads"
+check_eq "[12]" "$(field '.deferred_issues')"         "deferred: deferred_issues is unique"
+check_eq "12"   "$(lookups)"                          "deferred: each number is looked up once per run"
+check_eq '["deferred_thread_count","deferred_issues"]' "$(echo "$OUT" | jq -c 'keys_unsorted | .[-2:]')" \
+  "deferred fields are appended after review_tier"
 
 echo
 echo "merge-gate-review-tier.test.sh: $PASS passed, $FAIL failed"
