@@ -15,6 +15,11 @@
 #   because bugbot.md calls a duplicate nudge harmless while a wrongly
 #   suppressed one costs a whole review.
 #
+#   Scenarios (t0)-(t8) cover the second guard (issue #1728): the `tier-check`
+#   step skips the nudge when the PR's review tier (ci-only /
+#   ci+codeant-one-round) excludes BugBot, and posts on full, legacy, a failed
+#   resolver, or a missing helper.
+#
 # HOW IT IS OBSERVED
 #   The guard's shell body is EXTRACTED FROM THE WORKFLOW by step id and run
 #   under the runner's exact default shell (`bash --noprofile --norc -eo
@@ -171,22 +176,35 @@ elif mode == "if-truth-table":
     # rejected, so an added, renamed, or retyped clause errors here rather than
     # being quietly evaluated away. That token allow-list is also what makes the
     # eval below safe: nothing but these names and boolean operators survives it.
-    targets = {"posting": posting_step, "warn": lambda: by_id("suppressed-warn")}
+    #
+    # The review-tier clause (issue #1728) is a third input. The original
+    # two-input table is read with the tier NOT excluded — the only state a
+    # legacy or full repo can produce — so its expected rows stay byte-identical;
+    # `with-tier` prints the three-input table instead.
+    targets = {
+        "posting": posting_step,
+        "warn": lambda: by_id("suppressed-warn"),
+        "tier-notice": lambda: by_id("tier-skip-notice"),
+    }
     if sys.argv[3] not in targets:
         sys.exit("unknown truth-table target %r" % sys.argv[3])
+    with_tier = len(sys.argv) > 4 and sys.argv[4] == "with-tier"
     cond = targets[sys.argv[3]]().get("if", "")
 
     atoms = [
         ("env.HAS_TRIGGER_TOKEN == 'true'", "TOKEN"),
         ("steps.suppress-check.outputs.suppressed != 'true'", "NOT_SUPPRESSED"),
         ("steps.suppress-check.outputs.suppressed == 'true'", "SUPPRESSED"),
+        ("steps.tier-check.outputs.excluded != 'true'", "NOT_EXCLUDED"),
+        ("steps.tier-check.outputs.excluded == 'true'", "EXCLUDED"),
     ]
     expr = " ".join(cond.split())
     for literal, name in atoms:
         expr = expr.replace(literal, name)
     expr = expr.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
 
-    allowed = {"TOKEN", "NOT_SUPPRESSED", "SUPPRESSED", "and", "or", "not", "(", ")"}
+    allowed = {"TOKEN", "NOT_SUPPRESSED", "SUPPRESSED", "NOT_EXCLUDED", "EXCLUDED",
+               "and", "or", "not", "(", ")"}
     unknown = [
         t for t in re.findall(r"[A-Za-z_][A-Za-z_0-9]*|\S", expr) if t not in allowed
     ]
@@ -195,16 +213,27 @@ elif mode == "if-truth-table":
                  % (sys.argv[3], unknown, cond))
 
     # SUPPRESSED and NOT_SUPPRESSED read the same step output, so they are one
-    # input with two spellings — never two independent variables.
+    # input with two spellings — never two independent variables. Same for the
+    # EXCLUDED pair.
+    def fire(token, suppressed, excluded):
+        return bool(eval(expr, {"__builtins__": {}}, {
+            "TOKEN": token,
+            "SUPPRESSED": suppressed,
+            "NOT_SUPPRESSED": not suppressed,
+            "EXCLUDED": excluded,
+            "NOT_EXCLUDED": not excluded,
+        }))
+
     rows = []
     for token in (True, False):
         for suppressed in (True, False):
-            fired = eval(expr, {"__builtins__": {}}, {
-                "TOKEN": token,
-                "SUPPRESSED": suppressed,
-                "NOT_SUPPRESSED": not suppressed,
-            })
-            rows.append("token=%d,suppressed=%d:%d" % (token, suppressed, bool(fired)))
+            if with_tier:
+                for excluded in (True, False):
+                    rows.append("token=%d,suppressed=%d,excluded=%d:%d"
+                                % (token, suppressed, excluded, fire(token, suppressed, excluded)))
+            else:
+                rows.append("token=%d,suppressed=%d:%d"
+                            % (token, suppressed, fire(token, suppressed, False)))
     print(" ".join(rows), end="")
 else:
     sys.exit("unknown mode %r" % mode)
@@ -607,6 +636,145 @@ check_eq "helper is checked out from the base branch, not the PR" \
 for scope in contents issues pull-requests checks; do
   check_eq "permissions grant $scope: read" "read" "$(wf_query permission "$scope")"
 done
+
+############################################################################
+# REVIEW TIER (issue #1728)
+#
+# A repo may declare review tiers; BugBot is invited only on the `full` gate or
+# with no policy (`legacy`). The `tier-check` step runs the shared
+# bugbot-tier-excluded.sh from the base checkout and the comment step skips on
+# `excluded=true`. Same observation method as above: the body is extracted from
+# the workflow by step id and run under the runner's exact shell, against the
+# REAL helper and a stub review-tier.sh that logs the arguments it was handed.
+# The stub stands in for the resolver only — its own suite covers resolution.
+TIER_STEP_ID="tier-check"
+TIER_BODY="$(wf_query step-field "$TIER_STEP_ID" run)" || { echo "FAIL — could not read the tier-check body: $TIER_BODY"; exit 1; }
+TIER_RUNFILE="$TMP/tier-step.sh"
+printf '%s\n' "$TIER_BODY" > "$TIER_RUNFILE"
+
+TIER_HELPER="$WORK/.claude/scripts/bugbot-tier-excluded.sh"
+cp "$REPO_ROOT/.claude/scripts/bugbot-tier-excluded.sh" "$TIER_HELPER"
+cat > "$WORK/.claude/scripts/review-tier.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TIER_CALLS"
+if [[ -n "${FIXTURE_TIER_OUT:-}" ]]; then printf '%s\n' "$FIXTURE_TIER_OUT"; fi
+exit "${FIXTURE_TIER_RC:-0}"
+STUB
+TIER_CALLS="$TMP/tier-calls"
+export TIER_CALLS
+BASE_REF_FIXTURE="main"
+
+tier_setup() { # <resolver stdout> [resolver exit code]
+  export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC="${2:-0}"
+  : > "$OUT"; : > "$TIER_CALLS"
+}
+tier_json() { printf '{"policy":"present","gate":"%s","tier":"t","source":"base:main","error":null,"matches":[]}' "$1"; }
+run_tier() {
+  local script="${1-$TIER_RUNFILE}"
+  (
+    cd "$WORK" || exit 99
+    HOME="$TMP_HOME" GITHUB_OUTPUT="$OUT" GH_REPO="$GH_REPO_FIXTURE" \
+      GH_TOKEN="stub" PR_NUMBER="$PR_NUM" BASE_REF="$BASE_REF_FIXTURE" \
+      PATH="$STUB_BIN:$PATH" \
+      bash --noprofile --norc -eo pipefail "$script" >/dev/null 2>&1
+  )
+}
+tier_calls() { tr '\n' ';' < "$TIER_CALLS"; }
+
+echo "== (t0): the extracted tier body is the shipped one =="
+check_contains "tier body invokes the shared tier helper" \
+  ".claude/scripts/bugbot-tier-excluded.sh" "$TIER_BODY"
+
+for gate in ci-only ci+codeant-one-round; do
+  echo "== (t1): gate $gate -> excluded, the nudge is skipped =="
+  tier_setup "$(tier_json "$gate")"
+  run_tier; RC=$?
+  check_eq "step succeeded" "0" "$RC"
+  check_eq "wrote excluded=true and the gate" "excluded=truegate=$gate" "$(emitted)"
+  # Positive wiring: THIS PR, THIS repo, the base branch — never assumed.
+  check_eq "resolver asked about this PR against the base branch" \
+    "$PR_NUM --repo $GH_REPO_FIXTURE --base $BASE_REF_FIXTURE --json;" "$(tier_calls)"
+done
+
+for gate in full legacy; do
+  echo "== (t2): gate $gate -> not excluded, the nudge posts =="
+  tier_setup "$(tier_json "$gate")"
+  run_tier; RC=$?
+  check_eq "step succeeded despite the helper's exit 1" "0" "$RC"
+  check_eq "wrote excluded=false" "excluded=false" "$(emitted)"
+done
+
+echo "== (t3): FAILS OPEN — the resolver fails (exit 4, nothing on stdout) -> posts =="
+tier_setup "" 4
+run_tier; RC=$?
+check_eq "step succeeded" "0" "$RC"
+check_eq "wrote excluded=false" "excluded=false" "$(emitted)"
+check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
+
+echo "== (t4): FAILS OPEN — unusable resolver output -> posts =="
+for junk in "not json" '{"gate":"lenient"}' '["ci-only"]'; do
+  tier_setup "$junk"
+  run_tier; RC=$?
+  check_eq "step succeeded on '$junk'" "0" "$RC"
+  check_eq "'$junk' -> excluded=false" "excluded=false" "$(emitted)"
+done
+
+echo "== (t5): BOOTSTRAP — tier helper absent from the base branch -> posts =="
+tier_setup "$(tier_json ci-only)"
+mv "$TIER_HELPER" "$TMP/tier-helper.bak"
+run_tier; RC=$?
+mv "$TMP/tier-helper.bak" "$TIER_HELPER"
+check_eq "step succeeded" "0" "$RC"
+check_eq "wrote excluded=false" "excluded=false" "$(emitted)"
+check_eq "a ci-only resolver never reached without the helper" "" "$(tier_calls)"
+
+echo "== (t6): the body honours the helper's EXIT-CODE CONTRACT, whichever helper ships =="
+# Production runs the BASE branch's helper; same reasoning as (k).
+cp "$TIER_HELPER" "$TMP/tier-helper.real"
+for spec in "0:ci-only:excluded=truegate=ci-only" "1:full:excluded=false" "2::excluded=false"; do
+  code="${spec%%:*}"; rest="${spec#*:}"; out="${rest%%:*}"; want="${rest#*:}"
+  tier_setup ""
+  printf '#!/usr/bin/env bash\n[[ -n "%s" ]] && echo "%s"\nexit %s\n' "$out" "$out" "$code" > "$TIER_HELPER"
+  run_tier; RC=$?
+  check_eq "tier helper exit $code keeps the step green" "0" "$RC"
+  check_eq "tier helper exit $code -> $want" "$want" "$(emitted)"
+done
+cp "$TMP/tier-helper.real" "$TIER_HELPER"
+
+echo "== (t7): NEGATIVE CONTROL — a bare call would fail the step under set -e =="
+TIER_BARE="$TMP/tier-step-bare.sh"
+cat > "$TIER_BARE" <<'BARE_BODY'
+TIER=.claude/scripts/bugbot-tier-excluded.sh
+GATE=$(bash "$TIER" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF")
+echo "excluded=true" >> "$GITHUB_OUTPUT"
+BARE_BODY
+tier_setup "$(tier_json full)"
+run_tier "$TIER_BARE"; RC=$?
+check_eq "bare call fails the step (harness can detect the regression)" "1" "$RC"
+check_eq "and never reaches its output write" "" "$(emitted)"
+
+echo "== (t8): YAML wiring — the tier check is consulted =="
+check_contains "comment step consults the tier output" \
+  "steps.$TIER_STEP_ID.outputs.excluded != 'true'" "$POSTING_IF"
+POSTING_TIER_TABLE="$(wf_query if-truth-table posting with-tier)" || { echo "FAIL — $POSTING_TIER_TABLE"; exit 1; }
+check_eq "comment posts ONLY with the PAT, no refusal, and no tier exclusion (a real AND)" \
+  "token=1,suppressed=1,excluded=1:0 token=1,suppressed=1,excluded=0:0 token=1,suppressed=0,excluded=1:0 token=1,suppressed=0,excluded=0:1 token=0,suppressed=1,excluded=1:0 token=0,suppressed=1,excluded=0:0 token=0,suppressed=0,excluded=1:0 token=0,suppressed=0,excluded=0:0" \
+  "$POSTING_TIER_TABLE"
+NOTICE_TABLE="$(wf_query if-truth-table tier-notice with-tier)" || { echo "FAIL — $NOTICE_TABLE"; exit 1; }
+check_eq "the tier notice fires ONLY on an excluded run that had the PAT" \
+  "token=1,suppressed=1,excluded=1:1 token=1,suppressed=1,excluded=0:0 token=1,suppressed=0,excluded=1:1 token=1,suppressed=0,excluded=0:0 token=0,suppressed=1,excluded=1:0 token=0,suppressed=1,excluded=0:0 token=0,suppressed=0,excluded=1:0 token=0,suppressed=0,excluded=0:0" \
+  "$NOTICE_TABLE"
+check_eq "tier step passes the repository" "\${{ github.repository }}" \
+  "$(wf_query step-env "$TIER_STEP_ID" GH_REPO)"
+check_eq "tier step passes a token" "\${{ github.token }}" \
+  "$(wf_query step-env "$TIER_STEP_ID" GH_TOKEN)"
+check_eq "tier step passes THIS PR's number" "\${{ github.event.pull_request.number }}" \
+  "$(wf_query step-env "$TIER_STEP_ID" PR_NUMBER)"
+check_eq "tier step passes the PR's base branch" "\${{ github.event.pull_request.base.ref }}" \
+  "$(wf_query step-env "$TIER_STEP_ID" BASE_REF)"
+check_eq "tier step never fails the job" "True" "$(wf_query step-field "$TIER_STEP_ID" continue-on-error)"
+check_eq "tier step is gated on the PAT" "env.HAS_TRIGGER_TOKEN == 'true'" \
+  "$(wf_query step-field "$TIER_STEP_ID" if)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

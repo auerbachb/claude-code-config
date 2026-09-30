@@ -16,6 +16,10 @@
 # SKIPPED when cursor[bot] has already refused THIS HEAD for a Cursor usage/spend
 # limit. Fails open — see bugbot_refused_head() below.
 #
+# Review-tier suppression (issue #1728): the `@cursor review` nudge is also
+# SKIPPED when the PR's review tier excludes BugBot (gate ci-only or
+# ci+codeant-one-round). --json reports it as `bugbot_skipped`. Fails open.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
@@ -23,7 +27,7 @@
 # Usage:
 #   maybe-trigger-ai-review.sh <pr_number> [--dry-run] [--json]
 #
-# Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence
+# Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence; 70 --help extraction empty
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
@@ -35,7 +39,11 @@ COMPLEXITY_SCRIPT="${SCRIPT_DIR}/complexity-score.sh"
 STATE_FILE="${HOME}/.claude/session-state.json"
 
 help() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  # The whole leading comment block, so a new header paragraph can never be cut
+  # off mid-sentence by a hardcoded line range. An empty extraction is a defect,
+  # not a help page, so it fails loudly instead of exiting 0 (#1528).
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 PR_NUM=""
@@ -251,6 +259,26 @@ if [[ -n "$SKIP_REASON" ]]; then
   exit 0
 fi
 
+# Review-tier suppression (issue #1728). BugBot is invited only on the `full`
+# gate and on `legacy` (no `## Review policy`); a ci-only or ci+codeant-one-round
+# PR never needs it, so its nudge is skipped while CodeAnt and Graphite still
+# post. The shared helper owns the excluded-gate list.
+#
+# FAILS OPEN like the refusal guard below: a missing helper, an unresolvable
+# tier, or any exit but 0 posts the nudge — `legacy` behaviour is to post.
+# Asked once, here, so a dry run reports the same answer a real run acts on.
+BUGBOT_TIER_GATE=""
+bugbot_tier_excluded() {
+  local helper="${SCRIPT_DIR}/bugbot-tier-excluded.sh" gate
+  [[ -x "$helper" ]] || return 1
+  gate="$("$helper" "$PR_NUM")" || return 1
+  BUGBOT_TIER_GATE="$gate"
+}
+BUGBOT_SKIPPED_JSON="null"
+if bugbot_tier_excluded; then
+  BUGBOT_SKIPPED_JSON="$(jq -cn --arg g "$BUGBOT_TIER_GATE" '{reason: "review_tier", gate: $g}')"
+fi
+
 if (( DRY_RUN )); then
   if (( JSON_OUT )); then
     jq -n \
@@ -261,6 +289,7 @@ if (( DRY_RUN )); then
       --argjson first_round "$FIRST_CR_ROUND" \
       --argjson cadence "$CADENCE_ROUNDS" \
       --arg head "$HEAD_SHA" \
+      --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
       '{
         status: $status,
         cr_rounds: $cr_rounds,
@@ -268,8 +297,11 @@ if (( DRY_RUN )); then
         threshold: $threshold,
         first_cr_round: $first_round,
         cadence_rounds: $cadence,
-        head_sha: $head
+        head_sha: $head,
+        bugbot_skipped: $bugbot_skipped
       }'
+  elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
+    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
     echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
@@ -354,13 +386,21 @@ bugbot_refused_head() {
 }
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
-if bugbot_refused_head; then
+if [[ -n "$BUGBOT_TIER_GATE" ]]; then
+  # Deliberately NOT recorded as handled, unlike the refusal branch below. A
+  # refusal is fixed for this HEAD, but a tier can change without a push (a
+  # label flip, a base-branch policy edit). A resumed run re-asks the tier
+  # above, so it skips again while the tier still excludes BugBot and posts
+  # once the tier invites it. A completed run clears the record either way.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — review tier gate '$BUGBOT_TIER_GATE' excludes BugBot (#1728)" >&2
+elif bugbot_refused_head; then
   # Mark the step handled rather than leaving it false. A run that completes
   # clears the whole record (`ai_review_trigger_steps=null` below), but a run
   # that fails at a LATER step leaves it in place — and steps_incomplete() reads
   # a false `cursor` as "resume this trigger", so the retry would post the very
   # nudge we just decided cannot succeed. Suppressed IS complete for this HEAD.
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1199)" >&2
+  BUGBOT_SKIPPED_JSON='{"reason":"refused_head","gate":null}'
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true"; then
     echo "maybe-trigger-ai-review.sh: failed to record the suppressed cursor step — may re-check on retry" >&2
   fi
@@ -383,7 +423,10 @@ if (( JSON_OUT )); then
     --argjson cr_rounds "$CR_ROUNDS" \
     --argjson score "$SCORE" \
     --arg head "$HEAD_SHA" \
-    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head}'
+    --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
+    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped}'
+elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
+  echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — review tier $BUGBOT_TIER_GATE)"
 else
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE)"
 fi

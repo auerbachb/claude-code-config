@@ -226,6 +226,10 @@ reset_state() { echo '{}' > "$STATE_JSON"; }
 # Most scenarios exercise the GitHub-scan path only; point the helper at a
 # non-existent path so the dedupe layer is inert unless a scenario enables it.
 export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"
+# The review-tier BugBot skip (issue #1728) is inert by default the same way:
+# every scenario written before it keeps the no-helper path, which posts. The
+# tier scenarios at the end opt in with a real helper over a stub resolver.
+export PREFLIGHT_BUGBOT_TIER_SH="$TMP/no-such-bugbot-tier-excluded.sh"
 enable_state_dedupe()  { export PREFLIGHT_SESSION_STATE_SH="$STATE_STUB"; reset_state; }
 disable_state_dedupe() { export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"; }
 
@@ -779,6 +783,96 @@ OUT=$(PREFLIGHT_REVIEW_SUBSTANCE_SH="$TMP/no-such-review-substance.sh" run_json 
 check_eq "exit 0" 0 "$RC"
 check_eq "unavailable evaluator → degrade to already-present" "already-present" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "no trigger posted during degradation" "0" "$(actions | grep -cF '@codeant-ai review')"
+
+############################################################################
+# REVIEW TIER (issue #1728): the cursor reviewer is skipped when the PR's
+# review tier (ci-only / ci+codeant-one-round) excludes BugBot. The REAL helper
+# runs over a stub resolver; full, legacy, and a failed resolver all post.
+TIER_DIR="$TMP/tier"
+mkdir -p "$TIER_DIR"
+cp "$REPO_ROOT/.claude/scripts/bugbot-tier-excluded.sh" "$TIER_DIR/"
+chmod +x "$TIER_DIR/bugbot-tier-excluded.sh"
+cat > "$TIER_DIR/review-tier.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TIER_CALLS"
+if [[ -n "${FIXTURE_TIER_OUT:-}" ]]; then printf '%s\n' "$FIXTURE_TIER_OUT"; fi
+exit "${FIXTURE_TIER_RC:-0}"
+STUB
+export TIER_CALLS="$TMP/tier-calls"
+tier_json() { printf '{"policy":"present","gate":"%s","tier":"t","source":"base:main","error":null,"matches":[]}' "$1"; }
+use_tier() { # <resolver stdout> [resolver exit code]
+  export PREFLIGHT_BUGBOT_TIER_SH="$TIER_DIR/bugbot-tier-excluded.sh"
+  export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC="${2:-0}"
+  : > "$TIER_CALLS"
+}
+
+for gate in ci-only ci+codeant-one-round; do
+  echo "== Scenario T1: gate $gate, no reviewer engaged → cursor skipped, the other 3 posted =="
+  use_tier "$(tier_json "$gate")"
+  view_ready; commit_ok; no_checks; no_timeline
+  write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+  OUT=$(run_json 493); RC=$?
+  check_eq "exit 0" 0 "$RC"
+  check_eq "cursor skipped-tier-excluded" "skipped-tier-excluded" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+  check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
+  check_eq "codeant, coderabbit, graphite still triggered" "triggered triggered triggered" \
+    "$(jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status, .reviewers.graphite.status] | join(" ")' <<<"$OUT")"
+  check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+  check_eq "resolver asked about THIS PR" "493 --json;" "$(tr '\n' ';' < "$TIER_CALLS")"
+done
+
+echo "== Scenario T2: gate ci-only, the other 3 engaged on HEAD → clean (the skip leaves nothing pending) =="
+use_tier "$(tier_json ci-only)"
+view_ready; commit_ok; no_checks; no_timeline
+write_reviews "[{\"user\":{\"login\":\"coderabbitai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"},{\"user\":{\"login\":\"codeant-ai[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"submitted_at\":\"$HEAD_DATE\",\"body\":\"$SUBSTANCE_BODY\"}]"
+write_pull_comments "$EMPTY"
+write_issue_comments "[{\"user\":{\"login\":\"graphite-app[bot]\"},\"created_at\":\"$AFTER_HEAD\",\"body\":\"z\"}]"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "clean=true" "true" "$(jq -r '.clean' <<<"$OUT")"
+check_eq "actions=0" "0" "$(jq -r '.actions' <<<"$OUT")"
+check_eq "no comments posted" "0" "$(actions | grep -c '^COMMENT')"
+
+for gate in full legacy; do
+  echo "== Scenario T3: gate $gate → cursor triggered, exactly as today =="
+  use_tier "$(tier_json "$gate")"
+  view_ready; commit_ok; no_checks; no_timeline
+  write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+  OUT=$(run_json 493); RC=$?
+  check_eq "exit 0" 0 "$RC"
+  check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+  check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+done
+
+echo "== Scenario T4: FAILS OPEN — the resolver fails → cursor triggered =="
+use_tier "" 4
+view_ready; commit_ok; no_checks; no_timeline
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
+
+echo "== Scenario T5: --dry-run on gate ci-only reports the skip, not a would-trigger =="
+use_tier "$(tier_json ci-only)"
+view_ready; commit_ok; no_checks; no_timeline
+write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
+OUT=$(run_json 493 --dry-run); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "cursor skipped-tier-excluded" "skipped-tier-excluded" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "nothing posted" "0" "$(actions | grep -c '^COMMENT')"
+
+echo "== Scenario T6: cursor already engaged on HEAD → already-present, no tier lookup =="
+use_tier "$(tier_json ci-only)"
+view_ready; commit_ok; no_checks; no_timeline
+write_reviews "$EMPTY"; write_issue_comments "$EMPTY"
+write_pull_comments "[{\"user\":{\"login\":\"cursor[bot]\"},\"commit_id\":\"$HEAD_SHA\",\"created_at\":\"$HEAD_DATE\",\"body\":\"y\"}]"
+OUT=$(run_json 493); RC=$?
+check_eq "exit 0" 0 "$RC"
+check_eq "cursor already-present" "already-present" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "no resolver call for a reviewer with nothing to post" "" "$(tr '\n' ';' < "$TIER_CALLS")"
+export PREFLIGHT_BUGBOT_TIER_SH="$TMP/no-such-bugbot-tier-excluded.sh"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

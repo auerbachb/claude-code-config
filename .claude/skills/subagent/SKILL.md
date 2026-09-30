@@ -1557,6 +1557,7 @@ If missing, reconstruct state from GitHub API.
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
    - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
+   - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.
    - `trigger_greptile`: run `greptile-budget.sh --consume`, post `@greptileai`, persist `reviewer: greptile`, and follow the Greptile path.
    - `budget_exhausted`: persist the self-review fallback/blocker; do NOT post `@greptileai`.
    - `self_review`: perform/report self-review fallback; merge remains blocked.

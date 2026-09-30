@@ -26,6 +26,7 @@ opt-in of issue #1544.
 | [bgwork-ceiling.test.sh](../tests/bgwork-ceiling.test.sh) | Tests for `bgwork-ceiling.sh` |
 | [board-round-membership.test.sh](../tests/board-round-membership.test.sh) | Runs the real skill-embedded bash for `/subagent` Step 7.0's round-membership write and `/board` Step 3's queued-row derivation (issue #1604), plus the cross-file contracts they depend on: the schema block, the teardown clear, `/wave`'s deliberate non-write, and the reconciled "no durable field" rationale |
 | [bounded-run.test.sh](../tests/bounded-run.test.sh) | Tests `lib/bounded-run.sh` — real exit status on the healthy path, 124 at the bound, the process-group kill, a late finisher's own status (failures included) rather than a false timeout, `normalize_bound` fallbacks, the source-only guard, and `kill_child`'s `ps`/`tr` guards keeping a missing helper off a caller's stderr contract |
+| [bugbot-tier-excluded.test.sh](../tests/bugbot-tier-excluded.test.sh) | Tests the gate-to-exit-code contract of `bugbot-tier-excluded.sh` |
 | [candidate-ownership.test.sh](../tests/candidate-ownership.test.sh) | Tests `candidate-ownership.sh` — live-owner skip, dead-owner adoption, indeterminate liveness, bare-stale warn-and-proceed, corrupt-state degradation, and the read-only guarantee |
 | [ccusage-baseline.test.sh](../tests/ccusage-baseline.test.sh) | JSON shape, human-readable output, ccusage-absent exit 3, empty-blocks exit 1, usage errors, and --help for `ccusage-baseline.sh` (#781) |
 | [check-runs-dedup.test.sh](../tests/check-runs-dedup.test.sh) | Tests for `check-runs-dedup.sh` |
@@ -55,6 +56,7 @@ opt-in of issue #1544.
 | [escalate-review-merge-gate-freshness-parity.test.sh](../tests/escalate-review-merge-gate-freshness-parity.test.sh) | Drift guard that `escalate-review.sh` and `merge-gate.sh` reach the same approval-freshness verdict on one PR state, in-place re-reviews included |
 | [escalate-review-never-invited.test.sh](../tests/escalate-review-never-invited.test.sh) | Invitation, grace-window, and cache-state tests for `escalate-review.sh` |
 | [escalate-review-silent-exit.test.sh](../tests/escalate-review-silent-exit.test.sh) | Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed |
+| [escalate-review-tier-gate.test.sh](../tests/escalate-review-tier-gate.test.sh) | Review-tier `tier_gate` verdict tests for `escalate-review.sh` |
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
 | [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b passes the post-push `PUSHED_SHA` to `bugbot-refused-head.sh`, not the pre-push `HEAD_SHA` |
 | [forgotten-pr-triage.test.sh](../tests/forgotten-pr-triage.test.sh) | Tests for `forgotten-pr-triage.sh` |
@@ -71,6 +73,7 @@ opt-in of issue #1544.
 | [leave-time.test.sh](../tests/leave-time.test.sh) | Runs the real skill-embedded bash for `/leave-by`'s lead-time cascade and `/subagent` Step 7's deadline decline (issue #1525), plus the cross-file contracts: one deadline source, Monitor wake, and teardown on both sides of a pause |
 | [local-review.test.sh](../tests/local-review.test.sh) | Tests for `local-review.sh`; every CLI is a stub, so no network and no dependence on which CLIs are installed |
 | [maybe-trigger-bugbot-suppression.test.sh](../tests/maybe-trigger-bugbot-suppression.test.sh) | Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh` |
+| [maybe-trigger-bugbot-tier.test.sh](../tests/maybe-trigger-bugbot-tier.test.sh) | Tests the review-tier `@cursor review` skip in `maybe-trigger-ai-review.sh` |
 | [merge-gate-authorship.test.sh](../tests/merge-gate-authorship.test.sh) | Tests the authorship guard in `merge-gate.sh` |
 | [merge-gate-bugbot.test.sh](../tests/merge-gate-bugbot.test.sh) | Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962) |
 | [merge-gate-ci-dedup.test.sh](../tests/merge-gate-ci-dedup.test.sh) | Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh` |
