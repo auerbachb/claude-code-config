@@ -61,6 +61,20 @@ for FILE in "$SUBAGENT" "$PM" "$WAVE" .claude/skills/pm-forgotten-pr/SKILL.md; d
 done
 ok "no consumer hard-codes a numeric ceiling in slot math"
 
+# --- launches fill to LIMIT = min(CEILING, CAP), never the raw ceiling ------
+# A consumer that launches up to the bare CEILING outruns ACTIVE_WORK_CAP
+# whenever a repo sets the ceiling above the cap (PR #1732 review round 1).
+FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
+require_text "$FORGOTTEN" 'min(PIPELINE_CEILING, ACTIVE_WORK_CAP)' \
+  '/pm-forgotten-pr merge dispatch must launch up to min(PIPELINE_CEILING, ACTIVE_WORK_CAP)'
+require_text "$FORGOTTEN" '`--cap`' \
+  '/pm-forgotten-pr must read the cap as well as the ceiling'
+reject_pattern "$PM" 'up to the \*\*`CEILING`' \
+  '/pm must launch up to Step 0 LIMIT, not the raw CEILING'
+reject_pattern "$PM" 'below the ceiling \(`CEILING`|1-of-\{CEILING\}' \
+  '/pm 3.4 refill must trigger below Step 0 LIMIT, not the raw CEILING'
+ok "/pm and /pm-forgotten-pr launch up to min(CEILING, CAP), not the raw ceiling"
+
 # --- MAX_WAVE may still only lower the ceiling ------------------------------
 require_text "$WAVE" 'clamped to [1, CEILING]' \
   '/wave must still clamp MAX_WAVE to [1, CEILING]'
