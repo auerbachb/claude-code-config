@@ -1,0 +1,104 @@
+# Per-repo review policy (`## Review policy`)
+
+A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the review a PR needs follows the risk of what it touches rather than one harness-wide rule. This is issue #1724. Its increments are:
+
+| Issue | Part | Status |
+|---|---|---|
+| #1725 | Tier resolver | Landed |
+| #1726 | Merge gate | Pending |
+| #1727 | Deferred findings | Pending |
+| #1728 | BugBot triggering | Pending |
+| #1729 | Pipeline ceiling | Pending |
+
+This file is the mechanism reference. The rule files only point here, because the rule corpus has no word headroom.
+
+A repo **without** the section keeps today's behaviour exactly. The resolver reports gate `legacy`, and every consumer takes its existing path.
+
+## Declaring tiers
+
+Add a markdown table under `## Review policy`. The resolver reads the **first** table in the section, matching columns by header name: case-insensitive, any order, unknown columns ignored.
+
+```markdown
+## Review policy
+
+| Tier    | Gate                 | Paths                                  | Labels    |
+|---------|----------------------|----------------------------------------|-----------|
+| core    | full                 | src/ledger/**, src/auth/**, migrations/ | tier:core |
+| leaf    | ci+codeant-one-round | src/adapters/**, src/reports/**        | tier:leaf |
+| docs    | ci-only              | docs/**, specs/**, *.md, .github/**    | tier:docs |
+| default | full                 |                                        |           |
+```
+
+| Column | Meaning |
+|---|---|
+| `Tier` | Required. The name reported back to you. Names must be unique, compared case-insensitively. |
+| `Gate` | Required. One of `ci-only`, `ci+codeant-one-round`, or `full`. |
+| `Paths` | Comma-separated shell globs, matched against the repo-relative path. `*` also crosses `/`, so `*.md` means every markdown file anywhere. `**/` also matches zero directories, as in CODEOWNERS, so `**/migrations/**` covers a root-level `migrations/`. A trailing `/` means everything under that directory. Backticks around a glob are ignored. Brace lists such as `src/{a,b}/**` are refused, because the comma split would cut them into two globs that match nothing; list each path separately. |
+| `Labels` | Comma-separated PR labels, compared case-insensitively. |
+
+A row named **`default`** classifies files that no `Paths` glob matches. Without a `default` row, those files are `full`.
+
+Declare every tier in **one contiguous table**. As on GitHub, the edge pipes are optional, and the table runs from its first line containing `|` to the first blank line or heading. A table inside a ```` ``` ```` fence or an `<!-- -->` comment is ignored, so you can keep an inactive example in the section. Any `|` line *after* the table ends makes the policy invalid rather than silently dropping rows — for example, rows separated by a blank line or cut off by a comment.
+
+## Resolution — strictest wins
+
+The gates rank `full` > `ci+codeant-one-round` > `ci-only`. The candidate tiers for a PR are:
+
+1. every tier whose `Paths` match **any** changed file. For a renamed file, both the old path and the new path count, so moving a file out of a core directory still touches core.
+2. every tier whose `Labels` include a label on the PR.
+3. `default` (or `full`, with no `default` row) when some file matched no path **and** no tier label is present.
+
+The PR gets the strictest candidate gate. `tier` names the first table row carrying that gate.
+
+Three consequences follow:
+
+- **A label classifies what the paths leave open.** It never lowers a file that a path already matched.
+- **A PR with no files and no tier label gets `default`.**
+- **If GitHub lists fewer files than the PR changed, `full` is added.** This happens past GitHub's 3000-file listing cap. Files the resolver cannot see are never assumed to be light.
+
+## Fail-closed behaviour
+
+| Condition | Result |
+|---|---|
+| No section, no `pm-config.md`, or a section with no table | `policy: absent`, gate `legacy`. A prose-only section also warns on stderr. |
+| Unknown gate, missing `Tier`/`Gate` column, no header separator row, header but no data rows, empty or duplicate tier name, a brace glob, a `\|` line after the table, or a near-miss heading such as `## Review Policy` | `policy: invalid`, gate **`full`**, and one stderr warning. `full` is today's gate, so a typo can never loosen review. |
+| A policy source that exists but cannot be read: a failed `gh` call, a base-branch object that is not a base64 file (a symlink, an over-size blob), a missing `changedFiles` count, an unreadable or directory `--config`, or offline mode outside a git checkout | exit 4 with nothing on stdout. The consumer fails closed. Only a source that does not *exist* reads as absent. |
+
+CRLF line endings are stripped before parsing, so a Windows checkout reads the same policy as CI.
+
+## Where the policy is read from
+
+In PR mode, the policy comes from the PR's **base branch**, through the contents API. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself; the new policy governs PRs opened after it merges.
+
+`--config <path>` overrides the source. The CI workflow uses it with its base-branch checkout, and the tests use it with fixtures. It is a flag only, never an environment variable, so ambient state cannot re-point a review-enforcing consumer at a looser policy. The merge gate never passes it.
+
+## What each gate means
+
+**`full`** is the reviewer-path gate in `cr-merge-gate.md`, unchanged. CodeRabbit/CodeAnt, BugBot, and Greptile keep their current rules. `legacy` enforces the same gate. The only difference is that `legacy` reports that no policy is declared.
+
+The lighter gates are enforced by the later increments:
+
+- **#1726:** the merge gate enforces `ci-only` (CI green) and `ci+codeant-one-round` (CI green plus one completed CodeAnt round).
+- **#1727:** a follow-up-issue reply clears a deferred finding in those two tiers.
+- **#1728:** BugBot is invited only on `full` and `legacy`.
+
+The two-round cap on core PRs stays a process limit, not gate logic.
+
+## CLI
+
+```bash
+.claude/scripts/review-tier.sh <pr_number> [--repo owner/name] [--config <path>] [--json]
+.claude/scripts/review-tier.sh --files-from <file|-> [--labels a,b] [--config <path>] [--json]
+```
+
+The plain output is the gate name. `--json` returns one line:
+
+```json
+{"policy":"present","gate":"full","tier":"core","source":"base:main","error":null,
+ "matches":[{"tier":"core","gate":"full","via":"path","count":1,"examples":["src/ledger/x.ts"]},
+            {"tier":"docs","gate":"ci-only","via":"path","count":1,"examples":["docs/a.md"]}]}
+```
+
+The `via` field is one of `path`, `label`, `default`, or `truncated`.
+
+The exit codes are `0` (resolved), `2` (usage error), `3` (PR not found), and `4` (read failure). The full contract is in `review-tier.sh --help`.

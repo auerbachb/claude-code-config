@@ -28,6 +28,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `browser-capability-rung.md` — rung 4 (browser) detail: in-app vs Chrome surface selection, the single login/authorization ask, bounded attempt, untrusted-page posture, subagent reachability matrix, and the `phase-c-merger` stay-restricted decision (#852)
 - `diff-survival-guard.md` — mechanism and rationale for `diff-survival-check.sh`; the failure mode where clean conflict markers hide a silently dropped fix (#757)
 - `merge-gate-reviewer-paths.md` — per-reviewer merge-gate path details (CR/CodeAnt, BugBot, Greptile)
+- `review-policy.md` — per-repo review tiers declared in pm-config `## Review policy`: table format, strictest-wins resolution across paths and labels, fail-closed invalid policies, base-branch reads, and what each gate (`ci-only` / `ci+codeant-one-round` / `full` / `legacy`) means; resolved by `review-tier.sh` (#1724, #1725)
 - `merge-gate-stale-approval-redemption.md` — CodeAnt in-place review edit: how `merge-gate.sh` redeems a stale approval by evidence rather than by reviewer identity (#876)
 - `merge-sequencing.md` — mechanism and state machine for `merge-sequence.sh`; overlap-aware merge sequencing for PRs touching the same file (#756)
 - `codeant-graphite-supplemental.md` — CodeAnt and Graphite supplemental polling on the CR path
