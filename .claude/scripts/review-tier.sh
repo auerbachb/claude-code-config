@@ -239,7 +239,11 @@ HAVE_POLICY=0
 SOURCE=""
 if [[ -n "$CONFIG" ]]; then
   SOURCE="file:$CONFIG"
-  if [[ ! -e "$CONFIG" ]]; then
+  if [[ -L "$CONFIG" && ! -e "$CONFIG" ]]; then
+    # A dangling symlink is a path someone pointed somewhere on purpose; its
+    # target going missing is a read failure, not "no policy declared".
+    die_read "--config is a dangling symlink: $CONFIG"
+  elif [[ ! -e "$CONFIG" ]]; then
     # Almost always a typo; say so rather than reading it silently as absent.
     warn "--config file not found: $CONFIG — treating the policy as absent"
   elif [[ -d "$CONFIG" ]]; then
@@ -349,8 +353,23 @@ parse_table() {
         if (index(line, "-->") == 0) next
         line = substr(line, index(line, "-->") + 3); comment = 0
       }
-      if (line ~ /^[ \t]*(```|~~~)/) { fence = !fence; if (state == 1) state = 2; next }
-      if (fence) next
+      # A fence closes only on a run of the SAME character at least as long
+      # as its opener, with nothing after it (CommonMark). Toggling on any
+      # ``` line would let an inner ``` close a ```` fence and turn the
+      # example table after it into the live policy.
+      if (fence) {
+        s = line; sub(/^[ \t]*/, "", s)
+        n = 0
+        while (substr(s, n + 1, 1) == fch) n++
+        if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
+        next
+      }
+      if (match(line, /^[ \t]*(```+|~~~+)/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", s)
+        fch = substr(s, 1, 1); flen = length(s); fence = 1
+        if (state == 1) state = 2
+        next
+      }
       while (index(line, "<!--") > 0) {
         pre = substr(line, 1, index(line, "<!--") - 1)
         rest = substr(line, index(line, "<!--") + 4)

@@ -85,12 +85,43 @@ Example only — not active:
 EOF
 check "tables inside fences and HTML comments are ignored" "legacy" "$(gate_for 'docs/a.md')"
 
+# An inner ``` must not close a ```` fence: the table inside stays an example,
+# and the real table after the fence governs.
+write_policy <<'EOF'
+````markdown
+```
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+````
+
+| Tier | Gate |
+|---|---|
+| default | full |
+EOF
+check "inner 3-backtick line does not close a 4-backtick fence" "full" "$(gate_for 'docs/a.md')"
+
+write_policy <<'EOF'
+~~~
+```
+| Tier | Gate |
+|---|---|
+| default | ci-only |
+~~~
+EOF
+check "a backtick line does not close a tilde fence" "legacy" "$(gate_for 'docs/a.md')"
+
 check "missing --config file → legacy" "legacy" \
   "$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>/dev/null)"
 err="$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/nope.md" 2>&1 >/dev/null)"
 case "$err" in *"not found"*) ok "missing --config file warns" ;; *) bad "missing --config should warn, got [$err]" ;; esac
 
 # A config that EXISTS but cannot be read is a read failure, never "absent".
+ln -s "$TMP_DIR/no-such-target.md" "$TMP_DIR/dangling.md"
+out="$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/dangling.md" 2>/dev/null)"; rc=$?
+check "--config dangling symlink → exit 4" "4" "$rc"
+check "--config dangling symlink → nothing on stdout" "" "$out"
+
 mkdir -p "$TMP_DIR/a-directory"
 out="$(printf 'x' | bash "$SUT" --files-from - --config "$TMP_DIR/a-directory" 2>/dev/null)"; rc=$?
 check "--config pointing at a directory → exit 4" "4" "$rc"
