@@ -20,6 +20,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [merge-gate.sh](../merge-gate.sh) | Verify the full merge gate (reviewer approval, CI, threads, mergeStateStatus) |
 | [merge-sequence.sh](../merge-sequence.sh) | Overlap-aware merge dispatch planner to avoid conflict rounds across a PR fleet |
 | [review-substance.sh](../review-substance.sh) | Decide whether a bot's `APPROVED` on a SHA is real review coverage or a hollow rubber stamp |
+| [review-tier.sh](../review-tier.sh) | Resolve a PR's review tier (ci-only / ci+codeant-one-round / full / legacy) from pm-config |
 <!-- catalog:rows:end -->
 
 ---
