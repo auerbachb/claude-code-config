@@ -45,9 +45,11 @@
 #           `/` means "everything under". Brace lists are refused.
 #   Labels  comma-separated PR labels (case-insensitive).
 #   A row named `default` classifies files no path matches; without one they
-#   are `full`. Edge pipes are optional (GFM); the table runs to the first
-#   blank line or heading, and any later `|` line makes the policy invalid.
-#   Tables inside ``` fences or <!-- --> comments are ignored.
+#   are `full`. The table is found as GFM finds one (a header line followed
+#   by a delimiter row); edge pipes are optional; it runs to the first blank
+#   line or heading. A `|`-leading row outside it, or a second table, makes
+#   the policy invalid. Fenced blocks and <!-- --> comments are removed from
+#   the whole file first, so a fenced example is never the live section.
 #
 # RESOLUTION (strictest wins: full > ci+codeant-one-round > ci-only)
 #   Candidates = the tiers every changed file matches, plus every tier whose
@@ -70,8 +72,8 @@
 #                      every consumer keeps today's behaviour.
 #   policy "invalid" — unknown gate, missing Tier/Gate column, no header
 #                      separator, no data rows, empty or duplicate tier name,
-#                      a brace glob, a `|` line after the table, or a
-#                      near-miss heading (`## Review Policy`)
+#                      a brace glob, a `|` row outside the table, a second
+#                      table, or a near-miss heading (`## Review Policy`)
 #                      → gate full (today's gate) plus one stderr warning.
 #                      Fail-closed: a typo can never loosen review.
 #
@@ -175,6 +177,7 @@ LABELS_FILE="$TMP_DIR/labels"
 : > "$FILES_FILE"
 : > "$LABELS_FILE"
 TRUNCATED=0
+UNREADABLE_NAMES=0
 BASE_REF=""
 
 if [[ -n "$PR_NUMBER" ]]; then
@@ -204,13 +207,17 @@ if [[ -n "$PR_NUMBER" ]]; then
   # moving a file out of a core directory still touches that directory — but
   # only F lines are counted against changedFiles, so a rename can never pad
   # the count and hide a truncated listing.
+  # A path carrying a newline would split its own record, so the file it
+  # names could never be classified; it is tagged W instead and forces full.
   if ! gh api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate \
-      --jq '.[] | "F\t\(.filename)", (.previous_filename // empty | "P\t\(.)")' \
+      --jq '.[] | if ((.filename + (.previous_filename // "")) | test("[\n\r]")) then "W\t-" else ("F\t\(.filename)", (.previous_filename // empty | "P\t\(.)")) end' \
       > "$TMP_DIR/files.tagged" 2>"$TMP_DIR/files.err"; then
     die_read "could not list PR #$PR_NUMBER files: $(head -1 "$TMP_DIR/files.err" 2>/dev/null)"
   fi
-  cut -f2- "$TMP_DIR/files.tagged" > "$FILES_FILE" || die_read "could not read the PR file listing"
-  LISTED="$(awk -F'\t' '$1 == "F" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
+  awk -F'\t' '$1 == "F" || $1 == "P" { sub(/^[^\t]*\t/, ""); print }' "$TMP_DIR/files.tagged" > "$FILES_FILE" \
+    || die_read "could not read the PR file listing"
+  LISTED="$(awk -F'\t' '$1 == "F" || $1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
+  UNREADABLE_NAMES="$(awk -F'\t' '$1 == "W" { n++ } END { print n + 0 }' "$TMP_DIR/files.tagged")"
   # An undershoot is GitHub's file-listing cap: the files it hid are
   # unclassified, so they are never assumed light.
   if (( LISTED < CHANGED )); then
@@ -229,6 +236,52 @@ else
 fi
 
 # ----------------------------------------------------------- the policy -----
+
+# Blank out every fenced code block and HTML comment in the WHOLE file before
+# anything looks for the section, keeping the line count. Doing it here, not
+# after the section is extracted, is what stops a fenced example that happens
+# to contain `## Review policy` (say, under `## Notes`) from being read as the
+# live section: pm-config-get.sh itself does not know about fences.
+#   Fences follow CommonMark: an opener is a run of 3+ ` or ~; a backtick run
+#   with another backtick after it on the line is an inline span, not a fence;
+#   a fence closes only on a run of the same character at least as long as its
+#   opener with nothing after it. An unclosed fence hides the rest of the file,
+#   exactly as GitHub renders it.
+strip_hidden() {
+  awk '
+    BEGIN { fence = 0; comment = 0 }
+    {
+      line = $0
+      if (fence) {
+        s = line; sub(/^[ \t]*/, "", s)
+        n = 0
+        while (substr(s, n + 1, 1) == fch) n++
+        if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
+        print ""; next
+      }
+      if (comment) {
+        i = index(line, "-->")
+        if (i == 0) { print ""; next }
+        line = substr(line, i + 3); comment = 0
+      }
+      if (match(line, /^[ \t]*(```+|~~~+)/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", s)
+        info = substr(line, RSTART + RLENGTH)
+        if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
+          fch = substr(s, 1, 1); flen = length(s); fence = 1
+          print ""; next
+        }
+      }
+      while (index(line, "<!--") > 0) {
+        pre = substr(line, 1, index(line, "<!--") - 1)
+        rest = substr(line, index(line, "<!--") + 4)
+        if (index(rest, "-->") > 0) { line = pre substr(rest, index(rest, "-->") + 3) }
+        else { line = pre; comment = 1; break }
+      }
+      print line
+    }
+  '
+}
 
 # Whatever the source, the policy lands in POLICY_COPY with CRs stripped, so
 # a CRLF checkout parses exactly like the LF blob CI reads. Only a source that
@@ -281,7 +334,9 @@ else
     || die_read "not in a git checkout (git rev-parse failed) — pass --config"
   [[ -n "$TOP" ]] || die_read "git rev-parse returned no toplevel — pass --config"
   SOURCE="file:$TOP/.claude/pm-config.md"
-  if [[ -e "$TOP/.claude/pm-config.md" ]]; then
+  if [[ -L "$TOP/.claude/pm-config.md" && ! -e "$TOP/.claude/pm-config.md" ]]; then
+    die_read "$TOP/.claude/pm-config.md is a dangling symlink"
+  elif [[ -e "$TOP/.claude/pm-config.md" ]]; then
     { tr -d '\r' < "$TOP/.claude/pm-config.md" > "$POLICY_COPY"; } 2>/dev/null \
       || die_read "could not read $TOP/.claude/pm-config.md"
     HAVE_POLICY=1
@@ -289,9 +344,11 @@ else
 fi
 
 SECTION_BODY=""
+POLICY_VISIBLE="$TMP_DIR/pm-config.visible.md"
 if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
+  strip_hidden < "$POLICY_COPY" > "$POLICY_VISIBLE" || die_read "could not pre-process the policy file"
   rc=0
-  SECTION_BODY="$("$GETTER" --section "$SECTION" --file "$POLICY_COPY" 2>/dev/null)" || rc=$?
+  SECTION_BODY="$("$GETTER" --section "$SECTION" --file "$POLICY_VISIBLE" 2>/dev/null)" || rc=$?
   case $rc in
     0) ;;
     1) SECTION_BODY="" ;;
@@ -320,7 +377,8 @@ if [[ -z "$SECTION_BODY" ]]; then
   # it without a word. Checked only when the exact section was not found.
   NEAR=""
   if [[ $HAVE_POLICY -eq 1 ]]; then
-    NEAR="$(awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_COPY")"
+    [[ -f "$POLICY_VISIBLE" ]] || : > "$POLICY_VISIBLE"
+    NEAR="$(awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_VISIBLE")"
   fi
   if [[ -n "$NEAR" ]]; then
     warn "## $SECTION is invalid (heading '$NEAR' must read exactly '## $SECTION') — resolving to the full gate"
@@ -331,11 +389,18 @@ if [[ -z "$SECTION_BODY" ]]; then
   exit 0
 fi
 
-# Parse the FIRST markdown table outside code fences and HTML comments.
+# Parse the policy table out of the (already fence- and comment-free) section.
 # Emits one of:  NOTABLE | ERROR<US>reason | ROW<US>tier<US>gate<US>paths<US>labels
 # <US> is the ASCII unit separator (\037): a NON-whitespace IFS, so an empty
 # cell stays an empty field instead of collapsing into its neighbour the way
 # consecutive tabs do.
+#   A table is found the way GFM finds one: a line containing `|` immediately
+#   followed by a delimiter row (`|---|:---:|`). Edge pipes are optional, so
+#   `core | full | src/**` is a row. Prose that merely contains a `|` is not a
+#   table and is skipped. The table runs to the first blank line or heading.
+#   Fail-closed refusals (ERROR → gate full): a line STARTING with `|` that
+#   belongs to no table (a table missing its delimiter row, or rows cut off
+#   from the table by a blank line or comment), or a second table.
 parse_table() {
   awk '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -346,80 +411,47 @@ parse_table() {
       for (i = 1; i <= n; i++) { cells[i] = trim(cells[i]); gsub(/\t/, " ", cells[i]) }
       return n
     }
-    BEGIN { fence = 0; comment = 0; state = 0; row = 0; US = "\037" }
+    function is_delim(l) { return (index(l, "|") > 0 && l ~ /-/ && l ~ /^[ \t|:-]+$/) }
+    function is_row_start(l) { return (l ~ /^[ \t]*\|/) }
+    BEGIN { state = 0; found = 0; pending = ""; US = "\037" }
     {
       line = $0
-      if (comment) {
-        if (index(line, "-->") == 0) next
-        line = substr(line, index(line, "-->") + 3); comment = 0
-      }
-      # A fence closes only on a run of the SAME character at least as long
-      # as its opener, with nothing after it (CommonMark). Toggling on any
-      # ``` line would let an inner ``` close a ```` fence and turn the
-      # example table after it into the live policy.
-      if (fence) {
-        s = line; sub(/^[ \t]*/, "", s)
-        n = 0
-        while (substr(s, n + 1, 1) == fch) n++
-        if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
-        next
-      }
-      # A backtick run is an opener only when no backtick follows it on the
-      # line (CommonMark: a backtick info string may not contain one), so
-      # ```full``` is an inline code span, not a fence. Tilde info strings
-      # may contain backticks.
-      if (match(line, /^[ \t]*(```+|~~~+)/)) {
-        s = substr(line, RSTART, RLENGTH); sub(/^[ \t]*/, "", s)
-        info = substr(line, RSTART + RLENGTH)
-        if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
-          fch = substr(s, 1, 1); flen = length(s); fence = 1
-          if (state == 1) state = 2
+      if (state == 0) {
+        if (pending != "" && is_delim(line)) {
+          nh = split_cells(pending, hdr)
+          for (i = 1; i <= nh; i++) {
+            h = tolower(hdr[i]); gsub(/[`*_]/, "", h); h = trim(h)
+            col[h] = i
+          }
+          state = 1; found = 1; pending = ""
           next
         }
-      }
-      while (index(line, "<!--") > 0) {
-        pre = substr(line, 1, index(line, "<!--") - 1)
-        rest = substr(line, index(line, "<!--") + 4)
-        if (index(rest, "-->") > 0) { line = pre substr(rest, index(rest, "-->") + 3) }
-        else { line = pre; comment = 1; break }
-      }
-      # GFM makes the edge pipes optional, so a row is any line carrying a
-      # `|` — `core | full | src/**` renders as a row on GitHub and must parse
-      # as one here. The table runs from its first pipe line to the first
-      # blank line or heading.
-      has_pipe = (index(line, "|") > 0)
-      if (state == 2) {
-        # A pipe line after the table ended — a second table, or rows cut off
-        # by a blank line or a comment — is ambiguous. Refuse it rather than
-        # silently ignoring rows the author meant to declare.
-        if (has_pipe && bad == "") bad = "a line containing | follows the policy table; keep every tier in one contiguous table"
+        if (pending != "" && is_row_start(pending) && bad == "")
+          bad = "a | row outside any table with a header separator row"
+        pending = (index(line, "|") > 0) ? line : ""
         next
       }
-      if (state == 1 && (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/)) { state = 2; next }
-      if (state == 0 && !has_pipe) next
-      state = 1; row++
-      if (row == 1) {
-        nh = split_cells(line, hdr)
-        for (i = 1; i <= nh; i++) {
-          h = tolower(hdr[i]); gsub(/[`*_]/, "", h); h = trim(h)
-          col[h] = i
-        }
+      if (state == 1) {
+        if (line ~ /^[ \t]*$/ || line ~ /^[ \t]*#/) { state = 2; next }
+        nc = split_cells(line, c)
+        t = ("tier"   in col) ? c[col["tier"]]   : ""
+        g = ("gate"   in col) ? c[col["gate"]]   : ""
+        p = ("paths"  in col) ? c[col["paths"]]  : ""
+        l = ("labels" in col) ? c[col["labels"]] : ""
+        rows[++nr] = t US g US p US l
         next
       }
-      if (row == 2) {
-        if (line !~ /-/ || line !~ /^[ \t|:-]+$/) { bad = "table has no header separator row"; state = 2 }
-        next
-      }
-      nc = split_cells(line, c)
-      t = ("tier"   in col) ? c[col["tier"]]   : ""
-      g = ("gate"   in col) ? c[col["gate"]]   : ""
-      p = ("paths"  in col) ? c[col["paths"]]  : ""
-      l = ("labels" in col) ? c[col["labels"]] : ""
-      rows[++nr] = t US g US p US l
+      # state 2: the table has ended. A row-shaped line or a second table
+      # after it is ambiguous — refuse it rather than silently dropping rows
+      # the author meant to declare.
+      if (bad == "" && (is_row_start(line) || is_delim(line)))
+        bad = "a | row follows the policy table; keep every tier in one contiguous table"
     }
     END {
-      if (row == 0) { print "NOTABLE"; exit }
+      if (!found && pending != "" && is_row_start(pending) && bad == "")
+        bad = "a | row outside any table with a header separator row"
       if (bad != "") { print "ERROR" US bad; exit }
+      if (!found) { print "NOTABLE"; exit }
       if (!("tier" in col) || !("gate" in col)) { print "ERROR" US "table must have Tier and Gate columns"; exit }
       if (nr == 0) { print "ERROR" US "table declares no tiers"; exit }
       for (i = 1; i <= nr; i++) print "ROW" US rows[i]
@@ -608,6 +640,10 @@ FORCE_FULL=0
 if (( TRUNCATED == 1 )); then
   FORCE_FULL=1
   record "(truncated)" full truncated "GitHub listed fewer files than the PR changed"
+fi
+if (( UNREADABLE_NAMES > 0 )); then
+  FORCE_FULL=1
+  record "(truncated)" full truncated "$UNREADABLE_NAMES path(s) contain a newline and cannot be classified"
 fi
 
 BEST=0

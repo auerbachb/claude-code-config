@@ -165,6 +165,34 @@ check "offline mode outside a git checkout → nothing on stdout" "" "$out"
 
 # ------------------------------------------------------ table parsing ------
 
+# A fenced example that contains its own `## Review policy` heading (here
+# under ## Notes) must never become the live section.
+{ printf '# PM Config\n\n## Notes\n\nExample:\n\n```markdown\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n```\n'; } > "$POLICY"
+check "a fenced example heading is not the live section" "legacy" "$(gate_for 'docs/a.md')"
+{ printf '# PM Config\n\n## Notes\n\n<!--\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n-->\n'; } > "$POLICY"
+check "a commented-out heading is not the live section" "legacy" "$(gate_for 'docs/a.md')"
+
+# Prose that merely contains a pipe before the table is not a table header.
+write_policy <<'EOF'
+Gates are ci-only | ci+codeant-one-round | full, strictest wins.
+
+| Tier | Gate | Paths |
+|---|---|---|
+| core | full | src/ledger/** |
+| default | ci-only | |
+EOF
+check "prose containing | before the table is skipped" "ci-only" "$(gate_for 'docs/a.md')"
+check "…and the real table still governs core" "full" "$(gate_for 'src/ledger/x.ts')"
+
+write_policy <<'EOF'
+| Tier | Gate | Paths |
+|---|---|---|
+| default | ci-only | |
+
+Remember: a | b in prose after the table is fine.
+EOF
+check "prose containing | after the table is not refused" "ci-only" "$(gate_for 'docs/a.md')"
+
 write_policy <<'EOF'
 Tier | Gate | Paths
 ---- | ---- | -----
@@ -412,6 +440,11 @@ check "rename does not mask a truncated listing" "full" \
   "$(FAKE_FILES_JSON='[{"filename":"docs/b.md","previous_filename":"docs/a.md"}]' FAKE_CHANGED=2 pr_gate)"
 check "an untruncated docs→docs rename stays ci-only" "ci-only" \
   "$(FAKE_FILES_JSON='[{"filename":"docs/b.md","previous_filename":"docs/a.md"}]' FAKE_CHANGED=1 pr_gate)"
+# A path with a newline would split its own record; it can never be
+# classified, so the PR fails closed to full rather than dropping the file.
+out="$(FAKE_FILES_JSON='[{"filename":"docs/a.md"},{"filename":"src/ledger/x\ny.ts"}]' FAKE_CHANGED=2 pr_gate --json)"
+check "a newline in a changed path → full" "full" "$(jq -r .gate <<<"$out")"
+check "…reported as unclassifiable" "true" "$(jq -r '[.matches[] | select(.via == "truncated")] | length > 0' <<<"$out")"
 check "truncated file listing → full" "full" \
   "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=3001 pr_gate)"
 check "base branch without pm-config.md (404) → legacy" "legacy" \
@@ -441,6 +474,14 @@ LOCAL_REPO="$TMP_DIR/local-repo"
 mkdir -p "$LOCAL_REPO/.claude"
 git -C "$LOCAL_REPO" init -q
 printf '# PM Config\n\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n' > "$LOCAL_REPO/.claude/pm-config.md"
+ln -s "$TMP_DIR/gone.md" "$TMP_DIR/dangling-repo-config.md"
+DANGLING_REPO="$TMP_DIR/dangling-repo"
+mkdir -p "$DANGLING_REPO/.claude"; git -C "$DANGLING_REPO" init -q
+ln -s "$TMP_DIR/gone.md" "$DANGLING_REPO/.claude/pm-config.md"
+out="$(cd "$DANGLING_REPO" && printf 'docs/a.md' | bash "$SUT" --files-from - 2>/dev/null)"; rc=$?
+check "offline mode: dangling pm-config.md symlink → exit 4" "4" "$rc"
+check "offline mode: dangling pm-config.md symlink → nothing on stdout" "" "$out"
+
 check "sanity: the throwaway repo's own policy is ci-only offline" "ci-only" \
   "$(cd "$LOCAL_REPO" && printf 'docs/a.md' | bash "$SUT" --files-from - 2>/dev/null)"
 printf '# PM Config\n' > "$FAKE_BASE_CONFIG"

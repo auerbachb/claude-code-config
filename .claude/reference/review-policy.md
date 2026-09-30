@@ -38,7 +38,11 @@ Add a markdown table under `## Review policy`. The resolver reads the **first** 
 
 A row named **`default`** classifies files that no `Paths` glob matches. Without a `default` row, those files are `full`.
 
-Declare every tier in **one contiguous table**. As on GitHub, the edge pipes are optional, and the table runs from its first line containing `|` to the first blank line or heading. A table inside a ```` ``` ```` fence or an `<!-- -->` comment is ignored, so you can keep an inactive example in the section. Any `|` line *after* the table ends makes the policy invalid rather than silently dropping rows — for example, rows separated by a blank line or cut off by a comment.
+Declare every tier in **one contiguous table**. The table is found the way GitHub finds one: a header line followed by a delimiter row (`|---|---|`). The edge pipes are optional, and the table runs to the first blank line or heading. Prose that merely contains a `|` is ignored.
+
+Fenced code blocks and `<!-- -->` comments are removed from the whole file before the section is looked up, following CommonMark fence rules. So an inactive example table, or even a fenced example carrying its own `## Review policy` heading elsewhere in the file, never becomes the live policy.
+
+A row-shaped line (one starting with `|`) that belongs to no table makes the policy invalid rather than being silently dropped. So does a second table. Examples are rows separated from the table by a blank line or a comment, or a table missing its delimiter row.
 
 ## Resolution — strictest wins
 
@@ -54,15 +58,15 @@ Three consequences follow:
 
 - **A label classifies what the paths leave open.** It never lowers a file that a path already matched.
 - **A PR with no files and no tier label gets `default`.**
-- **If GitHub lists fewer files than the PR changed, `full` is added.** This happens past GitHub's 3000-file listing cap. Files the resolver cannot see are never assumed to be light.
+- **If GitHub lists fewer files than the PR changed, `full` is added.** This happens past GitHub's 3000-file listing cap. Files the resolver cannot see are never assumed to be light. A changed path containing a newline cannot be classified either, and adds `full` the same way.
 
 ## Fail-closed behaviour
 
 | Condition | Result |
 |---|---|
 | No section, no `pm-config.md`, or a section with no table | `policy: absent`, gate `legacy`. A prose-only section also warns on stderr. |
-| Unknown gate, missing `Tier`/`Gate` column, no header separator row, header but no data rows, empty or duplicate tier name, a brace glob, a `\|` line after the table, or a near-miss heading such as `## Review Policy` | `policy: invalid`, gate **`full`**, and one stderr warning. `full` is today's gate, so a typo can never loosen review. |
-| A policy source that exists but cannot be read: a failed `gh` call, a base-branch object that is not a base64 file (a symlink, an over-size blob), a missing `changedFiles` count, an unreadable or directory `--config`, or offline mode outside a git checkout | exit 4 with nothing on stdout. The consumer fails closed. Only a source that does not *exist* reads as absent. |
+| Unknown gate, missing `Tier`/`Gate` column, header but no data rows, empty or duplicate tier name, a brace glob, a `\|` row outside the table, a second table, or a near-miss heading such as `## Review Policy` | `policy: invalid`, gate **`full`**, and one stderr warning. `full` is today's gate, so a typo can never loosen review. |
+| A policy source that exists but cannot be read: a failed `gh` call, a base-branch object that is not a base64 file (a symlink, an over-size blob), a missing `changedFiles` count, an unreadable, directory, or dangling-symlink `--config` or checkout `pm-config.md`, or offline mode outside a git checkout | exit 4 with nothing on stdout. The consumer fails closed. Only a source that does not *exist* reads as absent. |
 
 CRLF line endings are stripped before parsing, so a Windows checkout reads the same policy as CI.
 
