@@ -27,7 +27,7 @@
 # Usage:
 #   maybe-trigger-ai-review.sh <pr_number> [--dry-run] [--json]
 #
-# Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence
+# Exit: 0 skipped/dry-run/success; 2 usage; 3 PR; 4 error (incl. session-state missing); 5 gh post failed after persistence; 70 --help extraction empty
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
@@ -40,8 +40,10 @@ STATE_FILE="${HOME}/.claude/session-state.json"
 
 help() {
   # The whole leading comment block, so a new header paragraph can never be cut
-  # off mid-sentence by a hardcoded line range.
-  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+  # off mid-sentence by a hardcoded line range. An empty extraction is a defect,
+  # not a help page, so it fails loudly instead of exiting 0 (#1528).
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
 }
 
 PR_NUM=""
