@@ -187,7 +187,7 @@ The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is
 
 | Path | On a `ci-only` or `ci+codeant-one-round` PR |
 |---|---|
-| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It marks the cursor step done, so a resumed run cannot post it. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`. The field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead, and `null` when nothing was skipped. |
+| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`. The field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead, and `null` when nothing was skipped. |
 | `pr-preflight.sh` | Gives the cursor reviewer status `skipped-tier-excluded`, which counts as clean. |
 | `/fixpr` Step 3b | Prints `[REVIEWERS] skipping @cursor review — review tier <gate> excludes BugBot`. |
 | `cursor-review-pr-comment.yml` | The `tier-check` step runs the helper from the base-branch checkout with `--repo` and `--base`. The comment step skips on `excluded=true`, and a notice annotation says why. A base branch without the helper posts. |

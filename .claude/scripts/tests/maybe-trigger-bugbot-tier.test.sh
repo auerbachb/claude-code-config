@@ -175,21 +175,35 @@ check_eq "exit 0" "0" "$RC"
 check_eq "@cursor review posted despite a ci-only resolver" "1" "$(posted_cursor)"
 
 ############################################################################
-echo "== (e): a tier skip records the cursor step, so a resume cannot re-post it =="
+echo "== (e): a tier skip leaves the cursor step open, so a resume re-asks the tier =="
 # A completed run clears the steps record; failing the Graphite post keeps it
 # alive, which is the only state a retry reads (same shape as the refusal suite).
 setup "$(tier_json ci-only)"
 export FIXTURE_POST_FAIL="@graphite-app re-review"
 run_script; RC=$?
 check_eq "run failed at the graphite step" "5" "$RC"
-check_eq "cursor step recorded true (skipped counts as done)" "true" "$(read_step cursor)"
+check_eq "cursor step NOT recorded (a tier can change without a push)" "false" "$(read_step cursor)"
 check_eq "graphite step still false (record is partial, not all-true)" "false" "$(read_step graphite)"
 check_eq "no @cursor review posted" "0" "$(posted_cursor)"
-# The retry: Graphite now posts, and cursor must stay unposted.
+# The retry while the tier still excludes BugBot: Graphite posts, cursor does not.
 export FIXTURE_POST_FAIL=""
 run_script; RC=$?
 check_eq "retry exits 0" "0" "$RC"
 check_eq "still no @cursor review after the retry" "0" "$(posted_cursor)"
+check_eq "codeant posted exactly once across both runs" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
+
+echo "== (e2): the tier changes to full before the retry -> the resumed run posts @cursor review =="
+setup "$(tier_json ci-only)"
+export FIXTURE_POST_FAIL="@graphite-app re-review"
+run_script; RC=$?
+check_eq "run failed at the graphite step" "5" "$RC"
+check_eq "no @cursor review posted on the ci-only run" "0" "$(posted_cursor)"
+export FIXTURE_POST_FAIL="" FIXTURE_TIER_OUT="$(tier_json full)"
+run_script; RC=$?
+check_eq "retry exits 0" "0" "$RC"
+check_eq "@cursor review posted once, now that the tier invites BugBot" "1" "$(posted_cursor)"
+check_eq "codeant not re-posted on the retry" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
+check_eq "retry --json reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 
 ############################################################################
 echo "== (f): --dry-run reports the same answer the real run acts on =="

@@ -387,11 +387,12 @@ bugbot_refused_head() {
 
 if ! post_one codeant "@codeant-ai review"; then echo "maybe-trigger-ai-review.sh: failed posting @codeant-ai review" >&2; exit 5; fi
 if [[ -n "$BUGBOT_TIER_GATE" ]]; then
-  # Recorded as handled for the same resume reason as the refusal branch below.
+  # Deliberately NOT recorded as handled, unlike the refusal branch below. A
+  # refusal is fixed for this HEAD, but a tier can change without a push (a
+  # label flip, a base-branch policy edit). A resumed run re-asks the tier
+  # above, so it skips again while the tier still excludes BugBot and posts
+  # once the tier invites it. A completed run clears the record either way.
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — review tier gate '$BUGBOT_TIER_GATE' excludes BugBot (#1728)" >&2
-  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true"; then
-    echo "maybe-trigger-ai-review.sh: failed to record the tier-skipped cursor step — may re-check on retry" >&2
-  fi
 elif bugbot_refused_head; then
   # Mark the step handled rather than leaving it false. A run that completes
   # clears the whole record (`ai_review_trigger_steps=null` below), but a run
