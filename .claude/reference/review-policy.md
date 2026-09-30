@@ -7,7 +7,7 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 | #1725 | Tier resolver | Landed |
 | #1726 | Merge gate | Landed |
 | #1727 | Deferred findings | Landed |
-| #1728 | BugBot triggering | Pending |
+| #1728 | BugBot triggering | Landed |
 | #1729 | Pipeline ceiling | Pending |
 
 This file is the mechanism reference. The rule files only point here, because the rule corpus has no word headroom.
@@ -162,12 +162,40 @@ If the tier cannot be resolved, the gate fails closed. The resolver may be missi
 
 The run never ends up less strict than legacy.
 
-The remaining increments cover the rest:
+The later increments cover the rest:
 
 - **#1727** (landed): a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers. See [Deferred findings](#deferred-findings).
-- **#1728:** BugBot is invited only on `full` and `legacy`.
+- **#1728** (landed): BugBot is invited only on `full` and `legacy`. See [BugBot triggering](#bugbot-triggering).
 
 The two-round cap on core PRs stays a process limit, not gate logic.
+
+## BugBot triggering
+
+BugBot is the most expensive reviewer in the stack, so it is invited only when the gate is `full` or `legacy` (#1728). Every path that could invite it asks one helper first, so they cannot disagree:
+
+```bash
+.claude/scripts/bugbot-tier-excluded.sh <pr_number> [--repo owner/name] [--base <ref>]
+```
+
+| Exit | Meaning | What the caller does |
+|---|---|---|
+| `0` | The gate is `ci-only` or `ci+codeant-one-round`. The gate is printed on stdout. | Skips `@cursor review` and says so. |
+| `1` | The gate is `full` or `legacy`. The gate is printed on stdout. | Posts, as before. |
+| `2` | A usage error, or the tier could not be resolved: the resolver is missing, exits non-zero, or returns no recognised gate. | Posts, as before. |
+
+The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is the opposite of the merge gate's direction. That is deliberate: `legacy` behaviour is to post, and the BugBot refusal guard (`bugbot-refused-head.sh`) fails the same way. An unreadable policy can cost one BugBot review, never a missing one. The merge gate is unaffected, because it resolves the tier on its own and fails closed.
+
+| Path | On a `ci-only` or `ci+codeant-one-round` PR |
+|---|---|
+| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It marks the cursor step done, so a resumed run cannot post it. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`. The field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead, and `null` when nothing was skipped. |
+| `pr-preflight.sh` | Gives the cursor reviewer status `skipped-tier-excluded`, which counts as clean. |
+| `/fixpr` Step 3b | Prints `[REVIEWERS] skipping @cursor review — review tier <gate> excludes BugBot`. |
+| `cursor-review-pr-comment.yml` | The `tier-check` step runs the helper from the base-branch checkout with `--repo` and `--base`. The comment step skips on `excluded=true`, and a notice annotation says why. A base branch without the helper posts. |
+| `escalate-review.sh` | Emits `STATUS=tier_gate` wherever it would have emitted `switch_bugbot`. |
+
+`STATUS=tier_gate` means the review tier, not the escalation chain, governs the PR. The caller does not make BugBot the reviewer and posts nothing. It keeps the current reviewer and keeps polling, and `merge-gate.sh` applies the tier's gate. It is not a stop and not self-review. Every other verdict keeps its meaning, including `trigger_greptile` for a BugBot that reviewed the PR on its own and then failed.
+
+`pmm-act.md` and `wrap-merge-gate-recovery.md` post `@cursor review` only when BugBot already owns the PR. `tier_gate` keeps a lighter-tier PR from reaching that state.
 
 ## CLI
 

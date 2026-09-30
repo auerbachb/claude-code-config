@@ -69,7 +69,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 3a. Dismiss stale bot `CHANGES_REQUESTED` | Mechanical | `dismiss-stale-bot-changes.sh` after push when `DID_PUSH=1`; optional `--handoff-file` append |
-| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, post `@cursor review` unless BugBot already refused this HEAD |
+| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, post `@cursor review` unless the PR's review tier excludes BugBot or BugBot already refused this HEAD |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
 | 4d. Review-wait loop (issue #454) | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
@@ -554,14 +554,26 @@ for candidate in \
   ".claude/scripts/bugbot-refused-head.sh"; do
   if [[ -x "$candidate" ]]; then BUGBOT_REFUSED_SH="$candidate"; break; fi
 done
-if [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
+# The PR's review tier may exclude BugBot altogether (gate ci-only or
+# ci+codeant-one-round — issue #1728). Exit 0 alone skips; any other exit, or a
+# missing helper, posts as before (fail-open).
+BUGBOT_TIER_SH=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-tier-excluded.sh" \
+  "$HOME/.claude/scripts/bugbot-tier-excluded.sh" \
+  ".claude/scripts/bugbot-tier-excluded.sh"; do
+  if [[ -x "$candidate" ]]; then BUGBOT_TIER_SH="$candidate"; break; fi
+done
+if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_GATE=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" 2>/dev/null); then
+  echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
+elif [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
   echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
 else
   gh pr comment "$PR_NUMBER" --body "@cursor review"
 fi
 ```
 
-Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-refused-head.sh`** (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
+Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-tier-excluded.sh` and `bugbot-refused-head.sh`** — the first skips a PR whose review tier (`ci-only` / `ci+codeant-one-round`) never needs BugBot, `.claude/reference/review-policy.md` (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
 **Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 

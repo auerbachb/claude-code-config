@@ -27,10 +27,19 @@
 #                             trigger comment). Make BugBot the sticky reviewer;
 #                             when it has no footprint yet, post the manual
 #                             `@cursor review` trigger before polling
+#     STATUS=tier_gate        the PR's review tier excludes BugBot (gate ci-only or
+#                             ci+codeant-one-round, issue #1728), so the tier, not
+#                             this chain, governs it. Emitted INSTEAD of
+#                             switch_bugbot, at the same two points: do NOT make
+#                             BugBot the reviewer and do NOT post `@cursor review`;
+#                             trigger nothing, keep the current reviewer, and keep
+#                             polling — merge-gate.sh applies the tier's gate. Not
+#                             a stop and not self-review. An unresolvable tier
+#                             emits switch_bugbot as before (fail-open)
 #     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
 #                             invited and then timed out; trigger Greptile. NOT
 #                             emitted for a BugBot that was never invited — that
-#                             case is switch_bugbot above
+#                             case is switch_bugbot (or tier_gate) above
 #     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
@@ -124,6 +133,30 @@ die_usage() {
 emit() {
   printf 'STATUS=%s\n' "$1"
   exit 0
+}
+
+# The ONE way this script hands a PR to BugBot (issue #1728). A PR whose review
+# tier excludes BugBot (gate ci-only or ci+codeant-one-round) gets tier_gate
+# instead: its merge gate never needs BugBot, and switching is sticky and
+# one-way, so a hand-off would spend the stack's most expensive review on a PR
+# the repo's policy exempts. Asked only at the two points that would otherwise
+# switch, so every earlier verdict keeps its precedence, the Greptile branches
+# are untouched, and no other cycle pays for the lookup.
+#
+# FAILS OPEN to switch_bugbot — a missing helper, an unresolvable tier, or any
+# exit but 0 (full and legacy are exit 1). `|| tier_rc=$?` keeps a failing or
+# unlaunchable helper (126/127) away from `set -e` and the EXIT trap: an
+# unreadable policy has a defined answer here, the pre-#1728 one.
+emit_switch_bugbot() {
+  local helper="$SCRIPT_DIR/bugbot-tier-excluded.sh" gate="" tier_rc=0
+  if [[ -x "$helper" ]]; then
+    gate="$("$helper" "$PR_NUMBER" --repo "$OWNER/$REPO")" || tier_rc=$?
+    if [[ "$tier_rc" -eq 0 ]]; then
+      echo "escalate-review.sh: review tier gate '$gate' excludes BugBot — tier_gate, not switch_bugbot (issue #1728)" >&2
+      emit "tier_gate"
+    fi
+  fi
+  emit "switch_bugbot"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -818,7 +851,7 @@ esac
 # fetch added here (meta-guard test L). The gate-satisfiable evaluation lives in
 # merge-gate.sh where CHECK_RUNS_JSON and LAST_COMMIT_TS are already available.
 if [[ "$BUGBOT_GENUINE" == "true" ]]; then
-  emit "switch_bugbot"
+  emit_switch_bugbot
 fi
 
 # A usage-limit/couldn't-run failure is not a reason to keep waiting out the
@@ -863,7 +896,7 @@ fi
 # leaves this branch open and routes to the free `@cursor review` instead.
 if [[ "$BUGBOT_FAILED" != "true" && "$BUGBOT_GENUINE" != "true" \
       && "$BUGBOT_CHECK_PRESENT" != "true" && "$BUGBOT_TRIGGER_PRESENT" != "true" ]]; then
-  emit "switch_bugbot"
+  emit_switch_bugbot
 fi
 
 # CodeRabbit retry-window grace (issue #1199). CodeRabbit's `Review limit reached`

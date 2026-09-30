@@ -8,7 +8,7 @@ BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-git
 
 **Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` (`cursor-review-pr-comment.yml`, which consults `bugbot-refused-head.sh` first); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
 
-**Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md` ("Reviewer escalation gate"). Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
+**Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md`. Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
 ## BugBot Basics
 
@@ -25,11 +25,11 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 **Completion signal:** BugBot creates a CI check-run named `Cursor Bugbot` that transitions to `status: "completed"` when the review finishes. `conclusion: "success"` = no findings, no review object (silent pass — gate conditions at §Merge Gate). `conclusion: "neutral"` = findings posted (review object required) or a refusal (below). Completion also detected via review comments on any endpoint.
 
-**BugBot failure detection:** a spend-limit failure produces a non-passing `conclusion: "neutral"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …) — measured, 19 capped PRs (PR #1349). A sample, not a census: `merge-gate.sh` still blocks the `success` silent-pass path whenever such a comment postdates the HEAD commit. Cap and levers: `.claude/reference/pricing-matrix.md` §Cursor BugBot.
+**BugBot failure detection:** a spend-limit failure produces a non-passing `conclusion: "neutral"` check-run alongside a failure-phrase cursor[bot] comment (`couldn't run`, `usage limit`, …; PR #1349). `merge-gate.sh` still blocks the `success` silent-pass path whenever such a comment postdates HEAD. Cap and levers: `.claude/reference/pricing-matrix.md` §Cursor BugBot.
 
 ## When BugBot Becomes the Active Reviewer
 
-On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`.
+On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`. Never on `STATUS=tier_gate` (review tier excludes BugBot — `review-policy.md`); trigger paths skip `@cursor review` too.
 
 ## Processing BugBot Findings
 

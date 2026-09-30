@@ -28,6 +28,14 @@
 # The guard only ever NARROWS posting; it is fail-open in every direction —
 # missing helper, unreadable API, or a broken guard step all still post.
 #
+# Review tier (issue #1728):
+# A repo may declare review tiers in `.claude/pm-config.md`, and BugBot is
+# invited only on the `full` gate or with no policy (`legacy`). The tier-check
+# step runs the shared `bugbot-tier-excluded.sh` from the same base checkout and
+# skips the comment for `ci-only` and `ci+codeant-one-round`. It narrows posting
+# the same fail-open way: a missing helper or an unresolvable tier still posts.
+# Mechanism: .claude/reference/review-policy.md.
+#
 # This is a convenience trigger, never a merge gate. A missing PAT or a failed
 # comment degrades to a warning annotation; the workflow always exits success.
 name: Cursor BugBot review trigger
@@ -38,10 +46,12 @@ on:
 
 permissions:
   # Comment is posted via CURSOR_REVIEW_PAT, not GITHUB_TOKEN. Everything below
-  # is read-only and serves the suppression guard's GITHUB_TOKEN calls only:
-  #   contents      — commits/{sha} (the HEAD commit's committer date)
+  # is read-only and serves the two guards' GITHUB_TOKEN calls only:
+  #   contents      — commits/{sha} (the HEAD commit's committer date), and the
+  #                   base branch's .claude/pm-config.md (the review policy)
   #   issues        — issues/{n}/comments (cursor[bot]'s refusal comments)
-  #   pull-requests — same endpoint, reached on a pull request
+  #   pull-requests — same endpoint, reached on a pull request; the PR's files
+  #                   and labels, which decide its review tier
   #   checks        — commits/{sha}/check-runs (BugBot's footprint on this commit)
   contents: read
   issues: read
@@ -135,6 +145,55 @@ jobs:
             echo "No attributable BugBot refusal on $HEAD_SHA — posting the nudge."
           fi
 
+      - name: Check whether the PR's review tier excludes BugBot
+        id: tier-check
+        if: env.HAS_TRIGGER_TOKEN == 'true'
+        # Same reasoning as the two steps above. If this step dies before
+        # writing its output, the comment step reads '' and posts.
+        continue-on-error: true
+        env:
+          GH_REPO: ${{ github.repository }}
+          # Read-only calls (the policy file on the base branch, the PR's files
+          # and labels), so the default token rather than the PAT's budget.
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          TIER=.claude/scripts/bugbot-tier-excluded.sh
+          # Bootstrap: the helper is not on the base branch — the PR introducing
+          # it, or a repo given this workflow without .claude/scripts. Post.
+          if [[ ! -f "$TIER" ]]; then
+            echo "excluded=false" >> "$GITHUB_OUTPUT"
+            echo "Review-tier check unavailable on the base branch — posting the nudge."
+            exit 0
+          fi
+          # 0 = the tier (ci-only / ci+codeant-one-round) excludes BugBot, gate
+          # on stdout; 1 = full or legacy; 2 = tier unresolved. Only 0 skips:
+          # a failed resolver posts, as the refusal guard above fails open.
+          if GATE=$(bash "$TIER" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF"); then
+            echo "excluded=true" >> "$GITHUB_OUTPUT"
+            echo "gate=$GATE" >> "$GITHUB_OUTPUT"
+            echo "Review tier gate $GATE excludes BugBot — skipping the nudge."
+          else
+            echo "excluded=false" >> "$GITHUB_OUTPUT"
+            echo "Review tier gate '${GATE:-unresolved}' invites BugBot (or could not be resolved) — posting the nudge."
+          fi
+
+      - name: Notice — nudge skipped, the review tier excludes BugBot
+        # Selected by id in the offline suite, like suppressed-warn below.
+        id: tier-skip-notice
+        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.tier-check.outputs.excluded == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TIER_GATE: ${{ steps.tier-check.outputs.gate }}
+        with:
+          script: |
+            core.notice(
+              `Skipped the BugBot trigger: this PR's review tier gate is ${process.env.TIER_GATE}, ` +
+              'which never needs BugBot (.claude/reference/review-policy.md). ' +
+              'Only the full gate, or a repo with no review policy, invites it.'
+            );
+
       - name: Warn — nudge suppressed, BugBot already refused this HEAD
         # Carries an id purely so the offline suite can select this step by
         # identity rather than by matching text in its condition — a rename or
@@ -156,7 +215,7 @@ jobs:
             );
 
       - name: Comment @cursor review
-        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed != 'true'
+        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed != 'true' && steps.tier-check.outputs.excluded != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # Authenticate as the PAT owner (repository owner) rather than

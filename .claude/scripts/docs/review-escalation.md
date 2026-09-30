@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [bugbot-refused-head.sh](../bugbot-refused-head.sh) | One shared answer for every `@cursor review` trigger path: has BugBot already refused this HEAD for a Cursor usage/spend limit? |
+| [bugbot-tier-excluded.sh](../bugbot-tier-excluded.sh) | One shared answer for every `@cursor review` trigger path and the escalation chain: does the PR's review tier exclude BugBot? |
 | [complexity-score.sh](../complexity-score.sh) | Compute a PR complexity score from additions, deletions, and changed-file count |
 | [cr-plan.sh](../cr-plan.sh) | Detect a substantive CodeRabbit implementation-plan comment on a GitHub issue |
 | [cr-review-hourly.sh](../cr-review-hourly.sh) | Track CodeRabbit's rolling hourly review cap and per-PR explicit trigger count |

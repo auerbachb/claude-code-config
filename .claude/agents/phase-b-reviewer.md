@@ -160,6 +160,13 @@ case "$ESCALATION_STATUS" in
     reviewer="bugbot"
     # Continue this cycle using the BugBot Review Path below.
     ;;
+  tier_gate)
+    : # The PR's review tier (ci-only / ci+codeant-one-round) excludes BugBot
+      # (issue #1728): do NOT make BugBot the reviewer and do NOT post
+      # `@cursor review`. Trigger nothing, keep reviewer=cr, and keep polling —
+      # the CR Merge Gate check below applies the tier's gate. Not a stop and
+      # not self-review.
+    ;;
   trigger_greptile)
     if run_script greptile-budget.sh --consume >/dev/null; then
       gh pr comment {{PR_NUMBER}} --body "@greptileai"

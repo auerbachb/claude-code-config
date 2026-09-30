@@ -135,7 +135,12 @@
 #       "clean": <bool>                # true ⇒ nothing to do this run
 #     }
 #   reviewer status ∈ already-present | triggered | skipped-rate-cap |
-#                     trigger-failed | dry-run-would-trigger
+#                     trigger-failed | dry-run-would-trigger |
+#                     skipped-tier-excluded
+#   `skipped-tier-excluded` is cursor-only (issue #1728): the PR's review tier
+#   (gate ci-only or ci+codeant-one-round) never needs BugBot, so nothing was
+#   posted and nothing is pending — it counts toward `clean` like
+#   already-present. An unresolvable tier posts as before (fail-open).
 #
 #   Status vocabulary and decision semantics are unchanged by #576 — only the
 #   inputs to the decision became SHA-aware, and the JSON gains the additive
@@ -294,6 +299,28 @@ resolve_review_substance() {
   return 1
 }
 REVIEW_SUBSTANCE_SH="$(resolve_review_substance || true)"
+
+# --- resolve bugbot-tier-excluded.sh (review-tier BugBot skip; env override for tests) ---
+# Same contract as resolve_review_substance(): sibling first, and an explicit
+# override is honoured even when it names nothing, so a test can make the
+# helper absent. Absent means "not excluded" — the fail-open direction (#1728).
+resolve_bugbot_tier() {
+  if [[ -n "${PREFLIGHT_BUGBOT_TIER_SH:-}" ]]; then
+    [[ -x "${PREFLIGHT_BUGBOT_TIER_SH}" ]] && { echo "$PREFLIGHT_BUGBOT_TIER_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/bugbot-tier-excluded.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-tier-excluded.sh" \
+    "$HOME/.claude/scripts/bugbot-tier-excluded.sh" \
+    ".claude/scripts/bugbot-tier-excluded.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+BUGBOT_TIER_SH="$(resolve_bugbot_tier || true)"
 
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
@@ -798,6 +825,15 @@ post_trigger() {
   fi
 }
 
+# Prints the gate and returns 0 only when the PR's review tier excludes BugBot.
+# Every other outcome — no helper, full/legacy, an unresolvable tier — returns 1
+# and the nudge posts as before (fail-open, issue #1728). The helper's own stderr
+# line on an unresolvable tier is kept out of --json callers' way.
+bugbot_tier_excluded() {
+  [[ -n "$BUGBOT_TIER_SH" ]] || return 1
+  "$BUGBOT_TIER_SH" "$PR" 2>/dev/null
+}
+
 for key in "${REVIEWER_KEYS[@]}"; do
   login="$(reviewer_login "$key")"
   trigger="$(reviewer_trigger "$key")"
@@ -818,6 +854,11 @@ for key in "${REVIEWER_KEYS[@]}"; do
       set_status "$key" "skipped-rate-cap"
       surface "skipping @coderabbitai full review — CR rate cap hit (posting the other reviewers)"
     fi
+  elif [[ "$key" == "cursor" ]] && tier_gate="$(bugbot_tier_excluded)"; then
+    # The PR's review tier never needs BugBot (issue #1728): nothing to do and
+    # nothing pending, so this status counts as clean below.
+    set_status "$key" "skipped-tier-excluded"
+    surface "skipping @cursor review — review tier $tier_gate excludes BugBot"
   else
     post_trigger "$key"
   fi
@@ -825,7 +866,8 @@ done
 
 # --- 5. clean determination + summary ---
 # Clean ⇒ nothing was done and nothing is pending: not flipped, and every
-# reviewer was already-present (no triggers, no skips, no failures).
+# reviewer was already-present (no triggers, no skips, no failures) — or, for
+# cursor, excluded by the PR's review tier, which leaves nothing pending either.
 CLEAN=true
 # Any draft action other than a genuine "not-draft" means work happened or the PR
 # is still a draft (marked-ready / skipped-not-author / ready-failed) — not clean.
@@ -833,7 +875,10 @@ CLEAN=true
 # all four reviewers are present (issue #494 BugBot — "False clean after ready failure").
 [[ "$DRAFT_ACTION" != "not-draft" ]] && CLEAN=false
 for key in "${REVIEWER_KEYS[@]}"; do
-  [[ "$(get_status "$key")" != "already-present" ]] && CLEAN=false
+  case "$(get_status "$key")" in
+    already-present|skipped-tier-excluded) ;;
+    *) CLEAN=false ;;
+  esac
 done
 
 if [[ "$CLEAN" == "true" ]]; then
