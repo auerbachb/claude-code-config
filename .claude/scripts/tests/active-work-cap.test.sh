@@ -332,13 +332,20 @@ ok "CLAUDE_ACTIVE_WORK_CAP overrides the config value"
 # --- 7. Invalid and out-of-range fall back LOUDLY ----------------------------
 # Silent fallback is the failure mode this guards: a typo'd knob that reads as
 # "the default" with no signal looks identical to never having set one.
-for BAD in "abc" "0" "99" "-3"; do
+for BAD in "abc" "0" "99" "-3" "18446744073709551618"; do
   OUT=$(CLAUDE_ACTIVE_WORK_CAP="$BAD" run --cap 2>"$TMP_DIR/err") || \
     fail "a bad cap ('$BAD') should fall back, not exit non-zero"
   [[ "$OUT" == "6" ]] || fail "bad cap '$BAD' should fall back to 6, got '$OUT'"
   [[ -s "$TMP_DIR/err" ]] || fail "bad cap '$BAD' must warn on stderr, but stderr was empty"
 done
-ok "unparseable / zero / over-max / negative caps all fall back to 6 and warn"
+ok "unparseable / zero / over-max / negative / overlong caps all fall back to 6 and warn"
+
+# Leading zeros are still just a number: the overflow guard strips them before
+# counting digits, so 0007 is 7, silently.
+CAP=$(CLAUDE_ACTIVE_WORK_CAP=0007 run --cap 2>"$TMP_DIR/err") || fail "--cap failed on a zero-padded value"
+[[ "$CAP" == "7" && ! -s "$TMP_DIR/err" ]] || \
+  fail "a zero-padded cap 0007 should resolve 7 silently, got '$CAP' / $(cat "$TMP_DIR/err")"
+ok "a zero-padded cap resolves to its value without a warning"
 
 set_cap_config '```ini
 ACTIVE_WORK_CAP=6
@@ -1570,7 +1577,7 @@ CEIL=$(run --ceiling) || fail "38c: --ceiling failed on the colon form"
 ok "38c: the lowercase colon form 'pipeline_ceiling: N' resolves"
 
 # (d) Out-of-range and non-integer config values warn and fall back to 4.
-for BAD in 0 11 abc; do
+for BAD in 0 11 abc 18446744073709551621; do
   set_cap_config "\`\`\`ini
 PIPELINE_CEILING=$BAD
 \`\`\`"
@@ -1580,7 +1587,7 @@ PIPELINE_CEILING=$BAD
   grep -q 'PIPELINE_CEILING (config)' "$TMP_DIR/ceilerr" || \
     fail "38d: bad config ceiling '$BAD' must warn naming PIPELINE_CEILING, stderr: $(cat "$TMP_DIR/ceilerr")"
 done
-ok "38d: config PIPELINE_CEILING of 0 / 11 / abc warns on stderr and falls back to 4"
+ok "38d: config PIPELINE_CEILING of 0 / 11 / abc / an overlong value warns on stderr and falls back to 4"
 
 # (e) The env override wins over a valid config; an invalid env value warns
 # and falls back to the DEFAULT — never to the config value underneath it.
@@ -1589,7 +1596,7 @@ PIPELINE_CEILING=8
 ```'
 CEIL=$(CLAUDE_PIPELINE_CEILING=3 run --ceiling) || fail "38e: --ceiling failed with env override"
 [[ "$CEIL" == "3" ]] || fail "38e: CLAUDE_PIPELINE_CEILING=3 should win over config 8, got '$CEIL'"
-for BAD in 0 11 abc; do
+for BAD in 0 11 abc 18446744073709551621; do
   OUT=$(CLAUDE_PIPELINE_CEILING="$BAD" run --ceiling 2>"$TMP_DIR/ceilerr") || \
     fail "38e: a bad env ceiling ('$BAD') should fall back, not exit non-zero"
   [[ "$OUT" == "4" ]] || fail "38e: bad env ceiling '$BAD' should fall back to 4 (not config 8), got '$OUT'"

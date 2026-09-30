@@ -423,10 +423,15 @@ resolve_knob() {
     return
   fi
 
-  # Strip leading zeros so 10#$raw arithmetic never reads as octal.
-  local n=$((10#$raw))
+  # Strip leading zeros textually, then bound the digit count BEFORE any
+  # arithmetic: bash integers wrap silently past 2^63, so an overlong value
+  # could land back inside the range (18446744073709551621 wraps to 5).
+  # n stays -1 (below any min) when the digits cannot fit.
+  local digits="$raw" n=-1
+  while [[ "$digits" == 0?* ]]; do digits="${digits#0}"; done
+  (( ${#digits} <= ${#max} )) && n=$((10#$digits))
   if (( n < min || n > max )); then
-    warn "$key ($source) = $n is outside [$min, $max] — using default $def"
+    warn "$key ($source) = $digits is outside [$min, $max] — using default $def"
     printf '%s %s' "$def" "default"
     return
   fi
