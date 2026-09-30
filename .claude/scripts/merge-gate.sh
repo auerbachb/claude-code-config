@@ -109,6 +109,14 @@
 #   applies to every tier. A resolver failure adds its own `missing` reason and
 #   the full reviewer path still runs: never less strict than legacy.
 #
+# Deferred findings (issue #1727): on `ci-only` and `ci+codeant-one-round` only,
+#   an unresolved thread stops blocking when a human (GraphQL `User`) reply in
+#   it links an existing ISSUE of this repo — `#N`, `<owner>/<repo>#N`, or the
+#   issue URL; a PR number or another repo never counts. Each number is looked
+#   up once; a lookup failure other than 404/410 keeps the thread blocking and
+#   adds its own `missing` reason. Emitted as `deferred_thread_count` and
+#   `deferred_issues`; `full`/`legacy` never defer anything.
+#
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
@@ -151,7 +159,9 @@
 #     "code_owner_bots": ["coderabbitai[bot]", "greptile-apps[bot]"],
 #     "human_changes_requested": ["login", ...],
 #     "stale_bot_changes_requested_count": N,
-#     "unresolved_thread_count": N,
+#     "unresolved_thread_count": N,  # BLOCKING threads — excludes deferred ones
+#     "deferred_thread_count": N,    # issue #1727; always 0 off the deferred tiers
+#     "deferred_issues": [N, ...],   # issue #1727; sorted, unique; [] when none
 #     "primary_review_met": true|false,
 #     "authorship": "mine"|"not_mine"|"unknown",
 #     "review_evidence": { … },  # review-substance.sh output; {} off the cr path
@@ -199,6 +209,10 @@
 # "N unresolved review thread(s)" entry in `missing` — orchestrators (e.g.
 # /wrap Step 2.1 Branch B) should key the threads-only decision off this field
 # (and `missing | length`) rather than string-matching the prose (#455 / #479).
+# On the deferred tiers it counts only BLOCKING threads — a thread deferred to a
+# follow-up issue is in `deferred_thread_count` instead (issue #1727), so it can
+# never send a merge-ready PR to /fixpr. Elsewhere it counts every unresolved
+# thread, exactly as before.
 #
 # `primary_review_met`: true when CodeRabbit OR CodeAnt has a valid
 # (non-retracted, fresh, and — since issue #875 — SUBSTANTIVE) APPROVED review
@@ -361,7 +375,7 @@ missing_json() { # <reason>...
 }
 
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json] [required_contexts_json] [review_tier_json]
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json] [required_contexts_json] [review_tier_json] [deferred_thread_count_number] [deferred_issues_json_array]
   local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
   # review_evidence (issue #875) — arg 16. Defaulted separately rather than with
   # ${16:-{}} because a literal `{}` inside brace-default expansion is ambiguous.
@@ -380,6 +394,11 @@ emit_json() {
   # return before the tier is resolved, and when resolution itself failed.
   local review_tier="${18:-}"
   if [[ -z "$review_tier" ]]; then review_tier='null'; fi
+  # deferred_thread_count / deferred_issues (issue #1727) — args 19 and 20.
+  # 0 and [] everywhere except a deferred tier that deferred something.
+  local deferred_thread_count="${19:-0}"
+  local deferred_issues="${20:-}"
+  if [[ -z "$deferred_issues" ]]; then deferred_issues='[]'; fi
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -399,8 +418,10 @@ emit_json() {
     --argjson review_evidence "$review_evidence" \
     --argjson required_contexts "$required_contexts" \
     --argjson review_tier "$review_tier" \
+    --argjson deferred_thread_count "$deferred_thread_count" \
+    --argjson deferred_issues "$deferred_issues" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier}
+     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues}
      | scrub'
 }
 
@@ -574,10 +595,11 @@ fi
 # Greptile-scoped count, and RESOLVED_COMMENT_IDS — share one complete node list.
 #
 # Thread-level `comments(first: 100)` stays unpaginated on purpose: the readers
-# take only `databaseId` and `author.login`, and truncation there is safe in both
-# directions (a missing comment makes a thread read as non-Greptile, and can only
-# WITHHOLD a resolved-comment redemption; the universal gate counts the thread by
-# `isResolved` regardless).
+# take only `databaseId`, `author`, and `body`, and truncation there is safe in
+# every direction (a missing comment makes a thread read as non-Greptile, can only
+# WITHHOLD a resolved-comment redemption, and can only withhold a follow-up-issue
+# deferral (issue #1727); the universal gate counts the thread by `isResolved`
+# regardless).
 #
 # The loop is inline in the main script body, not a function called via $(): the
 # fail-closed `die_api` calls `exit`, which inside a command substitution would
@@ -606,7 +628,7 @@ while :; do
       pullRequest(number: $pr) {
         reviewThreads(first: 100, after: $cursor) {
           pageInfo { hasNextPage endCursor }
-          nodes { isResolved comments(first: 100) { nodes { databaseId author { login } } } }
+          nodes { isResolved comments(first: 100) { nodes { databaseId body author { login __typename } } } }
         }
       }
     }
@@ -1137,6 +1159,116 @@ UNRESOLVED_TOTAL=$(echo "$THREADS_JSON" | jq -r '
   [.data.repository.pullRequest.reviewThreads.nodes[]?
     | select(.isResolved == false)]
   | length')
+
+# Deferred findings (issue #1727). On the `ci-only` and `ci+codeant-one-round`
+# tiers ONLY, an unresolved thread stops blocking when a human reply in it links
+# a follow-up ISSUE in this repo. It is then counted in DEFERRED_TOTAL instead,
+# and UNRESOLVED_TOTAL becomes the BLOCKING count — so /wrap's threads-only
+# branch, which keys off `unresolved_thread_count`, never sends a deferred
+# thread to /fixpr. `full`, `legacy`, and an unresolved tier skip this block
+# entirely: no lookups, and the count means exactly what it always has.
+#
+# Every doubt keeps the thread blocking. A qualifying reply is a comment AFTER
+# the first (the first is the finding itself) whose GraphQL author is a `User`
+# — a bot's own `#123` never clears its thread, and GraphQL bot logins carry no
+# `[bot]` suffix to test instead. Accepted references: `#N`,
+# `<owner>/<repo>#N` for THIS repo, and `https://github.com/<owner>/<repo>/issues/N`.
+# N is capped at nine digits so `tonumber` stays exact; a longer number simply
+# never matches, which keeps its thread blocking (fail-closed, like the
+# 100-comment read limit above).
+# A PR URL never matches, and a cross-repo reference is dropped before any
+# lookup. Quoted lines (`> …`) are ignored, so a reply that quotes a bot's
+# finding cannot defer the thread on a number the bot wrote. Each distinct number is then looked up once: it must be an issue of
+# this repo (no `pull_request` key; `repository_url` naming this repo, which
+# also rejects a transferred issue). A 404/410 or a PR simply does not qualify.
+# Any OTHER lookup failure also does not qualify, and — so it cannot read as
+# "no such issue" — adds its own `missing` reason when it leaves a thread
+# blocking. Raw THREADS_JSON is untouched: RESOLVED_COMMENT_IDS and the Greptile
+# count still see a deferred thread as unresolved.
+DEFERRED_TOTAL=0
+DEFERRED_ISSUES_JSON='[]'
+DEFER_LOOKUP_CAP=25
+case "$REVIEW_TIER_GATE" in
+  ci-only|ci+codeant-one-round)
+    if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
+      # One array per unresolved thread: the same-repo numbers its human
+      # replies reference. A jq failure leaves it empty → nothing defers.
+      DEFER_REFS_JSON=$(printf '%s' "$THREADS_JSON" | jq -c --arg repo "$OWNER/$REPO" '
+        ($repo | ascii_downcase) as $self
+        | [ .data.repository.pullRequest.reviewThreads.nodes[]?
+            | select(.isResolved == false)
+            | [ ((.comments.nodes // [])[1:])[]?
+                | select((.author.__typename // "") == "User")
+                | select(((.author.login // "") | endswith("[bot]")) | not)
+                | (.body // "") | strings
+                | gsub("(^|\n)[ \t]*>[^\n]*"; "\n")
+                | scan("(?<![A-Za-z0-9_./-])https?://(?:www\\.)?github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([0-9]{1,9})(?![A-Za-z0-9_])|(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]{1,9})(?![A-Za-z0-9_])|(?<![A-Za-z0-9_./&#-])#([0-9]{1,9})(?![A-Za-z0-9_])")
+                | if .[2] != null then {r: ((.[0] + "/" + .[1]) | ascii_downcase), n: .[2]}
+                  elif .[5] != null then {r: ((.[3] + "/" + .[4]) | ascii_downcase), n: .[5]}
+                  else {r: $self, n: .[6]} end
+                | select(.r == $self)
+                | (.n | tonumber)
+                | select(. > 0) ]
+            | unique ]' 2>/dev/null) || DEFER_REFS_JSON=""
+      if [[ -z "$DEFER_REFS_JSON" ]]; then
+        echo "[merge-gate] could not parse review-thread replies for follow-up links — every unresolved thread stays blocking (issue #1727)" >&2
+        DEFER_REFS_JSON='[]'
+      fi
+      DEFER_OK=""      # space-separated numbers verified as issues of this repo
+      DEFER_ERR=""     # numbers whose lookup failed for a reason other than 404/410
+      DEFER_LOOKUPS=0
+      DEFER_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/merge-gate-defer.XXXXXX" 2>/dev/null) || DEFER_ERR_FILE=""
+      for DEFER_N in $(printf '%s' "$DEFER_REFS_JSON" | jq -r '[.[][]] | unique | .[]' 2>/dev/null); do
+        if [[ "$DEFER_LOOKUPS" -ge "$DEFER_LOOKUP_CAP" ]]; then
+          DEFER_ERR="$DEFER_ERR $DEFER_N"   # past the cap: unverified, never assumed
+          continue
+        fi
+        DEFER_LOOKUPS=$((DEFER_LOOKUPS + 1))
+        DEFER_RC=0
+        DEFER_BODY=$(gh api "repos/$OWNER/$REPO/issues/$DEFER_N" 2>"${DEFER_ERR_FILE:-/dev/null}") || DEFER_RC=$?
+        if [[ "$DEFER_RC" -ne 0 ]]; then
+          # Without a stderr capture a 404 cannot be told apart — report it.
+          if [[ -z "$DEFER_ERR_FILE" ]] || ! grep -qE 'HTTP 404|HTTP 410' "$DEFER_ERR_FILE" 2>/dev/null; then
+            DEFER_ERR="$DEFER_ERR $DEFER_N"
+          fi
+          continue
+        fi
+        DEFER_KIND=$(printf '%s' "$DEFER_BODY" | jq -r --argjson n "$DEFER_N" --arg repo "$OWNER/$REPO" '
+          if type != "object" or .number != $n or ((.repository_url // null) | type) != "string" then "error"
+          elif has("pull_request") then "pr"
+          elif (.repository_url | ascii_downcase | endswith("/repos/" + ($repo | ascii_downcase))) then "issue"
+          else "elsewhere" end' 2>/dev/null) || DEFER_KIND="error"
+        case "$DEFER_KIND" in
+          issue) DEFER_OK="$DEFER_OK $DEFER_N" ;;
+          pr|elsewhere) ;;
+          *) DEFER_ERR="$DEFER_ERR $DEFER_N" ;;
+        esac
+      done
+      [[ -n "$DEFER_ERR_FILE" ]] && rm -f "$DEFER_ERR_FILE"
+      DEFER_RESULT=$(printf '%s' "$DEFER_REFS_JSON" | jq -c \
+          --argjson ok "[$(printf '%s' "${DEFER_OK# }" | tr ' ' ',')]" \
+          --argjson err "[$(printf '%s' "${DEFER_ERR# }" | tr ' ' ',')]" '
+        def has_any($set): any(.[]; . as $n | any($set[]; . == $n));
+        { count:  [ .[] | select(has_any($ok)) ] | length,
+          issues: [ .[] | select(has_any($ok)) | .[] | . as $n | select(any($ok[]; . == $n)) ] | unique,
+          unverified: [ .[] | select(has_any($ok) | not) | .[] | . as $n | select(any($err[]; . == $n)) ] | unique }' 2>/dev/null) || DEFER_RESULT=""
+      if [[ -n "$DEFER_RESULT" ]]; then
+        DEFERRED_TOTAL=$(printf '%s' "$DEFER_RESULT" | jq -r '.count')
+        DEFERRED_ISSUES_JSON=$(printf '%s' "$DEFER_RESULT" | jq -c '.issues')
+        UNRESOLVED_TOTAL=$((UNRESOLVED_TOTAL - DEFERRED_TOTAL))
+        for DEFER_N in $(printf '%s' "$DEFER_RESULT" | jq -r '.unverified[]'); do
+          MISSING+=("follow-up issue #$DEFER_N could not be verified — its review thread stays blocking (issue #1727)")
+        done
+        if [[ "$DEFERRED_TOTAL" -gt 0 ]]; then
+          echo "[merge-gate] $DEFERRED_TOTAL unresolved review thread(s) deferred to follow-up issue(s) $(printf '%s' "$DEFERRED_ISSUES_JSON" | jq -r 'map("#\(.)") | join(", ")') on review tier $REVIEW_TIER_GATE (issue #1727)" >&2
+        fi
+      else
+        echo "[merge-gate] could not classify follow-up links — every unresolved thread stays blocking (issue #1727)" >&2
+      fi
+    fi
+    ;;
+esac
+
 if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
   MISSING+=("$UNRESOLVED_TOTAL unresolved review thread(s) — resolve via GraphQL before merge")
 fi
@@ -2337,7 +2469,7 @@ MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 # over a guard the bugbot path never consults.
 [[ "$REVIEWER_DISPATCH" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}"
 
 if [[ "$MET" == true ]]; then
   exit 0

@@ -45,7 +45,7 @@ Applies to ALL merge paths: `gh pr merge`, `/merge`, `/wrap`, Phase C verify-and
 
 ## Step 1c — All Review Threads Resolved (NON-NEGOTIABLE)
 
-Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots). `merge-gate.sh` enforces this — any unresolved thread blocks, regardless of author. **If any unresolved: DO NOT MERGE.** Reply, then `resolve-review-threads.sh <PR>`, re-check.
+Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses cursor/copilot bots) or, on `ci-only`/`ci+codeant-one-round`, a non-severe finding deferred by a human reply's follow-up-issue link (`review-policy.md`); `merge-gate.sh` enforces this, regardless of author. **Any other unresolved: DO NOT MERGE.** Reply, then `resolve-review-threads.sh <PR>`.
 
 ## Step 1d — `mergeStateStatus` and branch sync (NON-NEGOTIABLE)
 
@@ -63,7 +63,7 @@ Every thread must be `isResolved: true` via GraphQL `reviewThreads` (REST misses
 
 ## Step 2 — Verify every Test Plan checkbox (MANDATORY — do NOT skip)
 
-> After Steps 1b–1d pass (`merge-gate.sh` enforces CI, resolved threads, and merge metadata), verify AC before merge.
+> After Steps 1b–1d pass, verify AC before merge.
 >
 > 1. Fetch the PR body via `gh pr view N --json body`
 > 2. Parse **every** checkbox in the **Test plan** section
