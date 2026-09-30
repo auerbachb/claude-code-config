@@ -27,6 +27,7 @@ ok() { echo "ok   — $*"; }
 # expect the 7200s default to expire it, which a caller-set TTL would flip in
 # either direction). Keep in step with the script's TUNING block.
 unset CLAUDE_ACTIVE_WORK_CAP
+unset CLAUDE_PIPELINE_CEILING
 unset CLAUDE_ACTIVE_WORK_AGENT_TTL_S
 unset CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT
 
@@ -331,13 +332,20 @@ ok "CLAUDE_ACTIVE_WORK_CAP overrides the config value"
 # --- 7. Invalid and out-of-range fall back LOUDLY ----------------------------
 # Silent fallback is the failure mode this guards: a typo'd knob that reads as
 # "the default" with no signal looks identical to never having set one.
-for BAD in "abc" "0" "99" "-3"; do
+for BAD in "abc" "0" "99" "-3" "18446744073709551618"; do
   OUT=$(CLAUDE_ACTIVE_WORK_CAP="$BAD" run --cap 2>"$TMP_DIR/err") || \
     fail "a bad cap ('$BAD') should fall back, not exit non-zero"
   [[ "$OUT" == "6" ]] || fail "bad cap '$BAD' should fall back to 6, got '$OUT'"
   [[ -s "$TMP_DIR/err" ]] || fail "bad cap '$BAD' must warn on stderr, but stderr was empty"
 done
-ok "unparseable / zero / over-max / negative caps all fall back to 6 and warn"
+ok "unparseable / zero / over-max / negative / overlong caps all fall back to 6 and warn"
+
+# Leading zeros are still just a number: the overflow guard strips them before
+# counting digits, so 0007 is 7, silently.
+CAP=$(CLAUDE_ACTIVE_WORK_CAP=0007 run --cap 2>"$TMP_DIR/err") || fail "--cap failed on a zero-padded value"
+[[ "$CAP" == "7" && ! -s "$TMP_DIR/err" ]] || \
+  fail "a zero-padded cap 0007 should resolve 7 silently, got '$CAP' / $(cat "$TMP_DIR/err")"
+ok "a zero-padded cap resolves to its value without a warning"
 
 set_cap_config '```ini
 ACTIVE_WORK_CAP=6
@@ -853,8 +861,9 @@ HELP=$(run --help 2>/dev/null) || fail "--help should exit 0"
 for SECTION in USAGE MODES FLAGS TUNING OUTPUT "EXIT STATUS"; do
   [[ "$HELP" == *"$SECTION"* ]] || fail "--help omits the $SECTION section"
 done
-for FLAG in -- --json --free --cap --repo --path \
-            CLAUDE_ACTIVE_WORK_CAP CLAUDE_ACTIVE_WORK_AGENT_TTL_S \
+for FLAG in -- --json --free --cap --ceiling --repo --path \
+            CLAUDE_ACTIVE_WORK_CAP CLAUDE_PIPELINE_CEILING \
+            CLAUDE_ACTIVE_WORK_AGENT_TTL_S \
             CLAUDE_ACTIVE_WORK_HANDOFF_DIR CLAUDE_CHIP_OFFER_REGISTRY_SH \
             CLAUDE_ACTIVE_WORK_MERGED_PR_LIMIT; do
   [[ "$FLAG" == "--" ]] && continue
@@ -1524,5 +1533,148 @@ CH37C=$(GH_FAKE_NO_CLOSING_REFS=1 run --json 2>/dev/null | jq -r '.live_chips') 
 ok "old gh: fence/span delimiter length respected, and spans never cross a newline"
 
 reset_old_gh_case
+
+# --- 38. PIPELINE_CEILING — the per-thread ceiling knob (#1729) ---------------
+# Same resolution contract as the cap (env -> `## Active work` -> default),
+# its own default (4, the top of the historical 3–4 band) and bounds [1, 10].
+# Every case below fails against the pre-#1729 script, which has no --ceiling
+# mode and exits 2 on it — a plain "prints 4" check would not prove the knob
+# is read, so case (b) and the env cases are the discriminating ones.
+set_open_prs 0
+set_open_issues ""
+set_pipelines '[]'
+rm -f "$CLAUDE_ACTIVE_WORK_HANDOFF_DIR"/issue-maker-*-log.json
+
+# (a) Absent key -> 4, silently: a repo that never set it behaves as today.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+```'
+CEIL=$(run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38a: --ceiling failed with the key absent"
+[[ "$CEIL" == "4" ]] || fail "38a: absent PIPELINE_CEILING should resolve 4, got '$CEIL'"
+[[ ! -s "$TMP_DIR/ceilerr" ]] || fail "38a: an absent ceiling must be silent, got: $(cat "$TMP_DIR/ceilerr")"
+set_cap_config ""
+CEIL=$(run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38a: --ceiling failed with no pm-config.md"
+[[ "$CEIL" == "4" && ! -s "$TMP_DIR/ceilerr" ]] || \
+  fail "38a: no pm-config.md should resolve 4 silently, got '$CEIL' / $(cat "$TMP_DIR/ceilerr")"
+ok "38a: absent PIPELINE_CEILING (key or whole file) resolves 4 with no warning"
+
+# (b) PIPELINE_CEILING=8 is read from the config, and the prose bullet that
+# names the key does not shadow it.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+PIPELINE_CEILING=8
+```
+
+- **PIPELINE_CEILING** — per-thread ceiling. Default is 4.'
+CEIL=$(run --ceiling) || fail "38b: --ceiling failed reading the config"
+[[ "$CEIL" == "8" ]] || fail "38b: PIPELINE_CEILING=8 should resolve 8, got '$CEIL'"
+ok "38b: PIPELINE_CEILING=8 is read from pm-config (prose bullet ignored)"
+
+# (c) The colon form resolves, as it does for the cap.
+set_cap_config 'pipeline_ceiling: 7'
+CEIL=$(run --ceiling) || fail "38c: --ceiling failed on the colon form"
+[[ "$CEIL" == "7" ]] || fail "38c: 'pipeline_ceiling: 7' should resolve 7, got '$CEIL'"
+ok "38c: the lowercase colon form 'pipeline_ceiling: N' resolves"
+
+# (d) Out-of-range and non-integer config values warn and fall back to 4.
+for BAD in 0 11 abc 18446744073709551621; do
+  set_cap_config "\`\`\`ini
+PIPELINE_CEILING=$BAD
+\`\`\`"
+  OUT=$(run --ceiling 2>"$TMP_DIR/ceilerr") || \
+    fail "38d: a bad config ceiling ('$BAD') should fall back, not exit non-zero"
+  [[ "$OUT" == "4" ]] || fail "38d: bad config ceiling '$BAD' should fall back to 4, got '$OUT'"
+  grep -q 'PIPELINE_CEILING (config)' "$TMP_DIR/ceilerr" || \
+    fail "38d: bad config ceiling '$BAD' must warn naming PIPELINE_CEILING, stderr: $(cat "$TMP_DIR/ceilerr")"
+done
+ok "38d: config PIPELINE_CEILING of 0 / 11 / abc / an overlong value warns on stderr and falls back to 4"
+
+# (e) The env override wins over a valid config; an invalid env value warns
+# and falls back to the DEFAULT — never to the config value underneath it.
+set_cap_config '```ini
+PIPELINE_CEILING=8
+```'
+CEIL=$(CLAUDE_PIPELINE_CEILING=3 run --ceiling) || fail "38e: --ceiling failed with env override"
+[[ "$CEIL" == "3" ]] || fail "38e: CLAUDE_PIPELINE_CEILING=3 should win over config 8, got '$CEIL'"
+for BAD in 0 11 abc 18446744073709551621; do
+  OUT=$(CLAUDE_PIPELINE_CEILING="$BAD" run --ceiling 2>"$TMP_DIR/ceilerr") || \
+    fail "38e: a bad env ceiling ('$BAD') should fall back, not exit non-zero"
+  [[ "$OUT" == "4" ]] || fail "38e: bad env ceiling '$BAD' should fall back to 4 (not config 8), got '$OUT'"
+  grep -q 'PIPELINE_CEILING (env)' "$TMP_DIR/ceilerr" || \
+    fail "38e: bad env ceiling '$BAD' must warn naming the env source, stderr: $(cat "$TMP_DIR/ceilerr")"
+done
+# An EMPTY override is unset, as for the cap: the config value underneath wins.
+CEIL=$(CLAUDE_PIPELINE_CEILING="" run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38e: empty env override failed"
+[[ "$CEIL" == "8" && ! -s "$TMP_DIR/ceilerr" ]] || \
+  fail "38e: an empty CLAUDE_PIPELINE_CEILING should read config 8 silently, got '$CEIL' / $(cat "$TMP_DIR/ceilerr")"
+ok "38e: CLAUDE_PIPELINE_CEILING overrides config; an invalid env value warns and falls back to 4; empty is unset"
+
+# (f) The two knobs resolve independently, and --ceiling never reads the cap:
+# a malformed cap must not warn on a ceiling read.
+set_cap_config '```ini
+ACTIVE_WORK_CAP=7
+PIPELINE_CEILING=8
+```'
+[[ "$(run --cap)" == "7" && "$(run --ceiling)" == "8" ]] || \
+  fail "38f: cap 7 / ceiling 8 should resolve independently, got cap '$(run --cap)' ceiling '$(run --ceiling)'"
+set_cap_config '```ini
+PIPELINE_CEILING=8
+```'
+[[ "$(run --cap)" == "6" ]] || fail "38f: a ceiling-only config must leave the cap at 6, got '$(run --cap)'"
+set_cap_config '```ini
+ACTIVE_WORK_CAP=abc
+PIPELINE_CEILING=5
+```'
+CEIL=$(run --ceiling 2>"$TMP_DIR/ceilerr") || fail "38f: --ceiling failed beside a malformed cap"
+[[ "$CEIL" == "5" && ! -s "$TMP_DIR/ceilerr" ]] || \
+  fail "38f: --ceiling must ignore a malformed cap, got '$CEIL' / $(cat "$TMP_DIR/ceilerr")"
+ok "38f: cap and ceiling resolve independently; a bad cap never warns on --ceiling"
+
+# (g) --ceiling makes no network call (same decoy as section 17), and --path
+# reads the TARGET repo's ceiling from an unrelated cwd.
+set_cap_config '```ini
+PIPELINE_CEILING=9
+```'
+CEIL=$(PATH="$DECOY:$PATH" run --ceiling 2>"$TMP_DIR/decoyerr"); RC=$?
+[[ $RC -eq 0 && "$CEIL" == "9" ]] || \
+  fail "38g: --ceiling invoked gh or misresolved (rc=$RC, '$CEIL'): $(cat "$TMP_DIR/decoyerr")"
+CEIL=$( cd "$OUTSIDE" && PATH="$DECOY:$PATH" "$SCRIPT" --path "$FIXTURE_REPO" --ceiling ) || \
+  fail "38g: --path --ceiling from an unrelated cwd failed"
+[[ "$CEIL" == "9" ]] || fail "38g: --path should read the target repo's ceiling (9), got '$CEIL'"
+# --repo alone cannot choose the config; say so rather than silently reading
+# the cwd's — and still without touching gh.
+CEIL=$(PATH="$DECOY:$PATH" run --repo "$SLUG" --ceiling 2>"$TMP_DIR/ceilerr"); RC=$?
+[[ $RC -eq 0 && "$CEIL" == "9" ]] || fail "38g: --repo --ceiling should still resolve 9 (rc=$RC, '$CEIL')"
+grep -q -- '--repo does not select the config' "$TMP_DIR/ceilerr" || \
+  fail "38g: --repo with --ceiling (no --path) must warn, stderr: $(cat "$TMP_DIR/ceilerr")"
+ok "38g: --ceiling makes no gh call, honors --path, and flags a --repo it cannot use"
+
+# (h) --json carries the ceiling and its source without disturbing the census.
+JSON=$(run --json) || fail "38h: --json failed with a ceiling configured"
+[[ "$(printf '%s' "$JSON" | jq -r '.pipeline_ceiling')" == "9" ]] || \
+  fail "38h: --json pipeline_ceiling should be 9, got '$(printf '%s' "$JSON" | jq -r '.pipeline_ceiling')'"
+[[ "$(printf '%s' "$JSON" | jq -r '.pipeline_ceiling_source')" == "config" ]] || \
+  fail "38h: --json pipeline_ceiling_source should be config"
+[[ "$(printf '%s' "$JSON" | jq -r '.cap')" == "6" ]] || fail "38h: --json cap must stay 6"
+PLAIN=$(run) || fail "38h: default mode failed"
+[[ "$PLAIN" == "CAP=6 ACTIVE=0 FREE=6" ]] || \
+  fail "38h: the default census line must be unchanged, got '$PLAIN'"
+ok "38h: --json reports pipeline_ceiling + source; the plain census line is unchanged"
+
+# (i) --ceiling is an output mode like the others: combining modes exits 2.
+# Assert the DIAGNOSTIC, not just the code — an unknown-flag rejection also
+# exits 2, so exit status alone would pass against a script with no --ceiling.
+for PAIR in "--cap --ceiling" "--ceiling --json" "--ceiling --ceiling"; do
+  read -r -a PAIR_ARGS <<<"$PAIR"
+  run "${PAIR_ARGS[@]}" >/dev/null 2>"$TMP_DIR/ceilerr"; RC=$?
+  [[ $RC -eq 2 ]] || fail "38i: '$PAIR' should exit 2 (conflicting modes), got $RC"
+  grep -q 'conflicting output modes' "$TMP_DIR/ceilerr" || \
+    fail "38i: '$PAIR' should report conflicting output modes, stderr: $(cat "$TMP_DIR/ceilerr")"
+done
+ok "38i: --ceiling conflicts with --cap / --json / itself (exit 2)"
+
+set_cap_config '```ini
+ACTIVE_WORK_CAP=6
+```'
 
 echo "OK: active-work-cap.sh tests passed"

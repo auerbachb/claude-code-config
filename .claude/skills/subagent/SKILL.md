@@ -34,6 +34,7 @@ SPLIT_THRESHOLDS_SH=$(resolve_script split-thresholds.sh || true)
 OVERRUN_CHECK_SH=$(resolve_script overrun-check.sh || true)
 TABLE_FRESHNESS_SH=$(resolve_script table-freshness.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
+ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh || true)
 ```
 
 `handoff-state.sh` (Step 8), `ac-checkboxes.sh`, `escalate-review.sh`, and `local-review.sh` are resolved by the phase agents themselves, inside the spawn prompts — the RESOLVE block inserted with SAFETY/MINDSET/SKILLS carries the same candidate order to them. Read reference docs (`chip-launching.md`, `subagent-phase-guardrails.md`, `issue-claim.md`, `merge-sequencing.md`) through the matching `.claude/reference/` order.
@@ -49,6 +50,7 @@ USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 - `OVERRUN_CHECK_SH` empty → **optional**. Print `DEGRADED: overrun-check.sh not found (checked all three paths) — in-flight overrun alerts unavailable` and skip the overrun check in Step 8.
 - `SPLIT_THRESHOLDS_SH` empty → **optional**. Print `DEGRADED: split-thresholds.sh not found (checked all three paths) — using default thresholds 180/120` and continue with those documented defaults. The time trigger still fires (Step 4 criterion 3); it just cannot see a repo that retuned the knobs. Silently skipping the trigger instead would be worse — it would turn a missing config reader into a missing sizing check.
 - `USAGE_HORIZON_SH` empty → **optional**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — pre-emptive usage-horizon park unavailable; the reactive park still applies` and continue. Step 8's gate then holds `unknown` on every cycle, which starts nothing new and parks nothing — the conservative direction, and the same posture a displaced session already reads.
+- `ACTIVE_WORK_CAP_SH` empty → **optional**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — per-repo PIPELINE_CEILING unavailable, using the default ceiling of 4` and run Step 7 with `CEILING=4` and no cap term. A **non-zero exit** from `--ceiling` or `--cap` on a script that did resolve (they exit non-zero only on a usage error — a bad config value warns and prints the default instead) is not a default: Step 7 sets `LIMIT=0` and launches nothing new rather than sizing against a guessed number.
 - `TABLE_FRESHNESS_SH` empty → **optional**. Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; re-render the "Running now" table on every heartbeat instead` and continue. Failing toward *more* table renders is correct: the floor exists to guarantee a table at least hourly, so its absence must never buy the thread permission to emit fewer.
 
 The Step 4 too-big criteria need no fallback — they are written inline in this file, so that contract already travels. Only their per-criterion rationale doc (`too-big-recalibration-2026-07.md`) is a fallback read.
@@ -356,7 +358,7 @@ Reuse `/wave`'s existing footprint model verbatim — do not invent a second one
 
 **Launch the head of each chain now; queue the rest behind it.** A queued issue starts when the one ahead of it reaches a **genuinely terminal state — `merged` or `blocked`** — the same rule Step 7 already uses for the concurrency ceiling. `merge_ready` is not terminal: the PR has not landed, so the file is still contested.
 
-Chains are independent of each other: three disjoint chains still run three pipelines in parallel, subject to the usual 3–4 ceiling. Serialization narrows *which* issues may run together; it never raises or lowers the ceiling.
+Chains are independent of each other: three disjoint chains still run three pipelines in parallel, subject to the usual Step 7 ceiling. Serialization narrows *which* issues may run together; it never raises or lowers the ceiling.
 
 Report the decision in one line so the slower launch is explained rather than mysterious:
 
@@ -397,9 +399,23 @@ Custom `subagent_type` agents (phase-a-fixer, phase-b-reviewer, phase-c-merger, 
 
 For each qualifying issue, spawn a Phase A subagent using the Agent tool.
 
-**Parallel execution rules — the 3–4 concurrent-pipeline ceiling:**
-- Treat each issue's A→B→C run as one **pipeline**. Keep at most the concurrency ceiling from `subagent-orchestration.md` ("keep 3-4 active CR-polled PRs max") running at once — **3–4 concurrent pipelines**. Reuse that number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
-- If more issues qualify than the ceiling, launch the first 3–4 now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
+**Parallel execution rules — the concurrent-pipeline ceiling:**
+
+Resolve the limit once, before the first launch — both modes read only the repo's `.claude/pm-config.md` `## Active work` section and make no network call:
+
+```bash
+CEILING=4; LIMIT=4                               # script absent: the default (Step 0 DEGRADED)
+if [[ -n "$ACTIVE_WORK_CAP_SH" ]]; then
+  if CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling) && CAP=$("$ACTIVE_WORK_CAP_SH" --cap); then
+    LIMIT=$(( CEILING < CAP ? CEILING : CAP ))  # min() — the cap is the backstop
+  else
+    CEILING=0; LIMIT=0                          # read failed: launch nothing new
+  fi
+fi
+```
+
+- Treat each issue's A→B→C run as one **pipeline**. Keep at most `LIMIT` running at once — the ceiling from `subagent-orchestration.md`, which a repo widens with its own `PIPELINE_CEILING` knob and never past its `ACTIVE_WORK_CAP` (`active-work-cap.md` §Subordination). Use the resolved number; do not invent a new one. The count is **your own pipelines** — the ones this skill launches, all authored by you. Per `subagent-orchestration.md` (the canonical author-scoped ceiling), a collaborator's open PRs never enter it, so they can never block you from launching a queued pipeline.
+- If more issues qualify than the ceiling, launch the first `LIMIT` now and **queue** the rest. Start a queued pipeline only when a running one reaches a **genuinely terminal state — `merged` or `blocked`.** A pipeline parked at `merge_ready` is **not** terminal: Phase C (auto `/wrap`) is still ahead, so it keeps its slot until it actually merges (or blocks). Freeing the slot at `merge_ready` would let a new pipeline start while the parked one's Phase C is still pending, pushing total in-flight pipelines past the ceiling.
 - **A full ceiling means queue, never route out.** Subagent-fit work that arrives with every slot busy **waits inline** — it does not become a separate-thread chip or prompt. Only a named Step 4 disqualifier sends an issue to a thread; a busy pipeline is a scheduling state, not a fit verdict. (Shared gate: `.claude/reference/chip-launching.md`; rationale: `too-big-recalibration-2026-07.md`.)
 - When every slot is held by pipelines at `merge_ready` or in Phase C, don't launch more queued pipelines — wait for a terminal `merged`/`blocked` outcome to free a slot.
 - Each subagent gets its own worktree (use `isolation: "worktree"` on the Agent tool call).

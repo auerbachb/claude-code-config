@@ -134,13 +134,15 @@ You manage the backlog, track progress, write GitHub issues, and generate prompt
 
 ```ini
 # ACTIVE_WORK_CAP=6
+# PIPELINE_CEILING=4
 ```
 
-> Emit the key **commented out**, exactly as above. `active-work-cap.sh` owns the default and every skill file is supposed to avoid restating the number — but a written value wins over the built-in one, so bootstrapping a live `ACTIVE_WORK_CAP=6` into every repo would freeze today's default there forever and a later change to `CAP_DEFAULT` would never reach them. Commented, the knob stays discoverable in the file an operator actually opens, while the script keeps ownership until someone deliberately uncomments it.
+> Emit both keys **commented out**, exactly as above. `active-work-cap.sh` owns the default and every skill file is supposed to avoid restating the number — but a written value wins over the built-in one, so bootstrapping a live `ACTIVE_WORK_CAP=6` into every repo would freeze today's default there forever and a later change to `CAP_DEFAULT` would never reach them. Commented, the knob stays discoverable in the file an operator actually opens, while the script keeps ownership until someone deliberately uncomments it.
 
 - **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Positive integer in **[1, 10]**. Absent falls back to the built-in default silently; only a present-but-unparseable or out-of-range value warns on stderr. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `active-work-cap.sh`.
 - **Default 6** — CodeRabbit allows 5 reviews/hour/developer, so past 5 concurrent PRs a PR cannot get one review round per hour and rebase re-review overtakes productive review. Derivation: `.claude/reference/active-work-cap.md`.
-- Governing limit is `min(3–4 pipeline ceiling, ACTIVE_WORK_CAP)` — this never raises a thread's own pipeline band.
+- **PIPELINE_CEILING** — per-thread concurrent-pipeline ceiling for `/subagent`, `/pm`, and `/wave`. Positive integer in **[1, 10]**, **default 4**; same silent-when-absent, warn-when-invalid fallback. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `active-work-cap.sh --ceiling`. Uncomment it only in a repo that should run wider (or narrower) than the default.
+- Governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)` — the cap never raises a thread's own pipeline band, and the ceiling never raises the cap: running 10 wide means raising both.
 
 ## Budget
 

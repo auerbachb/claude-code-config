@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # active-work-cap.sh — repo-wide budget for simultaneously active coding work.
-# catalog: scheduling-monitoring — Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters
+# catalog: scheduling-monitoring — Repo-wide budget for simultaneously active coding work — resolves `ACTIVE_WORK_CAP` and the per-thread `PIPELINE_CEILING`, counts open PRs + live chips + pre-PR pipelines, emits `FREE` for batch chip emitters
 #
 # PURPOSE
-#   The 3-4 concurrent-pipeline ceiling in subagent-orchestration.md is a
+#   The concurrent-pipeline ceiling in subagent-orchestration.md is a
 #   PER-THREAD limit. Once work fans out across separate coding threads nothing
 #   counted the total, and a chip emitter with no PM context had no in-flight
 #   figure to gate on — so it offered one chip per issue with nothing to count
@@ -13,6 +13,12 @@
 #   rules. Rule and skill files describe the behavior ("offer at most FREE")
 #   and never restate the number, so the default can be retuned in one place.
 #
+#   It also resolves that per-thread ceiling, `PIPELINE_CEILING` (#1729), so a
+#   repo can widen its own band with a config change instead of a global rule
+#   edit. The ceiling never raises the cap: the governing limit stays
+#   min(PIPELINE_CEILING, ACTIVE_WORK_CAP), so running 10 wide means raising
+#   both knobs. See --ceiling below.
+#
 #   Derivation of the default — why 6 and not the originally proposed 8:
 #   .claude/reference/active-work-cap.md. Short form: CodeRabbit Pro allows 5
 #   reviews/hour/developer (the ~8 this repo modelled was retracted in #1204),
@@ -21,8 +27,8 @@
 #   productive review. 6 is that limit plus one slot of operating headroom.
 #
 # USAGE
-#   active-work-cap.sh [--json | --free | --cap] [--repo <owner/name>]
-#                      [--path <dir>]
+#   active-work-cap.sh [--json | --free | --cap | --ceiling]
+#                      [--repo <owner/name>] [--path <dir>]
 #   active-work-cap.sh --help | -h
 #
 # MODES
@@ -33,6 +39,10 @@
 #              just need "how many may I offer".
 #   --cap      Print only CAP. Resolves the knob without counting anything, so
 #              it makes no network call.
+#   --ceiling  Print only the per-thread pipeline ceiling (PIPELINE_CEILING,
+#              default 4) — the raw resolved value, NOT min()'d with the cap;
+#              consumers apply min(CEILING, CAP) themselves. Resolves nothing
+#              else (a bad cap cannot warn here) and makes no network call.
 #
 # FLAGS
 #   --repo <owner/name>  Count open PRs in this repo instead of the one
@@ -163,6 +173,15 @@
 #   silent; a PRESENT but unparseable or out-of-range value warns and falls
 #   back, per the MAX_WAVE / CLAUDE_BGWORK_CEILING_S precedent.
 #
+#   CLAUDE_PIPELINE_CEILING  Override the per-thread pipeline ceiling. Same
+#                           contract as the cap: integer in [CEILING_MIN,
+#                           CEILING_MAX], else warn on stderr and fall back to
+#                           CEILING_DEFAULT. Resolution order: env override ->
+#                           PIPELINE_CEILING in the same `## Active work`
+#                           section (`pipeline_ceiling: N` also accepted) ->
+#                           built-in default. An EMPTY value counts as unset,
+#                           exactly as for CLAUDE_ACTIVE_WORK_CAP.
+#
 #   CLAUDE_ACTIVE_WORK_AGENT_TTL_S  How long an `active_agents` entry may go
 #                           unseen before it stops consuming a slot, in
 #                           seconds (default 7200). These records say what was
@@ -239,9 +258,11 @@
 #           --json fields: cap, active, free, open_prs, live_chips,
 #           inline_pipelines, registry_baseline, cap_source,
 #           closing_refs_source ("api", or "body-keywords" on the degraded
-#           old-gh path — CLIENT REQUIREMENTS above), and offered_issue_nums
+#           old-gh path — CLIENT REQUIREMENTS above), offered_issue_nums
 #           (sorted int array of issue numbers that make up the offered-work
-#           term — explains a FREE=0 reading, AC#3 #1285).
+#           term — explains a FREE=0 reading, AC#3 #1285), and
+#           pipeline_ceiling / pipeline_ceiling_source (the --ceiling value
+#           and how it resolved: env, config, or default).
 #   stderr: one-line diagnostics — fallback warnings and read failures.
 #
 # EXIT STATUS
@@ -257,6 +278,13 @@ set -uo pipefail
 CAP_DEFAULT=6
 CAP_MIN=1
 CAP_MAX=10
+
+# Per-thread pipeline ceiling (#1729). 4 is the top of the historical 3–4 band,
+# so a repo that never sets PIPELINE_CEILING behaves exactly as before. Same
+# bounds as the cap; this script owns the default for the same reason.
+CEILING_DEFAULT=4
+CEILING_MIN=1
+CEILING_MAX=10
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
@@ -286,7 +314,7 @@ FROM_PATH=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --json|--free|--cap)
+    --json|--free|--cap|--ceiling)
       local_mode="${1#--}"
       if [[ "$MODE" != "plain" ]]; then
         die_usage "conflicting output modes (--$local_mode after --$MODE)"
@@ -320,26 +348,40 @@ if [[ -n "$REPO" && ! "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   die_usage "--repo must look like owner/name (got: $REPO)"
 fi
 
-# ---------------------------------------------------------------- cap ------
+# ------------------------------------------------------- cap / ceiling ------
 
-# Extract ACTIVE_WORK_CAP from a pm-config `## Active work` body. Accepts both
-# `ACTIVE_WORK_CAP=6` (the KEY=value convention) and `active_work_cap: 6` (the
-# colon form the ticket used), case-insensitively, anchored at line start so
-# the prose bullets that NAME the key are never mistaken for a value.
-extract_cap_value() {
-  awk '
-    tolower($0) ~ /^[[:space:]]*active_work_cap[[:space:]]*[=:]/ {
-      line = $0
-      sub(/^[^=:]*[=:][[:space:]]*/, "", line)
-      sub(/[[:space:]]*$/, "", line)
-      print line
+# Extract one knob ($1, e.g. ACTIVE_WORK_CAP) from a pm-config `## Active work`
+# body. Accepts both `KEY=6` (the KEY=value convention) and `key: 6` (the colon
+# form the #1191 ticket used), case-insensitively. The key must be the WHOLE
+# text before the first `=` or `:` on the line, so the prose bullets that NAME
+# the key are never mistaken for a value. Compared with `==`, never spliced
+# into a regex (feedback_never_interpolate_an_identifier_into_a_regex.md).
+extract_knob_value() {
+  awk -v key="$1" '
+    {
+      i = match($0, /[=:]/)
+      if (i == 0) next
+      k = substr($0, 1, i - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      v = substr($0, i + 1)
+      sub(/^[[:space:]]*/, "", v)
+      sub(/[[:space:]]*$/, "", v)
+      print v
       exit
     }
   '
 }
 
-resolve_cap() {
-  local raw="${CLAUDE_ACTIVE_WORK_CAP:-}"
+# Resolve one knob: env override -> the `## Active work` config line -> the
+# built-in default. Prints "<value> <source>". Both knobs share this path so
+# their precedence and warn-and-fall-back contract cannot drift apart. An empty
+# env value is deliberately the same as an unset one (callers pass `${VAR:-}`):
+# that has been the cap's contract since #1191, and the ceiling mirrors it.
+#   $1 key (as written in pm-config and in warnings)   $2 env value
+#   $3 default   $4 min   $5 max   $6 noun for the config-reader warning
+resolve_knob() {
+  local key="$1" raw="$2" def="$3" min="$4" max="$5" noun="$6"
   local source="default"
 
   if [[ -n "$raw" ]]; then
@@ -361,9 +403,9 @@ resolve_cap() {
         # normal "this repo has not set a cap" case and stay silent. rc 3 is a
         # usage error, which is our bug, not the repo's.
         if [[ $rc -eq 3 ]]; then
-          warn "pm-config-get.sh usage error while reading the cap; using default"
+          warn "pm-config-get.sh usage error while reading the $noun; using default"
         elif [[ $rc -eq 0 ]]; then
-          raw="$(printf '%s\n' "$body" | extract_cap_value)"
+          raw="$(printf '%s\n' "$body" | extract_knob_value "$key")"
           [[ -n "$raw" ]] && source="config"
         fi
       fi
@@ -371,26 +413,55 @@ resolve_cap() {
   fi
 
   if [[ -z "$raw" ]]; then
-    printf '%s %s' "$CAP_DEFAULT" "default"
+    printf '%s %s' "$def" "default"
     return
   fi
 
   if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
-    warn "ACTIVE_WORK_CAP ($source) is not a positive integer: '$raw' — using default $CAP_DEFAULT"
-    printf '%s %s' "$CAP_DEFAULT" "default"
+    warn "$key ($source) is not a positive integer: '$raw' — using default $def"
+    printf '%s %s' "$def" "default"
     return
   fi
 
-  # Strip leading zeros so 10#$raw arithmetic never reads as octal.
-  local n=$((10#$raw))
-  if (( n < CAP_MIN || n > CAP_MAX )); then
-    warn "ACTIVE_WORK_CAP ($source) = $n is outside [$CAP_MIN, $CAP_MAX] — using default $CAP_DEFAULT"
-    printf '%s %s' "$CAP_DEFAULT" "default"
+  # Strip leading zeros textually, then bound the digit count BEFORE any
+  # arithmetic: bash integers wrap silently past 2^63, so an overlong value
+  # could land back inside the range (18446744073709551621 wraps to 5).
+  # n stays -1 (below any min) when the digits cannot fit.
+  local digits="$raw" n=-1
+  while [[ "$digits" == 0?* ]]; do digits="${digits#0}"; done
+  (( ${#digits} <= ${#max} )) && n=$((10#$digits))
+  if (( n < min || n > max )); then
+    warn "$key ($source) = $digits is outside [$min, $max] — using default $def"
+    printf '%s %s' "$def" "default"
     return
   fi
 
   printf '%s %s' "$n" "$source"
 }
+
+resolve_cap() {
+  resolve_knob ACTIVE_WORK_CAP "${CLAUDE_ACTIVE_WORK_CAP:-}" \
+    "$CAP_DEFAULT" "$CAP_MIN" "$CAP_MAX" cap
+}
+
+resolve_ceiling() {
+  resolve_knob PIPELINE_CEILING "${CLAUDE_PIPELINE_CEILING:-}" \
+    "$CEILING_DEFAULT" "$CEILING_MIN" "$CEILING_MAX" ceiling
+}
+
+# --ceiling resolves ONLY the ceiling: resolving the cap first would let a
+# malformed ACTIVE_WORK_CAP warn on every ceiling read, blaming the wrong knob.
+# --repo names whose PRs to COUNT; it cannot pick the pm-config.md a knob is
+# read from (that is --path). The census mode warns about that pairing with a
+# gh lookup; --ceiling must stay network-free, so it says so unconditionally.
+if [[ "$MODE" == "ceiling" ]]; then
+  if [[ -n "$REPO" && -z "$FROM_PATH" ]]; then
+    warn "--repo does not select the config --ceiling reads — reading the current checkout's; pass --path <checkout of $REPO> for its own ceiling"
+  fi
+  read -r CEILING _ <<<"$(resolve_ceiling)"
+  printf '%s\n' "$CEILING"
+  exit 0
+fi
 
 read -r CAP CAP_SOURCE <<<"$(resolve_cap)"
 
@@ -1555,6 +1626,9 @@ case "$MODE" in
     if [[ $OFFERED_NUMS_RC -ne 0 ]]; then
       die_read "could not encode offered_issue_nums as JSON: $OFFERED_ISSUE_NUMS_JSON"
     fi
+    # The diagnostic mode also names the per-thread ceiling, so one call shows
+    # both halves of min(PIPELINE_CEILING, ACTIVE_WORK_CAP).
+    read -r PIPELINE_CEILING PIPELINE_CEILING_SOURCE <<<"$(resolve_ceiling)"
     jq -cn \
       --argjson cap "$CAP" \
       --argjson active "$ACTIVE" \
@@ -1566,12 +1640,16 @@ case "$MODE" in
       --arg cap_source "$CAP_SOURCE" \
       --arg closing_refs_source "$CLOSING_REFS_SOURCE" \
       --argjson offered_issue_nums "$OFFERED_ISSUE_NUMS_JSON" \
+      --argjson pipeline_ceiling "$PIPELINE_CEILING" \
+      --arg pipeline_ceiling_source "$PIPELINE_CEILING_SOURCE" \
       '{cap: $cap, active: $active, free: $free,
         open_prs: $open_prs, live_chips: $chips, inline_pipelines: $pipelines,
         registry_baseline: $reg_chip_count,
         cap_source: $cap_source,
         closing_refs_source: $closing_refs_source,
-        offered_issue_nums: $offered_issue_nums}'
+        offered_issue_nums: $offered_issue_nums,
+        pipeline_ceiling: $pipeline_ceiling,
+        pipeline_ceiling_source: $pipeline_ceiling_source}'
     ;;
   *)
     printf 'CAP=%s ACTIVE=%s FREE=%s\n' "$CAP" "$ACTIVE" "$FREE"
