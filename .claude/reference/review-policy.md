@@ -5,7 +5,7 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 | Issue | Part | Status |
 |---|---|---|
 | #1725 | Tier resolver | Landed |
-| #1726 | Merge gate | Pending |
+| #1726 | Merge gate | Landed |
 | #1727 | Deferred findings | Pending |
 | #1728 | BugBot triggering | Pending |
 | #1729 | Pipeline ceiling | Pending |
@@ -72,18 +72,52 @@ CRLF line endings are stripped before parsing, so a Windows checkout reads the s
 
 ## Where the policy is read from
 
-In PR mode, the policy comes from the PR's **base branch**, through the contents API. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself; the new policy governs PRs opened after it merges.
+In PR mode, the policy comes from the PR's **base branch**, through the contents API. It is read **before** the PR's files and labels are fetched, so a repo with no policy pays for that single read and nothing more. `--base <ref>` supplies the base branch when the caller already knows it, as `merge-gate.sh` does, which saves the `gh pr view` too. It never comes from the local checkout. A PR that edits `## Review policy` therefore cannot re-tier itself; the new policy governs PRs opened after it merges.
 
 `--config <path>` overrides the source. The CI workflow uses it with its base-branch checkout, and the tests use it with fixtures. It is a flag only, never an environment variable, so ambient state cannot re-point a review-enforcing consumer at a looser policy. The merge gate never passes it.
 
 ## What each gate means
 
-**`full`** is the reviewer-path gate in `cr-merge-gate.md`, unchanged. CodeRabbit/CodeAnt, BugBot, and Greptile keep their current rules. `legacy` enforces the same gate. The only difference is that `legacy` reports that no policy is declared.
+`merge-gate.sh` resolves the tier once per run (#1726). The tier selects **only** the reviewer-approval requirement:
 
-The lighter gates are enforced by the later increments:
+| Gate | Reviewer requirement |
+|---|---|
+| `legacy` | The reviewer-path gate in `cr-merge-gate.md`, unchanged. CodeRabbit/CodeAnt, BugBot, and Greptile keep their current rules. |
+| `full` | The same gate as `legacy`. The only difference is that `full` was declared by a policy. |
+| `ci-only` | None. |
+| `ci+codeant-one-round` | One **completed** CodeAnt round on any commit of the PR, not necessarily HEAD. |
 
-- **#1726:** the merge gate enforces `ci-only` (CI green) and `ci+codeant-one-round` (CI green plus one completed CodeAnt round).
-- **#1727:** a follow-up-issue reply clears a deferred finding in those two tiers.
+**Every tier** keeps the merge-wide checks:
+
+- authorship
+- merge state (`BEHIND`, `CONFLICTING`, `DIRTY`, `UNKNOWN`)
+- failing or incomplete CI
+- branch-protection required contexts
+- unresolved review threads
+- a human `CHANGES_REQUESTED`
+- CODEOWNERS `reviewDecision`
+
+A completed CodeAnt round is any one of these:
+
+- a `done: true` row in CodeAnt's `<!-- codeant-review-status:[…] -->` run record, posted by `codeant-ai[bot]`
+- a `codeant-ai[bot]` review in state `COMMENTED` or `CHANGES_REQUESTED` (CodeAnt posts those only once it has run)
+- a completed check-run on HEAD whose conclusion is `success`, `neutral`, or `failure`, published by the CodeAnt app itself (slug `codeant-ai`, the app behind the `codeant-ai[bot]` login). A check's *name* is not identity: any workflow in the PR can name a job "CodeAnt".
+
+An `APPROVED` on its own is **not** a round. CodeAnt posts an approval stub before it has analysed anything (#1365, #1432). A CodeAnt `CHANGES_REQUESTED` does not block on its own either: its findings arrive as review threads, and the thread check governs them.
+
+The gate's JSON adds `review_tier: {gate, tier, policy}`. The `reviewer`, `path`, and `primary_review_met` fields keep their meaning. So on the lighter tiers `primary_review_met` stays `false`, because no approval exists; `met` is the readiness signal.
+
+If the tier cannot be resolved, the gate fails closed. The resolver may be missing, exit non-zero, or return an unusable answer. In each case the gate:
+
+- adds `review tier unresolved: …` to `missing`
+- still runs the full reviewer path
+- reports `review_tier: null`
+
+The run never ends up less strict than legacy.
+
+The remaining increments cover the rest:
+
+- **#1727:** a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers.
 - **#1728:** BugBot is invited only on `full` and `legacy`.
 
 The two-round cap on core PRs stays a process limit, not gate logic.
@@ -91,7 +125,7 @@ The two-round cap on core PRs stays a process limit, not gate logic.
 ## CLI
 
 ```bash
-.claude/scripts/review-tier.sh <pr_number> [--repo owner/name] [--config <path>] [--json]
+.claude/scripts/review-tier.sh <pr_number> [--repo owner/name] [--base <ref>] [--config <path>] [--json]
 .claude/scripts/review-tier.sh --files-from <file|-> [--labels a,b] [--config <path>] [--json]
 ```
 

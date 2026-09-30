@@ -449,7 +449,10 @@ case "$1 $2" in
   "pr view")
     [[ "${FAKE_PR_MISSING:-0}" == "1" ]] && { echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }
     case "$ARGS" in *" --repo o/r "*) ;; *) echo "fake gh: pr view without --repo o/r: $*" >&2; exit 96 ;; esac
-    printf '{"baseRefName":"main","labels":%s,"changedFiles":%s}\n' "${FAKE_LABELS:-[]}" "${FAKE_CHANGED-2}" ;;
+    PRJSON="$(printf '{"baseRefName":"main","labels":%s,"changedFiles":%s}' "${FAKE_LABELS:-[]}" "${FAKE_CHANGED-2}")"
+    JQ=""; prev=""
+    for a in "$@"; do [[ "$prev" == "--jq" ]] && JQ="$a"; prev="$a"; done
+    if [[ -n "$JQ" ]]; then jq -r "$JQ" <<<"$PRJSON"; else printf '%s\n' "$PRJSON"; fi ;;
   "api repos/o/r/pulls/7/files?per_page=100")
     case "$ARGS" in *" --paginate "*) ;; *) echo "fake gh: files call must paginate" >&2; exit 96 ;; esac
     [[ "${FAKE_FILES_FAIL:-0}" == "1" ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
@@ -467,6 +470,7 @@ case "$1 $2" in
     case "$ARGS" in *" repos/o/r/contents/.claude/pm-config.md "*" ref=main "*) ;; *) echo "fake gh: unexpected contents call: $*" >&2; exit 96 ;; esac
     case "${FAKE_CONTENT_MODE:-ok}" in
       404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      barenotfound) echo "Not Found" >&2; exit 1 ;;
       500) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;
     esac
     case "${FAKE_CONTENT_MODE:-ok}" in
@@ -521,6 +525,29 @@ check "file listing failure → nothing on stdout" "" "$out"
 out="$(FAKE_PR_MISSING=1 pr_gate)"; rc=$?
 check "missing PR → exit 3" "3" "$rc"
 check "missing PR → nothing on stdout" "" "$out"
+
+# Policy first, PR facts second: a repo that declares no tiers pays for the
+# contents read and nothing else — no labels, no file listing, and with --base
+# not even the PR lookup.
+: > "$FAKE_GH_LOG"
+check "absent policy with --base → legacy" "legacy" \
+  "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_CONTENT_MODE=404 pr_gate --repo o/r --base main)"
+check "…makes no pr view call" "0" "$(grep -c '^pr view' "$FAKE_GH_LOG")"
+check "…and no file listing" "0" "$(grep -c 'pulls/7/files' "$FAKE_GH_LOG")"
+check "…just the one contents read" "1" "$(grep -c 'contents/.claude/pm-config.md' "$FAKE_GH_LOG")"
+
+cp "$FAKE_BASE_CONFIG" "$TMP_DIR/base-backup.md"
+printf '# PM Config\n\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| docs | nope |\n' > "$FAKE_BASE_CONFIG"
+: > "$FAKE_GH_LOG"
+check "invalid base policy → full" "full" "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --base main)"
+check "…without listing the PR's files" "0" "$(grep -c 'pulls/7/files' "$FAKE_GH_LOG")"
+cp "$TMP_DIR/base-backup.md" "$FAKE_BASE_CONFIG"
+
+# The shared merge-gate fixture answers a missing file with a bare "Not Found";
+# real gh says "gh: Not Found (HTTP 404)". Both are the no-policy case.
+check "a bare 'Not Found' reads as no pm-config.md → legacy" "legacy" \
+  "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_CONTENT_MODE=barenotfound pr_gate --base main)"
+bash "$SUT" --files-from - --base main </dev/null >/dev/null 2>&1; check "--base in offline mode → exit 2" "2" "$?"
 
 for mode in symlink nocontent; do
   out="$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_CONTENT_MODE=$mode pr_gate)"; rc=$?

@@ -91,6 +91,24 @@
 #   clean — degraded means degraded (`--allow-unverified-required-checks` is the
 #   explicit per-PR user override). Emitted as `required_contexts`.
 #
+# Review tier (issue #1726): a repo may declare review tiers in its own
+#   .claude/pm-config.md `## Review policy` (format: .claude/reference/
+#   review-policy.md). The PR's tier is resolved by the sibling review-tier.sh,
+#   ALWAYS against the PR's base branch — no flag or environment variable here
+#   can re-point it. The tier selects only the reviewer-approval requirement:
+#     legacy / full         — the reviewer paths above, unchanged
+#     ci-only               — no reviewer approval required
+#     ci+codeant-one-round  — one COMPLETED CodeAnt round on any commit of the
+#                             PR: a `done` row in CodeAnt's run record, or a
+#                             COMMENTED / CHANGES_REQUESTED CodeAnt review, or a
+#                             completed CodeAnt check-run on HEAD. An APPROVED
+#                             alone is not a round — CodeAnt posts one before it
+#                             analyses anything (#1365, #1432).
+#   Every merge-wide check — authorship, merge state, CI, required contexts,
+#   unresolved threads, human CHANGES_REQUESTED, CODEOWNERS reviewDecision —
+#   applies to every tier. A resolver failure adds its own `missing` reason and
+#   the full reviewer path still runs: never less strict than legacy.
+#
 # Usage:
 #   merge-gate.sh <pr_number> [--reviewer cr|bugbot|greptile] [--allow-nonauthor]
 #                             [--allow-hollow-approval]
@@ -118,6 +136,9 @@
 #     "reviewer": "cr"|"bugbot"|"greptile"|"unknown",
 #     "path": "cr"|"bugbot"|"greptile",
 #     "missing": ["reason", ...],
+#     "review_tier": {"gate": "legacy|ci-only|ci+codeant-one-round|full",
+#                     "tier": "<name>"|null, "policy": "absent|present|invalid"}
+#                    | null   (null when the tier could not be resolved),
 #     "head_sha": "abc1234...",
 #     "ci_status": {
 #       "total": N, "passing": N, "failing": N, "in_progress": N,
@@ -340,7 +361,7 @@ missing_json() { # <reason>...
 }
 
 emit_json() {
-  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json]
+  # emit_json <met> <reviewer> <path> <missing_json_array> <head_sha> <ci_status_json> <merge_state> <mergeable> <review_decision> <code_owner_bots_json> <human_changes_json_array> <stale_bot_changes_requested_count_number> [unresolved_thread_count_number] [primary_review_met_bool] [authorship] [review_evidence_json] [required_contexts_json] [review_tier_json]
   local met="$1" reviewer="$2" path="$3" missing="$4" head_sha="$5" ci_status="$6" merge_state="$7" mergeable="$8" review_decision="$9" code_owner_bots="${10}" human_changes="${11}" stale_bot_count="${12}" unresolved_thread_count="${13:-0}" primary_review_met="${14:-false}" authorship="${15:-unknown}"
   # review_evidence (issue #875) — arg 16. Defaulted separately rather than with
   # ${16:-{}} because a literal `{}` inside brace-default expansion is ambiguous.
@@ -355,6 +376,10 @@ emit_json() {
   if [[ -z "$required_contexts" ]]; then
     required_contexts='{"source":"unknown","base":"","contexts":[],"unsatisfied":[],"error":""}'
   fi
+  # review_tier (issue #1726) — arg 18. `null` on the early error paths, which
+  # return before the tier is resolved, and when resolution itself failed.
+  local review_tier="${18:-}"
+  if [[ -z "$review_tier" ]]; then review_tier='null'; fi
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -373,8 +398,9 @@ emit_json() {
     --arg authorship "$authorship" \
     --argjson review_evidence "$review_evidence" \
     --argjson required_contexts "$required_contexts" \
+    --argjson review_tier "$review_tier" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts}
+     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier}
      | scrub'
 }
 
@@ -419,6 +445,33 @@ fi
 if [[ -z "$HEAD_SHA" ]]; then
   emit_json false unknown cr "$(missing_json "could not determine HEAD SHA")" "" "$(emit_empty_ci)" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$(emit_empty_code_owner_bots)" '[]' 0
   exit 4
+fi
+
+# Review tier (issue #1726) — resolved once, here, by the sibling resolver and
+# always against the base branch: this call passes no --config, and nothing in
+# this script lets a flag or the environment supply one, so a PR can never pick
+# the policy it is judged by. Any failure (missing resolver, non-zero exit,
+# unparseable output, an unknown gate) leaves REVIEW_TIER_GATE empty — the full
+# reviewer path then runs — and records a reason the gate adds to `missing`.
+REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
+REVIEW_TIER_GATE=""
+REVIEW_TIER_JSON="null"
+REVIEW_TIER_FAILURE=""
+if [[ ! -x "$REVIEW_TIER_SH" ]]; then
+  REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
+else
+  REVIEW_TIER_RC=0
+  REVIEW_TIER_OUT=$("$REVIEW_TIER_SH" "$PR_NUMBER" --repo "$OWNER_REPO" ${BASE_REF:+--base "$BASE_REF"} --json) || REVIEW_TIER_RC=$?
+  if [[ "$REVIEW_TIER_RC" -ne 0 ]]; then
+    REVIEW_TIER_FAILURE="review-tier.sh exited $REVIEW_TIER_RC"
+  elif ! REVIEW_TIER_JSON=$(printf '%s' "$REVIEW_TIER_OUT" | jq -ce '
+        select(type == "object" and (.gate | IN("legacy", "ci-only", "ci+codeant-one-round", "full")))
+        | {gate, tier, policy}' 2>/dev/null); then
+    REVIEW_TIER_FAILURE="review-tier.sh returned no usable tier"
+    REVIEW_TIER_JSON="null"
+  else
+    REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+  fi
 fi
 
 # Fetch last commit timestamp for Greptile freshness gate (issue #723) and the
@@ -1483,10 +1536,58 @@ if [[ "$REVIEWER" == "cr" || "$REVIEWER" == "bugbot" ]]; then
   fi
 fi
 
+# Review-tier dispatch (issue #1726). Only the reviewer-approval requirement
+# varies by tier; everything above this point applied to every tier. The
+# relaxed tiers dispatch to `none`, which no arm of the case below matches.
+REVIEWER_DISPATCH="$REVIEWER"
+if [[ -n "$REVIEW_TIER_FAILURE" ]]; then
+  MISSING+=("review tier unresolved: $REVIEW_TIER_FAILURE — the full reviewer gate is applied instead (issue #1726)")
+fi
+case "$REVIEW_TIER_GATE" in
+  ci-only)
+    REVIEWER_DISPATCH="none"
+    ;;
+  ci+codeant-one-round)
+    REVIEWER_DISPATCH="none"
+    # A completed round, on ANY commit of the PR — never an APPROVED alone,
+    # which CodeAnt posts before it has analysed anything (#1365, #1432).
+    #   (a) a `done` row in CodeAnt's structured run record
+    #   (b) a COMMENTED / CHANGES_REQUESTED review: posted only once it ran
+    #   (c) a completed check-run on HEAD that reached a verdict, published by
+    #       the CodeAnt app itself: slug `codeant-ai`, the app behind the
+    #       codeant-ai[bot] login. A check NAME is not identity — any workflow
+    #       in the PR can name a job "CodeAnt", and this signal relaxes a gate.
+    CODEANT_ROUND_RECORD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
+      [ .[]?
+        | select((.user.login // "") == "codeant-ai[bot]")
+        | (.body // "")
+        | scan("<!--[[:space:]]*codeant-review-status:([\\s\\S]*?)-->")
+        | (if type == "array" then (.[0] // "") else . end)
+        | (fromjson? // empty)
+        | (if type == "array" then .[] else empty end)
+        | select(type == "object" and .done == true) ]
+      | length' 2>/dev/null || echo 0)
+    CODEANT_ROUND_REVIEWS=$(echo "$REVIEWS_JSON" | jq -r '
+      [ .[]?
+        | select((.user.login // "") == "codeant-ai[bot]")
+        | select((.state // "") == "COMMENTED" or (.state // "") == "CHANGES_REQUESTED") ]
+      | length' 2>/dev/null || echo 0)
+    CODEANT_ROUND_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -r '
+      [ .check_runs[]?
+        | select((.status // "") == "completed")
+        | select((.conclusion // "") | IN("success", "neutral", "failure"))
+        | select((.app.slug // "") == "codeant-ai") ]
+      | length' 2>/dev/null || echo 0)
+    if [[ "${CODEANT_ROUND_RECORD:-0}" -eq 0 && "${CODEANT_ROUND_REVIEWS:-0}" -eq 0 && "${CODEANT_ROUND_CHECK:-0}" -eq 0 ]]; then
+      MISSING+=("review tier ci+codeant-one-round: no completed CodeAnt round on any commit of this PR — an APPROVED alone is not a round; comment @codeant-ai review")
+    fi
+    ;;
+esac
+
 # Path-specific checks.
 # Default false — the cr) and bugbot) paths set a meaningful value.
 PRIMARY_REVIEW_MET=false
-case "$REVIEWER" in
+case "$REVIEWER_DISPATCH" in
   cr)
 
     # Set PRIMARY_REVIEW_MET from the shared pre-case detection block (issue #865).
@@ -2219,7 +2320,7 @@ fi
 # Discounted approvals (issue #875) — say so on stderr even when the gate passes
 # on another reviewer, so a hollow rubber stamp is never silently absorbed.
 HOLLOW_LOGINS=$(echo "$REVIEW_EVIDENCE" | jq -r '(.hollow // []) | join(", ")' 2>/dev/null || echo "")
-if [[ -n "$HOLLOW_LOGINS" && "$REVIEWER" == "cr" ]]; then
+if [[ -n "$HOLLOW_LOGINS" && "$REVIEWER_DISPATCH" == "cr" ]]; then
   echo "[merge-gate] discounted APPROVED review(s) with no substantive review evidence on HEAD ${HEAD_SHA:0:7}: ${HOLLOW_LOGINS}. See .review_evidence for the per-reviewer detail (issue #875)." >&2
 fi
 
@@ -2234,9 +2335,9 @@ MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 # The evaluator runs on the bugbot path for bypass computation but must not
 # surface its results in the JSON — a failed evaluator must never block a PR
 # over a guard the bugbot path never consults.
-[[ "$REVIEWER" != "cr" ]] && REVIEW_EVIDENCE='{}'
+[[ "$REVIEWER_DISPATCH" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT"
+emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON"
 
 if [[ "$MET" == true ]]; then
   exit 0
