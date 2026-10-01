@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Regression coverage for Issue #1729: the pipeline ceiling is a per-repo knob.
-# catalog: tests — Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch hard-code no pipeline ceiling — the first three read it via `active-work-cap.sh --ceiling`, and `/pm` and `/pm-forgotten-pr` launch up to `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`
+# catalog: tests — Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal
 #
-# The three consumers used to hard-code the 3–4 band (`CEILING = 4` in /wave,
-# "3–4 concurrent pipelines" in /subagent and /pm), so widening one repo meant
-# a global rule edit. They now resolve PIPELINE_CEILING through
-# `active-work-cap.sh --ceiling`. This suite fails if any of them stops
+# The three original consumers used to hard-code the 3–4 band (`CEILING = 4` in
+# /wave, "3–4 concurrent pipelines" in /subagent and /pm), so widening one repo
+# meant a global rule edit. They now resolve PIPELINE_CEILING through
+# `active-work-cap.sh --ceiling`, and so does the fourth consumer,
+# /pm-forgotten-pr's merge dispatch. This suite fails if any of them stops
 # resolving it, or if a literal ceiling creeps back into slot math.
 
 set -euo pipefail
@@ -32,6 +33,7 @@ reject_pattern() {
 SUBAGENT=.claude/skills/subagent/SKILL.md
 PM=.claude/skills/pm/SKILL.md
 WAVE=.claude/skills/wave/SKILL.md
+FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
 
 # --- each consumer resolves the ceiling from the script ---------------------
 require_text "$SUBAGENT" 'ACTIVE_WORK_CAP_SH=$(resolve_script active-work-cap.sh' \
@@ -42,7 +44,9 @@ require_text "$PM" 'CEILING=$("$ACTIVE_WORK_CAP_SH" --ceiling)' \
   '/pm Step 0 must read the ceiling via active-work-cap.sh --ceiling'
 require_text "$WAVE" 'CEILING    = "$ACTIVE_WORK_CAP_SH" --ceiling' \
   '/wave Step 6 must read CEILING via active-work-cap.sh --ceiling'
-ok "/subagent, /pm, and /wave resolve the ceiling from active-work-cap.sh --ceiling"
+require_text "$FORGOTTEN" '"$(resolve_script active-work-cap.sh)" --ceiling' \
+  '/pm-forgotten-pr merge dispatch must read the ceiling via active-work-cap.sh --ceiling'
+ok "/subagent, /pm, /wave, and /pm-forgotten-pr resolve the ceiling from active-work-cap.sh --ceiling"
 
 # --- no literal ceiling left in slot math -----------------------------------
 # The historical literals, in both dash spellings — an alternation, not a
@@ -52,7 +56,7 @@ ok "/subagent, /pm, and /wave resolve the ceiling from active-work-cap.sh --ceil
 # `CEILING    = <n>` (spaces around `=`, which no shell assignment has), is not.
 # /pm-forgotten-pr's merge dispatch honours the same ceiling, so it is held to
 # the literal checks too.
-for FILE in "$SUBAGENT" "$PM" "$WAVE" .claude/skills/pm-forgotten-pr/SKILL.md; do
+for FILE in "$SUBAGENT" "$PM" "$WAVE" "$FORGOTTEN"; do
   reject_pattern "$FILE" '3(–|-)4 (concurrent|pipeline|ceiling|active|slots?|parallel|band)' \
     "$FILE still hard-codes the 3–4 band"
   reject_pattern "$FILE" 'CEILING[[:space:]]+=[[:space:]]*[0-9]' \
@@ -64,7 +68,6 @@ ok "no consumer hard-codes a numeric ceiling in slot math"
 # --- launches fill to LIMIT = min(CEILING, CAP), never the raw ceiling ------
 # A consumer that launches up to the bare CEILING outruns ACTIVE_WORK_CAP
 # whenever a repo sets the ceiling above the cap (PR #1732 review round 1).
-FORGOTTEN=.claude/skills/pm-forgotten-pr/SKILL.md
 require_text "$FORGOTTEN" 'min(PIPELINE_CEILING, ACTIVE_WORK_CAP)' \
   '/pm-forgotten-pr merge dispatch must launch up to min(PIPELINE_CEILING, ACTIVE_WORK_CAP)'
 require_text "$FORGOTTEN" '`--cap`' \
