@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for Issue #1729: the pipeline ceiling is a per-repo knob.
-# catalog: tests — Static check that `/subagent`, `/pm`, and `/wave` read the pipeline ceiling from `active-work-cap.sh --ceiling` instead of a literal
+# catalog: tests — Static check that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch hard-code no pipeline ceiling — the first three read it via `active-work-cap.sh --ceiling`, and `/pm` and `/pm-forgotten-pr` launch up to `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`
 #
 # The three consumers used to hard-code the 3–4 band (`CEILING = 4` in /wave,
 # "3–4 concurrent pipelines" in /subagent and /pm), so widening one repo meant
