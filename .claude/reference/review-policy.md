@@ -166,7 +166,7 @@ The later increments cover the rest:
 
 - **#1727** (landed): a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers. See [Deferred findings](#deferred-findings).
 - **#1728** (landed): BugBot is invited only on `full` and `legacy`. See [BugBot triggering](#bugbot-triggering).
-- **#1729** (landed): a repo sets its own per-thread pipeline ceiling with `PIPELINE_CEILING` in the `## Active work` section of its `.claude/pm-config.md`, which `/subagent`, `/pm` and `/wave` honour; it stays subordinate to `ACTIVE_WORK_CAP` (`min()`, never `max()`). See [`active-work-cap.md` §Subordination](active-work-cap.md#subordination--min-never-max).
+- **#1729** (landed): a repo sets its own per-thread pipeline ceiling with `PIPELINE_CEILING` in the `## Active work` section of its `.claude/pm-config.md`, which `/subagent`, `/pm`, `/wave` and `/pm-forgotten-pr`'s merge dispatch honour; it stays subordinate to `ACTIVE_WORK_CAP` (`min()`, never `max()`). See [`active-work-cap.md` §Subordination](active-work-cap.md#subordination--min-never-max).
 
 The two-round cap on core PRs stays a process limit, not gate logic.
 
