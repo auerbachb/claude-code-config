@@ -1,6 +1,6 @@
 # Per-repo review policy (`## Review policy`)
 
-A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the review a PR needs follows the risk of what it touches rather than one harness-wide rule. This is issue #1724. Its increments are:
+A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the review a PR needs follows the risk of what it touches rather than one harness-wide rule. This is issue #1724. Its increments, all landed, are:
 
 | Issue | Part | Status |
 |---|---|---|
@@ -8,7 +8,7 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 | #1726 | Merge gate | Landed |
 | #1727 | Deferred findings | Landed |
 | #1728 | BugBot triggering | Landed |
-| #1729 | Pipeline ceiling | Pending |
+| #1729 | Pipeline ceiling | Landed |
 
 This file is the mechanism reference. The rule files only point here, because the rule corpus has no word headroom.
 
@@ -166,6 +166,7 @@ The later increments cover the rest:
 
 - **#1727** (landed): a follow-up-issue reply clears a deferred finding in the `ci-only` and `ci+codeant-one-round` tiers. See [Deferred findings](#deferred-findings).
 - **#1728** (landed): BugBot is invited only on `full` and `legacy`. See [BugBot triggering](#bugbot-triggering).
+- **#1729** (landed): a repo sets its own per-thread pipeline ceiling with `PIPELINE_CEILING` in the `## Active work` section of its `.claude/pm-config.md`, which `/subagent`, `/pm` and `/wave` honour; it stays subordinate to `ACTIVE_WORK_CAP` (`min()`, never `max()`). See [`active-work-cap.md` §Subordination](active-work-cap.md#subordination--min-never-max).
 
 The two-round cap on core PRs stays a process limit, not gate logic.
 
