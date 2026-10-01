@@ -54,6 +54,11 @@
 #      <!-- codeant-review-status:[…] -->. This marker never appears in a real finding body.
 #      Keyed on the HTML comment prefix only — case-sensitive, no "i" flag, because the marker is
 #      machine-generated JSON and casing is stable.
+#      The CodeAnt auto-resolve marker (#1748) is CodeAnt's counterpart of the addressed marker:
+#      <!-- codeant-auto-resolve-reply --> rides only on its "CodeAnt verified this suggestion was
+#      addressed in subsequent commits" thread reply, which retracts the finding it answers. The
+#      reply restates the fix, so it can carry finding vocabulary — that is why it sits in tier 1.
+#      Marker-only and case-sensitive, like the review-status marker: the prose is not matched.
 #   2. The specific "actionable comments posted: 0" and "no actionable comments were
 #      generated" checks MUST precede the general "actionable comments posted" finding
 #      check — otherwise the general pattern swallows clean CR summaries as findings.
@@ -80,6 +85,15 @@
 #      phrase if the Greptile branch were any later. The branch requires the summary heading
 #      and either no "issues found" prose or the explicit "no issues found" clean-pass wording,
 #      so a summary that reports N>0 issues still reaches the finding phrase below.
+#      CodeAnt's prose-only boilerplate (#1748) joins this late tier, immediately above the default:
+#      the "Customized review instruction saved!" reply, the "Thanks for using CodeAnt!" footer, the
+#      empty "CodeAnt Nitpicks" summary, the "Skipping CodeAnt AI review" notice and the "does not
+#      have a PR Review subscription" notice. None carries an HTML marker, so each is keyed on
+#      CodeAnt's own wording and placed where every finding pattern is evaluated first — a body
+#      that pairs one of these phrases with finding language stays a finding. A Nitpicks summary
+#      that lists suggestions is deliberately NOT matched: it reaches the default as a finding.
+#      These shapes reach this file only since enrich() admitted every review bot (#1748); before
+#      that only poll-watermarks.sh's array mode classified them.
 #   7. Default is finding — under-classifying is the failure mode this skill prevents.
 
 def classify:
@@ -96,6 +110,7 @@ def classify:
   elif test("Oops, something went wrong"; "i") then {class: "acknowledgment", reason: "CR error stub / transient noise"}
   elif test("<!--\\s*This is an auto-generated reply by CodeRabbit\\s*-->"; "i") then {class: "acknowledgment", reason: "CR auto-reply ack"}
   elif test("<!--\\s*codeant-review-status:"; "") then {class: "acknowledgment", reason: "CodeAnt review-status table"}
+  elif test("<!--\\s*codeant-auto-resolve-reply\\s*-->"; "") then {class: "acknowledgment", reason: "CodeAnt auto-resolve reply"}
   elif test("\\b(critical|major|minor|nitpick|p[0-2])\\b"; "i") then {class: "finding", reason: "severity keyword"}
   elif test("🔴|🟠|🟡"; "") then {class: "finding", reason: "severity badge"}
   elif test("actionable comments posted"; "i") then {class: "finding", reason: "actionable phrase"}
@@ -105,12 +120,27 @@ def classify:
   elif test("```suggestion"; "m") then {class: "finding", reason: "suggestion block"}
   elif test("\\b(lgtm|looks good|approved|confirmed|resolved)\\b"; "i") then {class: "acknowledgment", reason: "lgtm variant"}
   elif test("<!--\\s*This is an auto-generated comment:\\s*summarize by coderabbit\\.ai\\s*-->"; "i") then {class: "acknowledgment", reason: "CR walkthrough summary"}
+  elif test("Customized review instruction saved!"; "i") then {class: "acknowledgment", reason: "CodeAnt saved-instruction reply"}
+  elif test("Thanks for using CodeAnt!"; "i") then {class: "acknowledgment", reason: "CodeAnt promotional footer"}
+  elif (test("CodeAnt Nitpicks"; "i") and test("No threshold-suppressed suggestions found"; "i")) then {class: "acknowledgment", reason: "CodeAnt empty nitpicks summary"}
+  elif test("Skipping CodeAnt AI review"; "i") then {class: "acknowledgment", reason: "CodeAnt review-skipped notice"}
+  elif test("does not have a PR Review subscription"; "i") then {class: "acknowledgment", reason: "CodeAnt subscription notice"}
   else {class: "finding", reason: "default — no pattern matched"}
   end;
 
+# Every review bot whose comments reach new_since_baseline (issue #1748). It
+# must equal pr-state.sh's --wait-state-eval $botlist, which stays a separate
+# literal so that lightweight mode never loads this file; the parity test in
+# tests/pr-state-classify.test.sh parses both lists and fails on any drift.
+# A shorter list here silently zeroes finding_count for the missing bot, and
+# with it --wait-state-eval's new_findings, so /fixpr's wait loop reports clean
+# while that bot's finding sits open on HEAD.
+def review_bots:
+  ["coderabbitai[bot]", "cursor[bot]", "codeant-ai[bot]", "greptile-apps[bot]", "graphite-app[bot]"];
+
 def enrich($since; $tsfield):
   [.[]
-   | select((.user.login == "coderabbitai[bot]" or .user.login == "greptile-apps[bot]" or .user.login == "cursor[bot]")
+   | select(((.user.login // "") as $login | any(review_bots[]; . == $login))
             and ((.[$tsfield] // "") > $since))
    | {
        id,

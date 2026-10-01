@@ -149,8 +149,8 @@ write_watermarks() {
 }
 
 # This ID-watermark helper executes the canonical classification rules in
-# lib/pr-state-classify.jq (fixpr Step 5b). It watches CodeAnt and Graphite in
-# addition to pr-state.sh --since's three-bot scope, then applies ID watermarks.
+# lib/pr-state-classify.jq (fixpr Step 5b). It watches the same five review bots
+# as pr-state.sh --since (issue #1748), then applies ID watermarks.
 eval_watermarks() {
   local state_file="$1" stored_wm="$2"
   local classified

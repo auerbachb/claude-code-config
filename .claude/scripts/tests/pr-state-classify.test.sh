@@ -2,7 +2,7 @@
 # Unit test for the canonical `pr-state-classify.jq` program invoked by
 # catalog: tests — Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since`
 # `pr-state.sh --since`
-# (issues #535, #557, #575, #669, #743).
+# (issues #535, #557, #575, #669, #743, #1207, #1748).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly
 # classified as acknowledgments, and that existing patterns are not regressed:
@@ -16,13 +16,20 @@
 #     to `finding`. Their real job is to fail against a WRONG fix. Verified by hoisting
 #     the override into the tier-1 group, which flips both to acknowledgment — the exact
 #     false-clean the placement prevents. Re-run that control if you touch the ordering.
+#   - #1748: enrich() admitted only three of the five review bots, so CodeAnt and
+#     Graphite findings never reached new_since_baseline (PR #1745). Bug11 pins the
+#     admission end to end, through pr-state.sh --wait-state-eval, plus a parity check
+#     against pr-state.sh's $botlist; Bug12 pins the CodeAnt non-finding shapes that
+#     admission exposed. Bug12a's late-placement guard fails if those branches are
+#     hoisted into tier 1 — re-run that control too if you touch the ordering.
 #
 # Strategy: run the canonical jq file used by pr-state.sh with a one-comment
 # review fixture. This tests the actual production code rather than a copied
 # duplicate, so the two can never drift apart.
 #
 # Requires: jq, bash 3.2+ (macOS-compatible — no mapfile/readarray, no head -n -N).
-# Offline: no gh, no git, no network calls needed.
+# Offline: no gh, no git, no network calls needed (Bug11 runs pr-state.sh's offline
+# --wait-state-eval mode on a local bundle file).
 set -euo pipefail
 
 # Resolve the production filter relative to this test file — no git required, so the test
@@ -805,6 +812,320 @@ class="${result%%|*}"
   || fail "Bug10a: real CodeAnt finding (severity keyword) — expected finding, got $class"
 
 # ---------------------------------------------------------------------------
+# Bug 11: every review bot reaches new_since_baseline (issue #1748)
+#
+# enrich() admitted only coderabbitai/greptile-apps/cursor, so a CodeAnt or
+# Graphite finding never reached new_since_baseline: finding_count stayed 0, so
+# did --wait-state-eval's new_findings, and /fixpr's Step 4d wait loop and Step 5b
+# verify reported clean early. Observed on PR #1745 at HEAD d5884e6: baseline
+# 15:40:41Z, CodeAnt inline finding 4157391754 at 15:42:16Z, wait loop printing
+# new_findings: 0 on every tick.
+#
+# Every positive check below asserts the item is ADMITTED as well as how it is
+# classified, so none of them can pass by the item silently dropping out — each
+# fails against the old three-bot filter (the PR for #1748 records that run). The Bug11d
+# controls are expected to pass both ways; they pin what must stay excluded.
+# ---------------------------------------------------------------------------
+PR_STATE="$TEST_DIR/../pr-state.sh"
+TMP="$(mktemp -d)"
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT
+BUNDLE_SEQ=0
+
+BASELINE='2026-10-01T15:40:41Z'
+HEAD_SHA='d5884e6f93e5446faf984e374ce4e473186e1195'
+
+# since_bundle <reviews> <inline> <conversation> <since> — the null-input mode
+# pr-state.sh --since runs, on the given endpoint arrays.
+since_bundle() {
+  jq -n \
+    --argjson reviews "$1" \
+    --argjson inline "$2" \
+    --argjson conversation "$3" \
+    --arg since "$4" \
+    -f "$FILTER"
+}
+
+# wait_new_findings <classifier-output> <reviews> <inline> <conversation> — embed
+# the real classifier output in a pr-state-shaped bundle and run the real
+# pr-state.sh --wait-state-eval predicate on it; print its new_findings.
+wait_new_findings() {
+  local bundle
+  BUNDLE_SEQ=$((BUNDLE_SEQ + 1))
+  bundle="$TMP/wait-bundle-$BUNDLE_SEQ.json"
+  jq -n \
+    --argjson nsb "$1" \
+    --argjson reviews "$2" \
+    --argjson inline "$3" \
+    --argjson conversation "$4" \
+    --arg sha "$HEAD_SHA" \
+    '{pr: {head_sha: $sha},
+      comments: {reviews: $reviews, inline: $inline, conversation: $conversation},
+      check_runs: {all: []}, bot_statuses: {}, new_since_baseline: $nsb}' >"$bundle"
+  "$PR_STATE" --wait-state-eval "$HEAD_SHA" "$bundle" | jq -r '.new_findings'
+}
+
+# classify_as <login> <body> — classify one review authored by <login>, posted
+# after the baseline. Prints "class|reason", or "|" when enrich() drops it.
+classify_as() {
+  local reviews
+  reviews=$(jq -nc --arg login "$1" --arg body "$2" \
+    '[{id: 1, user: {login: $login}, submitted_at: "2026-10-01T16:00:00Z", html_url: null, url: null, body: $body}]')
+  since_bundle "$reviews" '[]' '[]' "$BASELINE" \
+    | jq -r '.reviews[0].classification | (.class // "") + "|" + (.reason // "")'
+}
+
+# Abbreviated verbatim body of CodeAnt inline finding 4157391754 (PR #1745).
+CODEANT_FINDING_BODY='**Suggestion:** The catalog claims `/pm-forgotten-pr` is covered, but the test never verifies its actual `--ceiling` read; leaving explanatory text intact could let dispatch regressions pass.
+
+**Assessment:** 🟠 `Major` · 🔁 `Occurrence: Rarely` · 🏷️ `Incomplete implementation`
+
+<details>
+<summary><b>Prompt for AI Agent 🤖 </b></summary>
+
+This is a comment left during a code review.
+
+**Path:** .claude/scripts/tests/pipeline-ceiling-consumers.test.sh
+**Line:** 3:3
+</details>'
+
+CODEANT_STATUS_BODY='## 🤖 CodeAnt AI — Review Status
+
+| Status | Commit | Started (UTC) | Finished (UTC) |
+| --- | --- | --- | --- |
+| ✅ Reviewed your PR | `d5884e6` | Oct 01, 2026 · 15:40 | 15:42 |
+
+<!-- codeant-review-status:[{"label":"Reviewed your PR","commit":"d5884e6f93e5446faf984e374ce4e473186e1195","done":true}] -->'
+
+# Bug11a: the PR #1745 replay. The CodeAnt finding and its empty COMMENTED review
+# land after the baseline; the status table and promo footer predate it.
+REVIEWS=$(jq -nc --arg sha "$HEAD_SHA" \
+  '[{id: 5381758756, user: {login: "codeant-ai[bot]"}, state: "COMMENTED", commit_id: $sha,
+     submitted_at: "2026-10-01T15:42:16Z", body: ""}]')
+INLINE=$(jq -nc --arg body "$CODEANT_FINDING_BODY" \
+  '[{id: 4157391754, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T15:42:16Z",
+     html_url: "https://github.com/auerbachb/claude-code-config/pull/1745#discussion_r4157391754", body: $body}]')
+CONVO=$(jq -nc --arg status "$CODEANT_STATUS_BODY" \
+  '[{id: 5934555428, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T15:23:36Z", body: $status},
+    {id: 5934555738, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T15:23:37Z",
+     body: "---\n\n### Thanks for using CodeAnt! 🎉\n\nWe are free for open-source projects."}]')
+NSB=$(since_bundle "$REVIEWS" "$INLINE" "$CONVO" "$BASELINE")
+got=$(jq -r '[.inline[0].user, .inline[0].classification.class, .finding_count, .acknowledgment_count,
+              (.conversation | length)] | map(tostring) | join(" ")' <<<"$NSB")
+if [[ "$got" == "codeant-ai[bot] finding 1 1 0" ]]; then
+  pass "Bug11a: PR #1745 replay — CodeAnt inline finding after --since counted (finding_count 1)"
+else
+  fail "Bug11a: PR #1745 replay — expected 'codeant-ai[bot] finding 1 1 0' (user class findings acks convo), got '$got'"
+fi
+got=$(wait_new_findings "$NSB" "$REVIEWS" "$INLINE" "$CONVO")
+if [[ "$got" =~ ^[0-9]+$ ]] && [[ "$got" -ge 1 ]]; then
+  pass "Bug11a: --wait-state-eval on the real classifier output reports new_findings $got (>= 1)"
+else
+  fail "Bug11a: --wait-state-eval — expected new_findings >= 1, got '$got'"
+fi
+
+# Bug11b: the same for Graphite. Abbreviated from a graphite-app[bot] inline finding (PR #1589).
+GRAPHITE_FINDING_BODY='The `marker_path()` test helper does not match the actual marker filename pattern when `cksum` is unavailable.
+
+```suggestion
+  [[ "$sum" =~ ^[0-9]+$ ]] || sum=""
+```
+
+*Spotted by [Graphite](https://app.graphite.com/diamond/?org=auerbachb&ref=ai-review-comment)*'
+INLINE=$(jq -nc --arg body "$GRAPHITE_FINDING_BODY" \
+  '[{id: 3001, user: {login: "graphite-app[bot]"}, created_at: "2026-10-01T15:45:00Z", body: $body}]')
+NSB=$(since_bundle '[]' "$INLINE" '[]' "$BASELINE")
+got=$(jq -r '[.inline[0].user, .inline[0].classification.class, .finding_count] | map(tostring) | join(" ")' <<<"$NSB")
+if [[ "$got" == "graphite-app[bot] finding 1" ]]; then
+  pass "Bug11b: Graphite inline finding after --since counted (finding_count 1)"
+else
+  fail "Bug11b: Graphite finding — expected 'graphite-app[bot] finding 1', got '$got'"
+fi
+got=$(wait_new_findings "$NSB" '[]' "$INLINE" '[]')
+if [[ "$got" =~ ^[0-9]+$ ]] && [[ "$got" -ge 1 ]]; then
+  pass "Bug11b: --wait-state-eval on the Graphite classifier output reports new_findings $got (>= 1)"
+else
+  fail "Bug11b: --wait-state-eval (Graphite) — expected new_findings >= 1, got '$got'"
+fi
+
+# Bug11c: CodeAnt non-finding items posted AFTER the baseline are admitted and stay
+# acknowledgments — the status table and an empty-body review, plus the thread
+# replies CodeAnt posts when /fixpr answers its findings. Without Bug 12's branches
+# those replies would be phantom findings that keep /fixpr's wait loop re-sweeping.
+REVIEWS=$(jq -nc '[{id: 7001, user: {login: "codeant-ai[bot]"}, state: "APPROVED", submitted_at: "2026-10-01T16:05:40Z", body: ""}]')
+INLINE=$(jq -nc '[
+  {id: 7002, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T16:06:00Z",
+   body: "✅ **CodeAnt verified this suggestion was addressed in subsequent commits and marked this thread resolved** as of `2c0c71b`.\n\nAdded an explicit guard.\n\n<!-- codeant-auto-resolve-reply -->"},
+  {id: 7003, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T16:06:30Z",
+   body: "✅ **Customized review instruction saved!**\n\n**Instruction:**\n> Keep per-source degradation.\n\n**Applied to:**\n  - `.claude/scripts/candidate-ownership.sh`"}]')
+CONVO=$(jq -nc --arg status "$CODEANT_STATUS_BODY" \
+  '[{id: 7004, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T16:05:16Z", body: $status}]')
+NSB=$(since_bundle "$REVIEWS" "$INLINE" "$CONVO" "$BASELINE")
+got=$(jq -r '[([.reviews[], .inline[], .conversation[]] | length), .finding_count, .acknowledgment_count]
+             | map(tostring) | join(" ")' <<<"$NSB")
+if [[ "$got" == "4 0 4" ]]; then
+  pass "Bug11c: CodeAnt status table, empty review and thread replies after --since — admitted, all acknowledgments"
+else
+  fail "Bug11c: CodeAnt acknowledgments — expected '4 0 4' (admitted findings acks), got '$got'"
+fi
+got=$(wait_new_findings "$NSB" "$REVIEWS" "$INLINE" "$CONVO")
+if [[ "$got" == "0" ]]; then
+  pass "Bug11c: --wait-state-eval reports new_findings 0 for CodeAnt acknowledgments"
+else
+  fail "Bug11c: --wait-state-eval (CodeAnt acks) — expected new_findings 0, got '$got'"
+fi
+
+# Bug11d: controls — a CodeAnt finding BEFORE the baseline and a human comment
+# after it both stay out of new_since_baseline.
+INLINE=$(jq -nc --arg body "$CODEANT_FINDING_BODY" '[
+  {id: 8001, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-01T15:30:00Z", body: $body},
+  {id: 8002, user: {login: "auerbachb"}, created_at: "2026-10-01T15:50:00Z", body: "Major: I think this needs a retry too."}]')
+NSB=$(since_bundle '[]' "$INLINE" '[]' "$BASELINE")
+got=$(jq -r '[(.inline | length), .finding_count] | map(tostring) | join(" ")' <<<"$NSB")
+if [[ "$got" == "0 0" ]]; then
+  pass "Bug11d: CodeAnt finding before --since and human comment after it — both excluded"
+else
+  fail "Bug11d: controls — expected '0 0' (admitted findings), got '$got'"
+fi
+
+# Bug11e: PARITY — the classifier's review_bots must equal pr-state.sh's
+# --wait-state-eval $botlist. Both are parsed out of the files themselves, so a
+# bot added to one list alone fails here. An unparseable list fails too: an empty
+# parse never counts as agreement.
+REVIEW_BOTS=$(tr '\n' ' ' <"$FILTER" \
+  | grep -oE 'def review_bots:[[:space:]]*\[("[^"]*"[[:space:]]*,?[[:space:]]*)+\]' \
+  | sed -E 's/^def review_bots:[[:space:]]*//' || true)
+BOTLIST=$(tr '\n' ' ' <"$PR_STATE" \
+  | grep -oE '\[("[^"]*"[[:space:]]*,?[[:space:]]*)+\][[:space:]]+as[[:space:]]+\$botlist' \
+  | sed -E 's/[[:space:]]+as[[:space:]]+\$botlist$//' || true)
+if [[ -z "$REVIEW_BOTS" || -z "$BOTLIST" ]]; then
+  fail "Bug11e: parity — could not parse review_bots ('$REVIEW_BOTS') or \$botlist ('$BOTLIST')"
+else
+  # Prints "true" only when the two lists hold the same logins and both bots this
+  # issue added are among them; any other output, a jq error included, fails.
+  parity=$(jq -nr --argjson a "$REVIEW_BOTS" --argjson b "$BOTLIST" \
+    '(($a | sort) == ($b | sort))
+     and any($a[]; . == "codeant-ai[bot]")
+     and any($a[]; . == "graphite-app[bot]")' 2>&1 || true)
+  if [[ "$parity" == "true" ]]; then
+    pass "Bug11e: parity — classifier review_bots equals pr-state.sh \$botlist"
+  else
+    fail "Bug11e: parity — review_bots $REVIEW_BOTS vs \$botlist $BOTLIST ($parity)"
+  fi
+fi
+
+# Bug11f: behavioural half of the parity check — a finding from EVERY login in
+# pr-state.sh's $botlist reaches new_since_baseline.
+if [[ -n "$BOTLIST" ]]; then
+  REVIEWS=$(jq -nc --argjson bots "$BOTLIST" \
+    '[$bots | to_entries[] | {id: (.key + 1), user: {login: .value},
+      submitted_at: "2026-10-01T16:00:00Z", body: "🟠 Major: missing retry on lock timeout."}]')
+  NSB=$(since_bundle "$REVIEWS" '[]' '[]' "$BASELINE")
+  got=$(jq -r --argjson bots "$BOTLIST" \
+    '([.reviews[].user] == $bots) and (.finding_count == ($bots | length))' <<<"$NSB")
+  if [[ "$got" == "true" ]]; then
+    pass "Bug11f: a finding from every \$botlist login is admitted and counted"
+  else
+    fail "Bug11f: expected every \$botlist login admitted — got users $(jq -c '[.reviews[].user]' <<<"$NSB")"
+  fi
+else
+  fail "Bug11f: \$botlist could not be parsed from pr-state.sh"
+fi
+
+# ---------------------------------------------------------------------------
+# Bug 12: CodeAnt non-finding shapes stay acknowledgments (issue #1748)
+#
+# Admitting codeant-ai[bot] exposed every CodeAnt body to classify. These shapes,
+# sampled from the 160 most recent PRs, matched no branch and fell through to
+# default → finding. The fixtures are abbreviated copies of the observed bodies.
+# ---------------------------------------------------------------------------
+check_codeant_ack() {
+  local label="$1" body="$2" want_reason="$3" result
+  result=$(classify_as "codeant-ai[bot]" "$body")
+  if [[ "$result" == "acknowledgment|$want_reason" ]]; then
+    pass "Bug12: $label → acknowledgment ($want_reason)"
+  else
+    fail "Bug12: $label — expected acknowledgment|$want_reason, got $result"
+  fi
+}
+
+check_codeant_ack "CodeAnt review-status table" "$CODEANT_STATUS_BODY" "CodeAnt review-status table"
+check_codeant_ack "CodeAnt empty-body review" "" "empty body"
+check_codeant_ack "CodeAnt auto-resolve reply" \
+  '✅ **CodeAnt verified this suggestion was addressed in subsequent commits** as of `7892928`.
+
+The fence opener regex now allows at most three leading spaces.
+
+<!-- codeant-auto-resolve-reply -->' "CodeAnt auto-resolve reply"
+# Tier-1 placement: the reply restates the fix and may carry finding vocabulary.
+check_codeant_ack "CodeAnt auto-resolve reply restating a critical fix" \
+  '✅ **CodeAnt verified this suggestion was addressed in subsequent commits and marked this thread resolved** as of `cf592ea`.
+
+The critical path now fails closed on a malformed table.
+
+<!-- codeant-auto-resolve-reply -->' "CodeAnt auto-resolve reply"
+check_codeant_ack "CodeAnt saved-instruction reply" \
+  '✅ **Customized review instruction saved!**
+
+**Instruction:**
+> Do not flag newline-delimited filename handling in scripts-catalog linting.
+
+---
+💡 *To manage or update this instruction, visit: [CodeAnt AI Settings](https://app.codeant.ai/org/settings/learnings)*' \
+  "CodeAnt saved-instruction reply"
+check_codeant_ack "CodeAnt promotional footer" \
+  '---
+
+### Thanks for using CodeAnt! 🎉
+
+We'"'"'re free for open-source projects. if you'"'"'re enjoying it, help us grow by sharing.' \
+  "CodeAnt promotional footer"
+check_codeant_ack "CodeAnt empty Nitpicks summary" \
+  '## CodeAnt Nitpicks
+
+_No threshold-suppressed suggestions found in the latest review._' "CodeAnt empty nitpicks summary"
+check_codeant_ack "CodeAnt review-skipped notice" \
+  '**Skipping CodeAnt AI review** — this PR changes more than 100 files, which usually means a migration, codemod, or vendored drop.
+
+If you still want a review, comment `@codeant-ai : review`.' "CodeAnt review-skipped notice"
+check_codeant_ack "CodeAnt subscription notice" \
+  'User dev@example.com does not have a PR Review subscription.
+
+Go to [Team management](https://app.codeant.ai/org/settings/team-management) and add this email to the PR Review subscription.' \
+  "CodeAnt subscription notice"
+
+# Bug12a: guards — what must stay a finding.
+check_codeant_finding() {
+  local label="$1" body="$2" result
+  result=$(classify_as "codeant-ai[bot]" "$body")
+  if [[ "${result%%|*}" == "finding" ]]; then
+    pass "Bug12a: $label → finding"
+  else
+    fail "Bug12a: $label — expected finding, got $result"
+  fi
+}
+
+# A Nitpicks summary that LISTS suggestions is real review output (PR #1550 shape).
+check_codeant_finding "CodeAnt Nitpicks summary listing a suggestion" '## CodeAnt Nitpicks
+
+<!-- codeant-nitpicks:pr_code_suggestions:start -->
+<details>
+<summary><strong>1 code suggestion</strong></summary>
+
+#### 1. If this new `mktemp` fails, the earlier temporary files remain because the cleanup trap is installed only afterward.
+
+</details>
+<!-- codeant-nitpicks:pr_code_suggestions:end -->'
+# Marker-only: the auto-resolve PROSE without its HTML marker reaches the finding tiers.
+check_codeant_finding "auto-resolve prose without the marker (marker-only)" \
+  'CodeAnt verified this suggestion was addressed in subsequent commits, but a major gap remains.'
+# Late placement: CodeAnt boilerplate beside finding language stays a finding.
+# Fails if the boilerplate branches are hoisted above the finding patterns.
+check_codeant_finding "CodeAnt promo footer + severity badge (late placement)" '### Thanks for using CodeAnt! 🎉
+
+🟠 Major: the retry loop never re-reads the lock.'
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -812,4 +1133,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743, #1207)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743, #1207, #1748)"
