@@ -125,6 +125,45 @@
 #   defence against a stolen lock turning into a silently dropped update, and
 #   the check must sit as close to the commit `mv` as possible.
 #
+# STATE_LOCK_WAITED — DID THIS ACQUIRE HAVE TO WAIT? (issue #1567)
+#   state_lock_acquire sets STATE_LOCK_WAITED on every return, alongside
+#   STATE_LOCK_DIR / STATE_LOCK_TOKEN. It is the only party that knows the
+#   answer exactly; a caller inferring it from outside (a lockdir pre-check, a
+#   whole-second clock either side of the call) is guessing, and both guesses
+#   are lossy (issue #1751: a slow uncontended acquire crossing a second
+#   boundary read as contended).
+#     0  the FIRST mkdir won — nobody held the lock when this call arrived.
+#        Clearing a legacy flock artifact or creating a missing parent
+#        directory first does not count: neither is another holder.
+#     1  at least one mkdir attempt FAILED with the parent directory present.
+#        That is a lock somebody else held: a live holder this call waited
+#        out, OR a STALE lock it broke and then took. Stale recovery reports 1
+#        deliberately — another holder existed, it may have died or wedged
+#        mid-write after changing the protected state, and the break itself
+#        sleeps — so a caller asking "was anyone else in here around my
+#        acquire?" must hear yes. The lock is NOT re-checked after a failed
+#        attempt (a holder that released in the meantime was still a holder),
+#        so a failure with another cause — an unwritable directory — also
+#        reports 1: over-reporting a wait only ever sends a caller down its
+#        conservative branch, and a persistent one ends in a timeout anyway.
+#   Re-entrant acquire (CLAUDE_STATE_LOCK_HELD names this lock): 0. Nothing was
+#     attempted — the ancestor already holds the lock — so nothing was waited
+#     for. The ancestor's own value is NOT inherited: a nested writer's flag
+#     describes its own call, and only the acquire that won the mkdir can say
+#     whether that mkdir had to wait.
+#   Failed acquire (non-zero return): still set — 1 once any attempt was lost,
+#     which a timeout always implies — but the caller holds nothing and should
+#     not branch on it.
+#   state_lock_release resets it to "" (no acquisition in effect), so read it
+#   immediately after the acquire it describes; a later acquire — including a
+#   re-entrant one in the same process — overwrites it. Treat anything other
+#   than an explicit 0 as "waited": that reading fails safe if the flag is
+#   ever empty.
+#   Published as a shell global like STATE_LOCK_DIR and STATE_LOCK_TOKEN, NOT
+#   exported into the environment: it describes THIS process's call, and a
+#   child that inherited it would be reading a value about an acquire it never
+#   made — the outside guess this flag exists to replace.
+#
 # DEPENDENCIES
 #   mkdir, mv, rm, date, sleep, hostname (all POSIX / base macOS).
 
@@ -143,6 +182,10 @@ STATE_LOCK_HELD_DIR=""
 
 # Token of the acquisition covering this process ("" when none).
 STATE_LOCK_TOKEN=""
+
+# Whether the most recent state_lock_acquire had to wait: 0, 1, or "" when no
+# acquisition is in effect. Contract in the header (STATE_LOCK_WAITED section).
+STATE_LOCK_WAITED=""
 
 # Current unix time. Uses bash's printf time format when available (a builtin,
 # no fork) and falls back to date(1) on bash 3.2 — macOS system bash. Forks are
@@ -319,7 +362,8 @@ _state_lock_break() {
 # state_lock_acquire <state-file-path> [timeout-seconds]
 # Blocks until the lock is held, the timeout expires, or the lock dir is
 # unwritable. Registers an EXIT trap so the lock is released even if the
-# caller exits early (including `set -e` aborts).
+# caller exits early (including `set -e` aborts). Sets STATE_LOCK_WAITED on
+# every return — see the header for the 0/1 contract.
 state_lock_acquire() {
   local state_file="$1"
   local timeout="${2:-${CLAUDE_STATE_LOCK_TIMEOUT:-30}}"
@@ -336,8 +380,14 @@ state_lock_acquire() {
     # process that won the mkdir may release it.
     STATE_LOCK_HELD_DIR="$lock_dir"
     STATE_LOCK_TOKEN="${CLAUDE_STATE_LOCK_TOKEN:-}"
+    # No attempt was made, so none was lost (header: STATE_LOCK_WAITED).
+    STATE_LOCK_WAITED=0
     return 0
   fi
+
+  # Not waited until an attempt actually loses to a lock already present —
+  # set inside the loop, never inferred from a clock (issue #1567).
+  STATE_LOCK_WAITED=0
 
   # Legacy artifact: before issue #639, cr-review-hourly.sh used flock(1) on a
   # regular FILE at this exact path. A file sitting there makes `mkdir` fail
@@ -400,6 +450,20 @@ state_lock_acquire() {
       continue
     fi
 
+    # This attempt lost: the lock is (or just was) somebody else's. Set BEFORE
+    # the stale branch on purpose — a stale lock we break and then take still
+    # had another holder, and reports 1 (header: STATE_LOCK_WAITED).
+    #
+    # Deliberately NOT gated on re-checking that the lock directory still
+    # exists. A holder can release between our failed mkdir and any look we
+    # take now; it was still a holder, and reporting 0 for that acquire is the
+    # unsafe direction — the caller would treat a contended acquire as clean.
+    # A mkdir that failed for some other reason (an unwritable parent) lands
+    # here too: if it persists it can only end in the timeout below, where the
+    # caller holds nothing and the flag decides nothing; if it was transient,
+    # over-reporting a wait costs a caller only its conservative branch.
+    STATE_LOCK_WAITED=1
+
     if [[ -d "$lock_dir" ]] && _state_lock_is_stale "$lock_dir" "$stale_age"; then
       _state_lock_break "$lock_dir" "$stale_age" || true
       continue
@@ -418,6 +482,9 @@ state_lock_acquire() {
 # owner pid is re-checked so we never delete a lock that is no longer ours.
 state_lock_release() {
   local lock_dir="$STATE_LOCK_DIR" token="$STATE_LOCK_TOKEN" owner_token
+  # Reset for every caller, re-entrant ones included: once released, no
+  # acquisition is in effect for the flag to describe.
+  STATE_LOCK_WAITED=""
   # STATE_LOCK_DIR is empty for a re-entrant caller, so an inner writer can
   # never release the lock its ancestor owns.
   [[ -n "$lock_dir" ]] || return 0
