@@ -378,6 +378,155 @@ check_eq "it reported the broken lock rather than failing silently" "1" \
 check_eq "the file it would have clobbered is byte-identical" "$BEFORE" "$(cat "$STATE_FILE")"
 rm -rf "$LOCK_DIR" "$LOCK_DIR.thief" "$SHIM_BIN" "$TMP_HOME/arm" "$TMP_HOME/parked" "$TMP_HOME/go"
 
+# ── issue #1567: STATE_LOCK_WAITED ──────────────────────────────────────────
+# state_lock_acquire reports whether it had to wait. Every case below is
+# deterministic: contention is produced through the lock itself — a real
+# holder process, or a lock directory planted on disk — and a live holder lets
+# go only on an explicit hand-off, never after a sleep. Each case is paired with
+# a control that would fail if the flag were hard-coded to the value it expects.
+#
+# The probe pre-seeds STATE_LOCK_WAITED with a sentinel AFTER sourcing, so a
+# path that forgets to assign the flag prints "sentinel" instead of passing on
+# the library's load-time default.
+ACQ_PROBE="$TMP_HOME/acquire-probe.sh"
+cat > "$ACQ_PROBE" <<'SH'
+#!/usr/bin/env bash
+# acquire-probe.sh <lock-lib> <state-file> <timeout> [handoff-dir]
+# Prints "rc=<acquire status> waited=<STATE_LOCK_WAITED>". With a handoff dir,
+# the first mkdir that LOSES to the existing lock touches <handoff-dir>/lost —
+# the signal a holder waits for before letting go.
+source "$1"
+if [[ -n "${4:-}" ]]; then
+  _probe_lock="$2.lock"
+  _probe_hand="$4"
+  mkdir() {
+    command mkdir "$@" && return 0
+    local rc=$?
+    if [[ "$#" -eq 1 && "$1" == "$_probe_lock" ]]; then : > "$_probe_hand/lost"; fi
+    return "$rc"
+  }
+fi
+STATE_LOCK_WAITED=sentinel
+state_lock_acquire "$2" "$3"
+rc=$?
+printf 'rc=%s waited=%s\n' "$rc" "$STATE_LOCK_WAITED"
+state_lock_release
+SH
+probe() { bash "$ACQ_PROBE" "$LOCK_LIB" "$@"; }
+# Bounded poll for a hand-off sentinel. The bound only stops a broken run from
+# hanging; no assertion depends on how long anything takes.
+wait_for() {
+  local path="$1" tries=400
+  while (( tries-- > 0 )); do [[ -e "$path" ]] && return 0; sleep 0.05; done
+  return 1
+}
+plant_lock() { # plant_lock <pid> <epoch>: a lock directory owned by <pid> on this host
+  mkdir -p "$LOCK_DIR"
+  { printf 'pid=%s\n' "$1"; printf 'host=%s\n' "$(hostname)"; printf 'epoch=%s\n' "$2"
+    printf 'token=planted-%s\n' "$1"; } > "$LOCK_DIR/owner"
+}
+
+echo
+echo "== issue #1567: an immediate acquire reports STATE_LOCK_WAITED=0 =="
+reset_state
+check_eq "free lock: acquired on the first attempt, not waited" "rc=0 waited=0" \
+  "$(probe "$STATE_FILE" 5 2>&1)"
+# Neither clearing the legacy flock artifact nor creating a missing parent
+# directory is another holder, so neither may read as a wait.
+reset_state
+: > "$LOCK_DIR"
+check_eq "legacy flock FILE cleared first: still not waited" "rc=0 waited=0" \
+  "$(probe "$STATE_FILE" 5 2>&1)"
+FRESH_PARENT="$TMP_HOME/no-such-dir-yet/state.json"
+check_eq "(setup) the parent directory is genuinely missing" "0" \
+  "$([[ -d "${FRESH_PARENT%/*}" ]] && echo 1 || echo 0)"
+check_eq "missing parent created first: still not waited" "rc=0 waited=0" \
+  "$(probe "$FRESH_PARENT" 5 2>&1)"
+rm -rf "${FRESH_PARENT%/*}"
+# Control: the same probe against a lock that IS held reports 1, so a flag
+# hard-coded to 0 fails here (the waited cases below are the full proof).
+reset_state
+plant_lock "$$" "$(date +%s)"
+check_eq "(control) a live holder makes even a zero-timeout attempt report waited=1" \
+  "rc=6 waited=1" "$(probe "$STATE_FILE" 0 2>/dev/null)"
+rm -rf "$LOCK_DIR"
+
+echo
+echo "== issue #1567: an acquire that waits out a live holder reports STATE_LOCK_WAITED=1 =="
+reset_state
+HAND="$TMP_HOME/handoff"; rm -rf "$HAND"; mkdir -p "$HAND"
+# The holder is a real process holding the lock through the library. It lets go
+# ONLY after the acquirer has demonstrably lost an attempt to it.
+bash -c 'source "$1"; state_lock_acquire "$2" 5 || exit 6; : > "$3/held"
+         while [[ ! -e "$3/release" ]]; do sleep 0.05; done
+         state_lock_release' _ "$LOCK_LIB" "$STATE_FILE" "$HAND" &
+HOLDER1567=$!
+wait_for "$HAND/held"
+check_eq "(setup) the holder took the lock" "1" "$([[ -e "$HAND/held" && -d "$LOCK_DIR" ]] && echo 1 || echo 0)"
+( probe "$STATE_FILE" 20 "$HAND" > "$HAND/acq.out" 2>&1 ) &
+ACQ1567=$!
+wait_for "$HAND/lost"; LOST_RC=$?
+: > "$HAND/release"   # unconditional, so a failed hand-off can never wedge the holder
+wait "$ACQ1567" 2>/dev/null; wait "$HOLDER1567" 2>/dev/null
+check_eq "(setup) the acquirer lost an attempt to the live holder before the release" "0" "$LOST_RC"
+check_eq "it then acquired, reporting waited=1" "rc=0 waited=1" "$(cat "$HAND/acq.out" 2>/dev/null)"
+# Control: the identical probe, hand-off wrapper and all, against a free lock.
+# A flag hard-coded to 1 fails here.
+reset_state; rm -f "$HAND/lost"
+check_eq "(control) the same probe on a free lock reports waited=0" "rc=0 waited=0" \
+  "$(probe "$STATE_FILE" 20 "$HAND" 2>&1)"
+check_eq "(control) and recorded no lost attempt" "0" "$([[ -e "$HAND/lost" ]] && echo 1 || echo 0)"
+rm -rf "$HAND" "$LOCK_DIR"
+
+echo
+echo "== issue #1567: stale-lock recovery reports STATE_LOCK_WAITED=1 =="
+# Documented choice: another holder existed — it died or wedged, possibly mid-
+# write — so the acquire that broke its lock is a waited acquire, not a fresh one.
+# The age rule, with this live process as the recorded pid: a pid that has
+# merely exited could be reused before the probe looks, reading as a live
+# holder and timing out. Which staleness rule fires does not matter to the
+# flag — it is set on the lost attempt, before the stale check runs.
+reset_state
+plant_lock "$$" "$(( $(date +%s) - 9999 ))"
+OUT="$(probe "$STATE_FILE" 5 2>"$TMP_HOME/stale.err")"
+check_eq "(setup) the ancient lock was broken, not timed out" "1" "$(grep -c 'broke stale lock' "$TMP_HOME/stale.err")"
+check_eq "stale lock broken and taken: waited=1" "rc=0 waited=1" "$OUT"
+# Control: with nothing to break, the same call reports 0 — a flag hard-coded to
+# 1 fails here.
+reset_state
+check_eq "(control) no stale lock to break: waited=0" "rc=0 waited=0" "$(probe "$STATE_FILE" 5 2>&1)"
+rm -f "$TMP_HOME/stale.err"
+
+echo
+echo "== issue #1567: a re-entrant acquire reports STATE_LOCK_WAITED=0 =="
+# The nested writer inherits CLAUDE_STATE_LOCK_HELD and attempts nothing, so it
+# waited for nothing — even though, from its point of view, the lock is held.
+reset_state
+OUT="$(bash -c 'source "$1"; state_lock_acquire "$2" 5 || exit 9
+  bash "$3" "$1" "$2" 0
+  env -u CLAUDE_STATE_LOCK_HELD -u CLAUDE_STATE_LOCK_TOKEN bash "$3" "$1" "$2" 0' \
+  _ "$LOCK_LIB" "$STATE_FILE" "$ACQ_PROBE" 2>/dev/null)"
+check_eq "nested acquire under the inherited lock: rc 0, waited=0" "rc=0 waited=0" "$(sed -n 1p <<<"$OUT")"
+# Control: the SAME call with the inheritance stripped is an ordinary contender
+# against the same live lock, so it loses and reports 1. A flag hard-coded to 0,
+# or a re-entrant path that merely fell through, fails one of these two checks.
+check_eq "(control) without the inherited marker it is a contender: rc 6, waited=1" "rc=6 waited=1" \
+  "$(sed -n 2p <<<"$OUT")"
+check_eq "the flag is a shell global, not exported to children" "0" \
+  "$(bash -c 'source "$1"; state_lock_acquire "$2" 5 || exit 9; env | grep -c "^STATE_LOCK_WAITED="' \
+       _ "$LOCK_LIB" "$STATE_FILE" 2>/dev/null)"
+
+echo
+echo "== issue #1567: state_lock_release resets STATE_LOCK_WAITED =="
+reset_state
+check_eq "set after acquire, empty after release" "before=0 after=[]" \
+  "$(bash -c 'source "$1"; state_lock_acquire "$2" 5 || exit 9; b="$STATE_LOCK_WAITED"
+              state_lock_release; printf "before=%s after=[%s]" "$b" "$STATE_LOCK_WAITED"' \
+       _ "$LOCK_LIB" "$STATE_FILE" 2>/dev/null)"
+check_eq "a library that is only sourced starts with no acquisition in effect" "[]" \
+  "$(bash -c 'source "$1"; printf "[%s]" "$STATE_LOCK_WAITED"' _ "$LOCK_LIB")"
+rm -rf "$LOCK_DIR"
+
 echo
 echo "== summary: $PASS passed, $FAIL failed =="
 if [[ "$FAIL" -gt 0 ]]; then

@@ -11,9 +11,10 @@ hook_stdin=$(cat)
 session_source=$(jq -r '.source // empty' <<<"$hook_stdin" 2>/dev/null)
 
 # Whether the config-sync lock had to be WAITED for. Set at the acquire below
-# and read by the restart-marker clear near the end: waiting is unambiguous
-# evidence that another sync was in flight during this startup, and so that
-# changes may have landed after this session loaded its definitions.
+# from state-lock.sh's own STATE_LOCK_WAITED, and read by the restart-marker
+# clear near the end: waiting is unambiguous evidence that another sync was in
+# flight during this startup, and so that changes may have landed after this
+# session loaded its definitions.
 _lock_contended=0
 
 # --- Sync skills worktree ---
@@ -334,56 +335,34 @@ if [[ -n "$_scripts_dir" && -f "$_lock_lib" ]]; then
   # Short bound: this hook is registered with timeout 30, and a real critical
   # section is milliseconds. A scheduled sync that genuinely holds the lock for
   # longer has already done this hook's work.
-  # Contention is detected three ways, OR-ed, because none alone is sound.
   #
-  #   1. Structural: does the lock directory already exist as we walk up to it?
-  #      state-lock.sh's lock for a given base is "${base}.lock" (documented in
-  #      its header). Present => somebody else holds it right now.
-  #   2. Probe: a zero-timeout state_lock_acquire. Its loop attempts mkdir
-  #      BEFORE its first deadline check, so a 0 bound is a single non-blocking
-  #      attempt — success proves no wait happened at all; failure proves a
-  #      live holder in that instant. A stale lock does not false-positive:
-  #      the loop breaks it and wins mkdir on the next iteration, still ahead
-  #      of the deadline check.
-  #   3. Timing: whole-second stamps either side of the acquire.
-  #
-  # The timing check ALONE is not enough: `date +%s` has one-second resolution,
-  # so a real wait shorter than a second reads as a delta of 0 and would be
-  # misreported as uncontended — which would clear the restart marker for
-  # definitions this session never loaded (the failure that matters, since it
-  # silently withholds the restart reminder). The structural check narrows that
-  # window but cannot close it: a holder appearing after the test and releasing
-  # within the same whole second slips both. The probe closes exactly that gap
-  # — any wait at all implies a failed first attempt.
-  #
-  # All three are biased toward reporting CONTENDED, whose only cost is a
-  # duplicate reminder. An unusable clock reads as CONTENDED for the same
-  # reason.
-  _lock_contended_pre=0
-  [[ -d "${_sync_lock_base}.lock" ]] && _lock_contended_pre=1
-  _lock_t0="$(date -u +%s 2>/dev/null)" || _lock_t0=""
   # 5, not 10. This wait is spent inside the same budget as the git calls below
   # (see the deadline block above), so a long wait does not overrun the hook —
   # it shortens those calls. Capping it anyway keeps a contended login from
   # spending the whole budget queueing for work the other holder is already
-  # doing. The 0-timeout probe costs nothing when uncontended and never waits.
-  _lock_probe_waited=0
-  if state_lock_acquire "$_sync_lock_base" 0 2>/dev/null; then
+  # doing.
+  if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
     _lock_held=1
-  else
-    _lock_probe_waited=1
-    if state_lock_acquire "$_sync_lock_base" "${CLAUDE_CONFIG_SYNC_HOOK_LOCK_TIMEOUT:-5}" 2>/dev/null; then
-      _lock_held=1
-    fi
   fi
-  _lock_t1="$(date -u +%s 2>/dev/null)" || _lock_t1=""
-  if (( _lock_contended_pre == 1 || _lock_probe_waited == 1 )); then
-    _lock_contended=1
-  elif [[ "$_lock_t0" =~ ^[0-9]+$ && "$_lock_t1" =~ ^[0-9]+$ ]]; then
-    (( _lock_t1 > _lock_t0 )) && _lock_contended=1
-  else
-    _lock_contended=1
-  fi
+  # Contention comes from the lock itself (issue #1567). state_lock_acquire
+  # publishes STATE_LOCK_WAITED: 0 only when its FIRST mkdir won, 1 when any
+  # attempt failed — a live holder it waited out, or a stale one it broke (a
+  # holder that died mid-sync may already have changed the tree).
+  # That is exact, with no clock and no resolution limit.
+  #
+  # It replaces three outside guesses at the same fact (PR #1553): a lockdir
+  # pre-check, a zero-timeout probe, and whole-second `date` stamps either side
+  # of the acquire. The stamps were the harmful one. A SLOW but uncontended
+  # acquire that straddled a second boundary read as contended, so the marker
+  # was kept on a startup that had loaded everything — the macOS CI flake in
+  # session-start-sync.test.sh case 11b (issue #1751). The other two only ever
+  # approximated what the library now reports directly.
+  #
+  # Captured HERE, immediately: the marker clear below re-acquires the lock,
+  # which overwrites the flag, and every release resets it. Anything other than
+  # an explicit 0 reads as CONTENDED — the safe direction, whose only cost is a
+  # duplicate restart reminder.
+  [[ "${STATE_LOCK_WAITED:-}" == 0 ]] || _lock_contended=1
 fi
 
 if [[ "$_lock_held" != 1 ]]; then
@@ -864,8 +843,9 @@ if [[ -f "$_marker_file" ]]; then
   # any clock we could sample here have one-second resolution, so a sync and a
   # session start in the SAME second are indistinguishable — and that same
   # second is exactly the race. Waiting at all, by contrast, is unambiguous
-  # evidence that another sync was in flight during this startup. An
-  # uncontended acquire is sub-second, so a zero-second delta is reliable.
+  # evidence that another sync was in flight during this startup, and
+  # state-lock.sh reports it exactly (STATE_LOCK_WAITED, captured at the
+  # acquire) rather than leaving this hook to infer it from a clock.
   # Third condition: the sync region must have SUCCEEDED. The skip guard only
   # asks whether the region ran, so a region that ran and failed — a tripped
   # bound, a failed reset, a setup that could not complete — still passed it,
