@@ -365,9 +365,9 @@ hq bash "$S_SEED" add --kind decision --repo "$REPO" --key k --question "Before 
 check "add on a store without 002 exits 1" "$RC" "1"
 check_contains "add on a store without 002 says to migrate" "$ERR" "run human-queue.sh migrate"
 HUGE_ID="D-99999999999999999999"
-sql_in "$S_SEED" "INSERT INTO items (id, kind, repo, key, question) VALUES ('D-41', 'decision', 'o/r', 'k', 'old one'), ('R-7', 'review', 'o/r', 'k', 'old two'), ('$HUGE_ID', 'decision', 'o/r', 'k', 'beyond bigint')" >/dev/null
+sql_in "$S_SEED" "INSERT INTO items (id, kind, repo, key, question) VALUES ('D-41', 'decision', 'o/r', 'k', 'old one'), ('R-7', 'review', 'o/r', 'k', 'old two'), ('$HUGE_ID', 'decision', 'o/r', 'k', 'beyond bigint'), ('D-9223372036854775808', 'decision', 'o/r', 'k', 'bigint max plus one')" >/dev/null
 hq bash "$S_SEED" migrate
-check "002 applies over existing rows, one of them beyond bigint" "$RC" "0"
+check "002 applies over existing rows, two of them beyond bigint" "$RC" "0"
 hq bash "$S_SEED" add --kind decision --repo "$REPO" --key k --question "After 002?"
 check "the next Decision id follows the highest existing one that fits the sequence" "$OUT" "D-42"
 hq bash "$S_SEED" add --kind review --repo "$REPO" --key k --question "Merged: after 002"
@@ -380,7 +380,7 @@ check_contains "get prints that id" "$OUT" "$HUGE_ID · decision · open"
 RC=0
 HUMAN_QUEUE_SCHEMA="$S_DUP" bash "$TMP/only001/desk/bin/human-queue.sh" migrate >/dev/null 2>"$TMP/err" </dev/null || RC=$?
 check "a second schema at 001 only migrates" "$RC" "0"
-sql_in "$S_DUP" "INSERT INTO items (id, kind, repo, key, question, status) VALUES ('D-5', 'decision', 'o/r', 'k', 'Same question?', 'open'), ('D-6', 'decision', 'o/r', 'k', '  same   QUESTION? ', 'open'), ('D-7', 'decision', 'o/r', 'k', 'Same question?', 'closed'), ('D-8', 'decision', 'o/r', 'other', 'Same question?', 'open')" >/dev/null
+sql_in "$S_DUP" "INSERT INTO items (id, kind, repo, key, question, status) VALUES ('D-5', 'decision', 'o/r', 'k', 'Same question?', 'open'), ('D-6', 'decision', 'o/r', 'k', '  same   QUESTION? ', 'open'), ('D-7', 'decision', 'o/r', 'k', 'Same question?', 'closed'), ('D-8', 'decision', 'o/r', 'other', 'Same question?', 'open'), ('R-9223372036854775806', 'review', 'o/r', 'k', 'One below bigint max', 'open')" >/dev/null
 hq bash "$S_DUP" migrate
 check "002 refuses open items that repeat a question" "$RC" "1"
 check_contains "002 names the repeating ids and what to do" "$ERR" "open items repeat the same question (D-5, D-6); close all but one"
@@ -393,6 +393,8 @@ hq bash "$S_DUP" migrate
 check "002 applies once the repeat is closed" "$RC" "0"
 hq bash "$S_DUP" add --kind decision --repo o/r --key k --question "same question?"
 check "the surviving open item is the one a repeat bumps" "$OUT" "D-5"
+hq bash "$S_DUP" add --kind review --repo o/r --key k --question "Merged: the last review id"
+check "a 19-digit id that fits bigint seeds its sequence" "$OUT" "R-9223372036854775807"
 
 # --- the live default schema was never touched -----------------------------------
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")

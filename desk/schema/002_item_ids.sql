@@ -20,23 +20,29 @@ COMMENT ON SEQUENCE items_review_seq IS 'Numbers Review ids (R-n); read only by 
 -- migrate prints whatever a migration's statements return. 001 allows ids of
 -- any length, but a sequence only reaches bigint's maximum: an id beyond it can
 -- never collide with a value the sequence hands out, so it is left out rather
--- than cast (a cast would fail and roll this migration back).
+-- than cast (a cast would fail and roll this migration back). The test is on
+-- the digits as text, before any cast: 001's CHECK rules out leading zeros, so
+-- fewer than 19 digits always fit, and 19 digits fit when they sort at or
+-- below bigint's maximum (byte order, so collation cannot change it). CASE
+-- keeps the cast from running on a row that fails the test.
 DO $$
 DECLARE
-  max_decision numeric;
-  max_review   numeric;
+  max_decision bigint;
+  max_review   bigint;
 BEGIN
-  SELECT max(n) INTO max_decision
-    FROM (SELECT substring(id FROM 3)::numeric AS n FROM items WHERE kind = 'decision') d
-   WHERE n <= 9223372036854775807;
-  SELECT max(n) INTO max_review
-    FROM (SELECT substring(id FROM 3)::numeric AS n FROM items WHERE kind = 'review') r
-   WHERE n <= 9223372036854775807;
+  SELECT max(CASE WHEN length(id) < 21
+                    OR (length(id) = 21 AND substring(id FROM 3) COLLATE "C" <= '9223372036854775807')
+                  THEN substring(id FROM 3)::bigint END)
+    INTO max_decision FROM items WHERE kind = 'decision';
+  SELECT max(CASE WHEN length(id) < 21
+                    OR (length(id) = 21 AND substring(id FROM 3) COLLATE "C" <= '9223372036854775807')
+                  THEN substring(id FROM 3)::bigint END)
+    INTO max_review FROM items WHERE kind = 'review';
   IF max_decision IS NOT NULL THEN
-    PERFORM setval('items_decision_seq', max_decision::bigint);
+    PERFORM setval('items_decision_seq', max_decision);
   END IF;
   IF max_review IS NOT NULL THEN
-    PERFORM setval('items_review_seq', max_review::bigint);
+    PERFORM setval('items_review_seq', max_review);
   END IF;
 END;
 $$;
