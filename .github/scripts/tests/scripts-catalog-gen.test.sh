@@ -426,6 +426,46 @@ printf 'notes\n'               > "$dir/.claude/scripts/tests/fixtures/new.md"
 printf '<plist/>\n'            > "$dir/.claude/scripts/com.example.other.plist"
 expect "out-of-scope files need no declaration" 0 'no drift' "$dir" --check
 
+# --- entry points outside .claude/scripts/ (CATALOG_EXTRA_DIRS, issue #1774) --
+# desk/bin holds the human-queue CLI, kept outside .claude/ so it can be spun
+# out. Its top-level *.sh are cataloged with a link that climbs from
+# .claude/scripts/docs/ to the repo root; the cmd/ and lib/ files it sources are
+# not entry points and need no declaration.
+new_case
+catalog_script "$dir" "desk/bin/queue.sh" tools "Queue CLI"
+mkdir -p "$dir/desk/bin/cmd" "$dir/desk/bin/lib"
+printf '# shellcheck shell=bash\n' > "$dir/desk/bin/cmd/sub.sh"
+printf '# shellcheck shell=bash\n' > "$dir/desk/bin/lib/common.sh"
+expect "a new desk/bin entry point is drift until written" 1 \
+  'committed catalog region is stale' "$dir" --check
+expect "--write catalogs the desk/bin entry point" 0 'scripts-catalog-gen: OK' "$dir" --write
+if grep -qF '| [queue.sh](../../../desk/bin/queue.sh) | Queue CLI |' "$dir/.claude/scripts/docs/tools.md"; then
+  ok "a desk/bin row links up to the repo root"
+else
+  bad "a desk/bin row links up to the repo root"
+  grep -F 'queue.sh' "$dir/.claude/scripts/docs/tools.md" | sed 's/^/       /' || true
+fi
+if [[ -f "$dir/.claude/scripts/docs/../../../desk/bin/queue.sh" ]]; then
+  ok "the desk/bin link resolves from the category doc"
+else
+  bad "the desk/bin link resolves from the category doc"
+fi
+if grep -qE '\[(sub|common)\.sh\]' "$dir/.claude/scripts/docs/tools.md"; then
+  bad "desk/bin/cmd/ or desk/bin/lib/ leaked into the catalog"
+else
+  ok "desk/bin/cmd/ and desk/bin/lib/ stay out of the catalog"
+fi
+expect "the tree is in sync after --write" 0 'no drift' "$dir" --check
+
+# NEGATIVE CONTROL: a desk/bin entry point is held to the same contract as any
+# in-scope script — an undeclared one is refused, so the cases above cannot pass
+# by the scope silently ignoring desk/bin.
+new_case
+mkdir -p "$dir/desk/bin"
+printf '#!/usr/bin/env bash\n# stray.sh — undeclared.\n' > "$dir/desk/bin/stray.sh"
+expect "an undeclared desk/bin entry point is refused" 1 \
+  'file=desk/bin/stray\.sh::no' "$dir" --check
+
 # --- real repo ------------------------------------------------------------
 # Read-only: --check regenerates into a temp buffer and writes nothing.
 if (cd "$REPO_ROOT" && bash "$CATALOG_GEN" --check >/dev/null 2>&1); then
