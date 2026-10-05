@@ -17,14 +17,21 @@ COMMENT ON SEQUENCE items_review_seq IS 'Numbers Review ids (R-n); read only by 
 
 -- Start each sequence past any id already in the table, so rows written before
 -- this migration can never collide with a new one. A DO block, not a SELECT:
--- migrate prints whatever a migration's statements return.
+-- migrate prints whatever a migration's statements return. 001 allows ids of
+-- any length, but a sequence only reaches bigint's maximum: an id beyond it can
+-- never collide with a value the sequence hands out, so it is left out rather
+-- than cast (a cast would fail and roll this migration back).
 DO $$
 DECLARE
   max_decision numeric;
   max_review   numeric;
 BEGIN
-  SELECT max(substring(id FROM 3)::numeric) INTO max_decision FROM items WHERE kind = 'decision';
-  SELECT max(substring(id FROM 3)::numeric) INTO max_review FROM items WHERE kind = 'review';
+  SELECT max(n) INTO max_decision
+    FROM (SELECT substring(id FROM 3)::numeric AS n FROM items WHERE kind = 'decision') d
+   WHERE n <= 9223372036854775807;
+  SELECT max(n) INTO max_review
+    FROM (SELECT substring(id FROM 3)::numeric AS n FROM items WHERE kind = 'review') r
+   WHERE n <= 9223372036854775807;
   IF max_decision IS NOT NULL THEN
     PERFORM setval('items_decision_seq', max_decision::bigint);
   END IF;
@@ -50,6 +57,29 @@ COMMENT ON FUNCTION item_question_hash(text) IS 'Dedupe key of an item question:
 -- this index is the backstop that makes a duplicate impossible even if a
 -- writer skipped that lock. An answered or closed question asked again becomes
 -- a new item, so the predicate is status = 'open' only.
+--
+-- Rows written before this migration were never deduplicated. If two open
+-- items already share a key, building the index would fail with a bare
+-- unique-violation; stop first with a message naming the ids instead. Nothing
+-- is closed or merged automatically: which copy to keep is the operator's
+-- call, and the whole migration rolls back, so it can simply run again.
+DO $$
+DECLARE
+  groups text;
+BEGIN
+  SELECT string_agg(ids, '; ' ORDER BY ids) INTO groups
+    FROM (SELECT string_agg(id, ', ' ORDER BY id) AS ids
+            FROM items
+           WHERE status = 'open'
+           GROUP BY kind, repo, key, item_question_hash(question)
+          HAVING count(*) > 1) g;
+  IF groups IS NOT NULL THEN
+    -- One line: migrate reports only the first ERROR line psql prints.
+    RAISE EXCEPTION 'open items repeat the same question (%); close all but one of each group, then run migrate again', groups;
+  END IF;
+END;
+$$;
+
 CREATE UNIQUE INDEX items_open_question_key
   ON items (kind, repo, key, item_question_hash(question))
   WHERE status = 'open';

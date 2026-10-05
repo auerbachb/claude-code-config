@@ -119,7 +119,8 @@ full contract.
   lines with 600 characters in total, at most 26 options, the impact values)
   is checked first in the CLI, so the database never sees a value it would
   reject. When options are given, `--default` must be one of them;
-  `--default-at` is ISO 8601 with a time zone.
+  `--default-at` is ISO 8601 with a time zone (an offset of at most 14:00
+  either way).
 - **Secrets.** Every value `add` takes, and `bump`'s note, is scanned for
   secret shapes: private keys; AWS, Google, Slack, GitHub, Stripe, `sk-`, and
   Neon `npg_` keys; JSON Web Tokens; bearer values; URLs with
@@ -130,8 +131,9 @@ full contract.
   question (compared ignoring case and runs of whitespace), `add` bumps it
   instead of creating a second one: it prints the same id, records `bumped`,
   and the fields given on that call replace the stored ones (the session
-  becomes the new return address). An answered or closed question asked again
-  is a new item. Concurrent adds are safe: an advisory lock per question
+  becomes the new return address). New options given without `--default`
+  clear a stored default that is not among them, with its time. An answered
+  or closed question asked again is a new item. Concurrent adds are safe: an advisory lock per question
   serializes them, ids come from per-kind sequences, and a partial unique
   index (`items_open_question_key`) makes a second open copy impossible.
 - **Printed shape.** `get`, `show`, and `list` share one renderer: a header
@@ -170,7 +172,10 @@ full contract.
   nothing, and re-running it is safe.
 - A merged migration reaches the shared store only when someone runs
   `human-queue.sh migrate` against it. Until `002_item_ids.sql` is applied,
-  `add` exits 1 with a hint to run `migrate`.
+  `add` exits 1 with a hint to run `migrate`. If the store already holds two
+  open items with the same kind, repo, key, and question, 002 stops and names
+  their ids, changing nothing: close all but one of each group and run it
+  again.
 
 ## Adding a subcommand
 
@@ -210,7 +215,8 @@ bash desk/tests/run.sh
   unchanged. With the URL set, an unreachable database fails the suite.
   `items.test.sh` covers the item round trip, dedupe, ten parallel adds (of
   distinct questions and of one question), `bump`, list filters and order, and
-  the id-sequence seeding in migration 002. `migrate.test.sh` derives its
+  migration 002 over existing rows (sequence seeding, an id beyond bigint,
+  duplicate open items). `migrate.test.sh` derives its
   expected migrations from `desk/schema/`, so a new migration needs no edit
   there.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when

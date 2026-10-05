@@ -171,6 +171,10 @@ for SH in $SHELLS; do
     add "${BASE[@]}" --default go --default-at 2026-10-05T24:00Z
   expect_rc "$SH" 4 "default-at with offset +16:00" "out-of-range time-zone offset" \
     add "${BASE[@]}" --default go --default-at 2026-10-05T18:00+16:00
+  expect_rc "$SH" 4 "default-at with offset +14:01" "out-of-range time-zone offset" \
+    add "${BASE[@]}" --default go --default-at 2026-10-05T18:00+14:01
+  expect_rc "$SH" 4 "default-at with offset -15:30" "out-of-range time-zone offset" \
+    add "${BASE[@]}" --default go --default-at 2026-10-05T18:00-1530
   expect_rc "$SH" 4 "unknown impact" "--impact must be low, medium, or high" \
     add "${BASE[@]}" --impact huge
   expect_rc "$SH" 4 "question given twice" "--question given more than once" \
@@ -266,6 +270,17 @@ for SH in $SHELLS; do
   RC=0
   env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" get d-43 >/dev/null 2>"$TMP/err" </dev/null || RC=$?
   check "[$SH] a lowercase id is accepted (reaches the database step)" "$RC" "7"
+  for long_id in D-9223372036854775807 R-99999999999999999999; do
+    RC=0
+    env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" bump "$long_id" >/dev/null 2>"$TMP/err" </dev/null || RC=$?
+    check "[$SH] a ${#long_id}-character id is accepted (reaches the database step)" "$RC" "7"
+  done
+  for tz in +14:00 -14:00 +0545 -09; do
+    RC=0
+    env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" add "${BASE[@]}" --default go \
+      --default-at "2026-10-05T18:00$tz" >/dev/null 2>"$TMP/err" </dev/null || RC=$?
+    check "[$SH] default-at with offset $tz passes validation" "$RC" "7"
+  done
   RC=0
   env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" list --kind review --status open --json \
     >/dev/null 2>"$TMP/err" </dev/null || RC=$?

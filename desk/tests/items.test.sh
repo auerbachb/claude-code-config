@@ -28,8 +28,12 @@
 #        again is a new item; the unique index backs the dedupe up; bump
 #        writes `bumped` with its note and exits 4 on an unknown id; get, list,
 #        and show record no event; list filters and orders (parked, impact,
-#        age); show lists events oldest first; migration 002 seeds the id
-#        sequences past existing rows; an unmigrated store exits 1 with a hint
+#        age); show lists events oldest first; a repeat that replaces the
+#        options clears a default that is no longer one of them; migration
+#        002 seeds the id sequences past existing rows (skipping an id beyond
+#        bigint, which get still reads) and stops, naming the ids and
+#        changing nothing, when open items already repeat a question; an
+#        unmigrated store exits 1 with a hint
 # On macOS, a share of the calls (including half of each parallel batch) run
 # under /bin/bash 3.2.
 set -uo pipefail
@@ -52,13 +56,14 @@ HUMAN_QUEUE_SCHEMA=public hq_db_connect
 BASE="hq_test_$$_$(printf '%05d' "$RANDOM")"
 S_MAIN="${BASE}_items"
 S_SEED="${BASE}_seed"
+S_DUP="${BASE}_dup"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/hq-items-test.XXXXXX")
 
 admin_sql() { hq_psql -At -c "$1"; }
 
 cleanup() {
-  admin_sql "DROP SCHEMA IF EXISTS $S_MAIN CASCADE; DROP SCHEMA IF EXISTS $S_SEED CASCADE;" >/dev/null 2>&1 \
-    || echo "WARN: could not drop scratch schemas $S_MAIN / $S_SEED — drop them by hand" >&2
+  admin_sql "DROP SCHEMA IF EXISTS $S_MAIN CASCADE; DROP SCHEMA IF EXISTS $S_SEED CASCADE; DROP SCHEMA IF EXISTS $S_DUP CASCADE;" >/dev/null 2>&1 \
+    || echo "WARN: could not drop scratch schemas $S_MAIN / $S_SEED / $S_DUP — drop them by hand" >&2
   rm -rf "$TMP"
   hq__cleanup_tmp
 }
@@ -230,6 +235,33 @@ check_contains "get prints the status" "$OUT" "D-2 · decision · answered ·"
 R=$(sql_in "$S_MAIN" "INSERT INTO items (id, kind, repo, key, question) VALUES ('D-900', 'decision', '$REPO', 'pr-1776', 'SHIP the migration before the CLI?')" || true)
 check_contains "the unique index refuses a second open copy" "$R" "items_open_question_key"
 
+# --- a repeat that replaces the options keeps the default only if it still fits --
+QD="Which default survives a new option list?"
+hq bash "$S_MAIN" add --kind decision --repo "$REPO" --key pr-defaults --question "$QD" \
+  --option Alpha --option Beta --default Beta --default-at 2026-10-05T18:00Z
+DID="$OUT"
+hq "$OLD_BASH" "$S_MAIN" add --kind decision --repo "$REPO" --key pr-defaults --question "$QD" \
+  --option Alpha --option Beta --option Gamma
+check "new options that include the stored default bump the same item" "$OUT" "$DID"
+check "new options that include the stored default keep it and its time" \
+  "$(sql_in "$S_MAIN" "SELECT default_option || '|' || (default_at IS NOT NULL) FROM items WHERE id = '$DID'")" \
+  "Beta|true"
+hq bash "$S_MAIN" add --kind decision --repo "$REPO" --key pr-defaults --question "$QD" \
+  --option Alpha --option Gamma
+check "new options without the stored default clear it and its time" \
+  "$(sql_in "$S_MAIN" "SELECT coalesce(default_option, 'none') || '|' || coalesce(default_at::text, 'none') || '|' || array_to_string(options, ',') FROM items WHERE id = '$DID'")" \
+  "none|none|Alpha,Gamma"
+hq bash "$S_MAIN" get "$DID"
+check_absent "a cleared default is not printed" "$OUT" "Default:"
+hq bash "$S_MAIN" add --kind decision --repo "$REPO" --key pr-defaults --question "$QD" \
+  --option Delta --option Gamma --default Delta
+check "new options with a new default store both" \
+  "$(sql_in "$S_MAIN" "SELECT default_option || '|' || array_to_string(options, ',') FROM items WHERE id = '$DID'")" \
+  "Delta|Delta,Gamma"
+hq bash "$S_MAIN" add --kind decision --repo "$REPO" --key pr-defaults --question "$QD" --impact high
+check "a repeat without options keeps the stored default" \
+  "$(sql_in "$S_MAIN" "SELECT default_option FROM items WHERE id = '$DID'")" "Delta"
+
 # --- bump ------------------------------------------------------------------------
 BEFORE=$(sql_in "$S_MAIN" "SELECT updated_at FROM items WHERE id = 'R-1'")
 hq "$OLD_BASH" "$S_MAIN" bump r-1 --note "rebased onto main"
@@ -332,13 +364,35 @@ check "a schema at 001 only migrates" "$RC" "0"
 hq bash "$S_SEED" add --kind decision --repo "$REPO" --key k --question "Before 002?"
 check "add on a store without 002 exits 1" "$RC" "1"
 check_contains "add on a store without 002 says to migrate" "$ERR" "run human-queue.sh migrate"
-sql_in "$S_SEED" "INSERT INTO items (id, kind, repo, key, question) VALUES ('D-41', 'decision', 'o/r', 'k', 'old one'), ('R-7', 'review', 'o/r', 'k', 'old two')" >/dev/null
+HUGE_ID="D-99999999999999999999"
+sql_in "$S_SEED" "INSERT INTO items (id, kind, repo, key, question) VALUES ('D-41', 'decision', 'o/r', 'k', 'old one'), ('R-7', 'review', 'o/r', 'k', 'old two'), ('$HUGE_ID', 'decision', 'o/r', 'k', 'beyond bigint')" >/dev/null
 hq bash "$S_SEED" migrate
-check "002 applies over existing rows" "$RC" "0"
+check "002 applies over existing rows, one of them beyond bigint" "$RC" "0"
 hq bash "$S_SEED" add --kind decision --repo "$REPO" --key k --question "After 002?"
-check "the next Decision id follows the highest existing one" "$OUT" "D-42"
+check "the next Decision id follows the highest existing one that fits the sequence" "$OUT" "D-42"
 hq bash "$S_SEED" add --kind review --repo "$REPO" --key k --question "Merged: after 002"
 check "the next Review id follows the highest existing one" "$OUT" "R-8"
+hq "$OLD_BASH" "$S_SEED" get "$HUGE_ID"
+check "get reads an id longer than bigint" "$RC" "0"
+check_contains "get prints that id" "$OUT" "$HUGE_ID · decision · open"
+
+# --- migration 002 stops, naming the ids, when open items already repeat ---------
+RC=0
+HUMAN_QUEUE_SCHEMA="$S_DUP" bash "$TMP/only001/desk/bin/human-queue.sh" migrate >/dev/null 2>"$TMP/err" </dev/null || RC=$?
+check "a second schema at 001 only migrates" "$RC" "0"
+sql_in "$S_DUP" "INSERT INTO items (id, kind, repo, key, question, status) VALUES ('D-5', 'decision', 'o/r', 'k', 'Same question?', 'open'), ('D-6', 'decision', 'o/r', 'k', '  same   QUESTION? ', 'open'), ('D-7', 'decision', 'o/r', 'k', 'Same question?', 'closed'), ('D-8', 'decision', 'o/r', 'other', 'Same question?', 'open')" >/dev/null
+hq bash "$S_DUP" migrate
+check "002 refuses open items that repeat a question" "$RC" "1"
+check_contains "002 names the repeating ids and what to do" "$ERR" "open items repeat the same question (D-5, D-6); close all but one"
+check "a refused 002 records nothing" \
+  "$(sql_in "$S_DUP" "SELECT count(*) FROM schema_migrations WHERE filename = '002_item_ids.sql'")" "0"
+check "a refused 002 creates nothing" \
+  "$(sql_in "$S_DUP" "SELECT count(*) FROM pg_class WHERE relname = 'items_decision_seq' AND relnamespace = '$S_DUP'::regnamespace")" "0"
+sql_in "$S_DUP" "UPDATE items SET status = 'closed' WHERE id = 'D-6'" >/dev/null
+hq bash "$S_DUP" migrate
+check "002 applies once the repeat is closed" "$RC" "0"
+hq bash "$S_DUP" add --kind decision --repo o/r --key k --question "same question?"
+check "the surviving open item is the one a repeat bumps" "$OUT" "D-5"
 
 # --- the live default schema was never touched -----------------------------------
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")

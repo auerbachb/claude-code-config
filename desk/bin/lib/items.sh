@@ -12,7 +12,8 @@
 #                               VALUE is non-blank, one line, at most MAX
 #                               characters; exits 4 naming FIELD otherwise
 #   hq_check_timestamp FIELD VALUE
-#                               ISO 8601 date and time WITH a time zone, and a
+#                               ISO 8601 date and time WITH a time zone (an
+#                               offset of at most 14:00 either way), and a
 #                               real calendar date; exits 4 otherwise
 #   hq_in_list VALUE WORDS      true when VALUE is one of the space-separated WORDS
 #   hq_is_kind / hq_is_status / hq_is_impact VALUE
@@ -68,12 +69,11 @@ hq_item_id() {
     *) hq_die_validation "invalid item id (expected D-<n> or R-<n>, for example D-43)" ;;
   esac
   hq__n="${hq__v#??}"
+  # No length cap: 001's CHECK (^[DR]-[1-9][0-9]*$) has none, the sequences
+  # reach 19 digits (bigint), and the id only ever travels as text.
   case "$hq__n" in
     *[!0-9]*) hq_die_validation "invalid item id (expected D-<n> or R-<n>, for example D-43)" ;;
   esac
-  if [ "${#hq__n}" -gt 18 ]; then
-    hq_die_validation "invalid item id (the number is too long)"
-  fi
   case "$hq__v" in
     [Dd]*) printf -v "$1" 'D-%s' "$hq__n" ;;
     *) printf -v "$1" 'R-%s' "$hq__n" ;;
@@ -162,7 +162,8 @@ hq_check_timestamp() {
       om="${tz:3}"
       om="${om#:}"
       om=$((10#${om:-0}))
-      if [ "$oh" -gt 15 ] || [ "$om" -gt 59 ]; then
+      # Real offsets span -12:00 to +14:00; accept up to 14:00 either way.
+      if [ "$om" -gt 59 ] || [ $((oh * 60 + om)) -gt 840 ]; then
         hq_die_validation "$field has an out-of-range time-zone offset"
       fi
       ;;

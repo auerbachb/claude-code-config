@@ -34,8 +34,8 @@ OPTIONS
   --default TEXT            the recommended answer; must be one of the --option
                             values when options are given
   --default-at TIME         when the agent takes the default: ISO 8601 with a
-                            time zone, for example 2026-10-05T18:00Z
-                            (needs --default)
+                            time zone (offset at most 14:00 either way), for
+                            example 2026-10-05T18:00Z (needs --default)
   --impact low|medium|high  declared impact
   --parked                  the asking agent is parked waiting on this item
   --cost TEXT               operator effort to answer, for example "~10 min"
@@ -48,8 +48,10 @@ DEDUPE
   creating a second item: the id is reused, a `bumped` event is recorded
   instead of `asked`, and the fields given on this call replace the stored
   ones (the session becomes the new return address); fields not given keep
-  their values. The id and the question text never change. A question asked
-  again after it was answered or closed is a new item.
+  their values, except that new --option values without --default clear a
+  stored default that is not among them (and its --default-at). The id and
+  the question text never change. A question asked again after it was
+  answered or closed is a new item.
   Concurrent adds are safe: id allocation and dedupe are serialized by the
   database (an advisory lock per question, backed by a unique index).
 
@@ -108,14 +110,31 @@ hq__sql_text_array() {
 #      the previous lock holder committed.
 #   3. New: allocate from the kind's sequence, insert the item and its `asked`
 #      event. Existing open item: refresh the given fields and record `bumped`.
+#      When the call replaces the options without giving --default, a stored
+#      default that is not among the new options is cleared, with its time,
+#      so the default always names an option it can be answered with.
 # SEQUENCE and PREFIX come from a fixed mapping of the validated kind; every
 # value travels as a psql variable.
 hq__add_sql() {
-  local seq="$1" prefix="$2" ctx_sql opt_sql ctx_set="" opt_set=""
+  local seq="$1" prefix="$2" ctx_sql opt_sql ctx_set="" opt_set="" def_set
   ctx_sql=$(hq__sql_text_array hq_ctx "$3")
   opt_sql=$(hq__sql_text_array hq_opt "$4")
   if [ "$3" -gt 0 ]; then ctx_set="context = $ctx_sql,"; fi
-  if [ "$4" -gt 0 ]; then opt_set="options = $opt_sql,"; fi
+  if [ "$4" -gt 0 ]; then
+    opt_set="options = $opt_sql,"
+    # In SET, default_option and default_at on the right are the stored values.
+    # Every cast stays behind nullif: the planner folds constants even in a
+    # CASE branch that never runs, so a bare ''::timestamptz would fail.
+    def_set="default_option  = CASE WHEN nullif(:'hq_default', '') IS NOT NULL
+                             OR default_option = ANY($opt_sql)
+                           THEN coalesce(nullif(:'hq_default', ''), default_option) END,
+    default_at      = CASE WHEN nullif(:'hq_default', '') IS NOT NULL
+                             OR default_option = ANY($opt_sql)
+                           THEN coalesce(nullif(:'hq_default_at', '')::timestamptz, default_at) END,"
+  else
+    def_set="default_option  = coalesce(nullif(:'hq_default', ''), default_option),
+    default_at      = coalesce(nullif(:'hq_default_at', '')::timestamptz, default_at),"
+  fi
 
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
@@ -151,11 +170,9 @@ SELECT id FROM new_item;
 WITH bumped AS (
   UPDATE items SET
 SQL
-  printf '    %s\n    %s\n' "$ctx_set" "$opt_set"
+  printf '    %s\n    %s\n    %s\n' "$ctx_set" "$opt_set" "$def_set"
   cat <<'SQL'
     session_id      = coalesce(nullif(:'hq_session', ''), session_id),
-    default_option  = coalesce(nullif(:'hq_default', ''), default_option),
-    default_at      = coalesce(nullif(:'hq_default_at', '')::timestamptz, default_at),
     impact_declared = coalesce(nullif(:'hq_impact', ''), impact_declared),
     cost            = coalesce(nullif(:'hq_cost', ''), cost),
     focus           = coalesce(nullif(:'hq_focus', ''), focus),
