@@ -14,6 +14,8 @@ be spun out as its own project later.
 | `bin/cmd/<name>.sh` | One file per subcommand, found at run time |
 | `bin/lib/common.sh` | One-line diagnostics, exit codes, `HUMAN_QUEUE_SCHEMA` |
 | `bin/lib/db.sh` | Connection handling: URL parsing, the two-second probe, psql |
+| `bin/lib/items.sh` | Item ids, input checks mirrored from the schema, the shared item renderer |
+| `bin/lib/secrets.sh` | The secret-shape detector behind exit 5 |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
 | `hooks/` | Hook implementations (the capture hook arrives with issue #1755) |
 | `skill/` | The `/desk` skill (arrives with the `/desk` issues) |
@@ -76,8 +78,8 @@ URL, is refused with exit 7 rather than silently dropped.
 |------|---------|
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
-| `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, or invalid input |
-| `5` | secret refused: free text that looks like a credential is never stored (used by `add`, issue #1775) |
+| `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, or an item id that does not exist |
+| `5` | secret refused: free text that looks like a credential is never stored (`add`, and `bump --note`) |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -91,8 +93,67 @@ same 1.5-second connect deadline, so a database that goes away after the probe
 also ends in exit 7 rather than a hang; once a connection is up, the SQL itself
 is not time-limited.
 
-Validation always runs before any connection attempt, and `--help` (global or
-per subcommand) never touches the database.
+Validation and the secret check always run before any connection attempt, and
+`--help` (global or per subcommand) never touches the database. The one exit 4
+that needs the store is an item id that does not exist; it is reported after
+connecting.
+
+## Items
+
+Every item is a Decision (`D-43`: needs the operator, holds an agent) or a
+Review (`R-88`: landed work). Ids are short and typeable; a lowercase `d-43` is
+accepted everywhere and printed as `D-43`. Each subcommand's `--help` is its
+full contract.
+
+| Subcommand | What it does |
+|------------|--------------|
+| `add --kind K --repo O/N --key KEY --question TEXT [...]` | Writes an item and its `asked` event, then prints the new id alone. Optional: `--session`, up to three `--context`, up to 26 `--option`, `--default`, `--default-at`, `--impact`, `--parked`, `--cost`, `--focus` |
+| `bump ID [--note TEXT]` | Records a `bumped` event and refreshes `updated_at` |
+| `get ID [--json]` | Prints one item |
+| `show ID [--json]` | Prints one item, then its events, oldest first |
+| `list [--kind K] [--status S] [--json]` | Prints matching items: parked first, then impact, then age |
+
+- **Validation.** `add` checks the required fields in the order kind, repo,
+  key, question, and names the first one missing (exit 4). Every limit in the
+  schema (a one-line question of at most 500 characters, at most three context
+  lines with 600 characters in total, at most 26 options, the impact values)
+  is checked first in the CLI, so the database never sees a value it would
+  reject. When options are given, `--default` must be one of them;
+  `--default-at` is ISO 8601 with a time zone (an offset of at most 14:00
+  either way).
+- **Secrets.** Every value `add` takes, and `bump`'s note, is scanned for
+  secret shapes: private keys; AWS, Google, Slack, GitHub, Stripe, `sk-`, and
+  Neon `npg_` keys; JSON Web Tokens; bearer values; URLs with
+  `user:password@`; and labeled values such as `password=...`. A match exits 5
+  naming the flag, never the value, and nothing is stored. The scan is a
+  heuristic; it cannot recognize every secret.
+- **Dedupe.** If an *open* item already has the same kind, repo, key, and
+  question (compared ignoring case and runs of whitespace), `add` bumps it
+  instead of creating a second one: it prints the same id, records `bumped`,
+  and the fields given on that call replace the stored ones (the session
+  becomes the new return address). New options given without `--default`
+  clear a stored default that is not among them, with its time. An answered
+  or closed question asked again is a new item. Concurrent adds are safe: an advisory lock per question
+  serializes them, ids come from per-kind sequences, and a partial unique
+  index (`items_open_question_key`) makes a second open copy impossible.
+- **Printed shape.** `get`, `show`, and `list` share one renderer: a header
+  line, the question in bold, the context as a numbered list, lettered
+  options, the default and when it applies, one line of triage facts, and the
+  answer once there is one. Times are UTC.
+
+  ```text
+  D-43 · decision · open · auerbachb/claude-code-config · pr-1775
+  **Ship the migration before the CLI?**
+  1. Migration 002 adds the id sequences.
+  2. The CLI allocates ids from them.
+  Options: A. Ship now · B. Wait for review
+  Default: B. Wait for review, at 2026-10-05 22:00 UTC
+  Asked 2026-10-05 21:40 UTC · Impact: high · Cost: ~10 min · Parked · Session: abc
+  ```
+
+- **Events** record state changes only (`asked`, `bumped`, ...), with an
+  optional note of at most 200 characters: never transcripts or diffs.
+  Reading (`get`, `show`, `list`) records nothing.
 
 ## Migrations
 
@@ -109,6 +170,12 @@ per subcommand) never touches the database.
   The wait is capped at 30 seconds (`lock_timeout`), so a stuck run cannot
   hang the next one: past the cap the later run exits 1 having changed
   nothing, and re-running it is safe.
+- A merged migration reaches the shared store only when someone runs
+  `human-queue.sh migrate` against it. Until `002_item_ids.sql` is applied,
+  `add` exits 1 with a hint to run `migrate`. If the store already holds two
+  open items with the same kind, repo, key, and question, 002 stops and names
+  their ids, changing nothing: close all but one of each group and run it
+  again.
 
 ## Adding a subcommand
 
@@ -120,7 +187,10 @@ not edit `human-queue.sh`. The file:
 - defines `cmd_usage` (printed for `<name> --help`) and `cmd_run "$@"`;
 - validates its arguments first (exit 4 through `hq_die_validation`), then calls
   `hq_db_connect`, then runs SQL through `hq_db_script` (one transaction in the
-  selected schema) or `hq_psql`, mapping failures with `hq_db_fail`.
+  selected schema) or `hq_psql`, mapping failures with `hq_db_fail`;
+- sources `lib/items.sh` for ids, input checks, and the item renderer, and
+  `lib/secrets.sh` (`hq_refuse_secret`) for any free text it stores; values
+  reach SQL only as psql variables (`-v name=value`, used as `:'name'`).
 
 ## Tests
 
@@ -133,14 +203,24 @@ bash desk/tests/run.sh
   installed, an `.invalid` host and a TEST-NET address), and that the URL never
   reaches `psql`'s argv or any output. Each case runs under `bash` and, on
   macOS, under `/bin/bash` 3.2.
-- `migrate.test.sh` runs against the real database when
-  `HUMAN_QUEUE_DATABASE_URL` is set and skips with a notice otherwise. It never
-  touches the queue's own tables: each run creates throwaway schemas named
-  `hq_test_<pid>_<random>`, points the CLI at them with `HUMAN_QUEUE_SCHEMA`,
-  drops them on exit, and asserts the `public` schema is unchanged. With the
-  URL set, an unreachable database fails the suite.
+- `items-cli.test.sh` is offline too: every `add`/`bump`/`get`/`list`/`show`
+  validation rule (exit 4) and secret shape (exit 5) is refused without a
+  connection attempt and without echoing the value, and prose that merely
+  mentions a password or token is let through. Same two shells.
+- `migrate.test.sh` and `items.test.sh` run against the real database when
+  `HUMAN_QUEUE_DATABASE_URL` is set and skip with a notice otherwise. They
+  never touch the queue's own tables: each run creates throwaway schemas named
+  `hq_test_<pid>_<random>[_suffix]`, points the CLI at them with
+  `HUMAN_QUEUE_SCHEMA`, drops them on exit, and asserts the `public` schema is
+  unchanged. With the URL set, an unreachable database fails the suite.
+  `items.test.sh` covers the item round trip, dedupe, ten parallel adds (of
+  distinct questions and of one question), `bump`, list filters and order, and
+  migration 002 over existing rows (sequence seeding, an id beyond bigint,
+  duplicate open items). `migrate.test.sh` derives its
+  expected migrations from `desk/schema/`, so a new migration needs no edit
+  there.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
 
 CI runs the suites through `.github/scripts/run-hook-tests.sh`, without a
-database, so the live suite skips there.
+database, so the live suites skip there.

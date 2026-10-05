@@ -13,7 +13,9 @@
 #
 # Asserts (Test Plan 5.1 and AC 4.3/4.4):
 #   - migrate on an empty schema creates items, events, sets, state and
-#     schema_migrations, and records 001_init.sql by full filename
+#     schema_migrations, and applies every desk/schema file in order, each
+#     recorded by full filename (expectations come from the directory, so a
+#     new migration never needs this suite edited)
 #   - a second migrate applies nothing
 #   - two files sharing a prefix (002_alpha, 002_beta) both apply, in order
 #   - a failing migration rolls back its DDL and its ledger row, exit 1
@@ -98,16 +100,24 @@ run_migrate() {
   ERR=$(cat "$TMP/err")
 }
 
+# The migrations on disk, in the runner's (LC_ALL=C) order: the expected
+# `applied` lines, the expected ledger, and how many rows it holds.
+SCHEMA_FILES=$(cd "$HQ_T_DESK_DIR/schema" && for f in [0-9][0-9][0-9]_*.sql; do printf '%s\n' "$f"; done | LC_ALL=C sort)
+EXPECTED_APPLIED=$(printf '%s\n' "$SCHEMA_FILES" | sed 's/^/applied /')
+EXPECTED_LEDGER=$(printf '%s\n' "$SCHEMA_FILES" | paste -sd, -)
+N_SCHEMA_FILES=$(hq_t_lines "$SCHEMA_FILES")
+
 # --- 5.1: empty schema -> four tables + ledger -----------------------------
 echo "first migrate runs under: $OLD_BASH"
 run_migrate "$S_MAIN" "$HQ_T_CLI" "$OLD_BASH"
 check "first migrate exits 0" "$RC" "0"
-check "first migrate applies 001_init.sql" "$OUT" "applied 001_init.sql"
+check "first migrate applies every schema file, in order" "$OUT" "$EXPECTED_APPLIED"
+check "first migrate applies 001_init.sql first" "$(printf '%s\n' "$OUT" | sed -n 1p)" "applied 001_init.sql"
 check "first migrate is silent on stderr" "$ERR" ""
 TABLES=$(sql_in "$S_MAIN" "SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables WHERE table_schema = '$S_MAIN'")
 check "migrate created exactly the expected tables" "$TABLES" "events,items,schema_migrations,sets,state"
 LEDGER=$(sql_in "$S_MAIN" "SELECT string_agg(filename, ',' ORDER BY filename) FROM schema_migrations")
-check "ledger records the full filename" "$LEDGER" "001_init.sql"
+check "ledger records every file by its full filename" "$LEDGER" "$EXPECTED_LEDGER"
 
 run_migrate "$S_MAIN"
 check "second migrate exits 0" "$RC" "0"
@@ -177,7 +187,8 @@ check "two 002_ files exit 0" "$RC" "0"
 check "two 002_ files both apply, in lexical order" "$OUT" "applied 002_alpha.sql
 applied 002_beta.sql"
 LEDGER=$(sql_in "$S_MAIN" "SELECT string_agg(filename, ',' ORDER BY filename) FROM schema_migrations")
-check "ledger holds both same-prefix files" "$LEDGER" "001_init.sql,002_alpha.sql,002_beta.sql"
+check "ledger holds both same-prefix files" "$LEDGER" \
+  "$(printf '%s\n' "$SCHEMA_FILES" 002_alpha.sql 002_beta.sql | LC_ALL=C sort | paste -sd, -)"
 
 # --- a failing migration rolls back completely ------------------------------
 printf 'CREATE TABLE partial_t (x int);\nSELECT * FROM no_such_table_hq;\n' > "$TMP/tree dir/desk/schema/003_broken.sql"
@@ -208,7 +219,7 @@ APPLIED_COUNT=$(cat "$TMP/race_a.out" "$TMP/race_b.out" | grep -c '^applied 001_
 check "001 applied exactly once across both runs" "$APPLIED_COUNT" "1"
 check "concurrent runs are silent on stderr" "$(cat "$TMP/race_a.err" "$TMP/race_b.err")" ""
 R=$(sql_in "$S_RACE" "SELECT count(*) FROM schema_migrations")
-check "the race left one ledger row" "$R" "1"
+check "the race left one ledger row per schema file" "$R" "$N_SCHEMA_FILES"
 
 # --- once connected, the connect deadline never limits SQL ------------------
 # hq_psql's watchdog kills psql only when its connect marker is still empty at
