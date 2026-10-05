@@ -182,6 +182,12 @@ for SH in $SHELLS; do
   check "[$SH] unsupported URL parameter exits 7" "$RC" "7"
   check_contains "[$SH] unsupported parameter is named" "$ERR" "bogus"
 
+  # The URL is validated before psql is looked up, so a CI runner (or a
+  # machine) without psql still names the bad parameter.
+  run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=postgresql://u:${FAKE_PW}@h/db?bogus=1" "HUMAN_QUEUE_PSQL=$TMP/no-such-psql" -- migrate
+  check "[$SH] unsupported URL parameter without psql exits 7" "$RC" "7"
+  check_contains "[$SH] unsupported parameter is named even without psql" "$ERR" "bogus"
+
   run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=postgresql://u:bad%zzescape@h/db" -- migrate
   check "[$SH] malformed percent-escape exits 7" "$RC" "7"
 

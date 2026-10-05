@@ -276,7 +276,8 @@ hq_db_connect() {
   if [ -z "${HUMAN_QUEUE_DATABASE_URL:-}" ]; then
     hq_die_unavailable "HUMAN_QUEUE_DATABASE_URL is not set — database unavailable"
   fi
-  hq__find_psql
+  # The URL is checked before the client is looked up, so a configuration
+  # error is named the same way on a machine with or without psql.
   rc=0
   hq__parse_url "$HUMAN_QUEUE_DATABASE_URL" || rc=$?
   if [ "$rc" -eq 2 ]; then
@@ -284,6 +285,7 @@ hq_db_connect() {
   elif [ "$rc" -ne 0 ]; then
     hq_die_unavailable "HUMAN_QUEUE_DATABASE_URL is not a valid postgres:// URL — database unavailable"
   fi
+  hq__find_psql
 
   # Probe under a watchdog. Both background jobs get /dev/null for every stdio
   # stream, so neither can hold a caller's $(...) pipe open after we return.
