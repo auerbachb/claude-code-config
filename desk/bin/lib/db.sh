@@ -207,13 +207,17 @@ hq__parse_url() {
 # hq__child_env — exports the scoped libpq environment. Call ONLY inside the
 # subshell that execs psql, never in the parent: PGPASSWORD must not leak into
 # any other child process. The raw URL is dropped too — psql needs only the
-# parsed variables, so it never inherits the password-bearing URL.
+# parsed variables, so it never inherits the password-bearing URL. Ambient
+# session settings (PGOPTIONS, PGTZ, PGDATESTYLE, PGGEQO) are cleared as well:
+# a statement_timeout or search_path left in the operator's shell for other
+# Postgres work must not reach the queue. Only the URL's `options` applies.
 hq__child_env() {
   unset HUMAN_QUEUE_DATABASE_URL \
     PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE \
     PGSERVICE PGSERVICEFILE PGSSLMODE PGREQUIRESSL PGCHANNELBINDING \
     PGSSLROOTCERT PGSSLNEGOTIATION PGTARGETSESSIONATTRS PGGSSENCMODE \
-    PGREQUIREAUTH PGLOADBALANCEHOSTS
+    PGREQUIREAUTH PGLOADBALANCEHOSTS \
+    PGOPTIONS PGTZ PGDATESTYLE PGGEQO
   if [ -n "$HQ_CONN_HOST" ]; then export PGHOST="$HQ_CONN_HOST"; fi
   if [ -n "$HQ_CONN_PORT" ]; then export PGPORT="$HQ_CONN_PORT"; fi
   if [ -n "$HQ_CONN_USER" ]; then export PGUSER="$HQ_CONN_USER"; fi
@@ -223,9 +227,7 @@ hq__child_env() {
   if [ -n "$HQ_CONN_CHANNELBINDING" ]; then export PGCHANNELBINDING="$HQ_CONN_CHANNELBINDING"; fi
   if [ -n "$HQ_CONN_SSLROOTCERT" ]; then export PGSSLROOTCERT="$HQ_CONN_SSLROOTCERT"; fi
   if [ -n "$HQ_CONN_SSLNEGOTIATION" ]; then export PGSSLNEGOTIATION="$HQ_CONN_SSLNEGOTIATION"; fi
-  if [ -n "$HQ_CONN_OPTIONS" ]; then
-    export PGOPTIONS="$HQ_CONN_OPTIONS${PGOPTIONS:+ $PGOPTIONS}"
-  fi
+  if [ -n "$HQ_CONN_OPTIONS" ]; then export PGOPTIONS="$HQ_CONN_OPTIONS"; fi
   # GSS encryption is attempted before TLS by default; Neon offers none, and a
   # misconfigured Kerberos setup can stall the attempt.
   export PGGSSENCMODE=disable

@@ -21,6 +21,8 @@
 #   - 001's constraints: id format and kind prefix, context <= 3 lines and
 #     <= 600 chars, note <= 200 chars, status and event-kind sets, and the
 #     updated_at trigger
+#   - hq_psql's connect deadline stands down once connected: a query longer
+#     than 1.5 s survives, with a space in the marker path
 # On macOS the first migrate and one side of the race run under /bin/bash 3.2.
 set -uo pipefail
 
@@ -207,6 +209,25 @@ check "001 applied exactly once across both runs" "$APPLIED_COUNT" "1"
 check "concurrent runs are silent on stderr" "$(cat "$TMP/race_a.err" "$TMP/race_b.err")" ""
 R=$(sql_in "$S_RACE" "SELECT count(*) FROM schema_migrations")
 check "the race left one ledger row" "$R" "1"
+
+# --- once connected, the connect deadline never limits SQL ------------------
+# hq_psql's watchdog kills psql only when its connect marker is still empty at
+# 1.5 s. A query that outlasts the deadline must survive, with the marker path
+# (TMPDIR) containing a space: psql must write the marker to the whole path.
+mkdir -p "$TMP/marker dir"
+RC=0
+R=$(
+  TMPDIR="$TMP/marker dir/"
+  HQ_CONN_MARKER=""
+  hq_db_connect
+  hq_psql -At -c "SELECT pg_sleep(2)" -c "SELECT 'survived'" || exit "$?"
+  printf 'marker=%s\n' "$(cat "$HQ_CONN_MARKER")"
+  case "$HQ_CONN_MARKER" in *"marker dir/"*) printf 'spaced=yes\n' ;; esac
+) || RC=$?
+check "a 2 s query outlives the 1.5 s connect deadline" "$RC" "0"
+check_contains "the long query completes" "$R" "survived"
+check_contains "psql wrote the connect marker" "$R" "marker=connected"
+check_contains "the marker path contained a space" "$R" "spaced=yes"
 
 # --- the live default schema was never touched -----------------------------
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")

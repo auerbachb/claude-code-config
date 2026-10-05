@@ -67,6 +67,8 @@ cat > "$TMP/psql-record" <<'EOF'
   printf 'PGCHANNELBINDING=%s\n' "${PGCHANNELBINDING-<unset>}"
   printf 'PGCONNECT_TIMEOUT=%s\n' "${PGCONNECT_TIMEOUT-<unset>}"
   printf 'PGSERVICE=%s\n' "${PGSERVICE-<unset>}"
+  printf 'PGOPTIONS=%s\n' "${PGOPTIONS-<unset>}"
+  printf 'PGTZ=%s\n' "${PGTZ-<unset>}"
   if [ -n "${HUMAN_QUEUE_DATABASE_URL+x}" ]; then
     printf 'RAW_URL=inherited\n'
   else
@@ -215,6 +217,8 @@ for SH in $SHELLS; do
     "STUB_RECORD=$TMP/record" \
     "STUB_EXPECT_PW=p@ss/w0rd%x" \
     "PGSERVICE=ambient-service-must-be-cleared" \
+    "PGOPTIONS=-c statement_timeout=1" \
+    "PGTZ=Pacific/Kiritimati" \
     -- migrate
   check "[$SH] probe failure (psql exit 2) maps to exit 7" "$RC" "7"
   REC=$(cat "$TMP/record" 2>/dev/null || true)
@@ -227,12 +231,27 @@ for SH in $SHELLS; do
   check_contains "[$SH] connect timeout is set" "$REC" "PGCONNECT_TIMEOUT=2"
   check_contains "[$SH] ambient PGSERVICE is cleared" "$REC" "PGSERVICE=<unset>"
   check_contains "[$SH] raw URL is not inherited by psql" "$REC" "RAW_URL=<unset>"
+  check_contains "[$SH] ambient PGOPTIONS is cleared" "$REC" "PGOPTIONS=<unset>"
+  check_contains "[$SH] ambient PGTZ is cleared" "$REC" "PGTZ=<unset>"
   check_contains "[$SH] password is percent-decoded into PGPASSWORD" "$REC" "PGPASSWORD=match"
   ARGV_LINE=$(grep '^argv:' "$TMP/record" 2>/dev/null || true)
   check_absent "[$SH] password never on psql argv (decoded)" "$ARGV_LINE" "p@ss"
   check_absent "[$SH] password never on psql argv (encoded)" "$ARGV_LINE" "p%40ss"
   check_absent "[$SH] URL never on psql argv" "$ARGV_LINE" "postgresql://"
   check_absent "[$SH] password never in CLI output" "$OUT$ERR" "p@ss"
+  rm -f "$TMP/record"
+
+  # The URL's own `options` is the ONLY source of PGOPTIONS: an ambient value
+  # is replaced, never appended.
+  run_cli "$SH" \
+    "HUMAN_QUEUE_DATABASE_URL=postgresql://u:pw@db.example.test/db?options=endpoint%3Dep-test" \
+    "HUMAN_QUEUE_PSQL=$TMP/psql-record" \
+    "STUB_RECORD=$TMP/record" \
+    "STUB_EXPECT_PW=pw" \
+    "PGOPTIONS=-c statement_timeout=1" \
+    -- migrate
+  check "[$SH] URL options reach psql alone" \
+    "$(grep '^PGOPTIONS=' "$TMP/record" 2>/dev/null || true)" "PGOPTIONS=endpoint=ep-test"
   rm -f "$TMP/record"
 
   if [ -n "$REAL_PSQL" ]; then
