@@ -30,10 +30,13 @@
 #   catalog_inscope_files [REPO_ROOT]
 #     Prints the normalized repo-root-relative path of every file in the
 #     .claude/scripts/ catalog's scope, LC_ALL=C sorted: top-level *.sh and
-#     *.py plus tests/*.test.sh. Deliberately excludes lib/, tests/lib/,
-#     tests/fixtures/ and non-script files. Returns 1 when the scope is empty
-#     (a broken glob is never a silent pass). Shared so the catalog generator
-#     and the catalog lint enumerate from one implementation (issue #1578).
+#     *.py plus tests/*.test.sh, plus the top-level *.sh entry points in each
+#     CATALOG_EXTRA_DIRS directory (desk/bin, issue #1774 — the human-queue CLI
+#     lives outside .claude/ so it can be spun out later). Deliberately
+#     excludes lib/, tests/lib/, tests/fixtures/, desk/bin/cmd/, desk/bin/lib/
+#     and non-script files. Returns 1 when the scope is empty (a broken glob is
+#     never a silent pass). Shared so the catalog generator and the catalog
+#     lint enumerate from one implementation (issue #1578).
 #
 #   catalog_meta FILE
 #     Reads FILE's `# catalog: <id> — <description>` header line and prints
@@ -54,8 +57,10 @@
 #     Prints one catalog table row — `| [name](target) | description |` —
 #     for the in-scope file at repo-root-relative PATH. The target is
 #     computed with normalize_relpath from .claude/scripts/docs/, so the row
-#     a doc carries is the row this function spells. A '|' inside
-#     DESCRIPTION is escaped, so a description can never split the table.
+#     a doc carries is the row this function spells — including for a path
+#     outside .claude/scripts/ (a CATALOG_EXTRA_DIRS entry), which links back
+#     up to the repo root. A '|' inside DESCRIPTION is escaped, so a
+#     description can never split the table.
 #
 #   normalize_relpath BASE TARGET
 #     Joins BASE and TARGET and prints the result with '.' and '..' segments
@@ -133,13 +138,18 @@ published_skills() {
 CATALOG_SCRIPTS_DIR=".claude/scripts"
 CATALOG_TESTS_DIR=".claude/scripts/tests"
 CATALOG_DOCS_DIR=".claude/scripts/docs"
+# Repo-root-relative directories outside .claude/scripts/ whose top-level *.sh
+# entry points are cataloged too (space-separated). desk/bin holds the
+# human-queue CLI (issue #1774); its cmd/ and lib/ are sourced pieces, not
+# invocable scripts, and -maxdepth 1 keeps them out.
+CATALOG_EXTRA_DIRS="desk/bin"
 
 # catalog_inscope_files [REPO_ROOT]
-# -maxdepth 1 on two named directories: bounded, and it never walks the rest of
+# -maxdepth 1 on named directories: bounded, and it never walks the rest of
 # .claude/ (where untracked paths can stall a recursive find).
 catalog_inscope_files() {
   local root="${1:-.}" found
-  local scripts_dir tests_dir
+  local scripts_dir tests_dir extra
   scripts_dir="${root%/}/$CATALOG_SCRIPTS_DIR"
   tests_dir="${root%/}/$CATALOG_TESTS_DIR"
 
@@ -151,6 +161,11 @@ catalog_inscope_files() {
       if [[ -d "$tests_dir" ]]; then
         find "$tests_dir" -maxdepth 1 -type f -name '*.test.sh'
       fi
+      for extra in $CATALOG_EXTRA_DIRS; do
+        if [[ -d "${root%/}/$extra" ]]; then
+          find "${root%/}/$extra" -maxdepth 1 -type f -name '*.sh'
+        fi
+      done
     } | while IFS= read -r f; do
           # Re-key on the repo-root-relative path, never on what find printed:
           # REPO_ROOT may be absolute (a fixture tree), and every consumer
@@ -201,8 +216,13 @@ catalog_meta() {
 catalog_row() {
   local path="$1" desc="$2" name target rel
   name="${path##*/}"
-  rel="${path#"$CATALOG_SCRIPTS_DIR/"}"
-  target=$(normalize_relpath ".." "$rel")
+  if [[ "$path" == "$CATALOG_SCRIPTS_DIR/"* ]]; then
+    rel="${path#"$CATALOG_SCRIPTS_DIR/"}"
+    target=$(normalize_relpath ".." "$rel")
+  else
+    # A CATALOG_EXTRA_DIRS entry: climb from .claude/scripts/docs/ to the root.
+    target=$(normalize_relpath "../../.." "$path")
+  fi
   # The link text is escaped for the same reason the description is: an
   # unescaped pipe splits the row, and the split regenerates identically.
   name="${name//|/\\|}"

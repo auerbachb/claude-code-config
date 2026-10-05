@@ -37,8 +37,10 @@
 #      scope" or of "the row format" here is how a generator and its drift
 #      check start disagreeing (shared helpers live in lib/lint-common.sh).
 #
-# In scope: .claude/scripts/*.sh, .claude/scripts/*.py (top level only) and
-# .claude/scripts/tests/*.test.sh. Deliberately OUT of scope: lib/ (sourced
+# In scope: .claude/scripts/*.sh, .claude/scripts/*.py (top level only),
+# .claude/scripts/tests/*.test.sh, and the top-level *.sh entry points of each
+# CATALOG_EXTRA_DIRS directory in lib/lint-common.sh (desk/bin, issue #1774).
+# Deliberately OUT of scope: lib/ (sourced
 # helper libraries and jq programs, not invocable scripts), tests/lib/,
 # tests/fixtures/, and non-script files such as the launchd .plist.
 #

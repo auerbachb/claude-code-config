@@ -8,6 +8,9 @@
 #
 # Discovered dirs:
 #   .claude/hooks/tests/    .claude/scripts/tests/    .github/scripts/tests/
+#   desk/tests/             (the human-queue store, issue #1774 — its live
+#                            database suite skips without HUMAN_QUEUE_DATABASE_URL,
+#                            so CI runs only the offline ones)
 #
 # Test contract: exit 0 on pass / non-zero on fail; invoked via `bash` so the
 # executable bit is NOT required (some suites are intentionally non-exec); no
@@ -89,7 +92,8 @@ FAILED_LIST=""
 RELEVANT=""
 for t in .claude/hooks/tests/*.test.sh \
          .claude/scripts/tests/*.test.sh \
-         .github/scripts/tests/*.test.sh; do
+         .github/scripts/tests/*.test.sh \
+         desk/tests/*.test.sh; do
   total=$((total + 1))
   rc=0
   # Parse-check BEFORE running (issue #1675). A suite that does not parse still

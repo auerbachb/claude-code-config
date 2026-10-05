@@ -84,7 +84,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) "Hook Lifecycle" and "Hook Auto-Registrat
 
 Tests are **auto-discovered** by the [`hook-scripts.yml`](.github/workflows/hook-scripts.yml) CI workflow — you do **not** edit the workflow to register one (issue #681, which retired the hand-maintained per-test step list that made that file a merge-conflict hotspot).
 
-- **Bash tests** — drop a `<name>.test.sh` into `.claude/scripts/tests/`, `.claude/hooks/tests/`, or `.github/scripts/tests/`. They are discovered and run by [`.github/scripts/run-hook-tests.sh`](.github/scripts/run-hook-tests.sh).
+- **Bash tests** — drop a `<name>.test.sh` into `.claude/scripts/tests/`, `.claude/hooks/tests/`, `.github/scripts/tests/`, or `desk/tests/` (the human-queue store). They are discovered and run by [`.github/scripts/run-hook-tests.sh`](.github/scripts/run-hook-tests.sh).
 - **Python tests** — drop a `test_*.py` unittest module into `tests/`. It runs under **both** the default-Python job and the pinned-3.9 job, so keep it **Python 3.9-compatible** (e.g. `from __future__ import annotations` before any PEP 604 `X | Y` annotation; no `match`/`case`).
 
 **Discovery contract** (a test must satisfy these to be picked up correctly): exit `0` on pass / non-zero on fail; be invoked via `bash` (the executable bit is **not** required — some suites are intentionally non-exec); and require **no** positional arguments.
