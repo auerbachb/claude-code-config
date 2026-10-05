@@ -16,7 +16,8 @@ USAGE
 
 ARGUMENTS
   ID      the item id, for example D-43 or R-88 (d-43 is accepted)
-  --json  print the item as one JSON object (every column) instead
+  --json  print the item as one JSON object (every column except the
+          internal change marker `tick` reads) instead
 
 OUTPUT
   The item as the operator reads it:
@@ -44,7 +45,7 @@ EOF
 
 hq__get_sql() {
   if [ "$1" -eq 1 ]; then
-    printf '%s\n' "SELECT to_jsonb(i) FROM items i WHERE i.id = :'hq_id';"
+    printf 'SELECT %s FROM items i WHERE i.id = %s;\n' "$(hq_sql_item_json)" ":'hq_id'"
   else
     printf 'SELECT %s\n  FROM items i\n WHERE i.id = %s;\n' "$(hq_sql_render_item)" ":'hq_id'"
   fi

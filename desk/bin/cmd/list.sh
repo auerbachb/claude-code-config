@@ -40,7 +40,7 @@ EOF
 hq__list_sql() {
   local where="(:'hq_kind' = '' OR i.kind = :'hq_kind') AND (:'hq_status' = '' OR i.status = :'hq_status')"
   if [ "$1" -eq 1 ]; then
-    printf '%s\n' "SELECT coalesce(jsonb_agg(to_jsonb(i) ORDER BY"
+    printf 'SELECT coalesce(jsonb_agg(%s ORDER BY\n' "$(hq_sql_item_json)"
     hq_sql_item_order
     printf '%s\n' "), '[]'::jsonb) FROM items i WHERE $where;"
   else

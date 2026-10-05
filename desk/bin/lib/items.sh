@@ -21,6 +21,8 @@
 #   hq_flag_name ARG            prints "option '--flag'" when ARG looks like a
 #                               flag, else "argument": a stray value (which may
 #                               be free text) is never echoed into a message
+#   hq_sql_item_json            SQL expression: the items row `i` as JSON, every
+#                               column except the internal change marker
 #   hq_sql_render_item          SQL expression rendering the items row `i`
 #   hq_sql_render_events        SQL expression rendering the events of `i`
 #   hq_sql_events_json          SQL expression: the events of `i` as JSON
@@ -172,6 +174,13 @@ hq_check_timestamp() {
 
 # The SQL below lives in functions (not heredocs inside $(...)) because bash
 # 3.2's command-substitution scanner does not understand here-documents.
+
+# The items row `i` as one JSON object. change_xid (migration 003) is the
+# transaction id `tick` reads changes from: internal bookkeeping, so it is left
+# out and the item JSON keeps one shape before and after 003.
+hq_sql_item_json() {
+  printf '%s' "(to_jsonb(i) - 'change_xid')"
+}
 
 # One item, as the operator reads it: a header line, the question in bold, the
 # context as a numbered list, lettered options, the default and when it
