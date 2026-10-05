@@ -12,8 +12,11 @@
 #   - unreachable database: exit 7 in under two seconds, one stderr line —
 #     with a stub psql that hangs (deterministic) and, when a real psql is
 #     installed, with a bogus .invalid host and a TEST-NET address
+#   - a database lost after the probe: the next psql call's connect deadline
+#     also exits 7 in under two seconds, one stderr line
 #   - the URL is parsed into libpq env for the psql child only: percent-decoded,
-#     never on psql's argv, and the password never appears in any output
+#     never on psql's argv, the raw URL is not inherited by psql, and the
+#     password never appears in any output
 #   - a misnamed schema file exits 1 naming it
 #   - the live suite skips with a notice and exits 0 when the URL is unset
 #
@@ -64,6 +67,11 @@ cat > "$TMP/psql-record" <<'EOF'
   printf 'PGCHANNELBINDING=%s\n' "${PGCHANNELBINDING-<unset>}"
   printf 'PGCONNECT_TIMEOUT=%s\n' "${PGCONNECT_TIMEOUT-<unset>}"
   printf 'PGSERVICE=%s\n' "${PGSERVICE-<unset>}"
+  if [ -n "${HUMAN_QUEUE_DATABASE_URL+x}" ]; then
+    printf 'RAW_URL=inherited\n'
+  else
+    printf 'RAW_URL=<unset>\n'
+  fi
   if [ "${PGPASSWORD-}" = "$STUB_EXPECT_PW" ]; then
     printf 'PGPASSWORD=match\n'
   else
@@ -72,7 +80,17 @@ cat > "$TMP/psql-record" <<'EOF'
 } > "$STUB_RECORD"
 exit 2
 EOF
-chmod +x "$TMP/psql-hang" "$TMP/psql-record"
+# Stub psql whose probe (`-c 'SELECT 1'`) succeeds but whose next connection
+# hangs before connecting: the database went away after the probe. hq_psql's
+# connect-phase watchdog must kill it.
+cat > "$TMP/psql-probe-then-hang" <<'EOF'
+#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "SELECT 1" ]; then exit 0; fi
+done
+exec sleep 10
+EOF
+chmod +x "$TMP/psql-hang" "$TMP/psql-record" "$TMP/psql-probe-then-hang"
 
 # run_cli SHELL [VAR=value | -u VAR]... -- ARGS...
 # Runs the CLI under SHELL with an adjusted environment; sets OUT, ERR, RC,
@@ -178,6 +196,18 @@ for SH in $SHELLS; do
     bad "[$SH] hanging psql: took $(hq_t_elapsed "$ELAPSED_START" "$ELAPSED_END")s (limit 2s)"
   fi
 
+  # The probe succeeds, then the next connection hangs: the later psql call
+  # carries its own connect deadline and also ends in exit 7, not a hang.
+  run_cli "$SH" "HUMAN_QUEUE_DATABASE_URL=$BLACKHOLE_URL" "HUMAN_QUEUE_PSQL=$TMP/psql-probe-then-hang" -- migrate
+  check "[$SH] lost after probe: exit 7" "$RC" "7"
+  check "[$SH] lost after probe: exactly one stderr line" "$(hq_t_lines "$ERR")" "1"
+  check_contains "[$SH] lost after probe: names the connect deadline" "$ERR" "no connection within"
+  if hq_t_elapsed_under "$ELAPSED_START" "$ELAPSED_END" 2.0; then
+    ok "[$SH] lost after probe: returned in $(hq_t_elapsed "$ELAPSED_START" "$ELAPSED_END")s (< 2s)"
+  else
+    bad "[$SH] lost after probe: took $(hq_t_elapsed "$ELAPSED_START" "$ELAPSED_END")s (limit 2s)"
+  fi
+
   # --- the URL reaches psql as env, never argv ----------------------------
   run_cli "$SH" \
     "HUMAN_QUEUE_DATABASE_URL=postgresql://us%40er:p%40ss%2Fw0rd%25x@db.example.test:6543/my%20db?sslmode=require&channel_binding=require" \
@@ -196,6 +226,7 @@ for SH in $SHELLS; do
   check_contains "[$SH] channel_binding reaches psql" "$REC" "PGCHANNELBINDING=require"
   check_contains "[$SH] connect timeout is set" "$REC" "PGCONNECT_TIMEOUT=2"
   check_contains "[$SH] ambient PGSERVICE is cleared" "$REC" "PGSERVICE=<unset>"
+  check_contains "[$SH] raw URL is not inherited by psql" "$REC" "RAW_URL=<unset>"
   check_contains "[$SH] password is percent-decoded into PGPASSWORD" "$REC" "PGPASSWORD=match"
   ARGV_LINE=$(grep '^argv:' "$TMP/record" 2>/dev/null || true)
   check_absent "[$SH] password never on psql argv (decoded)" "$ARGV_LINE" "p@ss"

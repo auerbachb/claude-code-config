@@ -17,7 +17,9 @@ BEHAVIOR
   schema_migrations, so a failing file leaves nothing behind. Files are
   recorded by FULL filename: two branches that both add a 002_ file never
   collide. Re-running applies nothing. Concurrent runs serialize on an
-  advisory lock; the later one finds the work done.
+  advisory lock; the later one waits for it (up to 30 seconds) and finds the
+  work done. A run that cannot get the lock within 30 seconds exits 1 having
+  changed nothing; re-run it.
   Runs in HUMAN_QUEUE_SCHEMA (default public), creating it if missing.
 
 OUTPUT
@@ -25,8 +27,8 @@ OUTPUT
 
 EXIT CODES
   0  ok
-  1  a migration failed (its transaction rolled back) or a schema file is
-     misnamed
+  1  a migration failed (its transaction rolled back), the migration lock
+     was not free within 30 seconds, or a schema file is misnamed
   4  unexpected argument or invalid HUMAN_QUEUE_SCHEMA
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF

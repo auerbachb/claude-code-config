@@ -37,15 +37,18 @@ for a fresh setup or a new machine.
    ```
 
 2. On each machine, write the connection URL into the shell profile without
-   echoing it to the terminal. `connection-string` returns the direct
+   echoing it to the terminal. The profile is restricted to its owner
+   **before** the secret goes in, so it is never readable by others, even if
+   the append is interrupted. `connection-string` returns the direct
    (non-pooled) endpoint unless `--pooled` is given; either works, because the
    CLI selects its schema inside each transaction rather than through startup
    options.
 
    ```bash
-   url=$(neonctl connection-string --project-id <project-id>) \
-     && printf "export HUMAN_QUEUE_DATABASE_URL='%s'\n" "$url" >> ~/.zprofile \
-     && unset url && chmod 600 ~/.zprofile
+   touch ~/.zprofile && chmod 600 ~/.zprofile \
+     && url=$(neonctl connection-string --project-id <project-id>) \
+     && printf "export HUMAN_QUEUE_DATABASE_URL='%s'\n" "$url" >> ~/.zprofile
+   unset url
    ```
 
    A non-login shell may need `source ~/.zprofile` before the variable is set.
@@ -83,7 +86,10 @@ stderr, so a caller such as the capture hook can fail open. libpq's own
 address), so the CLI first runs a `SELECT 1` probe under a 1.5-second watchdog
 and only then does real work. One trade-off follows: a Neon compute waking from
 suspend more slowly than that reads as exit 7. Callers fail open, and the next
-call finds the compute awake.
+call finds the compute awake. Every later connection in the same run gets the
+same 1.5-second connect deadline, so a database that goes away after the probe
+also ends in exit 7 rather than a hang; once a connection is up, the SQL itself
+is not time-limited.
 
 Validation always runs before any connection attempt, and `--help` (global or
 per subcommand) never touches the database.
@@ -99,7 +105,10 @@ per subcommand) never touches the database.
 - Never edit a migration after it merges. Change the schema with a new file.
 - Use unqualified table names: `HUMAN_QUEUE_SCHEMA` picks the schema.
 - Concurrent `migrate` runs (for example from two machines) serialize on an
-  advisory lock; the later run finds the work done and exits 0.
+  advisory lock; the later run waits for it, finds the work done, and exits 0.
+  The wait is capped at 30 seconds (`lock_timeout`), so a stuck run cannot
+  hang the next one: past the cap the later run exits 1 having changed
+  nothing, and re-running it is safe.
 
 ## Adding a subcommand
 

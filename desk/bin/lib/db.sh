@@ -8,7 +8,9 @@
 #   is a secret: it is never printed, logged, written to a file, or passed on a
 #   command line (argv is visible to every local user through `ps`). Instead it
 #   is parsed here into libpq variables (PGHOST, PGUSER, PGPASSWORD, ...) that
-#   are exported ONLY inside the subshell that execs psql.
+#   are exported ONLY inside the subshell that execs psql. Those subshells, and
+#   the watchdogs, also drop HUMAN_QUEUE_DATABASE_URL itself, so no child this
+#   library starts inherits the raw URL.
 #
 # TWO-SECOND BOUND
 #   libpq's connect_timeout has a 2 s floor and applies per resolved address,
@@ -18,10 +20,16 @@
 #   runs only after the probe succeeds. A Neon cold start slower than the
 #   deadline reads as exit 7 — callers fail open and the next call finds the
 #   compute awake.
+#   Every later psql call is a new connection, so hq_psql bounds its connect
+#   phase the same way: the first thing psql does once connected is write a
+#   marker file, and a watchdog that finds no marker at the deadline kills it
+#   (hq_db_fail maps that to exit 7). Once connected the watchdog stands down,
+#   so SQL itself is never time-limited.
 #
 # PUBLIC FUNCTIONS
 #   hq_db_connect          validate env + probe; exits 7 on any failure
 #   hq_psql ARGS...        run psql with the scoped env (-X -w -q, ON_ERROR_STOP)
+#                          under the connect-phase deadline; needs hq_db_connect
 #   hq_db_script ARGS...   run the SQL script on stdin in ONE transaction with
 #                          `SET LOCAL search_path` to hq_schema; ARGS are extra
 #                          psql options (e.g. -At, -v name=value)
@@ -43,6 +51,8 @@ HQ_CONN_SSLROOTCERT=""
 HQ_CONN_SSLNEGOTIATION=""
 HQ_CONN_OPTIONS=""
 HQ_SCHEMA=""
+# Connect marker for hq_psql's watchdog; created by hq_db_connect.
+HQ_CONN_MARKER=""
 
 # hq__find_psql — sets HQ_PSQL or exits 7.
 hq__find_psql() {
@@ -196,9 +206,11 @@ hq__parse_url() {
 
 # hq__child_env — exports the scoped libpq environment. Call ONLY inside the
 # subshell that execs psql, never in the parent: PGPASSWORD must not leak into
-# any other child process.
+# any other child process. The raw URL is dropped too — psql needs only the
+# parsed variables, so it never inherits the password-bearing URL.
 hq__child_env() {
-  unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE \
+  unset HUMAN_QUEUE_DATABASE_URL \
+    PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE \
     PGSERVICE PGSERVICEFILE PGSSLMODE PGREQUIRESSL PGCHANNELBINDING \
     PGSSLROOTCERT PGSSLNEGOTIATION PGTARGETSESSIONATTRS PGGSSENCMODE \
     PGREQUIREAUTH PGLOADBALANCEHOSTS
@@ -224,11 +236,32 @@ hq__child_env() {
 
 # hq_psql ARGS... — psql with the scoped env. -X: never read ~/.psqlrc.
 # -w: never prompt for a password (a prompt would hang a hook).
+# Needs hq_db_connect (for HQ_CONN_MARKER). psql connects before it runs any
+# command, so the three leading -c actions write the marker only once the
+# connection is up; the watchdog kills psql (status 143) if the marker is
+# still empty at HQ_CONNECT_DEADLINE and otherwise does nothing. stdin is
+# passed through explicitly: bash 3.2 gives a background job /dev/null.
 hq_psql() {
+  local hq__pid hq__wd hq__rc=0
+  if [ -z "$HQ_CONN_MARKER" ] || ! : 2>/dev/null >"$HQ_CONN_MARKER"; then
+    hq_die_error "hq_psql: no connect marker (call hq_db_connect first)"
+  fi
   (
     hq__child_env
-    exec "$HQ_PSQL" -X -w -q -v ON_ERROR_STOP=1 "$@"
-  )
+    exec "$HQ_PSQL" -X -w -q -v ON_ERROR_STOP=1 -v "hq_marker=$HQ_CONN_MARKER" \
+      -c '\o :hq_marker' -c '\qecho connected' -c '\o' "$@"
+  ) <&0 &
+  hq__pid=$!
+  (
+    unset HUMAN_QUEUE_DATABASE_URL
+    sleep "$HQ_CONNECT_DEADLINE"
+    if [ ! -s "$HQ_CONN_MARKER" ]; then kill -TERM "$hq__pid" 2>/dev/null; fi
+  ) </dev/null >/dev/null 2>&1 &
+  hq__wd=$!
+  wait "$hq__pid" || hq__rc=$?
+  kill -TERM "$hq__wd" 2>/dev/null || true
+  wait "$hq__wd" 2>/dev/null || true
+  return "$hq__rc"
 }
 
 # hq_db_connect — exits 4 on a bad HUMAN_QUEUE_SCHEMA, 7 on anything that
@@ -254,7 +287,7 @@ hq_db_connect() {
   # stream, so neither can hold a caller's $(...) pipe open after we return.
   ( hq__child_env; exec "$HQ_PSQL" -X -w -q -At -c 'SELECT 1' ) </dev/null >/dev/null 2>&1 &
   pid=$!
-  ( sleep "$HQ_CONNECT_DEADLINE"; kill -TERM "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  ( unset HUMAN_QUEUE_DATABASE_URL; sleep "$HQ_CONNECT_DEADLINE"; kill -TERM "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   wd=$!
   rc=0
   wait "$pid" 2>/dev/null || rc=$?
@@ -262,7 +295,10 @@ hq_db_connect() {
   wait "$wd" 2>/dev/null || true
 
   case "$rc" in
-    0) return 0 ;;
+    0)
+      hq_mktemp HQ_CONN_MARKER
+      return 0
+      ;;
     143) hq_die_unavailable "database unreachable (no connection within ${HQ_CONNECT_DEADLINE}s)" ;;
     2) hq_die_unavailable "database unreachable (connection refused, failed, or rejected)" ;;
     *) hq_die_unavailable "database unreachable (probe failed with psql status $rc)" ;;
@@ -281,12 +317,16 @@ hq_db_script() {
 }
 
 # hq_db_fail RC ERRFILE CONTEXT — maps a failed psql run and exits.
-#   psql 2 (connection lost / refused) -> 7, anything else -> 1, quoting the
-#   first ERROR/FATAL line psql wrote (never the URL: psql does not print it).
+#   psql 2 (connection lost / refused) -> 7, 143 (hq_psql's connect deadline
+#   killed it) -> 7, anything else -> 1, quoting the first ERROR/FATAL line psql
+#   wrote (never the URL: psql does not print it).
 hq_db_fail() {
   local rc="$1" errfile="$2" context="$3" line
   if [ "$rc" -eq 2 ]; then
     hq_die_unavailable "$context: database connection lost"
+  fi
+  if [ "$rc" -eq 143 ]; then
+    hq_die_unavailable "$context: database unreachable (no connection within ${HQ_CONNECT_DEADLINE}s)"
   fi
   line=$(grep -m1 -E 'ERROR:|FATAL:' "$errfile" 2>/dev/null || true)
   if [ -z "$line" ]; then
