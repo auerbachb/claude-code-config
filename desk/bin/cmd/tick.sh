@@ -39,6 +39,12 @@ THE WATERMARK
   older than that tick.) Concurrent ticks are serialized; each write is
   reported by exactly one of them.
 
+THE TICK TIME
+  Each tick also stores its own time, UTC ISO 8601, under the reserved state
+  key tick_at. `control-status` reads it: a control session that has ticked
+  recently is a live desk, which is what the capture hook checks before it
+  queues a question (desk/README.md, "Capture hook").
+
 EXIT CODES
   0  ok (including when nothing changed)
   1  unexpected database failure (for example the store is not migrated:
@@ -53,7 +59,8 @@ EOF
 # snapshot, pg_current_snapshot() returns that snapshot, and the lock is taken
 # in the statement before, so this statement sees what the previous tick
 # committed. `prev` reads the old watermark before `mark` replaces it (a
-# statement never sees its own writes).
+# statement never sees its own writes). `stamp` records when this tick read,
+# a different row of the same table, for control-status (issue #1755).
 hq__tick_sql() {
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
@@ -62,6 +69,10 @@ WITH prev AS (
   SELECT value::pg_snapshot AS snap FROM state WHERE key = 'tick_watermark'
 ), mark AS (
   INSERT INTO state (key, value) VALUES ('tick_watermark', pg_current_snapshot()::text)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+), stamp AS (
+  INSERT INTO state (key, value)
+    VALUES ('tick_at', to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
 )
 SQL
