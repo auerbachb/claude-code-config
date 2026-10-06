@@ -233,7 +233,8 @@ R=$(
   hq_db_connect
   hq_psql -At -c "SELECT pg_sleep(2)" -c "SELECT 'survived'" || exit "$?"
   printf 'marker=%s\n' "$(cat "$HQ_CONN_MARKER")"
-  case "$HQ_CONN_MARKER" in *"marker dir/"*) printf 'spaced=yes\n' ;; esac
+  # [[ ]], not case: bash 3.2 cannot parse a case pattern's `)` inside $(...).
+  if [[ "$HQ_CONN_MARKER" == *"marker dir/"* ]]; then printf 'spaced=yes\n'; fi
 ) || RC=$?
 check "a 2 s query outlives the 1.5 s connect deadline" "$RC" "0"
 check_contains "the long query completes" "$R" "survived"

@@ -15,6 +15,7 @@ be spun out as its own project later.
 | `bin/lib/common.sh` | One-line diagnostics, exit codes, `HUMAN_QUEUE_SCHEMA` |
 | `bin/lib/db.sh` | Connection handling: URL parsing, the two-second probe, psql |
 | `bin/lib/items.sh` | Item ids, input checks mirrored from the schema, the shared item renderer |
+| `bin/lib/lifecycle.sh` | The answer transaction shared by `answer` and `set-resolve`, row locking, the `!reason` refusal protocol |
 | `bin/lib/secrets.sh` | The secret-shape detector behind exit 5 |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
 | `hooks/` | Hook implementations (the capture hook arrives with issue #1755) |
@@ -78,8 +79,8 @@ URL, is refused with exit 7 rather than silently dropped.
 |------|---------|
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
-| `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, or an item id that does not exist |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, and `bump --note`) |
+| `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
+| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session) |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -94,9 +95,11 @@ also ends in exit 7 rather than a hang; once a connection is up, the SQL itself
 is not time-limited.
 
 Validation and the secret check always run before any connection attempt, and
-`--help` (global or per subcommand) never touches the database. The one exit 4
-that needs the store is an item id that does not exist; it is reported after
-connecting.
+`--help` (global or per subcommand) never touches the database. The exit 4s
+that need the store (an item id that does not exist, a set number that is not
+in the set, an answer letter past the last option, an item with no answer to
+acknowledge, a state key that is not set) are reported after connecting, and
+the transaction that found them writes nothing.
 
 ## Items
 
@@ -118,9 +121,12 @@ full contract.
   schema (a one-line question of at most 500 characters, at most three context
   lines with 600 characters in total, at most 26 options, the impact values)
   is checked first in the CLI, so the database never sees a value it would
-  reject. When options are given, `--default` must be one of them;
-  `--default-at` is ISO 8601 with a time zone (an offset of at most 14:00
-  either way).
+  reject. The text an item carries (question, context, options, notes,
+  comments, session ids, answers) may not hold control characters other than
+  tab — answers may also span lines — because `list`, `show`, and `set-open`
+  print it raw to a terminal. (`state` values are opaque and stored exactly.)
+  When options are given, `--default` must be one of them; `--default-at` is
+  ISO 8601 with a time zone (an offset of at most 14:00 either way).
 - **Secrets.** Every value `add` takes, and `bump`'s note, is scanned for
   secret shapes: private keys; AWS, Google, Slack, GitHub, Stripe, `sk-`, and
   Neon `npg_` keys; JSON Web Tokens; bearer values; URLs with
@@ -153,7 +159,81 @@ full contract.
 
 - **Events** record state changes only (`asked`, `bumped`, ...), with an
   optional note of at most 200 characters: never transcripts or diffs.
-  Reading (`get`, `show`, `list`) records nothing.
+  Reading (`get`, `show`, `list`, `pending-for`) records nothing.
+
+## Lifecycle
+
+| Subcommand | Takes | What it does | Event |
+|------------|-------|--------------|-------|
+| `answer ID ANSWER` | Decisions | Stores the answer and sets `answered`. A single letter naming one of the item's options stores that option's text; free text may span lines (at most 4000 characters, trimmed). The last answer wins and returns an acknowledged item to `answered` | `answered` (note `option B` for a letter) |
+| `ack ID [--answer TEXT]` | Decisions | The asking thread has read the answer: `answered` becomes `acknowledged` and the item is no longer parked. `--answer` acknowledges only if the stored answer is still TEXT | `acknowledged` |
+| `pending-for SESSION [--json]` | Decisions | Read-only: the answered, not yet acknowledged items whose return address is SESSION, oldest answer first | none |
+| `review ID` | Reviews | Sets `reviewed` (also clears a flag) | `reviewed` |
+| `flag ID [--note TEXT]` | Reviews | Sets `flagged`; the note says what to follow up. Turning it into an issue is the desk's job | `flagged` |
+| `comment ID TEXT` | any item | A one-line note in the item's history; the item is unchanged | `commented` |
+| `feedback ID TAG` | any item | An interrupt-tuning tag: `not-important`, `should-have-defaulted`, `good-interrupt`, or any other hyphenated lowercase tag | `feedback` |
+
+- **One event per change.** Every write records exactly one event per item it
+  changes, in the same transaction. A call that would change nothing (an
+  `ack` of an acknowledged item, re-sending the same answer, reviewing a
+  reviewed item, repeating a flag's note, giving a tag the item already has)
+  is a no-op: exit 0, no event. `comment` always appends.
+- **The id prefix is the kind**, so `answer`/`ack` refuse `R-` ids and
+  `review`/`flag` refuse `D-` ids before connecting (exit 4).
+- **The worker loop.** A thread that asked with `add --session S` polls
+  `pending-for S`, acts on each answer, then runs `ack ID --answer TEXT`. If
+  the operator changed the answer in between, that `ack` exits 4 and the
+  thread reads it again.
+- **Concurrency.** Each write locks the item rows first and reads them again in
+  the next statement, so concurrent calls never double-record. Several items
+  are locked in id order, so multi-item writes cannot deadlock.
+
+## Sets
+
+| Subcommand | What it does |
+|------------|--------------|
+| `set-open ID... [--json]` | Numbers 1 to 99 distinct items 1..n under a new set id, in argument order, and records one `shown` event per item (note `set N #k`). Prints `set N` and one `k. ID **question**` line per item |
+| `set-resolve REPLY [--set ID] [--json]` | Maps the operator's reply to the set's items and answers them, exactly as `answer` does |
+
+- **Replies.** `"2: B"`, `"1: A, 2: C"`, or `"1: yes, but after CI; 3: use
+  staging"`. A pair starts at the beginning, or after a comma, semicolon, or
+  line break followed by `N:`; anything else continues the answer before it,
+  so commas and line breaks inside an answer survive. A reply is at most 8000
+  characters, which bounds the parse to under a second on bash 3.2.
+- **All or nothing.** Every pair is validated (the number is in the set, the
+  item is a Decision, a letter names one of its options) before any answer is
+  written, and all answers are written in one transaction. One bad pair
+  writes nothing.
+- **Which set.** The latest set by default; a caller that holds a set id
+  passes `--set`. Numbering restarts at 1 in every set. Four per menu is the
+  question tool's limit, not the store's.
+
+## State, control, and tick
+
+| Subcommand | What it does |
+|------------|--------------|
+| `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
+| `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced |
+| `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
+
+- **Reserved keys.** `tick_watermark` (written by `tick`) and
+  `control_session` (written by `register-control`) are readable with
+  `state get`; `state set` refuses them. State is not an item, so it records
+  no event.
+- **What `tick` reports.** An item whose row was written: added, bumped,
+  answered, acknowledged, reviewed, or flagged. `comment`, `feedback`, and
+  `shown` events are annotations the desk writes itself and do not re-report
+  an item. The first tick ever reports every item.
+- **Why the watermark is a snapshot, not a time.** `updated_at` is `now()`,
+  the start of the writing transaction, so a write that starts before a tick
+  and commits after it carries a time older than that tick and would be
+  missed for good. Instead, migration 003 stamps every item write with its
+  transaction id (`items.change_xid`, kept out of the JSON), and each tick
+  stores the database snapshot it read under (`pg_current_snapshot()`) as the
+  watermark. The next tick reports exactly the items whose last write that
+  snapshot could not see: every write that committed after the previous tick
+  read, including one still in flight while it ran, and nothing twice.
+  Concurrent ticks serialize on an advisory lock.
 
 ## Migrations
 
@@ -172,7 +252,8 @@ full contract.
   nothing, and re-running it is safe.
 - A merged migration reaches the shared store only when someone runs
   `human-queue.sh migrate` against it. Until `002_item_ids.sql` is applied,
-  `add` exits 1 with a hint to run `migrate`. If the store already holds two
+  `add` exits 1 with a hint to run `migrate`; until `003_lifecycle.sql` is
+  applied, `set-open` and `tick` do. If the store already holds two
   open items with the same kind, repo, key, and question, 002 stops and names
   their ids, changing nothing: close all but one of each group and run it
   again.
@@ -203,11 +284,15 @@ bash desk/tests/run.sh
   installed, an `.invalid` host and a TEST-NET address), and that the URL never
   reaches `psql`'s argv or any output. Each case runs under `bash` and, on
   macOS, under `/bin/bash` 3.2.
+- `lifecycle-cli.test.sh` is offline: `human-queue.sh --help` lists all 18
+  subcommands, every lifecycle, set, state, and control validation rule exits
+  4 (and every secret 5) without a connection attempt, and the `set-resolve`
+  reply parser is checked directly. Same two shells.
 - `items-cli.test.sh` is offline too: every `add`/`bump`/`get`/`list`/`show`
   validation rule (exit 4) and secret shape (exit 5) is refused without a
   connection attempt and without echoing the value, and prose that merely
   mentions a password or token is let through. Same two shells.
-- `migrate.test.sh` and `items.test.sh` run against the real database when
+- `migrate.test.sh`, `items.test.sh`, and `lifecycle.test.sh` run against the real database when
   `HUMAN_QUEUE_DATABASE_URL` is set and skip with a notice otherwise. They
   never touch the queue's own tables: each run creates throwaway schemas named
   `hq_test_<pid>_<random>[_suffix]`, points the CLI at them with
@@ -216,7 +301,14 @@ bash desk/tests/run.sh
   `items.test.sh` covers the item round trip, dedupe, ten parallel adds (of
   distinct questions and of one question), `bump`, list filters and order, and
   migration 002 over existing rows (sequence seeding, an id beyond bigint,
-  duplicate open items). `migrate.test.sh` derives its
+  duplicate open items). `lifecycle.test.sh` covers answer, pending-for, and
+  ack; no-ops that record nothing; review, flag, comment, and feedback; sets
+  numbered 1 to n and resolved one pair or several, all or nothing; `tick`,
+  including a write held open across a tick by a second connection, two
+  concurrent ticks, and a tick that waits for the lock under a URL whose
+  `options` default to SERIALIZABLE (every `hq_db_script` transaction is
+  pinned to READ COMMITTED); state and register-control; and migration 003
+  over a 002 store. `migrate.test.sh` derives its
   expected migrations from `desk/schema/`, so a new migration needs no edit
   there.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when

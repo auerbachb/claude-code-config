@@ -43,7 +43,7 @@ EOF
 # item alone.
 hq__show_sql() {
   if [ "$1" -eq 1 ]; then
-    printf '%s\n' "SELECT jsonb_build_object('item', to_jsonb(i), 'events',"
+    printf "SELECT jsonb_build_object('item', %s, 'events',\n" "$(hq_sql_item_json)"
     hq_sql_events_json
     printf '%s\n' ") FROM items i WHERE i.id = :'hq_id';"
   else

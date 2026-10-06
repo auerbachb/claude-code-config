@@ -9,8 +9,13 @@
 #   hq_parse_id_args CMD ID_VAR JSON_VAR ARGS...
 #                               parses `CMD ID [--json]`; exits 4 on anything else
 #   hq_check_text FIELD VALUE MAX
-#                               VALUE is non-blank, one line, at most MAX
+#                               VALUE is non-blank, one line, free of control
+#                               characters (tab aside), at most MAX
 #                               characters; exits 4 naming FIELD otherwise
+#   hq_refuse_control FIELD VALUE [newline]
+#                               exits 4 naming FIELD when VALUE holds a control
+#                               character other than tab (and line breaks,
+#                               with `newline`)
 #   hq_check_timestamp FIELD VALUE
 #                               ISO 8601 date and time WITH a time zone (an
 #                               offset of at most 14:00 either way), and a
@@ -21,6 +26,8 @@
 #   hq_flag_name ARG            prints "option '--flag'" when ARG looks like a
 #                               flag, else "argument": a stray value (which may
 #                               be free text) is never echoed into a message
+#   hq_sql_item_json            SQL expression: the items row `i` as JSON, every
+#                               column except the internal change marker
 #   hq_sql_render_item          SQL expression rendering the items row `i`
 #   hq_sql_render_events        SQL expression rendering the events of `i`
 #   hq_sql_events_json          SQL expression: the events of `i` as JSON
@@ -118,6 +125,7 @@ hq_check_text() {
   case "$value" in
     *$'\n'*|*$'\r'*) hq_die_validation "$field must be a single line" ;;
   esac
+  hq_refuse_control "$field" "$value"
   case "$value" in
     *[![:space:]]*) ;;
     *) hq_die_validation "$field is empty" ;;
@@ -125,6 +133,19 @@ hq_check_text() {
   if [ "${#value}" -gt "$max" ]; then
     hq_die_validation "$field is longer than $max characters"
   fi
+}
+
+# hq_refuse_control FIELD VALUE [newline] — free text is printed raw by list,
+# show, and set-open, so a stored escape sequence would reach the operator's
+# terminal. Refused here, at the only way in: tab is allowed, and line breaks
+# only with `newline` (answers). The value is never echoed into the message.
+hq_refuse_control() {
+  local hq__tab=$'\t' hq__nl=$'\n' hq__v
+  hq__v=${2//$hq__tab/}
+  if [ "${3:-}" = newline ]; then hq__v=${hq__v//$hq__nl/}; fi
+  case "$hq__v" in
+    *[[:cntrl:]]*) hq_die_validation "$1 contains a control character (an escape or other non-printing character)" ;;
+  esac
 }
 
 hq_check_timestamp() {
@@ -172,6 +193,13 @@ hq_check_timestamp() {
 
 # The SQL below lives in functions (not heredocs inside $(...)) because bash
 # 3.2's command-substitution scanner does not understand here-documents.
+
+# The items row `i` as one JSON object. change_xid (migration 003) is the
+# transaction id `tick` reads changes from: internal bookkeeping, so it is left
+# out and the item JSON keeps one shape before and after 003.
+hq_sql_item_json() {
+  printf '%s' "(to_jsonb(i) - 'change_xid')"
+}
 
 # One item, as the operator reads it: a header line, the question in bold, the
 # context as a numbered list, lettered options, the default and when it
