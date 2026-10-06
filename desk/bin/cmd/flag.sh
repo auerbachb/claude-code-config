@@ -16,14 +16,18 @@ cmd_usage() {
 human-queue.sh flag — flag a Review for follow-up.
 
 USAGE
+  human-queue.sh flag ID ["TEXT"]
   human-queue.sh flag ID [--note TEXT]
 
 ARGUMENTS
   ID           a Review id, for example R-88 (r-88 is accepted). Decisions
                (D-n) are answered, not flagged; tune their interrupts with
                feedback.
-  --note TEXT  what to follow up: one line, <= 200 characters. Never a
-               transcript or a diff.
+  TEXT, --note TEXT
+               what to follow up: one line, <= 200 characters, given either
+               after the id (quoted) or with --note, once. Never a
+               transcript or a diff. A note that starts with a dash needs
+               --note.
 
 BEHAVIOR
   The item's status becomes `flagged` and one `flagged` event carrying the
@@ -31,7 +35,8 @@ BEHAVIOR
   is the desk's job, not the store's. Flagging an item again records another
   `flagged` event only when the note differs from the last flag's note;
   repeating the same flag changes nothing and records nothing. `review`
-  clears a flag once it is handled.
+  clears a flag once it is handled. After a flag, the desk offers to open a
+  follow-up issue from the item's title, link, and this note.
 
 OUTPUT
   The canonical item id on stdout. Nothing on stderr on success.
@@ -69,7 +74,7 @@ SQL
 }
 
 cmd_run() {
-  local id="" raw_id="" note="" have_id=0 have_note=0 errf out rc
+  local id="" raw_id="" note="" have_id=0 have_note=0 bare=0 label="flag: --note" errf out rc
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -78,6 +83,7 @@ cmd_run() {
         exit 0
         ;;
       --note)
+        if [ "$bare" -eq 1 ]; then hq_die_validation "flag: give the note once, after the id or with --note"; fi
         if [ "$have_note" -eq 1 ]; then hq_die_validation "flag: --note given more than once"; fi
         if [ "$#" -lt 2 ]; then hq_die_validation "flag: --note needs a value"; fi
         have_note=1
@@ -86,9 +92,20 @@ cmd_run() {
         ;;
       -*) hq_die_validation "flag: unknown $(hq_flag_name "$1") (run human-queue.sh flag --help)" ;;
       *)
-        if [ "$have_id" -eq 1 ]; then hq_die_validation "flag: takes one item id (quote a note with --note)"; fi
-        have_id=1
-        raw_id="$1"
+        if [ "$have_id" -eq 0 ]; then
+          have_id=1
+          raw_id="$1"
+        elif [ "$bare" -eq 1 ]; then
+          hq_die_validation "flag: takes one item id and one note (quote a note that has spaces)"
+        elif [ "$have_note" -eq 1 ]; then
+          hq_die_validation "flag: give the note once, after the id or with --note"
+        else
+          # The form the desk writes: flag R-88 "what to follow up".
+          bare=1
+          have_note=1
+          note="$1"
+          label="flag: the note"
+        fi
         shift
         ;;
     esac
@@ -99,8 +116,8 @@ cmd_run() {
   hq_item_id id "$raw_id"
   hq_require_kind flag "$id" review
   if [ "$have_note" -eq 1 ]; then
-    hq_check_text "flag: --note" "$note" 200
-    hq_refuse_secret "flag: --note" "$note"
+    hq_check_text "$label" "$note" 200
+    hq_refuse_secret "$label" "$note"
   fi
 
   hq_db_connect
