@@ -20,7 +20,9 @@
 #        a write whose transaction started before a tick and committed after
 #        it is reported by the next tick (a time watermark would miss it:
 #        its updated_at is older than that tick); two concurrent ticks report
-#        a change exactly once
+#        a change exactly once; under a URL whose options default to
+#        SERIALIZABLE, hq_db_script still runs READ COMMITTED and a tick that
+#        waited for the lock reads the watermark committed meanwhile
 #   4.2  answer, ack, review, flag, comment, feedback write one event each;
 #        a call that changes nothing writes none; pending-for writes none
 #   and: answers by letter store the option's text; a letter past the last
@@ -436,6 +438,75 @@ wait "$P2" || F=$((F + 1))
 check "two concurrent ticks both exit 0" "$F" "0"
 check "two concurrent ticks report the change exactly once" \
   "$(cat "$TMP/t1.out" "$TMP/t2.out" | grep -o "\"id\": \"$RACE\"" | grep -c .)" "1"
+
+# Isolation: a URL whose `options` default every transaction to SERIALIZABLE
+# reaches the server (the control), yet hq_db_script still runs READ COMMITTED.
+SER_OPTS="-c default_transaction_isolation=serializable"
+check "control: URL options set the session default" \
+  "$( (HQ_CONN_OPTIONS="${HQ_CONN_OPTIONS:+$HQ_CONN_OPTIONS }$SER_OPTS"; hq_psql -At -c 'SHOW transaction_isolation') 2>&1)" \
+  "serializable"
+check "hq_db_script pins READ COMMITTED over that default" \
+  "$( (HQ_CONN_OPTIONS="${HQ_CONN_OPTIONS:+$HQ_CONN_OPTIONS }$SER_OPTS"
+       printf '%s\n' "SELECT current_setting('transaction_isolation');" | hq_db_script -At) 2>&1)" \
+  "read committed"
+
+# A tick that waits for the lock while another tick commits a new watermark,
+# under that SERIALIZABLE URL: a snapshot taken before the wait would read the
+# old watermark and fail with a serialization error on the update. It must
+# succeed and report the change made under the lock holder.
+case "$HUMAN_QUEUE_DATABASE_URL" in
+  *options=*)
+    printf 'skip — the URL already carries options; the serializable tick case needs its own\n'
+    ;;
+  *)
+    case "$HUMAN_QUEUE_DATABASE_URL" in *\?*) SER_SEP='&' ;; *) SER_SEP='?' ;; esac
+    SER_URL="$HUMAN_QUEUE_DATABASE_URL${SER_SEP}options=-c%20default_transaction_isolation%3Dserializable"
+    hq bash "$S_MAIN" tick
+    OLD_WM=$(sql_in "$S_MAIN" "SELECT value FROM state WHERE key = 'tick_watermark'")
+    LATE=$(add_item "$S_MAIN" decision pr-tick "Reported after the lock wait?")
+    mkfifo "$TMP/lock.fifo"
+    (
+      HQ_CONN_MARKER="$TMP/lock.marker"
+      hq_psql -At -f - >"$TMP/lock.out" 2>"$TMP/lock.err"
+    ) <"$TMP/lock.fifo" &
+    HELD_PID=$!
+    exec 3>"$TMP/lock.fifo"
+    printf '%s\n' "SET search_path TO $S_MAIN;" "BEGIN;" \
+      "SELECT pg_advisory_xact_lock(hashtextextended('human-queue:tick:' || '$S_MAIN', 0));" \
+      "UPDATE state SET value = pg_current_snapshot()::text WHERE key = 'tick_watermark';" \
+      '\echo locked' >&3
+    i=0
+    while [ "$i" -lt 150 ] && ! grep -q '^locked$' "$TMP/lock.out" 2>/dev/null; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    check "the lock holder has the tick lock" "$(grep -c '^locked$' "$TMP/lock.out" 2>/dev/null)" "1"
+    HUMAN_QUEUE_DATABASE_URL="$SER_URL" HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" tick \
+      >"$TMP/t3.out" 2>"$TMP/t3.err" </dev/null &
+    P3=$!
+    i=0
+    WAITING=0
+    while [ "$i" -lt 150 ]; do
+      WAITING=$(sql_in "$S_MAIN" "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'human-queue' AND wait_event = 'advisory' AND query LIKE '%human-queue:tick:%$S_MAIN%' AND pid <> pg_backend_pid()")
+      [ "$WAITING" = "1" ] && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    check "the second tick is waiting for the lock" "$WAITING" "1"
+    printf '%s\n' "COMMIT;" '\echo released' >&3
+    exec 3>&-
+    wait "$HELD_PID" || true
+    HELD_PID=""
+    RC=0
+    wait "$P3" || RC=$?
+    check "a tick that waited under a SERIALIZABLE default exits 0" "$RC" "0"
+    check "and writes nothing on stderr" "$(cat "$TMP/t3.err")" ""
+    # The holder's watermark already covers $LATE; the old one would report it.
+    check "it reads the watermark committed during its wait, not the old one" "$(cat "$TMP/t3.out")" "[]"
+    check "control: the old watermark would have reported $LATE" \
+      "$(sql_in "$S_MAIN" "SELECT NOT pg_visible_in_snapshot(change_xid, '$OLD_WM'::pg_snapshot) FROM items WHERE id = '$LATE'")" "t"
+    ;;
+esac
 
 # --- state, register-control -------------------------------------------------------------
 EV8=$(n_events "$S_MAIN")

@@ -13,10 +13,16 @@
 #   - every usage and validation error exits 4 with one stderr line and no
 #     connection attempt: missing or extra arguments, malformed ids, the id
 #     prefix that is the wrong kind (answer/ack take D-, review/flag take R-),
-#     blank or over-long text, malformed feedback tags, set-open counts and
+#     blank or over-long text, control characters (escape, carriage return)
+#     in answers, comments, and notes, never echoed; malformed feedback tags, set-open counts and
 #     repeats, every malformed set-resolve reply, state actions and keys, and
 #     the reserved state keys
-#   - secret-shaped free text exits 5 without connecting and is never echoed
+#   - secret-shaped free text exits 5 without connecting and is never echoed,
+#     including the values that only reach psql's argv (a state get key, a
+#     pending-for session id); a state value too large for one Linux argument
+#     exits 4; --set accepts any bigint set id and nothing past it; a reply
+#     over 8000 characters exits 4, and one at the cap (thousands of leading
+#     zeros or separators) still parses quickly
 #   - the set-resolve parser, called directly: "2: B", "1: A, 2: C", commas
 #     and line breaks kept inside an answer, `;` separators, leading zeros,
 #     blank segments dropped, answers trimmed
@@ -110,6 +116,18 @@ EOF
 # repeat CHAR N — CHAR repeated N times.
 repeat() { printf "%${2}s" "" | tr ' ' "$1"; }
 
+# repeat_str TEXT N — TEXT (any bytes, multi-byte included) repeated N times,
+# by doubling, so it stays fast for large N.
+repeat_str() {
+  local out="" chunk="$1" n="$2"
+  while [ "$n" -gt 0 ]; do
+    if [ $((n % 2)) -eq 1 ]; then out="$out$chunk"; fi
+    chunk="$chunk$chunk"
+    n=$((n / 2))
+  done
+  printf '%s' "$out"
+}
+
 # parse SHELL REPLY — prints the parse, or the error line.
 parse() { "$1" "$TMP/parse.sh" "$HQ_T_DESK_DIR/bin" "$2" 2>&1; }
 
@@ -167,6 +185,12 @@ for SH in $SHELLS; do
   expect_db "$SH" "a multi-line answer" answer D-1 "$(printf 'First line.\nSecond line.')"
   expect_db "$SH" "an answer of exactly 4000 characters" answer D-1 "$(repeat x 4000)"
   expect_db "$SH" "an answer that starts with a dash" answer D-1 "-- not now"
+  expect_rc "$SH" 4 "an answer with a terminal escape" "the answer contains a control character" \
+    answer D-1 "$(printf 'yes\033]52;c;eA==\007')"
+  check_absent "[$SH] the escape in an answer is not echoed" "$OUT$ERR" "$(printf '\033')"
+  expect_rc "$SH" 4 "an answer with a carriage return" "the answer contains a control character" \
+    answer D-1 "$(printf 'fine\rFORGED')"
+  expect_db "$SH" "an answer with tabs and line breaks" answer D-1 "$(printf 'a\tb\nc')"
 
   # --- ack ---------------------------------------------------------------------
   expect_rc "$SH" 4 "ack without an id" "missing item id" ack
@@ -198,6 +222,10 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "comment that is blank" "the comment is empty" comment D-1 ""
   expect_rc "$SH" 4 "comment over 200 characters" "longer than 200" comment D-1 "$(printf '%201s' x)"
   expect_rc "$SH" 4 "comment on two lines" "must be a single line" comment D-1 "$(printf 'a\nb')"
+  expect_rc "$SH" 4 "comment with an escape" "the comment contains a control character" \
+    comment D-1 "$(printf 'ok \033[31mred')"
+  expect_rc "$SH" 4 "flag note with an escape" "--note contains a control character" \
+    flag R-1 --note "$(printf 'x\033[0m')"
   expect_rc "$SH" 5 "comment with a token" "the comment looks like" comment D-1 "$FAKE_GH"
   expect_db "$SH" "comment" comment R-2 "looks right"
   expect_db "$SH" "comment that starts with dashes" comment R-2 "-- see the PR"
@@ -214,6 +242,8 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "pending-for with two sessions" "takes one session id" pending-for a b
   expect_rc "$SH" 4 "pending-for with a two-line session" "must be a single line" pending-for "$(printf 'a\nb')"
   expect_rc "$SH" 4 "pending-for with an unknown flag" "unknown option '--all'" pending-for s --all
+  expect_rc "$SH" 5 "pending-for with a token for a session" "the session id looks like" pending-for "$FAKE_GH"
+  check_absent "[$SH] the pending-for token is not echoed" "$OUT$ERR" "$FAKE_GH"
   expect_db "$SH" "pending-for" pending-for sess-a --json
 
   # --- set-open --------------------------------------------------------------------
@@ -243,9 +273,32 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "set-resolve with a blank answer" "the answer to 2 is empty" set-resolve "1: A, 2:  "
   expect_rc "$SH" 4 "set-resolve with an over-long answer" "the answer to 1 is longer than 4000" \
     set-resolve "1: $(repeat x 4001)"
+  expect_rc "$SH" 4 "set-resolve with an escape in an answer" "the answer to 2 contains a control character" \
+    set-resolve "$(printf '1: A, 2: B\033[2J')"
   expect_rc "$SH" 4 "set-resolve --set that is not a number" "--set must be a set id" set-resolve "1: A" --set abc
   expect_rc "$SH" 4 "set-resolve --set 0" "--set must be a set id" set-resolve "1: A" --set 0
   expect_rc "$SH" 4 "set-resolve --set twice" "--set given more than once" set-resolve "1: A" --set 1 --set 2
+  expect_db "$SH" "set-resolve --set at bigint's maximum" set-resolve "1: A" --set 9223372036854775807
+  expect_db "$SH" "set-resolve --set of 19 digits" set-resolve "1: A" --set 1000000000000000000
+  expect_rc "$SH" 4 "set-resolve --set past the maximum in its high digits" "--set is not a set id" \
+    set-resolve "1: A" --set 9223372037000000000
+  expect_rc "$SH" 4 "set-resolve --set past bigint's maximum" "--set is not a set id" \
+    set-resolve "1: A" --set 9223372036854775808
+  expect_rc "$SH" 4 "set-resolve --set of 20 digits" "--set is not a set id" \
+    set-resolve "1: A" --set 10000000000000000000
+  expect_rc "$SH" 4 "set-resolve number 00" "from 1 to 99" set-resolve "00: A"
+  expect_rc "$SH" 4 "set-resolve number 0100" "from 1 to 99" set-resolve "0100: A"
+  expect_rc "$SH" 4 "set-resolve reply over 8000 characters" "the reply is longer than 8000" \
+    set-resolve "1: A$(repeat , 7997)"
+  check "[$SH] parse drops thousands of leading zeros" "$(parse "$SH" "$(repeat 0 7990)7: B")" "7=B|"
+  P_START=$(hq_t_now)
+  check "[$SH] parse of 8000 characters of separators" "$(parse "$SH" "1: A$(repeat , 7996)")" "1=A|"
+  P_END=$(hq_t_now)
+  if hq_t_elapsed_under "$P_START" "$P_END" 5.0; then
+    ok "[$SH] a reply at the cap parses in under 5 s"
+  else
+    bad "[$SH] a reply at the cap took $(hq_t_elapsed "$P_START" "$P_END")s to parse"
+  fi
   expect_rc "$SH" 5 "set-resolve with a token in an answer" "the answer to 2 looks like" \
     set-resolve "1: A, 2: try $FAKE_GH"
   check_absent "[$SH] the set-resolve token is not echoed" "$OUT$ERR" "$FAKE_GH"
@@ -280,6 +333,13 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "state set over the value limit" "longer than 65536" state set k "$(printf '%65537s' x)"
   expect_rc "$SH" 5 "state set with a token value" "the value looks like" state set k "$FAKE_GH"
   check_absent "[$SH] the state token is not echoed" "$OUT$ERR" "$FAKE_GH"
+  expect_rc "$SH" 5 "state get with a token for a key" "state get: the key looks like" state get "$FAKE_GH"
+  check_absent "[$SH] the state get key is not echoed" "$OUT$ERR" "$FAKE_GH"
+  # 43688 three-byte characters and one more byte: under 65536 characters, but
+  # 131065 bytes — one argument still fits Linux's 131072, `hq_value=` + it
+  # would not. (A C-locale shell counts bytes and stops at the character cap.)
+  expect_rc "$SH" 4 "state set of a value too large for one psql argument" "state set: the value is l" \
+    state set k "$(repeat_str '€' 43688)a"
   expect_db "$SH" "state get" state get day_plan:2026-10-05
   expect_db "$SH" "state get of a reserved key" state get tick_watermark
   expect_db "$SH" "state set" state set day_plan "$(printf 'PRD first\nthen four questions')"

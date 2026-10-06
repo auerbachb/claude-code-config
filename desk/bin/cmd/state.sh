@@ -10,6 +10,10 @@
 . "$HQ_BIN_DIR/lib/secrets.sh"
 
 HQ_STATE_VALUE_MAX=65536
+# The value reaches psql as one argument, `hq_value=VALUE`, and Linux caps one
+# argument at 131072 bytes (MAX_ARG_STRLEN). 65536 characters of multi-byte
+# text can exceed that, so the UTF-8 size is capped too, with room to spare.
+HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
 HQ_STATE_RESERVED="tick_watermark control_session"
 
@@ -24,8 +28,8 @@ USAGE
 ARGUMENTS
   KEY    1 to 200 characters of letters, digits, and _ . : / -
          (for example day_plan or day_plan:2026-10-05)
-  VALUE  any text, up to 65536 characters, lines included; may be empty.
-         Quote it.
+  VALUE  any text, up to 65536 characters (and 131000 bytes as UTF-8),
+         lines included; may be empty. Quote it.
 
 BEHAVIOR
   `get` prints the value stored under KEY exactly, followed by one newline.
@@ -63,6 +67,13 @@ hq__state_key_ok() {
   [ "${#1}" -ge 1 ] && [ "${#1}" -le 200 ] && [[ $1 =~ $re ]]
 }
 
+# hq__state_bytes VAR VALUE — VALUE's size in bytes (LC_ALL=C: ${#} counts
+# bytes, whatever the caller's locale), into VAR.
+hq__state_bytes() {
+  local LC_ALL=C
+  printf -v "$1" '%s' "${#2}"
+}
+
 # The value is framed by `v` on both sides, so an empty value and a missing
 # key (no row: nothing printed) stay distinct, and a value's own trailing
 # newlines survive the command substitution.
@@ -78,7 +89,7 @@ SQL
 }
 
 cmd_run() {
-  local action="" key="" value="" n=0 errf out rc
+  local action="" key="" value="" n=0 nbytes errf out rc
   # --help in the action or key position; a VALUE is never read as a flag,
   # so `state set note --help` stores the text "--help".
   case "${1:-}" in
@@ -134,7 +145,14 @@ cmd_run() {
     if [ "${#value}" -gt "$HQ_STATE_VALUE_MAX" ]; then
       hq_die_validation "state set: the value is longer than $HQ_STATE_VALUE_MAX characters"
     fi
-    hq_refuse_secret "state set: the key" "$key"
+    hq__state_bytes nbytes "$value"
+    if [ "$nbytes" -gt "$HQ_STATE_VALUE_MAX_BYTES" ]; then
+      hq_die_validation "state set: the value is larger than $HQ_STATE_VALUE_MAX_BYTES bytes"
+    fi
+  fi
+  # Both actions hand the key to psql's argv, so `get` checks it too.
+  hq_refuse_secret "state $action: the key" "$key"
+  if [ "$action" = set ]; then
     hq_refuse_secret "state set: the value" "$value"
   fi
 

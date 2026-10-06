@@ -6,6 +6,8 @@
 
 # shellcheck source=../lib/items.sh
 . "$HQ_BIN_DIR/lib/items.sh"
+# shellcheck source=../lib/secrets.sh
+. "$HQ_BIN_DIR/lib/secrets.sh"
 
 cmd_usage() {
   cat <<'EOF'
@@ -37,6 +39,7 @@ EXIT CODES
   1  unexpected database failure
   4  missing or invalid session, or a stray argument (before any connection
      attempt)
+  5  the session id looks like a secret (before any connection attempt)
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
 }
@@ -93,6 +96,8 @@ cmd_run() {
     hq_die_validation "pending-for: missing session id (run human-queue.sh pending-for --help)"
   fi
   hq_check_text "pending-for: the session id" "$session" 200
+  # The session id reaches psql's argv: a secret-shaped one stops here.
+  hq_refuse_secret "pending-for: the session id" "$session"
 
   hq_db_connect
   hq_mktemp errf

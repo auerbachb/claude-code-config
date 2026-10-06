@@ -80,7 +80,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
 | `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `set-resolve`, `state set`, `register-control`) |
+| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session) |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -121,9 +121,12 @@ full contract.
   schema (a one-line question of at most 500 characters, at most three context
   lines with 600 characters in total, at most 26 options, the impact values)
   is checked first in the CLI, so the database never sees a value it would
-  reject. When options are given, `--default` must be one of them;
-  `--default-at` is ISO 8601 with a time zone (an offset of at most 14:00
-  either way).
+  reject. The text an item carries (question, context, options, notes,
+  comments, session ids, answers) may not hold control characters other than
+  tab — answers may also span lines — because `list`, `show`, and `set-open`
+  print it raw to a terminal. (`state` values are opaque and stored exactly.)
+  When options are given, `--default` must be one of them; `--default-at` is
+  ISO 8601 with a time zone (an offset of at most 14:00 either way).
 - **Secrets.** Every value `add` takes, and `bump`'s note, is scanned for
   secret shapes: private keys; AWS, Google, Slack, GitHub, Stripe, `sk-`, and
   Neon `npg_` keys; JSON Web Tokens; bearer values; URLs with
@@ -195,7 +198,8 @@ full contract.
 - **Replies.** `"2: B"`, `"1: A, 2: C"`, or `"1: yes, but after CI; 3: use
   staging"`. A pair starts at the beginning, or after a comma, semicolon, or
   line break followed by `N:`; anything else continues the answer before it,
-  so commas and line breaks inside an answer survive.
+  so commas and line breaks inside an answer survive. A reply is at most 8000
+  characters, which bounds the parse to under a second on bash 3.2.
 - **All or nothing.** Every pair is validated (the number is in the set, the
   item is a Decision, a letter names one of its options) before any answer is
   written, and all answers are written in one transaction. One bad pair
@@ -208,7 +212,7 @@ full contract.
 
 | Subcommand | What it does |
 |------------|--------------|
-| `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4 |
+| `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced |
 | `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
 
@@ -300,9 +304,11 @@ bash desk/tests/run.sh
   duplicate open items). `lifecycle.test.sh` covers answer, pending-for, and
   ack; no-ops that record nothing; review, flag, comment, and feedback; sets
   numbered 1 to n and resolved one pair or several, all or nothing; `tick`,
-  including a write held open across a tick by a second connection and two
-  concurrent ticks; state and register-control; and migration 003 over a 002
-  store. `migrate.test.sh` derives its
+  including a write held open across a tick by a second connection, two
+  concurrent ticks, and a tick that waits for the lock under a URL whose
+  `options` default to SERIALIZABLE (every `hq_db_script` transaction is
+  pinned to READ COMMITTED); state and register-control; and migration 003
+  over a 002 store. `migrate.test.sh` derives its
   expected migrations from `desk/schema/`, so a new migration needs no edit
   there.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when

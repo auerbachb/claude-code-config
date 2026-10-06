@@ -21,7 +21,9 @@
 #   - bump/get/show: malformed ids and stray arguments exit 4; bump's note is
 #     validated and secret-checked
 #   - list: unknown kind or status exits 4
-#   - a fully valid add with the URL unset gets past validation to exit 7
+#   - a fully valid add with the URL unset gets past validation to exit 7;
+#     control characters (escape, bell, DEL) in free text exit 4 unechoed,
+#     while a tab and non-ASCII text pass
 #
 # Every case runs under `bash` on PATH and, when /bin/bash is 3.x (macOS),
 # under /bin/bash too. Token-shaped test values are assembled at run time so
@@ -153,6 +155,13 @@ for SH in $SHELLS; do
     add "${BASE[@]}" --context ok --context "$(printf 'a\rb')"
   expect_rc "$SH" 4 "an empty context entry" "--context 1 is empty" \
     add "${BASE[@]}" --context ""
+  expect_rc "$SH" 4 "a question with a terminal escape" "--question contains a control character" \
+    add --kind decision --repo a/b --key k --question "$(printf 'Ship \033[2Jit?')"
+  check_absent "[$SH] the escape is not echoed" "$OUT$ERR" "$(printf '\033')"
+  expect_rc "$SH" 4 "an option with a bell" "--option 2 contains a control character" \
+    add "${BASE[@]}" --option Yes --option "$(printf 'No\a')"
+  expect_rc "$SH" 4 "a context line with DEL" "--context 1 contains a control character" \
+    add "${BASE[@]}" --context "$(printf 'a\177b')"
   expect_rc "$SH" 4 "duplicate options" "--option 1 and --option 2 are the same" \
     add "${BASE[@]}" --option Yes --option Yes
   expect_rc "$SH" 4 "default not among the options" "--default must be one of the --option values" \
@@ -246,6 +255,10 @@ for SH in $SHELLS; do
     --context "$(printf '%300s' x)" --context "$(printf '%300s' y)" \
     >/dev/null 2>"$TMP/err" </dev/null || RC=$?
   check "[$SH] context of exactly 600 characters passes validation" "$RC" "7"
+  RC=0
+  env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" add --kind decision --repo a/b --key k \
+    --question "$(printf 'Ship\tit? — déjà vu ✓')" >/dev/null 2>"$TMP/err" </dev/null || RC=$?
+  check "[$SH] a question with a tab and non-ASCII text passes validation" "$RC" "7"
 
   # --- bump, get, show, list ---------------------------------------------------
   expect_rc "$SH" 4 "bump without an id" "missing item id" bump

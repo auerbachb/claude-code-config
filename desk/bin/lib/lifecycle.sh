@@ -9,7 +9,8 @@
 #   hq_trim VAR VALUE           VALUE without leading or trailing whitespace
 #                               (newlines included), into VAR
 #   hq_check_answer FIELD VALUE an answer: non-blank, at most HQ_ANSWER_MAX
-#                               characters, may span lines; exits 4 otherwise
+#                               characters, may span lines, no other control
+#                               characters (tab aside); exits 4 otherwise
 #   hq_require_kind CMD ID KIND exits 4 unless the id's prefix is KIND's
 #                               (D- decision, R- review): checked before
 #                               connecting, because the prefix IS the kind
@@ -41,8 +42,9 @@
 # LOCKING
 #   Every write locks the rows it reads first, in a statement of its own, and
 #   reads them again in the next statement. Under READ COMMITTED each
-#   statement takes a new snapshot, so what it reads after the lock is what
-#   the previous lock holder committed: two concurrent `ack` calls record one
+#   statement takes a new snapshot (hq_db_script pins that level, whatever the
+#   URL's `options` default), so what it reads after the lock is what the
+#   previous lock holder committed: two concurrent `ack` calls record one
 #   `acknowledged` event, not two. Several items are locked in id order, so
 #   two multi-item writes can never deadlock.
 
@@ -60,6 +62,7 @@ hq_check_answer() {
     *[![:space:]]*) ;;
     *) hq_die_validation "$1 is empty" ;;
   esac
+  hq_refuse_control "$1" "$2" newline
   if [ "${#2}" -gt "$HQ_ANSWER_MAX" ]; then
     hq_die_validation "$1 is longer than $HQ_ANSWER_MAX characters"
   fi

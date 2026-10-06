@@ -30,9 +30,10 @@
 #   hq_db_connect          validate env + probe; exits 7 on any failure
 #   hq_psql ARGS...        run psql with the scoped env (-X -w -q, ON_ERROR_STOP)
 #                          under the connect-phase deadline; needs hq_db_connect
-#   hq_db_script ARGS...   run the SQL script on stdin in ONE transaction with
-#                          `SET LOCAL search_path` to hq_schema; ARGS are extra
-#                          psql options (e.g. -At, -v name=value)
+#   hq_db_script ARGS...   run the SQL script on stdin in ONE READ COMMITTED
+#                          transaction with `SET LOCAL search_path` to
+#                          hq_schema; ARGS are extra psql options (e.g. -At,
+#                          -v name=value)
 #   hq_db_fail RC ERRFILE CONTEXT
 #                          map a failed psql run to the exit contract and exit
 
@@ -312,8 +313,14 @@ hq_db_connect() {
 # hq_db_script ARGS... — runs the SQL script on stdin as ONE transaction in
 # hq_schema. Scripts may use psql variables (`:'name'`, `:"name"`) and
 # meta-commands (\gset, \if); `:"hq_schema"` is always defined.
+# The transaction is READ COMMITTED even when the URL's `options` set another
+# default_transaction_isolation: every write locks rows (or an advisory lock)
+# in one statement and reads them in the next, which needs that statement's
+# fresh snapshot. Under REPEATABLE READ the second statement would read from
+# before the lock wait and fail with a serialization error.
 hq_db_script() {
   {
+    printf '%s\n' 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED;'
     printf '%s\n' 'SET LOCAL client_min_messages TO warning;'
     printf '%s\n' 'SET LOCAL search_path TO :"hq_schema";'
     cat

@@ -9,8 +9,13 @@
 #   hq_parse_id_args CMD ID_VAR JSON_VAR ARGS...
 #                               parses `CMD ID [--json]`; exits 4 on anything else
 #   hq_check_text FIELD VALUE MAX
-#                               VALUE is non-blank, one line, at most MAX
+#                               VALUE is non-blank, one line, free of control
+#                               characters (tab aside), at most MAX
 #                               characters; exits 4 naming FIELD otherwise
+#   hq_refuse_control FIELD VALUE [newline]
+#                               exits 4 naming FIELD when VALUE holds a control
+#                               character other than tab (and line breaks,
+#                               with `newline`)
 #   hq_check_timestamp FIELD VALUE
 #                               ISO 8601 date and time WITH a time zone (an
 #                               offset of at most 14:00 either way), and a
@@ -120,6 +125,7 @@ hq_check_text() {
   case "$value" in
     *$'\n'*|*$'\r'*) hq_die_validation "$field must be a single line" ;;
   esac
+  hq_refuse_control "$field" "$value"
   case "$value" in
     *[![:space:]]*) ;;
     *) hq_die_validation "$field is empty" ;;
@@ -127,6 +133,19 @@ hq_check_text() {
   if [ "${#value}" -gt "$max" ]; then
     hq_die_validation "$field is longer than $max characters"
   fi
+}
+
+# hq_refuse_control FIELD VALUE [newline] — free text is printed raw by list,
+# show, and set-open, so a stored escape sequence would reach the operator's
+# terminal. Refused here, at the only way in: tab is allowed, and line breaks
+# only with `newline` (answers). The value is never echoed into the message.
+hq_refuse_control() {
+  local hq__tab=$'\t' hq__nl=$'\n' hq__v
+  hq__v=${2//$hq__tab/}
+  if [ "${3:-}" = newline ]; then hq__v=${hq__v//$hq__nl/}; fi
+  case "$hq__v" in
+    *[[:cntrl:]]*) hq_die_validation "$1 contains a control character (an escape or other non-printing character)" ;;
+  esac
 }
 
 hq_check_timestamp() {

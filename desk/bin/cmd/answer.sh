@@ -23,8 +23,9 @@ ARGUMENTS
           are not answered: use review or flag.
   ANSWER  the answer: a single letter naming one of the item's options
           (A = the first, case-insensitive), or free text. Free text may span
-          several lines, at most 4000 characters; leading and trailing
-          whitespace is dropped. Quote it.
+          several lines, at most 4000 characters, with no other control
+          characters (tab aside); leading and trailing whitespace is
+          dropped. Quote it.
 
 BEHAVIOR
   A letter that names an option stores that option's text, so the asking

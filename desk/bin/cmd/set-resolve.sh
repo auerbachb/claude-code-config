@@ -28,7 +28,8 @@ ARGUMENTS
             or line break that is followed by `N:`. Any other text continues
             the answer before it, so commas and line breaks inside an answer
             are kept. Each ANSWER is what `answer` takes: a letter naming one
-            of the item's options, or free text (<= 4000 characters).
+            of the item's options, or free text (<= 4000 characters). The
+            whole reply is at most 8000 characters.
   --set ID  the set to resolve against (as set-open printed it). Default: the
             latest set. A caller that holds a set id should pass it.
   --json    print {"set_id": N, "answers": [{"n", "id", "answer",
@@ -63,7 +64,11 @@ EOF
 # starts with `N:` opens a pair, any other segment continues the answer
 # before it (with its separator), and a blank segment is dropped. Parameter
 # expansion, not a per-character loop, so a 4000-character reply stays fast
-# on bash 3.2. Exits 4 on malformed input; the reply is never echoed.
+# on bash 3.2. Each segment still copies the rest of the reply, so the work
+# grows with (segments x length): the reply is capped at HQ_SR_REPLY_MAX
+# first, which keeps the worst case (thousands of empty segments) under a
+# second on bash 3.2 (about 0.7 s measured; 16000 characters took 3 s). Exits 4 on malformed input; the reply is never echoed.
+HQ_SR_REPLY_MAX=8000
 HQ_SR_POS=()
 HQ_SR_ANS=()
 hq__sr_parse() {
@@ -71,6 +76,9 @@ hq__sr_parse() {
   local re='^[[:space:]]*([0-9]+)[[:space:]]*:(.*)$'
   HQ_SR_POS=()
   HQ_SR_ANS=()
+  if [ "${#rest}" -gt "$HQ_SR_REPLY_MAX" ]; then
+    hq_die_validation "set-resolve: the reply is longer than $HQ_SR_REPLY_MAX characters"
+  fi
   while :; do
     seg="${rest%%[,;"$nl"]*}"
     if [ "${#seg}" -lt "${#rest}" ]; then
@@ -84,10 +92,17 @@ hq__sr_parse() {
     fi
     if [[ $seg =~ $re ]]; then
       pos="${BASH_REMATCH[1]}"
-      # Leading zeros are dropped; more than two digits can never be a number
-      # in a set of at most 99.
-      while [ "${#pos}" -gt 1 ] && [ "${pos#0}" != "$pos" ]; do pos="${pos#0}"; done
-      if [ "${#pos}" -gt 2 ] || [ "$pos" -lt 1 ]; then
+      # Leading zeros are dropped in one step, not one zero at a time (that is
+      # quadratic in their count). Past two digits only zeros may lead: a set
+      # holds at most 99.
+      if [ "${#pos}" -gt 2 ]; then
+        case "${pos:0:$((${#pos} - 2))}" in
+          *[!0]*) hq_die_validation "set-resolve: item numbers run from 1 to 99" ;;
+        esac
+        pos="${pos:$((${#pos} - 2))}"
+      fi
+      pos="${pos#0}"
+      if [ -z "$pos" ] || [ "$pos" -lt 1 ]; then
         hq_die_validation "set-resolve: item numbers run from 1 to 99"
       fi
       k=0
@@ -124,6 +139,19 @@ hq__sr_parse() {
     hq_refuse_secret "set-resolve: the answer to $((HQ_SR_POS[k]))" "${HQ_SR_ANS[k]}"
     k=$((k + 1))
   done
+}
+
+# hq__sr_bigint_ok DIGITS — true when DIGITS (no leading zero) is at most
+# bigint's maximum, 9223372036854775807, the range of sets_set_id_seq: up to
+# 19 digits. A 19-digit value is compared in two halves (10 + 9 digits), so
+# bash arithmetic never sees a number past that maximum.
+hq__sr_bigint_ok() {
+  local hi lo
+  [ "${#1}" -lt 19 ] && return 0
+  [ "${#1}" -eq 19 ] || return 1
+  hi=$((10#${1:0:10}))
+  lo=$((10#${1:10}))
+  [ "$hi" -lt 9223372036 ] || { [ "$hi" -eq 9223372036 ] && [ "$lo" -le 854775807 ]; }
 }
 
 cmd_run() {
@@ -169,7 +197,7 @@ cmd_run() {
     case "$set_arg" in
       *[!0-9]*) hq_die_validation "set-resolve: --set must be a set id such as 12" ;;
     esac
-    if [ "${#set_arg}" -gt 18 ]; then
+    if ! hq__sr_bigint_ok "$set_arg"; then
       hq_die_validation "set-resolve: --set is not a set id"
     fi
   fi
