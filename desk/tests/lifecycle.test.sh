@@ -442,13 +442,25 @@ check "two concurrent ticks report the change exactly once" \
 # Isolation: a URL whose `options` default every transaction to SERIALIZABLE
 # reaches the server (the control), yet hq_db_script still runs READ COMMITTED.
 SER_OPTS="-c default_transaction_isolation=serializable"
+# with_conn_options OPTS CMD... — runs CMD as if the URL's `options` also
+# carried OPTS. The override is a function-local HQ_CONN_OPTIONS, which
+# hq_psql (and so hq_db_script) reads through bash's dynamic scope; the
+# parsed global is untouched once CMD returns.
+with_conn_options() {
+  local HQ_CONN_OPTIONS="${HQ_CONN_OPTIONS:+$HQ_CONN_OPTIONS }$1"
+  shift
+  "$@"
+}
+PARSED_OPTS="$HQ_CONN_OPTIONS"
 check "control: URL options set the session default" \
-  "$( (HQ_CONN_OPTIONS="${HQ_CONN_OPTIONS:+$HQ_CONN_OPTIONS }$SER_OPTS"; hq_psql -At -c 'SHOW transaction_isolation') 2>&1)" \
+  "$(with_conn_options "$SER_OPTS" hq_psql -At -c 'SHOW transaction_isolation' 2>&1)" \
   "serializable"
 check "hq_db_script pins READ COMMITTED over that default" \
-  "$( (HQ_CONN_OPTIONS="${HQ_CONN_OPTIONS:+$HQ_CONN_OPTIONS }$SER_OPTS"
-       printf '%s\n' "SELECT current_setting('transaction_isolation');" | hq_db_script -At) 2>&1)" \
+  "$(printf '%s\n' "SELECT current_setting('transaction_isolation');" \
+       | with_conn_options "$SER_OPTS" hq_db_script -At 2>&1)" \
   "read committed"
+check "the override did not leak into the parsed connection options" \
+  "$(if [ "$HQ_CONN_OPTIONS" = "$PARSED_OPTS" ]; then echo unchanged; else echo changed; fi)" "unchanged"
 
 # A tick that waits for the lock while another tick commits a new watermark,
 # under that SERIALIZABLE URL: a snapshot taken before the wait would read the
