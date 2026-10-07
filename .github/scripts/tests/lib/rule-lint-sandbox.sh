@@ -52,6 +52,16 @@ while IFS= read -r -d '' f; do
     continue
   fi
   mkdir -p "${SANDBOX}/$(dirname "$f")"
+  # A tracked symlink is recreated as the same link, never followed: plain
+  # `cp` refuses a symlink to a directory (.claude/skills/desk ->
+  # ../../desk/skill, issue #1779), and following any link would copy content
+  # the tree does not track at that path. Relative targets resolve inside the
+  # sandbox because their targets are copied too.
+  if [[ -L "$source_path" ]]; then
+    link_target="$(readlink "$source_path")" || { echo "BAIL: cannot read symlink ${f}"; exit 1; }
+    ln -s "$link_target" "${SANDBOX}/${f}" || { echo "BAIL: cannot recreate symlink ${f}"; exit 1; }
+    continue
+  fi
   cp "$source_path" "${SANDBOX}/${f}"
 done < <(git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard)
 
