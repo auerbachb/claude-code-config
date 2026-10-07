@@ -12,6 +12,8 @@
 . "$HQ_BIN_DIR/lib/lifecycle.sh"
 # shellcheck source=../lib/github.sh
 . "$HQ_BIN_DIR/lib/github.sh"
+# shellcheck source=../lib/filings.sh
+. "$HQ_BIN_DIR/lib/filings.sh"
 
 # The footer /issue-maker (and the desk's idea entry) writes on every issue it
 # files, on a line of its own; the search phrase that finds those issues.
@@ -56,6 +58,12 @@ THE WINDOW
   moves to this sync's start time (never backwards); it is the reserved
   state key reviews_watermark.
 
+DESK FILINGS
+  An issue the desk filed (`filed OWNER/NAME N`, issue #1766) waits as a
+  pending filing until its Review exists. After writing the Reviews, the
+  sync turns each such pending filing into one `commented` event, note
+  `filed from the desk`, on its Review, in the watermark's transaction.
+
 ONCE EACH
   Keyed on repository (case-insensitive) plus number: a PR or issue that
   already has a Review, in any status, is never added again, so overlapping
@@ -68,9 +76,10 @@ OUTPUT
   One line per new Review, `R-12 · OWNER/NAME · pr-1787 · title`, then
   `sync-reviews: N new, M already queued (P merged PRs, I captured issues
   since TIME)`, plus `, K skipped (malformed)` when GitHub returned a row
-  that cannot be stored. --json prints one object instead: since,
-  watermark, merged_prs, captured_issues, already_queued, skipped, and
-  created (an array of {id, repo, key, title}).
+  that cannot be stored, and `; F desk filing(s) noted on their Reviews`
+  when any were. --json prints one object instead: since, watermark,
+  merged_prs, captured_issues, already_queued, skipped, desk_filings_noted,
+  and created (an array of {id, repo, key, title}).
   A title that looks like a credential is stored as "PR #N (title
   withheld: it looks like a credential)".
 
@@ -199,7 +208,7 @@ JQ
 hq__sync_report_jq() {
   cat <<'JQ'
 {since: $since, watermark: $watermark, merged_prs: $prs, captured_issues: $issues,
- already_queued: $already, skipped: $skipped,
+ already_queued: $already, skipped: $skipped, desk_filings_noted: $filed,
  created: [inputs | select(length > 0) | split("\u001f")
            | {id: .[0], repo: .[1], key: .[2], title: .[3]}]}
 JQ
@@ -266,7 +275,7 @@ hq__sync_row_ok() {
 cmd_run() {
   local since="" json=0 seen_since=0 limit errf rc window start
   local prs_json issues_json rows_file kind repo num title url at what
-  local n_rows=0 n_chunk=0 n_new=0 n_skipped=0 n_prs=0 n_issues=0 created="" line
+  local n_rows=0 n_chunk=0 n_new=0 n_skipped=0 n_prs=0 n_issues=0 n_filed=0 created="" line
   local -a pv=()
 
   while [ "$#" -gt 0 ]; do
@@ -374,12 +383,19 @@ cmd_run() {
   done <"$rows_file"
   hq__sync_flush
 
+  # The desk's pending filings (issue #1766) whose Review now exists become
+  # their `filed from the desk` events, in the watermark's transaction: a
+  # failure leaves both for the next sync, which re-reads this window safely.
   rc=0
-  hq__sync_watermark_sql | hq_db_script -At -v "hq_wm_key=$HQ_SYNC_WATERMARK_KEY" \
-    -v "hq_start=$start" >/dev/null 2>"$errf" || rc=$?
+  n_filed=$( { hq_sql_consume_filings; hq__sync_watermark_sql; } \
+    | hq_db_script -At -v "hq_wm_key=$HQ_SYNC_WATERMARK_KEY" \
+      -v "hq_start=$start" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_db_fail "$rc" "$errf" "sync-reviews: the Reviews were written but the watermark did not move (the next sync re-reads this window safely)"
   fi
+  case "$n_filed" in
+    ''|*[!0-9]*) hq_die_error "sync-reviews: the Reviews and the watermark were written, but the store returned no count of desk filings" ;;
+  esac
 
   # --- report -------------------------------------------------------------------
   if [ "$json" -eq 1 ]; then
@@ -387,6 +403,7 @@ cmd_run() {
       --arg since "$since" --arg watermark "$start" \
       --argjson prs "$n_prs" --argjson issues "$n_issues" \
       --argjson already "$((n_rows - n_skipped - n_new))" --argjson skipped "$n_skipped" \
+      --argjson filed "$n_filed" \
       "$(hq__sync_report_jq)"
     return 0
   fi
@@ -400,6 +417,9 @@ EOF
   line="sync-reviews: $n_new new, $((n_rows - n_skipped - n_new)) already queued ($n_prs merged PRs, $n_issues captured issues since $since)"
   if [ "$n_skipped" -gt 0 ]; then
     line="${line%)}, $n_skipped skipped (malformed))"
+  fi
+  if [ "$n_filed" -gt 0 ]; then
+    line="$line; $n_filed desk filing(s) noted on their Reviews"
   fi
   printf '%s\n' "$line"
 }

@@ -21,6 +21,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [forgotten-pr-triage.sh](../forgotten-pr-triage.sh) | Detect and classify open PRs that have gone quiet past a staleness threshold |
 | [issue-claim.sh](../issue-claim.sh) | Claim an issue at pick time so two threads cannot work the same issue at once |
 | [issue-dedup.sh](../issue-dedup.sh) | Score open issues against keywords to find duplicate candidates before filing |
+| [issue-file.sh](../issue-file.sh) | Validate a seven-section issue body and file it with checked labels: the one create path for /issue-maker and the desk's idea: intent |
 | [makespan.sh](../makespan.sh) | Model batch makespan from per-issue estimates, respecting the concurrency ceiling, dependency chains, and reviewer throughput |
 | [pm-config-get.sh](../pm-config-get.sh) | Extract a named section from `.claude/pm-config.md` |
 | [pm-priority.sh](../pm-priority.sh) | Operator backlog priority for `/pm` (`<main-root>/.claude/pm-priority.json`) — `/desk` records `top`/`bump`/`park`/`drop`, `/pm` overlays it on its ranking with `apply` |

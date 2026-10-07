@@ -15,6 +15,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [graphite-repo-init.sh](../graphite-repo-init.sh) | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |
 | [human-queue.sh](../../../desk/bin/human-queue.sh) | Human-queue store CLI (`desk/bin/human-queue.sh`): auto-discovers subcommands in `desk/bin/cmd/`, applies `desk/schema/` migrations, and exits 7 within two seconds when the database is unset or unreachable so callers can fail open |
+| [idea-target.sh](../../../desk/bin/idea-target.sh) | Human-queue idea target (`desk/bin/idea-target.sh`): reads a desk `idea:` / `file:` / `repo:` message on stdin and resolves the repo the idea is filed in: named in the text, else the desk session's default, else a suggestion to ask about once |
 | [model-fleet.sh](../model-fleet.sh) | Resolve the current Claude model fleet from `.claude/model-fleet.json` |
 | [portable-handoff-context.sh](../portable-handoff-context.sh) | Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/end` |
 | [portable-handoff-lint.sh](../portable-handoff-lint.sh) | Enforce portable handoff structure, working-copy identity, cross-agent resume guidance, and freedom from harness-only references |
