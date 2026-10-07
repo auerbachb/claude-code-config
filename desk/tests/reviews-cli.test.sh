@@ -13,7 +13,8 @@
 #   - sync-reviews: a malformed --since, a repeated --since, a stray
 #     argument, and a bad HUMAN_QUEUE_SYNC_LIMIT exit 4 without connecting;
 #     a date or a zoned time passes validation
-#   - summary: missing or unknown actions, Decision ids, an empty summary,
+#   - summary: missing or unknown actions, Decision ids, an empty id (also
+#     one before a real id, which is never used), an empty summary,
 #     a terminal-free empty stdin, a first line that is not bold, a line that
 #     is not a numbered point, no points at all, too many lines or
 #     characters, control characters, and an unreadable --file exit 4 (1 for
@@ -26,7 +27,11 @@
 #     print the expected sections; --path narrows level 3 to one file (also
 #     by a rename, and never by a line inside another file's hunk); caps
 #     truncate with a marker; an issue's levels use its body; not found,
-#     the wrong kind, and a path not in the diff exit 3; usage exits 4;
+#     the wrong kind, a path not in the diff, and a number past GitHub's
+#     32-bit range (without calling GitHub) exit 3; usage exits 4; lists
+#     GitHub returned in part say how many are missing (labels, closing
+#     issues, files Tests touched could not check); control characters in
+#     GitHub's text and the diff print as "?" (a CRLF as LF);
 #     a GitHub failure and a deadline exit 1 with one stderr line
 #
 # Every case runs under `bash` on PATH and, when /bin/bash is 3.x (macOS),
@@ -54,6 +59,11 @@ fi
 ALNUM36="abcdefghijklmnopqrstuvwxyz0123456789"
 FAKE_GH="gh""p_$ALNUM36"
 FAKE_AWS="AK""IA""ABCDEFGHIJKLMNOP"
+
+# Control characters material must never print: C0 but tab and newline, DEL,
+# and C1 (U+0080-U+009F, two bytes in UTF-8).
+C0_RE=$(printf '[\001-\010\013-\037\177]')
+C1_RE=$(printf '\302[\200-\237]')
 
 GOOD_SUMMARY='**Widgets now land in the review queue.**
 1. sync-reviews adds one R-n per merged PR.
@@ -195,6 +205,8 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "summary get without an id" "missing item id" summary get
   expect_rc "$SH" 4 "summary get of a Decision" "D-1 is a Decision" summary get D-1
   expect_rc "$SH" 4 "summary get with two ids" "takes one item id" summary get R-1 R-2
+  expect_rc "$SH" 4 "summary set with an empty id before a real one" "takes one item id" summary set "" R-1
+  expect_rc "$SH" 4 "summary get of an empty id" "invalid item id" summary get ""
   expect_rc "$SH" 4 "summary get with --file" "unknown option '--file'" summary get R-1 --file x
   expect_db "$SH" "summary get" summary get r-1
   summary_rc "$SH" 4 "summary set of nothing" "the summary is empty" ""
@@ -353,6 +365,32 @@ $(i=1; while [ "$i" -le 40 ]; do printf '%s. point\n' "$i"; i=$((i + 1)); done)"
     acme/widgets 101 --level 2 2>/dev/null) || RC=$?
   check_contains "[$SH] material: the body cap" "$OUT" "[truncated: 10 of 74 characters shown]"
 
+  # Lists GitHub returned in part, and untrusted text (fixture 303).
+  material "$SH" acme/widgets 303 --level 2
+  check "[$SH] material 303: exit 0, silent on stderr" "$RC|$ERR" "0|"
+  check "[$SH] material 303: labels left out are counted" "$(section_lines "$OUT" Labels | paste -sd'|' -)" \
+    "big, desk|… and 21 more labels not listed"
+  check "[$SH] material 303: closing issues left out are counted" "$(section_lines "$OUT" Closes | paste -sd'|' -)" \
+    "acme/widgets#91 — Large change|… and 11 more closing issues not listed"
+  check "[$SH] material 303: Links counts them too" "$(section_lines "$OUT" Links | tail -n 1)" \
+    "… and 11 more closing issues not listed"
+  check "[$SH] material 303: Tests touched says what it could not check" \
+    "$(section_lines "$OUT" 'Tests touched' | paste -sd'|' -)" \
+    "- tests/big.test.sh|… 148 more files not checked (GitHub lists the first 2)"
+  check "[$SH] material 303: control characters print as ?" "$(section_lines "$OUT" Title)" \
+    "feat: a ?[31mloud?[0m title"
+  check "[$SH] material 303: a CRLF body reads as lines" "$(section_lines "$OUT" Body | paste -sd'|' -)" \
+    "First line|an escape ?]0;pwned? here|a C1 ?2J control"
+  check "[$SH] material 303: no C0 or DEL byte is printed" "$(printf '%s\n' "$OUT" | LC_ALL=C grep -c "$C0_RE")" "0"
+  check "[$SH] material 303: no C1 character is printed" "$(printf '%s\n' "$OUT" | LC_ALL=C grep -c "$C1_RE")" "0"
+  material "$SH" acme/widgets 303 --level 3
+  check "[$SH] material 303 L3: exit 0" "$RC" "0"
+  check "[$SH] material 303 L3: escapes in the diff print as ?" "$(printf '%s\n' "$OUT" | grep '^+echo' | paste -sd'|' -)" \
+    '+echo "?[2J cleared"|+echo "? c1"'
+  check "[$SH] material 303 L3: a CRLF line ends as LF" "$(printf '%s\n' "$OUT" | grep -c '^-old$')" "1"
+  check "[$SH] material 303 L3: no C0 or DEL byte is printed" "$(printf '%s\n' "$OUT" | LC_ALL=C grep -c "$C0_RE")" "0"
+  check "[$SH] material 303 L3: no C1 character is printed" "$(printf '%s\n' "$OUT" | LC_ALL=C grep -c "$C1_RE")" "0"
+
   # An issue: levels 1 and 2 use the body, level 3 is the whole body.
   material "$SH" acme/widgets issue-202 --level 1
   check "[$SH] material issue L1: exit 0" "$RC" "0"
@@ -375,6 +413,10 @@ $(i=1; while [ "$i" -le 40 ]; do printf '%s. point\n' "$i"; i=$((i + 1)); done)"
 
   # Not found, the wrong kind, GitHub failures.
   material_rc "$SH" 3 "a number GitHub does not know" "no PR or issue acme/widgets#404" acme/widgets 404 --level 1
+  : >"$STUB_DIR/calls.log"
+  material_rc "$SH" 3 "a number past GitHub's 32-bit range" "no PR or issue acme/widgets#2147483648" \
+    acme/widgets 2147483648 --level 1
+  check "[$SH] material: a number past the range never calls GitHub" "$(cat "$STUB_DIR/calls.log")" ""
   material_rc "$SH" 3 "an issue key on a PR" "is a PR, not an issue" acme/widgets issue-101 --level 1
   material_rc "$SH" 3 "a PR key on an issue" "is an issue, not a PR" acme/widgets pr-202 --level 2
   material_rc "$SH" 1 "a missing fixture (GitHub failed)" "GitHub failed" acme/widgets 555 --level 1

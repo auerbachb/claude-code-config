@@ -331,7 +331,7 @@ when the operator asks, never at wrap time.
 | `summary get ID` / `summary set ID [--file PATH]` | Reads, or caches once, a Review's level-2 summary (`items.summary_l2`) |
 | `review ID [--comment TEXT]` | As above, and the comment rides on the `reviewed` event (a comment on an already-reviewed item is a `commented` event) |
 | `flag ID "TEXT"` | As above; the note may follow the id (the form the desk writes) or come with `--note`, once |
-| `list --kind reviews --unreviewed [--json]` | The Reviews still `open` (a flagged one was read), then `N unreviewed · ~M lines at level 2` (20 lines an item); `--json` prints `{count, level2_lines, items}`. `--kind` also takes `decisions` and `reviews` |
+| `list --kind reviews --unreviewed [--json]` | The Reviews still `open` (a flagged one was read), then `N unreviewed · ~M lines at level 2` (20 lines an item); `--json` prints `{count, level2_lines, items}`, the items without `summary_l2` (read a cached summary with `summary get`). `--kind` also takes `decisions` and `reviews` |
 
 ### Sync
 
@@ -389,7 +389,10 @@ GitHub will not render), 3 when the number, the `pr-`/`issue-` kind, or the
 `--path` file does not exist, and 4 on usage. Its caps are
 `HQ_MATERIAL_EXCERPT_CHARS` (600), `HQ_MATERIAL_BODY_CHARS` (6000),
 `HQ_MATERIAL_DIFF_LINES` (2000), and `HQ_MATERIAL_DIFF_BYTES` (200000); a
-section a cap cuts ends with a `[truncated: ...]` line.
+section a cap cuts ends with a `[truncated: ...]` line, and a list GitHub
+returned only in part (labels, closing issues, commits, files) says how many
+it left out. GitHub's text is untrusted, so a CRLF prints as LF and every
+other control character but tab and newline prints as `?`.
 
 ### GitHub access and tests
 

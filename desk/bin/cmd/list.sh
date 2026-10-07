@@ -36,7 +36,8 @@ OUTPUT
   With --unreviewed the items are followed (after a blank line, when there
   are any) by the backlog and its reading estimate at level 2, twenty lines
   an item: `3 unreviewed · ~60 lines at level 2`. --json then prints one
-  object: {"count": N, "level2_lines": N*20, "items": [...]}.
+  object: {"count": N, "level2_lines": N*20, "items": [...]}, whose items
+  leave out summary_l2 (a cached summary is read with `summary get`).
 
 EXIT CODES
   0  ok (including when nothing matches)
@@ -57,7 +58,9 @@ hq__list_sql() {
   if [ "$2" -eq 1 ]; then
     if [ "$1" -eq 1 ]; then
       printf "SELECT jsonb_build_object('count', count(*), 'level2_lines', count(*) * %s, 'items',\n" "$HQ_LIST_L2_LINES"
-      printf '  coalesce(jsonb_agg(%s ORDER BY\n' "$(hq_sql_item_json)"
+      # The backlog leaves out cached level-2 summaries: listing is not
+      # reading, and `summary get` returns one when the operator opens it.
+      printf "  coalesce(jsonb_agg(%s - 'summary_l2' ORDER BY\n" "$(hq_sql_item_json)"
       hq_sql_item_order
       printf '%s\n' "), '[]'::jsonb)) FROM items i WHERE $where;"
     else

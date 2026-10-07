@@ -30,7 +30,10 @@
 #   A header line (`PR OWNER/REPO#N · merged ...` or `Issue OWNER/REPO#N ·
 #   open · filed ...`), then the `## Section` blocks above. A section cut
 #   short by a cap ends with a `[truncated: ...]` line; a list GitHub returned
-#   only in part (more than 100 commits or files) says how many are missing.
+#   only in part (more than 20 labels, 10 closing issues, or 100 commits or
+#   files) says how many are missing, and Tests touched says how many files
+#   it could not check. GitHub's text is untrusted: a CRLF prints as LF, and
+#   every other control character but tab and newline prints as "?".
 #   Nothing is stored or cached: level 2 is cached by the desk as text with
 #   `human-queue.sh summary set`, and level 3 is never stored.
 #
@@ -106,14 +109,14 @@ query($owner: String!, $name: String!, $number: Int!) {
       ... on PullRequest {
         number title url state body mergedAt closedAt createdAt
         additions deletions changedFiles
-        labels(first: 20) { nodes { name } }
-        closingIssuesReferences(first: 10) { nodes { number title url repository { nameWithOwner } } }
+        labels(first: 20) { totalCount nodes { name } }
+        closingIssuesReferences(first: 10) { totalCount nodes { number title url repository { nameWithOwner } } }
         commits(first: 100) { totalCount nodes { commit { messageHeadline } } }
         files(first: 100) { totalCount nodes { path additions deletions } }
       }
       ... on Issue {
         number title url state body createdAt closedAt
-        labels(first: 20) { nodes { name } }
+        labels(first: 20) { totalCount nodes { name } }
       }
     }
   }
@@ -132,9 +135,18 @@ def capped($s; $n):
   then $s[0:$n] + "\n[truncated: " + ($n | tostring) + " of " + ($s | length | tostring) + " characters shown]"
   else $s end;
 def body: (.body // "") | if test("\\S") then . else "(empty)" end;
-def labels: lines([.labels.nodes[]?.name] | if length == 0 then [] else [join(", ")] end);
 def more($shown; $total; $what):
   if $total > $shown then ["… and " + (($total - $shown) | tostring) + " more " + $what + " not listed"] else [] end;
+def labels: [.labels.nodes[]?.name] as $n
+  | lines((if ($n | length) == 0 then [] else [$n | join(", ")] end)
+          + more(($n | length); (.labels.totalCount // 0); "labels"));
+# GitHub text is untrusted: CRLF becomes LF, and every other control
+# character but tab and newline (C0, DEL, C1) prints as "?", so nothing can
+# drive the terminal that shows the material.
+def safe: gsub("\r\n"; "\n")
+  | explode
+  | map(if (. < 32 and . != 9 and . != 10) or (. >= 127 and . < 160) then 63 else . end)
+  | implode;
 def tests: test("(^|/)(tests?|spec|specs|__tests__)/|\\.test\\.|_test\\.|\\.spec\\.|(^|/)test_[^/]*$");
 
 .data.repository as $r
@@ -148,7 +160,9 @@ def tests: test("(^|/)(tests?|spec|specs|__tests__)/|\\.test\\.|_test\\.|\\.spec
        [ section("Title"; $x.title),
          section("Labels"; $x | labels),
          section("Closes"; lines([$x.closingIssuesReferences.nodes[]?
-                                  | .repository.nameWithOwner + "#" + (.number | tostring) + " — " + .title])) ]
+                                  | .repository.nameWithOwner + "#" + (.number | tostring) + " — " + .title]
+                                 + more(($x.closingIssuesReferences.nodes | length);
+                                        ($x.closingIssuesReferences.totalCount // 0); "closing issues"))) ]
        + if $level == 1 then [] else
          [ section("Size"; (($x.changedFiles // 0) | tostring) + " files · +"
                            + (($x.additions // 0) | tostring) + " -" + (($x.deletions // 0) | tostring)
@@ -160,12 +174,20 @@ def tests: test("(^|/)(tests?|spec|specs|__tests__)/|\\.test\\.|_test\\.|\\.spec
            section("Files changed (" + (($x.changedFiles // 0) | tostring) + ")";
                    lines([$x.files.nodes[]? | "- " + .path + " +" + (.additions | tostring) + " -" + (.deletions | tostring)]
                          + more(($x.files.nodes | length); ($x.changedFiles // 0); "files"))),
-           section("Tests touched"; lines([$x.files.nodes[]? | .path | select(tests) | "- " + .])),
+           section("Tests touched"; lines([$x.files.nodes[]? | .path | select(tests) | "- " + .]
+                                          + (($x.files.nodes | length) as $seen
+                                             | (($x.changedFiles // 0) - $seen) as $rest
+                                             | if $rest > 0
+                                               then ["… " + ($rest | tostring) + " more files not checked (GitHub lists the first "
+                                                     + ($seen | tostring) + ")"]
+                                               else [] end))),
            section("Links"; lines(["- PR: " + $x.url]
-                                  + [$x.closingIssuesReferences.nodes[]? | "- Closes: " + .url])) ]
+                                  + [$x.closingIssuesReferences.nodes[]? | "- Closes: " + .url]
+                                  + more(($x.closingIssuesReferences.nodes | length);
+                                         ($x.closingIssuesReferences.totalCount // 0); "closing issues"))) ]
          end
        end)
-    | join("\n")
+    | join("\n") | safe
   else
     ([ "Issue " + $ref + " · " + ($x.state | ascii_downcase) + " · filed " + when($x.createdAt) ]
      + if $level == 3 then [ section("Body"; $x | body) ]
@@ -175,7 +197,7 @@ def tests: test("(^|/)(tests?|spec|specs|__tests__)/|\\.test\\.|_test\\.|\\.spec
            else [ section("Body"; capped($x | body; $body_chars)), section("Links"; "- Issue: " + $x.url) ]
            end
        end)
-    | join("\n")
+    | join("\n") | safe
   end
 JQ
 }
@@ -210,6 +232,9 @@ cap_awk() {
 BEGIN { maxl = ENVIRON["HQ_L"] + 0; maxb = ENVIRON["HQ_B"] + 0; n = 0; b = 0; total = 0; cut = 0 }
 {
   total++
+  sub(/\r$/, "")
+  gsub(/[\001-\010\013-\037\177]/, "?")
+  gsub(/\302[\200-\237]/, "?")
   if (!cut && n < maxl && b + length($0) + 1 <= maxb) { print; n++; b += length($0) + 1 }
   else { cut = 1 }
 }
@@ -291,6 +316,11 @@ main() {
   body_chars=$(cap HQ_MATERIAL_BODY_CHARS 6000)
   diff_lines=$(cap HQ_MATERIAL_DIFF_LINES 2000)
   diff_bytes=$(cap HQ_MATERIAL_DIFF_BYTES 200000)
+  # PR and issue numbers are GraphQL Ints (32-bit signed): GitHub has none
+  # above this, and the query would fail on the variable rather than say so.
+  if [ "$n" -gt 2147483647 ]; then
+    die_not_found "no PR or issue $repo#$n"
+  fi
   owner="${repo%%/*}"
   name="${repo#*/}"
 
@@ -341,7 +371,8 @@ main() {
   fi
 
   # Level 3 of a PR: the whole diff into a file first (never piped into a
-  # reader that may stop early), then narrowed, then capped.
+  # reader that may stop early), then narrowed, then capped. GitHub bounds
+  # the file: it refuses to render a diff past its own size limits (exit 1).
   hq_mktemp diff
   rc=0
   hq_gh "$diff" "$err" pr diff "$n" --repo "$repo" --color never || rc=$?

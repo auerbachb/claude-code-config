@@ -39,7 +39,8 @@
 #        reported by `tick`, while a bump still is
 #   AC 4.5  `list --kind reviews --unreviewed` prints the count and the
 #        reading estimate (count x 20 lines), flagged and reviewed items
-#        excluded; --json gives count and level2_lines
+#        excluded; --json gives count and level2_lines, and its items never
+#        carry a cached level-2 summary
 #   smoke: sync-reviews against the real GitHub API in a throwaway schema,
 #        twice, without duplicates; pr-summary-material.sh level 1 of a real
 #        merged PR names its closing issue
@@ -405,6 +406,14 @@ else
 fi
 hq bash "$S_MAIN" show "$R202" --json
 check_contains "show --json carries the cached summary" "$OUT" "Widgets can be exported to paper"
+if [ -n "$JQ" ]; then
+  hq bash "$S_MAIN" list --unreviewed --json
+  check "the unreviewed --json backlog lists $R202 without its cached summary" \
+    "$RC|$(printf '%s' "$OUT" | HQ_T_ID="$R202" "$JQ" -r '[.items[] | select(.id == env.HQ_T_ID)] | "\(length)|\(.[0] | has("summary_l2"))"')" \
+    "0|1|false"
+fi
+check_absent "the unreviewed backlog never carries a cached summary" \
+  "$(HUMAN_QUEUE_SCHEMA="$S_MAIN" bash "$HQ_T_CLI" list --unreviewed --json </dev/null)" "Widgets can be exported to paper"
 
 # --- smoke: the real GitHub API ---------------------------------------------------------
 REAL_GH=""

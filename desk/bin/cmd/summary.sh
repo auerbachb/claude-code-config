@@ -155,7 +155,7 @@ SQL
 }
 
 cmd_run() {
-  local action="" raw_id="" id="" file="" have_file=0 text errf out rc
+  local action="" raw_id="" id="" file="" have_id=0 have_file=0 text errf out rc
   case "${1:-}" in
     -h|--help)
       cmd_usage
@@ -189,11 +189,12 @@ cmd_run() {
         ;;
       -*) hq_die_validation "summary $action: unknown $(hq_flag_name "$1") (run human-queue.sh summary --help)" ;;
     esac
-    if [ -n "$raw_id" ]; then hq_die_validation "summary $action: takes one item id"; fi
+    if [ "$have_id" -eq 1 ]; then hq_die_validation "summary $action: takes one item id"; fi
+    have_id=1
     raw_id="$1"
     shift
   done
-  if [ -z "$raw_id" ]; then
+  if [ "$have_id" -eq 0 ]; then
     hq_die_validation "summary $action: missing item id (run human-queue.sh summary --help)"
   fi
   hq_item_id id "$raw_id"
