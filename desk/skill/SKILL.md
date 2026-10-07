@@ -26,6 +26,7 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once | #1781 |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), printed without a state line | #1781 |
 | `priorities.md` | `top`, `bump`, `park`, `drop`, `priorities`: the operator's backlog order for `/pm`, kept in the target repo's `.claude/pm-priority.json` | #1767 |
+| `reviews.md` | The Reviews view: `reviews` (one line per unreviewed item, by day and repo), `open R-<n>` (level 2, cached), `diff R-<n> [path]` (level 3, live), `reviewed`, `reviewed all today`, `flag`, and `follow up` | #1782 |
 
 ## The prelude (every Bash call)
 
@@ -66,7 +67,7 @@ done
    "$HQ" migrate && "$HQ" register-control "$SID"
    ```
 
-   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`).
+   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, and the Reviews view `007_reviews_summary_l1.sql`).
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
 4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
@@ -119,6 +120,7 @@ Read each operator message in this order:
 
 1. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`), as the whole message → load `history.md`. This works at any time, including while a long-form prompt waits or during a discussion, and stores nothing.
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
+   **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after. Interrupts, policy, and feedback tags (#1783) and the day plan and end-of-day sweep (#1784) have no verb here yet.
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
 3. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, or a `D-<n>:` reply for another item.
 4. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".

@@ -36,8 +36,12 @@ OUTPUT
   With --unreviewed the items are followed (after a blank line, when there
   are any) by the backlog and its reading estimate at level 2, twenty lines
   an item: `3 unreviewed · ~60 lines at level 2`. --json then prints one
-  object: {"count": N, "level2_lines": N*20, "items": [...]}, whose items
-  leave out summary_l2 (a cached summary is read with `summary get`).
+  object: {"count": N, "level2_lines": N*20, "today": "YYYY-MM-DD",
+  "items": [...]}, whose items leave out summary_l2 (a cached summary is read
+  with `summary get`) and carry one more field, synced_on: the day the
+  Review was synced (its created_at). Both days are America/New_York
+  calendar days, today on the database's clock, so the desk groups the
+  backlog by day and `review --synced-today` marks the same "today".
 
 EXIT CODES
   0  ok (including when nothing matches)
@@ -57,10 +61,14 @@ hq__list_sql() {
   local where="(:'hq_kind' = '' OR i.kind = :'hq_kind') AND (:'hq_status' = '' OR i.status = :'hq_status')"
   if [ "$2" -eq 1 ]; then
     if [ "$1" -eq 1 ]; then
-      printf "SELECT jsonb_build_object('count', count(*), 'level2_lines', count(*) * %s, 'items',\n" "$HQ_LIST_L2_LINES"
+      printf "SELECT jsonb_build_object('count', count(*), 'level2_lines', count(*) * %s,\n" "$HQ_LIST_L2_LINES"
+      # The desk's day (issue #1782): the view groups by it, and
+      # `review --synced-today` reads the same one.
+      printf '%s\n' "  'today', to_char(statement_timestamp() AT TIME ZONE :'hq_tz', 'YYYY-MM-DD'), 'items',"
       # The backlog leaves out cached level-2 summaries: listing is not
       # reading, and `summary get` returns one when the operator opens it.
-      printf "  coalesce(jsonb_agg(%s - 'summary_l2' ORDER BY\n" "$(hq_sql_item_json)"
+      printf "  coalesce(jsonb_agg((%s - 'summary_l2')\n" "$(hq_sql_item_json)"
+      printf '%s\n' "    || jsonb_build_object('synced_on', to_char(i.created_at AT TIME ZONE :'hq_tz', 'YYYY-MM-DD')) ORDER BY"
       hq_sql_item_order
       printf '%s\n' "), '[]'::jsonb)) FROM items i WHERE $where;"
     else
@@ -152,7 +160,7 @@ cmd_run() {
   hq_mktemp errf
   rc=0
   out=$(hq__list_sql "$json" "$unreviewed" \
-    | hq_db_script -At -v "hq_kind=$kind" -v "hq_status=$status" 2>"$errf") || rc=$?
+    | hq_db_script -At -v "hq_kind=$kind" -v "hq_status=$status" -v "hq_tz=$(hq_desk_tz)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_db_fail "$rc" "$errf" "list"
   fi

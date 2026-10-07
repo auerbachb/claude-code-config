@@ -9,6 +9,9 @@
 #   api graphql ... -F number=N
 #                         -> graphql-N.json
 #   pr diff N ...         -> pr-N.diff
+#   issue create ...      -> issue-create.txt (the new issue's URL); the file
+#                            given to --body-file is copied to
+#                            issue-create.body
 # For a fixture NAME.EXT, an optional NAME.rc holds the exit code to return
 # after printing it (GitHub's NOT_FOUND answer comes with exit 1, for
 # example) and NAME.err the text to print on stderr. A file `sleep` delays
@@ -40,6 +43,16 @@ case "${1:-} ${2:-}" in
     done
     ;;
   "pr diff") name="pr-${3:-}.diff" ;;
+  "issue create")
+    # The desk's follow-up issue (issue #1782): keep the body it filed, which
+    # the desk's block deletes once gh returns.
+    name=issue-create.txt
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--body-file" ] && [ -f "$a" ]; then cp "$a" "$dir/issue-create.body"; fi
+      prev="$a"
+    done
+    ;;
 esac
 
 if [ -z "$name" ]; then
