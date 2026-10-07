@@ -347,6 +347,8 @@ check_contains "ideas.md: the exit-4 check compares with attempt-started" "$IDEA
 check_contains "ideas.md: only an issue created at or after the start is recorded" "$IDEAS" '`createdAt` at or after it → it was filed'
 check_contains "ideas.md: a match just before the start is uncertain, never recorded" "$IDEAS" '`createdAt` in the minute before it → **uncertain**'
 check_contains "ideas.md: an uncertain match can be confirmed" "$IDEAS" 'Reply idea: yes if it is this idea'
+check_contains "ideas.md: a failed exit-4 lookup is never read as not filed" "$IDEAS" '**When that lookup itself fails**'
+check_contains "ideas.md: a failed lookup reports an unknown outcome" "$IDEAS" 'Filing status unknown'
 check_contains "ideas.md: idea: yes records the confirmed issue" "$IDEAS" '`yes` → only after a `Possibly filed as #N` card'
 check_absent "ideas.md: no bare repo-relative script path" "$IDEAS" '".claude/scripts/'
 
