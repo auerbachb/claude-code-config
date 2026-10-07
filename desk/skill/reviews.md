@@ -11,7 +11,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 | `reviewed R-<n>`, or `reviewed` alone | Marks that Review reviewed (alone: the Review last opened or diffed here) |
 | `reviewed all today` | Marks every Review synced today that is still unreviewed |
 | `flag R-<n> "what to follow up"` | Flags it with that note, then offers a follow-up issue |
-| `follow up R-<n>` | Files the follow-up issue for a flagged Review in its own repo |
+| `follow up R-<n>` | Files the follow-up issue for a flagged Review in its own repo (`follow up R-<n> again` after a filing that was never recorded) |
 
 **Out of scope here:** interrupts, the interrupt policy, and feedback tags are #1783; the day plan and the end-of-day sweep are #1784; the numbered file-to-hunk outline and "ask about this PR" are #1768. None of them has a verb in this file.
 
@@ -20,6 +20,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 - **The CLI is the only writer.** Every summary, `reviewed`, `flagged`, and comment goes through `"$HQ"`; nothing is kept in this conversation as state, and no level-3 output is written anywhere.
 - **Summaries are lazy.** Level 1 is written the first time an item is listed, level 2 the first time it is opened; both are cached and never written again (`summary set` refuses a second, different text). Nothing is ever summarized at wrap time.
 - **Free text never goes inside the command's own quotes.** A summary, a note, a path, or an issue body is written through a quoted here-document (no expansion happens inside one), exactly as `decisions.md` passes replies.
+- **A here-document's text never holds its own delimiter.** A line that is exactly the block's delimiter (`DESK_BODY`, `DESK_NOTE`, `DESK_L1`, …) would end the here-document early, and every line after it would run as shell. Before running a block, check the text: if any line equals the delimiter, pick another one that no line of the text equals, for both lines.
 - **Plain text only, never AskUserQuestion.** In the desk's own session the capture hook queues any menu that does not carry the desk's `N. [D-id]` prefix as a new Decision.
 - **No state line.** Print what was asked for and the one line each step names, nothing else (`desk/DESIGN.md` 4.1.4).
 - **Exit 7** from any `"$HQ"` call → `Store unreachable — can't <verb> right now.` and stop; nothing is retried in a loop.
@@ -217,12 +218,15 @@ SHOWN=$("$HQ" show R-2 --json); rc=$?
 if [ "$rc" -ne 0 ]; then echo "exit=$rc"; else
   printf '%s\n' "$SHOWN" | jq -r '"status=\(.item.status)", "repo=\(.item.repo)", "link=\(.item.context[0] // "")",
     "note=\([.events[] | select(.kind == "flagged")] | last | .note // "")",
-    (.events[] | select(.kind == "commented" and ((.note // "") | startswith("follow-up: "))) | "filed=\(.note[11:])")'
+    ([.events[] | select(.kind == "commented" and ((.note // "") | startswith("follow-up: ")))] as $fu
+     | ($fu[] | select(.note != "follow-up: filing") | "filed=\(.note[11:])"),
+       (if ($fu | last | .note) == "follow-up: filing" then "pending=yes" else empty end))'
 fi
 ```
 
 - `status` is not `flagged` → `R-2 isn't flagged — flag it first: flag R-2 "what to follow up".` and stop.
 - A `filed=` line → a follow-up was already filed: `R-2's follow-up is already filed: <url>.` and stop.
+- `pending=yes` (step 3 started filing and never recorded an issue: interrupted, or GitHub's answer held no issue URL) → the issue may exist already, so never file blind: `R-2's follow-up was started but never recorded, so it may already be filed in <repo>. Check its issues for one linking <link>; reply "follow up R-2 again" to file it anyway.` and stop. Only `follow up R-<n> again` goes past this line, and only this line: every other check above still applies.
 
 ### 2. Draft the issue
 
@@ -249,19 +253,27 @@ DESK_TITLE
 <the body>
 DESK_BODY
   if [ -z "$GH" ]; then echo "exit=gh-missing"; else
-    CREATED=$("$GH" issue create --repo "$REPO" --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE" </dev/null); rc=$?
-    URL=$(printf '%s\n' "$CREATED" | tail -n 1)
-    echo "create-exit=$rc url=$URL"
-    if [ "$rc" -eq 0 ]; then
-      case "$URL" in
-        https://github.com/*/issues/[0-9]*) "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?" ;;
-      esac
+    "$HQ" comment R-2 "follow-up: filing" >/dev/null; rc=$?
+    if [ "$rc" -ne 0 ]; then echo "mark-exit=$rc"; else
+      CREATED=$("$GH" issue create --repo "$REPO" --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE" </dev/null); rc=$?
+      URL=$(printf '%s\n' "$CREATED" | tail -n 1)
+      echo "create-exit=$rc url=$URL"
+      if [ "$rc" -eq 0 ]; then
+        case "$URL" in
+          https://github.com/*/issues/[0-9]*) "$HQ" comment R-2 "follow-up: $URL"; echo "comment-exit=$?" ;;
+        esac
+      fi
     fi
   fi
   rm -f "$TITLE_FILE" "$BODY_FILE"
 fi
 ```
 
+The issue body is the text most likely to hold a delimiter-shaped line: check it against `DESK_BODY`, and the title against `DESK_TITLE`, before running the block ("Rules for every verb").
+
+The `follow-up: filing` comment is written **before** the issue is created, so a filing that never gets its URL recorded (the block interrupted, or GitHub's answer holding no issue URL) leaves R-2 marked, and step 1 stops the next `follow up R-2` instead of filing a second issue.
+
 - `create-exit=0` with an issue URL and `comment-exit=0` → the URL as the closing line: `Filed: <url>`. The comment puts the link in R-2's history (`show R-2`), which is how step 1 knows it was filed.
 - Created but `comment-exit` is not 0 (or missing) → `Filed: <url> — but the store didn't record it on R-2; run: comment R-2 "follow-up: <url>"` with the exact command. Never say it is recorded when it is not.
-- `create-exit` not 0, no issue URL, or `exit=gh-missing` → one line naming it; nothing is recorded. Never file again on a retry without step 1's check.
+- `create-exit` not 0, or no issue URL → one line naming it. R-2 stays marked as filing, because GitHub may have created the issue anyway: say `R-2 is marked as filing; check <repo>'s issues before "follow up R-2 again".`
+- `exit=gh-missing`, or `mark-exit=<n>` (the CLI's own stderr line says why; `7` is the store-unreachable line above) → one line naming it; nothing was filed and nothing recorded.

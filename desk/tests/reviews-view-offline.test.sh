@@ -8,8 +8,9 @@
 # Asserts:
 #   CLI          summary --level: a missing, repeated, or unknown level exits
 #                4; a level-1 line on two lines, blank, over 200 characters,
-#                or with an escape exits 4, a secret 5 (never echoed); valid
-#                level-1 and level-2 calls reach the database step.
+#                or with an escape or a tab exits 4, a secret 5 (never
+#                echoed); valid level-1 and level-2 calls reach the
+#                database step.
 #                review --synced-today: with an id, or neither, exits 4; with
 #                --comment it is validated like every comment; valid calls
 #                reach the database step. --help documents both.
@@ -26,7 +27,10 @@
 #   skill        SKILL.md routes the Reviews verbs to reviews.md and lists it;
 #                every anchored block reviews.md names exists; free text (a
 #                summary, a note, a path, an issue's title and body) reaches
-#                a command only through a quoted here-document; the open
+#                a command only through a quoted here-document, whose
+#                text never holds its delimiter; follow up marks the item
+#                `follow-up: filing` before filing and stops on an
+#                unrecorded mark; the open
 #                gate prints the cached level 2 without calling GitHub;
 #                diff never writes; the scope note names #1783 and #1784.
 #
@@ -126,6 +130,7 @@ for SH in $SHELLS; do
   l1_rc "$SH" 4 "level 1 blank" "the summary is empty" "   "
   l1_rc "$SH" 4 "level 1 over 200 characters" "longer than 200 characters" "$(printf '%201s' x | tr ' ' y)"
   l1_rc "$SH" 4 "level 1 with an escape" "contains a control character" "$(printf 'Widgets \033[0mship.')"
+  l1_rc "$SH" 4 "level 1 with a tab" "contains a control character (a tab)" "$(printf 'Widgets\tship.')"
   l1_rc "$SH" 5 "level 1 with a secret" "the summary looks like" "Rotated $FAKE_AWS for the widgets."
   check_absent "[$SH] the level-1 secret is not echoed" "$OUT$ERR" "$FAKE_AWS"
   printf '%s' "Widgets become reviewable from the desk." >"$TMP/stdin"
@@ -218,6 +223,7 @@ contract SKILL.md "$SKILL" <<'NEEDLES'
 | `reviews.md` |
 → load `reviews.md`
 `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`
+`follow up R-<n>` (`follow up R-<n> again`)
 (#1783)
 (#1784)
 007_reviews_summary_l1.sql
@@ -236,6 +242,11 @@ contract reviews.md "$REVIEWS" <<'NEEDLES'
 <<'DESK_PATH'
 <<'DESK_TITLE'
 <<'DESK_BODY'
+A here-document's text never holds its own delimiter.
+pick another one that no line of the text equals, for both lines
+"$HQ" comment R-2 "follow-up: filing" >/dev/null; rc=$?
+then "pending=yes" else empty end
+reply "follow up R-2 again" to file it anyway
 --level 3
 never stored
 Never invent.

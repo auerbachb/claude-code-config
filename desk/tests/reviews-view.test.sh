@@ -45,9 +45,11 @@
 #          run marks nothing
 #   4.4    the skill's flag block stores a note full of shell metacharacters
 #          byte for byte and runs none of them; the follow-up blocks see the
-#          flag, file the issue in the item's own repo with the capture
-#          footer, record its URL as a comment, and see it filed afterwards;
-#          `reviewed R-n` through the skill
+#          flag; a filing GitHub answers without a URL leaves the item
+#          marked `follow-up: filing`, which the check reports as pending;
+#          filing again files the issue in the item's own repo with the
+#          capture footer, records its URL after the marks, and the check
+#          sees it filed (no longer pending); `reviewed R-n` through the skill
 #   and    a store without 007: level 1 names `migrate`; the view still
 #          renders, from titles
 set -uo pipefail
@@ -357,7 +359,6 @@ check "4.4 the check sees the flag, the repo, the link, and the note" "$OUT" "st
 repo=acme/widgets
 link=https://github.com/acme/widgets/pull/103
 note=$NOTE"
-printf 'https://github.com/acme/widgets/issues/999\n' >"$STUB_DIR/issue-create.txt"
 BODY='## Background
 
 R-5 (https://github.com/acme/widgets/pull/103) added widget colors.
@@ -369,6 +370,24 @@ check the colors
 _Captured via /issue-maker._'
 literal "$TMP/block-desk-follow-up.sh" '<the title>' 'Widget colors need a contrast check' \
   | literal /dev/stdin '<the body>' "$BODY" | literal /dev/stdin 'R-2' 'R-5' >"$TMP/fu.sh"
+# A filing GitHub answers without an issue URL: R-5 stays marked as filing, and
+# the check stops the next `follow up` instead of filing a second issue.
+: >"$STUB_DIR/issue-create.txt"
+printf '1\n' >"$STUB_DIR/issue-create.rc"
+printf 'HTTP 502: Bad Gateway\n' >"$STUB_DIR/issue-create.err"
+: >"$STUB_DIR/calls.log"
+run_block "$TMP/fu.sh"
+check "4.4 a failed filing records no URL" "$OUT" "HTTP 502: Bad Gateway
+create-exit=1 url="
+check "4.4 ... but R-5 is marked as filing" \
+  "$(sql_in "SELECT string_agg(note, ',' ORDER BY id) FROM events WHERE item_id = 'R-5' AND kind = 'commented'")" \
+  "follow-up: filing"
+run_block "$TMP/fu-check.sh"
+check_contains "4.4 the check sees the unrecorded filing" "$OUT" "pending=yes"
+check_absent "4.4 ... and nothing filed" "$OUT" "filed="
+rm -f "$STUB_DIR/issue-create.rc" "$STUB_DIR/issue-create.err"
+# `follow up R-5 again`: the same block, now answered with the issue's URL.
+printf 'https://github.com/acme/widgets/issues/999\n' >"$STUB_DIR/issue-create.txt"
 : >"$STUB_DIR/calls.log"
 run_block "$TMP/fu.sh"
 check "4.4 the follow-up is filed and recorded" "$OUT" "create-exit=0 url=https://github.com/acme/widgets/issues/999
@@ -376,12 +395,14 @@ R-5
 comment-exit=0"
 check_contains "4.4 filed in the item's own repo" "$(gh_calls)" "issue create --repo acme/widgets --title Widget colors need a contrast check --body-file "
 check_contains "4.4 the body carries the capture footer" "$(cat "$STUB_DIR/issue-create.body")" "_Captured via /issue-maker._"
-check "4.4 the URL is a comment on R-5" \
-  "$(sql_in "SELECT note FROM events WHERE item_id = 'R-5' AND kind = 'commented'")" \
-  "follow-up: https://github.com/acme/widgets/issues/999"
+check "4.4 the filing marks come first, the URL last" \
+  "$(sql_in "SELECT string_agg(note, ',' ORDER BY id) FROM events WHERE item_id = 'R-5' AND kind = 'commented'")" \
+  "follow-up: filing,follow-up: filing,follow-up: https://github.com/acme/widgets/issues/999"
 check "4.4 R-5 is still flagged" "$(status_of R-5)" "flagged"
 run_block "$TMP/fu-check.sh"
 check_contains "4.4 the check now sees it filed" "$OUT" "filed=https://github.com/acme/widgets/issues/999"
+check_absent "4.4 ... and no longer pending" "$OUT" "pending="
+check_absent "4.4 ... and never reads the mark as a URL" "$OUT" "filed=filing"
 check "4.4 the follow-up blocks leave no file behind" "$(ls -A "$WORK")|$(ls -A "$BLOCK_TMP")" "|"
 
 # --- a store without 007 -------------------------------------------------------------------

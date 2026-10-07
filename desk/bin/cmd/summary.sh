@@ -248,6 +248,12 @@ cmd_run() {
     esac
     if [ "$level" -eq 1 ]; then
       hq_check_text "summary set: the level-1 line" "$text" "$HQ_SUMMARY_L1_MAX_CHARS"
+      # hq_check_text lets a tab through (answers and level 2 may hold one); the
+      # level-1 shape allows no control character at all, since the view prints
+      # the line raw between its ` · ` separators.
+      case "$text" in
+        *$'\t'*) hq_die_validation "summary set: the level-1 line contains a control character (a tab)" ;;
+      esac
     else
       hq__summary_check "$text"
     fi

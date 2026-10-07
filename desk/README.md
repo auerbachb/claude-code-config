@@ -709,7 +709,7 @@ numbered PR outline in issue #1768.
 | `diff R-<n> [path]` | `pr-summary-material.sh --level 3 [--path FILE]`; nothing is stored |
 | `reviewed R-<n>` / `reviewed all today` | `review R-<n>` / `review --synced-today` |
 | `flag R-<n> "…"` | `flag R-<n> --note …`, the note through a quoted here-document |
-| `follow up R-<n>` | `gh issue create --repo <the item's repo>` (seven sections, the capture footer), then `comment R-<n> "follow-up: <url>"` |
+| `follow up R-<n>` (`… again` after an interrupted filing) | `comment R-<n> "follow-up: filing"`, then `gh issue create --repo <the item's repo>` (seven sections, the capture footer), then `comment R-<n> "follow-up: <url>"`; a `filing` mark with no URL after it stops the next `follow up` until `again` |
 
 - **Level 1 is cached.** One line, at most 200 characters, written by the
   desk the first time the item is listed and stored with `summary set ID
