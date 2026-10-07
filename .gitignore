@@ -7,3 +7,6 @@ __pycache__/
 # Runtime lock files
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
+
+# Operator backlog priority (/desk -> /pm, issue #1767): runtime state, never committed
+.claude/pm-priority.json*
