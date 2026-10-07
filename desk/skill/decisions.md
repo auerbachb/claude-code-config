@@ -4,16 +4,17 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
 
 ## Showing items
 
-1. **Read the items.** `"$HQ" list --kind decision --status open --json` prints every open Decision, already in the set order the design asks for: parked first, then impact, then age (`desk/DESIGN.md` 4.2.5). For a tick event, keep only the ids the event named; for the start backlog, keep them all. An id the list no longer has was answered or closed in the meantime: drop it.
+1. **Read the items.** `"$HQ" list --kind decision --status open --json` prints every open Decision, already in the set order the design asks for: parked first, then impact, then age (`desk/DESIGN.md` 4.2.5). For a tick event, keep only the ids the event named (a named long-form part brings the rest of its open group: `longform.md`, "What is long-form"); for the start backlog, keep them all. An id the list no longer has was answered or closed in the meantime: drop it.
 2. **Split simple from long-form.** A Decision is **simple** when it has 2 to 4 options and its declared cost (if any) is not in hours, days, or weeks. Only simple ones render here, as menus. The rest are **long-form** (`longform.md`): no options, one option, more than four, or a cost such as `2h`, `1h30`, or `half a day`. They come one at a time as text prompts, grouped into multipart items. The predicate is `desk_split` in `desk.jq`, shared with `longform.md`:
 
    <!-- test-anchor: desk-split -->
 
    ```bash
-   "$HQ" list --kind decision --status open --json | jq -c -L "$DESK/skill" --arg ids "<the event's ids, or empty for all>" 'include "desk"; desk_split($ids)'
+   ITEMS=$("$HQ" list --kind decision --status open --json); rc=$?
+   if [ "$rc" -eq 0 ]; then printf '%s\n' "$ITEMS" | jq -c -L "$DESK/skill" --arg ids "<the event's ids, or empty for all>" 'include "desk"; desk_split($ids)'; else echo "exit=$rc"; fi
    ```
 
-   It prints `{"simple": ["D-43", "D-44"], "longform": [["D-45"], ["D-47", "D-48"]]}`: the simple ids in list order, and the long-form ids as groups (one array per multipart item).
+   It prints `{"simple": ["D-43", "D-44"], "longform": [["D-45"], ["D-47", "D-48"]]}`: the simple ids in list order, and the long-form ids as groups (one array per multipart item). `list` runs on its own first so its exit status is not lost in the pipe: `exit=7` means the store is unreachable (say so in one line and show this batch after the next `recovered` event), any other `exit=<n>` is the CLI's one stderr line to report.
 
 3. **Open and render one set at a time, up to four items each.** Four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the simple ids in order, four at a time. Open a set for the **next chunk only**:
 
@@ -45,7 +46,7 @@ Build one reply from the operator's choices, one line per answered item, in set 
 - an "Other" text that is `discuss`, `discuss <n>`, or `discuss D-<id>` → no line: it is not an answer. Resolve the rest of the reply, then load `discuss.md` for it (a bare `discuss` names this question's item)
 - an item left unanswered → no line
 
-Then resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's).
+When at least one line remains, resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's). When none does (the only choice was a `discuss` text, or nothing was answered), skip `set-resolve`, which refuses an empty reply, and go straight to `discuss.md` (or, with no `discuss` either, treat the menu as dismissed, as "The menu" says).
 
 **The reply never goes into the command line itself.** It holds the operator's own words, and an "Other" text or a typed reply can contain `"`, `$(…)`, or backticks that a double-quoted argument would break on or run. Write it through a quoted here-document (no expansion of any kind happens inside one), then pass the file's contents:
 

@@ -31,7 +31,8 @@
 #          2` resolves to part 2 through the set; the desk-discuss-card
 #          block loads part 2's question, context, and link (what a
 #          follow-up is answered from) and writes nothing; part 2 is then
-#          presented again as `part 2 of 2` and answered
+#          presented again as `part 2 of 2` and answered (whatever shells
+#          exist), and part 1 is answered once under each block shell
 # The answer block runs under bash, /bin/bash 3.2 (macOS), and zsh when
 # present.
 set -uo pipefail
@@ -234,19 +235,34 @@ OUT=$(run_block bash "$TMP/render-mp2.sh")
 check "5.2 part 2 is presented again" "$(printf '%s\n' "$OUT" | sed -n 1p)" \
   "> **$MP2** · part 2 of 2 · $REPO · issue-503"
 
-# Part 1 and part 2 answered under the other shells.
+# Part 2, presented again, is answered whatever shells exist.
+answer_script "$MP2" "$TMP/reply" "$TMP/answer-mp2.sh"
+OUT=$(run_block "$FIRST_SHELL" "$TMP/answer-mp2.sh")
+check_contains "5.2 part 2's answer block reports exit 0" "$OUT" "exit=0"
+check "5.2 part 2's answer changed it" "$(printf '%s\n' "$OUT" | sed -n 1p | "$JQ" -r '.changed')" "true"
+hq get "$MP2" --json
+check "5.2 part 2 is answered" "$(printf '%s' "$OUT" | "$JQ" -r '.status')" "answered"
+printf '%s' "$OUT" | "$JQ" -j '.answer' > "$TMP/stored-mp2"
+if cmp -s "$TMP/expected" "$TMP/stored-mp2"; then
+  ok "5.2 part 2's reply is stored byte for byte"
+else
+  bad "5.2 part 2's stored answer differs from the typed reply"
+fi
+
+# Part 1 under every block shell. Each run adds its own last line, so every
+# shell's run writes (changed true) and is compared on its own.
 SHELL_N=0
 for SH in $BLOCK_SHELLS; do
   SHELL_N=$((SHELL_N + 1))
-  [ "$SHELL_N" -eq 1 ] && continue
-  ID=$MP1
-  [ "$SHELL_N" -eq 3 ] && ID=$MP2
-  answer_script "$ID" "$TMP/reply" "$TMP/answer-$SHELL_N.sh"
+  { cat "$TMP/reply"; printf 'Answered under %s.\n' "$SH"; } > "$TMP/reply-$SHELL_N"
+  printf '%s' "$(cat "$TMP/reply-$SHELL_N")" > "$TMP/expected-$SHELL_N"
+  answer_script "$MP1" "$TMP/reply-$SHELL_N" "$TMP/answer-$SHELL_N.sh"
   OUT=$(run_block "$SH" "$TMP/answer-$SHELL_N.sh")
   check_contains "[$SH] the answer block reports exit 0" "$OUT" "exit=0"
-  hq get "$ID" --json
+  check "[$SH] the answer block changed part 1" "$(printf '%s\n' "$OUT" | sed -n 1p | "$JQ" -r '.changed')" "true"
+  hq get "$MP1" --json
   printf '%s' "$OUT" | "$JQ" -j '.answer' > "$TMP/stored-$SHELL_N"
-  if cmp -s "$TMP/expected" "$TMP/stored-$SHELL_N"; then
+  if cmp -s "$TMP/expected-$SHELL_N" "$TMP/stored-$SHELL_N"; then
     ok "[$SH] the reply is stored byte for byte"
   else
     bad "[$SH] the stored answer differs from the typed reply"

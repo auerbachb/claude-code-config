@@ -7,17 +7,18 @@ Loaded when the operator types `discuss`, `discuss <n>`, or `discuss D-<id>`, at
 - **`discuss D-<id>`** (`d-43` is accepted) → that item, in a set or not.
 - **`discuss <n>`** → number *n* of the latest set this session opened: the set on screen, a menu or a multipart group (whose parts are its numbers). Use the `{"n", "id"}` list `set-open` printed for it.
 - **A bare `discuss`** → the item on screen: the long-form part waiting for its reply, or the menu question whose "Other" box held it. With nothing on screen: `Nothing on screen to discuss — type "discuss 2" or "discuss D-43".`
-- **Not found** → one line naming what failed, and nothing else changes (a waiting long-form prompt keeps waiting): `discuss 5: set 14 has numbers 1 to 3.`, `discuss D-999: no such item.` (exit 4 from `get`), or `discuss R-88: R-88 is a Review; discuss takes Decisions.`
+- **Not found** → one line naming what failed, and nothing else changes (a waiting long-form prompt keeps waiting): `discuss 5: set 14 has numbers 1 to 3.`, `discuss D-999: no such item.` (`exit=4` from step 2's block), or `discuss R-88: R-88 is a Review; discuss takes Decisions.`
 
 ## 2. Load its card
 
 <!-- test-anchor: desk-discuss-card -->
 
 ```bash
-"$HQ" get D-48 --json | jq -r -L "$DESK/skill" 'include "desk"; discuss_card'
+ITEM=$("$HQ" get D-48 --json); rc=$?
+if [ "$rc" -eq 0 ]; then printf '%s\n' "$ITEM" | jq -r -L "$DESK/skill" 'include "desk"; discuss_card'; else echo "exit=$rc"; fi
 ```
 
-The card carries what the item holds: its status and when it was asked, the question, the numbered context, the options with the recommended default, when the default is taken, impact, cost and focus, the link to its PR or issue (from its repo and key), where the answer goes, and the answer so far. Print it, then one line: `Ask anything about D-48. "done" brings it back to answer; nothing is stored until you answer.` Keep the item's JSON in this conversation for the follow-ups. Exit 7 → `Store unreachable — can't load D-48 right now.` and nothing else changes.
+The card carries what the item holds: its status and when it was asked, the question, the numbered context, the options with the recommended default, when the default is taken, impact, cost and focus, the link to its PR or issue (from its repo and key), where the answer goes, and the answer so far. Print it, then one line: `Ask anything about D-48. "done" brings it back to answer; nothing is stored until you answer.` Keep the item's JSON in this conversation for the follow-ups. `get` runs on its own first so its exit status is not lost in the pipe: `exit=4` is step 1's "not found", and `exit=7` → `Store unreachable — can't load D-48 right now.` and nothing else changes.
 
 ## 3. Answer follow-ups
 
@@ -31,7 +32,7 @@ The card carries what the item holds: its status and when it was asked, the ques
 Read each operator message in this order:
 
 1. **`done`** or **`back`** (alone, any case) → step 5.
-2. **An answer** → the discussion ends and the message is the item's answer, through the normal path: it starts with the item's number in the latest set or its id, then a colon (`2: B`, `D-48: …`). A menu-shaped item goes to `decisions.md`, "Typed replies"; a long-form item goes to `longform.md`, "Storing an answer", with the text after the colon, word for word. Then step 6.
+2. **An answer** → the discussion ends and the message is the item's answer, through the normal path: it starts with the item's number in the latest set or its id, then a colon (`2: B`, `D-48: …`). A menu-shaped item goes to `decisions.md`, "Typed replies"; a long-form item goes to `longform.md`, "Storing an answer", with the text after the colon, word for word (bar the two changes that section names: outer blank space is trimmed, and a lone option letter stores that option). Then step 6.
 3. **`skip`** → no answer; the item stays open. Step 6.
 4. **`discuss <other>`** → discuss that item instead (step 1).
 5. **Anything else** is another follow-up (step 3).

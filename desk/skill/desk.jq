@@ -37,16 +37,28 @@ def menu_shaped:
 # (a multi-question ask is stored as one Decision per question). Parts keep
 # the list's order inside a group; groups are ordered by their first part. A
 # group of one is a single long-form Decision.
+#
+# With $ids, a named long-form Decision brings its whole group: every open
+# long-form part sharing its repo, key, and return address comes along, named
+# or not. The capture hook adds a multi-question ask one Decision at a time,
+# so a tick can land between two parts and report them in different events;
+# without this the later part would be shown alone as part 1 of 1.
+def group_key: [.repo, .key, .session_id];
+
 def desk_split($ids):
   ($ids | split(" ") | map(select(. != ""))) as $want
   | [ to_entries[]
       | select(.value.kind == "decision" and .value.status == "open")
-      | select(($want | length) == 0 or (.value.id as $i | any($want[]; . == $i)))
-      | {n: .key, item: .value} ] as $rows
+      | {n: .key, item: .value, named: (.value.id as $i | any($want[]; . == $i))} ] as $open
+  | ([ $open[] | select(.named and (.item | menu_shaped | not)) | .item | group_key ]) as $groups
+  | [ $open[]
+      | select(($want | length) == 0 or .named
+               or ((.item | menu_shaped | not)
+                   and ((.item | group_key) as $g | any($groups[]; . == $g)))) ] as $rows
   | { simple: [ $rows[] | select(.item | menu_shaped) | .item.id ],
       longform: ( [ $rows[]
                     | select(.item | menu_shaped | not)
-                    | {n, id: .item.id, g: [.item.repo, .item.key, .item.session_id]} ]
+                    | {n, id: .item.id, g: (.item | group_key)} ]
                   | group_by(.g) | map(sort_by(.n)) | sort_by(.[0].n)
                   | map(map(.id)) ) };
 

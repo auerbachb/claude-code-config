@@ -476,7 +476,9 @@ deterministic parts live in one jq library, `skill/desk.jq`, which both
 - **Long-form.** A Decision a menu cannot hold: no options, one option, more
   than four, or a declared cost in hours, days, or weeks (`2h`, `1h30`,
   `half a day`). It is shown alone, as a quoted text card (never a menu), and
-  the operator's next message is its answer, stored word for word.
+  the operator's next message is its answer, stored word for word (outer
+  whitespace trimmed and a lone option letter stored as that option, as for
+  every answer).
 - **Multipart.** The store has no parts field: a multi-question ask is
   already one Decision per question. A multipart Decision is the open
   long-form Decisions that share a repo, a key, and a return address (one

@@ -13,7 +13,9 @@
 #   split     desk_split keeps open Decisions only; simple ids in list
 #             order; long-form ids grouped by repo + key + return address (a
 #             multipart item), parts in list order, groups by their first
-#             part; an id filter keeps only the named ids
+#             part; an id filter keeps the named ids, and a named
+#             long-form part brings its whole open group (a tick can land
+#             between two parts of one ask)
 #   render    the long-form card is one blockquote: the id, `long-form` or
 #             `part k of m`, the question, numbered context, the options
 #             with the default marked once, the default's time in UTC,
@@ -35,7 +37,8 @@
 #             dash still works
 #   skill     the anchored blocks run against a stub CLI: desk-split,
 #             desk-longform-render, and desk-discuss-card print what desk.jq
-#             prints, and desk-longform-answer hands the operator's message
+#             prints, or `exit=<n>` when list or get fails (never an empty
+#             card hiding the failure), and desk-longform-answer hands the operator's message
 #             to `answer --stdin --json` byte for byte (quotes, $(...),
 #             backticks, backslashes, `2: B` lines, tabs, Unicode) under
 #             bash, /bin/bash 3.2, and zsh, running none of it; the skill
@@ -144,8 +147,16 @@ for J in $JQS; do
   check "[$J] desk_split: open Decisions, simple and grouped long-form" "$OUT" \
     '{"simple":["D-43","D-49"],"longform":[["D-45"],["D-47","D-48","D-53"],["D-50"],["D-51"]]}'
   OUT=$(dj "$J" -c 'include "desk"; desk_split("D-48 D-50 D-52 R-88 D-99")' "$TMP/items.json" 2>&1)
-  check "[$J] desk_split with ids: only those (answered, Reviews, unknown dropped)" "$OUT" \
-    '{"simple":[],"longform":[["D-48"],["D-50"]]}'
+  check "[$J] desk_split with ids: those, a part with its group (answered, Reviews, unknown dropped)" "$OUT" \
+    '{"simple":[],"longform":[["D-47","D-48","D-53"],["D-50"]]}'
+  # A tick that lands between two of the capture hook's adds reports the
+  # later part alone; it still comes as its whole group, never part 1 of 1.
+  OUT=$(dj "$J" -c 'include "desk"; desk_split("D-53")' "$TMP/items.json" 2>&1)
+  check "[$J] desk_split: a later part named alone brings its open group" "$OUT" \
+    '{"simple":[],"longform":[["D-47","D-48","D-53"]]}'
+  OUT=$(dj "$J" -c 'include "desk"; desk_split("D-49")' "$TMP/items.json" 2>&1)
+  check "[$J] desk_split: a named menu question brings no long-form siblings" "$OUT" \
+    '{"simple":["D-49"],"longform":[]}'
   OUT=$(dj "$J" -c 'include "desk"; desk_split("  D-43   D-49 ")' "$TMP/items.json" 2>&1)
   check "[$J] desk_split ignores extra spaces in the ids" "$OUT" '{"simple":["D-43","D-49"],"longform":[]}'
   OUT=$(printf '[]' | dj "$J" -c 'include "desk"; desk_split("")' 2>&1)
@@ -346,11 +357,20 @@ STUB="$STUB_DIR/cli.sh"
 cat > "$STUB" <<EOF
 #!/usr/bin/env bash
 # A stand-in for desk-cli.sh: records its arguments and standard input.
+# STUB_EXIT=<n> makes list and get fail the way an unreachable store does.
 d="$STUB_DIR"
 printf '%s\n' "\$@" > "\$d/args"
+if [ -n "\${STUB_EXIT:-}" ] && { [ "\$1" = list ] || [ "\$1" = get ]; }; then
+  echo "stub: the store is unreachable" >&2
+  exit "\$STUB_EXIT"
+fi
 case "\$1" in
   list) cat "\$d/items.json" ;;
-  get) "$FIRST_JQ" -c --arg id "\$2" '.[] | select(.id == \$id)' "\$d/items.json" ;;
+  get)
+    item=\$("$FIRST_JQ" -c --arg id "\$2" '.[] | select(.id == \$id)' "\$d/items.json")
+    if [ -z "\$item" ]; then echo "human-queue.sh get: no item \$2" >&2; exit 4; fi
+    printf '%s\n' "\$item"
+    ;;
   answer) cat > "\$d/stdin"; printf '{"id": "%s", "answer": "stub", "changed": true, "session": "sess-b"}\n' "\$2" ;;
   *) echo "stub: unexpected \$1" >&2; exit 1 ;;
 esac
@@ -384,6 +404,8 @@ block "$SKILL_DIR/discuss.md" desk-discuss-card
 
 literal "$TMP/block-desk-split.sh" "<the event's ids, or empty for all>" "" > "$TMP/split.sh"
 literal "$TMP/block-desk-split.sh" "<the event's ids, or empty for all>" "D-45 D-49" > "$TMP/split-ids.sh"
+literal "$TMP/block-desk-longform-render.sh" "D-48" "D-99" > "$TMP/render-gone.sh"
+literal "$TMP/block-desk-discuss-card.sh" "D-48" "D-99" > "$TMP/discuss-gone.sh"
 
 # The operator's message: everything a shell or a reply parser could touch.
 cat > "$TMP/reply" <<'REPLY'
@@ -413,6 +435,24 @@ for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/block-desk-discuss-card.sh")
   check "[$SH] desk-discuss-card block: the card" "$(printf '%s\n' "$OUT" | sed -n 1p)" \
     '> Discussing **D-48** · open · acme/widgets · issue-90 · asked 2026-10-05 14:21 UTC'
+
+  # A failed list or get reports its own exit; the pipe to jq never hides it
+  # behind an empty card or an empty split.
+  OUT=$(STUB_EXIT=7 run_block "$SH" "$TMP/split.sh")
+  check "[$SH] desk-split block: an unreachable store reports exit=7" "$OUT" \
+    "$(printf 'stub: the store is unreachable\nexit=7')"
+  OUT=$(STUB_EXIT=7 run_block "$SH" "$TMP/block-desk-longform-render.sh")
+  check "[$SH] desk-longform-render block: an unreachable store reports exit=7" "$OUT" \
+    "$(printf 'stub: the store is unreachable\nexit=7')"
+  OUT=$(run_block "$SH" "$TMP/render-gone.sh")
+  check "[$SH] desk-longform-render block: a gone item reports exit=4" "$OUT" \
+    "$(printf 'human-queue.sh get: no item D-99\nexit=4')"
+  OUT=$(STUB_EXIT=7 run_block "$SH" "$TMP/block-desk-discuss-card.sh")
+  check "[$SH] desk-discuss-card block: an unreachable store reports exit=7" "$OUT" \
+    "$(printf 'stub: the store is unreachable\nexit=7')"
+  OUT=$(run_block "$SH" "$TMP/discuss-gone.sh")
+  check "[$SH] desk-discuss-card block: a gone item reports exit=4" "$OUT" \
+    "$(printf 'human-queue.sh get: no item D-99\nexit=4')"
 
   rm -f "$STUB_DIR/stdin" "$TMP/desk-pwned" "$TMP/desk-pwned-2"
   OUT=$(run_block "$SH" "$TMP/answer.sh")
