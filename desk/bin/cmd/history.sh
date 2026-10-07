@@ -72,7 +72,9 @@ hq__history_check_date() {
   fi
 }
 
-# hq__history_sql JSON — the day's latest answer per Decision, then the items.
+# hq__history_sql JSON — the day's latest answer per Decision, then the items,
+# ordered by that answer's time (an event's id need not follow its time: a
+# transaction stamps `at` when it starts), the latest event id breaking ties.
 hq__history_sql() {
   cat <<'SQL'
 WITH d AS (
@@ -89,7 +91,7 @@ SQL
   if [ "$1" -eq 1 ]; then
     printf "SELECT coalesce(jsonb_agg(%s || jsonb_build_object('answered_at', h.answered_at)\n" "$(hq_sql_item_json)"
     cat <<'SQL'
-                          ORDER BY h.last_id), '[]'::jsonb)
+                          ORDER BY h.answered_at, h.last_id), '[]'::jsonb)
   FROM h JOIN items i ON i.id = h.item_id
  WHERE i.kind = 'decision';
 SQL
@@ -101,7 +103,7 @@ SELECT string_agg(concat_ws(E'\n',
                    i.status, i.repo, i.key),
          '**' || i.question || '**',
          'Answer: ' || i.answer),
-       E'\n\n' ORDER BY h.last_id)
+       E'\n\n' ORDER BY h.answered_at, h.last_id)
   FROM h JOIN items i ON i.id = h.item_id
  WHERE i.kind = 'decision'
 HAVING count(*) > 0;

@@ -35,7 +35,7 @@ Read each operator message in this order:
 2. **An answer** → the discussion ends and the message is the item's answer, through the normal path: it starts with the item's number in the latest set or its id, then a colon (`2: B`, `D-48: …`). A menu-shaped item goes to `decisions.md`, "Typed replies"; a long-form item goes to `longform.md`, "Storing an answer", with the text after the colon, word for word (bar the two changes that section names: outer blank space is trimmed, and a lone option letter stores that option). Then step 6.
 3. **`skip`** → no answer; the item stays open. Step 6.
 4. **`discuss <other>`** → discuss that item instead (step 1).
-5. **`show D-<n>`** or **`history`** as the whole message → `history.md`, then go on discussing.
+5. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then go on discussing.
 6. **Anything else** is another follow-up (step 3).
 
 ## 5. Present the item again

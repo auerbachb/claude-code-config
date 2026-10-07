@@ -34,7 +34,8 @@ BEHAVIOR
   (`answer-parked`) when its last retry fails too. A successful wake-up, an
   acknowledgement, a parked answer, or a new answer (which starts a new
   count) takes an item off this list. Oldest failure first. Read-only:
-  records nothing.
+  records nothing. It sees only recorded wake-ups: an attempt whose `wake`
+  record failed is not listed until the desk records it again.
 
 OUTPUT
   One line per answer: `D-43 · retry 2 of 3 · session abc`. Nothing at all

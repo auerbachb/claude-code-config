@@ -36,4 +36,10 @@ While a long-form prompt waits for its reply (`longform.md`), hold the notice th
 
 ## A wake-up the store did not record
 
-`wake` exit 7 or 1 means the attempt happened but was not counted. Say it once: `D-43: wake-up not recorded (<the CLI's line>) — it is retried at the next tick.` The next tick lists the item again, because its last recorded wake-up is still a failure. Exit 4 (`no item`, or `has no answer yet`) means the item is gone or was reset: drop it silently.
+`wake` exit 7 or 1 means the attempt happened but was not counted. `wake-due` sees only recorded wake-ups, so an unrecorded first attempt would never be retried: make the record again rather than drop it. Say it once: `D-43: wake-up not recorded (<the CLI's line>) — recording it again.`
+
+1. Run the same `wake` command (same id, `--result`, and `--note`) again at once.
+2. If it fails again, keep that command in this conversation. Run it at the start of the desk's next turn (any `desk-tick` line, `recovered` included, or an operator message), before anything else, until it exits 0 or 4. Running it first means a `retry` line's re-read already sees the attempt.
+3. Never send the pointer again for it: the attempt already happened. Handle its `--json` result as any other. A failure with retries left is retried from the next tick, and `"parked": true` prints the parked notice.
+
+Exit 4 (`no item`, or `has no answer yet`), on the first try or a later one, means the item is gone or was reset: drop it silently.

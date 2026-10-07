@@ -537,6 +537,7 @@ Tick events while a prompt waits
 is held, not shown
 longform_prompt($k; $m)
 Wake the asking thread now, before the next part
+**`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`
 NEEDLES
 contract discuss.md "$DISCUSS" <<'NEEDLES'
 **`done`** or **`back`**
@@ -550,6 +551,7 @@ read-only
 `answer-parked`
 `show D-<n>`
 `history`
+**`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`
 #1781
 discuss_card
 NEEDLES

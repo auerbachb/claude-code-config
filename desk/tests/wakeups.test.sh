@@ -22,7 +22,8 @@
 #   5.2  history after two answers today lists both, in answer order (text
 #        and --json, through the skill's desk-history block); an answer at
 #        23:30 America/New_York yesterday is not today's, and --date for that
-#        day lists it alone
+#        day lists it alone; the order follows the answers' times even when
+#        their event ids disagree
 #   5.1  an invalid owning session id: the answer is stored; wake-target
 #        finds no running session; the first failed wake-up writes a
 #        `wake-failed` event and leaves the item `answered` with 3 retries
@@ -32,8 +33,9 @@
 #        tick 3 it is `answer-parked` with one `answer-parked` event, and
 #        `parked: true` came back exactly once; a fourth tick is quiet; a
 #        later failure on the parked item parks nothing again
-#   4.2  wake-due --min-age skips an answer retried a moment ago; a `sent`
-#        wake-up is never due; an item with no return address parks on its
+#   4.2  an answer with no wake-up recorded yet is not due (so the skill
+#        records a refused `wake` again); wake-due --min-age skips an answer
+#        retried a moment ago; a `sent` wake-up is never due; an item with no return address parks on its
 #        first failure; a new answer starts the count again; re-sending the
 #        answer a parked item holds changes nothing; a store without
 #        migration 006 refuses to park with "run migrate", recording nothing
@@ -200,6 +202,15 @@ hq history --json
 check "5.2 yesterday's 23:30 ET answer is not today's" "$(jqr "$OUT" '[.[].id] | join(" ")')" "$H1 $H2"
 hq history --date "$YESTERDAY" --json
 check "5.2 history --date yesterday lists it alone" "$(jqr "$OUT" '[.[].id] | join(" ")')" "$H3"
+# Answer order is the answers' times, not their event ids: an event's `at` is
+# its transaction's start, so a later id can carry an earlier time. Stamp H2's
+# answer just before H1's; both views must then list H2 first.
+sql_in "UPDATE events SET at = (SELECT at FROM events WHERE item_id = '$H1' AND kind = 'answered') - interval '1 millisecond' WHERE item_id = '$H2' AND kind = 'answered'" >/dev/null
+hq history --json
+check "5.2 history --json orders by answer time, not event id" "$(jqr "$OUT" '[.[].id] | join(" ")')" "$H2 $H1"
+hq history
+check "5.2 the text view orders by answer time too" \
+  "$(printf '%s\n' "$OUT" | grep -o '^D-[0-9]* · answered' | cut -d' ' -f1 | tr '\n' ' ')" "$H2 $H1 "
 hq history --date 1999-01-01
 check "5.2 a day with no answers prints nothing" "$RC:$OUT" "0:"
 hq history --date 2026-02-30
@@ -220,6 +231,10 @@ literal "$TMP/block-desk-wake-target.sh" "<session>" "$DEAD" > "$TMP/target.sh"
 run_block "$TMP/target.sh"
 check "5.1 wake-target: no running session (exit 3)" "$RC" "3"
 check_contains "5.1 wake-target says so" "$OUT" "no running session"
+# wake-due sees only recorded wake-ups: until the failure is recorded the
+# answer is not due, which is why wakeups.md records a refused `wake` again.
+hq wake-due --json
+check "4.2 an answer whose wake-up is not recorded yet is not due" "$RC:$OUT" "0:[]"
 
 PARKED_TRUE=0
 # record ID — the skill's failed-wake record for ID; sets OUT (the JSON).

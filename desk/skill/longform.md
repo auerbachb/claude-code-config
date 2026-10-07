@@ -32,7 +32,7 @@ While a prompt waits, read the operator's next message in this order:
 
 1. **`skip`** or **`next`** (alone, any case) → nothing is stored and the item stays open: one line, `D-48 left open — type "D-48: …" any time.` Then the next part. **`skip all`** leaves this part and every remaining long-form item open for now.
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md` (a bare `discuss` names this part).
-   **`show D-<n>`** or **`history`** as the whole message → `history.md`, then print this part's card again. Nothing is stored.
+   **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then print this part's card again. Nothing is stored.
 3. **A reply for another item**: the message starts with `D-<n>:` naming a different item → handle it as a typed reply (`decisions.md`, "Typed replies"; a long-form one goes through "Storing an answer" below), then print this part's card again.
 4. **This item, addressed**: the message starts with this part's own `D-<n>:` → the answer is the text after that colon.
 5. **Anything else is the answer**: the whole message, as typed. A long answer may hold numbered lines (`1: …`, `2: …`), commas, or quotes; they are part of the answer, never split into replies.

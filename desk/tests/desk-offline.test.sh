@@ -680,7 +680,11 @@ up to three times
 `parked` is true on exactly one call
 Never skip the record
 hold the notice
+`wake-due` sees only recorded wake-ups
+Run the same `wake` command (same id, `--result`, and `--note`) again at once.
+Never send the pointer again for it
 NEEDLES
+check_absent "wakeups.md: an unrecorded wake-up is not left to the next tick" "$WAKEUPS" "it is retried at the next tick"
 contract history.md "$HISTORY" <<'NEEDLES'
 "$HQ" show D-43; echo "exit=$?"
 "$HQ" history; echo "exit=$?"
@@ -691,6 +695,7 @@ NEEDLES
 contract decisions.md "$DECISIONS" <<'NEEDLES'
 wake D-43 --result failed --note "no running session" --json
 `wakeups.md`, "The parked notice"
+an unrecorded attempt is neither counted nor retried
 NEEDLES
 check_absent "decisions.md: no 'No retry in this increment'" "$DECISIONS" "No retry in this increment"
 

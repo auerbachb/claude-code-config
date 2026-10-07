@@ -527,7 +527,9 @@ is retried, then parked for the next thread on that PR or issue.
   after `tick` and prints `desk-tick G retry D-43 D-44`. The desk reads
   `wake-due --json --min-age 30` again, so two queued events cannot retry one
   answer twice, then wakes each answer as it does after an answer and
-  records the result with `wake --json`. A failing `wake-due` is one `error`
+  records the result with `wake --json`. `wake-due` sees only recorded
+  wake-ups, so a `wake` the store did not take (exit 7 or 1) is run again
+  until it is, never dropped. A failing `wake-due` is one `error`
   line per outage, and the tick's `new` line is still printed, because that
   tick already moved the watermark.
 - **`answer-parked`.** The failure that uses up the third retry sets the
