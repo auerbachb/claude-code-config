@@ -21,7 +21,10 @@
 #        the check (`desk/skill` is a path, not a repo) stays in the text,
 #        with a note.
 #     2. Otherwise this desk session's default: the store's state key
-#        idea_repo:<SID>, read through desk-cli.sh.
+#        idea_repo:<SID>, read through desk-cli.sh and checked again the
+#        same way (access or the repository's issue setting may have changed
+#        since `repo:` saved it). A default that fails is not used: it is a
+#        note, and the idea goes to 3.
 #     3. Otherwise none: exit 3, with `suggest` set to the current
 #        directory's repository when it passes the same check. The desk then
 #        asks once, in plain text, for `repo: OWNER/NAME`.
@@ -67,7 +70,7 @@ HQ_BIN_DIR=$(cd -P "$(dirname "$it_self")" && pwd) || exit 1
 . "$HQ_BIN_DIR/lib/github.sh"
 
 it_usage() {
-  sed -n '3,51p' "$it_self" | sed 's/^# \{0,1\}//'
+  sed -n '3,54p' "$it_self" | sed 's/^# \{0,1\}//'
 }
 
 SID=""
@@ -241,10 +244,17 @@ fi
 rc=0
 default=$("$CLI" state get "idea_repo:$SID" 2>/dev/null) || rc=$?
 if [ "$rc" -eq 0 ] && [ -n "$default" ]; then
-  emit "$default" default false ""
-  exit 0
-fi
-if [ "$rc" -eq 7 ]; then
+  # `repo:` checked the default when it saved it, but your access or the
+  # repository's issue setting can change since: check it again before an
+  # idea is sent there. A default that fails is not used; the desk asks.
+  CHECK_WHY="not OWNER/NAME"
+  cand=$(repo_word "$default")
+  if [ -n "$cand" ] && check_repo "$cand"; then
+    emit "$CHECKED" default false ""
+    exit 0
+  fi
+  note "this session's default repo $default cannot take ideas now ($CHECK_WHY)"
+elif [ "$rc" -eq 7 ]; then
   note "the store is unreachable, so this session's default repo could not be read"
 elif [ "$rc" -ne 0 ] && [ "$rc" -ne 4 ]; then
   note "this session's default repo could not be read (state get exit $rc)"

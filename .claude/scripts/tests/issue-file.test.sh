@@ -56,6 +56,10 @@ command -v jq >/dev/null 2>&1 || { echo "FATAL: jq is required" >&2; exit 1; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/issue-file-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
+# issue-file.sh appends each call to $HOME/.claude/script-usage.log: a scratch
+# HOME keeps the test's calls out of the developer's real log.
+export HOME="$TMP/test-home"
+mkdir -p "$HOME/.claude"
 
 # --- the gh stub -----------------------------------------------------------
 # STUB_MODE: ok (default) | create-fail | wrong-repo | labels-fail

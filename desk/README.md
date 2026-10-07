@@ -756,7 +756,8 @@ the issue URL as its closing line.
 - **Which repository.** `bin/idea-target.sh` reads the message on stdin: a
   first word that is `owner/name` or a GitHub link to a repository you can
   file issues in (checked with `gh repo view`), else this desk session's
-  default (the state key `idea_repo:<session>`), else exit 3, and the desk
+  default (the state key `idea_repo:<session>`, checked again the same way
+  each time, since access can change), else exit 3, and the desk
   asks once, in plain text, for `repo: owner/name`, suggesting the
   repository it runs in. `repo:` saves the default (and can change it any
   time). A path such as `desk/skill` stays in the idea's text.

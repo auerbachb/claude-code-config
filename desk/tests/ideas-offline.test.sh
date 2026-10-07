@@ -11,6 +11,8 @@
 #                   neither it exits 3 with the current directory's repository
 #                   as the suggestion (the one question); `repo:` checks and
 #                   saves the default, after which an idea needs no question;
+#                   the default is checked again for every idea, and one that
+#                   lost access or is not OWNER/NAME is not used (exit 3);
 #                   a path-like word that is not a repository you can file in
 #                   stays in the text, with a note; read-only and
 #                   issues-off repositories are refused; an unreachable store
@@ -46,6 +48,10 @@ fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/hq-ideas-offline.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
+# issue-file.sh appends each call to $HOME/.claude/script-usage.log: a scratch
+# HOME keeps the test's calls out of the developer's real log.
+export HOME="$TMP/home"
+mkdir -p "$HOME/.claude"
 
 SHELLS="bash"
 if [ -x /bin/bash ] && [ "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')" = "3" ]; then
@@ -174,6 +180,23 @@ for SH in $SHELLS; do
   target "$SH" sess-1 "repo: two words"
   check "[$SH] repo: two words: exit 4" "$RC" "4"
   check "[$SH] a refused repo: keeps the default" "$(cat "$STUB_DIR/state.tsv")" "idea_repo:sess-1	acme/gadgets"
+
+  # The saved default is checked again for every idea: one that can no longer
+  # take issues is not used, and the desk asks again.
+  : > "$STUB_DIR/gh.log"
+  target "$SH" sess-1 "idea: add a pricing page"
+  check_contains "[$SH] the default is checked again" "$(cat "$STUB_DIR/gh.log")" "repo view acme/gadgets"
+  printf 'idea_repo:sess-3\tacme/readonly\n' >> "$STUB_DIR/state.tsv"
+  target "$SH" sess-3 "idea: add a pricing page"
+  check "[$SH] a default that lost access: exit 3, not used" "$RC|$J_REPO|$J_SUGGEST" "3|null|acme/widgets"
+  check_contains "[$SH] a default that lost access: says why" "$J_NOTES" \
+    "default repo acme/readonly cannot take ideas now (you cannot file issues there"
+  printf 'idea_repo:sess-4\t--jq=.\n' >> "$STUB_DIR/state.tsv"
+  : > "$STUB_DIR/gh.log"
+  target "$SH" sess-4 "idea: add a pricing page"
+  check "[$SH] a malformed default: exit 3, not used" "$RC|$J_REPO" "3|null"
+  check_contains "[$SH] a malformed default: says why" "$J_NOTES" "cannot take ideas now (not OWNER/NAME)"
+  check_absent "[$SH] a malformed default never reaches gh" "$(cat "$STUB_DIR/gh.log")" "--jq=."
 
   # The store unreachable: a note, never a lost repo.
   STUB_STORE=down target "$SH" sess-1 "repo: acme/widgets"

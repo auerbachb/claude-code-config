@@ -34,8 +34,8 @@ The repository comes from, in order: **the text** (its first word, when it is `o
 | Result | Do |
 |--------|-----|
 | `exit=0`, verb `idea` | File `text` in `repo` (step 2). |
-| `exit=3` | No repository yet. Hold the idea and ask the question below, once. |
-| `exit=0`, verb `repo` | The operator's answer. With `saved` true: `Ideas from this desk go to <repo> now.` With `saved` false: its note in one line (the store was unreachable; the desk will ask again next time). Either way, file a held idea there now (step 2). |
+| `exit=3` | No repository yet. Hold the idea and ask the question below, once. A note (a default that can no longer take ideas, or a store that could not be read) goes in one line above the card. |
+| `exit=0`, verb `repo` | The operator's answer. With `saved` true: `Ideas from this desk go to <repo> now.` With `saved` false: its note in one line (the store was unreachable; the desk will ask again next time). Then, only when an idea is held, file it there now (step 2); with none held, that line is the whole reply. |
 | `exit=4` | Its note in one line. For a `repo:` answer the question stays open: print the card again. |
 | `exit=1` | `gh` or `jq` is missing: one line, stop. The idea is not held. |
 
@@ -44,7 +44,7 @@ The repository comes from, in order: **the text** (its first word, when it is `o
 > **Which repo should ideas from this desk go to?**
 > Reply `repo: owner/name` — for the repo this desk runs in, `repo: <suggest>`. I'll file "<the idea's first 60 characters>" there and use it for every idea this session.
 
-Leave out the "for the repo this desk runs in" clause when `suggest` is null. That is the one question per session: once `repo:` has saved a default, ideas without a repository go there without asking. `repo: owner/name` also changes the default at any time.
+Leave out the "for the repo this desk runs in" clause when `suggest` is null. That is the one question per session: once `repo:` has saved a default, ideas without a repository go there without asking, as long as it still passes the same check (it is checked again for each idea; one that fails comes back as `exit=3` with a note). `repo: owner/name` also changes the default at any time.
 
 ## 2. File it: the one-shot entry
 
