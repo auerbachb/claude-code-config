@@ -10,6 +10,8 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | Script | Purpose |
 |--------|---------|
 <!-- catalog:rows:begin -->
+| [desk-cli.sh](../../../desk/bin/desk-cli.sh) | Human-queue CLI for the desk (`desk/bin/desk-cli.sh`): runs human-queue.sh with the store URL found the way the capture hook finds it |
+| [desk-tick.sh](../../../desk/bin/desk-tick.sh) | Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do |
 | [graphite-repo-init.sh](../graphite-repo-init.sh) | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |
 | [human-queue.sh](../../../desk/bin/human-queue.sh) | Human-queue store CLI (`desk/bin/human-queue.sh`): auto-discovers subcommands in `desk/bin/cmd/`, applies `desk/schema/` migrations, and exits 7 within two seconds when the database is unset or unreachable so callers can fail open |
@@ -21,6 +23,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [reference-catalog-lint.sh](../reference-catalog-lint.sh) | Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates) |
 | [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first |
 | [verify-exit-report-block.sh](../verify-exit-report-block.sh) | Verify stdin contains a parseable EXIT_REPORT with all required fields |
+| [wake-target.sh](../../../desk/bin/wake-target.sh) | Human-queue wake-up address (`desk/bin/wake-target.sh`): maps a Decision's return address to the running session's messaging address; read-only |
 <!-- catalog:rows:end -->
 
 ## Python helpers

@@ -10,9 +10,10 @@
 #   - no live desk (no control session registered, or its last tick is older
 #     than the bound): the menu renders as usual and nothing is queued;
 #   - live desk: every question becomes a Decision (human-queue.sh add). The
-#     desk's own session still sees its menu; any other session gets the call
-#     denied with a reason that tells it to print `question D-<n> sent to
-#     human queue` and carry on.
+#     desk's own session still sees its menu (and a question in the desk's
+#     set format, `1. [D-43] ...`, is an item shown again, so nothing is
+#     added); any other session gets the call denied with a reason that tells
+#     it to print `question D-<n> sent to human queue` and carry on.
 #
 # This launcher only finds its own location (through symlinks) and runs
 # capture.py with the hook input on stdin. It never blocks a thread: when

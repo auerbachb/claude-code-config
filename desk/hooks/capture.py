@@ -22,6 +22,9 @@ Flow:
   3. Live desk: one `human-queue.sh add --kind decision` per question, with
      the asking session as the return address. The desk's own session is
      allowed; any other session is denied with the receipt instruction.
+     In the desk's own session, a question in the desk's set format
+     (`1. [D-43] ...`) re-renders an item already queued and is not added
+     again (issue #1779).
 
 Every failure (no URL, no CLI, a non-zero CLI exit, a timeout, malformed
 input, an internal error) allows the menu with one warning line. Neither the
@@ -70,6 +73,11 @@ PROFILES = (".zprofile", ".zshenv", ".zshrc", ".bash_profile", ".bashrc", ".prof
 CONFIG_FILE = os.path.join("human-queue", "database_url")
 
 ID_RE = re.compile(r"^D-[1-9][0-9]*$")
+# How /desk renders a queued Decision in a set: its number, then its id in
+# brackets (desk/skill/decisions.md). In the control session such a question
+# is the item itself, shown again, so it must not become a new Decision: that
+# copy would be reported by the next tick and shown again, without end.
+RERENDER_RE = re.compile(r"^[1-9][0-9]?\. \[D-[1-9][0-9]*\] ")
 REPO_RE = re.compile(r"^[^/\s]+/[^/\s]+$")
 ASSIGN_RE = re.compile(r"^\s*(?:export\s+)?HUMAN_QUEUE_DATABASE_URL=(.*)$")
 # The three literal forms of an assignment's value, each optionally followed
@@ -483,6 +491,11 @@ def run(hook, raw):
         return None
 
     questions = [shape_question(q, n) for n, q in enumerate(raw_questions, 1)]
+    if session == control:
+        questions = [q for q in questions if not RERENDER_RE.match(q.text)]
+        if not questions:
+            # The desk showing queued items: the menu renders, nothing is added.
+            return None
     repo, key = repo_and_key(hook, data.get("cwd"), session)
     ids = []
     for n, q in enumerate(questions, 1):
