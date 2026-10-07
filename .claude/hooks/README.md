@@ -283,3 +283,21 @@ Registered on **`PreToolUse`** with matcher **`AskUserQuestion`** and a 15 s tim
 - **Fails open:** any failure (no URL, store unreachable, CLI missing, timeout, bad input) allows the menu with one `human-queue-capture:` line on stderr. Always exits `0`.
 
 **Contract:** `desk/README.md`, "Capture hook". **Tests:** `desk/tests/capture-offline.test.sh` (offline, CI) and `desk/tests/capture.test.sh` (live, throwaway schema).
+
+---
+
+## question-leak-warn.sh
+
+Nudges a thread that asked the operator a question in prose — the one leak `human-queue-capture.sh` cannot see (Issue #1778, `desk/DESIGN.md` 2.4). A **symlink** to `desk/hooks/question-leak-warn.sh`; it backs up the worker contract in `.claude/rules/human-queue.md`.
+
+Registered on **`Stop`** with a 5 s timeout.
+
+**What it does:**
+
+- Reads the final assistant message: `last_assistant_message`, or, when the payload has none, the last assistant message in `transcript_path` (final 2 MiB, malformed lines skipped).
+- A **question line** ends in `?` outside fenced code blocks; headings, blockquotes, table rows, a bare URL, and punctuation-only lines never count. A **receipt line** contains `question D-<n> sent to human queue` (or the plural `questions D-<n>, D-<m> …`) outside a code fence or blockquote.
+- When a question line has no receipt line after it, emits **one** `hookSpecificOutput.additionalContext` warning that quotes the line and names the fix: re-ask through `AskUserQuestion`; with a live desk, print the receipt and proceed on the default or park; with none, the menu renders.
+- **Warn-only:** never `decision: "block"`. Stop context continues the conversation for one model request. A warning leaves a per-session marker directory in `$TMPDIR` that the turn's first Stop clears; a later Stop of the same turn (`stop_hook_active: true`) warns only if it can create that marker, so the hook warns at most once per turn and cannot loop — yet a turn another Stop hook continued is still checked.
+- **Fails open:** no jq, bad input, an unreadable transcript — nothing printed. Always exits `0`. Needs no database.
+
+**Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.

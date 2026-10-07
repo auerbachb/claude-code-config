@@ -85,6 +85,11 @@
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/skill-usage-snapshot-hook.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/question-leak-warn.sh",
+            "timeout": 5
           }
         ]
       }
