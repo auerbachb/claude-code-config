@@ -209,8 +209,9 @@ SQL
 #      `answered` (which clears an earlier acknowledgement), and one
 #      `answered` event per item that changed. Re-sending the answer an item
 #      already holds changes nothing and records nothing.
-# Output: `answer` prints the id; `set-resolve` prints one line per pair, or
-# one JSON object with --json.
+# Output: `answer` prints the id, or with --json one object {"id", "answer",
+# "changed", "session"}; `set-resolve` prints one line per pair, or one JSON
+# object with --json.
 hq_sql_answer() {
   local mode="$1" n="$2" json="$3" input rows note
   input=$(hq__sql_answer_input "$mode" "$n")
@@ -302,7 +303,14 @@ SQL
   RETURNING item_id
 )
 SQL
-  if [ "$mode" = id ]; then
+  if [ "$mode" = id ] && [ "$json" -eq 1 ]; then
+    # `answer --json` (issue #1780): the fields the desk's wake rule needs.
+    cat <<'SQL'
+SELECT jsonb_build_object('id', c.id, 'answer', c.answer,
+                          'changed', c.changed, 'session', c.session)
+  FROM c;
+SQL
+  elif [ "$mode" = id ]; then
     printf '%s\n' "SELECT c.id FROM c;"
   elif [ "$json" -eq 1 ]; then
     cat <<'SQL'
