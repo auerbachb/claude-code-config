@@ -139,13 +139,17 @@ def running(pid):
 if session.startswith("local_"):
     emit(session, "host", None, None)
 
-if not os.path.isdir(directory):
-    sys.stderr.write("wake-target: no running session has that id (no session registry)\n")
-    sys.exit(3)
-
+# Only a registry that provably does not exist means "nobody is running".
+# os.path.isdir() would also say False when the path cannot be examined (a
+# parent we may not search), turning "cannot tell" into a confident exit 3.
 try:
     names = sorted(os.listdir(directory))
+except FileNotFoundError:
+    # The registry, or a directory above it, does not exist: nobody registered.
+    sys.stderr.write("wake-target: no running session has that id (no session registry)\n")
+    sys.exit(3)
 except OSError as exc:
+    # Permission denied on it or a parent, not a directory, ...: cannot tell.
     sys.stderr.write("wake-target: the session registry cannot be listed (%s)\n"
                      % (exc.strerror or "unreadable"))
     sys.exit(1)

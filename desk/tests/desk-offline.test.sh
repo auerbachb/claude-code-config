@@ -312,7 +312,21 @@ if [ "$(id -u)" != "0" ]; then
   chmod 700 "$REG2"
   check "a registry that cannot be listed: exit 1" "$RC" "1"
   check_contains "a registry that cannot be listed: says so" "$(cat "$TMP/err")" "cannot be listed"
+  # A parent that may not be searched hides whether the registry exists:
+  # "cannot tell" (exit 1), never a confident "nobody is running" (exit 3).
+  LOCKED="$TMP/locked-parent"
+  mkdir -p "$LOCKED/sessions"
+  cp "$REG/$LIVE1.json" "$LOCKED/sessions/"
+  chmod 000 "$LOCKED"
+  RC=0
+  env HUMAN_QUEUE_SESSIONS_DIR="$LOCKED/sessions" bash "$BIN/wake-target.sh" cli-aaa >/dev/null 2>"$TMP/err" || RC=$?
+  chmod 700 "$LOCKED"
+  check "a registry under an unsearchable parent: exit 1, not 3" "$RC" "1"
 fi
+: > "$TMP/not-a-dir"
+RC=0
+env HUMAN_QUEUE_SESSIONS_DIR="$TMP/not-a-dir" bash "$BIN/wake-target.sh" cli-aaa >/dev/null 2>"$TMP/err" || RC=$?
+check "a registry path that is a file: exit 1" "$RC" "1"
 wt
 check "no id: exit 4" "$RC" "4"
 wt ""
