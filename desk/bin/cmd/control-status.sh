@@ -21,7 +21,9 @@ BEHAVIOR
   Reads the control session `register-control` stored and the time the last
   `tick` stored (the reserved state keys control_session and tick_at), and
   works out how long ago that tick ran on the database's clock, so a machine
-  whose clock is off cannot change the answer. Read-only: records nothing.
+  whose clock is off cannot change the answer. The age is in whole seconds,
+  rounded up, so a tick even a fraction of a second past a bound reads as
+  past it. Read-only: records nothing.
 
   The capture hook runs this on every question: a registered control session
   whose last tick is recent is a live desk, and only then are questions
@@ -44,9 +46,12 @@ EXIT CODES
 EOF
 }
 
-# One read. tick_at is written by tick in exactly this shape; anything else
-# (only possible by editing the table by hand) reads as "no tick yet" rather
-# than failing the cast.
+# One read. tick_at is written by tick in exactly this shape, and `state set`
+# refuses the key, so anything else is only possible by editing the table by
+# hand. A value of another shape reads as "no tick yet" rather than failing
+# the cast; an impossible date in the right shape (February 30) still fails
+# it, which exits 1, and the capture hook fails open on that like any error.
+# The age is rounded up (ceil), so the hook's `age > bound` check is strict.
 hq__control_status_sql() {
   cat <<'SQL'
 WITH raw AS (
@@ -59,7 +64,7 @@ WITH raw AS (
     FROM raw
 ), a AS (
   SELECT session, tick_at,
-         floor(extract(epoch FROM statement_timestamp() - tick_at))::bigint AS age
+         ceil(extract(epoch FROM statement_timestamp() - tick_at))::bigint AS age
     FROM s
 )
 SQL

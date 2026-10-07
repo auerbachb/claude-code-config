@@ -24,7 +24,7 @@
 #   4.3 / 5.3     CLI missing, store unreachable (real CLI, TEST-NET), a
 #                 failing or hanging call, malformed input, no python
 #                 entry point: exit 0, empty stdout, ONE stderr line; the
-#                 URL never appears in any output
+#                 URL never appears in any output, and git never inherits it
 #   4.3a          the URL comes from an owner-only config file or a literal
 #                 export in a shell profile when the environment lacks it;
 #                 a non-literal or group-readable source is refused
@@ -113,7 +113,23 @@ on_branch() { git -C "$REPO_DIR" symbolic-ref HEAD "refs/heads/$1"; }
 on_branch issue-77-capture
 git -C "$REPO_DIR" remote add origin git@github.com:acme/widgets.git
 
-reset_stub() { rm -f "$STUB_DIR/calls" "$STUB_DIR/url" "$STUB_DIR/n"; }
+# A git that notes whether the store's URL reached it, then runs the real git:
+# only human-queue.sh may inherit the credential.
+REAL_GIT=$(command -v git)
+SPY_DIR="$TMP/gitspy"
+mkdir -p "$SPY_DIR"
+cat > "$SPY_DIR/git" <<EOF
+#!/bin/sh
+if [ -n "\${HUMAN_QUEUE_DATABASE_URL+x}" ]; then
+  echo leaked >> "\$STUB_DIR/git"
+else
+  echo clean >> "\$STUB_DIR/git"
+fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$SPY_DIR/git"
+
+reset_stub() { rm -f "$STUB_DIR/calls" "$STUB_DIR/url" "$STUB_DIR/n" "$STUB_DIR/git"; }
 
 # n_calls SUBCOMMAND — how many times the stub ran SUBCOMMAND.
 n_calls() {
@@ -266,6 +282,13 @@ for SH in $SHELLS; do
   check "[$SH] worker: one item queued" "$(n_calls add)" "1"
   check "[$SH] worker: add's arguments" "$(call_of add 1)" \
     "add|--kind|decision|--repo|acme/widgets|--key|issue-77|--question|Ship the migration before the CLI?|--session|worker-1|--context|Header: Rollout|--context|Options: Ship now (Recommended): Merges today; Wait for review: One more day|--option|Ship now (Recommended)|--option|Wait for review|--default|Ship now (Recommended)|"
+
+  # git (repo and key) runs without the store's URL; only the CLI gets it
+  reset_stub
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1")" "${STUBBED[@]}" STUB_STATUS="$LIVE" PATH="$SPY_DIR:$MINPATH"
+  check "[$SH] git spy: the key still comes from the branch" "$(arg_after add 1 --key)" "issue-77"
+  check "[$SH] git spy: git ran and never inherited HUMAN_QUEUE_DATABASE_URL" "$(sort -u "$STUB_DIR/git" 2>/dev/null)" "clean"
+  check "[$SH] git spy: the CLI still received the URL" "$(sort -u "$STUB_DIR/url")" "url-ok"
 
   # 5.2: live desk, the desk's own session
   reset_stub

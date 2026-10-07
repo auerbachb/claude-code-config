@@ -363,9 +363,18 @@ def live_control_session(hook, store):
     return session
 
 
+def git_env():
+    """The hook's environment without the store's URL: only human-queue.sh
+    needs the credential, so no other child inherits it, even when the
+    asking session exported it (the store's lib/db.sh drops it the same way)."""
+    env = dict(os.environ)
+    env.pop("HUMAN_QUEUE_DATABASE_URL", None)
+    return env
+
+
 def git_out(hook, cwd, args):
     try:
-        rc, out, _ = run_bounded(hook, ["git", "-C", cwd] + args, None, GIT_TIMEOUT_S, "git")
+        rc, out, _ = run_bounded(hook, ["git", "-C", cwd] + args, git_env(), GIT_TIMEOUT_S, "git")
     except FailOpen:
         return ""
     return out.strip() if rc == 0 else ""
