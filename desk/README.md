@@ -220,7 +220,7 @@ full contract.
 |------------|--------------|
 | `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
-| `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
+| `tick [--session SESSION]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
 
 - **Reserved keys.** `tick_watermark` and `tick_at` (written by `tick`) and
@@ -403,14 +403,16 @@ bash desk/tests/run.sh
   owner-only config file, a literal profile export) and refuses the rest;
   `wake-target.sh` against a fixture registry (running, dead, terminal,
   `.key` files ignored); `desk-tick.sh` against a stub CLI (new, quiet,
-  replaced, one error per outage, recovered, sleep first); and the skill's
+  replaced, replaced between control-status and tick, one error per outage,
+  recovered, sleep first, a cadence at or past the live-desk bound); and the skill's
   layout, including that its menu prefix is the hook's re-render prefix.
   Same two shells.
 - `desk.test.sh` is live under the same rules (one throwaway schema,
   `public` unchanged): two worker sessions' Decisions shown in one set as 1
   and 2, `1: A, 2: C` answered in one transaction with each asking session,
   `woken` and `wake-failed` events, each worker's `pending-for`, replies by
-  id, `wake` refusals, a second desk replacing the first, and `wake` on a
+  id, `wake` refusals, a second desk replacing the first (its
+  `tick --session` reads nothing and moves no watermark), and `wake` on a
   store without migration 005.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
@@ -428,7 +430,9 @@ retries, `answer-parked`, `show`, and `history` are #1781.
 - **Start.** `migrate`, then `register-control` with the session id the
   capture hook sees (`$CLAUDE_CODE_SESSION_ID`, never the desktop app's
   `local_…` id), one inline tick, then a persistent Monitor running
-  `desk-tick.sh` (default every 5 minutes, 1 to 60). From the inline tick on,
+  `desk-tick.sh` (default every 5 minutes; 1 to 60 and shorter than the
+  live-desk bound, which `desk-tick.sh` reads through the capture hook's own
+  policy parser and enforces with exit 4). From the inline tick on,
   the desk is live and worker threads' menus are queued instead of shown.
 - **`desk-cli.sh`.** The desktop app's Bash tool and Monitor do not source the
   shell profile, so the URL is usually missing there. The wrapper calls the
@@ -438,8 +442,11 @@ retries, `answer-parked`, `show`, and `history` are #1781.
   replaces the CLI (tests).
 - **`desk-tick.sh`.** Sleeps first, then each cycle: `control-status` (when
   another session is registered, prints `desk-tick G replaced` and exits, so
-  two desks never split the change feed), then `tick`, printing
-  `desk-tick G new D-43 D-44` only for open Decisions. A failing call prints
+  two desks never split the change feed), then `tick --session`, which
+  repeats that check inside the tick's own transaction so a registration
+  landing between the two calls cannot let the replaced loop consume the
+  feed (a refusal confirmed by `control-status` prints `replaced` too),
+  printing `desk-tick G new D-43 D-44` only for open Decisions. A failing call prints
   one `error` line per outage and one `recovered` line; a quiet tick prints
   nothing. `HUMAN_QUEUE_TICK_SECONDS` overrides the cadence (tests).
 - **Sets and replies.** Simple Decisions (2 to 4 options, a cost not in

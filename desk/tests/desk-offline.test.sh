@@ -302,14 +302,21 @@ printf '== desk-tick.sh\n'
 TSTUB="$STUB_DIR/loopcli.sh"
 # Answers from files: $STUB_DIR/status (control-status JSON), $STUB_DIR/tick-N
 # (the N-th tick's JSON, else tick-default); `fail-N` makes the N-th call of
-# any subcommand exit 7.
+# any subcommand exit 7, and `refuse-N` makes it exit 4 the way
+# `tick --session` refuses a session that is no longer the control session.
+# Every call's arguments are appended to $STUB_DIR/args.
 cat > "$TSTUB" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(cat "$STUB_DIR/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_DIR/calls"
+printf '%s\n' "$*" >> "$STUB_DIR/args"
 if [ -f "$STUB_DIR/fail-$n" ]; then
   echo "human-queue: database unreachable (stub)" >&2
   exit 7
+fi
+if [ -f "$STUB_DIR/refuse-$n" ]; then
+  echo "human-queue: tick: this session is not the registered control session (stub)" >&2
+  exit 4
 fi
 case "$1" in
   control-status)
@@ -321,7 +328,7 @@ case "$1" in
 esac
 EOF
 chmod +x "$TSTUB"
-treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/fail-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-*; }
+treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/args "$STUB_DIR"/fail-* "$STUB_DIR"/refuse-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-*; }
 OURS='{"session": "desk-1", "last_tick_at": "2026-10-07T07:00:00Z", "tick_age_seconds": 1}'
 THEIRS='{"session": "desk-2", "last_tick_at": null, "tick_age_seconds": null}'
 MIXED='[{"id": "R-9", "kind": "review", "status": "open"}, {"id": "D-4", "kind": "decision", "status": "open"}, {"id": "D-2", "kind": "decision", "status": "answered"}, {"id": "D-7", "kind": "decision", "status": "open"}]'
@@ -340,6 +347,28 @@ for SH in $SHELLS; do
   printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
   dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
   check "[$SH] --once: open Decisions only, in tick order" "$RC:$OUT" "0:desk-tick g1 new D-4 D-7"
+  check "[$SH] --once: ticks as its own control session" "$(sed -n 2p "$STUB_DIR/args")" "tick --session desk-1"
+
+  # A registration between control-status and tick (issue #1779): tick
+  # --session refuses (call 2), and the re-check (call 3) names another desk.
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '%s\n' "$THEIRS" > "$STUB_DIR/status-3"
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
+  : > "$STUB_DIR/refuse-2"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check "[$SH] replaced between the calls: tick refuses, one replaced line" "$RC:$OUT" "0:desk-tick g1 replaced"
+  check "[$SH] replaced between the calls: confirmed with control-status" "$(sed -n 3p "$STUB_DIR/args")" "control-status --json"
+
+  # A refusal while this session is still the control session is an error,
+  # never a reason to stop.
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
+  : > "$STUB_DIR/refuse-2"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check_contains "[$SH] refused but still the desk: an error line" "$OUT" "desk-tick g1 error tick exit 4: human-queue: tick: this session is not"
+  check_absent "[$SH] refused but still the desk: never replaced" "$OUT" "replaced"
 
   treset
   printf '[{"id": "R-9", "kind": "review", "status": "open"}, {"id": "D-2", "kind": "decision", "status": "answered"}]\n' > "$STUB_DIR/tick-default"
@@ -396,10 +425,25 @@ desk-tick g2 replaced"
   check "[$SH] no --generation: exit 4" "$RC" "4"
   dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation 'g 1' --once
   check "[$SH] a generation with a space: exit 4" "$RC" "4"
-  for bad_cadence in 0 61 x 007 -5; do
+  for bad_cadence in 0 61 x 007 -5 15; do
     dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --cadence "$bad_cadence" --once
     check "[$SH] --cadence $bad_cadence: exit 4" "$RC" "4"
   done
+  # The cadence stays under the capture hook's live-desk bound (issue #1779):
+  # 15 minutes by default, or what desk/policy.json sets.
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '[]\n' > "$STUB_DIR/tick-default"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --cadence 15 --once
+  check_contains "[$SH] --cadence 15: names the live-desk bound" "$ERR" "shorter than the live-desk bound (15 min"
+  check "[$SH] --cadence 15: nothing was called" "$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)" "0"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --cadence 14 --once
+  check "[$SH] --cadence 14: under the default bound, ticks" "$RC:$OUT:$ERR" "0::"
+  printf '{"live_desk_max_tick_age_min": 30}\n' > "$TMP/policy30.json"
+  dtick env HUMAN_QUEUE_POLICY="$TMP/policy30.json" "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --cadence 20 --once
+  check "[$SH] --cadence 20 under a 30-minute policy: ticks" "$RC:$OUT:$ERR" "0::"
+  dtick env HUMAN_QUEUE_POLICY="$TMP/policy30.json" "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --cadence 30 --once
+  check_contains "[$SH] --cadence 30 under a 30-minute policy: refused" "$RC:$ERR" "4:desk-tick: --cadence must be shorter than the live-desk bound (30 min"
   dtick "$SH" "$BIN/desk-tick.sh" --help
   check "[$SH] --help: exit 0" "$RC" "0"
 done
@@ -430,10 +474,13 @@ SKILL=$(cat "$HQ_T_DESK_DIR/skill/SKILL.md")
 DECISIONS=$(cat "$HQ_T_DESK_DIR/skill/decisions.md")
 check "SKILL.md frontmatter names the skill desk" "$(sed -n '2p' "$HQ_T_DESK_DIR/skill/SKILL.md")" "name: desk"
 for needle in "register-control \"\$SID\"" 'desk-tick.sh' 'persistent: true' 'decisions.md' 'control-status --json' \
-              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781'; do
+              'CLAUDE_CODE_SESSION_ID' '#1780' '#1781' 'shorter than the live-desk bound' '--cadence <N> --once'; do
   check_contains "SKILL.md: $needle" "$SKILL" "$needle"
 done
-for needle in 'set-open' 'set-resolve "<the reply>" --set <set_id> --json' 'human-queue: D-<k> answered' \
+# The reply reaches set-resolve through a quoted here-document, never inside
+# the command's own quotes (an operator's `$(...)` must not run).
+RESOLVE_LINE="set-resolve \"\$(cat \"\$REPLY_FILE\")\" --set <set_id> --json"
+for needle in 'set-open' "$RESOLVE_LINE" "<<'DESK_REPLY'" 'human-queue: D-<k> answered' \
               'wake-target.sh' 'wake D-43 --result sent' '(Recommended)' 'SendMessage'; do
   check_contains "decisions.md: $needle" "$DECISIONS" "$needle"
 done

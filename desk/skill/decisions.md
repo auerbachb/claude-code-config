@@ -47,13 +47,21 @@ Build one reply from the operator's choices, one line per answered item, in set 
 - an "Other" text → `<n>: <the text as typed>`
 - an item left unanswered → no line
 
-Then resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's):
+Then resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's).
+
+**The reply never goes into the command line itself.** It holds the operator's own words, and an "Other" text or a typed reply can contain `"`, `$(…)`, or backticks that a double-quoted argument would break on or run. Write it through a quoted here-document (no expansion of any kind happens inside one), then pass the file's contents:
 
 <!-- test-anchor: desk-resolve -->
 
 ```bash
-"$HQ" set-resolve "<the reply>" --set <set_id> --json
+REPLY_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-reply.XXXXXX")
+cat > "$REPLY_FILE" <<'DESK_REPLY'
+<the reply, verbatim>
+DESK_REPLY
+"$HQ" set-resolve "$(cat "$REPLY_FILE")" --set <set_id> --json; rc=$?; rm -f "$REPLY_FILE"; echo "exit=$rc"
 ```
+
+The reply goes between the two delimiter lines exactly as built or typed, with nothing escaped. If it contains a line that is exactly `DESK_REPLY`, pick another delimiter for both lines.
 
 - Exit 0 → `{"set_id": 12, "answers": [{"n": 1, "id": "D-43", "answer": "Ship now", "changed": true, "session": "…"}, …]}`. The answers are written, all in one transaction, through the same answer transaction as `human-queue.sh answer` (one `answered` event each). Go to "Waking the asking threads".
 - Exit 4 → nothing was written. Show its one stderr line and ask again **only** for the item it names (a one-question menu, same number and id).
@@ -62,19 +70,19 @@ Then resolve it against **this** set (always pass `--set`: the default is the ne
 
 ## Typed replies
 
-The operator may type instead of clicking, at any time: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Pass the message **verbatim** as the reply, against the latest set this session opened:
+The operator may type instead of clicking, at any time: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Pass the message **verbatim** as the reply, against the latest set this session opened, through the same here-document as above (never inside the command's quotes):
 
 ```bash
-"$HQ" set-resolve "<the operator's message>" --set <latest set_id> --json
+REPLY_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-reply.XXXXXX")
+cat > "$REPLY_FILE" <<'DESK_REPLY'
+<the operator's message, verbatim>
+DESK_REPLY
+"$HQ" set-resolve "$(cat "$REPLY_FILE")" --set <latest set_id> --json; rc=$?; rm -f "$REPLY_FILE"; echo "exit=$rc"
 ```
 
 `set-resolve` itself accepts numbers and ids (an id must be in that set), keeps commas and line breaks inside an answer, and refuses the whole reply when any pair is wrong. Handle its exits as above.
 
-One case goes to `answer` instead: an id that is in no set this session opened (a held item, or one from before this desk started). Answer it alone, then wake its thread the same way (the `get` JSON's `session_id` is its `session`):
-
-```bash
-"$HQ" answer D-45 "<the answer>" && "$HQ" get D-45 --json
-```
+An id that is in no set this session opened (a held item, or one from before this desk started) gets a set of its own, so its answer comes back with `changed` and `session` like any other and the wake-up rule below applies unchanged: `"$HQ" set-open D-45 --json`, then resolve that pair (`D-45: <the answer>`) against the new set id with the here-document above. A reply that mixes such an id with pairs for the latest set is refused whole (`D-45 is not in set 12`, nothing written): split it, resolving the latest set's pairs there and each other id in its own set.
 
 ## Waking the asking threads
 

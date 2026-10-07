@@ -50,12 +50,12 @@ done
 
 - `HQ` is `human-queue.sh` with the store's URL found the way the capture hook finds it (the app's Bash and Monitor do not source your shell profile). It never prints the URL. Exit **7** from any call means the store is unreachable.
 - `SID` is this session's id **as the capture hook sees it** (the hook input's `session_id`). `${CLAUDE_SESSION_ID}` is the skill's own substitution when the harness provides it; `CLAUDE_CODE_SESSION_ID` is the same id from the environment. Never use `CLAUDE_CODE_HOST_SESSION_ID` (the app's `local_…` id) here: the hook would not recognise it, and would deny the desk's own menus.
-- `SESSION_STATE_SH` empty → `DEGRADED: session-state.sh not found (checked both paths) — the desk's Monitor identity is not recorded, continuing without it`. Keep the task id and generation in this conversation instead.
+- `SESSION_STATE_SH` empty → `DEGRADED: session-state.sh not found (checked both paths) — the desk's Monitor identity is not recorded, continuing without it`. Keep the task id and generation in this conversation instead, and skip every `"$SESSION_STATE_SH"` call below (steps 4 and 7, the `replaced` event, the end-of-turn gate's step 3): with it empty, the call would run `--get-json` or `--set` as a command and fail.
 
 ## Start: `/desk [--cadence Nm]`
 
 1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
-2. **Cadence.** `--cadence Nm`, a whole number of minutes from 1 to 60; default 5. Anything else → one line naming the range, and stop.
+2. **Cadence.** `--cadence Nm`, a whole number of minutes, default 5, and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
 3. **Migrate**, then **register** this session:
 
    <!-- test-anchor: desk-start -->
@@ -67,17 +67,17 @@ done
    - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql`).
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
-4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk`. When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
+4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
 5. **Tick once, inline**, with a new generation. This stamps the tick time, which is what makes the desk live from this moment:
 
    <!-- test-anchor: desk-first-tick -->
 
    ```bash
    GEN="desk-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-   "$DESK/bin/desk-tick.sh" --session "$SID" --generation "$GEN" --once; echo "GEN=$GEN"
+   "$DESK/bin/desk-tick.sh" --session "$SID" --generation "$GEN" --cadence <N> --once; echo "GEN=$GEN"
    ```
 
-   An `error` line → the same "not started" report as step 3, and stop.
+   An `error` line → the same "not started" report as step 3, and stop. Exit 4 → the cadence (or another argument) was refused: report its one stderr line as "not started", and stop. Nothing is armed.
 6. **Arm the Monitor** with `persistent: true`, description `Desk tick`, and the longest `timeout_ms` the tool allows. Its command, with `DESK`, `SID`, `GEN`, and the cadence written in literally:
 
    ```bash
@@ -92,6 +92,7 @@ done
    ```
 
    - Arming failed (no task id) → `Desk not started: the Monitor did not arm.` Leave `.desk` unwritten.
+   - `SESSION_STATE_SH` empty (the prelude's DEGRADED line) → skip this write and keep `TASK_ID`, `GEN`, and the cadence in this conversation. That is the degraded mode, not a failure: the desk starts.
    - Arming worked but this write failed → `TaskStop` the task id you hold now, then report the desk as not started. If that `TaskStop` also fails, name the task id in the message so the operator can stop it.
 8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.`
 
@@ -102,8 +103,8 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 | Line | Do |
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids |
-| `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null`, say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
-| `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; after 15 min of no ticks, worker threads show their own menus again.` The loop keeps going |
+| `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
+| `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
 | The Monitor exited or expired | Re-arm: steps 5–7 with a new generation (no new registration; `register-control` is only for start) |
 
@@ -125,7 +126,7 @@ A message that starts with an item number or an id followed by a colon is a repl
 
 1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
 2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
-3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`.
+3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
 4. **Output.** Say something only for a blocker, a failed wake-up, or a menu the operator must answer — never a routine "still watching".
 
 If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.

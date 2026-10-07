@@ -21,7 +21,9 @@
 #        wake-failed); each worker's pending-for returns its own answer
 #   4.2  register-control + desk-tick.sh --once make the desk live
 #        (control-status: this session, a fresh tick); a second desk
-#        registering makes the first loop print `replaced`
+#        registering makes the first loop print `replaced`; `tick --session`
+#        as the replaced desk reads nothing, moves no watermark, and stamps
+#        no tick_at, so the new desk's tick still reports what came in
 #   4.3  replies by id (`D-<n>: B`) resolve through set-resolve; an id not in
 #        the set, or one item by number and by id, writes nothing
 #   4.4  wake records woken / wake-failed with its note, changes no item
@@ -206,6 +208,23 @@ check_jq "the id resolves to its number in the set" \
 # --- 4.2: a second desk replaces the first ----------------------------------
 hq bash register-control desk-2
 check "a second desk registers" "$OUT" "control session desk-2 (replaces desk-1)"
+# The replaced desk's tick, as if its control-status had run just before the
+# registration: refused inside the tick's transaction, nothing consumed.
+D5=$(add_decision issue-906 worker-a "Cut the release today?" "Now" "Monday")
+WM0=$(sql_in "SELECT value FROM state WHERE key = 'tick_watermark'")
+hq bash tick --session desk-1
+check "tick --session as the replaced desk: exit 4" "$RC" "4"
+check_contains "tick --session as the replaced desk: says why" "$ERR" "not the registered control session"
+check "tick --session as the replaced desk: prints nothing" "$OUT" ""
+check "tick --session as the replaced desk: the watermark is unmoved" \
+  "$(sql_in "SELECT value FROM state WHERE key = 'tick_watermark'")" "$WM0"
+check "tick --session as the replaced desk: no tick_at stamped" \
+  "$(sql_in "SELECT count(*) FROM state WHERE key = 'tick_at'")" "0"
+hq bash tick --session
+check "tick --session with no value: exit 4" "$RC" "4"
+hq "$OLD_BASH" tick --session desk-2
+check "tick --session as the control session: exit 0" "$RC" "0"
+check_jq "the new desk's tick reports what the refused tick left" "[.[].id] | any(. == \"$D5\")" "true"
 desk --session desk-1 --generation g1 --once
 check "the first desk's loop sees it was replaced" "$RC:$OUT" "0:desk-tick g1 replaced"
 

@@ -6,6 +6,8 @@
 
 # shellcheck source=../lib/items.sh
 . "$HQ_BIN_DIR/lib/items.sh"
+# shellcheck source=../lib/secrets.sh
+. "$HQ_BIN_DIR/lib/secrets.sh"
 # shellcheck source=../lib/lifecycle.sh
 . "$HQ_BIN_DIR/lib/lifecycle.sh"
 
@@ -14,7 +16,16 @@ cmd_usage() {
 human-queue.sh tick — the items new or changed since the last tick.
 
 USAGE
-  human-queue.sh tick
+  human-queue.sh tick [--session SESSION]
+
+ARGUMENTS
+  --session SESSION  tick only as the registered control session (issue
+                     #1779): checked inside the tick's own transaction,
+                     holding register-control's lock, so a desk that another
+                     session has just replaced can never consume the change
+                     feed. When SESSION is not the control session, nothing
+                     is read, the watermark is not moved, tick_at is not
+                     stamped, and the exit is 4. Without it, any caller ticks.
 
 OUTPUT
   One JSON array of item objects, the same shape as `list --json`, in list
@@ -50,7 +61,10 @@ EXIT CODES
   0  ok (including when nothing changed)
   1  unexpected database failure (for example the store is not migrated:
      run human-queue.sh migrate)
-  4  a stray argument (before any connection attempt)
+  4  a stray argument or a bad --session (before any connection attempt);
+     --session names a session that is not the registered control session
+     (after connecting, nothing read or written)
+  5  the --session value looks like a secret (before any connection attempt)
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
 }
@@ -62,10 +76,26 @@ EOF
 # committed. `prev` reads the old watermark before `mark` replaces it (a
 # statement never sees its own writes). `stamp` records when this tick read,
 # a different row of the same table, for control-status (issue #1755).
+#
+# hq__tick_sql GUARD — GUARD 1 (tick --session) first takes register-control's
+# own advisory lock, after the tick lock (register-control never takes the
+# tick lock, so the order cannot deadlock), then compares control_session with
+# :'hq_session'. Holding that lock until commit, no registration can land
+# between the check and the read: either it committed before (the check sees
+# it) or it waits for this tick to commit (issue #1779).
 hq__tick_sql() {
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:tick:' || :'hq_schema', 0)) AS hq_locked \gset
+SQL
+  if [ "$1" -eq 1 ]; then
+    cat <<'SQL'
+SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_control_locked \gset
+SELECT coalesce((SELECT value FROM state WHERE key = 'control_session'), '') = :'hq_session' AS hq_ok \gset
+\if :hq_ok
+SQL
+  fi
+  cat <<'SQL'
 WITH prev AS (
   SELECT value::pg_snapshot AS snap FROM state WHERE key = 'tick_watermark'
 ), mark AS (
@@ -85,21 +115,47 @@ SQL
  WHERE NOT EXISTS (SELECT 1 FROM prev)
     OR NOT pg_visible_in_snapshot(i.change_xid, (SELECT snap FROM prev));
 SQL
+  if [ "$1" -eq 1 ]; then
+    cat <<'SQL'
+\else
+SELECT '!this session is not the registered control session; nothing was read and the watermark was not moved';
+\endif
+SQL
+  fi
 }
 
 cmd_run() {
-  local errf out rc
-  if [ "$#" -gt 0 ]; then
-    hq_die_validation "tick: unknown $(hq_flag_name "$1") (run human-queue.sh tick --help)"
+  local errf out rc session="" guard=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        cmd_usage
+        exit 0
+        ;;
+      --session)
+        if [ "$guard" -eq 1 ]; then hq_die_validation "tick: --session given more than once"; fi
+        if [ "$#" -lt 2 ]; then hq_die_validation "tick: --session needs a value"; fi
+        guard=1
+        session="$2"
+        shift 2
+        ;;
+      *) hq_die_validation "tick: unknown $(hq_flag_name "$1") (run human-queue.sh tick --help)" ;;
+    esac
+  done
+  if [ "$guard" -eq 1 ]; then
+    hq_check_text "tick: the session id" "$session" 200
+    # The session id reaches psql's argv: a secret-shaped one stops here.
+    hq_refuse_secret "tick: the session id" "$session"
   fi
 
   hq_db_connect
   hq_mktemp errf
   rc=0
-  out=$(hq__tick_sql | hq_db_script -At 2>"$errf") || rc=$?
+  out=$(hq__tick_sql "$guard" | hq_db_script -At -v "hq_session=$session" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_fail_unmigrated "$rc" "$errf" "tick: the watermark was not moved" 'change_xid'
   fi
+  hq_problem_check tick "$out"
   if [ -z "$out" ]; then
     hq_die_error "tick: the store returned nothing"
   fi

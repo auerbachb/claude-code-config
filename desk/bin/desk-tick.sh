@@ -12,7 +12,12 @@
 #   --generation GEN   the Monitor generation the skill recorded; every line
 #                      carries it so a line from a superseded loop is ignored
 #                      (letters, digits, and - _ . : only, <= 80 characters)
-#   --cadence MIN      minutes between ticks, 1 to 60 (default 5)
+#   --cadence MIN      minutes between ticks, 1 to 60 (default 5), and
+#                      shorter than the capture hook's live-desk bound (15
+#                      unless desk/policy.json sets live_desk_max_tick_age_min;
+#                      read with the hook's own parser): a desk that ticks less
+#                      often goes stale between ticks, and worker menus stop
+#                      being queued
 #   --once             one cycle now, no sleep (tests, and a manual tick)
 #
 # BEHAVIOR
@@ -21,12 +26,17 @@
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
 #        never both tick, because each tick consumes the change feed.
-#     2. `tick`. It stamps tick_at, which is what keeps the desk live for
-#        the capture hook, and prints the items new or changed since the last
-#        tick. When any of them is an open Decision, print
+#     2. `tick --session SESSION`. It stamps tick_at, which is what keeps the
+#        desk live for the capture hook, and prints the items new or changed
+#        since the last tick. When any of them is an open Decision, print
 #        `desk-tick GEN new D-43 D-44` (ids in tick order: parked, impact,
 #        age). Anything else (Reviews, answers, acknowledgements) prints
-#        nothing.
+#        nothing. Step 1 alone cannot keep two desks apart: a registration
+#        can land between the two calls. `--session` repeats the check
+#        inside the tick's own transaction, under register-control's lock,
+#        and refuses (exit 4, nothing consumed) when SESSION is no longer the
+#        control session; the loop then confirms with `control-status` and
+#        prints `replaced` as in step 1.
 #   A failing call prints `desk-tick GEN error <subcommand> exit <code>: <the
 #   CLI's one stderr line>` once, when the loop goes from working to failing,
 #   and `desk-tick GEN recovered` once when it works again, so an outage is
@@ -38,11 +48,12 @@
 # ENVIRONMENT
 #   HUMAN_QUEUE_TICK_SECONDS  seconds between ticks, overriding --cadence
 #                             (tests)
+#   HUMAN_QUEUE_POLICY        the policy file, as the capture hook reads it
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
 #
 # EXIT CODES
 #   0  replaced by another control session, or --once finished
-#   4  usage error
+#   4  usage error, including a cadence at or past the live-desk bound
 #   (the loop itself never ends on a store failure; the Monitor's own expiry
 #   or TaskStop ends it)
 #
@@ -69,6 +80,7 @@ while [ -L "$dt_self" ]; do
 done
 dt_bin=$(cd -P "$(dirname "$dt_self")" && pwd) || exit 1
 dt_cli="$dt_bin/desk-cli.sh"
+dt_capture="$(dirname "$dt_bin")/hooks/capture.py"
 
 dt_session=""
 dt_gen=""
@@ -126,6 +138,26 @@ fi
 if [ -z "$dt_py" ]; then
   printf 'desk-tick: python3 is not installed\n' >&2
   exit 1
+fi
+
+# The live-desk bound in minutes, from the capture hook's own policy parser
+# (one parser, not two). Unreadable or missing hook: its documented default.
+dt_live=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'LIVE'
+import importlib.util
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location("hq_capture", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sys.stdout.write(str(mod.policy_minutes(mod.Hook(time.monotonic()))))
+LIVE
+) || dt_live=""
+case "$dt_live" in
+  ''|*[!0-9]*) dt_live=15 ;;
+esac
+if [ "$((10#$dt_cadence))" -ge "$dt_live" ]; then
+  dt_die "--cadence must be shorter than the live-desk bound ($dt_live min, desk/policy.json live_desk_max_tick_age_min), or the desk goes stale between ticks"
 fi
 
 dt_err=$(mktemp "${TMPDIR:-/tmp}/desk-tick.XXXXXX") || exit 1
@@ -205,7 +237,21 @@ dt_cycle() {
     exit 0
   fi
   rc=0
-  out=$("$dt_cli" tick 2>"$dt_err") || rc=$?
+  out=$("$dt_cli" tick --session "$dt_session" 2>"$dt_err") || rc=$?
+  if [ "$rc" -eq 4 ]; then
+    # Refused: most likely another desk registered after step 1. Confirm
+    # before stopping, so any other exit-4 cause stays an error line.
+    rc=0
+    out=$("$dt_cli" control-status --json 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      control=$(dt_control "$out") || control="$dt_session"
+      if [ "$control" != "$dt_session" ]; then
+        printf 'desk-tick %s replaced\n' "$dt_gen"
+        exit 0
+      fi
+    fi
+    rc=4
+  fi
   if [ "$rc" -ne 0 ]; then
     dt_fail tick "$rc"
     return 0
