@@ -1,6 +1,6 @@
 ---
 name: desk
-description: "Use when you want one place to answer every question your agent threads ask — the human queue's control session. Registers this session as the desk, ticks the queue on a persistent Monitor, shows waiting Decisions as numbered menus, writes the answers, and wakes each asking thread."
+description: "Use when you want one place to answer every question your agent threads ask — the human queue's control session. Registers this session as the desk, ticks the queue on a persistent Monitor, shows waiting Decisions as menus or long-form prompts, lets you discuss one, writes the answers, and wakes each asking thread."
 triggers:
   - desk
   - open the desk
@@ -20,10 +20,12 @@ The hook queues a question only while a desk is **live**: a registered control s
 | File | Owns | Issue |
 |------|------|-------|
 | `decisions.md` | Simple Decisions: sets, menus, replies, answers, wake-ups | #1779 |
-| *(next increment)* | Long-form and multipart Decisions, `discuss <n\|D-id>` | #1780 |
-| *(the one after)* | Wake-up retries, `answer-parked`, `show D-<n>`, `history` | #1781 |
+| `longform.md` | Long-form and multipart Decisions: one text prompt at a time, part by part, answers stored word for word | #1780 |
+| `discuss.md` | `discuss <n\|D-id>`: talk one item through with its context loaded, then answer it | #1780 |
+| `desk.jq` | The functions both views call: which Decisions fit a menu, multipart groups, the long-form and discussion cards | #1779, #1780 |
+| *(next increment)* | Wake-up retries, `answer-parked`, `show D-<n>`, `history` | #1781 |
 
-Until #1780 lands, a Decision that is not menu-shaped is held, not shown (see `decisions.md`). Until #1781 lands, a failed wake-up is recorded once and not retried; the answer is safe in the store either way.
+Until #1781 lands, a failed wake-up is recorded once and not retried; the answer is safe in the store either way.
 
 ## The prelude (every Bash call)
 
@@ -102,7 +104,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 
 | Line | Do |
 |------|----|
-| `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids |
+| `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
 | `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
 | `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
@@ -112,7 +114,12 @@ A quiet tick prints nothing, and the desk says nothing about it.
 
 ## Replies the operator types
 
-A message that starts with an item number or an id followed by a colon is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies". Any other message is ordinary conversation.
+Read each operator message in this order:
+
+1. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
+2. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, or a `D-<n>:` reply for another item.
+3. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".
+4. Any other message is ordinary conversation.
 
 ## End-of-turn gate (STOP before ending any desk turn)
 
@@ -127,7 +134,7 @@ A message that starts with an item number or an id followed by a colon is a repl
 1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
 2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
 3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
-4. **Output.** Say something only for a blocker, a failed wake-up, or a menu the operator must answer — never a routine "still watching".
+4. **Output.** Say something only for a blocker, a failed wake-up, a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line) — never a routine "still watching".
 
 If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.
 

@@ -63,9 +63,24 @@ hq_check_answer() {
     *) hq_die_validation "$1 is empty" ;;
   esac
   hq_refuse_control "$1" "$2" newline
-  if [ "${#2}" -gt "$HQ_ANSWER_MAX" ]; then
+  if hq__answer_too_long "$2"; then
     hq_die_validation "$1 is longer than $HQ_ANSWER_MAX characters"
   fi
+}
+
+# hq__answer_too_long TEXT — true when TEXT holds more than HQ_ANSWER_MAX
+# characters, read as UTF-8 whatever the locale. ${#} counts bytes in a C
+# locale, and macOS's /bin/bash 3.2 does so with no locale set, which would
+# refuse a 1500-character Japanese answer (4500 bytes). Every byte that is not
+# a UTF-8 continuation byte (0x80-0xBF) starts a character; text no longer
+# than the limit in bytes cannot be too long in characters, so it skips the
+# count.
+hq__answer_too_long() {
+  local LC_ALL=C hq__n
+  [ "${#1}" -gt "$HQ_ANSWER_MAX" ] || return 1
+  hq__n=$(printf '%s' "$1" | tr -d '\200-\277' | wc -c)
+  hq__n=$((hq__n))
+  [ "$hq__n" -gt "$HQ_ANSWER_MAX" ]
 }
 
 hq_require_kind() {
@@ -209,8 +224,9 @@ SQL
 #      `answered` (which clears an earlier acknowledgement), and one
 #      `answered` event per item that changed. Re-sending the answer an item
 #      already holds changes nothing and records nothing.
-# Output: `answer` prints the id; `set-resolve` prints one line per pair, or
-# one JSON object with --json.
+# Output: `answer` prints the id, or with --json one object {"id", "answer",
+# "changed", "session"}; `set-resolve` prints one line per pair, or one JSON
+# object with --json.
 hq_sql_answer() {
   local mode="$1" n="$2" json="$3" input rows note
   input=$(hq__sql_answer_input "$mode" "$n")
@@ -302,7 +318,14 @@ SQL
   RETURNING item_id
 )
 SQL
-  if [ "$mode" = id ]; then
+  if [ "$mode" = id ] && [ "$json" -eq 1 ]; then
+    # `answer --json` (issue #1780): the fields the desk's wake rule needs.
+    cat <<'SQL'
+SELECT jsonb_build_object('id', c.id, 'answer', c.answer,
+                          'changed', c.changed, 'session', c.session)
+  FROM c;
+SQL
+  elif [ "$mode" = id ]; then
     printf '%s\n' "SELECT c.id FROM c;"
   elif [ "$json" -eq 1 ]; then
     cat <<'SQL'

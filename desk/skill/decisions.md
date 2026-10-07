@@ -4,19 +4,17 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
 
 ## Showing items
 
-1. **Read the items.** `"$HQ" list --kind decision --status open --json` prints every open Decision, already in the set order the design asks for: parked first, then impact, then age (`desk/DESIGN.md` 4.2.5). For a tick event, keep only the ids the event named; for the start backlog, keep them all. An id the list no longer has was answered or closed in the meantime: drop it.
-2. **Split simple from held.** A Decision is **simple** when it has 2 to 4 options and its declared cost (if any) is not in hours or days. Only simple ones render here. The rest are **held** for the long-form view (#1780): no options, one option, more than four, or a cost such as `2h` or `half a day`. Held items are not lost: they stay open in the store, and the operator can answer one by typing `D-<n>: <answer>` (see "Typed replies").
+1. **Read the items.** `"$HQ" list --kind decision --status open --json` prints every open Decision, already in the set order the design asks for: parked first, then impact, then age (`desk/DESIGN.md` 4.2.5). For a tick event, keep only the ids the event named (a named long-form part brings the rest of its open group: `longform.md`, "What is long-form"); for the start backlog, keep them all. An id the list no longer has was answered or closed in the meantime: drop it.
+2. **Split simple from long-form.** A Decision is **simple** when it has 2 to 4 options and its declared cost (if any) is not in hours, days, or weeks. Only simple ones render here, as menus. The rest are **long-form** (`longform.md`): no options, one option, more than four, or a cost such as `2h`, `1h30`, or `half a day`. They come one at a time as text prompts, grouped into multipart items. The predicate is `desk_split` in `desk.jq`, shared with `longform.md`:
 
    <!-- test-anchor: desk-split -->
 
    ```bash
-   "$HQ" list --kind decision --status open --json | jq -c --arg ids "<the event's ids, or empty for all>" '
-     ($ids | split(" ") | map(select(. != ""))) as $want
-     | [ .[] | select(($want | length) == 0 or (.id as $i | $want | index($i))) ]
-     | def long: (.cost // "") | test("[0-9] *h\\b|hours?|hrs?\\b|days?"; "i");
-       { simple: [ .[] | select((.options | length) >= 2 and (.options | length) <= 4 and (long | not)) | .id ],
-         held:   [ .[] | select((.options | length) < 2 or (.options | length) > 4 or long) | .id ] }'
+   ITEMS=$("$HQ" list --kind decision --status open --json); rc=$?
+   if [ "$rc" -eq 0 ]; then printf '%s\n' "$ITEMS" | jq -c -L "$DESK/skill" --arg ids "<the event's ids, or empty for all>" 'include "desk"; desk_split($ids)'; else echo "exit=$rc"; fi
    ```
+
+   It prints `{"simple": ["D-43", "D-44"], "longform": [["D-45"], ["D-47", "D-48"]]}`: the simple ids in list order, and the long-form ids as groups (one array per multipart item). `list` runs on its own first so its exit status is not lost in the pipe: `exit=7` means the store is unreachable (say so in one line and show this batch after the next `recovered` event), any other `exit=<n>` is the CLI's one stderr line to report.
 
 3. **Open and render one set at a time, up to four items each.** Four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the simple ids in order, four at a time. Open a set for the **next chunk only**:
 
@@ -25,7 +23,7 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
    ```
 
    It prints `{"set_id": 12, "items": [{"n": 1, "id": "D-43"}, {"n": 2, "id": "D-44"}]}` and records one `shown` event per item. Numbering starts at 1 in every set. Keep the set id: every reply to this menu names it. Render that set at once as one AskUserQuestion call ("The menu" below). Open the following chunk's set only after the operator has answered or dismissed this menu. Never open every chunk up front: the latest set this session opened must always be the one whose menu is on screen, because typed numbers (`2: B`) resolve against it ("Typed replies").
-4. **Held items** get one line after the menus, never a menu: `Held for the long-form view (#1780): D-45, D-47 — answer by typing "D-45: …".` Say it once per item, not every tick.
+4. **Long-form groups come after the menus**, never as a menu: once this batch's last set is answered or left open, load `longform.md` and follow "Presenting a group" for the `longform` groups, one at a time. A batch with no simple items goes there at once.
 
 ## The menu
 
@@ -45,9 +43,10 @@ Build one reply from the operator's choices, one line per answered item, in set 
 - a chosen label `<letter>. …` → `<n>: <letter>`
 - several chosen labels (a multi-select item) → `<n>: <option text> | <option text>`: the chosen options' full texts in letter order, joined by ` | `. `set-resolve` stores that as the free-text answer, which is what the asking thread reads; a single letter could name only one option
 - an "Other" text → `<n>: <the text as typed>`
+- an "Other" text that is `discuss`, `discuss <n>`, or `discuss D-<id>` → no line: it is not an answer. Resolve the rest of the reply, then load `discuss.md` for it (a bare `discuss` names this question's item)
 - an item left unanswered → no line
 
-Then resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's).
+When at least one line remains, resolve it against **this** set (always pass `--set`: the default is the newest set in the store, which may be another desk's). When none does (the only choice was a `discuss` text, or nothing was answered), skip `set-resolve`, which refuses an empty reply, and go straight to `discuss.md` (or, with no `discuss` either, treat the menu as dismissed, as "The menu" says).
 
 **The reply never goes into the command line itself.** It holds the operator's own words, and an "Other" text or a typed reply can contain `"`, `$(…)`, or backticks that a double-quoted argument would break on or run. Write it through a quoted here-document (no expansion of any kind happens inside one), then pass the file's contents:
 
@@ -82,7 +81,9 @@ DESK_REPLY
 
 `set-resolve` itself accepts numbers and ids (an id must be in that set), keeps commas and line breaks inside an answer, and refuses the whole reply when any pair is wrong. Handle its exits as above.
 
-An id that is in no set this session opened (a held item, or one from before this desk started) gets a set of its own, so its answer comes back with `changed` and `session` like any other and the wake-up rule below applies unchanged: `"$HQ" set-open D-45 --json`, then resolve that pair (`D-45: <the answer>`) against the new set id with the here-document above. A reply that mixes such an id with pairs for the latest set is refused whole (`D-45 is not in set 12`, nothing written): split it, resolving the latest set's pairs there and each other id in its own set.
+A reply that is a single `D-<n>: …` pair for a **long-form** item goes to `longform.md` instead ("A typed `D-<n>: …` for a long-form item"): `set-resolve` would split a long answer at a later line that starts `2:`.
+
+Any other id that is not in the latest set this session opened (one from before this desk started, from an earlier set, or left open earlier) gets a set of its own, so its answer comes back with `changed` and `session` like any other and the wake-up rule below applies unchanged: `"$HQ" set-open D-45 --json`, then resolve that pair (`D-45: <the answer>`) against the new set id with the here-document above. A reply that mixes such an id with pairs for the latest set is refused whole (`D-45 is not in set 12`, nothing written): split it, resolving the latest set's pairs there and each other id in its own set.
 
 ## Waking the asking threads
 
