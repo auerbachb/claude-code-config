@@ -107,12 +107,14 @@ For each answer with `"changed": true` (an unchanged answer was delivered before
    <!-- test-anchor: desk-wake-record -->
 
    ```bash
-   "$HQ" wake D-43 --result sent --note "SendMessage to local_…: delivered"
-   "$HQ" wake D-43 --result failed --note "no running session"
+   "$HQ" wake D-43 --result sent --note "SendMessage to local_…: delivered" --json
+   "$HQ" wake D-43 --result failed --note "no running session" --json
    ```
 
    `sent` only when the tool's result confirms the message reached the session (`delivered`, `queued`, or held for that session's approval: say which in the note). An error, a refusal, or no result → `failed`, with the tool's reason in one line (at most 200 characters). Never report a wake-up the tool did not confirm. A note that quotes a tool's own words goes through the same quoted here-document as a reply (`--note "$(cat "$NOTE_FILE")"`), never inside the command's quotes.
 
-No retry in this increment: the answer is already durable, and a thread that wakes later reads it from `pending-for`. Retries and `answer-parked` are #1781.
+   It prints `{"id", "result", "failures", "retries_left", "status", "parked"}`. `"parked": true` (an answer with no return address parks on its first failure) → `wakeups.md`, "The parked notice". Exit 7 or 1 → `wakeups.md`, "A wake-up the store did not record".
 
-**What the operator sees.** One line for the whole reply: `Answered D-43, D-44; both threads woken.` A failed wake-up names it with its reason: `Answered D-43, D-44; D-44's thread is not running — the answer waits in the store.` (exit 3), or `… D-44's thread is running but has no messaging address — it reads the answer from the store when it next checks.` (exit 5).
+**Retries.** A failed wake-up is retried on each of the next three ticks (`wakeups.md`). The record in step 3 is what counts the attempts, so it is made every time. When the last retry fails too, the answer is parked for the next thread on that PR or issue and shown once. Either way the answer is already durable, and a thread that wakes later reads it from `pending-for`.
+
+**What the operator sees.** One line for the whole reply: `Answered D-43, D-44; both threads woken.` A failed wake-up names it with its reason: `Answered D-43, D-44; D-44's thread is not running — retrying at the next ticks; the answer is safe in the store.` (exit 3), or `… D-44's thread is running but has no messaging address — retrying at the next ticks; it reads the answer from the store when it next checks.` (exit 5).

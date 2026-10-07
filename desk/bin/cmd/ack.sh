@@ -25,7 +25,9 @@ ARGUMENTS
                  read one.
 
 BEHAVIOR
-  An `answered` item becomes `acknowledged`, is no longer parked, and leaves
+  An `answered` item, or an `answer-parked` one (its asking thread had ended,
+  so the next thread on that PR or issue reads it: pending-for --repo
+  --key), becomes `acknowledged`, is no longer parked, and leaves
   pending-for; one `acknowledged` event is recorded, in one transaction.
   Acknowledging an item that is already acknowledged changes nothing and
   records nothing. A new answer returns it to `answered`.
@@ -59,7 +61,7 @@ SELECT :'hq_problem' = '' AS hq_ok \gset
 \if :hq_ok
 WITH upd AS (
   UPDATE items SET status = 'acknowledged', parked = false
-   WHERE id = :'hq_id' AND status = 'answered'
+   WHERE id = :'hq_id' AND status IN ('answered', 'answer-parked')
   RETURNING id
 ), ev AS (
   INSERT INTO events (item_id, kind) SELECT id, 'acknowledged' FROM upd

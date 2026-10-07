@@ -32,6 +32,7 @@ While a prompt waits, read the operator's next message in this order:
 
 1. **`skip`** or **`next`** (alone, any case) → nothing is stored and the item stays open: one line, `D-48 left open — type "D-48: …" any time.` Then the next part. **`skip all`** leaves this part and every remaining long-form item open for now.
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md` (a bare `discuss` names this part).
+   **`show D-<n>`** or **`history`** as the whole message → `history.md`, then print this part's card again. Nothing is stored.
 3. **A reply for another item**: the message starts with `D-<n>:` naming a different item → handle it as a typed reply (`decisions.md`, "Typed replies"; a long-form one goes through "Storing an answer" below), then print this part's card again.
 4. **This item, addressed**: the message starts with this part's own `D-<n>:` → the answer is the text after that colon.
 5. **Anything else is the answer**: the whole message, as typed. A long answer may hold numbered lines (`1: …`, `2: …`), commas, or quotes; they are part of the answer, never split into replies.
@@ -63,6 +64,8 @@ After its last part is answered, skipped, or found closed: one line naming what 
 ## Tick events while a prompt waits
 
 A `desk-tick <GEN> new …` event that arrives while a long-form prompt waits is held, not shown: a menu would land on top of a half-written answer. Keep its ids in this conversation and say nothing; once this group ends (or after `skip all`), show them through `decisions.md`, "Showing items". An id already on screen or already held is not queued twice: a worker re-asking bumps the item, and the tick reports it again.
+
+A `desk-tick <GEN> retry …` event is handled at once (`wakeups.md`), because a retry shows nothing. A parked notice that it produces is held the same way and printed when the group ends.
 
 ## A typed `D-<n>: …` for a long-form item
 

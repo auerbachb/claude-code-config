@@ -83,7 +83,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `0` | ok |
 | `1` | unexpected failure, such as a migration's SQL error (its transaction is rolled back) |
 | `4` | validation or usage error: unknown subcommand, stray argument, invalid `HUMAN_QUEUE_SCHEMA`, invalid input, an item id that does not exist, or a write the item's state refuses (for example `ack` of an item with no answer) |
-| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session) |
+| `5` | secret refused: free text that looks like a credential is never stored (`add`, `bump --note`, `answer`, `flag --note`, `comment`, `set-resolve`, `state set`, `register-control`), nor sent to `psql` as a lookup value (`state get`'s key, `pending-for`'s session, repo, and key) |
 | `7` | database unset, unparseable, client missing, or unreachable |
 
 Exit 7 always arrives **within two seconds** with **exactly one line** on
@@ -116,8 +116,9 @@ full contract.
 | `add --kind K --repo O/N --key KEY --question TEXT [...]` | Writes an item and its `asked` event, then prints the new id alone. Optional: `--session`, up to three `--context`, up to 26 `--option`, `--default`, `--default-at`, `--impact`, `--parked`, `--cost`, `--focus` |
 | `bump ID [--note TEXT]` | Records a `bumped` event and refreshes `updated_at` |
 | `get ID [--json]` | Prints one item |
-| `show ID [--json]` | Prints one item, then its events, oldest first |
-| `list [--kind K] [--status S] [--json]` | Prints matching items: parked first, then impact, then age |
+| `show ID [--json]` | Prints one item, then its events, oldest first: the item's whole sub-thread (`/desk`'s `show D-<n>`) |
+| `list [--kind K] [--status S] [--json]` | Prints matching items: parked first, then impact, then age. Statuses: `open`, `answered`, `acknowledged`, `reviewed`, `flagged`, `closed`, `answer-parked` |
+| `history [--date YYYY-MM-DD] [--json]` | Read-only: the Decisions answered on that America/New_York day (default today), once each, in answer order, whatever their status now |
 
 - **Validation.** `add` checks the required fields in the order kind, repo,
   key, question, and names the first one missing (exit 4). Every limit in the
@@ -169,12 +170,13 @@ full contract.
 | Subcommand | Takes | What it does | Event |
 |------------|-------|--------------|-------|
 | `answer ID ANSWER` | Decisions | Stores the answer and sets `answered`. A single letter naming one of the item's options stores that option's text; free text may span lines (at most 4000 characters, trimmed). The last answer wins and returns an acknowledged item to `answered` | `answered` (note `option B` for a letter) |
-| `ack ID [--answer TEXT]` | Decisions | The asking thread has read the answer: `answered` becomes `acknowledged` and the item is no longer parked. `--answer` acknowledges only if the stored answer is still TEXT | `acknowledged` |
-| `pending-for SESSION [--json]` | Decisions | Read-only: the answered, not yet acknowledged items whose return address is SESSION, oldest answer first | none |
+| `ack ID [--answer TEXT]` | Decisions | A thread has read the answer: `answered` or `answer-parked` becomes `acknowledged` and the item is no longer parked. `--answer` acknowledges only if the stored answer is still TEXT | `acknowledged` |
+| `pending-for [SESSION] [--repo O/N --key KEY] [--json]` | Decisions | Read-only: the answered or `answer-parked`, not yet acknowledged items whose return address is SESSION; with `--repo`/`--key`, the `answer-parked` items of that PR or issue, whoever asked them (the next thread on that work). Oldest answer first | none |
 | `review ID` | Reviews | Sets `reviewed` (also clears a flag) | `reviewed` |
 | `flag ID [--note TEXT]` | Reviews | Sets `flagged`; the note says what to follow up. Turning it into an issue is the desk's job | `flagged` |
 | `comment ID TEXT` | any item | A one-line note in the item's history; the item is unchanged | `commented` |
-| `wake ID --result sent\|failed [--note TEXT]` | answered Decisions | Records whether the desk woke the asking thread after an answer; the item is unchanged and `tick` does not report it again. Every call appends (each attempt is a fact); an item with no answer is refused | `woken` or `wake-failed` (note: the address and the tool's status, or the reason) |
+| `wake ID --result sent\|failed [--note TEXT] [--json]` | answered Decisions | Records whether the desk woke the asking thread after an answer. Every call appends (each attempt is a fact); an item with no answer is refused. The failure that uses up the third retry (or any failure with no return address) also sets `answer-parked`; otherwise the item is unchanged and `tick` does not report it again. `--json` prints `{id, result, failures, retries_left, status, parked}` | `woken` or `wake-failed` (note: the address and the tool's status, or the reason); `answer-parked` when it parks |
+| `wake-due [--min-age SECONDS] [--json]` | answered Decisions | Read-only: the answers whose last wake-up since their latest answer failed and that have a retry left (at most 3 after the first attempt), oldest failure first | none |
 | `feedback ID TAG` | any item | An interrupt-tuning tag: `not-important`, `should-have-defaulted`, `good-interrupt`, or any other hyphenated lowercase tag | `feedback` |
 
 - **One event per change.** Every write records exactly one event per item it
@@ -187,7 +189,9 @@ full contract.
 - **The worker loop.** A thread that asked with `add --session S` polls
   `pending-for S`, acts on each answer, then runs `ack ID --answer TEXT`. If
   the operator changed the answer in between, that `ack` exits 4 and the
-  thread reads it again.
+  thread reads it again. A thread that takes over a PR or issue whose asking
+  thread has ended reads the answers parked for it with `pending-for --repo
+  O/N --key KEY` and acknowledges them the same way.
 - **Concurrency.** Each write locks the item rows first and reads them again in
   the next statement, so concurrent calls never double-record. Several items
   are locked in id order, so multi-item writes cannot deadlock.
@@ -402,11 +406,12 @@ bash desk/tests/run.sh
   validate before connecting; `desk-cli.sh` finds the URL (environment, an
   owner-only config file, a literal profile export) and refuses the rest;
   `wake-target.sh` against a fixture registry (running, dead, terminal,
-  `.key` files ignored); `desk-tick.sh` against a stub CLI (new, quiet,
-  replaced, replaced between control-status and tick, one error per outage,
-  recovered, sleep first, a cadence at or past the live-desk bound); and the skill's
-  layout, including that its menu prefix is the hook's re-render prefix.
-  Same two shells.
+  `.key` files ignored); `desk-tick.sh` against a stub CLI (new, retry,
+  quiet, replaced, replaced between control-status and tick, one error per
+  outage, recovered, sleep first, a cadence at or past the live-desk bound);
+  the validation of `wake --json`, `wake-due`, `history`, and `pending-for
+  --repo/--key`; and the skill's layout, including that its menu prefix is
+  the hook's re-render prefix. Same two shells.
 - `desk.test.sh` is live under the same rules (one throwaway schema,
   `public` unchanged): two worker sessions' Decisions shown in one set as 1
   and 2, `1: A, 2: C` answered in one transaction with each asking session,
@@ -414,6 +419,9 @@ bash desk/tests/run.sh
   id, `wake` refusals, a second desk replacing the first (its
   `tick --session` reads nothing and moves no watermark), and `wake` on a
   store without migration 005.
+- `wakeups.test.sh` is live under the same rules: retries, `answer-parked`,
+  `show`, and `history` (see "Wake-up retries, `answer-parked`, `show`, and
+  `history`").
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
 
@@ -425,7 +433,7 @@ database, so the live suites skip there.
 `/desk` (`skill/SKILL.md`, published as `.claude/skills/desk`) is the control
 session: the one thread where questions render. Its first increment covers
 simple Decisions; long-form, multipart, and `discuss` are #1780, and wake-up
-retries, `answer-parked`, `show`, and `history` are #1781.
+retries, `answer-parked`, `show`, and `history` are #1781 (below).
 
 - **Start.** `migrate`, then `register-control` with the session id the
   capture hook sees (`$CLAUDE_CODE_SESSION_ID`, never the desktop app's
@@ -464,7 +472,7 @@ retries, `answer-parked`, `show`, and `history` are #1781.
   desk sends exactly `human-queue: D-<n> answered` with
   `SendMessage` (or the app's `send_message`) and records the outcome with
   `wake`. The thread reads the answer from `pending-for`; a thread that is
-  gone loses nothing.
+  gone loses nothing: the desk retries, then parks the answer (#1781).
 
 ## Long-form, multipart, and discuss (issue #1780)
 
@@ -505,6 +513,56 @@ deterministic parts live in one jq library, `skill/desk.jq`, which both
   `tests/longform.test.sh` (live, throwaway schema) stores a reply full of
   shell metacharacters through the skill's own here-document and compares it
   byte for byte.
+
+## Wake-up retries, `answer-parked`, `show`, and `history` (issue #1781)
+
+The desk's last part-1 increment (`skill/wakeups.md`, `skill/history.md`,
+migration `006_answer_parked.sql`). A dead thread loses nothing: its answer
+is retried, then parked for the next thread on that PR or issue.
+
+- **Retries.** A failed wake-up is retried on the next tick, up to three
+  times after the first attempt. The count is the `wake-failed` events since
+  the item's latest `answered` event, so there is no counter column and a new
+  answer starts afresh. Each cycle `desk-tick.sh` runs `wake-due --json`
+  after `tick` and prints `desk-tick G retry D-43 D-44`. The desk reads
+  `wake-due --json --min-age 30` again, so two queued events cannot retry one
+  answer twice, then wakes each answer as it does after an answer and
+  records the result with `wake --json`. A failing `wake-due` is one `error`
+  line per outage, and the tick's `new` line is still printed, because that
+  tick already moved the watermark.
+- **`answer-parked`.** The failure that uses up the third retry sets the
+  status `answer-parked` and records one `answer-parked` event (note `4
+  wake-ups failed`) in the same transaction, under the item's row lock. An
+  item with no return address parks on its first failure (`no return
+  address`), because there is nothing to retry. Only an `answered` item is
+  parked, so exactly one `wake` call returns `"parked": true`, and the desk
+  shows the parked answer once, from that result. The answer waits for the
+  next thread on that work: `pending-for --repo O/N --key KEY` lists it,
+  `pending-for SESSION` still lists it for its own thread, and `ack` accepts
+  it. Re-sending the answer it holds is a no-op; a different answer returns
+  it to `answered`, and the count starts again. Before 006 the store refuses
+  the status, so `wake` names `migrate` and records nothing (the desk runs
+  `migrate` at start).
+- **`show D-<n>`** is `show`: the item, then every event oldest first with
+  its note (asked, shown, answered, woken or wake-failed, answer-parked,
+  acknowledged). That is its whole sub-thread, because the store keeps no
+  transcripts.
+- **`history`** lists the Decisions with an `answered` event on one
+  America/New_York calendar day (default today on the database's clock),
+  once each at their latest answer that day, in answer order, whatever their
+  status now. `--date YYYY-MM-DD` picks another day.
+- **No state line.** The skill prints `show`'s and `history`'s output and
+  nothing else (DESIGN 4.1.4).
+- **Tests.** `tests/wakeups.test.sh` (live, throwaway schema; no wake-up is
+  sent, because the sessions are ids nobody has, resolved against a fixture
+  registry) covers test 5.1 through `desk-tick.sh --once` and the skill's
+  blocks: the answer is stored, the first failure and three retries are
+  recorded, and the item reaches `answer-parked` on tick 3, shown once. It
+  covers test 5.2 (two answers today, an answer at 23:30 ET yesterday left
+  out, `--date`), `show`, `pending-for --repo --key`, `ack`, the
+  no-return-address and new-answer cases, and a store without 006.
+  `tests/desk-offline.test.sh` covers the `retry` line and the new
+  validations against a stub CLI.
 
 ## Reviews (issue #1756)
 

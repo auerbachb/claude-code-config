@@ -47,9 +47,10 @@ BEHAVIOR
   The item's status becomes `answered`, and one `answered` event is recorded
   (its note is `option B` when the answer was given by letter), in one
   transaction. The last answer wins: answering again replaces the answer and
-  returns an acknowledged item to `answered`, so the asking thread sees the
-  new answer in pending-for. Sending the answer the item already holds
-  changes nothing and records nothing ("changed": false).
+  returns an acknowledged or answer-parked item to `answered`, so the asking
+  thread sees the new answer in pending-for (and the desk's wake-up count
+  starts again). Sending the answer the item already holds changes nothing
+  and records nothing ("changed": false).
 
 SECRETS
   The answer is checked for secret shapes before anything is sent; a match

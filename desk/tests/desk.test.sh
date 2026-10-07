@@ -30,8 +30,9 @@
 #        (tick does not report it again), refuses an unanswered Decision and
 #        an unknown id, and names `migrate` on a store without 005
 #   and  desk-cli.sh reaches the store with the URL from the environment;
-#        after the answers, desk-tick.sh prints nothing (answered items are
-#        not new open Decisions)
+#        after the answers, desk-tick.sh prints no `new` line (answered items
+#        are not new open Decisions), only the retry D-2's failed wake-up is
+#        due (issue #1781)
 # On macOS a share of the calls run under /bin/bash 3.2.
 set -uo pipefail
 
@@ -167,9 +168,10 @@ check_jq "5.1 worker-a reads its own answer" '[.[] | "\(.id)=\(.answer)"] | join
 hq bash pending-for worker-b --json
 check_jq "5.1 worker-b reads its own answer" '[.[] | "\(.id)=\(.answer)"] | join(",")' "D-2=ap-south-1"
 
-# Answered items are changes, but not new open Decisions: the loop is quiet.
+# Answered items are changes, but not new open Decisions: no `new` line. D-2's
+# failed wake-up is due a retry (issue #1781), so the loop prints only that.
 desk --session desk-1 --generation g1 --once
-check "after the answers the desk tick prints nothing" "$RC:$OUT:$ERR" "0::"
+check "after the answers the desk tick prints only D-2's retry" "$RC:$OUT:$ERR" "0:desk-tick g1 retry D-2:"
 # A wake event changes no item, so tick does not report it again.
 hq bash wake D-1 --result failed --note "second attempt"
 hq bash tick

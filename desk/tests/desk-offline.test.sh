@@ -23,14 +23,22 @@
 #                 unknown id, or a missing registry exits 3; local_ ids pass
 #                 through; the .key files are never read; usage errors exit 4
 #   desk-tick.sh  --once prints `desk-tick G new <ids>` for open Decisions
-#                 only (Reviews and answered items print nothing), prints
+#                 only (Reviews and answered items print nothing), then
+#                 `desk-tick G retry <ids>` for wake-due's answers (issue
+#                 #1781; a failing wake-due is an error line, and the
+#                 tick's new line is still printed), prints
 #                 `replaced` and exits 0 when another session is registered,
 #                 prints one `error` line per failure streak and one
 #                 `recovered` line, sleeps first, validates its arguments
+#   #1781 CLI     wake --json, wake-due --min-age, history --date, and
+#                 pending-for --repo/--key validate before connecting (exit 4,
+#                 a secret-shaped key 5, never echoed); valid calls reach the
+#                 database step
 #   skill         .claude/skills/desk is a relative symlink to desk/skill;
-#                 SKILL.md declares name: desk and routes to decisions.md;
-#                 the menu prefix decisions.md prescribes is the one the
-#                 capture hook recognises as a re-render
+#                 SKILL.md declares name: desk and routes to decisions.md,
+#                 wakeups.md, and history.md; the menu prefix decisions.md
+#                 prescribes is the one the capture hook recognises as a
+#                 re-render
 #
 # Cases run under `bash` and, when /bin/bash is 3.x (macOS), under /bin/bash.
 set -uo pipefail
@@ -137,6 +145,39 @@ for SH in $SHELLS; do
   check_absent "[$SH] the token is never echoed" "$OUT$ERR" "$FAKE_GH"
   expect_db "$SH" "wake D-1 --result sent" wake D-1 --result sent
   expect_db "$SH" "wake d-1 --result failed --note" wake d-1 --result failed --note "no running session"
+  # Issue #1781: --json, wake-due, history, pending-for --repo/--key.
+  expect_rc "$SH" 4 "wake with --json twice" "--json given more than once" wake D-1 --result sent --json --json
+  expect_db "$SH" "wake --json" wake D-1 --result failed --json
+
+  printf '== %s: wake-due, history, pending-for --repo/--key\n' "$SH"
+  for bad_age in x -1 86401 123456 ''; do
+    expect_rc "$SH" 4 "wake-due --min-age '$bad_age'" "--min-age must be a whole number" wake-due --min-age "$bad_age"
+  done
+  expect_rc "$SH" 4 "wake-due --min-age without a value" "--min-age needs a value" wake-due --min-age
+  expect_rc "$SH" 4 "wake-due --min-age twice" "--min-age given more than once" wake-due --min-age 1 --min-age 2
+  expect_rc "$SH" 4 "wake-due with a stray argument" "takes no arguments" wake-due D-1
+  expect_rc "$SH" 4 "wake-due with an unknown flag" "unknown option '--all'" wake-due --all
+  expect_db "$SH" "wake-due" wake-due
+  expect_db "$SH" "wake-due --min-age 60 --json" wake-due --min-age 60 --json
+  for bad_date in 2026-02-30 2026-13-01 26-10-07 2026-10-7 today 2026-10-07T00:00 ''; do
+    expect_rc "$SH" 4 "history --date '$bad_date'" "--date" history --date "$bad_date"
+  done
+  expect_rc "$SH" 4 "history --date without a value" "--date needs a value" history --date
+  expect_rc "$SH" 4 "history --date twice" "--date given more than once" history --date 2026-10-06 --date 2026-10-07
+  expect_rc "$SH" 4 "history with a stray argument" "takes no arguments" history today
+  expect_db "$SH" "history" history
+  expect_db "$SH" "history --date 2024-02-29 --json" history --date 2024-02-29 --json
+  expect_rc "$SH" 4 "pending-for --repo without --key" "--repo and --key go together" pending-for --repo a/b
+  expect_rc "$SH" 4 "pending-for --key without --repo" "--repo and --key go together" pending-for s --key issue-1
+  expect_rc "$SH" 4 "pending-for --repo without a slash" "--repo must be OWNER/NAME" pending-for --repo ab --key issue-1
+  expect_rc "$SH" 4 "pending-for --repo with a space" "--repo must be OWNER/NAME" pending-for --repo "a/b c" --key issue-1
+  expect_rc "$SH" 4 "pending-for a two-line --key" "must be a single line" pending-for --repo a/b --key $'issue-1\nx'
+  expect_rc "$SH" 4 "pending-for --key twice" "--key given more than once" pending-for --repo a/b --key k --key j
+  expect_rc "$SH" 4 "pending-for --repo needs a value" "--repo needs a value" pending-for --repo
+  expect_rc "$SH" 5 "pending-for with a token for a key" "--key looks like" pending-for --repo a/b --key "$FAKE_GH"
+  check_absent "[$SH] the pending-for key token is never echoed" "$OUT$ERR" "$FAKE_GH"
+  expect_db "$SH" "pending-for --repo --key" pending-for --repo a/b --key issue-1 --json
+  expect_db "$SH" "pending-for SESSION --repo --key" pending-for sess-a --repo a/b --key issue-1
 
   printf '== %s: set-resolve ids\n' "$SH"
   check "[$SH] parse D-43: B" "$(parse "$SH" "D-43: B")" "/D-43=B|"
@@ -158,6 +199,17 @@ case "$HELP" in
   *$'\n  wake '*) ok "human-queue.sh --help lists wake" ;;
   *) bad "human-queue.sh --help does not list wake" ;;
 esac
+for c in wake-due history; do
+  case "$HELP" in
+    *$'\n  '"$c "*) ok "human-queue.sh --help lists $c" ;;
+    *) bad "human-queue.sh --help does not list $c" ;;
+  esac
+  RC=0
+  OUT=$(env -u HUMAN_QUEUE_DATABASE_URL bash "$HQ_T_CLI" "$c" --help 2>&1) || RC=$?
+  check "$c --help is offline: exit 0" "$RC" "0"
+  check_contains "$c --help documents its usage" "$OUT" "human-queue.sh $c"
+  check_contains "$c --help documents exit codes" "$OUT" "EXIT CODES"
+done
 
 # ------------------------------------------------------------- desk-cli.sh
 printf '== desk-cli.sh\n'
@@ -370,13 +422,19 @@ case "$1" in
   tick)
     if [ -f "$STUB_DIR/tick-$n" ]; then cat "$STUB_DIR/tick-$n"; else cat "$STUB_DIR/tick-default"; fi
     ;;
+  wake-due)
+    if [ -f "$STUB_DIR/due-$n" ]; then cat "$STUB_DIR/due-$n"
+    elif [ -f "$STUB_DIR/due-default" ]; then cat "$STUB_DIR/due-default"
+    else echo '[]'; fi
+    ;;
 esac
 EOF
 chmod +x "$TSTUB"
-treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/args "$STUB_DIR"/fail-* "$STUB_DIR"/refuse-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-*; }
+treset() { rm -f "$STUB_DIR"/calls "$STUB_DIR"/args "$STUB_DIR"/fail-* "$STUB_DIR"/refuse-* "$STUB_DIR"/status-* "$STUB_DIR"/tick-* "$STUB_DIR"/due-*; }
 OURS='{"session": "desk-1", "last_tick_at": "2026-10-07T07:00:00Z", "tick_age_seconds": 1}'
 THEIRS='{"session": "desk-2", "last_tick_at": null, "tick_age_seconds": null}'
 MIXED='[{"id": "R-9", "kind": "review", "status": "open"}, {"id": "D-4", "kind": "decision", "status": "open"}, {"id": "D-2", "kind": "decision", "status": "answered"}, {"id": "D-7", "kind": "decision", "status": "open"}]'
+DUE='[{"id": "D-9", "session": "s9", "failures": 1, "retry": 1}, {"id": "D-2", "session": "s2", "failures": 3, "retry": 3}, {"id": "R-1"}, {"id": "D-x"}]'
 
 dtick() {
   RC=0
@@ -393,6 +451,40 @@ for SH in $SHELLS; do
   dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
   check "[$SH] --once: open Decisions only, in tick order" "$RC:$OUT" "0:desk-tick g1 new D-4 D-7"
   check "[$SH] --once: ticks as its own control session" "$(sed -n 2p "$STUB_DIR/args")" "tick --session desk-1"
+  check "[$SH] --once: then asks which answers are due a retry" "$(sed -n 3p "$STUB_DIR/args")" "wake-due --json"
+
+  # Retries (issue #1781): wake-due's Decision ids on a `retry` line, after
+  # the `new` line, in its order.
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
+  printf '%s\n' "$DUE" > "$STUB_DIR/due-default"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check "[$SH] --once: new, then retry" "$RC:$OUT" "0:desk-tick g1 new D-4 D-7
+desk-tick g1 retry D-9 D-2"
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '[]\n' > "$STUB_DIR/tick-default"
+  printf '%s\n' "$DUE" > "$STUB_DIR/due-default"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check "[$SH] --once: a retry alone" "$RC:$OUT:$ERR" "0:desk-tick g1 retry D-9 D-2:"
+  # wake-due fails after the tick moved the watermark: one error line, and
+  # the tick's `new` line is still printed.
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
+  : > "$STUB_DIR/fail-3"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check "[$SH] wake-due unreachable: an error line, then the tick's new line" "$RC:$OUT" \
+    "0:desk-tick g1 error wake-due exit 7: human-queue: database unreachable (stub)
+desk-tick g1 new D-4 D-7"
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '[]\n' > "$STUB_DIR/tick-default"
+  printf 'not json\n' > "$STUB_DIR/due-default"
+  dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check_contains "[$SH] unreadable wake-due output: an error line" "$OUT" "desk-tick g1 error wake-due exit 1"
+  check_absent "[$SH] unreadable wake-due output: no retry line" "$OUT" "retry"
 
   # A registration between control-status and tick (issue #1779): tick
   # --session refuses (call 2), and the re-check (call 3) names another desk.
@@ -445,14 +537,15 @@ for SH in $SHELLS; do
   # status of cycle 2 ... then recovery with a new item, then replaced.
   #   cycle 1: control-status(1) fails           -> error line
   #   cycle 2: control-status(2) fails           -> nothing (same streak)
-  #   cycle 3: control-status(3) ok, tick(4) new -> recovered + new D-4 D-7
-  #   cycle 4: control-status(5) replaced        -> replaced, exit 0
+  #   cycle 3: control-status(3) ok, tick(4) new,
+  #            wake-due(5) none                  -> recovered + new D-4 D-7
+  #   cycle 4: control-status(6) replaced        -> replaced, exit 0
   treset
   printf '%s\n' "$OURS" > "$STUB_DIR/status"
   printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
   : > "$STUB_DIR/fail-1"
   : > "$STUB_DIR/fail-2"
-  printf '%s\n' "$THEIRS" > "$STUB_DIR/status-5"
+  printf '%s\n' "$THEIRS" > "$STUB_DIR/status-6"
   # perl's alarm bounds the loop, so a regression that never exits fails
   # this case instead of hanging the suite.
   dtick perl -e 'alarm 20; exec @ARGV' env HUMAN_QUEUE_TICK_SECONDS=1 "$SH" "$BIN/desk-tick.sh" \
@@ -556,5 +649,49 @@ print(" ".join("y" if mod.RERENDER_RE.match(c) else "n" for c in cases))
 PY
 )
 check "capture.py's re-render prefix: the desk's shape only" "$RERENDER" "y y y n n n n n"
+
+# Issue #1781: retries, parked answers, show, and history are routed and
+# written down; nothing is left as "the next increment".
+WAKEUPS=$(cat "$HQ_T_DESK_DIR/skill/wakeups.md")
+HISTORY=$(cat "$HQ_T_DESK_DIR/skill/history.md")
+# contract LABEL TEXT — every line of stdin must appear in TEXT. The needles
+# come from quoted here-documents, so backticks and `$` stay literal.
+contract() {
+  local label="$1" text="$2" needle
+  while IFS= read -r needle; do
+    [ -n "$needle" ] || continue
+    check_contains "$label: $needle" "$text" "$needle"
+  done
+}
+contract SKILL.md "$SKILL" <<'NEEDLES'
+`wakeups.md`
+`history.md`
+desk-tick <GEN> retry D-43 D-44
+**`show D-<n>`** or **`history`**
+006_answer_parked.sql
+never a state line nobody asked for
+NEEDLES
+check_absent "SKILL.md: no deferred increment left" "$SKILL" "next increment"
+check_absent "SKILL.md: no 'until #1781 lands'" "$SKILL" "Until #1781 lands"
+contract wakeups.md "$WAKEUPS" <<'NEEDLES'
+"$HQ" wake-due --json --min-age 30
+up to three times
+## The parked notice (shown once)
+`parked` is true on exactly one call
+Never skip the record
+hold the notice
+NEEDLES
+contract history.md "$HISTORY" <<'NEEDLES'
+"$HQ" show D-43; echo "exit=$?"
+"$HQ" history; echo "exit=$?"
+America/New_York
+state line
+history --date 2026-10-06
+NEEDLES
+contract decisions.md "$DECISIONS" <<'NEEDLES'
+wake D-43 --result failed --note "no running session" --json
+`wakeups.md`, "The parked notice"
+NEEDLES
+check_absent "decisions.md: no 'No retry in this increment'" "$DECISIONS" "No retry in this increment"
 
 hq_t_finish "desk-offline.test.sh"

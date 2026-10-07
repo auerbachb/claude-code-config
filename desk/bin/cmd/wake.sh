@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# summary: record whether the desk woke the asking thread after an answer (a `woken` or `wake-failed` event)
+# summary: record whether the desk woke the asking thread after an answer (`woken` or `wake-failed`; the last failed retry parks it)
 #
 # Sourced by desk/bin/human-queue.sh, which has already loaded lib/common.sh
 # and lib/db.sh and set HQ_BIN_DIR.
@@ -16,7 +16,7 @@ cmd_usage() {
 human-queue.sh wake — record the result of waking the asking thread.
 
 USAGE
-  human-queue.sh wake ID --result sent|failed [--note TEXT]
+  human-queue.sh wake ID --result sent|failed [--note TEXT] [--json]
 
 ARGUMENTS
   ID              a Decision id, for example D-43 (d-43 is accepted)
@@ -27,18 +27,40 @@ ARGUMENTS
   --note TEXT     what happened, one line, <= 200 characters: the address and
                   the tool's own status word on success, the reason on
                   failure. Never the message body of anything but the pointer.
+  --json          print one JSON object instead of the id (see OUTPUT)
 
 BEHAVIOR
   After the operator answers, /desk wakes the session that asked with a
   pointer message; the thread then reads its answer from the store
   (pending-for). This records the outcome as one event: `woken` for sent,
-  `wake-failed` for failed. The item itself is not changed, so `tick` does
-  not report it again. Every call appends an event: each attempt is a fact
-  (issue #1781 retries count `wake-failed`). Only an answered item is woken
-  for: a Decision with no answer exits 4 and records nothing.
+  `wake-failed` for failed. Every call appends an event: each attempt is a
+  fact. Only an answered item is woken for: a Decision with no answer exits
+  4 and records nothing.
+
+RETRIES AND answer-parked (issue #1781)
+  A failed wake-up is retried on later ticks (`wake-due` lists the answers
+  due one), up to 3 retries after the first attempt. The count is the
+  `wake-failed` events since the item's latest `answered` event, so a new
+  answer starts a new count. The failure that uses up the last retry, or any
+  failure for an item with no return address (nothing to retry), sets the
+  status `answer-parked` and records one `answer-parked` event, in the same
+  transaction as the `wake-failed` event: the answer waits in the store for
+  the next thread on that PR or issue (`pending-for --repo R --key K`). Only
+  an `answered` item is parked, so exactly one call parks a given answer.
+  Otherwise the item is unchanged, and `tick` does not report it again.
 
 OUTPUT
-  The canonical item id on stdout. Nothing on stderr on success.
+  The canonical item id on stdout. With --json, one object:
+    {"id": "D-43", "result": "failed", "failures": 2, "retries_left": 2,
+     "status": "answered", "parked": false}
+  failures      the `wake-failed` events since the latest answer, this one
+                included
+  retries_left  the retries wake-due still offers for this answer: 0 after a
+                `sent` result, once parked, or with no return address
+  status        the item's status after this call
+  parked        true only on the call that parked the item, so the desk shows
+                a parked answer once, from this result
+  Nothing on stderr on success.
 
 EXIT CODES
   0  ok
@@ -52,6 +74,10 @@ EXIT CODES
 EOF
 }
 
+# hq__wake_sql JSON — record the attempt; then, in a second statement (which
+# sees the first one's event), count the failures since the latest answer and
+# park the answer once its retries are used up. The item's row lock, taken
+# first, serializes concurrent calls, so two can never both park it.
 hq__wake_sql() {
   hq_sql_lock_item "NO KEY UPDATE"
   cat <<'SQL'
@@ -66,7 +92,49 @@ WITH ev AS (
   VALUES (:'hq_id', :'hq_kind', nullif(:'hq_note', ''))
   RETURNING item_id
 )
-SELECT item_id FROM ev;
+SELECT count(*) AS hq_recorded FROM ev \gset
+WITH f AS (
+  SELECT i.id, i.status, i.session_id,
+         (SELECT count(*) FROM events e
+           WHERE e.item_id = i.id AND e.kind = 'wake-failed'
+             AND e.id > coalesce((SELECT max(a.id) FROM events a
+                                   WHERE a.item_id = i.id AND a.kind = 'answered'), 0))::int AS failures
+    FROM items i
+   WHERE i.id = :'hq_id'
+), park AS (
+  UPDATE items t SET status = 'answer-parked'
+    FROM f
+   WHERE t.id = f.id AND :'hq_kind' = 'wake-failed' AND f.status = 'answered'
+     AND (f.failures > :hq_retries OR f.session_id IS NULL)
+  RETURNING t.id
+), pev AS (
+  INSERT INTO events (item_id, kind, note)
+  SELECT p.id, 'answer-parked',
+         CASE WHEN f.session_id IS NULL THEN 'no return address'
+              ELSE f.failures || ' wake-ups failed' END
+    FROM park p CROSS JOIN f
+  RETURNING item_id
+), r AS (
+  SELECT f.*, EXISTS (SELECT 1 FROM pev) AS parked FROM f
+)
+SQL
+  if [ "$1" -eq 1 ]; then
+    cat <<'SQL'
+SELECT jsonb_build_object(
+         'id', r.id,
+         'result', CASE WHEN :'hq_kind' = 'woken' THEN 'sent' ELSE 'failed' END,
+         'failures', r.failures,
+         'retries_left', CASE WHEN :'hq_kind' = 'wake-failed' AND NOT r.parked
+                                   AND r.status = 'answered' AND r.session_id IS NOT NULL
+                              THEN greatest(0, :hq_retries + 1 - r.failures) ELSE 0 END,
+         'status', CASE WHEN r.parked THEN 'answer-parked' ELSE r.status END,
+         'parked', r.parked)
+  FROM r;
+SQL
+  else
+    printf '%s\n' "SELECT r.id FROM r;"
+  fi
+  cat <<'SQL'
 \else
 SELECT '!' || :'hq_problem';
 \endif
@@ -74,13 +142,18 @@ SQL
 }
 
 cmd_run() {
-  local raw_id="" id="" have_id=0 result="" have_result=0 note="" have_note=0 kind errf out rc
+  local raw_id="" id="" have_id=0 result="" have_result=0 note="" have_note=0 json=0 kind errf out rc
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -h|--help)
         cmd_usage
         exit 0
+        ;;
+      --json)
+        if [ "$json" -eq 1 ]; then hq_die_validation "wake: --json given more than once"; fi
+        json=1
+        shift
         ;;
       --result)
         if [ "$have_result" -eq 1 ]; then hq_die_validation "wake: --result given more than once"; fi
@@ -124,18 +197,25 @@ cmd_run() {
   hq_db_connect
   hq_mktemp errf
   rc=0
-  out=$(hq__wake_sql | hq_db_script -At -v "hq_id=$id" -v "hq_kind=$kind" \
-    -v "hq_note=$note" 2>"$errf") || rc=$?
+  out=$(hq__wake_sql "$json" | hq_db_script -At -v "hq_id=$id" -v "hq_kind=$kind" \
+    -v "hq_note=$note" -v "hq_retries=$(hq_wake_retries)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
-    # Before migration 005 the event kinds refuse woken / wake-failed: a CHECK
-    # violation, not a missing object, so hq_fail_unmigrated cannot see it.
-    if [ "$rc" -ne 2 ] && [ "$rc" -ne 143 ] && grep -q 'events_kind_check' "$errf"; then
+    # Before migration 005 the event kinds refuse woken / wake-failed, and
+    # before 006 the store refuses answer-parked: CHECK violations, not a
+    # missing object, so hq_fail_unmigrated cannot see them.
+    if [ "$rc" -ne 2 ] && [ "$rc" -ne 143 ] \
+      && grep -q -e 'events_kind_check' -e 'items_status_check' "$errf"; then
       hq_die_error "wake: the store is not migrated (run human-queue.sh migrate); nothing was recorded"
     fi
     hq_db_fail "$rc" "$errf" "wake: nothing was recorded"
   fi
   hq_problem_check wake "$out"
-  if [ "$out" != "$id" ]; then
+  if [ "$json" -eq 1 ]; then
+    case "$out" in
+      '{'*) ;;
+      *) hq_die_error "wake: the store returned no item" ;;
+    esac
+  elif [ "$out" != "$id" ]; then
     hq_die_error "wake: the store returned no item id"
   fi
   printf '%s\n' "$out"

@@ -23,9 +23,8 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `longform.md` | Long-form and multipart Decisions: one text prompt at a time, part by part, answers stored word for word | #1780 |
 | `discuss.md` | `discuss <n\|D-id>`: talk one item through with its context loaded, then answer it | #1780 |
 | `desk.jq` | The functions both views call: which Decisions fit a menu, multipart groups, the long-form and discussion cards | #1779, #1780 |
-| *(next increment)* | Wake-up retries, `answer-parked`, `show D-<n>`, `history` | #1781 |
-
-Until #1781 lands, a failed wake-up is recorded once and not retried; the answer is safe in the store either way.
+| `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once | #1781 |
+| `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), printed without a state line | #1781 |
 
 ## The prelude (every Bash call)
 
@@ -66,7 +65,7 @@ done
    "$HQ" migrate && "$HQ" register-control "$SID"
    ```
 
-   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql`).
+   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`).
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
 4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
@@ -86,7 +85,7 @@ done
    "<DESK>/bin/desk-tick.sh" --session "<SID>" --generation "<GEN>" --cadence <N>
    ```
 
-   The loop sleeps first (the inline tick was this cycle), then each cadence confirms this session is still the control session, runs `tick`, and prints a line only when there is something to do (see "Monitor events").
+   The loop sleeps first (the inline tick was this cycle). Each cadence it confirms this session is still the control session, runs `tick` and `wake-due`, and prints a line only when there is something to do (see "Monitor events").
 7. **Record the identity at once.** An unrecorded Monitor cannot be stopped by a later turn:
 
    ```bash
@@ -105,6 +104,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 | Line | Do |
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
+| `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
 | `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
 | `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
@@ -116,10 +116,11 @@ A quiet tick prints nothing, and the desk says nothing about it.
 
 Read each operator message in this order:
 
-1. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
-2. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, or a `D-<n>:` reply for another item.
-3. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".
-4. Any other message is ordinary conversation.
+1. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`), as the whole message → load `history.md`. This works at any time, including while a long-form prompt waits or during a discussion, and stores nothing.
+2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
+3. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, or a `D-<n>:` reply for another item.
+4. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".
+5. Any other message is ordinary conversation.
 
 ## End-of-turn gate (STOP before ending any desk turn)
 
@@ -134,7 +135,7 @@ Read each operator message in this order:
 1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
 2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
 3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
-4. **Output.** Say something only for a blocker, a failed wake-up, a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line) — never a routine "still watching".
+4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`) — never a routine "still watching", and never a state line nobody asked for.
 
 If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.
 
