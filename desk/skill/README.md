@@ -11,9 +11,10 @@ here).
 | `decisions.md` | Simple Decisions: sets, menus, replies, answers, wake-ups (#1779) |
 | `longform.md` | Long-form and multipart Decisions: one text prompt at a time, answers stored word for word (#1780) |
 | `discuss.md` | `discuss <n\|D-id>`: one item talked through with its context loaded, then presented again (#1780) |
-| `desk.jq` | jq functions the files above call (`jq -L "$DESK/skill" 'include "desk"; …'`): `desk_split`, `menu_shaped`, `longform_prompt`, `discuss_card` (#1779, #1780) |
+| `desk.jq` | jq functions the files above call (`jq -L "$DESK/skill" 'include "desk"; …'`): `desk_split`, `menu_shaped`, `longform_prompt`, `discuss_card` (#1779, #1780); `reviews_view`, `reviews_missing_l1`, `review_header` (#1782) |
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once (#1781) |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), with no state line (#1781) |
+| `reviews.md` | The Reviews view: `reviews`, `open R-<n>` (level 2, cached), `diff R-<n> [path]` (level 3, live), `reviewed`, `reviewed all today`, `flag`, `follow up`; its rendering is `reviews_view` and `review_header` in `desk.jq` (#1782) |
 
 Later desk issues add a file here and a row to `SKILL.md`'s table rather than
 growing one file.

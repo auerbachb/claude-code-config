@@ -174,7 +174,7 @@ for SH in $SHELLS; do
   check_contains "[$SH] sync-reviews --help names the footer" \
     "$(env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" sync-reviews --help)" "_Captured via /issue-maker._"
   check_contains "[$SH] summary --help says level 3 is never stored" \
-    "$(env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" summary --help)" "neither is"
+    "$(env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" summary --help)" "fetched live, never stored"
   check_contains "[$SH] review --help documents --comment" \
     "$(env -u HUMAN_QUEUE_DATABASE_URL "$SH" "$HQ_T_CLI" review --help)" "review ID [--comment TEXT]"
   check_contains "[$SH] list --help documents --unreviewed" \

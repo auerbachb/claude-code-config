@@ -32,10 +32,16 @@
 #   hq_sql_render_events        SQL expression rendering the events of `i`
 #   hq_sql_events_json          SQL expression: the events of `i` as JSON
 #   hq_sql_item_order           ORDER BY list: parked, then impact, then age
+#   hq_desk_tz                  prints the desk's calendar (America/New_York)
 #
 # Lengths are checked with ${#value}: characters under a UTF-8 locale, bytes
 # under bash 3.2 or a C locale. Bytes are never fewer than characters, so the
 # CLI is at most stricter than the database's own CHECK constraints.
+
+# hq_desk_tz — the desk's calendar (issue #1782): the Reviews view groups by
+# its day and `review --synced-today` reads the same one. America/New_York,
+# like `history`. One definition, so the two can never disagree.
+hq_desk_tz() { printf 'America/New_York'; }
 
 # The value sets of the CHECK constraints (001, and 006 for answer-parked),
 # mirrored so input is refused before any connection attempt.

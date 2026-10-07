@@ -7,7 +7,9 @@
 # Use:    jq -L "$DESK/skill" 'include "desk"; <function>'
 # Input:  the CLI's item JSON — `list --json` arrays, `get --json` objects.
 # Tests:  desk/tests/longform-offline.test.sh (fixtures),
-#         desk/tests/longform.test.sh (live, throwaway schema).
+#         desk/tests/longform.test.sh (live, throwaway schema);
+#         the Reviews view (#1782): desk/tests/reviews-view-offline.test.sh
+#         (fixtures) and desk/tests/reviews-view.test.sh (live).
 
 # ---------------------------------------------------------------- classify
 
@@ -194,3 +196,80 @@ def discuss_card:
     item_lines,
     (.answer // empty | "Answer so far: " + .) ]
   | quote;
+
+# ----------------------------------------------------------- reviews (#1782)
+#
+# The Reviews view: `list --kind reviews --unreviewed --json` is
+# {count, level2_lines, today, items}, each item with synced_on (the
+# America/New_York day it was synced) and, once the desk has written it,
+# summary_l1 (its one cached line).
+
+# review_label: "PR #101" or "Issue #202" from a Review's key; the key itself
+# when it names neither.
+def review_label: (item_link | if . == null then null else .label end) // .key;
+
+# short_repo($all): the repository without its owner, unless another
+# repository in $all (an array of owner/name strings) has the same name.
+def short_repo($all):
+  . as $r | ($r | split("/") | .[1] // $r) as $n
+  | if ([ $all[] | select((split("/") | .[1] // "" | ascii_downcase) == ($n | ascii_downcase))
+          | ascii_downcase ] | unique | length) > 1
+    then $r else $n end;
+
+# day_epoch: a YYYY-MM-DD day as seconds (UTC midnight); null when malformed.
+def day_epoch:
+  if type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+  then (. + "T00:00:00Z" | fromdateiso8601) else null end;
+
+# day_label($today): "Today", "Yesterday", or "Mon Oct 5" for a day.
+def day_label($today):
+  day_epoch as $d | ($today | day_epoch) as $t
+  | if $d == null then "Undated"
+    elif $d == $t then "Today"
+    elif $t != null and $d == $t - 86400 then "Yesterday"
+    else $d | strftime("%a %b %d") | sub(" 0(?<n>[1-9])$"; " \(.n)")
+    end;
+
+# review_line: one item at level 1. Until the desk caches its line, the title
+# stands in, marked so it is never mistaken for a summary.
+def review_line:
+  .id + " · " + review_label + " · "
+  + (if (.summary_l1 // "") != "" then .summary_l1
+     else .question + " (title; not summarized yet)" end);
+
+# reviews_missing_l1: the unreviewed items with no level-1 line yet, one per
+# output line: id, repo, and key separated by U+001F (none of the three is
+# ever empty, and none can hold that character).
+def reviews_missing_l1:
+  .items[] | select((.summary_l1 // "") == "") | [.id, .repo, .key] | join("\u001f");
+
+# reviews_view: the whole view. A header with the backlog and its reading
+# estimate; then one group per day and repository, newest day first and
+# repositories by name inside a day, each `<day> · <repo> (<n>)` followed by
+# its items oldest first; then one line naming what to type next.
+def reviews_view:
+  if ((.items // []) | length) == 0 then "No unreviewed Reviews."
+  else
+    (.today // null) as $today
+    | ([ .items[].repo ] | unique) as $repos
+    | ([ .items
+         | group_by([.synced_on, (.repo | ascii_downcase)])[]
+         | { day: .[0].synced_on, name: (.[0].repo | short_repo($repos)),
+             items: sort_by([(.id | length), .id]) } ]
+       | sort_by([ -((.day | day_epoch) // 0), (.name | ascii_downcase) ])) as $groups
+    | ([ "Reviews · \(.count) unreviewed · ~\(.level2_lines) lines at level 2" ]
+       + [ $groups[]
+           | "",
+             "\(.day | day_label($today)) · \(.name) (\(.items | length))",
+             (.items[] | review_line) ]
+       + [ "", "Next: open R-<n> · diff R-<n> [path] · reviewed R-<n> · reviewed all today · flag R-<n> \"…\"" ])
+      | join("\n")
+  end;
+
+# review_header: the first lines of `open` and `diff` (a `get --json`
+# object): the id, PR or issue, repository, when it merged or was filed, and
+# the status once it is no longer unreviewed; then the link.
+def review_header:
+  ([ .id, review_label, .repo, ((.context // [])[1] // empty),
+     (if .status != "open" then .status else empty end) ] | join(" · "))
+  + (item_link | if . == null then "" else "\n" + .url end);
