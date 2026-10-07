@@ -36,7 +36,10 @@
 #
 # EXIT CODES
 #   0  found
-#   1  unexpected failure (python3 missing, an unreadable registry)
+#   1  unexpected failure: python3 is missing, the registry directory
+#      cannot be listed, or no readable registry file has that id while at
+#      least one <pid>.json could not be read or parsed (the session may be
+#      that one, so "nobody is running" would be a guess)
 #   3  no running session has that id (the session ended, or it never
 #      registered): there is nobody to wake; the answer waits in the store
 #   4  usage error: a missing, blank, multi-line, or over-long session id, or
@@ -100,7 +103,6 @@ fi
 # The scan prints the answer and exits 0, or exits 3 (nobody running) or 1
 # with one reason line. Session ids and names are data: printed, never run.
 "$wt_py" -I - "$wt_dir" "$wt_session" "$wt_json" <<'PY'
-import glob
 import json
 import os
 import re
@@ -138,14 +140,26 @@ if not os.path.isdir(directory):
     sys.stderr.write("wake-target: no running session has that id (no session registry)\n")
     sys.exit(3)
 
+try:
+    names = sorted(os.listdir(directory))
+except OSError as exc:
+    sys.stderr.write("wake-target: the session registry cannot be listed (%s)\n"
+                     % (exc.strerror or "unreadable"))
+    sys.exit(1)
+
 best = None
-for path in glob.glob(os.path.join(directory, "*.json")):
-    if not PID_FILE.match(os.path.basename(path)):
+unreadable = 0
+for base in names:
+    if not PID_FILE.match(base):
         continue
+    path = os.path.join(directory, base)
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
+        # Another session's file being rewritten, or one we may not read.
+        # Skipped, but counted: if nothing matches, it may have been ours.
+        unreadable += 1
         continue
     if not isinstance(data, dict) or data.get("sessionId") != session:
         continue
@@ -159,6 +173,10 @@ for path in glob.glob(os.path.join(directory, "*.json")):
         best = (updated, data, pid)
 
 if best is None:
+    if unreadable:
+        sys.stderr.write("wake-target: no readable registry file has that id, and %d could not "
+                         "be read or parsed\n" % unreadable)
+        sys.exit(1)
     sys.stderr.write("wake-target: no running session has that id\n")
     sys.exit(3)
 

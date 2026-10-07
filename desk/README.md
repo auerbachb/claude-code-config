@@ -457,7 +457,9 @@ retries, `answer-parked`, `show`, and `history` are #1781.
   harness's session registry (`~/.claude/sessions/<pid>.json`, never the
   `.key` files beside it) for a running session with that id and prints its
   `local_…` id, or its name for a terminal session; exit 3 when none is
-  running. The desk sends exactly `human-queue: D-<n> answered` with
+  running, exit 1 when it cannot tell (the registry cannot be listed, or no
+  readable file matches while some file could not be read or parsed). The
+  desk sends exactly `human-queue: D-<n> answered` with
   `SendMessage` (or the app's `send_message`) and records the outcome with
   `wake`. The thread reads the answer from `pending-for`; a thread that is
   gone loses nothing.

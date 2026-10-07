@@ -98,6 +98,7 @@ For each answer with `"changed": true` (an unchanged answer was delivered before
 
    - Exit 0 → `{"address": "local_…", "via": "host", "name": …}` (a desktop-app session) or `{"address": "<session name>", "via": "name"}` (a terminal session).
    - Exit 3 → no running session has that id: the thread has ended. Record `failed` (step 3) with note `no running session`.
+   - Exit 1 → the registry could not be read well enough to tell (its one stderr line says why). Record `failed` with that line as the note.
 2. **Send exactly** `human-queue: D-<k> answered` — a pointer, never the answer: the thread reads the store (`pending-for`). Use `SendMessage` with `to` = the address (load it with ToolSearch when it is deferred). When `SendMessage` is not available and `via` is `host`, use `mcp__ccd_session_mgmt__send_message` with `session_id` = the address. Neither available → record `failed` with note `no session-messaging tool in this session`.
 3. **Record what happened**, every time, whatever it was:
 

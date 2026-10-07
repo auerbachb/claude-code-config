@@ -283,6 +283,27 @@ check "a local_ id passes through" "$RC:$OUT" "0:local_9999"
 RC=0
 env HUMAN_QUEUE_SESSIONS_DIR="$TMP/nowhere" bash "$BIN/wake-target.sh" cli-aaa >/dev/null 2>&1 || RC=$?
 check "no registry: exit 3" "$RC" "3"
+# A registry file that cannot be parsed (a session's file mid-rewrite) is
+# skipped; with no match elsewhere, the answer is exit 1, never a guessed 3.
+REG2="$TMP/sessions2"
+mkdir -p "$REG2"
+cp "$REG/$LIVE1.json" "$REG2/"
+printf '{"pid": %s, "sessionId": "cli-b' "$LIVE2" > "$REG2/$LIVE2.json"
+RC=0
+env HUMAN_QUEUE_SESSIONS_DIR="$REG2" bash "$BIN/wake-target.sh" cli-aaa >"$TMP/out" 2>"$TMP/err" || RC=$?
+check "an unparsable file elsewhere: the match is still found" "$RC:$(cat "$TMP/out")" "0:local_1111"
+RC=0
+env HUMAN_QUEUE_SESSIONS_DIR="$REG2" bash "$BIN/wake-target.sh" cli-bbb >"$TMP/out" 2>"$TMP/err" || RC=$?
+check "no match and an unparsable file: exit 1" "$RC" "1"
+check_contains "no match and an unparsable file: says so" "$(cat "$TMP/err")" "1 could not be read or parsed"
+if [ "$(id -u)" != "0" ]; then
+  chmod 000 "$REG2"
+  RC=0
+  env HUMAN_QUEUE_SESSIONS_DIR="$REG2" bash "$BIN/wake-target.sh" cli-aaa >/dev/null 2>"$TMP/err" || RC=$?
+  chmod 700 "$REG2"
+  check "a registry that cannot be listed: exit 1" "$RC" "1"
+  check_contains "a registry that cannot be listed: says so" "$(cat "$TMP/err")" "cannot be listed"
+fi
 wt
 check "no id: exit 4" "$RC" "4"
 wt ""
