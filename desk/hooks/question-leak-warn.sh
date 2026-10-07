@@ -12,7 +12,8 @@
 #
 # Detection, on the final assistant message only:
 #   - a QUESTION line ends in `?` once trailing whitespace and `*`, `_`, `~`
-#     emphasis are stripped, and sits outside fenced code blocks (``` or ~~~);
+#     emphasis are stripped, and sits outside fenced code blocks (``` or ~~~,
+#     on a line of their own or opening a list item);
 #   - never a question: headings (#), blockquotes (>), table rows (|) — also
 #     nested in a list item (`- > quoted?`) — a `?` inside inline code, a
 #     bare URL (a list marker at most), a line with no words. Quoted or bracketed questions (`?"`, `?)`) and questions answered
@@ -115,25 +116,33 @@ qlw_scan() {
 
       # Fenced code: a run of 3+ backticks or tildes opens it; a run of the
       # same character, at least as long, with nothing after it closes it.
-      c = substr(t, 1, 1)
+      # Inside a fence a line is only content, so the close is read from the
+      # line as it stands (a `- ```` line in a code block closes nothing).
+      if (infence) {
+        if (substr(t, 1, 1) == fch) {
+          r = t
+          while (substr(r, 1, 1) == fch) r = substr(r, 2)
+          if (length(t) - length(r) >= flen && r ~ /^[ \t]*$/) infence = 0
+        }
+        next
+      }
+
+      # The line with its list markers removed: a fence, heading, blockquote,
+      # or table row that opens a list item (`- ```bash`, `- > quoted?`) is
+      # still one.
+      b = t
+      while (b ~ /^([-*+]|[0-9]+[.)])[ \t]+/) sub(/^([-*+]|[0-9]+[.)])[ \t]+/, "", b)
+
+      c = substr(b, 1, 1)
       if (c == "`" || c == "~") {
-        r = t
+        r = b
         while (substr(r, 1, 1) == c) r = substr(r, 2)
-        n = length(t) - length(r)
+        n = length(b) - length(r)
       } else {
         n = 0
       }
-      if (infence) {
-        if (c == fch && n >= flen && r ~ /^[ \t]*$/) infence = 0
-        next
-      }
       # (A backtick run with another backtick after it is inline code.)
       if (n >= 3 && !(c == "`" && index(r, "`") > 0)) { infence = 1; fch = c; flen = n; next }
-
-      # The line with its list markers removed: a heading, blockquote, or
-      # table row nested in a list item (`- > quoted?`) is still one.
-      b = t
-      while (b ~ /^([-*+]|[0-9]+[.)])[ \t]+/) sub(/^([-*+]|[0-9]+[.)])[ \t]+/, "", b)
 
       # A receipt answers every question above it: it carries no question
       # text, so it cannot be tied to one line, and the rule is "a question

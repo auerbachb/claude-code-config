@@ -32,7 +32,8 @@ leak the capture hook cannot see: a question written as prose
   Stop payload, or, when the payload has none, the last assistant message in
   `transcript_path` (its final 2 MiB, malformed lines skipped).
 - **A question line** ends in `?` (after trailing whitespace and `*` / `_` /
-  `~` emphasis) outside fenced code blocks. Headings, blockquotes, table rows
+  `~` emphasis) outside fenced code blocks (a fence may open a list item,
+  ``- ```bash``). Headings, blockquotes, table rows
   (also nested in a list item, `- > quoted?`), a bare URL, and
   punctuation-only lines never count; a
   `?` inside inline code or before a closing quote or bracket is never

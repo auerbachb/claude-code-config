@@ -20,8 +20,9 @@
 #   4.2           the same cases through last_assistant_message, plus the
 #                 false-positive guards (inline code, URL, heading,
 #                 blockquote, quoted question, same-line answer, table row,
-#                 tilde / long / unclosed fences, a blockquote or heading
-#                 nested in a list item), plural and decorated receipts, a
+#                 tilde / long / unclosed fences, a fence that opens a list
+#                 item, a blockquote or heading nested in a list item),
+#                 plural and decorated receipts, a
 #                 fenced or blockquoted receipt (an example or a quote: still
 #                 warns, list-nested too), a question after the receipt (next
 #                 line or same line), one warning for many questions, the
@@ -218,6 +219,22 @@ M_UNCLOSED='Example output:
 
 ```
 Overwrite the file?'
+# (Single quotes, not a heredoc in $(...): bash 3.2 scans that for backticks.)
+M_ITEM_FENCE='Steps:
+
+1. ```bash
+   Continue with the migration?
+   ```
+- ~~~
+  Overwrite the file?
+  ~~~'
+M_ITEM_FENCE_THEN_Q="$M_ITEM_FENCE
+
+Should I run it on staging first?"
+M_FENCE_ITEM_LINE='````text
+- ```
+Still inside?
+````'
 M_INLINE_FENCE=$(cat <<'EOF'
 ```x``` is inline code, not a fence.
 Should I keep it?
@@ -369,6 +386,16 @@ for SH in $SHELLS; do
 
   hook "$SH" "$(msg "$M_LIST_FENCE")"
   expect_silent "[$SH] question inside an indented fence"
+
+  hook "$SH" "$(msg "$M_ITEM_FENCE")"
+  expect_silent "[$SH] question inside a fence that opens a list item"
+
+  hook "$SH" "$(msg "$M_ITEM_FENCE_THEN_Q")"
+  expect_warn "[$SH] a list-item fence closes: a question after it warns" \
+    "Should I run it on staging first?"
+
+  hook "$SH" "$(msg "$M_FENCE_ITEM_LINE")"
+  expect_silent "[$SH] a list-marker fence line inside a fence closes nothing"
 
   hook "$SH" "$(msg "$M_INLINE_FENCE")"
   expect_warn "[$SH] a backtick run with a backtick after it opens no fence" "Should I keep it?"
