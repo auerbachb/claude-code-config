@@ -18,13 +18,14 @@ be spun out as its own project later.
 | `bin/lib/lifecycle.sh` | The answer transaction shared by `answer` and `set-resolve`, row locking, the `!reason` refusal protocol |
 | `bin/lib/secrets.sh` | The secret-shape detector behind exit 5 |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
-| `hooks/` | Hook implementations (the capture hook arrives with issue #1755) |
+| `hooks/` | Hook implementations: `capture.sh` and its logic `capture.py`, the capture hook (see "Capture hook") |
 | `skill/` | The `/desk` skill (arrives with the `/desk` issues) |
 | `tests/` | `run.sh` plus `*.test.sh` suites |
 
-`.claude/skills/desk` and the hook entries under `.claude/hooks/` will be
-symlinks into this folder, added by the issues that create that content, so the
-repo's skill-symlink rule keeps holding.
+The hook entries under `.claude/hooks/` are symlinks into this folder
+(`human-queue-capture.sh` → `hooks/capture.sh`), and `.claude/skills/desk`
+will be one too, added by the issue that creates it, so the repo's
+skill-symlink rule keeps holding.
 
 ## Provisioning the database (once)
 
@@ -213,10 +214,11 @@ full contract.
 | Subcommand | What it does |
 |------------|--------------|
 | `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
-| `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced |
+| `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
 | `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
+| `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
 
-- **Reserved keys.** `tick_watermark` (written by `tick`) and
+- **Reserved keys.** `tick_watermark` and `tick_at` (written by `tick`) and
   `control_session` (written by `register-control`) are readable with
   `state get`; `state set` refuses them. State is not an item, so it records
   no event.
@@ -234,6 +236,72 @@ full contract.
   snapshot could not see: every write that committed after the previous tick
   read, including one still in flight while it ran, and nothing twice.
   Concurrent ticks serialize on an advisory lock.
+- **When the desk last ticked.** The watermark is not a time, so each tick
+  also stores its own time (UTC ISO 8601) under `tick_at`. `control-status`
+  turns it into an age; it reads any tick, and in practice only the desk
+  ticks. Registering a different control session clears `tick_at`, so a
+  replacement desk is live only after its own first tick, never on the
+  previous desk's.
+
+## Capture hook
+
+`hooks/capture.sh` (with its logic in `hooks/capture.py`) is a `PreToolUse`
+hook on `AskUserQuestion`, registered as `.claude/hooks/human-queue-capture.sh`,
+a symlink into this folder, through `global-settings.json` (timeout 15 s). It
+registers globally at the next session start.
+
+| Situation | What the asking thread sees | What the store gets |
+|-----------|-----------------------------|---------------------|
+| No live desk | The menu, as before | Nothing |
+| Live desk, the desk's own session | The menu | One Decision per question |
+| Live desk, any other session | The call denied with the reason below | One Decision per question |
+| The hook cannot do its job | The menu, plus one warning line on stderr | Whatever was written before the failure |
+
+- **Live desk.** A control session is registered (`register-control`) and
+  `control-status` says the last tick is at most **15 minutes** old: three
+  missed ticks at the desk's default five-minute cadence. Override it with
+  `live_desk_max_tick_age_min` (1 to 1440) in `desk/policy.json`; an invalid
+  value keeps 15 and warns. With no live desk (none registered, never ticked,
+  or the desk session died) every menu renders in its thread as before, so no
+  question is stranded during rollout or while the desk is down.
+- **The reason.** `Queued as D-43. Print exactly: question D-43 sent to human
+  queue. Then proceed on your recommended default or park and wait for a
+  wake-up.` A call with several questions names every id:
+  `Queued as D-43, D-44. Print exactly: questions D-43, D-44 sent to human
+  queue. ...`
+- **What a Decision carries.** `--kind decision`; the question on one line
+  (whitespace collapsed, control characters dropped, at most 500 bytes); each
+  option label as `--option`; `--default` is the label ending in
+  `(Recommended)`, else the first option (`ask-menu.md` puts the recommended
+  one first); context lines for the header, a multi-select note, and the
+  option descriptions (600 characters in total); `--session` is the asking
+  session, the return address. `--repo` is the `owner/name` of the cwd's
+  `origin` (else `local/<directory>`). `--key` is `issue-N` when the branch is
+  `issue-N-*`, else `branch:<name>`, else (on `main` or a detached HEAD)
+  `session:<id>`, so unrelated threads never share an item. A key over 200
+  bytes keeps its start and ends in `~` and 12 hex digits of its SHA-256, so
+  two long branch names that share a prefix stay two keys. `add`'s dedupe
+  applies: asking the same open question again bumps it.
+- **Finding the store.** The desktop app starts hooks without sourcing a
+  shell profile, so `HUMAN_QUEUE_DATABASE_URL` is taken from the first of:
+  the environment; `${XDG_CONFIG_HOME:-~/.config}/human-queue/database_url`
+  (the URL on one line; used only when it is a file you own with mode 600);
+  the last `export HUMAN_QUEUE_DATABASE_URL=...` line of the first of
+  `~/.zprofile`, `~/.zshenv`, `~/.zshrc`, `~/.bash_profile`, `~/.bashrc`,
+  `~/.profile` that sets it. A profile line counts only when its value is a
+  literal (single-quoted, double-quoted without `$`, backtick, or backslash,
+  or bare): the profile is read, never run. The URL goes only into the CLI's
+  environment and is never printed.
+- **Failing open.** No URL, no CLI, a CLI exit other than 0 (7: the store is
+  unreachable, within two seconds), output it cannot read, malformed input,
+  python3 missing, or a call over 6 s (the whole hook gives up at 12 s): the
+  menu renders and stderr carries one line, prefixed `human-queue-capture:`.
+  The hook never prints the URL, raw CLI output, or exception text, and never
+  blocks a thread because of its own failure. A failure after some questions
+  of one call were queued names them; those items stay in the store.
+- **Cost.** With no live desk the hook makes one `control-status` call
+  (about half a second against Neon); with a live desk, one `add` per
+  question as well.
 
 ## Migrations
 
@@ -311,6 +379,20 @@ bash desk/tests/run.sh
   over a 002 store. `migrate.test.sh` derives its
   expected migrations from `desk/schema/`, so a new migration needs no edit
   there.
+- `capture-offline.test.sh` is offline: it runs the capture hook through its
+  `.claude/hooks/` symlink with only the environment it sets (`env -i`, as
+  the desktop app starts hooks), against a stub CLI that logs every call or
+  the real CLI aimed at a TEST-NET address. It covers the registration in
+  `global-settings.json`, the live-desk gate (none, never ticked, stale, live,
+  and the `desk/policy.json` bound), the deny reason for one and two
+  questions, the arguments `add` receives, every fail-open path (one stderr
+  line, never the URL), finding the URL in a config file or a profile, and
+  `control-status` validation. Same two shells.
+- `capture.test.sh` is live under the same rules as the three above (skips
+  without the URL, one throwaway schema, `public` unchanged): `control-status`
+  and `tick_at`; no live desk queues nothing; a live desk denies a worker and
+  allows the desk while both items exist; dedupe; two questions; and the URL
+  read from a profile when the environment lacks it.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
 

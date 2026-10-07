@@ -27,6 +27,12 @@ BEHAVIOR
   registration wins (concurrent registrations are serialized). Read it with
   `state get control_session`. No event is recorded (state is not an item).
 
+  Registering a session other than the one registered also clears tick_at,
+  the time of the last tick, so a replacement desk is not live (and the
+  capture hook queues nothing) until it has ticked itself; the previous
+  desk's tick never vouches for it. Registering the same session again
+  keeps tick_at.
+
 OUTPUT
   `control session SESSION`, plus `(replaces PREVIOUS)` when another session
   was registered before. Nothing on stderr on success.
@@ -50,6 +56,10 @@ WITH prev AS (
 ), up AS (
   INSERT INTO state (key, value) VALUES ('control_session', :'hq_session')
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+), unticked AS (
+  DELETE FROM state
+   WHERE key = 'tick_at'
+     AND NOT EXISTS (SELECT 1 FROM prev WHERE value = :'hq_session')
 )
 SQL
   if [ "$1" -eq 1 ]; then
