@@ -8,10 +8,11 @@ What happens after: the issue is open, unassigned, and carries none of the label
 
 ## 0. A held idea first
 
-At most one idea is **held** (waiting on a question below), in this conversation only; its text is never stored. When one is held and the message is exactly `idea: anyway`, `idea: re-cut`, or `idea: drop` (`file:` works the same), act on the held idea and skip step 1:
+At most one idea is **held** (waiting on a question below), in this conversation only; its text is never stored. When one is held and the message is exactly `idea: anyway`, `idea: re-cut`, `idea: yes`, or `idea: drop` (`file:` works the same), act on the held idea and skip step 1:
 
-- `anyway` → file it as drafted (past a duplicate, or all N increments).
+- `anyway` → file it as drafted (past a duplicate, a failed create, or all N increments).
 - `re-cut` → only after the more-than-five-increments question: re-cut the chain to at most five, then file.
+- `yes` → only after a `Possibly filed as #N` card (step 3, `file-exit=4`): that issue is this filing. Run `"$HQ" filed <repo> <N>` and go on as for `file-exit=0` with its number and URL, closing on the URL.
 - `drop` → `Dropped the idea "<its first 60 characters>".` Nothing is filed.
 
 Any other `idea:` or `file:` text is a new idea and replaces the held one: say `Dropped the held idea "<…>".` in one line, then go on with the new one.
@@ -110,7 +111,7 @@ fi
 - **`file-exit=3`** → a check failed and nothing was sent: fix the title or body it names (the title is over 70 characters, a section is missing or out of order, the footer is not the last line) and run the block again.
 - **`file-exit=4`** → `gh` failed, and the issue may have landed anyway (a lost response after the write). Check first: `gh issue list --repo <repo> --author @me --limit 5 --json number,title,url,createdAt`. Compare each issue with this title against the block's `attempt-started`:
   - `createdAt` at or after it → it was filed: go on as for `file-exit=0` with its number and URL (run `filed`).
-  - `createdAt` in the minute before it → **uncertain**: clock skew between this machine and GitHub, or an earlier filing of the same idea. Record nothing and say once: `Possibly filed as #N (<url>), created just before this attempt — check it. Reply idea: anyway to file again, or idea: drop.` The idea stays held.
+  - `createdAt` in the minute before it → **uncertain**: clock skew between this machine and GitHub, or an earlier filing of the same idea. Record nothing yet and say once: `Possibly filed as #N (<url>), created just before this attempt — check it. Reply idea: yes if it is this idea, idea: anyway to file again, or idea: drop.` The idea stays held; `idea: yes` records that issue as this filing (step 0).
   - Older → an earlier filing (a re-filed idea, or a duplicate passed with `idea: anyway`); it never counts.
   - No same-title issue in the first two cases → `Not filed: <its message> (exit 4). Reply idea: anyway to try again.` and the idea stays held.
 - **`file-exit=2`** → the call itself was malformed: fix it and run again.

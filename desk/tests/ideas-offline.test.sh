@@ -346,6 +346,8 @@ check_contains "ideas.md: the exit-4 check reads createdAt" "$IDEAS" '--json num
 check_contains "ideas.md: the exit-4 check compares with attempt-started" "$IDEAS" 'against the block'"'"'s `attempt-started`'
 check_contains "ideas.md: only an issue created at or after the start is recorded" "$IDEAS" '`createdAt` at or after it → it was filed'
 check_contains "ideas.md: a match just before the start is uncertain, never recorded" "$IDEAS" '`createdAt` in the minute before it → **uncertain**'
+check_contains "ideas.md: an uncertain match can be confirmed" "$IDEAS" 'Reply idea: yes if it is this idea'
+check_contains "ideas.md: idea: yes records the confirmed issue" "$IDEAS" '`yes` → only after a `Possibly filed as #N` card'
 check_absent "ideas.md: no bare repo-relative script path" "$IDEAS" '".claude/scripts/'
 
 hq_t_finish "ideas-offline.test.sh"
