@@ -30,6 +30,7 @@ URL nor raw CLI output nor exception text is ever printed.
 Python 3.9 compatible (macOS /usr/bin/python3).
 """
 
+import hashlib
 import json
 import os
 import re
@@ -119,6 +120,19 @@ def one_line(value, limit):
         return ""
     kept = "".join(ch for ch in value if ch.isspace() or unicodedata.category(ch) != "Cc")
     return cap_bytes(" ".join(kept.split()), limit)
+
+
+def item_key(value):
+    """VALUE as a --key of at most MAX_KEY bytes. A longer one keeps its start
+    and ends in a short hash of the whole value, so two long branch names that
+    share a prefix stay two keys (a plain cut would make them one, and add's
+    dedupe would merge their questions into one item)."""
+    whole = one_line(value, 1 << 30)
+    raw = whole.encode("utf-8")
+    if len(raw) <= MAX_KEY:
+        return whole
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    return cap_bytes(whole, MAX_KEY - len(digest) - 1) + "~" + digest
 
 
 def is_recommended(label):
@@ -401,9 +415,9 @@ def repo_and_key(hook, cwd, session):
     if m:
         key = "issue-" + m.group(1)
     elif branch and branch not in ("main", "master"):
-        key = one_line("branch:" + branch, MAX_KEY)
+        key = item_key("branch:" + branch)
     else:
-        key = one_line("session:" + session, MAX_KEY)
+        key = item_key("session:" + session)
     return repo, key
 
 

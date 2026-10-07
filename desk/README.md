@@ -214,7 +214,7 @@ full contract.
 | Subcommand | What it does |
 |------------|--------------|
 | `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
-| `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced |
+| `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
 | `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
 
@@ -239,7 +239,9 @@ full contract.
 - **When the desk last ticked.** The watermark is not a time, so each tick
   also stores its own time (UTC ISO 8601) under `tick_at`. `control-status`
   turns it into an age; it reads any tick, and in practice only the desk
-  ticks.
+  ticks. Registering a different control session clears `tick_at`, so a
+  replacement desk is live only after its own first tick, never on the
+  previous desk's.
 
 ## Capture hook
 
@@ -276,7 +278,9 @@ registers globally at the next session start.
   session, the return address. `--repo` is the `owner/name` of the cwd's
   `origin` (else `local/<directory>`). `--key` is `issue-N` when the branch is
   `issue-N-*`, else `branch:<name>`, else (on `main` or a detached HEAD)
-  `session:<id>`, so unrelated threads never share an item. `add`'s dedupe
+  `session:<id>`, so unrelated threads never share an item. A key over 200
+  bytes keeps its start and ends in `~` and 12 hex digits of its SHA-256, so
+  two long branch names that share a prefix stay two keys. `add`'s dedupe
   applies: asking the same open question again bumps it.
 - **Finding the store.** The desktop app starts hooks without sourcing a
   shell profile, so `HUMAN_QUEUE_DATABASE_URL` is taken from the first of:

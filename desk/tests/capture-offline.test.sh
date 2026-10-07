@@ -20,7 +20,9 @@
 #   4.1           add carries the question, options, the (Recommended) or
 #                 first option as --default, the session, the header and
 #                 descriptions as context; repo and key come from the cwd's
-#                 origin and branch; text is shaped to the store's limits
+#                 origin and branch; text is shaped to the store's limits;
+#                 a key over 200 bytes ends in a hash, so two long
+#                 branches that share a prefix keep two keys
 #   4.3 / 5.3     CLI missing, store unreachable (real CLI, TEST-NET), a
 #                 failing or hanging call, malformed input, no python
 #                 entry point: exit 0, empty stdout, ONE stderr line; the
@@ -481,6 +483,26 @@ for SH in $SHELLS; do
   reset_stub
   hook "$SH" "$(input worker-1 "$REPO_DIR" "$QF")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
   check "[$SH] on main the key is the session" "$(arg_after add 1 --key)" "session:worker-1"
+
+  LONGB="feature/"
+  i=0
+  while [ "$i" -lt 240 ]; do LONGB="${LONGB}x"; i=$((i + 1)); done
+  on_branch "${LONGB}-one"
+  reset_stub
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$QF")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
+  K1=$(arg_after add 1 --key)
+  on_branch "${LONGB}-two"
+  reset_stub
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$QF")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
+  K2=$(arg_after add 1 --key)
+  check "[$SH] long branch keys fit 200 bytes" \
+    "$(printf '%s' "$K1" | wc -c | tr -d ' ')/$(printf '%s' "$K2" | wc -c | tr -d ' ')" "200/200"
+  check_contains "[$SH] a long branch key keeps its start" "$K1" "branch:feature/xxxxxxxx"
+  if [ -n "$K1" ] && [ "$K1" != "$K2" ]; then
+    ok "[$SH] long branches sharing a prefix get two keys"
+  else
+    bad "[$SH] long branches sharing a prefix share a key: '$K1'"
+  fi
   on_branch issue-77-capture
   git -C "$REPO_DIR" remote set-url origin git@github.com:acme/widgets.git
 

@@ -39,7 +39,8 @@ BEHAVIOR
 
 RESERVED KEYS (readable with get; `set` refuses them)
   tick_watermark   the snapshot the last `tick` read under; written by tick
-  tick_at          when the last `tick` ran (UTC ISO 8601); written by tick
+  tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
+                   cleared by register-control when the session changes
   control_session  the registered desk control session; written by
                    register-control
   reviews_watermark  the start of the last successful sync-reviews;

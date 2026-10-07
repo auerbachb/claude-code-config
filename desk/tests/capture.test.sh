@@ -28,6 +28,9 @@
 #                   questions in one call are two items
 #   4.3a            URL absent from the environment but present in a
 #                   profile: still captured
+#   replacement     re-registering the same session keeps tick_at; a
+#                   different session clears it, so nothing is queued
+#                   until the new desk ticks, then its questions are
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -251,6 +254,29 @@ case "$HUMAN_QUEUE_DATABASE_URL" in
     check "URL only in the profile: nothing on stderr" "$ERR" ""
     ;;
 esac
+
+# ---------------------------- a replacement desk is not live until it ticks
+hq tick
+hq register-control desk-1
+check "re-registering the same session: exit 0" "$RC" "0"
+hq control-status --json
+if [ "$(json_of last_tick_at)" != "<null>" ]; then
+  ok "re-registering the same session keeps its tick"
+else
+  bad "re-registering the same session cleared tick_at"
+fi
+hq register-control desk-2
+check "register-control desk-2 names the one it replaces" "$OUT" "control session desk-2 (replaces desk-1)"
+hq control-status --json
+check "a replacement session: the previous desk's tick is cleared" "$(json_of session) $(json_of last_tick_at)" "desk-2 <null>"
+BEFORE=$(n_items)
+hook "$(input worker-4 '{"question": "Queued before the new desk ticks?", "options": [{"label": "No"}]}')"
+check "replacement desk, not yet ticked: allow" "$OUT/$ERR" "/"
+check "replacement desk, not yet ticked: nothing queued" "$(n_items)" "$BEFORE"
+hq tick
+hook "$(input worker-4 '{"question": "Queued after the new desk ticks?", "options": [{"label": "Yes"}]}')"
+IDR=$(sql_in "SELECT id FROM items WHERE question = 'Queued after the new desk ticks?'")
+check "replacement desk after its own tick: queued" "$(reason)" "$(receipt "$IDR")"
 
 PUBLIC_AFTER=$(admin_sql "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
 check "the public schema's tables are unchanged" "$PUBLIC_AFTER" "$PUBLIC_BEFORE"

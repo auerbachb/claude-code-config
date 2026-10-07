@@ -28,7 +28,8 @@ BEHAVIOR
   The capture hook runs this on every question: a registered control session
   whose last tick is recent is a live desk, and only then are questions
   queued instead of shown in the asking thread (desk/README.md, "Capture
-  hook"). Any tick counts; in practice only the desk ticks.
+  hook"). Any tick since the session was registered counts (registering a
+  different session clears tick_at); in practice only the desk ticks.
 
 OUTPUT
   Two lines: `control session SESSION` (or `no control session`), then
