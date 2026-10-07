@@ -448,8 +448,8 @@ retries, `answer-parked`, `show`, and `history` are #1781.
   feed (a refusal confirmed by `control-status` prints `replaced` too),
   printing `desk-tick G new D-43 D-44` only for open Decisions. A failing call prints
   one `error` line per outage and one `recovered` line; a quiet tick prints
-  nothing. `HUMAN_QUEUE_TICK_SECONDS` (1 to 3600) overrides the cadence
-  (tests); 0 is refused.
+  nothing. `HUMAN_QUEUE_TICK_SECONDS` (1 to 3600, and under the live-desk
+  bound like the cadence) overrides the cadence (tests); 0 is refused.
 - **Sets and replies.** Simple Decisions (2 to 4 options, a cost not in
   hours or days) are numbered with `set-open` four at a time and shown as one
   menu per set, each question prefixed `N. [D-<n>]`. Clicks and typed replies

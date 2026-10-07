@@ -465,12 +465,18 @@ desk-tick g2 replaced"
   check "[$SH] the loop exits 0 when replaced" "$RC" "0"
 
   # A zero-second override would call the store back-to-back: refused.
-  for bad_secs in 0 00 3601 x; do
+  # 900 s is the default 15-minute live-desk bound: the override obeys it too.
+  for bad_secs in 0 00 3601 x 900; do
     treset
     dtick env HUMAN_QUEUE_TICK_SECONDS="$bad_secs" "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
     check "[$SH] HUMAN_QUEUE_TICK_SECONDS=$bad_secs: exit 4, nothing called" \
       "$RC:$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)" "4:0"
   done
+  treset
+  printf '%s\n' "$OURS" > "$STUB_DIR/status"
+  printf '[]\n' > "$STUB_DIR/tick-default"
+  dtick env HUMAN_QUEUE_TICK_SECONDS=899 "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+  check "[$SH] HUMAN_QUEUE_TICK_SECONDS=899: under the bound, ticks" "$RC:$OUT:$ERR" "0::"
 
   dtick "$SH" "$BIN/desk-tick.sh" --generation g1 --once
   check "[$SH] no --session: exit 4" "$RC" "4"

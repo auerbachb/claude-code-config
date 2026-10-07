@@ -46,9 +46,10 @@
 #   URL found the way the capture hook finds it).
 #
 # ENVIRONMENT
-#   HUMAN_QUEUE_TICK_SECONDS  seconds between ticks, 1 to 3600, overriding
-#                             --cadence (tests); 0 is refused (exit 4), never
-#                             a loop that calls the store without a pause
+#   HUMAN_QUEUE_TICK_SECONDS  seconds between ticks, 1 to 3600 and shorter
+#                             than the live-desk bound, overriding --cadence
+#                             (tests); 0 is refused (exit 4), never a loop that
+#                             calls the store without a pause
 #   HUMAN_QUEUE_POLICY        the policy file, as the capture hook reads it
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
 #
@@ -167,6 +168,11 @@ case "$dt_live" in
 esac
 if [ "$((10#$dt_cadence))" -ge "$dt_live" ]; then
   dt_die "--cadence must be shorter than the live-desk bound ($dt_live min, desk/policy.json live_desk_max_tick_age_min), or the desk goes stale between ticks"
+fi
+# The interval actually slept: the cadence, or HUMAN_QUEUE_TICK_SECONDS when
+# set. The same bound holds for it, so an override cannot leave the desk stale.
+if [ "$dt_secs" -ge "$((dt_live * 60))" ]; then
+  dt_die "HUMAN_QUEUE_TICK_SECONDS ($dt_secs s) must be shorter than the live-desk bound ($dt_live min), or the desk goes stale between ticks"
 fi
 
 dt_err=$(mktemp "${TMPDIR:-/tmp}/desk-tick.XXXXXX") || exit 1
