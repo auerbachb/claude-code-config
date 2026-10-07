@@ -135,13 +135,15 @@ hq__summary_check() {
 }
 
 # hq__summary_get_sql LEVEL — the column is chosen from a fixed pair, never
-# from input.
+# from input. A cached summary comes back behind a `=` that cmd_run strips:
+# a level-1 line may itself begin with `!`, which hq_problem_check would
+# otherwise read as this script's own failure sentinel.
 hq__summary_get_sql() {
   local col="summary_l$1"
   cat <<SQL
 SELECT coalesce(
          (SELECT CASE WHEN $col IS NULL THEN '!no level-$1 summary is cached for ' || id
-                      ELSE $col END
+                      ELSE '=' || $col END
             FROM items WHERE id = :'hq_id'),
          '!no item ' || :'hq_id');
 SQL
@@ -275,6 +277,12 @@ cmd_run() {
   hq_problem_check "summary $action" "$out"
   if [ "$action" = set ] && [ "$out" != "$id" ]; then
     hq_die_error "summary set: the store returned no item id"
+  fi
+  if [ "$action" = get ]; then
+    case "$out" in
+      =*) out="${out#=}" ;;
+      *) hq_die_error "summary get: the store returned no summary" ;;
+    esac
   fi
   printf '%s\n' "$out"
 }

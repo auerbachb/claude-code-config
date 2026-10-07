@@ -26,8 +26,9 @@
 # Asserts (issue #1782):
 #   007    migrate applies 007; summary --level 1 caches the one line once (a
 #          different line exits 4, the same is a no-op); a level-1 write is
-#          not reported by `tick`; list --unreviewed --json carries today,
-#          synced_on, and summary_l1
+#          not reported by `tick`; a line beginning with `!` is cached and
+#          read back by `summary get` as the line, not as an error; list
+#          --unreviewed --json carries today, synced_on, and summary_l1
 #   4.2    the skill's level-1 blocks: the material block lists exactly the
 #          items without a line (a GitHub failure is reported per item and
 #          the rest go on); the cache block stores each line; the view block
@@ -244,6 +245,15 @@ check "007 tick does not report a level-1 write" "$RC|$OUT" "0|[]"
 hq summary get R-3 --level 1
 check "007 summary get --level 1 with none cached exits 4" "$RC" "4"
 check_contains "007 ... and says so" "$ERR" "no level-1 summary is cached for R-3"
+# A level-1 line may begin with `!`, the CLI's own failure sentinel on stdout:
+# get must still return it as the line, not as an error. R-4 (reviewed) is
+# never in the view, so the view checks below are unaffected.
+L1_BANG='!Widget counts are right again after the off-by-one.'
+printf '%s' "$L1_BANG" >"$TMP/l1-bang.txt"
+hq summary set R-4 --level 1 --file "$TMP/l1-bang.txt"
+check "007 a level-1 line beginning with ! is cached" "$RC|$OUT" "0|R-4"
+hq summary get R-4 --level 1
+check "007 ... and summary get returns it, not an error" "$RC|$OUT|$ERR" "0|$L1_BANG|"
 
 hq list --kind reviews --unreviewed --json
 TODAY=$(sql_in "SELECT to_char(statement_timestamp() AT TIME ZONE 'America/New_York', 'YYYY-MM-DD')")
