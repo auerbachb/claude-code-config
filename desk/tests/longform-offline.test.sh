@@ -45,8 +45,8 @@
 #             backticks, backslashes, `2: B` lines, tabs, Unicode) under
 #             bash, /bin/bash 3.2, and zsh, running none of it; the skill
 #             files carry the contract (word for word, never a menu, the
-#             exit words, nothing stored during discussion, the deferred
-#             commands of #1781)
+#             exit words, nothing stored during discussion, and where
+#             `show D-<n>` and `history` live, #1781)
 #
 # Every jq found (PATH and /usr/bin/jq) runs the desk.jq cases.
 set -uo pipefail
@@ -537,6 +537,7 @@ Tick events while a prompt waits
 is held, not shown
 longform_prompt($k; $m)
 Wake the asking thread now, before the next part
+**`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`
 NEEDLES
 contract discuss.md "$DISCUSS" <<'NEEDLES'
 **`done`** or **`back`**
@@ -546,10 +547,11 @@ never AskUserQuestion
 ## 5. Present the item again
 Never invent.
 read-only
-## Not in this increment
+## Its events
 `answer-parked`
 `show D-<n>`
 `history`
+**`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`
 #1781
 discuss_card
 NEEDLES

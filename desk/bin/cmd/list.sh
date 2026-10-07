@@ -17,7 +17,7 @@ USAGE
 
 FILTERS (each at most once; validated before any connection attempt)
   --kind decision|review    (decisions and reviews are accepted too)
-  --status open|answered|acknowledged|reviewed|flagged|closed
+  --status open|answered|acknowledged|reviewed|flagged|closed|answer-parked
   --unreviewed              the Reviews the operator has not looked at yet:
                             kind review, status open (a flagged Review was
                             read). Implies --kind review; cannot be combined

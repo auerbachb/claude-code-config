@@ -35,7 +35,8 @@ Read each operator message in this order:
 2. **An answer** → the discussion ends and the message is the item's answer, through the normal path: it starts with the item's number in the latest set or its id, then a colon (`2: B`, `D-48: …`). A menu-shaped item goes to `decisions.md`, "Typed replies"; a long-form item goes to `longform.md`, "Storing an answer", with the text after the colon, word for word (bar the two changes that section names: outer blank space is trimmed, and a lone option letter stores that option). Then step 6.
 3. **`skip`** → no answer; the item stays open. Step 6.
 4. **`discuss <other>`** → discuss that item instead (step 1).
-5. **Anything else** is another follow-up (step 3).
+5. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then go on discussing.
+6. **Anything else** is another follow-up (step 3).
 
 ## 5. Present the item again
 
@@ -49,6 +50,6 @@ Whatever its kind, the item comes back for an answer exactly as it is presented 
 
 Continue from where `discuss` was typed: the rest of that menu's set, the next part of the group, or the next group. Set numbering does not change. A `desk-tick … new` event that arrived during the discussion is held the way `longform.md` holds one ("Tick events while a prompt waits") and shown after this.
 
-## Not in this increment
+## Its events
 
-Wake-up retries, `answer-parked`, `show D-<n>` (an item's sub-thread), and `history` are the next increment, #1781. `discuss` reads the item with `get`; it does not print the item's events.
+`discuss` reads the item with `get`, so it does not print the item's events. For the item's sub-thread (when it was shown, answered, woken, or `answer-parked`), the operator types `show D-<n>` (`history.md`, #1781). It is read-only and changes nothing here, and the discussion then continues. `history` lists today's answered items the same way.

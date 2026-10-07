@@ -22,7 +22,7 @@
 #                               real calendar date; exits 4 otherwise
 #   hq_in_list VALUE WORDS      true when VALUE is one of the space-separated WORDS
 #   hq_is_kind / hq_is_status / hq_is_impact VALUE
-#                               true when VALUE is in 001's value set
+#                               true when VALUE is in the schema's value set
 #   hq_flag_name ARG            prints "option '--flag'" when ARG looks like a
 #                               flag, else "argument": a stray value (which may
 #                               be free text) is never echoed into a message
@@ -37,10 +37,10 @@
 # under bash 3.2 or a C locale. Bytes are never fewer than characters, so the
 # CLI is at most stricter than the database's own CHECK constraints.
 
-# The value sets of 001's CHECK constraints, mirrored so input is refused
-# before any connection attempt.
+# The value sets of the CHECK constraints (001, and 006 for answer-parked),
+# mirrored so input is refused before any connection attempt.
 HQ_ITEM_KINDS="decision review"
-HQ_ITEM_STATUSES="open answered acknowledged reviewed flagged closed"
+HQ_ITEM_STATUSES="open answered acknowledged reviewed flagged closed answer-parked"
 HQ_ITEM_IMPACTS="low medium high"
 
 hq_is_kind()   { hq_in_list "$1" "$HQ_ITEM_KINDS"; }

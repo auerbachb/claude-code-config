@@ -1,9 +1,10 @@
 # shellcheck shell=bash
 # desk/bin/lib/lifecycle.sh — shared code for the lifecycle, set, and control
 # subcommands (answer, ack, review, flag, comment, feedback, pending-for,
-# set-open, set-resolve, state, register-control, tick; issue #1776). Sourced
-# by those command files after lib/common.sh, lib/db.sh, and lib/items.sh;
-# never executed. Bash 3.2 compatible.
+# set-open, set-resolve, state, register-control, tick; issue #1776; wake and
+# wake-due, issues #1779 and #1781). Sourced by those command files after
+# lib/common.sh, lib/db.sh, and lib/items.sh; never executed. Bash 3.2
+# compatible.
 #
 # PUBLIC FUNCTIONS
 #   hq_trim VAR VALUE           VALUE without leading or trailing whitespace
@@ -29,6 +30,8 @@
 #                               NO KEY UPDATE) and setting :hq_n to 0 or 1
 #   hq_sql_answer MODE N JSON   the answer transaction behind `answer` (MODE
 #                               id) and `set-resolve` (MODE set)
+#   hq_wake_retries             prints the number of wake-up retries after a
+#                               first failed wake-up (3), for wake and wake-due
 #
 # THE PROBLEM PROTOCOL
 #   A transaction that finds a reason to refuse after connecting (an unknown
@@ -49,6 +52,12 @@
 #   two multi-item writes can never deadlock.
 
 HQ_ANSWER_MAX=4000
+
+# hq_wake_retries — the wake-up retries that follow a first failed wake-up
+# (issue #1781): `wake` parks an answer when this many retries have failed
+# too, and `wake-due` lists an answer for a retry while it has any left. One
+# definition, so the two can never disagree.
+hq_wake_retries() { printf '3'; }
 
 hq_trim() {
   local hq__v="$2"
@@ -221,9 +230,10 @@ SQL
 #   3. validate every pair; the first problem (in reply order) becomes the
 #      `!reason` line and nothing is written
 #   4. write: the answer (an option's text when given by letter), status
-#      `answered` (which clears an earlier acknowledgement), and one
-#      `answered` event per item that changed. Re-sending the answer an item
-#      already holds changes nothing and records nothing.
+#      `answered` (which clears an earlier acknowledgement or parking), and
+#      one `answered` event per item that changed. Re-sending the answer an
+#      item already holds (answered, acknowledged, or answer-parked) changes
+#      nothing and records nothing.
 # Output: `answer` prints the id, or with --json one object {"id", "answer",
 # "changed", "session"}; `set-resolve` prints one line per pair, or one JSON
 # object with --json.
@@ -296,7 +306,7 @@ d AS (
 ),
 c AS (
   SELECT d.*,
-         NOT (d.status IN ('answered', 'acknowledged')
+         NOT (d.status IN ('answered', 'acknowledged', 'answer-parked')
               AND d.old_answer IS NOT DISTINCT FROM d.answer) AS changed
     FROM d
 ),

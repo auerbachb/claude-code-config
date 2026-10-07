@@ -37,6 +37,15 @@
 #        and refuses (exit 4, nothing consumed) when SESSION is no longer the
 #        control session; the loop then confirms with `control-status` and
 #        prints `replaced` as in step 1.
+#     3. `wake-due --json` (issue #1781): the answers whose last wake-up
+#        failed and that have a retry left. When there are any, print
+#        `desk-tick GEN retry D-43 D-44` (oldest failure first) after any
+#        `new` line; the desk wakes each one again and records the result,
+#        and the last failed retry parks the answer. One retry per answer
+#        per tick: the desk records every attempt, so the next tick sees it.
+#        When this call fails after the tick succeeded, the `new` line is
+#        still printed (that tick already moved the watermark) after the
+#        error line.
 #   A failing call prints `desk-tick GEN error <subcommand> exit <code>: <the
 #   CLI's one stderr line>` once, when the loop goes from working to failing,
 #   and `desk-tick GEN recovered` once when it works again, so an outage is
@@ -232,8 +241,33 @@ sys.stdout.write(" ".join(ids))
 '
 }
 
+# dt_due_ids JSON — the ids in wake-due's array, in order, space-separated;
+# exits 1 when the array is unreadable.
+dt_due_ids() {
+  printf '%s' "$1" | "$dt_py" -I -c '
+import json, re, sys
+try:
+    items = json.loads(sys.stdin.read())
+except ValueError:
+    sys.exit(1)
+if not isinstance(items, list):
+    sys.exit(1)
+ids = [i.get("id") for i in items
+       if isinstance(i, dict) and isinstance(i.get("id"), str)
+       and re.match(r"^D-[1-9][0-9]*$", i["id"])]
+sys.stdout.write(" ".join(ids))
+'
+}
+
+# dt_new IDS — the `new` line, when there is anything new.
+dt_new() {
+  if [ -n "$1" ]; then
+    printf 'desk-tick %s new %s\n' "$dt_gen" "$1"
+  fi
+}
+
 dt_cycle() {
-  local out rc control ids
+  local out rc control ids due
   rc=0
   out=$("$dt_cli" control-status --json 2>"$dt_err") || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -278,9 +312,25 @@ dt_cycle() {
     dt_fail tick 1
     return 0
   fi
+  rc=0
+  out=$("$dt_cli" wake-due --json 2>"$dt_err") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    dt_fail wake-due "$rc"
+    dt_new "$ids"
+    return 0
+  fi
+  rc=0
+  due=$(dt_due_ids "$out") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'wake-due printed something other than a JSON array\n' >"$dt_err"
+    dt_fail wake-due 1
+    dt_new "$ids"
+    return 0
+  fi
   dt_ok
-  if [ -n "$ids" ]; then
-    printf 'desk-tick %s new %s\n' "$dt_gen" "$ids"
+  dt_new "$ids"
+  if [ -n "$due" ]; then
+    printf 'desk-tick %s retry %s\n' "$dt_gen" "$due"
   fi
 }
 
