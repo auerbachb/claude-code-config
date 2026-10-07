@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u-1","sessionId":"fixture","message":{"role":"user","content":"What does the prompt in the capture test look like?"}}
+{"type":"assistant","uuid":"a-1","sessionId":"fixture","message":{"id":"msg_fixture_01","role":"assistant","content":[{"type":"text","text":"The capture test sends this question through the hook:\n\n```json\n{\"question\": \"Ship the migration before the CLI?\"}\n```\n\nand an interactive prompt in the CLI reads:\n\n```\nContinue with the migration?\n```\n\nBoth live in desk/tests/capture-offline.test.sh."}],"stop_reason":"end_turn"}}

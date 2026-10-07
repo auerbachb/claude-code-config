@@ -19,7 +19,7 @@ sequenceDiagram
   CC->>H: PostCompact
   Note over H: post-compact-reconcile.sh
   CC->>H: Stop
-  Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh, skill-usage-snapshot-hook.sh
+  Note over H: silence-detector-ack.sh, bgwork-ceiling-guard.sh, trust-flag-repair.sh, dirty-main-warn.sh, skill-usage-snapshot-hook.sh, question-leak-warn.sh
   CC->>H: StopFailure (matcher: rate_limit)
   Note over H: usage-limit-record.sh
 ```
