@@ -63,9 +63,24 @@ hq_check_answer() {
     *) hq_die_validation "$1 is empty" ;;
   esac
   hq_refuse_control "$1" "$2" newline
-  if [ "${#2}" -gt "$HQ_ANSWER_MAX" ]; then
+  if hq__answer_too_long "$2"; then
     hq_die_validation "$1 is longer than $HQ_ANSWER_MAX characters"
   fi
+}
+
+# hq__answer_too_long TEXT — true when TEXT holds more than HQ_ANSWER_MAX
+# characters, read as UTF-8 whatever the locale. ${#} counts bytes in a C
+# locale, and macOS's /bin/bash 3.2 does so with no locale set, which would
+# refuse a 1500-character Japanese answer (4500 bytes). Every byte that is not
+# a UTF-8 continuation byte (0x80-0xBF) starts a character; text no longer
+# than the limit in bytes cannot be too long in characters, so it skips the
+# count.
+hq__answer_too_long() {
+  local LC_ALL=C hq__n
+  [ "${#1}" -gt "$HQ_ANSWER_MAX" ] || return 1
+  hq__n=$(printf '%s' "$1" | tr -d '\200-\277' | wc -c)
+  hq__n=$((hq__n))
+  [ "$hq__n" -gt "$HQ_ANSWER_MAX" ]
 }
 
 hq_require_kind() {

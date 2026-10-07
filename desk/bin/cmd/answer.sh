@@ -61,7 +61,8 @@ OUTPUT
 
 EXIT CODES
   0  ok (including an unchanged answer)
-  1  unexpected database failure
+  1  unexpected database failure, or --stdin could not read standard input
+     (nothing recorded)
   4  invalid id, a Review id, or a missing, blank, over-long, or doubly
      given answer (before any connection attempt); no item has that id, or
      a letter is not one of its options (after connecting, nothing written)
@@ -84,10 +85,20 @@ hq__answer_bytes() {
 # producer cannot fill memory. A NUL byte cannot live in a shell variable
 # (bash would drop it silently), so it becomes \001, which hq_check_answer
 # refuses as a control character. The trailing `x` keeps trailing newlines
-# through the command substitution; hq_trim drops them afterwards.
+# through the command substitution; hq_trim drops them afterwards. The
+# substitution exits with the read's own status (pipefail covers head as well
+# as tr), so a read that fails partway stores nothing rather than a truncated
+# answer. Their own messages are dropped: the refusal below is the one line.
 hq__answer_read_stdin() {
-  local hq__v hq__cap=$((HQ_ANSWER_MAX * 4))
-  hq__v=$(head -c "$((hq__cap + 1))" | LC_ALL=C tr '\000' '\001'; printf x)
+  local hq__v hq__cap=$((HQ_ANSWER_MAX * 4)) hq__rc=0
+  hq__v=$(set -o pipefail
+          head -c "$((hq__cap + 1))" 2>/dev/null | LC_ALL=C tr '\000' '\001' 2>/dev/null
+          hq__s=$?
+          printf x
+          exit "$hq__s") || hq__rc=$?
+  if [ "$hq__rc" -ne 0 ]; then
+    hq_die_error "answer: standard input could not be read (exit $hq__rc); nothing was recorded"
+  fi
   hq__v="${hq__v%x}"
   if [ "$(hq__answer_bytes "$hq__v")" -gt "$hq__cap" ]; then
     hq_die_validation "answer: the answer is longer than $HQ_ANSWER_MAX characters"

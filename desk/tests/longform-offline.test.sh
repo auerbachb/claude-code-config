@@ -34,7 +34,9 @@
 #             flags, and a secret (never echoed) are refused before any
 #             connection; valid input reaches the database step; --help
 #             documents both flags; a positional answer starting with a
-#             dash still works
+#             dash still works; an unreadable standard input exits 1 having
+#             recorded nothing; the 4000 limit counts UTF-8 characters, not
+#             bytes, even in a C locale
 #   skill     the anchored blocks run against a stub CLI: desk-split,
 #             desk-longform-render, and desk-discuss-card print what desk.jq
 #             prints, or `exit=<n>` when list or get fails (never an empty
@@ -311,6 +313,10 @@ head -c 4001 /dev/zero | tr '\000' x > "$TMP/over-4000"
 head -c 4000 /dev/zero | tr '\000' x > "$TMP/at-4000"
 { head -c 4000 /dev/zero | tr '\000' x; printf '\n\n\n  \n'; } > "$TMP/at-4000-trailing"
 printf -- '--json\n' > "$TMP/flag-word"
+# 1500 three-byte characters (4500 bytes) and 4001 two-byte ones: the limit
+# is in characters whatever the locale (bash 3.2 and a C locale count bytes).
+perl -CO -e 'print "\x{65E5}" x 1500, "\n"' > "$TMP/cjk-1500"
+perl -CO -e 'print "\x{E9}" x 4001, "\n"' > "$TMP/e-4001"
 
 for SH in $SHELLS; do
   echo "=== shell: $SH — $("$SH" --version 2>&1 | sed -n 1p)"
@@ -347,6 +353,24 @@ for SH in $SHELLS; do
   reaches_db "$SH" "the word --json as an answer, through --stdin" "$TMP/flag-word" D-1 --stdin
   reaches_db "$SH" "a positional answer with --json" "$TMP/empty" D-1 "Ship it" --json
   reaches_db "$SH" "a positional answer starting with a dash" "$TMP/empty" D-1 "-- not now"
+
+  # A read that fails (here: standard input is a directory) records nothing,
+  # where the read's status used to be lost behind the trailing `printf x`.
+  refused "$SH" 1 "an unreadable standard input" "standard input could not be read" / D-1 --stdin
+  # Characters, not bytes, in a C locale — through --stdin and as an argument.
+  RC=0
+  env -u HUMAN_QUEUE_DATABASE_URL -u LANG -u LC_CTYPE LC_ALL=C "$SH" "$HQ_T_CLI" answer D-1 --stdin \
+    <"$TMP/cjk-1500" >/dev/null 2>"$TMP/err" || RC=$?
+  check "[$SH] 1500 three-byte characters on stdin, C locale: passes validation (exit 7)" "$RC" "7"
+  RC=0
+  env -u HUMAN_QUEUE_DATABASE_URL -u LANG -u LC_CTYPE LC_ALL=C "$SH" "$HQ_T_CLI" answer D-1 "$(cat "$TMP/cjk-1500")" \
+    </dev/null >/dev/null 2>"$TMP/err" || RC=$?
+  check "[$SH] 1500 three-byte characters as an argument, C locale: passes validation (exit 7)" "$RC" "7"
+  RC=0
+  env -u HUMAN_QUEUE_DATABASE_URL -u LANG -u LC_CTYPE LC_ALL=C "$SH" "$HQ_T_CLI" answer D-1 --stdin \
+    <"$TMP/e-4001" >/dev/null 2>"$TMP/err" || RC=$?
+  check "[$SH] 4001 two-byte characters, C locale: refused (exit 4)" "$RC" "4"
+  check_contains "[$SH] 4001 two-byte characters: names the limit" "$(cat "$TMP/err")" "longer than 4000 characters"
 done
 
 # --- the skill's own blocks, against a stub CLI ------------------------------

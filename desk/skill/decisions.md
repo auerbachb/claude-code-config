@@ -83,7 +83,7 @@ DESK_REPLY
 
 A reply that is a single `D-<n>: …` pair for a **long-form** item goes to `longform.md` instead ("A typed `D-<n>: …` for a long-form item"): `set-resolve` would split a long answer at a later line that starts `2:`.
 
-Any other id that is in no set this session opened (one from before this desk started, or one left open earlier) gets a set of its own, so its answer comes back with `changed` and `session` like any other and the wake-up rule below applies unchanged: `"$HQ" set-open D-45 --json`, then resolve that pair (`D-45: <the answer>`) against the new set id with the here-document above. A reply that mixes such an id with pairs for the latest set is refused whole (`D-45 is not in set 12`, nothing written): split it, resolving the latest set's pairs there and each other id in its own set.
+Any other id that is not in the latest set this session opened (one from before this desk started, from an earlier set, or left open earlier) gets a set of its own, so its answer comes back with `changed` and `session` like any other and the wake-up rule below applies unchanged: `"$HQ" set-open D-45 --json`, then resolve that pair (`D-45: <the answer>`) against the new set id with the here-document above. A reply that mixes such an id with pairs for the latest set is refused whole (`D-45 is not in set 12`, nothing written): split it, resolving the latest set's pairs there and each other id in its own set.
 
 ## Waking the asking threads
 
