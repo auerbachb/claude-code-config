@@ -280,7 +280,13 @@ STARTED=$(printf '%s\n' "$OUT" | sed -n 's/^attempt-started=//p')
 check "desk-idea-file: prints when the attempt began (UTC, ISO 8601)" \
   "$(printf '%s\n' "$STARTED" | grep -c '^[0-9]\{4\}-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$')" "1"
 NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-if [[ "$STARTED" < "$NOW_UTC" ]]; then ok "desk-idea-file: the attempt start is set back, before now"; else bad "desk-idea-file: attempt-started '$STARTED' is not before now ($NOW_UTC)"; fi
+RECENT_UTC=$(date -u -d '45 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-45S +%Y-%m-%dT%H:%M:%SZ)
+# The real start, not backdated: no later than now, and within the last 45 s.
+if [[ ! "$STARTED" > "$NOW_UTC" ]] && [[ ! "$STARTED" < "$RECENT_UTC" ]]; then
+  ok "desk-idea-file: attempt-started is the real start time"
+else
+  bad "desk-idea-file: attempt-started '$STARTED' is outside [$RECENT_UTC, $NOW_UTC]"
+fi
 check_contains "desk-idea-file: the title reached gh whole" "$(cat "$STUB_DIR/gh.log")" '--title=Desk: export "widgets" as CSV'
 reset_stub
 OUT=$(STUB_CREATE=fail run_block "$TMP/file.sh")
@@ -337,7 +343,9 @@ check_contains "ideas.md: the URL is the closing line" "$IDEAS" "The issue URL a
 check_contains "ideas.md: no capture mode" "$IDEAS" "There is no capture mode"
 check_contains "ideas.md: records the filing" "$IDEAS" '"$HQ" filed "$IDEA_REPO"'
 check_contains "ideas.md: the exit-4 check reads createdAt" "$IDEAS" '--json number,title,url,createdAt'
-check_contains "ideas.md: the exit-4 check ignores older same-title issues" "$IDEAS" 'at or after the block'"'"'s `attempt-started`'
+check_contains "ideas.md: the exit-4 check compares with attempt-started" "$IDEAS" 'against the block'"'"'s `attempt-started`'
+check_contains "ideas.md: only an issue created at or after the start is recorded" "$IDEAS" '`createdAt` at or after it → it was filed'
+check_contains "ideas.md: a match just before the start is uncertain, never recorded" "$IDEAS" '`createdAt` in the minute before it → **uncertain**'
 check_absent "ideas.md: no bare repo-relative script path" "$IDEAS" '".claude/scripts/'
 
 hq_t_finish "ideas-offline.test.sh"

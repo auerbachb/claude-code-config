@@ -87,9 +87,9 @@ DESK_IDEA_TITLE
   cat > "$IDEA_BODY" <<'DESK_IDEA_BODY'
 <the body>
 DESK_IDEA_BODY
-  # When this attempt began, a minute early to absorb clock skew with GitHub:
-  # the exit-4 check below accepts only an issue created at or after it.
-  echo "attempt-started=$(date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-1M +%Y-%m-%dT%H:%M:%SZ)"
+  # When this attempt began: the exit-4 check below records only an issue
+  # created at or after it.
+  echo "attempt-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   rc=0
   FILED=$("$ISSUE_FILE" --repo "$IDEA_REPO" --title "$IDEA_TITLE" --body-file "$IDEA_BODY" --json <the labels>) || rc=$?
   rm -f "$IDEA_BODY"
@@ -108,7 +108,11 @@ fi
   - `filed-exit=0` prints `noted R-12` (its Review already existed and now records the filing) or `pending` (`sync-reviews` records it when it adds the Review). Neither needs a word.
   - `filed-exit=7` → the store is unreachable. Keep `filed <repo> <number>` in this conversation and run it after the next `recovered` event; until then the Review would arrive without the note. Any other non-zero → show its one line once.
 - **`file-exit=3`** → a check failed and nothing was sent: fix the title or body it names (the title is over 70 characters, a section is missing or out of order, the footer is not the last line) and run the block again.
-- **`file-exit=4`** → `gh` failed, and the issue may have landed anyway (a lost response after the write). Check first: `gh issue list --repo <repo> --author @me --limit 5 --json number,title,url,createdAt`. An issue with this title **and** a `createdAt` at or after the block's `attempt-started` is there → it was filed (a same-title issue created earlier is an older filing, such as a re-filed idea or a duplicate passed with `idea: anyway`, and never counts): go on as for `file-exit=0` with its number and URL (run `filed`). Not there → `Not filed: <its message> (exit 4). Reply idea: anyway to try again.` and the idea stays held.
+- **`file-exit=4`** → `gh` failed, and the issue may have landed anyway (a lost response after the write). Check first: `gh issue list --repo <repo> --author @me --limit 5 --json number,title,url,createdAt`. Compare each issue with this title against the block's `attempt-started`:
+  - `createdAt` at or after it → it was filed: go on as for `file-exit=0` with its number and URL (run `filed`).
+  - `createdAt` in the minute before it → **uncertain**: clock skew between this machine and GitHub, or an earlier filing of the same idea. Record nothing and say once: `Possibly filed as #N (<url>), created just before this attempt — check it. Reply idea: anyway to file again, or idea: drop.` The idea stays held.
+  - Older → an earlier filing (a re-filed idea, or a duplicate passed with `idea: anyway`); it never counts.
+  - No same-title issue in the first two cases → `Not filed: <its message> (exit 4). Reply idea: anyway to try again.` and the idea stays held.
 - **`file-exit=2`** → the call itself was malformed: fix it and run again.
 
 ## 4. Report
