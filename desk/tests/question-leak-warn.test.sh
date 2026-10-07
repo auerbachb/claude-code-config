@@ -20,11 +20,13 @@
 #   4.2           the same cases through last_assistant_message, plus the
 #                 false-positive guards (inline code, URL, heading,
 #                 blockquote, quoted question, same-line answer, table row,
-#                 tilde / long / unclosed fences), plural and decorated
-#                 receipts, a fenced or blockquoted receipt (an example or a
-#                 quote: still warns), a question after the receipt (next
+#                 tilde / long / unclosed fences, a blockquote or heading
+#                 nested in a list item), plural and decorated receipts, a
+#                 fenced or blockquoted receipt (an example or a quote: still
+#                 warns, list-nested too), a question after the receipt (next
 #                 line or same line), one warning for many questions, the
-#                 quote truncated
+#                 quote truncated, a question line longer than one exec
+#                 argument may be
 #   once per turn a warning leaves a per-session marker; a continued turn
 #                 (stop_hook_active) it warned in stays silent; one another
 #                 hook continued still warns, once; a new turn clears the
@@ -248,6 +250,13 @@ You asked (why the delay?)'
 M_SAME_LINE='Why did it fail? The token expired.'
 M_TABLE='| Ready? | yes |
 |---|---|'
+M_LIST_QUOTE='The issue body says:
+
+- > Should we deploy on Friday?
+1. ## Why did the cache miss?'
+M_LIST_QUOTED_RECEIPT='Should I retry the deploy?
+
+- > question D-43 sent to human queue'
 M_BOLD='Two options are open.
 
 **Ship now or wait for review?**'
@@ -260,6 +269,16 @@ M_NONE='All done. The branch is merged.'
 M_CRLF=$(printf 'Done.\r\nProceed with the deploy?\r\n')
 M_EMPH='_Proceed with the deploy?_   '
 LONGQ="Should I rewrite the whole capture path so it batches every question from one call into a single store transaction, or keep one add per question?"
+# A 1.2 MB question line, built through a file: it is too long to pass to jq
+# as an argument or an environment variable.
+{
+  printf 'Should I keep this line '
+  head -c 1200000 /dev/zero | tr '\0' 'a'
+  printf '?'
+} >"$TMP/huge-question.txt"
+HUGE_Q=$(head -c 200 "$TMP/huge-question.txt")
+HUGE_PAYLOAD=$("$JQ" -cRs '{session_id: "s-huge", hook_event_name: "Stop",
+  stop_hook_active: false, last_assistant_message: .}' <"$TMP/huge-question.txt")
 
 for SH in $SHELLS; do
   printf '== %s: fixture transcripts\n' "$SH"
@@ -381,6 +400,13 @@ for SH in $SHELLS; do
   hook "$SH" "$(msg "$M_TABLE")"
   expect_silent "[$SH] table row"
 
+  hook "$SH" "$(msg "$M_LIST_QUOTE")"
+  expect_silent "[$SH] blockquote and heading nested in a list item"
+
+  hook "$SH" "$(msg "$M_LIST_QUOTED_RECEIPT")"
+  expect_warn "[$SH] a receipt in a list-nested blockquote is a quote, not a receipt" \
+    "Should I retry the deploy?"
+
   hook "$SH" "$(msg "$M_BOLD")"
   expect_warn "[$SH] bold question" "**Ship now or wait for review?**"
 
@@ -401,6 +427,12 @@ for SH in $SHELLS; do
 
   hook "$SH" "$(msg "$LONGQ")"
   expect_warn "[$SH] a long line is truncated" "$(printf '%s' "$LONGQ" | cut -c1-117)..."
+
+  # A question line longer than one exec argument may be (ARG_MAX on macOS,
+  # MAX_ARG_STRLEN on Linux) still warns: the hook cuts it before jq sees it.
+  hook "$SH" "$HUGE_PAYLOAD"
+  expect_warn "[$SH] a question line over the argument limit still warns" \
+    "$(printf '%s' "$HUGE_Q" | cut -c1-117)..."
 
   printf '== %s: once per turn\n' "$SH"
 

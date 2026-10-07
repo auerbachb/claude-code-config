@@ -13,9 +13,9 @@
 # Detection, on the final assistant message only:
 #   - a QUESTION line ends in `?` once trailing whitespace and `*`, `_`, `~`
 #     emphasis are stripped, and sits outside fenced code blocks (``` or ~~~);
-#   - never a question: headings (#), blockquotes (>), table rows (|), a `?`
-#     inside inline code, a bare URL (a list marker at most), a line with no
-#     words. Quoted or bracketed questions (`?"`, `?)`) and questions answered
+#   - never a question: headings (#), blockquotes (>), table rows (|) — also
+#     nested in a list item (`- > quoted?`) — a `?` inside inline code, a
+#     bare URL (a list marker at most), a line with no words. Quoted or bracketed questions (`?"`, `?)`) and questions answered
 #     on the same line do not end in `?`, so they never match;
 #   - a RECEIPT line names `question D-<n>` or `questions D-<n>, D-<m>`
 #     followed by `sent to human queue` (any case, anywhere in the line),
@@ -104,7 +104,7 @@ if [ "$qlw_mode" != message ] && [ "$qlw_mode" != transcript ]; then exit 0; fi
 # qlw_scan — reads the message on stdin; prints the first question line that
 # no receipt line follows, or nothing. LC_ALL=C: bytes, the same in every awk.
 qlw_scan() {
-  LC_ALL=C awk -v receipt="$QLW_RECEIPT_RE" '
+  LC_ALL=C awk -v receipt="$QLW_RECEIPT_RE" -v keep="$(( (QLW_QUOTE_MAX + 1) * 4 ))" '
     BEGIN { infence = 0; fch = ""; flen = 0; pending = "" }
     {
       line = $0
@@ -130,16 +130,21 @@ qlw_scan() {
       # (A backtick run with another backtick after it is inline code.)
       if (n >= 3 && !(c == "`" && index(r, "`") > 0)) { infence = 1; fch = c; flen = n; next }
 
+      # The line with its list markers removed: a heading, blockquote, or
+      # table row nested in a list item (`- > quoted?`) is still one.
+      b = t
+      while (b ~ /^([-*+]|[0-9]+[.)])[ \t]+/) sub(/^([-*+]|[0-9]+[.)])[ \t]+/, "", b)
+
       # A receipt answers every question above it: it carries no question
       # text, so it cannot be tied to one line, and the rule is "a question
       # not followed by a receipt" (issue #1778). One inside a fence or a
       # blockquote is an example or a quote, not a receipt. The receipt line
       # itself is still checked below: a question after the receipt on the
       # same line is a new, unanswered one.
-      if (t !~ /^>/ && tolower(line) ~ receipt) pending = ""
+      if (b !~ /^>/ && tolower(line) ~ receipt) pending = ""
 
       # Headings, blockquotes, table rows.
-      if (t ~ /^#+([ \t]|$)/ || t ~ /^>/ || t ~ /^[|]/) next
+      if (b ~ /^#+([ \t]|$)/ || b ~ /^>/ || b ~ /^[|]/) next
 
       # A `?` inside inline code is never line-final: the closing backtick
       # is, and backticks are not stripped here.
@@ -163,6 +168,10 @@ qlw_scan() {
         pending = line
         sub(/^[ \t]+/, "", pending)
         sub(/[ \t]+$/, "", pending)
+        # Only the first QLW_QUOTE_MAX characters are ever quoted, and the
+        # line reaches jq as an argument, which must stay under the OS
+        # limit. keep bytes always hold more than that many characters.
+        if (length(pending) > keep + 0) pending = substr(pending, 1, keep + 0)
       }
     }
     END { if (pending != "") print pending }
