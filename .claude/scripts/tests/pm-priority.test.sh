@@ -177,14 +177,29 @@ corrupt_case() { # LABEL CONTENT
   check "$1: the file is byte-for-byte unchanged" "$(cat "$FILE")" "$snap"
 }
 corrupt_case "not JSON" 'not json {'
+corrupt_case "an empty file" ''
+corrupt_case "a whitespace-only file" $' \n\t\n'
+corrupt_case "two concatenated documents" '{"order":[1]} {"order":[2]}'
+err=$(p show 2>&1 >/dev/null)
+check_contains "the two-document error names the problem" "$err" "holds 2 JSON documents"
 corrupt_case "a JSON array" '[1,2]'
 corrupt_case "a duplicated issue" '{"order":[1,1]}'
 corrupt_case "a string in order" '{"order":["7"]}'
 corrupt_case "a bad parked date" '{"parked":{"7":{"until":"soon"}}}'
+corrupt_case "an impossible parked date" '{"parked":{"7":{"until":"2026-02-30"}}}'
+corrupt_case "Feb 29 in a common year" '{"parked":{"7":{"until":"2027-02-29"}}}'
+corrupt_case "month 13" '{"parked":{"7":{"until":"2026-13-01"}}}'
+corrupt_case "a null order" '{"order":null}'
+corrupt_case "a false order" '{"order":false}'
+corrupt_case "a null parked" '{"parked":null}'
 corrupt_case "ordered and parked" '{"order":[7],"parked":{"7":{"until":"2099-01-01"}}}'
 corrupt_case "an unknown version" '{"version":2,"order":[]}'
 err=$(p show 2>&1 >/dev/null)
 check_contains "the error names the problem" "$err" "unsupported version"
+printf '%s' '{"parked":{"7":{"until":"2028-02-29"}}}' > "$FILE"
+out=$(p show --json); rc=$?
+check "a leap-day park date reads" "$rc" "0"
+check "the leap-day park is active" "$(jq -c '.parked' <<<"$out")" '[{"issue":7,"until":"2028-02-29"}]'
 printf '%s\n' "$GOOD" > "$FILE"
 p show >/dev/null; check "a repaired file reads again" "$?" "0"
 
@@ -251,6 +266,9 @@ usage_case "an unknown flag" show --yaml
 (cd "$REPO" && printf '101\nnope\n' | "$HELPER" apply >/dev/null 2>&1); check "a malformed apply line" "$?" "2"
 out=$(cd "$REPO" && printf '#101\n\n  102 \n101\n' | "$HELPER" --today "$D1" apply --json | jq -r '[.order[].issue | tostring] | join(" ")')
 check "apply accepts #N, blank lines, and spaces, and drops repeats" "$(tr ' ' '\n' <<<"$out" | grep -E '^(101|102)$' | paste -sd' ' -)" "101 102"
+(cd "$REPO" && printf '101\n10 2\n' | "$HELPER" --today "$D1" apply >/dev/null 2>&1); check "apply rejects whitespace inside a line (never joins 10 2 into 102)" "$?" "2"
+out=$(cd "$REPO" && printf '\t101 \r\n 102\t\n' | "$HELPER" --today "$D1" apply | awk -F'\t' '{print $1}' | paste -sd' ' -)
+check "apply trims tabs, spaces, and a CR around each number" "$out" "101 102"
 help=$("$HELPER" --help 2>&1); rc=$?
 check "--help exits 0" "$rc" "0"
 for needle in "EXIT STATUS" "apply" "park N" "America/New_York" "--repo OWNER/NAME"; do
@@ -287,7 +305,12 @@ check "1B.1a, no file: readable, no override" "$(run_read "$REPO" "$HELPER")" "f
 check "1B.1a, an order: readable, present, the order" "$(run_read "$REPO" "$HELPER")" "false true [103,101]"
 check "1B.1a, from a worktree: the same order" "$(run_read "$WT" "$HELPER")" "false true [103,101]"
 check "1B.1a, outside a checkout: no override, not unreadable" "$(run_read "$TMP/notrepo" "$HELPER")" "false false []"
-check "1B.1a, no helper: the safe default" "$(run_read "$REPO" "")" "false false []"
+check "1B.1a, no helper but a file: unreadable (Step 0's DEGRADED case fails closed)" "$(run_read "$REPO" "")" "true false []"
+check "1B.1a, no helper but a file, from a worktree: unreadable" "$(run_read "$WT" "")" "true false []"
+GOOD=$(cat "$FILE"); rm -f "$FILE"
+check "1B.1a, no helper and no file: the safe default" "$(run_read "$REPO" "")" "false false []"
+check "1B.1a, no helper, outside a checkout: the safe default" "$(run_read "$TMP/notrepo" "")" "false false []"
+printf '%s\n' "$GOOD" > "$FILE"
 GOOD=$(cat "$FILE")
 printf 'garbage' > "$FILE"
 check "1B.1a, a corrupt file: unreadable (fails closed)" "$(run_read "$REPO" "$HELPER")" "true false []"
@@ -338,7 +361,12 @@ check_contains "the templates mark override rows" "$TPL_TEXT" "Operator order (d
 check_contains "the templates carry the Parked (desk) line" "$TPL_TEXT" "Parked (desk): #57 until 2026-10-09"
 check_contains "the templates carry the Not eligible (desk) line" "$TPL_TEXT" "Not eligible (desk):"
 check_contains "the full ranking opens with the operator section" "$TPL_TEXT" "## Operator order (desk)"
-check_contains "the context line carries the status" "$TPL_TEXT" "operator priority {2 ordered, 1 parked}"
+check_contains "the context line carries the status" "$TPL_TEXT" "operator priority {4 ordered, 2 parked}"
+check_contains "every eligible ordered row in the example is marked" "$TPL_TEXT" "Operator order (desk) #2 | Blocked by: #35"
+check_contains "3.4 applies SCOPE to the operator-ordered source" "$SKILL_TEXT" "When \`\$SCOPE\` is non-null, take only the override rows inside it"
+check_contains "1B.3 fetches an ordered issue past the 500 cap" "$SKILL_TEXT" "past its 500-issue cap"
+dups=$(sed -n '/^## Full Ranking/,/^## Stop doing/p' "$TEMPLATES" | grep -oE '^- \*\*#[0-9]+' | sort | uniq -d)
+check "the full-ranking example lists each issue once" "$dups" ""
 
 echo ""
 if [[ $FAIL -eq 0 ]]; then

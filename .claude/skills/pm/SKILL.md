@@ -392,16 +392,24 @@ The operator can reorder the backlog from `/desk` (`top`, `bump`, `park`, `drop`
 PRIO_RC=0; PRIO_JSON=""
 if [[ -n "$PM_PRIORITY_SH" ]]; then
   PRIO_JSON=$("$PM_PRIORITY_SH" show --json 2>/dev/null) || PRIO_RC=$?
+else
+  # Step 0's DEGRADED case: no helper, but the operator may still have written a
+  # file at the main checkout's root. An order nothing here can read is unreadable.
+  PRIO_GITDIR=$(git rev-parse --git-common-dir 2>/dev/null) || PRIO_GITDIR=""
+  if [[ -n "$PRIO_GITDIR" ]] && PRIO_MAIN=$(cd "$PRIO_GITDIR/.." 2>/dev/null && pwd) \
+     && [[ -e "$PRIO_MAIN/.claude/pm-priority.json" ]]; then
+    PRIO_RC=127
+  fi
 fi
 [[ "$PRIO_RC" -eq 0 && -n "$PRIO_JSON" ]] || PRIO_JSON='{"present":false,"order":[],"parked":[]}'
 PRIORITY_UNREADABLE=false
 case "$PRIO_RC" in
   0|3) ;;                          # read (absent = none), or no git checkout here: no override
-  *)   PRIORITY_UNREADABLE=true ;;   # 4 = unreadable file; anything else is unreadable too
+  *)   PRIORITY_UNREADABLE=true ;;   # 4 = unreadable file; 127 = no helper but a file; anything else too
 esac
 ```
 
-`PRIORITY_STATUS` for the context line (`pm-output-templates.md`): `unreadable` when `PRIORITY_UNREADABLE=true` (or Step 0's DEGRADED file-exists case); `none` when `.order` and `.parked` are both empty; otherwise `N ordered, M parked`. **Unreadable fails closed:** rank and report without the override, warn in one line (`Operator priority unreadable (<file>) — fix or remove it; no autonomous launches until then`), and launch nothing autonomously (1B.5's default dispatch, 3.4's refill) — parking is a "do not start" instruction, and an unreadable file may be hiding one. A request in chat naming issues still proceeds. Re-run this read wherever a ranking is rebuilt — a mid-session re-prioritize (3.3) and every refill (3.4, so every day-mode tick) — so a desk edit takes effect at the next one without restarting `/pm`.
+`PRIORITY_STATUS` for the context line (`pm-output-templates.md`): `unreadable` when `PRIORITY_UNREADABLE=true` (a file the helper rejects, or Step 0's DEGRADED case with a file present); `none` when `.order` and `.parked` are both empty; otherwise `N ordered, M parked`. **Unreadable fails closed:** rank and report without the override, warn in one line (`Operator priority unreadable (<file>) — fix or remove it; no autonomous launches until then`), and launch nothing autonomously (1B.5's default dispatch, 3.4's refill) — parking is a "do not start" instruction, and an unreadable file may be hiding one. A request in chat naming issues still proceeds. Re-run this read wherever a ranking is rebuilt — a mid-session re-prioritize (3.3) and every refill (3.4, so every day-mode tick) — so a desk edit takes effect at the next one without restarting `/pm`.
 
 ### 1B.2: Fetch GitHub state
 
@@ -444,7 +452,7 @@ Reading all issue bodies is expensive. Use a two-pass approach:
 - Issues not already covered by an open PR (cross-reference PR branch names and bodies for `#N` references)
 - Most recently updated (active discussion = likely important)
 - Oldest unassigned (may be neglected but important)
-- **Operator order (1B.1a):** every open issue in `PRIO_JSON.order` is a candidate whatever the signals above say, and every issue in `PRIO_JSON.parked` is dropped here, before any deep read
+- **Operator order (1B.1a):** every open issue in `PRIO_JSON.order` is a candidate whatever the signals above say, and every issue in `PRIO_JSON.parked` is dropped here, before any deep read. An ordered issue missing from 1B.2's list (past its 500-issue cap) is fetched directly — `gh issue view N --json number,title,labels,assignees,state,createdAt,updatedAt` — and joins when open, so the cap never silently drops an operator pick
 
 **Pass 2 — Deep read:** For the top ~20 candidates, fetch full bodies:
 
@@ -2019,7 +2027,7 @@ tick is unattended by construction, and `--window` already armed `.window` in St
 
 **Do not add a second budget pause mechanism.** `credit-budget.sh` is the single evaluation point. Re-read it per pick (same pattern as the refill.paused re-read), not once per tick. A budget state change between the tick read and the per-pick read cancels remaining launches for that tick.
 
-**A non-null `$SCOPE` constrains both refill sources** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, queued or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.
+**A non-null `$SCOPE` constrains every refill source** — it is a narrowing, not a stop, and it is worthless if it is only recorded. Every candidate, operator-ordered, queued, or from the backlog, must fall inside it; one that doesn't is skipped exactly like a failed re-validation, and if that empties the candidate set the reason is `nothing eligible (scope: <scope>)`. Reading `refill.scope` and then ranking the whole backlog would auto-launch precisely the work the user just excluded.
 
 Write it **only** when a human says stop in chat, and clear it **only** on an explicit human resume — never on an unrelated later message:
 
@@ -2048,7 +2056,7 @@ SCOPE_JSON=$(jq -cn --arg s "<label>" --arg at "$NOW" \
 
 Refill from three sources, in this order:
 
-**(o) Operator order — first.** Re-run 1B.4 item 7 over the latest ranking with this tick's read and take its `override` rows, in the operator's order. An ordered issue that ranking never saw (bumped since it ran) first joins the candidate set as a first-seen issue — full read, scored, excluded or not — exactly as step 2 of "When one or more pipelines or threads finish" below treats one. An issue that is also queued is taken once, here, at its override position, and leaves the queue. **Parked issues are deferred in every source:** a parked queued issue stays queued and is skipped until its date, the way an out-of-scope queued issue is; a parked backlog issue is not a candidate.
+**(o) Operator order — first.** Re-run 1B.4 item 7 over the latest ranking with this tick's read and take its `override` rows, in the operator's order. An ordered issue that ranking never saw (bumped since it ran) first joins the candidate set as a first-seen issue — full read, scored, excluded or not — exactly as step 2 of "When one or more pipelines or threads finish" below treats one. An issue that is also queued is taken once, here, at its override position, and leaves the queue. When `$SCOPE` is non-null, take only the override rows inside it, still in the operator's order; an out-of-scope ordered issue is deferred, not dropped — it stays in the override for a later, wider refill, the way an out-of-scope queued issue stays queued. **Parked issues are deferred in every source:** a parked queued issue stays queued and is skipped until its date, the way an out-of-scope queued issue is; a parked backlog issue is not a candidate.
 
 **(a) Queue refill — existing, automatic.** Start the next issue queued behind the ceiling from 3.1 before touching the backlog. When `$SCOPE` is non-null, skip queued issues outside it (they stay queued — a narrowing defers work, it does not drop it).
 

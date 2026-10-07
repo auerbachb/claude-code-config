@@ -69,7 +69,7 @@ Print the helper's output without the final `exit=0` line, and nothing else: no 
 
 | Result | Say |
 |---|---|
-| `exit=2` | Its one stderr line: a date that is not later than today, a word that is not a date, a bad number |
+| `exit=2` | Its one stderr line (a usage error, such as a date that is not later than today, a word that is not a date, a bad number, or a malformed `owner/name`) |
 | `exit=3` | `No local checkout of <owner/name> found — end the command with "in /path/to/checkout".` |
 | `exit=4` | `The priority file is unreadable (<its one line>); nothing changed. /pm launches nothing on its own until it is fixed or removed.` |
 | `exit=5` or `exit=6` | `Couldn't write the priority file (<its one line>) — nothing changed; try again.` |

@@ -21,8 +21,8 @@
 #                       "parked_at": "<ISO 8601 UTC>"}},
 #      "updated_at": "<ISO 8601 UTC>"}
 #   Read rules: absent is no override; anything that is not this shape (bad
-#   JSON, wrong types, an issue listed twice, an issue both ordered and parked)
-#   is UNREADABLE and is never overwritten. Unknown top-level fields survive a
+#   JSON, an empty file, several documents, wrong types, an issue listed twice,
+#   an issue both ordered and parked) is UNREADABLE and is never overwritten. Unknown top-level fields survive a
 #   write. A parked issue is excluded while today (America/New_York) is earlier
 #   than its `until` date and returns ON that date; expired entries are ignored
 #   on read and pruned on the next write.
@@ -51,7 +51,8 @@
 #   show      Print the active order and the active parks (--json: one object
 #             with file, repo, present, today, order, parked, updated_at).
 #   apply     Read the eligible ranked issue numbers on stdin, one per line,
-#             best first (blank lines ignored). Print them overlaid: the
+#             best first (blank lines and whitespace around a number ignored;
+#             whitespace inside a line is malformed). Print them overlaid: the
 #             operator-ordered ones first, in operator order, then the rest in
 #             input order; parked ones removed. Text: one line per issue,
 #             `<N><TAB>override<TAB><k>` or `<N><TAB>ranked<TAB>-`, where k is
@@ -236,24 +237,40 @@ resolve_target() {
 
 # ------------------------------------------------------------------ the file
 
-# The shape check. Prints "" for a readable document, else the first problem.
+# The shape check, run on the slurped file (`jq -s`), so an empty file or several
+# concatenated documents is a problem too, not a silent no-output pass. Prints ""
+# for a readable document, else the first problem. A present key is checked as
+# it stands: `has`, never `//`, which would read a null or false order/parked as
+# absent. A park date must be a real calendar day, not just YYYY-MM-DD-shaped.
 JQ_PROBLEM='
-def ints: (.order // []);
+def ints: (if has("order") then .order else [] end);
+def parks: (if has("parked") then .parked else {} end);
+def real_ymd:
+  [capture("^(?<y>[0-9]{4})-(?<m>[0-9]{2})-(?<d>[0-9]{2})$")]
+  | if length == 0 then false
+    else .[0] | (.y | tonumber) as $y | (.m | tonumber) as $m | (.d | tonumber) as $d
+      | ($m >= 1 and $m <= 12 and $d >= 1
+         and $d <= ([31, (if ($y % 4 == 0 and $y % 100 != 0) or $y % 400 == 0 then 29 else 28 end),
+                     31, 30, 31, 30, 31, 31, 30, 31, 30, 31][$m - 1]))
+    end;
+if length == 0 then "empty (no JSON document)"
+elif length > 1 then "holds \(length) JSON documents, not one"
+else .[0] |
 if type != "object" then "not a JSON object"
 elif has("version") and .version != 1 then "unsupported version \(.version | tojson)"
 elif (ints | type) != "array" then "order is not an array"
 elif any(ints | .[]; (type != "number") or . < 1 or . != floor) then "order holds something that is not an issue number"
 elif (ints | length) != (ints | unique | length) then "order lists an issue twice"
-elif ((.parked // {}) | type) != "object" then "parked is not an object"
-elif any((.parked // {}) | to_entries[];
+elif (parks | type) != "object" then "parked is not an object"
+elif any(parks | to_entries[];
          (.key | test("^[1-9][0-9]*$") | not)
          or ((.value | type) != "object")
          or ((.value.until | type) != "string")
-         or (.value.until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not))
-  then "a parked entry is not {\"<issue>\": {\"until\": \"YYYY-MM-DD\"}}"
-elif ([ints | .[] | tostring] - ((.parked // {}) | keys) | length) != (ints | length)
+         or (.value.until | real_ymd | not))
+  then "a parked entry is not {\"<issue>\": {\"until\": \"YYYY-MM-DD\"}} with a real date"
+elif ([ints | .[] | tostring] - (parks | keys) | length) != (ints | length)
   then "an issue is both ordered and parked"
-else "" end'
+else "" end end'
 
 # load_doc — sets DOC (the file's JSON, or {} when absent) and PRESENT (0/1).
 # Exits 4 on an unreadable file.
@@ -264,7 +281,7 @@ load_doc() {
   PRESENT=1
   local raw problem rc=0
   raw=$(cat "$FILE" 2>/dev/null) || die 4 "priority file unreadable: cannot read $FILE"
-  problem=$(printf '%s' "$raw" | jq -r "$JQ_PROBLEM" 2>/dev/null) || rc=$?
+  problem=$(printf '%s' "$raw" | jq -rs "$JQ_PROBLEM" 2>/dev/null) || rc=$?
   if [[ $rc -ne 0 ]]; then
     die 4 "priority file unreadable: $FILE is not valid JSON"
   fi
@@ -374,7 +391,10 @@ if [[ "$VERB" == "apply" ]]; then
   # whatever the file's state.
   INPUT=()
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line//[[:space:]]/}"
+    # Trim the ends only: whitespace inside a line (`10 2`) is malformed, never
+    # joined into another issue number.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
     [[ -n "$line" ]] || continue
     n=$(issue_num "$line") || exit 2
     INPUT+=("$n")

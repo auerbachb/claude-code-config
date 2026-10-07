@@ -40,14 +40,14 @@ lines appear only when they have entries.
 ```
 ## Suggested Next Issues
 
-Based on {N} open issues, {M} recent merges, {OKR status}, and operator priority {2 ordered, 1 parked}:
+Based on {N} open issues, {M} recent merges, {OKR status}, and operator priority {4 ordered, 2 parked}:
 
 1. **#42 — {Title}** — {1-line rationale connecting to business value or OKR}
    - Labels: {labels} | Age: {days} days | Operator order (desk) #1 | Unblocks: #50, #53
    - Est: 45–90 min · plan on 90
 
 2. **#38 — {Title}** — {rationale}
-   - Labels: {labels} | Age: {days} days | Blocked by: #35
+   - Labels: {labels} | Age: {days} days | Operator order (desk) #2 | Blocked by: #35
    - Est: 15–30 min · plan on 30
 
 3. **#55 — {Title}** — {rationale}
@@ -97,7 +97,7 @@ Not eligible (desk): #49 — open PR #120
 - **#55 — {title}** — {rationale}
 
 ## Medium — supporting work (defer if necessary)
-- **#61 — {title}** — {rationale}
+- **#66 — {title}** — {rationale}
 
 ## Low — tangential (skip for now)
 - **#70 — {title}** — {rationale}
