@@ -17,15 +17,17 @@ be spun out as its own project later.
 | `bin/lib/items.sh` | Item ids, input checks mirrored from the schema, the shared item renderer |
 | `bin/lib/lifecycle.sh` | The answer transaction shared by `answer` and `set-resolve`, row locking, the `!reason` refusal protocol |
 | `bin/lib/secrets.sh` | The secret-shape detector behind exit 5 |
+| `bin/desk-cli.sh` | `human-queue.sh` for the desk: same arguments, the store's URL found the way the capture hook finds it (see "The desk") |
+| `bin/desk-tick.sh` | The `/desk` Monitor loop (see "The desk") |
+| `bin/wake-target.sh` | A Decision's return address → the running session's messaging address (see "The desk") |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
 | `hooks/` | Hook implementations: `capture.sh` and its logic `capture.py`, the capture hook (see "Capture hook") |
-| `skill/` | The `/desk` skill (arrives with the `/desk` issues) |
+| `skill/` | The `/desk` skill: `SKILL.md` (router) and one file per kind of work (see "The desk") |
 | `tests/` | `run.sh` plus `*.test.sh` suites |
 
 The hook entries under `.claude/hooks/` are symlinks into this folder
-(`human-queue-capture.sh` → `hooks/capture.sh`), and `.claude/skills/desk`
-will be one too, added by the issue that creates it, so the repo's
-skill-symlink rule keeps holding.
+(`human-queue-capture.sh` → `hooks/capture.sh`), and so is `.claude/skills/desk`
+(→ `../../desk/skill`), so the repo's skill-symlink rule keeps holding.
 
 ## Provisioning the database (once)
 
@@ -172,6 +174,7 @@ full contract.
 | `review ID` | Reviews | Sets `reviewed` (also clears a flag) | `reviewed` |
 | `flag ID [--note TEXT]` | Reviews | Sets `flagged`; the note says what to follow up. Turning it into an issue is the desk's job | `flagged` |
 | `comment ID TEXT` | any item | A one-line note in the item's history; the item is unchanged | `commented` |
+| `wake ID --result sent\|failed [--note TEXT]` | answered Decisions | Records whether the desk woke the asking thread after an answer; the item is unchanged and `tick` does not report it again. Every call appends (each attempt is a fact); an item with no answer is refused | `woken` or `wake-failed` (note: the address and the tool's status, or the reason) |
 | `feedback ID TAG` | any item | An interrupt-tuning tag: `not-important`, `should-have-defaulted`, `good-interrupt`, or any other hyphenated lowercase tag | `feedback` |
 
 - **One event per change.** Every write records exactly one event per item it
@@ -194,11 +197,13 @@ full contract.
 | Subcommand | What it does |
 |------------|--------------|
 | `set-open ID... [--json]` | Numbers 1 to 99 distinct items 1..n under a new set id, in argument order, and records one `shown` event per item (note `set N #k`). Prints `set N` and one `k. ID **question**` line per item |
-| `set-resolve REPLY [--set ID] [--json]` | Maps the operator's reply to the set's items and answers them, exactly as `answer` does |
+| `set-resolve REPLY [--set ID] [--json]` | Maps the operator's reply to the set's items and answers them, exactly as `answer` does. `--json` answers carry each item's `session` (its return address), so the desk wakes threads without another read |
 
-- **Replies.** `"2: B"`, `"1: A, 2: C"`, or `"1: yes, but after CI; 3: use
-  staging"`. A pair starts at the beginning, or after a comma, semicolon, or
-  line break followed by `N:`; anything else continues the answer before it,
+- **Replies.** `"2: B"`, `"1: A, 2: C"`, `"D-43: B"`, or `"1: yes, but after
+  CI; 3: use staging"`. A pair is opened by an item's number in the set or by
+  its id (issue #1779; the id must be in the set, and one item may not be
+  named by both). A pair starts at the beginning, or after a comma, semicolon, or
+  line break followed by `N:` or `D-<n>:`; anything else continues the answer before it,
   so commas and line breaks inside an answer survive. A reply is at most 8000
   characters, which bounds the parse to under a second on bash 3.2.
 - **All or nothing.** Every pair is validated (the number is in the set, the
@@ -215,7 +220,7 @@ full contract.
 |------------|--------------|
 | `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
-| `tick` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick |
+| `tick [--session SESSION]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
 
 - **Reserved keys.** `tick_watermark` and `tick_at` (written by `tick`) and
@@ -253,7 +258,7 @@ registers globally at the next session start.
 | Situation | What the asking thread sees | What the store gets |
 |-----------|-----------------------------|---------------------|
 | No live desk | The menu, as before | Nothing |
-| Live desk, the desk's own session | The menu | One Decision per question |
+| Live desk, the desk's own session | The menu | One Decision per question, except a question in the desk's set format (`1. [D-43] …`), which is a queued item shown again and adds nothing |
 | Live desk, any other session | The call denied with the reason below | One Decision per question |
 | The hook cannot do its job | The menu, plus one warning line on stderr | Whatever was written before the failure |
 
@@ -393,11 +398,73 @@ bash desk/tests/run.sh
   and `tick_at`; no live desk queues nothing; a live desk denies a worker and
   allows the desk while both items exist; dedupe; two questions; and the URL
   read from a profile when the environment lacks it.
+- `desk-offline.test.sh` is offline: `wake` and `set-resolve`'s id pairs
+  validate before connecting; `desk-cli.sh` finds the URL (environment, an
+  owner-only config file, a literal profile export) and refuses the rest;
+  `wake-target.sh` against a fixture registry (running, dead, terminal,
+  `.key` files ignored); `desk-tick.sh` against a stub CLI (new, quiet,
+  replaced, replaced between control-status and tick, one error per outage,
+  recovered, sleep first, a cadence at or past the live-desk bound); and the skill's
+  layout, including that its menu prefix is the hook's re-render prefix.
+  Same two shells.
+- `desk.test.sh` is live under the same rules (one throwaway schema,
+  `public` unchanged): two worker sessions' Decisions shown in one set as 1
+  and 2, `1: A, 2: C` answered in one transaction with each asking session,
+  `woken` and `wake-failed` events, each worker's `pending-for`, replies by
+  id, `wake` refusals, a second desk replacing the first (its
+  `tick --session` reads nothing and moves no watermark), and `wake` on a
+  store without migration 005.
 - `shellcheck.test.sh` runs shellcheck on every shell file here (skips when
   shellcheck is not installed).
 
 CI runs the suites through `.github/scripts/run-hook-tests.sh`, without a
 database, so the live suites skip there.
+
+## The desk (issue #1779)
+
+`/desk` (`skill/SKILL.md`, published as `.claude/skills/desk`) is the control
+session: the one thread where questions render. Its first increment covers
+simple Decisions; long-form, multipart, and `discuss` are #1780, and wake-up
+retries, `answer-parked`, `show`, and `history` are #1781.
+
+- **Start.** `migrate`, then `register-control` with the session id the
+  capture hook sees (`$CLAUDE_CODE_SESSION_ID`, never the desktop app's
+  `local_…` id), one inline tick, then a persistent Monitor running
+  `desk-tick.sh` (default every 5 minutes; 1 to 60 and shorter than the
+  live-desk bound, which `desk-tick.sh` reads through the capture hook's own
+  policy parser and enforces with exit 4). From the inline tick on,
+  the desk is live and worker threads' menus are queued instead of shown.
+- **`desk-cli.sh`.** The desktop app's Bash tool and Monitor do not source the
+  shell profile, so the URL is usually missing there. The wrapper calls the
+  capture hook's own resolver (`capture.py`'s `resolve_url`: environment,
+  owner-only config file, literal profile export) and runs `human-queue.sh`
+  with it; exit 7 with one line when there is none. `HUMAN_QUEUE_CLI`
+  replaces the CLI (tests).
+- **`desk-tick.sh`.** Sleeps first, then each cycle: `control-status` (when
+  another session is registered, prints `desk-tick G replaced` and exits, so
+  two desks never split the change feed), then `tick --session`, which
+  repeats that check inside the tick's own transaction so a registration
+  landing between the two calls cannot let the replaced loop consume the
+  feed (a refusal confirmed by `control-status` prints `replaced` too),
+  printing `desk-tick G new D-43 D-44` only for open Decisions. A failing call prints
+  one `error` line per outage and one `recovered` line; a quiet tick prints
+  nothing. `HUMAN_QUEUE_TICK_SECONDS` (1 to 3600, and under the live-desk
+  bound like the cadence) overrides the cadence (tests); 0 is refused.
+- **Sets and replies.** Simple Decisions (2 to 4 options, a cost not in
+  hours or days) are numbered with `set-open` four at a time and shown as one
+  menu per set, each question prefixed `N. [D-<n>]`. Clicks and typed replies
+  both go through `set-resolve --set ID --json`.
+- **Wake-ups.** For each changed answer, `wake-target.sh SESSION` reads the
+  harness's session registry (`~/.claude/sessions/<pid>.json`, never the
+  `.key` files beside it) for a running session with that id and prints its
+  `local_…` id, or its name for a terminal session; exit 3 when none is
+  running, exit 5 when it is running but has no messaging address, exit 1
+  when it cannot tell (the registry cannot be listed, or no readable file
+  matches while some file could not be read or parsed). The
+  desk sends exactly `human-queue: D-<n> answered` with
+  `SendMessage` (or the app's `send_message`) and records the outcome with
+  `wake`. The thread reads the answer from `pending-for`; a thread that is
+  gone loses nothing.
 
 ## Reviews (issue #1756)
 

@@ -161,25 +161,27 @@ hq_sql_lock_item() {
     ":'hq_id'" "$1"
 }
 
-# hq__sql_answer_input MODE N — the `input(n, pos, id, reply)` CTE.
-#   id:  one row from :'hq_id_1' and :'hq_reply_1'; pos is NULL.
-#   set: one row per pair from :'hq_pos_K' and :'hq_reply_K', the id looked up
-#        by position in set :hq_set_id (NULL when the set has no such number).
+# hq__sql_answer_input MODE N — the `input(n, pos, ref, id, reply)` CTE.
+#   id:  one row from :'hq_id_1' and :'hq_reply_1'; pos and ref are NULL.
+#   set: one row per pair from :'hq_pos_K' (a number, or empty), :'hq_ref_K'
+#        (an item id such as D-43, or empty; issue #1779) and :'hq_reply_K'.
+#        The id and its number are looked up in set :hq_set_id by whichever
+#        was given (both NULL when the set has no such number or item).
 # Only variable references are generated; values never enter the SQL text.
 hq__sql_answer_input() {
   local k=1 rows=""
   if [ "$1" = id ]; then
-    printf '%s\n' "input(n, pos, id, reply) AS (VALUES (1, NULL::int, :'hq_id_1'::text, :'hq_reply_1'::text))"
+    printf '%s\n' "input(n, pos, ref, id, reply) AS (VALUES (1, NULL::int, NULL::text, :'hq_id_1'::text, :'hq_reply_1'::text))"
     return 0
   fi
   while [ "$k" -le "$2" ]; do
-    rows="$rows${rows:+, }($k, :'hq_pos_$k'::int, :'hq_reply_$k'::text)"
+    rows="$rows${rows:+, }($k, nullif(:'hq_pos_$k', '')::int, nullif(:'hq_ref_$k', '')::text, :'hq_reply_$k'::text)"
     k=$((k + 1))
   done
-  printf '%s\n' "input(n, pos, id, reply) AS ("
-  printf '%s\n' "  SELECT v.n, v.pos, s.item_id, v.reply"
-  printf '    FROM (VALUES %s) AS v(n, pos, reply)\n' "$rows"
-  printf '%s\n' "    LEFT JOIN sets s ON s.set_id = :hq_set_id AND s.position = v.pos)"
+  printf '%s\n' "input(n, pos, ref, id, reply) AS ("
+  printf '%s\n' "  SELECT v.n, coalesce(s.position::int, v.pos), v.ref, s.item_id, v.reply"
+  printf '    FROM (VALUES %s) AS v(n, pos, ref, reply)\n' "$rows"
+  printf '%s\n' "    LEFT JOIN sets s ON s.set_id = :hq_set_id AND (s.position = v.pos OR s.item_id = v.ref))"
 }
 
 # The `r` CTE: each input row with its item. A reply that is a single letter
@@ -187,8 +189,9 @@ hq__sql_answer_input() {
 hq__sql_answer_rows() {
   cat <<'SQL'
 r AS (
-  SELECT inp.n, inp.pos, inp.id, inp.reply, i.id AS found, i.kind, i.status,
-         i.answer AS old_answer, i.options, cardinality(i.options) AS n_options,
+  SELECT inp.n, inp.pos, inp.ref, inp.id, inp.reply, i.id AS found, i.kind, i.status,
+         i.answer AS old_answer, i.session_id AS session, i.options,
+         cardinality(i.options) AS n_options,
          CASE WHEN cardinality(i.options) > 0 AND inp.reply ~ '^[A-Za-z]$'
               THEN upper(inp.reply) END AS letter
     FROM input inp
@@ -243,7 +246,10 @@ SQL
   printf '%s\n' "    SELECT CASE"
   if [ "$mode" = set ]; then
     # Only a set lookup can leave the id empty; :hq_set_id exists only here.
+    printf '%s\n' "             WHEN r.id IS NULL AND r.ref IS NOT NULL THEN r.ref || ' is not in set ' || :hq_set_id"
     printf '%s\n' "             WHEN r.id IS NULL THEN 'set ' || :hq_set_id || ' has no number ' || r.pos"
+    # One item named by its number and by its id (issue #1779).
+    printf '%s\n' "             WHEN (SELECT count(*) FROM r r2 WHERE r2.id = r.id) > 1 THEN 'number ' || r.pos || ' (' || r.id || ') is answered twice'"
   fi
   cat <<'SQL'
              WHEN r.found IS NULL THEN 'no item ' || r.id
@@ -253,6 +259,7 @@ SQL
       FROM r
      WHERE r.id IS NULL OR r.found IS NULL OR r.kind <> 'decision'
         OR (r.letter IS NOT NULL AND ascii(r.letter) - 64 > r.n_options)
+        OR (SELECT count(*) FROM r r2 WHERE r2.id = r.id) > 1
      ORDER BY r.n
      LIMIT 1), '')
 SQL
@@ -266,7 +273,7 @@ SQL
   printf 'WITH %s,\n%s,\n' "$input" "$rows"
   cat <<'SQL'
 d AS (
-  SELECT r.n, r.pos, r.id, r.letter, r.status, r.old_answer,
+  SELECT r.n, r.pos, r.id, r.session, r.letter, r.status, r.old_answer,
          CASE WHEN r.letter IS NOT NULL THEN r.options[ascii(r.letter) - 64]
               ELSE r.reply END AS answer
     FROM r
@@ -301,7 +308,8 @@ SQL
     cat <<'SQL'
 SELECT jsonb_build_object('set_id', :hq_set_id, 'answers',
          jsonb_agg(jsonb_build_object('n', c.pos, 'id', c.id, 'answer', c.answer,
-                                      'changed', c.changed) ORDER BY c.n))
+                                      'changed', c.changed, 'session', c.session)
+                   ORDER BY c.n))
   FROM c;
 SQL
   else

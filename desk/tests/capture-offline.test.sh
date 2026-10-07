@@ -299,6 +299,25 @@ for SH in $SHELLS; do
   check "[$SH] desk session: the item is still queued" "$(n_calls add)" "1"
   check "[$SH] desk session: its session is the return address" "$(arg_after add 1 --session)" "desk-1"
 
+  # issue #1779: the desk showing queued items (`N. [D-<n>] ...`) is not a new
+  # question. Without this, each menu would queue a copy that the next tick
+  # shows again, without end.
+  QR1='{"question": "1. [D-43] Ship the migration before the CLI? (acme/widgets · issue-77)", "header": "1 · D-43", "multiSelect": false, "options": [{"label": "A. Ship now (Recommended)", "description": "Ship now"}, {"label": "B. Wait for review", "description": "Wait for review"}]}'
+  QR2='{"question": "2. [D-44] Which region?", "header": "2 · D-44", "multiSelect": false, "options": [{"label": "A. us-east-1", "description": "us-east-1"}, {"label": "B. eu-west-1", "description": "eu-west-1"}]}'
+  reset_stub
+  hook "$SH" "$(input desk-1 "$REPO_DIR" "$QR1" "$QR2")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
+  expect_allow_silent "[$SH] desk re-render"
+  check "[$SH] desk re-render: nothing is queued" "$(n_calls add)" "0"
+  reset_stub
+  hook "$SH" "$(input desk-1 "$REPO_DIR" "$QR1" "$Q2")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
+  expect_allow_silent "[$SH] desk re-render beside its own question"
+  check "[$SH] desk re-render beside its own question: only that one is queued" "$(n_calls add)" "1"
+  check "[$SH] desk re-render beside its own question: the queued one" "$(arg_after add 1 --question)" "Which region?"
+  reset_stub
+  hook "$SH" "$(input worker-1 "$REPO_DIR" "$QR1")" "${STUBBED[@]}" STUB_STATUS="$LIVE"
+  check "[$SH] the re-render shape in a worker session is still captured" "$(decision)" "PreToolUse deny"
+  check "[$SH] the re-render shape in a worker session: one add" "$(n_calls add)" "1"
+
   # two questions in one call
   reset_stub
   hook "$SH" "$(input worker-1 "$REPO_DIR" "$Q1" "$Q2")" "${STUBBED[@]}" STUB_STATUS="$LIVE"

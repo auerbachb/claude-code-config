@@ -3,7 +3,8 @@
 #
 # Validates:
 #   1. The Slash Commands table in README.md matches the actual set of
-#      .claude/skills/*/ directories (no drift in either direction).
+#      .claude/skills/*/ directories, a symlink to a directory included
+#      (no drift in either direction; a broken skill symlink is an error).
 #   2. No duplicate command rows (a dupe would inflate the count while
 #      leaving a command undocumented).
 #   3. Every skill directory actually contains a SKILL.md.
@@ -78,8 +79,22 @@ documented_all=$(printf '%s\n' "$catalog_section" \
   | sort || true)
 documented=$(printf '%s\n' "$documented_all" | sort -u)
 
-actual=$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; \
-  | sort -u)
+# A skill directory may be a symlink to a directory elsewhere in the repo
+# (.claude/skills/desk -> ../../desk/skill, issue #1779): publication follows
+# it (setup-skills-worktree.sh and publish-skill-symlinks.sh glob `*/`), so the
+# catalog counts it too. A symlink that resolves to no directory is an error,
+# never a silent skip, and it is left out of the comparison below.
+actual=""
+while IFS= read -r s; do
+  [[ -z "$s" ]] && continue
+  if [[ -L "${SKILLS_DIR}/${s}" && ! -d "${SKILLS_DIR}/${s}" ]]; then
+    echo "::error::${SKILLS_DIR}/${s} is a symlink that does not resolve to a directory"
+    errors=$((errors + 1))
+    continue
+  fi
+  actual+="${s}"$'\n'
+done < <(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -exec basename {} \; | sort -u)
+actual="${actual%$'\n'}"
 
 undocumented=$(comm -23 <(printf '%s\n' "$actual") <(printf '%s\n' "$documented") || true)
 phantom=$(comm -13 <(printf '%s\n' "$actual") <(printf '%s\n' "$documented") || true)
