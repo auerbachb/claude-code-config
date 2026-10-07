@@ -572,7 +572,9 @@ check_contains "tick says to migrate" "$ERR" "run human-queue.sh migrate"
 hq bash "$S_OLD" answer "$O1" "works before 003 too"
 check "answer works on a store without 003" "$RC" "0"
 hq bash "$S_OLD" migrate
-check "003 applies over existing rows" "$RC|$OUT" "0|applied 003_lifecycle.sql"
+# Later migrations (004 onward) apply in the same run, so match 003's line.
+check "003 applies over existing rows" "$RC" "0"
+check_contains "003 is applied over existing rows" "$OUT" "applied 003_lifecycle.sql"
 check "existing rows get a change marker" \
   "$(sql_in "$S_OLD" "SELECT count(*) FROM items WHERE change_xid IS NULL")" "0"
 hq bash "$S_OLD" set-open "$O1" "$O2"

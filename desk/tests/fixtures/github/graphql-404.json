@@ -1,0 +1,1 @@
+{"data":{"repository":{"nameWithOwner":"acme/widgets","issueOrPullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","issueOrPullRequest"],"locations":[{"line":4,"column":5}],"message":"Could not resolve to an issue or pull request with the number of 404."}]}

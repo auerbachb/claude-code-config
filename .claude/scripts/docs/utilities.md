@@ -17,6 +17,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [portable-handoff-context.sh](../portable-handoff-context.sh) | Emit a bounded, secret-free JSON snapshot of the exact repository/worktree, Git/linkage state, and current-session task recovery metadata for `/end` |
 | [portable-handoff-lint.sh](../portable-handoff-lint.sh) | Enforce portable handoff structure, working-copy identity, cross-agent resume guidance, and freedom from harness-only references |
 | [portable-handoff-publish.sh](../portable-handoff-publish.sh) | Lint and atomically update one locked canonical manual handoff per repository/session |
+| [pr-summary-material.sh](../../../desk/bin/pr-summary-material.sh) | Human-queue Reviews material (`desk/bin/pr-summary-material.sh`): prints a PR's or issue's raw material for a level 1, 2, or 3 summary (title, labels, closing issue; body, commits, files, tests; the bounded diff, narrowed by --path); read-only |
 | [reference-catalog-lint.sh](../reference-catalog-lint.sh) | Lint the `.claude/reference/` catalog against the directory contents (index/disk parity, no phantoms, no duplicates) |
 | [report-path.sh](../report-path.sh) | Return a collision-free monthly report path for `/review-stack-audit` and `/harness-audit`, so a second same-month audit cannot overwrite the first |
 | [verify-exit-report-block.sh](../verify-exit-report-block.sh) | Verify stdin contains a parseable EXIT_REPORT with all required fields |

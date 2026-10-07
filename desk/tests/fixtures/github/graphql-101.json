@@ -1,0 +1,49 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "acme/widgets",
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 101,
+        "title": "feat(#90): widgets become reviewable",
+        "url": "https://github.com/acme/widgets/pull/101",
+        "state": "MERGED",
+        "body": "## Summary\n\nWidgets now land in the review queue.\n\n- one\n- two\n\nCloses #90",
+        "mergedAt": "2026-10-05T21:34:47Z",
+        "closedAt": "2026-10-05T21:34:47Z",
+        "createdAt": "2026-10-05T18:00:00Z",
+        "additions": 75,
+        "deletions": 3,
+        "changedFiles": 4,
+        "labels": { "nodes": [ { "name": "enhancement" }, { "name": "desk" } ] },
+        "closingIssuesReferences": {
+          "nodes": [
+            {
+              "number": 90,
+              "title": "Make widgets reviewable",
+              "url": "https://github.com/acme/widgets/issues/90",
+              "repository": { "nameWithOwner": "acme/widgets" }
+            }
+          ]
+        },
+        "commits": {
+          "totalCount": 3,
+          "nodes": [
+            { "commit": { "messageHeadline": "feat(#90): widgets become reviewable" } },
+            { "commit": { "messageHeadline": "test(#90): cover the widget queue" } },
+            { "commit": { "messageHeadline": "docs(#90): describe reviews" } }
+          ]
+        },
+        "files": {
+          "totalCount": 4,
+          "nodes": [
+            { "path": "src/widget.sh", "additions": 40, "deletions": 2 },
+            { "path": "tests/widget.test.sh", "additions": 30, "deletions": 0 },
+            { "path": "docs/README.md", "additions": 5, "deletions": 1 },
+            { "path": "src/new_name.sh", "additions": 0, "deletions": 0 }
+          ]
+        }
+      }
+    }
+  }
+}

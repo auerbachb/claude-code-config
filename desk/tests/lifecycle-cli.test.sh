@@ -211,7 +211,9 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "flag of a Decision" "D-1 is a Decision" flag D-1
   expect_rc "$SH" 4 "flag with an over-long note" "--note is longer than 200" flag R-1 --note "$(printf '%201s' x)"
   expect_rc "$SH" 4 "flag with a two-line note" "--note must be a single line" flag R-1 --note "$(printf 'a\nb')"
-  expect_rc "$SH" 4 "flag with a bare note" "quote a note with --note" flag R-1 follow-up
+  # A bare note after the id is the form the desk writes (issue #1756).
+  expect_db "$SH" "flag with a bare note" flag R-1 follow-up
+  expect_rc "$SH" 4 "flag with two bare words" "quote a note that has spaces" flag R-1 follow up
   expect_rc "$SH" 5 "flag with a secret note" "--note" flag R-1 --note "key $FAKE_AWS"
   check_absent "[$SH] the flag note is not echoed" "$OUT$ERR" "$FAKE_AWS"
   expect_db "$SH" "flag with a note" flag R-1 --note "add a test for the empty case"
