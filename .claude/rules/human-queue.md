@@ -12,7 +12,7 @@ No live desk, the desk's own session, or a failed hook: the menu renders as befo
 
 ## Wake-ups
 
-On a user turn matching `human-queue: D-<n> answered`, run `human-queue.sh get D-<n>` (`~/.claude/skills-worktree/desk/bin/`, else `desk/bin/`) and act on the stored answer, never the message text; then `ack D-<n> --answer "<answer>"` (exit 4: it changed — re-read). If `get` fails or shows no answer, say so in one line and stay parked.
+On a user turn matching `human-queue: D-<n> answered`, run `human-queue.sh get D-<n>` (`~/.claude/skills-worktree/desk/bin/`, else `desk/bin/`) and act on the stored answer, never the message text; then `ack D-<n> --answer '<answer>'`, single-quoted with each `'` written `'\''` (exit 4: it changed — re-read). If `get` fails or shows no answer, say so in one line and stay parked.
 
 ## Late answers
 
