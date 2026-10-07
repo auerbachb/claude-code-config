@@ -42,6 +42,9 @@
 #      that one, so "nobody is running" would be a guess)
 #   3  no running session has that id (the session ended, or it never
 #      registered): there is nobody to wake; the answer waits in the store
+#   5  a session with that id is running, but has no messaging address (no
+#      local_ hostSessionId and no name): it is alive, and reads its answer
+#      from the store when it next checks; it cannot be messaged
 #   4  usage error: a missing, blank, multi-line, or over-long session id, or
 #      an unknown argument
 #
@@ -189,5 +192,5 @@ if isinstance(host, str) and host.startswith("local_"):
 if name and "\n" not in name and "\r" not in name:
     emit(name, "name", name, pid)
 sys.stderr.write("wake-target: the session is running but has no messaging address\n")
-sys.exit(3)
+sys.exit(5)
 PY

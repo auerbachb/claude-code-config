@@ -46,8 +46,9 @@
 #   URL found the way the capture hook finds it).
 #
 # ENVIRONMENT
-#   HUMAN_QUEUE_TICK_SECONDS  seconds between ticks, overriding --cadence
-#                             (tests)
+#   HUMAN_QUEUE_TICK_SECONDS  seconds between ticks, 1 to 3600, overriding
+#                             --cadence (tests); 0 is refused (exit 4), never
+#                             a loop that calls the store without a pause
 #   HUMAN_QUEUE_POLICY        the policy file, as the capture hook reads it
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
 #
@@ -125,10 +126,18 @@ if [ "${#dt_cadence}" -gt 2 ] || [ "$dt_cadence" -lt 1 ] || [ "$dt_cadence" -gt 
   dt_die "--cadence must be a whole number of minutes from 1 to 60"
 fi
 dt_secs=$((10#$dt_cadence * 60))
+# At least one second: 0 would make the persistent loop call the store
+# back-to-back with no pause at all.
 case "${HUMAN_QUEUE_TICK_SECONDS:-}" in
   '') ;;
-  *[!0-9]*) dt_die "HUMAN_QUEUE_TICK_SECONDS must be a whole number of seconds" ;;
-  *) dt_secs="$HUMAN_QUEUE_TICK_SECONDS" ;;
+  *[!0-9]*) dt_die "HUMAN_QUEUE_TICK_SECONDS must be a whole number of seconds from 1 to 3600" ;;
+  *)
+    if [ "${#HUMAN_QUEUE_TICK_SECONDS}" -gt 4 ] || [ "$((10#$HUMAN_QUEUE_TICK_SECONDS))" -lt 1 ] \
+      || [ "$((10#$HUMAN_QUEUE_TICK_SECONDS))" -gt 3600 ]; then
+      dt_die "HUMAN_QUEUE_TICK_SECONDS must be a whole number of seconds from 1 to 3600"
+    fi
+    dt_secs="$((10#$HUMAN_QUEUE_TICK_SECONDS))"
+    ;;
 esac
 
 dt_py=$(command -v python3 2>/dev/null) || dt_py=""

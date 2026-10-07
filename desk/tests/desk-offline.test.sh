@@ -283,6 +283,15 @@ check "a local_ id passes through" "$RC:$OUT" "0:local_9999"
 RC=0
 env HUMAN_QUEUE_SESSIONS_DIR="$TMP/nowhere" bash "$BIN/wake-target.sh" cli-aaa >/dev/null 2>&1 || RC=$?
 check "no registry: exit 3" "$RC" "3"
+# Running, but no local_ id and no name: alive and unreachable, never
+# reported as gone (exit 3 would tell the operator the thread ended).
+REG3="$TMP/sessions3"
+mkdir -p "$REG3"
+printf '{"pid": %s, "sessionId": "cli-anon", "updatedAt": 10}\n' "$LIVE1" > "$REG3/$LIVE1.json"
+RC=0
+env HUMAN_QUEUE_SESSIONS_DIR="$REG3" bash "$BIN/wake-target.sh" cli-anon >"$TMP/out" 2>"$TMP/err" || RC=$?
+check "running with no messaging address: exit 5" "$RC" "5"
+check_contains "running with no messaging address: says so" "$(cat "$TMP/err")" "running but has no messaging address"
 # A registry file that cannot be parsed (a session's file mid-rewrite) is
 # skipped; with no match elsewhere, the answer is exit 1, never a guessed 3.
 REG2="$TMP/sessions2"
@@ -317,6 +326,7 @@ check "an unknown option: exit 4" "$RC" "4"
 wt --help
 check "--help: exit 0" "$RC" "0"
 check_contains "--help documents exit 3" "$OUT" "no running session"
+check_contains "--help documents exit 5" "$OUT" "has no messaging address"
 
 # ------------------------------------------------------------- desk-tick.sh
 printf '== desk-tick.sh\n'
@@ -431,7 +441,7 @@ for SH in $SHELLS; do
   printf '%s\n' "$THEIRS" > "$STUB_DIR/status-5"
   # perl's alarm bounds the loop, so a regression that never exits fails
   # this case instead of hanging the suite.
-  dtick perl -e 'alarm 20; exec @ARGV' env HUMAN_QUEUE_TICK_SECONDS=0 "$SH" "$BIN/desk-tick.sh" \
+  dtick perl -e 'alarm 20; exec @ARGV' env HUMAN_QUEUE_TICK_SECONDS=1 "$SH" "$BIN/desk-tick.sh" \
     --session desk-1 --generation g2 --cadence 5
   EXPECTED="desk-tick g2 error control-status exit 7: human-queue: database unreachable (stub)
 desk-tick g2 recovered
@@ -439,6 +449,14 @@ desk-tick g2 new D-4 D-7
 desk-tick g2 replaced"
   check "[$SH] the loop: one error per streak, recovered, new, replaced" "$OUT" "$EXPECTED"
   check "[$SH] the loop exits 0 when replaced" "$RC" "0"
+
+  # A zero-second override would call the store back-to-back: refused.
+  for bad_secs in 0 00 3601 x; do
+    treset
+    dtick env HUMAN_QUEUE_TICK_SECONDS="$bad_secs" "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
+    check "[$SH] HUMAN_QUEUE_TICK_SECONDS=$bad_secs: exit 4, nothing called" \
+      "$RC:$(cat "$STUB_DIR/calls" 2>/dev/null || echo 0)" "4:0"
+  done
 
   dtick "$SH" "$BIN/desk-tick.sh" --generation g1 --once
   check "[$SH] no --session: exit 4" "$RC" "4"

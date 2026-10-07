@@ -18,24 +18,23 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
          held:   [ .[] | select((.options | length) < 2 or (.options | length) > 4 or long) | .id ] }'
    ```
 
-3. **Number them in sets of up to four.** Four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the simple ids in order, four at a time; for each chunk:
+3. **Open and render one set at a time, up to four items each.** Four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the simple ids in order, four at a time. Open a set for the **next chunk only**:
 
    ```bash
    "$HQ" set-open D-43 D-44 --json
    ```
 
-   It prints `{"set_id": 12, "items": [{"n": 1, "id": "D-43"}, {"n": 2, "id": "D-44"}]}` and records one `shown` event per item. Numbering starts at 1 in every set. Keep the set id: every reply to this menu names it.
-4. **Render each set** as one AskUserQuestion call ("The menu" below), one set at a time; the next set follows once the operator has answered or dismissed this one ("next" chains them).
-5. **Held items** get one line after the menus, never a menu: `Held for the long-form view (#1780): D-45, D-47 — answer by typing "D-45: …".` Say it once per item, not every tick.
+   It prints `{"set_id": 12, "items": [{"n": 1, "id": "D-43"}, {"n": 2, "id": "D-44"}]}` and records one `shown` event per item. Numbering starts at 1 in every set. Keep the set id: every reply to this menu names it. Render that set at once as one AskUserQuestion call ("The menu" below). Open the following chunk's set only after the operator has answered or dismissed this menu. Never open every chunk up front: the latest set this session opened must always be the one whose menu is on screen, because typed numbers (`2: B`) resolve against it ("Typed replies").
+4. **Held items** get one line after the menus, never a menu: `Held for the long-form view (#1780): D-45, D-47 — answer by typing "D-45: …".` Say it once per item, not every tick.
 
 ## The menu
 
 One question per item, in set order. For item `n` with id `D-<k>`:
 
 - **question**: `<n>. [D-<k>] <the item's question>`, then ` — ` and its context lines joined by ` · ` when it has any, then ` (<repo> · <key>)`. The prefix is exact: a number, a dot, a space, the id in square brackets, a space. The capture hook recognises that prefix in the desk's own session as an item being shown again and does not queue it a second time; any other wording would be captured as a brand-new Decision.
-- **header**: `<n> · D-<k>` (at most 12 characters).
+- **header**: at most 12 characters, the tool's limit: `<n> · D-<k>` when that fits (ids up to six digits), else `D-<k>` alone when that fits, else `<n>`. The question's own prefix always carries the full id.
 - **options**: the item's own options, each label `<letter>. <option text>` with `A` for the item's first option, cut to about 60 characters with `…`. The description carries the full option text. The **recommended default first**: move the option equal to `default_option` to the top and end its label with ` (Recommended)`; its description adds `default — taken <default_at> if unanswered` when `default_at` is set. A captured option often already ends in `(Recommended)` (the asking thread's own label, stored as is): drop that suffix from every label first, so the marker appears once and only on the default. The letters stay the item's own, so a moved default may read `B. …` above `A. …`: the letter is what the answer records.
-- **multiSelect**: false. The tool adds "Other" for a free-text answer.
+- **multiSelect**: true when the item's `context` holds the line `More than one option may be chosen.` (the capture hook's note for a multi-select question; `desk/README.md`, "What a Decision carries"), else false. The tool adds "Other" for a free-text answer either way.
 
 A menu the operator dismisses answers nothing: the items stay open, and silence is never consent. Say `Set <set_id> left open — reply "1: A" any time.` and move to the next set.
 
@@ -44,6 +43,7 @@ A menu the operator dismisses answers nothing: the items stay open, and silence 
 Build one reply from the operator's choices, one line per answered item, in set order:
 
 - a chosen label `<letter>. …` → `<n>: <letter>`
+- several chosen labels (a multi-select item) → `<n>: <option text> | <option text>`: the chosen options' full texts in letter order, joined by ` | `. `set-resolve` stores that as the free-text answer, which is what the asking thread reads; a single letter could name only one option
 - an "Other" text → `<n>: <the text as typed>`
 - an item left unanswered → no line
 
@@ -70,7 +70,7 @@ The reply goes between the two delimiter lines exactly as built or typed, with n
 
 ## Typed replies
 
-The operator may type instead of clicking, at any time: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Pass the message **verbatim** as the reply, against the latest set this session opened, through the same here-document as above (never inside the command's quotes):
+The operator may type instead of clicking, at any time: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Pass the message **verbatim** as the reply, against the latest set this session opened (the set whose menu was shown last: sets open one at a time, "Showing items" step 3), through the same here-document as above (never inside the command's quotes):
 
 ```bash
 REPLY_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-reply.XXXXXX")
@@ -98,6 +98,7 @@ For each answer with `"changed": true` (an unchanged answer was delivered before
 
    - Exit 0 → `{"address": "local_…", "via": "host", "name": …}` (a desktop-app session) or `{"address": "<session name>", "via": "name"}` (a terminal session).
    - Exit 3 → no running session has that id: the thread has ended. Record `failed` (step 3) with note `no running session`.
+   - Exit 5 → the session **is** running but has no messaging address (no `local_…` id and no name). Record `failed` with note `session running, no messaging address`; it reads its answer from `pending-for` the next time it checks.
    - Exit 1 → the registry could not be read well enough to tell (its one stderr line says why). Record `failed` with that line as the note.
 2. **Send exactly** `human-queue: D-<k> answered` — a pointer, never the answer: the thread reads the store (`pending-for`). Use `SendMessage` with `to` = the address (load it with ToolSearch when it is deferred). When `SendMessage` is not available and `via` is `host`, use `mcp__ccd_session_mgmt__send_message` with `session_id` = the address. Neither available → record `failed` with note `no session-messaging tool in this session`.
 3. **Record what happened**, every time, whatever it was:
@@ -109,8 +110,8 @@ For each answer with `"changed": true` (an unchanged answer was delivered before
    "$HQ" wake D-43 --result failed --note "no running session"
    ```
 
-   `sent` only when the tool's result confirms the message reached the session (`delivered`, `queued`, or held for that session's approval: say which in the note). An error, a refusal, or no result → `failed`, with the tool's reason in one line (at most 200 characters). Never report a wake-up the tool did not confirm.
+   `sent` only when the tool's result confirms the message reached the session (`delivered`, `queued`, or held for that session's approval: say which in the note). An error, a refusal, or no result → `failed`, with the tool's reason in one line (at most 200 characters). Never report a wake-up the tool did not confirm. A note that quotes a tool's own words goes through the same quoted here-document as a reply (`--note "$(cat "$NOTE_FILE")"`), never inside the command's quotes.
 
 No retry in this increment: the answer is already durable, and a thread that wakes later reads it from `pending-for`. Retries and `answer-parked` are #1781.
 
-**What the operator sees.** One line for the whole reply: `Answered D-43, D-44; both threads woken.` A failed wake-up names it: `Answered D-43, D-44; D-44's thread is not running — the answer waits in the store.`
+**What the operator sees.** One line for the whole reply: `Answered D-43, D-44; both threads woken.` A failed wake-up names it with its reason: `Answered D-43, D-44; D-44's thread is not running — the answer waits in the store.` (exit 3), or `… D-44's thread is running but has no messaging address — it reads the answer from the store when it next checks.` (exit 5).
