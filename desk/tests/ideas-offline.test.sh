@@ -21,7 +21,9 @@
 #   skill blocks    `desk-idea-target` runs as written with the message in
 #                   its here-document; `desk-idea-file` files through
 #                   issue-file.sh (the desk checkout's own) and then records
-#                   `filed OWNER/NAME N`, and on a gh failure records nothing
+#                   `filed OWNER/NAME N`, and on a gh failure records nothing;
+#                   it prints `attempt-started`, which the exit-4 recovery
+#                   check compares with each candidate's createdAt
 #   filed / state   `filed` validates before connecting (exit 4) and reaches
 #                   the database step with valid input (exit 7, URL unset);
 #                   `state set filed:...` is refused offline
@@ -274,6 +276,11 @@ check "desk-idea-file: the JSON names the URL and labels" \
   "https://github.com/acme/widgets/issues/4242|skill|nope"
 check "desk-idea-file: then records the filing" "$(cat "$STUB_DIR/hq.log" 2>/dev/null)" "filed acme/widgets 4242"
 check_contains "desk-idea-file: filed-exit=0" "$OUT" "filed-exit=0"
+STARTED=$(printf '%s\n' "$OUT" | sed -n 's/^attempt-started=//p')
+check "desk-idea-file: prints when the attempt began (UTC, ISO 8601)" \
+  "$(printf '%s\n' "$STARTED" | grep -c '^[0-9]\{4\}-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$')" "1"
+NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [[ "$STARTED" < "$NOW_UTC" ]]; then ok "desk-idea-file: the attempt start is set back, before now"; else bad "desk-idea-file: attempt-started '$STARTED' is not before now ($NOW_UTC)"; fi
 check_contains "desk-idea-file: the title reached gh whole" "$(cat "$STUB_DIR/gh.log")" '--title=Desk: export "widgets" as CSV'
 reset_stub
 OUT=$(STUB_CREATE=fail run_block "$TMP/file.sh")
@@ -329,6 +336,8 @@ check_contains "ideas.md: never the menu tool" "$IDEAS" "plain text, never AskUs
 check_contains "ideas.md: the URL is the closing line" "$IDEAS" "The issue URL as the closing line"
 check_contains "ideas.md: no capture mode" "$IDEAS" "There is no capture mode"
 check_contains "ideas.md: records the filing" "$IDEAS" '"$HQ" filed "$IDEA_REPO"'
+check_contains "ideas.md: the exit-4 check reads createdAt" "$IDEAS" '--json number,title,url,createdAt'
+check_contains "ideas.md: the exit-4 check ignores older same-title issues" "$IDEAS" 'at or after the block'"'"'s `attempt-started`'
 check_absent "ideas.md: no bare repo-relative script path" "$IDEAS" '".claude/scripts/'
 
 hq_t_finish "ideas-offline.test.sh"

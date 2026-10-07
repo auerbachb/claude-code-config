@@ -23,6 +23,9 @@
 #             says so and --json carries desk_filings_noted
 #   noted     `filed` after the Review exists records the event at once
 #             (`noted R-n`); again, no second event; --json shape
+#   race      a pending key re-inserted after the Review was noted (what an
+#             overlapping `filed` leaves) is consumed by sync or `filed`
+#             without a second event, and the tally counts it as 0
 #   waiting   a pending filing whose issue has not synced survives a sync
 #   reserved  `state set filed:...` is refused
 # On macOS, a share of the calls run under /bin/bash 3.2.
@@ -161,6 +164,23 @@ check "filed after sync: noted at once" "$RC|$(printf '%s' "$OUT" | jq -c .)" \
   "0|{\"repo\":\"acme/gadgets\",\"number\":7,\"status\":\"noted\",\"review\":\"$R7\"}"
 check "filed after sync: one event" "$(events_of "$R7")" "asked:synced from GitHub,commented:filed from the desk"
 check "filed after sync: nothing left pending for it" "$(pending)" "filed:acme/widgets:issue-999"
+# --- race: a key re-inserted after the note ---------------------------------------
+# An overlapping `filed` can re-insert a pending key just after another run's
+# transaction noted the Review (its insert waits on the key, then finds the
+# row gone). Consuming that key must add nothing. The end state, built here.
+RACE_KEY="INSERT INTO state (key, value) VALUES ('filed:acme/gadgets:issue-7', '2026-10-07T16:30:00Z')"
+sql "$RACE_KEY" >/dev/null
+hq bash sync-reviews --json
+check "race, sync: exit 0" "$RC" "0"
+check "race, sync: the key is consumed, nothing noted" "$(printf '%s' "$OUT" | jq -r '.desk_filings_noted')" "0"
+check "race, sync: still one filing event" "$(events_of "$R7")" "asked:synced from GitHub,commented:filed from the desk"
+check "race, sync: nothing left pending for it" "$(pending)" "filed:acme/widgets:issue-999"
+sql "$RACE_KEY" >/dev/null
+hq "$OLD_BASH" filed acme/gadgets 7
+check "race, filed: noted, no second event" "$RC|$OUT|$(events_of "$R7")" \
+  "0|noted $R7|asked:synced from GitHub,commented:filed from the desk"
+check "race, filed: nothing left pending for it" "$(pending)" "filed:acme/widgets:issue-999"
+
 hq bash filed acme/widgets 999 --json
 check "--json while pending" "$(printf '%s' "$OUT" | jq -c .)" '{"repo":"acme/widgets","number":999,"status":"pending","review":null}'
 

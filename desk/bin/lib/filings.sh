@@ -15,13 +15,19 @@
 # `filed from the desk`, on the Review, and the key is deleted. `filed` does
 # that at once when the Review is already there; otherwise `sync-reviews`
 # does it after its inserts. Consuming is DELETE ... RETURNING, so two
-# consumers running at once record the event once. `state set` refuses keys
-# that start with `filed:`; `state get` reads them.
+# consumers running at once delete a key once. The event goes on only when
+# the Review does not already carry it: an overlapping `filed` can re-insert
+# a key the moment another one's transaction (which already noted the
+# Review) commits, and consuming that key must add nothing. Under READ
+# COMMITTED the consume statement's snapshot is taken after that commit, so
+# it sees the earlier note. `state set` refuses keys that start with
+# `filed:`; `state get` reads them.
 
 # hq_sql_consume_filings — SQL: turns every pending filing whose Review
-# exists into its event and deletes the key. Prints one line: how many it
-# consumed. The note, `filed from the desk`, is a literal here and in
-# cmd/filed.sh's re-run guard; keep the two in step.
+# exists into its event (unless the Review already has it) and deletes the
+# key. Prints one line: how many events it recorded. The note, `filed from
+# the desk`, is a literal here (twice) and in cmd/filed.sh's re-run guard;
+# keep the three in step.
 hq_sql_consume_filings() {
   cat <<'SQL'
 WITH done AS (
@@ -34,8 +40,13 @@ WITH done AS (
 ),
 ev AS (
   INSERT INTO events (item_id, kind, note)
-  SELECT id, 'commented', 'filed from the desk' FROM done
+  SELECT d.id, 'commented', 'filed from the desk' FROM done d
+   WHERE NOT EXISTS (
+     SELECT 1 FROM events e
+      WHERE e.item_id = d.id AND e.kind = 'commented'
+        AND e.note = 'filed from the desk')
+  RETURNING item_id
 )
-SELECT count(*) FROM done;
+SELECT count(*) FROM ev;
 SQL
 }
