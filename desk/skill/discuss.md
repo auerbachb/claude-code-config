@@ -36,6 +36,7 @@ Read each operator message in this order:
 3. **`skip`** → no answer; the item stays open. Step 6.
 4. **`discuss <other>`** → discuss that item instead (step 1).
 5. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then go on discussing.
+   **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`) as the whole message → `priorities.md`, then go on discussing.
 6. **Anything else** is another follow-up (step 3).
 
 ## 5. Present the item again

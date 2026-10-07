@@ -25,6 +25,7 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `desk.jq` | The functions both views call: which Decisions fit a menu, multipart groups, the long-form and discussion cards | #1779, #1780 |
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once | #1781 |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), printed without a state line | #1781 |
+| `priorities.md` | `top`, `bump`, `park`, `drop`, `priorities`: the operator's backlog order for `/pm`, kept in the target repo's `.claude/pm-priority.json` | #1767 |
 
 ## The prelude (every Bash call)
 
@@ -117,6 +118,7 @@ A quiet tick prints nothing, and the desk says nothing about it.
 Read each operator message in this order:
 
 1. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`), as the whole message → load `history.md`. This works at any time, including while a long-form prompt waits or during a discussion, and stores nothing.
+   **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
 3. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, or a `D-<n>:` reply for another item.
 4. **A message that starts with an item number or an id followed by a colon** is a reply: `2: B`, `1: A, 2: C`, `D-43: B`, `1: yes, but after CI; 3: use staging`. Load `decisions.md` and follow "Typed replies".

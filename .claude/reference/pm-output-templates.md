@@ -31,13 +31,19 @@ When `$GH_USER` is set, render all four in this order before the backlog ranking
 Top 3-5 backlog issues for pickup. Each issue shows its per-issue estimate resolved via
 `estimate-resolve.sh` (body `## Estimate` section → tier-label fallback → `unestimated`).
 
+Rows from the operator's `/desk` order (`/pm` 1B.4 item 7, issue #1767) come first, each marked
+`Operator order (desk) #k` beside its other annotations — k is its place among the override rows —
+then ranked rows up to five in all. The context line names the operator-priority status:
+`N ordered, M parked`, `none`, or `unreadable`. The `Parked (desk):` and `Not eligible (desk):`
+lines appear only when they have entries.
+
 ```
 ## Suggested Next Issues
 
-Based on {N} open issues, {M} recent merges, and {OKR status}:
+Based on {N} open issues, {M} recent merges, {OKR status}, and operator priority {2 ordered, 1 parked}:
 
 1. **#42 — {Title}** — {1-line rationale connecting to business value or OKR}
-   - Labels: {labels} | Age: {days} days | Unblocks: #50, #53
+   - Labels: {labels} | Age: {days} days | Operator order (desk) #1 | Unblocks: #50, #53
    - Est: 45–90 min · plan on 90
 
 2. **#38 — {Title}** — {rationale}
@@ -55,6 +61,9 @@ Based on {N} open issues, {M} recent merges, and {OKR status}:
 5. **#47 — {Title}** — {rationale}
    - Labels: {labels} | Age: {days} days
    - Est: 45–90 min · plan on 90
+
+Parked (desk): #57 until 2026-10-09, #64 until 2026-10-12
+Not eligible (desk): #49 — open PR #120; #51 — closed
 
 ### Already In-Flight
 {List open PRs with their linked issues — these don't need new threads}
@@ -74,6 +83,12 @@ informational and never a dispatch blocker.
 When the user asks to "rank the backlog", "priority list", or "full ranking", replace the top 3-5 list with the tiered view. "Full" means every tier is covered, not that every issue is listed: name the issues that earn a decision in each tier and summarize the rest. Omit any tier with no issues:
 
 ```
+## Operator order (desk)
+- **#61 — {title}** — {rationale} · Operator order (desk) #1 · ranked Medium
+- **#38 — {title}** — {rationale} · Operator order (desk) #2 · ranked High
+Parked (desk): #57 until 2026-10-09
+Not eligible (desk): #49 — open PR #120
+
 ## Critical — must do to achieve the goal
 - **#42 — {title}** — {1-line rationale tying the issue to the goal or OKR}
   - Unblocks: #50, #53 | Advances: O1/KR2
@@ -93,3 +108,5 @@ higher-impact work to switch to. Omit entirely when current work is well-aligned
 ```
 
 Summarize rather than enumerate once a tier stops informing a decision — most often the Low tier: "68 additional issues are Low-priority relative to this goal". The tier still appears with its heading; it just carries a count instead of 68 bullets.
+
+The `## Operator order (desk)` section appears only when the operator ordered or parked something (`/pm` 1B.1a). Its rows are listed once, there, with the tier they would have ranked in (`ranked Medium`), and are left out of the tier sections below — so dropping one from the override puts it straight back in its tier.
