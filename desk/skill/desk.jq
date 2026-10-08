@@ -106,7 +106,10 @@ def feedback_tag:
 # important | should have defaulted | good interrupt`, pairs separated by
 # commas, semicolons, or line breaks. Anything else is null: the message is
 # not feedback, so it stays an answer or a remark. ref is the item's number
-# in the latest set (1 to 99) or its id, uppercased.
+# in the latest set (1 to 99) or its id, uppercased. A Review's id (R-<n>) is
+# deliberately not a ref: the tags tune interrupts, and a Review never
+# interrupts (it waits in the Reviews view, with no asking thread and no
+# default to take). The CLI's `feedback` still takes any item's id.
 def desk_feedback:
   [ split("\n")[] | split(";")[] | split(",")[]
     | sub("^\\s+"; "") | sub("\\s+$"; "") | select(. != "") ] as $pairs

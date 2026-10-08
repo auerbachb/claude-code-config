@@ -559,6 +559,7 @@ contract interrupts.md "$(cat "$INTERRUPTS")" <<'NEEDLES'
 <<'DESK_WHEN'
 <<'DESK_MSG'
 A tag is never an answer:
+a Review's `R-<n>` is not a tag's item
 Acknowledge in one line
 the release does step 8's read instead, whole, whether or not the tick printed a line
 NEEDLES

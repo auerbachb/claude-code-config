@@ -114,7 +114,7 @@ How the operator tunes the desk: after an item reached them, they say whether it
 | `2: should have defaulted` | `should-have-defaulted`: the agent should have taken its default |
 | `2: good interrupt` | `good-interrupt`: this was worth the interruption |
 
-The item is named by its number in the latest set this session opened (`decisions.md`, "Typed replies") or by its id (`D-43: not important`); several pairs may share one message (`1: good interrupt, 3: not important`). Any case; hyphens or spaces between the words; a trailing period is fine. **A tag is never an answer:** a message whose every pair is one of these three phrases is feedback, whatever the item's options say, and it answers nothing. A message that mixes tags with answers (`2: not important, 3: B`) is not feedback: it goes to `decisions.md` as a typed reply.
+The item is named by its number in the latest set this session opened (`decisions.md`, "Typed replies") or by its id (`D-43: not important`); a Review's `R-<n>` is not a tag's item, because a Review never interrupts. Several pairs may share one message (`1: good interrupt, 3: not important`). Any case; hyphens or spaces between the words; a trailing period is fine. **A tag is never an answer:** a message whose every pair is one of these three phrases is feedback, whatever the item's options say, and it answers nothing. A message that mixes tags with answers (`2: not important, 3: B`) is not feedback: it goes to `decisions.md` as a typed reply.
 
 1. **Parse.** Confirm it is feedback, through a quoted here-document (the message is the operator's own text):
 
