@@ -266,6 +266,22 @@ check_contains "revise: stored, no yes needed" "$CARD" "Stored. Change it again 
 R=$(revise 'plan: 2 sections' 2026-10-08T14:00:00Z)
 check "revise with a count: that many still to do" \
   "$(printf '%s' "$R" | jq -c '[.blocks[] | .label]')" '["section 2 of 3","section 3 of 3"]'
+# Revised twice: the record keeps the blocks already over, so the second
+# revision still counts them (section 2 ran 10:00-10:45).
+REC1=$(revise 'plan: 45 min a section' 2026-10-08T14:00:00Z | djq -c 'include "desk"; plan_record')
+check "revise: the record keeps the block already over, first" \
+  "$(printf '%s' "$REC1" | jq -c '[.blocks[] | "\(.start)-\(.until) \(.label)"]')" \
+  '["2026-10-08T13:10:00Z-2026-10-08T13:40:00Z section 1 of 4","2026-10-08T14:00:00Z-2026-10-08T14:45:00Z section 2 of 4","2026-10-08T14:50:00Z-2026-10-08T15:35:00Z section 3 of 4","2026-10-08T15:40:00Z-2026-10-08T16:25:00Z section 4 of 4"]'
+R=$(printf '%s' 'plan: 40 min a section' | djq -c -Rs --argjson st "$REC1" --slurpfile fc "$FIX/forecast.json" \
+      'include "desk"; desk_plan_parse(false) as $m
+       | {inputs: ($st.inputs | desk_plan_merge($m.fields)), forecast: ($fc[0] + {now: "2026-10-08T15:00:00Z"}), stored: $st, gap: 5}
+       | desk_plan_propose')
+check "revise twice: only the sections still to do, numbered for the whole plan" \
+  "$(printf '%s' "$R" | jq -c '[.blocks[] | "\(.start_local)-\(.until_local) \(.label)"]')" \
+  '["11:00-11:40 section 3 of 4","11:45-12:25 section 4 of 4"]'
+check "revise twice: the record holds both blocks already over, then these" \
+  "$(printf '%s' "$R" | djq -c 'include "desk"; [plan_record.blocks[] | .label]')" \
+  '["section 1 of 4","section 2 of 4","section 3 of 4","section 4 of 4"]'
 R=$(revise 'plan: 45 min a section' 2026-10-08T15:30:00Z)
 check "revise after every block is over: no block comes back, a problem says so" \
   "$(printf '%s' "$R" | jq -c '[(.blocks | length), .problem]')" '[0,"every section planned is done; name how many more (`2 sections`)"]'
@@ -718,6 +734,7 @@ for SH in $BLOCK_SHELLS; do
   check_contains "[$SH] desk-sweep: the paper offer" "$OUT" "Take it to paper: say \`export\` for a numbered PDF (#1759)."
   MD=$(printf '%s\n' "$OUT" | sed -n 's/^md=//p')
   check "[$SH] desk-sweep: the paper copy's name" "${MD##*/}" "desk-sweep-2026-10-08-set31.md"
+  check "[$SH] desk-sweep: the paper copy sits in a private directory" "$(ls -ld "${MD%/*}" 2>/dev/null | cut -c1-10)" "drwx------"
   check "[$SH] desk-sweep: the paper copy" "$(cat "$MD" 2>/dev/null | sed -n '1p;3p;6p')" \
     "# End of day · 2026-10-08
 1. D-44 · Retry the flaky upload test once? (widgets · pr-12) · parked

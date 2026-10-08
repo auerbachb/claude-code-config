@@ -130,7 +130,7 @@ rm -f "$PLAN_PREV" "$PLAN_FC" "$PLAN_DEC" "$PLAN_REV" "$PLAN_OUT" "$PLAN_REC" "$
 
 ## 4. Change it in one sentence (`plan: …`)
 
-With a plan stored today and none being agreed, `plan: <text>` changes it at once: the chunks still to do are planned again from now (from the first block's start, when none has begun), keeping what to clear first and what waits for later. A count in the sentence is the chunks still to do (`plan: 2 sections` → two more); without one, the old count less the blocks already over.
+With a plan stored today and none being agreed, `plan: <text>` changes it at once: the chunks still to do are planned again from now (from the first block's start, when none has begun), keeping what to clear first, what waits for later, and the blocks already over (stored as they were, so a second change still counts them). A count in the sentence is the chunks still to do (`plan: 2 sections` → two more); without one, the old count less the blocks already over.
 
 <!-- test-anchor: desk-plan-revise -->
 

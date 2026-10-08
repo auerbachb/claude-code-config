@@ -8,7 +8,7 @@ Loaded on a `desk-tick <GEN> eod` event, when the operator's whole message is `s
 
 ## The sweep
 
-Everything still open, as **one numbered list**: open Decisions first (parked, then impact, then age), then unreviewed Reviews (oldest first), at most 99. The list is opened as a set, so its numbers are what typed replies resolve against (`2: B`, `decisions.md`, "Typed replies"); a copy is written as Markdown for paper.
+Everything still open, as **one numbered list**: open Decisions first (parked, then impact, then age), then unreviewed Reviews (oldest first), at most 99. The list is opened as a set, so its numbers are what typed replies resolve against (`2: B`, `decisions.md`, "Typed replies"); a copy is written as Markdown for paper, in a directory only the operator can read (it holds the open questions).
 
 <!-- test-anchor: desk-sweep -->
 
@@ -19,9 +19,11 @@ rc=0; set_rc=0
 if [ "$rc" -eq 0 ] && [ "$(jq '.items | length' "$SWEEP_JSON")" -gt 0 ]; then
   "$HQ" set-open $(jq -r '.items[].id' "$SWEEP_JSON") --json > "$SWEEP_SET" || set_rc=$?
   if [ "$set_rc" -ne 0 ]; then echo "set-open exit=$set_rc"; : > "$SWEEP_SET"; fi
-  SWEEP_MD="${TMPDIR:-/tmp}/desk-sweep-$(jq -r '.today' "$SWEEP_JSON")$(jq -r '"-set" + (.set_id | tostring)' "$SWEEP_SET" 2>/dev/null).md"
-  jq -r -L "$DESK/skill" --slurpfile set "$SWEEP_SET" \
-    'include "desk"; "# End of day · \(.today)", "", sweep_lines($set[0])[]' "$SWEEP_JSON" > "$SWEEP_MD" && echo "md=$SWEEP_MD"
+  if SWEEP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/desk-sweep-md.XXXXXX"); then
+    SWEEP_MD="$SWEEP_DIR/desk-sweep-$(jq -r '.today' "$SWEEP_JSON")$(jq -r '"-set" + (.set_id | tostring)' "$SWEEP_SET" 2>/dev/null).md"
+    jq -r -L "$DESK/skill" --slurpfile set "$SWEEP_SET" \
+      'include "desk"; "# End of day · \(.today)", "", sweep_lines($set[0])[]' "$SWEEP_JSON" > "$SWEEP_MD" && echo "md=$SWEEP_MD"
+  fi
 fi
 if [ "$rc" -eq 0 ]; then
   jq -r -L "$DESK/skill" --slurpfile set "$SWEEP_SET" 'include "desk"; sweep_view($set[0])' "$SWEEP_JSON"

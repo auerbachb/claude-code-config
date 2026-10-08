@@ -545,10 +545,11 @@ def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
 # Output:
 #   {inputs (with `end` resolved), missing ([] or ["item"] or ["pace"]),
 #    now, forecast, batch {decisions, reviews, ids, minutes}, later [ids],
-#    revision, pace, blocks [{item, label, pace, start, until, start_local,
-#    until_local}], wanted (null, or how many blocks were asked for when
-#    fewer fit: at most 24, all within a day), problem (null, or why no
-#    block fits)}
+#    revision, pace, kept (a revision's stored blocks already over: [] for a
+#    new plan), blocks [{item, label, pace, start, until, start_local,
+#    until_local}] (the blocks to come), wanted (null, or how many blocks
+#    were asked for when fewer fit: at most 24 in all, within a day),
+#    problem (null, or why no block fits)}
 # A new plan clears a batch first: the parked menu-shaped Decisions, then the
 # other menu-shaped ones and then Reviews while they fit in batch_min (a
 # Decision at its declared minutes, else 2; a Review at 2). Long-form
@@ -557,10 +558,12 @@ def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
 # apart, so a tick lands between them and shows what was held. No count,
 # until, or for: one chunk. A new plan's `for` counts from the first block's
 # start each time it is proposed, so the time taken to confirm it never
-# shortens it. A revision (stored) keeps the stored batch, `later`, and end,
-# and plans the chunks still to do from now (from the first block's start,
-# when none has begun): the old count less the blocks already over (none
-# left is a problem, not one more), or a count named in the revision.
+# shortens it. A revision (stored) keeps the stored batch, `later`, end, and
+# the blocks already over (`kept`, which plan_record stores first, so a later
+# revision still counts them), and plans the chunks still to do from now
+# (from the first block's start, when none has begun): the old count less
+# the blocks already over (none left is a problem, not one more), or a count
+# named in the revision.
 def desk_plan_propose:
   . as $c
   | ($c.forecast.now // (now | todate) | plan_epoch) as $now
@@ -578,7 +581,8 @@ def desk_plan_propose:
            ids: ($st.clear_first // []), minutes: 0, later: ($st.later // []),
            start: (if $before then $sb[0].s else ($now | plan_ceil_min) end),
            first: (if $before then 1 else $done + 1 end),
-           done: (if $before then 0 else $done end) }
+           done: (if $before then 0 else $done end),
+           kept: [ ($st.blocks // [])[] | select((.until | plan_epoch) <= $now) ] }
      else
        ([ $open[] | select(menu_shaped) | {id, parked: (.parked == true), m: (plan_cost // 2)} ]) as $quick
        | ({dec: [], rev: [], m: 0}
@@ -589,7 +593,7 @@ def desk_plan_propose:
               if .m + 2 <= $budget then .rev += [$r.id] | .m += 2 else . end)) as $b
        | { decisions: $b.dec, reviews: $b.rev, ids: ($b.dec + $b.rev), minutes: $b.m,
            later: [ $open[] | .id as $i | select([ $b.dec[] | select(. == $i) ] | length == 0) | .id ],
-           start: (($now + $b.m * 60) | plan_ceil_min), first: 1, done: 0 }
+           start: (($now + $b.m * 60) | plan_ceil_min), first: 1, done: 0, kept: [] }
      end) as $batch
   | $batch.start as $start
   | (if $in.item == null then ["item"]
@@ -606,11 +610,14 @@ def desk_plan_propose:
        (if $st != null and $in.count_given != true then [0, $in.count - $batch.done] | max else $in.count end)
      elif $end != null then [1, ((($end - $start) + $gap * 60) / (($p + $gap) * 60) | floor)] | max
      else 1 end) as $want
+  # A revision keeps the blocks already over; all of them together stay
+  # within plan set's 24.
+  | (24 - ($batch.kept | length)) as $room
   | (if $missing != [] then []
      elif $p == null then
-       (if $end != null and $end > $start then [{s: $start, u: $end}] else [] end)
+       (if $end != null and $end > $start and $room > 0 then [{s: $start, u: $end}] else [] end)
      else
-       [ range(0; [$want, 24] | min) as $k
+       [ range(0; [$want, $room] | min) as $k
          | ($start + $k * ($p + $gap) * 60) as $s
          | {s: $s, u: (if $end != null then [$s + $p * 60, $end] | min else $s + $p * 60 end)}
          | select(.u > .s and .u <= $now + 86400) ]
@@ -626,6 +633,7 @@ def desk_plan_propose:
       later: $batch.later,
       revision: ($st != null),
       pace: $pace,
+      kept: $batch.kept,
       blocks: [ $spans | to_entries[]
                 | { item: $in.item,
                     label: (if $total > 1 then "\($in.chunk // "block") \($batch.first + .key) of \($total)"
@@ -703,10 +711,12 @@ def plan_card:
   end;
 
 # plan_record: the JSON `plan set` stores, from a proposal with blocks.
+# A revision's blocks already over come first, as stored, so the next
+# revision still counts them as done.
 def plan_record:
   { item: .inputs.item, pace: .pace, inputs: .inputs,
     clear_first: .batch.ids, later: .later,
-    blocks: [ .blocks[] | {item, pace, start, until} + (if .label != null then {label} else {} end) ] };
+    blocks: ((.kept // []) + [ .blocks[] | {item, pace, start, until} + (if .label != null then {label} else {} end) ]) };
 
 # plan_show: `plan get --json` ({now, today, plan}) as the `plan?` card.
 def plan_show:
