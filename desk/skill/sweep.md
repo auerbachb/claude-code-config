@@ -32,6 +32,7 @@ rm -f "$SWEEP_JSON" "$SWEEP_SET"; echo "exit=$rc"
 ```
 
 - **Exit 0** → print the card as is: `**End of day · 6 items still open · set 31**`, then `1. D-44 · Retry the flaky upload test once? (widgets · pr-12) · parked`, …, `5. R-9 · Issue #202 · <its line>`, then one line: reply by number or id, and `Take it to paper: say export for a numbered PDF (#1759).` Keep the set id and the `md=` path in this conversation; the set is now the latest set this session opened (`decisions.md`). With nothing open the card is one line, `End of day: nothing is open.`, and no set is opened.
+  An item that carries the operator's own priority, tags, or note (`todo.md`, #1769) has one nested line under it, `   - P2 · tags: prd · note: ask Sam first`, on the card and in the paper copy alike.
 - **`set-open exit=<n>`** → the list could not be numbered in the store: the card numbers it in list order, says so, and replies use ids.
 - **Exit 7** → `Can't reach the store — the end-of-day sweep shows once it is back.` Run this block again after the next `recovered` event (the store has marked the day, so no second `eod` event comes).
 

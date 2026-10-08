@@ -209,8 +209,11 @@ hq_sql_item_json() {
 
 # One item, as the operator reads it: a header line, the question in bold, the
 # context as a numbered list, lettered options, the default and when it
-# applies, one line of triage facts, and the answer once there is one. Lines
-# with nothing to say are left out (concat_ws skips NULLs). Times are UTC.
+# applies, one line of triage facts, the operator's own to-do fields (issue
+# #1769: priority, tags, and a snooze still ahead on one line, the note on the
+# next), and the answer once there is one. Lines with nothing to say are left
+# out (concat_ws skips NULLs). Times are UTC. The to-do fields are read through
+# to_jsonb(i), so the renderer works on a store without migration 010 too.
 hq_sql_render_item() {
   cat <<'SQL'
 concat_ws(E'\n',
@@ -232,6 +235,15 @@ concat_ws(E'\n',
     'Focus: ' || i.focus,
     CASE WHEN i.parked THEN 'Parked' END,
     'Session: ' || i.session_id),
+  nullif(concat_ws(' · ',
+    'My priority: ' || (to_jsonb(i)->>'my_priority'),
+    CASE WHEN jsonb_typeof(to_jsonb(i)->'my_tags') = 'array' AND jsonb_array_length(to_jsonb(i)->'my_tags') > 0
+         THEN 'Tags: ' || (SELECT string_agg(t.tag, ', ' ORDER BY t.n)
+                             FROM jsonb_array_elements_text(to_jsonb(i)->'my_tags') WITH ORDINALITY AS t(tag, n)) END,
+    CASE WHEN (to_jsonb(i)->>'snoozed_until')::timestamptz > statement_timestamp()
+         THEN 'Snoozed until ' || to_char((to_jsonb(i)->>'snoozed_until')::timestamptz AT TIME ZONE 'UTC',
+                                          'YYYY-MM-DD HH24:MI "UTC"') END), ''),
+  'My note: ' || (to_jsonb(i)->>'my_note'),
   'Answer: ' || i.answer
 )
 SQL

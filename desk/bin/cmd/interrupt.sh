@@ -90,35 +90,6 @@ EXIT CODES
 EOF
 }
 
-# hq__interrupt_clock WHEN — a clock time into HQ_INT_TIMES, the candidate
-# 24-hour times (HH:MM, comma-separated) it may mean; returns 1 when WHEN is
-# not a clock time. A 12-hour time without am or pm has two candidates.
-HQ_INT_TIMES=""
-hq__interrupt_clock() {
-  local LC_ALL=C re h m ap
-  re='^([0-9]{1,2})(:([0-5][0-9]))?[[:space:]]?([AaPp][Mm])?([[:space:]]+[Ee][Tt])?$'
-  [[ $1 =~ $re ]] || return 1
-  h=$((10#${BASH_REMATCH[1]}))
-  m="${BASH_REMATCH[3]:-00}"
-  ap="${BASH_REMATCH[4]}"
-  if [ -n "$ap" ]; then
-    if [ "$h" -lt 1 ] || [ "$h" -gt 12 ]; then return 1; fi
-    h=$((h % 12))
-    case "$ap" in
-      [Pp]*) h=$((h + 12)) ;;
-    esac
-    HQ_INT_TIMES=$(printf '%02d:%s' "$h" "$m")
-    return 0
-  fi
-  if [ "$h" -gt 23 ]; then return 1; fi
-  if [ "$h" -ge 1 ] && [ "$h" -le 12 ]; then
-    HQ_INT_TIMES=$(printf '%02d:%s,%02d:%s' "$((h % 12))" "$m" "$((h % 12 + 12))" "$m")
-  else
-    HQ_INT_TIMES=$(printf '%02d:%s' "$h" "$m")
-  fi
-  return 0
-}
-
 # The rule in force, as text or JSON, from hq_sql_interrupt_row.
 hq__interrupt_out_sql() {
   if [ "$1" -eq 1 ]; then
@@ -296,7 +267,7 @@ cmd_run() {
       # Blank space around WHEN (a here-document's line, say) is not part of it.
       until="${until#"${until%%[![:space:]]*}"}"
       until="${until%"${until##*[![:space:]]}"}"
-      if hq__interrupt_clock "$until"; then
+      if hq_clock_times "$until"; then
         times="$HQ_INT_TIMES"
       else
         case "$until" in

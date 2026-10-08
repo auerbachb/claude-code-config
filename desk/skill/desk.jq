@@ -15,7 +15,9 @@
 #         feedback tags (#1783): desk/tests/interrupts-offline.test.sh
 #         (fixtures) and desk/tests/interrupts.test.sh (live); the day plan
 #         and the end-of-day sweep (#1784): desk/tests/plan-offline.test.sh
-#         (fixtures) and desk/tests/plan.test.sh (live).
+#         (fixtures) and desk/tests/plan.test.sh (live); the to-do layer
+#         (#1769): desk/tests/todo-offline.test.sh (fixtures) and
+#         desk/tests/todo.test.sh (live).
 
 # ---------------------------------------------------------------- classify
 
@@ -749,26 +751,43 @@ def plan_show:
         | quote)
     end;
 
+# ------------------------------------------------- the to-do layer (#1769)
+
+# todo_line: the operator's own to-do fields on an item (any item JSON the
+# CLI prints, migration 010): its personal priority, tags, and note as one
+# line, `P2 · tags: prd, urgent · note: ask Sam first`, or empty when it
+# carries none (as on a store before 010). The snooze is left out: it only
+# hides the item from `my list`.
+def todo_line:
+  [ (.my_priority // empty | "P\(.)"),
+    ((.my_tags // []) | if length > 0 then "tags: " + join(", ") else empty end),
+    ((.my_note // "") | if . == "" then empty else "note: " + . end) ]
+  | if length == 0 then empty else join(" · ") end;
+
 # ---------------------------------------------------- end-of-day sweep (#1784)
 
 # sweep_lines($set): `sweep list --json` as the sweep's numbered lines, one
 # per item: a Decision's question with its repository and key, a Review's
-# cached line (else its title). $set is set-open's JSON for these items (its
-# numbers are the ones replies resolve against), or null when no set could be
-# opened (then the list's own order numbers them, and replies use ids).
+# cached line (else its title). An item that carries the operator's own
+# priority, tags, or note (#1769) gets one nested line under it, `   - ` and
+# its todo_line, so the paper copy carries them too. $set is set-open's JSON
+# for these items (its numbers are the ones replies resolve against), or null
+# when no set could be opened (then the list's own order numbers them, and
+# replies use ids).
 def sweep_lines($set):
   ([ (($set // {}).items // [])[] | {key: .id, value: .n} ] | from_entries) as $num
   | [ (.items // []) | to_entries[]
       | ($num[.value.id] // (.key + 1)) as $n
       | .value
-      | if .kind == "review" then
-          "\($n). \(.id) · \(review_label) · "
-          + (if (.summary_l1 // "") != "" then .summary_l1 else .question + " (title; not summarized yet)" end)
-        else
-          "\($n). \(.id) · \(.question) (\(.repo | split("/") | .[1] // .) · \(.key))"
-          + (if menu_shaped then "" else " · long-form" end)
-          + (if .parked then " · parked" else "" end)
-        end ]
+      | (if .kind == "review" then
+           "\($n). \(.id) · \(review_label) · "
+           + (if (.summary_l1 // "") != "" then .summary_l1 else .question + " (title; not summarized yet)" end)
+         else
+           "\($n). \(.id) · \(.question) (\(.repo | split("/") | .[1] // .) · \(.key))"
+           + (if menu_shaped then "" else " · long-form" end)
+           + (if .parked then " · parked" else "" end)
+         end),
+        ("   - " + todo_line) ]
   + (if (.more // 0) > 0 then ["… and \(.more) more; `sweep` lists them once some are cleared."] else [] end);
 
 # sweep_view($set): the end-of-day card: a bold header and the numbered list
