@@ -11,7 +11,7 @@ here).
 | `decisions.md` | Simple Decisions: sets, menus, replies, answers, wake-ups (#1779) |
 | `longform.md` | Long-form and multipart Decisions: one text prompt at a time, answers stored word for word (#1780) |
 | `discuss.md` | `discuss <n\|D-id>`: one item talked through with its context loaded, then presented again (#1780) |
-| `interrupts.md` | `desk/policy.json`, the interrupt rule (`away`, `available`, `focus until …`, `focus off`, `interrupts?`), and feedback tags (`2: not important`, …) (#1783) |
+| `interrupts.md` | `desk/policy.json`, the interrupt rule (`away`, `available`, `focus until …`, `focus for …`, `focus off`, `interrupts?`), and feedback tags (`2: not important`, …) (#1783) |
 | `desk.jq` | jq functions the files above call (`jq -L "$DESK/skill" 'include "desk"; …'`): `desk_split`, `menu_shaped`, `longform_prompt`, `discuss_card` (#1779, #1780); `reviews_view`, `reviews_missing_l1`, `review_header` (#1782); `desk_batch`, `desk_sets`, `desk_feedback` (#1783) |
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once (#1781) |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), with no state line (#1781) |

@@ -69,8 +69,9 @@ POLICY_DEFAULTS = (
     (POLICY_KEY, DEFAULT_LIVE_MINUTES),
 )
 INTERRUPT_RULES = ("everything", "away")
-# HH:MM on a 24-hour clock, in the desk's calendar (America/New_York).
-EOD_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+# HH:MM on a 24-hour clock, in the desk's calendar (America/New_York). \Z, not
+# $: `$` also matches before a final newline, which would pass "17:30\n".
+EOD_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]\Z")
 
 # Time bounds. The registered hook timeout is 15 s (global-settings.json); the
 # hook gives up at 12 s so it can still say why. A CLI call that cannot reach

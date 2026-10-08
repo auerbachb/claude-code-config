@@ -136,6 +136,7 @@ bad_policy "interrupt_rule Everything" '{"interrupt_rule": "Everything"}' "inter
 bad_policy "eod_time 5:30" '{"eod_time": "5:30"}' "eod_time must be"
 bad_policy "eod_time 24:00" '{"eod_time": "24:00"}' "eod_time must be"
 bad_policy "eod_time as a number" '{"eod_time": 1730}' "eod_time must be"
+bad_policy "eod_time with a final newline" '{"eod_time": "17:30\n"}' "eod_time must be"
 bad_policy "set_size 5" '{"set_size": 5}' "set_size must be"
 bad_policy "set_size 0" '{"set_size": 0}' "set_size must be"
 bad_policy "live bound 0" '{"live_desk_max_tick_age_min": 0}' "live_desk_max_tick_age_min must be"
@@ -545,6 +546,8 @@ contract SKILL.md "$(cat "$SKILL")" <<'NEEDLES'
 block `desk-policy`
 `008_event_session.sql`
 never the interrupt rule unasked
+the first `new` event after it drops any of those ids whose `updated_at` is unchanged
+This read then waits for the hold to end, and happens there
 NEEDLES
 check_absent "SKILL.md: no 'no verb here yet' for #1783" "$(cat "$SKILL")" "Interrupts, policy, and feedback tags (#1783)"
 contract decisions.md "$(cat "$SKILL_DIR/decisions.md")" <<'NEEDLES'
@@ -557,12 +560,15 @@ contract interrupts.md "$(cat "$INTERRUPTS")" <<'NEEDLES'
 <<'DESK_MSG'
 A tag is never an answer:
 Acknowledge in one line
+the release does step 8's read instead, whole, whether or not the tick printed a line
 NEEDLES
 contract discuss.md "$(cat "$SKILL_DIR/discuss.md")" <<'NEEDLES'
 A tag is never this item's answer.
+`focus until …`, `focus for …`, `focus off`, `interrupts?`
 NEEDLES
 contract longform.md "$(cat "$SKILL_DIR/longform.md")" <<'NEEDLES'
 A tag is never this part's answer.
+`focus until …`, `focus for …`, `focus off`, `interrupts?`
 NEEDLES
 
 hq_t_finish interrupts-offline.test.sh

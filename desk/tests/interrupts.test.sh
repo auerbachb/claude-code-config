@@ -231,6 +231,26 @@ check "focus until 3:30pm ET: 15:30 ET, the next one" "$RC:$(jqo .until_local)" 
 check "focus until 3:30pm ET: within a day" \
   "$(sql_in "SELECT '$(jqo .until)'::timestamptz > now() AND '$(jqo .until)'::timestamptz <= now() + interval '1 day'
                 AND to_char('$(jqo .until)'::timestamptz AT TIME ZONE 'America/New_York', 'HH24:MI') = '15:30'")" "t"
+# A clock time across a daylight-saving change, on a fixed clock (the
+# resolver set uses, hq_sql_focus_until, with NOW pinned): the next showing of
+# a time the clock shows twice, the jump for one it skips.
+# shellcheck source=../bin/lib/interrupts.sh
+. "$HQ_BIN_DIR/lib/interrupts.sh"
+focus_at() { # NOW TIMES -> the focus's end, UTC
+  printf '%s\n' "SELECT to_char($(hq_sql_focus_until "'$1'::timestamptz") AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI');" \
+    | hq_psql -At -v "hq_tz=America/New_York" -v "hq_times=$2" -f - 2>&1
+}
+check "until 15:30 at 15:00 EDT: 15:30 today" "$(focus_at '2026-10-07 19:00Z' '15:30')" "2026-10-07 19:30"
+check "until 3:30 at 15:00 EDT: the sooner, 15:30" "$(focus_at '2026-10-07 19:00Z' '03:30,15:30')" "2026-10-07 19:30"
+check "until 15:30 at 15:30 EDT: tomorrow" "$(focus_at '2026-10-07 19:30Z' '15:30')" "2026-10-08 19:30"
+check "until 0:00 at 23:50 EDT: midnight" "$(focus_at '2026-10-07 03:50Z' '00:00')" "2026-10-07 04:00"
+check "fall back, until 1:30 at 1:05 EDT: 1:30 EDT, not EST" "$(focus_at '2026-11-01 05:05Z' '01:30,13:30')" "2026-11-01 05:30"
+check "fall back, until 1:30 at 1:40 EDT: 1:30 EST" "$(focus_at '2026-11-01 05:40Z' '01:30,13:30')" "2026-11-01 06:30"
+check "fall back, until 1:00 at 1:30 EDT: 1:00 EST" "$(focus_at '2026-11-01 05:30Z' '01:00')" "2026-11-01 06:00"
+check "spring forward, until 2:30 at 1:05 EST: 3:00 EDT" "$(focus_at '2026-03-08 06:05Z' '02:30')" "2026-03-08 07:00"
+check "spring forward, until 3:00 at 1:05 EST: 3:00 EDT" "$(focus_at '2026-03-08 06:05Z' '03:00')" "2026-03-08 07:00"
+check "spring forward, until 3:30 at 1:05 EST: 3:30 EDT" "$(focus_at '2026-03-08 06:05Z' '03:30')" "2026-03-08 07:30"
+
 PAST=$(sql_in "SELECT to_char((now() - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
 FAR=$(sql_in "SELECT to_char((now() + interval '2 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
 STORED=$(sql_in "SELECT value FROM state WHERE key = 'interrupt'")

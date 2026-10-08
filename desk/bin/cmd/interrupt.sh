@@ -47,6 +47,9 @@ ARGUMENTS
                      A clock time is in the desk's calendar (America/New_York)
                      and means its next occurrence, on the store's clock; it
                      may end in ` ET`. Blank space around WHEN is ignored.
+                     Across a daylight-saving change, a time the clock shows
+                     twice means its next showing, and one the clock skips
+                     means the moment the clock jumps past it.
   --for MINUTES      a focus of 1 to 1440 minutes from now
   --json             print the result as JSON
 
@@ -153,12 +156,10 @@ SELECT coalesce(to_char(u AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '')
                  WHEN :'hq_minutes' <> ''
                    THEN statement_timestamp() + make_interval(mins => nullif(:'hq_minutes', '')::int)
                  WHEN :'hq_at' <> '' THEN nullif(:'hq_at', '')::timestamptz
-                 ELSE (SELECT min(((n.local_now::date + t::time)
-                                   + CASE WHEN n.local_now::date + t::time <= n.local_now
-                                          THEN interval '1 day' ELSE interval '0' END)
-                                  AT TIME ZONE :'hq_tz')
-                         FROM (SELECT statement_timestamp() AT TIME ZONE :'hq_tz' AS local_now) n,
-                              unnest(string_to_array(nullif(:'hq_times', ''), ',')) AS t)
+                 ELSE
+SQL
+  hq_sql_focus_until 'statement_timestamp()'
+  cat <<'SQL'
                END AS u) f \gset
 SELECT CASE
          WHEN :'hq_rule' <> 'focus' THEN ''

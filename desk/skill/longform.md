@@ -32,7 +32,7 @@ While a prompt waits, read the operator's next message in this order:
 
 1. **`skip`** or **`next`** (alone, any case) → nothing is stored and the item stays open: one line, `D-48 left open — type "D-48: …" any time.` Then the next part. **`skip all`** leaves this part and every remaining long-form item open for now.
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md` (a bare `discuss` names this part).
-   **Feedback tags** (`2: not important`, `D-48: good interrupt`) or **an interrupt verb** (`away`, `available`, `focus until …`, `focus off`, `interrupts?`) as the whole message → `interrupts.md`, then print this part's card again (after `away` or a focus, once the hold ends). A tag is never this part's answer.
+   **Feedback tags** (`2: not important`, `D-48: good interrupt`) or **an interrupt verb** (`away`, `available`, `focus until …`, `focus for …`, `focus off`, `interrupts?`) as the whole message → `interrupts.md`, then print this part's card again (after `away` or a focus, once the hold ends). A tag is never this part's answer.
    **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then print this part's card again. Nothing is stored.
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`) as the whole message → `priorities.md`, then print this part's card again. Nothing is stored for this item.
    **`idea: …`**, **`file: …`**, or **`repo: …`** → `ideas.md`, then print this part's card again. Nothing is stored for this part.

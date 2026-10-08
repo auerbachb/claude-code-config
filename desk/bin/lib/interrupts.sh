@@ -22,10 +22,16 @@
 #   hq_interrupt_rule_ok RULE   true for everything or away (a default)
 #   hq_sql_interrupt_row        SQL query, one row (rule, until, held,
 #                               source) for :'hq_session' with :'hq_default'
+#   hq_sql_focus_until NOW      SQL scalar subquery: when a `focus until
+#                               <clock time>` ends, from :'hq_times' in
+#                               :'hq_tz', counted from NOW (an SQL timestamptz
+#                               expression; statement_timestamp() in use)
 #
 # PSQL VARIABLES the SQL reads
 #   hq_session  the desk session whose rule applies
 #   hq_default  everything or away: the rule when that session set none
+#   hq_tz       the desk's calendar (hq_desk_tz)
+#   hq_times    candidate clock times, HH:MM, comma-separated
 
 hq_interrupt_rule_ok() {
   case "$1" in
@@ -71,4 +77,27 @@ SELECT r.rule, r.until, r.rule IN ('away', 'focus') AS held, r.source
       ) o ON true
   ) r
 SQL
+}
+
+# The first minute after NOW, within a day, at which the clock in :'hq_tz'
+# reaches one of :'hq_times'; NULL when none does. It walks the day minute by
+# minute (1,440 rows) rather than adding a day to a local time, because local
+# arithmetic is wrong across a daylight-saving change: at 1:05 EDT on the
+# night the clock falls back, `1:30` read as a local time is the later 1:30
+# EST, an hour late, and on the night it springs forward `2:30` (a time that
+# never shows) becomes 3:30 EDT. Walking it, a time the clock shows twice is
+# its next showing, and one it skips is the minute the clock jumps past it.
+hq_sql_focus_until() {
+  local now="$1"
+  printf '%s\n' \
+    "(SELECT min(c.x)" \
+    "   FROM (SELECT x," \
+    "                x AT TIME ZONE :'hq_tz' AS cur," \
+    "                (x - interval '1 minute') AT TIME ZONE :'hq_tz' AS prev" \
+    "           FROM generate_series(date_trunc('minute', $now) + interval '1 minute'," \
+    "                                $now + interval '1 day'," \
+    "                                interval '1 minute') AS x) c," \
+    "        unnest(string_to_array(nullif(:'hq_times', ''), ',')) AS t" \
+    "  WHERE c.cur = c.cur::date + t::time" \
+    "     OR (c.prev < c.cur::date + t::time AND c.cur::date + t::time < c.cur))"
 }

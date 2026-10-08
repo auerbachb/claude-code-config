@@ -32,7 +32,7 @@ The card carries what the item holds: its status and when it was asked, the ques
 Read each operator message in this order:
 
 1. **`done`** or **`back`** (alone, any case) → step 5.
-   **Feedback tags** (`2: not important`, `D-48: good interrupt`) or **an interrupt verb** (`away`, `available`, `focus until …`, `focus off`, `interrupts?`) as the whole message → `interrupts.md`, then go on discussing. A tag is never this item's answer.
+   **Feedback tags** (`2: not important`, `D-48: good interrupt`) or **an interrupt verb** (`away`, `available`, `focus until …`, `focus for …`, `focus off`, `interrupts?`) as the whole message → `interrupts.md`, then go on discussing. A tag is never this item's answer.
 2. **An answer** → the discussion ends and the message is the item's answer, through the normal path: it starts with the item's number in the latest set or its id, then a colon (`2: B`, `D-48: …`). A menu-shaped item goes to `decisions.md`, "Typed replies"; a long-form item goes to `longform.md`, "Storing an answer", with the text after the colon, word for word (bar the two changes that section names: outer blank space is trimmed, and a lone option letter stores that option). Then step 6.
 3. **`skip`** → no answer; the item stays open. Step 6.
 4. **`discuss <other>`** → discuss that item instead (step 1).

@@ -40,10 +40,13 @@ project `human-queue` (region `aws-us-east-1`) already exists; these steps are
 for a fresh setup or a new machine.
 
 1. Create the project once, from any machine with
-   [`neonctl`](https://neon.tech/docs/reference/neon-cli) authenticated:
+   [`neonctl`](https://neon.tech/docs/reference/neon-cli) authenticated. The
+   store needs PostgreSQL 16 or later (the interrupt rule's reader uses
+   `pg_input_is_valid`), so the version is pinned rather than left to Neon's
+   default; `migrate` refuses an older server by name:
 
    ```bash
-   neonctl projects create --name human-queue --region-id aws-us-east-1
+   neonctl projects create --name human-queue --region-id aws-us-east-1 --pg-version 17
    ```
 
 2. On each machine, write the connection URL into the shell profile without

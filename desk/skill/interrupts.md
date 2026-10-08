@@ -89,6 +89,8 @@ After `available`, `back`, or `focus off`, run one tick now, so what was held re
 
 Handle each line it prints exactly as the Monitor's (`SKILL.md`, "Monitor events"): a `new` line goes to `decisions.md`, "Showing items". No line means nothing arrived during the hold (or the Monitor's own tick got there first, and its `new` event arrives as a notification). A focus ends on its own: the first tick after its time reports what was held, as a `new` event like any other.
 
+When `/desk` started under the hold, its backlog has not been shown yet (`SKILL.md`, step 8): a tick reports only what changed during the hold, never the older open items. So the release does step 8's read instead, whole, whether or not the tick printed a line (the read covers that line's ids), and step 8's rule for the first `new` event after it applies. A focus that ends on its own does the same at the first `new` event after its time, or at the operator's next message after it when no event comes.
+
 A parked notice (`wakeups.md`) that arrives during a hold is held too: keep it in this conversation and print it after the release, or once the first `new` event after a focus ends has been shown. Wake-up retries themselves keep running during a hold; they show nothing.
 
 ### Reading it: `interrupts?`

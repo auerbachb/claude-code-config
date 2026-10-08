@@ -15,6 +15,20 @@
 -- item's return address, and the event keeps the one it judged. NULL for an
 -- item with no return address (a Review) and for every other kind of event.
 -- Like the rest of an event, it is a dozen bytes of state, never a transcript.
+--
+-- The interrupt rule's reader (desk/bin/lib/interrupts.sh), which lands with
+-- this migration, guards its casts with pg_input_is_valid, new in PostgreSQL
+-- 16. An older server is refused here, by name, rather than left to fail every
+-- `tick --interrupts` later with an undefined-function error.
+DO $$
+BEGIN
+  IF current_setting('server_version_num')::int < 160000 THEN
+    RAISE EXCEPTION 'human-queue needs PostgreSQL 16 or later; this server is %',
+      current_setting('server_version');
+  END IF;
+END;
+$$;
+
 ALTER TABLE events ADD COLUMN session_id text;
 
 ALTER TABLE events ADD CONSTRAINT events_session_id_check
