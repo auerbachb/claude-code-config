@@ -34,6 +34,20 @@ hq_die_validation()  { hq_die "$HQ_EXIT_VALIDATION" "$@"; }
 hq_die_secret()      { hq_die "$HQ_EXIT_SECRET" "$@"; }
 hq_die_unavailable() { hq_die "$HQ_EXIT_UNAVAILABLE" "$@"; }
 
+# hq_bigint_ok DIGITS — true when DIGITS (digits only, no leading zero) is at
+# most bigint's maximum, 9223372036854775807, the range of a bigint id such as
+# sets_set_id_seq's: up to 19 digits. A 19-digit value is compared in two
+# halves (10 + 9 digits), so bash arithmetic never sees a number past that
+# maximum. Shared by set-resolve and feedback --set.
+hq_bigint_ok() {
+  local hi lo
+  [ "${#1}" -lt 19 ] && return 0
+  [ "${#1}" -eq 19 ] || return 1
+  hi=$((10#${1:0:10}))
+  lo=$((10#${1:10}))
+  [ "$hi" -lt 9223372036 ] || { [ "$hi" -eq 9223372036 ] && [ "$lo" -le 854775807 ]; }
+}
+
 # hq_schema — prints the schema every statement runs in.
 # HUMAN_QUEUE_SCHEMA selects it (default `public`). The value is applied with
 # `SET LOCAL search_path` inside each transaction, so it holds on Neon's pooled

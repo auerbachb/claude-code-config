@@ -23,12 +23,13 @@
 #
 # BEHAVIOR
 #   Sleep first, then each cycle:
-#     0. Read desk/policy.json again, through the same parser, so an edit
-#        reaches a running loop at its next tick as it reaches the capture
-#        hook at its next call: RULE below follows it, and when the
-#        live-desk bound has dropped to the interval or below, the loop
-#        sleeps 30 seconds less than the bound (at least 1) from then on, so
-#        the desk stays live. The cadence itself is fixed at start.
+#     0. The sleep runs in steps of at most 30 seconds, reading
+#        desk/policy.json again (same parser) after each, as the capture
+#        hook reads it on every call: RULE below follows an edit, and when
+#        the live-desk bound has dropped to the interval or below, the loop
+#        sleeps 30 seconds less than the bound (at least 1) from then on,
+#        cutting short a sleep already under way, so the desk stays live.
+#        The cadence itself is fixed at start.
 #     1. `control-status --json`. When the registered control session is no
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
@@ -403,7 +404,28 @@ if [ "$dt_once" -eq 1 ]; then
   dt_cycle
   exit 0
 fi
-while sleep "$(dt_interval)"; do
-  dt_read_policy
+# dt_wait — sleep until the next tick is due, in steps of at most 30 seconds,
+# reading the policy again after each step, so a live bound lowered while the
+# loop sleeps shortens this very sleep (dt_interval) instead of the next one:
+# the desk ticks within 30 seconds of the edit or by the new interval,
+# whichever is later, and stays live. Fails when `sleep` does (the loop ends).
+dt_wait() {
+  local slept=0 step interval
+  while :; do
+    interval=$(dt_interval)
+    if [ "$slept" -ge "$interval" ]; then
+      return 0
+    fi
+    step=$((interval - slept))
+    if [ "$step" -gt 30 ]; then
+      step=30
+    fi
+    sleep "$step" || return 1
+    slept=$((slept + step))
+    dt_read_policy
+  done
+}
+
+while dt_wait; do
   dt_cycle
 done

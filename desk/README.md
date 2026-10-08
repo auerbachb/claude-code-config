@@ -39,7 +39,8 @@ The store is one Postgres database on Neon, shared by every machine. The
 project `human-queue` (region `aws-us-east-1`) already exists; these steps are
 for a fresh setup or a new machine.
 
-1. Create the project once, from any machine with
+1. **A fresh setup only** (a new machine joining the existing project skips
+   to step 2): create the project once, from any machine with
    [`neonctl`](https://neon.tech/docs/reference/neon-cli) authenticated. The
    store needs PostgreSQL 16 or later (the interrupt rule's reader uses
    `pg_input_is_valid`), so the version is pinned rather than left to Neon's
@@ -827,10 +828,11 @@ the store, never in a worker thread.
   file is the defaults; an unreadable file, a non-object, or any invalid value
   is the defaults for every key, with one warning; unknown keys are ignored.
   `HUMAN_QUEUE_POLICY` names another file (tests). `desk-tick.sh` reads it
-  again before every tick, as the hook does on every call, so an edit reaches
-  a running desk: `interrupt_rule` follows it, and a live bound lowered to the
-  loop's interval or below makes the loop sleep 30 seconds inside the bound.
-  The cadence is fixed when the desk starts.
+  again every 30 seconds while it sleeps, as the hook reads it on every call,
+  so an edit reaches a running desk: `interrupt_rule` follows it, and a live
+  bound lowered to the loop's interval or below makes the loop tick 30
+  seconds inside the bound, cutting short a sleep already under way. The
+  cadence is fixed when the desk starts.
 - **The interrupt rule.**
 
   | Subcommand | What it does |
@@ -849,7 +851,9 @@ the store, never in a worker thread.
   `tick_at` (the desk stays live, so worker questions are still queued, never
   shown in their own threads), prints `[]`, and neither reads nor moves the
   watermark: the change feed is the hold buffer, and the first tick after the
-  hold (`available` runs one at once; a focus ends on its own) reports
+  hold (`available` runs one at once; a focus ends on its own, back in the
+  policy's rule, so under an `away` policy the hold goes on until
+  `available`) reports
   everything that arrived during it, once, in the usual order. Wake-up
   retries keep running.
 - **Sets.** `decisions.md` chunks the simple Decisions into sets of

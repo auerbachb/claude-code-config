@@ -11,10 +11,10 @@ Loaded at start (`SKILL.md` step 2 reads the policy here), when the operator's w
 | Key | Default | Means |
 |-----|---------|-------|
 | `tick_cadence_min` | `5` | Minutes between ticks, 1 to 60 and shorter than `live_desk_max_tick_age_min`. `/desk --cadence Nm` overrides it for one desk |
-| `interrupt_rule` | `everything` | The rule in force while the desk has set none: `everything` or `away`. The loop reads it again every tick, so an edit applies at the next one |
+| `interrupt_rule` | `everything` | The rule in force while the desk has set none: `everything` or `away`. The loop reads it again every 30 seconds, so an edit applies at the next tick |
 | `eod_time` | `17:30` | The end of the working day, `HH:MM` in America/New_York (the end-of-day sweep, #1784, uses it) |
 | `set_size` | `4` | Decisions per menu, 1 to 4 (four questions is the menu tool's limit) |
-| `live_desk_max_tick_age_min` | `15` | How old the last tick may be for the capture hook to queue questions, 1 to 1440. Lowered to a running desk's cadence or below, the loop ticks 30 seconds inside it |
+| `live_desk_max_tick_age_min` | `15` | How old the last tick may be for the capture hook to queue questions, 1 to 1440. Lowered to a running desk's cadence or below, the loop (which reads the policy every 30 seconds) ticks 30 seconds inside it, even mid-sleep |
 
 An invalid file (unreadable, not a JSON object, or any value out of range) is the defaults, every key, with one warning; one bad value never leaves the others half-applied. Unknown keys are ignored. A missing file is the defaults, silently.
 
@@ -42,7 +42,7 @@ The rule is stored in the queue (`human-queue.sh interrupt`, state key `interrup
 |------------------------------|------|
 | `away` | Hold everything |
 | `available`, or `back` outside a discussion (in one, `back` ends the discussion: `discuss.md`) | Show everything again, starting with what was held |
-| `focus until <time>` | Hold until `<time>`: `15:30`, `3:30`, `3:30pm`, `3pm`, optionally ending ` ET`, the next time it comes in America/New_York (a 12-hour time without am or pm: whichever comes first); at most a day ahead |
+| `focus until <time>` | Hold until `<time>`: `15:30`, `3:30`, `3:30pm`, `3pm`, optionally ending ` ET`, the next time it comes in America/New_York (a 12-hour time without am or pm: whichever comes first); or an ISO 8601 time with a zone, `2026-10-07T19:30Z`, as `interrupt set focus --until` takes it; at most a day ahead |
 | `focus for <N> min` | Hold for N minutes, 1 to 1440 (`<N>` digits only) |
 | `focus off` | The same as `available` |
 | `interrupts?` | Show the rule in force. Changes nothing |
@@ -73,7 +73,7 @@ DESK_WHEN
 
 `focus for <N> min`: the same command with `--for <N>` in place of `--until …`.
 
-- Exit 0 → `{"rule": "focus", "until": "2026-10-07T19:30:00Z", "until_local": "15:30", "held": true, "source": "desk"}`. Acknowledge in one line: `Away — new Decisions wait in the queue until you say "available".` or `Focus until 15:30 ET — new Decisions wait until then.` For `available`, the line is `Available.`, followed by the release (below).
+- Exit 0 → `{"rule": "focus", "until": "2026-10-07T19:30:00Z", "until_local": "15:30", "held": true, "source": "desk"}`. Acknowledge in one line: `Away — new Decisions wait in the queue until you say "available".` or `Focus until 15:30 ET — new Decisions wait until then.` A focus ends back in the policy's rule, so when its `interrupt_rule` is `away` (`RULE` in block `desk-interrupt-get`), say `Focus until 15:30 ET — new Decisions wait until then, and after it until you say "available".` For `available`, the line is `Available.`, followed by the release (below).
 - Exit 4 → nothing changed. Show its one stderr line (`the focus time is in the past`, `… more than a day ahead (use away instead)`, a time it could not read, or `this session is not the registered control session`).
 - Exit 7 → the store is unreachable; nothing changed. `Can't reach the store — the interrupt rule is unchanged.`
 
@@ -87,9 +87,9 @@ After `available`, `back`, or `focus off`, run one tick now, so what was held re
 "$DESK/bin/desk-tick.sh" --session "$SID" --generation "<GEN>" --once
 ```
 
-Handle each line it prints exactly as the Monitor's (`SKILL.md`, "Monitor events"): a `new` line goes to `decisions.md`, "Showing items". No line means nothing arrived during the hold (or the Monitor's own tick got there first, and its `new` event arrives as a notification). A focus ends on its own: the first tick after its time reports what was held, as a `new` event like any other.
+Handle each line it prints exactly as the Monitor's (`SKILL.md`, "Monitor events"): a `new` line goes to `decisions.md`, "Showing items". No line means nothing arrived during the hold (or the Monitor's own tick got there first, and its `new` event arrives as a notification). A focus ends on its own, back in the policy's rule: when that is `everything`, the first tick after its time reports what was held, as a `new` event like any other; when it is `away`, the hold goes on until `available`.
 
-When `/desk` started under the hold, its backlog has not been shown yet (`SKILL.md`, step 8): a tick reports only what changed during the hold, never the older open items. So the release does step 8's read instead, whole, whether or not the tick printed a line (the read covers that line's ids), and step 8's rule for the first `new` event after it applies. A focus that ends on its own does the same at the first `new` event after its time, or at the operator's next message after it when no event comes.
+When `/desk` started under the hold, its backlog has not been shown yet (`SKILL.md`, step 8): a tick reports only what changed during the hold, never the older open items. So the release does step 8's read instead, whole, whether or not the tick printed a line (the read covers that line's ids), and step 8's rule for the first `new` event after it applies. A focus that ends on its own into `everything` does the same at the first `new` event after its time, or at the operator's next message after it when no event comes.
 
 A parked notice (`wakeups.md`) that arrives during a hold is held too: keep it in this conversation and print it after the release, or once the first `new` event after a focus ends has been shown. Wake-up retries themselves keep running during a hold; they show nothing.
 

@@ -168,19 +168,6 @@ hq__sr_parse() {
   done
 }
 
-# hq__sr_bigint_ok DIGITS — true when DIGITS (no leading zero) is at most
-# bigint's maximum, 9223372036854775807, the range of sets_set_id_seq: up to
-# 19 digits. A 19-digit value is compared in two halves (10 + 9 digits), so
-# bash arithmetic never sees a number past that maximum.
-hq__sr_bigint_ok() {
-  local hi lo
-  [ "${#1}" -lt 19 ] && return 0
-  [ "${#1}" -eq 19 ] || return 1
-  hi=$((10#${1:0:10}))
-  lo=$((10#${1:10}))
-  [ "$hi" -lt 9223372036 ] || { [ "$hi" -eq 9223372036 ] && [ "$lo" -le 854775807 ]; }
-}
-
 cmd_run() {
   local reply="" have=0 set_arg="" have_set=0 json=0 k errf out rc
   local -a pv=()
@@ -224,7 +211,7 @@ cmd_run() {
     case "$set_arg" in
       *[!0-9]*) hq_die_validation "set-resolve: --set must be a set id such as 12" ;;
     esac
-    if ! hq__sr_bigint_ok "$set_arg"; then
+    if ! hq_bigint_ok "$set_arg"; then
       hq_die_validation "set-resolve: --set is not a set id"
     fi
   fi

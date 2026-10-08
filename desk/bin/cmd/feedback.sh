@@ -152,7 +152,7 @@ cmd_run() {
     case "$set_id" in
       ''|0*|*[!0-9]*) hq_die_validation "feedback: --set must be a set id (a whole number from 1)" ;;
     esac
-    if [ "${#set_id}" -gt 18 ]; then
+    if ! hq_bigint_ok "$set_id"; then
       hq_die_validation "feedback: --set must be a set id (a whole number from 1)"
     fi
   fi

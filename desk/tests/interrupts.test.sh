@@ -219,6 +219,12 @@ sql_in "UPDATE state SET value = jsonb_set(value::jsonb, '{until}', to_jsonb(to_
 hq interrupt get --session desk-1 --json
 check "a focus whose time has passed is over: the default again" "$RC:$(jqo '[.rule, .held, .source, .until] | @json')" \
   '0:["everything",false,"default",null]'
+# A focus ends back in the policy's rule: under `away`, the hold goes on.
+hq interrupt get --session desk-1 --default away --json
+check "a focus over under an away policy: away again, still held" \
+  "$RC:$(jqo '[.rule, .held, .source] | join(",")')" "0:away,true,default"
+hq tick --session desk-1 --interrupts away
+check "... and its tick still holds" "$RC:$OUT" "0:[]"
 desk --session desk-1 --generation g1 --once
 check "a focus whose time has passed: the next tick shows what it held" "$RC:$OUT:$ERR" "0:desk-tick g1 new $D6:"
 

@@ -191,13 +191,18 @@ case "$1" in
 esac
 EOF
 chmod +x "$TSTUB"
-# A `sleep` that records how long the loop meant to sleep, then ends it.
+# A `sleep` that records each step the loop sleeps until its first tick, then
+# ends the loop at the next one. The loop sleeps in steps of at most 30 s, so
+# the steps before the tick add up to the interval.
 cat > "$TMP/sleepbin/sleep" <<'EOF'
 #!/usr/bin/env bash
+if grep -q '^tick ' "$STUB_DIR/args" 2>/dev/null; then exit 1; fi
 printf '%s\n' "$1" >> "$STUB_DIR/slept"
-exit 1
+exit 0
 EOF
 chmod +x "$TMP/sleepbin/sleep"
+# slept — "<total>/<longest step>" of the steps recorded before the first tick.
+slept() { awk '{ t += $1; if ($1 > m) m = $1 } END { print t "/" m }' "$STUB_DIR/slept" 2>/dev/null; }
 
 # dtick POLICY ARGS... — desk-tick.sh for desk-1 with POLICY ("" for the
 # repo's own) against the stub CLI.
@@ -233,43 +238,38 @@ check "an invalid policy is the defaults: everything" "$RC:$(sed -n 2p "$STUB_DI
 check "desk-tick.sh does not repeat the policy warning" "$ERR" ""
 
 dtick ""
-check "the loop sleeps the default cadence (5 min)" "$RC:$(cat "$STUB_DIR/slept" 2>/dev/null)" "0:300"
+check "the loop sleeps the default cadence (5 min), 30 s at a time" "$RC:$(slept)" "0:300/30"
 dtick "$TMP/wide.json"
-check "the loop sleeps the policy's cadence (20 min)" "$RC:$(cat "$STUB_DIR/slept" 2>/dev/null)" "0:1200"
+check "the loop sleeps the policy's cadence (20 min)" "$RC:$(slept)" "0:1200/30"
 dtick "$TMP/wide.json" --cadence 7
-check "--cadence overrides the policy's" "$RC:$(cat "$STUB_DIR/slept" 2>/dev/null)" "0:420"
+check "--cadence overrides the policy's" "$RC:$(slept)" "0:420/30"
 dtick "$TMP/wide.json" --cadence 30
 check_contains "--cadence at the policy's live bound: refused" "$RC:$ERR" "4:desk-tick: --cadence must be shorter than the live-desk bound (30 min"
 
-# The loop reads the policy again each cycle: an edit after start reaches the
-# next tick, and a live bound lowered to the interval or below shortens it.
-# This `sleep` swaps in the edited policy on its first call, then ends the
-# loop on its second.
+# The loop reads the policy again while it sleeps: an edit after start
+# reaches the next tick, and a live bound lowered to the interval or below
+# cuts short the sleep already under way. This `sleep` swaps in the edited
+# policy during the first step, then behaves as the one above.
 mkdir -p "$TMP/sleepbin2"
 cat > "$TMP/sleepbin2/sleep" <<'EOF'
 #!/usr/bin/env bash
-n=$(cat "$STUB_DIR/sleeps" 2>/dev/null || echo 0)
-n=$((n + 1))
-printf '%s\n' "$n" > "$STUB_DIR/sleeps"
+if grep -q '^tick ' "$STUB_DIR/args" 2>/dev/null; then exit 1; fi
+if [ ! -s "$STUB_DIR/slept" ]; then cp "$NEXT_POLICY" "$HUMAN_QUEUE_POLICY"; fi
 printf '%s\n' "$1" >> "$STUB_DIR/slept"
-if [ "$n" -eq 1 ]; then
-  cp "$NEXT_POLICY" "$HUMAN_QUEUE_POLICY"
-  exit 0
-fi
-exit 1
+exit 0
 EOF
 chmod +x "$TMP/sleepbin2/sleep"
 printf '{"interrupt_rule": "away"}\n' > "$TMP/live-pol.json"
 printf '{"tick_cadence_min": 2, "live_desk_max_tick_age_min": 3}\n' > "$TMP/live-next.json"
-rm -f "$STUB_DIR/args" "$STUB_DIR/slept" "$STUB_DIR/sleeps"
+rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
 RC=0
 env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
   HUMAN_QUEUE_POLICY="$TMP/live-pol.json" NEXT_POLICY="$TMP/live-next.json" PATH="$TMP/sleepbin2:$PATH" \
   bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
-check "a policy edited while the loop runs: the next tick follows its rule" \
+check "a policy edited while the loop sleeps: the next tick follows its rule" \
   "$RC:$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "0:tick --session desk-1 --interrupts everything"
-check "... and a live bound lowered past the interval: 30 s inside it" \
-  "$(tr '\n' ' ' < "$STUB_DIR/slept" 2>/dev/null)" "300 150 "
+check "... and a live bound lowered mid-sleep: that sleep ends 30 s inside it (150 s, not 300)" \
+  "$(slept)" "150/30"
 
 # --------------------------------------------------------------------- CLI
 printf '== CLI\n'
@@ -285,6 +285,15 @@ run_cli() {
   OUT=$(cat "$TMP/out")
   ERR=$(cat "$TMP/err")
 }
+
+# hq_bigint_ok (lib/common.sh), shared by set-resolve and feedback --set: the
+# whole bigint range, never past it.
+bigint_ok() { bash -c '. "$1"; hq_bigint_ok "$2" && echo yes || echo no' _ "$BIN/lib/common.sh" "$1"; }
+check "hq_bigint_ok: 1" "$(bigint_ok 1)" "yes"
+check "hq_bigint_ok: 19 digits under the maximum" "$(bigint_ok 1234567890123456789)" "yes"
+check "hq_bigint_ok: bigint's maximum" "$(bigint_ok 9223372036854775807)" "yes"
+check "hq_bigint_ok: one past it" "$(bigint_ok 9223372036854775808)" "no"
+check "hq_bigint_ok: 20 digits" "$(bigint_ok 10000000000000000000)" "no"
 
 # expect_rc SHELL CODE LABEL NEEDLE ARGS... — exit CODE, one stderr line
 # naming NEEDLE, nothing on stdout, no connection attempt.
@@ -379,7 +388,8 @@ for SH in $SHELLS; do
   expect_rc "$SH" 4 "feedback --set 0" "--set must be a set id" feedback 2 not-important --set 0
   expect_rc "$SH" 4 "feedback --set 012" "--set must be a set id" feedback 2 not-important --set 012
   expect_rc "$SH" 4 "feedback --set x" "--set must be a set id" feedback 2 not-important --set x
-  expect_rc "$SH" 4 "feedback --set with 19 digits" "--set must be a set id" feedback 2 not-important --set 1234567890123456789
+  expect_rc "$SH" 4 "feedback --set past bigint's maximum" "--set must be a set id" feedback 2 not-important --set 9223372036854775808
+  expect_rc "$SH" 4 "feedback --set with 20 digits" "--set must be a set id" feedback 2 not-important --set 12345678901234567890
   expect_rc "$SH" 4 "feedback --set twice" "--set given more than once" feedback 2 not-important --set 1 --set 2
   expect_rc "$SH" 4 "feedback --set with no value" "--set needs a value" feedback 2 not-important --set
   expect_rc "$SH" 4 "feedback number 100" "invalid item id" feedback 100 not-important --set 1
@@ -590,6 +600,8 @@ contract interrupts.md "$(cat "$INTERRUPTS")" <<'NEEDLES'
 <<'DESK_MSG'
 A tag is never an answer:
 a Review's `R-<n>` is not a tag's item
+or an ISO 8601 time with a zone, `2026-10-07T19:30Z`
+when it is `away`, the hold goes on until `available`
 Acknowledge in one line
 the release does step 8's read instead, whole, whether or not the tick printed a line
 NEEDLES
