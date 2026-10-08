@@ -70,6 +70,17 @@
 #        or two calls. A failure is an error line like any other, printed
 #        before the tick's `new` and `retry` lines; a refusal (exit 4) is
 #        confirmed with control-status as in step 2.
+#     5. The morning check-in (issue #1770). From 04:00 in America/New_York
+#        until the policy's eod_time, `checkin due --session SESSION --at
+#        04:00 --until EOD_TIME` asks the store, whose clock and once-a-day
+#        mark decide: `due DAY` prints `desk-tick GEN morning` before any
+#        `new` line (the first tick of the day, so the desk asks hours,
+#        energy, and plans and sets the reading budget before anything else);
+#        `done` (asked already today, or today's check-in is stored) prints
+#        nothing. Like the sweep, once the store has answered for a day the
+#        loop asks no more that day, and a failure or refusal is handled the
+#        same way. The two windows never overlap, so a tick asks one of
+#        them at most.
 #   A failing call prints `desk-tick GEN error <subcommand> exit <code>: <the
 #   CLI's one stderr line>` once, when the loop goes from working to failing,
 #   and `desk-tick GEN recovered` once when it works again, so an outage is
@@ -89,8 +100,8 @@
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
 #   HUMAN_QUEUE_CLOCK         the America/New_York day and time this loop
 #                             reads, `YYYY-MM-DD HH:MM` (tests; the store's
-#                             own clock still decides whether the sweep is
-#                             due)
+#                             own clock still decides whether the sweep or
+#                             the morning check-in is due)
 #
 # EXIT CODES
 #   0  replaced by another control session, or --once finished
@@ -430,6 +441,51 @@ dt_sweep() {
   return 0
 }
 
+# When the morning starts for the check-in (issue #1770): the first tick from
+# then until eod_time asks. A desk left running overnight asks at 04:00, and
+# the card waits in the conversation until the operator arrives.
+dt_morning_at=04:00
+# The day the store last answered `due` or `done` for the check-in.
+dt_morning_day=""
+
+# dt_morning — step 5. Sets dt_morning_line to the `morning` line when the
+# check-in is due; returns 1 (after dt_fail) when the call failed.
+dt_morning_line=""
+dt_morning() {
+  local now day hm out rc
+  dt_morning_line=""
+  now=$(dt_clock)
+  case "$now" in
+    [0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]' '[0-2][0-9]:[0-5][0-9]) ;;
+    *) return 0 ;;
+  esac
+  day="${now%% *}"
+  hm="${now#* }"
+  hm="${hm%%:*}${hm#*:}"
+  if [ "$day" = "$dt_morning_day" ] \
+    || [ "$((10#$hm))" -lt "$((10#${dt_morning_at%%:*}${dt_morning_at#*:}))" ] \
+    || [ "$((10#$hm))" -ge "$((10#${dt_eod%%:*}${dt_eod#*:}))" ]; then
+    return 0
+  fi
+  rc=0
+  out=$("$dt_cli" checkin due --session "$dt_session" --at "$dt_morning_at" --until "$dt_eod" 2>"$dt_err") || rc=$?
+  if [ "$rc" -eq 4 ]; then
+    dt_still_ours
+  fi
+  if [ "$rc" -ne 0 ]; then
+    dt_fail checkin "$rc"
+    return 1
+  fi
+  case "$out" in
+    'due '*)
+      dt_morning_day="$day"
+      dt_morning_line="desk-tick $dt_gen morning"
+      ;;
+    'done '*) dt_morning_day="$day" ;;
+  esac
+  return 0
+}
+
 # dt_new IDS — the `new` line, when there is anything new.
 dt_new() {
   if [ -n "$1" ]; then
@@ -496,12 +552,20 @@ dt_cycle() {
     dt_new "$ids"
     return 0
   fi
+  if ! dt_morning; then
+    dt_new "$ids"
+    dt_retry "$due"
+    return 0
+  fi
   if ! dt_sweep; then
     dt_new "$ids"
     dt_retry "$due"
     return 0
   fi
   dt_ok
+  if [ -n "$dt_morning_line" ]; then
+    printf '%s\n' "$dt_morning_line"
+  fi
   dt_new "$ids"
   dt_retry "$due"
   if [ -n "$dt_sweep_line" ]; then

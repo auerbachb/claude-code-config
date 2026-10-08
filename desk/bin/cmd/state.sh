@@ -15,7 +15,7 @@ HQ_STATE_VALUE_MAX=65536
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
-HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep"
+HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep checkin checkin_asked"
 
 cmd_usage() {
   cat <<'EOF'
@@ -43,6 +43,10 @@ RESERVED KEYS (readable with get; `set` refuses them)
                    deleted by `plan clear`
   eod_sweep        the day the end-of-day sweep last ran (YYYY-MM-DD);
                    written by `sweep due`
+  checkin          today's morning check-in and reading budget (JSON);
+                   written by `checkin set`
+  checkin_asked    the day the morning check-in was last due (YYYY-MM-DD);
+                   written by `checkin due`
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
@@ -155,6 +159,8 @@ cmd_run() {
         interrupt) hq_die_validation "state set: interrupt is reserved: use interrupt set" ;;
         plan) hq_die_validation "state set: plan is reserved: use plan set" ;;
         eod_sweep) hq_die_validation "state set: eod_sweep is reserved: only sweep due writes it" ;;
+        checkin) hq_die_validation "state set: checkin is reserved: use checkin set" ;;
+        checkin_asked) hq_die_validation "state set: checkin_asked is reserved: only checkin due writes it" ;;
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi

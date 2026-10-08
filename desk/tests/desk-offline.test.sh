@@ -402,12 +402,13 @@ TSTUB="$STUB_DIR/loopcli.sh"
 # any subcommand exit 7, and `refuse-N` makes it exit 4 the way
 # `tick --session` refuses a session that is no longer the control session.
 # Every call's arguments are appended to $STUB_DIR/args. The end-of-day
-# sweep's `sweep due` (issue #1784; plan-offline.test.sh tests it) answers
-# nothing here and is neither counted nor logged, so the numbers above keep
-# naming the loop's own calls whatever the clock says.
+# sweep's `sweep due` (issue #1784; plan-offline.test.sh tests it) and the
+# morning check-in's `checkin due` (issue #1770; checkin-offline.test.sh
+# tests it) answer nothing here and are neither counted nor logged, so the
+# numbers above keep naming the loop's own calls whatever the clock says.
 cat > "$TSTUB" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = sweep ]; then exit 0; fi
+if [ "$1" = sweep ] || [ "$1" = checkin ]; then exit 0; fi
 n=$(( $(cat "$STUB_DIR/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STUB_DIR/calls"
 printf '%s\n' "$*" >> "$STUB_DIR/args"

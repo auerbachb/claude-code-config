@@ -555,7 +555,9 @@ def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
 #    no block fits)}
 # A new plan clears a batch first: the parked menu-shaped Decisions, then the
 # other menu-shaped ones and then Reviews while they fit in batch_min (a
-# Decision at its declared minutes, else 2; a Review at 2). Long-form
+# Decision at its declared minutes, else 2; a Review at 2) and, with a
+# morning check-in today, while the reading budget has some left (the
+# forecast's `left`, #1770: none left, no Review in the batch). Long-form
 # Decisions and what does not fit wait for the first block's end (`later`).
 # The first block starts when the batch is done, and blocks are gap minutes
 # apart, so a tick lands between them and shows what was held. No count,
@@ -575,6 +577,9 @@ def desk_plan_propose:
   | ($c.inputs // {}) as $in
   | ([ ($c.decisions // [])[] | select(.kind == "decision" and .status == "open") ]) as $open
   | ($c.stored // null) as $st
+  # Today's reading budget (#1770): the forecast's `left`, the Reviews still
+  # to read today; null (no check-in today) leaves the batch as it was.
+  | (($c.forecast // {}).left | if type == "number" then . else null end) as $rleft
   | (if $st != null then
        [ ($st.blocks // [])[] | {s: (.start | plan_epoch), u: (.until | plan_epoch)} ] as $sb
        | ([ $sb[] | select(.u <= $now) ] | length) as $done
@@ -593,7 +598,8 @@ def desk_plan_propose:
           | reduce ($quick[] | select(.parked | not)) as $q (.;
               if .m + $q.m <= $budget then .dec += [$q.id] | .m += $q.m else . end)
           | reduce (($c.reviews // [])[] | select(.kind == "review" and .status == "open")) as $r (.;
-              if .m + 2 <= $budget then .rev += [$r.id] | .m += 2 else . end)) as $b
+              if .m + 2 <= $budget and ($rleft == null or (.rev | length) < $rleft)
+              then .rev += [$r.id] | .m += 2 else . end)) as $b
        | { decisions: $b.dec, reviews: $b.rev, ids: ($b.dec + $b.rev), minutes: $b.m,
            later: [ $open[] | .id as $i | select([ $b.dec[] | select(. == $i) ] | length == 0) | .id ],
            start: (($now + $b.m * 60) | plan_ceil_min), first: 1, done: 0, kept: [] }
@@ -667,7 +673,18 @@ def desk_plan_propose:
                       else "no block fits" end)
                 else null end) };
 
-# plan_forecast_lines: the proposal's "waiting now" and forecast lines.
+# budget_line: today's reading budget against what has been read (#1770),
+# from anything carrying `budget`, `read_today`, and `left` (`checkin get
+# --json`, `plan forecast --json`): "Reading budget: 9 of 28 Reviews read
+# today · 19 left" (or "· 3 over"). Nothing without a check-in today.
+def budget_line:
+  if (.budget | type) != "number" then empty
+  else "Reading budget: \(.read_today // 0) of \(.budget) Reviews read today · "
+       + (if (.left // 0) >= 0 then "\(.left // 0) left" else "\(-.left) over" end)
+  end;
+
+# plan_forecast_lines: the proposal's "waiting now", reading budget (with a
+# check-in today), and forecast lines.
 def plan_forecast_lines:
   . as $p
   | .forecast as $f
@@ -677,6 +694,7 @@ def plan_forecast_lines:
             + (if ($f.parked // 0) > 0 then " (\($f.parked) parked)" else "" end) else empty end),
          (if ($f.unreviewed // 0) > 0 then plan_n($f.unreviewed; "unreviewed Review"; "unreviewed Reviews") else empty end) ]
        | if length == 0 then "Waiting now: nothing." else "Waiting now: " + join(" and ") + "." end),
+      ($f | budget_line | . + "."),
       (($f.window_min // 180) as $w
        | ($f.asked // 0) as $a
        | if $a == 0 then "Forecast: no thread asked anything in \(plan_window_text($w)), so few new questions are likely."
@@ -763,6 +781,192 @@ def todo_line:
     ((.my_tags // []) | if length > 0 then "tags: " + join(", ") else empty end),
     ((.my_note // "") | if . == "" then empty else "note: " + . end) ]
   | if length == 0 then empty else join(" · ") end;
+
+# ------------------------------------- morning check-in and reading budget (#1770)
+#
+# The check-in (checkin.md): three answers in one typed line — hours at the
+# desk today, energy in one word, anything planned — read by one grammar, so
+# the desk never guesses them out of prose; the card that asks, the card that
+# shows the budget once, and the Reviews view's running count. Input: `checkin
+# get --json` ({today, checkin, measured, factors, guess, read_today,
+# answered_today, unreviewed, budget, left}).
+
+# num1: a number to one decimal, without a trailing ".0" ("7", "7.3").
+def num1: (. * 10 | round) / 10 | tostring;
+
+# checkin_hours: hours as typed ("4", "4.5", "4h", "4 hours", "four",
+# "an hour", "half an hour", "4 and a half hours", "90 min", "none") as a
+# number of hours (two decimals at most), else null. 0 to 16.
+def checkin_hours:
+  ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")
+  | sub("^(?:about|around|roughly|maybe|~) ?"; "")
+  | sub("(?: (?:at the desk|at my desk|today))+$"; "")
+  | if test("^(?:0|zero|none|no hours?)(?: ?(?:h|hrs?|hours?))?$") then 0
+    else (capture("^(?<n>[0-9]{1,3}(?:\\.[0-9]{1,2})?|half an?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|ninety)"
+                  + "(?: ?(?<u>h|hrs?|hours?|m|mins?|minutes?)\\b)?(?<half> and a half)?(?: (?<u2>h|hrs?|hours?))?$") // null)
+      | if . == null then null
+        else (.n | plan_num) as $v
+          | if $v == null then null
+            elif ((.u // "") | startswith("m")) then (if .half != null then null else $v / 60 end)
+            else $v + (if .half != null then 0.5 else 0 end) end
+        end
+    end
+  | if . == null or . < 0 or . > 16 then null else (. * 100 | round) / 100 end;
+
+# checkin_energy: one word of energy as typed ("ok", "Pretty tired", "low.")
+# as the stored word: the last word of up to three, lowercase; else null.
+def checkin_energy:
+  ascii_downcase | gsub("[.!]+$"; "") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")
+  | sub("^energy ?[:=]? ?"; "")
+  | split(" ") | if length >= 1 and length <= 3 then last else null end
+  | if . != null and test("^[a-z][a-z-]{0,19}$") then . else null end;
+
+# checkin_planned: the planned text as typed, trimmed; null for none.
+def checkin_planned:
+  gsub("\\s+"; " ") | gsub("^ | $"; "") | sub("^(?i:planned|plans?|planning)\\s*[:=]?\\s*"; "")
+  | if test("^(?i:none|nothing|no|nope|n/a|-|nothing planned|no plans?)?\\.?$") then null else . end;
+
+# checkin_parse: the operator's whole reply to the check-in card (a string,
+# as `jq -Rs` reads it) as
+#   {"skip": bool, "hours": N|null, "energy": "word"|null,
+#    "planned": "text"|null, "missing": ["hours"?, "energy"?]}
+# The reply is `hours, energy, plan` — separated by commas, semicolons, or
+# line breaks; the plan keeps any commas of its own (`4, ok, the PRD, 30 min
+# a section`) and may be left out — or the same three separated by spaces
+# (`4h ok the PRD`). `skip` (also `not today`, `no check-in`, `pass`) skips
+# the check-in. A reply missing hours or energy names it in `missing`: it is
+# not a check-in reply, and the desk treats it as an ordinary message.
+def checkin_parse:
+  (gsub("[’‘]"; "'") | gsub("^\\s+|\\s+$"; "")) as $m
+  | ($m | ascii_downcase | sub("[.!]+$"; "")) as $l
+  | if ($l | test("^(skip|skip it|skip today|skip the check-?in|not today|no check-?in|pass)$")) then
+      {skip: true, hours: null, energy: null, planned: null, missing: []}
+    else
+      ([ $m | match("[,;\\n]"; "g") | .offset ]) as $cuts
+      # Separated by commas, semicolons, or line breaks.
+      | (if ($cuts | length) >= 1 then
+           { h: $m[0:$cuts[0]],
+             e: $m[($cuts[0] + 1):($cuts[1] // ($m | length))],
+             p: (if ($cuts | length) >= 2 then $m[($cuts[1] + 1):] else null end) }
+           | {hours: (.h | sub("^(?i:hours?)\\s*[:=]?\\s*"; "") | checkin_hours),
+              energy: (.e | checkin_energy), planned: (.p | if . == null then null else checkin_planned end)}
+         else null end) as $a
+      # Separated by spaces (`4h ok the PRD, 30 min a section`): the longest
+      # run of up to five leading words that reads as hours, the next word,
+      # and the rest.
+      | (($m | gsub("\\s+"; " ") | split(" ")) as $w
+         | [ range([5, ($w | length) - 1] | min; 0; -1) as $k
+             | ($w[:$k] | join(" ") | checkin_hours) as $h
+             | select($h != null)
+             | {hours: $h,
+                energy: ($w[$k] | checkin_energy),
+                planned: ($w[($k + 1):] | join(" ") | checkin_planned)} ] | .[0]) as $b
+      | (def whole: . != null and .hours != null and .energy != null;
+         if ($a | whole) then $a elif ($b | whole) then $b
+         else $a // $b // {hours: ($m | checkin_hours), energy: null, planned: null} end) as $r
+      | $r + {skip: false,
+              missing: ([ (if $r.hours == null then "hours" else empty end),
+                          (if $r.energy == null then "energy" else empty end) ])}
+      | {skip, hours, energy, planned, missing}
+    end;
+
+# checkin_planned_plan: whether the planned text is a piece of work the day
+# plan can schedule — an item with a pace or an extent (`the PRD, 30 min a
+# section`, `the deck until 12:30`, `meetings until noon`) — by plan.md's
+# own grammar (desk_plan_parse). Then the desk goes on into plan.md step 2
+# with it.
+def checkin_planned_plan:
+  if type != "string" then false
+  else desk_plan_parse("item").fields
+    | .item != null and (.pace_min != null or .until != null or .for_min != null or .count != null)
+  end;
+
+# checkin_day_text: a YYYY-MM-DD day as "Thu Oct 8".
+def checkin_day_text: day_epoch | if . == null then "?" else strftime("%a %b %d") | sub(" 0(?<n>[1-9])$"; " \(.n)") end;
+
+# checkin_hours_text: hours as "4 h", "1.5 h", "30 min".
+def checkin_hours_text:
+  if type != "number" then "?"
+  elif . > 0 and . < 1 then "\(. * 60 | round) min"
+  else "\(num1) h" end;
+
+# checkin_active_text: minutes at the desk as "45 min" or "1.5 h" (to the
+# half hour).
+def checkin_active_text:
+  if . < 60 then "\(.) min" else "\(. / 30 | round | . / 2 | num1) h" end;
+
+# checkin_pace_line: the measured day's numbers as one line, or why there
+# are none.
+def checkin_pace_line:
+  .today as $today
+  | if .measured == null then
+      "No measured pace yet: no day in the last \(.guess.lookback_days // 7) has \(.guess.min_read // 3) Reviews read,"
+      + " so today starts from the \(.guess.items // 30) × \(.guess.lines_per_item // 20) guess."
+    else .measured as $m
+      | ($m.day | day_label($today)) as $d
+      | (if $d == "Yesterday" then "Yesterday" else "Last measured day, \($d)" end)
+        + ": \(plan_n($m.reviewed; "Review"; "Reviews")) read in about \($m.active_min | checkin_active_text) at the desk,"
+        + " \($m.reviews_per_hour | num1) an hour"
+        + (if ($m.answered // 0) > 0 then
+             "; \(plan_n($m.answered; "Decision"; "Decisions")) answered"
+             + (if $m.median_shown_to_answered_min != null
+                then ", median \($m.median_shown_to_answered_min | num1) min from shown to answered" else "" end)
+           else "" end)
+        + "."
+    end;
+
+# checkin_card: the morning check-in's card (`checkin get --json`): the
+# measured pace, what waits, and the three questions, as one blockquote; then
+# how to reply. With today's check-in stored (`check-in` again), it says what
+# is stored and that a new answer replaces it.
+def checkin_card:
+  ([ "**" + (if .checkin != null then "Check-in again" else "Morning check-in" end)
+       + " · \(.today | checkin_day_text)**",
+     checkin_pace_line,
+     (if .checkin != null then
+        "Now: \(.checkin.hours | checkin_hours_text), energy \(.checkin.energy), budget \(.checkin.budget)"
+        + " (\(.read_today // 0) read). A new answer replaces it."
+      else empty end),
+     "Waiting now: " + (if (.unreviewed // 0) > 0 then plan_n(.unreviewed; "unreviewed Review"; "unreviewed Reviews") else "no unreviewed Reviews" end) + ".",
+     "1. Hours at the desk today?",
+     "2. Energy, in one word? (for example low, ok, high)",
+     "3. Anything planned? (a piece of work and its pace, meetings, or none)" ] | quote)
+  + "\n\nReply in one line, `hours, energy, plan`: `4, ok, the PRD until noon`. `skip` "
+  + (if .checkin != null then "keeps the one stored." else "leaves today without a reading budget." end);
+
+# budget_card: the reading budget, shown once after the check-in is stored
+# (`checkin set --json`, the same shape as get), and on `budget?`. Without a
+# check-in today, one line saying so.
+def budget_card:
+  if .checkin == null then "No check-in today, so no reading budget. Say `check-in` to set one."
+  else .checkin as $c
+    | (.today // $c.day) as $today
+    | ($c.factor | if type == "number" then num1 else "1" end) as $f
+    | ("energy \($c.energy) (" + (if $c.factor_known == false then "not in the table: 1" else $f end) + ")") as $e
+    | ([ "**Reading budget today: \(plan_n($c.budget; "Review"; "Reviews"))"
+           + (if ($c.lines // 0) > 0 then " (~\($c.lines) lines at level 2)" else "" end) + "**",
+         (if $c.hours == 0 then "0 h at the desk today: nothing to read."
+          elif ($c.basis.kind // "") == "measured" then
+            (($c.basis.day | day_label($today)) as $d
+             | (if $d == "Yesterday" then "Yesterday's pace" else "The pace on \($d)" end))
+            + ", \($c.basis.rate | num1) an hour × \($c.hours | checkin_hours_text) × \($e) = \($c.budget)."
+          else "The starting guess, \($c.basis.items // 30) Reviews (no measured pace yet) × \($e) = \($c.budget)." end),
+         "\(.unreviewed // 0) waiting now · \(.read_today // 0) read so far today"
+           + (if (.left | type) == "number" and .left < 0 then " · \(-.left) over" else "" end) + ".",
+         (if $c.planned != null then "Planned: \($c.planned)" else empty end) ] | quote)
+    + "\n\n`reviews` keeps the running count against it; `check-in` changes the hours or the energy; `budget?` shows this again."
+  end;
+
+# reviews_view_budget($chk): reviews_view (its input, `list --kind reviews
+# --unreviewed --json`) with today's running count under its header, from
+# $chk (`checkin get --json`, or null): exactly reviews_view without a
+# check-in today.
+def reviews_view_budget($chk):
+  reviews_view as $v
+  | ([ ($chk // {}) | budget_line ] | .[0]) as $b
+  | if $b == null then $v
+    elif ((.items // []) | length) == 0 then $v + "\n" + $b + "."
+    else ($v | split("\n")) as $l | ([ $l[0], $b ] + $l[1:]) | join("\n") end;
 
 # ---------------------------------------------------- end-of-day sweep (#1784)
 

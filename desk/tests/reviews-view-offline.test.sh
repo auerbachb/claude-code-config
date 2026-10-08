@@ -234,7 +234,7 @@ contract reviews.md "$REVIEWS" <<'NEEDLES'
 'include "desk"; reviews_missing_l1'
 --level 1 </dev/null; echo "exit=$?"
 "$HQ" summary set R-3 --level 1 <<'DESK_L1'
-'include "desk"; reviews_view'
+'include "desk"; reviews_view_budget(
 "$HQ" summary set R-2 <<'DESK_SUMMARY'
 "$HQ" review --synced-today; echo "exit=$?"
 "$HQ" flag R-2 --note "$(cat "$NOTE_FILE")"

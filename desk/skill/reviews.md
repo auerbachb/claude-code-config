@@ -78,7 +78,11 @@ Several items' blocks may run in one Bash call, one here-document each. `exit=0`
 
 ```bash
 VIEW=$("$HQ" list --kind reviews --unreviewed --json); rc=$?
-if [ "$rc" -eq 0 ]; then printf '%s\n' "$VIEW" | jq -r -L "$DESK/skill" 'include "desk"; reviews_view'; else echo "exit=$rc"; fi
+if [ "$rc" -eq 0 ]; then
+  CHK=$("$HQ" checkin get --json 2>/dev/null) || CHK=""
+  printf '%s\n' "$VIEW" | jq -r -L "$DESK/skill" --arg chk "$CHK" \
+    'include "desk"; reviews_view_budget(try ($chk | fromjson) catch null)'
+else echo "exit=$rc"; fi
 ```
 
 Print its output as is, nothing before or after it:
@@ -97,6 +101,8 @@ Next: open R-<n> · diff R-<n> [path] · reviewed R-<n> · reviewed all today ·
 ```
 
 The day is the day the item was synced (America/New_York), newest first; inside a day, repositories by name (the owner is shown only when two repositories share a name); inside a group, oldest item first. An item still without its line shows its title, marked `(title; not summarized yet)`. With nothing unreviewed the block prints `No unreviewed Reviews.`, which is the whole reply.
+
+**The running count** (#1770, `checkin.md`): with a morning check-in stored today, the line under the header is today's reading budget, `Reading budget: 9 of 28 Reviews read today · 19 left` (`· 3 over` past it), and with nothing unreviewed it follows `No unreviewed Reviews.` Without a check-in today (or when the check-in can't be read) the view is exactly as above.
 
 ## `open R-<n>`: level 2, cached
 
