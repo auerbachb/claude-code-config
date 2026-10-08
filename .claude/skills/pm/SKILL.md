@@ -442,6 +442,71 @@ fi
 
 **Truncation check:** If the returned issue count equals 500, warn: "Showing 500 issues — repo may have more. Results may be incomplete."
 
+**New since the last scan (issue #1766).** An issue filed after this repo's previous backlog scan — an idea filed from the desk, or by `/issue-maker` — must show up in this scan's ranking without anyone pointing at it. This block fetches the backlog again (never a saved list) and picks the open, unassigned issues created after the baseline that carry none of the labels 1B.4 (6) excludes. The baseline is the repo's `pm_backlog_scan_at` (the previous scan's start, less five minutes of overlap), else the last 24 hours, and it moves only after a successful, complete fetch:
+
+<!-- test-anchor: pm-1b2-new-issues -->
+```bash
+if [ -z "${SESSION_STATE_SH:-}" ]; then
+  for candidate in \
+    "$HOME/.claude/skills-worktree/.claude/scripts/session-state.sh" \
+    "$HOME/.claude/scripts/session-state.sh" \
+    ".claude/scripts/session-state.sh"; do
+    if [ -x "$candidate" ]; then SESSION_STATE_SH="$candidate"; break; fi
+  done
+fi
+# The next baseline: taken before the fetch and set back 5 minutes, so a local
+# clock running ahead of GitHub's never skips an issue (one filed inside the
+# overlap is named on two scans, which is harmless).
+SCAN_NOW=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-5M +%Y-%m-%dT%H:%M:%SZ)
+SCAN_SINCE=""; SCAN_KEY=""
+if [ -n "${SESSION_STATE_SH:-}" ]; then
+  SCAN_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || SCAN_KEY=""
+  if [ "$SCAN_KEY" = "_unknown" ]; then SCAN_KEY=""; fi
+  if [ -n "$SCAN_KEY" ]; then
+    SCAN_SINCE=$("$SESSION_STATE_SH" --get ".repos[\"$SCAN_KEY\"].pm_backlog_scan_at" 2>/dev/null) || SCAN_SINCE=""
+  fi
+fi
+case "$SCAN_SINCE" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) SINCE_FROM="the last scan" ;;
+  *) SCAN_SINCE=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)
+     SINCE_FROM="the last 24 h (no earlier scan recorded)" ;;
+esac
+NEW_ISSUES='[]'
+# The fetch names the repo whose baseline it reads, so the two always agree.
+SCAN_OK=0
+if [ -n "$SCAN_KEY" ]; then
+  BACKLOG_NOW=$(gh issue list --repo "$SCAN_KEY" --state open --json number,title,labels,assignees,createdAt --limit 500 2>/dev/null) && SCAN_OK=1
+else
+  BACKLOG_NOW=$(gh issue list --state open --json number,title,labels,assignees,createdAt --limit 500 2>/dev/null) && SCAN_OK=1
+fi
+if [ "$SCAN_OK" -eq 1 ] \
+   && NEW_ISSUES=$(printf '%s' "$BACKLOG_NOW" | jq -c --arg since "$SCAN_SINCE" '
+        [ .[] | select(.createdAt >= $since)
+              | select(((.assignees // []) | length) == 0)
+              | select([(.labels // [])[].name | ascii_downcase]
+                       | any(IN("blocked", "on-hold", "wontfix", "duplicate")) | not)
+              | {number, title, createdAt} ] | sort_by(.createdAt)'); then
+  # `gh issue list` returns newest first, so a 500-row cap drops only old
+  # issues — unless all 500 are newer than the baseline. Then some new ones
+  # may be missing: keep the baseline so the next scan reads the window again.
+  SCAN_FULL=$(printf '%s' "$BACKLOG_NOW" | jq -r --arg since "$SCAN_SINCE" \
+    'if length >= 500 and ((map(.createdAt) | min) >= $since) then "yes" else "no" end' 2>/dev/null) || SCAN_FULL=yes
+  if [ "$SCAN_FULL" != "no" ]; then
+    echo "DEGRADED: the list hit its 500-issue cap with every row newer than $SCAN_SINCE, so some new issues may be missing — the baseline did not move"
+  elif [ -n "$SCAN_KEY" ]; then
+    "$SESSION_STATE_SH" --set ".repos[\"$SCAN_KEY\"].pm_backlog_scan_at=\"$SCAN_NOW\"" >/dev/null 2>&1 \
+      || echo "DEGRADED: the backlog-scan baseline was not saved — the next scan reads the same window again"
+  else
+    echo "DEGRADED: no repo key from session-state.sh — new issues are judged against the last 24 h, and no baseline is kept"
+  fi
+  printf 'NEW_ISSUES since %s (%s): %s\n' "$SCAN_SINCE" "$SINCE_FROM" \
+    "$(printf '%s' "$NEW_ISSUES" | jq -r 'if length == 0 then "none" else map("#\(.number) \(.title)") | join("; ") end')"
+else
+  NEW_ISSUES='[]'
+  echo "DEGRADED: the new-issue scan failed (gh issue list or jq) — no issue is marked new this run, and the baseline did not move"
+fi
+```
+
 ### 1B.3: Read issue bodies for top candidates
 
 Reading all issue bodies is expensive. Use a two-pass approach:
@@ -453,6 +518,8 @@ Reading all issue bodies is expensive. Use a two-pass approach:
 - Most recently updated (active discussion = likely important)
 - Oldest unassigned (may be neglected but important)
 - **Operator order (1B.1a):** every open issue in `PRIO_JSON.order` is a candidate whatever the signals above say, and every issue in `PRIO_JSON.parked` is dropped here, before any deep read. An ordered issue missing from 1B.2's list (past its 500-issue cap) is fetched directly — `gh issue view N --json number,title,labels,assignees,state,createdAt,updatedAt` — and joins when open, so the cap never silently drops an operator pick
+
+**Every issue in `NEW_ISSUES` (1B.2) joins the shortlist on top of the ~20**, so an issue filed since the last scan is always read, scored, and tiered on the first scan after it was filed. The 1B.5 output then **names each of them with its tier**, even when it ranks below the top 3–5, as one line after the ranked list: `New since the last scan: #N — title (Tier)` (several joined with `; `). A new issue the 1B.3 / 1B.4 checks later drop (an open PR, a dependency) is named the same way with that reason in place of the tier, so the operator sees it was picked up.
 
 **Pass 2 — Deep read:** For the top ~20 candidates, fetch full bodies:
 
@@ -2062,7 +2129,7 @@ Refill from three sources, in this order:
 
 **(b) Backlog refill — automatic.** When the queue is empty and slots remain, go back to the backlog and launch, with **no "suggest 1–3 and wait for a selection" round-trip**:
 
-1. Re-scan and re-score using the incremental re-read + **total** re-score described in step 2 of "When one or more pipelines or threads finish" below.
+1. Re-scan and re-score using the incremental re-read + **total** re-score described in step 2 of "When one or more pipelines or threads finish" below. The re-scan runs 1B.2's `pm-1b2-new-issues` block too, and the refill report line names each `NEW_ISSUES` entry with its tier, launched or not (`New since the last scan: #N (Tier)`), so an issue filed meanwhile is visibly in the ranking (issue #1766).
 2. **Apply `$SCOPE` first when it is non-null** — drop every candidate outside it before ranking decides anything, so a narrowed refill can never launch excluded work.
 3. Take the highest-ranked **inline-eligible** candidates from what survives, up to the number of free slots.
 4. Launch them through 3.1's inline path (`/subagent` A→B→C) and mark each `Inline` in the Active Work table (3.2).

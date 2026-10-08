@@ -34,6 +34,7 @@ While a prompt waits, read the operator's next message in this order:
 2. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md` (a bare `discuss` names this part).
    **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then print this part's card again. Nothing is stored.
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`) as the whole message → `priorities.md`, then print this part's card again. Nothing is stored for this item.
+   **`idea: …`**, **`file: …`**, or **`repo: …`** → `ideas.md`, then print this part's card again. Nothing is stored for this part.
 3. **A reply for another item**: the message starts with `D-<n>:` naming a different item → handle it as a typed reply (`decisions.md`, "Typed replies"; a long-form one goes through "Storing an answer" below), then print this part's card again.
 4. **This item, addressed**: the message starts with this part's own `D-<n>:` → the answer is the text after that colon.
 5. **Anything else is the answer**: the whole message, as typed. A long answer may hold numbered lines (`1: …`, `2: …`), commas, or quotes; they are part of the answer, never split into replies.

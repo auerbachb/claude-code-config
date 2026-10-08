@@ -45,6 +45,9 @@ RESERVED KEYS (readable with get; `set` refuses them)
                    register-control
   reviews_watermark  the start of the last successful sync-reviews;
                    written by sync-reviews (move it with --since)
+  filed:*          a pending desk filing, filed:<owner/name>:issue-<N>;
+                   written by filed, deleted by filed or sync-reviews once
+                   the issue's Review carries the event
 
 SECRETS
   KEY and VALUE are checked for secret shapes before anything is sent; a
@@ -147,6 +150,9 @@ cmd_run() {
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi
+    case "$key" in
+      filed:*) hq_die_validation "state set: filed:* keys are reserved: only filed writes them (and sync-reviews deletes them)" ;;
+    esac
     if [ "${#value}" -gt "$HQ_STATE_VALUE_MAX" ]; then
       hq_die_validation "state set: the value is longer than $HQ_STATE_VALUE_MAX characters"
     fi

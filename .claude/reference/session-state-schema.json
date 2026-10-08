@@ -54,6 +54,8 @@
         "scope": null,
         "at": "2026-07-30T18:40:00Z"
       },
+      "_pm_backlog_scan_at_comment": "When `/pm` last fetched this repo's backlog successfully (UTC ISO 8601, set back five minutes so a fast local clock never skips an issue), written by the `pm-1b2-new-issues` block in `/pm` Step 1B.2 (issue #1766). The next scan names every open, unassigned, non-excluded issue created after it as `NEW_ISSUES` — shortlisted and shown with its tier — so an idea filed from the desk is ranked on the first scan after it was filed. Absent means the last 24 hours. It moves only after a successful fetch.",
+      "pm_backlog_scan_at": "2026-10-07T17:49:11Z",
       "_execution_pauses_comment": "Session-scoped direct-launch gates written by execution-pause.sh for /end and /pause (issues #1308 and #1310). Keys are Claude session IDs. active=true blocks Agent, Workflow, Monitor, and background Bash in pause-launch-gate.sh; foreground teardown stays allowed. This gate is independent from repo refill.paused and is cleared only by an explicit end-resume or pause-resume. deadline_epoch is the graceful-shutdown ceiling, not an automatic clear time.",
       "execution_pauses": {
         "session-example": {
