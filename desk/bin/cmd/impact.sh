@@ -27,10 +27,11 @@ ARGUMENTS
                     `issue-N-…` branch gives its questions; the repo is
                     compared case-insensitively)
   --open            derive for every open Decision keyed issue-<N> whose
-                    derived impact is missing or older than --max-age, one
-                    GitHub read per repo. Decisions of a `local/…` repo (no
-                    GitHub remote) are skipped. The desk runs this before it
-                    reads a batch (desk/skill/decisions.md)
+                    derived impact is missing, older than --max-age, or
+                    stored before its agent parked, one GitHub read per
+                    repo. Decisions of a `local/…` repo (no GitHub remote)
+                    are skipped. The desk runs this before it reads a batch
+                    (desk/skill/decisions.md)
   --max-age MIN     with --open: re-derive after MIN minutes, 0 to 10080
                     (default 60; 0 re-derives every open Decision keyed by
                     an issue)
@@ -270,7 +271,11 @@ SELECT coalesce(jsonb_agg(jsonb_build_object('repo', r.repo, 'issues', to_jsonb(
          WHERE i.kind = 'decision' AND i.status = 'open'
            AND i.key ~ '^issue-[1-9][0-9]{0,9}$'
            AND (i.impact_derived_at IS NULL
-                OR i.impact_derived_at <= statement_timestamp() - make_interval(mins => :'hq_max_age'::int))
+                OR i.impact_derived_at <= statement_timestamp() - make_interval(mins => :'hq_max_age'::int)
+                -- The parked flag moved since the derivation (a re-ask with
+                -- --parked): impact.jq's basis ends ', agent parked' exactly
+                -- when it was stored for a parked row.
+                OR i.parked IS DISTINCT FROM (i.impact_basis LIKE '%, agent parked'))
          GROUP BY lower(i.repo)) r;
 SQL
 }

@@ -843,7 +843,7 @@ The two scans are independent — one finding nothing never suppresses the other
 
 Once the cleanup is done (gates acted on or declined, or the clean-status line printed), return here and continue with the rest of the calling step (1A.4 or 1B.5), then Step 2.
 
-**Reconcile the cleanup's effect before ranking.** If the inline cleanup closed any issues, remove those now-closed issues from the candidate set, the assignments table, and the ranking before the calling step (1A.4 / 1B.5) presents them — `/pm` must never suggest or list an issue the user just closed. This is a filter on the already-computed results, not a re-score, so the non-scoring contract above still holds (the dependency map and tiers are not recomputed). Workspace deletions do not affect the issue ranking and need no reconciliation.
+**Reconcile the cleanup's effect before ranking.** If the inline cleanup closed any issues, remove those now-closed issues from the candidate set, the assignments table, and the ranking before the calling step (1A.4 / 1B.5) presents them — `/pm` must never suggest or list an issue the user just closed. This is a filter on the already-computed results, not a re-score, so the non-scoring contract above still holds (the dependency map and tiers are not recomputed). On the cold-start path, when a closed issue was in the order 1B.4c already persisted, drop it from `FINAL_ORDER` and run the 1B.4c block again, so the ranks the desk reads match the order 1B.5 shows (each later issue moves up one place per closed issue above it). Workspace deletions do not affect the issue ranking and need no reconciliation.
 
 ### Escape hatch: `--no-clean` / `fast`
 

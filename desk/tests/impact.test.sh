@@ -26,7 +26,8 @@
 #        derivation is not a change `tick` reports
 #   open `impact --open` derives what is missing or older than --max-age, one
 #        GitHub read per repo, skips local/ repos, and a second run with
-#        nothing stale reads GitHub not at all
+#        nothing stale reads GitHub not at all; a Decision parked after its
+#        derivation (a re-ask with --parked) is re-derived at once
 #   fail a failing GitHub read stores nothing (exit 1) and keeps the values
 #        already stored; under --open the other repos are still stored
 #   show `get` prints the derived impact, its basis, and the declared one
@@ -247,6 +248,21 @@ check "--max-age 0 re-derives every open Decision keyed by an issue" "$RC" "0"
 check_contains "… text, one block per issue" "$OUT" "acme/widgets#41: low (0 open dependents, not in the backlog ranking)
   $D4 medium (agent parked)"
 check_contains "… the local repo is named as skipped" "$OUT" "skipped local/scratch: no GitHub remote"
+
+# ---------------------------------------------------------------- parked since
+# A re-ask with --parked parks D5 after its derivation; --open re-derives it
+# at once, though its value is minutes old, and only it.
+hq add --kind decision --repo acme/widgets --key issue-15 --question "Middle of the chain?" --option Yes --option No --parked
+check "parked since: the re-ask bumps D5, parking it" "$RC:$OUT:$(field "$D5" parked)" "0:$D5:true"
+check "parked since: … its stored basis predates the park" "$(field "$D5" "(impact_basis LIKE '%, agent parked')")" "false"
+: > "$STUB/calls.log"
+hq impact --open --json
+check "parked since: --open re-derives it, one GitHub read" \
+  "$RC:$(gh_calls):$(jqo '[.reports[] | "\(.repo)#\(.issue)"] | join(" ")')" "0:1:acme/widgets#15"
+check "parked since: … its basis now says so" "$(field "$D5" "(impact_basis LIKE '%, agent parked')")" "true"
+: > "$STUB/calls.log"
+hq impact --open --json
+check "parked since: a second --open finds nothing stale" "$RC:$(gh_calls):$(jqo '.reports | length')" "0:0:0"
 
 # ---------------------------------------------------------------- 014 over an older store
 OLD=$(sql_in "ALTER TABLE items DROP COLUMN impact_derived, DROP COLUMN impact_basis, DROP COLUMN impact_derived_at;

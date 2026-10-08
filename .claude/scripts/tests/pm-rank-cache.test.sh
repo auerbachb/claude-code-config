@@ -163,6 +163,7 @@ check_contains "Step 0 resolves pm-rank-cache.sh" 'PM_RANK_CACHE_SH=$(resolve_sc
 check_contains "Step 0 resolves issue-deps.sh" 'ISSUE_DEPS_SH=$(resolve_script issue-deps.sh || true)' "$SKILL_TEXT"
 check_contains "re-prioritize persists the new order" "then persist the new order (1B.4c)" "$SKILL_TEXT"
 check_contains "every 3.4 re-scan persists it" "Then persist the new order (1B.4c), so the desk's derived impact reads this re-scan's ranks." "$SKILL_TEXT"
+check_contains "Step 1C's closures re-persist the order without them" "drop it from \`FINAL_ORDER\` and run the 1B.4c block again" "$SKILL_TEXT"
 check_contains "1B.3 names the canonical parser" "**\`issue-deps.sh\` is the canonical reading of these markers**" "$SKILL_TEXT"
 
 echo

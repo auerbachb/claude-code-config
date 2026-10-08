@@ -1180,7 +1180,7 @@ items.
 | Subcommand | What it does | Event |
 |------------|--------------|-------|
 | `impact OWNER/REPO ISSUE [--json] [--no-store]` | Derives for one issue and stores the value on its open Decisions (those keyed `issue-ISSUE` in that repo, the repo compared in any case). `--no-store` derives and prints only, without the store | none |
-| `impact --open [--max-age MIN] [--json]` | Derives for every open Decision keyed by an issue whose derived impact is missing or older than MIN minutes (default 60; 0 for all), one GitHub read per repo; `local/…` repos are skipped | none |
+| `impact --open [--max-age MIN] [--json]` | Derives for every open Decision keyed by an issue whose derived impact is missing, older than MIN minutes (default 60; 0 for all), or stored before its agent parked, one GitHub read per repo; `local/…` repos are skipped | none |
 
 - **The rule** (`bin/lib/impact.jq`, one place): **critical-path** when at
   least `critical_path_min_dependents` open issues depend on the issue,
@@ -1239,7 +1239,8 @@ items.
   order expression, and decisions.md's anchored block);
   `tests/impact.test.sh` (live, throwaway schema: storage beside the
   declared value, `tick`/`list`/sweep order, a derivation is not a tick
-  change, `--open` and `--max-age`, a failed read keeps what was stored, and
+  change, `--open` and `--max-age`, a re-ask with `--parked` re-derived at
+  once, a failed read keeps what was stored, and
   014 over a store without it). The shared scripts have their own suites:
   `.claude/scripts/tests/issue-deps.test.sh` and `pm-rank-cache.test.sh`.
 
