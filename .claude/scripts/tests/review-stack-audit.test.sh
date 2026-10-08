@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Tests for /review-stack-audit's own engines (issues #1201, #1345):
-#   measure.sh — per-tool measurement and cap classification
+# Tests for /review-stack-audit's own engines (issues #1201, #1345, #1808):
+#   measure.sh — per-tool measurement and cap classification, the multi-repo
+#                roll-up (--repos / --all-repos), and a golden byte-identity
+#                check that the single-repo shape did not move under it
 #   drift.sh   — snapshot vs baseline comparison
 # catalog: tests — Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path
 #
@@ -815,6 +817,278 @@ if [[ -r "$BASELINE_REAL" ]]; then
 else
   fail "baseline: $BASELINE_REAL is missing"
 fi
+
+
+# ---------------------------------------------------------------------------
+# measure.sh — single-repo output is byte-identical to before multi-repo mode
+# (issue #1808)
+#
+# GOLDEN_OUT was captured from measure.sh as it stood at e08b08db, BEFORE
+# --repos/--all-repos existed, by running exactly golden_transcript() below over
+# GOLDEN_INPUTS — the measure.sh fixtures this suite builds inline, bundled one
+# per key. Only the clock-derived fields are normalised (generated_at, until,
+# days, and `since` on the default-window run); every other byte is compared.
+# A diff here means the single-repo shape a baseline or report reads changed.
+# Re-capture ONLY for an intended single-repo change, and say so in the PR.
+# ---------------------------------------------------------------------------
+
+GOLDEN_DIR="$REPO_ROOT/.claude/scripts/tests/fixtures/review-stack-audit"
+GOLDEN_INPUTS="$GOLDEN_DIR/single-repo-inputs.json"
+GOLDEN_OUT="$GOLDEN_DIR/single-repo.golden"
+
+golden_normalize() {
+  sed -E -e 's/^(  "generated_at": )"[^"]*"/\1"<GENERATED_AT>"/' \
+         -e 's/^(    "until": )"[^"]*"/\1"<UNTIL>"/' \
+         -e 's/^(    "days": )[0-9]+/\1<DAYS>/'
+}
+
+golden_transcript() {
+  local measure="$1" name f
+  for name in $(python3 -c 'import json,sys; print("\n".join(sorted(json.load(open(sys.argv[1])))))' "$GOLDEN_INPUTS"); do
+    f="$TMP_DIR/golden-$name.json"
+    python3 -c 'import json,sys; json.dump(json.load(open(sys.argv[1]))[sys.argv[2]], open(sys.argv[3], "w"))' \
+      "$GOLDEN_INPUTS" "$name" "$f"
+    printf '=== %s --json\n' "$name"
+    "$measure" --fixture "$f" --since 2026-08-01 --json | golden_normalize || printf '!! rc=%s\n' "$?"
+    printf '=== %s --summary\n' "$name"
+    "$measure" --fixture "$f" --since 2026-08-01 --summary || printf '!! rc=%s\n' "$?"
+  done
+  # The two flag-variant cases read the `caps` input. Extract it explicitly
+  # rather than reusing a file the loop above happened to write, so a renamed
+  # or removed key fails loudly here instead of as an opaque transcript diff.
+  f="$TMP_DIR/golden-flag-variants.json"
+  python3 -c 'import json,sys; json.dump(json.load(open(sys.argv[1]))[sys.argv[2]], open(sys.argv[3], "w"))' \
+    "$GOLDEN_INPUTS" caps "$f" || { printf '!! golden input "caps" missing\n'; return 1; }
+  printf '=== caps --repo golden/override --json\n'
+  "$measure" --fixture "$f" --repo golden/override --since 2026-08-01 --json | golden_normalize || printf '!! rc=%s\n' "$?"
+  printf '=== caps default window --json\n'
+  "$measure" --fixture "$f" --json | golden_normalize | sed -E 's/^(    "since": )"[^"]*"/\1"<SINCE>"/' || printf '!! rc=%s\n' "$?"
+}
+
+if [[ -r "$GOLDEN_INPUTS" && -r "$GOLDEN_OUT" ]]; then
+  # Control: the golden must actually exercise the classifier, or an empty
+  # transcript on both sides would compare equal for the wrong reason.
+  golden_cases="$(grep -c '^=== .* --json$' "$GOLDEN_OUT")"
+  [[ "$golden_cases" -ge 16 ]] || fail "golden: expected >= 16 --json cases in $GOLDEN_OUT, found $golden_cases"
+  golden_transcript "$MEASURE" > "$TMP_DIR/golden-now.txt" 2>"$TMP_DIR/golden-now.err"
+  if cmp -s "$TMP_DIR/golden-now.txt" "$GOLDEN_OUT"; then
+    ok "golden: single-repo --json/--summary/--repo output is byte-identical to the pre-#1808 capture ($golden_cases cases)"
+  else
+    fail "golden: single-repo output drifted from the pre-#1808 capture:"
+    diff "$GOLDEN_OUT" "$TMP_DIR/golden-now.txt" | head -40 >&2
+  fi
+else
+  fail "golden: missing $GOLDEN_INPUTS or $GOLDEN_OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# measure.sh — multi-repo roll-up (issue #1808)
+# ---------------------------------------------------------------------------
+
+# Two repos built to differ on every summed axis, so a total that silently took
+# one repo's figure (or double-counted one) cannot equal the sum by accident.
+MULTI="$TMP_DIR/multi.json"
+cat > "$MULTI" <<'JSON'
+{"repos": [
+ {"repo": "acme/one", "prs": [
+   {"number": 1, "merged_at": "2026-08-01T00:00:00Z",
+    "reviews": [{"user": "coderabbitai[bot]", "state": "APPROVED", "body": "> **Plan**: Pro"}],
+    "pr_comments": [{"user": "coderabbitai[bot]", "body": "nit: rename"}],
+    "issue_comments": []},
+   {"number": 2, "merged_at": "2026-08-02T00:00:00Z", "reviews": [], "pr_comments": [],
+    "issue_comments": [{"user": "cursor[bot]", "body": "Bugbot hit a usage or spend limit."}]}]},
+ {"repo": "acme/two", "prs": [
+   {"number": 1, "merged_at": "2026-08-03T00:00:00Z",
+    "reviews": [{"user": "coderabbitai[bot]", "state": "CHANGES_REQUESTED", "body": ""},
+                {"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
+    "pr_comments": [{"user": "coderabbitai[bot]", "body": "bug"}, {"user": "greptile-apps[bot]", "body": "bug"}],
+    "issue_comments": [{"user": "coderabbitai[bot]", "body": "Review limit reached."}]},
+   {"number": 7, "merged_at": "2026-08-04T00:00:00Z", "reviews": [],
+    "pr_comments": [{"user": "greptile-apps[bot]", "body": "race here"}],
+    "issue_comments": [{"user": "codeant-ai[bot]", "body": "your quota for this org has been adjusted"}]}]}
+]}
+JSON
+
+OUT="$TMP_DIR/multi.out.json"
+"$MEASURE" --fixture "$MULTI" --repos acme/one,acme/two --since 2026-08-01 --json > "$OUT" \
+  || fail "measure: multi-repo fixture run failed"
+shape="$(jget "$OUT" "(d['repos'], sorted(d), len(d['per_repo']))")"
+[[ "$shape" == "(['acme/one', 'acme/two'], ['generated_at', 'notes', 'per_repo', 'repos', 'source', 'tools', 'unclassified', 'unclassified_hits', 'window'], 2)" ]] \
+  && ok "measure: multi-repo JSON carries repos[], per_repo[] and a top-level tools[]" \
+  || fail "measure: unexpected multi-repo shape: $shape"
+
+# Every summed field of every tool must equal the sum of the per-repo figures.
+mismatch="$(jget "$OUT" "[(t['key'], f) for t in d['tools'] for f in ['prs_touched','review_objects','approved','changes_requested','inline_findings','issue_comments','sole_provider_on'] if t[f] != sum([x for x in r['tools'] if x['key']==t['key']][0][f] for r in d['per_repo'])]")"
+[[ "$mismatch" == "[]" ]] && ok "measure: each total tools[] field is the sum of the per-repo figures" \
+  || fail "measure: totals disagree with the per-repo sum: $mismatch"
+# Pin real numbers too, so a sum over two empty documents cannot pass.
+cr="$(jget "$OUT" "[(t['prs_touched'], t['review_objects'], t['approved'], t['changes_requested'], t['inline_findings']) for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$cr" == "(2, 2, 1, 1, 2)" ]] && ok "measure: coderabbit total = 2 PRs, 2 reviews, 1 approved, 1 changes-requested, 2 findings" \
+  || fail "measure: coderabbit total wrong, got $cr"
+gs="$(jget "$OUT" "[(t['sole_provider_on'], t['sole_provider_prs']) for t in d['tools'] if t['key']=='greptile'][0]")"
+[[ "$gs" == "(1, ['acme/two#7'])" ]] && ok "measure: sole_provider_on stays a count; its PRs are listed repo-qualified" \
+  || fail "measure: greptile sole-provider total wrong, got $gs"
+
+# Repo-qualified identifiers: PR #1 exists in BOTH repos, so a bare number in
+# the total would be ambiguous — exactly the case the qualification is for.
+caps="$(jget "$OUT" "sorted((c['pr'], c['kind']) for t in d['tools'] for c in t['cap_signals'])")"
+[[ "$caps" == "[('acme/one#2', 'spend_limit'), ('acme/two#1', 'rate_limit')]" ]] \
+  && ok "measure: total cap_signals carry owner/name#N, not bare PR numbers" \
+  || fail "measure: cap_signals not repo-qualified: $caps"
+uc="$(jget "$OUT" "[u['pr'] for u in d['unclassified']]")"
+[[ "$uc" == "['acme/two#7']" ]] && ok "measure: merged unclassified[] entries are repo-qualified" \
+  || fail "measure: unclassified not repo-qualified: $uc"
+st="$(jget "$OUT" "[(t['key'], t['observed_state'], t['cap_kinds']) for t in d['tools'] if t['key'] in ('coderabbit','bugbot','vercel')]")"
+[[ "$st" == "[('coderabbit', 'capped', ['rate_limit']), ('bugbot', 'capped', ['spend_limit']), ('vercel', 'silent', [])]" ]] \
+  && ok "measure: total observed_state and cap_kinds are recomputed across repos" \
+  || fail "measure: total state wrong: $st"
+# The per-repo entries keep bare PR numbers: they are the single-repo document.
+inner="$(jget "$OUT" "[c['pr'] for r in d['per_repo'] for t in r['tools'] for c in t['cap_signals']]")"
+[[ "$inner" == "[2, 1]" ]] && ok "measure: per_repo[] documents keep their own bare PR numbers" \
+  || fail "measure: per_repo cap_signals changed shape: $inner"
+
+# per_repo[i] IS the single-repo document: measure each repo alone through the
+# single-repo path and compare whole documents (clock fields aside).
+python3 - "$MULTI" "$TMP_DIR" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["repos"]:
+    name = e["repo"].replace("/", "_")
+    json.dump({"repo": e["repo"], "prs": e["prs"]}, open("%s/single-%s.json" % (sys.argv[2], name), "w"))
+PY
+same=1
+idx=0
+for r in acme/one acme/two; do
+  "$MEASURE" --fixture "$TMP_DIR/single-${r/\//_}.json" --since 2026-08-01 --json > "$TMP_DIR/single-$idx.out.json" || same=0
+  python3 - "$OUT" "$TMP_DIR/single-$idx.out.json" "$idx" <<'PY' || same=0
+import json, sys
+multi = json.load(open(sys.argv[1]))["per_repo"][int(sys.argv[3])]
+single = json.load(open(sys.argv[2]))
+for doc in (multi, single):
+    doc.pop("generated_at", None)
+sys.exit(0 if multi == single else 1)
+PY
+  idx=$((idx + 1))
+done
+[[ $same -eq 1 ]] && ok "measure: each per_repo[] entry equals that repo's single-repo document" \
+  || fail "measure: a per_repo[] entry differs from the single-repo document for the same repo"
+
+# drift.sh must read the roll-up unchanged — that is why the total lives in a
+# top-level tools[] rather than under a new key.
+"$DRIFT" --snapshot "$OUT" --baseline "$BASE" --json > "$TMP_DIR/multi-drift.json" 2>/dev/null
+rc=$?
+[[ $rc -eq 0 || $rc -eq 3 ]] && [[ "$(jget "$TMP_DIR/multi-drift.json" "type(d['drift_count']).__name__")" == "int" ]] \
+  && ok "drift: drift.sh analyses a multi-repo roll-up unchanged (rc=$rc)" \
+  || fail "drift: drift.sh rejected the multi-repo roll-up (rc=$rc)"
+
+# A one-per-line --repos value keeps every line, not just the first.
+"$MEASURE" --fixture "$MULTI" --repos $'acme/one\nacme/two' --json > "$TMP_DIR/multi-nl.json" \
+  || fail "measure: newline-separated --repos run failed"
+r="$(jget "$TMP_DIR/multi-nl.json" "d['repos']")"
+[[ "$r" == "['acme/one', 'acme/two']" ]] && ok "measure: --repos accepts newline-separated entries without dropping any" \
+  || fail "measure: newline-separated --repos measured $r"
+
+# A multi-repo fixture with no repo flag measures every repo it carries.
+"$MEASURE" --fixture "$MULTI" --json > "$TMP_DIR/multi-implicit.json" || fail "measure: implicit multi-repo fixture run failed"
+r="$(jget "$TMP_DIR/multi-implicit.json" "d['repos']")"
+[[ "$r" == "['acme/one', 'acme/two']" ]] && ok "measure: a multi-repo fixture with no flag measures every repo in it" \
+  || fail "measure: implicit multi-repo run measured $r"
+
+# --summary: one block per repo, then one total block whose prs per tool is the
+# sum of the repo blocks' (Test Plan item 2, offline).
+"$MEASURE" --fixture "$MULTI" --repos acme/one,acme/two --summary > "$TMP_DIR/multi.summary" \
+  || fail "measure: multi-repo --summary failed"
+heads="$(grep '^# ' "$TMP_DIR/multi.summary" | tr '\n' '|')"
+[[ "$heads" == "# repo: acme/one|# repo: acme/two|# total: 2 repos|" ]] \
+  && ok "measure: multi-repo --summary prints two repo blocks then one total block" \
+  || fail "measure: unexpected --summary block headers: $heads"
+sum_check="$(awk -F'\t' '
+  /^# total:/ { tot = 1; next }
+  /^# repo:/  { tot = 0; next }
+  NF == 5 { if (tot) t[$1] = $3; else s[$1] += $3 }
+  END { bad = 0; n = 0; for (k in t) { n++; if (t[k] != s[k]) bad = 1 } print (n == 6 && !bad) ? "ok" : "bad" }
+' "$TMP_DIR/multi.summary")"
+[[ "$sum_check" == "ok" ]] && ok "measure: the total block's prs_touched per tool equals the sum of the repo blocks" \
+  || fail "measure: --summary total does not equal the sum of the repo blocks"
+
+# Truncation propagates, and notes merge with the repo that produced them.
+TRUNC_MULTI="$TMP_DIR/multi-trunc.json"
+python3 - "$MULTI" "$TRUNC_MULTI" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["repos"][1]["truncated"] = True       # ONLY acme/two's listing hit --limit
+json.dump(d, open(sys.argv[2], "w"))
+PY
+OUT="$TMP_DIR/multi-trunc.out.json"
+"$MEASURE" --fixture "$TRUNC_MULTI" --repos acme/one,acme/two --json > "$OUT" || fail "measure: truncated multi-repo run failed"
+w="$(jget "$OUT" "(d['window']['truncated'], d['window']['pr_count'], [r['window']['truncated'] for r in d['per_repo']])")"
+[[ "$w" == "(True, 4, [False, True])" ]] \
+  && ok "measure: one truncated repo makes window.truncated true; pr_count is summed" \
+  || fail "measure: truncation/pr_count roll-up wrong: $w"
+notes="$(jget "$OUT" "[n.split(':')[0] for n in d['notes']]")"
+[[ "$notes" == "['acme/two', 'acme/two']" ]] \
+  && ok "measure: notes merge into one array, each tagged with its repo" \
+  || fail "measure: merged notes wrong: $notes"
+case "$(jget "$OUT" "d['notes'][0]")" in
+  "acme/two: Sample hit the --limit"*) ok "measure: the truncation note survives the merge" ;;
+  *) fail "measure: truncation note missing from merged notes" ;;
+esac
+
+# Usage conflicts are exit 2, before anything is measured.
+expect_usage_error() {
+  "$MEASURE" --fixture "$MULTI" "$@" >/dev/null 2>&1
+  local rc=$?
+  [[ $rc -eq 2 ]] && ok "measure: '$*' is a usage error (exit 2)" \
+    || fail "measure: '$*' should exit 2, got $rc"
+}
+expect_usage_error --repo x/y --repos a/b
+expect_usage_error --repo x/y --all-repos
+expect_usage_error --repos a/b --all-repos
+expect_usage_error --repos a/b,bogus
+expect_usage_error --repos "acme/my repo"
+expect_usage_error --repos acme/..
+expect_usage_error --repos ../acme
+
+# Fail closed: one repo that cannot be measured means no output at all.
+"$MEASURE" --fixture "$MULTI" --repos acme/one,acme/missing --json > "$TMP_DIR/multi-missing.out" 2>/dev/null
+rc=$?
+[[ $rc -eq 1 && ! -s "$TMP_DIR/multi-missing.out" ]] \
+  && ok "measure: a repo that fails to measure fails the whole run with empty stdout" \
+  || fail "measure: partial multi-repo run leaked output or wrong rc ($rc)"
+"$MEASURE" --fixture "$TMP_DIR/caps.json" --repos acme/one --json >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "measure: multi-repo mode refuses a single-repo fixture" \
+  || fail "measure: single-repo fixture in multi-repo mode should exit 1"
+"$MEASURE" --fixture "$MULTI" --repo acme/one --json >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "measure: --repo refuses a multi-repo fixture rather than guessing" \
+  || fail "measure: --repo against a multi-repo fixture should exit 1"
+
+# --all-repos goes through review-repos.sh; REVIEW_REPOS is its first source.
+# Both runs inherit the HOME="$TMP_DIR/home" exported at the top of this suite,
+# so review-repos.sh's telemetry append and its default ~/.claude/account-config.md
+# lookup stay inside the sandbox.
+REVIEW_REPOS="acme/two" "$MEASURE" --fixture "$MULTI" --all-repos --json > "$TMP_DIR/multi-all.json" \
+  || fail "measure: --all-repos with REVIEW_REPOS failed"
+r="$(jget "$TMP_DIR/multi-all.json" "d['repos']")"
+[[ "$r" == "['acme/two']" ]] && ok "measure: --all-repos measures exactly the registered list" \
+  || fail "measure: --all-repos measured $r"
+REVIEW_REPOS="acme/two,not-a-repo" "$MEASURE" --fixture "$MULTI" --all-repos --json > "$TMP_DIR/multi-all-bad.out" 2>/dev/null
+rc=$?
+[[ $rc -eq 1 && ! -s "$TMP_DIR/multi-all-bad.out" ]] \
+  && ok "measure: --all-repos fails closed when the registered list cannot be resolved" \
+  || fail "measure: --all-repos with an unresolvable list should exit 1 silently (rc=$rc)"
+# A fixture run must never reach the network: with no REVIEW_REPOS and no
+# config list, --all-repos under --fixture fails rather than discovering live.
+# PATH holds a gh stub that records any call, so "it failed" cannot pass while
+# discovery quietly ran.
+mkdir -p "$TMP_DIR/gh-trap"
+printf '#!/bin/sh\necho called >> "%s"\nexit 1\n' "$TMP_DIR/gh-trap/calls" > "$TMP_DIR/gh-trap/gh"
+chmod +x "$TMP_DIR/gh-trap/gh"
+env -u REVIEW_REPOS CLAUDE_ACCOUNT_CONFIG="$TMP_DIR/no-such-account-config.md" PATH="$TMP_DIR/gh-trap:$PATH" \
+  "$MEASURE" --fixture "$MULTI" --all-repos --json > "$TMP_DIR/multi-all-offline.out" 2>/dev/null
+rc=$?
+[[ $rc -eq 1 && ! -s "$TMP_DIR/multi-all-offline.out" && ! -e "$TMP_DIR/gh-trap/calls" ]] \
+  && ok "measure: --fixture --all-repos never falls through to live gh discovery" \
+  || fail "measure: --fixture --all-repos reached gh or did not fail closed (rc=$rc)"
 
 [[ $FAILED -eq 0 ]] && echo "All review-stack-audit tests passed."
 exit $FAILED

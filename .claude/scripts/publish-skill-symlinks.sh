@@ -1,7 +1,7 @@
 #!/bin/bash
-# publish-skill-symlinks.sh — Publish the skill / CLAUDE.md / rules symlinks
+# publish-skill-symlinks.sh — Publish the skill / CLAUDE.md / rules / account-config.md symlinks
 # from the skills worktree into ~/.claude/.
-# catalog: trust-worktree-repo — Publish the `~/.claude/skills/`, `CLAUDE.md` and `rules` symlinks from the skills worktree; idempotent, silent when already correct
+# catalog: trust-worktree-repo — Publish the `~/.claude/skills/`, `CLAUDE.md`, `rules` and `account-config.md` symlinks from the skills worktree; idempotent, silent when already correct
 #
 # Extracted from setup-skills-worktree.sh Steps 3, 3b, 4 and 5 (issue #1524) so
 # that a steady-state pass — the scheduled claude-config-sync.sh tick, or a
@@ -22,6 +22,9 @@
 #   ~/.claude/skills/<name>  ->  <worktree>/.claude/skills/<name>   (per-entry)
 #   ~/.claude/CLAUDE.md      ->  <worktree>/CLAUDE.md
 #   ~/.claude/rules          ->  <worktree>/.claude/rules           (directory)
+#   ~/.claude/account-config.md -> <worktree>/.claude/account-config.md
+#                               (account-level settings, issue #1808; created
+#                               only once the file exists on main)
 #
 #   The skills leg is a REAL directory holding one symlink per skill; `rules` is
 #   a single directory symlink. That asymmetry is deliberate and documented in
@@ -48,12 +51,12 @@
 #   skill. It is never repointed and never pruned — the ownership rule from
 #   PR #1196.
 #
-#   CLAUDE.md AND rules: these are NOT user-owned. This repo is their single
-#   source of truth (.claude/rules/skill-symlinks.md), so a symlink pointing
-#   anywhere else is repointed at the worktree — that migration is the whole
-#   reason the leg exists. What IS preserved either way is a REGULAR FILE or
-#   directory at those paths: hand-authored content is warned about and never
-#   overwritten.
+#   CLAUDE.md, rules AND account-config.md: these are NOT user-owned. This repo
+#   is their single source of truth (.claude/rules/skill-symlinks.md), so a
+#   symlink pointing anywhere else is repointed at the worktree — that
+#   migration is the whole reason the leg exists. What IS preserved either way
+#   is a REGULAR FILE or directory at those paths: hand-authored content is
+#   warned about and never overwritten.
 #
 # Idempotent — safe to run every session and on every scheduled tick.
 #
@@ -66,8 +69,8 @@ usage() {
   cat <<'EOF'
 Usage: publish-skill-symlinks.sh <skills-worktree> [<repo-root>]
 
-  Publishes the skill, CLAUDE.md and rules symlinks from the skills worktree
-  into ~/.claude/. Idempotent; a no-op run prints nothing.
+  Publishes the skill, CLAUDE.md, rules and account-config.md symlinks from the
+  skills worktree into ~/.claude/. Idempotent; a no-op run prints nothing.
 
   skills-worktree  Absolute path to ~/.claude/skills-worktree
   repo-root        Optional root repo path, used only to recognise and migrate
@@ -474,11 +477,22 @@ fi
 migrate_symlink "$CLAUDE_MD_LINK" "$CLAUDE_MD_TARGET" "$legacy_claude_md" "CLAUDE.md" -f
 migrate_symlink "$RULES_LINK" "$RULES_TARGET" "$legacy_rules" "rules" -d
 
+# --- Step 5: account-config.md (issue #1808) ---
+#
+# Account-level settings — the AI-review repo list review-repos.sh reads — are
+# tracked here so a change to them is reviewable, and published the same way
+# CLAUDE.md is: one correct target, repointed if it drifts, a regular file at
+# the path never overwritten. No legacy target: no pre-worktree install ever
+# linked this file at the root repo. The -f existence test keeps a worktree
+# that predates the file (not on main yet) from producing a dangling link.
+migrate_symlink "$HOME/.claude/account-config.md" \
+  "$SKILLS_WORKTREE/.claude/account-config.md" "" "account-config.md" -f
+
 # EXIT CODES above promise 1 when "a symlink could not be created or removed".
 # The creation half already behaves that way — a bare `ln -s` aborts the run
 # under `set -e`. The removal half does not abort on purpose: one un-removable
-# stale link must not stop the remaining skills, CLAUDE.md and rules from
-# publishing. Reporting it here keeps both properties — the run finishes its
+# stale link must not stop the remaining skills, CLAUDE.md, rules and
+# account-config.md from publishing. Reporting it here keeps both properties — the run finishes its
 # work AND the caller still learns that something was left undone.
 if (( PRUNE_FAILED )); then
   exit 1

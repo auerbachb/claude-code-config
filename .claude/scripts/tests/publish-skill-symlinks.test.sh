@@ -1,6 +1,6 @@
 #!/bin/bash
 # publish-skill-symlinks.test.sh — Tests for .claude/scripts/publish-skill-symlinks.sh
-# catalog: tests — Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, and the `setup-skills-worktree.sh` delegation guard
+# catalog: tests — Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard
 # Issue #1524: the skill / CLAUDE.md / rules symlink legs, extracted out of
 # setup-skills-worktree.sh so a steady-state pass can publish them.
 #
@@ -691,6 +691,45 @@ test_19_setup_continues_past_publisher_failure_then_fails() {
     "[ '${done_line:-0}' -gt '${exit_line:-0}' ]"
 }
 
+# ── Test 20: account-config.md leg (issue #1808) ─────────────────────────────
+
+test_20_account_config_published() {
+  section "Test 20: account-config.md — published when on main, absent otherwise, never clobbers a file"
+
+  local tmp_home fake_wt output exit_code
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+
+  # Premise A: a worktree that predates the file. No link, and no dangling one.
+  HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" >/dev/null 2>&1
+  assert "no account-config.md link while the worktree lacks the file" \
+    "[ ! -e '$tmp_home/.claude/account-config.md' ] && [ ! -L '$tmp_home/.claude/account-config.md' ]"
+
+  # Premise B: the file lands on main. The next publish links it.
+  printf '## Review repos\n\n- acme/alpha\n' > "$fake_wt/.claude/account-config.md"
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1)"
+  exit_code=$?
+  assert "publish exits 0" "[ $exit_code -eq 0 ]"
+  assert "account-config.md symlinked into the worktree" \
+    "[ -L '$tmp_home/.claude/account-config.md' ] && [ \"\$(readlink '$tmp_home/.claude/account-config.md')\" = '$fake_wt/.claude/account-config.md' ]"
+  assert "the creation is reported" "grep -q 'account-config.md — creating' <<<\"\$output\""
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1)"
+  assert "a second run is still a silent no-op" "[ -z \"\$output\" ]"
+  cleanup "$tmp_home"
+
+  # Premise C: a hand-authored regular file at the path is never overwritten.
+  tmp_home="$(make_test_home)"
+  fake_wt="$tmp_home/.claude/skills-worktree"
+  printf '## Review repos\n\n- acme/alpha\n' > "$fake_wt/.claude/account-config.md"
+  printf 'hand written, do not touch\n' > "$tmp_home/.claude/account-config.md"
+  output="$(HOME="$tmp_home" bash "$PUBLISH_SCRIPT" "$fake_wt" 2>&1)"
+  assert "a regular account-config.md is left as a regular file" \
+    "[ -f '$tmp_home/.claude/account-config.md' ] && [ ! -L '$tmp_home/.claude/account-config.md' ]"
+  assert "its content is untouched" "grep -q 'hand written' '$tmp_home/.claude/account-config.md'"
+  assert "the skip is warned about" "grep -q 'is not a symlink' <<<\"\$output\""
+  cleanup "$tmp_home"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -717,6 +756,7 @@ test_16_regression_unremovable_stale_link_exits_1
 test_17_regression_repoint_never_creates_a_dangling_link
 test_18_directory_copy_migration_is_not_destructive
 test_19_setup_continues_past_publisher_failure_then_fails
+test_20_account_config_published
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

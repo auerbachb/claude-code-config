@@ -568,13 +568,16 @@ if [[ -d "$skills_wt" && -f "$skills_wt/.git" ]] && \
     # changes still owe the restart signal. The skill publisher also owns the
     # CLAUDE.md and rules links, and prints their lines under those literal
     # labels — map them to their own categories so this writer agrees with the
-    # scheduled job's snapshot-derived ones.
+    # scheduled job's snapshot-derived ones. Its account-config.md line maps to
+    # NO category: that file is data review-repos.sh reads on every run, so a
+    # live session picks a change up without a restart, and the scheduled job
+    # never snapshots it either (issue #1808).
     if [[ -n "$out" ]] && grep -Eq "$_publish_change_verbs" <<< "$out"; then
       case "$label" in
         skill)
           _pc_cm="$(grep -E '^  CLAUDE\.md — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_cm=""
           _pc_ru="$(grep -E '^  rules — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_ru=""
-          _pc_sk="$(grep -Ev '^  (CLAUDE\.md|rules) — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_sk=""
+          _pc_sk="$(grep -Ev '^  (CLAUDE\.md|rules|account-config\.md) — ' <<< "$out" | grep -E "$_publish_change_verbs")" || _pc_sk=""
           [[ -n "$_pc_sk" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }skills"
           [[ -n "$_pc_cm" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }claude-md"
           [[ -n "$_pc_ru" ]] && _links_changed_cats="${_links_changed_cats:+$_links_changed_cats }rules"

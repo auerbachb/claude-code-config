@@ -1,0 +1,347 @@
+{
+ "boiler": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "Looks good.\n<details><summary>How do review limits work?</summary>quota subscription billing</details>",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 8,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "caps": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->",
+      "user": "coderabbitai[bot]"
+     },
+     {
+      "body": "Go to team management and add this email to the PR Review subscription.",
+      "user": "codeant-ai[bot]"
+     },
+     {
+      "body": "Bugbot is counted against Cursor usage and this run hit a usage or spend limit.",
+      "user": "cursor[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "cr-burst-only": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "Review limit reached. Next review available in: 12 minutes.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-03T00:00:00Z",
+    "number": 3,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "cr-cap-both": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n## Review limit reached\nYou have reached a temporary PR review limit under our Fair Usage Limits Policy.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-04T00:00:00Z",
+    "number": 4,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "cr-cap-kinds": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "You have reached a temporary PR review limit under our Fair Usage Limits Policy.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [],
+    "reviews": []
+   },
+   {
+    "issue_comments": [
+     {
+      "body": "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->",
+      "user": "greptile-apps[bot]"
+     }
+    ],
+    "merged_at": "2026-08-02T00:00:00Z",
+    "number": 2,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "cr-fair-usage-linked": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "Full review finished.\n\n---\n\nYour included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Your current included review allowance is based on your included PR review attempts over the past 7 days.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-06T00:00:00Z",
+    "number": 6,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "cr-fair-usage-prose": {
+  "prs": [
+   {
+    "issue_comments": [],
+    "merged_at": "2026-08-05T00:00:00Z",
+    "number": 5,
+    "pr_comments": [
+     {
+      "body": "Key details regarding this quota: these limits function as a rolling allowance rather than a fixed hourly reset, so additional reviews become available as earlier ones age out. CodeRabbit also maintains a Fair Usage Limits Policy, which may adjust review availability for accounts demonstrating sustained, high-volume activity that significantly exceeds typical usage.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "crosstalk": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "add this email to the PR Review subscription",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "plan": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "> **Plan**: Pro\n> **Review profile**: assertive",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "sole": {
+  "prs": [
+   {
+    "issue_comments": [],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [
+     {
+      "body": "nit: rename this",
+      "user": "greptile-apps[bot]"
+     }
+    ],
+    "reviews": []
+   },
+   {
+    "issue_comments": [],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 2,
+    "pr_comments": [
+     {
+      "body": "nit: rename this",
+      "user": "coderabbitai[bot]"
+     },
+     {
+      "body": "nit: rename this",
+      "user": "codeant-ai[bot]"
+     }
+    ],
+    "reviews": []
+   },
+   {
+    "issue_comments": [],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 3,
+    "pr_comments": [
+     {
+      "body": "nit: rename this",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "We have exhausted our monthly quota for this integration.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 7,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass-freq": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "your quota for this org has been adjusted",
+      "user": "codeant-ai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 1,
+    "pr_comments": [],
+    "reviews": []
+   },
+   {
+    "issue_comments": [
+     {
+      "body": "your quota for this org has been adjusted",
+      "user": "codeant-ai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-02T00:00:00Z",
+    "number": 2,
+    "pr_comments": [],
+    "reviews": []
+   },
+   {
+    "issue_comments": [
+     {
+      "body": "your quota for this org has been adjusted",
+      "user": "codeant-ai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-03T00:00:00Z",
+    "number": 3,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass-plus-declared": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "Your included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Separately, your account is out of credits.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-01T00:00:00Z",
+    "number": 9,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass-review-body": {
+  "prs": [
+   {
+    "issue_comments": [],
+    "merged_at": "2026-08-04T00:00:00Z",
+    "number": 12,
+    "pr_comments": [],
+    "reviews": [
+     {
+      "body": "Skipping review: this org has exhausted its monthly quota.",
+      "state": "COMMENTED",
+      "user": "greptile-apps[bot]"
+     }
+    ]
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass-spending-cap": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "You have reached a temporary PR review limit under our Fair Usage Limits Policy. Your organization has reached its usage spending cap. Adjust your spending cap in the billing tab.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-02T00:00:00Z",
+    "number": 10,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ },
+ "unclass-two-tokens": {
+  "prs": [
+   {
+    "issue_comments": [
+     {
+      "body": "Your included review limit is currently reached under our [Fair Usage Limits Policy](https://docs.coderabbit.ai/management/plans#fair-usage-limits-policy). Your account is out of credits; see the billing tab.",
+      "user": "coderabbitai[bot]"
+     }
+    ],
+    "merged_at": "2026-08-03T00:00:00Z",
+    "number": 11,
+    "pr_comments": [],
+    "reviews": []
+   }
+  ],
+  "repo": "test/repo"
+ }
+}

@@ -730,6 +730,37 @@ except Exception:
 rr = d.get("restart_recommended") or {}
 sys.exit(0 if "claude-md" in (rr.get("categories") or []) else 1)
 PY
+# account-config.md maps to NO category (issue #1808): it is data review-repos.sh
+# reads on every run, so (re)creating its link on an unchanged HEAD must not
+# raise a restart signal — the skill publisher prints that line too, and an
+# unlabelled change line used to be filed under "skills". Settle every link on
+# startup, drop only the account-config.md link, then resume.
+mkdir -p "$R14_UP/.claude"
+printf '# account config\n' > "$R14_UP/.claude/account-config.md"
+git -C "$R14_UP" add -A >/dev/null 2>&1
+git -C "$R14_UP" -c user.email=t@t -c user.name=t commit -qm five
+R14G_HOME="$R14/home-g"; mkdir -p "$R14G_HOME/.claude/logs"
+git clone -q "$R14_UP" "$R14/base-g"
+git -C "$R14/base-g" worktree add -q --detach "$R14G_HOME/.claude/skills-worktree" main
+printf '{"source":"startup"}' | HOME="$R14G_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+[ -L "$R14G_HOME/.claude/account-config.md" ] \
+  || fail "fixture: startup did not publish the account-config.md link — the resume check below would be vacuous"
+rm -f "$R14G_HOME/.claude/account-config.md"
+printf '{"source":"resume"}' | HOME="$R14G_HOME" bash "$HOOK" >/dev/null 2>&1 || true
+[ -L "$R14G_HOME/.claude/account-config.md" ] \
+  || fail "fixture: the resume did not recreate the account-config.md link — its no-signal result would be vacuous"
+python3 - "$R14G_HOME/.claude/sync-restart-recommended.json" <<'PY' || fail "a resume that only recreated the account-config.md link raised a restart signal — data-only config was filed as a skills change (CodeAnt, PR #1817)"
+import json, os, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    sys.exit(0)
+try:
+    with open(path) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(1 if d.get("restart_recommended") is not None else 0)
+PY
 # Harvest-before-rc ordering: the category harvest must precede the non-zero
 # exit branch, or a publisher that lands links then fails hides them. The bound
 # trip is the ONE branch that legitimately precedes the harvest: a killed

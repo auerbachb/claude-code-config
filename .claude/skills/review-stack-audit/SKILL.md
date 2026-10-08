@@ -1,7 +1,7 @@
 ---
 name: review-stack-audit
 description: Use when asking whether the AI review tools still earn what we pay for them — "audit the review stack", "are we still paying for Greptile", "did a cap change", "re-check review tool costs", or the monthly check. Re-measures each tool's billed state, caps, throughput, and unique value, compares against the recorded baseline, and files drift issues. Advisory only — never edits rules.
-argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD] [--days N] [--limit N] [--arm] [--stop]"
+argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD] [--days N] [--limit N] [--repos a/b,c/d | --all-repos] [--arm] [--stop]"
 ---
 
 # review-stack-audit — do the review tools still earn their keep?
@@ -81,6 +81,19 @@ logic here.
 with any mode. `--arm` and `--stop` are lifecycle modes and mutually exclusive
 with the rest.
 
+`--repos a/b,c/d` / `--all-repos` also pass through (issue #1808): the vendors
+bill one account across every repo they review, so these measure several repos in
+one run. `--all-repos` reads the registered list from `review-repos.sh` (the
+`## Review repos` section of `~/.claude/account-config.md`). The snapshot's
+top-level `tools[]` is then the cross-repo total, so Steps 4–6 compare the
+account-level figure against the baseline unchanged; each repo's own figures stay
+in `per_repo[]`, and the report states which repos were measured. With neither
+flag, the run measures the current repo exactly as before. They combine with the
+on-demand and `--report-only` runs only. **`--tick` with `--repos` or
+`--all-repos` is a usage error — refuse it here, before Step 2:** the tick's
+watermark is one month for one selection, so a tick always measures the current
+repo and Step 3 never forwards a repo selection on a tick.
+
 ```bash
 REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"
@@ -157,7 +170,7 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} --json > "$TMP_SNAP"; then
+if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1
@@ -422,6 +435,7 @@ Report shape, following the prior audits in this series:
 **Issue:** #1201
 **Date:** <ET date>
 **Window:** <since> → <until> (<N> PRs<, truncated> )
+<**Repos:** <`repos[]`, comma-separated> — multi-repo runs only; figures below are the cross-repo total>
 **Baseline:** <path> (<provenance>, as of <date>)
 
 ## Executive summary
