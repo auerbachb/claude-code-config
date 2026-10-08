@@ -200,8 +200,9 @@ SQL
 hq_sql_budget_factors() {
   cat <<'SQL'
 hqb_fo AS (
-  SELECT CASE WHEN pg_input_is_valid(value, 'jsonb') AND jsonb_typeof(value::jsonb) = 'object'
-              THEN value::jsonb END AS o
+  SELECT CASE WHEN pg_input_is_valid(value, 'jsonb')
+              THEN CASE WHEN jsonb_typeof(value::jsonb) = 'object' THEN value::jsonb END
+         END AS o
     FROM state WHERE key = 'energy_factors'
 ),
 hqb_fx AS (

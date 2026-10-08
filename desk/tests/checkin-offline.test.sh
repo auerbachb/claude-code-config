@@ -93,9 +93,14 @@ check "hours: none" "$(parse 'none, low, none')" '[false,0,"low",null,[]]'
 check "hours: 0" "$(parse '0, ok')" '[false,0,"ok",null,[]]'
 check "hours: over 16 is not hours" "$(parse '17, ok')" '[false,null,"ok",null,["hours"]]'
 check "energy: the last of a few words, lowercase" "$(parse '4, Pretty Tired., none')" '[false,4,"tired",null,[]]'
+check "energy: a trailing today is not the word" "$(parse '4, feeling low today, none')" '[false,4,"low",null,[]]'
+check "energy: a trailing right now is not the word" "$(parse '4; tired right now')" '[false,4,"tired",null,[]]'
 check "energy: a sentence is not one word" "$(parse '4, I am feeling rather low today')" '[false,4,null,null,["energy"]]'
 check "energy: digits are not a word" "$(parse '4, 5')" '[false,4,null,null,["energy"]]'
 check "planned: a prefix is dropped" "$(parse '2.5, great, plan: the deck until 12:30')" '[false,2.5,"great","the deck until 12:30",[]]'
+check "planned: a whole-word prefix is dropped" "$(parse '4, ok, planning the offsite')" '[false,4,"ok","the offsite",[]]'
+check "planned: a longer word keeps its letters (planet)" "$(parse '4, ok, planet visit')" '[false,4,"ok","planet visit",[]]'
+check "planned: a longer word keeps its letters (plant)" "$(parse '4, ok, plant the garden')" '[false,4,"ok","plant the garden",[]]'
 check "planned: line breaks inside it become spaces" "$(parse "$(printf '4, ok, the PRD\nthen email')")" '[false,4,"ok","the PRD then email",[]]'
 check "skip" "$(parse 'skip')" '[true,null,null,null,[]]'
 check "skip: not today." "$(parse 'Not today.')" '[true,null,null,null,[]]'
@@ -345,13 +350,39 @@ case "$1" in
       exit "$rc"
     fi
     cat "$STUB_DIR/checkin-out" 2>/dev/null || true ;;
+  sweep)
+    rc=$(cat "$STUB_DIR/sweep-rc" 2>/dev/null || echo 0)
+    if [ "$rc" -ne 0 ]; then
+      echo "human-queue: sweep due: cannot reach the store (stub)" >&2
+      exit "$rc"
+    fi
+    cat "$STUB_DIR/sweep-out" 2>/dev/null || true ;;
 esac
 EOF
 chmod +x "$TSTUB"
+# A `date` that answers desk-tick's clock reads from $STUB_DIR/clocks, one
+# line per call (the last line again once they run out), so one tick can see
+# the clock move between its morning step and its sweep.
+mkdir -p "$STUB_DIR/bin"
+cat > "$STUB_DIR/bin/date" <<'EOF'
+#!/bin/sh
+if [ "$1" = '+%Y-%m-%d %H:%M' ] && [ -f "$STUB_DIR/clocks" ]; then
+  n=$(cat "$STUB_DIR/clock-n" 2>/dev/null || echo 0)
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$STUB_DIR/clock-n"
+  line=$(sed -n "${n}p" "$STUB_DIR/clocks")
+  [ -n "$line" ] || line=$(tail -n 1 "$STUB_DIR/clocks")
+  printf '%s\n' "$line"
+else
+  exec /bin/date "$@"
+fi
+EOF
+chmod +x "$STUB_DIR/bin/date"
 OURS='{"session": "desk-1", "last_tick_at": "2026-10-08T11:00:00Z", "tick_age_seconds": 1}'
 THEIRS='{"session": "desk-2", "last_tick_at": null, "tick_age_seconds": null}'
 treset() {
-  rm -f "$STUB_DIR"/args "$STUB_DIR"/checkin-out "$STUB_DIR"/checkin-rc "$STUB_DIR"/refused "$STUB_DIR"/status-checkin
+  rm -f "$STUB_DIR"/args "$STUB_DIR"/checkin-out "$STUB_DIR"/checkin-rc "$STUB_DIR"/refused "$STUB_DIR"/status-checkin \
+    "$STUB_DIR"/sweep-out "$STUB_DIR"/sweep-rc "$STUB_DIR"/clocks "$STUB_DIR"/clock-n
   printf '%s\n' "$OURS" > "$STUB_DIR/status"
   printf '[]\n' > "$STUB_DIR/tick"
   printf '[]\n' > "$STUB_DIR/due"
@@ -432,6 +463,24 @@ desk-tick g1 new D-4"
   printf '%s\n' "$THEIRS" > "$STUB_DIR/status-checkin"
   dtick "$SH" "2026-10-08 10:00" "" --once
   check "[$SH] checkin refused for another desk: replaced" "$RC:$OUT" "0:desk-tick g1 replaced"
+
+  # The clock crosses eod_time between the morning step and the sweep, and
+  # the sweep fails: the store has already marked the morning asked, so the
+  # morning line still goes out, after the error line and before new.
+  treset
+  printf 'due 2026-10-08\n' > "$STUB_DIR/checkin-out"
+  printf '%s\n' "$NEWD" > "$STUB_DIR/tick"
+  printf '7\n' > "$STUB_DIR/sweep-rc"
+  printf '2026-10-08 17:29\n2026-10-08 17:30\n' > "$STUB_DIR/clocks"
+  RC=0
+  env -u HUMAN_QUEUE_CLOCK STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    HUMAN_QUEUE_POLICY="$TMP/no-policy.json" PATH="$STUB_DIR/bin:$PATH" \
+    "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+  OUT=$(cat "$TMP/out")
+  check "[$SH] eod_time crossed mid-tick and the sweep fails: morning still goes out" "$RC:$OUT:$(cat "$STUB_DIR/clock-n" 2>/dev/null)" \
+    "0:desk-tick g1 error sweep exit 7: human-queue: sweep due: cannot reach the store (stub)
+desk-tick g1 morning
+desk-tick g1 new D-4:2"
 
   # The loop asks once a day: after `due` no further check-in call that day.
   treset

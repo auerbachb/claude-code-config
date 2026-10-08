@@ -558,6 +558,12 @@ dt_cycle() {
     return 0
   fi
   if ! dt_sweep; then
+    # The store has already marked today's check-in asked, so the morning
+    # line goes out even though the sweep failed (the clock crossed
+    # eod_time between the two calls); later ticks would not ask again.
+    if [ -n "$dt_morning_line" ]; then
+      printf '%s\n' "$dt_morning_line"
+    fi
     dt_new "$ids"
     dt_retry "$due"
     return 0

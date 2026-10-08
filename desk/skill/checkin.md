@@ -80,7 +80,7 @@ The reply goes in its own quoted here-document because it holds the operator's w
   ```
 
   Then, when `plan` is `true` (the plan is a piece of work with a pace or an extent, by `plan.md`'s grammar: `the PRD, 30 min a section`, `the deck until 12:30`, `meetings until noon`), go on into `plan.md` step 2 with the planned text as the message and the inputs `{}`: the day plan proposes the blocks, with the budget in its card. A plan sentence that sent you here (step 3 below) takes precedence over the planned text.
-- **`skip` true** → nothing stored: `No check-in today — no reading budget; say "check-in" any time.` The check-in no longer waits.
+- **`skip` true** → nothing stored. With no check-in stored today (the card said `leaves today without a reading budget`): `No check-in today — no reading budget; say "check-in" any time.` With one already stored (the card said `keeps the one stored`): `Kept today's check-in — the budget is unchanged.` Either way the check-in no longer waits.
 - **`missing` not empty** → not a reply (the message goes on through the router).
 - **Exit 4** → its one stderr line (`--hours must be …`, `--planned is longer than 200 characters`, `this session is not the registered control session`); nothing was stored and the check-in still waits. **Exit 5** → `That plan looks like it holds a credential — not stored. Reword it.` **Exit 7** → `Can't reach the store — the check-in was not stored; reply again once it is back.`
 

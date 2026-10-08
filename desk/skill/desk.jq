@@ -813,17 +813,23 @@ def checkin_hours:
     end
   | if . == null or . < 0 or . > 16 then null else (. * 100 | round) / 100 end;
 
-# checkin_energy: one word of energy as typed ("ok", "Pretty tired", "low.")
-# as the stored word: the last word of up to three, lowercase; else null.
+# checkin_energy: one word of energy as typed ("ok", "Pretty tired", "low.",
+# "feeling low today") as the stored word: the last word of up to three,
+# lowercase, after a trailing "today" / "now" / "right now" / "this morning"
+# / "at the moment" is dropped; else null.
 def checkin_energy:
   ascii_downcase | gsub("[.!]+$"; "") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")
   | sub("^energy ?[:=]? ?"; "")
+  | sub("(?: (?:today|right now|now|this morning|at the moment))+$"; "")
   | split(" ") | if length >= 1 and length <= 3 then last else null end
   | if . != null and test("^[a-z][a-z-]{0,19}$") then . else null end;
 
-# checkin_planned: the planned text as typed, trimmed; null for none.
+# checkin_planned: the planned text as typed, trimmed; null for none. A
+# leading `plan`/`plans`/`planned`/`planning` label is dropped only as a whole
+# word (`plan: the deck`, `planning the offsite`), never out of a longer word
+# (`planet visit`, `plant the garden` stay whole).
 def checkin_planned:
-  gsub("\\s+"; " ") | gsub("^ | $"; "") | sub("^(?i:planned|plans?|planning)\\s*[:=]?\\s*"; "")
+  gsub("\\s+"; " ") | gsub("^ | $"; "") | sub("^(?i:planned|plans?|planning)(?:\\s*[:=]\\s*|\\s+|$)"; "")
   | if test("^(?i:none|nothing|no|nope|n/a|-|nothing planned|no plans?)?\\.?$") then null else . end;
 
 # checkin_parse: the operator's whole reply to the check-in card (a string,
