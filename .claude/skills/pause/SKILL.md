@@ -7,7 +7,7 @@ triggers:
   - heading out
   - park the work
   - shutting down
-argument-hint: "[--window Nm] (default: --window 15m; --window 0 stops immediately)"
+argument-hint: "[N] (runway minutes, e.g. /pause 5; long form --window Nm; default: --window 15m; /pause 0 stops immediately)"
 ---
 
 Land what can land. Park the rest at a deliberate boundary. Write a resume point you can pick up cold.
@@ -16,9 +16,11 @@ Two outputs, in this order: an active wind-down that drives near-done PRs to mer
 
 **This command never relaxes a gate.** `cr-merge-gate.md` Steps 1–1d, 1b and the Step 2 AC verification bind unchanged. The hard stops in `CLAUDE.md` "PR MERGE AUTHORIZATION" (human `CHANGES_REQUESTED` on HEAD, failing/incomplete CI, unresolved threads, unchecked AC, protection-modifying bypass) are hard stops here. The window never makes a borderline PR eligible; it only decides how long to wait on already-eligible ones.
 
-**One parameter: `--window Nm`.** Fifteen minutes is the default graceful
-shutdown runway and triage threshold; a caller may choose a shorter or longer
-non-negative window. The command stops earlier when all owned work is terminal.
+**One parameter: the runway, `/pause [N]`.** `/pause 5` gives a five-minute
+runway, `/pause 0` stops immediately, and plain `/pause` uses the fifteen-minute
+default graceful shutdown runway and triage threshold. `--window Nm` is the
+equivalent long form (`/pause 5` = `/pause --window 5m`); a caller may choose a
+shorter or longer non-negative window either way. The command stops earlier when all owned work is terminal.
 At the chosen deadline it stops leftovers; it never merely returns while
 billable work continues.
 
@@ -27,7 +29,7 @@ bounds every phase — landing, park bookkeeping, marker writing, state
 persistence — and not merely the land phase. Once the deadline passes, the run
 stops all remaining non-terminal work and cuts straight to the bounded terminal
 path defined in Step 0, degrading optional output rather than blowing the
-ceiling. A `/pause --window 15m` is observably finished shortly after minute
+ceiling. A `/pause 15` (`--window 15m`) is observably finished shortly after minute
 15, every time, and Step 8 names what was skipped to make that true.
 
 ## Step 0: Resolve helpers and parse arguments
@@ -97,31 +99,38 @@ that can still be armed, skip any claim that no tasks are live, and carry the
 missing control into Step 8 as `INCOMPLETE SHUTDOWN`; never interpret an
 unreadable inventory as an empty one.
 
-**Parse `--window Nm`:** extract the integer N from the **first** `--window` argument; default to `15`. `--window 0` means skip landing and checkpoint time, then stop everything immediately. Accept a non-negative integer with an optional trailing `m`; normalize leading zeroes as decimal, and reject non-numeric, negative, or greater-than-1440-minute values. Stop processing `--window` arguments after the first valid value. Compute `T_end` once:
+**Parse the window:** take N from the **first** window-supplying argument — a bare token (`/pause 5`, `/pause 5m`) or the value after `--window` (`--window 5m`, `--window 5`) — and default to `15`. A window of `0` means skip landing and checkpoint time, then stop everything immediately. Both forms accept a non-negative integer with an optional trailing `m`; normalize leading zeroes as decimal, and reject (exit 2, never a silent default) non-numeric, negative, or greater-than-1440-minute values. Other `--flag` tokens are ignored as before. Stop processing arguments after the first valid value. Compute `T_end` once:
 
 ```bash
 WINDOW_MINUTES=15
 _WINDOW_SET=false
 _NEXT_IS_WINDOW=false
+# One validator for both forms: `/pause N` and `/pause --window N`. $1 is the
+# raw token, $2 the form named in the error. Strip an optional trailing 'm',
+# validate text, then bound before arithmetic.
+set_window() {
+  local _RAW="${1%m}" _NORMALIZED
+  [[ "$_RAW" =~ ^[0-9]+$ ]] || \
+    { echo "ERROR: $2 requires a non-negative integer number of minutes (got: $1)" >&2; exit 2; }
+  _NORMALIZED="${_RAW#"${_RAW%%[!0]*}"}"
+  _NORMALIZED="${_NORMALIZED:-0}"
+  (( ${#_NORMALIZED} < 4 )) || \
+    { (( ${#_NORMALIZED} == 4 )) && [[ "$_NORMALIZED" < 1441 ]]; } || \
+    { echo "ERROR: $2 must not exceed 1440 minutes (got: $1)" >&2; exit 2; }
+  WINDOW_MINUTES=$((10#$_NORMALIZED))
+  _WINDOW_SET=true
+}
 for arg in $ARGUMENTS; do
   [[ "$_WINDOW_SET" == true ]] && continue
   if [[ "$_NEXT_IS_WINDOW" == true ]]; then
     _NEXT_IS_WINDOW=false
-    # Strip optional trailing 'm', validate text, then bound before arithmetic.
-    _RAW="${arg%m}"
-    [[ "$_RAW" =~ ^[0-9]+$ ]] || \
-      { echo "ERROR: --window requires a non-negative integer (got: $arg)" >&2; exit 2; }
-    _NORMALIZED="${_RAW#"${_RAW%%[!0]*}"}"
-    _NORMALIZED="${_NORMALIZED:-0}"
-    (( ${#_NORMALIZED} < 4 )) || \
-      { (( ${#_NORMALIZED} == 4 )) && [[ "$_NORMALIZED" < 1441 ]]; } || \
-      { echo "ERROR: --window must not exceed 1440 minutes." >&2; exit 2; }
-    WINDOW_MINUTES=$((10#$_NORMALIZED))
-    _WINDOW_SET=true
+    set_window "$arg" "--window"
     continue
   fi
   case "$arg" in
     --window) _NEXT_IS_WINDOW=true ;;
+    --*) ;;                                  # other flags: ignored, as before
+    *) set_window "$arg" "/pause N" ;;       # bare minutes: /pause 5, /pause 5m
   esac
 done
 if [[ "$_NEXT_IS_WINDOW" == true ]]; then
