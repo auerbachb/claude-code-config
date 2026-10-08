@@ -281,10 +281,13 @@ def parse_rates(path):
 # --- signals -----------------------------------------------------------------
 
 def extract_charges(issue_comments):
-    """CodeRabbit receipt events: [{"amount": Decimal, "created_at", "pr"}].
+    """CodeRabbit receipt events: [{"amount": Decimal, "at", "created_at", "pr"}].
 
     Only comments authored by coderabbitai[bot] count, so a human quoting a
     receipt back (or this repo's own docs quoted by a bot) is never a charge.
+    `at` times the receipt by the comment's last edit (`updated_at`, falling
+    back to `created_at`): CodeRabbit rewrites its summary comment in place, so
+    the receipt it shows belongs to the review that last edited it.
     """
     events = []
     for c in issue_comments or []:
@@ -295,8 +298,9 @@ def extract_charges(issue_comments):
                 amount = Decimal(m.group(1).replace(",", ""))
             except InvalidOperation:
                 continue
-            events.append({"amount": amount, "created_at": c.get("created_at"),
-                           "pr": c.get("pr")})
+            events.append({"amount": amount,
+                           "at": c.get("updated_at") or c.get("created_at"),
+                           "created_at": c.get("created_at"), "pr": c.get("pr")})
     return events
 
 

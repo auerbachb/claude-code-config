@@ -93,8 +93,9 @@
 # SPEND LEDGER (--ledger)
 #   Each tool gains `spend_usd` (number or null) and `spend_source`, one of:
 #     receipt   CodeRabbit: the sum of `Charged: $X` lines in coderabbitai[bot]
-#               conversation comments in the window. A FLOOR, never the bill — a
-#               summary comment keeps one receipt and a later review overwrites it.
+#               conversation comments in the window, each timed by its comment's
+#               last edit (updated_at, else created_at). A FLOOR, never the bill —
+#               a summary comment keeps one receipt and a later review overwrites it.
 #     estimate  BugBot: `Cursor Bugbot` check-runs published by the `cursor`
 #               app (every commit of each PR, filter=all, deduped by run id,
 #               timed by started_at) x $/review.
@@ -130,8 +131,9 @@
 #             "pr_comments":    [{"user": "coderabbitai[bot]", "body": ""}],
 #             "issue_comments": [{"user": "coderabbitai[bot]", "body": ""}]}]}
 #
-#   Ledger fields (optional, read only in ledger mode): `created_at` on an
-#   issue comment, and a per-PR `check_runs` list of
+#   Ledger fields (optional, read only in ledger mode): `created_at` and
+#   `updated_at` on an issue comment (a receipt is timed by `updated_at` when
+#   present), and a per-PR `check_runs` list of
 #   {"id", "name": "Cursor Bugbot", "app": "cursor", "started_at"} objects (REST
 #   envelopes with a `check_runs` array, and REST's {"app": {"slug"}}, are
 #   accepted too). A run under that name from any other app, or with no `app`,
@@ -706,11 +708,13 @@ def fetch_prs(repo):
                          "body": r.get("body") or ""} for r in reviews],
             "pr_comments": [{"user": (c.get("user") or {}).get("login", ""),
                              "body": c.get("body") or ""} for c in pr_comments],
-            # created_at places a receipt or trigger in the ledger window; the
-            # legacy path never reads it and never emits normalized data.
+            # created_at places a trigger in the ledger window, updated_at a
+            # receipt (CodeRabbit edits its summary in place); the legacy path
+            # never reads either and never emits normalized data.
             "issue_comments": [{"user": (c.get("user") or {}).get("login", ""),
                                 "body": c.get("body") or "",
-                                "created_at": c.get("created_at")} for c in issue_comments],
+                                "created_at": c.get("created_at"),
+                                "updated_at": c.get("updated_at")} for c in issue_comments],
         }
         if ledger is not None:
             pr["check_runs"] = fetch_bugbot_runs(repo, num)
@@ -975,7 +979,7 @@ def apply_spend(tools_out, prs):
         check_runs.append(pr.get("check_runs") or [])
     open_until = until_arg or None
     charges, undated_charges = ledger.filter_window(
-        ledger.extract_charges(comments), since, open_until, "created_at")
+        ledger.extract_charges(comments), since, open_until, "at")
     runs, undated_runs = ledger.filter_window(
         ledger.bugbot_runs(check_runs), since, open_until, "started_at")
     triggers, undated_triggers = ledger.filter_window(

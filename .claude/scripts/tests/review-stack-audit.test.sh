@@ -1147,7 +1147,8 @@ rc=$?
 
 # Test Plan item 1. Exactly the issue's signals — one $3.25 CodeRabbit receipt,
 # three Cursor Bugbot runs, one @greptileai trigger — plus noise that must add
-# nothing: a CodeRabbit comment quoting a receipt mid-sentence, a duplicate
+# nothing: a CodeRabbit comment quoting a receipt mid-sentence, a receipt
+# created in the window but last edited after it (timed by the edit), a duplicate
 # run id, a run under another check name, a `Cursor
 # Bugbot` run from another app or from no app, a run and a
 # receipt outside the window, a human quoting a receipt, and Greptile's own
@@ -1161,6 +1162,7 @@ fixture_write "$LEDGER_F" '[
     {"user":"coderabbitai[bot]","created_at":"2025-09-30T23:59:59Z","body":"- Charged: $8.25"},
     {"user":"auerbachb","created_at":"2025-10-03T10:00:00Z","body":"The bot said Charged: $99.00 here"},
     {"user":"coderabbitai[bot]","created_at":"2025-10-06T10:00:00Z","body":"Walkthrough: the ledger sums each `Charged: $7.00` line it finds."},
+    {"user":"coderabbitai[bot]","created_at":"2025-10-08T10:00:00Z","updated_at":"2025-11-05T10:00:00Z","body":"- Reviewed files: 4\n- Charged: $4.00\n"},
     {"user":"auerbachb","created_at":"2025-10-04T10:00:00Z","body":"@greptileai review please, @greptileai"},
     {"user":"greptile-apps[bot]","created_at":"2025-10-04T11:00:00Z","body":"Mention @greptileai to ask a question"}],
   "check_runs":[
@@ -1391,6 +1393,11 @@ checks = [
     ("zero-receipts-is-a-floor", L.compute_spend("coderabbit", {"charges": []}, None, 30) == (D("0.00"), "receipt")),
     ("no-rates-is-none-not-zero", L.compute_spend("bugbot", {"bugbot_runs": 3}, None, 30) == (None, "none")),
     ("comma-and-bold-receipts", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]", "body": "**Charged:** $1,234.50"}])] == [D("1234.50")]),
+    ("receipt-timed-by-last-edit", [e["amount"] for e in L.filter_window(L.extract_charges([
+        {"user": "coderabbitai[bot]", "created_at": "2025-09-20T00:00:00Z", "updated_at": "2025-10-07T00:00:00Z", "body": "- Charged: $1.00"},
+        {"user": "coderabbitai[bot]", "created_at": "2025-10-02T00:00:00Z", "updated_at": "2025-11-02T00:00:00Z", "body": "- Charged: $2.00"},
+        {"user": "coderabbitai[bot]", "created_at": "2025-10-03T00:00:00Z", "body": "- Charged: $3.00"}]),
+        "2025-10-01", "2025-10-31", "at")[0]] == [D("1.00"), D("3.00")]),
     ("receipt-is-a-line-not-a-quote", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]",
         "body": "- Reviewed files: 2\n- Charged: $0.50\nThe walkthrough quotes Charged: $9.00 inline."}])] == [D("0.50")]),
 ]
