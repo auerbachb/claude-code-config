@@ -237,6 +237,8 @@ Walk the candidates in `/pm`'s ranked order and admit each one only if it surviv
 - it is blocked by another issue **in this wave** → the blocker keeps its slot, the blocked issue is excluded ("blocked by #N, which is in this wave"); or
 - it is blocked by any **open, unmerged** issue at all → excluded ("blocked by #N, still open"). A wave is for work that can start *now*.
 
+The canonical reading of those markers is `issue-deps.sh` (resolved like `/pm`'s helpers; issue #1760): its edges are `/pm` 1B.3's, and the desk counts an issue's open dependents with the same script, so the three never disagree. The exclusion rules above are unchanged.
+
 **Circular pairs** (A blocks B, B blocks A) → exclude **both** and flag them for human resolution, matching `/pm` 1B.4's treatment. Do not guess which direction is real.
 
 **5.2 — Declared overlap (hard).** Any surface shared with an already-admitted issue → exclude, naming the surface: "overlaps #M on `.claude/skills/pm/SKILL.md`".
@@ -363,7 +365,7 @@ Batch makespan: 1.5 h–3 h · binding: parallel-work · plan on ~8:45 PM ET
 - `estimate-resolve.sh` exit 2 (`unestimated`): use `null`/`null` — `makespan.sh` applies Standard fallback.
 - `estimate-resolve.sh` exit 3 or 4 (usage/error): report one line per failure; use `null`/`null` for that issue.
 
-Collect `Depends on` links for `deps`. Build `{"issues":[{"num":N,"est_lo":lo,"est_hi":hi,"deps":[...]},...]}` and pipe to `makespan.sh --ceiling "$EFFECTIVE"` (Step 6's resolved per-thread limit, so a widened repo's makespan reflects its real parallelism). Append the single output line as `Batch makespan: <output>` after the `Running ...` line and before `### Excluded`. If `makespan.sh` is unavailable, print `DEGRADED: makespan.sh not found — batch makespan unavailable` (non-blocking; wave dispatch continues). If `makespan.sh` exits 1 (all issues were unestimated — every one used Standard fallback), omit the line silently.
+Collect `Depends on` links for `deps` (the blockers 5.1's reading — `issue-deps.sh` edges — names for each issue). Build `{"issues":[{"num":N,"est_lo":lo,"est_hi":hi,"deps":[...]},...]}` and pipe to `makespan.sh --ceiling "$EFFECTIVE"` (Step 6's resolved per-thread limit, so a widened repo's makespan reflects its real parallelism). Append the single output line as `Batch makespan: <output>` after the `Running ...` line and before `### Excluded`. If `makespan.sh` is unavailable, print `DEGRADED: makespan.sh not found — batch makespan unavailable` (non-blocking; wave dispatch continues). If `makespan.sh` exits 1 (all issues were unestimated — every one used Standard fallback), omit the line silently.
 
 The same exit-code mapping applies to the per-issue estimate in `/subagent`'s launch announcement: exit 0/1 → show the Est line; exit 2 → show `unestimated`; exit 3/4 → report the failure, omit the parenthetical.
 

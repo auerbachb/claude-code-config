@@ -197,8 +197,15 @@ def default_line:
          else " — the thread takes it at " + (.default_at | utc) + " if unanswered" end)
   end;
 
+# The impact shown is the one that ordered the item: the derived value
+# (issue #1760) with its basis and the declared one beside it, else the
+# declared one.
 def facts_line:
-  [ (.impact_declared // empty | "Impact: " + .),
+  [ (if .impact_derived != null then
+       "Impact: " + .impact_derived + " (derived"
+       + (if .impact_basis != null then ": " + .impact_basis else "" end)
+       + (if .impact_declared != null then "; declared " + .impact_declared else "" end) + ")"
+     else (.impact_declared // empty | "Impact: " + .) end),
     (.cost // empty | "Cost: " + .),
     (.focus // empty | "Focus: " + .),
     (if .parked then "Parked: the thread waits for this answer" else empty end) ]
