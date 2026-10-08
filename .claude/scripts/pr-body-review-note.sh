@@ -24,8 +24,10 @@
 #
 # PLACEMENT
 #   The line is appended as a bullet at the end of the `## Review notes`
-#   section, before the next `#` or `##` heading outside a code fence. With no
-#   such section, one is created at the end of the body. Everything else in the
+#   section, before the next `#` or `##` heading outside a code fence. Headings
+#   are read as CommonMark ATX headings: up to three leading spaces, an
+#   optional closing run of `#`, any letter case (`  ## Review Notes ##`). With
+#   no such section, one is created at the end of the body. Everything else in the
 #   body is left byte-for-byte as it was. A body with CRLF line endings (the
 #   GitHub web editor saves them) is matched with the CR stripped, every
 #   existing line keeps its own ending, and the added lines use CRLF.
@@ -139,6 +141,18 @@ NOTE="- $LINE $MARKER" awk '
     sub(/^ ? ? ?/, "", t)
     return substr(t, length(run) + 1) ~ /^[ \t]*$/
   }
+  # ATX headings (CommonMark): up to three leading spaces, then the opening
+  # run, then a space, a tab, or the end of the line.
+  function is_notes(s,   t) {
+    t = tolower(s)
+    sub(/^ ? ? ?/, "", t)
+    return t ~ /^##[ \t]+review[ \t]+notes([ \t]+#+)?[ \t]*$/
+  }
+  function ends_section(s,   t) {
+    t = s
+    sub(/^ ? ? ?/, "", t)
+    return t ~ /^##?([ \t]|$)/
+  }
   # Each existing line is written back with the ending it was read with; an
   # added line uses CRLF when any line of the body did.
   function emit(i) { printf "%s%s\n", lines[i], (cr[i] ? "\r" : "") }
@@ -151,8 +165,8 @@ NOTE="- $LINE $MARKER" awk '
       if (open != "") { if (closes(lines[i], open)) open = ""; continue }
       run = fence_run(lines[i])
       if (run != "") { open = run; continue }
-      if (!start && lines[i] ~ /^##[ \t]+[Rr]eview [Nn]otes[ \t]*$/) { start = i; continue }
-      if (start && lines[i] ~ /^##?[ \t]/) { stop = i; break }
+      if (!start && is_notes(lines[i])) { start = i; continue }
+      if (start && ends_section(lines[i])) { stop = i; break }
     }
     if (!start) {
       last = NR

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for pr-body-review-note.sh (issue #1812).
-# catalog: tests — Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors
+# catalog: tests — Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors
 #
 # WHAT IS UNDER TEST
 #   /fixpr Step 3b records a BugBot daily-cap skip in the PR body, and Step 3b
@@ -124,6 +124,21 @@ usage 1840 --head "$SHA1" --key k --line x --repo nope; check_eq "malformed --re
 check_eq "the body file is untouched" "body" "$(cat "$TMP/g.md")"
 RC=0; "$SCRIPT" 1840 --head "$SHA1" --key k --line x --body-file "$TMP/missing.md" >/dev/null 2>&1 || RC=$?
 check_eq "a missing body file exits 1" "1" "$RC"
+
+echo "== CommonMark ATX headings: indented, closed, any case =="
+printf '# Title\n\n  ## Review Notes ##\n\n- earlier note\n\n   ## Test plan\n- [ ] a\n' > "$TMP/atx.md"
+note "$TMP/atx.md" "$SHA1"
+check_eq "the indented, closed heading is the section; the indented ## ends it" \
+  "$(printf '# Title\n\n  ## Review Notes ##\n\n- earlier note\n- %s %s\n\n   ## Test plan\n- [ ] a' "$LINE" "$(m "$SHA1")")" \
+  "$(cat "$TMP/atx.md")"
+printf '## Review notes\n\n- old\n##\n- tail\n' > "$TMP/atx2.md"
+note "$TMP/atx2.md" "$SHA1"
+check_eq "an empty ## heading ends the section" \
+  "$(printf '## Review notes\n\n- old\n- %s %s\n\n##\n- tail' "$LINE" "$(m "$SHA1")")" "$(cat "$TMP/atx2.md")"
+printf '    ## Review notes\n\n#Review notes\n' > "$TMP/atx3.md"
+note "$TMP/atx3.md" "$SHA1"
+check_eq "four-space indent and no space after # are not headings: a new section" "1" \
+  "$(grep -c '^## Review notes$' "$TMP/atx3.md" | tr -d ' ')"
 
 ############################################################################
 echo "== CRLF body (GitHub web editor): the section is found, not duplicated =="

@@ -111,7 +111,7 @@ opt-in of issue #1544.
 | [portable-handoff-lint.test.sh](../tests/portable-handoff-lint.test.sh) | Tests that `portable-handoff-lint.sh` catches each violation class and does not fire on a genuinely useful handoff |
 | [portable-handoff-publish.test.sh](../tests/portable-handoff-publish.test.sh) | Tests canonical `/end` handoff publication |
 | [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
-| [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
+| [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
 | [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
 | [pr-preflight.test.sh](../tests/pr-preflight.test.sh) | Tests for `pr-preflight.sh` |
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
@@ -129,7 +129,7 @@ opt-in of issue #1544.
 | [repo-bootstrap.test.sh](../tests/repo-bootstrap.test.sh) | Tests for `repo-bootstrap.sh` — file-set check/apply/report behavior and the exit-code contract |
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
 | [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control |
-| [review-daily-cap.test.sh](../tests/review-daily-cap.test.sh) | Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh, and the 5-minute cache |
+| [review-daily-cap.test.sh](../tests/review-daily-cap.test.sh) | Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh (comments read from both ends, BugBot read limits noted), and the 5-minute cache |
 | [review-repos.test.sh](../tests/review-repos.test.sh) | Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list, `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves |
 | [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path |
 | [review-tier.test.sh](../tests/review-tier.test.sh) | Tests for `review-tier.sh` — policy parsing, strictest-wins resolution, fail-closed invalid policies, PR-mode base-branch reads |

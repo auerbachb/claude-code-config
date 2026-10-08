@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests for review-daily-cap.sh — the account-level daily soft cap on
 # paid reviewer triggers (issue #1812).
-# catalog: tests — Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh, and the 5-minute cache
+# catalog: tests — Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh (comments read from both ends, BugBot read limits noted), and the 5-minute cache
 #
 # WHAT IS UNDER TEST
 #   Fixture mode runs the REAL script against review_ledger.py's normalized
@@ -423,6 +423,24 @@ check_eq "greptile: the two triggers made today (03:00Z is the 7th ET) are read 
 check_contains "  stderr says the middle was skipped" "only its first 100 and last 100 of 250 comments" "$ERR"
 STUB_REPOS="acme/one" run coderabbit
 check_eq "coderabbit: the receipt edited today is read from the oldest end" "1.75|ok" "$(field spent_usd)|$(field status)"
+
+echo "== live: BugBot suites and runs past the read limit are noted, not dropped silently =="
+rm -rf "$HOME/.claude/review-daily-cap"
+page false "" "$(pr_node 6 2026-10-08T14:00:00Z 601 2026-10-08T13:00:00Z)" > "$GH_DIR/one.json"
+python3 - "$GH_DIR/one.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+commit = d["data"]["repository"]["pullRequests"]["nodes"][0]["commits"]["nodes"][0]["commit"]
+commit["oid"] = "abcdef0123456789"
+commit["checkSuites"]["totalCount"] = 6
+commit["checkSuites"]["nodes"][0]["checkRuns"]["totalCount"] = 25
+json.dump(d, open(p, "w"))
+PY
+STUB_REPOS="acme/one" run bugbot
+check_eq "the runs that were read still count" "1.58|ok" "$(field spent_usd)|$(field status)"
+check_contains "  stderr names the suite overflow" "only 5 of 6 BugBot check suites on abcdef0" "$ERR"
+check_contains "  stderr names the run overflow" "only 20 of 25 BugBot check-runs in one suite on abcdef0" "$ERR"
 
 echo "== missing ledger library -> unknown (and --rate still answers) =="
 mv "$STUB/scripts/lib/review_ledger.py" "$TMP/ledger.bak"

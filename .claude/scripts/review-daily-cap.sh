@@ -17,7 +17,10 @@
 #   from live GitHub evidence priced by lib/review_ledger.py, so it also counts
 #   spend the harness did not trigger (vendor auto-reviews, CI nudges). Receipts
 #   and estimates are a floor, so the cap errs toward spending slightly more
-#   than it thinks, never less. Policy: .claude/reference/review-policy.md
+#   than it thinks, never less. It is also not a lock: two triggers checked at
+#   once, or before an earlier trigger's run shows on GitHub, read the same
+#   tally and can both pass, so a burst can overshoot the cap by about one
+#   review per concurrent trigger. Policy: .claude/reference/review-policy.md
 #   "Account-level daily cap".
 #
 # USAGE
@@ -65,8 +68,10 @@
 #   Comments are read from both ends of each PR — its first 100 hold
 #   CodeRabbit's rewritten summary, its last 100 today's triggers — and a
 #   comment read from both ends counts once. A PR with more than 50 commits or
-#   200 comments, or a repo with more than 100 PRs updated today, is read in
-#   part and noted on stderr: the figure is then a floor, like every receipt.
+#   200 comments, a commit with more than 5 BugBot check suites, a suite with
+#   more than 20 BugBot runs, or a repo with more than 100 PRs updated today,
+#   is read in part and noted on stderr: the figure is then a floor, like
+#   every receipt.
 #
 # CACHE
 #   A known live tally is cached per platform and ET day in
@@ -374,6 +379,8 @@ GH_TIMEOUT = 90
 PR_PAGE = 10        # PRs per GraphQL page
 MAX_PAGES = 10      # 100 PRs per repo per ET day before the read is partial
 COMMITS_READ = 50
+SUITES_READ = 5     # Cursor Bugbot check suites per commit
+RUNS_READ = 20      # Cursor Bugbot check-runs per suite
 COMMENTS_READ = 100
 EXIT_USAGE = 2
 
@@ -493,11 +500,13 @@ query($owner: String!, $name: String!, $endCursor: String) {
 # comments. Each platform reads only what prices it.
 BUGBOT_FIELDS = """commits(last: %d) {
           totalCount
-          nodes { commit { checkSuites(first: 5, filterBy: {checkName: "%s"}) {
+          nodes { commit { oid checkSuites(first: %d, filterBy: {checkName: "%s"}) {
+            totalCount
             nodes { app { slug }
-                    checkRuns(first: 20, filterBy: {checkName: "%s", checkType: ALL}) {
+                    checkRuns(first: %d, filterBy: {checkName: "%s", checkType: ALL}) {
+                      totalCount
                       nodes { databaseId name startedAt } } } } } }
-        }""" % (COMMITS_READ, ledger.BUGBOT_CHECK_NAME, ledger.BUGBOT_CHECK_NAME)
+        }""" % (COMMITS_READ, SUITES_READ, ledger.BUGBOT_CHECK_NAME, RUNS_READ, ledger.BUGBOT_CHECK_NAME)
 # Comments are read from both ends: CodeRabbit rewrites its summary comment —
 # often a PR's first — in place, while today's @greptileai triggers are a PR's
 # newest. normalize_pr() drops the overlap by node id.
@@ -547,10 +556,19 @@ def normalize_pr(node):
         if (commits.get("totalCount") or 0) > COMMITS_READ:
             pr["partial"].append("only its last %d of %d commits" % (COMMITS_READ, commits["totalCount"]))
         for c in commits.get("nodes") or []:
-            suites = (((c or {}).get("commit") or {}).get("checkSuites") or {}).get("nodes") or []
-            for suite in suites:
+            commit = (c or {}).get("commit") or {}
+            sha = (commit.get("oid") or "?")[:7]
+            suite_conn = commit.get("checkSuites") or {}
+            if (suite_conn.get("totalCount") or 0) > SUITES_READ:
+                pr["partial"].append("only %d of %d BugBot check suites on %s"
+                                     % (SUITES_READ, suite_conn["totalCount"], sha))
+            for suite in suite_conn.get("nodes") or []:
                 slug = ((suite or {}).get("app") or {}).get("slug")
-                for run in ((suite or {}).get("checkRuns") or {}).get("nodes") or []:
+                run_conn = (suite or {}).get("checkRuns") or {}
+                if (run_conn.get("totalCount") or 0) > RUNS_READ:
+                    pr["partial"].append("only %d of %d BugBot check-runs in one suite on %s"
+                                         % (RUNS_READ, run_conn["totalCount"], sha))
+                for run in run_conn.get("nodes") or []:
                     run = run or {}
                     pr["check_runs"].append({"id": run.get("databaseId"), "name": run.get("name"),
                                              "app": slug, "started_at": run.get("startedAt")})
