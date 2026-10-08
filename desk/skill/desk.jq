@@ -507,9 +507,14 @@ def plan_until_epoch($now):
          else [$h] end) as $hours
       | plan_off($now) as $off
       | (($now + $off) | floor | gmtime) as $lt
+      # Today's and tomorrow's showing of each hour, each at the offset in
+      # force then (read twice, so the second read is at the time itself):
+      # across a daylight-saving change, tomorrow's is not 24 hours on.
       | [ $hours[]
-          | ([$lt[0], $lt[1], $lt[2], ., $mi, 0, 0, 0] | mktime) - $off
-          | if . > $now then . else . + 86400 end ]
+          | ([$lt[0], $lt[1], $lt[2], ., $mi, 0, 0, 0] | mktime) as $wall
+          | ($wall, $wall + 86400) as $w
+          | $w - plan_off($w - plan_off($w - $off))
+          | select(. > $now) ]
       | if length == 0 then null else min end
     end;
 
@@ -541,17 +546,21 @@ def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
 #   {inputs (with `end` resolved), missing ([] or ["item"] or ["pace"]),
 #    now, forecast, batch {decisions, reviews, ids, minutes}, later [ids],
 #    revision, pace, blocks [{item, label, pace, start, until, start_local,
-#    until_local}], problem (null, or why no block fits)}
+#    until_local}], wanted (null, or how many blocks were asked for when
+#    fewer fit: at most 24, all within a day), problem (null, or why no
+#    block fits)}
 # A new plan clears a batch first: the parked menu-shaped Decisions, then the
 # other menu-shaped ones and then Reviews while they fit in batch_min (a
 # Decision at its declared minutes, else 2; a Review at 2). Long-form
 # Decisions and what does not fit wait for the first block's end (`later`).
 # The first block starts when the batch is done, and blocks are gap minutes
 # apart, so a tick lands between them and shows what was held. No count,
-# until, or for: one chunk. A revision (stored) keeps the stored batch and
-# `later`, and plans the chunks still to do from now (from the first block's
-# start, when none has begun): the old count less the blocks already over,
-# or a count named in the revision.
+# until, or for: one chunk. A new plan's `for` counts from the first block's
+# start each time it is proposed, so the time taken to confirm it never
+# shortens it. A revision (stored) keeps the stored batch, `later`, and end,
+# and plans the chunks still to do from now (from the first block's start,
+# when none has begun): the old count less the blocks already over (none
+# left is a problem, not one more), or a count named in the revision.
 def desk_plan_propose:
   . as $c
   | ($c.forecast.now // (now | todate) | plan_epoch) as $now
@@ -586,23 +595,25 @@ def desk_plan_propose:
   | (if $in.item == null then ["item"]
      elif $in.pace_min == null and $in.until == null and $in.for_min == null and $in.end == null then ["pace"]
      else [] end) as $missing
-  | (if $in.end != null then ($in.end | plan_epoch)
+  | (if $in.for_min != null and $in.until == null and $st == null then $start + $in.for_min * 60
+     elif $in.end != null then ($in.end | plan_epoch)
      elif $in.until != null then ($in.until | plan_until_epoch($now))
      elif $in.for_min != null then $start + $in.for_min * 60
      else null end) as $end
   | $in.pace_min as $p
+  | (if $missing != [] or $p == null then null
+     elif $in.count != null then
+       (if $st != null and $in.count_given != true then [0, $in.count - $batch.done] | max else $in.count end)
+     elif $end != null then [1, ((($end - $start) + $gap * 60) / (($p + $gap) * 60) | floor)] | max
+     else 1 end) as $want
   | (if $missing != [] then []
      elif $p == null then
        (if $end != null and $end > $start then [{s: $start, u: $end}] else [] end)
      else
-       (if $in.count != null then
-          (if $st != null and $in.count_given != true then [1, $in.count - $batch.done] | max else $in.count end)
-        elif $end != null then [1, ((($end - $start) + $gap * 60) / (($p + $gap) * 60) | floor)] | max
-        else 1 end) as $n
-       | [ range(0; [$n, 24] | min) as $k
-           | ($start + $k * ($p + $gap) * 60) as $s
-           | {s: $s, u: (if $end != null then [$s + $p * 60, $end] | min else $s + $p * 60 end)}
-           | select(.u > .s and .u <= $now + 86400) ]
+       [ range(0; [$want, 24] | min) as $k
+         | ($start + $k * ($p + $gap) * 60) as $s
+         | {s: $s, u: (if $end != null then [$s + $p * 60, $end] | min else $s + $p * 60 end)}
+         | select(.u > .s and .u <= $now + 86400) ]
      end) as $spans
   | ($spans | length) as $n
   | ($batch.first + $n - 1) as $total
@@ -623,8 +634,11 @@ def desk_plan_propose:
                     pace: $pace,
                     start: (.value.s | plan_iso), until: (.value.u | plan_iso),
                     start_local: (.value.s | plan_hm), until_local: (.value.u | plan_hm) } ],
+      wanted: (if $want != null and $n > 0 and $want > $n then $want else null end),
       problem: (if $missing == [] and $n == 0
-                then (if $end != null then "no block fits before \($end | plan_hm) ET" else "no block fits" end)
+                then (if $want == 0 then "every \($in.chunk // "block") planned is done; name how many more (`2 \($in.chunk // "block")s`)"
+                      elif $end != null then "no block fits before \($end | plan_hm) ET"
+                      else "no block fits" end)
                 else null end) };
 
 # plan_forecast_lines: the proposal's "waiting now" and forecast lines.
@@ -680,6 +694,8 @@ def plan_card:
                         + " · everything held."),
            "Then what was held" + (if (.later | length) > 0 then ", and later: \(.later | join(", "))." else "." end) ]
          | to_entries | map("\(.key + 1). \(.value)") )
+     + (if .wanted != null then [ "Only \(.blocks | length) of the \(.wanted) asked for fit: at most 24 blocks, all within a day." ]
+        else [] end)
      | quote)
     + "\n\n"
     + (if .revision then "Stored. Change it again in one sentence; `plan?` shows it, `plan off` drops it."

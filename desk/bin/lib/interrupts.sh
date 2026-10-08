@@ -24,6 +24,7 @@
 #   hq_interrupt_rule_ok RULE   true for everything or away (a default)
 #   hq_sql_interrupt_row        SQL query, one row (rule, until, held,
 #                               source) for :'hq_session' with :'hq_default'
+#                               and today's plan in :'hq_tz'
 #   hq_sql_focus_until NOW      SQL scalar subquery: when a `focus until
 #                               <clock time>` ends, from :'hq_times' in
 #                               :'hq_tz', counted from NOW (an SQL timestamptz
@@ -32,7 +33,8 @@
 # PSQL VARIABLES the SQL reads
 #   hq_session  the desk session whose rule applies
 #   hq_default  everything or away: the rule when that session set none
-#   hq_tz       the desk's calendar (hq_desk_tz)
+#   hq_tz       the desk's calendar (hq_desk_tz): which plan is today's, and
+#               where a focus's clock time falls
 #   hq_times    candidate clock times, HH:MM, comma-separated
 
 hq_interrupt_rule_ok() {
@@ -62,7 +64,9 @@ hq_interrupt_rule_ok() {
 #                        again, because it started after the rule was set
 # then the plan's block, then the stored everything, then the default. The
 # plan belongs to no session: a desk registered later keeps the operator's
-# day.
+# day. Only today's plan holds, as `plan get` reads it (its `day` is today
+# on the store's clock in :'hq_tz'): a plan stored on another day holds
+# nothing, even a block of it that runs past midnight.
 #
 # A stored value that is not valid JSON, names another session, or holds an
 # unknown rule reads as no rule at all, never as an error: a tick must not
@@ -112,6 +116,7 @@ SELECT r.rule, r.until, r.rule IN ('away', 'focus') AS held, r.source
                   FROM state WHERE key = 'plan') ps,
                LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(ps.v) = 'object'
                                                       AND jsonb_typeof(ps.v->'blocks') = 'array'
+                                                      AND ps.v->>'day' = to_char(statement_timestamp() AT TIME ZONE :'hq_tz', 'YYYY-MM-DD')
                                                  THEN ps.v->'blocks' ELSE '[]'::jsonb END) e(b),
                LATERAL (SELECT CASE WHEN jsonb_typeof(e.b) = 'object'
                                          AND pg_input_is_valid(e.b->>'start', 'timestamptz')

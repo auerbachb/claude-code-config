@@ -188,6 +188,8 @@ P=$(propose 'I need to work on the PRD, 30 minutes a section, 4 sections')
 check "four sections: four blocks, a five-minute gap between" \
   "$(printf '%s' "$P" | jq -c '[.blocks[] | "\(.start_local)-\(.until_local) \(.label)"]')" \
   '["09:10-09:40 section 1 of 4","09:45-10:15 section 2 of 4","10:20-10:50 section 3 of 4","10:55-11:25 section 4 of 4"]'
+check "four sections all fit: nothing wanted beyond them" "$(printf '%s' "$P" | jq -c '.wanted')" "null"
+check_absent "four sections: no shortfall line" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" "asked for fit"
 P=$(propose 'I need to work on the PRD, 30 minutes a section, 4 sections' '.gap = 10')
 check "the gap is the desk's cadence" "$(printf '%s' "$P" | jq -r '.blocks[1].start_local')" "09:50"
 P=$(propose 'I need to work on the PRD until 11:30, 45 min a section')
@@ -197,9 +199,29 @@ P=$(propose 'I need to work on the PRD for 90 min')
 check "for 90 min, no pace: one block" \
   "$(printf '%s' "$P" | jq -c '[.blocks[] | "\(.start_local)-\(.until_local)"], .pace')" '["09:10-10:40"]
 "one block until 10:40"'
+INPUTS90=$(printf '%s' "$P" | jq -c '.inputs')
+# The same inputs (their end resolved) confirmed five minutes later.
+P=$(djq -c -n --argjson in "$INPUTS90" --slurpfile fc "$FIX/forecast.json" --slurpfile dec "$FIX/decisions.json" \
+      --slurpfile rev "$FIX/reviews.json" \
+      'include "desk"; {inputs: $in, forecast: ($fc[0] + {now: "2026-10-08T13:05:00Z"}), decisions: $dec[0],
+                       reviews: $rev[0].items, gap: 5, batch_min: 10} | desk_plan_propose')
+check "for 90 min, confirmed five minutes later: still 90 minutes" \
+  "$(printf '%s' "$P" | jq -c '[.blocks[] | "\(.start_local)-\(.until_local)"]')" '["09:15-10:45"]'
 P=$(propose 'I need to work on the PRD, 30 min a section, until 3')
 # 09:00 now: 03:00 has passed, so 15:00; ten 35-minute steps from 09:10.
 check "until 3: the sooner of 3:00 and 15:00" "$(printf '%s' "$P" | jq -c '[(.blocks | length), (.blocks | last | .until_local)]')" '[10,"14:55"]'
+# Tomorrow's showing of a time sits at tomorrow's offset.
+check "until 9am, asked the evening before the clocks fall back: 09:00 EST" \
+  "$(djq -n -r 'include "desk"; "9am" | plan_until_epoch("2026-11-01T00:00:00Z" | fromdateiso8601) | todate')" "2026-11-01T14:00:00Z"
+check "until 9am, asked the evening before the clocks spring forward: 09:00 EDT" \
+  "$(djq -n -r 'include "desk"; "9am" | plan_until_epoch("2026-03-08T02:00:00Z" | fromdateiso8601) | todate')" "2026-03-08T13:00:00Z"
+check "until 8am, the next morning on an ordinary day" \
+  "$(djq -n -r 'include "desk"; "8am" | plan_until_epoch("2026-10-08T13:00:00Z" | fromdateiso8601) | todate')" "2026-10-09T12:00:00Z"
+P=$(propose 'I need to work on the PRD, 30 min a section, 30 sections')
+check "30 sections: the first 24, and how many were asked for" \
+  "$(printf '%s' "$P" | jq -c '[(.blocks | length), .wanted, (.blocks | last | .label)]')" '[24,30,"section 24 of 24"]'
+check_contains "30 sections: the card says only 24 fit" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" \
+  "> Only 24 of the 30 asked for fit: at most 24 blocks, all within a day."
 P=$(propose 'I need to work on the PRD, 30 min a section, until 9:05')
 check "nothing fits before 9:05: a problem, no blocks" "$(printf '%s' "$P" | jq -c '[(.blocks | length), .problem]')" '[0,"no block fits before 09:05 ET"]'
 check_contains "the problem card" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" "**No plan for the PRD: no block fits before 09:05 ET.**"
@@ -244,6 +266,12 @@ check_contains "revise: stored, no yes needed" "$CARD" "Stored. Change it again 
 R=$(revise 'plan: 2 sections' 2026-10-08T14:00:00Z)
 check "revise with a count: that many still to do" \
   "$(printf '%s' "$R" | jq -c '[.blocks[] | .label]')" '["section 2 of 3","section 3 of 3"]'
+R=$(revise 'plan: 45 min a section' 2026-10-08T15:30:00Z)
+check "revise after every block is over: no block comes back, a problem says so" \
+  "$(printf '%s' "$R" | jq -c '[(.blocks | length), .problem]')" '[0,"every section planned is done; name how many more (`2 sections`)"]'
+R=$(revise 'plan: 2 sections' 2026-10-08T15:30:00Z)
+check "revise after every block is over, with a count: that many more" \
+  "$(printf '%s' "$R" | jq -c '[.blocks[] | .label]')" '["section 5 of 6","section 6 of 6"]'
 R=$(revise 'plan: until noon' 2026-10-08T13:05:00Z)
 check "revise before the first block: it keeps its start" \
   "$(printf '%s' "$R" | jq -c '[.blocks[0].start_local, (.blocks | last | .until_local), (.blocks | length)]')" '["09:10","12:00",5]'

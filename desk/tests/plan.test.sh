@@ -8,8 +8,9 @@
 # and drops it on exit; the number of tables in `public` is asserted
 # unchanged.
 #
-# Skips with a notice (exit 0) when HUMAN_QUEUE_DATABASE_URL is unset. With the
-# URL set, an unreachable database FAILS the suite.
+# Skips with a notice (exit 0) when HUMAN_QUEUE_DATABASE_URL is unset, or jq or
+# python3 is missing. With the URL set, an unreachable database FAILS the
+# suite.
 #
 # Asserts (issue #1784):
 #   5.1  the skill's desk-plan-propose block on "I need to work on the PRD, 30
@@ -37,6 +38,10 @@ hq_t_require_db "plan.test.sh"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP: plan.test.sh — jq is not installed (the desk skill needs it)"
+  exit 0
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "SKIP: plan.test.sh — python3 is not installed (desk-tick.sh needs it)"
   exit 0
 fi
 
@@ -285,9 +290,17 @@ hq interrupt get --session desk-1
 check "blocks with unreadable times hold nothing" "$RC:$OUT" "0:everything"
 plan_json "$(iso '-5 minutes')" "$(iso '20 minutes')" "$(iso '25 minutes')" "$(iso '55 minutes')" > "$TMP/plan.json"
 STDIN_FILE="$TMP/plan.json" hq plan set --session desk-1
+# No rule of the desk's own, so only the plan can hold.
+sql_in "DELETE FROM state WHERE key = 'interrupt'" >/dev/null
+hq interrupt get --session desk-1 --json
+check "today's plan: its block in force holds" "$RC:$(jqo '[.held, .source] | @json')" '0:[true,"plan"]'
 sql_in "UPDATE state SET value = jsonb_set(value::jsonb, '{day}', '\"2000-01-01\"')::text WHERE key = 'plan'" >/dev/null
 hq plan get
 check "another day's plan is not today's" "$RC:$OUT" "0:no plan for today"
+hq interrupt get --session desk-1 --json
+check "another day's plan holds nothing, even a block still in force" \
+  "$RC:$(jqo '[.rule, .held, .source] | @json')" '0:["everything",false,"default"]'
+hq interrupt set everything --session desk-1
 hq plan clear --session desk-1
 
 # plan set refuses, and stores nothing.

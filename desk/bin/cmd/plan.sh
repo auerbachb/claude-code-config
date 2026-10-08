@@ -53,7 +53,8 @@ WHAT A PLAN DOES
   is `focus until <the block's until>`, source plan (`interrupt --help`): new
   Decisions wait in the store and the first tick after the block shows them.
   The desk's own `away`, an unexpired focus, or `available` said during that
-  block take precedence.
+  block take precedence. Only today's plan holds: one stored on another day
+  holds nothing, even a block of it that runs past midnight.
 
 ACTIONS
   get       today's plan; a plan stored on another day is not today's
