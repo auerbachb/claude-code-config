@@ -257,6 +257,11 @@ Each reply is read, in order of precedence:
 | `Fixed in <sha>` anywhere outside a fenced code block (7–40 hex digits; backticks and a `commit` word tolerated) | `fixed` |
 | A follow-up link — `#N`, `owner/repo#N` for this repo, or an `/issues/N` URL | `deferred` |
 
+Fenced blocks are read as CommonMark reads them: a fence closes on a line of
+the same character (backtick or tilde) at least as long as its opener, and an
+unclosed fence runs to the end of the reply. Emphasis is up to three `*` or `_`
+characters (`***Declined***`, `_Won't fix_`).
+
 Per thread, the **latest marker** wins over everything; with no marker, the
 **latest reply whose wording matched** wins ("Fixed in…" then "Declined: on
 reflection…" is declined); with neither, the thread is `unanswered`.
@@ -291,7 +296,9 @@ than style drift.
 `reply-thread.sh` writes the marker: `--verdict <v> --defect real|not` (plus
 `--agent <name>`, default `claude-code`) appends it as its own line after the
 reviewer's @mention rules run; without the flags a reply is byte-identical to
-before. The `agent` field is recorded so a later study can split results by
+before. A reply that ends inside an open fenced block gets that fence closed
+first, so the marker never lands in code where the ledger would skip it. The
+`agent` field is recorded so a later study can split results by
 coding agent without a second collection pass; this increment does not
 aggregate by it.
 
@@ -313,8 +320,10 @@ its own is never timed from a later re-request. Triggers are non-bot PR
 conversation comments outside quoted lines: `@coderabbitai review` or `@coderabbitai
 full review` (CodeRabbit), `@cursor review` (BugBot), `@codeant-ai review`
 (CodeAnt), `@graphite-app re-review` (Graphite), any `@greptileai` mention
-(Greptile). Vercel has none. A response that cannot be timed (no timestamp, or
-nothing to start from) is left out of the median and counted in a note.
+(Greptile). Vercel has none. A PR the tool cannot be timed on is left out of the
+median and counted in a note: one where any of its responses has no timestamp
+(that response may have been the first, so a later dated one never stands in),
+or one with nothing to start from.
 
 Multi-repo totals are recomputed, never averaged: counts are summed, precision
 comes from the summed counts, the median pools every repo's response times, and

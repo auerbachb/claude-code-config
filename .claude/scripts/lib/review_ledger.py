@@ -569,16 +569,22 @@ DEFERRED_REFS_MODULE = "deferred-refs.jq"
 _MARKER_RE = re.compile(r"<!--[ \t]*review-verdict[ \t]*:([^\n]*?)-->", re.I)
 _AGENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Code is shown, not hidden: a marker quoted inside a fenced block or a code span
-# is an example of the syntax, not a verdict. An unterminated fence runs to the
-# end of the body, as CommonMark reads it. Code spans are matched within one
-# line, so an unmatched backtick never scans past its own line; a marker is
-# one line anyway.
-_FENCED_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}\1[ \t]*$|\Z)",
+# is an example of the syntax, not a verdict. A fence closes on a line of the
+# same character at least as long as its opener (CommonMark), so a ```` line
+# closes a ``` block but a ``` line never closes a ```` one. An unterminated
+# fence runs to the end of the body, as CommonMark reads it. Code spans are
+# matched within one line, so an unmatched backtick never scans past its own
+# line; a marker is one line anyway.
+_FENCED_RE = re.compile(r"^[ \t]{0,3}(?:(`{3,})|(~{3,}))[^\n]*\n.*?"
+                        r"(?:^[ \t]{0,3}(?(1)\1`*|\2~*)[ \t]*$|\Z)",
                         re.M | re.S)
 _CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]+?(?<!`)\1(?!`)")
+# Up to three emphasis characters may open the decline (`*`, `**`, `***`,
+# `_..._`, `**_..._**`), so the word boundary after it ignores an underscore:
+# `_Declined_` is emphasis, not an identifier.
 _DECLINED_RE = re.compile(
     r"\A\s*(?:<!--.*?-->\s*)*(?:@[A-Za-z0-9][A-Za-z0-9_-]*(?:\[bot\])?[\s,:]*)*"
-    r"(?:\*\*|__|\*|_)?(?:declined|not[ \t]+a[ \t]+defect|won['’]t[ \t]+fix)(?!\w)",
+    r"[*_]{0,3}(?:declined|not[ \t]+a[ \t]+defect|won['’]t[ \t]+fix)(?![^\W_])",
     re.I | re.S)
 _FIXED_RE = re.compile(
     r"(?<![\w-])fixed[ \t]+in[ \t]+(?:commit[ \t]+)?`?[0-9a-f]{7,40}`?(?!\w)", re.I)
@@ -800,6 +806,7 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
                 if rx.search(parsed[i]["stripped"]):
                     triggers[key].append(at)
         responded = {}
+        undated = set()   # tools with a response on this PR that carries no timestamp
         for field, ts_key in (("reviews", "submitted_at"), ("pr_comments", "created_at"),
                               ("issue_comments", "created_at")):
             for event in _as_list(pr.get(field)):
@@ -808,11 +815,16 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
                     continue
                 at = _parse_ts(event.get(ts_key))
                 responded.setdefault(key, [])
-                if at is not None:
+                if at is None:
+                    undated.add(key)
+                else:
                     responded[key].append(at)
         opened = _parse_ts(pr.get("created_at"))
         for key, times in responded.items():
-            if not times:
+            # An undated response may have been the first one, so the earliest
+            # DATED response is not known to be the first: time nothing on
+            # this PR for that tool rather than let a later one stand in.
+            if not times or key in undated:
                 untimed += 1
                 continue
             first = min(times)
@@ -832,9 +844,10 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
         notes.append("%d review thread(s) carried more than 100 comments; replies past the "
                      "100th were not read, so their verdicts may be understated." % truncated)
     if untimed:
-        notes.append("%d tool response(s) could not be timed (no timestamp on the response, "
-                     "or neither a PR open time nor a preceding trigger to start from); "
-                     "median_response_min leaves them out." % untimed)
+        notes.append("%d tool response(s) could not be timed (a response on the PR with no "
+                     "timestamp, so its first response is unknown, or neither a PR open time "
+                     "nor a preceding trigger to start from); median_response_min leaves "
+                     "them out." % untimed)
     return tallies, notes
 
 

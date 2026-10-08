@@ -735,6 +735,36 @@ check_contains "usage line lists the verdict flags" \
 check_contains "help shows the marker shape" \
   "<!-- review-verdict: X defect=Y agent=NAME -->" "$OUT"
 
+echo "== (34) a body ending inside an open fence is closed before the marker =="
+# An unclosed fence runs to the end of the comment, and the ledger ignores a
+# marker inside code, so without the closing line the verdict would be lost.
+run_and_capture 1234567 --reviewer bugbot --body $'Fixed in abc1234. Log:\n````text\nline one' --pr 1 \
+  --verdict fixed --defect real
+check_eq "exit 0" 0 "$RC"
+printf '%s\n%s\n%s' $'Fixed in abc1234. Log:\n````text\nline one' '````' \
+  '<!-- review-verdict: fixed defect=real agent=claude-code -->' > "$TMP/expected_open_fence"
+check_bytes "the open fence is closed with its own run, then the marker" "$TMP/expected_open_fence" "$TMP/posted_body"
+readback="$(python3 - "$REPO_ROOT/.claude/scripts/lib" "$TMP/posted_body" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
+PY
+)"
+check_eq "the ledger still reads the marker" \
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code'}" "$readback"
+
+echo "== (35) closed fences, quoted fences, and indented code add no closing line =="
+# cr, not a stripping reviewer: cr trims no leading whitespace, so the
+# indented-code case reaches the scan still indented.
+for body in $'Log:\n```\nline\n```\nDone.' $'Log:\n~~~\nline\n~~~~~' $'See:\n> ```\nquoted only' \
+            $'See:\n    ```\nindented code'; do
+  run_and_capture 1234567 --reviewer cr --body "$body" --pr 1 --verdict declined --defect not
+  printf '%s\n%s' "@coderabbitai $body" '<!-- review-verdict: declined defect=not agent=claude-code -->' \
+    > "$TMP/expected_closed"
+  check_bytes "no fence added for: $(printf '%q' "$body")" "$TMP/expected_closed" "$TMP/posted_body"
+done
+
 ############################################################################
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

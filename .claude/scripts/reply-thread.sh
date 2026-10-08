@@ -328,7 +328,40 @@ fi
 # empty-body check, so a marker never stands in for a reply. Without --verdict
 # this block never runs and BODY is exactly what it always was. The fallback
 # path below carries it too, behind its review-comment-id line.
+#
+# A body that ends inside an open fenced code block would swallow the marker
+# (an unclosed fence runs to the end of the comment, and the ledger ignores a
+# marker in code), so the open fence is closed first. The scan mirrors the
+# ledger's reading in lib/review_ledger.py: quoted lines are skipped; a fence
+# opens on 0-3 spaces then 3+ backticks or tildes, and closes on a line of the
+# same character at least as long, with nothing after it but blanks. It prints
+# the open fence's run, or nothing when every fence is closed. The awk program
+# lives in a plain variable, not inline in $( ): bash 3.2 mis-scans backticks
+# and quotes inside a command substitution.
 if [[ -n "$VERDICT" ]]; then
+  OPEN_FENCE_AWK='
+    /^[ \t]*>/ { next }
+    {
+      line = $0
+      if (open == "") {
+        if (match(line, /^[ \t]?[ \t]?[ \t]?(```+|~~~+)/)) {
+          run = substr(line, RSTART, RLENGTH)
+          sub(/^[ \t]*/, "", run)
+          open = run
+        }
+      } else if (line ~ /^[ \t]?[ \t]?[ \t]?(```+|~~~+)[ \t]*$/) {
+        run = line
+        sub(/^[ \t]*/, "", run)
+        sub(/[ \t]*$/, "", run)
+        if (substr(run, 1, 1) == substr(open, 1, 1) && length(run) >= length(open)) open = ""
+      }
+    }
+    END { print open }'
+  OPEN_FENCE=$(printf '%s\n' "$BODY" | awk "$OPEN_FENCE_AWK")
+  if [[ -n "$OPEN_FENCE" ]]; then
+    BODY="$BODY
+$OPEN_FENCE"
+  fi
   BODY="$BODY
 <!-- review-verdict: $VERDICT defect=$DEFECT agent=$AGENT -->"
 fi

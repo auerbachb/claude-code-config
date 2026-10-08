@@ -1769,6 +1769,15 @@ def verdict(body, repo="test/repo"):
     return L.classify_reply(p["stripped"], p["refs"])[0]
 def tally(**kw):
     t = L._empty_tally(); t.update(kw); return t
+def undated_response_is_not_skipped():
+    # An undated review plus a dated comment at +30m: the review may have been
+    # first, so the PR is untimed and noted, never timed at 30m.
+    prs = [{"created_at": "2025-10-02T00:00:00Z",
+            "reviews": [{"user": "coderabbitai[bot]", "state": "COMMENTED", "body": ""}],
+            "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2025-10-02T00:30:00Z", "body": "x"}]}]
+    t, notes = L.measure_value(prs, "test/repo", {"coderabbitai[bot]": "coderabbit"}, ["coderabbit"])
+    return (t["coderabbit"]["samples"] == [] and len(notes) == 1
+            and notes[0].startswith("1 tool response(s) could not be timed"))
 checks = [
     ("cost-null-zero-defects", L.cost_per_real_defect(D("6.00"), 0) is None),
     ("cost-null-null-spend", L.cost_per_real_defect(None, 3) is None),
@@ -1776,10 +1785,19 @@ checks = [
     ("cost-divides-in-cents", L.cost_per_real_defect(D("10.00"), 3) == D("3.33")),
     ("precision-null-when-only-unanswered", L.value_fields(tally(findings=2, unanswered=2), None)["precision"] is None),
     ("precision-excludes-unanswered", L.value_fields(tally(findings=5, valid=1, declined=1, unanswered=3), None)["precision"] == 0.5),
-    ("precision-rounds-half-up", L.value_fields(tally(findings=8, valid=1, declined=7), None)["precision"] == 0.125),
+    # 1/16 = 0.0625 exactly, a true tie at 3 decimals: half-up gives 0.063,
+    # banker's rounding (Python's round) and truncation give 0.062.
+    ("precision-rounds-half-up", L.value_fields(tally(findings=16, valid=1, declined=15), None)["precision"] == 0.063),
     ("cr-mention-then-decline", verdict("@coderabbitai Declined: matches the sibling pattern") == "declined"),
     ("curly-wont-fix", verdict("Won’t fix — by design") == "declined"),
     ("bold-not-a-defect", verdict("**Not a defect** — intended") == "declined"),
+    ("triple-emphasis-decline-beats-a-number", verdict("***Declined*** — same as #12") == "declined"),
+    ("underscore-emphasis-decline", verdict("_Declined_ — same as #12") == "declined"),
+    ("mixed-emphasis-decline", verdict("**_Won't fix_** — see #12") == "declined"),
+    ("decline-glued-to-a-word-is-not", verdict("Declinedness of #12") == "deferred"),
+    ("longer-closing-fence-closes", verdict("```\nlog\n`````\nFixed in abc1234") == "fixed"),
+    ("shorter-line-does-not-close-a-fence", verdict("````\n```\nFixed in abc1234") is None),
+    ("tilde-line-does-not-close-a-backtick-fence", verdict("```\n~~~\nFixed in abc1234") is None),
     ("decline-mid-sentence-is-not-a-decline", verdict("I declined to rename it") is None),
     ("fixed-backticks-and-commit", verdict("Fixed in commit `abc1234`.") == "fixed"),
     ("fixed-needs-a-sha", verdict("Fixed in the next PR") is None),
@@ -1798,8 +1816,10 @@ checks = [
     ("empty-marker-is-no-marker", L.parse_marker("   ") is None),
     ("fenced-marker-ignored", L.classify_reply("```\n<!-- review-verdict: fixed defect=real -->\n```\nok", [])[1] is None),
     ("unterminated-fence-marker-ignored", L.classify_reply("```\n<!-- review-verdict: fixed defect=real -->", [])[1] is None),
+    ("marker-after-a-longer-closing-fence-counts", L.classify_reply("~~~\nx\n~~~~~  \n<!-- review-verdict: fixed defect=real -->", [])[1]["verdict"] == "fixed"),
     ("later-marker-in-a-reply-wins", L.classify_reply("<!-- review-verdict: declined defect=not -->\n<!-- review-verdict: fixed defect=real -->", [])[1]["verdict"] == "fixed"),
     ("no-items-no-jq", L.parse_bodies([]) == []),
+    ("undated-response-is-not-skipped", undated_response_is_not_skipped()),
 ]
 try:
     L.parse_bodies([{"repo": "a/b", "body": "x"}], lib_dir=sys.argv[1] + "/no-such-dir")
