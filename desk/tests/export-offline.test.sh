@@ -282,6 +282,17 @@ check_contains "html: page numbers" "$HTML" 'counter(page) " of " counter(pages)
 check "css strings escape quotes and backslashes" \
   "$(jq -n -r -L "$SKILL_DIR" "$EXPORT_JQ_TEXT"'
 "a\"b\\c\nd" | ex_css_string')" '"a\"b\\c d"'
+# The rename and the pending record's clear run with INT, TERM, and HUP
+# ignored, both placements: a signal between them would undo a placed export.
+for placed in 'export.pdf" "$path"' 'export.md" "$mdpath"'; do
+  check "export.sh: placing $placed is one step against signals" \
+    "$(awk -v p="$placed" '
+         /trap .. INT TERM HUP$/ { guard = 1; seen = ""; next }
+         /trap - INT TERM HUP$/  { if (guard && seen == "place,clear") print "guarded"; guard = 0; next }
+         guard && index($0, "hq__export_place \"$HQ_EXPORT_WORK/" p) { seen = "place" }
+         guard && seen == "place" && /HQ_EXPORT_PENDING=""/ { seen = "place,clear" }
+       ' "$BIN/cmd/export.sh")" "guarded"
+done
 check_absent "export.sh never includes export.jq as a module (jq 1.8 aborts on it)" \
   "$(grep -v '^ *#' "$BIN/cmd/export.sh" "$BIN/lib/export.sh")" 'include "export"'
 # The renderings through hq_export_jq itself, and through every other jq this

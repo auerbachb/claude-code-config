@@ -508,15 +508,23 @@ cmd_run() {
     if hq_export_pdf renderer "$HQ_EXPORT_WORK/export.md" "$HQ_EXPORT_WORK/export.txt" \
          "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK"; then
       format=pdf
+      # The rename and the pending record's clear are one step: a signal in
+      # between would undo an export whose file is in place, so INT, TERM,
+      # and HUP are ignored for it (a signal then is dropped and the export
+      # completes); the default handling, EXIT trap included, comes back after.
+      trap '' INT TERM HUP
       hq__export_place "$HQ_EXPORT_WORK/export.pdf" "$path" \
         || hq__export_fail "$data" "write the PDF"
       HQ_EXPORT_PENDING=""
+      trap - INT TERM HUP
     else
       format=markdown
       mdpath="${path%.*}.md"
+      trap '' INT TERM HUP
       hq__export_place "$HQ_EXPORT_WORK/export.md" "$mdpath" \
         || hq__export_fail "$data" "write the Markdown"
       HQ_EXPORT_PENDING=""
+      trap - INT TERM HUP
       warn="no PDF renderer produced a PDF ($HQ_EXPORT_TRIED); wrote the Markdown instead: $mdpath"
       path="$mdpath"
       printf 'human-queue: export: %s\n' "$warn" >&2
