@@ -83,7 +83,7 @@ if [ "$rc" -ne 0 ]; then echo "exit=$rc"; else
 fi
 ```
 
-`exit=0` → print the header lines, then each node: its `=== 2.3 …` line as plain text, then the rest in a ```` ```diff ```` fence exactly as printed. A hunk comes widened to twenty lines of context on each side as one hunk with its own `@@` line, stopping early at a neighbouring hunk (`(context above stops at hunk 2.2)`, so a line from 2.2 never shows as plain context) or at the file's edge. `(more context unavailable: …)` means the hunk is shown as GitHub gave it; say why in one line after the fence. A file node is its whole diff, a `[2.1]` line before each hunk. Then the hint line: `ask R-2: <question> · outline R-2`.
+`exit=0` → print the header lines, then each node: its `=== 2.3 …` line as plain text, then the rest in a ```` ```diff ```` fence exactly as printed. A hunk comes widened to twenty lines of context on each side as one hunk with its own `@@` line, stopping early at a neighbouring hunk (`(context above stops at hunk 2.2)`, so a line from 2.2 never shows as plain context) or at the file's edge. `(more context unavailable: …)` means the hunk is shown as GitHub gave it; say why in one line after the fence. A file node is its whole diff, a `[2.1]` line before each hunk. When this conversation already showed R-2's outline and the `head` on the `===` lines is a different SHA, the PR was pushed to since and its numbers may now point elsewhere: say so in one line before the nodes (`R-2 moved to head <sha> since its outline: "outline R-2" renumbers it.`). Then the hint line: `ask R-2: <question> · outline R-2`.
 
 ## `ask R-<n>: <question>`
 
@@ -92,13 +92,14 @@ An answer from the PR itself, loading only the parts the question needs. The out
 1. **Outline.** Run the `outline` block (`desk-outline`) for R-<n>. Its exits are the rules above: an issue, an unknown Review, or GitHub failing ends the `ask` with that one line.
 2. **Choose the nodes.** From the outline's paths, hunk headings, line counts, and test names, pick the hunks the question is about: usually two to six. Prefer hunks to whole files; open a whole file only when the question is about the file as a whole. A question about testing reads the `T` nodes.
 3. **Open them in one call**: the `open` block (`desk-open-node`) with every chosen id on its last line.
-4. **Answer from what was read.** Plainly and briefly, citing node ids where they carry the point (`2.3 keeps both facts because …`). If what was read does not settle it, open more nodes (step 3 again) or say exactly what is missing; never fill a gap from memory of the codebase or a guess, and never call it settled when the hunks do not show it.
-5. **End with the `Read:` line**, every node opened for this answer in the order opened, and the head SHA from their `===` lines:
+4. **Check the head.** Every `===` line's `head` must be the outline's `head`. If one differs, the PR was pushed to between the two calls and the ids may now name other hunks: discard what was opened, run the outline again (step 1), choose again (step 2), and open again (step 3). Never answer from, or name on the `Read:` line, a node read under another head. If the head moves again, say the PR is being pushed to right now and stop.
+5. **Answer from what was read.** Plainly and briefly, citing node ids where they carry the point (`2.3 keeps both facts because …`). If what was read does not settle it, open more nodes (steps 3 and 4 again) or say exactly what is missing; never fill a gap from memory of the codebase or a guess, and never call it settled when the hunks do not show it.
+6. **End with the `Read:` line**, every node opened for this answer in the order opened, and the head SHA from their `===` lines (the outline's, after step 4):
 
    ```text
    Read: 2.3, 2.4, T1.1 · head 5a5e505
    ```
 
-   An answer without this line is incomplete. A follow-up question about the same R-number may reuse what is already open in this conversation; its `Read:` line names the nodes that answer used, opened now or earlier.
+   An answer without this line is incomplete. A follow-up question about the same R-number may reuse what is already open in this conversation while every node it names carries the same head; its `Read:` line names the nodes that answer used, opened now or earlier.
 
 Load the whole diff (`diff R-<n>`) only when the operator asks for it.

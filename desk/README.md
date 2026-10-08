@@ -1067,7 +1067,7 @@ rebuilds the outline from GitHub.
 |--------------------|---------------|
 | `outline R-<n>` | `get R-<n> --json`, then `bin/pr-outline.sh OWNER/REPO pr-N` |
 | `open R-<n> <node>…` | the same, with the nodes (`2`, `2.3`, `T1`, `T1.2`) after the key; `open R-<n>` alone stays level 2 |
-| `ask R-<n>: <question>` | the outline, then one `open` of the nodes the question needs; the answer ends `Read: 2.3, T1.1 · head <sha>` |
+| `ask R-<n>: <question>` | the outline, then one `open` of the nodes the question needs (every node's head checked against the outline's; a push in between means outline and open again); the answer ends `Read: 2.3, T1.1 · head <sha>` |
 
 - **`bin/pr-outline.sh OWNER/REPO N [NODE...]`** is read-only. Without
   nodes it prints the outline: the files that are not tests numbered `1, 2,

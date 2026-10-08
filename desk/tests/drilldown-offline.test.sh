@@ -36,7 +36,8 @@
 #            blocks extract, parse, write nothing, and, run against a stub
 #            CLI under bash and zsh, print the header and the outline or
 #            the node, `kind=issue` for an issue, and the store's exit;
-#            `ask` requires the Read: line naming the nodes and the head;
+#            `ask` requires the Read: line naming the nodes and the head,
+#            after checking every opened node's head against the outline's;
 #            its id check is the helper's own node pattern.
 #   The answer `ask` writes is model behaviour: the PR records a live run.
 #
@@ -389,6 +390,9 @@ no `summary set`, no `comment`, no `flag`, no `review`, no `state set`, and no f
 The question in `ask` never goes into a command
 `kind=issue` → `R-2 is an issue: it has no diff.
 **End with the `Read:` line**
+**Check the head.** Every `===` line's `head` must be the outline's `head`.
+Never answer from, or name on the `Read:` line, a node read under another head.
+R-2 moved to head <sha> since its outline
 Read: 2.3, 2.4, T1.1 · head 5a5e505
 An answer without this line is incomplete.
 never fill a gap from memory of the codebase or a guess
