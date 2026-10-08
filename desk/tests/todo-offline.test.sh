@@ -17,14 +17,17 @@
 #     range; priorities outside 1 to 5; `my` without `list`, a bad --tag
 #   - a secret-shaped note exits 5 and is never echoed
 #   - valid calls reach the database step (exit 7 with the URL unset): every
-#     WHEN and DURATION shape the help documents
+#     WHEN and DURATION shape the help documents; a note after `--` that reads
+#     as an option (--clear, --json, --help) is a note, and `--` misplaced or
+#     followed by more than one argument exits 4
 #   - snooze's WHEN parser, called directly: which day, which clock times
 #     (a 12-hour time without a day has two readings, with a day one, on the
 #     24-hour clock), ISO kept as given, durations in minutes
 #   - desk.jq's todo_line on fixtures, and sweep_lines' nested line (the
 #     paper copy, AC 4.3) only for an item that carries the fields
 #   - the skill: todo.md's anchored blocks extract and parse, the note goes
-#     through a quoted here-document, and SKILL.md routes the verbs to it
+#     through a quoted here-document and after `--`, a note holding the
+#     delimiter gets another one, and SKILL.md routes the verbs to it
 #
 # Every case runs under `bash` on PATH and, when /bin/bash is 3.x (macOS),
 # under /bin/bash too. Token-shaped values are assembled at run time so this
@@ -168,6 +171,18 @@ for SH in $SHELLS; do
   expect_db "$SH" "note: a note that starts with a dash" note D-1 "-- see above"
   expect_db "$SH" "note: 1000 characters" note D-1 "$(repeat a 1000)"
   expect_db "$SH" "note --clear" note D-1 --clear --json
+  # After `--` the note is word for word: one that reads as an option is a note.
+  expect_db "$SH" "note -- --clear (a note, not the option)" note D-1 --json -- --clear
+  expect_db "$SH" "note -- --json (a note, not the option)" note D-1 -- --json
+  expect_db "$SH" "note -- --help (a note, not help)" note D-1 -- --help
+  expect_db "$SH" "note -- with an ordinary note" note D-1 --json -- "ask Sam first"
+  expect_rc "$SH" 4 "note: -- with no note" "note: missing note" note D-1 --
+  expect_rc "$SH" 4 "note: -- with two notes" "note: -- takes exactly one note after it" note D-1 -- a b
+  expect_rc "$SH" 4 "note: an option after the note" "note: -- takes exactly one note after it" note D-1 -- a --json
+  expect_rc "$SH" 4 "note: -- before the id" "note: -- goes after the item id" note -- D-1 x
+  expect_rc "$SH" 4 "note: -- after a note" "note: -- goes after the item id" note D-1 x --
+  expect_rc "$SH" 4 "note: --clear and a note after --" "give a note or --clear, not both" note D-1 --clear -- x
+  expect_rc "$SH" 4 "note: a two-line note after --" "note: the note must be a single line" note D-1 -- "$(printf 'one\nDESK_NOTE')"
 
   # --- snooze / unsnooze ------------------------------------------------------------
   expect_rc "$SH" 4 "snooze: no when" "say when" snooze D-1
@@ -278,7 +293,11 @@ for a in desk-todo-write desk-todo-note desk-todo-list; do
 done
 check_contains "todo.md: the note goes through a quoted here-document" "$(cat "$TMP/desk-todo-note.sh")" "<<'DESK_NOTE'"
 check_contains "todo.md: the note never sits inside the command's quotes" "$(cat "$TMP/desk-todo-note.sh")" '"$(cat "$NOTE_FILE")"'
+check_contains "todo.md: the note comes after --, so it is never read as an option" "$(cat "$TMP/desk-todo-note.sh")" \
+  '--json -- "$(cat "$NOTE_FILE")"'
 TODO=$(cat "$SKILL_DIR/todo.md")
+check_contains "todo.md: a note holding the delimiter gets another one" "$TODO" \
+  'If it contains a line that is exactly `DESK_NOTE`, pick another delimiter for both lines.'
 check_contains "todo.md: keeps itself apart from /pm's priorities" "$TODO" "**Not \`/pm\`'s priorities.**"
 check_contains "todo.md: my list is unnumbered on purpose" "$TODO" "unnumbered on purpose"
 SKILL=$(cat "$SKILL_DIR/SKILL.md")

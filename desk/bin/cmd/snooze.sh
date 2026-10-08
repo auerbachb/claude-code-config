@@ -124,11 +124,17 @@ cmd_run() {
       ;;
   esac
 
+  # The limit is elapsed time, not calendar days: 24-hour days as hours, so a
+  # daylight-saving change in the session's time zone moves it by no hour.
+  # It is rounded up to the whole minute exactly as a duration is, so
+  # `for 366d` (the most a duration allows) is never refused for its rounding.
   sql=$(hq_sql_todo_write snoozed_until \
     "$(hq_sql_todo_when)" \
     "CASE WHEN nxt.v IS NULL THEN 'the snooze time could not be worked out'
           WHEN nxt.v <= statement_timestamp() THEN 'the snooze time is in the past'
-          WHEN nxt.v > statement_timestamp() + interval '$HQ_TODO_SNOOZE_DAYS days'
+          WHEN nxt.v > date_trunc('minute', statement_timestamp()
+                                            + make_interval(hours => 24 * $HQ_TODO_SNOOZE_DAYS)
+                                            - interval '1 microsecond') + interval '1 minute'
             THEN 'the snooze time is more than $HQ_TODO_SNOOZE_DAYS days ahead' END" \
     snoozed \
     "'until ' || to_char(u.snoozed_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')" \

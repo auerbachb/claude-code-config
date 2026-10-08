@@ -19,12 +19,15 @@ human-queue.sh note — set or clear the operator's own note on an item (issue #
 
 USAGE
   human-queue.sh note ID TEXT [--json]
+  human-queue.sh note ID [--json] -- TEXT
   human-queue.sh note ID --clear [--json]
 
 ARGUMENTS
   ID       any item id, for example D-43 or R-88 (d-43 is accepted)
   TEXT     the note: one line, <= 1000 characters. Quote it. It replaces
            any note the item had.
+  --       the argument after it is the note, word for word, even one that
+           reads as an option (`-- --clear` stores the note "--clear")
   --clear  remove the note
   --json   print the item's to-do fields after the call, as `tag --json`
            does; changed is false when nothing changed
@@ -54,9 +57,10 @@ EOF
 }
 
 cmd_run() {
-  local id="" raw="" text="" n=0 json=0 clear=0 sql="" a
+  local id="" raw="" text="" n=0 json=0 clear=0 verbatim=0 sql="" a
   for a in "$@"; do
     case "$a" in
+      --) break ;;
       -h|--help)
         cmd_usage
         exit 0
@@ -64,7 +68,20 @@ cmd_run() {
     esac
   done
   for a in "$@"; do
+    # After `--`, the next argument is the note word for word: a note that
+    # reads "--clear" or "--json" is stored, not taken as the option.
+    case "$verbatim" in
+      1)
+        text="$a"
+        n=2
+        verbatim=2
+        continue
+        ;;
+      2) hq_die_validation "note: -- takes exactly one note after it (options go before it)" ;;
+    esac
     case "$n:$a" in
+      1:--) verbatim=1 ;;
+      *:--) hq_die_validation "note: -- goes after the item id, before the note" ;;
       *:--json) json=1 ;;
       *:--clear) clear=1 ;;
       0:-*) hq_die_validation "note: unknown $(hq_flag_name "$a") (run human-queue.sh note --help)" ;;

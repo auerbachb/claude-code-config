@@ -176,7 +176,10 @@ check "tag D5 (a tag alone does not put an item on the list)" "$RC" "0"
 
 check "5.1 my list: priority first, unset last, then oldest first" "$(my_ids)" "$D3,$D4,$D1,$R1"
 
-UNTIL=$(sql_in "SELECT to_char((statement_timestamp() + interval '3 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+# Far enough ahead that the six store round trips before the block runs (each
+# a fresh connection to a remote database, slower on a loaded machine) finish
+# while it is still snoozed: at 3 seconds the block saw it already back.
+UNTIL=$(sql_in "SELECT to_char((statement_timestamp() + interval '20 seconds') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 hq snooze "$D1" until "$UNTIL" --json
 check "5.1 snooze until a time just ahead" "$RC:$(jqo '.changed')" "0:true"
 check "5.1 snooze: one snoozed event, note the time" "$(events "$D1" snoozed):$(last_note "$D1" snoozed)" "1:until $UNTIL"
@@ -186,9 +189,9 @@ check "5.1 ... and counts it, with when it is back" "$(jqo '[.count, .snoozed, .
 OUT=$(run_block "$TMP/block-desk-todo-list.sh")
 check_contains "5.1 desk-todo-list: the header counts the snooze" "$(printf '%s\n' "$OUT" | sed -n 1p)" "My list · 3 items · 1 snoozed (next back "
 check_absent "5.1 desk-todo-list: the snoozed item is not listed" "$OUT" "$D1 ·"
-# Wait for the store's clock to pass the snooze (at most 10 seconds).
+# Wait for the store's clock to pass the snooze (at most 30 seconds).
 n=0
-while [ "$n" -lt 20 ] && [ "$(sql_in "SELECT statement_timestamp() > '$UNTIL'::timestamptz")" != "t" ]; do
+while [ "$n" -lt 60 ] &&[ "$(sql_in "SELECT statement_timestamp() > '$UNTIL'::timestamptz")" != "t" ]; do
   sleep 0.5
   n=$((n + 1))
 done
@@ -309,6 +312,16 @@ check "a time in the past is refused" "$RC:$ERR" "4:human-queue: snooze: the sno
 hq snooze "$D5" until "$(sql_in "SELECT to_char(current_date + 400, 'YYYY-MM-DD')")"
 check "more than 366 days ahead is refused" "$RC" "4"
 check_contains "... naming the limit" "$ERR" "more than 366 days ahead"
+# The longest duration is rounded up to the whole minute like any other; the
+# limit is rounded the same way, so that never pushes it past the limit.
+hq snooze "$D5" for 366d
+check "for 366d, the longest duration, is accepted" "$RC:$ERR" "0:"
+check "... a whole minute, 366 days of 24 hours ahead" \
+  "$(sql_in "SELECT snoozed_until = date_trunc('minute', snoozed_until)
+                AND snoozed_until - statement_timestamp() BETWEEN interval '8783 hours 59 minutes' AND interval '8784 hours 1 minute'
+               FROM items WHERE id = '$D5'")" "t"
+hq snooze "$D5" until "$(sql_in "SELECT to_char((statement_timestamp() + interval '8784 hours 2 minutes') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")"
+check "a time a minute past the limit is refused" "$RC" "4"
 
 # ---------------------------------------------------------------- tick
 hq tick

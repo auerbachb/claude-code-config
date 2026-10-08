@@ -12,7 +12,7 @@ The operator organizes the queue their own way: tags, a note, a personal priorit
 |---|---|
 | `tag D-43 prd [urgent …]` | `tag D-43 prd urgent --json`: adds tags (lowercase words joined by hyphens, a letter in each; `#PRD` is `prd`) |
 | `untag D-43 prd […]` | `untag D-43 prd --json` |
-| `note D-43 <text>` | `note D-43 <text> --json`: sets the note (one line, at most 1000 characters), replacing any note |
+| `note D-43 <text>` | `note D-43 --json -- <text>`: sets the note (one line, at most 1000 characters), replacing any note |
 | `unnote D-43` | `note D-43 --clear --json` |
 | `snooze D-43 until <when>` | `snooze D-43 until <when> --json`: `tomorrow`, `friday`, `2026-10-12`, `15:30`, `3pm`, `friday 9am`, `tomorrow 14:30`, or an ISO time |
 | `snooze D-43 for <duration>` | `snooze D-43 for <duration> --json`: `30m`, `2h`, `3 days`, `1w` |
@@ -48,8 +48,10 @@ NOTE_FILE=$(mktemp "${TMPDIR:-/tmp}/desk-todo-note.XXXXXX")
 cat > "$NOTE_FILE" <<'DESK_NOTE'
 <the note, verbatim, without its surrounding quotes>
 DESK_NOTE
-"$HQ" note D-43 "$(cat "$NOTE_FILE")" --json; rc=$?; rm -f "$NOTE_FILE"; echo "exit=$rc"
+"$HQ" note D-43 --json -- "$(cat "$NOTE_FILE")"; rc=$?; rm -f "$NOTE_FILE"; echo "exit=$rc"
 ```
+
+The note goes between the two delimiter lines exactly as typed, with nothing escaped. If it contains a line that is exactly `DESK_NOTE`, pick another delimiter for both lines. The `--` keeps a note that reads like an option (`--clear`) a note.
 
 `exit=0` prints the item's to-do fields as JSON (`my_priority`, `my_tags`, `my_note`, `snoozed_until_local`, and `changed`). Answer in one line, from it:
 
