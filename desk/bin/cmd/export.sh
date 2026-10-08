@@ -290,6 +290,25 @@ $tmp"
   mv -f "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
+# hq__export_settle SRC DEST — places SRC at DEST (hq__export_place) and, in
+# the same step, clears the pending record: a signal between the rename and
+# the clear would undo an export whose file is in place, so INT, TERM, and
+# HUP are ignored for these two only (a signal then is dropped and the export
+# completes). The default handling, EXIT trap included, is back before this
+# returns, either way: a failed place returns 1 with the record still
+# pending, and hq__export_fail's undo then runs its psql with the connect
+# watchdog's TERM in force.
+hq__export_settle() {
+  trap '' INT TERM HUP
+  if hq__export_place "$1" "$2"; then
+    HQ_EXPORT_PENDING=""
+    trap - INT TERM HUP
+    return 0
+  fi
+  trap - INT TERM HUP
+  return 1
+}
+
 # hq__export_undo DATA — the export was recorded (DATA: the store's JSON) but
 # its file could not be written: one more transaction removes what the first
 # recorded: the events it inserted (its `exported` events and, when it opened
@@ -508,23 +527,13 @@ cmd_run() {
     if hq_export_pdf renderer "$HQ_EXPORT_WORK/export.md" "$HQ_EXPORT_WORK/export.txt" \
          "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK"; then
       format=pdf
-      # The rename and the pending record's clear are one step: a signal in
-      # between would undo an export whose file is in place, so INT, TERM,
-      # and HUP are ignored for it (a signal then is dropped and the export
-      # completes); the default handling, EXIT trap included, comes back after.
-      trap '' INT TERM HUP
-      hq__export_place "$HQ_EXPORT_WORK/export.pdf" "$path" \
+      hq__export_settle "$HQ_EXPORT_WORK/export.pdf" "$path" \
         || hq__export_fail "$data" "write the PDF"
-      HQ_EXPORT_PENDING=""
-      trap - INT TERM HUP
     else
       format=markdown
       mdpath="${path%.*}.md"
-      trap '' INT TERM HUP
-      hq__export_place "$HQ_EXPORT_WORK/export.md" "$mdpath" \
+      hq__export_settle "$HQ_EXPORT_WORK/export.md" "$mdpath" \
         || hq__export_fail "$data" "write the Markdown"
-      HQ_EXPORT_PENDING=""
-      trap - INT TERM HUP
       warn="no PDF renderer produced a PDF ($HQ_EXPORT_TRIED); wrote the Markdown instead: $mdpath"
       path="$mdpath"
       printf 'human-queue: export: %s\n' "$warn" >&2

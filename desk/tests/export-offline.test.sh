@@ -283,16 +283,17 @@ check "css strings escape quotes and backslashes" \
   "$(jq -n -r -L "$SKILL_DIR" "$EXPORT_JQ_TEXT"'
 "a\"b\\c\nd" | ex_css_string')" '"a\"b\\c d"'
 # The rename and the pending record's clear run with INT, TERM, and HUP
-# ignored, both placements: a signal between them would undo a placed export.
-for placed in 'export.pdf" "$path"' 'export.md" "$mdpath"'; do
-  check "export.sh: placing $placed is one step against signals" \
-    "$(awk -v p="$placed" '
-         /trap .. INT TERM HUP$/ { guard = 1; seen = ""; next }
-         /trap - INT TERM HUP$/  { if (guard && seen == "place,clear") print "guarded"; guard = 0; next }
-         guard && index($0, "hq__export_place \"$HQ_EXPORT_WORK/" p) { seen = "place" }
-         guard && seen == "place" && /HQ_EXPORT_PENDING=""/ { seen = "place,clear" }
-       ' "$BIN/cmd/export.sh")" "guarded"
-done
+# ignored (a signal between them would undo a placed export), and nothing
+# else does: a failed place restores them before hq__export_fail, whose undo
+# needs the connect watchdog's TERM to reach psql.
+SETTLE=$(sed -n '/^hq__export_settle() {/,/^}/p' "$BIN/cmd/export.sh")
+check "export.sh: hq__export_settle ignores signals, places, clears, restores" \
+  "$(printf '%s\n' "$SETTLE" | grep -oE "trap '' INT TERM HUP|hq__export_place|HQ_EXPORT_PENDING=\"\"|trap - INT TERM HUP" | tr '\n' ' ')" \
+  "trap '' INT TERM HUP hq__export_place HQ_EXPORT_PENDING=\"\" trap - INT TERM HUP trap - INT TERM HUP "
+check "export.sh: both placements go through hq__export_settle" \
+  "$(grep -cE '^ +hq__export_settle "\$HQ_EXPORT_WORK/export\.(pdf|md)"' "$BIN/cmd/export.sh")" "2"
+check "export.sh: no failure path runs with the signals ignored" \
+  "$(awk "/trap '' INT TERM HUP/ { g = 1; next } /trap - INT TERM HUP/ { g = 0; next } g && /hq__export_fail|hq_die|hq__export_undo/ { print }" "$BIN/cmd/export.sh")" ""
 check_absent "export.sh never includes export.jq as a module (jq 1.8 aborts on it)" \
   "$(grep -v '^ *#' "$BIN/cmd/export.sh" "$BIN/lib/export.sh")" 'include "export"'
 # The renderings through hq_export_jq itself, and through every other jq this
