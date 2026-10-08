@@ -547,9 +547,10 @@ def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
 #    now, forecast, batch {decisions, reviews, ids, minutes}, later [ids],
 #    revision, pace, kept (a revision's stored blocks already over: [] for a
 #    new plan), blocks [{item, label, pace, start, until, start_local,
-#    until_local}] (the blocks to come), wanted (null, or how many blocks
-#    were asked for when fewer fit: at most 24 in all, within a day),
-#    problem (null, or why no block fits)}
+#    until_local}] (the blocks to come), wanted and shortfall (null, or how
+#    many blocks were asked for when fewer fit, and the card's line saying
+#    why: the 24 cap, the extent's end, or the day), problem (null, or why
+#    no block fits)}
 # A new plan clears a batch first: the parked menu-shaped Decisions, then the
 # other menu-shaped ones and then Reviews while they fit in batch_min (a
 # Decision at its declared minutes, else 2; a Review at 2). Long-form
@@ -599,11 +600,14 @@ def desk_plan_propose:
   | (if $in.item == null then ["item"]
      elif $in.pace_min == null and $in.until == null and $in.for_min == null and $in.end == null then ["pace"]
      else [] end) as $missing
-  | (if $in.for_min != null and $in.until == null and $st == null then $start + $in.for_min * 60
-     elif $in.end != null then ($in.end | plan_epoch)
-     elif $in.until != null then ($in.until | plan_until_epoch($now))
-     elif $in.for_min != null then $start + $in.for_min * 60
-     else null end) as $end
+  # A plan runs at most a day ahead (plan set refuses more): a time tomorrow
+  # can be 25 hours on across the night the clocks fall back.
+  | ((if $in.for_min != null and $in.until == null and $st == null then $start + $in.for_min * 60
+      elif $in.end != null then ($in.end | plan_epoch)
+      elif $in.until != null then ($in.until | plan_until_epoch($now))
+      elif $in.for_min != null then $start + $in.for_min * 60
+      else null end)
+     | if . == null then null else [., $now + 86400] | min end) as $end
   | $in.pace_min as $p
   | (if $missing != [] or $p == null then null
      elif $in.count != null then
@@ -623,6 +627,11 @@ def desk_plan_propose:
          | select(.u > .s and .u <= $now + 86400) ]
      end) as $spans
   | ($spans | length) as $n
+  # Fewer blocks than asked for: the 24 cap, the extent's end, or the day.
+  | (if $want == null or $n == 0 or $want <= $n then null
+     elif $n == ([$want, $room] | min) then "Only \($n) of the \($want) asked for fit: at most 24 blocks in a plan."
+     elif $end != null then "Only \($n) of the \($want) asked for fit before \($end | plan_hm) ET."
+     else "Only \($n) of the \($want) asked for fit within a day." end) as $short
   | ($batch.first + $n - 1) as $total
   | (plan_pace_text($p; $in.chunk) // (if $end != null then "one block until \($end | plan_hm)" else null end)) as $pace
   | { inputs: ($in + {end: (if $end != null then ($end | plan_iso) else null end)} | del(.count_given)),
@@ -642,7 +651,8 @@ def desk_plan_propose:
                     pace: $pace,
                     start: (.value.s | plan_iso), until: (.value.u | plan_iso),
                     start_local: (.value.s | plan_hm), until_local: (.value.u | plan_hm) } ],
-      wanted: (if $want != null and $n > 0 and $want > $n then $want else null end),
+      wanted: (if $short != null then $want else null end),
+      shortfall: $short,
       problem: (if $missing == [] and $n == 0
                 then (if $want == 0 then "every \($in.chunk // "block") planned is done; name how many more (`2 \($in.chunk // "block")s`)"
                       elif $end != null then "no block fits before \($end | plan_hm) ET"
@@ -702,8 +712,7 @@ def plan_card:
                         + " · everything held."),
            "Then what was held" + (if (.later | length) > 0 then ", and later: \(.later | join(", "))." else "." end) ]
          | to_entries | map("\(.key + 1). \(.value)") )
-     + (if .wanted != null then [ "Only \(.blocks | length) of the \(.wanted) asked for fit: at most 24 blocks, all within a day." ]
-        else [] end)
+     + (if .shortfall != null then [ .shortfall ] else [] end)
      | quote)
     + "\n\n"
     + (if .revision then "Stored. Change it again in one sentence; `plan?` shows it, `plan off` drops it."

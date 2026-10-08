@@ -220,8 +220,20 @@ check "until 8am, the next morning on an ordinary day" \
 P=$(propose 'I need to work on the PRD, 30 min a section, 30 sections')
 check "30 sections: the first 24, and how many were asked for" \
   "$(printf '%s' "$P" | jq -c '[(.blocks | length), .wanted, (.blocks | last | .label)]')" '[24,30,"section 24 of 24"]'
-check_contains "30 sections: the card says only 24 fit" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" \
-  "> Only 24 of the 30 asked for fit: at most 24 blocks, all within a day."
+check_contains "30 sections: the card says only 24 fit, and why" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" \
+  "> Only 24 of the 30 asked for fit: at most 24 blocks in a plan."
+P=$(propose 'I need to work on the PRD, 30 min a section, 4 sections until 10:30')
+check "4 sections until 10:30: the shortfall names the time box" \
+  "$(printf '%s' "$P" | jq -c '[(.blocks | length), .wanted, .shortfall]')" '[3,4,"Only 3 of the 4 asked for fit before 10:30 ET."]'
+P=$(propose 'I need to work on the PRD, 60 min a section, 24 sections')
+check "24 hour-long sections: the shortfall names the day" \
+  "$(printf '%s' "$P" | jq -c '[(.blocks | length), .shortfall]')" '[22,"Only 22 of the 24 asked for fit within a day."]'
+# Saturday 09:30 EDT before the clocks fall back: 9:15 tomorrow is 24 h 45 min
+# on, past what plan set takes, so the block ends a day from now.
+P=$(propose 'I need to work on the deck until 9:15am' '.forecast.now = "2026-10-31T13:30:00Z"')
+check "until 9:15am across the fall-back night: the block ends a day from now" \
+  "$(printf '%s' "$P" | jq -c '[(.blocks | length), .blocks[0].until, .inputs.end]')" \
+  '[1,"2026-11-01T13:30:00Z","2026-11-01T13:30:00Z"]'
 P=$(propose 'I need to work on the PRD, 30 min a section, until 9:05')
 check "nothing fits before 9:05: a problem, no blocks" "$(printf '%s' "$P" | jq -c '[(.blocks | length), .problem]')" '[0,"no block fits before 09:05 ET"]'
 check_contains "the problem card" "$(printf '%s' "$P" | djq -r 'include "desk"; plan_card')" "**No plan for the PRD: no block fits before 09:05 ET.**"
