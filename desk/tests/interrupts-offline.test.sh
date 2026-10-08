@@ -122,6 +122,10 @@ policy "$TMP/wide.json"
 check "a longer cadence under a longer live bound" "$(printf '%s' "$OUT" | jq -c '[.tick_cadence_min, .live_desk_max_tick_age_min, .eod_time]')" '[20,30,"09:05"]'
 
 bad_policy "not JSON" '{"set_size": 2' "not valid JSON"
+# Nested past Python's recursion limit: json.load raises RecursionError, not
+# ValueError, and it must still be the defaults with one warning.
+DEEP=$(python3 -c 'print("[" * 100000 + "]" * 100000)')
+bad_policy "nested 100,000 deep" "$DEEP" "not valid JSON"
 bad_policy "an array" '[1, 2]' "not a JSON object"
 bad_policy "a string" '"everything"' "not a JSON object"
 bad_policy "tick_cadence_min 0" '{"tick_cadence_min": 0}' "tick_cadence_min must be"
@@ -329,7 +333,7 @@ expect_rc() {
 expect_db() {
   local sh="$1" label="$2" rc=0
   shift 2
-  env -u HUMAN_QUEUE_DATABASE_URL "$sh" "$HQ_T_CLI" "$@" >/dev/null 2>"$TMP/err" </dev/null || rc=$?
+  env -u HUMAN_QUEUE_DATABASE_URL -u HUMAN_QUEUE_SCHEMA "$sh" "$HQ_T_CLI" "$@" >/dev/null 2>"$TMP/err" </dev/null || rc=$?
   check "[$sh] $label passes validation (exit 7, URL unset)" "$rc" "7"
 }
 

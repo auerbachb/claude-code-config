@@ -408,7 +408,9 @@ def load_policy():
             data = json.load(fh)
     except FileNotFoundError:
         return defaults, None
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: json.load on deeply nested input, which is no
+        # policy either; it must not escape load_policy's never-raises promise.
         return defaults, "%s is unreadable or not valid JSON; using the defaults" % name
     if not isinstance(data, dict):
         return defaults, "%s is not a JSON object; using the defaults" % name

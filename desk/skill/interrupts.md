@@ -102,7 +102,7 @@ RULE=$("$DESK/bin/desk-policy.sh" 2>/dev/null | jq -r '.interrupt_rule' 2>/dev/n
 "$HQ" interrupt get --session "$SID" --default "$RULE"; echo "exit=$?"
 ```
 
-It prints one line, `everything`, `away`, or `focus until 15:30 ET (2026-10-07 19:30 UTC)`, ending ` (default)` when no rule was set at this desk and the policy's applies. Print that line, `Interrupts: <it>`, and nothing else. `exit=7` → `Can't reach the store — can't read the interrupt rule right now.`
+It prints one line, `everything`, `away`, or `focus until 15:30 ET (2026-10-07 19:30 UTC)`, ending ` (default)` when no rule was set at this desk and the policy's applies. Print that line, `Interrupts: <it>`, and nothing else. The default it names is the policy file as it is now; the running loop keeps the `interrupt_rule` it started with, so after `interrupt_rule` is edited while the desk runs, run `/desk` again to bring the two back together. `exit=7` → `Can't reach the store — can't read the interrupt rule right now.`
 
 ## Feedback tags
 

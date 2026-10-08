@@ -263,6 +263,12 @@ check "spring forward, until 3:30 at 1:05 EST: 3:30 EDT" "$(focus_at '2026-03-08
 check "a session zone's own clock change: still a 24-hour window" \
   "$(focus_at '2026-03-28 12:00Z' '07:30' 'Europe/London')" "2026-03-29 11:30"
 
+# A fractional ISO --until is stored rounded up to the second, never early.
+FRAC=$(sql_in "SELECT to_char((now() + interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') || '.400Z'")
+hq interrupt set focus --session desk-1 --until "$FRAC" --json
+check "focus until a fractional second: rounded up" \
+  "$RC:$(sql_in "SELECT '$(jqo .until)'::timestamptz - '$FRAC'::timestamptz = interval '0.6 seconds'")" "0:t"
+
 PAST=$(sql_in "SELECT to_char((now() - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
 FAR=$(sql_in "SELECT to_char((now() + interval '2 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
 STORED=$(sql_in "SELECT value FROM state WHERE key = 'interrupt'")

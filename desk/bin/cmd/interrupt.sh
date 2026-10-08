@@ -150,7 +150,12 @@ SET LOCAL lock_timeout TO '30s';
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_control_locked \gset
 SELECT coalesce((SELECT value FROM state WHERE key = 'control_session'), '') = :'hq_session' AS hq_ok \gset
 \if :hq_ok
-SELECT coalesce(to_char(u AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '') AS hq_until
+-- Stored in whole seconds, rounded up, so a fractional ISO --until never
+-- ends the focus early.
+SELECT coalesce(to_char((date_trunc('second', u)
+                          + CASE WHEN u > date_trunc('second', u) THEN interval '1 second'
+                                 ELSE interval '0' END)
+                         AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '') AS hq_until
   FROM (SELECT CASE
                  WHEN :'hq_rule' <> 'focus' THEN NULL
                  WHEN :'hq_minutes' <> ''
