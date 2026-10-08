@@ -450,7 +450,8 @@ for SH in $SHELLS; do
   printf '%s\n' "$MIXED" > "$STUB_DIR/tick-default"
   dtick "$SH" "$BIN/desk-tick.sh" --session desk-1 --generation g1 --once
   check "[$SH] --once: open Decisions only, in tick order" "$RC:$OUT" "0:desk-tick g1 new D-4 D-7"
-  check "[$SH] --once: ticks as its own control session" "$(sed -n 2p "$STUB_DIR/args")" "tick --session desk-1"
+  check "[$SH] --once: ticks as its own control session, honoring the policy's interrupt rule" \
+    "$(sed -n 2p "$STUB_DIR/args")" "tick --session desk-1 --interrupts everything"
   check "[$SH] --once: then asks which answers are due a retry" "$(sed -n 3p "$STUB_DIR/args")" "wake-due --json"
 
   # Retries (issue #1781): wake-due's Decision ids on a `retry` line, after

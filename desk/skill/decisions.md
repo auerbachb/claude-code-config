@@ -5,18 +5,19 @@ Loaded by `SKILL.md` on a `desk-tick … new` event, at start (the backlog), and
 ## Showing items
 
 1. **Read the items.** `"$HQ" list --kind decision --status open --json` prints every open Decision, already in the set order the design asks for: parked first, then impact, then age (`desk/DESIGN.md` 4.2.5). For a tick event, keep only the ids the event named (a named long-form part brings the rest of its open group: `longform.md`, "What is long-form"); for the start backlog, keep them all. An id the list no longer has was answered or closed in the meantime: drop it.
-2. **Split simple from long-form.** A Decision is **simple** when it has 2 to 4 options and its declared cost (if any) is not in hours, days, or weeks. Only simple ones render here, as menus. The rest are **long-form** (`longform.md`): no options, one option, more than four, or a cost such as `2h`, `1h30`, or `half a day`. They come one at a time as text prompts, grouped into multipart items. The predicate is `desk_split` in `desk.jq`, shared with `longform.md`:
+2. **Split simple from long-form, and the simple ones into sets.** A Decision is **simple** when it has 2 to 4 options and its declared cost (if any) is not in hours, days, or weeks. Only simple ones render here, as menus. The rest are **long-form** (`longform.md`): no options, one option, more than four, or a cost such as `2h`, `1h30`, or `half a day`. They come one at a time as text prompts, grouped into multipart items. The predicate is `desk_split` in `desk.jq`, shared with `longform.md`; `desk_batch` adds the sets, sized by `desk/policy.json`'s `set_size` (issue #1783):
 
    <!-- test-anchor: desk-split -->
 
    ```bash
    ITEMS=$("$HQ" list --kind decision --status open --json); rc=$?
-   if [ "$rc" -eq 0 ]; then printf '%s\n' "$ITEMS" | jq -c -L "$DESK/skill" --arg ids "<the event's ids, or empty for all>" 'include "desk"; desk_split($ids)'; else echo "exit=$rc"; fi
+   SIZE=$("$DESK/bin/desk-policy.sh" 2>/dev/null | jq '.set_size' 2>/dev/null); case "$SIZE" in [1-4]) ;; *) SIZE=4 ;; esac
+   if [ "$rc" -eq 0 ]; then printf '%s\n' "$ITEMS" | jq -c -L "$DESK/skill" --arg ids "<the event's ids, or empty for all>" --argjson size "$SIZE" 'include "desk"; desk_batch($ids; $size)'; else echo "exit=$rc"; fi
    ```
 
-   It prints `{"simple": ["D-43", "D-44"], "longform": [["D-45"], ["D-47", "D-48"]]}`: the simple ids in list order, and the long-form ids as groups (one array per multipart item). `list` runs on its own first so its exit status is not lost in the pipe: `exit=7` means the store is unreachable (say so in one line and show this batch after the next `recovered` event), any other `exit=<n>` is the CLI's one stderr line to report.
+   It prints `{"simple": ["D-43", "D-44"], "longform": [["D-45"], ["D-47", "D-48"]], "sets": [["D-43", "D-44"]]}`: the simple ids in list order, the long-form ids as groups (one array per multipart item), and the simple ids chunked into the sets step 3 opens, in order (three new Decisions are one set). `list` runs on its own first so its exit status is not lost in the pipe: `exit=7` means the store is unreachable (say so in one line and show this batch after the next `recovered` event), any other `exit=<n>` is the CLI's one stderr line to report. The policy's warning, if any, was shown at start (`SKILL.md` step 2), so it is not repeated here.
 
-3. **Open and render one set at a time, up to four items each.** Four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the simple ids in order, four at a time. Open a set for the **next chunk only**:
+3. **Open and render one set at a time, at most `set_size` items each.** The size comes from `desk/policy.json` (`set_size`, 1 to 4, default 4); four questions per menu is the question tool's limit (`desk/DESIGN.md` 4.2.4). Take the `sets` in order. Open a set for the **next chunk only**:
 
    ```bash
    "$HQ" set-open D-43 D-44 --json

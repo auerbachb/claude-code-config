@@ -15,7 +15,7 @@ HQ_STATE_VALUE_MAX=65536
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
-HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark"
+HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt"
 
 cmd_usage() {
   cat <<'EOF'
@@ -38,6 +38,7 @@ BEHAVIOR
   event is recorded.
 
 RESERVED KEYS (readable with get; `set` refuses them)
+  interrupt        the desk's interrupt rule (JSON); written by `interrupt set`
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
@@ -147,6 +148,7 @@ cmd_run() {
       case "$key" in
         tick_watermark|tick_at) hq_die_validation "state set: $key is reserved: only tick writes it" ;;
         reviews_watermark) hq_die_validation "state set: reviews_watermark is reserved: only sync-reviews writes it (pass it --since instead)" ;;
+        interrupt) hq_die_validation "state set: interrupt is reserved: use interrupt set" ;;
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi

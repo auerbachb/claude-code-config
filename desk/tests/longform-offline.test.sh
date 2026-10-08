@@ -446,10 +446,10 @@ awk -v ph="<the operator's message, exactly as typed>" -v rf="$TMP/reply" '
 
 for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/split.sh")
-  check "[$SH] desk-split block prints the split" "$OUT" \
-    '{"simple":["D-43","D-49"],"longform":[["D-45"],["D-47","D-48","D-53"],["D-50"],["D-51"]]}'
+  check "[$SH] desk-split block prints the split and its sets" "$OUT" \
+    '{"simple":["D-43","D-49"],"longform":[["D-45"],["D-47","D-48","D-53"],["D-50"],["D-51"]],"sets":[["D-43","D-49"]]}'
   OUT=$(run_block "$SH" "$TMP/split-ids.sh")
-  check "[$SH] desk-split block with a tick's ids" "$OUT" '{"simple":["D-49"],"longform":[["D-45"]]}'
+  check "[$SH] desk-split block with a tick's ids" "$OUT" '{"simple":["D-49"],"longform":[["D-45"]],"sets":[["D-49"]]}'
 
   OUT=$(run_block "$SH" "$TMP/block-desk-longform-render.sh")
   check "[$SH] desk-longform-render block: part 2 of 3 of D-48" "$(printf '%s\n' "$OUT" | sed -n 1p)" \
@@ -519,7 +519,7 @@ A long-form prompt waits for its reply
 `discuss <n>`, or `discuss D-<id>` → load `discuss.md`
 NEEDLES
 contract decisions.md "$DECISIONS" <<'NEEDLES'
-'include "desk"; desk_split($ids)'
+'include "desk"; desk_batch($ids; $size)'
 `longform.md`
 `discuss.md`
 `set-resolve` would split a long answer

@@ -151,7 +151,7 @@ block discuss.md desk-discuss-card
 literal "$TMP/block-desk-split.sh" "<the event's ids, or empty for all>" "" > "$TMP/split.sh"
 OUT=$(run_block bash "$TMP/split.sh")
 check "desk-split over the live list: menu, then long-form groups" "$OUT" \
-  "{\"simple\":[\"$SIMPLE\"],\"longform\":[[\"$LF\"],[\"$MP1\",\"$MP2\"],[\"$HOURS\"]]}"
+  "{\"simple\":[\"$SIMPLE\"],\"longform\":[[\"$LF\"],[\"$MP1\",\"$MP2\"],[\"$HOURS\"]],\"sets\":[[\"$SIMPLE\"]]}"
 
 # --- 5.1: a long-form item alone, its reply stored word for word ----------------
 literal "$TMP/block-desk-longform-render.sh" "D-48" "$LF" \

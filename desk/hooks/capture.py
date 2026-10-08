@@ -54,6 +54,25 @@ TAIL = "; the menu renders in this thread"
 DEFAULT_LIVE_MINUTES = 15
 POLICY_KEY = "live_desk_max_tick_age_min"
 
+# desk/policy.json: the desk's defaults, which conversation at the desk
+# overrides (issue #1783). This module is the one parser: the hook reads the
+# live-desk bound from it, and desk-tick.sh and desk-policy.sh import it for
+# the rest. A missing file is the defaults; an unreadable file, one that is
+# not a JSON object, or one with any invalid value is the defaults too, with
+# one warning naming the first problem. Keys it does not know are ignored, so
+# a later increment can add one without breaking an older reader.
+POLICY_DEFAULTS = (
+    ("tick_cadence_min", 5),
+    ("interrupt_rule", "everything"),
+    ("eod_time", "17:30"),
+    ("set_size", 4),
+    (POLICY_KEY, DEFAULT_LIVE_MINUTES),
+)
+INTERRUPT_RULES = ("everything", "away")
+# HH:MM on a 24-hour clock, in the desk's calendar (America/New_York). \Z, not
+# $: `$` also matches before a final newline, which would pass "17:30\n".
+EOD_RE = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]\Z")
+
 # Time bounds. The registered hook timeout is 15 s (global-settings.json); the
 # hook gives up at 12 s so it can still say why. A CLI call that cannot reach
 # the store exits 7 within two seconds by contract; 6 s also covers the SQL.
@@ -344,25 +363,73 @@ def resolve_cli():
     return cli
 
 
-def policy_minutes(hook):
-    path = os.environ.get("HUMAN_QUEUE_POLICY") or os.path.join(DESK_DIR, "policy.json")
+def policy_path():
+    return os.environ.get("HUMAN_QUEUE_POLICY") or os.path.join(DESK_DIR, "policy.json")
+
+
+def _whole(value, low, high):
+    """VALUE is a JSON whole number from LOW to HIGH (true and false are not)."""
+    return not isinstance(value, bool) and isinstance(value, int) and low <= value <= high
+
+
+def policy_problem(data):
+    """The first invalid value in a parsed policy object, as a phrase, else None."""
+    checks = (
+        ("tick_cadence_min", lambda v: _whole(v, 1, 60),
+         "a whole number of minutes from 1 to 60"),
+        ("interrupt_rule", lambda v: v in INTERRUPT_RULES,
+         "everything or away"),
+        ("eod_time", lambda v: isinstance(v, str) and EOD_RE.match(v) is not None,
+         'a 24-hour time such as "17:30"'),
+        ("set_size", lambda v: _whole(v, 1, 4),
+         "a whole number from 1 to 4 (four questions is the menu tool's limit)"),
+        (POLICY_KEY, lambda v: _whole(v, 1, 1440),
+         "a whole number of minutes from 1 to 1440"),
+    )
+    for key, valid, wanted in checks:
+        if key in data and not valid(data[key]):
+            return "%s must be %s" % (key, wanted)
+    cadence = data.get("tick_cadence_min", POLICY_DEFAULTS[0][1])
+    bound = data.get(POLICY_KEY, DEFAULT_LIVE_MINUTES)
+    if cadence >= bound:
+        return ("tick_cadence_min must be shorter than %s, or the desk goes stale between ticks"
+                % POLICY_KEY)
+    return None
+
+
+def load_policy():
+    """(policy, warning): the effective policy as a dict holding every key of
+    POLICY_DEFAULTS, and one warning phrase or None. Never raises."""
+    defaults = dict(POLICY_DEFAULTS)
+    path = policy_path()
+    name = os.path.basename(path)
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return DEFAULT_LIVE_MINUTES
-    except (OSError, ValueError):
-        hook.remember("%s is unreadable or not valid JSON; using the %d-minute live-desk bound"
-                      % (os.path.basename(path), DEFAULT_LIVE_MINUTES))
-        return DEFAULT_LIVE_MINUTES
-    if not isinstance(data, dict) or POLICY_KEY not in data:
-        return DEFAULT_LIVE_MINUTES
-    value = data[POLICY_KEY]
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 1440:
-        hook.remember("%s: %s must be a whole number of minutes from 1 to 1440; using %d"
-                      % (os.path.basename(path), POLICY_KEY, DEFAULT_LIVE_MINUTES))
-        return DEFAULT_LIVE_MINUTES
-    return value
+        return defaults, None
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: json.load on deeply nested input, which is no
+        # policy either; it must not escape load_policy's never-raises promise.
+        return defaults, "%s is unreadable or not valid JSON; using the defaults" % name
+    if not isinstance(data, dict):
+        return defaults, "%s is not a JSON object; using the defaults" % name
+    problem = policy_problem(data)
+    if problem:
+        return defaults, "%s: %s; using the defaults" % (name, problem)
+    policy = dict(defaults)
+    for key in defaults:
+        if key in data:
+            policy[key] = data[key]
+    return policy, None
+
+
+def policy_minutes(hook):
+    """The live-desk bound in minutes; a policy warning goes to HOOK."""
+    policy, warning = load_policy()
+    if warning:
+        hook.remember(warning)
+    return policy[POLICY_KEY]
 
 
 def live_control_session(hook, store):

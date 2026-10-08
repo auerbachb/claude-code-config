@@ -1,0 +1,7 @@
+{
+  "tick_cadence_min": 5,
+  "interrupt_rule": "everything",
+  "eod_time": "17:30",
+  "set_size": 4,
+  "live_desk_max_tick_age_min": 15
+}

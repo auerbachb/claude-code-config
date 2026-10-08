@@ -224,7 +224,7 @@ contract SKILL.md "$SKILL" <<'NEEDLES'
 → load `reviews.md`
 `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`
 `follow up R-<n>` (`follow up R-<n> again`)
-(#1783)
+| #1783 |
 (#1784)
 007_reviews_summary_l1.sql
 NEEDLES

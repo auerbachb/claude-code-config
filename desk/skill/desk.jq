@@ -1,15 +1,19 @@
 # desk/skill/desk.jq — the /desk skill's deterministic item logic (issues
-# #1779, #1780): which Decisions fit a menu, how the long-form ones group into
-# multipart items, and the exact text of a long-form card and a discussion
-# card. One file, so the menus and the long-form view share one predicate, and
-# the tests run these functions themselves rather than copies of them.
+# #1779, #1780, #1783): which Decisions fit a menu, how the simple ones chunk
+# into sets and the long-form ones group into multipart items, the exact text
+# of a long-form card and a discussion card, and which replies are feedback
+# tags rather than answers. One file, so the menus and the long-form view
+# share one predicate, and the tests run these functions themselves rather
+# than copies of them.
 #
 # Use:    jq -L "$DESK/skill" 'include "desk"; <function>'
 # Input:  the CLI's item JSON — `list --json` arrays, `get --json` objects.
 # Tests:  desk/tests/longform-offline.test.sh (fixtures),
 #         desk/tests/longform.test.sh (live, throwaway schema);
 #         the Reviews view (#1782): desk/tests/reviews-view-offline.test.sh
-#         (fixtures) and desk/tests/reviews-view.test.sh (live).
+#         (fixtures) and desk/tests/reviews-view.test.sh (live); sets and
+#         feedback tags (#1783): desk/tests/interrupts-offline.test.sh
+#         (fixtures) and desk/tests/interrupts.test.sh (live).
 
 # ---------------------------------------------------------------- classify
 
@@ -63,6 +67,62 @@ def desk_split($ids):
                     | {n, id: .item.id, g: (.item | group_key)} ]
                   | group_by(.g) | map(sort_by(.n)) | sort_by(.[0].n)
                   | map(map(.id)) ) };
+
+# desk_sets($size): an array of ids (desk_split's simple ones) chunked into
+# the sets the desk opens one at a time, in order: ["D-1", …, "D-5"] with
+# size 4 is [["D-1", "D-2", "D-3", "D-4"], ["D-5"]]. $size is the policy's
+# set_size, a whole number from 1 to 4 (four questions is the menu tool's
+# limit); anything else is 4. [] for no ids.
+def desk_sets($size):
+  (if ($size | type) == "number" and ($size | floor) == $size and $size >= 1 and $size <= 4
+   then $size else 4 end) as $s
+  | . as $ids
+  | [ range(0; $ids | length; $s) as $i | $ids[$i:$i + $s] ];
+
+# desk_batch($ids; $size): desk_split($ids) with its simple ids also chunked
+# into sets (issue #1783), so three new Decisions are one set and a fifth
+# opens a second one when the size is four:
+#
+#   {"simple": ["D-43", "D-44"], "longform": [["D-45"]], "sets": [["D-43", "D-44"]]}
+def desk_batch($ids; $size):
+  desk_split($ids) | . + {sets: (.simple | desk_sets($size))};
+
+# ---------------------------------------------------------- feedback (#1783)
+
+# feedback_tag: one tag phrase as typed ("Not important.", "should have
+# defaulted", "good-interrupt") as the stored tag, else null. Any case, words
+# separated by spaces or hyphens, an optional trailing period.
+def feedback_tag:
+  ascii_downcase | sub("^\\s+"; "") | sub("\\s+$"; "") | sub("\\.$"; "")
+  | gsub("[\\s-]+"; " ")
+  | if . == "not important" then "not-important"
+    elif . == "should have defaulted" then "should-have-defaulted"
+    elif . == "good interrupt" then "good-interrupt"
+    else null end;
+
+# desk_feedback: the operator's whole message (a string, as `jq -Rs` reads
+# it) as feedback tags, [{"ref": "2", "tag": "not-important"}, {"ref":
+# "D-43", "tag": "good-interrupt"}], when every pair in it is `<n|D-id>: not
+# important | should have defaulted | good interrupt`, pairs separated by
+# commas, semicolons, or line breaks. Anything else is null: the message is
+# not feedback, so it stays an answer or a remark. ref is the item's number
+# in the latest set (1 to 99) or its id, uppercased. A Review's id (R-<n>) is
+# deliberately not a ref: the tags tune interrupts, and a Review never
+# interrupts (it waits in the Reviews view, with no asking thread and no
+# default to take). The CLI's `feedback` still takes any item's id.
+def desk_feedback:
+  [ split("\n")[] | split(";")[] | split(",")[]
+    | sub("^\\s+"; "") | sub("\\s+$"; "") | select(. != "") ] as $pairs
+  | if ($pairs | length) == 0 then null
+    else
+      [ $pairs[]
+        | (capture("^(?<ref>[1-9][0-9]?|[Dd]-[1-9][0-9]*)\\s*:\\s*(?<tag>.*)$") // null)
+        | if . == null then null
+          else (.tag | feedback_tag) as $t
+          | if $t == null then null else {ref: (.ref | ascii_upcase), tag: $t} end
+          end ]
+      | if any(.[]; . == null) then null else . end
+    end;
 
 # ------------------------------------------------------------------ render
 

@@ -32,7 +32,7 @@ When the item has no return address (`session` null, parked on its first failure
 
 `D-43 parked — it has no return address; the answer waits in the store for the next thread on <repo> <key>.`
 
-While a long-form prompt waits for its reply (`longform.md`), hold the notice the way that file holds tick events, and print it once the group ends. Never print it between a prompt and its answer.
+While a long-form prompt waits for its reply (`longform.md`), hold the notice the way that file holds tick events, and print it once the group ends. Never print it between a prompt and its answer. During an `away` or `focus` hold (`interrupts.md`, "The release"), hold it too, and print it once the hold ends.
 
 ## A wake-up the store did not record
 
