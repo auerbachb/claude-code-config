@@ -906,6 +906,9 @@ doc = {"schema": "review-stack-rates/v1", "as_of": "2026-10-01", "caps": [],
        "tools": [{"key": k, "usd": v, "unit": units[k], "source": "test",
                   "retrieved": "2026-10-01"} for k, v in rates.items()]}
 doc["tools"][0]["informational"] = True
+for t in doc["tools"]:
+    if t["key"] == "greptile":
+        t["credits_per_review"] = 1
 open(sys.argv[1], "w").write(
     "# Test pricing\n\nProse is never parsed: $999 per review.\n\n"
     "```json review-stack-rates\n%s\n```\n" % json.dumps(doc, indent=2))
@@ -1392,6 +1395,8 @@ checks = [
         {"id": 4, "name": "Cursor Bugbot"}])] == [1, 2]),
     ("zero-receipts-is-a-floor", L.compute_spend("coderabbit", {"charges": []}, None, 30) == (D("0.00"), "receipt")),
     ("no-rates-is-none-not-zero", L.compute_spend("bugbot", {"bugbot_runs": 3}, None, 30) == (None, "none")),
+    ("unknown-credits-is-none", L.compute_spend("greptile", {"greptile_triggers": 2},
+        {"usd": {"greptile": D("0.5")}, "credits_per_review": None}, 30) == (None, "none")),
     ("comma-and-bold-receipts", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]", "body": "**Charged:** $1,234.50"}])] == [D("1234.50")]),
     ("receipt-timed-by-last-edit", [e["amount"] for e in L.filter_window(L.extract_charges([
         {"user": "coderabbitai[bot]", "created_at": "2025-09-20T00:00:00Z", "updated_at": "2025-10-07T00:00:00Z", "body": "- Charged: $1.00"},
@@ -1473,6 +1478,10 @@ cases["huge-float-refused"] = parse("hugef", good.replace('"usd": 2.0', '"usd": 
 cases["informational-string-refused"] = parse("info", good.replace('"informational": true', '"informational": "false"', 1))[0] is None
 r, n = parse("unit", good.replace('"unit": "review"', '"unit": "month"'))
 cases["wrong-unit-unusable"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is priced per 'month'" in x for x in n)
+# Greptile's credits per review unknown: its spend is null with a note, never
+# priced at an assumed one credit.
+r, n = parse("no-cpr", good.replace('"credits_per_review": 1', '"credits_per_review": null', 1))
+cases["greptile-null-credits-noted"] = r is not None and r["usd"]["greptile"] is None and any("greptile has no `credits_per_review`" in x for x in n)
 # An informational flag on a rate-priced tool nulls its spend, and says so.
 r, n = parse("info-bugbot", good.replace('"key": "bugbot",', '"key": "bugbot", "informational": true,', 1))
 cases["informational-rate-noted"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is marked informational" in x for x in n)

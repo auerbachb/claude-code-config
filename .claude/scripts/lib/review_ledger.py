@@ -166,10 +166,11 @@ def parse_rates(path):
     Returns (rates, notes). `rates` is None when the file or block cannot be
     used at all — every rate-priced figure is then null. Otherwise it is
     {"as_of", "tools": {key: entry}, "caps": [entry], "usd": {key: Decimal|None},
-     "credits_per_review": Decimal}, where `usd` holds only rates the ledger can
-    actually apply. Each tool whose rate is null, missing, or in the wrong unit
-    gets one note naming it; an informational rate (CodeRabbit's, since the
-    ledger prices CodeRabbit from receipts) never does.
+     "credits_per_review": Decimal|None}, where `usd` holds only rates the ledger
+    can actually apply. Each tool whose rate is null, missing, or in the wrong
+    unit gets one note naming it, as does Greptile when its credits per review
+    are unknown; an informational rate on CodeRabbit (priced from receipts)
+    never does.
     """
     def unusable(why):
         return None, ["rates unavailable: %s (%s); every rate-priced tool reports "
@@ -268,12 +269,18 @@ def parse_rates(path):
         usd[key] = Decimal(str(entry["usd"]))
     greptile = tools.get("greptile") or {}
     credits = greptile.get("credits_per_review")
+    # A $/credit rate prices a review only with a credits-per-review figure.
+    # Absent or null, a review's cost is unknown: null, never assumed 1 credit.
+    if usd.get("greptile") is not None and credits is None:
+        usd["greptile"] = None
+        notes.append("rates: greptile has no `credits_per_review` in the `%s` block, "
+                     "so its spend_usd is null, never an assumed 1 credit" % FENCE_TAG)
     rates = {
         "as_of": doc["as_of"],
         "tools": tools,
         "caps": caps,
         "usd": usd,
-        "credits_per_review": Decimal(str(credits)) if credits is not None else Decimal(1),
+        "credits_per_review": Decimal(str(credits)) if credits is not None else None,
     }
     return rates, notes
 
@@ -451,7 +458,9 @@ def compute_spend(tool_key, signals, rates, window_days):
     if rule["method"] == "per_run":
         return cents(rate * int(signals.get("bugbot_runs") or 0)), "estimate"
     if rule["method"] == "per_trigger":
-        credits = rates.get("credits_per_review", Decimal(1))
+        credits = rates.get("credits_per_review")
+        if credits is None:
+            return None, "none"
         return cents(rate * credits * int(signals.get("greptile_triggers") or 0)), "estimate"
     return prorate_flat(rate, window_days), "flat"
 

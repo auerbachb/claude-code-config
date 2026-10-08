@@ -99,7 +99,8 @@
 #     estimate  BugBot: `Cursor Bugbot` check-runs published by the `cursor`
 #               app (every commit of each PR, filter=all, deduped by run id,
 #               timed by started_at) x $/review.
-#               Greptile: non-bot `@greptileai` comments x credits/review x $/credit.
+#               Greptile: non-bot `@greptileai` comments x credits/review x $/credit
+#               (credits/review absent or null: `none`, never an assumed 1).
 #     flat      CodeAnt and Vercel: the monthly fee x elapsed days / 30 —
 #               spend so far, never a projection. With --until: the days from
 #               --since through the earlier of --until and today, inclusive, so
