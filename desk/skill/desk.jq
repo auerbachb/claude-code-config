@@ -634,7 +634,13 @@ def desk_plan_propose:
      else "Only \($n) of the \($want) asked for fit within a day." end) as $short
   | ($batch.first + $n - 1) as $total
   | (plan_pace_text($p; $in.chunk) // (if $end != null then "one block until \($end | plan_hm)" else null end)) as $pace
-  | { inputs: ($in + {end: (if $end != null then ($end | plan_iso) else null end)} | del(.count_given)),
+  # A count named in a revision is the chunks still to do; the inputs store
+  # the plan's whole count (those plus the blocks already over), which the
+  # next revision subtracts the blocks over from again.
+  | { inputs: ($in + {end: (if $end != null then ($end | plan_iso) else null end),
+                      count: (if $st != null and $in.count_given == true and $in.count != null
+                              then $in.count + $batch.done else $in.count end)}
+               | del(.count_given)),
       missing: $missing,
       now: ($now | plan_iso),
       forecast: ($c.forecast // null),

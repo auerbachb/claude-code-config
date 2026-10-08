@@ -294,6 +294,18 @@ check "revise twice: only the sections still to do, numbered for the whole plan"
 check "revise twice: the record holds both blocks already over, then these" \
   "$(printf '%s' "$R" | djq -c 'include "desk"; [plan_record.blocks[] | .label]')" \
   '["section 1 of 4","section 2 of 4","section 3 of 4","section 4 of 4"]'
+# A count in a revision is what is left; the record stores the whole count,
+# so a later revision without one still plans every section left.
+REC2=$(revise 'plan: 2 sections' 2026-10-08T14:00:00Z | djq -c 'include "desk"; plan_record')
+check "revise with a count: the record stores the whole count" \
+  "$(printf '%s' "$REC2" | jq -c '[.inputs.count, (.blocks | length)]')" '[3,3]'
+R=$(printf '%s' 'plan: 45 min a section' | djq -c -Rs --argjson st "$REC2" --slurpfile fc "$FIX/forecast.json" \
+      'include "desk"; desk_plan_parse(false) as $m
+       | {inputs: ($st.inputs | desk_plan_merge($m.fields)), forecast: ($fc[0] + {now: "2026-10-08T14:20:00Z"}), stored: $st, gap: 5}
+       | desk_plan_propose')
+check "a count, then a pace: both sections left are planned" \
+  "$(printf '%s' "$R" | jq -c '[.blocks[] | "\(.start_local)-\(.until_local) \(.label)"]')" \
+  '["10:20-11:05 section 2 of 3","11:10-11:55 section 3 of 3"]'
 R=$(revise 'plan: 45 min a section' 2026-10-08T15:30:00Z)
 check "revise after every block is over: no block comes back, a problem says so" \
   "$(printf '%s' "$R" | jq -c '[(.blocks | length), .problem]')" '[0,"every section planned is done; name how many more (`2 sections`)"]'
