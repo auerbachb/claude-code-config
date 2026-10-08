@@ -481,12 +481,9 @@ cmd_run() {
       || hq__export_fail "$data" "create a scratch directory"
     trap hq__export_cleanup EXIT
     chmod 700 "$HQ_EXPORT_WORK" 2>/dev/null || true
-    if ! printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
-           'include "export"; export_markdown' > "$HQ_EXPORT_WORK/export.md" \
-       || ! printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
-           'include "export"; export_text' > "$HQ_EXPORT_WORK/export.txt" \
-       || ! printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
-           'include "export"; export_html' > "$HQ_EXPORT_WORK/export.html"; then
+    if ! printf '%s' "$data" | hq_export_jq -r 'export_markdown' > "$HQ_EXPORT_WORK/export.md" \
+       || ! printf '%s' "$data" | hq_export_jq -r 'export_text' > "$HQ_EXPORT_WORK/export.txt" \
+       || ! printf '%s' "$data" | hq_export_jq -r 'export_html' > "$HQ_EXPORT_WORK/export.html"; then
       hq__export_fail "$data" "render the batch"
     fi
     path=$(hq__export_abs "$out")
@@ -507,9 +504,8 @@ cmd_run() {
   fi
 
   if [ "$json" -eq 1 ]; then
-    printf '%s' "$data" | hq_jq -c -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
+    printf '%s' "$data" | hq_export_jq -c \
       --arg path "$path" --arg format "$format" --arg renderer "$renderer" --arg warning "$warn" '
-      include "export";
       def orNull: if . == "" then null else . end;
       { path: ($path | orNull), format: ($format | orNull), renderer: ($renderer | orNull),
         dry_run, set_id, new_set, count, more,
@@ -517,8 +513,7 @@ cmd_run() {
         warning: ($warning | orNull) }' \
       || hq_die_error "export: could not print the result"
   elif [ "$dry" -eq 1 ]; then
-    printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" '
-      include "export";
+    printf '%s' "$data" | hq_export_jq -r '
       export_missing as $m | .level as $l
       | if .count == 0 then "nothing to export"
         else .items[] | "\(.n). \(.id)" + (if (.id | IN($m[])) then " · no level-\($l) summary" else "" end)

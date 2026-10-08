@@ -168,7 +168,12 @@ chmod 755 "$TMP/ro-dir"
 
 # ----------------------------------------------------------------- export.jq
 printf '== export.jq\n'
-ejq() { jq -r -L "$BIN/lib" -L "$SKILL_DIR" "include \"export\"; $1" "${2:-$FIX/batch.json}"; }
+# ejq FILTER [FILE] — FILTER after export.jq's own definitions, as the CLI runs
+# them (lib/export.sh's hq_export_jq: never `include "export"`, which jq 1.8
+# aborts on). EJQ_JQ picks the jq (default: the one on PATH).
+EXPORT_JQ_TEXT=$(cat "$BIN/lib/export.jq")
+ejq() { "${EJQ_JQ:-jq}" -r -L "$SKILL_DIR" "$EXPORT_JQ_TEXT
+$1" "${2:-$FIX/batch.json}"; }
 MD=$(ejq export_markdown)
 TXT=$(ejq export_text)
 HTML=$(ejq export_html)
@@ -275,7 +280,21 @@ check_contains "html: a summary's bold run" "$HTML" "<p><strong>Procedures can b
 check_contains "html: the footer on every page" "$HTML" '@bottom-left { content: "Exported Thu 2026-10-08 17:31 ET · set 31 · 5 items";'
 check_contains "html: page numbers" "$HTML" 'counter(page) " of " counter(pages)'
 check "css strings escape quotes and backslashes" \
-  "$(jq -n -r -L "$BIN/lib" -L "$SKILL_DIR" 'include "export"; "a\"b\\c\nd" | ex_css_string')" '"a\"b\\c d"'
+  "$(jq -n -r -L "$SKILL_DIR" "$EXPORT_JQ_TEXT"'
+"a\"b\\c\nd" | ex_css_string')" '"a\"b\\c d"'
+check_absent "export.sh never includes export.jq as a module (jq 1.8 aborts on it)" \
+  "$(grep -v '^ *#' "$BIN/cmd/export.sh" "$BIN/lib/export.sh")" 'include "export"'
+# The renderings through hq_export_jq itself, and through every other jq this
+# machine has (Homebrew's, the system's): the paper is the same on each.
+HQX=$(printf '%s' "$(cat "$FIX/batch.json")" | bash -c 'HQ_BIN_DIR="$1"; HQ_DESK_DIR="$2"
+  . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/github.sh"; . "$HQ_BIN_DIR/lib/export.sh"
+  hq_jq_find && hq_export_jq -r export_markdown' _ "$BIN" "$HQ_T_DESK_DIR" 2>&1)
+check "hq_export_jq renders what ejq does" "$HQX" "$MD"
+for other_jq in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq ${HQ_T_EXTRA_JQ:-}; do
+  [ -x "$other_jq" ] || continue
+  check "$("$other_jq" --version 2>/dev/null) renders the same Markdown and HTML" \
+    "$(EJQ_JQ="$other_jq" ejq export_markdown 2>&1)$(EJQ_JQ="$other_jq" ejq export_html 2>&1)" "$MD$HTML"
+done
 
 # ----------------------------------------------------------------- renderers
 printf '== renderers\n'

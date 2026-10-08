@@ -171,6 +171,22 @@ hq_export_stop_renderer() {
   fi
 }
 
+# hq_export_jq [JQ_OPTION...] FILTER — jq (hq_jq) with lib/export.jq's
+# definitions as the main program's own, then FILTER (`export_markdown`, …),
+# reading the export's JSON from stdin. Not `include "export"`: jq 1.8 aborts
+# ("Unknown function type", expand_call_arglist) when a def in an included
+# module calls a desk.jq function that calls another one (default_line,
+# review_label, menu_shaped); the same defs in the main program compile on
+# jq 1.6 through 1.8. The last argument is the filter; the rest are jq's.
+hq_export_jq() {
+  local hq__n=$# hq__filter hq__prog
+  hq__filter="${!hq__n}"
+  hq__prog=$(cat "$HQ_BIN_DIR/lib/export.jq") || return 1
+  set -- "${@:1:$((hq__n - 1))}"
+  hq_jq "$@" -L "$HQ_DESK_DIR/skill" "$hq__prog
+$hq__filter"
+}
+
 # hq__export_is_pdf FILE — FILE is non-empty and starts as a PDF does.
 hq__export_is_pdf() {
   local hq__head=""

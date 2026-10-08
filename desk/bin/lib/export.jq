@@ -1,7 +1,11 @@
 # desk/bin/lib/export.jq — the paper copy of a batch (issue #1759): one item
-# model and three renderings of it, Markdown, plain text, and HTML. Loaded by
-# `human-queue.sh export` with
-#   jq -L desk/bin/lib -L desk/skill 'include "export"; export_markdown'
+# model and three renderings of it, Markdown, plain text, and HTML. Run by
+# `human-queue.sh export` as the head of the main program, never included:
+#   jq -L desk/skill "$(cat desk/bin/lib/export.jq)
+#   export_markdown"
+# (lib/export.sh's hq_export_jq). jq 1.8 aborts when a def in an included
+# module calls a desk.jq function that calls another desk.jq function; the
+# same defs in the main program compile on every jq.
 # Input: the export's own JSON (export --help, "THE MODEL"): the batch's set,
 # its export time, and its items, each with its number `n` in the set.
 #

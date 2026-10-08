@@ -1280,7 +1280,10 @@ lands on the right item.
   page numbers; from pandoc or the print system once, at the end (the
   header line on the first page carries the time too).
   `bin/lib/export.jq` renders it three ways (Markdown, plain text, HTML)
-  from one item model, reusing `skill/desk.jq`'s labels and links.
+  from one item model, reusing `skill/desk.jq`'s labels and links. It runs
+  as the head of the main jq program (`lib/export.sh`'s `hq_export_jq`),
+  never as an included module: jq 1.8 aborts when a module's def calls a
+  `desk.jq` function that calls another one.
 - **Renderers.** No new dependency: the first of these that produces a PDF
   is used. pandoc (the Markdown, when pandoc and a PDF engine are
   installed; the items' text is escaped and read literally: its Markdown,
@@ -1326,7 +1329,8 @@ lands on the right item.
   order and fallbacks against stub binaries, the URL kept out of their
   environment, their temp files in the scratch directory, Chrome offline
   and stopped after it writes, a renderer stopped when the export is
-  interrupted, images in the text escaped, a real cupsfilter and Chrome
+  interrupted, images in the text escaped, the same paper from every jq
+  on the machine (and `HQ_T_EXTRA_JQ`, for a jq 1.8), a real cupsfilter and Chrome
   PDF read back by `pdftotext` on macOS, and the skill's blocks under bash,
   `/bin/bash` 3.2, and zsh); `tests/export.test.sh` (live, throwaway
   schema: test 5.1, three fixture Decisions to a PDF with three sections
