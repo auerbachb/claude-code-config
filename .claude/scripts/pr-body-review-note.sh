@@ -27,10 +27,11 @@
 #   section, before the next `#` or `##` heading outside a code fence. Headings
 #   are read as CommonMark ATX headings: up to three leading spaces, an
 #   optional closing run of `#`, any letter case (`  ## Review Notes ##`). With
-#   no such section, one is created at the end of the body. Everything else in the
-#   body is left byte-for-byte as it was. A body with CRLF line endings (the
-#   GitHub web editor saves them) is matched with the CR stripped, every
-#   existing line keeps its own ending, and the added lines use CRLF.
+#   no such section, one is created at the end of the body, and any blank lines
+#   that ended the body collapse into the one blank line before its heading.
+#   Every other line is left byte-for-byte as it was. A body with CRLF line
+#   endings (the GitHub web editor saves them) is matched with the CR stripped,
+#   every existing line keeps its own ending, and the added lines use CRLF.
 #
 # OUTPUT
 #   stdout: `added` or `present` (the marker was already there; nothing written).
