@@ -1466,6 +1466,9 @@ cases["huge-float-refused"] = parse("hugef", good.replace('"usd": 2.0', '"usd": 
 cases["informational-string-refused"] = parse("info", good.replace('"informational": true', '"informational": "false"', 1))[0] is None
 r, n = parse("unit", good.replace('"unit": "review"', '"unit": "month"'))
 cases["wrong-unit-unusable"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is priced per 'month'" in x for x in n)
+# An informational flag on a rate-priced tool nulls its spend, and says so.
+r, n = parse("info-bugbot", good.replace('"key": "bugbot",', '"key": "bugbot", "informational": true,', 1))
+cases["informational-rate-noted"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is marked informational" in x for x in n)
 print(";".join("%s=%s" % (k, "ok" if v else "BAD") for k, v in cases.items()))
 PY
 }

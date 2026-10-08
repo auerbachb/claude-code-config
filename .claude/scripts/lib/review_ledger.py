@@ -248,6 +248,13 @@ def parse_rates(path):
                              "spend_usd is null" % (key, FENCE_TAG))
             continue
         if entry.get("informational"):
+            # Recorded for reference, never priced. Silent only for a
+            # receipt-priced tool, whose spend reads no rate; any other tool's
+            # spend goes null, and the note says why.
+            if rule["method"] != "receipt":
+                notes.append("rates: %s is marked informational in the `%s` block, so "
+                             "its rate is not used and its spend_usd is null"
+                             % (key, FENCE_TAG))
             continue
         if entry["unit"] != rule["unit"]:
             notes.append("rates: %s is priced per %r but the ledger prices %s per %r, "
