@@ -122,10 +122,13 @@ policy "$TMP/wide.json"
 check "a longer cadence under a longer live bound" "$(printf '%s' "$OUT" | jq -c '[.tick_cadence_min, .live_desk_max_tick_age_min, .eod_time]')" '[20,30,"09:05"]'
 
 bad_policy "not JSON" '{"set_size": 2' "not valid JSON"
-# Nested past Python's recursion limit: json.load raises RecursionError, not
-# ValueError, and it must still be the defaults with one warning.
+# Nested 100,000 deep: where json.load raises RecursionError (not
+# ValueError), and where a Python's decoder parses it into a list instead,
+# it is still the defaults with one warning, never an escaped exception.
+# The two Pythons word the warning differently ("not valid JSON", "not a
+# JSON object"), so the check is the part both share.
 DEEP=$(python3 -c 'print("[" * 100000 + "]" * 100000)')
-bad_policy "nested 100,000 deep" "$DEEP" "not valid JSON"
+bad_policy "nested 100,000 deep" "$DEEP" "; using the defaults"
 bad_policy "an array" '[1, 2]' "not a JSON object"
 bad_policy "a string" '"everything"' "not a JSON object"
 bad_policy "tick_cadence_min 0" '{"tick_cadence_min": 0}' "tick_cadence_min must be"
