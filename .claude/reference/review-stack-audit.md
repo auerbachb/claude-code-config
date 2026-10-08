@@ -226,6 +226,139 @@ Issue #1191's concurrent-work cap derives from review throughput, and this is th
 surface that refreshes that figure. It is stated in the report rather than left
 inside the snapshot JSON so the number is readable without tooling.
 
+## Value fields (issue #1810)
+
+Counting findings says how loud a reviewer is, not how right. Every finding
+already gets a verdict when an agent replies to its thread — `Fixed in <sha>`,
+`Deferred to #N`, or a decline with a reason — and the ledger reads those
+verdicts back instead of letting them vanish when the thread resolves. These
+are the working definitions; the verdict buckets are the ones sales-kit
+Issue #184's hand-built ledger used, so the two compare (differences below). The
+fields land in the snapshot in ledger mode only; rendering them is increment 4
+of Issue #1747.
+
+### What a finding and a verdict are
+
+A **finding** is a review thread whose first comment a review tool wrote
+(GraphQL `reviewThreads`, first 100 comments per thread). Its verdict comes only
+from the replies after that first comment written by a GitHub `User` account —
+the same qualifying-reply rule as [deferred findings](review-policy.md#what-counts-as-a-follow-up-reply).
+A bot's reply, the tool's own included, never decides a verdict; GraphQL bot
+logins carry no `[bot]` suffix, so the account type is what is tested. Quoted
+lines (`> …`) are skipped, so a reply that quotes the finding cannot borrow its
+wording, its numbers, or a marker inside it.
+
+Each reply is read, in order of precedence:
+
+| Rule | Verdict |
+|---|---|
+| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> -->` outside any code span or fenced block | the marker's verdict |
+| The reply **starts** with `Declined`, `Not a defect`, or `Won't fix` (straight or curly apostrophe), after any leading @mentions, HTML comments, emphasis, or fenced code block | `declined` |
+| `Fixed in <sha>` anywhere outside a fenced code block (7–40 hex digits; backticks and a `commit` word tolerated) | `fixed` |
+| A follow-up link — `#N`, `owner/repo#N` for this repo, or an `/issues/N` URL | `deferred` |
+
+Fenced blocks are read as CommonMark reads them: a fence closes on a line of
+the same character (backtick or tilde) at least as long as its opener, and an
+unclosed fence runs to the end of the reply. Emphasis is up to three `*` or `_`
+characters (`***Declined***`, `_Won't fix_`).
+
+Per thread, the **latest marker** wins over everything; with no marker, the
+**latest reply whose wording matched** wins ("Fixed in…" then "Declined: on
+reflection…" is declined); with neither, the thread is `unanswered`.
+
+Two choices here are deliberate:
+
+- **A leading decline beats a cited number.** Replies in this repo cite PRs as
+  precedent ("Declined: same as the pattern in PR #1222"), and the follow-up
+  parser cannot tell an issue from a PR without a lookup. The opening verb is
+  the agent's stated disposition, so it wins. An agent deferring with a
+  decline-shaped opening should lead with "Deferred to" or stamp the marker.
+- **`deferred` is syntactic only.** The ledger reads links with the merge gate's
+  own parser (`.claude/scripts/lib/deferred-refs.jq`, one shared file), but makes
+  none of the gate's issue lookups: a batch audit over hundreds of threads should
+  not carry that API cost or its failure modes. The gate still verifies every
+  link it acts on.
+
+A marker whose verdict is unknown is ignored and counted in a note; the reply is
+then read by its wording. Only `defect=real` counts as a real defect — an unknown
+or missing value reads as not real — and an `agent` outside a plain token shape
+reads as unnamed.
+
+### The marker
+
+Real-defect judgment stays with the agent at reply time, which is where the
+evidence is; no text heuristic guesses it afterwards. `defect=real` means the
+test sales-kit Issue #184 §2.3 applied: as merged, the code or spec would have
+behaved incorrectly, insecurely, or undefinedly for a reachable input (or led a
+reader to build the wrong thing), and the fix closes a behavioral gap rather
+than style drift.
+
+`reply-thread.sh` writes the marker: `--verdict <v> --defect real|not` (plus
+`--agent <name>`, default `claude-code`) appends it as its own line after the
+reviewer's @mention rules run; without the flags a reply is byte-identical to
+before. A reply that ends inside an open fenced block gets that fence closed
+first, so the marker never lands in code where the ledger would skip it. The
+`agent` field is recorded so a later study can split results by
+coding agent without a second collection pass; this increment does not
+aggregate by it.
+
+### The fields
+
+| Field | Definition |
+|---|---|
+| `findings` | Threads whose first comment the tool wrote |
+| `valid` | `fixed` + `deferred` |
+| `real_defects` | Threads whose deciding marker says `defect=real`. A valid finding without the marker is not a real defect |
+| `declined`, `unanswered` | The other two verdicts |
+| `precision` | `valid / (valid + declined)`, 3 decimals; `null` when both are 0. Unanswered findings are left out: no verdict is not a no |
+| `cost_per_real_defect_usd` | `spend_usd / real_defects`, in cents; `null` when either is null or 0 — a $0.00 receipt floor per defect would read as free |
+| `median_response_min` | The median, over the PRs the tool reviewed or commented on, of the minutes from the start of its clock to its first review or comment |
+
+The clock starts at the earliest **trigger comment** for that tool that precedes
+its first response, and at PR open otherwise — so a tool that reviews at open on
+its own is never timed from a later re-request. Triggers are non-bot PR
+conversation comments outside quoted lines: `@coderabbitai review` or `@coderabbitai
+full review` (CodeRabbit), `@cursor review` (BugBot), `@codeant-ai review`
+(CodeAnt), `@graphite-app re-review` (Graphite), any `@greptileai` mention
+(Greptile). Vercel has none. A PR the tool cannot be timed on is left out of the
+median and counted in a note: one where any of its responses has no timestamp
+(that response may have been the first, so a later dated one never stands in),
+or one with nothing to start from.
+
+Multi-repo totals are recomputed, never averaged: counts are summed, precision
+comes from the summed counts, the median pools every repo's response times, and
+the cost divides the total spend. Each repo's cost divides its own share of a
+flat fee after the split.
+
+### Limits
+
+- **The sample is the PRs, not the window.** Threads are read for every PR the
+  run samples (merged in the window, up to `--limit`), whenever the reply came;
+  spend is timed by event inside the window. At the window's edges the two do
+  not line up exactly, so cost per real defect is an approximation there.
+- **100 comments per thread.** A reply past the 100th is unseen; a thread that
+  long is counted in a note.
+- **Fallback replies are outside the thread.** `reply-thread.sh` posts a PR-level
+  comment when the inline reply 404s, and the ledger reads only thread replies,
+  so that finding reads `unanswered`.
+
+### Comparing with sales-kit Issue #184
+
+Shared: the four outcomes (fixed, deferred, declined, unanswered), valid as
+fixed plus deferred, and the real-defect test above. Different, and worth
+reading before putting the two side by side:
+
+- **Spend.** sales-kit Issue #184's headline cost per real defect uses
+  **marginal** spend, the extra cost a review added. That is why it shows
+  CodeAnt at $0.00 — the seat is paid either way. This ledger reports CodeAnt's
+  **prorated flat** fee (the `flat` label), so its CodeAnt figure is not $0.00
+  and is not comparable with that marginal one.
+- **Who judged real.** That ledger classified real defects afterwards, by a
+  verifier pass, so a real defect could be unanswered or declined. Here only the
+  replying agent's marker makes one, so a finding nobody stamped is never real.
+- **What a finding is.** That ledger also counted findings written in a review
+  body; this one counts review threads only.
+
 ## What this audit will not do
 
 It never edits a rule, skill, script, or config, and never touches a

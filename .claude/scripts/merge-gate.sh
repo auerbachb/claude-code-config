@@ -1192,24 +1192,21 @@ case "$REVIEW_TIER_GATE" in
   ci-only|ci+codeant-one-round)
     if [[ "$UNRESOLVED_TOTAL" -gt 0 ]]; then
       # One array per unresolved thread: the same-repo numbers its human
-      # replies reference. A jq failure leaves it empty → nothing defers.
-      DEFER_REFS_JSON=$(printf '%s' "$THREADS_JSON" | jq -c --arg repo "$OWNER/$REPO" '
-        ($repo | ascii_downcase) as $self
-        | [ .data.repository.pullRequest.reviewThreads.nodes[]?
-            | select(.isResolved == false)
-            | [ ((.comments.nodes // [])[1:])[]?
-                | select((.author.__typename // "") == "User")
-                | select(((.author.login // "") | endswith("[bot]")) | not)
-                | (.body // "") | strings
-                | gsub("(^|\n)[ \t]*>[^\n]*"; "\n")
-                | scan("(?<![A-Za-z0-9_./-])https?://(?:www\\.)?github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([0-9]{1,9})(?![A-Za-z0-9_])|(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]{1,9})(?![A-Za-z0-9_])|(?<![A-Za-z0-9_./&#-])#([0-9]{1,9})(?![A-Za-z0-9_])")
-                | if .[2] != null then {r: ((.[0] + "/" + .[1]) | ascii_downcase), n: .[2]}
-                  elif .[5] != null then {r: ((.[3] + "/" + .[4]) | ascii_downcase), n: .[5]}
-                  else {r: $self, n: .[6]} end
-                | select(.r == $self)
-                | (.n | tonumber)
-                | select(. > 0) ]
-            | unique ]' 2>/dev/null) || DEFER_REFS_JSON=""
+      # replies reference. The link parser itself lives in
+      # lib/deferred-refs.jq, shared with the review-stack-audit ledger
+      # (issue #1810) so the two can never disagree on what a follow-up link
+      # is. A jq failure — the module missing included — leaves it empty →
+      # nothing defers.
+      DEFER_REFS_JSON=$(printf '%s' "$THREADS_JSON" | jq -c -L "$SCRIPT_DIR/lib" --arg repo "$OWNER/$REPO" '
+        include "deferred-refs";
+        [ .data.repository.pullRequest.reviewThreads.nodes[]?
+          | select(.isResolved == false)
+          | [ ((.comments.nodes // [])[1:])[]?
+              | select((.author.__typename // "") == "User")
+              | select(((.author.login // "") | endswith("[bot]")) | not)
+              | (.body // "") | strings
+              | deferred_refs($repo)[] ]
+          | unique ]' 2>/dev/null) || DEFER_REFS_JSON=""
       if [[ -z "$DEFER_REFS_JSON" ]]; then
         echo "[merge-gate] could not parse review-thread replies for follow-up links — every unresolved thread stays blocking (issue #1727)" >&2
         DEFER_REFS_JSON='[]'

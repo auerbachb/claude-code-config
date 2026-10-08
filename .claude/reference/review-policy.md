@@ -93,6 +93,8 @@ A reply qualifies only when all of these hold:
 
 A `/pull/` URL never matches. Neither does a reference to another repo, or a number glued to a word or a path (`abc#12`, `a/b/c#12`). Quoted lines (`> …`) are skipped, so quoting a bot's finding cannot defer the thread on an issue number the bot wrote.
 
+The parser for these forms and the quoted-line rule is `.claude/scripts/lib/deferred-refs.jq`. The merge gate and the `/review-stack-audit` ledger's verdict classifier (Issue #1810) both load that one file, so they cannot disagree on what a follow-up link is.
+
 Two read limits apply, both on the blocking side. Only the first 100 comments of a thread are read, so a follow-up link posted after the 100th stays unseen. An issue number has at most nine digits, which keeps it exact through `tonumber`. A link past either limit leaves the thread blocking; post the follow-up reply earlier in the thread, or resolve the thread instead.
 
 ### How a link is verified

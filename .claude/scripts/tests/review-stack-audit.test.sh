@@ -986,7 +986,9 @@ inner="$(jget "$OUT" "[c['pr'] for r in d['per_repo'] for t in r['tools'] for c 
 # per_repo[i] IS the single-repo document: measure each repo alone through the
 # single-repo path and compare whole documents (clock fields aside). A multi-repo
 # run is a ledger run (#1809), so each per_repo tool also carries the two spend
-# fields — and ONLY those, which is what stripping them and comparing proves.
+# fields and the eight value fields (#1810) — and ONLY those, which is what
+# stripping them and comparing proves. The ledger's own notes (#1810: here, the
+# fixture's untimed responses) are stripped the same way.
 python3 - "$MULTI" "$TMP_DIR" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -1002,17 +1004,24 @@ for r in acme/one acme/two; do
 import json, sys
 multi = json.load(open(sys.argv[1]))["per_repo"][int(sys.argv[3])]
 single = json.load(open(sys.argv[2]))
+VALUE = ("findings", "valid", "real_defects", "declined", "unanswered",
+         "precision", "cost_per_real_defect_usd", "median_response_min")
 for t in multi["tools"]:
     if t.get("spend_source") not in ("receipt", "estimate", "flat", "none") or "spend_usd" not in t:
         sys.exit(1)
+    if any(k not in t for k in VALUE):
+        sys.exit(1)
     del t["spend_usd"], t["spend_source"]
+    for k in VALUE:
+        del t[k]
+multi["notes"] = [n for n in multi["notes"] if "could not be timed" not in n]
 for doc in (multi, single):
     doc.pop("generated_at", None)
 sys.exit(0 if multi == single else 1)
 PY
   idx=$((idx + 1))
 done
-[[ $same -eq 1 ]] && ok "measure: each per_repo[] entry equals that repo's single-repo document, plus spend fields" \
+[[ $same -eq 1 ]] && ok "measure: each per_repo[] entry equals that repo's single-repo document, plus spend and value fields" \
   || fail "measure: a per_repo[] entry differs from the single-repo document for the same repo"
 
 # drift.sh must read the roll-up unchanged — that is why the total lives in a
@@ -1072,18 +1081,25 @@ json.dump(d, open(sys.argv[2], "w"))
 PY
 OUT="$TMP_DIR/multi-trunc.out.json"
 # A fully-priced --pricing file: with every rate known, the ledger adds no
-# run-wide note, so the merged notes below are exactly the repos' own.
+# run-wide note, so the merged notes below are exactly the repos' own. This
+# fixture carries no timestamps, so each repo also gets the value fields'
+# untimed-response note (#1810); it is counted, then set aside, so the
+# assertions below still pin the order of the repos' other notes.
 "$MEASURE" --fixture "$TRUNC_MULTI" --repos acme/one,acme/two --pricing "$PRICING_FULL" --json > "$OUT" \
   || fail "measure: truncated multi-repo run failed"
 w="$(jget "$OUT" "(d['window']['truncated'], d['window']['pr_count'], [r['window']['truncated'] for r in d['per_repo']])")"
 [[ "$w" == "(True, 4, [False, True])" ]] \
   && ok "measure: one truncated repo makes window.truncated true; pr_count is summed" \
   || fail "measure: truncation/pr_count roll-up wrong: $w"
-notes="$(jget "$OUT" "[n.split(':')[0] for n in d['notes']]")"
+untimed="$(jget "$OUT" "[n.split(':')[0] for n in d['notes'] if 'could not be timed' in n]")"
+[[ "$untimed" == "['acme/one', 'acme/two']" ]] \
+  && ok "measure: each repo's untimed-response note merges tagged with its repo" \
+  || fail "measure: untimed-response notes wrong: $untimed"
+notes="$(jget "$OUT" "[n.split(':')[0] for n in d['notes'] if 'could not be timed' not in n]")"
 [[ "$notes" == "['acme/two', 'acme/two']" ]] \
   && ok "measure: notes merge into one array, each tagged with its repo" \
   || fail "measure: merged notes wrong: $notes"
-case "$(jget "$OUT" "d['notes'][0]")" in
+case "$(jget "$OUT" "[n for n in d['notes'] if 'could not be timed' not in n][0]")" in
   "acme/two: Sample hit the --limit"*) ok "measure: the truncation note survives the merge" ;;
   *) fail "measure: truncation note missing from merged notes" ;;
 esac
@@ -1517,6 +1533,387 @@ if [[ $rc_legacy -eq 0 && -s "$TMP_DIR/iso-legacy.out" && $rc_ledger -eq 1 && ! 
   ok "ledger: without the library the legacy path still runs and ledger mode fails closed"
 else
   fail "ledger: library isolation wrong (legacy rc=$rc_legacy, ledger rc=$rc_ledger)"
+fi
+
+# ---------------------------------------------------------------------------
+# measure.sh — value fields: reply verdicts, precision, cost per real defect,
+# response time (issue #1810)
+# ---------------------------------------------------------------------------
+
+# One PR, one tool per concern, so each tool's tuple below isolates one rule:
+#   coderabbit  Test Plan item 1 — the four canonical replies
+#   greptile    Test Plan item 2 — replies that must NOT decide a verdict
+#   bugbot      Test Plan item 3 — a marker-only reply vs a bare `Fixed in`
+#   codeant     marker precedence, unknown/quoted/code-span markers, latest
+#               wording, the leading decline, same-repo follow-up forms
+# plus a human's own thread and malformed thread entries, which count nowhere.
+# No tool has a review or comment here, so no response time is measured and no
+# untimed note is due.
+VALUE_F="$TMP_DIR/value.json"
+cat > "$VALUE_F" <<'JSON'
+{"repo": "test/repo", "prs": [
+ {"number": 1, "merged_at": "2025-10-05T00:00:00Z", "reviews": [], "pr_comments": [], "issue_comments": [],
+  "check_runs": [{"id": 1, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-02T00:00:00Z"},
+                 {"id": 2, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-03T00:00:00Z"},
+                 {"id": 3, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-04T00:00:00Z"}],
+  "threads": [
+   {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Rename this."},
+                 {"user": "auerbachb", "user_type": "User", "body": "@coderabbitai Fixed in abc1234"}]},
+   {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Add a test."},
+                 {"user": "auerbachb", "user_type": "User", "body": "Deferred to #12 — not severe"}]},
+   {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Use a set."},
+                 {"user": "auerbachb", "user_type": "User", "body": "Declined: the sibling pattern does this"}]},
+   {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Nit."}]},
+
+   {"comments": [{"user": "greptile-apps[bot]", "user_type": "Bot", "body": "P1: race."},
+                 {"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Fixed in abc1234, see #12"}]},
+   {"comments": [{"user": "greptile-apps[bot]", "user_type": "Bot", "body": "P2: Fixed in abc1234 upstream? See #12."},
+                 {"user": "auerbachb", "user_type": "User", "body": "> P2: Fixed in abc1234 upstream? See #12.\n> Declined"}]},
+   {"comments": [{"user": "greptile-apps[bot]", "user_type": "Bot", "body": "P2: typo."},
+                 {"user": "github-actions[bot]", "user_type": "User", "body": "Fixed in abc1234"}]},
+   {"comments": [{"user": "greptile-apps[bot]", "user_type": "Bot", "body": "P2: name."},
+                 {"user": "auerbachb", "body": "Fixed in abc1234"}]},
+
+   {"comments": [{"user": "cursor[bot]", "user_type": "Bot", "body": "Bug: off by one."},
+                 {"user": "auerbachb", "user_type": "User", "body": "<!-- review-verdict: fixed defect=real agent=claude-code -->"}]},
+   {"comments": [{"user": "cursor[bot]", "user_type": "Bot", "body": "Bug: null deref."},
+                 {"user": "auerbachb", "user_type": "User", "body": "Fixed in abc1234"}]},
+
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "a"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Declined: not needed\n<!-- review-verdict: fixed defect=not agent=codex -->"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "b"},
+                 {"user": "auerbachb", "user_type": "User", "body": "<!-- review-verdict: declined defect=not -->"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Reconsidered.\n<!-- review-verdict: deferred defect=real agent=cursor -->"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "c"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Declined: duplicate\n<!-- review-verdict: maybe defect=real -->"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "d"},
+                 {"user": "auerbachb", "user_type": "User", "body": "> <!-- review-verdict: fixed defect=real -->\nthanks"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "e"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Next time use `<!-- review-verdict: fixed defect=real -->` here"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "f"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Fixed in abc1234"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Declined: on reflection the bot was wrong; reverted"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "g"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Declined: same as the pattern in #1222"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "h"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Deferred to test/repo#40"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "i"},
+                 {"user": "auerbachb", "user_type": "User", "body": "Deferred to other/repo#40"}]},
+   {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "j"},
+                 {"user": "auerbachb", "user_type": "User", "body": "See https://github.com/test/repo/pull/41"}]},
+
+   {"comments": [{"user": "auerbachb", "user_type": "User", "body": "Question for reviewers?"},
+                 {"user": "coderabbitai[bot]", "user_type": "Bot", "body": "Answer."}]},
+   {"comments": []},
+   "not a thread",
+   {"comments": "not a list"},
+   {"comments": [null, {"user": "coderabbitai[bot]", "user_type": "Bot", "body": "a reply is never promoted to finding"}]},
+   {"comments": [{"user": "graphite-app[bot]", "user_type": "Bot", "body": null}, null,
+                 {"user": "auerbachb", "user_type": "User", "body": null}]}
+  ]}
+]}
+JSON
+OUT="$TMP_DIR/value.out.json"
+"$MEASURE" --fixture "$VALUE_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" 2>"$TMP_DIR/value.err" \
+  || fail "value: ledger run over the verdict fixture failed: $(head -c 300 "$TMP_DIR/value.err")"
+vt() { jget "$OUT" "[(t['findings'], t['valid'], t['real_defects'], t['declined'], t['unanswered'], t['precision']) for t in d['tools'] if t['key']=='$1'][0]"; }
+r="$(vt coderabbit)"
+[[ "$r" == "(4, 2, 0, 1, 1, 0.667)" ]] \
+  && ok "value: Fixed in / Deferred to #12 / Declined: / no reply give valid=2 declined=1 unanswered=1 precision=0.667" \
+  || fail "value: canonical verdicts wrong for coderabbit (findings, valid, real, declined, unanswered, precision): $r"
+r="$(vt greptile)"
+[[ "$r" == "(4, 0, 0, 0, 4, None)" ]] \
+  && ok "value: a bot reply, a quote-only reply, a [bot] login, and a reply with no account type all leave a thread unanswered" \
+  || fail "value: greptile threads should all be unanswered: $r"
+r="$(vt bugbot)"
+[[ "$r" == "(2, 2, 1, 0, 0, 1.0)" ]] \
+  && ok "value: a marker-only reply is fixed and one real defect; a bare Fixed in is fixed and not a real defect" \
+  || fail "value: bugbot marker/wording split wrong: $r"
+r="$(vt codeant)"
+[[ "$r" == "(10, 3, 1, 3, 4, 0.5)" ]] \
+  && ok "value: marker beats wording, latest marker and latest wording win, quoted/code/unknown markers are ignored, the leading decline beats a cited number, follow-ups count only for this repo's issues" \
+  || fail "value: codeant precedence cases wrong: $r"
+r="$(jget "$OUT" "[(t['findings'], t['unanswered'], t['precision'], t['median_response_min']) for t in d['tools'] if t['key'] in ('graphite', 'vercel')]")"
+[[ "$r" == "[(1, 1, None, None), (0, 0, None, None)]" ]] \
+  && ok "value: a human's own thread and malformed entries are nobody's finding; null bodies and null replies read as unanswered" \
+  || fail "value: malformed-thread handling wrong (graphite, vercel): $r"
+# Test Plan item 4, through the snapshot: BugBot's 3 runs x \$2.00 over its one
+# real defect; CodeRabbit has spend but no real defect; CodeAnt's flat \$62.00
+# over its one real defect.
+r="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['cost_per_real_defect_usd']) for t in d['tools'] if t['key'] in ('coderabbit', 'codeant', 'bugbot')]")"
+[[ "$r" == "[('coderabbit', 0.0, None), ('codeant', 62.0, 62.0), ('bugbot', 6.0, 6.0)]" ]] \
+  && ok "value: cost_per_real_defect_usd is spend_usd / real_defects, null with no real defect" \
+  || fail "value: cost per real defect wrong: $r"
+r="$(jget "$OUT" "[n for n in d['notes'] if 'review-verdict marker' in n]")"
+case "$r" in
+  "['1 review-verdict marker(s) named no known verdict"*) ok "value: the one unknown-verdict marker is ignored and counted in a note" ;;
+  *) fail "value: expected exactly one note counting 1 ignored marker, got $r" ;;
+esac
+r="$(jget "$OUT" "sum(1 for n in d['notes'] if 'could not be timed' in n)")"
+[[ "$r" == "0" ]] && ok "value: no response, no untimed-response note" \
+  || fail "value: a fixture with no tool responses produced an untimed note"
+# A null rate nulls the cost too, never divides a missing spend.
+"$MEASURE" --fixture "$VALUE_F" --ledger --pricing "$PRICING_NULL_BB" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/value-null.out.json" \
+  || fail "value: null-rate ledger run failed"
+r="$(jget "$TMP_DIR/value-null.out.json" "[(t['spend_usd'], t['real_defects'], t['cost_per_real_defect_usd']) for t in d['tools'] if t['key']=='bugbot'][0]")"
+[[ "$r" == "(None, 1, None)" ]] && ok "value: cost_per_real_defect_usd is null when spend_usd is null" \
+  || fail "value: null spend should null the cost: $r"
+# Legacy parity: the same fixture without --ledger carries no value field.
+"$MEASURE" --fixture "$VALUE_F" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/value-legacy.out.json" \
+  || fail "value: legacy run over the verdict fixture failed"
+r="$(jget "$TMP_DIR/value-legacy.out.json" "sorted({k for t in d['tools'] for k in t} & {'findings', 'valid', 'real_defects', 'declined', 'unanswered', 'precision', 'cost_per_real_defect_usd', 'median_response_min'})")"
+[[ "$r" == "[]" ]] && ok "value: a run without --ledger carries no value field" \
+  || fail "value: legacy run leaked value fields: $r"
+
+# Response time. PR 1: CodeRabbit reviews at open+10m on its own — a later
+# `@coderabbitai full review` does not move the start. BugBot answers the
+# earliest HUMAN `@cursor review` (01:00) at 01:15:30; the earlier bot-posted
+# and quoted triggers must not start its clock. PR 2: CodeRabbit at +20m,
+# BugBot untriggered at +45m, Vercel at +5m, and a Greptile review with no
+# timestamp, which cannot be timed. Medians: CodeRabbit (10, 20) -> 15.0;
+# BugBot (15.5, 45) -> 30.25, rounded half-up -> 30.3.
+MEDIAN_F="$TMP_DIR/median.json"
+cat > "$MEDIAN_F" <<'JSON'
+{"repo": "test/repo", "prs": [
+ {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
+  "reviews": [{"user": "coderabbitai[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-02T00:10:00Z"}],
+  "pr_comments": [{"user": "cursor[bot]", "body": "bug", "created_at": "2025-10-02T01:15:30Z"}],
+  "issue_comments": [
+    {"user": "auerbachb", "created_at": "2025-10-02T00:30:00Z", "body": "@coderabbitai full review"},
+    {"user": "github-actions[bot]", "created_at": "2025-10-02T00:40:00Z", "body": "@cursor review"},
+    {"user": "auerbachb", "created_at": "2025-10-02T00:50:00Z", "body": "> @cursor review\nquoting the CI comment"},
+    {"user": "auerbachb", "created_at": "2025-10-02T01:00:00Z", "body": "@cursor review"},
+    {"user": "auerbachb", "created_at": "2025-10-02T01:05:00Z", "body": "@cursor review"}]},
+ {"number": 2, "merged_at": "2025-10-04T00:00:00Z", "created_at": "2025-10-03T00:00:00Z",
+  "reviews": [{"user": "coderabbitai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T00:20:00Z"},
+              {"user": "greptile-apps[bot]", "state": "COMMENTED", "body": ""}],
+  "pr_comments": [{"user": "cursor[bot]", "body": "bug", "created_at": "2025-10-03T00:45:00Z"}],
+  "issue_comments": [{"user": "vercel[bot]", "created_at": "2025-10-03T00:05:00Z", "body": "Deployed."}]}
+]}
+JSON
+OUT="$TMP_DIR/median.out.json"
+"$MEASURE" --fixture "$MEDIAN_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
+  || fail "value: median fixture run failed"
+r="$(jget "$OUT" "[(t['key'], t['median_response_min']) for t in d['tools']]")"
+[[ "$r" == "[('coderabbit', 15.0), ('codeant', None), ('bugbot', 30.3), ('greptile', None), ('graphite', None), ('vercel', 5.0)]" ]] \
+  && ok "value: median_response_min starts at PR open or the earliest preceding human trigger, rounds half-up" \
+  || fail "value: median_response_min wrong: $r"
+r="$(jget "$OUT" "[n for n in d['notes'] if 'could not be timed' in n]")"
+case "$r" in
+  "['1 tool response(s) could not be timed"*) ok "value: an undated response is left out of the median and counted in a note" ;;
+  *) fail "value: expected one untimed-response note counting 1, got $r" ;;
+esac
+
+# Multi-repo totals pool, never average. CodeRabbit: acme/one 2 fixed (1.0),
+# acme/two 1 declined (0.0) -> pooled 2/3 = 0.667 (an average would be 0.5).
+# CodeAnt answers in 10m on acme/one and 20m/30m on acme/two -> pooled median
+# 20.0 (a median of medians would be 17.5). CodeAnt's \$62.00 flat fee splits
+# 20.67 / 41.33 by prs_touched 1:2, and each repo's cost per real defect
+# divides ITS share, not the whole fee; the total divides the total.
+VALUE_MULTI="$TMP_DIR/value-multi.json"
+cat > "$VALUE_MULTI" <<'JSON'
+{"repos": [
+ {"repo": "acme/one", "prs": [
+   {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:10:00Z"}],
+    "pr_comments": [], "issue_comments": [],
+    "threads": [
+     {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "x"},
+                   {"user": "dev", "user_type": "User", "body": "Fixed in abc1234"}]},
+     {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "y"},
+                   {"user": "dev", "user_type": "User", "body": "Fixed in def5678"}]},
+     {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "z"},
+                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: fixed defect=real agent=claude-code -->"}]}]}]},
+ {"repo": "acme/two", "prs": [
+   {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:20:00Z"}],
+    "pr_comments": [], "issue_comments": [],
+    "threads": [
+     {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "x"},
+                   {"user": "dev", "user_type": "User", "body": "Declined: intended"}]},
+     {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "z"},
+                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: deferred defect=real agent=codex -->"}]}]},
+   {"number": 2, "merged_at": "2025-10-04T00:00:00Z", "created_at": "2025-10-03T00:00:00Z",
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T00:30:00Z"}],
+    "pr_comments": [], "issue_comments": []}]}
+]}
+JSON
+OUT="$TMP_DIR/value-multi.out.json"
+"$MEASURE" --fixture "$VALUE_MULTI" --repos acme/one,acme/two --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
+  || fail "value: two-repo value run failed"
+r="$(jget "$OUT" "([[x['precision'] for x in r['tools'] if x['key']=='coderabbit'][0] for r in d['per_repo']], [t['precision'] for t in d['tools'] if t['key']=='coderabbit'][0])")"
+[[ "$r" == "([1.0, 0.0], 0.667)" ]] && ok "value: the total's precision comes from summed counts (0.667), not an average of 1.0 and 0.0" \
+  || fail "value: pooled precision wrong: $r"
+r="$(jget "$OUT" "([[x['median_response_min'] for x in r['tools'] if x['key']=='codeant'][0] for r in d['per_repo']], [t['median_response_min'] for t in d['tools'] if t['key']=='codeant'][0])")"
+[[ "$r" == "([10.0, 25.0], 20.0)" ]] && ok "value: the total's median pools every repo's response times (20.0), not a median of medians" \
+  || fail "value: pooled median wrong: $r"
+r="$(jget "$OUT" "([[(x['spend_usd'], x['real_defects'], x['cost_per_real_defect_usd']) for x in r['tools'] if x['key']=='codeant'][0] for r in d['per_repo']], [(t['spend_usd'], t['real_defects'], t['cost_per_real_defect_usd']) for t in d['tools'] if t['key']=='codeant'][0])")"
+[[ "$r" == "([(20.67, 1, 20.67), (41.33, 1, 41.33)], (62.0, 2, 31.0))" ]] \
+  && ok "value: each repo's cost divides its reallocated flat-fee share; the total divides the total" \
+  || fail "value: per-repo/total cost per real defect wrong: $r"
+r="$(jget "$OUT" "[(t['key'], t['findings'], t['valid'], t['real_defects'], t['declined'], t['unanswered']) for t in d['tools'] if t['key'] in ('coderabbit', 'codeant')]")"
+[[ "$r" == "[('coderabbit', 3, 2, 0, 1, 0), ('codeant', 2, 2, 2, 0, 0)]" ]] \
+  && ok "value: the total's counts are the sum of the per-repo counts" \
+  || fail "value: total counts wrong: $r"
+
+# The library directly: rounding, null rules, and parser parity edge cases a
+# fixture reaches only awkwardly.
+value_lib_probe() {
+  python3 - "$REPO_ROOT/.claude/scripts/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+D = L.Decimal
+def verdict(body, repo="test/repo"):
+    p = L.parse_bodies([{"repo": repo, "body": body}])[0]
+    return L.classify_reply(p["stripped"], p["refs"])[0]
+def tally(**kw):
+    t = L._empty_tally(); t.update(kw); return t
+def undated_response_is_not_skipped():
+    # An undated review plus a dated comment at +30m: the review may have been
+    # first, so the PR is untimed and noted, never timed at 30m.
+    prs = [{"created_at": "2025-10-02T00:00:00Z",
+            "reviews": [{"user": "coderabbitai[bot]", "state": "COMMENTED", "body": ""}],
+            "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2025-10-02T00:30:00Z", "body": "x"}]}]
+    t, notes = L.measure_value(prs, "test/repo", {"coderabbitai[bot]": "coderabbit"}, ["coderabbit"])
+    return (t["coderabbit"]["samples"] == [] and len(notes) == 1
+            and notes[0].startswith("1 tool response(s) could not be timed"))
+checks = [
+    ("cost-null-zero-defects", L.cost_per_real_defect(D("6.00"), 0) is None),
+    ("cost-null-null-spend", L.cost_per_real_defect(None, 3) is None),
+    ("cost-null-zero-spend", L.cost_per_real_defect(D("0.00"), 3) is None),
+    ("cost-divides-in-cents", L.cost_per_real_defect(D("10.00"), 3) == D("3.33")),
+    ("precision-null-when-only-unanswered", L.value_fields(tally(findings=2, unanswered=2), None)["precision"] is None),
+    ("precision-excludes-unanswered", L.value_fields(tally(findings=5, valid=1, declined=1, unanswered=3), None)["precision"] == 0.5),
+    # 1/16 = 0.0625 exactly, a true tie at 3 decimals: half-up gives 0.063,
+    # banker's rounding (Python's round) and truncation give 0.062.
+    ("precision-rounds-half-up", L.value_fields(tally(findings=16, valid=1, declined=15), None)["precision"] == 0.063),
+    ("cr-mention-then-decline", verdict("@coderabbitai Declined: matches the sibling pattern") == "declined"),
+    ("curly-wont-fix", verdict("Won’t fix — by design") == "declined"),
+    ("bold-not-a-defect", verdict("**Not a defect** — intended") == "declined"),
+    ("triple-emphasis-decline-beats-a-number", verdict("***Declined*** — same as #12") == "declined"),
+    ("underscore-emphasis-decline", verdict("_Declined_ — same as #12") == "declined"),
+    ("mixed-emphasis-decline", verdict("**_Won't fix_** — see #12") == "declined"),
+    ("decline-glued-to-a-word-is-not", verdict("Declinedness of #12") == "deferred"),
+    ("longer-closing-fence-closes", verdict("```\nlog\n`````\nFixed in abc1234") == "fixed"),
+    ("shorter-line-does-not-close-a-fence", verdict("````\n```\nFixed in abc1234") is None),
+    ("tilde-line-does-not-close-a-backtick-fence", verdict("```\n~~~\nFixed in abc1234") is None),
+    ("decline-mid-sentence-is-not-a-decline", verdict("I declined to rename it") is None),
+    ("fixed-backticks-and-commit", verdict("Fixed in commit `abc1234`.") == "fixed"),
+    ("fixed-needs-a-sha", verdict("Fixed in the next PR") is None),
+    ("fixed-in-a-fenced-example-is-not-a-fix", verdict("Reply like this:\n```\nFixed in abc1234\n```") is None),
+    ("decline-after-a-leading-fence-is-a-decline", verdict("```\nlog line\n```\nDeclined: expected output") == "declined"),
+    ("decline-only-inside-a-fence-is-not", verdict("See:\n```\nDeclined: example\n```") is None),
+    ("fixed-beats-a-follow-up", verdict("Fixed in abc1234; the rest is #12") == "fixed"),
+    ("issue-url-defers", verdict("Tracked in https://github.com/test/repo/issues/77") == "deferred"),
+    ("pr-url-does-not-defer", verdict("See https://github.com/test/repo/pull/77") is None),
+    ("other-repo-does-not-defer", verdict("Deferred to other/repo#77") is None),
+    ("glued-number-does-not-defer", verdict("see abc#12") is None),
+    ("same-repo-any-case-defers", verdict("Deferred to TEST/Repo#77") == "deferred"),
+    ("unknown-defect-is-not-real", L.parse_marker(" fixed defect=maybe agent=x ") == {"verdict": "fixed", "defect": None, "agent": "x"}),
+    ("bad-agent-is-unnamed", L.parse_marker(" fixed defect=real agent=a<b ")["agent"] is None),
+    ("unknown-verdict-is-no-marker", L.parse_marker(" maybe defect=real ") is None),
+    ("empty-marker-is-no-marker", L.parse_marker("   ") is None),
+    ("fenced-marker-ignored", L.classify_reply("```\n<!-- review-verdict: fixed defect=real -->\n```\nok", [])[1] is None),
+    ("unterminated-fence-marker-ignored", L.classify_reply("```\n<!-- review-verdict: fixed defect=real -->", [])[1] is None),
+    ("marker-after-a-longer-closing-fence-counts", L.classify_reply("~~~\nx\n~~~~~  \n<!-- review-verdict: fixed defect=real -->", [])[1]["verdict"] == "fixed"),
+    ("later-marker-in-a-reply-wins", L.classify_reply("<!-- review-verdict: declined defect=not -->\n<!-- review-verdict: fixed defect=real -->", [])[1]["verdict"] == "fixed"),
+    ("no-items-no-jq", L.parse_bodies([]) == []),
+    ("undated-response-is-not-skipped", undated_response_is_not_skipped()),
+]
+try:
+    L.parse_bodies([{"repo": "a/b", "body": "x"}], lib_dir=sys.argv[1] + "/no-such-dir")
+    checks.append(("missing-module-fails-closed", False))
+except L.LedgerError:
+    checks.append(("missing-module-fails-closed", True))
+print(";".join("%s=%s" % (n, "ok" if r else "BAD") for n, r in checks))
+PY
+}
+VALUE_LIB="$(value_lib_probe)"
+case "$VALUE_LIB" in
+  *BAD*|"") fail "value: library rule probe failed: $VALUE_LIB" ;;
+  *) ok "value: library cost/precision/wording/parser-parity rules hold ($VALUE_LIB)" ;;
+esac
+
+# The ledger and the merge gate read follow-up links through ONE parser. Both
+# carry it by include; neither may grow its own copy of the reference regex.
+gate_inline="$(grep -c 'issues/(\[0-9\]{1,9})' "$REPO_ROOT/.claude/scripts/merge-gate.sh")"
+gate_include="$(grep -c 'include "deferred-refs"' "$REPO_ROOT/.claude/scripts/merge-gate.sh")"
+ledger_include="$(grep -c 'include "deferred-refs"' "$REPO_ROOT/.claude/scripts/lib/review_ledger.py")"
+[[ "$gate_inline" == "0" && "$gate_include" == "1" && "$ledger_include" == "1" ]] \
+  && ok "value: merge-gate.sh and review_ledger.py both include deferred-refs.jq; neither inlines the link regex" \
+  || fail "value: follow-up parser not shared (gate inline=$gate_inline, gate include=$gate_include, ledger include=$ledger_include)"
+
+# The live path, through a stub gh: ledger mode reads every reviewThreads page
+# (two concatenated pages here), suffixes GraphQL bot logins with [bot] so the
+# finding is attributed, decides verdicts on the GraphQL account type, times the
+# response from the PR's createdAt, and notes a thread past 100 comments. The
+# legacy run over the same stub never issues the GraphQL call at all.
+GH_STUB="$TMP_DIR/gh-stub"
+mkdir -p "$GH_STUB"
+cat > "$GH_STUB/graphql.json" <<'JSON'
+{"data":{"repository":{"pullRequest":{"createdAt":"2025-10-02T00:00:00Z","reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[
+ {"comments":{"totalCount":2,"nodes":[
+  {"author":{"__typename":"Bot","login":"coderabbitai"},"body":"Rename.","createdAt":"2025-10-02T00:12:00Z"},
+  {"author":{"__typename":"User","login":"auerbachb"},"body":"Fixed in abc1234","createdAt":"2025-10-02T01:00:00Z"}]}}]}}}}}
+{"data":{"repository":{"pullRequest":{"createdAt":"2025-10-02T00:00:00Z","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+ {"comments":{"totalCount":150,"nodes":[
+  {"author":{"__typename":"Bot","login":"coderabbitai"},"body":"Nit.","createdAt":"2025-10-02T00:12:00Z"},
+  {"author":{"__typename":"Bot","login":"cursor"},"body":"Fixed in abc1234","createdAt":"2025-10-02T02:00:00Z"},
+  {"author":null,"body":"Declined: ghost","createdAt":"2025-10-02T03:00:00Z"}]}}]}}}}}
+JSON
+cat > "$GH_STUB/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+case "$1 $2" in
+  "pr list")     echo '[{"number":5,"mergedAt":"2025-10-05T00:00:00Z"}]' ;;
+  "api graphql") cat "$GH_STUB_DIR/graphql.json" ;;
+  api\ */pulls/5/reviews*)
+    echo '[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","body":"","submitted_at":"2025-10-02T00:10:00Z"}]' ;;
+  "api "*)       echo '[]' ;;
+  *)             echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$GH_STUB/gh"
+: > "$GH_STUB/calls"
+GH_STUB_DIR="$GH_STUB" PATH="$GH_STUB:$PATH" "$MEASURE" --repo stub/repo --ledger --pricing "$PRICING_FULL" \
+  --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/value-live.out.json" 2>"$TMP_DIR/value-live.err" \
+  || fail "value: stubbed live ledger run failed: $(head -c 300 "$TMP_DIR/value-live.err")"
+r="$(jget "$TMP_DIR/value-live.out.json" "[(t['findings'], t['valid'], t['unanswered'], t['median_response_min']) for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$r" == "(2, 1, 1, 10.0)" ]] \
+  && ok "value: live threads across two GraphQL pages attribute to coderabbit; a Bot or ghost reply decides nothing; timed from createdAt" \
+  || fail "value: live GraphQL thread normalization wrong (findings, valid, unanswered, median): $r"
+r="$(jget "$TMP_DIR/value-live.out.json" "[n for n in d['notes'] if 'more than 100 comments' in n]")"
+case "$r" in
+  "['1 review thread(s) carried more than 100 comments"*) ok "value: a thread past 100 comments is noted, not silently judged on part of its replies" ;;
+  *) fail "value: expected one truncated-thread note, got $r" ;;
+esac
+grep -q '^api graphql --paginate' "$GH_STUB/calls" \
+  && ok "value: ledger mode reads review threads through gh api graphql --paginate" \
+  || fail "value: ledger mode never called gh api graphql"
+: > "$GH_STUB/calls"
+GH_STUB_DIR="$GH_STUB" PATH="$GH_STUB:$PATH" "$MEASURE" --repo stub/repo --since 2025-10-01 --until 2025-10-31 --json \
+  > "$TMP_DIR/value-live-legacy.out.json" 2>/dev/null || fail "value: stubbed live legacy run failed"
+if ! grep -q 'graphql\|/commits' "$GH_STUB/calls" \
+   && [[ "$(jget "$TMP_DIR/value-live-legacy.out.json" "sorted({k for t in d['tools'] for k in t if k in ('findings', 'spend_usd')})")" == "[]" ]]; then
+  ok "value: a live run without --ledger makes no GraphQL or commit call and emits no ledger field"
+else
+  fail "value: the live legacy path reached ledger-only calls or fields"
+fi
+
+# Fail closed: with review_ledger.py present but its jq module missing, a
+# ledger run that has replies to classify exits 1 with nothing on stdout.
+ISO2="$TMP_DIR/iso2/.claude"
+mkdir -p "$ISO2/skills/review-stack-audit" "$ISO2/scripts/lib"
+cp "$MEASURE" "$ISO2/skills/review-stack-audit/measure.sh"
+cp "$REPO_ROOT/.claude/scripts/lib/review_ledger.py" "$ISO2/scripts/lib/"
+( cd "$TMP_DIR" && "$ISO2/skills/review-stack-audit/measure.sh" --fixture "$VALUE_F" --ledger --pricing "$PRICING_FULL" --json \
+    > "$TMP_DIR/iso2.out" 2>"$TMP_DIR/iso2.err" )
+rc=$?
+if [[ $rc -eq 1 && ! -s "$TMP_DIR/iso2.out" ]] && grep -q 'deferred-refs.jq not found' "$TMP_DIR/iso2.err"; then
+  ok "value: a missing deferred-refs.jq fails the ledger run closed (exit 1, empty stdout)"
+else
+  fail "value: missing jq module did not fail closed (rc=$rc): $(head -c 300 "$TMP_DIR/iso2.err")"
 fi
 
 [[ $FAILED -eq 0 ]] && echo "All review-stack-audit tests passed."

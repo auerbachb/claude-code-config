@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline unit tests for reply-thread.sh (issue #772 — codeant reviewer mode;
-# issue #1374 — graphite reviewer mode).
+# issue #1374 — graphite reviewer mode; issue #1810 — verdict marker flags).
 # Covers: --reviewer validation (all five modes accepted; unknown rejected);
 # @codeant-ai and @graphite-app strip behavior (plain-text, no auto-mention);
 # per-reviewer strip-rule independence (neither token is eaten by the other
@@ -630,6 +630,140 @@ run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234."
 check_eq "non-numeric PR segment: exit 3" 3 "$RC"
 check_contains "error names the bad segment" "no numeric PR segment" "$OUT"
 check_eq "no inline POST attempted" "" "$POSTED_ENDPOINT"
+
+############################################################################
+# Verdict marker flags (issue #1810). Bodies are compared BYTE FOR BYTE with
+# cmp against an expected file, never as $(cat ...) substrings: command
+# substitution drops trailing newlines, so a substring check could not tell
+# "unchanged" from "unchanged plus a trailing newline".
+############################################################################
+check_bytes() {
+  local desc="$1" expected_file="$2" actual_file="$3"
+  if [[ -f "$actual_file" ]] && cmp -s "$expected_file" "$actual_file"; then
+    PASS=$((PASS + 1)); echo "ok   — $desc"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL — $desc"
+    if [[ -f "$actual_file" ]]; then
+      printf '      expected: %q\n      actual:   %q\n' "$(cat "$expected_file"; printf .)" "$(cat "$actual_file"; printf .)"
+    else
+      echo "      (nothing was posted)"
+    fi
+  fi
+}
+MARKER_DNC='<!-- review-verdict: deferred defect=not agent=claude-code -->'
+
+echo "== (26) no verdict flags: cr body is byte-identical to today's =="
+export FAKE_INLINE_MODE="success"
+unset FAKE_FALLBACK_MODE FAKE_RESOLVE_MODE FAKE_RESOLVED_PR
+run_and_capture 1234567 --reviewer cr --body "Deferred to #12 — not severe." --pr 1
+check_eq "exit 0" 0 "$RC"
+printf '%s' "@coderabbitai Deferred to #12 — not severe." > "$TMP/expected_cr"
+check_bytes "cr body without flags is exactly the prepended reply" "$TMP/expected_cr" "$TMP/posted_body"
+
+echo "== (27) no verdict flags: a stripping reviewer's body is byte-identical to today's =="
+run_and_capture 1234567 --reviewer bugbot --body $'@cursor  Fixed in abc1234.\nSecond line.' --pr 1
+check_eq "exit 0" 0 "$RC"
+printf '%s' $'Fixed in abc1234.\nSecond line.' > "$TMP/expected_bugbot"
+check_bytes "bugbot body without flags is exactly the stripped reply" "$TMP/expected_bugbot" "$TMP/posted_body"
+
+echo "== (28) --verdict deferred --defect not appends exactly one marker line =="
+run_and_capture 1234567 --reviewer cr --body "Deferred to #12 — not severe." --pr 1 \
+  --verdict deferred --defect not
+check_eq "exit 0" 0 "$RC"
+printf '%s\n%s' "@coderabbitai Deferred to #12 — not severe." "$MARKER_DNC" > "$TMP/expected_cr_marked"
+check_bytes "the marked body is the unmarked body plus one marker line" "$TMP/expected_cr_marked" "$TMP/posted_body"
+check_eq "exactly one marker line" 1 "$(grep -c 'review-verdict:' "$TMP/posted_body")"
+
+echo "== (29) the marker survives a stripping reviewer and keeps the stripped text =="
+run_and_capture 1234567 --reviewer bugbot --body $'@cursor  Fixed in abc1234.\nSecond line.' --pr 1 \
+  --verdict fixed --defect real --agent codex
+check_eq "exit 0" 0 "$RC"
+printf '%s\n%s' $'Fixed in abc1234.\nSecond line.' '<!-- review-verdict: fixed defect=real agent=codex -->' \
+  > "$TMP/expected_bugbot_marked"
+check_bytes "stripped body plus a marker naming the --agent" "$TMP/expected_bugbot_marked" "$TMP/posted_body"
+
+echo "== (30) the fallback PR comment carries the marker behind its review-comment-id line =="
+export FAKE_INLINE_MODE="404"
+export FAKE_FALLBACK_MODE="success"
+run_and_capture 1234567 --reviewer greptile --body "Deferred to #12." --pr 1 \
+  --verdict deferred --defect not
+check_eq "fallback: exit 0" 0 "$RC"
+printf '%s\n%s\n%s' '<!-- review-comment-id:1234567 -->' "Deferred to #12." "$MARKER_DNC" > "$TMP/expected_fallback"
+check_bytes "fallback body: id line, reply, marker" "$TMP/expected_fallback" "$TMP/posted_body"
+export FAKE_INLINE_MODE="success"
+unset FAKE_FALLBACK_MODE
+
+echo "== (31) the ledger reads back exactly the verdict the flags wrote =="
+# Writer and reader must agree on the marker's shape; this runs a body posted
+# with --verdict fixed --defect real (and the default agent) through
+# review_ledger.py's own reply classifier.
+run_and_capture 1234567 --reviewer cr --body "Fixed in abc1234." --pr 1 \
+  --verdict fixed --defect real
+readback="$(python3 - "$REPO_ROOT/.claude/scripts/lib" "$TMP/posted_body" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
+PY
+)"
+check_eq "marker parsed as fixed / real / claude-code" \
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code'}" "$readback"
+
+echo "== (32) verdict flag misuse is a usage error (exit 2) before anything posts =="
+expect_usage() {
+  local desc="$1"; shift
+  reset_recorded
+  OUT="$(bash "$SCRIPT" 1234567 --reviewer cr --body "Fixed." --pr 1 "$@" 2>&1)"; RC=$?
+  check_eq "$desc: exit 2" 2 "$RC"
+  check_eq "$desc: nothing posted" "" "$(cat "$TMP/posted_body" 2>/dev/null)"
+}
+expect_usage "--verdict without --defect" --verdict fixed
+expect_usage "--defect without --verdict" --defect real
+expect_usage "--agent without --verdict" --agent codex
+expect_usage "unknown --verdict" --verdict maybe --defect real
+expect_usage "unknown --defect" --verdict fixed --defect maybe
+expect_usage "--agent with a space" --verdict fixed --defect real --agent "two words"
+expect_usage "--agent that closes the comment" --verdict fixed --defect real --agent "x-->"
+expect_usage "--agent starting with a dash" --verdict fixed --defect real --agent "-x"
+expect_usage "--verdict with an empty value" --verdict "" --defect real
+
+echo "== (33) --help documents the verdict flags =="
+run --help
+check_eq "exit 0" 0 "$RC"
+check_contains "usage line lists the verdict flags" \
+  "[--verdict fixed|deferred|declined --defect real|not [--agent NAME]]" "$OUT"
+check_contains "help shows the marker shape" \
+  "<!-- review-verdict: X defect=Y agent=NAME -->" "$OUT"
+
+echo "== (34) a body ending inside an open fence is closed before the marker =="
+# An unclosed fence runs to the end of the comment, and the ledger ignores a
+# marker inside code, so without the closing line the verdict would be lost.
+run_and_capture 1234567 --reviewer bugbot --body $'Fixed in abc1234. Log:\n````text\nline one' --pr 1 \
+  --verdict fixed --defect real
+check_eq "exit 0" 0 "$RC"
+printf '%s\n%s\n%s' $'Fixed in abc1234. Log:\n````text\nline one' '````' \
+  '<!-- review-verdict: fixed defect=real agent=claude-code -->' > "$TMP/expected_open_fence"
+check_bytes "the open fence is closed with its own run, then the marker" "$TMP/expected_open_fence" "$TMP/posted_body"
+readback="$(python3 - "$REPO_ROOT/.claude/scripts/lib" "$TMP/posted_body" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+print(L.classify_reply(open(sys.argv[2], encoding="utf-8").read(), [])[1])
+PY
+)"
+check_eq "the ledger still reads the marker" \
+  "{'verdict': 'fixed', 'defect': 'real', 'agent': 'claude-code'}" "$readback"
+
+echo "== (35) closed fences, quoted fences, and indented code add no closing line =="
+# cr, not a stripping reviewer: cr trims no leading whitespace, so the
+# indented-code case reaches the scan still indented.
+for body in $'Log:\n```\nline\n```\nDone.' $'Log:\n~~~\nline\n~~~~~' $'See:\n> ```\nquoted only' \
+            $'See:\n    ```\nindented code'; do
+  run_and_capture 1234567 --reviewer cr --body "$body" --pr 1 --verdict declined --defect not
+  printf '%s\n%s' "@coderabbitai $body" '<!-- review-verdict: declined defect=not agent=claude-code -->' \
+    > "$TMP/expected_closed"
+  check_bytes "no fence added for: $(printf '%q' "$body")" "$TMP/expected_closed" "$TMP/posted_body"
+done
 
 ############################################################################
 echo ""
