@@ -137,6 +137,16 @@ check_eq "1B.4c: the order lands under the session's repo key" "1 2 Low" \
 OUT=$(run_block "" "$SCRIPT")
 check_eq "1B.4c: without session-state.sh, gh names the repo" "fresh 2" \
   "$(printf '%s' "$OUT"; "$SCRIPT" read acme/fromgh 4 | jq -r '"\(.status) \(.issues[0].rank)"')"
+cat > "$TMP/stubbin/session-state-unknown.sh" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "--repo-key" ] && { echo "_unknown"; exit 0; }
+exit 2
+EOF
+chmod +x "$TMP/stubbin/session-state-unknown.sh"
+rm -f "$("$SCRIPT" path acme/fromgh)"
+OUT=$(run_block "$TMP/stubbin/session-state-unknown.sh" "$SCRIPT")
+check_eq "1B.4c: session-state.sh's _unknown bucket is no repo — gh names it" "fresh 3" \
+  "$(printf '%s' "$OUT"; "$SCRIPT" read acme/fromgh 9 | jq -r '"\(.status) \(.issues[0].rank)"')"
 OUT=$(run_block "$TMP/stubbin/session-state.sh" "$TMP/stubbin/no-such-script")
 check_contains "1B.4c: a failed write is one DEGRADED line, never a stop" "DEGRADED: the ranking was not cached" "$OUT"
 OUT=$(run_block "$TMP/stubbin/session-state.sh" "")

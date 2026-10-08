@@ -631,6 +631,7 @@ Once 1B.4b has settled the order, write it to the rank cache, so `/desk` can der
 if [[ -n "$PM_RANK_CACHE_SH" ]]; then
   RANK_REPO=""
   if [[ -n "$SESSION_STATE_SH" ]]; then RANK_REPO=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || RANK_REPO=""; fi
+  [[ "$RANK_REPO" == */* ]] || RANK_REPO=""  # --repo-key prints `_unknown` (exit 0) when it resolves no repo
   if [[ -z "$RANK_REPO" ]]; then RANK_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || RANK_REPO=""; fi
   if [[ -z "$RANK_REPO" ]] \
     || ! printf '%s\n' ${FINAL_ORDER[@]+"${FINAL_ORDER[@]}"} | "$PM_RANK_CACHE_SH" write "$RANK_REPO" >/dev/null 2>&1; then

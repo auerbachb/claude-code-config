@@ -86,17 +86,19 @@ die() { local code="$1"; shift; printf '%s: %s\n' "$ME" "$*" >&2; exit "$code"; 
 usage_err() { die 2 "$* (run with --help)"; }
 
 # The canonical program. `edges_of` reads an issue array; the regexes are the
-# marker set above, and the one place it is spelled.
+# marker set above, and the one place it is spelled. Case-insensitivity is the
+# inline `(?i)` and scan has one argument: jq 1.6 has no scan/2 (scan(re; flags)
+# arrived in 1.7), and this script promises 1.6.
 JQ_LIB='
-def blocked_re: "\\b(?:blocked\\s+by|depends\\s+on|prerequisite\\s+for|after)[\\s:*_]+#([0-9]+)\\b";
-def unblocking_re: "\\b(?:unblocks|enables|required\\s+by|before)[\\s:*_]+#([0-9]+)\\b";
+def blocked_re: "(?i)\\b(?:blocked\\s+by|depends\\s+on|prerequisite\\s+for|after)[\\s:*_]+#([0-9]+)\\b";
+def unblocking_re: "(?i)\\b(?:unblocks|enables|required\\s+by|before)[\\s:*_]+#([0-9]+)\\b";
 def open_only: map(select(type == "object" and (.number | type) == "number"
                           and ((.state // "OPEN") | ascii_upcase) == "OPEN"));
 def texts: (.body // ""), ((.comments // [])[] | .body // "") | select(type == "string");
 def edges_of:
   [ .[] | .number as $a
-    | ( texts | scan(blocked_re; "i") | {blocker: (.[0] | tonumber), blocked: $a} ),
-      ( texts | scan(unblocking_re; "i") | {blocker: $a, blocked: (.[0] | tonumber)} ) ]
+    | ( texts | scan(blocked_re) | {blocker: (.[0] | tonumber), blocked: $a} ),
+      ( texts | scan(unblocking_re) | {blocker: $a, blocked: (.[0] | tonumber)} ) ]
   | map(select(.blocker != .blocked)) | unique_by([.blocker, .blocked]);
 def adjacency($edges):
   reduce $edges[] as $e ({}; .[$e.blocker | tostring] += [$e.blocked]);

@@ -127,6 +127,10 @@ done
 HELP=$("$SCRIPT" --help 2>&1)
 check_contains "--help names the marker set" "blocked by #N, depends on #N, prerequisite for #N, after #N" "$HELP"
 check_contains "--help ends with its dependencies" "jq 1.6+" "$HELP"
+# jq 1.6 has scan/1 only (scan/2 arrived in 1.7): the 1.6+ promise means every
+# scan takes one argument, case folded by an inline (?i) in the regex itself.
+SCAN2=$(grep -n -E 'scan\([^()]*;' "$SCRIPT" | grep -v -E '^[0-9]+:#' || true)
+check_eq "jq 1.6: no two-argument scan in the program" "" "$SCAN2"
 
 echo
 echo "issue-deps.test.sh: $PASS passed, $FAIL failed"
