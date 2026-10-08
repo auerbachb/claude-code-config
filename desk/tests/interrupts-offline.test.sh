@@ -246,10 +246,11 @@ check "--cadence overrides the policy's" "$RC:$(slept)" "0:420/30"
 dtick "$TMP/wide.json" --cadence 30
 check_contains "--cadence at the policy's live bound: refused" "$RC:$ERR" "4:desk-tick: --cadence must be shorter than the live-desk bound (30 min"
 
-# The loop reads the policy again while it sleeps: an edit after start
-# reaches the next tick, and a live bound lowered to the interval or below
-# cuts short the sleep already under way. This `sleep` swaps in the edited
-# policy during the first step, then behaves as the one above.
+# The loop reads the live bound again while it sleeps: a bound lowered to the
+# interval or below cuts short the sleep already under way. The rule is the
+# one the desk started with, whatever the edit says (an invalid edit is the
+# defaults, which must not flip `away` to `everything`). This `sleep` swaps in
+# the edited policy during the first step, then behaves as the one above.
 mkdir -p "$TMP/sleepbin2"
 cat > "$TMP/sleepbin2/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -261,15 +262,26 @@ EOF
 chmod +x "$TMP/sleepbin2/sleep"
 printf '{"interrupt_rule": "away"}\n' > "$TMP/live-pol.json"
 printf '{"tick_cadence_min": 2, "live_desk_max_tick_age_min": 3}\n' > "$TMP/live-next.json"
-rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
-RC=0
-env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
-  HUMAN_QUEUE_POLICY="$TMP/live-pol.json" NEXT_POLICY="$TMP/live-next.json" PATH="$TMP/sleepbin2:$PATH" \
-  bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
-check "a policy edited while the loop sleeps: the next tick follows its rule" \
-  "$RC:$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "0:tick --session desk-1 --interrupts everything"
-check "... and a live bound lowered mid-sleep: that sleep ends 30 s inside it (150 s, not 300)" \
-  "$(slept)" "150/30"
+# midsleep START EDIT — the loop with policy START, edited to EDIT mid-sleep.
+midsleep() {
+  rm -f "$STUB_DIR/args" "$STUB_DIR/slept"
+  cp "$1" "$TMP/live-run.json"
+  RC=0
+  env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+    HUMAN_QUEUE_POLICY="$TMP/live-run.json" NEXT_POLICY="$2" PATH="$TMP/sleepbin2:$PATH" \
+    bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+}
+midsleep "$TMP/live-pol.json" "$TMP/live-next.json"
+check "a live bound lowered mid-sleep: that sleep ends 30 s inside it (150 s, not 300)" \
+  "$RC:$(slept)" "0:150/30"
+check "... and the tick keeps the rule the desk started with" \
+  "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
+printf '{"interrupt_rule": "away", "set_size": 9}\n' > "$TMP/live-bad.json"
+midsleep "$TMP/live-pol.json" "$TMP/live-bad.json"
+check "an invalid edit mid-sleep: the bound is the hook's default again (300 s)" \
+  "$RC:$(slept)" "0:300/30"
+check "... and the rule stays away, never the defaults' everything" \
+  "$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "tick --session desk-1 --interrupts away"
 
 # --------------------------------------------------------------------- CLI
 printf '== CLI\n'

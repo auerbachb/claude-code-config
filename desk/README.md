@@ -827,12 +827,13 @@ the store, never in a worker thread.
   `bin/desk-policy.sh` (which prints the effective policy as JSON). A missing
   file is the defaults; an unreadable file, a non-object, or any invalid value
   is the defaults for every key, with one warning; unknown keys are ignored.
-  `HUMAN_QUEUE_POLICY` names another file (tests). `desk-tick.sh` reads it
-  again every 30 seconds while it sleeps, as the hook reads it on every call,
-  so an edit reaches a running desk: `interrupt_rule` follows it, and a live
-  bound lowered to the loop's interval or below makes the loop tick 30
-  seconds inside the bound, cutting short a sleep already under way. The
-  cadence is fixed when the desk starts.
+  `HUMAN_QUEUE_POLICY` names another file (tests). The hook reads the live
+  bound on every call, so `desk-tick.sh` reads it again every 30 seconds
+  while it sleeps: a bound lowered to the loop's interval or below makes the
+  loop tick 30 seconds inside it, cutting short a sleep already under way.
+  The cadence and `interrupt_rule` are read when the desk starts; an edit to
+  them applies at the next `/desk`, so an invalid edit never flips a running
+  `away` desk to `everything`.
 - **The interrupt rule.**
 
   | Subcommand | What it does |

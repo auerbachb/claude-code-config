@@ -11,10 +11,10 @@ Loaded at start (`SKILL.md` step 2 reads the policy here), when the operator's w
 | Key | Default | Means |
 |-----|---------|-------|
 | `tick_cadence_min` | `5` | Minutes between ticks, 1 to 60 and shorter than `live_desk_max_tick_age_min`. `/desk --cadence Nm` overrides it for one desk |
-| `interrupt_rule` | `everything` | The rule in force while the desk has set none: `everything` or `away`. The loop reads it again every 30 seconds, so an edit applies at the next tick |
+| `interrupt_rule` | `everything` | The rule a desk starts with, in force while it has set none: `everything` or `away`. Read when the desk starts; an edit applies at the next `/desk` |
 | `eod_time` | `17:30` | The end of the working day, `HH:MM` in America/New_York (the end-of-day sweep, #1784, uses it) |
 | `set_size` | `4` | Decisions per menu, 1 to 4 (four questions is the menu tool's limit) |
-| `live_desk_max_tick_age_min` | `15` | How old the last tick may be for the capture hook to queue questions, 1 to 1440. Lowered to a running desk's cadence or below, the loop (which reads the policy every 30 seconds) ticks 30 seconds inside it, even mid-sleep |
+| `live_desk_max_tick_age_min` | `15` | How old the last tick may be for the capture hook to queue questions, 1 to 1440. Lowered to a running desk's cadence or below, the loop (which reads this key every 30 seconds) ticks 30 seconds inside it, even mid-sleep |
 
 An invalid file (unreadable, not a JSON object, or any value out of range) is the defaults, every key, with one warning; one bad value never leaves the others half-applied. Unknown keys are ignored. A missing file is the defaults, silently.
 

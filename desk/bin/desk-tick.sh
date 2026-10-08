@@ -23,13 +23,13 @@
 #
 # BEHAVIOR
 #   Sleep first, then each cycle:
-#     0. The sleep runs in steps of at most 30 seconds, reading
-#        desk/policy.json again (same parser) after each, as the capture
-#        hook reads it on every call: RULE below follows an edit, and when
-#        the live-desk bound has dropped to the interval or below, the loop
-#        sleeps 30 seconds less than the bound (at least 1) from then on,
-#        cutting short a sleep already under way, so the desk stays live.
-#        The cadence itself is fixed at start.
+#     0. The sleep runs in steps of at most 30 seconds, reading the live-desk
+#        bound from desk/policy.json again (same parser) after each, as the
+#        capture hook reads it on every call: when it has dropped to the
+#        interval or below, the loop sleeps 30 seconds less than the bound
+#        (at least 1) from then on, cutting short a sleep already under way,
+#        so the desk stays live. The cadence and RULE below are the ones the
+#        loop started with; an edit to them applies at the next /desk.
 #     1. `control-status --json`. When the registered control session is no
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
@@ -180,16 +180,19 @@ if [ -z "$dt_py" ]; then
   exit 1
 fi
 
-# dt_read_policy — the policy, from the capture hook's own parser (one
-# parser, not two), into dt_live (the live-desk bound), dt_policy_cadence
+# dt_read_policy [bound] — the policy, from the capture hook's own parser
+# (one parser, not two), into dt_live (the live-desk bound), dt_policy_cadence
 # (the default cadence), and dt_rule (the interrupt rule that holds until the
 # operator sets one at the desk). An unreadable or missing hook leaves the
 # documented defaults; an invalid policy file is the defaults too
-# (desk-policy.sh is what warns about it). Read at start and again before
-# every cycle, so an edit reaches a running loop at its next tick, as it
-# reaches the capture hook at its next call.
+# (desk-policy.sh is what warns about it). At start it sets all three. With
+# `bound` (the re-read while the loop sleeps) it sets dt_live alone: the
+# capture hook reads only that key on every call, so the loop must follow it
+# to stay live, while the cadence and the rule are what this desk started
+# with, so an edit, even an invalid one that falls back to the defaults,
+# never flips a running desk from `away` to `everything`.
 dt_read_policy() {
-  local policy
+  local policy live cadence rule
   policy=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'POLICY'
 import importlib.util
 import sys
@@ -202,20 +205,26 @@ sys.stdout.write("%s %s %s" % (policy[mod.POLICY_KEY], policy["tick_cadence_min"
                                policy["interrupt_rule"]))
 POLICY
 ) || policy=""
-  dt_live="" dt_policy_cadence="" dt_rule=""
-  read -r dt_live dt_policy_cadence dt_rule <<EOF
+  live="" cadence="" rule=""
+  read -r live cadence rule <<EOF
 $policy
 EOF
-  case "$dt_live" in
-    ''|*[!0-9]*) dt_live=15 ;;
+  case "$live" in
+    ''|*[!0-9]*) live=15 ;;
   esac
-  case "$dt_policy_cadence" in
-    ''|*[!0-9]*) dt_policy_cadence=5 ;;
+  dt_live="$live"
+  if [ "${1:-}" = bound ]; then
+    return 0
+  fi
+  case "$cadence" in
+    ''|*[!0-9]*) cadence=5 ;;
   esac
-  case "$dt_rule" in
+  case "$rule" in
     everything|away) ;;
-    *) dt_rule=everything ;;
+    *) rule=everything ;;
   esac
+  dt_policy_cadence="$cadence"
+  dt_rule="$rule"
 }
 
 # dt_interval — the seconds to sleep before the next cycle: dt_secs, or,
@@ -405,7 +414,7 @@ if [ "$dt_once" -eq 1 ]; then
   exit 0
 fi
 # dt_wait — sleep until the next tick is due, in steps of at most 30 seconds,
-# reading the policy again after each step, so a live bound lowered while the
+# reading the live bound again after each step, so a bound lowered while the
 # loop sleeps shortens this very sleep (dt_interval) instead of the next one:
 # the desk ticks within 30 seconds of the edit or by the new interval,
 # whichever is later, and stays live. Fails when `sleep` does (the loop ends).
@@ -422,7 +431,7 @@ dt_wait() {
     fi
     sleep "$step" || return 1
     slept=$((slept + step))
-    dt_read_policy
+    dt_read_policy bound
   done
 }
 
