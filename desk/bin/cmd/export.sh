@@ -62,7 +62,8 @@ LAYOUT (ISO 2145)
   `n.1  A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies,
   the operator's own priority, tags, and note when it carries them (#1769),
   its link, and a blank answer line (an item answered since: its answer).
-  A footer with the export time (in the PDF, on every page).
+  A footer with the export time (from headless Chrome on every page, with
+  page numbers; from pandoc or cupsfilter once, at the end).
 
 RENDERERS
   The first that produces a PDF: pandoc (the Markdown), headless Google
@@ -73,8 +74,9 @@ RENDERERS
   picks one; HUMAN_QUEUE_PANDOC, HUMAN_QUEUE_CHROME, and
   HUMAN_QUEUE_CUPSFILTER name their binaries (set to anything that is not
   an executable file, that renderer counts as not installed);
-  HUMAN_QUEUE_EXPORT_TIMEOUT caps each one's run in seconds (defaults:
-  pandoc 120, Chrome 60, cupsfilter 30). Headless Chrome, which can keep
+  HUMAN_QUEUE_EXPORT_TIMEOUT caps each one's run in seconds, 1 to 86400
+  (defaults: pandoc 120, Chrome 60, cupsfilter 30; any other value keeps
+  them). Headless Chrome, which can keep
   running after it writes its PDF, is stopped once it reports the file; it
   runs offline. Each renderer's temp files stay in a private scratch
   directory removed on exit, and an export interrupted mid-render stops its
@@ -171,6 +173,8 @@ SELECT :'hq_problem' = '' AS hq_ok,
        :'hq_sel_ids' <> '' AND :'hq_dry' = '0' AS hq_record,
        :'hq_sel_ids' <> '' AND :'hq_dry' = '0' AND :'hq_new' = '1' AS hq_open_set \gset
 \if :hq_ok
+\set hq_shown_ids ''
+\set hq_exported_ids ''
 \if :hq_open_set
 SELECT nextval('sets_set_id_seq') AS hq_set_id \gset
 WITH s AS (
@@ -179,18 +183,26 @@ WITH s AS (
   INSERT INTO sets (set_id, position, item_id)
   SELECT :'hq_set_id'::bigint, s.n, s.id FROM s
   RETURNING position
+), ev AS (
+  INSERT INTO events (item_id, kind, note)
+  SELECT s.id, 'shown', 'set ' || :'hq_set_id' || ' #' || s.n FROM s ORDER BY s.n
+  RETURNING id
 )
-INSERT INTO events (item_id, kind, note)
-SELECT s.id, 'shown', 'set ' || :'hq_set_id' || ' #' || s.n FROM s ORDER BY s.n;
+SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '') AS hq_shown_ids FROM ev \gset
 \endif
 \if :hq_record
-INSERT INTO events (item_id, kind, note)
-SELECT u.id, 'exported', 'set ' || :'hq_set_id' || ' #' || u.n
-  FROM unnest(string_to_array(:'hq_sel_ids', ','), string_to_array(:'hq_sel_ns', ',')::int[]) AS u(id, n)
- ORDER BY u.n;
+WITH ev AS (
+  INSERT INTO events (item_id, kind, note)
+  SELECT u.id, 'exported', 'set ' || :'hq_set_id' || ' #' || u.n
+    FROM unnest(string_to_array(:'hq_sel_ids', ','), string_to_array(:'hq_sel_ns', ',')::int[]) AS u(id, n)
+   ORDER BY u.n
+  RETURNING id
+)
+SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '') AS hq_exported_ids FROM ev \gset
 \endif
 SELECT jsonb_build_object(
          'source', :'hq_source',
+         'event_ids', to_jsonb(array_remove(string_to_array(:'hq_shown_ids' || ',' || :'hq_exported_ids', ','), '')::bigint[]),
          'set_id', nullif(:'hq_set_id', '')::bigint,
          'new_set', :'hq_open_set'::boolean,
          'dry_run', :'hq_dry' = '1',
@@ -266,25 +278,20 @@ $tmp"
 
 # hq__export_undo DATA — the export was recorded (DATA: the store's JSON) but
 # its file could not be written: one more transaction removes what the first
-# recorded, its `exported` events and, when it opened the set, the set and
-# its `shown` events. They are told from any other export of the same set by
-# their time, the first transaction's own (`exported_at`). Returns non-zero
-# when that could not be done.
+# recorded: the events it inserted (its `exported` events and, when it opened
+# the set, their `shown` ones), by the ids that transaction returned
+# (`event_ids`), so no other export's events are touched; and the set it
+# opened. Returns non-zero when that could not be done.
 hq__export_undo() {
-  local data="$1" sid new at ids
+  local data="$1" sid new evids
   sid=$(printf '%s' "$data" | hq_jq -r '.set_id // empty' 2>/dev/null) || return 1
   new=$(printf '%s' "$data" | hq_jq -r 'if .new_set then 1 else 0 end' 2>/dev/null) || return 1
-  at=$(printf '%s' "$data" | hq_jq -r '.exported_at // empty' 2>/dev/null) || return 1
-  ids=$(printf '%s' "$data" | hq_jq -r '[.items[].id] | join(",")' 2>/dev/null) || return 1
-  if [ -z "$sid" ] || [ -z "$at" ] || [ -z "$ids" ]; then return 1; fi
-  hq_db_script -At -v "hq_set_id=$sid" -v "hq_new=$new" -v "hq_at=$at" -v "hq_ids=$ids" \
+  evids=$(printf '%s' "$data" | hq_jq -r '(.event_ids // []) | map(tostring) | join(",")' 2>/dev/null) || return 1
+  if [ -z "$sid" ] || [ -z "$evids" ]; then return 1; fi
+  hq_db_script -At -v "hq_set_id=$sid" -v "hq_new=$new" -v "hq_event_ids=$evids" \
     >/dev/null 2>&1 <<'SQL'
 SET LOCAL lock_timeout TO '30s';
-DELETE FROM events
- WHERE item_id = ANY (string_to_array(:'hq_ids', ','))
-   AND at = :'hq_at'::timestamptz
-   AND note LIKE 'set ' || :'hq_set_id' || ' #%'
-   AND (kind = 'exported' OR (kind = 'shown' AND :'hq_new' = '1'));
+DELETE FROM events WHERE id = ANY (string_to_array(:'hq_event_ids', ',')::bigint[]);
 DELETE FROM sets WHERE set_id = :'hq_set_id'::bigint AND :'hq_new' = '1';
 SQL
 }

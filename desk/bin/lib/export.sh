@@ -39,8 +39,8 @@
 #                                renderer counts as not installed. Tests use
 #                                these.
 #   HUMAN_QUEUE_EXPORT_TIMEOUT   seconds each renderer may take, overriding the
-#                                deadlines below (a positive whole number;
-#                                anything else keeps them)
+#                                deadlines below (a whole number from 1 to
+#                                86400; anything else keeps them)
 #
 # Every renderer runs with stdin from /dev/null, without
 # HUMAN_QUEUE_DATABASE_URL in its environment, with TMPDIR (and Chrome's
@@ -60,7 +60,16 @@ HQ_EXPORT_RTMP=""
 hq__export_limit() {
   case "${HUMAN_QUEUE_EXPORT_TIMEOUT:-}" in
     ''|*[!0-9]*|0*) printf '%s' "$1" ;;
-    *) printf '%s' "$HUMAN_QUEUE_EXPORT_TIMEOUT" ;;
+    *)
+      # At most a day (86400): a longer one is no deadline, and a huge one
+      # would overflow the shell's arithmetic (the poll counts fifths of a
+      # second) into a negative deadline that stops the renderer at once.
+      if [ "${#HUMAN_QUEUE_EXPORT_TIMEOUT}" -le 5 ] && [ "$HUMAN_QUEUE_EXPORT_TIMEOUT" -le 86400 ]; then
+        printf '%s' "$HUMAN_QUEUE_EXPORT_TIMEOUT"
+      else
+        printf '%s' "$1"
+      fi
+      ;;
   esac
 }
 

@@ -90,7 +90,7 @@ URL, is refused with exit 7 rather than silently dropped.
 | `HUMAN_QUEUE_PSQL` | `psql` binary to use (default `/opt/homebrew/bin/psql`, else `psql` on `PATH`) |
 | `HUMAN_QUEUE_EXPORT_RENDERER` | `export`'s PDF renderer: `auto` (default: pandoc, then headless Chrome, then cupsfilter), one of those three, or `markdown` (none) |
 | `HUMAN_QUEUE_PANDOC`, `HUMAN_QUEUE_CHROME`, `HUMAN_QUEUE_CUPSFILTER` | That renderer's binary; set to anything that is not an executable file, it counts as not installed (tests) |
-| `HUMAN_QUEUE_EXPORT_TIMEOUT` | Seconds each `export` renderer may run (defaults: pandoc 120, Chrome 60, cupsfilter 30) |
+| `HUMAN_QUEUE_EXPORT_TIMEOUT` | Seconds each `export` renderer may run, 1 to 86400 (defaults: pandoc 120, Chrome 60, cupsfilter 30; any other value keeps them) |
 
 ## Exit codes
 
@@ -1276,7 +1276,9 @@ lands on the right item.
   A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies, the
   operator's own priority, tags, and note when it carries them (#1769), the
   link, and a blank answer line (an item answered since shows its answer).
-  The PDF's footer, on every page, carries the export time and page numbers.
+  A footer carries the export time: from headless Chrome on every page, with
+  page numbers; from pandoc or the print system once, at the end (the
+  header line on the first page carries the time too).
   `bin/lib/export.jq` renders it three ways (Markdown, plain text, HTML)
   from one item model, reusing `skill/desk.jq`'s labels and links.
 - **Renderers.** No new dependency: the first of these that produces a PDF
@@ -1305,8 +1307,8 @@ lands on the right item.
 - **Recording.** One `exported` event per item (note `set N #k`), in the
   transaction that reads the batch, so nothing else is logged. When the
   file then cannot be written, a second transaction removes that record
-  (the set it opened, its `shown` and `exported` events, told apart by the
-  first transaction's time), so no unseen set becomes the latest; exit 1,
+  (the set it opened, and its `shown` and `exported` events by the ids the
+  first transaction returned), so no unseen set becomes the latest; exit 1,
   `nothing was recorded`. Migration
   `013_exported_event.sql` adds the kind to whatever `events_kind_check`
   allows (as 010 does), so it applies before or after #1769's 010. Before

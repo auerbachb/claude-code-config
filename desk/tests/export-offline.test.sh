@@ -301,6 +301,7 @@ done
 case "${STUB_MODE:-ok}" in
   fail) exit 3 ;;
   hang) exec sleep 30 ;;
+  slow) sleep 1 ;;
   notpdf) if [ -n "$out" ]; then echo "not a pdf" > "$out"; else echo "not a pdf"; fi; exit 0 ;;
   linger)
     printf '%%PDF-1.4 stub\n' > "$out"
@@ -358,6 +359,15 @@ if hq_t_elapsed_under "$START" "$END" 10; then ok "Chrome stopped promptly"; els
 check "a renderer past its deadline falls through" \
   "$(render STUB_MODE=hang HUMAN_QUEUE_EXPORT_TIMEOUT=1 HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER=)" \
   "1 - | pandoc: not installed; chrome: timed out; cupsfilter: not installed"
+check "a huge HUMAN_QUEUE_EXPORT_TIMEOUT keeps the default deadline (no overflow into an instant timeout)" \
+  "$(render STUB_MODE=slow HUMAN_QUEUE_EXPORT_TIMEOUT=1844674407370955162 HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER=)" \
+  "0 chrome | pandoc: not installed"
+limit_of() {
+  env HUMAN_QUEUE_EXPORT_TIMEOUT="$1" bash -c 'HQ_BIN_DIR="$1"; . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/export.sh"; hq__export_limit 60' _ "$BIN"
+}
+check "HUMAN_QUEUE_EXPORT_TIMEOUT: 1 to 86400 is taken, anything else keeps the default" \
+  "$(limit_of 5) $(limit_of 86400) $(limit_of 86401) $(limit_of 99999999999999999999) $(limit_of 1844674407370955162) $(limit_of 0) $(limit_of 007) $(limit_of 1.5)" \
+  "5 86400 60 60 60 60 60 60"
 check "a renderer past its deadline is not left running" \
   "$(if kill -0 "$(cat "$TMP/log/chrome.pid")" 2>/dev/null; then echo running; else echo stopped; fi)" "stopped"
 
