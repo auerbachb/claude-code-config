@@ -39,6 +39,7 @@ Standard library only; must import on macOS system python3 (3.9).
 """
 
 import json
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -114,7 +115,15 @@ def _tagged_fences(text, tag):
 
 
 def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    # Python's json accepts NaN and Infinity; neither is a price, and either
+    # would turn every figure it touches into non-JSON output. An int is always
+    # finite, and math.isfinite would overflow on a huge one, so only floats
+    # are checked.
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _check_figure(entry, where):
@@ -373,8 +382,12 @@ def cents(value):
 
 
 def prorate_flat(monthly, window_days):
-    """A monthly fee for a window of `window_days` days, in cents."""
-    return cents(Decimal(monthly) * Decimal(int(window_days)) / Decimal(MONTH_DAYS))
+    """A monthly fee for a window of `window_days` days, in cents.
+
+    A window that has not begun (a future --since gives negative days) bills
+    nothing, never a negative fee."""
+    days = max(int(window_days), 0)
+    return cents(Decimal(monthly) * Decimal(days) / Decimal(MONTH_DAYS))
 
 
 def compute_spend(tool_key, signals, rates, window_days):

@@ -1032,6 +1032,11 @@ r="$(jget "$TMP_DIR/multi-nl.json" "d['repos']")"
 r="$(jget "$TMP_DIR/multi-implicit.json" "d['repos']")"
 [[ "$r" == "['acme/one', 'acme/two']" ]] && ok "measure: a multi-repo fixture with no flag measures every repo in it" \
   || fail "measure: implicit multi-repo run measured $r"
+# ...and, being a multi-repo run, it is a ledger run: every per_repo and total
+# tool carries both spend fields, exactly as with --repos.
+r="$(jget "$TMP_DIR/multi-implicit.json" "all('spend_usd' in t and t.get('spend_source') in ('receipt', 'estimate', 'flat', 'none') for t in d['tools'] + [x for doc in d['per_repo'] for x in doc['tools']])")"
+[[ "$r" == "True" ]] && ok "measure: an implicit multi-repo fixture run carries the spend fields" \
+  || fail "measure: implicit multi-repo run lacks spend fields ($r)"
 
 # --summary: one block per repo, then one total block whose prs per tool is the
 # sum of the repo blocks' (Test Plan item 2, offline). Multi-repo is ledger mode,
@@ -1263,6 +1268,14 @@ expect_ledger_rc 2 --pricing "$PRICING_FULL"
 expect_ledger_rc 1 --ledger --pricing "$TMP_DIR/no-such-pricing.md"
 expect_ledger_rc 0 --since 2026-10-31 --until 2026-10-31
 
+# A --since that has not arrived yet gives a negative window.days; the flat fee
+# for a window that has not begun is 0.00, never negative.
+"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2099-01-01 --json > "$TMP_DIR/ledger-future.json" \
+  || fail "measure: future --since ledger run failed"
+r="$(jget "$TMP_DIR/ledger-future.json" "(d['window']['days'] < 0, [(t['spend_usd'], t['spend_source']) for t in d['tools'] if t['key'] == 'codeant'])")"
+[[ "$r" == "(True, [(0.0, 'flat')])" ]] && ok "ledger: a window that has not begun bills a flat fee of 0.00, never negative" \
+  || fail "ledger: future --since flat fee wrong: $r"
+
 # Test Plan item 3: two repos. Each tool's total is the exact sum of its
 # per-repo figures, and CodeAnt's flat fee is split by its prs_touched share
 # (3 PRs vs 1) into parts that sum to the prorated fee to the cent.
@@ -1338,6 +1351,7 @@ checks = [
     ("odd-cent-split", L.allocate(D("10.00"), [1, 1, 1]) == [D("3.34"), D("3.33"), D("3.33")]),
     ("all-zero-weights-split-evenly", L.allocate(D("48.00"), [0, 0]) == [D("24.00"), D("24.00")]),
     ("prorate-30-days-is-one-month", L.prorate_flat(D("48"), 30) == D("48.00")),
+    ("prorate-negative-window-is-zero", L.prorate_flat(D("48"), -5) == D("0.00")),
     ("zero-receipts-is-a-floor", L.compute_spend("coderabbit", {"charges": []}, None, 30) == (D("0.00"), "receipt")),
     ("no-rates-is-none-not-zero", L.compute_spend("bugbot", {"bugbot_runs": 3}, None, 30) == (None, "none")),
     ("comma-and-bold-receipts", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]", "body": "**Charged:** $1,234.50"}])] == [D("1234.50")]),
@@ -1403,6 +1417,11 @@ cases = {
     # A block shown inside another fence is an example, not the block.
     "nested-example-ignored": parse("nested", good + "\n````markdown\n" + block + "\n````\n")[0] is not None,
 }
+# Python's json reads NaN and Infinity; neither is a price.
+for bad in ("NaN", "Infinity", "-Infinity"):
+    cases["non-finite-%s" % bad] = parse("nf-" + bad, good.replace('"usd": 2.0', '"usd": %s' % bad, 1))[0] is None
+# ...while an integer too big for a float is still a finite number, not a crash.
+cases["huge-int-parses"] = parse("huge", good.replace('"usd": 2.0', '"usd": ' + "9" * 400, 1))[0] is not None
 r, n = parse("unit", good.replace('"unit": "review"', '"unit": "month"'))
 cases["wrong-unit-unusable"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is priced per 'month'" in x for x in n)
 print(";".join("%s=%s" % (k, "ok" if v else "BAD") for k, v in cases.items()))

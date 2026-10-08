@@ -73,8 +73,10 @@
 #               declared in `window.truncated` rather than passed off as the
 #               whole window.
 #   --ledger    Add labelled spend per tool (issue #1809; see SPEND LEDGER).
-#               Implied by --repos and --all-repos. Without it, the single-repo
-#               path runs the same queries and emits the same output as before.
+#               Implied by every multi-repo run: --repos, --all-repos, or a
+#               multi-repo fixture read with no repo flag. Without it, the
+#               single-repo path runs the same queries and emits the same
+#               output as before.
 #   --pricing   Markdown file holding the `review-stack-rates` block (ledger
 #               mode only, exit 2 otherwise; unreadable: exit 1). Default: this
 #               checkout's .claude/reference/pricing-matrix.md, then the
@@ -96,7 +98,10 @@
 #     estimate  BugBot: `Cursor Bugbot` check-runs (every commit of each PR,
 #               filter=all, deduped by run id, timed by started_at) x $/review.
 #               Greptile: non-bot `@greptileai` comments x credits/review x $/credit.
-#     flat      CodeAnt and Vercel: the monthly fee x window.days / 30.
+#     flat      CodeAnt and Vercel: the monthly fee x window.days / 30, and
+#               0.00 for a window that has not begun. window.days counts whole
+#               elapsed days when --until is absent (so a --since of today
+#               prorates to 0.00); pass --until for the inclusive day count.
 #     none      No figure: the rate is null, missing, or unreadable. spend_usd is
 #               then null, never 0, and a note names the missing input.
 #   Events are kept inside the inclusive window (since 00:00:00Z through until
@@ -312,8 +317,15 @@ if [[ -n "$UNTIL" ]]; then
   [[ ! "$UNTIL" < "$SINCE" ]] || usage_error "--until ($UNTIL) is before --since ($SINCE)"
 fi
 # Ledger mode (issue #1809): asked for, or implied by a multi-repo run, whose
-# cross-repo total is what the account is billed against.
+# cross-repo total is what the account is billed against. A multi-repo fixture
+# ('repos' array) read with no repo flag is measured as a multi-repo run too,
+# so it is a ledger run like --repos; --repo against one is refused later.
 [[ -n "$REPOS_CSV" || "$ALL_REPOS" -eq 1 ]] && LEDGER=1
+if [[ "$LEDGER" -eq 0 && -n "$FIXTURE" && -z "$REPO" && -r "$FIXTURE" ]] \
+   && python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d, dict) and "repos" in d else 1)' \
+        "$FIXTURE" 2>/dev/null; then
+  LEDGER=1
+fi
 if [[ -n "$PRICING" ]]; then
   [[ "$LEDGER" -eq 1 ]] || usage_error "--pricing is valid only in ledger mode (--ledger, --repos or --all-repos)"
   [[ -r "$PRICING" && -f "$PRICING" ]] || { echo "measure.sh: pricing file not readable: $PRICING" >&2; exit 1; }
