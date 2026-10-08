@@ -124,6 +124,31 @@ if [ -n "$PF_KEY" ] && [ -n "${PF_SUMMARY_BY_PR[$N]:-}" ] \
   echo "[PMM] pre-flight already re-triggered $REVIEWER on #$N this tick — skipping duplicate explicit trigger"
   REVIEWER="__already_triggered__"
 fi
+# Tier-aware repos (issue #1749): the review tier decides whether this reviewer
+# may be invited at all. On a repo with a `## Review policy`, post only a
+# reviewer review-triggers-allowed.sh allows, and claim it first; a failed post
+# releases the claim. Mode `legacy` or a missing helper leaves the explicit
+# re-trigger below exactly as it was.
+TRIGGERS_ALLOWED=""
+for c in "$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh" \
+         "$HOME/.claude/scripts/review-triggers-allowed.sh" \
+         ".claude/scripts/review-triggers-allowed.sh"; do
+  [ -x "$c" ] && { TRIGGERS_ALLOWED="$c"; break; }
+done
+TA_CLAIMED=""
+if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIGGERS_ALLOWED" ]; then
+  TA_JSON=$("$TRIGGERS_ALLOWED" "$N" 2>/dev/null || echo '{"mode":"fail_closed"}')
+  if [ "$(jq -r '.mode // "fail_closed"' <<<"$TA_JSON" 2>/dev/null)" != "legacy" ]; then
+    if [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].allowed // false' <<<"$TA_JSON" 2>/dev/null)" = "true" ] \
+       && "$TRIGGERS_ALLOWED" "$N" --claim "$PF_KEY" >/dev/null 2>&1; then
+      TA_CLAIMED="$PF_KEY"
+    else
+      echo "[PMM] review tier does not allow re-triggering $REVIEWER on #$N now ($(jq -r --arg k "$PF_KEY" '.reviewers[$k].reason // "tier_unresolved"' <<<"$TA_JSON" 2>/dev/null)) — skipping"
+      REVIEWER="__tier_skipped__"
+    fi
+  fi
+fi
+ta_release() { [ -n "$TA_CLAIMED" ] && "$TRIGGERS_ALLOWED" "$N" --release "$TA_CLAIMED" >/dev/null 2>&1; return 0; }
 CR_HOURLY=""
 for c in "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
          "$HOME/.claude/scripts/cr-review-hourly.sh" \
@@ -138,24 +163,36 @@ case "$REVIEWER" in
       if gh pr comment "$N" --body "@coderabbitai full review" >/dev/null 2>&1; then
         "$CR_HOURLY" --record-explicit "$N" >/dev/null 2>&1 || true
         echo "[PMM] re-triggered owning bot (cr) on #$N"
+      else
+        ta_release
       fi
     else
       echo "[PMM] CodeRabbit rate cap hit — skipping explicit re-trigger on #$N"
+      ta_release
     fi
     ;;
   bugbot)
-    gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1 \
-      && echo "[PMM] re-triggered owning bot (bugbot) on #$N"
+    if gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1; then
+      echo "[PMM] re-triggered owning bot (bugbot) on #$N"
+    else
+      ta_release
+    fi
     ;;
   graphite)
-    gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1 \
-      && echo "[PMM] re-triggered owning bot (graphite) on #$N"
+    if gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1; then
+      echo "[PMM] re-triggered owning bot (graphite) on #$N"
+    else
+      ta_release
+    fi
     ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"
     ;;
   __already_triggered__)
     : # pre-flight covered it this tick (#576) — message already printed above
+    ;;
+  __tier_skipped__)
+    : # the review tier ruled it out or deferred it (#1749) — message printed above
     ;;
   *)
     echo "[PMM] unknown reviewer on #$N — skipping explicit re-trigger"

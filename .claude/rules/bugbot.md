@@ -6,16 +6,16 @@
 
 BugBot (Cursor) is the **second-tier** reviewer in the escalation chain (`cr-github-review.md` §Three-Tier).
 
-**Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` (`cursor-review-pr-comment.yml`, which consults `bugbot-refused-head.sh` first); BugBot ignores bot-authored triggers; absent secret → no post, warns — see `feedback_bugbot_auto_trigger_unreliable.md`.
+**Trigger on push:** CI posts `@cursor review` via `CURSOR_REVIEW_PAT` (`cursor-review-pr-comment.yml`; no-policy repos only); BugBot ignores bot-authored triggers; absent secret → no post, warns.
 
 **Escalation authority:** The numbered gate + STOP conditions live in `cr-github-review.md`. Use `.claude/scripts/escalate-review.sh <PR_NUMBER>` for the per-cycle `STATUS=` verdict; this file only defines BugBot behavior after `STATUS=switch_bugbot`.
 
 ## BugBot Basics
 
 - **Bot username:** `cursor[bot]`
-- **Trigger:** `@cursor review` comment (`/fixpr` or CI — duplicates OK, but see §Re-Reviews).
+- **Trigger:** `@cursor review` comment (`/fixpr`, `pr-preflight.sh`, or CI; duplicates OK only without a review policy — §Re-Reviews).
 - **Cost:** Highest per review in the stack. One nudge per HEAD; after a usage-limit refusal all three trigger paths — `maybe-trigger-ai-review.sh`, `/fixpr` Step 3b, CI — suppress further nudges until the next push, via the shared fail-open `bugbot-refused-head.sh`.
-- **Review time:** ~1–3 min. **No CLI** (GitHub-only).
+- **Review time:** ~1–3 min. **No CLI**.
 
 ## Polling for BugBot Reviews
 
@@ -29,13 +29,13 @@ Poll alongside CR per the shared cadence/endpoints (`cr-github-review.md` §Poll
 
 ## When BugBot Becomes the Active Reviewer
 
-On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`. Never on `STATUS=tier_gate` (review tier excludes BugBot — `review-policy.md`); trigger paths skip `@cursor review` too.
+On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership with `.claude/scripts/reviewer-of.sh <PR_NUMBER> --sticky bugbot`. Never on `STATUS=tier_gate` (review tier excludes BugBot — `review-policy.md`).
 
 ## Processing BugBot Findings
 
 Verify all findings against actual code. Fix all valid findings in one commit, push once, reply to every thread, then resolve via `resolve-review-threads.sh <PR> --thread-ids <id1,id2>`.
 
-**Reply format:** plain text only — do NOT include `@cursor` in replies (may trigger a re-review).
+**Reply format:** plain text only, no `@cursor`.
 
 ## Merge Gate
 
@@ -43,4 +43,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-BugBot doesn't auto-review pushes. After a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set — necessary, not sufficient: a refusal on that HEAD still suppresses; otherwise post it manually — one nudge per HEAD.
+BugBot doesn't auto-review pushes. With no `## Review policy`, after a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set — necessary, not sufficient: a refusal on that HEAD still suppresses; otherwise post it manually — one nudge per HEAD. With one, post only once `review-triggers-allowed.sh --claim cursor` exits 0.

@@ -58,8 +58,9 @@ opt-in of issue #1544.
 | [escalate-review-silent-exit.test.sh](../tests/escalate-review-silent-exit.test.sh) | Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed |
 | [escalate-review-tier-gate.test.sh](../tests/escalate-review-tier-gate.test.sh) | Review-tier `tier_gate` verdict tests for `escalate-review.sh` |
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
-| [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision block against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
-| [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b passes the post-push `PUSHED_SHA` to `bugbot-refused-head.sh`, not the pre-push `HEAD_SHA` |
+| [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
+| [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b hands the post-push `PUSHED_SHA` to `fixpr-reviewer-triggers.sh`, which passes it to `bugbot-refused-head.sh` and the review-tier helper, never the pre-push `HEAD_SHA` |
+| [fixpr-step3b-tier-triggers.test.sh](../tests/fixpr-step3b-tier-triggers.test.sh) | Runs `fixpr-reviewer-triggers.sh` (/fixpr Step 3b) against fixture policies — ci-only posts no reviewer comment after a push, ci+codeant-one-round posts one CodeAnt invitation, full waits for green CI and posts CodeAnt and BugBot only, and a policy-free repo keeps the legacy four-trigger order |
 | [forgotten-pr-triage.test.sh](../tests/forgotten-pr-triage.test.sh) | Tests for `forgotten-pr-triage.sh` |
 | [go-on-universal-resume.test.sh](../tests/go-on-universal-resume.test.sh) | Contract tests for `/go-on` as the universal resume front door — stoppage-class detection, precedence, refill-gate safety |
 | [handoff-scoping.test.sh](../tests/handoff-scoping.test.sh) | Tests per-repo handoff path scoping in `handoff-state.sh` |
@@ -78,6 +79,7 @@ opt-in of issue #1544.
 | [maybe-trigger-bugbot-daily-cap.test.sh](../tests/maybe-trigger-bugbot-daily-cap.test.sh) | Tests the account daily-cap `@cursor review` skip in `maybe-trigger-ai-review.sh` — over/ok/unknown, dry-run reporting, the open cursor step, and that the tier and refused-HEAD skips still win |
 | [maybe-trigger-bugbot-suppression.test.sh](../tests/maybe-trigger-bugbot-suppression.test.sh) | Tests the BugBot spend-refusal suppression in `maybe-trigger-ai-review.sh` |
 | [maybe-trigger-bugbot-tier.test.sh](../tests/maybe-trigger-bugbot-tier.test.sh) | Tests the review-tier `@cursor review` skip in `maybe-trigger-ai-review.sh` |
+| [maybe-trigger-tier-triggers.test.sh](../tests/maybe-trigger-tier-triggers.test.sh) | Tests `maybe-trigger-ai-review.sh` under a review tier — ci-only posts nothing, ci+codeant-one-round posts one CodeAnt invitation for the life of the PR, full defers BugBot until CI is green and HEAD settled and stops at two, and a policy-free repo still posts all three |
 | [merge-gate-authorship.test.sh](../tests/merge-gate-authorship.test.sh) | Tests the authorship guard in `merge-gate.sh` |
 | [merge-gate-bugbot.test.sh](../tests/merge-gate-bugbot.test.sh) | Tests the BugBot reviewer path in `merge-gate.sh` (issues #844, #962) |
 | [merge-gate-ci-dedup.test.sh](../tests/merge-gate-ci-dedup.test.sh) | Tests CI check-run deduplication and CodeAnt supplemental gate in `merge-gate.sh` |
@@ -115,6 +117,7 @@ opt-in of issue #1544.
 | [pr-authorship.test.sh](../tests/pr-authorship.test.sh) | Tests for `pr-authorship.sh` |
 | [pr-body-review-note.test.sh](../tests/pr-body-review-note.test.sh) | Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, CommonMark ATX headings, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors |
 | [pr-issue-ref.test.sh](../tests/pr-issue-ref.test.sh) | Tests for `pr-issue-ref.sh` — tiered set-valued default mode, `--first` mode, `--all` mode, `owner/repo#N` form, word-boundary guards |
+| [pr-preflight-tier-triggers.test.sh](../tests/pr-preflight-tier-triggers.test.sh) | Tests `pr-preflight.sh` under a review tier — ci-only triggers nothing and is clean, ci+codeant-one-round invites CodeAnt once, full defers BugBot until CI is green and HEAD settled and stops at two, and a policy-free repo still triggers all four |
 | [pr-preflight.test.sh](../tests/pr-preflight.test.sh) | Tests for `pr-preflight.sh` |
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
@@ -135,6 +138,7 @@ opt-in of issue #1544.
 | [review-repos.test.sh](../tests/review-repos.test.sh) | Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list, `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves |
 | [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path |
 | [review-tier.test.sh](../tests/review-tier.test.sh) | Tests for `review-tier.sh` — policy parsing, strictest-wins resolution, fail-closed invalid policies, PR-mode base-branch reads |
+| [review-triggers-allowed.test.sh](../tests/review-triggers-allowed.test.sh) | Tests `review-triggers-allowed.sh` — legacy pass-through, every tier row, fail-closed probe, settled HEAD, lifetime caps across comments and the ledger, the CodeAnt-unavailable fallback, BugBot's refused-HEAD and daily-cap guards, and racing claims |
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
 | [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |
 | [session-scheduling-reconcile.test.sh](../tests/session-scheduling-reconcile.test.sh) | Tests for `session-scheduling-reconcile.sh` against a redirected `HOME` |

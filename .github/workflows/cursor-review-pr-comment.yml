@@ -36,6 +36,16 @@
 # the same fail-open way: a missing helper or an unresolvable tier still posts.
 # Mechanism: .claude/reference/review-policy.md.
 #
+# Tier-aware repos (issue #1749):
+# With a `## Review policy`, the agent's shared trigger helper
+# (`review-triggers-allowed.sh`) owns every BugBot invitation — only on a
+# `full` PR, only once CI is green on a settled HEAD, at most twice per PR. A
+# nudge on every push would break all three, so the same `tier-check` step asks
+# that helper first (`--mode-only`, from the base checkout) and skips on any
+# tier-aware mode, `full` included, and on a policy repo whose tier cannot be
+# resolved. A repo with no policy (`legacy`), a base branch without the helper,
+# or an unusable answer falls through to the #1728 check above, unchanged.
+#
 # This is a convenience trigger, never a merge gate. A missing PAT or a failed
 # comment degrades to a warning annotation; the workflow always exits success.
 name: Cursor BugBot review trigger
@@ -160,6 +170,21 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           TIER=.claude/scripts/bugbot-tier-excluded.sh
+          TRIGGERS=.claude/scripts/review-triggers-allowed.sh
+          # Tier-aware repos (issue #1749): the trigger helper owns BugBot, so
+          # this per-push nudge stands down on any tiered mode. `if` keeps the
+          # helper's exit codes out of the runner's `set -e`. Mode `legacy`, a
+          # missing helper, or an unusable answer falls through, unchanged.
+          if [[ -f "$TRIGGERS" ]] \
+             && MODE_JSON=$(bash "$TRIGGERS" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF" --mode-only) \
+             && MODE=$(printf '%s' "$MODE_JSON" | jq -r '.mode // ""') \
+             && [[ "$MODE" == "tiered" || "$MODE" == "fail_closed" ]]; then
+            GATE=$(printf '%s' "$MODE_JSON" | jq -r '.gate // "unresolved"') || GATE=unresolved
+            echo "excluded=true" >> "$GITHUB_OUTPUT"
+            echo "gate=$GATE" >> "$GITHUB_OUTPUT"
+            echo "Review policy present (mode $MODE, gate $GATE) — the trigger helper owns BugBot invitations; skipping the per-push nudge."
+            exit 0
+          fi
           # Bootstrap: the helper is not on the base branch — the PR introducing
           # it, or a repo given this workflow without .claude/scripts. Post.
           if [[ ! -f "$TIER" ]]; then
@@ -189,9 +214,11 @@ jobs:
         with:
           script: |
             core.notice(
-              `Skipped the BugBot trigger: this PR's review tier gate is ${process.env.TIER_GATE}, ` +
-              'which never needs BugBot (.claude/reference/review-policy.md). ' +
-              'Only the full gate, or a repo with no review policy, invites it.'
+              `Skipped the BugBot trigger: this PR's review tier gate is ${process.env.TIER_GATE}. ` +
+              'In a repo with a review policy, the agent trigger helper decides BugBot: ' +
+              'only on the full gate, once CI is green on a settled HEAD, at most twice per PR. ' +
+              'Only a repo with no review policy gets this per-push nudge ' +
+              '(.claude/reference/review-policy.md).'
             );
 
       - name: Warn — nudge suppressed, BugBot already refused this HEAD

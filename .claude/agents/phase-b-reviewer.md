@@ -216,7 +216,7 @@ If CR remains silent or cannot produce a current-HEAD approval, keep using the R
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
-**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK. That verdict is judged per-SHA, so it also arrives for a PR BugBot *did* answer on an earlier SHA once the current HEAD is uninvited and has no footprint (issue #948) — the `bugbot_installed` cache described above no longer suppresses it. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK, except on a tier-aware repo (issue #1749), where you post only once `review-triggers-allowed.sh {{PR_NUMBER}} --claim cursor` exits 0. That verdict is judged per-SHA, so it also arrives for a PR BugBot *did* answer on an earlier SHA once the current HEAD is uninvited and has no footprint (issue #948) — the `bugbot_installed` cache described above no longer suppresses it. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
 
 ### Polling
 
@@ -241,7 +241,7 @@ run_script reply-thread.sh <comment_id> --reviewer bugbot \
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK.
+After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK. **Tier-aware repo** (a `## Review policy` exists — issue #1749): CI does not nudge there; post only when `review-triggers-allowed.sh {{PR_NUMBER}}` reports cursor `allowed` and `--claim cursor` exits 0, never as a duplicate (`.claude/reference/review-policy.md` "Trigger eligibility").
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 

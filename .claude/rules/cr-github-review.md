@@ -38,7 +38,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
 
-If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (dedupe `session-state.json` `.prs[N].ai_review_trigger_*`).
+If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows — never Graphite).
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
@@ -87,5 +87,3 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `tier_gate`, `trigger_grept
 5. Resume polling; repeat until CR has no more findings
 
 > **"Duplicate" findings are NOT resolved** — always verify against code before dismissing.
-
-This file owns polling/feedback only.
