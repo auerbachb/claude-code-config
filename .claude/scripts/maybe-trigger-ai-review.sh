@@ -20,6 +20,14 @@
 # SKIPPED when the PR's review tier excludes BugBot (gate ci-only or
 # ci+codeant-one-round). --json reports it as `bugbot_skipped`. Fails open.
 #
+# Account daily cap (issue #1812): the `@cursor review` nudge is also SKIPPED when
+# review-daily-cap.sh says today's (ET) BugBot spend across every registered repo,
+# plus one review, would pass the account's daily cap. The tier and refused-HEAD
+# skips are checked first and still win. Only a validated `over` skips: an
+# `unknown` tally or a missing helper posts, with a stderr line. --json reports
+# the skip as `bugbot_skipped: {"reason":"daily_cap","gate":null,"tally":{...}}`
+# and the tally itself as `bugbot_daily_cap` whenever the cap was consulted.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
@@ -279,7 +287,62 @@ if bugbot_tier_excluded; then
   BUGBOT_SKIPPED_JSON="$(jq -cn --arg g "$BUGBOT_TIER_GATE" '{reason: "review_tier", gate: $g}')"
 fi
 
+# Account-level daily cap (issue #1812). One BugBot review at the ledger's
+# per-review rate is the trigger about to be spent; review-daily-cap.sh sums
+# today's ET spend across every registered repo and answers ok, over, or
+# unknown. Asked here, before --dry-run, so a dry run reports the answer a real
+# run acts on — but only when the tier has not already ruled BugBot out, since
+# a skipped trigger spends nothing. The real run applies it AFTER the
+# refused-HEAD guard below, so both earlier skips keep their precedence.
+#
+# FAILS OPEN: a missing helper, an `unknown` tally, an unexpected exit, or
+# output that is not the helper's JSON all post. Only a validated `over` skips.
+BUGBOT_CAP_JSON="null"
+BUGBOT_CAP_STATUS=""
+bugbot_daily_cap() {
+  local helper="${SCRIPT_DIR}/review-daily-cap.sh" rate out rc=0
+  if [[ ! -x "$helper" ]]; then
+    echo "DEGRADED: review-daily-cap.sh not found beside this script — account daily cap unavailable, continuing without it" >&2
+    return 0
+  fi
+  rate="$("$helper" bugbot --rate)" || rate=""
+  [[ "$rate" =~ ^[0-9]+(\.[0-9]+)?$ ]] || rate=0
+  out="$("$helper" bugbot --add-usd "$rate")" || rc=$?
+  if (( rc > 1 )) || ! jq -e 'type == "object" and (.status == "ok" or .status == "over" or .status == "unknown")' <<<"$out" >/dev/null 2>&1; then
+    echo "maybe-trigger-ai-review.sh: review-daily-cap.sh gave no usable answer (rc=$rc) — daily cap unknown, posting" >&2
+    return 0
+  fi
+  BUGBOT_CAP_JSON="$(jq -c . <<<"$out")"
+  BUGBOT_CAP_STATUS="$(jq -r '.status' <<<"$out")"
+  # The exit code and the status must agree before a skip is believed.
+  if [[ "$BUGBOT_CAP_STATUS" == "over" && "$rc" -ne 1 ]] || [[ "$BUGBOT_CAP_STATUS" != "over" && "$rc" -ne 0 ]]; then
+    echo "maybe-trigger-ai-review.sh: review-daily-cap.sh status '$BUGBOT_CAP_STATUS' disagrees with its exit $rc — treating the cap as unknown, posting" >&2
+    BUGBOT_CAP_STATUS="unknown"
+    # Report what was acted on, so --json never shows `over` beside a post.
+    BUGBOT_CAP_JSON="$(jq -c '.status = "unknown"' <<<"$BUGBOT_CAP_JSON")"
+  fi
+  if [[ "$BUGBOT_CAP_STATUS" == "unknown" ]]; then
+    echo "maybe-trigger-ai-review.sh: BugBot daily cap is unknown today — posting (the vendor cap stays the hard stop)" >&2
+  fi
+}
+cap_skip_json() {
+  jq -cn --argjson t "$BUGBOT_CAP_JSON" '{reason: "daily_cap", gate: null, tally: $t}'
+}
+cap_text() {
+  LC_ALL=C printf 'daily cap: $%.2f of $%.2f spent today, one more review ($%.2f) would pass it' \
+    "$(jq -r '.spent_usd' <<<"$BUGBOT_CAP_JSON")" \
+    "$(jq -r '.cap_usd' <<<"$BUGBOT_CAP_JSON")" \
+    "$(jq -r '.add_usd' <<<"$BUGBOT_CAP_JSON")"
+}
+if [[ -z "$BUGBOT_TIER_GATE" ]]; then
+  bugbot_daily_cap
+fi
+
 if (( DRY_RUN )); then
+  # A dry run never reaches the refused-HEAD guard (Issue #1735), so the cap is
+  # the only skip it can add to the tier's.
+  DRY_SKIPPED_JSON="$BUGBOT_SKIPPED_JSON"
+  [[ "$BUGBOT_CAP_STATUS" == "over" ]] && DRY_SKIPPED_JSON="$(cap_skip_json)"
   if (( JSON_OUT )); then
     jq -n \
       --arg status dry_run \
@@ -289,7 +352,8 @@ if (( DRY_RUN )); then
       --argjson first_round "$FIRST_CR_ROUND" \
       --argjson cadence "$CADENCE_ROUNDS" \
       --arg head "$HEAD_SHA" \
-      --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
+      --argjson bugbot_skipped "$DRY_SKIPPED_JSON" \
+      --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
       '{
         status: $status,
         cr_rounds: $cr_rounds,
@@ -298,10 +362,13 @@ if (( DRY_RUN )); then
         first_cr_round: $first_round,
         cadence_rounds: $cadence,
         head_sha: $head,
-        bugbot_skipped: $bugbot_skipped
+        bugbot_skipped: $bugbot_skipped,
+        bugbot_daily_cap: $bugbot_daily_cap
       }'
   elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
     echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
+  elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
+    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
     echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
@@ -404,6 +471,11 @@ elif bugbot_refused_head; then
   if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true"; then
     echo "maybe-trigger-ai-review.sh: failed to record the suppressed cursor step — may re-check on retry" >&2
   fi
+elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
+  # Deliberately NOT recorded as handled, like the tier skip: the cap is a
+  # daily tally, not a fact about this HEAD, so a resumed run asks it again.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — account $(cap_text) (#1812)" >&2
+  BUGBOT_SKIPPED_JSON="$(cap_skip_json)"
 elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 
@@ -424,9 +496,12 @@ if (( JSON_OUT )); then
     --argjson score "$SCORE" \
     --arg head "$HEAD_SHA" \
     --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" \
-    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped}'
+    --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
+    '{status: $status, cr_rounds: $cr_rounds, score: $score, head_sha: $head, bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
 elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — review tier $BUGBOT_TIER_GATE)"
+elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "daily_cap" ]]; then
+  echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — $(cap_text))"
 else
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE)"
 fi

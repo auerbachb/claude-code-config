@@ -10,7 +10,7 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 | #1728 | BugBot triggering | Landed |
 | #1729 | Pipeline ceiling | Landed |
 
-A follow-up, #1807, lets a repo [turn off escalation](#turning-off-escalation) to BugBot and Greptile altogether.
+A follow-up, #1807, lets a repo [turn off escalation](#turning-off-escalation) to BugBot and Greptile altogether. A separate, account-wide control, the [daily cap on paid triggers](#account-level-daily-cap) (#1812), is set once for every repo rather than per repo.
 
 This file is the mechanism reference. The rule files only point here, because the rule corpus has no word headroom.
 
@@ -201,6 +201,68 @@ The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is
 `STATUS=tier_gate` means the review tier, not the escalation chain, governs the PR. The caller does not make BugBot the reviewer and posts nothing. It keeps the current reviewer and keeps polling, and `merge-gate.sh` applies the tier's gate. It is not a stop and not self-review. Every other verdict keeps its meaning, including `trigger_greptile` for a BugBot that reviewed the PR on its own and then failed. The one exception is a repo that [turned escalation off](#turning-off-escalation).
 
 `pmm-act.md` and `wrap-merge-gate-recovery.md` post `@cursor review` only when BugBot already owns the PR. `tier_gate` keeps a lighter-tier PR from reaching that state.
+
+## Account-level daily cap
+
+The review vendors cap the **account**, not a repo. CodeRabbit's usage pool is org-wide, Cursor's spend limit covers every repo, and Greptile's flex cap is per org. Two repos that each honour their own $10 can still draw $20 from one cap, and neither can see the other. So the harness keeps one soft cap per paid platform per day, evaluated across every registered repo, and asks it before it posts a paid trigger. This is issue #1812, the last increment of the cross-repo cost ledger (#1747).
+
+### Where the cap is read from
+
+The cap is set once, in the account config, not per repo: the `## Review daily caps` section of `.claude/account-config.md`. That file is published to `~/.claude/account-config.md`, and the helper reads it with `pm-config-get.sh --file "${CLAUDE_ACCOUNT_CONFIG:-$HOME/.claude/account-config.md}"`.
+
+```ini
+REVIEW_DAILY_CAP_USD_BUGBOT = 10
+REVIEW_DAILY_CAP_USD_CODERABBIT = 10
+REVIEW_DAILY_CAP_USD_GREPTILE = 10
+```
+
+| Source | Precedence |
+|---|---|
+| Env `REVIEW_DAILY_CAP_USD_<PLATFORM>` | First. Set but blank counts as unset. |
+| The account config section | Second. `KEY = value` or `KEY: value`. The key matches in any case, and the first occurrence wins. A trailing `# note` is dropped, and HTML comments are ignored. |
+| Default | `10`. |
+
+A value must be a non-negative decimal. Anything else, such as `$10`, warns on stderr and falls back to the default, and so does a config file that exists but cannot be read. A missing file or section uses the default silently.
+
+### What is tallied
+
+```bash
+.claude/scripts/review-daily-cap.sh <platform> [--add-usd X] [--fixture <path>]
+.claude/scripts/review-daily-cap.sh <platform> --rate
+```
+
+The day is the **America/New_York** calendar day, the same boundary `greptile-budget.sh` uses. The UTC date never decides it. The helper lists the repos from `review-repos.sh`, reads every PR updated since ET midnight, and prices that day's events with `lib/review_ledger.py`, the `/review-stack-audit` ledger's own rules:
+
+| Platform | Spend |
+|---|---|
+| `bugbot` | `Cursor Bugbot` check-runs from the `cursor` app, deduplicated by run id, times the per-review rate. |
+| `coderabbit` | `Charged: $X` receipts in `coderabbitai[bot]` comments. |
+| `greptile` | Non-bot `@greptileai` comments, times credits per review, times $/credit. |
+
+Rates come only from the `review-stack-rates` block in `pricing-matrix.md`. A known tally is cached per platform and ET day in `~/.claude/review-daily-cap/` for 5 minutes. Only the spend is cached, so a cap edit takes effect at once.
+
+It prints one line, `{"platform","date","spent_usd","add_usd","cap_usd","status"}`:
+
+| Status | When | Exit | The caller |
+|---|---|---|---|
+| `ok` | `spent + add <= cap` | `0` | Posts. |
+| `over` | `spent + add > cap`. The comparison is strict. | `1` | Skips the trigger and says so. |
+| `unknown` | The tally cannot be read. A rate is null, `review-repos.sh` lists nothing or fails, `gh` fails or returns errors, or a dependency is missing. `spent_usd` is then `null`, never `0`, and stderr says why. | `0` | Posts, and says the cap is unknown. |
+
+`--add-usd` is the trigger about to be spent. A caller gets it from `--rate`, which reads the block's per-review figure. Only when that reads null does `--rate` fall back to `REVIEW_RATE_USD_<PLATFORM>`, then to BugBot's documented `1.58`. That is the block's own measured average, $815.58 over 516 reviews (#1204).
+
+### Where it is consulted
+
+| Path | Behaviour |
+|---|---|
+| `maybe-trigger-ai-review.sh` | Asks the cap last: the tier skip, then the refused-HEAD skip, then the cap. On `over` it skips `@cursor review` and still posts CodeAnt and Graphite. It leaves the cursor step open, as the tier skip does, so a resumed run asks again. `--json` and `--dry-run --json` report `bugbot_skipped: {"reason":"daily_cap","gate":null,"tally":{…}}`, plus the tally as `bugbot_daily_cap` whenever the cap was consulted, `unknown` included. |
+| `/fixpr` Step 3b | Asks the cap after the same two skips. On `over` it appends `BugBot skipped: daily cap ($spent of $cap today)` under a `## Review notes` heading in the PR body, which it creates if absent. It does this once per HEAD, through `pr-body-review-note.sh`. |
+| `cursor-review-pr-comment.yml` | **A known bypass.** CI posts one `@cursor review` per new HEAD and cannot read the account config from a runner. The ledger still measures that spend, so it counts against the cap for every later trigger. |
+| #1749's trigger helper | Owns trigger order: CodeAnt first, BugBot once on a settled HEAD, and no Graphite on light tiers. This cap only gates the BugBot post. The per-repo daily check that #1749 proposes in its section 2.4 should call this helper rather than tally one repo. |
+
+### Failure direction
+
+The cap is **soft**, and it fails open. Only a validated `over`, with exit `1` and a matching status, skips a trigger. A missing helper, an `unknown` tally, or an unexpected answer posts, and a stderr line says so. **The vendors' own caps remain the hard stop.** The tally reads live GitHub evidence, so it also counts spend the harness did not trigger, such as vendor auto-reviews and CI nudges. Receipts and per-run estimates are a floor. A PR read only in part is noted on stderr: one with more than 50 commits or 100 comments, or a repo with more than 100 PRs updated today. The cap therefore errs toward spending slightly more than it thinks, never less.
 
 ## Turning off escalation
 

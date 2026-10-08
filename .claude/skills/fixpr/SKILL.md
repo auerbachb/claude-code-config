@@ -564,16 +564,59 @@ for candidate in \
   ".claude/scripts/bugbot-tier-excluded.sh"; do
   if [[ -x "$candidate" ]]; then BUGBOT_TIER_SH="$candidate"; break; fi
 done
+# The account-level daily cap (issue #1812) is asked LAST, so the tier and
+# refused-HEAD skips keep their precedence. Only a validated `over` skips; an
+# `unknown` tally or a missing helper posts and says so. A skip is recorded
+# once per HEAD under the PR body's `## Review notes`.
+REVIEW_DAILY_CAP_SH=""
+PR_BODY_NOTE_SH=""
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/review-daily-cap.sh" \
+  "$HOME/.claude/scripts/review-daily-cap.sh" \
+  ".claude/scripts/review-daily-cap.sh"; do
+  if [[ -x "$candidate" ]]; then REVIEW_DAILY_CAP_SH="$candidate"; break; fi
+done
+for candidate in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/pr-body-review-note.sh" \
+  "$HOME/.claude/scripts/pr-body-review-note.sh" \
+  ".claude/scripts/pr-body-review-note.sh"; do
+  if [[ -x "$candidate" ]]; then PR_BODY_NOTE_SH="$candidate"; break; fi
+done
+BUGBOT_CAP_JSON=""
+bugbot_cap_over() {   # exit 0 only on a validated `over`
+  local rate rc=0
+  if [[ -z "$REVIEW_DAILY_CAP_SH" ]]; then
+    echo "[REVIEWERS] DEGRADED: review-daily-cap.sh not found (checked all three paths) — BugBot daily cap unknown, posting"
+    return 1
+  fi
+  rate=$("$REVIEW_DAILY_CAP_SH" bugbot --rate 2>/dev/null) || rate=0
+  [[ "$rate" =~ ^[0-9]+(\.[0-9]+)?$ ]] || rate=0
+  BUGBOT_CAP_JSON=$("$REVIEW_DAILY_CAP_SH" bugbot --add-usd "$rate") || rc=$?
+  if [[ "$rc" -eq 1 && "$(jq -r '.status // ""' <<<"$BUGBOT_CAP_JSON" 2>/dev/null)" == "over" ]]; then
+    return 0
+  fi
+  [[ "$(jq -r '.status // ""' <<<"$BUGBOT_CAP_JSON" 2>/dev/null)" == "ok" ]] \
+    || echo "[REVIEWERS] BugBot daily cap unknown (rc=$rc) — posting; the vendor cap stays the hard stop"
+  return 1
+}
 if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_GATE=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" 2>/dev/null); then
   echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
 elif [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
   echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
+elif bugbot_cap_over; then
+  CAP_NOTE=$(LC_ALL=C printf 'BugBot skipped: daily cap ($%.2f of $%.2f today)' \
+    "$(jq -r '.spent_usd' <<<"$BUGBOT_CAP_JSON")" "$(jq -r '.cap_usd' <<<"$BUGBOT_CAP_JSON")")
+  echo "[REVIEWERS] skipping @cursor review — $CAP_NOTE (#1812)"
+  if [[ -z "$PR_BODY_NOTE_SH" ]] || ! "$PR_BODY_NOTE_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" \
+      --head "$PUSHED_SHA" --key bugbot-daily-cap --line "$CAP_NOTE" >/dev/null; then
+    echo "[REVIEWERS] could not record the daily-cap skip in the PR body's ## Review notes" >&2
+  fi
 else
   gh pr comment "$PR_NUMBER" --body "@cursor review"
 fi
 ```
 
-Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-tier-excluded.sh` and `bugbot-refused-head.sh`** — the first skips a PR whose review tier (`ci-only` / `ci+codeant-one-round`) never needs BugBot, `.claude/reference/review-policy.md` (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
+Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-tier-excluded.sh` and `bugbot-refused-head.sh`** — the first skips a PR whose review tier (`ci-only` / `ci+codeant-one-round`) never needs BugBot, `.claude/reference/review-policy.md` (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. A third, last gate is the account-level daily cap (`review-daily-cap.sh`, #1812): today's ET BugBot spend across every registered repo plus one review must stay under the account config's `## Review daily caps`, or the nudge is skipped and noted once per HEAD in the PR body — policy in `.claude/reference/review-policy.md` "Account-level daily cap". Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
 **Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 

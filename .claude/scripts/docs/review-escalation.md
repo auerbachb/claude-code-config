@@ -20,6 +20,8 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [greptile-budget.sh](../greptile-budget.sh) | Guard the daily Greptile review budget counter in session-state |
 | [local-review.sh](../local-review.sh) | Run a local review CLI (CodeRabbit/CodeAnt) with every false-clean check applied; emits the compact result contract |
 | [maybe-trigger-ai-review.sh](../maybe-trigger-ai-review.sh) | Post supplemental AI reviewer triggers when complexity and CR-round gates pass |
+| [pr-body-review-note.sh](../pr-body-review-note.sh) | Record a review-trigger decision (such as a BugBot daily-cap skip) as one line under the PR body's `## Review notes`, idempotent per key and HEAD |
+| [review-daily-cap.sh](../review-daily-cap.sh) | Tally today's (ET) spend for one paid reviewer across every registered repo and say whether one more trigger stays under the account's daily cap |
 | [review-repos.sh](../review-repos.sh) | Resolve the registered AI-review repos (`REVIEW_REPOS`, then the account config's `## Review repos` list, then `ac-gate.yml` discovery) for `/review-stack-audit`'s multi-repo roll-up |
 <!-- catalog:rows:end -->
 
