@@ -17,6 +17,7 @@ here).
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), with no state line (#1781) |
 | `reviews.md` | The Reviews view: `reviews`, `open R-<n>` (level 2, cached), `diff R-<n> [path]` (level 3, live), `reviewed`, `reviewed all today`, `flag`, `follow up`; its rendering is `reviews_view` and `review_header` in `desk.jq` (#1782) |
 | `ideas.md` | `idea:` / `file:` files an issue through `/issue-maker`'s one-shot entry without capture mode; `repo:` sets where ideas go (#1766) |
+| `attention.md` | `report`: the weekly attention report, one page computed from the events table (`human-queue.sh report`), offered once after Friday's end-of-day sweep (#1771) |
 
 Later desk issues add a file here and a row to `SKILL.md`'s table rather than
 growing one file.

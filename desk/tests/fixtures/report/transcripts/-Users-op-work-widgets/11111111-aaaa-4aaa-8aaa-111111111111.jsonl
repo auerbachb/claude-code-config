@@ -1,0 +1,7 @@
+{"type":"user","sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"role":"user","content":"Fix the importer."}}
+{"type":"assistant","isSidechain":false,"sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"model":"claude-opus-4-1","role":"assistant","content":[{"type":"tool_use","name":"Agent","input":{"model":"opus","prompt":"x"}}]}}
+{"type":"user","sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"role":"user","content":"Say \"type\":\"assistant\" and \"model\":\"claude-fake\" back to me."}}
+{"type":"assistant","isSidechain":false,"sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"Done."}]}}
+{"type":"assistant","isSidechain":true,"sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"model":"claude-haiku-4-5","role":"assistant","content":[]}}
+{"type":"assistant","isSidechain":false,"sessionId":"11111111-aaaa-4aaa-8aaa-111111111111","message":{"model":"<synthetic>","role":"assistant","content":[]}}
+{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-
