@@ -288,6 +288,34 @@ check "unwritable, --set: the set itself is kept" \
   "$(sql_in "SELECT string_agg(position || ':' || item_id, ' ' ORDER BY position) FROM sets WHERE set_id = $SET1")" "$POSITIONS0"
 check "unwritable, --set: the set's earlier exports are kept" "$(exported_count)" "$EXPORTED0"
 
+# --- stopped mid-render: the record is taken back ----------------------------------
+# A Chrome stand-in that never finishes; the export is stopped (SIGTERM) while
+# it waits on it, after the record committed and before any file.
+cat > "$TMP/hang-chrome" <<'EOF'
+#!/usr/bin/env bash
+echo "$$" > "$HANG_PID_FILE"
+exec sleep 30
+EOF
+chmod +x "$TMP/hang-chrome"
+E0=$(max_event)
+SETS1=$(nsets)
+rm -f "$TMP/hang.pid"
+HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_EXPORT_RENDERER=chrome HUMAN_QUEUE_CHROME="$TMP/hang-chrome" \
+  HANG_PID_FILE="$TMP/hang.pid" bash "$HQ_T_CLI" export --kind decisions --out "$TMP/out/stopped.pdf" \
+  >"$TMP/stdout" 2>"$TMP/stderr" </dev/null &
+EXPORT_PID=$!
+i=0
+while [ ! -s "$TMP/hang.pid" ] && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
+check "stopped mid-render: the renderer was running" "$([ -s "$TMP/hang.pid" ] && echo yes || echo no)" "yes"
+kill -TERM "$EXPORT_PID" 2>/dev/null
+wait "$EXPORT_PID" 2>/dev/null
+check "stopped mid-render: its set and its events are taken back" "$(nsets):$(events "$E0")" "$SETS1:"
+check_contains "stopped mid-render: says so" "$(cat "$TMP/stderr")" "stopped before the file was written; nothing was recorded"
+check "stopped mid-render: no file" \
+  "$([ -e "$TMP/out/stopped.pdf" ] || [ -e "$TMP/out/stopped.md" ] && echo yes || echo no)" "no"
+check "stopped mid-render: the renderer is stopped too" \
+  "$(kill -0 "$(cat "$TMP/hang.pid" 2>/dev/null)" 2>/dev/null && echo running || echo stopped)" "stopped"
+
 # --- at most 99 ------------------------------------------------------------------
 MANY=$(sql_in "INSERT INTO items (id, kind, repo, key, question, status)
   SELECT 'D-' || g, 'decision', 'acme/widgets', 'issue-' || g, 'Question ' || g || '?', 'open'

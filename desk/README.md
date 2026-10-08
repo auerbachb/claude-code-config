@@ -1312,7 +1312,9 @@ lands on the right item.
   file then cannot be written, a second transaction removes that record
   (the set it opened, and its `shown` and `exported` events by the ids the
   first transaction returned), so no unseen set becomes the latest; exit 1,
-  `nothing was recorded`. Migration
+  `nothing was recorded`. An export stopped before its file is in place
+  (SIGTERM, SIGINT) takes the record back the same way, from its exit
+  trap. Migration
   `013_exported_event.sql` adds the kind to whatever `events_kind_check`
   allows (as 010 does), so it applies before or after #1769's 010. Before
   013 is applied, `export` exits 1 naming `migrate` and records nothing; a

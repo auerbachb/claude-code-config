@@ -86,7 +86,8 @@ RECORDING
   One `exported` event per item (note `set N #k`), in the transaction that
   reads the items (migration 013). If the file then cannot be written, that
   record is removed again (the set it opened, its `shown` and `exported`
-  events) and export exits 1 saying `nothing was recorded`. Before 013 is
+  events) and export exits 1 saying `nothing was recorded`; an export
+  stopped before its file is in place (SIGTERM, SIGINT) removes it too. Before 013 is
   applied, export exits 1 naming `migrate`; --dry-run records nothing and
   needs no migration.
 
@@ -249,10 +250,23 @@ hq__export_out_check() {
 # HQ_EXPORT_WORK: the private scratch directory (the three renderings, the
 # renderers' own files and temp files, Chrome's throwaway profile); removed
 # on exit, after any renderer still running (an interrupted export) is
-# stopped.
+# stopped. HQ_EXPORT_PENDING: the store's JSON for a recorded export whose
+# file is not placed yet; an exit with it still set (SIGTERM, SIGINT, SIGHUP
+# mid-render) takes the record back, as hq__export_fail does, so no unseen
+# set outlives the export. Cleared once the file is in place.
 HQ_EXPORT_WORK=""
+HQ_EXPORT_PENDING=""
 hq__export_cleanup() {
+  local hq__pending="$HQ_EXPORT_PENDING"
   hq_export_stop_renderer
+  if [ -n "$hq__pending" ]; then
+    HQ_EXPORT_PENDING=""
+    if hq__export_undo "$hq__pending"; then
+      printf 'human-queue: export: stopped before the file was written; nothing was recorded\n' >&2
+    else
+      printf 'human-queue: export: stopped before the file was written (and could not undo the record: the items stay recorded as exported)\n' >&2
+    fi
+  fi
   case "$HQ_EXPORT_WORK" in
     */human-queue-export.*) rm -rf "$HQ_EXPORT_WORK" 2>/dev/null || true ;;
   esac
@@ -301,6 +315,7 @@ SQL
 # that does not exist and no unseen set becomes the latest; only when the
 # store refuses that too does the message say the items stay recorded.
 hq__export_fail() {
+  HQ_EXPORT_PENDING=""
   if hq__export_undo "$1"; then
     hq_die_error "export: could not $2; nothing was recorded"
   fi
@@ -477,9 +492,12 @@ cmd_run() {
   fi
 
   if [ "$dry" -eq 0 ] && [ "$(printf '%s' "$data" | hq_jq -r '.count')" != 0 ]; then
+    # Recorded, not yet on disk: from here to the file's rename, any exit
+    # takes the record back (hq__export_cleanup, hq__export_fail).
+    HQ_EXPORT_PENDING="$data"
+    trap hq__export_cleanup EXIT
     HQ_EXPORT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/human-queue-export.XXXXXX") \
       || hq__export_fail "$data" "create a scratch directory"
-    trap hq__export_cleanup EXIT
     chmod 700 "$HQ_EXPORT_WORK" 2>/dev/null || true
     if ! printf '%s' "$data" | hq_export_jq -r 'export_markdown' > "$HQ_EXPORT_WORK/export.md" \
        || ! printf '%s' "$data" | hq_export_jq -r 'export_text' > "$HQ_EXPORT_WORK/export.txt" \
@@ -492,11 +510,13 @@ cmd_run() {
       format=pdf
       hq__export_place "$HQ_EXPORT_WORK/export.pdf" "$path" \
         || hq__export_fail "$data" "write the PDF"
+      HQ_EXPORT_PENDING=""
     else
       format=markdown
       mdpath="${path%.*}.md"
       hq__export_place "$HQ_EXPORT_WORK/export.md" "$mdpath" \
         || hq__export_fail "$data" "write the Markdown"
+      HQ_EXPORT_PENDING=""
       warn="no PDF renderer produced a PDF ($HQ_EXPORT_TRIED); wrote the Markdown instead: $mdpath"
       path="$mdpath"
       printf 'human-queue: export: %s\n' "$warn" >&2
