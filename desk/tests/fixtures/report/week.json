@@ -1,0 +1,23 @@
+{
+  "week": {"start": "2026-09-07", "end": "2026-09-13", "tz": "America/New_York"},
+  "today": "2026-10-08",
+  "minutes": {"total": 39, "sittings": 5},
+  "days": [
+    {"day": "2026-09-07", "dow": "Mon", "handled": 3, "decisions": 2, "reviews": 1, "asked": 1, "minutes": 10, "desk": true},
+    {"day": "2026-09-08", "dow": "Tue", "handled": 1, "decisions": 1, "reviews": 0, "asked": 1, "minutes": 4, "desk": true},
+    {"day": "2026-09-09", "dow": "Wed", "handled": 2, "decisions": 0, "reviews": 2, "asked": 1, "minutes": 17, "desk": true},
+    {"day": "2026-09-10", "dow": "Thu", "handled": 0, "decisions": 0, "reviews": 0, "asked": 1, "minutes": 3, "desk": true},
+    {"day": "2026-09-11", "dow": "Fri", "handled": 1, "decisions": 1, "reviews": 0, "asked": 1, "minutes": 5, "desk": true},
+    {"day": "2026-09-12", "dow": "Sat", "handled": 0, "decisions": 0, "reviews": 0, "asked": 0, "minutes": 0, "desk": false},
+    {"day": "2026-09-13", "dow": "Sun", "handled": 0, "decisions": 0, "reviews": 0, "asked": 0, "minutes": 0, "desk": false}
+  ],
+  "handled": {"total": 7, "desk_days": 5, "per_desk_day": 1.4},
+  "open_age": {"decisions": 6, "still_open": 2, "median_minutes": 392},
+  "not_important": {"tagged": 3, "shown": 6},
+  "should_have_defaulted": {"tagged": 3},
+  "threads": [
+    {"session": "11111111-aaaa-4aaa-8aaa-111111111111", "model": "claude-sonnet-4-5", "asked": 2, "should_have_defaulted": 2, "not_important": 1, "good_interrupt": 0},
+    {"session": "22222222-bbbb-4bbb-8bbb-222222222222", "model": "unknown", "asked": 3, "should_have_defaulted": 1, "not_important": 1, "good_interrupt": 1},
+    {"session": null, "model": null, "asked": null, "should_have_defaulted": 0, "not_important": 1, "good_interrupt": 0}
+  ]
+}

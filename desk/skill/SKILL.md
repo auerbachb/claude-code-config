@@ -31,6 +31,7 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `ideas.md` | `idea: <text>` / `file: <text>`: file an issue through `/issue-maker`'s one-shot entry, no capture mode; `repo: owner/name` sets where ideas go | #1766 |
 | `plan.md` | The day plan: `plan`, `I need to work on …`, `plan: …` (one sentence revises it), `plan?`, `plan off`; asks pace and chunking, forecasts incoming questions, proposes what to clear first, stores the confirmed blocks, which hold new Decisions while they run | #1784 |
 | `sweep.md` | The end-of-day sweep at `eod_time` (the `eod` event) or on `sweep`: everything still open as one numbered list, then the paper export (`export`, #1759) | #1784 |
+| `attention.md` | The weekly attention report: `report` (`report <YYYY-MM-DD>` for another week), one page from the events table, offered once a week after Friday's end-of-day sweep | #1771 |
 
 ## The prelude (every Bash call)
 
@@ -111,7 +112,7 @@ Each stdout line of the loop arrives as a notification. A line whose generation 
 |------|----|
 | `desk-tick <GEN> new D-43 D-44` | Load `decisions.md` and follow "Showing items" for those ids. While a long-form prompt waits for its reply, hold them instead (`longform.md`, "Tick events while a prompt waits") |
 | `desk-tick <GEN> retry D-43 D-44` | Answers whose last wake-up failed, each due a retry. Load `wakeups.md` and follow "A `retry` event" at once, even while a long-form prompt waits: a retry shows nothing unless an answer parks |
-| `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep"; during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
+| `desk-tick <GEN> eod` | The end of the working day (`eod_time`), once a day. Load `sweep.md` and follow "The sweep", then "Friday" (the weekly report's offer); during a hold, or while a long-form prompt waits, keep it and show it after (`sweep.md`, "Held like a Decision") |
 | `desk-tick <GEN> replaced` | Another session registered as the desk. The loop has exited. Write `.desk=null` (skip with `SESSION_STATE_SH` empty), say `The desk moved to another session; this one has stopped ticking.`, and arm nothing |
 | `desk-tick <GEN> error <cmd> exit <n>: <line>` | One line, action first: `Desk can't reach the store (<cmd> exit <n>) — still retrying every <N> min; once the last tick is older than the live-desk bound (15 min by default), worker threads show their own menus again.` The loop keeps going |
 | `desk-tick <GEN> recovered` | One line: `Store reachable again — desk live.` |
@@ -127,6 +128,7 @@ Read each operator message in this order:
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
    **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after.
    **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`**, or **`export`** after a sweep → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
+   **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
    **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
 2. **`idea: …`**, **`file: …`**, or **`repo: …`** (any case) → load `ideas.md`. Like `show`, it works at any time; a waiting long-form prompt's card is printed again afterwards.
 3. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
@@ -148,7 +150,7 @@ Read each operator message in this order:
 1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
 2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
 3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
-4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`; a plan card, `plan.md`), the end-of-day sweep (`sweep.md`) — never a routine "still watching", never a state line nobody asked for, and never the interrupt rule unasked (`interrupts.md`).
+4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`; a plan card, `plan.md`; the weekly report, `attention.md`), the end-of-day sweep (`sweep.md`) — never a routine "still watching", never a state line nobody asked for, and never the interrupt rule unasked (`interrupts.md`).
 
 If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.
 

@@ -37,6 +37,19 @@ rm -f "$SWEEP_JSON" "$SWEEP_SET"; echo "exit=$rc"
 
 The sweep stores nothing but the set (`shown` events, one per item). It answers nothing and wakes nobody.
 
+## Friday: the weekly report
+
+After the card for an `eod` event's sweep (never a typed `sweep`), including the one-line `End of day: nothing is open.` card but not after an exit 7, check the day (issue #1771):
+
+<!-- test-anchor: desk-sweep-friday -->
+
+```bash
+if [ "$(TZ=America/New_York date +%u)" = 5 ]; then echo "offer=report"; else echo "offer=none"; fi
+```
+
+- **`offer=report`** → one more line under the card: `It's Friday: say report for this week's attention report.` The `eod` event comes once a day and a typed `sweep` never offers, so the offer comes once a week. When the operator says `report`, the router loads `attention.md` (`SKILL.md`, "Replies the operator types").
+- **`offer=none`** → nothing more.
+
 ## `export`
 
 The paper copy is issue #1759's `human-queue.sh export`. Check for it:
