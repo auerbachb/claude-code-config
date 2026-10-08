@@ -191,6 +191,18 @@ CLAIM_FIELDS = ("vendor", "claim", "metric", "benchmark", "authorship", "source_
 STATUSES = ("verified", "unverified")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
+
+def is_date(value):
+    """A real calendar date written YYYY-MM-DD. The layout alone is not enough:
+    `2026-99-99` matches it and would print as a retrieval date nobody had."""
+    if not (isinstance(value, str) and DATE_RE.match(value)):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
 snapshot_path = os.environ.get("SCORECARD_SNAPSHOT", "")
 claims_path = os.environ.get("SCORECARD_CLAIMS", "")
 state_dir = os.environ.get("SCORECARD_STATE_DIR", "")
@@ -310,8 +322,8 @@ def render_value(doc):
     out = ["## Value per dollar", ""]
     if not is_ledger(doc):
         out.append("_Value per dollar unavailable: this snapshot was measured without the "
-                   "spend ledger, so it has no spend or real-defect figures. Run with "
-                   "`--repos` or `--all-repos` (each implies `--ledger`)._")
+                   "spend ledger, so it has no spend or real-defect figures. Measure "
+                   "with `--ledger` (`--repos` and `--all-repos` imply it)._")
         return out
     tools = tool_list(doc)
     repos = doc.get("repos")
@@ -375,7 +387,7 @@ def load_claims():
         return None, "the `%s` block is not valid JSON: %s" % (CLAIMS_TAG, exc)
     if not isinstance(doc, dict) or doc.get("schema") != CLAIMS_SCHEMA:
         return None, "the `%s` block's schema is not %r" % (CLAIMS_TAG, CLAIMS_SCHEMA)
-    if not (isinstance(doc.get("retrieved"), str) and DATE_RE.match(doc["retrieved"])):
+    if not is_date(doc.get("retrieved")):
         return None, "the `%s` block needs `retrieved` as YYYY-MM-DD" % CLAIMS_TAG
     if not (isinstance(doc.get("page_url"), str) and doc["page_url"].startswith("https://")):
         return None, "the `%s` block needs an https `page_url`" % CLAIMS_TAG
@@ -390,7 +402,7 @@ def load_claims():
                 return None, "claims[%d] needs a non-empty `%s`" % (i, field)
         if not c["source_url"].startswith("https://"):
             return None, "claims[%d] `source_url` must be an https URL" % i
-        if not DATE_RE.match(c["retrieved"]):
+        if not is_date(c["retrieved"]):
             return None, "claims[%d] `retrieved` must be YYYY-MM-DD" % i
         if c["status"] not in STATUSES:
             return None, "claims[%d] `status` must be one of %s" % (i, ", ".join(STATUSES))
@@ -466,8 +478,15 @@ def utc_date(value):
 def render_window():
     if not state_dir:
         return "study window: unknown (no state directory: HOME is unset and no --state-dir given)"
-    if not os.path.exists(state_dir):
+    # os.path.exists answers False when a permission error stops the stat, which
+    # would read an inaccessible directory as "nothing yet". Only a real
+    # FileNotFoundError means not started; every other failure is unknown.
+    try:
+        os.stat(state_dir)
+    except FileNotFoundError:
         return "study window: not started"
+    except OSError as exc:
+        return "study window: unknown (cannot read %s: %s)" % (state_dir, exc.strerror or exc)
     try:
         names = sorted(n for n in os.listdir(state_dir) if fnmatch.fnmatch(n, "snapshot-*.json"))
     except OSError as exc:

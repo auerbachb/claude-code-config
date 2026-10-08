@@ -100,8 +100,10 @@ measures the current repo up to today (a `--since`/`--until` window could lie in
 the past yet still mark this month audited), and Step 3 never forwards a repo
 selection or an explicit window on a tick.
 
-A multi-repo run is also a **spend-ledger** run (issue #1809): each tool in
-`per_repo[]` and in the total carries `spend_usd` and a `spend_source` label —
+Every run is a **spend-ledger** run (issue #1809): Step 3 always passes
+`--ledger` (`--repos` / `--all-repos` imply it anyway), so a single-repo audit
+— the monthly tick included — renders the Step 7 scorecard and starts the
+study window too. Each tool in `per_repo[]` and in the total carries `spend_usd` and a `spend_source` label —
 `receipt` (CodeRabbit's own charge lines, a floor), `estimate` (a count times a
 unit rate), `flat` (a monthly fee prorated to the window's elapsed days), or `none` (null, never
 0). Rates come only from the `review-stack-rates` block in the pricing matrix;
@@ -180,7 +182,9 @@ there is no job whose survival needs confirming.
 
 A tick is cheap: one `measure.sh` call and one `drift.sh` call, no model
 judgment. That is why it can afford to run the real comparison rather than just
-offering to.
+offering to. The ledger adds GitHub reads (one call per sampled PR, one per
+commit, one GraphQL call per 100 review threads — `measure.sh --help`), still
+no model judgment.
 
 ---
 
@@ -192,7 +196,7 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
+if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --ledger --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1

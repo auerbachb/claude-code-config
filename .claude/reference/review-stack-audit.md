@@ -396,9 +396,11 @@ whose spend is unknown come last. Precision breaks ties inside each group
 renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a
 tool we cannot price as free.
 
-A snapshot measured without the ledger (a single-repo run without `--ledger`)
-has no spend or real-defect fields. The section then says so in one line rather
-than printing a table of dashes.
+A snapshot measured without the ledger (a direct single-repo `measure.sh` run
+without `--ledger`) has no spend or real-defect fields. The section then says so
+in one line rather than printing a table of dashes. `/review-stack-audit` itself
+always measures with `--ledger` (Step 3), so its reports, the monthly tick's
+included, carry the table.
 
 ### Vendor claims vs observed
 

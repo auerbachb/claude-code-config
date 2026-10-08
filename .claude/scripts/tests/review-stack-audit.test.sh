@@ -2072,6 +2072,13 @@ if [[ "$(id -u)" -ne 0 ]]; then
   chmod 000 "$W/unreadable"
   window_case "$W/unreadable" "study window: unknown (cannot read" "an unreadable state directory reads 'unknown', never 'not started'"
   chmod 700 "$W/unreadable"
+  # A parent that cannot be searched makes os.path.exists answer False for the
+  # state directory inside it; that is a failed lookup, not "nothing yet".
+  mkdir -p "$W/locked/state"
+  ledger_snap "$W/locked/state/snapshot-2026-10.json" "2026-10-10T00:00:00Z"
+  chmod 000 "$W/locked"
+  window_case "$W/locked/state" "study window: unknown (cannot read" "a state directory behind an unsearchable parent reads 'unknown', never 'not started'"
+  chmod 700 "$W/locked"
 fi
 
 # The claims block is refused whole — never a partial table — and says why.
@@ -2095,6 +2102,12 @@ claims_case http-source '"source_url": "https://www.greptile.com/benchmarks"' '"
 claims_case no-date '"retrieved": "2026-10-08",
       "status": "verified"' '"retrieved": "Oct 8",
       "status": "verified"' "YYYY-MM-DD"
+claims_case impossible-date '"retrieved": "2026-10-08",
+      "status": "verified"' '"retrieved": "2026-99-99",
+      "status": "verified"' "YYYY-MM-DD"
+claims_case impossible-page-date '"retrieved": "2026-10-08",
+  "page_url"' '"retrieved": "2026-02-30",
+  "page_url"' "YYYY-MM-DD"
 claims_case missing-tool-key '"tool_key": "greptile",' '' "tool_key"
 claims_case duplicate '## Re-verifying' '```json review-stack-claims
 {}
