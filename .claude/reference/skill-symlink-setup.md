@@ -27,9 +27,9 @@ fi
 
 ## Where the symlink installation lives
 
-`.claude/scripts/publish-skill-symlinks.sh` owns the skill, `CLAUDE.md` and `rules` legs (issue #1524); `publish-agent-symlinks.sh` owns the agents leg (issue #1197). `setup-skills-worktree.sh` delegates to both rather than carrying its own copy of the state machine.
+`.claude/scripts/publish-skill-symlinks.sh` owns the skill, `CLAUDE.md`, `rules` and `account-config.md` legs (issues #1524, #1808 — the last links `~/.claude/account-config.md` to the worktree's `.claude/account-config.md`, the account-level settings `review-repos.sh` reads); `publish-agent-symlinks.sh` owns the agents leg (issue #1197). `setup-skills-worktree.sh` delegates to both rather than carrying its own copy of the state machine.
 
-That matters because the publishers no longer run only at setup time. They also run on **every session start** (`session-start-sync.sh`) and on **every scheduled tick** (`claude-config-sync.sh`, hourly under launchd — `skill-sync-hooks.md`), which is what makes a skill merged on another machine appear here without anyone re-running setup. Both are idempotent and silent when nothing changed, and both leave user-owned symlinks — any target outside the worktree — alone.
+That matters because the publishers no longer run only at setup time. They also run on **every session start** (`session-start-sync.sh`) and on **every scheduled tick** (`claude-config-sync.sh`, hourly under launchd — `skill-sync-hooks.md`), which is what makes a skill merged on another machine appear here without anyone re-running setup. Both are idempotent and silent when nothing changed, and both leave user-owned skill and agent symlinks — any target outside the worktree — alone. `CLAUDE.md`, `rules` and `account-config.md` are different: each has exactly one correct target, so a symlink pointing elsewhere is repointed at the worktree (a regular file at those paths is still never overwritten).
 
 ## Installing a new skill's symlink
 
@@ -91,7 +91,7 @@ SAFETY/MINDSET/SKILLS blocks plus the role procedure, per
 ## Verifying and migrating existing links
 
 ```bash
-ls -la ~/.claude/skills/ ~/.claude/agents/ ~/.claude/CLAUDE.md ~/.claude/rules
+ls -la ~/.claude/skills/ ~/.claude/agents/ ~/.claude/CLAUDE.md ~/.claude/rules ~/.claude/account-config.md
 ```
 
 Every entry should resolve to `~/.claude/skills-worktree/...`.

@@ -1,8 +1,8 @@
 # Skill Symlink Rule
 
-> **Always:** Symlink new skills to `~/.claude/skills/` via the skills worktree. Verify existing skills are symlinks pointing to the worktree, not copies or root-repo symlinks. Ensure the skills worktree exists at session start. CLAUDE.md and rules also go through the skills worktree.
+> **Always:** Symlink new skills to `~/.claude/skills/` via the skills worktree. Verify existing skills are symlinks pointing to the worktree, not copies or root-repo symlinks. Ensure the skills worktree exists at session start. CLAUDE.md, rules and account-config.md also go through the skills worktree.
 > **Ask first:** Never — symlink creation and worktree setup are autonomous.
-> **Never:** Copy skill directories to `~/.claude/skills/`. Symlink directly to the root repo (breaks when root repo isn't on `main`). Leave a new skill without a global symlink. Symlink CLAUDE.md or rules directly to the root repo.
+> **Never:** Copy skill directories to `~/.claude/skills/`. Symlink directly to the root repo (breaks when root repo isn't on `main`). Leave a new skill without a global symlink. Symlink CLAUDE.md, rules or account-config.md directly to the root repo.
 
 ## Source of Truth
 
@@ -12,6 +12,7 @@ This repo is the single source of truth for skills, global rules, and CLAUDE.md.
 - `~/.claude/agents/<name>.md` -> `~/.claude/skills-worktree/.claude/agents/<name>.md`
 - `~/.claude/CLAUDE.md` -> `~/.claude/skills-worktree/CLAUDE.md`
 - `~/.claude/rules` -> `~/.claude/skills-worktree/.claude/rules`
+- `~/.claude/account-config.md` -> `~/.claude/skills-worktree/.claude/account-config.md`
 
 `~/.claude/skills-worktree/` stays permanently on `main`, so symlink targets survive the root repo being on a feature branch.
 
@@ -37,4 +38,4 @@ Same three steps, mirrored: delete it in the repo, land that on `main`, then syn
 
 ## Verifying Existing Symlinks
 
-`ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules` — every entry must resolve to `~/.claude/skills-worktree/...`. Regular files warn but are never overwritten; root-repo-targeted symlinks need migrating. Exact commands for step 3, the session-start guard, and migration: `.claude/reference/skill-symlink-setup.md`.
+`ls -la ~/.claude/skills/ ~/.claude/CLAUDE.md ~/.claude/rules ~/.claude/account-config.md` — every entry must resolve to `~/.claude/skills-worktree/...`. Regular files warn but are never overwritten; root-repo-targeted symlinks need migrating. Exact commands for step 3, the session-start guard, and migration: `.claude/reference/skill-symlink-setup.md`.

@@ -46,21 +46,33 @@
 #   the failure is made visible instead.
 #
 # USAGE
-#   measure.sh [--repo owner/name] [--since YYYY-MM-DD | --days N] [--limit N]
+#   measure.sh [--repo owner/name | --repos a/b,c/d | --all-repos]
+#              [--since YYYY-MM-DD | --days N] [--limit N]
 #              [--fixture <path>] [--json | --summary]
 #   measure.sh --help | -h
 #
 #   --repo      Repo to measure. Default: gh's current-repo inference.
+#   --repos     Measure several repos in one run (issue #1808): comma-separated
+#               owner/name list. Output is the MULTI-REPO shape below.
+#   --all-repos Measure every registered repo, as listed by review-repos.sh
+#               (REVIEW_REPOS env, then ~/.claude/account-config.md's
+#               `## Review repos`, then ac-gate.yml discovery; with --fixture,
+#               discovery is skipped so the run stays offline). If it cannot
+#               resolve the list, nothing is measured: exit 1.
+#               --repo, --repos and --all-repos are mutually exclusive (exit 2).
 #   --since     Window start, inclusive (YYYY-MM-DD). Default: --days 30.
 #   --days      Window start as N days before today. Mutually exclusive
 #               with --since.
-#   --limit     Max merged PRs to sample in the window (default 60). The window
-#               is the measurement's meaning, so a truncated sample is declared
-#               in `window.truncated` rather than passed off as the whole window.
+#   --limit     Max merged PRs to sample in the window (default 60), per repo.
+#               The window is the measurement's meaning, so a truncated sample is
+#               declared in `window.truncated` rather than passed off as the
+#               whole window.
 #   --fixture   Read a pre-captured bundle instead of calling gh. Same code path,
 #               so tests exercise the real classifier. Shape: FIXTURE FORMAT.
 #   --json      Full snapshot on stdout (DEFAULT).
 #   --summary   One `tool<TAB>state<TAB>prs<TAB>findings<TAB>sole` line per tool.
+#               Multi-repo: one block per repo headed `# repo: owner/name`, then
+#               one `# total: N repos` block, blocks separated by a blank line.
 #
 # FIXTURE FORMAT
 #   {"repo": "owner/name",
@@ -68,6 +80,14 @@
 #             "reviews":        [{"user": "coderabbitai[bot]", "state": "APPROVED", "body": ""}],
 #             "pr_comments":    [{"user": "coderabbitai[bot]", "body": ""}],
 #             "issue_comments": [{"user": "coderabbitai[bot]", "body": ""}]}]}
+#
+#   Multi-repo: {"repos": [{"repo": "owner/name", "truncated": false,
+#                           "prs": [ ...as above... ]}]}
+#   `truncated` (optional) stands in for a live listing that hit --limit. A
+#   multi-repo fixture with neither --repos nor --all-repos measures every repo
+#   it carries; with either, each named repo must be present in it (exit 1).
+#   A multi-repo fixture cannot be read with --repo, nor a single-repo fixture
+#   in multi-repo mode (exit 1).
 #
 # OUTPUT (--json)
 #   {
@@ -87,15 +107,37 @@
 #     "notes": [...]
 #   }
 #
+# OUTPUT (--json, multi-repo: --repos / --all-repos / a multi-repo fixture)
+#   {
+#     "generated_at", "source",
+#     "repos": ["owner/name", ...],
+#     "per_repo": [<the single-repo document above, one per repo>],
+#     "window": {"since", "until", "days", "limit",
+#                "pr_count",        # summed across repos
+#                "truncated"},      # true if ANY repo truncated
+#     "tools": [...],   # the cross-repo TOTAL per tool, same fields as above, so
+#                       # drift.sh reads it unchanged. Counts are summed;
+#                       # cap_signals[].pr is repo-qualified "owner/name#N";
+#                       # cap_kinds is the union; plan_observed is the first
+#                       # repo's non-null value (a disagreement is noted);
+#                       # sole_provider_prs lists the "owner/name#N" PRs behind
+#                       # sole_provider_on, which stays a count.
+#     "unclassified": [...],        # merged, `pr` repo-qualified
+#     "unclassified_hits": N,       # summed
+#     "notes": ["owner/name: <note>", ...]   # merged, each tagged with its repo
+#   }
+#
 # EXIT STATUS
 #   0  Snapshot emitted.
-#   1  Measurement failed (gh/network/fixture unreadable). Nothing is emitted —
-#      a partial snapshot must never become the baseline a later run trusts.
+#   1  Measurement failed (gh/network/fixture unreadable, or any one repo of a
+#      multi-repo run). Nothing is emitted — a partial snapshot must never
+#      become the baseline a later run trusts.
 #   2  Usage error.
 #
 # EXAMPLES
 #   .claude/skills/review-stack-audit/measure.sh --days 30 --summary
 #   .claude/skills/review-stack-audit/measure.sh --since 2026-06-27 | jq '.tools[]'
+#   .claude/skills/review-stack-audit/measure.sh --all-repos --days 7 --summary
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
@@ -112,6 +154,8 @@ usage_error() {
 
 MODE="json"
 REPO=""
+REPOS_CSV=""
+ALL_REPOS=0
 SINCE=""
 DAYS=""
 LIMIT="60"
@@ -127,6 +171,12 @@ while [[ $# -gt 0 ]]; do
       REPO="$2"; shift 2 ;;
     --repo=*)
       REPO="${1#--repo=}"; [[ -n "$REPO" ]] || usage_error "--repo value cannot be empty"; shift ;;
+    --repos)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--repos requires a value"
+      REPOS_CSV="$2"; shift 2 ;;
+    --repos=*)
+      REPOS_CSV="${1#--repos=}"; [[ -n "$REPOS_CSV" ]] || usage_error "--repos value cannot be empty"; shift ;;
+    --all-repos) ALL_REPOS=1; shift ;;
     --since)
       [[ $# -ge 2 && -n "$2" ]] || usage_error "--since requires a value"
       SINCE="$2"; shift 2 ;;
@@ -156,6 +206,34 @@ done
 [[ $# -eq 0 ]] || usage_error "unexpected positional argument: $1"
 
 [[ -n "$SINCE" && -n "$DAYS" ]] && usage_error "--since and --days are mutually exclusive"
+# --repo picks the single-repo shape; --repos/--all-repos pick the multi-repo
+# one. Accepting both would make the output shape depend on which flag "won".
+if [[ -n "$REPO" ]] && [[ -n "$REPOS_CSV" || "$ALL_REPOS" -eq 1 ]]; then
+  usage_error "--repo is mutually exclusive with --repos and --all-repos"
+fi
+[[ -n "$REPOS_CSV" && "$ALL_REPOS" -eq 1 ]] && usage_error "--repos and --all-repos are mutually exclusive"
+REPOS_LIST=""
+if [[ -n "$REPOS_CSV" ]]; then
+  # Same shape review-repos.sh enforces: the name lands in a gh api path, so a
+  # `.`/`..` name (or a dotted owner) is refused rather than sent.
+  repo_re='^[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9_.-]+$'
+  # Newlines separate too: `read` stops at the first one, so a pasted
+  # one-per-line list would otherwise lose every repo after the first, silently.
+  IFS=',' read -r -a _repos_arr <<< "${REPOS_CSV//$'\n'/,}"
+  for _r in ${_repos_arr[@]+"${_repos_arr[@]}"}; do
+    # Trim the ends only. Stripping ALL whitespace would quietly turn a typo
+    # like "acme/my repo" into a different, valid-looking repo name.
+    _r="${_r#"${_r%%[![:space:]]*}"}"
+    _r="${_r%"${_r##*[![:space:]]}"}"
+    # A blank entry ("a/b,,c/d", a trailing comma) is a separator artefact,
+    # not a repo; an all-blank list is still refused below.
+    [[ -n "$_r" ]] || continue
+    [[ "$_r" =~ $repo_re && "${_r#*/}" != "." && "${_r#*/}" != ".." ]] \
+      || usage_error "--repos entry is not owner/name: '$_r'"
+    REPOS_LIST+="$_r"$'\n'
+  done
+  [[ -n "$REPOS_LIST" ]] || usage_error "--repos names no repo"
+fi
 [[ -z "$DAYS"  ]] || [[ "$DAYS"  =~ ^[0-9]+$ ]] || usage_error "--days must be a non-negative integer"
 # Positive, not merely non-negative: `gh pr list --limit 0` fails with its own
 # opaque error, and a zero-PR "measurement" is not a window worth reporting.
@@ -168,8 +246,40 @@ if [[ -z "$FIXTURE" ]]; then
 fi
 command -v python3 >/dev/null 2>&1 || { echo "measure.sh: python3 not found" >&2; exit 1; }
 
+# --all-repos: the registered list. review-repos.sh never returns a partial
+# list, and its failure is this run's failure — measuring "whatever resolved"
+# would understate every tool's account-level draw without saying so.
+if [[ "$ALL_REPOS" -eq 1 ]]; then
+  REVIEW_REPOS_SH=""
+  # This checkout's own copy first (`cd -P` resolves the published
+  # ~/.claude/skills symlink to the worktree), then the published locations.
+  _scripts_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/scripts" || _scripts_dir=""
+  for _c in \
+    ${_scripts_dir:+"$_scripts_dir/review-repos.sh"} \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-repos.sh" \
+    "$HOME/.claude/scripts/review-repos.sh" \
+    ".claude/scripts/review-repos.sh"; do
+    if [[ -x "$_c" ]]; then REVIEW_REPOS_SH="$_c"; break; fi
+  done
+  [[ -n "$REVIEW_REPOS_SH" ]] \
+    || { echo "ERROR: review-repos.sh not found (checked this checkout's .claude/scripts and all three published paths) — --all-repos unavailable" >&2; exit 1; }
+  # Under --fixture the run must stay offline, so the registered list may come
+  # from REVIEW_REPOS or the account config, but never from a live gh
+  # discovery: --no-discovery makes that case an exit 1 instead.
+  _rr_args=()
+  [[ -z "$FIXTURE" ]] || _rr_args+=(--no-discovery)
+  REPOS_LIST="$("$REVIEW_REPOS_SH" ${_rr_args[@]+"${_rr_args[@]}"})" \
+    || { echo "measure.sh: review-repos.sh could not resolve the registered repos — nothing measured" >&2; exit 1; }
+  [[ -n "$REPOS_LIST" ]] || { echo "measure.sh: review-repos.sh returned no repos — nothing measured" >&2; exit 1; }
+fi
+
+MULTI=0
+[[ -n "$REPOS_CSV" || "$ALL_REPOS" -eq 1 ]] && MULTI=1
+
 MEASURE_MODE="$MODE" \
 MEASURE_REPO="$REPO" \
+MEASURE_MULTI="$MULTI" \
+MEASURE_REPOS="$REPOS_LIST" \
 MEASURE_SINCE="$SINCE" \
 MEASURE_DAYS="$DAYS" \
 MEASURE_LIMIT="$LIMIT" \
@@ -389,32 +499,24 @@ else:
     days = int(days_arg) if days_arg else 30
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
 
-notes = []
+multi_requested = os.environ.get("MEASURE_MULTI", "0") == "1"
+repos_requested = []
+_seen_requested = set()
+for _r in os.environ.get("MEASURE_REPOS", "").split("\n"):
+    _r = _r.strip()
+    if _r and _r.lower() not in _seen_requested:
+        _seen_requested.add(_r.lower())
+        repos_requested.append(_r)
+
 
 # --- gather -------------------------------------------------------------------
 # `prs` is normalized to one shape regardless of source, so the classifier below
 # runs identically on live data and on a fixture. That is what makes the tests
 # exercise the real logic rather than a parallel implementation.
-if fixture:
-    source = "fixture"
-    try:
-        with open(fixture) as fh:
-            bundle = json.load(fh)
-    except (OSError, ValueError) as exc:
-        fail("fixture unreadable: %s" % exc)
-    if not isinstance(bundle, dict) or not isinstance(bundle.get("prs"), list):
-        fail("fixture must be an object with a 'prs' array")
-    repo = repo_arg or bundle.get("repo") or "(fixture)"
-    prs = bundle["prs"]
-else:
-    source = "github"
-    repo = repo_arg
-    if not repo:
-        info = run_gh(["repo", "view", "--json", "nameWithOwner"])
-        repo = info.get("nameWithOwner") or ""
-        if not repo:
-            fail("could not infer the repo (pass --repo owner/name)")
-
+def fetch_prs(repo):
+    """Every merged PR in the window for one repo, normalized. Any gh failure is
+    fatal (run_gh exits 1), so a multi-repo run can never emit a roll-up that
+    quietly left out the repo it failed to read."""
     listed = run_gh([
         "pr", "list", "--repo", repo, "--state", "merged",
         "--search", "merged:>=%s" % since,
@@ -440,213 +542,398 @@ else:
             "issue_comments": [{"user": (c.get("user") or {}).get("login", ""),
                                 "body": c.get("body") or ""} for c in issue_comments],
         })
+    return prs
 
-truncated = (not fixture) and len(prs) >= limit
-if truncated:
-    notes.append(
-        "Sample hit the --limit of %d, so the window may extend past what was "
-        "measured. Throughput and findings counts are floors, not totals." % limit)
 
 # --- classify -----------------------------------------------------------------
-stats = {}
-for t in TOOLS:
-    stats[t["key"]] = {
-        "key": t["key"], "login": t["login"], "name": t["name"],
-        "prs_touched": 0, "review_objects": 0, "approved": 0,
-        "changes_requested": 0, "inline_findings": 0, "issue_comments": 0,
-        "sole_provider_on": 0, "plan_observed": None,
-        "cap_signals": [], "cap_kinds": [],
-        "_pr_ids": set(),
-    }
+def measure_repo(repo, source, prs, truncated):
+    """One repo's snapshot: the single-repo document, exactly as it has always
+    been emitted (a multi-repo run's per_repo[] entries ARE these documents).
 
-unclassified = []
-unclassified_seen = set()
-# Entries are deduped per (tool, token) so one reworded vendor phrase repeated
-# across 30 PRs does not produce 30 rows. But the DEDUPED count is what a human
-# reads when deciding whether a new CAP_SIGNALS entry is warranted, and "1"
-# reads as noise whether it happened once or thirty times. Keep the frequency
-# count so the report can state it: how many BODIES carried unexplained
-# limit-shaped language, which is what "is this a vendor reword or noise?"
-# actually turns on. A body counts once however many tokens it carries.
-#
-# BODIES, not comments: classify_body() is fed review bodies as well as inline
-# and conversation comments, so a comment-only label would misreport a vendor
-# banner posted as a review. Reviews are deliberately in scope — a cap notice is
-# the same signal wherever it is posted — so the unit is named for what is
-# actually tallied rather than narrowed to make an inaccurate name true.
-unclassified_hits = 0
+    Also returns, per tool key, the PR numbers behind `sole_provider_on`. The
+    document reports that figure only as a count — drift.sh reads it as one —
+    so the numbers travel beside it for the multi-repo roll-up to qualify."""
+    notes = []
+    if truncated:
+        notes.append(
+            "Sample hit the --limit of %d, so the window may extend past what was "
+            "measured. Throughput and findings counts are floors, not totals." % limit)
 
+    stats = {}
+    for t in TOOLS:
+        stats[t["key"]] = {
+            "key": t["key"], "login": t["login"], "name": t["name"],
+            "prs_touched": 0, "review_objects": 0, "approved": 0,
+            "changes_requested": 0, "inline_findings": 0, "issue_comments": 0,
+            "sole_provider_on": 0, "plan_observed": None,
+            "cap_signals": [], "cap_kinds": [],
+            "_pr_ids": set(), "_sole_prs": [],
+        }
 
-def classify_body(key, pr_number, body):
-    """Record cap signals and plan observations from one comment body."""
-    global unclassified_hits
-    if not body:
-        return
-    low = body.lower()
-    matched_patterns = []
-    for sig in CAP_SIGNALS:
-        if sig["tool"] != key:
-            continue
-        if sig["pattern"] in low:
-            matched_patterns.append(sig["pattern"])
-            entry = {"pr": pr_number, "kind": sig["kind"], "pattern": sig["pattern"]}
-            # Dedupe per (PR, kind): one capped PR is one observation however
-            # many comments the vendor posts about it.
-            dup = any(c["pr"] == pr_number and c["kind"] == sig["kind"]
-                      for c in stats[key]["cap_signals"])
-            if not dup:
-                stats[key]["cap_signals"].append(entry)
-    for pp in PLAN_PATTERNS:
-        if pp["tool"] != key:
-            continue
-        # Case-insensitive: CodeRabbit writes "> **Plan**: Pro", not lowercase.
-        m = re.search(pp["regex"], body, re.I)
-        if m and not stats[key]["plan_observed"]:
-            stats[key]["plan_observed"] = m.group(1).strip().lower()
-
-    # The probe runs on EVERY body, including one that already matched a
-    # declared classifier (issue #1342). Gating it on "nothing matched" meant a
-    # banner carrying a declared phrase AND a separate undeclared limit signal
-    # recorded only the declared kind, and the undeclared one never reached
-    # `unclassified[]` — silent by construction, and worst exactly where the
-    # vendor says the most. The #1303 window carries the live case: the org
-    # usage-spending-cap sentence rode inside comments that already matched, so
-    # the audit's own blind-spot surface could not see it.
+    unclassified = []
+    unclassified_seen = set()
+    # Entries are deduped per (tool, token) so one reworded vendor phrase
+    # repeated across 30 PRs does not produce 30 rows. But the DEDUPED count is
+    # what a human reads when deciding whether a new CAP_SIGNALS entry is
+    # warranted, and "1" reads as noise whether it happened once or thirty
+    # times. Keep the frequency count so the report can state it: how many
+    # BODIES carried unexplained limit-shaped language, which is what "is this
+    # a vendor reword or noise?" actually turns on. A body counts once however
+    # many tokens it carries.
     #
-    # What the probe must NOT do is re-report the declared phrases themselves:
-    # several contain limit-shaped words ("...spend limit", "...subscription"),
-    # so every span a matched pattern already explains is excluded first. Spans
-    # are located in the same stripped-and-lowered string the probe reads, so
-    # the overlap test is exact rather than an offset approximation.
-    probe = strip_boilerplate(body)
-    probe_low = probe.lower()
-    declared_spans = []
-    for pattern in matched_patterns:
-        pos = probe_low.find(pattern)
-        while pos != -1:
-            declared_spans.append((pos, pos + len(pattern)))
-            pos = probe_low.find(pattern, pos + 1)
+    # BODIES, not comments: classify_body() is fed review bodies as well as
+    # inline and conversation comments, so a comment-only label would misreport
+    # a vendor banner posted as a review. Reviews are deliberately in scope — a
+    # cap notice is the same signal wherever it is posted — so the unit is
+    # named for what is actually tallied rather than narrowed to make an
+    # inaccurate name true.
+    unclassified_hits = 0
 
-    counted = False
-    for hit in LIMIT_SHAPED.finditer(probe):
-        if any(hit.start() < span_end and span_start < hit.end()
-               for span_start, span_end in declared_spans):
-            continue
-        # `unclassified_hits` counts BODIES, not raw matches: the note it feeds
-        # reads "across N limit-shaped comment(s)/review(s)", and a human weighs
-        # it as "how often did a vendor say this". Counting a second token in
-        # the same body as a second body would overstate that frequency.
-        if not counted:
-            counted = True
-            unclassified_hits += 1
-        token = hit.group(0).lower()
-        dedupe_key = (key, token)
-        if dedupe_key not in unclassified_seen:
-            unclassified_seen.add(dedupe_key)
-            excerpt_start = max(0, hit.start() - 60)
-            unclassified.append({
-                "tool": key, "pr": pr_number, "token": token,
-                "excerpt": " ".join(probe[excerpt_start:hit.end() + 60].split()),
-            })
+    def classify_body(key, pr_number, body):
+        """Record cap signals and plan observations from one comment body."""
+        nonlocal unclassified_hits
+        if not body:
+            return
+        low = body.lower()
+        matched_patterns = []
+        for sig in CAP_SIGNALS:
+            if sig["tool"] != key:
+                continue
+            if sig["pattern"] in low:
+                matched_patterns.append(sig["pattern"])
+                entry = {"pr": pr_number, "kind": sig["kind"], "pattern": sig["pattern"]}
+                # Dedupe per (PR, kind): one capped PR is one observation
+                # however many comments the vendor posts about it.
+                dup = any(c["pr"] == pr_number and c["kind"] == sig["kind"]
+                          for c in stats[key]["cap_signals"])
+                if not dup:
+                    stats[key]["cap_signals"].append(entry)
+        for pp in PLAN_PATTERNS:
+            if pp["tool"] != key:
+                continue
+            # Case-insensitive: CodeRabbit writes "> **Plan**: Pro", not lowercase.
+            m = re.search(pp["regex"], body, re.I)
+            if m and not stats[key]["plan_observed"]:
+                stats[key]["plan_observed"] = m.group(1).strip().lower()
+
+        # The probe runs on EVERY body, including one that already matched a
+        # declared classifier (issue #1342). Gating it on "nothing matched"
+        # meant a banner carrying a declared phrase AND a separate undeclared
+        # limit signal recorded only the declared kind, and the undeclared one
+        # never reached `unclassified[]` — silent by construction, and worst
+        # exactly where the vendor says the most. The #1303 window carries the
+        # live case: the org usage-spending-cap sentence rode inside comments
+        # that already matched, so the audit's own blind-spot surface could not
+        # see it.
+        #
+        # What the probe must NOT do is re-report the declared phrases
+        # themselves: several contain limit-shaped words ("...spend limit",
+        # "...subscription"), so every span a matched pattern already explains
+        # is excluded first. Spans are located in the same stripped-and-lowered
+        # string the probe reads, so the overlap test is exact rather than an
+        # offset approximation.
+        probe = strip_boilerplate(body)
+        probe_low = probe.lower()
+        declared_spans = []
+        for pattern in matched_patterns:
+            pos = probe_low.find(pattern)
+            while pos != -1:
+                declared_spans.append((pos, pos + len(pattern)))
+                pos = probe_low.find(pattern, pos + 1)
+
+        counted = False
+        for hit in LIMIT_SHAPED.finditer(probe):
+            if any(hit.start() < span_end and span_start < hit.end()
+                   for span_start, span_end in declared_spans):
+                continue
+            # `unclassified_hits` counts BODIES, not raw matches: the note it
+            # feeds reads "across N limit-shaped comment(s)/review(s)", and a
+            # human weighs it as "how often did a vendor say this". Counting a
+            # second token in the same body as a second body would overstate
+            # that frequency.
+            if not counted:
+                counted = True
+                unclassified_hits += 1
+            token = hit.group(0).lower()
+            dedupe_key = (key, token)
+            if dedupe_key not in unclassified_seen:
+                unclassified_seen.add(dedupe_key)
+                excerpt_start = max(0, hit.start() - 60)
+                unclassified.append({
+                    "tool": key, "pr": pr_number, "token": token,
+                    "excerpt": " ".join(probe[excerpt_start:hit.end() + 60].split()),
+                })
+
+    for pr in prs:
+        num = pr.get("number")
+        finders_on_pr = set()
+
+        for rv in pr.get("reviews", []):
+            key = LOGIN_TO_KEY.get(rv.get("user", ""))
+            if not key:
+                continue
+            s = stats[key]
+            s["review_objects"] += 1
+            s["_pr_ids"].add(num)
+            state = (rv.get("state") or "").upper()
+            if state == "APPROVED":
+                s["approved"] += 1
+            elif state == "CHANGES_REQUESTED":
+                s["changes_requested"] += 1
+            classify_body(key, num, rv.get("body") or "")
+
+        for c in pr.get("pr_comments", []):
+            key = LOGIN_TO_KEY.get(c.get("user", ""))
+            if not key:
+                continue
+            s = stats[key]
+            # Inline diff comments are the cleanest available proxy for "a
+            # finding", matching the methodology of the 2026-04 and 2026-06
+            # hand audits.
+            s["inline_findings"] += 1
+            s["_pr_ids"].add(num)
+            finders_on_pr.add(key)
+            classify_body(key, num, c.get("body") or "")
+
+        for c in pr.get("issue_comments", []):
+            key = LOGIN_TO_KEY.get(c.get("user", ""))
+            if not key:
+                continue
+            s = stats[key]
+            s["issue_comments"] += 1
+            s["_pr_ids"].add(num)
+            classify_body(key, num, c.get("body") or "")
+
+        # Sole-provider: the unique-value signal. Only meaningful when exactly
+        # one tool posted an inline finding on this PR.
+        if len(finders_on_pr) == 1:
+            sole = stats[next(iter(finders_on_pr))]
+            sole["sole_provider_on"] += 1
+            sole["_sole_prs"].append(num)
+
+    tools_out = []
+    sole_prs = {}
+    for t in TOOLS:
+        s = stats[t["key"]]
+        s["prs_touched"] = len(s["_pr_ids"])
+        del s["_pr_ids"]
+        sole_prs[t["key"]] = s.pop("_sole_prs")
+        s["cap_kinds"] = sorted({c["kind"] for c in s["cap_signals"]})
+        s["observed_state"] = observed_state(s)
+        tools_out.append(s)
+
+    if unclassified:
+        notes.append(
+            "%d distinct (tool, token) pair(s) across %d limit-shaped "
+            "comment(s)/review(s) carry language no declared classifier explains — "
+            "see `unclassified`. A body can appear here AND be classified: the "
+            "probe reports only the part its declared match does not account for, "
+            "so a second cap phrase riding in a recognised banner is visible rather "
+            "than swallowed. These are NOT counted as caps; a human decides whether "
+            "the CAP_SIGNALS table needs a new phrase. The body count is the one to "
+            "weigh: a phrase recurring across many PRs is a vendor reword, not "
+            "noise."
+            % (len(unclassified), unclassified_hits))
+
+    snapshot = {
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "repo": repo,
+        "source": source,
+        "window": {
+            "since": since,
+            "until": now.strftime("%Y-%m-%d"),
+            "days": days,
+            "pr_count": len(prs),
+            "limit": limit,
+            "truncated": truncated,
+        },
+        "tools": tools_out,
+        "unclassified": unclassified,
+        "unclassified_hits": unclassified_hits,
+        "notes": notes,
+    }
+    return snapshot, sole_prs
 
 
-for pr in prs:
-    num = pr.get("number")
-    finders_on_pr = set()
-
-    for rv in pr.get("reviews", []):
-        key = LOGIN_TO_KEY.get(rv.get("user", ""))
-        if not key:
-            continue
-        s = stats[key]
-        s["review_objects"] += 1
-        s["_pr_ids"].add(num)
-        state = (rv.get("state") or "").upper()
-        if state == "APPROVED":
-            s["approved"] += 1
-        elif state == "CHANGES_REQUESTED":
-            s["changes_requested"] += 1
-        classify_body(key, num, rv.get("body") or "")
-
-    for c in pr.get("pr_comments", []):
-        key = LOGIN_TO_KEY.get(c.get("user", ""))
-        if not key:
-            continue
-        s = stats[key]
-        # Inline diff comments are the cleanest available proxy for "a finding",
-        # matching the methodology of the 2026-04 and 2026-06 hand audits.
-        s["inline_findings"] += 1
-        s["_pr_ids"].add(num)
-        finders_on_pr.add(key)
-        classify_body(key, num, c.get("body") or "")
-
-    for c in pr.get("issue_comments", []):
-        key = LOGIN_TO_KEY.get(c.get("user", ""))
-        if not key:
-            continue
-        s = stats[key]
-        s["issue_comments"] += 1
-        s["_pr_ids"].add(num)
-        classify_body(key, num, c.get("body") or "")
-
-    # Sole-provider: the unique-value signal. Only meaningful when exactly one
-    # tool posted an inline finding on this PR.
-    if len(finders_on_pr) == 1:
-        stats[next(iter(finders_on_pr))]["sole_provider_on"] += 1
-
-tools_out = []
-for t in TOOLS:
-    s = stats[t["key"]]
-    s["prs_touched"] = len(s["_pr_ids"])
-    del s["_pr_ids"]
-    s["cap_kinds"] = sorted({c["kind"] for c in s["cap_signals"]})
+def observed_state(s):
     if s["prs_touched"] == 0:
-        s["observed_state"] = "silent"
-    elif s["cap_signals"]:
+        return "silent"
+    if s["cap_signals"]:
         # `capped` wins over `active`: a tool that reviewed AND hit a limit is
         # the case the audit most needs to see. Its throughput numbers still
         # show what it managed before the cap.
-        s["observed_state"] = "capped"
+        return "capped"
+    return "active"
+
+
+def summary_lines(tools):
+    return ["%s\t%s\t%d\t%d\t%d" % (s["key"], s["observed_state"],
+                                    s["prs_touched"], s["inline_findings"],
+                                    s["sole_provider_on"]) for s in tools]
+
+
+def qualify(repo, pr_number):
+    """A PR identifier that survives leaving its repo: `owner/name#N`."""
+    return "%s#%s" % (repo, pr_number)
+
+
+bundle = None
+if fixture:
+    try:
+        with open(fixture) as fh:
+            bundle = json.load(fh)
+    except (OSError, ValueError) as exc:
+        fail("fixture unreadable: %s" % exc)
+    if not isinstance(bundle, dict):
+        fail("fixture must be an object with a 'prs' array")
+multi_fixture = bundle is not None and "repos" in bundle
+# A multi-repo fixture read with no repo flag measures everything it carries;
+# --repo against one is refused below rather than guessed at.
+multi = multi_requested or (multi_fixture and not repo_arg)
+
+# --- single repo: the shape every existing caller reads ------------------------
+if not multi:
+    if fixture:
+        if multi_fixture:
+            fail("a multi-repo fixture ('repos' array) cannot be read with --repo; "
+                 "use --repos or --all-repos")
+        if not isinstance(bundle.get("prs"), list):
+            fail("fixture must be an object with a 'prs' array")
+        source = "fixture"
+        repo = repo_arg or bundle.get("repo") or "(fixture)"
+        prs = bundle["prs"]
     else:
-        s["observed_state"] = "active"
-    tools_out.append(s)
+        source = "github"
+        repo = repo_arg
+        if not repo:
+            info = run_gh(["repo", "view", "--json", "nameWithOwner"])
+            repo = info.get("nameWithOwner") or ""
+            if not repo:
+                fail("could not infer the repo (pass --repo owner/name)")
+        prs = fetch_prs(repo)
 
-if unclassified:
-    notes.append(
-        "%d distinct (tool, token) pair(s) across %d limit-shaped "
-        "comment(s)/review(s) carry language no declared classifier explains — "
-        "see `unclassified`. A body can appear here AND be classified: the "
-        "probe reports only the part its declared match does not account for, "
-        "so a second cap phrase riding in a recognised banner is visible rather "
-        "than swallowed. These are NOT counted as caps; a human decides whether "
-        "the CAP_SIGNALS table needs a new phrase. The body count is the one to "
-        "weigh: a phrase recurring across many PRs is a vendor reword, not "
-        "noise."
-        % (len(unclassified), unclassified_hits))
+    truncated = (not fixture) and len(prs) >= limit
+    snapshot, _ = measure_repo(repo, source, prs, truncated)
+    if mode == "summary":
+        for line in summary_lines(snapshot["tools"]):
+            print(line)
+    else:
+        print(json.dumps(snapshot, indent=2, sort_keys=True))
+    sys.exit(0)
 
-snapshot = {
+# --- multi repo (issue #1808) --------------------------------------------------
+# Every repo is measured before anything is printed, so one failing repo
+# (run_gh / fail exit 1 mid-loop) leaves stdout empty: fail closed, as the
+# single-repo path always has.
+fixture_entries = {}
+if fixture:
+    if not isinstance(bundle.get("repos"), list):
+        fail("multi-repo mode needs a fixture with a 'repos' array")
+    fixture_order = []
+    for entry in bundle["repos"]:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("repo"), str)
+                or not entry["repo"] or not isinstance(entry.get("prs"), list)
+                or not isinstance(entry.get("truncated", False), bool)):
+            fail("fixture 'repos' entries must be objects with a 'repo' name, a "
+                 "'prs' array and an optional boolean 'truncated'")
+        if entry["repo"].lower() in fixture_entries:
+            fail("fixture lists repo %s twice" % entry["repo"])
+        fixture_entries[entry["repo"].lower()] = entry
+        fixture_order.append(entry["repo"])
+    source = "fixture"
+    targets = repos_requested or fixture_order
+else:
+    source = "github"
+    targets = repos_requested
+if not targets:
+    fail("no repos to measure")
+
+results = []
+for repo in targets:
+    if fixture:
+        entry = fixture_entries.get(repo.lower())
+        if entry is None:
+            fail("repo %s is not in the fixture" % repo)
+        prs = entry["prs"]
+        truncated = entry.get("truncated", False)
+    else:
+        prs = fetch_prs(repo)
+        truncated = len(prs) >= limit
+    doc, sole = measure_repo(repo, source, prs, truncated)
+    results.append((repo, doc, sole))
+
+# The cross-repo total per tool. Same fields as a single-repo tool entry, so
+# drift.sh — which reads only `tools[]`, `window.truncated` and `unclassified`
+# — compares an account-level total against the baseline with no change.
+SUMMED = ["prs_touched", "review_objects", "approved", "changes_requested",
+          "inline_findings", "issue_comments", "sole_provider_on"]
+totals = []
+notes = []
+for t in TOOLS:
+    agg = {"key": t["key"], "login": t["login"], "name": t["name"],
+           "plan_observed": None, "cap_signals": [], "sole_provider_prs": []}
+    for field in SUMMED:
+        agg[field] = 0
+    plans = []
+    for repo, doc, sole in results:
+        rt = next(x for x in doc["tools"] if x["key"] == t["key"])
+        for field in SUMMED:
+            agg[field] += rt[field]
+        if rt["plan_observed"]:
+            plans.append((repo, rt["plan_observed"]))
+        for c in rt["cap_signals"]:
+            agg["cap_signals"].append({"pr": qualify(repo, c["pr"]),
+                                       "kind": c["kind"], "pattern": c["pattern"]})
+        agg["sole_provider_prs"].extend(qualify(repo, n) for n in sole[t["key"]])
+    if plans:
+        agg["plan_observed"] = plans[0][1]
+        if len({p for _, p in plans}) > 1:
+            # One account can still sit on different plans per repo (a public
+            # repo on a vendor's free OSS tier, say). Reporting only the first
+            # would hide exactly the billed-state question the audit asks.
+            notes.append(
+                "%s stated different plans across repos (%s); the total's "
+                "plan_observed carries the first, so read per_repo[] before "
+                "comparing billed state."
+                % (t["name"], "; ".join("%s: %s" % (r, p) for r, p in plans)))
+    agg["cap_kinds"] = sorted({c["kind"] for c in agg["cap_signals"]})
+    agg["observed_state"] = observed_state(agg)
+    totals.append(agg)
+
+merged_notes = ["%s: %s" % (repo, n) for repo, doc, _ in results for n in doc["notes"]]
+unclassified_all = []
+for repo, doc, _ in results:
+    for u in doc["unclassified"]:
+        qualified = dict(u)
+        qualified["pr"] = qualify(repo, u["pr"])
+        unclassified_all.append(qualified)
+
+rollup = {
     "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "repo": repo,
     "source": source,
+    "repos": [repo for repo, _, _ in results],
+    "per_repo": [doc for _, doc, _ in results],
     "window": {
         "since": since,
         "until": now.strftime("%Y-%m-%d"),
         "days": days,
-        "pr_count": len(prs),
+        "pr_count": sum(doc["window"]["pr_count"] for _, doc, _ in results),
         "limit": limit,
-        "truncated": truncated,
+        "truncated": any(doc["window"]["truncated"] for _, doc, _ in results),
     },
-    "tools": tools_out,
-    "unclassified": unclassified,
-    "unclassified_hits": unclassified_hits,
-    "notes": notes,
+    "tools": totals,
+    "unclassified": unclassified_all,
+    "unclassified_hits": sum(doc["unclassified_hits"] for _, doc, _ in results),
+    "notes": merged_notes + notes,
 }
 
 if mode == "summary":
-    for s in tools_out:
-        print("%s\t%s\t%d\t%d\t%d" % (s["key"], s["observed_state"],
-                                      s["prs_touched"], s["inline_findings"],
-                                      s["sole_provider_on"]))
+    blocks = []
+    for repo, doc, _ in results:
+        blocks.append("\n".join(["# repo: %s" % repo] + summary_lines(doc["tools"])))
+    blocks.append("\n".join(["# total: %d repo%s" % (len(results), "" if len(results) == 1 else "s")]
+                            + summary_lines(totals)))
+    print("\n\n".join(blocks))
 else:
-    print(json.dumps(snapshot, indent=2, sort_keys=True))
+    print(json.dumps(rollup, indent=2, sort_keys=True))
 PY

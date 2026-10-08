@@ -47,7 +47,7 @@ echo "Root repo: $REPO_ROOT"
 
 # --- Step 0: Preflight — the symlink publisher must exist BEFORE we mutate ---
 #
-# Publishing the skill / CLAUDE.md / rules symlinks is this script's core job
+# Publishing the skill / CLAUDE.md / rules / account-config.md symlinks is this script's core job
 # (Steps 2-5 below), and since issue #1524 that work lives in a separate
 # publisher. A missing publisher is therefore fatal, not skippable: completing
 # "setup" with a worktree and no symlinks would report success while leaving
@@ -112,10 +112,11 @@ else
   echo "Skills worktree created."
 fi
 
-# --- Steps 2-5: Publish skill, CLAUDE.md and rules symlinks ---
+# --- Steps 2-5: Publish skill, CLAUDE.md, rules and account-config.md symlinks ---
 #
 # The symlink state machine (publish, prune, legacy-migrate) and the
-# CLAUDE.md / rules legs live in .claude/scripts/publish-skill-symlinks.sh
+# CLAUDE.md / rules / account-config.md legs live in
+# .claude/scripts/publish-skill-symlinks.sh
 # (issue #1524) so that the scheduled claude-config-sync.sh tick and the
 # session-start hook can run the same idempotent publish without re-running
 # this whole bootstrap. This mirrors the Step 5b delegation to
@@ -123,7 +124,7 @@ fi
 
 # SKILLS_PUBLISH_SCRIPT is resolved and existence-checked in the Step 0
 # preflight above, so this call site only has to invoke it.
-echo "Symlinking skills, CLAUDE.md and rules from worktree..."
+echo "Symlinking skills, CLAUDE.md, rules and account-config.md from worktree..."
 # Captured rather than left to `set -e`. The worktree already exists by this
 # point, and the legs that follow — the agent publish, hook registration — are
 # INDEPENDENT of this one. Aborting here left a machine with a half-published
@@ -133,7 +134,7 @@ echo "Symlinking skills, CLAUDE.md and rules from worktree..."
 SETUP_EXIT=0
 if ! bash "$SKILLS_PUBLISH_SCRIPT" "$SKILLS_WORKTREE" "$REPO_ROOT"; then
   SETUP_EXIT=1
-  echo "  WARNING: publish-skill-symlinks.sh failed — skill/CLAUDE.md/rules links may be incomplete." >&2
+  echo "  WARNING: publish-skill-symlinks.sh failed — skill/CLAUDE.md/rules/account-config.md links may be incomplete." >&2
   echo "           Continuing with the agent publish and hook registration, which do not depend on it;" >&2
   echo "           this script will exit non-zero at the end." >&2
 fi
@@ -211,7 +212,7 @@ if (( SETUP_EXIT != 0 )); then
   # success and must not report itself as one, or a caller (the scheduled sync,
   # the session-start hook) would publish from a tree it believes is fully set up.
   echo "Finished WITH ERRORS. Skills worktree: $SKILLS_WORKTREE" >&2
-  echo "The skill/CLAUDE.md/rules publish failed; agent links and hook registration were still attempted." >&2
+  echo "The skill/CLAUDE.md/rules/account-config.md publish failed; agent links and hook registration were still attempted." >&2
   echo "Re-run this script, or .claude/scripts/publish-skill-symlinks.sh, once the cause is fixed." >&2
   echo "" >&2
   echo "Inspect with: ls -la $SKILLS_DIR" >&2

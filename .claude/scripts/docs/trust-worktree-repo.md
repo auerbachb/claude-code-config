@@ -14,7 +14,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [dirty-main-guard.sh](../dirty-main-guard.sh) | Detect and quarantine dirty tracked state on the root repo's main branch |
 | [main-sync.sh](../main-sync.sh) | Sync a repo's local main branch with `origin/main` |
 | [publish-agent-symlinks.sh](../publish-agent-symlinks.sh) | Publish the `~/.claude/agents/` symlinks from the skills worktree; idempotent, re-run on every session start |
-| [publish-skill-symlinks.sh](../publish-skill-symlinks.sh) | Publish the `~/.claude/skills/`, `CLAUDE.md` and `rules` symlinks from the skills worktree; idempotent, silent when already correct |
+| [publish-skill-symlinks.sh](../publish-skill-symlinks.sh) | Publish the `~/.claude/skills/`, `CLAUDE.md`, `rules` and `account-config.md` symlinks from the skills worktree; idempotent, silent when already correct |
 | [repair-trust-all.sh](../repair-trust-all.sh) | Fix trust flags for all projects in `~/.claude.json` |
 | [repair-trust-single.sh](../repair-trust-single.sh) | Fix trust flags for one project in `~/.claude.json` |
 | [repair-worktrees.sh](../repair-worktrees.sh) | Detect stale git worktrees (merged/deleted branch) and optionally remove them |

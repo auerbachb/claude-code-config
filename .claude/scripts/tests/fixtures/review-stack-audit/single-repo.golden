@@ -1,0 +1,2394 @@
+=== boiler --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== boiler --summary
+coderabbit	active	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== caps --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "rate_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "rate_limit",
+          "pattern": "auto-generated comment: rate limited by coderabbit.ai",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "not_subscribed"
+      ],
+      "cap_signals": [
+        {
+          "kind": "not_subscribed",
+          "pattern": "add this email to the pr review subscription",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "spend_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "spend_limit",
+          "pattern": "hit a usage or spend limit",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== caps --summary
+coderabbit	capped	1	0	0
+codeant	capped	1	0	0
+bugbot	capped	1	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== cr-burst-only --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "rate_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "rate_limit",
+          "pattern": "review limit reached",
+          "pr": 3
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== cr-burst-only --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== cr-cap-both --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage",
+        "rate_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "rate_limit",
+          "pattern": "auto-generated comment: rate limited by coderabbit.ai",
+          "pr": 4
+        },
+        {
+          "kind": "fair_usage",
+          "pattern": "under our fair usage limits policy",
+          "pr": 4
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== cr-cap-both --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== cr-cap-kinds --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage"
+      ],
+      "cap_signals": [
+        {
+          "kind": "fair_usage",
+          "pattern": "under our fair usage limits policy",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 2,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== cr-cap-kinds --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	active	1	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== cr-fair-usage-linked --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage"
+      ],
+      "cap_signals": [
+        {
+          "kind": "fair_usage",
+          "pattern": "under our [fair usage limits policy]",
+          "pr": 6
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== cr-fair-usage-linked --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== cr-fair-usage-prose --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 1,
+      "issue_comments": 0,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 1
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "Key details regarding this quota: these limits function as a rolling allowance rather than a",
+      "pr": 5,
+      "token": "quota",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== cr-fair-usage-prose --summary
+coderabbit	active	1	1	1
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== crosstalk --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "add this email to the PR Review subscription",
+      "pr": 1,
+      "token": "subscription",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== crosstalk --summary
+coderabbit	active	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== plan --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": "pro",
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== plan --summary
+coderabbit	active	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== sole --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 2,
+      "issue_comments": 0,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 2,
+      "review_objects": 0,
+      "sole_provider_on": 1
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 1,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 1,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 1
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 3,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== sole --summary
+coderabbit	active	2	2	1
+codeant	active	1	1	0
+bugbot	silent	0	0	0
+greptile	active	1	1	1
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "We have exhausted our monthly quota for this integration.",
+      "pr": 7,
+      "token": "quota",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass --summary
+coderabbit	active	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass-freq --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 3 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 3,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 3,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "your quota for this org has been adjusted",
+      "pr": 1,
+      "token": "quota",
+      "tool": "codeant"
+    }
+  ],
+  "unclassified_hits": 3,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 3,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass-freq --summary
+coderabbit	silent	0	0	0
+codeant	active	3	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass-plus-declared --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage"
+      ],
+      "cap_signals": [
+        {
+          "kind": "fair_usage",
+          "pattern": "under our [fair usage limits policy]",
+          "pr": 9
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "lans#fair-usage-limits-policy). Separately, your account is out of credits.",
+      "pr": 9,
+      "token": "out of credits",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass-plus-declared --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass-review-body --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "active",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 1,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "Skipping review: this org has exhausted its monthly quota.",
+      "pr": 12,
+      "token": "quota",
+      "tool": "greptile"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass-review-body --summary
+coderabbit	silent	0	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	active	1	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass-spending-cap --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "1 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage"
+      ],
+      "cap_signals": [
+        {
+          "kind": "fair_usage",
+          "pattern": "under our fair usage limits policy",
+          "pr": 10
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "hed its usage spending cap. Adjust your spending cap in the billing tab.",
+      "pr": 10,
+      "token": "billing",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass-spending-cap --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== unclass-two-tokens --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [
+    "2 distinct (tool, token) pair(s) across 1 limit-shaped comment(s)/review(s) carry language no declared classifier explains \u2014 see `unclassified`. A body can appear here AND be classified: the probe reports only the part its declared match does not account for, so a second cap phrase riding in a recognised banner is visible rather than swallowed. These are NOT counted as caps; a human decides whether the CAP_SIGNALS table needs a new phrase. The body count is the one to weigh: a phrase recurring across many PRs is a vendor reword, not noise."
+  ],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "fair_usage"
+      ],
+      "cap_signals": [
+        {
+          "kind": "fair_usage",
+          "pattern": "under our [fair usage limits policy]",
+          "pr": 11
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [
+    {
+      "excerpt": "management/plans#fair-usage-limits-policy). Your account is out of credits; see the billing tab.",
+      "pr": 11,
+      "token": "out of credits",
+      "tool": "coderabbit"
+    },
+    {
+      "excerpt": "age-limits-policy). Your account is out of credits; see the billing tab.",
+      "pr": 11,
+      "token": "billing",
+      "tool": "coderabbit"
+    }
+  ],
+  "unclassified_hits": 1,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== unclass-two-tokens --summary
+coderabbit	capped	1	0	0
+codeant	silent	0	0	0
+bugbot	silent	0	0	0
+greptile	silent	0	0	0
+graphite	silent	0	0	0
+vercel	silent	0	0	0
+=== caps --repo golden/override --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "golden/override",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "rate_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "rate_limit",
+          "pattern": "auto-generated comment: rate limited by coderabbit.ai",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "not_subscribed"
+      ],
+      "cap_signals": [
+        {
+          "kind": "not_subscribed",
+          "pattern": "add this email to the pr review subscription",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "spend_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "spend_limit",
+          "pattern": "hit a usage or spend limit",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "2026-08-01",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
+=== caps default window --json
+{
+  "generated_at": "<GENERATED_AT>",
+  "notes": [],
+  "repo": "test/repo",
+  "source": "fixture",
+  "tools": [
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "rate_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "rate_limit",
+          "pattern": "auto-generated comment: rate limited by coderabbit.ai",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "coderabbit",
+      "login": "coderabbitai[bot]",
+      "name": "CodeRabbit",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "not_subscribed"
+      ],
+      "cap_signals": [
+        {
+          "kind": "not_subscribed",
+          "pattern": "add this email to the pr review subscription",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "codeant",
+      "login": "codeant-ai[bot]",
+      "name": "CodeAnt",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [
+        "spend_limit"
+      ],
+      "cap_signals": [
+        {
+          "kind": "spend_limit",
+          "pattern": "hit a usage or spend limit",
+          "pr": 1
+        }
+      ],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 1,
+      "key": "bugbot",
+      "login": "cursor[bot]",
+      "name": "BugBot (Cursor)",
+      "observed_state": "capped",
+      "plan_observed": null,
+      "prs_touched": 1,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "greptile",
+      "login": "greptile-apps[bot]",
+      "name": "Greptile",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "graphite",
+      "login": "graphite-app[bot]",
+      "name": "Graphite",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    },
+    {
+      "approved": 0,
+      "cap_kinds": [],
+      "cap_signals": [],
+      "changes_requested": 0,
+      "inline_findings": 0,
+      "issue_comments": 0,
+      "key": "vercel",
+      "login": "vercel[bot]",
+      "name": "Vercel Agent",
+      "observed_state": "silent",
+      "plan_observed": null,
+      "prs_touched": 0,
+      "review_objects": 0,
+      "sole_provider_on": 0
+    }
+  ],
+  "unclassified": [],
+  "unclassified_hits": 0,
+  "window": {
+    "days": <DAYS>,
+    "limit": 60,
+    "pr_count": 1,
+    "since": "<SINCE>",
+    "truncated": false,
+    "until": "<UNTIL>"
+  }
+}
