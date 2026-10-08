@@ -121,8 +121,9 @@ set_window() {
   _WINDOW_SET=true
 }
 # Split without pathname expansion: an unquoted `for arg in $ARGUMENTS` would
-# glob `/pause *` into a matching filename (e.g. `5`) and accept it.
-read -r -a _PAUSE_ARGS <<< "$ARGUMENTS"
+# glob `/pause *` into a matching filename (e.g. `5`) and accept it. `-d ''`
+# reads past newlines (status 1 at EOF is expected), so `--window\n5` still parses.
+read -r -d '' -a _PAUSE_ARGS <<< "$ARGUMENTS" || true
 for arg in "${_PAUSE_ARGS[@]}"; do
   [[ "$_WINDOW_SET" == true ]] && continue
   if [[ "$_NEXT_IS_WINDOW" == true ]]; then
