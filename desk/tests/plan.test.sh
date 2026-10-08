@@ -382,8 +382,8 @@ CARD=$(printf '%s\n' "$OUT" | sed -n '/^> \*\*End of day/,/Take it to paper/p')
 check "5.2 everything still open as one numbered list" "$CARD" "$EXPECTED"
 check "5.2 the list is a set, in that order" "$(sql_in "SELECT string_agg(position || '=' || item_id, ',' ORDER BY position) FROM sets WHERE set_id = $SET_ID")" \
   "1=$D1,2=$D5,3=$D3,4=$D4,5=$D6,6=$D7,7=$D8,8=$R1"
-MD=$(printf '%s\n' "$OUT" | sed -n 's/^md=//p')
-check "5.2 the paper copy is written" "$(sed -n 1p "$MD" 2>/dev/null)" "# End of day · $TODAY"
+# The paper copy is `export --set` (#1759, export.test.sh); the sweep writes none.
+check_absent "5.2 the sweep writes no paper copy of its own" "$OUT" "md="
 hq set-resolve "2: A" --set "$SET_ID" --json
 check "5.2 a typed number resolves against the sweep's set" "$RC:$(jqo '[.answers[0].id, .answers[0].answer] | @json')" "0:[\"$D5\",\"Yes\"]"
 hq sweep list

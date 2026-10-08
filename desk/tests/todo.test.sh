@@ -29,8 +29,9 @@
 #        minute; tomorrow and a date are 00:00 America/New_York; a weekday
 #        with a time; a clock time's next occurrence; past and too-far
 #        times refused
-#   4.3  get renders the to-do fields; the end-of-day sweep's paper copy
-#        (sweep.md's desk-sweep block) carries the tags and the note
+#   4.3  get renders the to-do fields; the end-of-day sweep's card
+#        (sweep.md's desk-sweep block) and its paper copy (`export --set`
+#        of the sweep's set, #1759) carry the tags and the note
 #   tick a to-do write is not a change `tick` reports; a bump still is
 #   010  over a store without it: every to-do command exits 1 naming migrate,
 #        get and list still render; a parallel migration's event kind
@@ -352,14 +353,24 @@ hq unsnooze "$D2"
 OUT=$(run_block "$TMP/block-desk-sweep.sh")
 check "4.3 desk-sweep: exit=0" "$(printf '%s\n' "$OUT" | tail -1)" "exit=0"
 check_contains "4.3 the card carries the tags and the note" "$OUT" "   - P4 · tags: later · note: after the release"
-MD=$(printf '%s\n' "$OUT" | sed -n 's/^md=//p')
-check_contains "4.3 the paper copy carries them" "$(cat "$MD" 2>/dev/null)" \
-  "$(printf '%s\n%s' "$D2 · Ship the migration first? (widgets · issue-11)" "   - P4 · tags: later · note: after the release")"
+# The paper copy is `export` of the sweep's set (#1759; the sweep no longer
+# writes one of its own), here as Markdown, so the check needs no renderer.
+SWEEP_SET=$(printf '%s\n' "$OUT" | sed -n 's/^\*\*End of day · .* · set \([0-9][0-9]*\)\*\*$/\1/p' | head -n 1)
+check "4.3 the sweep opened a set" "$([ -n "$SWEEP_SET" ] && echo yes || echo no)" "yes"
+RC=0
+HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_EXPORT_RENDERER=markdown bash "$HQ_T_CLI" export --set "${SWEEP_SET:-0}" \
+  --out "$TMP/sweep-paper.pdf" >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+check "4.3 export of the sweep's set: exit 0" "$RC:$(cat "$TMP/err")" \
+  "0:human-queue: export: no PDF renderer produced a PDF (HUMAN_QUEUE_EXPORT_RENDERER=markdown); wrote the Markdown instead: $(cd -P "$TMP" && pwd)/sweep-paper.md"
+PAPER=$(awk -v id="$D2 · " 'index($0, "## ") == 1 { inside = (index($0, id) > 0) } inside' "$TMP/sweep-paper.md" 2>/dev/null)
+check_contains "4.3 the paper copy heads the item by number and id" "$PAPER" "$D2 · Ship the migration first?"
+check_contains "4.3 the paper copy carries them, in the item's section" "$PAPER" "P4 · tags: later · note: after the release"
 
 # ---------------------------------------------------------------- 010 over an older store
 # Back to a store without 010, whose event-kind list a parallel branch's
-# migration extended first (its kind, `sibling-kind`, must survive 010).
-OLD=$(sql_in "DELETE FROM events WHERE kind IN ('tagged', 'untagged', 'noted', 'snoozed', 'unsnoozed', 'prioritized');
+# migration extended first (its kind, `sibling-kind`, must survive 010). The
+# list below predates 013 too, so 4.3's `exported` events go with the rest.
+OLD=$(sql_in "DELETE FROM events WHERE kind IN ('tagged', 'untagged', 'noted', 'snoozed', 'unsnoozed', 'prioritized', 'exported');
 ALTER TABLE items DROP COLUMN my_tags, DROP COLUMN my_note, DROP COLUMN my_priority, DROP COLUMN snoozed_until;
 ALTER TABLE events DROP CONSTRAINT events_kind_check;
 ALTER TABLE events ADD CONSTRAINT events_kind_check

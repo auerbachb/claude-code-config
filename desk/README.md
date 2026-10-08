@@ -27,6 +27,7 @@ be spun out as its own project later.
 | `bin/lib/todo.sh` | The operator's to-do layer: tag and snooze-time parsing, and the one locked write `tag`, `untag`, `note`, `snooze`, `unsnooze`, and `mine` share (see "The to-do layer") |
 | `bin/lib/budget.sh` | The reading budget's measurements from `events`, shared by `stats`, `checkin`, and `plan forecast` (see "Morning check-in and reading budget") |
 | `bin/lib/impact.jq` | The derived-impact rule behind `impact` (see "Derived impact") |
+| `bin/lib/export.sh`, `bin/lib/export.jq` | The paper copy's PDF renderers and its Markdown, text, and HTML rendering (see "Export to paper") |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
 | `hooks/` | Hook implementations: `capture.sh` and its logic `capture.py`, the capture hook (see "Capture hook") |
 | `policy.json` | The desk's defaults: tick cadence, interrupt rule, end of day, set size, live-desk bound (see "Interrupts, policy, and feedback tags"), and the critical-path thresholds (see "Derived impact") |
@@ -87,6 +88,9 @@ URL, is refused with exit 7 rather than silently dropped.
 | `HUMAN_QUEUE_DATABASE_URL` | `postgres://` URL of the store. Required; secret |
 | `HUMAN_QUEUE_SCHEMA` | Schema every statement runs in (default `public`), applied with `SET LOCAL search_path` inside each transaction. Tests set it to a throwaway schema |
 | `HUMAN_QUEUE_PSQL` | `psql` binary to use (default `/opt/homebrew/bin/psql`, else `psql` on `PATH`) |
+| `HUMAN_QUEUE_EXPORT_RENDERER` | `export`'s PDF renderer: `auto` (default: pandoc, then headless Chrome, then cupsfilter), one of those three, or `markdown` (none) |
+| `HUMAN_QUEUE_PANDOC`, `HUMAN_QUEUE_CHROME`, `HUMAN_QUEUE_CUPSFILTER` | That renderer's binary; set to anything that is not an executable file, it counts as not installed (tests) |
+| `HUMAN_QUEUE_EXPORT_TIMEOUT` | Seconds each `export` renderer may run (defaults: pandoc 120, Chrome 60, cupsfilter 30) |
 
 ## Exit codes
 
@@ -935,8 +939,8 @@ decide nothing new on their own.
   stops asking that day. `HUMAN_QUEUE_CLOCK` pins the loop's clock (tests).
   The desk then renders `sweep list` as one numbered list (`desk.jq`'s
   `sweep_view`), opened as a set with `set-open` so `2: B` resolves against
-  it, writes the same list as Markdown for paper, and offers the numbered
-  PDF (`export`, issue #1759; until it lands, the Markdown path). During a
+  it, and offers the numbered PDF of that set (`export`, issue #1759; see
+  "Export to paper"). During a
   hold the sweep waits for the release, like a parked notice.
 - **Tests.** `tests/plan-offline.test.sh` (offline: the grammar, merging,
   proposals on `tests/fixtures/plan/` — test 5.1's batch before the block —
@@ -1039,9 +1043,10 @@ item fields, one event per change, no new table, no state key.
   items (`D-`/`R-` ids). `/pm`'s backlog order for GitHub issues is
   `pm-priority.sh` (`top`, `bump`, `park`, `drop`; "Priorities" above).
   Neither reads the other.
-- **On paper.** The end-of-day sweep's card and its Markdown paper copy
-  (which the PDF export of issue #1759 renders) print each item's priority,
-  tags, and note on a nested line under it (`desk.jq`'s `todo_line`).
+- **On paper.** The end-of-day sweep's card prints each item's priority,
+  tags, and note on a nested line under it (`desk.jq`'s `todo_line`); the
+  paper copy, `export` (issue #1759, "Export to paper" below), prints the
+  same line in the item's section.
 - **The event kinds.** 010 adds `tagged`, `untagged`, `noted`, `snoozed`,
   `unsnoozed`, and `prioritized` to whatever `events_kind_check` allows when
   it runs (read from the constraint's own definition), so a migration from a
@@ -1245,3 +1250,71 @@ items.
   `.claude/scripts/tests/issue-deps.test.sh` and `pm-rank-cache.test.sh`.
 
 `migrate` for 014 runs at the next `/desk` start (its step 3), or by hand.
+
+## Export to paper (issue #1759)
+
+The operator reads long material on paper, marks it by pen, and dictates or
+types the answers back. `export` prints a batch as a numbered PDF whose
+numbers are a set's, so a reply typed from the paper (`2: B`, `D-43: B`)
+lands on the right item.
+
+- **The command.** `export --out FILE.pdf` with exactly one batch:
+  `--kind decisions` (every open Decision, list order), `--kind reviews`
+  (every unreviewed Review, oldest first; `--today` for today's), `--ids
+  D-43 R-9 …` (that order), or `--set N` (a set at its own numbers: the
+  end-of-day sweep's). `--level 1|2` picks how much of each Review (2, the
+  cached twenty-line summary, by default); `--dry-run` reports the batch and
+  the Reviews still missing a summary without writing or recording
+  anything; `--json` prints the result as one object. At most 99 items, the
+  rest counted as `more`. `export --help` has the whole contract.
+- **Numbering.** `--kind` and `--ids` open a new set, as `set-open` does
+  (`shown` events); `--set` opens nothing. Every item's heading carries its
+  id, so `D-43: B` works whatever set is current.
+- **Layout (ISO 2145).** A title, the set, the count, and the export time;
+  then one section per item headed `n  D-43 · the question`: its repo, key,
+  and triage facts, its context, a Review's summary, its options as `n.1
+  A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies, the
+  operator's own priority, tags, and note when it carries them (#1769), the
+  link, and a blank answer line (an item answered since shows its answer).
+  The PDF's footer, on every page, carries the export time and page numbers.
+  `bin/lib/export.jq` renders it three ways (Markdown, plain text, HTML)
+  from one item model, reusing `skill/desk.jq`'s labels and links.
+- **Renderers.** No new dependency: the first of these that produces a PDF
+  is used. pandoc (the Markdown, when pandoc and a PDF engine are
+  installed); headless Google Chrome or Chromium (the HTML, under a
+  throwaway profile, so a running Chrome is never touched; stopped once it
+  reports the file written, because on macOS it can keep running after);
+  the macOS print system (`/usr/sbin/cupsfilter`, the plain text). With
+  none, the Markdown is written next to the requested path (`FILE.md`),
+  the exit is still 0, and one stderr line names it and what each renderer
+  did. Every renderer runs without the store's URL in its environment and
+  under a deadline (`HUMAN_QUEUE_EXPORT_TIMEOUT`). To get PDFs on a
+  machine with none: install Google Chrome, or pandoc with a PDF engine.
+- **The file.** Written through a temp file and a rename, owner-only
+  (0600: it holds open questions); an existing file is replaced. The desk
+  writes into `~/.claude/desk-exports/` (0700) unless the operator names a
+  path.
+- **Recording.** One `exported` event per item (note `set N #k`), in the
+  transaction that reads the batch, so nothing else is logged. Migration
+  `013_exported_event.sql` adds the kind to whatever `events_kind_check`
+  allows (as 010 does), so it applies before or after #1769's 010. Before
+  013 is applied, `export` exits 1 naming `migrate` and records nothing; a
+  dry run needs no migration. The weekly report does not count `exported`.
+- **The desk.** `export` after a sweep prints that sweep's set; otherwise
+  `export`, `export decisions`, `export reviews` (`level 1`, `today`), and
+  `export D-43 R-9 …`, any of them `… to <path>.pdf` (`skill/export.md`).
+  Before Reviews go out at level 2, the desk writes any missing twenty-line
+  summary first (`reviews.md`'s `open` steps; summaries stay lazy). The
+  sweep no longer writes its own Markdown copy.
+- **Tests.** `tests/export-offline.test.sh` (offline: validation before
+  connecting, the three renderings of `tests/fixtures/export/batch.json`
+  — ISO 2145 numbering, the to-do line, escaping, levels — the renderer
+  order and fallbacks against stub binaries, the URL kept out of their
+  environment, Chrome stopped after it writes, a real cupsfilter and Chrome
+  PDF read back by `pdftotext` on macOS, and the skill's blocks under bash,
+  `/bin/bash` 3.2, and zsh); `tests/export.test.sh` (live, throwaway
+  schema: test 5.1, three fixture Decisions to a PDF with three sections
+  whose ids `pdftotext` finds; test 5.2, the Markdown fallback and its
+  warning; the set and its events, `--set`, `--ids`, Reviews at both
+  levels, `--today`, a dry run, the 99 cap, an empty batch, refusals, and a
+  store before 013).
