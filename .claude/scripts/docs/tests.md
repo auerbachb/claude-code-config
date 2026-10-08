@@ -127,7 +127,7 @@ opt-in of issue #1544.
 | [repo-root.test.sh](../tests/repo-root.test.sh) | Tests `repo-root.sh`'s resolution contract and its wall-clock bound |
 | [report-path.test.sh](../tests/report-path.test.sh) | Tests the collision-free report destination shared by `/review-stack-audit` and `/harness-audit`, over both series, with a month-only negative control |
 | [review-repos.test.sh](../tests/review-repos.test.sh) | Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list, `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves |
-| [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path |
+| [review-stack-audit.test.sh](../tests/review-stack-audit.test.sh) | Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path |
 | [review-tier.test.sh](../tests/review-tier.test.sh) | Tests for `review-tier.sh` — policy parsing, strictest-wins resolution, fail-closed invalid policies, PR-mode base-branch reads |
 | [scheduling-primitive-alignment.test.sh](../tests/scheduling-primitive-alignment.test.sh) | Regression coverage that recurring polls use `Monitor` end to end |
 | [script-usage-log-redirect.test.sh](../tests/script-usage-log-redirect.test.sh) | Runtime regression that converted telemetry writes stay silent without `~/.claude` and still log with it (issue #1406) |

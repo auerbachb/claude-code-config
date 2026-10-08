@@ -234,8 +234,8 @@ already gets a verdict when an agent replies to its thread — `Fixed in <sha>`,
 verdicts back instead of letting them vanish when the thread resolves. These
 are the working definitions; the verdict buckets are the ones sales-kit
 Issue #184's hand-built ledger used, so the two compare (differences below). The
-fields land in the snapshot in ledger mode only; rendering them is increment 4
-of Issue #1747.
+fields land in the snapshot in ledger mode only; the report renders them as the
+scorecard below (increment 4 of Issue #1747).
 
 ### What a finding and a verdict are
 
@@ -358,6 +358,92 @@ reading before putting the two side by side:
   replying agent's marker makes one, so a finding nobody stamped is never real.
 - **What a finding is.** That ledger also counted findings written in a review
   body; this one counts review threads only.
+
+## The scorecard (issue #1811)
+
+The snapshot knows what each reviewer cost and caught; the report used to read
+like an activity log anyway. `scorecard.sh` turns the snapshot into the three
+pieces of report content that answer the parent question, where the review
+money should go. SKILL.md Step 7 embeds them verbatim. The renderer reads the
+snapshot, the claims page, and the snapshot directory; it writes nothing and
+calls nothing, so it is tested on fixtures alone.
+
+**None of it is a drift finding.** The tables never reach `drift.sh` or Step 6:
+a tool ranking last, or a claim far from our figure, files no issue. Drift
+stays the only thing the audit files, and `--report-only` stays filing-free.
+
+### Value per dollar
+
+One row per tool from the snapshot's top-level `tools[]` — the cross-repo total
+on a multi-repo run — with a collapsed per-repo table beneath it, ranked the same
+way.
+
+| Column | Field | Notes |
+|---|---|---|
+| Spend | `spend_usd` (`spend_source`) | The label travels with the figure: `$62.00 (flat)`, `$3.30 (receipt)`, `— (none)` |
+| Real defects | `real_defects` | Marker-stamped only (Value fields above) |
+| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect |
+| Precision | `precision` | As a percentage, one decimal |
+| Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
+
+**Ranking.** Tools with a cost per real defect come first, lowest cost first.
+Tools with known spend but no cost follow, their spend still shown — "paid,
+found nothing" is a finding in its own right, so they stay in the table. Tools
+whose spend is unknown come last. Precision breaks ties inside each group
+(higher first, unknown last), then the tool key, so the order is deterministic.
+
+**`—` is no figure, never zero.** Every null renders `—`, and only a real zero
+renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a
+tool we cannot price as free.
+
+A snapshot measured without the ledger (a direct single-repo `measure.sh` run
+without `--ledger`) has no spend or real-defect fields. The section then says so
+in one line rather than printing a table of dashes. `/review-stack-audit` itself
+always measures with `--ledger` (Step 3), so its reports, the monthly tick's
+included, carry the table.
+
+### Vendor claims vs observed
+
+Every vendor publishes figures about itself. `.claude/reference/ai-review-vendor-claims.md`
+records each claim once, with its metric, benchmark, who ran it, source URL,
+retrieval date, and a `verified` / `unverified` status. A claim that could not be
+re-confirmed is kept and marked, never dropped. The renderer reads only that
+page's fenced `review-stack-claims` block (schema `review-stack-claims/v1`),
+through the same fence parser that reads the pricing matrix's rates block, and
+refuses a duplicated, malformed, or wrongly-versioned block whole. One caveat
+line replaces a table that might otherwise be half right.
+
+Each claim row sits beside the claimed tool's observed precision and cost per
+real defect, joined on `tool_key`. A vendor outside this stack (Qodo) keeps its
+row, with blank observed cells. Every snapshot tool that no claim names gets a
+`no published claim` row citing the page itself and its retrieval date, so a
+tool is never silently missing and every row carries a URL and a date. A claim
+whose `tool_key` matches no tool in the snapshot is named in a note under the
+table.
+
+The page opens with the comparability caveat for a reason. Published benchmarks
+are small, partly vendor-run, and score injected or back-tracked bugs, and the
+metric names collide. Our figures are agent-judged verdicts on real PRs. The
+table sets the two side by side to show where a vendor's story and our
+experience diverge, not to rank anyone on its own claim.
+
+### The 30-day study window
+
+Issue #1747's study needs a declared boundary for its data. The window opens on
+the UTC date of `generated_at` of the earliest ledger-mode snapshot (one whose
+tools carry `spend_source`) among `~/.claude/review-stack-audit/snapshot-*.json`,
+and closes 30 days later: a first ledger snapshot dated 2026-10-10 gives
+`study window: 2026-10-10 → 2026-11-09`. Before any ledger snapshot exists the
+line reads `study window: not started`. A file that cannot be read or parsed is
+skipped and counted on the line. An unreadable directory reads
+`study window: unknown`, because a lookup that failed is not evidence that
+nothing exists.
+
+**Limit — the start is the earliest snapshot still on disk.** Snapshots are
+monthly and a same-month run overwrites `snapshot-YYYY-MM.json`, so a re-run
+inside the first month moves the start to that re-run's date. No state file
+pins it. Every report caveats it, and a study that needs a fixed start should
+quote the first report's window line.
 
 ## What this audit will not do
 
