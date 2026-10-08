@@ -80,8 +80,13 @@ _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
 # `Charged: $3.25` is CodeRabbit's receipt line. Markdown emphasis around the
 # label is tolerated; thousands separators and decimals are accepted.
+# A receipt is its own line — CodeRabbit writes `- Charged: $0.50` as a list
+# item — so the match is anchored to the start of a line (an optional list
+# marker and bold allowed). Prose that merely quotes a `Charged: $X` line
+# mid-sentence, as a summary describing this very ledger would, is not a charge.
 _CHARGE_RE = re.compile(
-    r"\bcharged(?:\*\*)?\s*:\s*(?:\*\*)?\s*\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)", re.I)
+    r"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?charged(?:\*\*)?[ \t]*:[ \t]*(?:\*\*)?[ \t]*"
+    r"\$[ \t]*([0-9][0-9,]*(?:\.[0-9]+)?)", re.I | re.M)
 _GREPTILE_RE = re.compile(r"(?<![\w@])@greptileai\b", re.I)
 
 

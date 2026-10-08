@@ -1147,7 +1147,8 @@ rc=$?
 
 # Test Plan item 1. Exactly the issue's signals — one $3.25 CodeRabbit receipt,
 # three Cursor Bugbot runs, one @greptileai trigger — plus noise that must add
-# nothing: a duplicate run id, a run under another check name, a `Cursor
+# nothing: a CodeRabbit comment quoting a receipt mid-sentence, a duplicate
+# run id, a run under another check name, a `Cursor
 # Bugbot` run from another app or from no app, a run and a
 # receipt outside the window, a human quoting a receipt, and Greptile's own
 # footer naming its handle. Run under a fixed --since/--until so no figure
@@ -1159,6 +1160,7 @@ fixture_write "$LEDGER_F" '[
     {"user":"coderabbitai[bot]","created_at":"2026-10-02T10:00:00Z","body":"### Usage-based review receipt\n- Reviewed files: 13\n- Charged: $3.25\n"},
     {"user":"coderabbitai[bot]","created_at":"2026-09-30T23:59:59Z","body":"- Charged: $8.25"},
     {"user":"auerbachb","created_at":"2026-10-03T10:00:00Z","body":"The bot said Charged: $99.00 here"},
+    {"user":"coderabbitai[bot]","created_at":"2026-10-06T10:00:00Z","body":"Walkthrough: the ledger sums each `Charged: $7.00` line it finds."},
     {"user":"auerbachb","created_at":"2026-10-04T10:00:00Z","body":"@greptileai review please, @greptileai"},
     {"user":"greptile-apps[bot]","created_at":"2026-10-04T11:00:00Z","body":"Mention @greptileai to ask a question"}],
   "check_runs":[
@@ -1368,6 +1370,8 @@ checks = [
     ("zero-receipts-is-a-floor", L.compute_spend("coderabbit", {"charges": []}, None, 30) == (D("0.00"), "receipt")),
     ("no-rates-is-none-not-zero", L.compute_spend("bugbot", {"bugbot_runs": 3}, None, 30) == (None, "none")),
     ("comma-and-bold-receipts", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]", "body": "**Charged:** $1,234.50"}])] == [D("1234.50")]),
+    ("receipt-is-a-line-not-a-quote", [e["amount"] for e in L.extract_charges([{"user": "coderabbitai[bot]",
+        "body": "- Reviewed files: 2\n- Charged: $0.50\nThe walkthrough quotes Charged: $9.00 inline."}])] == [D("0.50")]),
 ]
 print(";".join("%s=%s" % (n, "ok" if r else "BAD") for n, r in checks))
 PY

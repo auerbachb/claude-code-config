@@ -77,10 +77,11 @@ logic here.
 | `/review-stack-audit --arm` | Enable the monthly session-start nudge. |
 | `/review-stack-audit --stop` | Disable it. |
 
-`--since` / `--until` / `--days` / `--limit` pass straight through to `measure.sh`
-and combine with any mode; `--until` closes a `--since` window (alone, or before
-`--since`, `measure.sh` exits 2 and Step 3 fails closed). `--arm` and `--stop` are lifecycle modes and mutually exclusive
-with the rest.
+`--since` / `--until` / `--days` / `--limit` pass straight through to `measure.sh`;
+`--until` closes a `--since` window (alone, or before `--since`, `measure.sh` exits
+2 and Step 3 fails closed). `--days` and `--limit` combine with any mode, `--since`
+and `--until` with every mode but `--tick` (below). `--arm` and `--stop` are
+lifecycle modes and mutually exclusive with the rest.
 
 `--repos a/b,c/d` / `--all-repos` also pass through (issue #1808): the vendors
 bill one account across every repo they review, so these measure several repos in
@@ -90,10 +91,12 @@ top-level `tools[]` is then the cross-repo total, so Steps 4–6 compare the
 account-level figure against the baseline unchanged; each repo's own figures stay
 in `per_repo[]`, and the report states which repos were measured. With neither
 flag, the run measures the current repo exactly as before. They combine with the
-on-demand and `--report-only` runs only. **`--tick` with `--repos` or
-`--all-repos` is a usage error — refuse it here, before Step 2:** the tick's
-watermark is one month for one selection, so a tick always measures the current
-repo and Step 3 never forwards a repo selection on a tick.
+on-demand and `--report-only` runs only. **`--tick` with `--repos`,
+`--all-repos`, `--since` or `--until` is a usage error — refuse it here, before
+Step 2:** the tick's watermark is one month for one selection, so a tick always
+measures the current repo up to today (a `--since`/`--until` window could lie in
+the past yet still mark this month audited), and Step 3 never forwards a repo
+selection or an explicit window on a tick.
 
 A multi-repo run is also a **spend-ledger** run (issue #1809): each tool in
 `per_repo[]` and in the total carries `spend_usd` and a `spend_source` label —
