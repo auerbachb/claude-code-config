@@ -32,6 +32,7 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `plan.md` | The day plan: `plan`, `I need to work on …`, `plan: …` (one sentence revises it), `plan?`, `plan off`; asks pace and chunking, forecasts incoming questions, proposes what to clear first, stores the confirmed blocks, which hold new Decisions while they run | #1784 |
 | `sweep.md` | The end-of-day sweep at `eod_time` (the `eod` event) or on `sweep`: everything still open as one numbered list, then the paper export (`export`, #1759) | #1784 |
 | `attention.md` | The weekly attention report: `report` (`report <YYYY-MM-DD>` for another week), one page from the events table, offered once a week after Friday's end-of-day sweep | #1771 |
+| `todo.md` | The operator's own to-do layer on items: `tag`, `untag`, `note`, `unnote`, `snooze … until\|for …`, `unsnooze`, `mine D-<n> 1-5\|off`, and `my list` (by personal priority, then age; snoozed items hidden until their time). Not `/pm`'s priorities | #1769 |
 
 ## The prelude (every Bash call)
 
@@ -130,6 +131,7 @@ Read each operator message in this order:
    **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`; **`sweep`**, or **`export`** after a sweep → load `sweep.md`. The day plan and the end-of-day sweep (#1784) work at any time too; a waiting long-form prompt keeps waiting and is shown again after.
    **`report`** (`report <YYYY-MM-DD>` for the week holding that day), as the whole message → load `attention.md`: the weekly attention report (#1771). Any time, like `history`, and nothing goes to the store.
    **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
+   **A to-do verb** as the whole message — `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, or `mine` followed by an item id (`D-<n>` or `R-<n>`), or `my list` (`my list all`, `my list snoozed`, `my list tag <word>`) → load `todo.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after, and a to-do verb is never an answer.
 2. **`idea: …`**, **`file: …`**, or **`repo: …`** (any case) → load `ideas.md`. Like `show`, it works at any time; a waiting long-form prompt's card is printed again afterwards.
 3. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
 4. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, `idea: …`, or a `D-<n>:` reply for another item.

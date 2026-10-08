@@ -29,6 +29,12 @@
 #                               <clock time>` ends, from :'hq_times' in
 #                               :'hq_tz', counted from NOW (an SQL timestamptz
 #                               expression; statement_timestamp() in use)
+#   hq_clock_times WHEN         a clock time (15:30, 3:30pm, 9 am, optionally
+#                               ending ` ET`) into HQ_INT_TIMES, the candidate
+#                               24-hour times it may mean, and HQ_CLOCK_24, its
+#                               reading on the 24-hour clock; returns 1 when
+#                               WHEN is not a clock time. Shared by `interrupt
+#                               set focus --until` and `snooze` (issue #1769)
 #
 # PSQL VARIABLES the SQL reads
 #   hq_session  the desk session whose rule applies
@@ -42,6 +48,42 @@ hq_interrupt_rule_ok() {
     everything|away) return 0 ;;
   esac
   return 1
+}
+
+# hq_clock_times WHEN — a clock time into HQ_INT_TIMES, the candidate 24-hour
+# times (HH:MM, comma-separated) it may mean, and HQ_CLOCK_24, the one time it
+# names on the 24-hour clock (with am or pm, that time; without, the hour as
+# written: `9:30` is 09:30, `12:30` is 12:30); returns 1 when WHEN is not a
+# clock time. A 12-hour time without am or pm has two candidates: a time with
+# no day (`focus until 3:30`) means whichever comes first, and `snooze … until
+# friday 3:30`, which names its day, reads the 24-hour clock instead.
+HQ_INT_TIMES=""
+HQ_CLOCK_24=""
+hq_clock_times() {
+  local LC_ALL=C re h m ap
+  re='^([0-9]{1,2})(:([0-5][0-9]))?[[:space:]]?([AaPp][Mm])?([[:space:]]+[Ee][Tt])?$'
+  [[ $1 =~ $re ]] || return 1
+  h=$((10#${BASH_REMATCH[1]}))
+  m="${BASH_REMATCH[3]:-00}"
+  ap="${BASH_REMATCH[4]}"
+  if [ -n "$ap" ]; then
+    if [ "$h" -lt 1 ] || [ "$h" -gt 12 ]; then return 1; fi
+    h=$((h % 12))
+    case "$ap" in
+      [Pp]*) h=$((h + 12)) ;;
+    esac
+    HQ_INT_TIMES=$(printf '%02d:%s' "$h" "$m")
+    HQ_CLOCK_24="$HQ_INT_TIMES"
+    return 0
+  fi
+  if [ "$h" -gt 23 ]; then return 1; fi
+  HQ_CLOCK_24=$(printf '%02d:%s' "$h" "$m")
+  if [ "$h" -ge 1 ] && [ "$h" -le 12 ]; then
+    HQ_INT_TIMES=$(printf '%02d:%s,%02d:%s' "$((h % 12))" "$m" "$((h % 12 + 12))" "$m")
+  else
+    HQ_INT_TIMES="$HQ_CLOCK_24"
+  fi
+  return 0
 }
 
 # One row:
