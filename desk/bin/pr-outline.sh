@@ -42,8 +42,9 @@
 #   past a neighbouring hunk (`(context above stops at hunk 2.2)`) or the
 #   file's edge (`(start of file)`, `(end of file)`). An added or removed
 #   file's hunk is already the whole file. When the file cannot be fetched,
-#   or does not match the patch, the hunk prints as GitHub gave it, with
-#   one `(more context unavailable: ...)` line.
+#   or does not match the patch (a CRLF line ending matches an LF one), the
+#   hunk prints as GitHub gave it, with one `(more context unavailable: ...)`
+#   line.
 #
 # OUTPUT
 #   GitHub's text is untrusted: a CRLF prints as LF, and every other control
@@ -298,9 +299,11 @@ node_jq() {
       elif $have_blob != "1" then
         ($top + ["(more context unavailable: " + $why + ")", $h.header] + $h.lines)
       else
-        ($blob | split("\n") | if length > 0 and .[-1] == "" then .[:-1] else . end) as $fl
+        # Line endings are not content: a CRLF file at head matches its patch
+        # whether GitHub's patch kept the CRs or not, so both sides drop one.
+        ($blob | split("\n") | if length > 0 and .[-1] == "" then .[:-1] else . end | map(sub("\r$"; ""))) as $fl
         | ($fl | length) as $total
-        | [ $h.lines[] | select(startswith(" ") or startswith("+") or . == "") | .[1:] ] as $newside
+        | [ $h.lines[] | select(startswith(" ") or startswith("+") or . == "") | .[1:] | sub("\r$"; "") ] as $newside
         | (if $h.nc == 0 then [] else $fl[($h.ns - 1):($h.ns - 1 + $h.nc)] end) as $actual
         | if ($h.nc > 0 and $h.ns < 1) or $newside != $actual then
             ($top + ["(more context unavailable: the file at head does not match the patch)", $h.header] + $h.lines)

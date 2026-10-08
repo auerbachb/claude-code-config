@@ -1106,7 +1106,8 @@ rebuilds the outline from GitHub.
   stopped at hunk 2.2; twenty below), `open 2.1`/`2.4` at the file's edges,
   `open 2` with its markers; one fetch per file; the edge cases above;
   a push between the reads (listed again, the new head cited) and a PR that
-  keeps moving (exit 1); a newline in a path;
+  keeps moving (exit 1); a newline in a path; a CRLF file at head, with an
+  LF or a CRLF patch, widened like any other;
   not found, unknown nodes, failures, the deadline; no temp file left; the
   skill's blocks under bash and zsh against a stub CLI. Under bash and
   `/bin/bash` 3.2. What `ask` answers is checked by a live run.

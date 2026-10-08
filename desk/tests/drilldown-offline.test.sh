@@ -338,6 +338,39 @@ T1 tests/evil?2 forged.test.sh · added · +1 -0 · touches 1
     "$(printf '%s\n' "$OUT" | grep -E '^(===|[0-9]|T[0-9])' | paste -sd'|' -)" \
     "=== 1 src/evil?2 forged.sh · modified · +1 -1 · head 5a5e510|=== T1 tests/evil?2 forged.test.sh · added · +1 -0 · head 5a5e510"
 
+  # --- a CRLF file at head (PR 511) -----------------------------------------------
+  # Both files are CRLF at head; GitHub's patch for 1 has LF endings, for 2
+  # it keeps the CRs. Either way the hunk widens, and no CR reaches the output.
+  printf '{"number": 511, "state": "open", "head": {"sha": "%s"}, "changed_files": 2, "additions": 2, "deletions": 2}\n' \
+    "$(sha40 5a5e511)" >"$STUB_DIR/pull-511.json"
+  printf '[%s, %s]\n' \
+    "{\"sha\": \"$(sha40 c1)\", \"filename\": \"src/dos-lf.txt\", \"status\": \"modified\", \"additions\": 1, \"deletions\": 1, \"changes\": 2, \"patch\": \"@@ -3,5 +3,5 @@\\n line 3\\n line 4\\n-line 5\\n+line 5, changed\\n line 6\\n line 7\"}" \
+    "{\"sha\": \"$(sha40 c2)\", \"filename\": \"src/dos-crlf.txt\", \"status\": \"modified\", \"additions\": 1, \"deletions\": 1, \"changes\": 2, \"patch\": \"@@ -3,5 +3,5 @@\\n line 3\\r\\n line 4\\r\\n-line 5\\r\\n+line 5, changed\\r\\n line 6\\r\\n line 7\\r\"}" \
+    >"$STUB_DIR/pull-511-files.json"
+  for c in c1 c2; do
+    printf 'line 1\r\nline 2\r\nline 3\r\nline 4\r\nline 5, changed\r\nline 6\r\nline 7\r\nline 8\r\nline 9\r\nline 10\r\n' \
+      >"$STUB_DIR/blob-$(sha40 "$c")"
+  done
+  po "$SH" acme/widgets 511 1.1 2.1
+  check "[$SH] a CRLF file: exit 0" "$RC" "0"
+  for n in 1.1 2.1; do
+    check "[$SH] a CRLF file at head widens hunk $n" "$(node_section "$OUT" "$n" | sed '1d')" "(start of file)
+@@ -1,10 +1,10 @@
+ line 1
+ line 2
+ line 3
+ line 4
+-line 5
++line 5, changed
+ line 6
+ line 7
+ line 8
+ line 9
+ line 10
+(end of file)"
+  done
+  check_absent "[$SH] a CRLF file: no CR reaches the output" "$OUT" "$(printf '\r')"
+
   # --- not found, unknown nodes, failures -----------------------------------------
   po_rc "$SH" 3 "a PR that does not exist" "no PR acme/widgets#404" acme/widgets 404
   po_rc "$SH" 3 "an unknown hunk" "no hunk 2.9: 2 has 2.1-2.4" acme/widgets 505 2.9
