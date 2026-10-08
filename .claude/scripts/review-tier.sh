@@ -67,8 +67,9 @@
 #   `key: value`, key case-insensitive, first occurrence wins), and ONLY from
 #   a live ```ini fence inside the section the table comes from: the section's
 #   bounds are taken from the fence- and comment-free text, so a fenced
-#   `## Review policy` elsewhere is never the live one. A key in prose, in a
-#   comment, or in another fence is ignored with one stderr warning. `on` and
+#   `## Review policy` elsewhere is never the live one. A key anywhere else in
+#   the file — prose, a comment, another fence, or another section such as
+#   `## Active work` — is ignored with one stderr warning. `on` and
 #   `off` match in any case; any other value, empty included, reads as `off`
 #   with one stderr warning — an unclear cost switch fails toward not
 #   spending. A near-miss heading's section is read the same way. The table
@@ -435,6 +436,7 @@ fi
 ESC_KEY="REVIEW_ESCALATION"
 ESCALATION="on"
 ESC_SECTION_FOUND=0
+ESC_LIVE_FOUND=0
 
 # The body line range "<first> <last>" of the live section, found in the
 # fence- and comment-free text with pm-config-get.sh's heading rule (`## ` at
@@ -485,10 +487,11 @@ extract_knob_value() {
   '
 }
 
-# Sets ESCALATION from the section (or near-miss section $1). Runs in the main
-# shell so die_read exits the script.
+# Sets ESCALATION from the section (or near-miss section $1), and
+# ESC_LIVE_FOUND when a live key was read. Runs in the main shell so die_read
+# exits the script.
 resolve_escalation() {
-  local range first last found stray value
+  local range first last found value
   range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $ESC_KEY"
   [[ -n "$range" ]] || return 0
   ESC_SECTION_FOUND=1
@@ -496,11 +499,8 @@ resolve_escalation() {
   (( first <= last )) || return 0
   found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$ESC_KEY")" \
     || die_read "could not read $ESC_KEY from ## $SECTION"
-  if [[ -z "$found" ]]; then
-    stray="$(sed -n "${first},${last}p" "$POLICY_COPY" | extract_knob_value "$ESC_KEY")" || stray=""
-    [[ -z "$stray" ]] || warn "$ESC_KEY in ## $SECTION is not inside a live \`\`\`ini block (it is in prose, a comment, or another fence) — ignored; escalation stays on"
-    return 0
-  fi
+  [[ -n "$found" ]] || return 0
+  ESC_LIVE_FOUND=1
   value="${found#=}"
   case "$(lower "$value")" in
     on|off) ESCALATION="$(lower "$value")" ;;
@@ -511,8 +511,29 @@ resolve_escalation() {
   esac
 }
 
+# A heading that is almost `## Review policy` (other case, extra spaces).
+# The gate treats it as invalid below; the switch in it is honoured.
+near_miss_heading() {
+  awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_VISIBLE"
+}
+
+# Resolution finishes here, before any emit: the exact section, else a
+# near-miss one (the gate fails toward more review, the switch toward less
+# spend). Only then is a key that no live ```ini block carried looked for
+# ANYWHERE in the raw file (prose, a comment, another fence, another
+# section such as `## Active work`), so a misplaced cost switch is never
+# silent. One warning at most; the whole file is read, never a pipe.
 if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   resolve_escalation
+  if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
+    ESC_NEAR="$(near_miss_heading)"
+    [[ -z "$ESC_NEAR" ]] || resolve_escalation "$ESC_NEAR"
+  fi
+  if [[ $ESC_LIVE_FOUND -eq 0 ]]; then
+    ESC_STRAY="$(extract_knob_value "$ESC_KEY" < "$POLICY_COPY")" || ESC_STRAY=""
+    [[ -z "$ESC_STRAY" ]] \
+      || warn "$ESC_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; escalation stays on"
+  fi
 fi
 
 emit() {
@@ -539,13 +560,10 @@ if [[ -z "$SECTION_BODY" ]]; then
   NEAR=""
   if [[ $HAVE_POLICY -eq 1 ]]; then
     [[ -f "$POLICY_VISIBLE" ]] || : > "$POLICY_VISIBLE"
-    NEAR="$(awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_VISIBLE")"
+    NEAR="$(near_miss_heading)"
   fi
   if [[ -n "$NEAR" ]]; then
-    # The switch in a near-miss section is honoured too: the gate fails
-    # toward more review, the switch toward less spend. An exact heading,
-    # even with an empty visible body, already answered.
-    [[ $ESC_SECTION_FOUND -eq 1 ]] || resolve_escalation "$NEAR"
+    # The switch in a near-miss section was already resolved above.
     warn "## $SECTION is invalid (heading '$NEAR' must read exactly '## $SECTION') — resolving to the full gate"
     emit invalid full "" "heading '$NEAR' must read exactly '## $SECTION'" '[]'
     exit 0

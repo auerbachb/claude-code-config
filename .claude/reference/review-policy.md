@@ -228,7 +228,7 @@ REVIEW_ESCALATION=off
 
 The switch is read from the same policy text as the table, so it follows the same source rules: the PR's **base branch** in PR mode, `--config` when given, and the checkout in offline mode. It never comes from the PR head, so a PR cannot turn escalation off for itself.
 
-Only a **live** ` ```ini ` fence inside the `## Review policy` section counts. The section's bounds are found in the fence- and comment-free text, exactly as for the table. So a fenced `## ` line inside the section does not cut it short, and a fenced example section elsewhere is never read. A key anywhere else is ignored with one stderr warning: in prose, inside a `<!-- -->` comment, or in a fence with another info string or none. A misplaced cost switch is therefore never silent.
+Only a **live** ` ```ini ` fence inside the `## Review policy` section counts. The section's bounds are found in the fence- and comment-free text, exactly as for the table. So a fenced `## ` line inside the section does not cut it short, and a fenced example section elsewhere is never read. A key anywhere else in the file is ignored with one stderr warning: in prose, inside a `<!-- -->` comment, in a fence with another info string or none, or under another section, such as the `ini` block of `## Active work`. A misplaced cost switch is therefore never silent.
 
 The table and the switch are independent:
 

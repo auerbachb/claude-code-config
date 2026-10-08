@@ -503,6 +503,7 @@ out="$(esc_json)"
 check "escalation: near-miss heading → policy invalid" "invalid" "$(jq -r .policy <<<"$out")"
 check "escalation: near-miss heading → gate full" "full" "$(jq -r .gate <<<"$out")"
 check "escalation: near-miss heading + ini off → off" "off" "$(jq -r .escalation <<<"$out")"
+check "escalation: …and no 'ignored' warning — the near-miss key was live" "0" "$(grep -c 'ignored' "$ESC_ERR" | tr -d ' ')"
 printf '# PM Config\n\n## Review Policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n' > "$POLICY"
 check "escalation: near-miss heading without the switch → on" "on" "$(esc_json | jq -r .escalation)"
 
@@ -539,9 +540,40 @@ check "escalation: a fenced '## ' line inside the section does not end it → of
 } > "$POLICY"
 out="$(esc_json)"
 check "escalation: a fenced example section elsewhere is not read → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …with one warning that it was ignored" "1" "$(grep -c 'REVIEW_ESCALATION.*ignored' "$ESC_ERR" | tr -d ' ')"
 check "escalation: …and the live table still governs" "ci-only" "$(jq -r .gate <<<"$out")"
 { printf '# PM Config\n\n## Review policy\n\n%s\n\n## Notes\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } > "$POLICY"
-check "escalation: an ini block under the NEXT section is not read → on" "on" "$(esc_json | jq -r .escalation)"
+out="$(esc_json)"
+check "escalation: an ini block under the NEXT section is not read → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …with exactly one warning that it was ignored" "1" "$(esc_err_lines)"
+check "escalation: …which names the key and says ignored" "1" "$(grep -c 'REVIEW_ESCALATION.*ignored' "$ESC_ERR" | tr -d ' ')"
+
+# A key anywhere OUTSIDE the section is never silent either — the likeliest
+# slip is the `## Active work` ini block, the shape the docs point to.
+printf '# PM Config\n\n## Active work\n\n```ini\nACTIVE_WORK_CAP=6\nREVIEW_ESCALATION=off\n```\n' > "$POLICY"
+out="$(esc_json)"
+check "escalation: key in ## Active work with no Review policy section → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …the gate is still legacy" "legacy" "$(jq -r .gate <<<"$out")"
+check "escalation: …with exactly one warning" "1" "$(esc_err_lines)"
+check "escalation: …which names the key and says ignored" "1" "$(grep -c 'REVIEW_ESCALATION.*ignored' "$ESC_ERR" | tr -d ' ')"
+{
+  printf '# PM Config\n\n## Active work\n\n'
+  ini_block $'ACTIVE_WORK_CAP=6\nREVIEW_ESCALATION=off'
+  printf '\n## Review policy\n\n%s\n' "$STANDARD_TABLE"
+} > "$POLICY"
+out="$(esc_json)"
+check "escalation: key in ## Active work beside a table-only Review policy → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …the table still governs" "ci-only" "$(jq -r .gate <<<"$out")"
+check "escalation: …with exactly one warning" "1" "$(esc_err_lines)"
+{
+  printf '# PM Config\n\n## Active work\n\n'
+  ini_block 'REVIEW_ESCALATION=on'
+  printf '\n## Review policy\n\n%s\n\n' "$STANDARD_TABLE"
+  ini_block 'REVIEW_ESCALATION=off'
+} > "$POLICY"
+out="$(esc_json)"
+check "escalation: a live key wins over a stray one elsewhere → off" "off" "$(jq -r .escalation <<<"$out")"
+check "escalation: …and stderr stays silent" "0" "$(esc_err_lines)"
 
 # A section far larger than a pipe buffer, with the key on its first ini
 # line: reading the key must not abandon the rest of the input, or the stage
