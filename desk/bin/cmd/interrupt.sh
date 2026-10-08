@@ -150,12 +150,16 @@ SET LOCAL lock_timeout TO '30s';
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_control_locked \gset
 SELECT coalesce((SELECT value FROM state WHERE key = 'control_session'), '') = :'hq_session' AS hq_ok \gset
 \if :hq_ok
--- Stored in whole seconds, rounded up, so a fractional ISO --until never
--- ends the focus early.
+-- hq_until_raw is the end as given or worked out, to the microsecond; the
+-- limits below judge it. hq_until, what is stored, is whole seconds rounded
+-- up, so a fractional ISO --until never ends the focus early. Judging the
+-- rounded value instead would refuse --for 1440 (the documented maximum)
+-- whenever the clock is part-way through a second.
 SELECT coalesce(to_char((date_trunc('second', u)
                           + CASE WHEN u > date_trunc('second', u) THEN interval '1 second'
                                  ELSE interval '0' END)
-                         AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '') AS hq_until
+                         AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '') AS hq_until,
+       coalesce(to_char(u AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '') AS hq_until_raw
   FROM (SELECT CASE
                  WHEN :'hq_rule' <> 'focus' THEN NULL
                  WHEN :'hq_minutes' <> ''
@@ -168,9 +172,9 @@ SQL
                END AS u) f \gset
 SELECT CASE
          WHEN :'hq_rule' <> 'focus' THEN ''
-         WHEN :'hq_until' = '' THEN 'the focus time could not be worked out'
-         WHEN nullif(:'hq_until', '')::timestamptz <= statement_timestamp() THEN 'the focus time is in the past'
-         WHEN nullif(:'hq_until', '')::timestamptz > statement_timestamp() + interval '24 hours'
+         WHEN :'hq_until_raw' = '' THEN 'the focus time could not be worked out'
+         WHEN nullif(:'hq_until_raw', '')::timestamptz <= statement_timestamp() THEN 'the focus time is in the past'
+         WHEN nullif(:'hq_until_raw', '')::timestamptz > statement_timestamp() + interval '24 hours'
            THEN 'the focus time is more than a day ahead (use away instead)'
          ELSE ''
        END AS hq_problem \gset

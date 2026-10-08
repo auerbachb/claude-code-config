@@ -263,6 +263,11 @@ check "spring forward, until 3:30 at 1:05 EST: 3:30 EDT" "$(focus_at '2026-03-08
 check "a session zone's own clock change: still a 24-hour window" \
   "$(focus_at '2026-03-28 12:00Z' '07:30' 'Europe/London')" "2026-03-29 11:30"
 
+# The documented maximum is accepted: the limit judges the end as worked out,
+# not the stored end rounded up to the next second.
+hq interrupt set focus --session desk-1 --for 1440 --json
+check "focus --for 1440, the maximum: accepted, a day from now" \
+  "$RC:$(sql_in "SELECT abs(extract(epoch FROM ('$(jqo .until)'::timestamptz - now() - interval '24 hours'))) < 60")" "0:t"
 # A fractional ISO --until is stored rounded up to the second, never early.
 FRAC=$(sql_in "SELECT to_char((now() + interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') || '.400Z'")
 hq interrupt set focus --session desk-1 --until "$FRAC" --json
