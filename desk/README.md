@@ -1204,8 +1204,10 @@ items.
   `unblocks #N`, …, in bodies and comments, any case), which `/pm` and
   `/wave` use too. `impact` reads the repo's open issues once through its own
   `gh` (`HUMAN_QUEUE_GH`, the deadline, no database URL in the child) and
-  hands them to `issue-deps.sh dependents --input`. A read that fails stores
-  nothing for that repo and exits 1: an outage never demotes an item.
+  hands them to `issue-deps.sh dependents --input`. A read that fails, or
+  that returns 500 issues (gh's `--limit`, where it stops without saying so,
+  so the list may be cut off), stores nothing for that repo and exits 1: an
+  outage never demotes an item.
 - **Where it orders.** `items.impact_derived` (`critical-path`, `high`,
   `medium`, `low`; the derivation itself never gives `high`, which stays the
   declared scale's), `impact_basis` (the inputs in words, for example `2 open
@@ -1227,8 +1229,9 @@ items.
 - **When it runs.** The desk runs `impact --open` before it reads a batch
   (`skill/decisions.md`, step 0), so a new question is ordered by what it
   unblocks the first time it is shown; with nothing stale it reads no
-  GitHub at all. A failure there leaves the declared order and is said once
-  per desk session.
+  GitHub at all. A failure there stores nothing for the repo it could not
+  read: each Decision keeps its last derived impact if it has one, else its
+  declared one, and the failure is said once per desk session.
 - **Tests.** `tests/impact-offline.test.sh` (offline, in CI, bash and
   `/bin/bash` 3.2: test plan 5.1–5.3 through `impact --no-store` with a stub
   `gh` and a scratch `PM_RANK_DIR`, the rule table, both thresholds from the

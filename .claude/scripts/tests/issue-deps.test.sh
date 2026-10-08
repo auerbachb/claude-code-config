@@ -114,6 +114,20 @@ RC=0; "$SCRIPT" dependents --input "$TMP/nope.json" 10 >/dev/null 2>&1 || RC=$?
 check_eq "an unreadable --input exits 1" "1" "$RC"
 RC=0; ISSUE_DEPS_GH="$TMP/no-gh" "$SCRIPT" dependents acme/widgets 10 >/dev/null 2>&1 || RC=$?
 check_eq "no gh exits 1" "1" "$RC"
+# gh stops at --limit 500 silently: a full page may be cut off, so it fails.
+jq -n -c '[range(1; 501) | {number: ., body: (if . == 2 then "Depends on #1" else "" end), comments: []}]' \
+  > "$TMP/issues-acme-full.json"
+RC=0; OUT=$("$SCRIPT" dependents acme/full 1 2>"$TMP/err") || RC=$?
+check_eq "a read of 500 issues (the limit) exits 1" "1" "$RC"
+check_eq "... with nothing on stdout" "" "$OUT"
+check_contains "... saying the list may be cut off" "the list may be cut off, so dependents are unknown (not zero)" "$(cat "$TMP/err")"
+RC=0; "$SCRIPT" edges acme/full >/dev/null 2>&1 || RC=$?
+check_eq "... edges too" "1" "$RC"
+jq -c '.[0:499]' "$TMP/issues-acme-full.json" > "$TMP/issues-acme-nearly.json"
+check_eq "499 issues is a whole list: read" "1" \
+  "$("$SCRIPT" dependents acme/nearly 1 | jq -r '.issues[0].count')"
+check_eq "--input of 500 is the caller's own set: read" "1" \
+  "$("$SCRIPT" dependents --input "$TMP/issues-acme-full.json" 1 | jq -r '.issues[0].count')"
 
 # ---- usage ------------------------------------------------------------------
 for args in "" "bogus" "dependents acme/widgets" "dependents 10" "edges" "edges acme/widgets 10" \

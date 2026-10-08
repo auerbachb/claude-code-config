@@ -34,7 +34,10 @@
 #
 #   <owner/repo>  read the repo's OPEN issues with
 #                 `gh issue list --repo <owner/repo> --state open --limit 500
-#                  --json number,body,comments` (one call; 500 is /pm's cap)
+#                  --json number,body,comments` (one call; 500 is /pm's cap).
+#                 gh stops at the limit without saying so, so a read that
+#                 returns 500 issues may be cut off: it fails (exit 1) rather
+#                 than undercount dependents
 #   --input FILE  read that same JSON from FILE (`-` for stdin) instead: an
 #                 array of {number, body, comments: [{body}], state?}. An
 #                 entry whose `state` is present and not OPEN is dropped, so
@@ -57,9 +60,10 @@
 #
 # EXIT STATUS
 #   0  printed
-#   1  the issue read failed (`gh` missing or failing, unreadable --input, or
-#      JSON that is not an array of issues). Nothing is printed on stdout: a
-#      failed read never reads as "no dependents"
+#   1  the issue read failed (`gh` missing or failing, a <owner/repo> read
+#      that reached the 500-issue limit, unreadable --input, or JSON that is
+#      not an array of issues). Nothing is printed on stdout: a failed or
+#      possibly cut-off read never reads as "no dependents"
 #   2  usage error
 #
 # ENVIRONMENT
@@ -77,6 +81,7 @@ set -uo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
 
 ME="issue-deps.sh"
+ISSUE_LIMIT=500
 
 print_help() {
   sed -n '/^# PURPOSE$/,/^$/{/^$/d;p;}' "$0" | sed 's/^# \{0,1\}//'
@@ -132,11 +137,20 @@ read_issues() {
     gh_bin="${ISSUE_DEPS_GH:-gh}"
     command -v "$gh_bin" >/dev/null 2>&1 || die 1 "gh not found — cannot read the issues of $repo"
     GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 GH_PAGER=cat \
-      "$gh_bin" issue list --repo "$repo" --state open --limit 500 --json number,body,comments \
+      "$gh_bin" issue list --repo "$repo" --state open --limit "$ISSUE_LIMIT" --json number,body,comments \
       > "$out" 2>/dev/null </dev/null \
       || die 1 "gh issue list failed for $repo — dependents unknown (not zero)"
   fi
   jq -e 'type == "array"' "$out" >/dev/null 2>&1 || die 1 "the issue JSON is not an array of issues"
+  # gh stops at --limit silently: a full page may be a cut-off list, and a
+  # cut-off list undercounts dependents. --input is the caller's own set.
+  if [[ -z "$input" ]]; then
+    local n
+    n=$(jq 'length' "$out" 2>/dev/null) || n=""
+    [[ "$n" =~ ^[0-9]+$ ]] || die 1 "cannot count the issues read for $repo"
+    (( n < ISSUE_LIMIT )) \
+      || die 1 "gh issue list returned $n open issues for $repo, its $ISSUE_LIMIT-issue limit — the list may be cut off, so dependents are unknown (not zero)"
+  fi
 }
 
 check_repo() {

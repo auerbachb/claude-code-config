@@ -24,8 +24,9 @@
 #        invalid value is the defaults; desk-policy.sh prints both keys
 #   rule the parked flag lifts low to medium and nothing else; the basis
 #        words
-#   fail a failed or missing GitHub read exits 1 with one stderr line naming
-#        "dependents unknown": never a derivation from zero dependents
+#   fail a failed or missing GitHub read, or one that fills gh's 500-issue
+#        limit (maybe cut off), exits 1 with one stderr line naming
+#        "dependents unknown": never a derivation from too few dependents
 #   usage every usage error exits 4 before any connection; the storing forms
 #        need the store (exit 7 without it)
 #   show desk.jq's facts line prints the derived impact, its basis, and the
@@ -97,6 +98,10 @@ printf '[]\n' > "$STUB/issues-acme-empty.json"
 printf '[]\n' > "$STUB/issues-acme-down.json"
 printf '1\n' > "$STUB/issues-acme-down.rc"
 printf 'HTTP 502: Bad Gateway\n' > "$STUB/issues-acme-down.err"
+# A full page (gh's --limit 500, where it stops silently) and one issue short.
+jq -n -c '[range(1; 501) | {number: ., body: (if . == 2 then "Depends on #1" else "" end), comments: []}]' \
+  > "$STUB/issues-acme-full.json"
+jq -c '.[0:499]' "$STUB/issues-acme-full.json" > "$STUB/issues-acme-nearly.json"
 
 POLICY="$TMP/policy.json"
 printf '{}\n' > "$POLICY"
@@ -235,6 +240,13 @@ for SH in $SHELLS; do
   check "[$SH] fail: nothing on stdout" "$OUT" ""
   run_cli "$SH" impact acme/missing 10 --no-store
   check "[$SH] fail: an unknown repo exits 1" "$RC" "1"
+  run_cli "$SH" impact acme/full 1 --no-store --json
+  check "[$SH] fail: 500 issues (gh's limit, maybe cut off) exits 1" "$RC" "1"
+  check "[$SH] fail: ... one stderr line" "$(hq_t_lines "$ERR")" "1"
+  check_contains "[$SH] fail: ... saying the list may be cut off" "$ERR" "the 500-issue limit, so the list may be cut off — dependents unknown"
+  check "[$SH] fail: ... nothing on stdout" "$OUT" ""
+  run_cli "$SH" impact acme/nearly 1 --no-store --json
+  check "[$SH] 499 issues is a whole list: derived" "$RC:$(jqo '.dependents')" "0:1"
   RC=0
   env -u HUMAN_QUEUE_DATABASE_URL HUMAN_QUEUE_GH="$TMP/no-such-gh" PM_RANK_DIR="$TMP/rank" \
     "$SH" "$HQ_T_CLI" impact acme/widgets 10 --no-store >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?

@@ -70,8 +70,9 @@ WHAT IT STORES
   their own order.
 
   When the repo's open issues cannot be read (gh missing, failing, or past
-  HUMAN_QUEUE_GH_TIMEOUT), nothing is stored for that repo: an outage never
-  demotes an item.
+  HUMAN_QUEUE_GH_TIMEOUT), or the read returns 500 issues (gh's --limit,
+  which it stops at silently, so the list may be cut off), nothing is stored
+  for that repo: an outage never demotes an item.
 
 OUTPUT
   Text: `owner/repo#ISSUE: <impact> (<basis>)`, then `  D-n <impact>` for
@@ -105,6 +106,9 @@ EOF
 }
 
 HQ_IMPACT_MAX_AGE_DEFAULT=60
+# The open-issue read's --limit (issue-deps.sh's and /pm's cap). gh stops there
+# without saying so, so a read that fills it may be cut off.
+HQ_IMPACT_ISSUE_LIMIT=500
 # The policy's defaults (desk/hooks/capture.py POLICY_DEFAULTS), used only
 # when desk-policy.sh cannot run at all.
 HQ_IMPACT_TOP_N=3
@@ -153,7 +157,7 @@ hq__impact_thresholds() {
 # HQ_IMPACT_ERR when the open issues cannot be read or parsed.
 HQ_IMPACT_ERR=""
 hq__impact_derive_repo() {
-  local repo="$1" out="$2" rankf depsf issuesf errf rank_sh deps_sh rc=0 t
+  local repo="$1" out="$2" rankf depsf issuesf errf rank_sh deps_sh rc=0 t n
   shift 2
   HQ_IMPACT_ERR=""
   hq_mktemp rankf
@@ -182,7 +186,7 @@ hq__impact_derive_repo() {
     return 1
   fi
   rc=0
-  hq_gh "$issuesf" "$errf" issue list --repo "$repo" --state open --limit 500 \
+  hq_gh "$issuesf" "$errf" issue list --repo "$repo" --state open --limit "$HQ_IMPACT_ISSUE_LIMIT" \
     --json number,body,comments || rc=$?
   if [ "$rc" -eq 124 ]; then
     t=$(hq__gh_timeout)
@@ -191,6 +195,14 @@ hq__impact_derive_repo() {
   fi
   if [ "$rc" -ne 0 ]; then
     HQ_IMPACT_ERR="reading the open issues of $repo failed: $(hq_gh_first_error "$errf") — dependents unknown"
+    return 1
+  fi
+  # A full page may be a cut-off list, and a cut-off list undercounts
+  # dependents: treat it as a failed read, never as fewer dependents.
+  n=$(hq_jq 'if type == "array" then length else 0 end' "$issuesf" 2>/dev/null) || n=""
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -ge "$HQ_IMPACT_ISSUE_LIMIT" ]; then
+    HQ_IMPACT_ERR="reading the open issues of $repo returned $n, the ${HQ_IMPACT_ISSUE_LIMIT}-issue limit, so the list may be cut off — dependents unknown"
     return 1
   fi
   rc=0
