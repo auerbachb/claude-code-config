@@ -1155,34 +1155,34 @@ rc=$?
 # depends on today's date.
 LEDGER_F="$TMP_DIR/ledger.json"
 fixture_write "$LEDGER_F" '[
- {"number":1,"merged_at":"2026-10-05T00:00:00Z","reviews":[],"pr_comments":[],
+ {"number":1,"merged_at":"2025-10-05T00:00:00Z","reviews":[],"pr_comments":[],
   "issue_comments":[
-    {"user":"coderabbitai[bot]","created_at":"2026-10-02T10:00:00Z","body":"### Usage-based review receipt\n- Reviewed files: 13\n- Charged: $3.25\n"},
-    {"user":"coderabbitai[bot]","created_at":"2026-09-30T23:59:59Z","body":"- Charged: $8.25"},
-    {"user":"auerbachb","created_at":"2026-10-03T10:00:00Z","body":"The bot said Charged: $99.00 here"},
-    {"user":"coderabbitai[bot]","created_at":"2026-10-06T10:00:00Z","body":"Walkthrough: the ledger sums each `Charged: $7.00` line it finds."},
-    {"user":"auerbachb","created_at":"2026-10-04T10:00:00Z","body":"@greptileai review please, @greptileai"},
-    {"user":"greptile-apps[bot]","created_at":"2026-10-04T11:00:00Z","body":"Mention @greptileai to ask a question"}],
+    {"user":"coderabbitai[bot]","created_at":"2025-10-02T10:00:00Z","body":"### Usage-based review receipt\n- Reviewed files: 13\n- Charged: $3.25\n"},
+    {"user":"coderabbitai[bot]","created_at":"2025-09-30T23:59:59Z","body":"- Charged: $8.25"},
+    {"user":"auerbachb","created_at":"2025-10-03T10:00:00Z","body":"The bot said Charged: $99.00 here"},
+    {"user":"coderabbitai[bot]","created_at":"2025-10-06T10:00:00Z","body":"Walkthrough: the ledger sums each `Charged: $7.00` line it finds."},
+    {"user":"auerbachb","created_at":"2025-10-04T10:00:00Z","body":"@greptileai review please, @greptileai"},
+    {"user":"greptile-apps[bot]","created_at":"2025-10-04T11:00:00Z","body":"Mention @greptileai to ask a question"}],
   "check_runs":[
-    {"id":11,"name":"Cursor Bugbot","app":"cursor","started_at":"2026-10-01T00:00:00Z"},
-    {"id":12,"name":"Cursor Bugbot","app":"cursor","started_at":"2026-10-15T12:00:00Z"},
+    {"id":11,"name":"Cursor Bugbot","app":"cursor","started_at":"2025-10-01T00:00:00Z"},
+    {"id":12,"name":"Cursor Bugbot","app":"cursor","started_at":"2025-10-15T12:00:00Z"},
     {"total_count":2,"check_runs":[
-      {"id":13,"name":"Cursor Bugbot","app":"cursor","started_at":"2026-10-31T23:59:59Z"},
-      {"id":12,"name":"Cursor Bugbot","app":"cursor","started_at":"2026-10-15T12:00:00Z"}]},
-    {"id":14,"name":"CodeRabbit","started_at":"2026-10-02T00:00:00Z"},
-    {"id":16,"name":"Cursor Bugbot","app":"impostor","started_at":"2026-10-10T00:00:00Z"},
-    {"id":17,"name":"Cursor Bugbot","started_at":"2026-10-11T00:00:00Z"},
-    {"id":15,"name":"Cursor Bugbot","app":"cursor","started_at":"2026-11-01T00:00:00Z"}]}]'
+      {"id":13,"name":"Cursor Bugbot","app":"cursor","started_at":"2025-10-31T23:59:59Z"},
+      {"id":12,"name":"Cursor Bugbot","app":"cursor","started_at":"2025-10-15T12:00:00Z"}]},
+    {"id":14,"name":"CodeRabbit","started_at":"2025-10-02T00:00:00Z"},
+    {"id":16,"name":"Cursor Bugbot","app":"impostor","started_at":"2025-10-10T00:00:00Z"},
+    {"id":17,"name":"Cursor Bugbot","started_at":"2025-10-11T00:00:00Z"},
+    {"id":15,"name":"Cursor Bugbot","app":"cursor","started_at":"2025-11-01T00:00:00Z"}]}]'
 OUT="$TMP_DIR/ledger.out.json"
-"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: ledger fixture run failed"
 spend="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['spend_source']) for t in d['tools']]")"
 [[ "$spend" == "[('coderabbit', 3.25, 'receipt'), ('codeant', 62.0, 'flat'), ('bugbot', 6.0, 'estimate'), ('greptile', 0.5, 'estimate'), ('graphite', 15.5, 'flat'), ('vercel', 0.0, 'flat')]" ]] \
   && ok "ledger: \$3.25 receipt, 3 runs x \$2.00 estimate, 1 trigger x \$0.50 estimate, flat fees x 31/30" \
   || fail "ledger: spend figures wrong: $spend"
 win="$(jget "$OUT" "(d['window']['since'], d['window']['until'], d['window']['days'])")"
-[[ "$win" == "('2026-10-01', '2026-10-31', 31)" ]] \
-  && ok "ledger: --since 2026-10-01 --until 2026-10-31 bounds the window to those dates, 31 days inclusive" \
+[[ "$win" == "('2025-10-01', '2025-10-31', 31)" ]] \
+  && ok "ledger: --since 2025-10-01 --until 2025-10-31 bounds the window to those dates, 31 days inclusive" \
   || fail "ledger: window not bounded by --since/--until: $win"
 
 # Negative control for the case above: the noise alone prices to nothing, so
@@ -1198,7 +1198,7 @@ pr["issue_comments"] = [c for c in pr["issue_comments"]
 pr["check_runs"] = [r for r in pr["check_runs"] if r.get("id") in (14, 15, 16, 17)]
 json.dump(d, open(sys.argv[2], "w"))
 PY
-"$MEASURE" --fixture "$NOISE_F" --ledger --pricing "$PRICING_FULL" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$NOISE_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: ledger noise fixture run failed"
 spend="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['spend_source']) for t in d['tools'] if t['key'] in ('coderabbit','bugbot','greptile')]")"
 [[ "$spend" == "[('coderabbit', 0.0, 'receipt'), ('bugbot', 0.0, 'estimate'), ('greptile', 0.0, 'estimate')]" ]] \
@@ -1210,7 +1210,7 @@ spend="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['spend_source']) for t in d[
 PRICING_NULL_BB="$TMP_DIR/pricing-null-bugbot.md"
 pricing_write "$PRICING_NULL_BB" '{"bugbot": null}'
 OUT="$TMP_DIR/ledger-null.out.json"
-"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_NULL_BB" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_NULL_BB" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: null-rate ledger run failed"
 bb="$(jget "$OUT" "[(t['spend_usd'], t['spend_source']) for t in d['tools'] if t['key']=='bugbot'][0]")"
 [[ "$bb" == "(None, 'none')" ]] && ok "ledger: a null BugBot rate yields spend_usd null / none, never 0" \
@@ -1223,7 +1223,7 @@ gr="$(jget "$OUT" "[(t['spend_usd'], t['spend_source']) for t in d['tools'] if t
 [[ "$gr" == "(0.5, 'estimate')" ]] && ok "ledger: one null rate leaves every other tool's figure intact" \
   || fail "ledger: greptile disturbed by a null BugBot rate: $gr"
 # The summary prints the null as `null`, not as 0.00 or a blank column.
-"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_NULL_BB" --since 2026-10-01 --until 2026-10-31 --summary > "$TMP_DIR/ledger-null.summary" \
+"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_NULL_BB" --since 2025-10-01 --until 2025-10-31 --summary > "$TMP_DIR/ledger-null.summary" \
   || fail "measure: null-rate ledger --summary failed"
 line="$(grep '^bugbot' "$TMP_DIR/ledger-null.summary")"
 [[ "$line" == $'bugbot\tsilent\t0\t0\t0\tnull\tnone' ]] \
@@ -1234,11 +1234,11 @@ line="$(grep '^bugbot' "$TMP_DIR/ledger-null.summary")"
 # in a note rather than silently included or silently dropped.
 UNDATED_F="$TMP_DIR/ledger-undated.json"
 fixture_write "$UNDATED_F" '[
- {"number":1,"merged_at":"2026-10-05T00:00:00Z","reviews":[],"pr_comments":[],
+ {"number":1,"merged_at":"2025-10-05T00:00:00Z","reviews":[],"pr_comments":[],
   "issue_comments":[{"user":"coderabbitai[bot]","body":"- Charged: $1.00"}],
   "check_runs":[{"id":1,"name":"Cursor Bugbot","app":"cursor"}]}]'
 OUT="$TMP_DIR/ledger-undated.out.json"
-"$MEASURE" --fixture "$UNDATED_F" --ledger --pricing "$PRICING_FULL" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$UNDATED_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: undated-event ledger run failed"
 und="$(jget "$OUT" "([t['spend_usd'] for t in d['tools'] if t['key'] in ('coderabbit','bugbot')], sum(1 for n in d['notes'] if 'carried no timestamp' in n))")"
 [[ "$und" == "([0.0, 0.0], 2)" ]] && ok "ledger: undated receipts and runs are excluded and each kind is counted in a note" \
@@ -1246,7 +1246,7 @@ und="$(jget "$OUT" "([t['spend_usd'] for t in d['tools'] if t['key'] in ('codera
 
 # Legacy parity: without --ledger (and without --repos/--all-repos) the snapshot
 # carries no spend key and the summary keeps its five columns — --until included.
-"$MEASURE" --fixture "$LEDGER_F" --since 2026-10-01 --until 2026-10-31 --json > "$TMP_DIR/legacy.out.json" \
+"$MEASURE" --fixture "$LEDGER_F" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/legacy.out.json" \
   || fail "measure: legacy run with --until failed"
 leak="$(jget "$TMP_DIR/legacy.out.json" "sorted({k for t in d['tools'] for k in t if k.startswith('spend')})")"
 [[ "$leak" == "[]" ]] && ok "ledger: a run without --ledger carries no spend_* keys" \
@@ -1264,14 +1264,14 @@ expect_ledger_rc() {
   local rc=$?
   [[ $rc -eq $want ]] && ok "ledger: '$*' exits $want" || fail "ledger: '$*' should exit $want, got $rc"
 }
-expect_ledger_rc 2 --until 2026-10-31
-expect_ledger_rc 2 --ledger --until 2026-10-31
-expect_ledger_rc 2 --days 5 --until 2026-10-31
-expect_ledger_rc 2 --since 2026-10-31 --until 2026-10-01
-expect_ledger_rc 2 --since 2026-10-01 --until 2026/10/31
+expect_ledger_rc 2 --until 2025-10-31
+expect_ledger_rc 2 --ledger --until 2025-10-31
+expect_ledger_rc 2 --days 5 --until 2025-10-31
+expect_ledger_rc 2 --since 2025-10-31 --until 2025-10-01
+expect_ledger_rc 2 --since 2025-10-01 --until 2026/10/31
 expect_ledger_rc 2 --pricing "$PRICING_FULL"
 expect_ledger_rc 1 --ledger --pricing "$TMP_DIR/no-such-pricing.md"
-expect_ledger_rc 0 --since 2026-10-31 --until 2026-10-31
+expect_ledger_rc 0 --since 2025-10-31 --until 2025-10-31
 
 # A --since that has not arrived yet gives a negative window.days; the flat fee
 # for a window that has not begun is 0.00, never negative.
@@ -1285,6 +1285,27 @@ r="$(jget "$TMP_DIR/ledger-future.json" "(d['window']['days'] < 0, [(t['spend_us
 r="$(jget "$TMP_DIR/ledger-future-bounded.json" "(d['window']['days'], [(t['spend_usd'], t['spend_source']) for t in d['tools'] if t['key'] == 'codeant'])")"
 [[ "$r" == "(31, [(0.0, 'flat')])" ]] && ok "ledger: a bounded window wholly in the future keeps window.days but bills no flat fee" \
   || fail "ledger: future bounded window flat fee wrong: $r"
+# A bounded window straddling today bills only its elapsed days: from --since
+# through today, inclusive ($60/month x d/30 = $2.00 x d). The probe accepts the
+# previous day too, in case the run crossed UTC midnight before the check.
+"$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2099-12-31 --json > "$TMP_DIR/ledger-straddle.json" \
+  || fail "measure: straddling ledger run failed"
+ledger_straddle_probe() {
+  python3 - "$TMP_DIR/ledger-straddle.json" <<'PY'
+import json, sys
+from datetime import date, datetime, timezone
+d = json.load(open(sys.argv[1]))
+codeant = [t["spend_usd"] for t in d["tools"] if t["key"] == "codeant"][0]
+elapsed = (datetime.now(timezone.utc).date() - date(2025, 10, 1)).days + 1
+full = (date(2099, 12, 31) - date(2025, 10, 1)).days + 1
+fee_ok = any(abs(codeant - 2.0 * e) < 0.005 for e in (elapsed, elapsed - 1))
+print("ok" if d["window"]["days"] == full and fee_ok
+      else "BAD days=%s codeant=%s elapsed=%s" % (d["window"]["days"], codeant, elapsed))
+PY
+}
+r="$(ledger_straddle_probe)"
+[[ "$r" == "ok" ]] && ok "ledger: a bounded window straddling today bills only its elapsed days, never the future ones" \
+  || fail "ledger: straddling window flat fee wrong: $r"
 
 # Test Plan item 3: two repos. Each tool's total is the exact sum of its
 # per-repo figures, and CodeAnt's flat fee is split by its prs_touched share
@@ -1293,22 +1314,22 @@ LEDGER_MULTI="$TMP_DIR/ledger-multi.json"
 cat > "$LEDGER_MULTI" <<'JSON'
 {"repos": [
  {"repo": "acme/one", "prs": [
-   {"number": 1, "merged_at": "2026-10-02T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
-    "pr_comments": [], "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2026-10-02T01:00:00Z", "body": "- Charged: $1.10"}],
-    "check_runs": [{"id": 1, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2026-10-02T00:00:00Z"}]},
-   {"number": 2, "merged_at": "2026-10-03T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
-    "pr_comments": [], "issue_comments": [{"user": "auerbachb", "created_at": "2026-10-03T00:00:00Z", "body": "@greptileai"}]},
-   {"number": 3, "merged_at": "2026-10-04T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
+   {"number": 1, "merged_at": "2025-10-02T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
+    "pr_comments": [], "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2025-10-02T01:00:00Z", "body": "- Charged: $1.10"}],
+    "check_runs": [{"id": 1, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-02T00:00:00Z"}]},
+   {"number": 2, "merged_at": "2025-10-03T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
+    "pr_comments": [], "issue_comments": [{"user": "auerbachb", "created_at": "2025-10-03T00:00:00Z", "body": "@greptileai"}]},
+   {"number": 3, "merged_at": "2025-10-04T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
     "pr_comments": [], "issue_comments": []}]},
  {"repo": "acme/two", "prs": [
-   {"number": 1, "merged_at": "2026-10-05T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
-    "pr_comments": [], "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2026-10-05T01:00:00Z", "body": "- Charged: $2.20"}],
-    "check_runs": [{"id": 9, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2026-10-05T00:00:00Z"},
-                   {"id": 10, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2026-10-06T00:00:00Z"}]}]}
+   {"number": 1, "merged_at": "2025-10-05T00:00:00Z", "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": ""}],
+    "pr_comments": [], "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2025-10-05T01:00:00Z", "body": "- Charged: $2.20"}],
+    "check_runs": [{"id": 9, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-05T00:00:00Z"},
+                   {"id": 10, "name": "Cursor Bugbot", "app": "cursor", "started_at": "2025-10-06T00:00:00Z"}]}]}
 ]}
 JSON
 OUT="$TMP_DIR/ledger-multi.out.json"
-"$MEASURE" --fixture "$LEDGER_MULTI" --repos acme/one,acme/two --pricing "$PRICING_FULL" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$LEDGER_MULTI" --repos acme/one,acme/two --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: two-repo ledger run failed"
 # Probes below are functions, not heredocs inside $( ): bash 3.2 (macOS) scans
 # a command substitution's raw text for parens and quotes, and Python source
@@ -1338,7 +1359,7 @@ tot="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['spend_source']) for t in d['t
   && ok "ledger: two-repo totals carry real figures (\$1.10+\$2.20 receipts, 3 runs, 1 trigger)" \
   || fail "ledger: two-repo totals wrong: $tot"
 # Null propagates: an unknown BugBot rate nulls every repo and so the total.
-"$MEASURE" --fixture "$LEDGER_MULTI" --repos acme/one,acme/two --pricing "$PRICING_NULL_BB" --since 2026-10-01 --until 2026-10-31 --json > "$OUT" \
+"$MEASURE" --fixture "$LEDGER_MULTI" --repos acme/one,acme/two --pricing "$PRICING_NULL_BB" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: two-repo null-rate ledger run failed"
 bbt="$(jget "$OUT" "([[x for x in r['tools'] if x['key']=='bugbot'][0]['spend_usd'] for r in d['per_repo']], [(t['spend_usd'], t['spend_source']) for t in d['tools'] if t['key']=='bugbot'][0])")"
 [[ "$bbt" == "([None, None], (None, 'none'))" ]] \

@@ -99,11 +99,12 @@
 #               app (every commit of each PR, filter=all, deduped by run id,
 #               timed by started_at) x $/review.
 #               Greptile: non-bot `@greptileai` comments x credits/review x $/credit.
-#     flat      CodeAnt and Vercel: the monthly fee x window.days / 30, and
-#               0.00 for a window that has not begun (--since after today, with
-#               or without --until). window.days counts whole elapsed days when
-#               --until is absent (so a --since of today prorates to 0.00);
-#               pass --until for the inclusive day count.
+#     flat      CodeAnt and Vercel: the monthly fee x elapsed days / 30 —
+#               spend so far, never a projection. With --until: the days from
+#               --since through the earlier of --until and today, inclusive, so
+#               a window wholly in the future bills 0.00 and one straddling
+#               today bills its elapsed part. Without it: window.days, whole
+#               elapsed days (a --since of today, or later, prorates to 0.00).
 #     none      No figure: the rate is null, missing, or unreadable. spend_usd is
 #               then null, never 0, and a note names the missing input.
 #   Events are kept inside the inclusive window (since 00:00:00Z through until
@@ -652,9 +653,16 @@ else:
 # Without --until the window ends today, exactly as it always has.
 until = until_arg or now.strftime("%Y-%m-%d")
 # The days a flat fee is prorated over (ledger only; window.days is unchanged).
-# A window whose first day is still to come has not begun, so it bills nothing
-# however many days a closing --until gives it.
-fee_days = 0 if since > now.strftime("%Y-%m-%d") else max(days, 0)
+# Flat spend is spend so far, never a projection: a bounded window counts its
+# days from --since through the earlier of --until and today, inclusive, so one
+# wholly in the future bills nothing and one straddling today bills only its
+# elapsed part. An open window keeps window.days (whole elapsed days).
+today = now.strftime("%Y-%m-%d")
+if until_arg:
+    _fee_end = min(until_dt, datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc))
+    fee_days = max((_fee_end - since_dt).days + 1, 0)
+else:
+    fee_days = 0 if since > today else max(days, 0)
 # Search and event window: open-ended above unless --until closed it.
 search_range = ("merged:%s..%s" % (since, until_arg)) if until_arg else ("merged:>=%s" % since)
 
