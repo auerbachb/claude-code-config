@@ -1,0 +1,8 @@
+{"count": 2, "level2_lines": 40, "today": "2026-10-08", "items": [
+  {"id": "R-7", "kind": "review", "status": "open", "repo": "acme/widgets", "key": "pr-101",
+   "question": "feat(#90): widgets become reviewable", "context": ["https://github.com/acme/widgets/pull/101", "Merged 2026-10-07 21:34 UTC"],
+   "synced_on": "2026-10-07", "summary_l1": "Widgets become reviewable from the desk."},
+  {"id": "R-9", "kind": "review", "status": "open", "repo": "acme/gadgets", "key": "issue-202",
+   "question": "Idea: export gadgets", "context": ["https://github.com/acme/gadgets/issues/202", "Filed 2026-10-08 12:00 UTC"],
+   "synced_on": "2026-10-08", "summary_l1": null}
+]}

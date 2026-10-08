@@ -61,15 +61,20 @@ BEHAVIOR
   `tick --session SESSION --interrupts RULE` reads the same rule and, while it
   holds items back, stamps tick_at without moving the change feed's
   watermark (`tick --help`).
+  The operator's day plan (`plan --help`, issue #1784) holds too: while one
+  of its blocks is in force, the rule is `focus until <the block's end>`,
+  source plan, unless this session set `away`, a focus not yet over, or
+  `everything` during that block (which releases that block only).
 
 OUTPUT
   One line: `everything`, `away`, or `focus until 15:30 ET
   (2026-10-07 19:30 UTC)`, ending ` (default)` when the rule in force is the
-  default rather than one the session set. With --json:
+  default rather than one the session set, or ` (plan)` when a block of the
+  day plan holds. With --json:
     {"rule": "focus", "until": "2026-10-07T19:30:00Z", "until_local":
      "15:30", "held": true, "source": "desk"}
-  until and until_local are null unless the rule is focus; source is desk or
-  default. Nothing on stderr on success.
+  until and until_local are null unless the rule is focus; source is desk,
+  plan, or default. Nothing on stderr on success.
 
 EXIT CODES
   0  ok
@@ -123,7 +128,7 @@ SELECT jsonb_build_object(
          'until', to_char(until AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
          'until_local', to_char(until AT TIME ZONE :'hq_tz', 'HH24:MI'),
          'held', held,
-         'source', CASE source WHEN 'desk' THEN 'desk' ELSE 'default' END)
+         'source', CASE source WHEN 'desk' THEN 'desk' WHEN 'plan' THEN 'plan' ELSE 'default' END)
   FROM (
 SQL
   else
@@ -132,7 +137,7 @@ SELECT rule
        || CASE WHEN until IS NULL THEN ''
                ELSE ' until ' || to_char(until AT TIME ZONE :'hq_tz', 'HH24:MI') || ' ET ('
                     || to_char(until AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC)' END
-       || CASE WHEN source = 'desk' THEN '' ELSE ' (default)' END
+       || CASE source WHEN 'desk' THEN '' WHEN 'plan' THEN ' (plan)' ELSE ' (default)' END
   FROM (
 SQL
   fi

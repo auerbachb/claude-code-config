@@ -199,7 +199,7 @@ cmd_run() {
   hq_mktemp errf
   rc=0
   out=$(hq__tick_sql "$guard" "$hold" | hq_db_script -At -v "hq_session=$session" \
-          -v "hq_default=$default_rule" 2>"$errf") || rc=$?
+          -v "hq_default=$default_rule" -v "hq_tz=$(hq_desk_tz)" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_fail_unmigrated "$rc" "$errf" "tick: the watermark was not moved" 'change_xid'
   fi

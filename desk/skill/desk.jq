@@ -1,5 +1,5 @@
 # desk/skill/desk.jq — the /desk skill's deterministic item logic (issues
-# #1779, #1780, #1783): which Decisions fit a menu, how the simple ones chunk
+# #1779, #1780, #1783, #1784): which Decisions fit a menu, how the simple ones chunk
 # into sets and the long-form ones group into multipart items, the exact text
 # of a long-form card and a discussion card, and which replies are feedback
 # tags rather than answers. One file, so the menus and the long-form view
@@ -13,7 +13,9 @@
 #         the Reviews view (#1782): desk/tests/reviews-view-offline.test.sh
 #         (fixtures) and desk/tests/reviews-view.test.sh (live); sets and
 #         feedback tags (#1783): desk/tests/interrupts-offline.test.sh
-#         (fixtures) and desk/tests/interrupts.test.sh (live).
+#         (fixtures) and desk/tests/interrupts.test.sh (live); the day plan
+#         and the end-of-day sweep (#1784): desk/tests/plan-offline.test.sh
+#         (fixtures) and desk/tests/plan.test.sh (live).
 
 # ---------------------------------------------------------------- classify
 
@@ -333,3 +335,452 @@ def review_header:
   ([ .id, review_label, .repo, ((.context // [])[1] // empty),
      (if .status != "open" then .status else empty end) ] | join(" · "))
   + (item_link | if . == null then "" else "\n" + .url end);
+
+# --------------------------------------------------------- day plan (#1784)
+#
+# The plan dialogue (plan.md). The operator's sentence is parsed here, by one
+# grammar, so the desk never guesses a plan out of prose; the proposal, its
+# card, and the record `plan set` stores are built here too, so a test runs
+# the same code the desk does. Times: the CLI's ISO 8601 UTC strings in,
+# America/New_York clock times out, through strflocaltime — run these with
+# TZ=America/New_York in the environment (the skill's blocks do).
+
+# plan_num: a number as typed ("30", "four", "an", "half an") as a number;
+# null when it is none of them.
+def plan_num:
+  ascii_downcase | gsub("\\s+"; " ")
+  | if test("^[0-9]+(\\.[0-9]+)?$") then tonumber
+    else {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+          "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+          "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40,
+          "forty-five": 45, "fifty": 50, "sixty": 60, "ninety": 90,
+          "half a": 0.5, "half an": 0.5}[.]
+    end;
+
+def plan_num_re:
+  "(?<num>[0-9]+(?:\\.[0-9]+)?|half an?|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty-five|forty|fifty|sixty|ninety)";
+def plan_unit_re: "(?<unit>minutes?|mins?|m|hours?|hrs?|h)\\b(?<half>\\s+and a half)?";
+
+# plan_minutes: a {num, unit, half} capture as whole minutes; null when the
+# number is not one.
+def plan_minutes:
+  (.num | plan_num) as $v
+  | if $v == null then null
+    else (if (.unit | startswith("h")) then 60 else 1 end) as $m
+      | ($v * $m + (if .half != null then (if $m == 60 then 30 else 0 end) else 0 end)) | round
+      | if . >= 1 then . else null end
+    end;
+
+def plan_trim: sub("^\\s+"; "") | sub("\\s+$"; "");
+
+# plan_cap($m; $name): one named capture of a match object, or null.
+def plan_cap($m; $name):
+  if $m == null then null else ($m.captures | map(select(.name == $name)) | .[0].string) end;
+
+def plan_mins($m):
+  if $m == null then null
+  else {num: plan_cap($m; "num"), unit: plan_cap($m; "unit"), half: plan_cap($m; "half")} | plan_minutes end;
+
+# plan_fields: the plan's fields in one piece of text (the part after the
+# trigger, or a reply while a plan is being agreed):
+#   {item, pace_min, chunk, count, until, for_min}
+# pace is `<n> <unit> a|per|each|every <chunk>`, `each <chunk> is|takes
+# <n> <unit>`, or `<n> <unit> each`; an
+# extent is `<n> <chunk>s` (`<n> of them`), `until|till|to <time>`, or `for
+# <n> <unit>`, and the item is what comes before the first comma, semicolon,
+# colon, dash, or field. A field it does not find is null.
+def plan_fields:
+  (gsub("[’‘]"; "'") | plan_trim) as $t
+  | ($t | ascii_downcase) as $l
+  | ([ $l | match("(?:about |around |roughly |~)?" + plan_num_re + "\\s*" + plan_unit_re
+                  + "\\s+(?:for\\s+)?(?:a|an|per|each|every)\\s+(?<chunk>[a-z][a-z-]*)"; "g") ] | .[0]) as $pm
+  | ([ $l | match("(?:about |around |roughly |~)?" + plan_num_re + "\\s*" + plan_unit_re + "\\s+each\\b"; "g") ]
+     | .[0]) as $em
+  | ([ $l | match("\\beach\\s+(?<chunk>[a-z][a-z-]*)\\s+(?:is|takes|will take|should take)\\s+(?:about |around |roughly |~)?"
+                  + plan_num_re + "\\s*" + plan_unit_re; "g") ] | .[0]) as $xm
+  | ([ $l | match("\\bfor\\s+(?:about |around |roughly )?" + plan_num_re + "\\s*" + plan_unit_re; "g") ]
+     | .[0]) as $fm
+  | ([ $l | match("\\b(?:until|till|til|to|through)\\s+(?<t>noon|midday|lunch|[0-9]{1,2}(?::[0-5][0-9])?(?:\\s?[ap]\\.?m\\.?)?)(?![0-9:])"; "g") ]
+     | .[0]) as $um
+  | ([ $l | match("\\b(?<num>[0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s+(?:more\\s+)?(?:(?<noun>[a-z][a-z-]*?)s\\b|of them\\b)"; "g") ]
+     | map(select((plan_cap(.; "noun") // "") | test("^(minute|min|hour|hr|h|m|second|sec)$") | not))
+     | .[0]) as $cm
+  | ([ ($pm, $em, $xm, $fm, $um, $cm | select(. != null) | .offset) ]
+     + [ $l | match("\\s[—–]\\s|\\s-\\s|[,;:]"; "g") | .offset ] | min) as $cut
+  | ($t[0:($cut // ($t | length))] | plan_trim
+     | sub("^(?i:(?:ok(?:ay)?|so|right|actually|well|then|and|make it|make that|change it to|change to|let's say|let's do|say|do)\\b[, ]*)+"; "")
+     | sub("(?i:\\s+(?:today|tonight|this morning|this afternoon|now|first|next|for now|then))+$"; "")
+     | plan_trim
+     | if . == "" or test("^(?i:it|that|this|them|one|ones)$") or (test("[A-Za-z]") | not) then null else . end) as $item
+  | { item: $item,
+      pace_min: (plan_mins($pm) // plan_mins($xm) // plan_mins($em)),
+      chunk: (plan_cap($pm; "chunk") // plan_cap($xm; "chunk") // plan_cap($cm; "noun")),
+      count: (if $cm == null then null else (plan_cap($cm; "num") | plan_num) end),
+      until: (if $um == null then null else plan_cap($um; "t") | gsub("[.\\s]"; "") end),
+      for_min: plan_mins($fm) };
+
+# The phrases that start a new plan, before what it is for.
+def plan_work_re:
+  "^(?i:(?:(?:ok(?:ay)?|so|right|today|this morning|this afternoon)[, ]+)?(?:i need to|i have to|i must|i want to|i'd like to|i would like to|i'll|i will|i'm going to|i am going to|i'm|i am|let me|let's|we need to|time to)\\s+work(?:ing)?\\s+on\\s+|(?:today|tonight|this morning|this afternoon|the morning|the afternoon)\\s+is\\s+for\\s+)";
+
+# desk_plan_parse($pending): the operator's whole message (a string, as
+# `jq -Rs` reads it) as
+#   {"trigger": "plan"|"show"|"off"|"work"|"revise"|null,
+#    "confirm": bool, "cancel": bool, "fields": {...plan_fields...}}
+# The triggers, any case, as the whole message (a final period is fine):
+#   plan                      start a plan: the desk asks what and how fast
+#   plan?                     show today's plan
+#   plan off, plan clear, no plan, drop the plan
+#                             clear it
+#   plan: <text>              revise today's plan (or start one) with <text>
+#   I need to work on <text>  (also: I have to / want to / will / am going to
+#                             work on, I'm working on, let me / let's work on,
+#                             today / this morning / this afternoon is for)
+#                             a new plan for <text>
+# With no trigger, fields are read only while a plan is being agreed: a
+# reply such as `4 sections` or `until 12:30`. $pending is false (no plan is
+# being agreed), true (one is, and its item is known: a reply never renames
+# it, so a remark is not read as an item), or "item" (the desk asked what the
+# plan is for: the reply's leading words are the item). A reply with no field
+# in it has every field null: it is not about the plan. confirm (`yes`, `ok`,
+# `sounds right`, ...) and cancel (`no`, `cancel`, `never mind`, ...) are the
+# whole message.
+def desk_plan_parse($pending):
+  (gsub("[’‘]"; "'") | plan_trim | sub("[.!]+$"; "") | plan_trim) as $m
+  | ($m | ascii_downcase | gsub("\\s+"; " ")) as $l
+  | ("" | plan_fields) as $none
+  | {confirm: ($l | test("^(yes|y|yep|yeah|yup|ok|okay|sure|sounds (right|good)|confirm(ed)?|go|go ahead|do it|start|perfect|great|looks good|that works)$")),
+     cancel: ($l | test("^(no|nope|cancel|never ?mind|drop it|scrap it|forget it|not now)$"))}
+  | if $l == "plan" then . + {trigger: "plan", fields: $none}
+    elif $l == "plan?" then . + {trigger: "show", fields: $none}
+    elif ($l | test("^(plan (off|clear|cancel|drop)|no plan|drop the plan|clear the plan|cancel the plan)$"))
+      then . + {trigger: "off", fields: $none}
+    elif ($m | test("^(?i:plan)\\s*:")) then
+      . + {trigger: "revise", fields: ($m | sub("^(?i:plan)\\s*:\\s*"; "") | plan_fields)}
+    elif ($m | test(plan_work_re + "\\S")) then
+      . + {trigger: "work", fields: ($m | sub(plan_work_re; "") | plan_fields)}
+    elif $pending == "item" and ((.confirm or .cancel) | not) then . + {trigger: null, fields: ($m | plan_fields)}
+    elif $pending == true and ((.confirm or .cancel) | not) then . + {trigger: null, fields: ($m | plan_fields | .item = null)}
+    else . + {trigger: null, fields: $none}
+    end;
+
+# desk_plan_merge($new): the inputs agreed so far (., {} at first) with the
+# fields of one more sentence over them: a field it names replaces the old
+# one; an extent (count, until, or for) replaces the whole old extent, and
+# `end` (the extent as an absolute time, set by desk_plan_propose) goes with
+# it. `count_given` marks a count named in this sentence, which a revision
+# reads as the chunks still to do.
+def desk_plan_merge($new):
+  (. // {}) as $o
+  | ($new.count != null or $new.until != null or $new.for_min != null) as $extent
+  | { item: ($new.item // $o.item),
+      pace_min: ($new.pace_min // $o.pace_min),
+      chunk: ($new.chunk // $o.chunk),
+      count: (if $extent then $new.count else $o.count end),
+      until: (if $extent then $new.until else $o.until end),
+      for_min: (if $extent then $new.for_min else $o.for_min end),
+      end: (if $extent then null else $o.end end),
+      count_given: ($new.count != null) };
+
+# Epoch seconds and the desk's clock.
+def plan_epoch: if type == "number" then . else sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 end;
+def plan_iso: floor | todate;
+def plan_hm: floor | strflocaltime("%H:%M");
+def plan_ceil_min: (. / 60 | ceil) * 60;
+# plan_off($t): the local clock's offset from UTC at $t, in seconds.
+def plan_off($t): ($t | floor | localtime | mktime) - ($t | floor);
+
+# plan_until_epoch($now): a clock time as typed (`12:30`, `3`, `3pm`,
+# `3:30pm`, `noon`) as its next occurrence after $now on the local clock; a
+# 12-hour time without am or pm is whichever comes first. null when it is
+# not a time.
+def plan_until_epoch($now):
+  ascii_downcase
+  | (if . == "noon" or . == "midday" or . == "lunch" then "12:00" else . end)
+  | (capture("^(?<h>[0-9]{1,2})(?::(?<m>[0-5][0-9]))?(?<ap>am|pm)?$") // null) as $c
+  | if $c == null then null
+    else ($c.h | tonumber) as $h | (($c.m // "0") | tonumber) as $mi
+      | (if $c.ap != null then
+           (if $h < 1 or $h > 12 then [] else [($h % 12) + (if $c.ap == "pm" then 12 else 0 end)] end)
+         elif $h > 23 then []
+         elif $h >= 1 and $h <= 12 then [$h % 12, ($h % 12) + 12]
+         else [$h] end) as $hours
+      | plan_off($now) as $off
+      | (($now + $off) | floor | gmtime) as $lt
+      # Today's and tomorrow's showing of each hour, each at the offset in
+      # force then (read twice, so the second read is at the time itself):
+      # across a daylight-saving change, tomorrow's is not 24 hours on.
+      | [ $hours[]
+          | ([$lt[0], $lt[1], $lt[2], ., $mi, 0, 0, 0] | mktime) as $wall
+          | ($wall, $wall + 86400) as $w
+          | $w - plan_off($w - plan_off($w - $off))
+          | select(. > $now) ]
+      | if length == 0 then null else min end
+    end;
+
+# plan_cost: a Decision's declared cost in minutes ("~10 min", "5m"); null
+# when it declares none in minutes.
+def plan_cost:
+  (.cost // "") | ascii_downcase
+  | (capture("(?<n>[0-9]+)\\s*(?:m|mins?|minutes?)\\b") // null)
+  | if . == null then null else .n | tonumber end;
+
+def plan_pace_text($p; $chunk):
+  if $p == null then null
+  elif $chunk != null then "\($p) min a \($chunk)"
+  else "\($p) min each" end;
+
+def plan_window_text($w):
+  if $w % 60 == 0 then (if $w == 60 then "the last hour" else "the last \($w / 60) hours" end)
+  else "the last \($w) min" end;
+
+def plan_n($n; $one; $many): "\($n) " + (if $n == 1 then $one else $many end);
+
+# desk_plan_propose: the proposal for one set of inputs. Input:
+#   {inputs, forecast (plan forecast --json), decisions (list --kind decision
+#    --status open --json), reviews (the items of list --kind reviews
+#    --unreviewed --json), gap (minutes between blocks: the tick cadence),
+#    batch_min (the clear-first budget, 10), stored (plan get --json's plan,
+#    for a revision; else absent)}
+# Output:
+#   {inputs (with `end` resolved), missing ([] or ["item"] or ["pace"]),
+#    now, forecast, batch {decisions, reviews, ids, minutes}, later [ids],
+#    revision, pace, kept (a revision's stored blocks already over: [] for a
+#    new plan), blocks [{item, label, pace, start, until, start_local,
+#    until_local}] (the blocks to come), wanted and shortfall (null, or how
+#    many blocks were asked for when fewer fit, and the card's line saying
+#    why: the 24 cap, the extent's end, or the day), problem (null, or why
+#    no block fits)}
+# A new plan clears a batch first: the parked menu-shaped Decisions, then the
+# other menu-shaped ones and then Reviews while they fit in batch_min (a
+# Decision at its declared minutes, else 2; a Review at 2). Long-form
+# Decisions and what does not fit wait for the first block's end (`later`).
+# The first block starts when the batch is done, and blocks are gap minutes
+# apart, so a tick lands between them and shows what was held. No count,
+# until, or for: one chunk. A new plan's `for` counts from the first block's
+# start each time it is proposed, so the time taken to confirm it never
+# shortens it. A revision (stored) keeps the stored batch, `later`, end, and
+# the blocks already over (`kept`, which plan_record stores first, so a later
+# revision still counts them), and plans the chunks still to do from now
+# (from the first block's start, when none has begun): the old count less
+# the blocks already over (none left is a problem, not one more), or a count
+# named in the revision.
+def desk_plan_propose:
+  . as $c
+  | ($c.forecast.now // (now | todate) | plan_epoch) as $now
+  | (($c.gap // 5) | if type == "number" and . >= 1 then . else 5 end) as $gap
+  | (($c.batch_min // 10) | if type == "number" and . >= 0 then . else 10 end) as $budget
+  | ($c.inputs // {}) as $in
+  | ([ ($c.decisions // [])[] | select(.kind == "decision" and .status == "open") ]) as $open
+  | ($c.stored // null) as $st
+  | (if $st != null then
+       [ ($st.blocks // [])[] | {s: (.start | plan_epoch), u: (.until | plan_epoch)} ] as $sb
+       | ([ $sb[] | select(.u <= $now) ] | length) as $done
+       | (($sb | length) > 0 and $now < $sb[0].s) as $before
+       | { decisions: [ ($st.clear_first // [])[] | select(startswith("D-")) ],
+           reviews: [ ($st.clear_first // [])[] | select(startswith("R-")) ],
+           ids: ($st.clear_first // []), minutes: 0, later: ($st.later // []),
+           start: (if $before then $sb[0].s else ($now | plan_ceil_min) end),
+           first: (if $before then 1 else $done + 1 end),
+           done: (if $before then 0 else $done end),
+           kept: [ ($st.blocks // [])[] | select((.until | plan_epoch) <= $now) ] }
+     else
+       ([ $open[] | select(menu_shaped) | {id, parked: (.parked == true), m: (plan_cost // 2)} ]) as $quick
+       | ({dec: [], rev: [], m: 0}
+          | reduce ($quick[] | select(.parked)) as $q (.; .dec += [$q.id] | .m += $q.m)
+          | reduce ($quick[] | select(.parked | not)) as $q (.;
+              if .m + $q.m <= $budget then .dec += [$q.id] | .m += $q.m else . end)
+          | reduce (($c.reviews // [])[] | select(.kind == "review" and .status == "open")) as $r (.;
+              if .m + 2 <= $budget then .rev += [$r.id] | .m += 2 else . end)) as $b
+       | { decisions: $b.dec, reviews: $b.rev, ids: ($b.dec + $b.rev), minutes: $b.m,
+           later: [ $open[] | .id as $i | select([ $b.dec[] | select(. == $i) ] | length == 0) | .id ],
+           start: (($now + $b.m * 60) | plan_ceil_min), first: 1, done: 0, kept: [] }
+     end) as $batch
+  | $batch.start as $start
+  | (if $in.item == null then ["item"]
+     elif $in.pace_min == null and $in.until == null and $in.for_min == null and $in.end == null then ["pace"]
+     else [] end) as $missing
+  # A plan runs at most a day ahead (plan set refuses more): a time tomorrow
+  # can be 25 hours on across the night the clocks fall back.
+  | ((if $in.for_min != null and $in.until == null and $st == null then $start + $in.for_min * 60
+      elif $in.end != null then ($in.end | plan_epoch)
+      elif $in.until != null then ($in.until | plan_until_epoch($now))
+      elif $in.for_min != null then $start + $in.for_min * 60
+      else null end)
+     | if . == null then null else [., $now + 86400] | min end) as $end
+  | $in.pace_min as $p
+  | (if $missing != [] or $p == null then null
+     elif $in.count != null then
+       (if $st != null and $in.count_given != true then [0, $in.count - $batch.done] | max else $in.count end)
+     elif $end != null then [1, ((($end - $start) + $gap * 60) / (($p + $gap) * 60) | floor)] | max
+     else 1 end) as $want
+  # A revision keeps the blocks already over; all of them together stay
+  # within plan set's 24.
+  | (24 - ($batch.kept | length)) as $room
+  | (if $missing != [] then []
+     elif $p == null then
+       (if $end != null and $end > $start and $room > 0 then [{s: $start, u: $end}] else [] end)
+     else
+       [ range(0; [$want, $room] | min) as $k
+         | ($start + $k * ($p + $gap) * 60) as $s
+         | {s: $s, u: (if $end != null then [$s + $p * 60, $end] | min else $s + $p * 60 end)}
+         | select(.u > .s and .u <= $now + 86400) ]
+     end) as $spans
+  | ($spans | length) as $n
+  # Fewer blocks than asked for: the 24 cap, the extent's end, or the day.
+  | (if $want == null or $n == 0 or $want <= $n then null
+     elif $n == ([$want, $room] | min) then "Only \($n) of the \($want) asked for fit: at most 24 blocks in a plan."
+     elif $end != null then "Only \($n) of the \($want) asked for fit before \($end | plan_hm) ET."
+     else "Only \($n) of the \($want) asked for fit within a day." end) as $short
+  | ($batch.first + $n - 1) as $total
+  | (plan_pace_text($p; $in.chunk) // (if $end != null then "one block until \($end | plan_hm)" else null end)) as $pace
+  # A count named in a revision is the chunks still to do; the inputs store
+  # the plan's whole count (those plus the blocks already over), which the
+  # next revision subtracts the blocks over from again.
+  | { inputs: ($in + {end: (if $end != null then ($end | plan_iso) else null end),
+                      count: (if $st != null and $in.count_given == true and $in.count != null
+                              then $in.count + $batch.done else $in.count end)}
+               | del(.count_given)),
+      missing: $missing,
+      now: ($now | plan_iso),
+      forecast: ($c.forecast // null),
+      batch: ($batch | {decisions, reviews, ids, minutes}),
+      later: $batch.later,
+      revision: ($st != null),
+      pace: $pace,
+      kept: $batch.kept,
+      blocks: [ $spans | to_entries[]
+                | { item: $in.item,
+                    label: (if $total > 1 then "\($in.chunk // "block") \($batch.first + .key) of \($total)"
+                            elif $in.chunk != null then "\($in.chunk) \($batch.first + .key)"
+                            else null end),
+                    pace: $pace,
+                    start: (.value.s | plan_iso), until: (.value.u | plan_iso),
+                    start_local: (.value.s | plan_hm), until_local: (.value.u | plan_hm) } ],
+      wanted: (if $short != null then $want else null end),
+      shortfall: $short,
+      problem: (if $missing == [] and $n == 0
+                then (if $want == 0 then "every \($in.chunk // "block") planned is done; name how many more (`2 \($in.chunk // "block")s`)"
+                      elif $end != null then "no block fits before \($end | plan_hm) ET"
+                      else "no block fits" end)
+                else null end) };
+
+# plan_forecast_lines: the proposal's "waiting now" and forecast lines.
+def plan_forecast_lines:
+  . as $p
+  | .forecast as $f
+  | if $f == null then empty
+    else
+      ([ (if ($f.open // 0) > 0 then plan_n($f.open; "open Decision"; "open Decisions")
+            + (if ($f.parked // 0) > 0 then " (\($f.parked) parked)" else "" end) else empty end),
+         (if ($f.unreviewed // 0) > 0 then plan_n($f.unreviewed; "unreviewed Review"; "unreviewed Reviews") else empty end) ]
+       | if length == 0 then "Waiting now: nothing." else "Waiting now: " + join(" and ") + "." end),
+      (($f.window_min // 180) as $w
+       | ($f.asked // 0) as $a
+       | if $a == 0 then "Forecast: no thread asked anything in \(plan_window_text($w)), so few new questions are likely."
+         else ($a * 60 / $w) as $rate
+           | ($p.blocks | last) as $last
+           | (if $last == null then null
+              else ((($last.until | plan_epoch) - ($p.now | plan_epoch)) / 3600 * $rate) | round end) as $expect
+           | "Forecast: " + plan_n($f.threads // 0; "thread"; "threads") + " asked "
+             + plan_n($a; "question"; "questions") + " in " + plan_window_text($w)
+             + ", about " + (if $rate < 1 then "one every \((60 / $rate) | round) min" else "\($rate | round) an hour" end)
+             + (if $expect == null then "."
+                else " — about \($expect) more by \($last.until_local) ET, held until each block ends." end)
+         end)
+    end;
+
+# plan_card: what the desk prints for a proposal: one blockquote (the
+# prose-question nudge reads a blockquote as the desk's own card), then one
+# line, outside it, saying how to reply.
+def plan_card:
+  if (.missing | index("item")) != null then
+    ([ "**What are you working on, and how fast?**",
+       "For example `the PRD, 30 min a section, 4 sections`, or `the deck until 12:30`." ] | quote)
+    + "\n\nReply in one sentence; `no` drops it."
+  elif (.missing | index("pace")) != null then
+    ([ "**How fast will \(.inputs.item) go, and in what chunks?**",
+       plan_forecast_lines,
+       "For example `30 min a section, 4 sections`, `an hour a chapter, until 12:30`, or `for 90 min`." ] | quote)
+    + "\n\nReply in one sentence; `no` drops it."
+  elif .problem != null then
+    ([ "**No plan for \(.inputs.item): \(.problem).**" ] | quote)
+    + "\n\nChange it in one sentence (`until 13:00`, `20 min a section`), or `no` to drop it."
+  else
+    ([ "**" + (if .revision then "Plan revised: " else "Plan: " end) + .inputs.item
+         + (if .pace != null then ", " + .pace else "" end)
+         + (if .revision then "**" else " — sound right?**" end),
+       plan_forecast_lines ]
+     + ( [ (if .revision then empty
+            elif (.batch.ids | length) > 0 then "Clear first, about \(.batch.minutes) min: \(.batch.ids | join(", "))."
+            else "Nothing quick to clear first." end),
+           (.blocks[] | "\(.start_local)–\(.until_local) ET · \(.item)" + (if .label != null then ", \(.label)" else "" end)
+                        + " · everything held."),
+           "Then what was held" + (if (.later | length) > 0 then ", and later: \(.later | join(", "))." else "." end) ]
+         | to_entries | map("\(.key + 1). \(.value)") )
+     + (if .shortfall != null then [ .shortfall ] else [] end)
+     | quote)
+    + "\n\n"
+    + (if .revision then "Stored. Change it again in one sentence; `plan?` shows it, `plan off` drops it."
+       else "Reply `yes` to keep this plan, or change it in one sentence (`4 sections`, `45 min a section`, `until 12:30`); `no` drops it." end)
+  end;
+
+# plan_record: the JSON `plan set` stores, from a proposal with blocks.
+# A revision's blocks already over come first, as stored, so the next
+# revision still counts them as done.
+def plan_record:
+  { item: .inputs.item, pace: .pace, inputs: .inputs,
+    clear_first: .batch.ids, later: .later,
+    blocks: ((.kept // []) + [ .blocks[] | {item, pace, start, until} + (if .label != null then {label} else {} end) ]) };
+
+# plan_show: `plan get --json` ({now, today, plan}) as the `plan?` card.
+def plan_show:
+  (.now | plan_epoch) as $now
+  | if .plan == null then "No plan for today."
+    else .plan as $p
+      | ([ "**Today's plan: \($p.item // "?")" + (if $p.pace != null then ", \($p.pace)" else "" end) + "**",
+           (if (($p.clear_first // []) | length) > 0 then "Clear first: \($p.clear_first | join(", "))." else empty end) ]
+         + [ ($p.blocks // []) | to_entries[]
+             | (.value.start | plan_epoch) as $s | (.value.until | plan_epoch) as $u
+             | "\(.key + 1). \($s | plan_hm)–\($u | plan_hm) ET · \(.value.item)"
+               + (if .value.label != null then ", \(.value.label)" else "" end)
+               + (if $u <= $now then " · over" elif $s <= $now then " · now, everything held" else "" end) ]
+         + [ (if (($p.later // []) | length) > 0 then "Later: \($p.later | join(", "))." else empty end) ]
+        | quote)
+    end;
+
+# ---------------------------------------------------- end-of-day sweep (#1784)
+
+# sweep_lines($set): `sweep list --json` as the sweep's numbered lines, one
+# per item: a Decision's question with its repository and key, a Review's
+# cached line (else its title). $set is set-open's JSON for these items (its
+# numbers are the ones replies resolve against), or null when no set could be
+# opened (then the list's own order numbers them, and replies use ids).
+def sweep_lines($set):
+  ([ (($set // {}).items // [])[] | {key: .id, value: .n} ] | from_entries) as $num
+  | [ (.items // []) | to_entries[]
+      | ($num[.value.id] // (.key + 1)) as $n
+      | .value
+      | if .kind == "review" then
+          "\($n). \(.id) · \(review_label) · "
+          + (if (.summary_l1 // "") != "" then .summary_l1 else .question + " (title; not summarized yet)" end)
+        else
+          "\($n). \(.id) · \(.question) (\(.repo | split("/") | .[1] // .) · \(.key))"
+          + (if menu_shaped then "" else " · long-form" end)
+          + (if .parked then " · parked" else "" end)
+        end ]
+  + (if (.more // 0) > 0 then ["… and \(.more) more; `sweep` lists them once some are cleared."] else [] end);
+
+# sweep_view($set): the end-of-day card: a bold header and the numbered list
+# as one blockquote, then one line on replying and taking it to paper.
+def sweep_view($set):
+  if ((.items // []) | length) == 0 then "End of day: nothing is open."
+  else
+    ([ "**End of day · " + plan_n(.count; "item"; "items") + " still open"
+         + (if $set != null then " · set \($set.set_id)" else "" end) + "**" ]
+     + sweep_lines($set) | quote)
+    + "\n\n"
+    + (if $set != null then "Reply by number or id any time (`2: B`, `D-43: B`, `reviewed R-7`)."
+       else "Reply by id any time (`D-43: B`, `reviewed R-7`)." end)
+    + " Take it to paper: say `export` for a numbered PDF (#1759)."
+  end;
