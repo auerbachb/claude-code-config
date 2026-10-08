@@ -1312,6 +1312,14 @@ r="$(ledger_straddle_probe)"
 [[ "$r" == "ok" ]] && ok "ledger: a bounded window straddling today bills only its elapsed days, never the future ones" \
   || fail "ledger: straddling window flat fee wrong: $r"
 
+# HOME unset: `set -u` must not abort the published-path lookups; the
+# checkout's own library and the --pricing file still run the ledger.
+env -u HOME "$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/ledger-nohome.json" 2>"$TMP_DIR/ledger-nohome.err"
+rc=$?
+r="$(jget "$TMP_DIR/ledger-nohome.json" "[t['spend_source'] for t in d['tools'] if t['key'] == 'codeant']" 2>/dev/null)"
+[[ $rc -eq 0 && "$r" == "['flat']" ]] && ok "ledger: runs with HOME unset (set -u never trips on the published-path lookups)" \
+  || fail "ledger: HOME-unset ledger run failed (rc=$rc, codeant=$r): $(head -c 300 "$TMP_DIR/ledger-nohome.err")"
+
 # Test Plan item 3: two repos. Each tool's total is the exact sum of its
 # per-repo figures, and CodeAnt's flat fee is split by its prs_touched share
 # (3 PRs vs 1) into parts that sum to the prorated fee to the cent.

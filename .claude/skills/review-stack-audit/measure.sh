@@ -355,8 +355,8 @@ if [[ "$ALL_REPOS" -eq 1 ]]; then
   _scripts_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/scripts" || _scripts_dir=""
   for _c in \
     ${_scripts_dir:+"$_scripts_dir/review-repos.sh"} \
-    "$HOME/.claude/skills-worktree/.claude/scripts/review-repos.sh" \
-    "$HOME/.claude/scripts/review-repos.sh" \
+    ${HOME:+"$HOME/.claude/skills-worktree/.claude/scripts/review-repos.sh"} \
+    ${HOME:+"$HOME/.claude/scripts/review-repos.sh"} \
     ".claude/scripts/review-repos.sh"; do
     if [[ -x "$_c" ]]; then REVIEW_REPOS_SH="$_c"; break; fi
   done
@@ -380,12 +380,13 @@ MULTI=0
 LEDGER_LIB_DIR=""
 if [[ "$LEDGER" -eq 1 ]]; then
   # This checkout's own .claude/ first (`cd -P` resolves the published
-  # ~/.claude/skills symlink to the worktree), then the published locations.
+  # ~/.claude/skills symlink to the worktree), then the published locations
+  # (skipped when HOME is unset, which `set -u` would otherwise abort on).
   _claude_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || _claude_dir=""
   for _c in \
     ${_claude_dir:+"$_claude_dir/scripts/lib"} \
-    "$HOME/.claude/skills-worktree/.claude/scripts/lib" \
-    "$HOME/.claude/scripts/lib" \
+    ${HOME:+"$HOME/.claude/skills-worktree/.claude/scripts/lib"} \
+    ${HOME:+"$HOME/.claude/scripts/lib"} \
     ".claude/scripts/lib"; do
     if [[ -r "$_c/review_ledger.py" ]]; then LEDGER_LIB_DIR="$_c"; break; fi
   done
@@ -394,8 +395,8 @@ if [[ "$LEDGER" -eq 1 ]]; then
   if [[ -z "$PRICING" ]]; then
     for _c in \
       ${_claude_dir:+"$_claude_dir/reference/pricing-matrix.md"} \
-      "$HOME/.claude/skills-worktree/.claude/reference/pricing-matrix.md" \
-      "$HOME/.claude/reference/pricing-matrix.md" \
+      ${HOME:+"$HOME/.claude/skills-worktree/.claude/reference/pricing-matrix.md"} \
+      ${HOME:+"$HOME/.claude/reference/pricing-matrix.md"} \
       ".claude/reference/pricing-matrix.md"; do
       if [[ -r "$_c" && -f "$_c" ]]; then PRICING="$_c"; break; fi
     done
