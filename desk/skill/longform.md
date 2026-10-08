@@ -36,6 +36,7 @@ While a prompt waits, read the operator's next message in this order:
    **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`) as the whole message → `history.md`, then print this part's card again. Nothing is stored.
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`) as the whole message → `priorities.md`, then print this part's card again. Nothing is stored for this item.
    **`idea: …`**, **`file: …`**, or **`repo: …`** → `ideas.md`, then print this part's card again. Nothing is stored for this part.
+   **A plan verb** (`plan`, `plan?`, `plan off`, `plan: …`) or **`sweep`** as the whole message → `plan.md` or `sweep.md`, then print this part's card again. A plan sentence (`I need to work on …`) is this part's answer, never a plan.
 3. **A reply for another item**: the message starts with `D-<n>:` naming a different item → handle it as a typed reply (`decisions.md`, "Typed replies"; a long-form one goes through "Storing an answer" below), then print this part's card again.
 4. **This item, addressed**: the message starts with this part's own `D-<n>:` → the answer is the text after that colon.
 5. **Anything else is the answer**: the whole message, as typed. A long answer may hold numbered lines (`1: …`, `2: …`), commas, or quotes; they are part of the answer, never split into replies.
@@ -68,7 +69,7 @@ After its last part is answered, skipped, or found closed: one line naming what 
 
 A `desk-tick <GEN> new …` event that arrives while a long-form prompt waits is held, not shown: a menu would land on top of a half-written answer. Keep its ids in this conversation and say nothing; once this group ends (or after `skip all`), show them through `decisions.md`, "Showing items". An id already on screen or already held is not queued twice: a worker re-asking bumps the item, and the tick reports it again.
 
-A `desk-tick <GEN> retry …` event is handled at once (`wakeups.md`), because a retry shows nothing. A parked notice that it produces is held the same way and printed when the group ends.
+A `desk-tick <GEN> retry …` event is handled at once (`wakeups.md`), because a retry shows nothing. A parked notice that it produces is held the same way and printed when the group ends, and so is a `desk-tick <GEN> eod` event (`sweep.md`).
 
 ## A typed `D-<n>: …` for a long-form item
 

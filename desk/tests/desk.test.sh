@@ -42,6 +42,11 @@ TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 hq_t_require_db "desk.test.sh"
 
+# desk-tick.sh's end-of-day step (issue #1784) reads this clock: pinned before
+# any eod_time, so no tick here asks for the sweep, whatever the hour the
+# suite runs at (plan.test.sh tests the sweep).
+export HUMAN_QUEUE_CLOCK="2000-01-01 00:00"
+
 HQ_BIN_DIR="$HQ_T_DESK_DIR/bin"
 # shellcheck source=../bin/lib/common.sh
 . "$HQ_BIN_DIR/lib/common.sh"

@@ -12,7 +12,7 @@ Loaded at start (`SKILL.md` step 2 reads the policy here), when the operator's w
 |-----|---------|-------|
 | `tick_cadence_min` | `5` | Minutes between ticks, 1 to 60 and shorter than `live_desk_max_tick_age_min`. `/desk --cadence Nm` overrides it for one desk |
 | `interrupt_rule` | `everything` | The rule a desk starts with, in force while it has set none: `everything` or `away`. Read when the desk starts; an edit applies at the next `/desk` |
-| `eod_time` | `17:30` | The end of the working day, `HH:MM` in America/New_York (the end-of-day sweep, #1784, uses it) |
+| `eod_time` | `17:30` | The end of the working day, `HH:MM` in America/New_York: when the end-of-day sweep runs (`sweep.md`, #1784). Read when the desk starts |
 | `set_size` | `4` | Decisions per menu, 1 to 4 (four questions is the menu tool's limit) |
 | `live_desk_max_tick_age_min` | `15` | How old the last tick may be for the capture hook to queue questions, 1 to 1440. Lowered to a running desk's cadence or below, the loop (which reads this key every 30 seconds) ticks 30 seconds inside it, even mid-sleep |
 
@@ -33,8 +33,9 @@ It prints the effective policy as one JSON object, then `exit=0`. A line startin
 | `everything` | Every new Decision is shown at the next tick, in sets of `set_size` (`decisions.md`). The default |
 | `away` | Nothing is shown until the operator is available again |
 | `focus` until a time | Nothing is shown until that time; the first tick after it shows everything that arrived meanwhile |
+| a block of the day plan | The same as a focus until the block ends (`plan.md`, #1784): `interrupts?` reads `focus until 09:40 ET (… UTC) (plan)` |
 
-The rule is stored in the queue (`human-queue.sh interrupt`, state key `interrupt`) and belongs to this desk session: a desk registered later starts from the policy's `interrupt_rule`. While a rule holds, each tick still stamps the tick time (the desk stays live) but reports nothing and leaves the change feed where it is, so nothing that arrived during the hold is lost or reported twice: the first tick after the hold reports all of it, in the usual set order.
+The rule is stored in the queue (`human-queue.sh interrupt`, state key `interrupt`) and belongs to this desk session: a desk registered later starts from the policy's `interrupt_rule`. The day plan's blocks (`plan.md`) belong to the operator's day, not to a session, and hold under any desk. What this desk set comes first: `away` holds plan or not, a focus holds until its own time, and `available` said during a block releases that block only (the next block holds again); `plan off` ends the plan's holds. While a rule holds, each tick still stamps the tick time (the desk stays live) but reports nothing and leaves the change feed where it is, so nothing that arrived during the hold is lost or reported twice: the first tick after the hold reports all of it, in the usual set order.
 
 ### The verbs
 

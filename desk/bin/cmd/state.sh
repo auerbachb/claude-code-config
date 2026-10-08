@@ -15,7 +15,7 @@ HQ_STATE_VALUE_MAX=65536
 # text can exceed that, so the UTF-8 size is capped too, with room to spare.
 HQ_STATE_VALUE_MAX_BYTES=131000
 # Owned by the subcommand named after each; `state set` refuses them.
-HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt"
+HQ_STATE_RESERVED="tick_watermark tick_at control_session reviews_watermark interrupt plan eod_sweep"
 
 cmd_usage() {
   cat <<'EOF'
@@ -27,18 +27,22 @@ USAGE
 
 ARGUMENTS
   KEY    1 to 200 characters of letters, digits, and _ . : / -
-         (for example day_plan or day_plan:2026-10-05)
+         (for example note or note:2026-10-05)
   VALUE  any text, up to 65536 characters (and 131000 bytes as UTF-8),
          lines included; may be empty. Quote it.
 
 BEHAVIOR
   `get` prints the value stored under KEY exactly, followed by one newline.
   `set` stores VALUE under KEY, replacing any earlier value. State holds the
-  operator's day plan and the desk's bookkeeping; it is not an item, so no
-  event is recorded.
+  desk's bookkeeping (the day plan has its own command, `plan`); it is not an
+  item, so no event is recorded.
 
 RESERVED KEYS (readable with get; `set` refuses them)
   interrupt        the desk's interrupt rule (JSON); written by `interrupt set`
+  plan             the operator's day plan (JSON); written by `plan set`,
+                   deleted by `plan clear`
+  eod_sweep        the day the end-of-day sweep last ran (YYYY-MM-DD);
+                   written by `sweep due`
   tick_watermark   the snapshot the last `tick` read under; written by tick
   tick_at          when the last `tick` ran (UTC ISO 8601); written by tick,
                    cleared by register-control when the session changes
@@ -149,6 +153,8 @@ cmd_run() {
         tick_watermark|tick_at) hq_die_validation "state set: $key is reserved: only tick writes it" ;;
         reviews_watermark) hq_die_validation "state set: reviews_watermark is reserved: only sync-reviews writes it (pass it --since instead)" ;;
         interrupt) hq_die_validation "state set: interrupt is reserved: use interrupt set" ;;
+        plan) hq_die_validation "state set: plan is reserved: use plan set" ;;
+        eod_sweep) hq_die_validation "state set: eod_sweep is reserved: only sweep due writes it" ;;
         *) hq_die_validation "state set: control_session is reserved: use register-control" ;;
       esac
     fi

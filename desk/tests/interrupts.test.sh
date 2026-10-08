@@ -43,6 +43,11 @@ TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 hq_t_require_db "interrupts.test.sh"
 
+# desk-tick.sh's end-of-day step (issue #1784) reads this clock: pinned before
+# any eod_time, so no tick here asks for the sweep, whatever the hour the
+# suite runs at (plan.test.sh tests the sweep).
+export HUMAN_QUEUE_CLOCK="2000-01-01 00:00"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP: interrupts.test.sh — jq is not installed (the desk skill needs it)"
   exit 0

@@ -28,8 +28,9 @@
 #        capture hook reads it on every call: when it has dropped to the
 #        interval or below, the loop sleeps 30 seconds less than the bound
 #        (at least 1) from then on, cutting short a sleep already under way,
-#        so the desk stays live. The cadence and RULE below are the ones the
-#        loop started with; an edit to them applies at the next /desk.
+#        so the desk stays live. The cadence, RULE, and eod_time below are
+#        the ones the loop started with; an edit to them applies at the
+#        next /desk.
 #     1. `control-status --json`. When the registered control session is no
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
@@ -59,6 +60,16 @@
 #        When this call fails after the tick succeeded, the `new` line is
 #        still printed (that tick already moved the watermark) after the
 #        error line.
+#     4. The end-of-day sweep (issue #1784). Once this machine's clock in
+#        America/New_York reads the policy's eod_time or later, `sweep due
+#        --session SESSION --at EOD_TIME` asks the store, whose clock and
+#        once-a-day mark decide: `due DAY` prints `desk-tick GEN eod` (after
+#        any `new` and `retry` lines), and the desk renders everything still
+#        open as one numbered list. After the store has answered `due` or
+#        `done` for a day the loop asks no more that day, so a day costs one
+#        or two calls. A failure is an error line like any other, printed
+#        before the tick's `new` and `retry` lines; a refusal (exit 4) is
+#        confirmed with control-status as in step 2.
 #   A failing call prints `desk-tick GEN error <subcommand> exit <code>: <the
 #   CLI's one stderr line>` once, when the loop goes from working to failing,
 #   and `desk-tick GEN recovered` once when it works again, so an outage is
@@ -76,6 +87,10 @@
 #                             (an invalid file is the defaults: desk-policy.sh
 #                             prints its warning, this loop does not)
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
+#   HUMAN_QUEUE_CLOCK         the America/New_York day and time this loop
+#                             reads, `YYYY-MM-DD HH:MM` (tests; the store's
+#                             own clock still decides whether the sweep is
+#                             due)
 #
 # EXIT CODES
 #   0  replaced by another control session, or --once finished
@@ -171,6 +186,14 @@ case "${HUMAN_QUEUE_TICK_SECONDS:-}" in
     ;;
 esac
 
+# HUMAN_QUEUE_CLOCK (tests): the day and time the eod check reads instead of
+# this machine's clock.
+case "${HUMAN_QUEUE_CLOCK:-}" in
+  '') ;;
+  [0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]' '[0-2][0-9]:[0-5][0-9]) ;;
+  *) dt_die "HUMAN_QUEUE_CLOCK must be YYYY-MM-DD HH:MM" ;;
+esac
+
 dt_py=$(command -v python3 2>/dev/null) || dt_py=""
 if [ -z "$dt_py" ] && [ -x /usr/bin/python3 ]; then
   dt_py=/usr/bin/python3
@@ -182,14 +205,15 @@ fi
 
 # dt_read_policy [bound] — the policy, from the capture hook's own parser
 # (one parser, not two), into dt_live (the live-desk bound), dt_policy_cadence
-# (the default cadence), and dt_rule (the interrupt rule that holds until the
-# operator sets one at the desk). An unreadable or missing hook leaves the
+# (the default cadence), dt_rule (the interrupt rule that holds until the
+# operator sets one at the desk), and dt_eod (when the end-of-day sweep is
+# due, HH:MM in America/New_York). An unreadable or missing hook leaves the
 # documented defaults; an invalid policy file is the defaults too
 # (desk-policy.sh is what warns about it). At start it sets all three. With
 # `bound` (the re-read while the loop sleeps) it sets dt_live alone: the
 # capture hook reads only that key on every call, so the loop must follow it
-# to stay live, while the cadence and the rule are what this desk started
-# with, so an edit, even an invalid one that falls back to the defaults,
+# to stay live, while the cadence, the rule, and eod_time are what this desk
+# started with, so an edit, even an invalid one that falls back to the defaults,
 # never flips a running desk from `away` to `everything`.
 dt_read_policy() {
   local policy live cadence rule
@@ -201,12 +225,12 @@ spec = importlib.util.spec_from_file_location("hq_capture", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 policy, _ = mod.load_policy()
-sys.stdout.write("%s %s %s" % (policy[mod.POLICY_KEY], policy["tick_cadence_min"],
-                               policy["interrupt_rule"]))
+sys.stdout.write("%s %s %s %s" % (policy[mod.POLICY_KEY], policy["tick_cadence_min"],
+                                  policy["interrupt_rule"], policy["eod_time"]))
 POLICY
 ) || policy=""
-  live="" cadence="" rule=""
-  read -r live cadence rule <<EOF
+  live="" cadence="" rule="" eod=""
+  read -r live cadence rule eod <<EOF
 $policy
 EOF
   case "$live" in
@@ -223,8 +247,13 @@ EOF
     everything|away) ;;
     *) rule=everything ;;
   esac
+  case "$eod" in
+    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+    *) eod=17:30 ;;
+  esac
   dt_policy_cadence="$cadence"
   dt_rule="$rule"
+  dt_eod="$eod"
 }
 
 # dt_interval — the seconds to sleep before the next cycle: dt_secs, or,
@@ -334,10 +363,84 @@ sys.stdout.write(" ".join(ids))
 '
 }
 
+# dt_still_ours — after a refusal (exit 4), whether this session is still the
+# control session. Prints `replaced` and exits 0 when control-status names
+# another one; returns 0 when it is still ours or cannot tell (the refusal
+# then stays an error line).
+dt_still_ours() {
+  local out rc=0 control
+  out=$("$dt_cli" control-status --json 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    control=$(dt_control "$out") || control="$dt_session"
+    if [ "$control" != "$dt_session" ]; then
+      printf 'desk-tick %s replaced\n' "$dt_gen"
+      exit 0
+    fi
+  fi
+  return 0
+}
+
+# dt_clock — this machine's day and time in America/New_York,
+# `YYYY-MM-DD HH:MM` (HUMAN_QUEUE_CLOCK in tests).
+dt_clock() {
+  if [ -n "${HUMAN_QUEUE_CLOCK:-}" ]; then
+    printf '%s' "$HUMAN_QUEUE_CLOCK"
+  else
+    TZ=America/New_York date '+%Y-%m-%d %H:%M'
+  fi
+}
+
+# The day the store last answered `due` or `done` for: no more calls that day.
+dt_eod_day=""
+
+# dt_sweep — step 4. Sets dt_sweep_line to the `eod` line when the sweep is
+# due; returns 1 (after dt_fail) when the call failed.
+dt_sweep_line=""
+dt_sweep() {
+  local now day hm out rc
+  dt_sweep_line=""
+  now=$(dt_clock)
+  case "$now" in
+    [0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]' '[0-2][0-9]:[0-5][0-9]) ;;
+    *) return 0 ;;
+  esac
+  day="${now%% *}"
+  hm="${now#* }"
+  # HH:MM compared as numbers (09:05 -> 905), never by the locale's collation.
+  hm="${hm%%:*}${hm#*:}"
+  if [ "$day" = "$dt_eod_day" ] || [ "$((10#$hm))" -lt "$((10#${dt_eod%%:*}${dt_eod#*:}))" ]; then
+    return 0
+  fi
+  rc=0
+  out=$("$dt_cli" sweep due --session "$dt_session" --at "$dt_eod" 2>"$dt_err") || rc=$?
+  if [ "$rc" -eq 4 ]; then
+    dt_still_ours
+  fi
+  if [ "$rc" -ne 0 ]; then
+    dt_fail sweep "$rc"
+    return 1
+  fi
+  case "$out" in
+    'due '*)
+      dt_eod_day="$day"
+      dt_sweep_line="desk-tick $dt_gen eod"
+      ;;
+    'done '*) dt_eod_day="$day" ;;
+  esac
+  return 0
+}
+
 # dt_new IDS — the `new` line, when there is anything new.
 dt_new() {
   if [ -n "$1" ]; then
     printf 'desk-tick %s new %s\n' "$dt_gen" "$1"
+  fi
+}
+
+# dt_retry IDS — the `retry` line, when any answer is due a retry.
+dt_retry() {
+  if [ -n "$1" ]; then
+    printf 'desk-tick %s retry %s\n' "$dt_gen" "$1"
   fi
 }
 
@@ -365,16 +468,7 @@ dt_cycle() {
   if [ "$rc" -eq 4 ]; then
     # Refused: most likely another desk registered after step 1. Confirm
     # before stopping, so any other exit-4 cause stays an error line.
-    rc=0
-    out=$("$dt_cli" control-status --json 2>/dev/null) || rc=$?
-    if [ "$rc" -eq 0 ]; then
-      control=$(dt_control "$out") || control="$dt_session"
-      if [ "$control" != "$dt_session" ]; then
-        printf 'desk-tick %s replaced\n' "$dt_gen"
-        exit 0
-      fi
-    fi
-    rc=4
+    dt_still_ours
   fi
   if [ "$rc" -ne 0 ]; then
     dt_fail tick "$rc"
@@ -402,10 +496,16 @@ dt_cycle() {
     dt_new "$ids"
     return 0
   fi
+  if ! dt_sweep; then
+    dt_new "$ids"
+    dt_retry "$due"
+    return 0
+  fi
   dt_ok
   dt_new "$ids"
-  if [ -n "$due" ]; then
-    printf 'desk-tick %s retry %s\n' "$dt_gen" "$due"
+  dt_retry "$due"
+  if [ -n "$dt_sweep_line" ]; then
+    printf '%s\n' "$dt_sweep_line"
   fi
 }
 
