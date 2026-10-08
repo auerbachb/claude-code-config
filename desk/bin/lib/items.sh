@@ -32,6 +32,9 @@
 #   hq_sql_render_events        SQL expression rendering the events of `i`
 #   hq_sql_events_json          SQL expression: the events of `i` as JSON
 #   hq_sql_item_order           ORDER BY list: parked, then impact, then age
+#   hq_sql_impact_rank          SQL expression: the item `i`'s effective impact
+#                               (derived, else declared; issue #1760) as a
+#                               sort key, critical-path 0 ... none 4
 #   hq_desk_tz                  prints the desk's calendar (America/New_York)
 #
 # Lengths are checked with ${#value}: characters under a UTF-8 locale, bytes
@@ -230,7 +233,10 @@ concat_ws(E'\n',
   END,
   concat_ws(' · ',
     'Asked ' || to_char(i.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
-    'Impact: ' || i.impact_declared,
+    'Impact: ' || coalesce((to_jsonb(i)->>'impact_derived') || ' (derived'
+                             || coalesce(': ' || (to_jsonb(i)->>'impact_basis'), '')
+                             || coalesce('; declared ' || i.impact_declared, '') || ')',
+                           i.impact_declared),
     'Cost: ' || i.cost,
     'Focus: ' || i.focus,
     CASE WHEN i.parked THEN 'Parked' END,
@@ -262,13 +268,19 @@ SQL
 }
 
 # The order items are listed in, per desk/DESIGN.md 4.2.5: parked agents
-# first, then declared impact, then age.
+# first, then impact, then age.
 hq_sql_item_order() {
-  cat <<'SQL'
-i.parked DESC,
-CASE i.impact_declared WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
-i.created_at, i.id
-SQL
+  printf 'i.parked DESC,\n%s,\ni.created_at, i.id\n' "$(hq_sql_impact_rank)"
+}
+
+# The item's effective impact as a sort key (issue #1760): the derived value
+# (`impact`, migration 014) wins over the declared one, and critical-path
+# ranks above the declared scale's high. Every order that reads impact (tick,
+# list, the sets, the day plan's clear-first batch, the sweep) goes through
+# this one expression. impact_derived is read through to_jsonb(i), so a store
+# without migration 014 still orders, by declared impact alone.
+hq_sql_impact_rank() {
+  printf '%s' "CASE coalesce(to_jsonb(i)->>'impact_derived', i.impact_declared) WHEN 'critical-path' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
 }
 
 # The events of item `i` as a JSON array, oldest first.

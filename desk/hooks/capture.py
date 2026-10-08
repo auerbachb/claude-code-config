@@ -67,6 +67,12 @@ POLICY_DEFAULTS = (
     ("eod_time", "17:30"),
     ("set_size", 4),
     (POLICY_KEY, DEFAULT_LIVE_MINUTES),
+    # Derived impact (issue #1760): an item is on the critical path when its
+    # issue ranks in the top N of /pm's backlog (a ranking under a day old),
+    # or when at least this many open issues depend on it, directly or down a
+    # chain, so the head of a three-issue chain qualifies at the default.
+    ("critical_path_rank_top_n", 3),
+    ("critical_path_min_dependents", 2),
 )
 INTERRUPT_RULES = ("everything", "away")
 # HH:MM on a 24-hour clock, in the desk's calendar (America/New_York). \Z, not
@@ -385,6 +391,10 @@ def policy_problem(data):
          "a whole number from 1 to 4 (four questions is the menu tool's limit)"),
         (POLICY_KEY, lambda v: _whole(v, 1, 1440),
          "a whole number of minutes from 1 to 1440"),
+        ("critical_path_rank_top_n", lambda v: _whole(v, 1, 100),
+         "a whole number from 1 to 100"),
+        ("critical_path_min_dependents", lambda v: _whole(v, 1, 100),
+         "a whole number from 1 to 100"),
     )
     for key, valid, wanted in checks:
         if key in data and not valid(data[key]):

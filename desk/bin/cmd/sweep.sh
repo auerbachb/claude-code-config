@@ -112,7 +112,7 @@ hq__sweep_list_sql() {
     "$(hq_sql_item_json)" "'summary_l2'" "'summary_l1'"
   printf '%s\n' "         row_number() OVER (ORDER BY CASE i.kind WHEN 'decision' THEN 0 ELSE 1 END,"
   printf '%s\n' "           CASE WHEN i.kind = 'decision' THEN i.parked END DESC NULLS LAST,"
-  printf '%s\n' "           CASE WHEN i.kind = 'decision' THEN CASE i.impact_declared WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END END,"
+  printf '%s\n' "           CASE WHEN i.kind = 'decision' THEN $(hq_sql_impact_rank) END,"
   printf '%s\n' "           i.created_at, i.id) AS n"
   printf '%s\n' "    FROM items i WHERE i.status = 'open'"
   printf '%s\n' ")"

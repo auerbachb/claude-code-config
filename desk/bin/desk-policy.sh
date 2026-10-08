@@ -10,7 +10,8 @@
 # OUTPUT
 #   One line of JSON on stdout, every key present:
 #     {"tick_cadence_min": 5, "interrupt_rule": "everything",
-#      "eod_time": "17:30", "set_size": 4, "live_desk_max_tick_age_min": 15}
+#      "eod_time": "17:30", "set_size": 4, "live_desk_max_tick_age_min": 15,
+#      "critical_path_rank_top_n": 3, "critical_path_min_dependents": 2}
 #
 #   tick_cadence_min            minutes between desk ticks, 1 to 60, and
 #                               shorter than live_desk_max_tick_age_min
@@ -23,6 +24,15 @@
 #                               the menu tool's limit)
 #   live_desk_max_tick_age_min  how old the desk's last tick may be for the
 #                               capture hook to treat the desk as live, 1 to 1440
+#   critical_path_rank_top_n    derived impact (issue #1760, `human-queue.sh
+#                               impact`): an issue ranked this high or higher
+#                               in /pm's backlog (a ranking under a day old)
+#                               is critical-path, 1 to 100 (default 3)
+#   critical_path_min_dependents
+#                               derived impact: an issue that this many open
+#                               issues depend on, directly or down a chain, is
+#                               critical-path, 1 to 100 (default 2, so the
+#                               head of a three-issue chain qualifies)
 #
 # BEHAVIOR
 #   Reads the file through the capture hook's own parser (capture.py's

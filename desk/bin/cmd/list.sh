@@ -25,8 +25,9 @@ FILTERS (each at most once; validated before any connection attempt)
   With no filter every item is listed.
 
 ORDER
-  Parked items first, then by declared impact (high, medium, low, none), then
-  oldest first.
+  Parked items first, then by impact (critical-path, high, medium, low,
+  none), then oldest first. Impact is the derived value where `impact` has
+  stored one (issue #1760), else the declared one.
 
 OUTPUT
   Each item exactly as `get` prints it (the question in bold, the context as

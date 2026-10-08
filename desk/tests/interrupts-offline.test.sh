@@ -64,7 +64,7 @@ fi
 BLOCK_SHELLS="$SHELLS"
 if command -v zsh >/dev/null 2>&1; then BLOCK_SHELLS="$BLOCK_SHELLS zsh"; fi
 
-DEFAULTS='{"tick_cadence_min":5,"interrupt_rule":"everything","eod_time":"17:30","set_size":4,"live_desk_max_tick_age_min":15}'
+DEFAULTS='{"tick_cadence_min":5,"interrupt_rule":"everything","eod_time":"17:30","set_size":4,"live_desk_max_tick_age_min":15,"critical_path_rank_top_n":3,"critical_path_min_dependents":2}'
 
 # ------------------------------------------------------------------ policy
 printf '== policy\n'
@@ -100,7 +100,7 @@ check "the repo's policy.json is the defaults" "$OUT" "$DEFAULTS"
 check "the repo's policy.json: no warning" "$ERR" ""
 check "desk/policy.json holds every key" \
   "$(jq -c 'keys' "$HQ_T_DESK_DIR/policy.json")" \
-  '["eod_time","interrupt_rule","live_desk_max_tick_age_min","set_size","tick_cadence_min"]'
+  '["critical_path_min_dependents","critical_path_rank_top_n","eod_time","interrupt_rule","live_desk_max_tick_age_min","set_size","tick_cadence_min"]'
 
 policy "$TMP/missing.json"
 check "a missing file: the defaults" "$RC:$OUT" "0:$DEFAULTS"
@@ -109,12 +109,12 @@ check "a missing file: silent" "$ERR" ""
 printf '{"set_size": 2, "interrupt_rule": "away"}\n' > "$TMP/partial.json"
 policy "$TMP/partial.json"
 check "a partial file fills in the rest" "$OUT" \
-  '{"tick_cadence_min":5,"interrupt_rule":"away","eod_time":"17:30","set_size":2,"live_desk_max_tick_age_min":15}'
+  '{"tick_cadence_min":5,"interrupt_rule":"away","eod_time":"17:30","set_size":2,"live_desk_max_tick_age_min":15,"critical_path_rank_top_n":3,"critical_path_min_dependents":2}'
 check "a partial file: no warning" "$ERR" ""
 
 printf '{"set_size": 3, "day_plan_style": "terse", "x": [1]}\n' > "$TMP/unknown.json"
 policy "$TMP/unknown.json"
-check "unknown keys are ignored" "$(printf '%s' "$OUT" | jq -c '[.set_size, (keys | length)]')" "[3,5]"
+check "unknown keys are ignored" "$(printf '%s' "$OUT" | jq -c '[.set_size, (keys | length)]')" "[3,7]"
 check "unknown keys: no warning" "$ERR" ""
 
 printf '{"tick_cadence_min": 20, "live_desk_max_tick_age_min": 30, "eod_time": "09:05"}\n' > "$TMP/wide.json"
@@ -545,7 +545,7 @@ literal "$TMP/block-desk-release.sh" "<GEN>" "g7" > "$TMP/release.sh"
 for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/block-desk-policy.sh" "$TMP/partial.json")
   check "[$SH] desk-policy block: the effective policy, then exit=0" "$OUT" \
-    "$(printf '%s\nexit=0' '{"tick_cadence_min": 5, "interrupt_rule": "away", "eod_time": "17:30", "set_size": 2, "live_desk_max_tick_age_min": 15}')"
+    "$(printf '%s\nexit=0' '{"tick_cadence_min": 5, "interrupt_rule": "away", "eod_time": "17:30", "set_size": 2, "live_desk_max_tick_age_min": 15, "critical_path_rank_top_n": 3, "critical_path_min_dependents": 2}')"
   printf '[1]\n' > "$TMP/array.json"
   OUT=$(run_block "$SH" "$TMP/block-desk-policy.sh" "$TMP/array.json")
   check_contains "[$SH] desk-policy block: the warning line comes through" "$OUT" "desk-policy: array.json is not a JSON object; using the defaults"

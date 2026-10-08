@@ -66,6 +66,8 @@ resolve_script() {
 SESSION_STATE_SH=$(resolve_script session-state.sh || true)
 PM_CONFIG_GET=$(resolve_script pm-config-get.sh || true)
 PM_PRIORITY_SH=$(resolve_script pm-priority.sh || true)
+PM_RANK_CACHE_SH=$(resolve_script pm-rank-cache.sh || true)
+ISSUE_DEPS_SH=$(resolve_script issue-deps.sh || true)
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
 CANDIDATE_OWNERSHIP=$(resolve_script candidate-ownership.sh || true)
 BACKLOG_HEALTH=$(resolve_script backlog-health.sh || true)
@@ -89,6 +91,8 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 - `ACTIVE_WORK_CAP_SH` empty → **optional, but say so**. Print `DEGRADED: active-work-cap.sh not found (checked all three paths) — repo-wide cap unenforced, bounding chips on the per-thread ceiling only` and cap the 3.1 chip batch at `CEILING` instead, which falls back to its default of 4 (the repo's `PIPELINE_CEILING` is read through the same script). A **non-zero exit** from a script that *did* resolve is not the same thing: it means a count source could not be read, so treat it as `FREE = 0` and defer rather than offering as if the repo were idle (`active-work-cap.md` "Resolution order and failure behavior").
 - `PM_CONFIG_GET` empty → **optional**. Print `DEGRADED: pm-config-get.sh not found (checked all three paths) — repo PM config unavailable, using defaults`. An *absent* `.claude/pm-config.md` where the script resolved is a normal state that `/pm` bootstraps — say nothing there.
 - `PM_PRIORITY_SH` empty → **optional, but say so**. Print `DEGRADED: pm-priority.sh not found (checked all three paths) — operator priority (/desk) unavailable` and rank without it. If a `.claude/pm-priority.json` nevertheless sits at the main checkout's root (the parent of `git rev-parse --git-common-dir`), the operator recorded an order nothing here can read: treat it as **unreadable** (1B.1a), never as absent.
+- `PM_RANK_CACHE_SH` empty → **optional**. Print `DEGRADED: pm-rank-cache.sh not found (checked all three paths) — the ranking is not cached; the desk's derived impact reads every backlog rank as unknown` and skip 1B.4c. Ranking and dispatch are unaffected.
+- `ISSUE_DEPS_SH` empty → **optional**. Print `DEGRADED: issue-deps.sh not found (checked all three paths) — dependency markers read by eye (1B.3)` and read the markers 1B.3 lists from the bodies and comments yourself.
 - `USAGE_HORIZON_SH` empty → **optional, degrades to `unknown`** (day mode only). Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — runway verdict unavailable, day mode holds the conservative posture` on the arming turn and treat every tick's verdict as `unknown` (D2's horizon gate): in-flight work finishes, nothing new starts, and **no pre-emptive park ever fires** — an absent signal must not park a healthy board any more than it may green-light a dying one.
 - `WINDOW_PLAN_SH` empty → **optional** (only needed when `WINDOW_STR` is set). Print `DEGRADED: window-plan.sh not found (checked all three paths) — window fitting unavailable` and skip Step 0b; treat the run as windowless.
 - `TABLE_FRESHNESS_SH` empty → **optional** (day mode only). Print `DEGRADED: table-freshness.sh not found (checked all three paths) — hourly table-freshness floor unavailable; the D5 heartbeat carries the "Running now" table every tick instead` and treat every tick's verdict as stale. Failing toward *more* table renders is correct: the floor guarantees a board at least hourly, so its absence must never buy the thread permission to emit fewer.
@@ -534,6 +538,7 @@ Extract from each:
 - Dependency references, from the body **and** comments. **Match these markers case-insensitively** — the same way the closing-keyword rule below does, and for a concrete reason: `/issue-maker` Step 8 and `/subagent` Step 5.1 both write increment links as `- Depends on #N` at the start of a list item, so a case-sensitive read would collect none of them and every increment chain would look parallelizable to `/wave` Step 5.1:
   - Blocked direction: `blocked by #N`, `depends on #N`, `prerequisite for #N`, `after #N`
   - Unblocking direction: `unblocks #N`, `enables #N`, `required by #N`, `before #N`
+  - **`issue-deps.sh` is the canonical reading of these markers** (issue #1760): `"$ISSUE_DEPS_SH" parse` reads the `--json number,body,comments` you already fetched (one array) and prints the blocker → blocked edges; `edges <owner/repo>` and `dependents <owner/repo> <N>...` read the repo's open issues themselves. Build 1B.4's dependency map from its edges rather than by eye, so `/pm`, `/wave` (5.1), and the desk's derived impact (`human-queue.sh impact`, which counts an issue's open dependents with the same script) can never read the markers differently.
 - In-flight signal: cross-reference against the open-PR list already fetched in 1B.2 (now includes `body`) — a PR body containing a GitHub closing keyword (`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive) for this issue's number means a PR is already underway; match both local (`#N`) and cross-repo (`owner/repo#N`) reference forms. GitHub's closing keywords live in PR bodies, not in the issue's own text, so this signal is never collected from the issue body or comments — same source Section 3.3's progress detection reuses.
 - Complexity signals: number of acceptance criteria, files mentioned, architectural scope
 - Current assignee — who, if anyone, is already on it
@@ -615,6 +620,26 @@ Incorporate the answer, finalize the ranking, and continue to 1B.5.
 **Operator-ordered rows are already decided** (1B.4 item 7): the operator ranked them, so no trigger fires on them — read the triggers against the `ranked` rows that follow.
 
 **Negative rule — this does not fire on every run.** No trigger, no question: when one candidate is clearly ahead, emit the ranking and proceed. A pause the user did not need is a failure of this step, not caution. Ask at most one question per ranking; if the answer is ambiguous, take the higher-leverage candidate, say so in one line, and move on.
+
+### 1B.4c: Persist the ranking (for the desk's derived impact)
+
+Once 1B.4b has settled the order, write it to the rank cache, so `/desk` can derive a Decision's impact from where its issue ranks (issue #1760: `human-queue.sh impact` reads the cache while it is under 24 hours old). Write **every retained candidate**, not just the 3-5 you present: the eligible rows in the order 1B.5 will show them — item 7's `.order` when it ran (override rows first, each with the tier (1)-(6) gave it), otherwise the tiers in order, Critical first. One `<N> <Tier>` line each, best first:
+
+<!-- test-anchor: pm-1b4c-rank-cache -->
+```bash
+# FINAL_ORDER: one "<N> <Tier>" line per retained candidate, best first (as above).
+if [[ -n "$PM_RANK_CACHE_SH" ]]; then
+  RANK_REPO=""
+  if [[ -n "$SESSION_STATE_SH" ]]; then RANK_REPO=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || RANK_REPO=""; fi
+  if [[ -z "$RANK_REPO" ]]; then RANK_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || RANK_REPO=""; fi
+  if [[ -z "$RANK_REPO" ]] \
+    || ! printf '%s\n' ${FINAL_ORDER[@]+"${FINAL_ORDER[@]}"} | "$PM_RANK_CACHE_SH" write "$RANK_REPO" >/dev/null 2>&1; then
+    echo "DEGRADED: the ranking was not cached (pm-rank-cache.sh write failed) — the desk reads this repo's backlog rank as unknown"
+  fi
+fi
+```
+
+Best-effort, never a gate: a failed write prints that one line and ranking, presentation, and dispatch carry on. Every path that re-ranks ends here — the mid-session re-prioritize (3.3) and every 3.4 re-scan, day-mode ticks included — so the cache always holds the latest order.
 
 ### 1B.5: Present recommendations
 
@@ -1979,7 +2004,7 @@ fi
 
 When answering "what's next", always check the user-scoped results first (your open PRs with unresolved findings, then review requests against you) before suggesting new backlog pickup.
 
-A mid-session "re-prioritize" or "rank the backlog" request runs the same ranking as a cold start — re-read the operator priority (1B.1a), re-score through 1B.4 (its operator-order overlay included), and apply the 1B.4b judgment check before presenting.
+A mid-session "re-prioritize" or "rank the backlog" request runs the same ranking as a cold start — re-read the operator priority (1B.1a), re-score through 1B.4 (its operator-order overlay included), and apply the 1B.4b judgment check before presenting, then persist the new order (1B.4c).
 
 Cross-reference with the assignments table:
 - Detect PRs that reference tracked issues (search PR body for `Closes #N`, `Fixes #N`)
@@ -2173,7 +2198,7 @@ A full board is `ceiling reached` and needs no explanation. The heartbeat carrie
 When one or more pipelines or threads finish (PRs merged, issues closed) — housekeeping that runs on a *finish*, separate from the capacity trigger above:
 
 1. **Dismiss the chips of finished issues, then remove their rows.** Order matters: a row carries its chip's `task_id`, and once the row is gone the chip can no longer be withdrawn. So for every completed issue still at `Chip offered`, `dismiss_task` first — its work is done, the offer is dead — and only then drop it from the assignments table.
-2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate — the operator-order overlay (1B.4 item 7) last, against the file as it reads now. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total.
+2. Re-scan open issues (reuse 1B.2-1B.4b logic but lighter — only re-read bodies **and comments** for issues whose `updatedAt` moved since the last scan's baseline, or that have no recorded baseline yet (first seen this pass — always gets a full read, same as a changed issue); track/update that baseline per issue as you go). **`updatedAt` bumps on a new comment just like a body edit**, so a dependency reference added in a comment on an otherwise-untouched issue (e.g. "blocked by #99") is still caught on the next pass — re-reading is scoped by *any* change, not just body/title edits, which is what keeps this from being a real completeness gap. **Re-score the whole retained candidate set, not just the changed issues:** tiers depend on the dependency map, so a closed or merged issue can change an *unchanged* issue's tier — #42 loses its leverage boost the moment the issues it unblocked are done. Refresh the map with what closed **and** what changed, then re-run 1B.4/1B.4b across every remaining candidate — the operator-order overlay (1B.4 item 7) last, against the file as it reads now. Re-reading bodies and comments stays scoped to issues whose `updatedAt` moved or that are new — that's the expensive part and it stays incremental; re-scoring the dependency map and tiers is cheap and must be total. Then persist the new order (1B.4c), so the desk's derived impact reads this re-scan's ranks.
 3. Refill the freed slots per the capacity trigger above — operator order first, then the queue, then the backlog — and report the picks. Do not present them for selection.
 4. Too-big candidates surfaced by that re-scan still go down Step 3.1's chip-or-fallback path and wait for the user's click.
 5. **Dismiss superseded and re-planned chips.** Beyond the finished issues handled in step 1, withdraw a `Chip offered` chip only when its offer is genuinely dead:
