@@ -9,8 +9,8 @@
 # are `n.1`, `n.2`, … each with the letter a typed reply uses (`2.2  B. No`).
 # Every open item ends in a blank answer line; the footer carries the export
 # time. Reuses desk.jq (letter, bare_label, utc, item_link, default_line,
-# review_label, menu_shaped, short_repo), so the paper and the screen agree
-# on every label.
+# review_label, menu_shaped, short_repo, todo_line), so the paper and the
+# screen agree on every label.
 
 include "desk";
 
@@ -48,17 +48,6 @@ def ex_footer:
     (if .set_id != null then "set \(.set_id)" else empty end),
     ex_plural(.count; "item"; "items") ]
   | join(" · ");
-
-# ex_todo: the operator's own priority, tags, and note on an item (#1769,
-# migration 010) as one line, `P2 · tags: prd, urgent · note: ask Sam
-# first`; empty when it carries none, or on a store before 010. The same
-# line desk.jq's todo_line prints on the screen, kept here so this file does
-# not depend on the order #1769 and #1759 merge in.
-def ex_todo:
-  [ (.my_priority // empty | "P\(.)"),
-    ((.my_tags // []) | if length > 0 then "tags: " + join(", ") else empty end),
-    ((.my_note // "") | if . == "" then empty else "note: " + . end) ]
-  | if length == 0 then empty else join(" · ") end;
 
 
 # ex_body($level): a Review's summary at $level, else the next level down,
@@ -99,7 +88,9 @@ def ex_item($level; $repos):
                      text: (.value | bare_label), recommended: (.value == $d) } ],
       default: ([ default_line ] | .[0]),
       body: (if .kind == "review" then ex_body($level) else null end),
-      todo: ([ ex_todo ] | .[0]),
+      # The operator's own priority, tags, and note (#1769): the line the
+      # screen prints, `P2 · tags: prd, urgent · note: ask Sam first`.
+      todo: ([ todo_line ] | .[0]),
       link: item_link,
       answer: (if .status == "open" then null else (.answer // null) end),
       answer_label: (if .kind == "review" then "Reviewed [ ]   Flag, and why:" else "Answer:" end)

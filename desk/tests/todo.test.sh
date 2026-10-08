@@ -355,7 +355,7 @@ check "4.3 desk-sweep: exit=0" "$(printf '%s\n' "$OUT" | tail -1)" "exit=0"
 check_contains "4.3 the card carries the tags and the note" "$OUT" "   - P4 · tags: later · note: after the release"
 # The paper copy is `export` of the sweep's set (#1759; the sweep no longer
 # writes one of its own), here as Markdown, so the check needs no renderer.
-SWEEP_SET=$(printf '%s\n' "$OUT" | sed -n 's/^\*\*End of day · .* · set \([0-9][0-9]*\)\*\*$/\1/p' | head -n 1)
+SWEEP_SET=$(printf '%s\n' "$OUT" | sed -n 's/^> \*\*End of day · .* · set \([0-9][0-9]*\)\*\*$/\1/p' | head -n 1)
 check "4.3 the sweep opened a set" "$([ -n "$SWEEP_SET" ] && echo yes || echo no)" "yes"
 RC=0
 HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_EXPORT_RENDERER=markdown bash "$HQ_T_CLI" export --set "${SWEEP_SET:-0}" \
