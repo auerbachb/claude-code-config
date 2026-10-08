@@ -301,7 +301,7 @@ E0=$(max_event)
 SETS1=$(nsets)
 rm -f "$TMP/hang.pid"
 HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_EXPORT_RENDERER=chrome HUMAN_QUEUE_CHROME="$TMP/hang-chrome" \
-  HANG_PID_FILE="$TMP/hang.pid" bash "$HQ_T_CLI" export --kind decisions --out "$TMP/out/stopped.pdf" \
+  HANG_PID_FILE="$TMP/hang.pid" bash "$HQ_T_CLI" export --kind decisions --out "$TMP/out/halted.pdf" \
   >"$TMP/stdout" 2>"$TMP/stderr" </dev/null &
 EXPORT_PID=$!
 i=0
@@ -312,7 +312,7 @@ wait "$EXPORT_PID" 2>/dev/null
 check "stopped mid-render: its set and its events are taken back" "$(nsets):$(events "$E0")" "$SETS1:"
 check_contains "stopped mid-render: says so" "$(cat "$TMP/stderr")" "stopped before the file was written; nothing was recorded"
 check "stopped mid-render: no file" \
-  "$([ -e "$TMP/out/stopped.pdf" ] || [ -e "$TMP/out/stopped.md" ] && echo yes || echo no)" "no"
+  "$([ -e "$TMP/out/halted.pdf" ] || [ -e "$TMP/out/halted.md" ] && echo yes || echo no)" "no"
 check "stopped mid-render: the renderer is stopped too" \
   "$(kill -0 "$(cat "$TMP/hang.pid" 2>/dev/null)" 2>/dev/null && echo running || echo stopped)" "stopped"
 
