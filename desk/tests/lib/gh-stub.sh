@@ -9,6 +9,12 @@
 #   api graphql ... -F number=N
 #                         -> graphql-N.json
 #   pr diff N ...         -> pr-N.diff
+#   api [FLAGS] repos/O/R/pulls/N
+#                         -> pull-N.json (the PR drill-down, issue #1768)
+#   api [FLAGS] repos/O/R/pulls/N/files...
+#                         -> pull-N-files.json
+#   api [FLAGS] repos/O/R/git/blobs/SHA
+#                         -> blob-SHA (the file's raw content)
 #   issue create ...      -> issue-create.txt (the new issue's URL); the file
 #                            given to --body-file is copied to
 #                            issue-create.body
@@ -43,6 +49,20 @@ case "${1:-} ${2:-}" in
     done
     ;;
   "pr diff") name="pr-${3:-}.diff" ;;
+  "api "*)
+    # The REST reads the PR drill-down makes (issue #1768): the endpoint is
+    # the one argument that starts with repos/, whatever flags come first.
+    for a in "$@"; do
+      case "$a" in
+        repos/*/*/pulls/*/files*)
+          a="${a%/files*}"
+          name="pull-${a##*/}-files.json"
+          ;;
+        repos/*/*/pulls/*) name="pull-${a##*/}.json" ;;
+        repos/*/*/git/blobs/*) name="blob-${a##*/}" ;;
+      esac
+    done
+    ;;
   "issue create")
     # The desk's follow-up issue (issue #1782): keep the body it filed, which
     # the desk's block deletes once gh returns.
