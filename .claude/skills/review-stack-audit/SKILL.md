@@ -45,14 +45,16 @@ REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 
 ## The engines
 
-All three are plain scripts, so the judgment in this file stays small and their
+All four are plain scripts, so the judgment in this file stays small and their
 behavior is testable offline (`.claude/scripts/tests/review-stack-audit.test.sh`
-for the first two, `.claude/scripts/tests/report-path.test.sh` for the third).
+for the three in this skill, `.claude/scripts/tests/report-path.test.sh` for
+`report-path.sh`).
 
 | Engine | Where | Job |
 |--------|-------|-----|
 | `measure.sh` | this skill | What each tool actually did: billed signals, caps, throughput, unique value. No verdicts. |
 | `drift.sh` | this skill | Snapshot vs baseline → one finding per divergence, each with a stable dedup marker. Pure function of two JSON files. |
+| `scorecard.sh` | this skill | Snapshot + vendor claims page + snapshot directory → the report's value-per-dollar table, claims-vs-observed table, and study-window line (Step 7). Renders only; reaches no verdict and files nothing. |
 | `report-path.sh` | `.claude/scripts/` — **shared** | Where this run's report goes, guaranteed not to be a path something already occupies (Step 7). Pure function of the target directory. Writes nothing. |
 
 > **`report-path.sh` is not this skill's private engine.** `/harness-audit` writes
@@ -109,13 +111,16 @@ read spend. Each tool also carries value fields read from the verdicts agents
 post in review threads (issue #1810): `findings`, `valid`, `real_defects`,
 `declined`, `unanswered`, `precision`, `cost_per_real_defect_usd`, and
 `median_response_min` — definitions in `measure.sh --help` (VALUE FIELDS) and
-`.claude/reference/review-stack-audit.md`. The report does not render them yet.
+`.claude/reference/review-stack-audit.md`. Step 7 renders them, ranked, through
+`scorecard.sh` (issue #1811).
 
 ```bash
 REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"
 MEASURE="$SKILL_DIR/measure.sh"
 DRIFT="$SKILL_DIR/drift.sh"
+SCORECARD="$SKILL_DIR/scorecard.sh"
+CLAIMS="$REPO_ROOT/.claude/reference/ai-review-vendor-claims.md"   # vendor claims (Step 7)
 REPORT_PATH="$REPO_ROOT/.claude/scripts/report-path.sh"   # shared with /harness-audit
 DEDUP="$REPO_ROOT/.claude/scripts/issue-dedup.sh"
 STATE_DIR="$HOME/.claude/review-stack-audit"
@@ -444,6 +449,38 @@ cannot collide on it either.
   canonical name and push every later report that month onto a suffix. The `EXIT`
   trap removes the placeholder unless it holds a real report.
 
+### The scorecard — value per dollar, vendor claims, study window
+
+Three pieces of the report are rendered by `scorecard.sh` (issue #1811) from the
+snapshot Step 3 published, never composed by hand:
+
+```bash
+SC_WINDOW="$("$SCORECARD" --snapshot "$STATE_DIR/snapshot-$MONTH.json" --state-dir "$STATE_DIR" --part window)" \
+  || SC_WINDOW="study window: unknown (scorecard.sh failed)"
+SC_VALUE="$("$SCORECARD" --snapshot "$STATE_DIR/snapshot-$MONTH.json" --claims "$CLAIMS" --part value)" \
+  || SC_VALUE="## Value per dollar"$'\n\n'"_Unavailable: scorecard.sh failed — see Caveats._"
+SC_CLAIMS="$("$SCORECARD" --snapshot "$STATE_DIR/snapshot-$MONTH.json" --claims "$CLAIMS" --part claims)" \
+  || SC_CLAIMS="## Vendor claims vs observed"$'\n\n'"_Unavailable: scorecard.sh failed — see Caveats._"
+```
+
+| Piece | What it is | Where it goes |
+|-------|------------|---------------|
+| `$SC_WINDOW` | `study window: <start> → <start + 30 days>`, start being the UTC date of the earliest ledger-mode snapshot in `$STATE_DIR`; `study window: not started` before one exists | its own line in the report header |
+| `$SC_VALUE` | `## Value per dollar` — every tool ranked by cost per real defect across the measured repos, with its labelled spend, real defects, precision, and sole-source PRs | after `## Per-tool measurements` |
+| `$SC_CLAIMS` | `## Vendor claims vs observed` — each published claim from `ai-review-vendor-claims.md` beside our precision and cost per real defect, with its source URL and retrieval date | after `## Value per dollar` |
+
+- **Embed verbatim.** Do not round, re-rank, or fill a `—`: a dash is a figure
+  nobody has, and the study this feeds (Issue #1747) needs every number to trace
+  to a receipt or a labelled estimate. The ranking rule, the null rule, and the
+  `no published claim` rows are `scorecard.sh --help`'s, not this file's.
+- **Report content, never drift findings.** Nothing here feeds Step 6: a tool
+  ranking last, or a claim far from our figure, files nothing. The audit files
+  `drift.sh` findings only, so `--report-only` and `--tick` stay filing-free.
+- **A failed render is a caveat, not an abort.** The report still lands with
+  the fallback line above, and `## Caveats` names what failed. A section the
+  renderer could not fill (no ledger fields, a refused claims block) already
+  says why in place; carry that line into Caveats too.
+
 Report shape, following the prior audits in this series:
 
 ```markdown
@@ -454,6 +491,7 @@ Report shape, following the prior audits in this series:
 **Window:** <since> → <until> (<N> PRs<, truncated> )
 <**Repos:** <`repos[]`, comma-separated> — multi-repo runs only; figures below are the cross-repo total>
 **Baseline:** <path> (<provenance>, as of <date>)
+<$SC_WINDOW, verbatim>
 
 ## Executive summary
 <2–4 sentences: how many tools, how many drifted, the single most consequential
@@ -461,6 +499,10 @@ finding. If nothing drifted, say so in one sentence.>
 
 ## Per-tool measurements
 | Tool | State | Plan | PRs | Reviews | Approved | Inline | Sole-source | Caps |
+
+<$SC_VALUE, verbatim — `## Value per dollar`>
+
+<$SC_CLAIMS, verbatim — `## Vendor claims vs observed`>
 
 ## Drift findings
 | Code | Tool | Severity | Divergence | Observed | Expected |
@@ -474,7 +516,12 @@ finding. If nothing drifted, say so in one sentence.>
 ## Follow-ups filed
 ## Filings suppressed as duplicates
 ## Caveats
-<Truncation, unclassified cap candidates, unmatched baseline tools.>
+<Truncation, unclassified cap candidates, unmatched baseline tools. Any
+scorecard section that failed or rendered unavailable. The study window starts
+at the earliest ledger snapshot still on disk: a same-month re-run overwrites
+`snapshot-YYYY-MM.json`, so a re-run inside the first month moves the start to
+that run's date. Vendor claims are dated by retrieval and do not compare with
+our figures (`ai-review-vendor-claims.md` §Read this first).>
 ## Cadence
 ```
 

@@ -107,10 +107,12 @@ _GREPTILE_RE = re.compile(r"(?<![\w@])@greptileai\b", re.I)
 
 # --- rates block -------------------------------------------------------------
 
-def _tagged_fences(text, tag):
+def tagged_fences(text, tag):
     """Bodies of every fenced block whose info-string tokens include `tag`.
 
-    Returns (bodies, error). A fence nested inside another fence is content,
+    Public: scorecard.sh reads the `review-stack-claims` block with this same
+    parser, so the two fenced-JSON contracts can never disagree on what counts
+    as a block. Returns (bodies, error). A fence nested inside another fence is content,
     not a block, so an example of the syntax shown inside a code block is
     never mistaken for the real one. An unterminated tagged fence is an error:
     reading it to end-of-file would parse whatever prose follows as JSON.
@@ -198,7 +200,7 @@ def parse_rates(path):
             text = fh.read()
     except (OSError, UnicodeDecodeError) as exc:
         return unusable("cannot read the pricing file: %s" % exc)
-    bodies, err = _tagged_fences(text, FENCE_TAG)
+    bodies, err = tagged_fences(text, FENCE_TAG)
     if err:
         return unusable(err)
     if not bodies:

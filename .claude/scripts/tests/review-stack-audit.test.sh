@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Tests for /review-stack-audit's own engines (issues #1201, #1345, #1808, #1809):
-#   measure.sh — per-tool measurement and cap classification, the multi-repo
-#                roll-up (--repos / --all-repos), a golden byte-identity
-#                check that the single-repo shape did not move under it, and
-#                the spend ledger (--ledger, review_ledger.py, the real
-#                pricing matrix's review-stack-rates block)
-#   drift.sh   — snapshot vs baseline comparison
-# catalog: tests — Tests `/review-stack-audit`'s measurement and drift engines offline through their fixture path
+# Tests for /review-stack-audit's own engines (issues #1201, #1345, #1808, #1809,
+# #1810, #1811):
+#   measure.sh   — per-tool measurement and cap classification, the multi-repo
+#                  roll-up (--repos / --all-repos), a golden byte-identity
+#                  check that the single-repo shape did not move under it, and
+#                  the spend ledger (--ledger, review_ledger.py, the real
+#                  pricing matrix's review-stack-rates block)
+#   drift.sh     — snapshot vs baseline comparison
+#   scorecard.sh — the report's value-per-dollar table, claims-vs-observed
+#                  table (against the real vendor claims page), and 30-day
+#                  study window
+# catalog: tests — Tests `/review-stack-audit`'s measurement, drift, and scorecard engines offline through their fixture path
 #
 # The third engine, report-path.sh, moved to .claude/scripts/ when /harness-audit
 # turned out to need it too (#1519), and its cases moved with it to
@@ -1915,6 +1919,239 @@ if [[ $rc -eq 1 && ! -s "$TMP_DIR/iso2.out" ]] && grep -q 'deferred-refs.jq not 
 else
   fail "value: missing jq module did not fail closed (rc=$rc): $(head -c 300 "$TMP_DIR/iso2.err")"
 fi
+
+# ---------------------------------------------------------------------------
+# scorecard.sh — value per dollar, claims vs observed, study window (issue #1811)
+# ---------------------------------------------------------------------------
+
+SCORECARD="$REPO_ROOT/.claude/skills/review-stack-audit/scorecard.sh"
+CLAIMS_REAL="$REPO_ROOT/.claude/reference/ai-review-vendor-claims.md"
+[[ -x "$SCORECARD" ]] || fail "scorecard.sh missing or not executable"
+
+# The rows of the Markdown table under one `## ` heading, header and
+# separator excluded. Sections are separated by headings, so the first table
+# after the heading is that section's table.
+table_rows() {
+  awk -v h="$2" '
+    $0 == h { on = 1; next }
+    on && /^## / { exit }
+    on && /^\|/ { n++; if (n > 2) print; seen = 1; next }
+    on && seen && !/^\|/ { exit }
+  ' "$1"
+}
+
+# Test Plan item 1: the two-repo fixture, through the real measurement and the
+# real claims page, renders both tables — and every claims row, the
+# `no published claim` ones included, carries an https URL and a date.
+SC_STATE="$TMP_DIR/sc-state"
+mkdir -p "$SC_STATE"
+"$MEASURE" --fixture "$VALUE_MULTI" --repos acme/one,acme/two --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json \
+  > "$SC_STATE/snapshot-2025-10.json" || fail "scorecard: two-repo ledger measurement failed"
+SC_BEFORE="$(ls -A "$SC_STATE")"
+"$SCORECARD" --snapshot "$SC_STATE/snapshot-2025-10.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" \
+  > "$TMP_DIR/sc-all.md" 2>"$TMP_DIR/sc-all.err" || fail "scorecard: two-repo render exited non-zero: $(head -c 300 "$TMP_DIR/sc-all.err")"
+if grep -qx '## Value per dollar' "$TMP_DIR/sc-all.md" && grep -qx '## Vendor claims vs observed' "$TMP_DIR/sc-all.md"; then
+  ok "scorecard: the two-repo fixture renders both the value-per-dollar and the claims-vs-observed tables"
+else
+  fail "scorecard: a table heading is missing from the two-repo render"
+fi
+n="$(table_rows "$TMP_DIR/sc-all.md" '## Value per dollar' | grep -c '^| [0-9]')"
+[[ "$n" == "6" ]] && ok "scorecard: the ranked table has one row per measured tool (6)" \
+  || fail "scorecard: expected 6 ranked rows, got $n"
+grep -q '^| 1 | CodeAnt | \$62.00 (flat) | 2 | \$31.00 | 100.0% | 0 |$' "$TMP_DIR/sc-all.md" \
+  && ok "scorecard: CodeAnt ranks first with its labelled \$62.00 flat spend, 2 real defects, \$31.00 each" \
+  || fail "scorecard: CodeAnt's ranked row is wrong: $(grep 'CodeAnt' "$TMP_DIR/sc-all.md" | head -1)"
+table_rows "$TMP_DIR/sc-all.md" '## Vendor claims vs observed' > "$TMP_DIR/sc-claims.rows"
+n="$(wc -l < "$TMP_DIR/sc-claims.rows" | tr -d ' ')"
+bad="$(grep -vcE '<https://[^>]+> \| [0-9]{4}-[0-9]{2}-[0-9]{2} \|$' "$TMP_DIR/sc-claims.rows")"
+[[ "$n" -ge 7 && "$bad" == "0" ]] && ok "scorecard: all $n claims rows carry an https source URL and a YYYY-MM-DD date" \
+  || fail "scorecard: $bad of $n claims rows lack a URL or a date"
+for v in Graphite 'Vercel Agent'; do
+  grep -q "^| $v | no published claim |" "$TMP_DIR/sc-claims.rows" \
+    && ok "scorecard: $v, with no claim recorded, renders a 'no published claim' row" \
+    || fail "scorecard: $v was dropped from the claims table"
+done
+grep -q '^| Qodo | 63.4% precision, ranked first on precision | precision | unverified; ' "$TMP_DIR/sc-claims.rows" \
+  && ok "scorecard: a vendor outside the stack (Qodo) keeps its unverified claim, observed cells blank" \
+  || fail "scorecard: the Qodo claim row is missing or unlabelled"
+grep -q '^| CodeAnt | .* | 100.0% | \$31.00 | <https://' "$TMP_DIR/sc-claims.rows" \
+  && ok "scorecard: a claim is joined to its tool's observed precision and cost per real defect" \
+  || fail "scorecard: CodeAnt's observed figures did not join to its claim"
+[[ "$(ls -A "$SC_STATE")" == "$SC_BEFORE" ]] && ok "scorecard: rendering writes nothing into the state directory" \
+  || fail "scorecard: the state directory changed during rendering"
+
+# Test Plan item 2, through the measurement: an unknown BugBot rate nulls its
+# spend, so its cost cell is `—` and it ranks last.
+"$MEASURE" --fixture "$VALUE_MULTI" --repos acme/one,acme/two --pricing "$PRICING_NULL_BB" --since 2025-10-01 --until 2025-10-31 --json \
+  > "$TMP_DIR/sc-null.json" || fail "scorecard: null-rate measurement failed"
+"$SCORECARD" --snapshot "$TMP_DIR/sc-null.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" --part value > "$TMP_DIR/sc-null.md" \
+  || fail "scorecard: null-rate render failed"
+last="$(table_rows "$TMP_DIR/sc-null.md" '## Value per dollar' | grep '^| [0-9]' | tail -1)"
+[[ "$last" == "| 6 | BugBot (Cursor) | — (none) | 0 | — | — | 0 |" ]] \
+  && ok "scorecard: a null spend renders '— (none)', its cost cell '—', and it ranks last" \
+  || fail "scorecard: the null-spend tool is not last with dashes: $last"
+
+# The ranking rule, on a hand-built snapshot that isolates each tier:
+#   c  $3 / 1 defect = $3.00                     -> 1
+#   b  $20 / 4 = $5.00 at 80% precision          -> 2 (ties a on cost, higher precision)
+#   a  $10 / 2 = $5.00 at 50%                    -> 3
+#   d  $50, 0 real defects, 90%                  -> 4 (paid, found nothing: spend shown)
+#   f  $0.00 flat, 0 defects, no precision       -> 5 (null precision after d)
+#   e  spend unknown, 3 real defects, 100%       -> 6 (unknown spend is last, whatever it found)
+cat > "$TMP_DIR/sc-rank.json" <<'JSON'
+{"generated_at": "2026-10-10T00:00:00Z", "repo": "acme/one",
+ "window": {"since": "2026-10-01", "until": "2026-10-31"},
+ "tools": [
+  {"key": "a", "name": "A", "spend_usd": 10.0, "spend_source": "estimate", "real_defects": 2, "cost_per_real_defect_usd": 5.0, "precision": 0.5, "sole_provider_on": 1},
+  {"key": "b", "name": "B", "spend_usd": 20.0, "spend_source": "receipt", "real_defects": 4, "cost_per_real_defect_usd": 5.0, "precision": 0.8, "sole_provider_on": 0},
+  {"key": "c", "name": "C", "spend_usd": 3.0, "spend_source": "flat", "real_defects": 1, "cost_per_real_defect_usd": 3.0, "precision": 0.1, "sole_provider_on": 2},
+  {"key": "d", "name": "D", "spend_usd": 50.0, "spend_source": "flat", "real_defects": 0, "cost_per_real_defect_usd": null, "precision": 0.9, "sole_provider_on": 0},
+  {"key": "e", "name": "E", "spend_usd": null, "spend_source": "none", "real_defects": 3, "cost_per_real_defect_usd": null, "precision": 1.0, "sole_provider_on": 5},
+  {"key": "f", "name": "F", "spend_usd": 0.0, "spend_source": "flat", "real_defects": 0, "cost_per_real_defect_usd": null, "precision": null, "sole_provider_on": null}
+ ]}
+JSON
+"$SCORECARD" --snapshot "$TMP_DIR/sc-rank.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" --part value > "$TMP_DIR/sc-rank.md" \
+  || fail "scorecard: ranking render failed"
+order="$(table_rows "$TMP_DIR/sc-rank.md" '## Value per dollar' | grep '^| [0-9]' | awk -F' [|] ' '{ printf "%s", $2 }')"
+[[ "$order" == "CBADFE" ]] \
+  && ok "scorecard: ranked by cost ascending, precision breaking ties; zero-defect spend next; unknown spend last" \
+  || fail "scorecard: rank order expected CBADFE, got $order"
+r="$(grep '^| 6 | E |' "$TMP_DIR/sc-rank.md")"
+[[ "$r" == "| 6 | E | — (none) | 3 | — | 100.0% | 5 |" ]] && ok "scorecard: a null cost is '—' even beside real figures" \
+  || fail "scorecard: unknown-spend row wrong: $r"
+r="$(grep '^| 5 | F |' "$TMP_DIR/sc-rank.md")"
+[[ "$r" == "| 5 | F | \$0.00 (flat) | 0 | — | — | — |" ]] \
+  && ok "scorecard: real zeros render '0' or '\$0.00'; nulls render '—', never '0'" \
+  || fail "scorecard: zero-vs-null row wrong: $r"
+
+# A snapshot measured without the ledger renders no table of dashes: it says so.
+fixture_write "$TMP_DIR/sc-legacy-in.json" "[$(pr_with_finders 1 'coderabbitai[bot]')]"
+"$MEASURE" --fixture "$TMP_DIR/sc-legacy-in.json" --json > "$TMP_DIR/sc-legacy.json" || fail "scorecard: legacy measurement failed"
+"$SCORECARD" --snapshot "$TMP_DIR/sc-legacy.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" > "$TMP_DIR/sc-legacy.md" \
+  || fail "scorecard: legacy-snapshot render failed"
+if grep -q '^_Value per dollar unavailable: ' "$TMP_DIR/sc-legacy.md" \
+   && [[ -z "$(table_rows "$TMP_DIR/sc-legacy.md" '## Value per dollar')" ]] \
+   && grep -q 'every observed cell is' "$TMP_DIR/sc-legacy.md"; then
+  ok "scorecard: a snapshot with no ledger fields prints why instead of a table, and flags its blank observed cells"
+else
+  fail "scorecard: legacy snapshot not handled: $(head -c 400 "$TMP_DIR/sc-legacy.md")"
+fi
+
+# Test Plan item 3: the study window. Each case builds its own state directory.
+# window_case <dir> <expected-line-prefix> <description>
+window_case() {
+  local got
+  got="$("$SCORECARD" --part window --state-dir "$1" 2>/dev/null)"
+  case "$got" in
+    "$2"*) ok "scorecard: $3" ;;
+    *) fail "scorecard: $3 — expected '$2…', got '$got'" ;;
+  esac
+}
+# ledger_snap <path> <generated_at>
+ledger_snap() {
+  printf '{"generated_at": "%s", "tools": [{"key": "codeant", "spend_usd": 1.0, "spend_source": "flat"}]}\n' "$2" > "$1"
+}
+W="$TMP_DIR/win"
+mkdir -p "$W/empty" "$W/legacy" "$W/one" "$W/unreadable"
+window_case "$W/empty" "study window: not started" "no snapshot on disk prints 'study window: not started'"
+window_case "$W/missing" "study window: not started" "a state directory that does not exist yet prints 'not started'"
+cp "$TMP_DIR/sc-legacy.json" "$W/legacy/snapshot-2026-09.json"
+window_case "$W/legacy" "study window: not started" "a snapshot without ledger fields does not start the window"
+ledger_snap "$W/one/snapshot-2026-10.json" "2026-10-10T12:00:00Z"
+window_case "$W/one" "study window: 2026-10-10 → 2026-11-09 (30 days" "a ledger snapshot dated 2026-10-10 opens a window ending 2026-11-09"
+ledger_snap "$W/one/snapshot-2026-11.json" "2026-11-02T08:00:00Z"
+window_case "$W/one" "study window: 2026-10-10 → 2026-11-09" "a later ledger snapshot does not move the start"
+printf '{"generated_at": ' > "$W/one/snapshot-2026-08.json"
+cp "$TMP_DIR/sc-legacy.json" "$W/one/snapshot-2026-07.json"
+window_case "$W/one" "study window: 2026-10-10 → 2026-11-09 (30 days from the first ledger snapshot; 1 snapshot(s) skipped" \
+  "a malformed snapshot is skipped and counted; an older legacy one is ignored"
+ledger_snap "$W/one/snapshot-2026-09.json" "2026-10-05T01:00:00+02:00"
+window_case "$W/one" "study window: 2026-10-04 → 2026-11-03" "the start is the UTC date of generated_at, not its local date"
+if [[ "$(id -u)" -ne 0 ]]; then
+  ledger_snap "$W/unreadable/snapshot-2026-10.json" "2026-10-10T00:00:00Z"
+  chmod 000 "$W/unreadable"
+  window_case "$W/unreadable" "study window: unknown (cannot read" "an unreadable state directory reads 'unknown', never 'not started'"
+  chmod 700 "$W/unreadable"
+fi
+
+# The claims block is refused whole — never a partial table — and says why.
+claims_case() {
+  local name="$1" from="$2" to="$3" want="$4"
+  python3 -c 'import sys; s=open(sys.argv[1]).read(); assert sys.argv[2] in s, sys.argv[2]; open(sys.argv[4],"w").write(s.replace(sys.argv[2], sys.argv[3], 1))' \
+    "$CLAIMS_REAL" "$from" "$to" "$TMP_DIR/claims-$name.md" || { fail "scorecard: claims fixture $name could not be built"; return; }
+  "$SCORECARD" --snapshot "$SC_STATE/snapshot-2025-10.json" --claims "$TMP_DIR/claims-$name.md" --state-dir "$SC_STATE" --part claims \
+    > "$TMP_DIR/claims-$name.out" || { fail "scorecard: claims case $name exited non-zero"; return; }
+  if grep -q "^_Vendor claims unavailable: .*$want" "$TMP_DIR/claims-$name.out" \
+     && [[ -z "$(table_rows "$TMP_DIR/claims-$name.out" '## Vendor claims vs observed')" ]]; then
+    ok "scorecard: claims block refused whole ($name)"
+  else
+    fail "scorecard: claims case $name not refused: $(head -c 300 "$TMP_DIR/claims-$name.out")"
+  fi
+}
+# The trailing comma pins the block's own schema line, not the prose quoting it.
+claims_case wrong-schema '"review-stack-claims/v1",' '"review-stack-claims/v9",' "schema"
+claims_case bad-status '"status": "unverified"' '"status": "probably"' "status"
+claims_case http-source '"source_url": "https://www.greptile.com/benchmarks"' '"source_url": "http://www.greptile.com/benchmarks"' "https"
+claims_case no-date '"retrieved": "2026-10-08",
+      "status": "verified"' '"retrieved": "Oct 8",
+      "status": "verified"' "YYYY-MM-DD"
+claims_case missing-tool-key '"tool_key": "greptile",' '' "tool_key"
+claims_case duplicate '## Re-verifying' '```json review-stack-claims
+{}
+```
+
+## Re-verifying' "exactly one"
+"$SCORECARD" --snapshot "$SC_STATE/snapshot-2025-10.json" --claims "$TMP_DIR/no-such-claims.md" --state-dir "$SC_STATE" --part claims \
+  > "$TMP_DIR/claims-missing.out" 2>/dev/null
+grep -q '^_Vendor claims unavailable: cannot read ' "$TMP_DIR/claims-missing.out" \
+  && ok "scorecard: an unreadable claims page prints a caveat, not an empty table" \
+  || fail "scorecard: missing claims page not reported"
+python3 -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("\"tool_key\": \"greptile\"", "\"tool_key\": \"greptyle\"", 1))' \
+  "$CLAIMS_REAL" "$TMP_DIR/claims-typo.md"
+"$SCORECARD" --snapshot "$SC_STATE/snapshot-2025-10.json" --claims "$TMP_DIR/claims-typo.md" --state-dir "$SC_STATE" --part claims \
+  > "$TMP_DIR/claims-typo.out"
+if grep -q "matches no tool in this snapshot .*: greptyle" "$TMP_DIR/claims-typo.out" \
+   && grep -q '^| Greptile | no published claim |' "$TMP_DIR/claims-typo.out"; then
+  ok "scorecard: a claim whose tool_key matches no tool is named aloud, and the tool still gets its row"
+else
+  fail "scorecard: an unmatched tool_key went unreported"
+fi
+
+# Usage and input errors.
+sc_rc() {
+  local want="$1"; shift
+  "$SCORECARD" "$@" > /dev/null 2>&1
+  local rc=$?
+  [[ $rc -eq $want ]] && ok "scorecard: '$*' exits $want" || fail "scorecard: '$*' should exit $want, got $rc"
+}
+sc_rc 2 --part value
+sc_rc 2 --part everything --snapshot "$TMP_DIR/sc-rank.json"
+sc_rc 2 --snapshot
+sc_rc 2 --part= --snapshot "$TMP_DIR/sc-rank.json"
+sc_rc 1 --snapshot "$TMP_DIR/no-such-snapshot.json" --part value
+printf '[1, 2]\n' > "$TMP_DIR/sc-not-a-snapshot.json"
+sc_rc 1 --snapshot "$TMP_DIR/sc-not-a-snapshot.json" --part value
+sc_rc 0 --part window --state-dir "$W/empty"
+
+# The skill wires it: Step 7 renders through scorecard.sh, Step 6 never sees
+# it, and --report-only still files nothing.
+RSA_MD="$REPO_ROOT/.claude/skills/review-stack-audit/SKILL.md"
+grep -q '^SCORECARD="\$SKILL_DIR/scorecard.sh"' "$RSA_MD" \
+  && ok "skill: SCORECARD points at the skill's own scorecard.sh" \
+  || fail "skill: SKILL.md does not define SCORECARD=\"\$SKILL_DIR/scorecard.sh\""
+step7="$(awk '/^## Step 7/{on=1} /^## Step 8/{on=0} on' "$RSA_MD")"
+step6="$(awk '/^## Step 6/{on=1} /^## Step 7/{on=0} on' "$RSA_MD")"
+case "$step7" in
+  *'"$SCORECARD" --snapshot "$STATE_DIR/snapshot-$MONTH.json"'*) ok "skill: Step 7 renders the scorecard from the published snapshot" ;;
+  *) fail "skill: Step 7 never invokes \"\$SCORECARD\" on the published snapshot" ;;
+esac
+case "$step6" in
+  *scorecard*|*SCORECARD*) fail "skill: Step 6 mentions the scorecard — its tables must never become filings" ;;
+  *) ok "skill: Step 6 (filing) never reads the scorecard" ;;
+esac
+grep -qF '`--report-only` and `--tick` **file nothing** — skip to Step 7.' "$RSA_MD" \
+  && ok "skill: --report-only and --tick still file nothing" \
+  || fail "skill: the 'file nothing' line in Step 6 changed"
 
 [[ $FAILED -eq 0 ]] && echo "All review-stack-audit tests passed."
 exit $FAILED
