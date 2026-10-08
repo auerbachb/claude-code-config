@@ -29,6 +29,8 @@
 #        record (a new set and its events; with --set, only this export's
 #        events); a store before migration 013 exits 1 naming migrate,
 #        nothing recorded
+#   #1760 a derived impact (migration 014) orders the batch ahead of a declared
+#        one and the paper prints it with its basis
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -334,6 +336,21 @@ check "an empty batch: exit 0" "$RC" "0"
 check "an empty batch: says so" "$OUT" "nothing to export"
 check "an empty batch: no file" "$([ -e "$TMP/out/empty.pdf" ] || [ -e "$TMP/out/empty.md" ] && echo yes || echo no)" "no"
 check "an empty batch: no set, no event" "$(nsets):$(events "$E0")" "$SETS1:"
+
+# --- derived impact (#1760, migration 014): the batch's order and the paper -------
+DERIVED=$(sql_in "UPDATE items SET impact_derived = 'critical-path', impact_basis = '2 open dependents, backlog rank unknown',
+  impact_derived_at = now() WHERE id = 'D-2'")
+check "setup: D-2 derives critical-path" "$DERIVED" ""
+hq export --kind decisions --dry-run --json
+check "derived impact orders the batch: D-2 (critical-path) before D-1 (declared high)" \
+  "$(jqo '[.items[0:3][] | .id]')" '["D-3","D-2","D-1"]'
+hq_none export --ids D-2 D-1 --out "$TMP/out/derived.pdf"
+check "derived impact on paper: exit 0" "$RC" "0"
+DER_MD=$(cat "$TMP/out/derived.md" 2>/dev/null)
+check_contains "the paper prints the derived impact with its basis" "$DER_MD" \
+  "widgets · issue-11 · Impact: critical-path (derived: 2 open dependents, backlog rank unknown)"
+check_contains "the paper prints the declared impact where nothing is derived" "$DER_MD" \
+  'widgets · pr-12 · Impact: high · Cost: \~2 min'
 
 # --- before migration 013 ----------------------------------------------------------
 OLD=$(sql_in "ALTER TABLE events DROP CONSTRAINT events_kind_check; ALTER TABLE events ADD CONSTRAINT events_kind_check CHECK (kind IN ('asked', 'bumped', 'shown', 'answered', 'acknowledged', 'reviewed', 'flagged', 'feedback', 'commented', 'woken', 'wake-failed', 'answer-parked')) NOT VALID;")

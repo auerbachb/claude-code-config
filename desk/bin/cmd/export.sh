@@ -28,7 +28,8 @@ USAGE
 
 WHAT IT EXPORTS (exactly one of)
   --kind decisions  the pending batch: every open Decision, parked first, then
-                    impact, then age (decision is accepted too)
+                    impact (derived where stored, else declared), then age
+                    (decision is accepted too)
   --kind reviews    every unreviewed Review, oldest first (review is accepted
                     too); --today keeps those synced today (America/New_York)
   --ids ID...       those items, in that order (d-43 is accepted; ids may

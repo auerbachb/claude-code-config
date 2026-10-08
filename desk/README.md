@@ -1219,13 +1219,13 @@ items.
   dependents, backlog rank unknown, agent parked`), and `impact_derived_at`.
   Every order that reads impact takes the derived value where there is one,
   else the declared one: `tick`, `list`, the desk's sets (`desk_split` and
-  `desk_batch` keep the list's order), the day plan's clear-first batch, and
-  the end-of-day sweep, all through `items.sh`'s `hq_sql_impact_rank`:
-  parked first, then critical-path, high, medium, low, none, then age. It is
-  read through the row's JSON, so a store before 014 still orders, by
-  declared impact. `get`/`list` and the desk's cards print `Impact:
-  critical-path (derived: 2 open dependents, backlog rank unknown; declared
-  low)`.
+  `desk_batch` keep the list's order), the day plan's clear-first batch,
+  the end-of-day sweep, and `export --kind decisions`, all through
+  `items.sh`'s `hq_sql_impact_rank`: parked first, then critical-path, high,
+  medium, low, none, then age. It is read through the row's JSON, so a store
+  before 014 still orders, by declared impact. `get`/`list`, the desk's
+  cards, and the paper copy print `Impact: critical-path (derived: 2 open
+  dependents, backlog rank unknown; declared low)`.
 - **Bookkeeping, not a change.** 014 replaces `items_mark_change()` keeping
   every annotation column 010 named (the cached summaries and the to-do
   fields) and adding the three impact columns, so a derivation is not a
@@ -1272,7 +1272,8 @@ lands on the right item.
   id, so `D-43: B` works whatever set is current.
 - **Layout (ISO 2145).** A title, the set, the count, and the export time;
   then one section per item headed `n  D-43 · the question`: its repo, key,
-  and triage facts, its context, a Review's summary, its options as `n.1
+  and triage facts (the impact as the card words it: derived, else
+  declared), its context, a Review's summary, its options as `n.1
   A. Yes (Recommended)`, `n.2  B. No`, the default and when it applies, the
   operator's own priority, tags, and note when it carries them (#1769), the
   link, and a blank answer line (an item answered since shows its answer).
@@ -1327,7 +1328,8 @@ lands on the right item.
   sweep no longer writes its own Markdown copy.
 - **Tests.** `tests/export-offline.test.sh` (offline: validation before
   connecting, the three renderings of `tests/fixtures/export/batch.json`
-  — ISO 2145 numbering, the to-do line, escaping, levels — the renderer
+  — ISO 2145 numbering, the to-do line, a derived impact, escaping,
+  levels — the renderer
   order and fallbacks against stub binaries, the URL kept out of their
   environment, their temp files in the scratch directory, Chrome offline
   and stopped after it writes, a renderer stopped when the export is
@@ -1338,5 +1340,5 @@ lands on the right item.
   schema: test 5.1, three fixture Decisions to a PDF with three sections
   whose ids `pdftotext` finds; test 5.2, the Markdown fallback and its
   warning; the set and its events, `--set`, `--ids`, Reviews at both
-  levels, `--today`, a dry run, the 99 cap, an empty batch, refusals, and a
-  store before 013).
+  levels, `--today`, a dry run, the 99 cap, an empty batch, a derived impact
+  in the batch's order and on paper, refusals, and a store before 013).

@@ -263,6 +263,24 @@ check_contains "md: same-named repositories keep their owners" "$MDS" "acme/widg
 check_contains "md: ... both of them" "$MDS" "other/widgets · issue-11"
 check_contains "md: a repository with a unique name drops its owner" "$MDS" "gadgets · Merged"
 
+# A derived impact (#1760, migration 014) is the one the paper prints, worded
+# as the card's facts_line words it; the declared one alone otherwise (above).
+jq '.items[0] += {impact_derived: "medium", impact_basis: "agent parked"}
+    | .items[1] += {impact_derived: "critical-path", impact_basis: "2 open dependents, backlog rank unknown"}' \
+  "$FIX/batch.json" > "$TMP/derived.json"
+MDD=$(ejq export_markdown "$TMP/derived.json")
+check_contains "md: a derived impact with its basis and the declared one beside it" "$MDD" \
+  'widgets · pr-12 · parked · Impact: medium (derived: agent parked; declared high) · Cost: \~2 min'
+check_contains "md: a derived impact with nothing declared" "$MDD" \
+  'widgets · issue-11 · Impact: critical-path (derived: 2 open dependents, backlog rank unknown)'
+check "md: the paper's impact is the card's (desk.jq facts_line)" \
+  "$(printf '%s\n' "$MDD" | grep -o 'Impact: critical-path[^·]*' | sed 's/ *$//')" \
+  "$(jq -r -L "$SKILL_DIR" 'include "desk"; .items[1] | facts_line' "$TMP/derived.json")"
+check_contains "txt: a derived impact" "$(ejq export_text "$TMP/derived.json")" \
+  "   widgets · pr-12 · parked · Impact: medium (derived: agent parked; declared high) · Cost: ~2 min"
+check_contains "html: a derived impact" "$(ejq export_html "$TMP/derived.json")" \
+  "Impact: critical-path (derived: 2 open dependents, backlog rank unknown)"
+
 check "txt: the title, underlined" "$(printf '%s\n' "$TXT" | sed -n '1,2p')" "Desk export · Set 31
 ===================="
 check_contains "txt: a heading" "$TXT" "1  D-44 · Retry the flaky upload test once?"

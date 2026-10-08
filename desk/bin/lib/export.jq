@@ -13,8 +13,8 @@
 # are `n.1`, `n.2`, … each with the letter a typed reply uses (`2.2  B. No`).
 # Every open item ends in a blank answer line; the footer carries the export
 # time. Reuses desk.jq (letter, bare_label, utc, item_link, default_line,
-# review_label, menu_shaped, short_repo, todo_line), so the paper and the
-# screen agree on every label.
+# review_label, menu_shaped, short_repo, todo_line, facts_line), so the paper
+# and the screen agree on every label.
 
 include "desk";
 
@@ -81,7 +81,11 @@ def ex_item($level; $repos):
                (if .kind == "decision" then
                   (if .parked then "parked" else empty end),
                   (if menu_shaped then empty else "long-form" end),
-                  (.impact_declared // empty | "Impact: " + .),
+                  # The impact that ordered the item, worded as the card's
+                  # facts_line words it: the derived value (#1760) with its
+                  # basis and the declared one beside it, else the declared.
+                  # Only the impact fields go in, so only that part comes out.
+                  ({impact_derived, impact_basis, impact_declared} | facts_line),
                   (.cost // empty | "Cost: " + .),
                   (.focus // empty | "Focus: " + .)
                 else empty end) ]
