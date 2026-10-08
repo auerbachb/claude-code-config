@@ -62,9 +62,11 @@
 #     greptile    non-bot `@greptileai` comments x credits/review x $/credit.
 #   Rates come from the `review-stack-rates` block in
 #   .claude/reference/pricing-matrix.md. A null rate makes the tally `unknown`.
-#   A PR with more than 50 commits or 100 comments, or a repo with more than
-#   100 PRs updated today, is read in part and noted on stderr: the figure is
-#   then a floor, like every receipt.
+#   Comments are read from both ends of each PR — its first 100 hold
+#   CodeRabbit's rewritten summary, its last 100 today's triggers — and a
+#   comment read from both ends counts once. A PR with more than 50 commits or
+#   200 comments, or a repo with more than 100 PRs updated today, is read in
+#   part and noted on stderr: the figure is then a floor, like every receipt.
 #
 # CACHE
 #   A known live tally is cached per platform and ET day in
@@ -496,10 +498,17 @@ BUGBOT_FIELDS = """commits(last: %d) {
                     checkRuns(first: 20, filterBy: {checkName: "%s", checkType: ALL}) {
                       nodes { databaseId name startedAt } } } } } }
         }""" % (COMMITS_READ, ledger.BUGBOT_CHECK_NAME, ledger.BUGBOT_CHECK_NAME)
-COMMENT_FIELDS = """comments(first: %d) {
+# Comments are read from both ends: CodeRabbit rewrites its summary comment —
+# often a PR's first — in place, while today's @greptileai triggers are a PR's
+# newest. normalize_pr() drops the overlap by node id.
+COMMENT_NODES = "nodes { id author { __typename login } body createdAt updatedAt }"
+COMMENT_FIELDS = """oldest: comments(first: %d) {
           totalCount
-          nodes { author { __typename login } body createdAt updatedAt }
-        }""" % COMMENTS_READ
+          %s
+        }
+        newest: comments(last: %d) {
+          %s
+        }""" % (COMMENTS_READ, COMMENT_NODES, COMMENTS_READ, COMMENT_NODES)
 
 
 def gh_graphql(repo, cursor):
@@ -545,20 +554,32 @@ def normalize_pr(node):
                     run = run or {}
                     pr["check_runs"].append({"id": run.get("databaseId"), "name": run.get("name"),
                                              "app": slug, "started_at": run.get("startedAt")})
-    comments = node.get("comments")
-    if isinstance(comments, dict):
-        if (comments.get("totalCount") or 0) > COMMENTS_READ:
-            pr["partial"].append("only its first %d of %d comments" % (COMMENTS_READ, comments["totalCount"]))
-        for c in comments.get("nodes") or []:
-            author = (c or {}).get("author") or {}
+    ends = [node.get(k) for k in ("oldest", "newest")]
+    ends = [e for e in ends if isinstance(e, dict)]
+    total = max([e.get("totalCount") or 0 for e in ends] or [0])
+    if total > 2 * COMMENTS_READ:
+        pr["partial"].append("only its first %d and last %d of %d comments"
+                             % (COMMENTS_READ, COMMENTS_READ, total))
+    seen = set()
+    for end in ends:
+        for c in end.get("nodes") or []:
+            c = c or {}
+            author = c.get("author") or {}
             login = author.get("login") or ""
             # GraphQL bot logins carry no [bot] suffix; the ledger keys on it
             # (measure.sh's fetch_threads adds it the same way).
             if author.get("__typename") == "Bot" and login and not login.endswith("[bot]"):
                 login += "[bot]"
-            pr["issue_comments"].append({"user": login, "body": (c or {}).get("body") or "",
-                                         "created_at": (c or {}).get("createdAt"),
-                                         "updated_at": (c or {}).get("updatedAt")})
+            body = c.get("body") or ""
+            # The two ends overlap whenever a PR has at most 2 x COMMENTS_READ
+            # comments; a comment read from both ends counts once.
+            key = c.get("id") or (login, c.get("createdAt"), c.get("updatedAt"), body)
+            if key in seen:
+                continue
+            seen.add(key)
+            pr["issue_comments"].append({"user": login, "body": body,
+                                         "created_at": c.get("createdAt"),
+                                         "updated_at": c.get("updatedAt")})
     return pr
 
 

@@ -403,9 +403,26 @@ mv "$TMP/rr.bak" "$STUB/scripts/review-repos.sh"
 check_eq "review-repos.sh missing: unknown" "unknown" "$(field status)"
 
 echo "== live: CodeRabbit receipts from GraphQL comments (bot logins gain [bot]) =="
-printf '{"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"number": 5, "updatedAt": "2026-10-08T14:00:00Z", "comments": {"totalCount": 2, "nodes": [{"author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "- Charged: $2.25", "createdAt": "2026-10-08T13:00:00Z", "updatedAt": "2026-10-08T13:30:00Z"}, {"author": {"__typename": "User", "login": "coderabbitai"}, "body": "- Charged: $40.00", "createdAt": "2026-10-08T13:00:00Z", "updatedAt": "2026-10-08T13:00:00Z"}]}}]}}}}' > "$GH_DIR/one.json"
+# A short PR: both ends of the comment read return the same two comments.
+CR_NODES='[{"id": "IC_1", "author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "- Charged: $2.25", "createdAt": "2026-10-08T13:00:00Z", "updatedAt": "2026-10-08T13:30:00Z"}, {"id": "IC_2", "author": {"__typename": "User", "login": "coderabbitai"}, "body": "- Charged: $40.00", "createdAt": "2026-10-08T13:00:00Z", "updatedAt": "2026-10-08T13:00:00Z"}]'
+printf '{"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"number": 5, "updatedAt": "2026-10-08T14:00:00Z", "oldest": {"totalCount": 2, "nodes": %s}, "newest": {"nodes": %s}}]}}}}' "$CR_NODES" "$CR_NODES" > "$GH_DIR/one.json"
 STUB_REPOS="acme/one" run coderabbit
-check_eq "only the Bot-authored receipt counts" "2.25|ok" "$(field spent_usd)|$(field status)"
+check_eq "only the Bot-authored receipt counts, once though read from both ends" "2.25|ok" "$(field spent_usd)|$(field status)"
+
+echo "== live: a PR past 200 comments — the summary is oldest, today's triggers newest =="
+rm -rf "$HOME/.claude/review-daily-cap"
+OLDEST='{"totalCount": 250, "nodes": [{"id": "IC_10", "author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "- Charged: $1.75", "createdAt": "2026-09-01T10:00:00Z", "updatedAt": "2026-10-08T12:00:00Z"}]}'
+NEWEST='{"nodes": [{"id": "IC_240", "author": {"__typename": "User", "login": "auerbachb"}, "body": "@greptileai", "createdAt": "2026-10-08T03:00:00Z", "updatedAt": "2026-10-08T03:00:00Z"}, {"id": "IC_249", "author": {"__typename": "User", "login": "auerbachb"}, "body": "@greptileai", "createdAt": "2026-10-08T12:00:00Z", "updatedAt": "2026-10-08T12:00:00Z"}, {"id": "IC_250", "author": {"__typename": "User", "login": "auerbachb"}, "body": "@greptileai again", "createdAt": "2026-10-08T14:00:00Z", "updatedAt": "2026-10-08T14:00:00Z"}]}'
+printf '{"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [{"number": 7, "updatedAt": "2026-10-08T14:00:00Z", "oldest": %s, "newest": %s}]}}}}' "$OLDEST" "$NEWEST" > "$GH_DIR/one.json"
+STUB_REPOS="acme/one" run greptile --rate
+GREPTILE_RATE="$OUT"
+STUB_REPOS="acme/one" run greptile
+check_eq "greptile: the two triggers made today (03:00Z is the 7th ET) are read from the newest end" \
+  "2 x $GREPTILE_RATE|ok" \
+  "$(python3 -c 'import sys; from decimal import Decimal as D; r, s = D(sys.argv[1]), D(sys.argv[2]); print("2 x %s" % sys.argv[1] if s == 2 * r else "%s, not 2 x %s" % (s, r))' "$GREPTILE_RATE" "$(field spent_usd)")|$(field status)"
+check_contains "  stderr says the middle was skipped" "only its first 100 and last 100 of 250 comments" "$ERR"
+STUB_REPOS="acme/one" run coderabbit
+check_eq "coderabbit: the receipt edited today is read from the oldest end" "1.75|ok" "$(field spent_usd)|$(field status)"
 
 echo "== missing ledger library -> unknown (and --rate still answers) =="
 mv "$STUB/scripts/lib/review_ledger.py" "$TMP/ledger.bak"

@@ -26,7 +26,9 @@
 #   The line is appended as a bullet at the end of the `## Review notes`
 #   section, before the next `#` or `##` heading outside a code fence. With no
 #   such section, one is created at the end of the body. Everything else in the
-#   body is left byte-for-byte as it was.
+#   body is left byte-for-byte as it was. A body with CRLF line endings (the
+#   GitHub web editor saves them) is matched with the CR stripped, every
+#   existing line keeps its own ending, and the added lines use CRLF.
 #
 # OUTPUT
 #   stdout: `added` or `present` (the marker was already there; nothing written).
@@ -118,7 +120,8 @@ fi
 # create the section at the end. Headings inside ``` / ~~~ fences are content.
 # A fence closes only on a run of its own character at least as long as the
 # opener with nothing after it (CommonMark), so a ``` line inside a ````
-# block, or a ~~~ line inside a ``` block, is content too.
+# block, or a ~~~ line inside a ``` block, is content too. A trailing CR is
+# stripped before matching and written back on output (see PLACEMENT).
 NOTE="- $LINE $MARKER" awk '
   # The fence run that opens line s ("```", "~~~~", ...), or "" when none.
   # No {m,n} interval: older mawk builds do not support it.
@@ -136,7 +139,11 @@ NOTE="- $LINE $MARKER" awk '
     sub(/^ ? ? ?/, "", t)
     return substr(t, length(run) + 1) ~ /^[ \t]*$/
   }
-  { lines[NR] = $0 }
+  # Each existing line is written back with the ending it was read with; an
+  # added line uses CRLF when any line of the body did.
+  function emit(i) { printf "%s%s\n", lines[i], (cr[i] ? "\r" : "") }
+  function add(s) { printf "%s%s\n", s, (crlf ? "\r" : "") }
+  { cr[NR] = sub(/\r$/, ""); if (cr[NR]) crlf = 1; lines[NR] = $0 }
   END {
     note = ENVIRON["NOTE"]
     start = 0; stop = NR + 1; open = ""
@@ -150,21 +157,21 @@ NOTE="- $LINE $MARKER" awk '
     if (!start) {
       last = NR
       while (last > 0 && lines[last] ~ /^[ \t]*$/) last--
-      for (i = 1; i <= last; i++) print lines[i]
-      if (last > 0) print ""
-      print "## Review notes"
-      print ""
-      print note
+      for (i = 1; i <= last; i++) emit(i)
+      if (last > 0) add("")
+      add("## Review notes")
+      add("")
+      add(note)
       exit
     }
     at = stop - 1
     while (at > start && lines[at] ~ /^[ \t]*$/) at--
-    for (i = 1; i <= at; i++) print lines[i]
-    if (at == start) print ""
-    print note
-    for (i = at + 1; i < stop; i++) print lines[i]
-    if (stop <= NR && (at + 1 >= stop)) print ""
-    for (i = stop; i <= NR; i++) print lines[i]
+    for (i = 1; i <= at; i++) emit(i)
+    if (at == start) add("")
+    add(note)
+    for (i = at + 1; i < stop; i++) emit(i)
+    if (stop <= NR && (at + 1 >= stop)) add("")
+    for (i = stop; i <= NR; i++) emit(i)
   }
 ' "$TMP" > "$TMP.new" || die "could not build the new body"
 

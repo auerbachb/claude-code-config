@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for pr-body-review-note.sh (issue #1812).
-# catalog: tests — Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, fenced headings ignored, the rest of the body untouched, and usage errors
+# catalog: tests — Tests `pr-body-review-note.sh` offline — one line per key and HEAD under `## Review notes`, section creation, placement before the next heading, fenced headings ignored, CRLF bodies, the rest of the body untouched, and usage errors
 #
 # WHAT IS UNDER TEST
 #   /fixpr Step 3b records a BugBot daily-cap skip in the PR body, and Step 3b
@@ -124,6 +124,30 @@ usage 1840 --head "$SHA1" --key k --line x --repo nope; check_eq "malformed --re
 check_eq "the body file is untouched" "body" "$(cat "$TMP/g.md")"
 RC=0; "$SCRIPT" 1840 --head "$SHA1" --key k --line x --body-file "$TMP/missing.md" >/dev/null 2>&1 || RC=$?
 check_eq "a missing body file exits 1" "1" "$RC"
+
+############################################################################
+echo "== CRLF body (GitHub web editor): the section is found, not duplicated =="
+# Shown with CR as R so a lost or doubled CR is visible in a failure.
+crs() { tr '\r' 'R' < "$1"; }
+printf '## Summary\r\n\r\n```\r\n## Not a heading\r\n```\r\n\r\n## Review notes\r\n\r\n- earlier note\r\n\r\n## Test plan\r\n\r\n- [ ] a\r\n' > "$TMP/crlf.md"
+note "$TMP/crlf.md" "$SHA1"
+check_eq "added once, exit 0" "added|0" "$OUT|$RC"
+note "$TMP/crlf.md" "$SHA1"
+check_eq "second run on the same HEAD: present" "present" "$OUT"
+check_eq "one Review notes heading" "1" "$(grep -c '^## Review notes' "$TMP/crlf.md" | tr -d ' ')"
+check_eq "inside the existing section; every line keeps CRLF" \
+  "$(printf '## SummaryR\nR\n```R\n## Not a headingR\n```R\nR\n## Review notesR\nR\n- earlier noteR\n- %s %sR\nR\n## Test planR\nR\n- [ ] aR' "$LINE" "$(m "$SHA1")")" \
+  "$(crs "$TMP/crlf.md")"
+printf '## Summary\r\n\r\nx\r\n\r\n' > "$TMP/crlf2.md"
+note "$TMP/crlf2.md" "$SHA1"
+check_eq "no section: CRLF trailing blanks trimmed, the new section in CRLF" \
+  "$(printf '## SummaryR\nR\nxR\nR\n## Review notesR\nR\n- %s %sR' "$LINE" "$(m "$SHA1")")" \
+  "$(crs "$TMP/crlf2.md")"
+printf '## Summary\nx\r\n' > "$TMP/mixed.md"
+note "$TMP/mixed.md" "$SHA1"
+check_eq "mixed endings: each existing line keeps its own" \
+  "$(printf '## Summary\nxR\nR\n## Review notesR\nR\n- %s %sR' "$LINE" "$(m "$SHA1")")" \
+  "$(crs "$TMP/mixed.md")"
 
 ############################################################################
 echo "== the gh path: read with gh pr view, write with gh pr edit =="
