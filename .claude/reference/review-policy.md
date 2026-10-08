@@ -10,6 +10,8 @@ A repo can declare **review tiers** in its own `.claude/pm-config.md`, so the re
 | #1728 | BugBot triggering | Landed |
 | #1729 | Pipeline ceiling | Landed |
 
+A follow-up, #1807, lets a repo [turn off escalation](#turning-off-escalation) to BugBot and Greptile altogether.
+
 This file is the mechanism reference. The rule files only point here, because the rule corpus has no word headroom.
 
 A repo **without** the section keeps today's behaviour exactly. The resolver reports gate `legacy`, and every consumer takes its existing path.
@@ -40,7 +42,7 @@ A row named **`default`** classifies files that no `Paths` glob matches. Without
 
 Declare every tier in **one contiguous table**. The table is found the way GitHub finds one: a header line followed by a delimiter row (`|---|---|`). The edge pipes are optional, and the table runs to the first blank line or heading. Prose that merely contains a `|` is ignored.
 
-Fenced code blocks and `<!-- -->` comments are removed from the whole file before the section is looked up, following CommonMark fence rules. So an inactive example table, or even a fenced example carrying its own `## Review policy` heading elsewhere in the file, never becomes the live policy.
+Fenced code blocks and `<!-- -->` comments are removed from the whole file before the section is looked up, following CommonMark fence rules. So an inactive example table, or even a fenced example carrying its own `## Review policy` heading elsewhere in the file, never becomes the live policy. The one fenced block the resolver does read is the section's own ` ```ini ` block for the [escalation switch](#turning-off-escalation).
 
 A row-shaped line (one starting with `|`) that belongs to no table makes the policy invalid rather than being silently dropped. So does a second table. Examples are rows separated from the table by a blank line or a comment, or a table missing its delimiter row.
 
@@ -172,7 +174,7 @@ The two-round cap on core PRs stays a process limit, not gate logic.
 
 ## BugBot triggering
 
-BugBot is the most expensive reviewer in the stack, so the `ci-only` and `ci+codeant-one-round` gates no longer invite it (#1728). Only one of those two recognised gates suppresses the invitation. `full`, `legacy`, a usage error, and a tier that cannot be resolved all still invite BugBot, because the helper fails open. Every path that could invite it asks one helper first, so they cannot disagree:
+BugBot is the most expensive reviewer in the stack, so the `ci-only` and `ci+codeant-one-round` gates no longer invite it (#1728). Only one of those two recognised gates suppresses the invitation, or any gate in a repo that [turned escalation off](#turning-off-escalation). Otherwise `full`, `legacy`, a usage error, and a tier that cannot be resolved all still invite BugBot, because the helper fails open. Every path that could invite it asks one helper first, so they cannot disagree:
 
 ```bash
 .claude/scripts/bugbot-tier-excluded.sh <pr_number> [--repo owner/name] [--base <ref>]
@@ -180,8 +182,8 @@ BugBot is the most expensive reviewer in the stack, so the `ci-only` and `ci+cod
 
 | Exit | Meaning | What the caller does |
 |---|---|---|
-| `0` | The gate is `ci-only` or `ci+codeant-one-round`. The gate is printed on stdout. | Skips `@cursor review` and says so. |
-| `1` | The gate is `full` or `legacy`. The gate is printed on stdout. | Posts, as before. |
+| `0` | The gate is `ci-only` or `ci+codeant-one-round`, or escalation is off on any gate. The gate is printed on stdout. | Skips `@cursor review` and says so. |
+| `1` | The gate is `full` or `legacy`, and escalation is on. The gate is printed on stdout. | Posts, as before. |
 | `2` | A usage error, or the tier could not be resolved: the resolver is missing, exits non-zero, or returns no recognised gate. | Posts, as before. |
 
 The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is the opposite of the merge gate's direction. That is deliberate: `legacy` behaviour is to post, and the BugBot refusal guard (`bugbot-refused-head.sh`) fails the same way. An unreadable policy can cost one BugBot review, never a missing one. The merge gate is unaffected, because it resolves the tier on its own and fails closed.
@@ -194,9 +196,67 @@ The helper wraps `review-tier.sh --json`. A resolver failure **posts**, which is
 | `cursor-review-pr-comment.yml` | The `tier-check` step runs the helper from the base-branch checkout with `--repo` and `--base`. The comment step skips on `excluded=true`, and a notice annotation says why. A base branch without the helper posts. |
 | `escalate-review.sh` | Emits `STATUS=tier_gate` wherever it would have emitted `switch_bugbot`. |
 
-`STATUS=tier_gate` means the review tier, not the escalation chain, governs the PR. The caller does not make BugBot the reviewer and posts nothing. It keeps the current reviewer and keeps polling, and `merge-gate.sh` applies the tier's gate. It is not a stop and not self-review. Every other verdict keeps its meaning, including `trigger_greptile` for a BugBot that reviewed the PR on its own and then failed.
+`STATUS=tier_gate` means the review tier, not the escalation chain, governs the PR. The caller does not make BugBot the reviewer and posts nothing. It keeps the current reviewer and keeps polling, and `merge-gate.sh` applies the tier's gate. It is not a stop and not self-review. Every other verdict keeps its meaning, including `trigger_greptile` for a BugBot that reviewed the PR on its own and then failed. The one exception is a repo that [turned escalation off](#turning-off-escalation).
 
 `pmm-act.md` and `wrap-merge-gate-recovery.md` post `@cursor review` only when BugBot already owns the PR. `tier_gate` keeps a lighter-tier PR from reaching that state.
+
+## Turning off escalation
+
+A repo can stop the CR → BugBot → Greptile chain at its primary reviewer, on every gate (#1807). Put this in a fenced `ini` block inside `## Review policy`, the same shape as `ACTIVE_WORK_CAP` under `## Active work`:
+
+````markdown
+## Review policy
+
+| Tier | Gate | Paths |
+|------|------|-------|
+| core | full | src/** |
+
+```ini
+REVIEW_ESCALATION=off
+```
+````
+
+| Value | Meaning |
+|---|---|
+| `on` (also when the key is absent) | Today's chain: CR → BugBot → Greptile. |
+| `off` | BugBot and Greptile are never invited, on any gate, `full` and `legacy` included. |
+| anything else, empty included | Read as `off`, with one stderr warning. An unclear cost switch fails toward not spending. |
+
+`on` and `off` match in any case. The key follows `active-work-cap.sh`'s rule: `KEY=value` or `key: value`, the key matched case-insensitively, and the first occurrence wins.
+
+### Where it is read from
+
+The switch is read from the same policy text as the table, so it follows the same source rules: the PR's **base branch** in PR mode, `--config` when given, and the checkout in offline mode. It never comes from the PR head, so a PR cannot turn escalation off for itself.
+
+Only a **live** ` ```ini ` fence inside the `## Review policy` section counts. The section's bounds are found in the fence- and comment-free text, exactly as for the table. So a fenced `## ` line inside the section does not cut it short, and a fenced example section elsewhere is never read. A key anywhere else in the file is ignored with one stderr warning: in prose, inside a `<!-- -->` comment, in a fence with another info string or none, or under another section, such as the `ini` block of `## Active work`. A misplaced cost switch is therefore never silent.
+
+The table and the switch are independent:
+
+- **An ini-only section** (no table) is still `policy: absent`, gate `legacy`, and reports its switch.
+- **An invalid table** still resolves to `full`, and reports its switch.
+- **A near-miss heading** such as `## Review Policy` makes the gate `full`, but its switch is still honoured. The gate fails toward more review, and the switch fails toward less spend.
+
+`review-tier.sh --json` reports the switch as `"escalation":"on"|"off"` on every line, appended after the other keys. The plain output is still the gate alone.
+
+### What it disables
+
+| Consumer | With `off` |
+|---|---|
+| `bugbot-tier-excluded.sh` | Exits `0` (skip BugBot) on any recognised gate. stdout stays the gate, and one stderr line names escalation off as the reason. |
+| Every BugBot trigger path | Inherits that answer unchanged: `maybe-trigger-ai-review.sh`, `pr-preflight.sh`, `/fixpr` Step 3b, and `cursor-review-pr-comment.yml`. Their messages still name the gate, because the helper's stdout is still the gate. |
+| `escalate-review.sh` | Emits `STATUS=tier_gate` where it would have emitted `switch_bugbot`, `trigger_greptile`, or `budget_exhausted`. It never reads or consumes the Greptile budget. Earlier verdicts keep their precedence, including `polling_cr` inside a CodeRabbit retry window. |
+
+Out of scope: CodeRabbit, CodeAnt, and Graphite triggers (#1749).
+
+### What a `full` PR then needs
+
+The merge gate does not change. On `full` and `legacy`, the reviewer requirement is still the CR path: a CodeRabbit or CodeAnt `APPROVED` on HEAD (`cr-merge-gate.md` Step 1). With escalation off there is **no fallback reviewer**. If neither bot approves, the PR keeps polling on `tier_gate` until one does, or until a human steps in. The lighter gates are unaffected, since they never needed BugBot or Greptile.
+
+### Failure direction — known limit
+
+The switch is read through `review-tier.sh`. If the tier cannot be resolved, the switch reads as **on**, and the chain runs as before. This happens when the resolver is missing, exits non-zero, or answers without a readable `escalation`. It is the same fail-open direction as [BugBot triggering](#bugbot-triggering) (#1728). A repo that turned escalation off can therefore still see one BugBot or Greptile hand-off while its policy is unreadable. `escalate-review.sh` says so on stderr when the resolver fails.
+
+Only a literal `"escalation":"off"` skips. Any other value in the JSON, or a missing field from an older resolver, reads as on. `review-tier.sh` itself already turns an unclear value into `off`, so a typo in the file fails toward not spending.
 
 ## CLI
 
@@ -210,9 +270,10 @@ The plain output is the gate name. `--json` returns one line:
 ```json
 {"policy":"present","gate":"full","tier":"core","source":"base:main","error":null,
  "matches":[{"tier":"core","gate":"full","via":"path","count":1,"examples":["src/ledger/x.ts"]},
-            {"tier":"docs","gate":"ci-only","via":"path","count":1,"examples":["docs/a.md"]}]}
+            {"tier":"docs","gate":"ci-only","via":"path","count":1,"examples":["docs/a.md"]}],
+ "escalation":"on"}
 ```
 
-The `via` field is one of `path`, `label`, `default`, or `truncated`.
+The `via` field is one of `path`, `label`, `default`, or `truncated`. `escalation` is the [switch](#turning-off-escalation), present on every line.
 
 The exit codes are `0` (resolved), `2` (usage error), `3` (PR not found), and `4` (read failure). The full contract is in `review-tier.sh --help`.
