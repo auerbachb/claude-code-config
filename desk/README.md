@@ -1281,21 +1281,31 @@ lands on the right item.
   from one item model, reusing `skill/desk.jq`'s labels and links.
 - **Renderers.** No new dependency: the first of these that produces a PDF
   is used. pandoc (the Markdown, when pandoc and a PDF engine are
-  installed); headless Google Chrome or Chromium (the HTML, under a
-  throwaway profile, so a running Chrome is never touched; stopped once it
-  reports the file written, because on macOS it can keep running after);
-  the macOS print system (`/usr/sbin/cupsfilter`, the plain text). With
-  none, the Markdown is written next to the requested path (`FILE.md`),
-  the exit is still 0, and one stderr line names it and what each renderer
-  did. Every renderer runs without the store's URL in its environment and
-  under a deadline (`HUMAN_QUEUE_EXPORT_TIMEOUT`). To get PDFs on a
-  machine with none: install Google Chrome, or pandoc with a PDF engine.
+  installed; the items' raw TeX, HTML, attributes, YAML blocks, and images
+  are read as text, so nothing in them reaches the engine or is fetched);
+  headless Google Chrome or Chromium (the HTML, under a throwaway profile,
+  so a running Chrome is never touched; offline, since no host name
+  resolves; stopped once it reports the file written, because on macOS it
+  can keep running after); the macOS print system (`/usr/sbin/cupsfilter`,
+  the plain text). With none, the Markdown is written next to the
+  requested path (`FILE.md`), the exit is still 0, and one stderr line
+  names it and what each renderer did. Every renderer runs without the
+  store's URL in its environment, with its temp files (`TMPDIR`, and
+  Chrome's `MAC_CHROMIUM_TMPDIR`) in the export's private scratch
+  directory, which is removed on exit, and under a deadline
+  (`HUMAN_QUEUE_EXPORT_TIMEOUT`); an export interrupted mid-render stops
+  its renderer. To get PDFs on a machine with none: install Google Chrome,
+  or pandoc with a PDF engine.
 - **The file.** Written through a temp file and a rename, owner-only
   (0600: it holds open questions); an existing file is replaced. The desk
   writes into `~/.claude/desk-exports/` (0700) unless the operator names a
   path.
 - **Recording.** One `exported` event per item (note `set N #k`), in the
-  transaction that reads the batch, so nothing else is logged. Migration
+  transaction that reads the batch, so nothing else is logged. When the
+  file then cannot be written, a second transaction removes that record
+  (the set it opened, its `shown` and `exported` events, told apart by the
+  first transaction's time), so no unseen set becomes the latest; exit 1,
+  `nothing was recorded`. Migration
   `013_exported_event.sql` adds the kind to whatever `events_kind_check`
   allows (as 010 does), so it applies before or after #1769's 010. Before
   013 is applied, `export` exits 1 naming `migrate` and records nothing; a
@@ -1310,7 +1320,9 @@ lands on the right item.
   connecting, the three renderings of `tests/fixtures/export/batch.json`
   — ISO 2145 numbering, the to-do line, escaping, levels — the renderer
   order and fallbacks against stub binaries, the URL kept out of their
-  environment, Chrome stopped after it writes, a real cupsfilter and Chrome
+  environment, their temp files in the scratch directory, Chrome offline
+  and stopped after it writes, a renderer stopped when the export is
+  interrupted, images in the text escaped, a real cupsfilter and Chrome
   PDF read back by `pdftotext` on macOS, and the skill's blocks under bash,
   `/bin/bash` 3.2, and zsh); `tests/export.test.sh` (live, throwaway
   schema: test 5.1, three fixture Decisions to a PDF with three sections

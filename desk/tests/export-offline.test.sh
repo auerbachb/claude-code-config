@@ -19,10 +19,12 @@
 #              Chrome, cupsfilter) and fall-through on a failure, a deadline,
 #              or a file that is not a PDF; a forced renderer; none at all
 #              (test 5.2's Markdown fallback: every renderer named);
-#              HUMAN_QUEUE_DATABASE_URL kept out of their environment;
-#              Chrome stopped once it reports the file written; on macOS, a
-#              real cupsfilter (and Chrome, when installed) PDF whose ids
-#              `pdftotext` finds
+#              HUMAN_QUEUE_DATABASE_URL kept out of their environment, their
+#              TMPDIR in the scratch directory; Chrome offline, and stopped
+#              once it reports the file written; a renderer stopped when the
+#              export is interrupted; on macOS, a real cupsfilter (and
+#              Chrome, when installed) PDF whose ids `pdftotext` finds, with
+#              Chrome's own temp directories in the scratch directory
 #   skill      export.md's anchored blocks, run as written against a stub CLI
 #              (bash, /bin/bash 3.2, zsh): the default file in a private
 #              directory, the operator's path passed through untouched, `~/`
@@ -175,24 +177,24 @@ check "md: the title" "$(printf '%s\n' "$MD" | sed -n 1p)" "# Desk export · Set
 check "md: the header line" "$(printf '%s\n' "$MD" | sed -n 3p)" \
   "set 31 · 5 items · Reviews at level 2 · exported Thu 2026-10-08 17:31 ET"
 check_contains "md: how to reply" "$MD" "or by number (2: B) while set 31 is the desk's latest set."
-check "md: one section per item, its number and id first (ISO 2145)" "$(printf '%s\n' "$MD" | grep '^## ')" \
-  "## 1  D-44 · Retry the flaky upload test once?
-## 2  D-41 · Ship <b>the</b> migration & the \"backfill\" first?
+check "md: one section per item, its number and id first (ISO 2145), the item's text escaped" "$(printf '%s\n' "$MD" | grep '^## ')" \
+  '## 1  D-44 · Retry the flaky upload test once?
+## 2  D-41 · Ship \<b\>the\</b\> migration \& the "backfill" first?
 ## 3  D-45 · How should the importer handle partial rows?
-## 4  R-9 · PR #283
-## 5  R-10 · Issue #202"
+## 4  R-9 · PR \#283
+## 5  R-10 · Issue \#202'
 check "md: options as n.k with the letter, the default marked once" "$(printf '%s\n' "$MD" | grep -E '^[0-9]+\.[0-9]+  ' | sed 's/ *$//')" \
   "1.1  A. Yes (Recommended)
 1.2  B. No
 2.1  A. Yes
 2.2  B. No
 2.3  C. Split it"
-check_contains "md: the triage line" "$MD" "widgets · pr-12 · parked · Impact: high · Cost: ~2 min"
+check_contains "md: the triage line" "$MD" 'widgets · pr-12 · parked · Impact: high · Cost: \~2 min'
 check_contains "md: the context" "$MD" "- The upload test failed twice on CI."
 check_contains "md: the default and when" "$MD" "Default: A. Yes — the thread takes it at 2026-10-09 18:00 UTC if unanswered"
 check_contains "md: the to-do line (#1769)" "$MD" "P2 · tags: prd, urgent · note: ask Sam first"
 check "md: only D-44 carries a to-do line" "$(printf '%s\n' "$MD" | grep -cE '^P[1-5] · |tags: ')" "1"
-check_contains "md: the link" "$MD" "Link: PR #12 — https://github.com/acme/widgets/pull/12"
+check_contains "md: the link" "$MD" 'Link: PR \#12 — https://github.com/acme/widgets/pull/12'
 check "md: a blank answer line per open Decision" "$(printf '%s\n' "$MD" | grep -c '^Answer: ____')" "2"
 check "md: a Review's answer line" "$(printf '%s\n' "$MD" | grep -c '^Reviewed \[ \]   Flag, and why: ____')" "2"
 check_contains "md: an answered item shows its answer" "$MD" "Answered: Skip them and log each one."
@@ -225,6 +227,37 @@ check "md: a batch with no set" "$(printf '%s\n' "$MDN" | sed -n '1p;3p')" "# De
 check_contains "md: no set: reply by id only" "$MDN" "or flag R-9 \"why\")."
 check_contains "md: more left out" "$MDN" "… and 2 more items left out (an export holds at most 99)."
 
+# An item's text is Markdown pandoc reads literally: an image in it is never
+# fetched, math never reaches the PDF engine as TeX, emphasis and links stay
+# text, and a line break in it cannot start a block. A Review's summary keeps
+# its **bold** runs.
+jq '.items[0].question = "see ![x](https://example.invalid/p.png)\n# not a heading"
+    | .items[0].context = ["![y][r] costs $\\input{/etc/hosts}$", "**loud** _x_ [l](u) 2^10^ H~2~O {.c} a|b `c`"]
+    | .items[0].options = ["Yes *please*", "No"] | .items[0].default_option = "Yes *please*"
+    | .items[0].my_note = "<i>ask</i> & see"
+    | .items[3].summary_l2 = "**Bold kept.** *one* $x$\n1. A line"' \
+  "$FIX/batch.json" > "$TMP/literal.json"
+MDI=$(ejq export_markdown "$TMP/literal.json")
+check_contains "md: an image in the text is escaped, on one line" "$MDI" \
+  '## 1  D-44 · see \!\[x\](https://example.invalid/p.png) \# not a heading'
+check_contains "md: a reference image and math in the text are escaped" "$MDI" '- \!\[y\]\[r\] costs \$\\input\{/etc/hosts\}\$'
+check_contains "md: emphasis, links, sub/superscripts, attributes, tables, code stay text" "$MDI" \
+  '- \*\*loud\*\* \_x\_ \[l\](u) 2\^10\^ H\~2\~O \{.c\} a\|b \`c\`'
+check_contains "md: an option's text is escaped" "$MDI" '1.1  A. Yes \*please\* (Recommended)'
+check_contains "md: the default's label is escaped" "$MDI" 'Default: A. Yes \*please\*'
+check_contains "md: the operator's note is escaped" "$MDI" 'note: \<i\>ask\</i\> \& see'
+check_contains "md: a summary keeps its bold, the rest escaped, its lines kept" "$MDI" \
+  "$(printf '%s\n%s' '**Bold kept.** \*one\* \$x\$  ' '1. A line  ')"
+check_absent "md: no image syntax survives" "$MDI" '!['
+check_absent "md: no math survives" "$MDI" ' $\'
+
+# Two repositories with the same name keep their owners; others drop them.
+jq '.items[1].repo = "other/widgets"' "$FIX/batch.json" > "$TMP/same-name.json"
+MDS=$(ejq export_markdown "$TMP/same-name.json")
+check_contains "md: same-named repositories keep their owners" "$MDS" "acme/widgets · pr-12 · parked"
+check_contains "md: ... both of them" "$MDS" "other/widgets · issue-11"
+check_contains "md: a repository with a unique name drops its owner" "$MDS" "gadgets · Merged"
+
 check "txt: the title, underlined" "$(printf '%s\n' "$TXT" | sed -n '1,2p')" "Desk export · Set 31
 ===================="
 check_contains "txt: a heading" "$TXT" "1  D-44 · Retry the flaky upload test once?"
@@ -249,12 +282,15 @@ printf '== renderers\n'
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 # A stub writes a PDF where its renderer would and logs what it saw: its
-# arguments, and whether the store's URL reached its environment.
+# arguments, whether the store's URL reached its environment, its temp
+# directories, and its pid.
 cat > "$STUBS/pdf-writer" <<'EOF'
 #!/usr/bin/env bash
 name="${0##*/}"
 printf '%s\n' "$*" > "$STUB_LOG/$name.args"
 if [ -n "${HUMAN_QUEUE_DATABASE_URL+x}" ]; then echo leaked > "$STUB_LOG/$name.env"; else echo clean > "$STUB_LOG/$name.env"; fi
+printf '%s %s\n' "${TMPDIR:-}" "${MAC_CHROMIUM_TMPDIR:-}" > "$STUB_LOG/$name.tmp"
+echo "$$" > "$STUB_LOG/$name.pid"
 out=""
 prev=""
 for a in "$@"; do
@@ -264,7 +300,7 @@ for a in "$@"; do
 done
 case "${STUB_MODE:-ok}" in
   fail) exit 3 ;;
-  hang) sleep 30; exit 0 ;;
+  hang) exec sleep 30 ;;
   notpdf) if [ -n "$out" ]; then echo "not a pdf" > "$out"; else echo "not a pdf"; fi; exit 0 ;;
   linger)
     printf '%%PDF-1.4 stub\n' > "$out"
@@ -295,8 +331,9 @@ P="$STUBS/pandoc" C="$STUBS/chrome" U="$STUBS/cupsfilter"
 
 check "pandoc first" "$(render HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER="$U")" "0 pandoc | "
 check "pandoc gets the Markdown" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/r.md"
-check_contains "pandoc reads raw TeX, HTML, and attributes as text" "$(cat "$TMP/log/pandoc.args")" \
-  "--from markdown-raw_tex-raw_html-raw_attribute"
+check_contains "pandoc reads raw TeX, HTML, attributes, YAML blocks, and math as text" "$(cat "$TMP/log/pandoc.args")" \
+  "--from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars "
+check "pandoc: its temp files in the scratch directory" "$(cat "$TMP/log/pandoc.tmp")" "$TMP/w/tmp $TMP/w/tmp"
 check "the PDF is where it was asked for" "$(head -c 5 "$TMP/w/out.pdf")" "%PDF-"
 check "the store's URL never reaches a renderer" "$(cat "$TMP/log/pandoc.env")" "clean"
 check "a failing renderer falls through to the next" \
@@ -309,7 +346,10 @@ check_contains "Chrome: headless" "$ARGS" "--headless"
 check_contains "Chrome: a profile of its own, in the scratch directory" "$ARGS" "--user-data-dir=$TMP/w/chrome-profile"
 check_contains "Chrome: no header or footer of its own" "$ARGS" "--no-pdf-header-footer"
 check_contains "Chrome: the HTML as a file URL" "$ARGS" "file://$TMP/r.html"
+check_contains "Chrome: offline, no host name resolves" "$ARGS" "--host-resolver-rules=MAP * ~NOTFOUND "
+check_contains "Chrome: no background fetches" "$ARGS" "--disable-background-networking"
 check "Chrome: the store's URL never reaches it" "$(cat "$TMP/log/chrome.env")" "clean"
+check "Chrome: its temp files in the scratch directory" "$(cat "$TMP/log/chrome.tmp")" "$TMP/w/tmp $TMP/w/tmp"
 START=$(hq_t_now)
 check "Chrome that keeps running after writing is stopped, and counts" \
   "$(render STUB_MODE=linger HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER=)" "0 chrome | pandoc: not installed"
@@ -318,6 +358,34 @@ if hq_t_elapsed_under "$START" "$END" 10; then ok "Chrome stopped promptly"; els
 check "a renderer past its deadline falls through" \
   "$(render STUB_MODE=hang HUMAN_QUEUE_EXPORT_TIMEOUT=1 HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER=)" \
   "1 - | pandoc: not installed; chrome: timed out; cupsfilter: not installed"
+check "a renderer past its deadline is not left running" \
+  "$(if kill -0 "$(cat "$TMP/log/chrome.pid")" 2>/dev/null; then echo running; else echo stopped; fi)" "stopped"
+
+# An export interrupted mid-render (SIGTERM) leaves no renderer running: the
+# EXIT trap's hq_export_stop_renderer stops it (export.sh's cleanup runs it).
+rm -rf "$TMP/w"
+mkdir -p "$TMP/w"
+rm -f "$TMP/log"/*
+env STUB_LOG="$TMP/log" STUB_MODE=hang HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER= bash -c '
+  HQ_BIN_DIR="$1"; . "$HQ_BIN_DIR/lib/common.sh"; . "$HQ_BIN_DIR/lib/export.sh"
+  trap hq_export_stop_renderer EXIT
+  hq_export_pdf used "$2/r.md" "$2/r.txt" "$2/r.html" "$2/w/out.pdf" "$2/w"' _ "$BIN" "$TMP" &
+OUTER=$!
+i=0
+while [ ! -s "$TMP/log/chrome.pid" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+STUB_PID=$(cat "$TMP/log/chrome.pid" 2>/dev/null)
+kill -TERM "$OUTER" 2>/dev/null
+wait "$OUTER" 2>/dev/null
+if [ -z "$STUB_PID" ]; then
+  bad "an interrupted export: the renderer never started"
+elif kill -0 "$STUB_PID" 2>/dev/null; then
+  bad "an interrupted export left its renderer running (pid $STUB_PID)"
+  kill -KILL "$STUB_PID" 2>/dev/null
+else
+  ok "an interrupted export stops its renderer"
+fi
+check_contains "export.sh's cleanup stops a running renderer first" \
+  "$(sed -n '/^hq__export_cleanup()/,/^}/p' "$BIN/cmd/export.sh")" "  hq_export_stop_renderer"
 check "a file that is not a PDF falls through" \
   "$(render STUB_MODE=notpdf HUMAN_QUEUE_PANDOC= HUMAN_QUEUE_CHROME= HUMAN_QUEUE_CUPSFILTER="$U")" \
   "1 - | pandoc: not installed; chrome: not installed; cupsfilter: no PDF written"
@@ -349,6 +417,11 @@ if [ "$(uname -s)" = Darwin ] && [ -n "$PDFTOTEXT" ]; then
   fi
   if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
     check "real Chrome: a PDF" "$(render HUMAN_QUEUE_EXPORT_RENDERER=chrome)" "0 chrome | "
+    # Chrome leaves its singleton-socket directory (and a fetcher's) behind in
+    # the per-user temp directory; on macOS only MAC_CHROMIUM_TMPDIR moves
+    # them, here into the scratch directory, which the export removes.
+    check_contains "real Chrome: its temp directories in the scratch directory" \
+      "$(find "$TMP/w/tmp" -mindepth 1 -maxdepth 1 -name 'com.google.Chrome.*' 2>/dev/null)" "$TMP/w/tmp/com.google.Chrome."
     TEXT=$("$PDFTOTEXT" -layout "$TMP/w/out.pdf" - 2>/dev/null | tr -d '\f')
     for id in D-44 D-41 D-45 R-9 R-10; do check_contains "real Chrome: pdftotext finds $id" "$TEXT" "$id ·"; done
     check "real Chrome: five sections" "$(printf '%s\n' "$TEXT" | grep -cE '^ *[0-9]+ +[DR]-[0-9]+ ·')" "5"

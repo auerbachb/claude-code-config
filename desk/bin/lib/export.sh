@@ -22,6 +22,12 @@
 #                          one did (`chrome: timed out; cupsfilter: not
 #                          installed`). WORK is a private directory for the
 #                          renderers' scratch files.
+#   hq_export_stop_renderer
+#                          stops the renderer hq_export_pdf is waiting on, if
+#                          any. For the caller's EXIT trap: an export
+#                          interrupted mid-render (SIGTERM, SIGHUP) leaves no
+#                          renderer running, where headless Chrome would
+#                          otherwise keep running on its own.
 #
 # ENVIRONMENT
 #   HUMAN_QUEUE_EXPORT_RENDERER  auto (default): every renderer in the order
@@ -37,11 +43,18 @@
 #                                anything else keeps them)
 #
 # Every renderer runs with stdin from /dev/null, without
-# HUMAN_QUEUE_DATABASE_URL in its environment, and under a deadline (pandoc
-# 120 s, Chrome 60 s, cupsfilter 30 s). Headless Chrome can keep running after
-# it has written its PDF, so it is stopped once it reports the file written.
+# HUMAN_QUEUE_DATABASE_URL in its environment, with TMPDIR (and Chrome's
+# MAC_CHROMIUM_TMPDIR) inside WORK, so its own temp files go when WORK does,
+# and under a deadline (pandoc 120 s, Chrome 60 s, cupsfilter 30 s). Headless
+# Chrome can keep running after it has written its PDF, so it is stopped once
+# it reports the file written; it runs offline (no host name resolves), so
+# it loads the local HTML and nothing else.
 
 HQ_EXPORT_TRIED=""
+# The running renderer's pid (hq_export_stop_renderer), and the TMPDIR the
+# renderers get (inside WORK; empty: leave TMPDIR as it is).
+HQ_EXPORT_PID=""
+HQ_EXPORT_RTMP=""
 
 # hq__export_limit DEFAULT — a renderer's deadline in seconds.
 hq__export_limit() {
@@ -115,16 +128,22 @@ hq__export_run() {
   shift 4
   (
     unset HUMAN_QUEUE_DATABASE_URL
+    if [ -n "$HQ_EXPORT_RTMP" ]; then
+      exec env TMPDIR="$HQ_EXPORT_RTMP" MAC_CHROMIUM_TMPDIR="$HQ_EXPORT_RTMP" "$@"
+    fi
     exec "$@"
   ) </dev/null >"$hq__o" 2>"$hq__e" &
   hq__pid=$!
+  HQ_EXPORT_PID="$hq__pid"
   while kill -0 "$hq__pid" 2>/dev/null; do
     if [ -n "$hq__done" ] && grep -qF -- "$hq__done" "$hq__e" 2>/dev/null; then
       hq__export_stop "$hq__pid"
+      HQ_EXPORT_PID=""
       return 0
     fi
     if [ "$hq__t" -ge $((hq__limit * 5)) ]; then
       hq__export_stop "$hq__pid"
+      HQ_EXPORT_PID=""
       return 124
     fi
     sleep 0.2
@@ -132,7 +151,15 @@ hq__export_run() {
   done
   # 2>/dev/null: no "Terminated" notice on the caller's stderr.
   wait "$hq__pid" 2>/dev/null || hq__rc=$?
+  HQ_EXPORT_PID=""
   return "$hq__rc"
+}
+
+hq_export_stop_renderer() {
+  if [ -n "$HQ_EXPORT_PID" ]; then
+    hq__export_stop "$HQ_EXPORT_PID"
+    HQ_EXPORT_PID=""
+  fi
 }
 
 # hq__export_is_pdf FILE — FILE is non-empty and starts as a PDF does.
@@ -176,10 +203,12 @@ hq__export_pandoc() {
     return 1
   fi
   rm -f "$hq__pdf"
-  # The items' text comes from agent threads: raw TeX, HTML, and attributes
-  # are read as text, never passed to the PDF engine as markup.
+  # The items' text comes from agent threads: export.jq escapes it, so it
+  # reads as text. As a second guard the reader takes raw TeX, HTML,
+  # attributes, and $math$ as text too (math would reach the PDF engine as
+  # TeX), and a YAML block never sets the template's variables.
   hq__export_run "$(hq__export_limit 120)" '' "$hq__work/pandoc.out" "$hq__work/pandoc.err" \
-    "$hq__bin" --from markdown-raw_tex-raw_html-raw_attribute --standalone \
+    "$hq__bin" --from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars --standalone \
     --output "$hq__pdf" "$hq__md" || rc=$?
   if [ "$rc" -eq 0 ] && hq__export_is_pdf "$hq__pdf"; then return 0; fi
   hq__export_note pandoc "$rc"
@@ -198,11 +227,14 @@ hq__export_chrome() {
   fi
   rm -f "$hq__pdf"
   mkdir -p "$hq__work/chrome-profile" || { hq__export_note chrome 1; return 1; }
-  # A profile of its own, so a running Chrome is never touched; both header
-  # flags, for older and newer Chrome (each ignores the one it lacks).
+  # A profile of its own, so a running Chrome is never touched; offline (no
+  # host name resolves, and no background fetches), since it needs only the
+  # local file; both header flags, for older and newer Chrome (each ignores
+  # the one it lacks).
   hq__export_run "$(hq__export_limit 60)" 'bytes written to file' "$hq__work/chrome.out" "$hq__work/chrome.err" \
     "$hq__bin" --headless --disable-gpu --no-first-run --no-default-browser-check \
-    --disable-extensions --disable-sync --user-data-dir="$hq__work/chrome-profile" \
+    --disable-extensions --disable-sync --disable-background-networking \
+    '--host-resolver-rules=MAP * ~NOTFOUND' --user-data-dir="$hq__work/chrome-profile" \
     --no-pdf-header-footer --print-to-pdf-no-header --print-to-pdf="$hq__pdf" \
     "$(hq__export_file_url "$hq__html")" || rc=$?
   if [ "$rc" -eq 0 ] && hq__export_is_pdf "$hq__pdf"; then return 0; fi
@@ -234,6 +266,8 @@ hq_export_pdf() {
   esac
   printf -v "$hq__var" '%s' ''
   HQ_EXPORT_TRIED=""
+  HQ_EXPORT_RTMP="$hq__work/tmp"
+  mkdir -p "$HQ_EXPORT_RTMP" 2>/dev/null || HQ_EXPORT_RTMP=""
   case "${HUMAN_QUEUE_EXPORT_RENDERER:-auto}" in
     auto) hq__list="pandoc chrome cupsfilter" ;;
     markdown) HQ_EXPORT_TRIED="HUMAN_QUEUE_EXPORT_RENDERER=markdown"; return 1 ;;

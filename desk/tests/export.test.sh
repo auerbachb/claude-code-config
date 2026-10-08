@@ -24,8 +24,11 @@
 #   4.1  --set re-exports a set at its own numbers (no new set); --ids keeps
 #        its order; --kind reviews at level 2 and 1, --today; a dry run opens
 #        and records nothing; at most 99 items (`more`); an empty batch writes
-#        nothing; an unknown id or set exits 4 having recorded nothing; a store
-#        before migration 013 exits 1 naming migrate, nothing recorded
+#        nothing; an unknown id or set exits 4 having recorded nothing; a file
+#        that cannot be written after the export was recorded undoes the
+#        record (a new set and its events; with --set, only this export's
+#        events); a store before migration 013 exits 1 naming migrate,
+#        nothing recorded
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -242,6 +245,48 @@ check_contains "an unknown set is named" "$ERR" "no set 999999"
 check "refusals recorded nothing" "$(events "$E0")" ""
 check "refusals opened no set" "$(nsets)" "$SETS1"
 check "refusals wrote nothing" "$([ -e "$TMP/out/x.pdf" ] || [ -e "$TMP/out/x.md" ] && echo yes || echo no)" "no"
+
+# --- a file that cannot be written: the record is undone --------------------------
+# A Chrome stand-in that makes the output directory read-only, then writes its
+# PDF: the export is recorded, and then the file cannot be placed.
+mkdir -p "$TMP/ro"
+cat > "$TMP/lock-chrome" <<'EOF'
+#!/usr/bin/env bash
+chmod 555 "$LOCK_DIR"
+out=""
+for a in "$@"; do case "$a" in --print-to-pdf=*) out="${a#--print-to-pdf=}" ;; esac; done
+printf '%%PDF-1.4 stub\n' > "$out"
+echo "16 bytes written to file $out" >&2
+exec sleep 30
+EOF
+chmod +x "$TMP/lock-chrome"
+# hq_locked ARGS... — the CLI with that stand-in as its only renderer.
+hq_locked() {
+  RC=0
+  chmod 755 "$TMP/ro"
+  HUMAN_QUEUE_SCHEMA="$S" HUMAN_QUEUE_EXPORT_RENDERER=chrome HUMAN_QUEUE_CHROME="$TMP/lock-chrome" LOCK_DIR="$TMP/ro" \
+    bash "$HQ_T_CLI" "$@" >"$TMP/stdout" 2>"$TMP/stderr" </dev/null || RC=$?
+  chmod 755 "$TMP/ro"
+  OUT=$(cat "$TMP/stdout")
+  ERR=$(cat "$TMP/stderr")
+}
+exported_count() { sql_in "SELECT count(*) FROM events WHERE kind = 'exported'"; }
+
+E0=$(max_event)
+SETS1=$(nsets)
+hq_locked export --kind decisions --out "$TMP/ro/locked.pdf"
+check "unwritable after recording: exit 1" "$RC" "1"
+check_contains "unwritable after recording: nothing was recorded" "$ERR" "could not write the PDF; nothing was recorded"
+check "unwritable after recording: its set and its events are removed" "$(nsets):$(events "$E0")" "$SETS1:"
+check "unwritable after recording: no file" "$(find "$TMP/ro" -mindepth 1 | wc -l | tr -d ' ')" "0"
+
+EXPORTED0=$(exported_count)
+POSITIONS0=$(sql_in "SELECT string_agg(position || ':' || item_id, ' ' ORDER BY position) FROM sets WHERE set_id = $SET1")
+hq_locked export --set "$SET1" --out "$TMP/ro/locked.pdf"
+check "unwritable, --set: exit 1, nothing recorded" "$RC:$(events "$E0")" "1:"
+check "unwritable, --set: the set itself is kept" \
+  "$(sql_in "SELECT string_agg(position || ':' || item_id, ' ' ORDER BY position) FROM sets WHERE set_id = $SET1")" "$POSITIONS0"
+check "unwritable, --set: the set's earlier exports are kept" "$(exported_count)" "$EXPORTED0"
 
 # --- at most 99 ------------------------------------------------------------------
 MANY=$(sql_in "INSERT INTO items (id, kind, repo, key, question, status)

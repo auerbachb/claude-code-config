@@ -75,12 +75,18 @@ RENDERERS
   an executable file, that renderer counts as not installed);
   HUMAN_QUEUE_EXPORT_TIMEOUT caps each one's run in seconds (defaults:
   pandoc 120, Chrome 60, cupsfilter 30). Headless Chrome, which can keep
-  running after it writes its PDF, is stopped once it reports the file.
+  running after it writes its PDF, is stopped once it reports the file; it
+  runs offline. Each renderer's temp files stay in a private scratch
+  directory removed on exit, and an export interrupted mid-render stops its
+  renderer.
 
 RECORDING
   One `exported` event per item (note `set N #k`), in the transaction that
-  reads the items (migration 013). Before 013 is applied, export exits 1
-  naming `migrate`; --dry-run records nothing and needs no migration.
+  reads the items (migration 013). If the file then cannot be written, that
+  record is removed again (the set it opened, its `shown` and `exported`
+  events) and export exits 1 saying `nothing was recorded`. Before 013 is
+  applied, export exits 1 naming `migrate`; --dry-run records nothing and
+  needs no migration.
 
 OUTPUT
   The written file's absolute path, one line. An empty batch writes no file
@@ -229,9 +235,12 @@ hq__export_out_check() {
 }
 
 # HQ_EXPORT_WORK: the private scratch directory (the three renderings, the
-# renderers' own files, Chrome's throwaway profile); removed on exit.
+# renderers' own files and temp files, Chrome's throwaway profile); removed
+# on exit, after any renderer still running (an interrupted export) is
+# stopped.
 HQ_EXPORT_WORK=""
 hq__export_cleanup() {
+  hq_export_stop_renderer
   case "$HQ_EXPORT_WORK" in
     */human-queue-export.*) rm -rf "$HQ_EXPORT_WORK" 2>/dev/null || true ;;
   esac
@@ -253,6 +262,42 @@ $tmp"
   chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   cat "$src" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   mv -f "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+# hq__export_undo DATA — the export was recorded (DATA: the store's JSON) but
+# its file could not be written: one more transaction removes what the first
+# recorded, its `exported` events and, when it opened the set, the set and
+# its `shown` events. They are told from any other export of the same set by
+# their time, the first transaction's own (`exported_at`). Returns non-zero
+# when that could not be done.
+hq__export_undo() {
+  local data="$1" sid new at ids
+  sid=$(printf '%s' "$data" | hq_jq -r '.set_id // empty' 2>/dev/null) || return 1
+  new=$(printf '%s' "$data" | hq_jq -r 'if .new_set then 1 else 0 end' 2>/dev/null) || return 1
+  at=$(printf '%s' "$data" | hq_jq -r '.exported_at // empty' 2>/dev/null) || return 1
+  ids=$(printf '%s' "$data" | hq_jq -r '[.items[].id] | join(",")' 2>/dev/null) || return 1
+  if [ -z "$sid" ] || [ -z "$at" ] || [ -z "$ids" ]; then return 1; fi
+  hq_db_script -At -v "hq_set_id=$sid" -v "hq_new=$new" -v "hq_at=$at" -v "hq_ids=$ids" \
+    >/dev/null 2>&1 <<'SQL'
+SET LOCAL lock_timeout TO '30s';
+DELETE FROM events
+ WHERE item_id = ANY (string_to_array(:'hq_ids', ','))
+   AND at = :'hq_at'::timestamptz
+   AND note LIKE 'set ' || :'hq_set_id' || ' #%'
+   AND (kind = 'exported' OR (kind = 'shown' AND :'hq_new' = '1'));
+DELETE FROM sets WHERE set_id = :'hq_set_id'::bigint AND :'hq_new' = '1';
+SQL
+}
+
+# hq__export_fail DATA WHAT — exits 1: WHAT (`write the PDF`) failed after the
+# export was recorded. The record is undone first, so the store names no paper
+# that does not exist and no unseen set becomes the latest; only when the
+# store refuses that too does the message say the items stay recorded.
+hq__export_fail() {
+  if hq__export_undo "$1"; then
+    hq_die_error "export: could not $2; nothing was recorded"
+  fi
+  hq_die_error "export: could not $2 (and could not undo the record: the items stay recorded as exported)"
 }
 
 # hq__export_abs PATH — PATH made absolute (its directory resolved).
@@ -426,7 +471,7 @@ cmd_run() {
 
   if [ "$dry" -eq 0 ] && [ "$(printf '%s' "$data" | hq_jq -r '.count')" != 0 ]; then
     HQ_EXPORT_WORK=$(mktemp -d "${TMPDIR:-/tmp}/human-queue-export.XXXXXX") \
-      || hq_die_error "export: cannot create a scratch directory"
+      || hq__export_fail "$data" "create a scratch directory"
     trap hq__export_cleanup EXIT
     chmod 700 "$HQ_EXPORT_WORK" 2>/dev/null || true
     if ! printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
@@ -435,19 +480,19 @@ cmd_run() {
            'include "export"; export_text' > "$HQ_EXPORT_WORK/export.txt" \
        || ! printf '%s' "$data" | hq_jq -r -L "$HQ_BIN_DIR/lib" -L "$HQ_DESK_DIR/skill" \
            'include "export"; export_html' > "$HQ_EXPORT_WORK/export.html"; then
-      hq_die_error "export: could not render the batch (the items were recorded as exported)"
+      hq__export_fail "$data" "render the batch"
     fi
     path=$(hq__export_abs "$out")
     if hq_export_pdf renderer "$HQ_EXPORT_WORK/export.md" "$HQ_EXPORT_WORK/export.txt" \
          "$HQ_EXPORT_WORK/export.html" "$HQ_EXPORT_WORK/export.pdf" "$HQ_EXPORT_WORK"; then
       format=pdf
       hq__export_place "$HQ_EXPORT_WORK/export.pdf" "$path" \
-        || hq_die_error "export: could not write the PDF (the items were recorded as exported)"
+        || hq__export_fail "$data" "write the PDF"
     else
       format=markdown
       mdpath="${path%.*}.md"
       hq__export_place "$HQ_EXPORT_WORK/export.md" "$mdpath" \
-        || hq_die_error "export: could not write the Markdown (the items were recorded as exported)"
+        || hq__export_fail "$data" "write the Markdown"
       warn="no PDF renderer produced a PDF ($HQ_EXPORT_TRIED); wrote the Markdown instead: $mdpath"
       path="$mdpath"
       printf 'human-queue: export: %s\n' "$warn" >&2

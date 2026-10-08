@@ -9,8 +9,8 @@
 # are `n.1`, `n.2`, … each with the letter a typed reply uses (`2.2  B. No`).
 # Every open item ends in a blank answer line; the footer carries the export
 # time. Reuses desk.jq (letter, bare_label, utc, item_link, default_line,
-# review_label, menu_shaped), so the paper and the screen agree on every
-# label.
+# review_label, menu_shaped, short_repo), so the paper and the screen agree
+# on every label.
 
 include "desk";
 
@@ -60,7 +60,6 @@ def ex_todo:
     ((.my_note // "") | if . == "" then empty else "note: " + . end) ]
   | if length == 0 then empty else join(" · ") end;
 
-def ex_short_repo: (.repo // "") | (split("/") | .[1]) // .;
 
 # ex_body($level): a Review's summary at $level, else the next level down,
 # marked, so a line that is only a title is never mistaken for a summary.
@@ -71,8 +70,10 @@ def ex_body($level):
       $l1 + (if $level >= 2 then "\n(level-2 summary not written yet; its one-line summary is shown)" else "" end)
     else .question + "\n(title; not summarized yet)" end;
 
-# ex_item($level): one item, every field the three renderings print.
-def ex_item($level):
+# ex_item($level; $repos): one item, every field the three renderings print.
+# $repos: every item's repository, so a repository shows without its owner
+# unless another one in the batch has the same name (desk.jq's short_repo).
+def ex_item($level; $repos):
   (.n | tostring) as $n
   | .default_option as $d
   | {
@@ -81,7 +82,7 @@ def ex_item($level):
       kind: .kind,
       open: (.status == "open"),
       heading: (if .kind == "review" then .id + " · " + review_label else .id + " · " + .question end),
-      meta: ([ ex_short_repo,
+      meta: ([ (.repo // "" | if . == "" then "" else short_repo($repos) end),
                (if .kind == "review" then ((.context // [])[1] // empty) else .key end),
                (if .status != "open" then .status else empty end),
                (if .kind == "decision" then
@@ -104,7 +105,10 @@ def ex_item($level):
       answer_label: (if .kind == "review" then "Reviewed [ ]   Flag, and why:" else "Answer:" end)
     };
 
-def ex_items: .level as $level | [ (.items // [])[] | ex_item($level) ];
+def ex_items:
+  .level as $level
+  | [ (.items // [])[] | .repo // empty | select(. != "") ] as $repos
+  | [ (.items // [])[] | ex_item($level; $repos) ];
 
 def ex_option_text: .num + "  " + .letter + ". " + .text + (if .recommended then " (Recommended)" else "" end);
 
@@ -112,20 +116,37 @@ def ex_rule: "______________________________________________________________";
 
 # ------------------------------------------------------------- Markdown
 
-# Lines that must stay lines end in two spaces (a Markdown line break), which
-# reads as nothing on paper when the Markdown itself is printed.
+# ex_md_esc: text with every character Markdown reads as markup
+# backslash-escaped: emphasis and code, links and images, raw HTML and
+# entities, math, sub- and superscripts, heading attributes, tables.
+def ex_md_esc: gsub("(?<c>[\\\\`*_{}\\[\\]<>#!$~^|&])"; "\\\(.c)");
+
+# ex_md_lit: an item's own text (it comes from agent threads and GitHub) as
+# Markdown pandoc reads literally, on one line: the paper shows the text as
+# stored, an image in it is never fetched, and nothing in it reaches the PDF
+# engine as TeX.
+def ex_md_lit: tostring | gsub("[\r\n]+"; " ") | ex_md_esc;
+
+# ex_md_body: a Review's summary, escaped the same way except its **bold**
+# runs, which the desk writes on purpose; its lines stay lines.
+def ex_md_body: tostring | ex_md_esc | gsub("\\\\\\*\\\\\\*"; "**");
+
+# The item's own text goes through ex_md_lit (ex_md_body for a summary); the
+# export's own words and rules do not. Lines that must stay lines end in two
+# spaces (a Markdown line break), which reads as nothing on paper when the
+# Markdown itself is printed.
 def ex_md_item:
-  "## " + .n + "  " + .heading,
+  "## " + .n + "  " + (.heading | ex_md_lit),
   "",
-  (if .meta != "" then .meta, "" else empty end),
-  (if (.context | length) > 0 then (.context[] | "- " + .), "" else empty end),
-  (if .body != null then (.body | split("\n")[] | . + "  "), "" else empty end),
-  (if (.options | length) > 0 then (.options[] | ex_option_text + "  "), "" else empty end),
-  (if .default != null then .default, "" else empty end),
-  (if .todo != null then .todo, "" else empty end),
-  (if .link != null then "Link: " + .link.label + " — " + .link.url, "" else empty end),
+  (if .meta != "" then (.meta | ex_md_lit), "" else empty end),
+  (if (.context | length) > 0 then (.context[] | "- " + ex_md_lit), "" else empty end),
+  (if .body != null then (.body | ex_md_body | split("\n")[] | . + "  "), "" else empty end),
+  (if (.options | length) > 0 then (.options[] | .text |= ex_md_lit | ex_option_text + "  "), "" else empty end),
+  (if .default != null then (.default | ex_md_lit), "" else empty end),
+  (if .todo != null then (.todo | ex_md_lit), "" else empty end),
+  (if .link != null then "Link: " + (.link.label | ex_md_lit) + " — " + (.link.url | ex_md_lit), "" else empty end),
   (if .open then .answer_label + " " + ex_rule, "", ex_rule, ""
-   elif .answer != null then "Answered: " + .answer, ""
+   elif .answer != null then "Answered: " + (.answer | ex_md_lit), ""
    else empty end);
 
 def export_markdown:
