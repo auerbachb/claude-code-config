@@ -105,7 +105,11 @@ unit rate), `flat` (a monthly fee prorated to the window's elapsed days), or `no
 0). Rates come only from the `review-stack-rates` block in the pricing matrix;
 `measure.sh --help` (SPEND LEDGER) has the rules. Quote a figure with its label —
 the vendor dashboard, not the ledger, is the bill. The drift comparison does not
-read spend.
+read spend. Each tool also carries value fields read from the verdicts agents
+post in review threads (issue #1810): `findings`, `valid`, `real_defects`,
+`declined`, `unanswered`, `precision`, `cost_per_real_defect_usd`, and
+`median_response_min` — definitions in `measure.sh --help` (VALUE FIELDS) and
+`.claude/reference/review-stack-audit.md`. The report does not render them yet.
 
 ```bash
 REPO_ROOT="$("$REPO_ROOT_SH")"

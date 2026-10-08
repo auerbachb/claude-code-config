@@ -72,7 +72,8 @@
 #               The window is the measurement's meaning, so a truncated sample is
 #               declared in `window.truncated` rather than passed off as the
 #               whole window.
-#   --ledger    Add labelled spend per tool (issue #1809; see SPEND LEDGER).
+#   --ledger    Add labelled spend per tool (issue #1809; see SPEND LEDGER)
+#               and the value fields (issue #1810; see VALUE FIELDS).
 #               Implied by every multi-repo run: --repos, --all-repos, or a
 #               multi-repo fixture read with no repo flag. Without it, the
 #               single-repo path runs the same queries and emits the same
@@ -123,7 +124,32 @@
 #   figures, and any null per-repo figure makes the total null. A single-repo
 #   ledger run attributes the whole prorated fee to its one repo.
 #   The vendor dashboard stays the authority for the real bill. Live ledger runs
-#   cost one extra gh call per PR plus one per commit.
+#   cost one extra gh call per PR plus one per commit, plus the review-thread
+#   read below (one GraphQL call per 100 threads per PR).
+#
+# VALUE FIELDS (--ledger; issue #1810)
+#   Each review thread a tool opens is one finding, and its replies give it a
+#   verdict: fixed, deferred, declined, or unanswered. Threads are read through
+#   GraphQL `reviewThreads` (first 100 comments per thread). Only replies after
+#   the first comment, by a GitHub `User` account, count. Per tool:
+#     findings                 threads whose first comment the tool wrote
+#     valid                    fixed + deferred
+#     real_defects             threads whose deciding `review-verdict` marker
+#                              says defect=real (wording alone never counts)
+#     declined, unanswered     the other two verdicts
+#     precision                valid / (valid + declined), 3 decimals; null
+#                              when both are 0 (unanswered is left out)
+#     cost_per_real_defect_usd spend_usd / real_defects, in cents; null when
+#                              either is null or 0
+#     median_response_min      median minutes, over the PRs the tool reviewed
+#                              or commented on, from the earliest trigger
+#                              comment for it that precedes its first response
+#                              (else from PR open) to that first response
+#   Multi-repo totals are recomputed from the summed counts and the pooled
+#   response times, never averaged across repos. Classification rules, the
+#   marker syntax, and the trigger table: .claude/reference/review-stack-audit.md
+#   "Value fields". The follow-up-link parser is the merge gate's own
+#   (.claude/scripts/lib/deferred-refs.jq), so ledger mode also needs `jq`.
 #
 # FIXTURE FORMAT
 #   {"repo": "owner/name",
@@ -139,6 +165,17 @@
 #   envelopes with a `check_runs` array, and REST's {"app": {"slug"}}, are
 #   accepted too). A run under that name from any other app, or with no `app`,
 #   is not BugBot's and is not priced. A PR without `check_runs` has none.
+#
+#   Value-field inputs (optional, ledger mode only; issue #1810): a per-PR
+#   `created_at` (PR open), `submitted_at` on a review, `created_at` on an
+#   inline comment, and a per-PR `threads` list:
+#     "threads": [{"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot",
+#                                "body": "...", "created_at": "..."},
+#                               {"user": "auerbachb", "user_type": "User",
+#                                "body": "Fixed in abc1234", "created_at": "..."}],
+#                  "comments_truncated": false}]
+#   `user_type` is GitHub's account type (`User`, `Bot`, ...); only `User`
+#   replies decide a verdict. A PR without `threads` has no findings.
 #
 #   Multi-repo: {"repos": [{"repo": "owner/name", "truncated": false,
 #                           "prs": [ ...as above... ]}]}
@@ -158,7 +195,10 @@
 #                "prs_touched", "review_objects", "approved",
 #                "changes_requested", "inline_findings", "issue_comments",
 #                "sole_provider_on", "cap_signals": [...], "cap_kinds": [...],
-#                "spend_usd", "spend_source"}],   # spend_*: ledger mode only
+#                "spend_usd", "spend_source",     # spend_*: ledger mode only
+#                "findings", "valid", "real_defects", "declined",
+#                "unanswered", "precision", "cost_per_real_defect_usd",
+#                "median_response_min"}],         # value fields: ledger only
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
 #     "unclassified_hits": N,   # bodies (review body, inline comment, or
 #                               # conversation comment) carrying >=1 unexplained
@@ -392,6 +432,11 @@ if [[ "$LEDGER" -eq 1 ]]; then
   done
   [[ -n "$LEDGER_LIB_DIR" ]] \
     || { echo "ERROR: review_ledger.py not found (checked this checkout's .claude/scripts/lib and all three published paths) — spend ledger unavailable" >&2; exit 1; }
+  # The value fields read follow-up links through the merge gate's own jq
+  # parser (issue #1810). Without jq they cannot be computed, and a ledger that
+  # quietly read every deferral as unanswered would understate every tool.
+  command -v jq >/dev/null 2>&1 \
+    || { echo "ERROR: jq not found — the ledger's follow-up link parser (deferred-refs.jq) is unavailable" >&2; exit 1; }
   if [[ -z "$PRICING" ]]; then
     for _c in \
       ${_claude_dir:+"$_claude_dir/reference/pricing-matrix.md"} \
@@ -705,11 +750,16 @@ def fetch_prs(repo):
         pr = {
             "number": num,
             "merged_at": row.get("mergedAt"),
+            # submitted_at / created_at time a tool's first response (ledger
+            # value fields, #1810); like the issue-comment timestamps below,
+            # the legacy path never reads them and never emits normalized data.
             "reviews": [{"user": (r.get("user") or {}).get("login", ""),
                          "state": r.get("state", ""),
-                         "body": r.get("body") or ""} for r in reviews],
+                         "body": r.get("body") or "",
+                         "submitted_at": r.get("submitted_at")} for r in reviews],
             "pr_comments": [{"user": (c.get("user") or {}).get("login", ""),
-                             "body": c.get("body") or ""} for c in pr_comments],
+                             "body": c.get("body") or "",
+                             "created_at": c.get("created_at")} for c in pr_comments],
             # created_at places a trigger in the ledger window, updated_at a
             # receipt (CodeRabbit edits its summary in place); the legacy path
             # never reads either and never emits normalized data.
@@ -720,8 +770,75 @@ def fetch_prs(repo):
         }
         if ledger is not None:
             pr["check_runs"] = fetch_bugbot_runs(repo, num)
+            pr["created_at"], pr["threads"] = fetch_threads(repo, num)
         prs.append(pr)
     return prs
+
+
+# One page of a PR's review threads (ledger only, issue #1810). The first 100
+# comments of each thread are read; `totalCount` says when there were more, so
+# a truncated thread is noted rather than silently judged on part of its replies.
+THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      createdAt
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          comments(first: 100) {
+            totalCount
+            nodes { author { __typename login } body createdAt }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def fetch_threads(repo, num):
+    """(PR createdAt, normalized review threads) for one PR, every page.
+
+    GraphQL bot logins carry no `[bot]` suffix, so one is added for a `Bot`
+    author: thread attribution then keys on the same login as the REST data.
+    `user_type` keeps GraphQL's own account type, which is what decides whether
+    a reply may carry a verdict. A response without the PR fails the run."""
+    owner, name = repo.split("/", 1)
+    pages = run_gh(["api", "graphql", "--paginate",
+                    "-f", "query=%s" % THREADS_QUERY,
+                    "-f", "owner=%s" % owner, "-f", "name=%s" % name,
+                    "-F", "number=%d" % num])
+    if isinstance(pages, dict):
+        pages = [pages]
+    created_at = None
+    threads = []
+    for page in pages:
+        if not isinstance(page, dict) or page.get("errors"):
+            fail("gh api graphql (review threads of %s#%d) returned errors: %s"
+                 % (repo, num, json.dumps(page.get("errors") if isinstance(page, dict) else page)[:400]))
+        pull = ((page.get("data") or {}).get("repository") or {}).get("pullRequest")
+        if not isinstance(pull, dict):
+            fail("gh api graphql returned no pull request for %s#%d" % (repo, num))
+        created_at = created_at or pull.get("createdAt")
+        for node in ((pull.get("reviewThreads") or {}).get("nodes") or []):
+            block = (node or {}).get("comments") or {}
+            nodes = block.get("nodes") or []
+            comments = []
+            for c in nodes:
+                author = (c or {}).get("author") or {}
+                login = author.get("login") or ""
+                kind = author.get("__typename") or ""
+                if kind == "Bot" and login and not login.endswith("[bot]"):
+                    login += "[bot]"
+                comments.append({"user": login, "user_type": kind,
+                                 "body": (c or {}).get("body") or "",
+                                 "created_at": (c or {}).get("createdAt")})
+            total = block.get("totalCount")
+            threads.append({"comments": comments,
+                            "comments_truncated": isinstance(total, int) and total > len(nodes)})
+    return created_at, threads
 
 
 def fetch_bugbot_runs(repo, num):
@@ -757,7 +874,11 @@ def measure_repo(repo, source, prs, truncated):
 
     Also returns, per tool key, the PR numbers behind `sole_provider_on`. The
     document reports that figure only as a count — drift.sh reads it as one —
-    so the numbers travel beside it for the multi-repo roll-up to qualify."""
+    so the numbers travel beside it for the multi-repo roll-up to qualify.
+
+    Third, in ledger mode, the per-tool value tallies (None otherwise): the
+    multi-repo totals are recomputed from them — pooled response times, summed
+    counts — rather than from the rounded per-repo figures."""
     notes = []
     if truncated:
         notes.append(
@@ -940,8 +1061,10 @@ def measure_repo(repo, source, prs, truncated):
             "noise."
             % (len(unclassified), unclassified_hits))
 
+    tallies = None
     if ledger is not None:
         notes.extend(apply_spend(tools_out, prs))
+        tallies = apply_value(tools_out, prs, repo, notes)
 
     snapshot = {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -960,7 +1083,31 @@ def measure_repo(repo, source, prs, truncated):
         "unclassified_hits": unclassified_hits,
         "notes": notes,
     }
-    return snapshot, sole_prs
+    return snapshot, sole_prs, tallies
+
+
+def apply_value(tools_out, prs, repo, notes):
+    """Attach the value fields to each tool (ledger mode only; issue #1810).
+
+    The verdict rules live in review_ledger.py; spend must already be on each
+    tool, since cost per real defect divides it. A multi-repo run reallocates
+    flat fees afterwards and recomputes that one field (set_cost). Returns the
+    tallies the multi-repo totals pool. A parser failure fails the run."""
+    try:
+        tallies, value_notes = ledger.measure_value(
+            prs, repo, LOGIN_TO_KEY, [t["key"] for t in TOOLS])
+    except ledger.LedgerError as exc:
+        fail("value fields unavailable for %s: %s" % (repo, exc))
+    for s in tools_out:
+        s.update(ledger.value_fields(tallies[s["key"]], ledger.to_decimal(s["spend_usd"])))
+    notes.extend(value_notes)
+    return tallies
+
+
+def set_cost(entry):
+    """Recompute cost_per_real_defect_usd from the entry's final spend_usd."""
+    entry["cost_per_real_defect_usd"] = ledger.to_number(ledger.cost_per_real_defect(
+        ledger.to_decimal(entry["spend_usd"]), entry["real_defects"]))
 
 
 def apply_spend(tools_out, prs):
@@ -1074,7 +1221,7 @@ if not multi:
         prs = fetch_prs(repo)
 
     truncated = (not fixture) and len(prs) >= limit
-    snapshot, _ = measure_repo(repo, source, prs, truncated)
+    snapshot, _, _ = measure_repo(repo, source, prs, truncated)
     if ledger is not None:
         snapshot["notes"].extend(rate_notes)
         snapshot["notes"].append(
@@ -1116,6 +1263,7 @@ if not targets:
     fail("no repos to measure")
 
 results = []
+repo_tallies = []   # ledger value tallies, parallel to results (None outside ledger mode)
 for repo in targets:
     if fixture:
         entry = fixture_entries.get(repo.lower())
@@ -1126,8 +1274,9 @@ for repo in targets:
     else:
         prs = fetch_prs(repo)
         truncated = len(prs) >= limit
-    doc, sole = measure_repo(repo, source, prs, truncated)
+    doc, sole, tallies = measure_repo(repo, source, prs, truncated)
     results.append((repo, doc, sole))
+    repo_tallies.append(tallies)
 
 # A flat fee is billed once to the account, not once per repo. Each repo's share
 # is that tool's prs_touched share of the one prorated fee, allocated in whole
@@ -1145,6 +1294,10 @@ if ledger is not None:
                                  [e["prs_touched"] for e in entries])
         for entry, share in zip(entries, shares):
             entry["spend_usd"] = ledger.to_number(share)
+    # Cost per real defect divides spend, so a reallocated share moves it.
+    for _, doc, _ in results:
+        for entry in doc["tools"]:
+            set_cost(entry)
 
 # The cross-repo total per tool. Same fields as a single-repo tool entry, so
 # drift.sh — which reads only `tools[]`, `window.truncated` and `unclassified`
@@ -1191,6 +1344,11 @@ for t in TOOLS:
                        for _, doc, _ in results)])
         agg["spend_usd"] = ledger.to_number(spend)
         agg["spend_source"] = label
+        # Value fields from the pooled tallies: precision from summed counts,
+        # the median over every repo's response times, cost from the total
+        # spend — never an average of the per-repo figures.
+        agg.update(ledger.value_fields(
+            ledger.pool_tallies([tallies[t["key"]] for tallies in repo_tallies]), spend))
     totals.append(agg)
 notes.extend(rate_notes)
 

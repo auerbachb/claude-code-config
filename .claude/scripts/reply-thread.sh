@@ -22,6 +22,7 @@
 #
 # Usage:
 #   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body "<text>" [--pr N]
+#                   [--verdict fixed|deferred|declined --defect real|not [--agent NAME]]
 #   reply-thread.sh --help
 #
 # Arguments:
@@ -36,6 +37,20 @@
 #                    repos/{owner}/{repo}/pulls/comments/{comment_id}, reading
 #                    the trailing segment of .pull_request_url. A comment that
 #                    cannot be resolved exits 3. Pass --pr to skip that lookup.
+#   --verdict X      Optional (issue #1810): fixed, deferred, or declined. Stamps
+#                    the reply with one hidden marker line, appended after the
+#                    reviewer rules above have run:
+#                      <!-- review-verdict: X defect=Y agent=NAME -->
+#                    /review-stack-audit's ledger reads it back as the thread's
+#                    verdict, ahead of the reply's wording. Requires --defect.
+#   --defect Y       real or not: was the finding a real defect? Only a marker
+#                    saying `real` counts toward the ledger's real defects.
+#                    Valid only with --verdict.
+#   --agent NAME     The coding agent replying (default: claude-code), so the
+#                    ledger can split verdicts by agent. Letters, digits, `.`,
+#                    `_`, `-`; at most 64 characters. Valid only with --verdict.
+#                    Without these three flags the posted body is byte-identical
+#                    to what it was before they existed.
 #
 # Prerequisites:
 #   Must be run from inside a git checkout of the target repository — the
@@ -77,6 +92,10 @@ REVIEWER=""
 BODY=""
 PR_NUMBER=""
 COMMENT_ID=""
+VERDICT=""
+DEFECT=""
+AGENT=""
+AGENT_SET=0
 
 print_help() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -116,6 +135,31 @@ while [[ $# -gt 0 ]]; do
       PR_NUMBER="$2"
       shift 2
       ;;
+    --verdict)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --verdict requires a value (fixed|deferred|declined)" >&2
+        exit 2
+      fi
+      VERDICT="$2"
+      shift 2
+      ;;
+    --defect)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --defect requires a value (real|not)" >&2
+        exit 2
+      fi
+      DEFECT="$2"
+      shift 2
+      ;;
+    --agent)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --agent requires a value" >&2
+        exit 2
+      fi
+      AGENT="$2"
+      AGENT_SET=1
+      shift 2
+      ;;
     --*)
       echo "ERROR: unknown flag: $1" >&2
       exit 2
@@ -133,7 +177,7 @@ done
 
 if [[ -z "$COMMENT_ID" ]]; then
   echo "ERROR: <comment_id> is required" >&2
-  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N]" >&2
+  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME]]" >&2
   exit 2
 fi
 
@@ -162,6 +206,42 @@ fi
 if [[ -n "$PR_NUMBER" ]] && [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: --pr must be a positive integer (got: $PR_NUMBER)" >&2
   exit 2
+fi
+
+# Verdict marker flags (issue #1810). All three are validated before anything
+# is posted, and a flag given without --verdict is an error rather than a
+# silent no-op: an agent that thought it had recorded a verdict must find out.
+if [[ -n "$VERDICT" || -n "$DEFECT" || "$AGENT_SET" -eq 1 ]]; then
+  case "$VERDICT" in
+    fixed|deferred|declined) ;;
+    "")
+      echo "ERROR: --defect and --agent are valid only with --verdict (fixed|deferred|declined)" >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: --verdict must be one of: fixed, deferred, declined (got: $VERDICT)" >&2
+      exit 2
+      ;;
+  esac
+  case "$DEFECT" in
+    real|not) ;;
+    "")
+      echo "ERROR: --verdict requires --defect (real|not)" >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: --defect must be one of: real, not (got: $DEFECT)" >&2
+      exit 2
+      ;;
+  esac
+  [[ "$AGENT_SET" -eq 1 ]] || AGENT="claude-code"
+  # The marker is parsed back by token, so the name may hold no whitespace and
+  # nothing that could close the HTML comment early.
+  agent_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+  if [[ ! "$AGENT" =~ $agent_re ]]; then
+    echo "ERROR: --agent must be 1-64 letters, digits, '.', '_' or '-', starting with a letter or digit (got: $AGENT)" >&2
+    exit 2
+  fi
 fi
 
 # --------------------------------------------------------------------------
@@ -241,6 +321,16 @@ fi
 if ! grep -q '[^[:space:]]' <<<"$BODY"; then
   echo "ERROR: --body is empty or whitespace-only after reviewer transformation" >&2
   exit 2
+fi
+
+# The verdict marker goes on a line of its own AFTER the reviewer rules, so
+# neither a token strip nor the blank-collapse can reach it, and after the
+# empty-body check, so a marker never stands in for a reply. Without --verdict
+# this block never runs and BODY is exactly what it always was. The fallback
+# path below carries it too, behind its review-comment-id line.
+if [[ -n "$VERDICT" ]]; then
+  BODY="$BODY
+<!-- review-verdict: $VERDICT defect=$DEFECT agent=$AGENT -->"
 fi
 
 # --------------------------------------------------------------------------

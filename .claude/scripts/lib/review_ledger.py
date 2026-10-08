@@ -35,12 +35,27 @@ MONEY IS DECIMAL
   (to_number), and a multi-repo total is summed from the per-repo cents, so a
   total always equals the sum of the figures printed beside it.
 
-Standard library only; must import on macOS system python3 (3.9).
+WHAT A FINDING WAS WORTH (issue #1810, increment 3/5)
+  Every review thread a tool opens is one finding, and the replies to it carry
+  its verdict: `fixed`, `deferred`, `declined`, or `unanswered`. Only replies
+  after the first comment, from a GitHub `User` account, count. An explicit
+  `<!-- review-verdict: ... -->` marker beats wording, and only a marker can
+  say a finding was a real defect. The per-tool value fields (precision, cost
+  per real defect, median response time) are derived here; the rules are
+  documented in .claude/reference/review-stack-audit.md "Value fields".
+  Follow-up links are read by lib/deferred-refs.jq — the merge gate's own
+  parser — through one `jq` call per run, so the two never disagree.
+
+Standard library only (plus the `jq` binary for the shared link parser); must
+import on macOS system python3 (3.9).
 """
 
 import json
 import math
+import os
 import re
+import statistics
+import subprocess
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fractions import Fraction
@@ -515,3 +530,353 @@ def to_number(value):
 def to_decimal(value):
     """JSON number -> Decimal cents, None -> None. Exact for 2-decimal values."""
     return None if value is None else cents(Decimal(repr(float(value))))
+
+
+# --- reply verdicts and value fields (issue #1810) ---------------------------
+#
+# A finding is a review thread whose FIRST comment a review tool wrote. Its
+# verdict comes from the replies after that comment, and only from replies by a
+# GitHub `User` account — the PR author, a collaborator, or an agent posting as
+# the user. A bot's reply, the tool's own follow-ups included, never decides a
+# verdict, and GraphQL bot logins carry no `[bot]` suffix, so the account TYPE
+# is what is tested (measure.sh normalizes it as `user_type`).
+#
+# Per reply, after quoted lines (`> ...`) are removed:
+#   marker    `<!-- review-verdict: fixed|deferred|declined defect=real|not
+#             agent=<name> -->` outside any code span or fenced block. It beats
+#             wording. A marker whose verdict is unknown is ignored (and noted),
+#             and the reply is read by its wording instead.
+#   declined  the reply STARTS with `Declined`, `Not a defect`, or `Won't fix`
+#             (straight or curly apostrophe), after any leading @mentions,
+#             HTML comments, emphasis, and fenced blocks (wording inside a
+#             fence is an example, never a verdict). The opening verb is the stated
+#             disposition, so it beats a commit or issue number cited later in
+#             the reply ("Declined: same as the pattern in #1222" is a decline
+#             that cites a PR, and the ledger cannot look the number up).
+#   fixed     `Fixed in <sha>` anywhere outside a fenced code block (7-40 hex
+#             digits, backticks and a `commit` word tolerated).
+#   deferred  a follow-up link in the forms the merge gate accepts, read by the
+#             gate's own parser (lib/deferred-refs.jq). Syntax only: unlike the
+#             gate, the ledger does not look the number up.
+# Per thread: the LATEST marker wins over everything; with no marker, the latest
+# reply whose wording matched wins; with neither, the thread is `unanswered`.
+# Only a marker can make a finding a real defect (`defect=real`) — a `Fixed in`
+# reply without one is fixed, not a real defect.
+
+VERDICTS = ("fixed", "deferred", "declined")
+DEFERRED_REFS_MODULE = "deferred-refs.jq"
+
+_MARKER_RE = re.compile(r"<!--[ \t]*review-verdict[ \t]*:([^\n]*?)-->", re.I)
+_AGENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# Code is shown, not hidden: a marker quoted inside a fenced block or a code span
+# is an example of the syntax, not a verdict. An unterminated fence runs to the
+# end of the body, as CommonMark reads it. Code spans are matched within one
+# line, so an unmatched backtick never scans past its own line; a marker is
+# one line anyway.
+_FENCED_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}\1[ \t]*$|\Z)",
+                        re.M | re.S)
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]+?(?<!`)\1(?!`)")
+_DECLINED_RE = re.compile(
+    r"\A\s*(?:<!--.*?-->\s*)*(?:@[A-Za-z0-9][A-Za-z0-9_-]*(?:\[bot\])?[\s,:]*)*"
+    r"(?:\*\*|__|\*|_)?(?:declined|not[ \t]+a[ \t]+defect|won['’]t[ \t]+fix)(?!\w)",
+    re.I | re.S)
+_FIXED_RE = re.compile(
+    r"(?<![\w-])fixed[ \t]+in[ \t]+(?:commit[ \t]+)?`?[0-9a-f]{7,40}`?(?!\w)", re.I)
+
+# The comment that asks each tool for a review, by the commands the rules
+# document. Vercel has none: its clock always starts at PR open.
+TRIGGERS = {
+    "coderabbit": re.compile(r"(?<![\w@])@coderabbitai[ \t]+(?:full[ \t]+)?review\b", re.I),
+    "bugbot":     re.compile(r"(?<![\w@])@cursor[ \t]+review\b", re.I),
+    "codeant":    re.compile(r"(?<![\w@])@codeant-ai[ \t]+review\b", re.I),
+    "graphite":   re.compile(r"(?<![\w@])@graphite-app[ \t]+re-review\b", re.I),
+    "greptile":   _GREPTILE_RE,
+}
+
+
+class LedgerError(Exception):
+    """A value-field input could not be read; the ledger run fails closed."""
+
+
+def _as_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _text(value):
+    return value if isinstance(value, str) else ""
+
+
+def is_user_reply(comment):
+    """A reply that may decide a verdict: a `User` account, never a bot login."""
+    login = _text(comment.get("user"))
+    return comment.get("user_type") == "User" and not login.lower().endswith("[bot]")
+
+
+def parse_bodies(items, lib_dir=None):
+    """Run the shared parser over many bodies in ONE jq call.
+
+    items: [{"repo": "owner/name", "body": str}]. Returns, per item and in
+    order, {"stripped": <body without quoted lines>, "refs": [issue numbers]}.
+    Any failure raises LedgerError: value fields computed without the parser
+    would silently read every deferral as unanswered."""
+    if not items:
+        return []
+    lib_dir = lib_dir or os.path.dirname(os.path.abspath(__file__))
+    if not os.path.isfile(os.path.join(lib_dir, DEFERRED_REFS_MODULE)):
+        raise LedgerError("%s not found beside review_ledger.py in %s"
+                          % (DEFERRED_REFS_MODULE, lib_dir))
+    program = ('include "deferred-refs"; map(. as $i | '
+               '{stripped: ($i.body | strip_quoted_lines), refs: ($i.body | deferred_refs($i.repo))})')
+    try:
+        proc = subprocess.run(["jq", "-c", "-L", lib_dir, program], input=json.dumps(items),
+                              capture_output=True, encoding="utf-8")
+    except OSError as exc:
+        raise LedgerError("could not run jq for the follow-up link parser: %s" % exc)
+    if proc.returncode != 0:
+        raise LedgerError("jq (follow-up link parser) failed (rc=%d): %s"
+                          % (proc.returncode, proc.stderr.strip()[:400]))
+    try:
+        parsed = json.loads(proc.stdout)
+    except ValueError:
+        raise LedgerError("jq (follow-up link parser) returned unparseable JSON")
+    if (not isinstance(parsed, list) or len(parsed) != len(items)
+            or not all(isinstance(p, dict) and isinstance(p.get("stripped"), str)
+                       and isinstance(p.get("refs"), list) for p in parsed)):
+        raise LedgerError("jq (follow-up link parser) returned an unexpected shape")
+    return parsed
+
+
+def parse_marker(inner):
+    """The fields of one marker's inside text, or None when its verdict is unknown.
+
+    Returns {"verdict", "defect": "real"|"not"|None, "agent": str|None}. Only the
+    verdict is required; an unknown `defect` value reads as not-real, and an
+    agent name outside a conservative token shape reads as unnamed."""
+    fields = inner.split()
+    if not fields or fields[0].lower() not in VERDICTS:
+        return None
+    marker = {"verdict": fields[0].lower(), "defect": None, "agent": None}
+    for field in fields[1:]:
+        key, _, value = field.partition("=")
+        key = key.lower()
+        if key == "defect":
+            marker["defect"] = value.lower() if value.lower() in ("real", "not") else None
+        elif key == "agent":
+            marker["agent"] = value if _AGENT_RE.fullmatch(value) else None
+    return marker
+
+
+def classify_reply(stripped, refs):
+    """(wording verdict or None, marker or None, ignored marker count) for one
+    reply. `stripped` already has its quoted lines removed; `refs` is the shared
+    parser's issue numbers for it."""
+    fence_free = _FENCED_RE.sub("\n", stripped)
+    code_free = _CODE_SPAN_RE.sub(" ", fence_free)
+    marker = None
+    ignored = 0
+    for m in _MARKER_RE.finditer(code_free):
+        parsed = parse_marker(m.group(1))
+        if parsed is None:
+            ignored += 1
+        else:
+            marker = parsed   # the last marker in a reply is its final word
+    # Wording shown in a fenced block is an example, not a report, so both
+    # wording checks read the fence-free text. Inline code spans stay readable:
+    # the house form is ``Fixed in `abc1234` ``, whose SHA a span strip would
+    # erase.
+    if _DECLINED_RE.match(fence_free):
+        wording = "declined"
+    elif _FIXED_RE.search(fence_free):
+        wording = "fixed"
+    elif refs:
+        wording = "deferred"
+    else:
+        wording = None
+    return wording, marker, ignored
+
+
+def classify_thread(replies):
+    """{"verdict", "real_defect", "agent"} for one thread from its classified
+    replies, oldest first: [(wording, marker), ...]."""
+    markers = [marker for _, marker in replies if marker]
+    if markers:
+        last = markers[-1]
+        return {"verdict": last["verdict"], "real_defect": last["defect"] == "real",
+                "agent": last["agent"]}
+    worded = [wording for wording, _ in replies if wording]
+    if worded:
+        return {"verdict": worded[-1], "real_defect": False, "agent": None}
+    return {"verdict": "unanswered", "real_defect": False, "agent": None}
+
+
+def _empty_tally():
+    return {"findings": 0, "valid": 0, "real_defects": 0, "declined": 0,
+            "unanswered": 0, "samples": []}
+
+
+def _minutes(delta):
+    """A timedelta as exact minutes (Fraction), so a median is never a float sum."""
+    micros = (delta.days * 86400 + delta.seconds) * 10 ** 6 + delta.microseconds
+    return Fraction(micros, 60 * 10 ** 6)
+
+
+def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
+    """Per-tool verdict tallies and response-time samples for one repo's PRs.
+
+    prs: measure.sh's normalized PRs; each may carry `threads`
+    ([{"comments": [{"user", "user_type", "body", "created_at"}],
+    "comments_truncated"}]) and `created_at`. Returns (tallies, notes), where
+    tallies[key] = {"findings", "valid", "real_defects", "declined",
+    "unanswered", "samples": [Fraction minutes]} for every key in tool_keys."""
+    tallies = {key: _empty_tally() for key in tool_keys}
+    items = []
+    threads = []      # (tool key, [item index of each qualifying reply])
+    pr_triggers = []  # per PR: [(item index, created_at)]
+    truncated = 0
+    for pr in prs:
+        for thread in _as_list(pr.get("threads")):
+            if not isinstance(thread, dict):
+                continue
+            comments = _as_list(thread.get("comments"))
+            # The first comment IS the finding. One that is missing or
+            # malformed leaves the thread unattributable — never promote a
+            # reply to finding.
+            if not comments or not isinstance(comments[0], dict):
+                continue
+            key = login_to_key.get(_text(comments[0].get("user")))
+            if key not in tallies:
+                continue   # a human's own thread, or a tool outside the stack
+            if thread.get("comments_truncated") is True:
+                truncated += 1
+            indexes = []
+            for comment in comments[1:]:
+                if isinstance(comment, dict) and is_user_reply(comment):
+                    indexes.append(len(items))
+                    items.append({"repo": repo, "body": _text(comment.get("body"))})
+            threads.append((key, indexes))
+        candidates = []
+        for comment in _as_list(pr.get("issue_comments")):
+            if not isinstance(comment, dict):
+                continue
+            login = _text(comment.get("user"))
+            body = _text(comment.get("body"))
+            # A bot's comment never triggers a review (BugBot ignores them, and
+            # a tool's own footer names its handle); `@` is a cheap pre-filter.
+            if not login or login.lower().endswith("[bot]") or "@" not in body:
+                continue
+            candidates.append((len(items), comment.get("created_at")))
+            items.append({"repo": repo, "body": body})
+        pr_triggers.append(candidates)
+
+    parsed = parse_bodies(items, lib_dir)
+    ignored = 0
+    for key, indexes in threads:
+        replies = []
+        for i in indexes:
+            wording, marker, bad = classify_reply(parsed[i]["stripped"], parsed[i]["refs"])
+            ignored += bad
+            replies.append((wording, marker))
+        verdict = classify_thread(replies)
+        tally = tallies[key]
+        tally["findings"] += 1
+        if verdict["verdict"] in ("fixed", "deferred"):
+            tally["valid"] += 1
+        elif verdict["verdict"] == "declined":
+            tally["declined"] += 1
+        else:
+            tally["unanswered"] += 1
+        if verdict["real_defect"]:
+            tally["real_defects"] += 1
+
+    untimed = 0
+    key_logins = {login: key for login, key in login_to_key.items() if key in tallies}
+    for pr, candidates in zip(prs, pr_triggers):
+        triggers = {key: [] for key in TRIGGERS}
+        for i, created in candidates:
+            at = _parse_ts(created)
+            if at is None:
+                continue
+            for key, rx in TRIGGERS.items():
+                if rx.search(parsed[i]["stripped"]):
+                    triggers[key].append(at)
+        responded = {}
+        for field, ts_key in (("reviews", "submitted_at"), ("pr_comments", "created_at"),
+                              ("issue_comments", "created_at")):
+            for event in _as_list(pr.get(field)):
+                key = key_logins.get(_text(event.get("user"))) if isinstance(event, dict) else None
+                if key is None:
+                    continue
+                at = _parse_ts(event.get(ts_key))
+                responded.setdefault(key, [])
+                if at is not None:
+                    responded[key].append(at)
+        opened = _parse_ts(pr.get("created_at"))
+        for key, times in responded.items():
+            if not times:
+                untimed += 1
+                continue
+            first = min(times)
+            asked = [t for t in triggers.get(key, []) if t <= first]
+            start = min(asked) if asked else opened
+            if start is None or start > first:
+                untimed += 1
+                continue
+            tallies[key]["samples"].append(_minutes(first - start))
+
+    notes = []
+    if ignored:
+        notes.append("%d review-verdict marker(s) named no known verdict (fixed, deferred, "
+                     "declined) and were ignored; those replies were read by their wording."
+                     % ignored)
+    if truncated:
+        notes.append("%d review thread(s) carried more than 100 comments; replies past the "
+                     "100th were not read, so their verdicts may be understated." % truncated)
+    if untimed:
+        notes.append("%d tool response(s) could not be timed (no timestamp on the response, "
+                     "or neither a PR open time nor a preceding trigger to start from); "
+                     "median_response_min leaves them out." % untimed)
+    return tallies, notes
+
+
+def pool_tallies(tallies):
+    """One tally from several repos' tallies for the same tool."""
+    pooled = _empty_tally()
+    for tally in tallies:
+        for field in ("findings", "valid", "real_defects", "declined", "unanswered"):
+            pooled[field] += tally[field]
+        pooled["samples"].extend(tally["samples"])
+    return pooled
+
+
+def _round_half_up(value, places):
+    """An exact Fraction rounded half-up to `places` decimals, as a JSON float."""
+    exact = Decimal(value.numerator) / Decimal(value.denominator)
+    return float(exact.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
+
+
+def cost_per_real_defect(spend, real_defects):
+    """spend (Decimal|None) / real defects, in cents; None when either is
+    missing or zero — a receipt floor of 0.00 per defect would read as free."""
+    if spend is None or spend == 0 or not real_defects:
+        return None
+    return cents(Decimal(spend) / Decimal(int(real_defects)))
+
+
+def value_fields(tally, spend):
+    """The per-tool value fields for one tally and that tool's spend (Decimal|None)."""
+    valid = tally["valid"]
+    declined = tally["declined"]
+    samples = tally["samples"]
+    return {
+        "findings": tally["findings"],
+        "valid": valid,
+        "real_defects": tally["real_defects"],
+        "declined": declined,
+        "unanswered": tally["unanswered"],
+        # Unanswered findings are not in the denominator: no verdict is not a no.
+        "precision": (_round_half_up(Fraction(valid, valid + declined), 3)
+                      if valid + declined else None),
+        "cost_per_real_defect_usd": to_number(cost_per_real_defect(spend, tally["real_defects"])),
+        "median_response_min": (_round_half_up(Fraction(statistics.median(samples)), 1)
+                                if samples else None),
+    }
