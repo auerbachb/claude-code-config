@@ -20,6 +20,7 @@ here).
 | `ideas.md` | `idea:` / `file:` files an issue through `/issue-maker`'s one-shot entry without capture mode; `repo:` sets where ideas go (#1766) |
 | `attention.md` | `report`: the weekly attention report, one page computed from the events table (`human-queue.sh report`), offered once after Friday's end-of-day sweep (#1771) |
 | `todo.md` | The operator's own to-do layer: `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, `mine`, `my list`; the paper copy's line is `todo_line` in `desk.jq` (#1769) |
+| `checkin.md` | The morning check-in (`morning` event, `check-in`, `budget?`): hours, energy, and plans with the measured pace set today's reading budget; its parsing and cards are `checkin_parse`, `checkin_card`, `budget_card`, `budget_line`, and `reviews_view_budget` in `desk.jq` (#1770) |
 
 Later desk issues add a file here and a row to `SKILL.md`'s table rather than
 growing one file.

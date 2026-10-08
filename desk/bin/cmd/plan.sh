@@ -10,6 +10,8 @@
 . "$HQ_BIN_DIR/lib/secrets.sh"
 # shellcheck source=../lib/lifecycle.sh
 . "$HQ_BIN_DIR/lib/lifecycle.sh"
+# shellcheck source=../lib/budget.sh
+. "$HQ_BIN_DIR/lib/budget.sh"
 
 # The plan travels to psql as one argument (-v hq_plan=...), far under the
 # 128 KiB a single argument may take.
@@ -71,7 +73,12 @@ OUTPUT
     --json: {"now": "...Z", "today": "YYYY-MM-DD", "plan": {...} | null}
   clear: `cleared` or `no plan`. --json: {"cleared": true|false}
   forecast: one line. --json: {"now", "today", "window_min", "asked",
-    "threads", "open", "parked", "unreviewed"}
+    "threads", "open", "parked", "unreviewed", "read_today", "budget",
+    "left"}; the last three are today's reading budget (issue #1770,
+    `checkin --help`): Reviews read today, today's budget (null with no
+    check-in today), and what is left of it (negative once over; null
+    with no check-in). The proposal's clear-first batch takes at most
+    `left` Reviews.
   Nothing on stderr on success.
 
 STATE
@@ -336,10 +343,14 @@ SELECT '!this session is not the registered control session; only the desk clear
 SQL
 }
 
-# hq__plan_forecast_sql JSON — counts over the trailing window; read-only.
+# hq__plan_forecast_sql JSON — counts over the trailing window, and today's
+# reading budget (lib/budget.sh); read-only.
 hq__plan_forecast_sql() {
+  printf '%s\n' 'WITH'
+  hq_sql_budget_today
   cat <<'SQL'
-WITH f AS (
+,
+f AS (
   SELECT (SELECT count(*) FROM items
            WHERE kind = 'decision' AND created_at > statement_timestamp() - make_interval(mins => :hq_window)) AS asked,
          (SELECT count(DISTINCT session_id) FROM items
@@ -356,7 +367,11 @@ SELECT jsonb_build_object(
          'now', to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
          'today', to_char(statement_timestamp() AT TIME ZONE :'hq_tz', 'YYYY-MM-DD'),
          'window_min', :hq_window, 'asked', asked, 'threads', threads,
-         'open', open, 'parked', parked, 'unreviewed', unreviewed)
+         'open', open, 'parked', parked, 'unreviewed', unreviewed,
+SQL
+    hq_sql_budget_fields
+    cat <<'SQL'
+)
   FROM f;
 SQL
   else
