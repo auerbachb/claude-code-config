@@ -34,7 +34,8 @@ THE CHECK-IN
   THE BUDGET  Reviews to read today. The measured day is the most recent of
               the 7 days before today with at least 3 Reviews read (`stats
               --help` says how a day is measured). Budget = round(its
-              Reviews an hour × hours × the energy factor). With no measured
+              Reviews an hour, to one decimal as the card shows it × hours
+              × the energy factor), half away from zero. With no measured
               day, the starting guess: round(30 × the energy factor), the
               "30 × 20" of desk/DESIGN.md 2.8 (30 Reviews, 20 lines each at
               level 2). 0 hours is a budget of 0.
@@ -220,7 +221,7 @@ hqb_calc AS (
 hqb_r AS (
   SELECT c.hours, c.factor, c.known, m.day AS mday, m.reviewed AS mread, m.active_exact AS mactive,
          (CASE WHEN c.hours = 0 THEN 0
-               WHEN m.day IS NOT NULL THEN round(m.reviewed * 60.0 / m.active_exact * c.hours * c.factor)
+               WHEN m.day IS NOT NULL THEN round(round(m.reviewed * 60.0 / m.active_exact, 1) * c.hours * c.factor)
                ELSE round($HQ_BUDGET_GUESS_ITEMS * c.factor) END)::int AS budget
     FROM hqb_calc c LEFT JOIN hqb_m m ON true
 )

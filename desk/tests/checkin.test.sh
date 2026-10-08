@@ -286,6 +286,15 @@ check "yesterday now reads two (under three)" "$(jqo .reviewed)" "2"
 hq checkin set --session desk-1 --hours 2 --energy ok --json
 check "5.2 the most recent day with three read: three days ago, 7.5 an hour × 2 h = 15" \
   "$(jqo '[.checkin.basis.day, (.checkin.basis.rate == 7.5), .checkin.budget, .measured.day] | @json')" "[\"$DAY3\",true,15,\"$DAY3\"]"
+# A fifth Review 7 minutes on (2 + 37 = 39 minutes, 5 read: 7.69 an hour,
+# shown 7.7): the budget multiplies the rate the card shows, 7.7 × 5 = 38.5,
+# so 39, where the unrounded 7.69 × 5 = 38.46 would give 38.
+ev "$Y7" reviewed "$DAY3 10:37"
+hq checkin set --session desk-1 --hours 5 --energy ok --json
+check "5.2 the budget multiplies the one-decimal rate the card shows: 7.7 × 5 = 38.5 -> 39" \
+  "$RC:$(jqo '[(.checkin.basis.rate == 7.7), .checkin.budget] | @json')" "0:[true,39]"
+sql_in "DELETE FROM events WHERE item_id = '$Y7' AND kind = 'reviewed'
+          AND (at AT TIME ZONE 'America/New_York')::date = '$DAY3'::date" >/dev/null
 
 # --- 4.3 and 4.4: the running count, the day plan, the Reviews view ----------------------------
 hq checkin set --session desk-1 --hours 4 --energy ok --json

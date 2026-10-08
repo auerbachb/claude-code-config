@@ -159,6 +159,11 @@ check_contains "budget_card: zero hours, no lines" "$(printf '%s' "$ZERO" | djq 
 OLDB=$(jq -c '.checkin.basis.day = "2026-10-05" | .checkin.basis.rate = 6.5 | .checkin.factor = 0.7 | .checkin.energy = "low"' "$FIX/get-set.json")
 check_contains "budget_card: an older day's pace, a factor" "$(printf '%s' "$OLDB" | djq -r 'include "desk"; budget_card')" \
   "> The pace on Mon Oct 5, 6.5 an hour × 4 h × energy low (0.7) = 28."
+# The card multiplies exactly what `checkin set` did: hours to two decimals
+# and the operator's factor as stored, never rounded to one decimal.
+EXACT=$(jq -c '.checkin.hours = 2.25 | .checkin.factor = 0.75 | .checkin.energy = "meh" | .checkin.basis.rate = 7.7 | .checkin.budget = 13' "$FIX/get-set.json")
+check_contains "budget_card: hours and an operator factor as stored" "$(printf '%s' "$EXACT" | djq -r 'include "desk"; budget_card')" \
+  "> Yesterday's pace, 7.7 an hour × 2.25 h × energy meh (0.75) = 13."
 check "budget_card: no check-in" "$(bcard get-none)" "No check-in today, so no reading budget. Say \`check-in\` to set one."
 
 bline() { djq -r 'include "desk"; [budget_line] | .[0] // "(none)"' "$@"; }

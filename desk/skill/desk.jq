@@ -890,11 +890,13 @@ def checkin_planned_plan:
 # checkin_day_text: a YYYY-MM-DD day as "Thu Oct 8".
 def checkin_day_text: day_epoch | if . == null then "?" else strftime("%a %b %d") | sub(" 0(?<n>[1-9])$"; " \(.n)") end;
 
-# checkin_hours_text: hours as "4 h", "1.5 h", "30 min".
+# checkin_hours_text: hours as stored (two decimals at most) as "4 h",
+# "1.5 h", "2.25 h", "30 min", so the budget card multiplies exactly the
+# hours the budget was computed from.
 def checkin_hours_text:
   if type != "number" then "?"
   elif . > 0 and . < 1 then "\(. * 60 | round) min"
-  else "\(num1) h" end;
+  else "\((. * 100 | round) / 100 | tostring) h" end;
 
 # checkin_active_text: minutes at the desk as "45 min" or "1.5 h" (to the
 # half hour).
@@ -947,7 +949,10 @@ def budget_card:
   if .checkin == null then "No check-in today, so no reading budget. Say `check-in` to set one."
   else .checkin as $c
     | (.today // $c.day) as $today
-    | ($c.factor | if type == "number" then num1 else "1" end) as $f
+    # The factor as stored (an operator's 0.75 stays 0.75), and the rate is
+    # the one-decimal figure `checkin set` multiplied, so the line's
+    # arithmetic is the stored budget's.
+    | ($c.factor | if type == "number" then tostring else "1" end) as $f
     | ("energy \($c.energy) (" + (if $c.factor_known == false then "not in the table: 1" else $f end) + ")") as $e
     | ([ "**Reading budget today: \(plan_n($c.budget; "Review"; "Reviews"))"
            + (if ($c.lines // 0) > 0 then " (~\($c.lines) lines at level 2)" else "" end) + "**",

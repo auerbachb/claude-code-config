@@ -1140,7 +1140,7 @@ Agents ask exactly as often as before and decide nothing new on their own.
 
   | Subcommand | What it does |
   |------------|--------------|
-  | `checkin set --session S --hours H --energy WORD [--planned TEXT] [--json]` | Stores today's check-in (reserved key `checkin`) with the budget computed once: round(Reviews an hour on the most recent of the last 7 days with at least 3 read × hours × the energy factor); with no such day, the 30 × 20 guess, round(30 × the factor); 0 hours is 0. Control session only |
+  | `checkin set --session S --hours H --energy WORD [--planned TEXT] [--json]` | Stores today's check-in (reserved key `checkin`) with the budget computed once: round(Reviews an hour, to one decimal, on the most recent of the last 7 days with at least 3 read × hours × the energy factor), so the card's arithmetic is exact; with no such day, the 30 × 20 guess, round(30 × the factor); 0 hours is 0. Control session only |
   | `checkin get [--json]` | Today's check-in, the measured day as it stands, the factor table, Reviews read today, unreviewed Reviews, the budget, and what is left |
   | `checkin due --session S --at HH:MM [--until HH:MM] [--json]` | `due DAY` the first time the store's clock is in the window and no check-in is stored today, `done DAY` after; control session only |
 
