@@ -120,7 +120,10 @@ set_window() {
   WINDOW_MINUTES=$((10#$_NORMALIZED))
   _WINDOW_SET=true
 }
-for arg in $ARGUMENTS; do
+# Split without pathname expansion: an unquoted `for arg in $ARGUMENTS` would
+# glob `/pause *` into a matching filename (e.g. `5`) and accept it.
+read -r -a _PAUSE_ARGS <<< "$ARGUMENTS"
+for arg in "${_PAUSE_ARGS[@]}"; do
   [[ "$_WINDOW_SET" == true ]] && continue
   if [[ "$_NEXT_IS_WINDOW" == true ]]; then
     _NEXT_IS_WINDOW=false
