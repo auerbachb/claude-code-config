@@ -95,13 +95,15 @@
 #     receipt   CodeRabbit: the sum of `Charged: $X` lines in coderabbitai[bot]
 #               conversation comments in the window. A FLOOR, never the bill — a
 #               summary comment keeps one receipt and a later review overwrites it.
-#     estimate  BugBot: `Cursor Bugbot` check-runs (every commit of each PR,
-#               filter=all, deduped by run id, timed by started_at) x $/review.
+#     estimate  BugBot: `Cursor Bugbot` check-runs published by the `cursor`
+#               app (every commit of each PR, filter=all, deduped by run id,
+#               timed by started_at) x $/review.
 #               Greptile: non-bot `@greptileai` comments x credits/review x $/credit.
 #     flat      CodeAnt and Vercel: the monthly fee x window.days / 30, and
-#               0.00 for a window that has not begun. window.days counts whole
-#               elapsed days when --until is absent (so a --since of today
-#               prorates to 0.00); pass --until for the inclusive day count.
+#               0.00 for a window that has not begun (--since after today, with
+#               or without --until). window.days counts whole elapsed days when
+#               --until is absent (so a --since of today prorates to 0.00);
+#               pass --until for the inclusive day count.
 #     none      No figure: the rate is null, missing, or unreadable. spend_usd is
 #               then null, never 0, and a note names the missing input.
 #   Events are kept inside the inclusive window (since 00:00:00Z through until
@@ -129,8 +131,10 @@
 #
 #   Ledger fields (optional, read only in ledger mode): `created_at` on an
 #   issue comment, and a per-PR `check_runs` list of
-#   {"id", "name": "Cursor Bugbot", "started_at"} objects (REST envelopes with a
-#   `check_runs` array are accepted too). A PR without `check_runs` has none.
+#   {"id", "name": "Cursor Bugbot", "app": "cursor", "started_at"} objects (REST
+#   envelopes with a `check_runs` array, and REST's {"app": {"slug"}}, are
+#   accepted too). A run under that name from any other app, or with no `app`,
+#   is not BugBot's and is not priced. A PR without `check_runs` has none.
 #
 #   Multi-repo: {"repos": [{"repo": "owner/name", "truncated": false,
 #                           "prs": [ ...as above... ]}]}
@@ -647,6 +651,10 @@ else:
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
 # Without --until the window ends today, exactly as it always has.
 until = until_arg or now.strftime("%Y-%m-%d")
+# The days a flat fee is prorated over (ledger only; window.days is unchanged).
+# A window whose first day is still to come has not begun, so it bills nothing
+# however many days a closing --until gives it.
+fee_days = 0 if since > now.strftime("%Y-%m-%d") else max(days, 0)
 # Search and event window: open-ended above unless --until closed it.
 search_range = ("merged:%s..%s" % (since, until_arg)) if until_arg else ("merged:>=%s" % since)
 
@@ -968,7 +976,7 @@ def apply_spend(tools_out, prs):
                "bugbot_runs": len(runs),
                "greptile_triggers": len(triggers)}
     for s in tools_out:
-        usd, label = ledger.compute_spend(s["key"], signals, rates, days)
+        usd, label = ledger.compute_spend(s["key"], signals, rates, fee_days)
         s["spend_usd"] = ledger.to_number(usd)
         s["spend_source"] = label
     notes = []
@@ -1058,7 +1066,7 @@ if not multi:
         snapshot["notes"].append(
             "Flat monthly fees are account-level: this single-repo ledger run "
             "attributes the whole %d-day prorated fee to %s. --repos / --all-repos "
-            "split it across repos by each tool's prs_touched." % (days, repo))
+            "split it across repos by each tool's prs_touched." % (fee_days, repo))
     if mode == "summary":
         for line in summary_lines(snapshot["tools"]):
             print(line)
@@ -1119,7 +1127,7 @@ if ledger is not None:
         if monthly is None:
             continue
         entries = [next(x for x in doc["tools"] if x["key"] == t["key"]) for _, doc, _ in results]
-        shares = ledger.allocate(ledger.prorate_flat(monthly, days),
+        shares = ledger.allocate(ledger.prorate_flat(monthly, fee_days),
                                  [e["prs_touched"] for e in entries])
         for entry, share in zip(entries, shares):
             entry["spend_usd"] = ledger.to_number(share)

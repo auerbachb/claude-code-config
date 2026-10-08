@@ -51,6 +51,9 @@ SPEND_SOURCES = ("receipt", "estimate", "flat", "none")
 TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "graphite", "vercel")
 CODERABBIT_LOGIN = "coderabbitai[bot]"
 BUGBOT_CHECK_NAME = "Cursor Bugbot"
+# The publisher, not the name, identifies BugBot: any app can post a check
+# named `Cursor Bugbot` (the merge gate and escalate-review.sh match both).
+BUGBOT_APP_SLUG = "cursor"
 CENT = Decimal("0.01")
 # A flat monthly fee is prorated by window days / 30, so the default 30-day
 # window prices exactly one monthly fee.
@@ -289,18 +292,30 @@ def _flatten_runs(items):
             yield item
 
 
-def bugbot_runs(check_runs):
-    """`Cursor Bugbot` check-runs, deduplicated by run id.
+def _app_slug(run):
+    """The publishing app's slug: REST's {"app": {"slug"}} or a normalized string."""
+    app = run.get("app")
+    if isinstance(app, dict):
+        app = app.get("slug")
+    return app.strip().lower() if isinstance(app, str) else ""
 
-    Accepts runs, REST envelopes, or nested page lists. Dedup is by `id` only:
-    the same run fetched through two commits (or two pages) counts once, while a
-    rerun has its own id and counts again — it was billed again. A run with no
-    id cannot be matched against anything and counts once as itself.
+
+def bugbot_runs(check_runs):
+    """`Cursor Bugbot` check-runs published by the Cursor app, deduplicated by id.
+
+    Accepts runs, REST envelopes, or nested page lists. A run under the name but
+    from another app, or with no publisher at all, is not BugBot's and is not
+    priced. Dedup is by `id` only: the same run fetched through two commits (or
+    two pages) counts once, while a rerun has its own id and counts again — it
+    was billed again. A run with no id cannot be matched against anything and
+    counts once as itself.
     """
     seen = set()
     runs = []
     for run in _flatten_runs(check_runs):
         if (run.get("name") or "").strip().lower() != BUGBOT_CHECK_NAME.lower():
+            continue
+        if _app_slug(run) != BUGBOT_APP_SLUG:
             continue
         run_id = run.get("id")
         if run_id is not None:
