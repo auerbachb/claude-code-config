@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [desk-cli.sh](../../../desk/bin/desk-cli.sh) | Human-queue CLI for the desk (`desk/bin/desk-cli.sh`): runs human-queue.sh with the store URL found the way the capture hook finds it |
+| [desk-policy.sh](../../../desk/bin/desk-policy.sh) | Human-queue desk policy (`desk/bin/desk-policy.sh`): prints desk/policy.json's effective values (tick cadence, interrupt rule, end of day, set size, live-desk bound) as JSON; an invalid file is the defaults with one warning |
 | [desk-tick.sh](../../../desk/bin/desk-tick.sh) | Human-queue desk tick loop (`desk/bin/desk-tick.sh`): the /desk Monitor command; ticks the store and prints a line only when the desk has something to do |
 | [graphite-repo-init.sh](../graphite-repo-init.sh) | Run `gt repo init` to create `.git/.graphite_repo_config` for Graphite CLI |
 | [hhg-state.sh](../hhg-state.sh) | Extract a 2-letter USPS state code from HHG-formatted text |

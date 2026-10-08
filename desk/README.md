@@ -18,12 +18,14 @@ be spun out as its own project later.
 | `bin/lib/lifecycle.sh` | The answer transaction shared by `answer` and `set-resolve`, row locking, the `!reason` refusal protocol |
 | `bin/lib/secrets.sh` | The secret-shape detector behind exit 5 |
 | `bin/desk-cli.sh` | `human-queue.sh` for the desk: same arguments, the store's URL found the way the capture hook finds it (see "The desk") |
+| `bin/desk-policy.sh` | The effective `policy.json` as one JSON object, through the capture hook's parser (see "Interrupts, policy, and feedback tags") |
 | `bin/desk-tick.sh` | The `/desk` Monitor loop (see "The desk") |
 | `bin/wake-target.sh` | A Decision's return address → the running session's messaging address (see "The desk") |
 | `bin/idea-target.sh` | Which repository a desk idea is filed in (see "Ideas") |
 | `bin/lib/filings.sh` | The desk's pending filings, shared by `filed` and `sync-reviews` (see "Ideas") |
 | `schema/NNN_<name>.sql` | Migrations, applied by `human-queue.sh migrate` |
 | `hooks/` | Hook implementations: `capture.sh` and its logic `capture.py`, the capture hook (see "Capture hook") |
+| `policy.json` | The desk's defaults: tick cadence, interrupt rule, end of day, set size, live-desk bound (see "Interrupts, policy, and feedback tags") |
 | `skill/` | The `/desk` skill: `SKILL.md` (router) and one file per kind of work (see "The desk") |
 | `tests/` | `run.sh` plus `*.test.sh` suites |
 
@@ -179,7 +181,7 @@ full contract.
 | `comment ID TEXT` | any item | A one-line note in the item's history; the item is unchanged | `commented` |
 | `wake ID --result sent\|failed [--note TEXT] [--json]` | answered Decisions | Records whether the desk woke the asking thread after an answer. Every call appends (each attempt is a fact); an item with no answer is refused. The failure that uses up the third retry (or any failure with no return address) also sets `answer-parked`; otherwise the item is unchanged and `tick` does not report it again. `--json` prints `{id, result, failures, retries_left, status, parked}` | `woken` or `wake-failed` (note: the address and the tool's status, or the reason); `answer-parked` when it parks |
 | `wake-due [--min-age SECONDS] [--json]` | answered Decisions | Read-only: the answers whose last wake-up since their latest answer failed and that have a retry left (at most 3 after the first attempt), oldest failure first | none |
-| `feedback ID TAG` | any item | An interrupt-tuning tag: `not-important`, `should-have-defaulted`, `good-interrupt`, or any other hyphenated lowercase tag | `feedback` |
+| `feedback ID TAG [--set SET_ID] [--json]` | any item | An interrupt-tuning tag: `not-important`, `should-have-defaulted`, `good-interrupt`, or any other hyphenated lowercase tag. The event also records the asking thread (the item's `session_id`; migration 008). With `--set`, ID may be the item's number in that set; `--json` prints `{id, tag, session, recorded}` | `feedback` (note: the tag) |
 
 - **One event per change.** Every write records exactly one event per item it
   changes, in the same transaction. A call that would change nothing (an
@@ -226,7 +228,7 @@ full contract.
 |------------|--------------|
 | `state get KEY` / `state set KEY VALUE` | One key of operator state (the day plan, for example). `get` prints the value exactly; a key that is not set exits 4. A value is at most 65536 characters and 131000 bytes (it travels as one `psql` argument, and Linux caps one at 128 KiB) |
 | `register-control SESSION [--json]` | Registers the desk's one control session (the last registration wins) and names the one it replaced; a different session also clears `tick_at` |
-| `tick [--session SESSION]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped |
+| `tick [--session SESSION [--interrupts RULE]]` | Prints, as one JSON array in the `list --json` shape, the items new or changed since the last tick. With `--session`, only as the registered control session: checked inside the tick's transaction under `register-control`'s lock; any other session exits 4 with nothing read, the watermark unmoved, and no `tick_at` stamped. With `--interrupts`, honors the desk's interrupt rule: while it holds items back, prints `[]`, stamps `tick_at`, and leaves the watermark (see "Interrupts, policy, and feedback tags") |
 | `control-status [--json]` | Read-only: the registered control session, when the last tick ran, and how many seconds ago on the database's clock (`{"session", "last_tick_at", "tick_age_seconds"}`, each null when unset). The capture hook's live-desk check |
 
 - **Reserved keys.** `tick_watermark` and `tick_at` (written by `tick`) and
@@ -444,8 +446,8 @@ retries, `answer-parked`, `show`, and `history` are #1781 (below).
 - **Start.** `migrate`, then `register-control` with the session id the
   capture hook sees (`$CLAUDE_CODE_SESSION_ID`, never the desktop app's
   `local_…` id), one inline tick, then a persistent Monitor running
-  `desk-tick.sh` (default every 5 minutes; 1 to 60 and shorter than the
-  live-desk bound, which `desk-tick.sh` reads through the capture hook's own
+  `desk-tick.sh` (default: `policy.json`'s `tick_cadence_min`, 5 minutes;
+  1 to 60 and shorter than the live-desk bound, which `desk-tick.sh` reads through the capture hook's own
   policy parser and enforces with exit 4). From the inline tick on,
   the desk is live and worker threads' menus are queued instead of shown.
 - **`desk-cli.sh`.** The desktop app's Bash tool and Monitor do not source the
@@ -701,9 +703,10 @@ for 004, are run once by hand after this merges.
 ## The Reviews view (issue #1782)
 
 The first of `/desk`'s attention increments (`skill/reviews.md`, migration
-`007_reviews_summary_l1.sql`). Interrupts, policy, and feedback tags are in
-issue #1783, the day plan and end-of-day sweep in issue #1784, and the
-numbered PR outline in issue #1768.
+`007_reviews_summary_l1.sql`). Interrupts, policy, and feedback tags are the
+second (issue #1783, "Interrupts, policy, and feedback tags" below), the day
+plan and end-of-day sweep the third (issue #1784), and the numbered PR
+outline is issue #1768.
 
 | The operator types | The desk runs |
 |--------------------|---------------|
@@ -802,3 +805,64 @@ receipt line (`question D-<n> sent to human queue`) after it. The warning
 names the fix from `.claude/rules/human-queue.md`. It never blocks, needs no
 database, and fails open. Detection rules and output: `hooks/README.md`, "The
 prose-question nudge". Tests: `tests/question-leak-warn.test.sh` (offline).
+
+## Interrupts, policy, and feedback tags (issue #1783)
+
+The second of `/desk`'s attention increments (`skill/interrupts.md`, migration
+`008_event_session.sql`). The desk is **loud by default**: every new Decision
+is shown at the next tick, in sets. The operator tunes it down item by item
+with feedback tags, and holds it while away or focused. Agents ask exactly as
+often as before and decide nothing new on their own; a held question waits in
+the store, never in a worker thread.
+
+- **`policy.json`.** `tick_cadence_min` 5 (1 to 60, below the live bound),
+  `interrupt_rule` `everything` (or `away`), `eod_time` `17:30` (`HH:MM`,
+  America/New_York; the end-of-day sweep is issue #1784), `set_size` 4 (1 to
+  4), `live_desk_max_tick_age_min` 15 (1 to 1440). One parser, `capture.py`'s
+  `load_policy()`, serves the capture hook, `desk-tick.sh`, and
+  `bin/desk-policy.sh` (which prints the effective policy as JSON). A missing
+  file is the defaults; an unreadable file, a non-object, or any invalid value
+  is the defaults for every key, with one warning; unknown keys are ignored.
+  `HUMAN_QUEUE_POLICY` names another file (tests).
+- **The interrupt rule.**
+
+  | Subcommand | What it does |
+  |------------|--------------|
+  | `interrupt get --session S [--default RULE] [--json]` | The rule in force for desk session S: `everything`, `away`, or `focus until 15:30 ET (… UTC)`, ending ` (default)` when S set none (or its focus ended) and RULE, the policy's `interrupt_rule`, applies |
+  | `interrupt set everything\|away --session S [--json]` / `interrupt set focus --session S (--until WHEN \| --for MIN) [--json]` | Stores the rule; only the registered control session may (exit 4 otherwise). WHEN is a clock time (`15:30`, `3:30`, `3:30pm`, optionally ` ET`; its next occurrence in America/New_York, a bare 12-hour time the sooner of am and pm) or an ISO 8601 time; a focus ends within a day |
+
+  The rule lives in the reserved state key `interrupt` (`state set` refuses
+  it) as `{"session", "rule", "until", "set_at"}` and belongs to the session
+  that set it: a newly registered desk starts from the policy's rule. A
+  stored value that is not valid JSON or names another session reads as no
+  rule, never as an error. State is not an item, so setting it records no
+  event.
+- **The hold.** `desk-tick.sh` runs `tick --session S --interrupts RULE`.
+  While the rule in force is `away` or a focus not yet over, that tick stamps
+  `tick_at` (the desk stays live, so worker questions are still queued, never
+  shown in their own threads), prints `[]`, and neither reads nor moves the
+  watermark: the change feed is the hold buffer, and the first tick after the
+  hold (`available` runs one at once; a focus ends on its own) reports
+  everything that arrived during it, once, in the usual order. Wake-up
+  retries keep running.
+- **Sets.** `decisions.md` chunks the simple Decisions into sets of
+  `set_size` with `desk.jq`'s `desk_batch`, so three new Decisions with no
+  day plan are one set.
+- **Feedback tags.** `2: not important`, `2: should have defaulted`, or `2:
+  good interrupt` (a number in the latest set, or an id) is recognized by
+  `desk.jq`'s `desk_feedback` before any typed reply, so a tag is never an
+  answer, and recorded with `feedback ID TAG --set SET_ID --json`: one
+  `feedback` event whose note is the tag and whose `session_id` is the asking
+  thread. The desk acknowledges in one line. Before 008, `feedback` exits 1
+  naming `migrate`.
+- **Tests.** `tests/interrupts-offline.test.sh` (offline: the policy parser's
+  shapes, `desk-policy.sh`, `desk-tick.sh` passing the policy's cadence and
+  rule, `interrupt`/`tick --interrupts`/`feedback --set` validation before
+  connecting, `desk_sets`, `desk_batch`, `desk_feedback`, and the skill's
+  anchors); `tests/interrupts.test.sh` (live, throwaway schema: three
+  Decisions in one set at the next tick; `away` holds and `available`
+  releases; a focus in the future holds and one that has passed does not;
+  another session's rule is ignored; an invalid stored value; a feedback tag
+  written with its tag and asking session; 008 over a 007 store).
+
+`migrate` for 008 runs at the next `/desk` start (its step 3), or by hand.

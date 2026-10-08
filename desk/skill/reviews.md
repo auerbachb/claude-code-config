@@ -13,7 +13,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 | `flag R-<n> "what to follow up"` | Flags it with that note, then offers a follow-up issue |
 | `follow up R-<n>` | Files the follow-up issue for a flagged Review in its own repo (`follow up R-<n> again` after a filing that was never recorded) |
 
-**Out of scope here:** interrupts, the interrupt policy, and feedback tags are #1783; the day plan and the end-of-day sweep are #1784; the numbered file-to-hunk outline and "ask about this PR" are #1768. None of them has a verb in this file.
+**Out of scope here:** interrupts, the interrupt policy, and feedback tags are `interrupts.md` (#1783); the day plan and the end-of-day sweep are #1784; the numbered file-to-hunk outline and "ask about this PR" are #1768. None of them has a verb in this file.
 
 ## Rules for every verb
 

@@ -10,13 +10,15 @@
 . "$HQ_BIN_DIR/lib/secrets.sh"
 # shellcheck source=../lib/lifecycle.sh
 . "$HQ_BIN_DIR/lib/lifecycle.sh"
+# shellcheck source=../lib/interrupts.sh
+. "$HQ_BIN_DIR/lib/interrupts.sh"
 
 cmd_usage() {
   cat <<'EOF'
 human-queue.sh tick — the items new or changed since the last tick.
 
 USAGE
-  human-queue.sh tick [--session SESSION]
+  human-queue.sh tick [--session SESSION [--interrupts RULE]]
 
 ARGUMENTS
   --session SESSION  tick only as the registered control session (issue
@@ -26,11 +28,21 @@ ARGUMENTS
                      feed. When SESSION is not the control session, nothing
                      is read, the watermark is not moved, tick_at is not
                      stamped, and the exit is 4. Without it, any caller ticks.
+  --interrupts RULE  honor the operator's interrupt rule (issue #1783; see
+                     `interrupt --help`): RULE (everything or away) is the
+                     default when SESSION has set none, and the desk passes
+                     desk/policy.json's interrupt_rule. Needs --session. While
+                     the rule in force holds items back (away, or a focus
+                     whose time has not come), the tick stamps tick_at, so
+                     the desk stays live and worker questions are still
+                     queued, prints [], and does not read or move the
+                     watermark: the first tick after the hold reports
+                     everything that changed during it, in the usual order.
 
 OUTPUT
   One JSON array of item objects, the same shape as `list --json`, in list
-  order (parked first, then impact, then age); [] when nothing changed.
-  Nothing on stderr on success.
+  order (parked first, then impact, then age); [] when nothing changed, or
+  while --interrupts holds items back. Nothing on stderr on success.
 
 WHAT COUNTS AS A CHANGE
   An item is reported when its row was written: created by add, bumped,
@@ -61,9 +73,10 @@ EXIT CODES
   0  ok (including when nothing changed)
   1  unexpected database failure (for example the store is not migrated:
      run human-queue.sh migrate)
-  4  a stray argument or a bad --session (before any connection attempt);
-     --session names a session that is not the registered control session
-     (after connecting, nothing read or written)
+  4  a stray argument, a bad --session, or --interrupts without --session
+     or with a rule other than everything or away (before any connection
+     attempt); --session names a session that is not the registered control
+     session (after connecting, nothing read or written)
   5  the --session value looks like a secret (before any connection attempt)
   7  database unset or unreachable (within two seconds, one line on stderr)
 EOF
@@ -77,12 +90,15 @@ EOF
 # statement never sees its own writes). `stamp` records when this tick read,
 # a different row of the same table, for control-status (issue #1755).
 #
-# hq__tick_sql GUARD — GUARD 1 (tick --session) first takes register-control's
-# own advisory lock, after the tick lock (register-control never takes the
-# tick lock, so the order cannot deadlock), then compares control_session with
-# :'hq_session'. Holding that lock until commit, no registration can land
-# between the check and the read: either it committed before (the check sees
-# it) or it waits for this tick to commit (issue #1779).
+# hq__tick_sql GUARD [HOLD] — GUARD 1 (tick --session) first takes
+# register-control's own advisory lock, after the tick lock (register-control
+# never takes the tick lock, so the order cannot deadlock), then compares
+# control_session with :'hq_session'. Holding that lock until commit, no
+# registration can land between the check and the read: either it committed
+# before (the check sees it) or it waits for this tick to commit (issue
+# #1779). HOLD 1 (tick --interrupts) then reads the session's interrupt rule
+# under the same locks; while it holds items back, only tick_at is stamped
+# (issue #1783).
 hq__tick_sql() {
   cat <<'SQL'
 SET LOCAL lock_timeout TO '30s';
@@ -93,6 +109,19 @@ SQL
 SELECT pg_advisory_xact_lock(hashtextextended('human-queue:control:' || :'hq_schema', 0)) AS hq_control_locked \gset
 SELECT coalesce((SELECT value FROM state WHERE key = 'control_session'), '') = :'hq_session' AS hq_ok \gset
 \if :hq_ok
+SQL
+  fi
+  if [ "${2:-0}" -eq 1 ]; then
+    printf 'SELECT held AS hq_held FROM (\n'
+    hq_sql_interrupt_row
+    cat <<'SQL'
+) ir \gset
+\if :hq_held
+INSERT INTO state (key, value)
+  VALUES ('tick_at', to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+SELECT '[]';
+\else
 SQL
   fi
   cat <<'SQL'
@@ -115,6 +144,9 @@ SQL
  WHERE NOT EXISTS (SELECT 1 FROM prev)
     OR NOT pg_visible_in_snapshot(i.change_xid, (SELECT snap FROM prev));
 SQL
+  if [ "${2:-0}" -eq 1 ]; then
+    printf '%s\n' '\endif'
+  fi
   if [ "$1" -eq 1 ]; then
     cat <<'SQL'
 \else
@@ -125,7 +157,7 @@ SQL
 }
 
 cmd_run() {
-  local errf out rc session="" guard=0
+  local errf out rc session="" guard=0 hold=0 default_rule=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -h|--help)
@@ -139,9 +171,24 @@ cmd_run() {
         session="$2"
         shift 2
         ;;
+      --interrupts)
+        if [ "$hold" -eq 1 ]; then hq_die_validation "tick: --interrupts given more than once"; fi
+        if [ "$#" -lt 2 ]; then hq_die_validation "tick: --interrupts needs a value"; fi
+        hold=1
+        default_rule="$2"
+        shift 2
+        ;;
       *) hq_die_validation "tick: unknown $(hq_flag_name "$1") (run human-queue.sh tick --help)" ;;
     esac
   done
+  if [ "$hold" -eq 1 ]; then
+    if ! hq_interrupt_rule_ok "$default_rule"; then
+      hq_die_validation "tick: --interrupts must be everything or away"
+    fi
+    if [ "$guard" -eq 0 ]; then
+      hq_die_validation "tick: --interrupts needs --session (the interrupt rule belongs to the desk session)"
+    fi
+  fi
   if [ "$guard" -eq 1 ]; then
     hq_check_text "tick: the session id" "$session" 200
     # The session id reaches psql's argv: a secret-shaped one stops here.
@@ -151,7 +198,8 @@ cmd_run() {
   hq_db_connect
   hq_mktemp errf
   rc=0
-  out=$(hq__tick_sql "$guard" | hq_db_script -At -v "hq_session=$session" 2>"$errf") || rc=$?
+  out=$(hq__tick_sql "$guard" "$hold" | hq_db_script -At -v "hq_session=$session" \
+          -v "hq_default=$default_rule" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     hq_fail_unmigrated "$rc" "$errf" "tick: the watermark was not moved" 'change_xid'
   fi

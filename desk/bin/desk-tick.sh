@@ -12,7 +12,8 @@
 #   --generation GEN   the Monitor generation the skill recorded; every line
 #                      carries it so a line from a superseded loop is ignored
 #                      (letters, digits, and - _ . : only, <= 80 characters)
-#   --cadence MIN      minutes between ticks, 1 to 60 (default 5), and
+#   --cadence MIN      minutes between ticks, 1 to 60 (default: the policy's
+#                      tick_cadence_min, 5 unless desk/policy.json sets it), and
 #                      shorter than the capture hook's live-desk bound (15
 #                      unless desk/policy.json sets live_desk_max_tick_age_min;
 #                      read with the hook's own parser): a desk that ticks less
@@ -26,9 +27,14 @@
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
 #        never both tick, because each tick consumes the change feed.
-#     2. `tick --session SESSION`. It stamps tick_at, which is what keeps the
-#        desk live for the capture hook, and prints the items new or changed
-#        since the last tick. When any of them is an open Decision, print
+#     2. `tick --session SESSION --interrupts RULE` (RULE: the policy's
+#        interrupt_rule, issue #1783). It stamps tick_at, which is what keeps
+#        the desk live for the capture hook, and prints the items new or
+#        changed since the last tick. While the operator's interrupt rule
+#        holds items (`away`, or `focus` until a time not yet reached), it
+#        prints [] and leaves the watermark where it is, so the first tick
+#        after the hold reports everything that arrived during it. When any
+#        of them is an open Decision, print
 #        `desk-tick GEN new D-43 D-44` (ids in tick order: parked, impact,
 #        age). Anything else (Reviews, answers, acknowledgements) prints
 #        nothing. Step 1 alone cannot keep two desks apart: a registration
@@ -60,6 +66,8 @@
 #                             (tests); 0 is refused (exit 4), never a loop that
 #                             calls the store without a pause
 #   HUMAN_QUEUE_POLICY        the policy file, as the capture hook reads it
+#                             (an invalid file is the defaults: desk-policy.sh
+#                             prints its warning, this loop does not)
 #   HUMAN_QUEUE_CLI           passed through to desk-cli.sh (tests)
 #
 # EXIT CODES
@@ -95,7 +103,8 @@ dt_capture="$(dirname "$dt_bin")/hooks/capture.py"
 
 dt_session=""
 dt_gen=""
-dt_cadence=5
+dt_cadence=""
+dt_cadence_given=0
 dt_once=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -108,7 +117,10 @@ while [ "$#" -gt 0 ]; do
       case "$1" in
         --session) dt_session="$2" ;;
         --generation) dt_gen="$2" ;;
-        *) dt_cadence="$2" ;;
+        *)
+          dt_cadence="$2"
+          dt_cadence_given=1
+          ;;
       esac
       shift 2
       continue
@@ -129,15 +141,17 @@ case "$dt_gen" in
   *[!A-Za-z0-9_.:-]*) dt_die "--generation may hold only letters, digits, and - _ . :" ;;
 esac
 if [ "${#dt_gen}" -gt 80 ]; then dt_die "--generation is longer than 80 characters"; fi
-case "$dt_cadence" in
-  ''|*[!0-9]*) dt_die "--cadence must be a whole number of minutes from 1 to 60" ;;
-esac
-if [ "${#dt_cadence}" -gt 2 ] || [ "$dt_cadence" -lt 1 ] || [ "$dt_cadence" -gt 60 ]; then
-  dt_die "--cadence must be a whole number of minutes from 1 to 60"
+if [ "$dt_cadence_given" -eq 1 ]; then
+  case "$dt_cadence" in
+    ''|*[!0-9]*) dt_die "--cadence must be a whole number of minutes from 1 to 60" ;;
+  esac
+  if [ "${#dt_cadence}" -gt 2 ] || [ "$dt_cadence" -lt 1 ] || [ "$dt_cadence" -gt 60 ]; then
+    dt_die "--cadence must be a whole number of minutes from 1 to 60"
+  fi
 fi
-dt_secs=$((10#$dt_cadence * 60))
 # At least one second: 0 would make the persistent loop call the store
 # back-to-back with no pause at all.
+dt_tick_secs=""
 case "${HUMAN_QUEUE_TICK_SECONDS:-}" in
   '') ;;
   *[!0-9]*) dt_die "HUMAN_QUEUE_TICK_SECONDS must be a whole number of seconds from 1 to 3600" ;;
@@ -146,7 +160,7 @@ case "${HUMAN_QUEUE_TICK_SECONDS:-}" in
       || [ "$((10#$HUMAN_QUEUE_TICK_SECONDS))" -gt 3600 ]; then
       dt_die "HUMAN_QUEUE_TICK_SECONDS must be a whole number of seconds from 1 to 3600"
     fi
-    dt_secs="$((10#$HUMAN_QUEUE_TICK_SECONDS))"
+    dt_tick_secs="$((10#$HUMAN_QUEUE_TICK_SECONDS))"
     ;;
 esac
 
@@ -159,22 +173,44 @@ if [ -z "$dt_py" ]; then
   exit 1
 fi
 
-# The live-desk bound in minutes, from the capture hook's own policy parser
-# (one parser, not two). Unreadable or missing hook: its documented default.
-dt_live=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'LIVE'
+# The policy, from the capture hook's own parser (one parser, not two):
+# the live-desk bound, the default cadence, and the interrupt rule that holds
+# until the operator sets one at the desk. An unreadable or missing hook
+# leaves the documented defaults; an invalid policy file is the defaults too
+# (desk-policy.sh is what warns about it).
+dt_policy=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'POLICY'
 import importlib.util
 import sys
-import time
 
 spec = importlib.util.spec_from_file_location("hq_capture", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-sys.stdout.write(str(mod.policy_minutes(mod.Hook(time.monotonic()))))
-LIVE
-) || dt_live=""
+policy, _ = mod.load_policy()
+sys.stdout.write("%s %s %s" % (policy[mod.POLICY_KEY], policy["tick_cadence_min"],
+                               policy["interrupt_rule"]))
+POLICY
+) || dt_policy=""
+dt_live="" dt_policy_cadence="" dt_rule=""
+read -r dt_live dt_policy_cadence dt_rule <<EOF
+$dt_policy
+EOF
 case "$dt_live" in
   ''|*[!0-9]*) dt_live=15 ;;
 esac
+case "$dt_policy_cadence" in
+  ''|*[!0-9]*) dt_policy_cadence=5 ;;
+esac
+case "$dt_rule" in
+  everything|away) ;;
+  *) dt_rule=everything ;;
+esac
+if [ "$dt_cadence_given" -eq 0 ]; then
+  dt_cadence="$dt_policy_cadence"
+fi
+dt_secs=$((10#$dt_cadence * 60))
+if [ -n "$dt_tick_secs" ]; then
+  dt_secs="$dt_tick_secs"
+fi
 if [ "$((10#$dt_cadence))" -ge "$dt_live" ]; then
   dt_die "--cadence must be shorter than the live-desk bound ($dt_live min, desk/policy.json live_desk_max_tick_age_min), or the desk goes stale between ticks"
 fi
@@ -286,7 +322,7 @@ dt_cycle() {
     exit 0
   fi
   rc=0
-  out=$("$dt_cli" tick --session "$dt_session" 2>"$dt_err") || rc=$?
+  out=$("$dt_cli" tick --session "$dt_session" --interrupts "$dt_rule" 2>"$dt_err") || rc=$?
   if [ "$rc" -eq 4 ]; then
     # Refused: most likely another desk registered after step 1. Confirm
     # before stopping, so any other exit-4 cause stays an error line.

@@ -22,7 +22,8 @@ The hook queues a question only while a desk is **live**: a registered control s
 | `decisions.md` | Simple Decisions: sets, menus, replies, answers, wake-ups | #1779 |
 | `longform.md` | Long-form and multipart Decisions: one text prompt at a time, part by part, answers stored word for word | #1780 |
 | `discuss.md` | `discuss <n\|D-id>`: talk one item through with its context loaded, then answer it | #1780 |
-| `desk.jq` | The functions both views call: which Decisions fit a menu, multipart groups, the long-form and discussion cards | #1779, #1780 |
+| `desk.jq` | The functions both views call: which Decisions fit a menu, sets, multipart groups, the long-form and discussion cards, feedback tags | #1779, #1780, #1783 |
+| `interrupts.md` | `desk/policy.json`; the interrupt rule (`away`, `available`, `focus until …`, `focus off`, `interrupts?`); feedback tags (`2: not important`, `2: should have defaulted`, `2: good interrupt`) | #1783 |
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once | #1781 |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), printed without a state line | #1781 |
 | `priorities.md` | `top`, `bump`, `park`, `drop`, `priorities`: the operator's backlog order for `/pm`, kept in the target repo's `.claude/pm-priority.json` | #1767 |
@@ -59,7 +60,7 @@ done
 ## Start: `/desk [--cadence Nm]`
 
 1. **Prelude.** `DESK` or `SID` empty → say so in one line and stop. Nothing is armed.
-2. **Cadence.** `--cadence Nm`, a whole number of minutes, default 5, and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
+2. **Policy and cadence.** Read `desk/policy.json` first (`interrupts.md`, "The policy": block `desk-policy`); a warning line it prints goes in the start report, once. `--cadence Nm`, a whole number of minutes, default the policy's `tick_cadence_min` (5), and **shorter than the live-desk bound**: the capture hook queues only while the last tick is at most that old (15 minutes unless `desk/policy.json` sets `live_desk_max_tick_age_min`), so a cadence at or past it leaves the desk stale between ticks and worker menus render in their own threads again. `desk-tick.sh` enforces it (1 to 60, and below the bound it reads through the hook's own policy parser): step 5 passes the cadence, so a bad one stops the start there with exit 4 and one line naming the bound. Anything that is not a whole number → one line naming the range, and stop.
 3. **Migrate**, then **register** this session:
 
    <!-- test-anchor: desk-start -->
@@ -68,7 +69,7 @@ done
    "$HQ" migrate && "$HQ" register-control "$SID"
    ```
 
-   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, and the Reviews view `007_reviews_summary_l1.sql`).
+   - `migrate` is idempotent and applies any migration a merge added (the desk needs `005_wake_events.sql` and `006_answer_parked.sql`, the Reviews view `007_reviews_summary_l1.sql`, and feedback tags `008_event_session.sql`).
    - Exit 7 → `Desk not started: the store is unreachable (<the CLI's one line>).` and stop. Exit 1 or 4 → the same shape with that line. **Do not arm anything** and never say the desk is live.
    - `control session <SID> (replaces <OTHER>)` → another desk was registered; it stops ticking on its own at its next cycle (`desk-tick.sh` exits on `replaced`). Mention it in the start line.
 4. **Stop an earlier loop of this session** (a second `/desk` in the same thread): read `.desk` with `"$SESSION_STATE_SH" --get-json .desk` (with `SESSION_STATE_SH` empty, skip the read and use the task id this conversation holds, if any). When its `session` is `SID` and it names a `monitor_task_id`, `TaskStop` that task first. A `TaskStop` failure on a task that no longer exists is fine; any other failure → keep the old identity, say so in one line, and stop.
@@ -98,7 +99,7 @@ done
    - Arming failed (no task id) → `Desk not started: the Monitor did not arm.` Leave `.desk` unwritten.
    - `SESSION_STATE_SH` empty (the prelude's DEGRADED line) → skip this write and keep `TASK_ID`, `GEN`, and the cadence in this conversation. That is the degraded mode, not a failure: the desk starts.
    - Arming worked but this write failed → `TaskStop` the task id you hold now, then report the desk as not started. If that `TaskStop` also fails, name the task id in the message so the operator can stop it.
-8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.`
+8. **Show what is already waiting.** The first tick reports only what changed since the last desk ticked, so read the whole backlog once: `"$HQ" list --kind decision --status open --json`, and hand it to `decisions.md` ("Showing items"). With nothing waiting, the start report is one line: `Desk live — nothing waiting; ticking every <N> min.` When the interrupt rule in force holds items (`interrupts.md`, block `desk-interrupt-get`: the policy's `interrupt_rule` is `away`, or this session set `away` or a focus before a second `/desk`), show nothing yet: `Desk live — holding new Decisions (<the rule>); "available" shows them.`
 
 ## Monitor events
 
@@ -121,7 +122,8 @@ Read each operator message in this order:
 
 1. **`show D-<n>`** or **`history`** (`history <YYYY-MM-DD>`), as the whole message → load `history.md`. This works at any time, including while a long-form prompt waits or during a discussion, and stores nothing.
    **A priority command** (`top: #a #b`, `bump #N`, `park #N until <date>`, `drop #N`, `priorities`, each optionally ending `in <repo>`), as the whole message → load `priorities.md`. The same holds: any time, and nothing goes to the store.
-   **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after. Interrupts, policy, and feedback tags (#1783) and the day plan and end-of-day sweep (#1784) have no verb here yet.
+   **A Reviews verb** as the whole message — `reviews` (`reviews since <YYYY-MM-DD>`), `open R-<n>`, `diff R-<n> [path]`, `reviewed` (`reviewed R-<n>`, `reviewed all today`), `flag R-<n> "…"`, or `follow up R-<n>` (`follow up R-<n> again`) → load `reviews.md`. Also at any time; a waiting long-form prompt keeps waiting and is shown again after. The day plan and end-of-day sweep (#1784) have no verb here yet.
+   **An interrupt verb** as the whole message — `away`, `available` (`back` outside a discussion), `focus until <time>`, `focus for <N> min`, `focus off`, or `interrupts?` — or **feedback tags**, a message whose every pair is `<n|D-id>: not important`, `should have defaulted`, or `good interrupt` → load `interrupts.md`. Also at any time, and checked before any typed reply or long-form answer: a tag is never an answer.
 2. **`idea: …`**, **`file: …`**, or **`repo: …`** (any case) → load `ideas.md`. Like `show`, it works at any time; a waiting long-form prompt's card is printed again afterwards.
 3. **`discuss`**, `discuss <n>`, or `discuss D-<id>` → load `discuss.md`.
 4. **A long-form prompt waits for its reply** → load `longform.md` and follow "Replies to a long-form prompt": the whole message is that item's answer, stored word for word, unless it is `skip`, `discuss …`, `idea: …`, or a `D-<n>:` reply for another item.
@@ -141,7 +143,7 @@ Read each operator message in this order:
 1. **Ticking, not just armed.** The JSON's `session` is `SID` and `tick_age_seconds` is at most the cadence in seconds plus 60. Arming is not ticking: the inline tick at start or a loop tick must have run. Too old → run the step 5 inline tick now, and if the Monitor has exited, re-arm (steps 5–7).
 2. **The Monitor is live.** The recorded `monitor_task_id` is still running (no exit or expiry notice since it was armed). Not running → re-arm.
 3. **State recorded.** `"$SESSION_STATE_SH" --set ".desk.last_tick_at=\"<last_tick_at from the JSON>\"" --set ".desk.checked_at=\"<now, UTC>\""`. With `SESSION_STATE_SH` empty, skip it (degraded mode).
-4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`) — never a routine "still watching", and never a state line nobody asked for.
+4. **Output.** Say something only for a blocker, a failed first wake-up (`decisions.md`; a failed retry stays quiet), a parked answer's one-time notice (`wakeups.md`), a menu or long-form prompt the operator must answer, or a reply to what the operator just typed (a discussion card and its follow-ups, `discuss.md`; a stored-answer or left-open line; `show` or `history` output, `history.md`) — never a routine "still watching", never a state line nobody asked for, and never the interrupt rule unasked (`interrupts.md`).
 
 If 1 or 2 cannot be fixed (the store is down, the Monitor will not arm), say so in one line. Never end a turn claiming the desk is watching when either check failed.
 
