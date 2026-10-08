@@ -94,6 +94,15 @@ on-demand and `--report-only` runs only. **`--tick` with `--repos` or
 watermark is one month for one selection, so a tick always measures the current
 repo and Step 3 never forwards a repo selection on a tick.
 
+A multi-repo run is also a **spend-ledger** run (issue #1809): each tool in
+`per_repo[]` and in the total carries `spend_usd` and a `spend_source` label —
+`receipt` (CodeRabbit's own charge lines, a floor), `estimate` (a count times a
+unit rate), `flat` (a monthly fee prorated to the window), or `none` (null, never
+0). Rates come only from the `review-stack-rates` block in the pricing matrix;
+`measure.sh --help` (SPEND LEDGER) has the rules. Quote a figure with its label —
+the vendor dashboard, not the ledger, is the bill. The drift comparison does not
+read spend.
+
 ```bash
 REPO_ROOT="$("$REPO_ROOT_SH")"
 SKILL_DIR="$REPO_ROOT/.claude/skills/review-stack-audit"

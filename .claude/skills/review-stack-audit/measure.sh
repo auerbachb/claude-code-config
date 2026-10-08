@@ -47,7 +47,8 @@
 #
 # USAGE
 #   measure.sh [--repo owner/name | --repos a/b,c/d | --all-repos]
-#              [--since YYYY-MM-DD | --days N] [--limit N]
+#              [--since YYYY-MM-DD [--until YYYY-MM-DD] | --days N] [--limit N]
+#              [--ledger] [--pricing <file>]
 #              [--fixture <path>] [--json | --summary]
 #   measure.sh --help | -h
 #
@@ -61,18 +62,58 @@
 #               resolve the list, nothing is measured: exit 1.
 #               --repo, --repos and --all-repos are mutually exclusive (exit 2).
 #   --since     Window start, inclusive (YYYY-MM-DD). Default: --days 30.
+#   --until     Window end, inclusive (YYYY-MM-DD; issue #1809). Valid only with
+#               --since, and not before it (exit 2). Bounds the PR search to
+#               merged:SINCE..UNTIL and window.days to the inclusive day count.
+#               Without it the window and search are exactly as before.
 #   --days      Window start as N days before today. Mutually exclusive
 #               with --since.
 #   --limit     Max merged PRs to sample in the window (default 60), per repo.
 #               The window is the measurement's meaning, so a truncated sample is
 #               declared in `window.truncated` rather than passed off as the
 #               whole window.
+#   --ledger    Add labelled spend per tool (issue #1809; see SPEND LEDGER).
+#               Implied by --repos and --all-repos. Without it, the single-repo
+#               path runs the same queries and emits the same output as before.
+#   --pricing   Markdown file holding the `review-stack-rates` block (ledger
+#               mode only, exit 2 otherwise; unreadable: exit 1). Default: this
+#               checkout's .claude/reference/pricing-matrix.md, then the
+#               published copies. If none resolves, rate-priced tools read null.
 #   --fixture   Read a pre-captured bundle instead of calling gh. Same code path,
 #               so tests exercise the real classifier. Shape: FIXTURE FORMAT.
 #   --json      Full snapshot on stdout (DEFAULT).
-#   --summary   One `tool<TAB>state<TAB>prs<TAB>findings<TAB>sole` line per tool.
+#   --summary   One `tool<TAB>state<TAB>prs<TAB>findings<TAB>sole` line per tool;
+#               ledger mode appends `<TAB>spend_usd<TAB>spend_source` (null
+#               prints as `null`).
 #               Multi-repo: one block per repo headed `# repo: owner/name`, then
 #               one `# total: N repos` block, blocks separated by a blank line.
+#
+# SPEND LEDGER (--ledger)
+#   Each tool gains `spend_usd` (number or null) and `spend_source`, one of:
+#     receipt   CodeRabbit: the sum of `Charged: $X` lines in coderabbitai[bot]
+#               conversation comments in the window. A FLOOR, never the bill — a
+#               summary comment keeps one receipt and a later review overwrites it.
+#     estimate  BugBot: `Cursor Bugbot` check-runs (every commit of each PR,
+#               filter=all, deduped by run id, timed by started_at) x $/review.
+#               Greptile: non-bot `@greptileai` comments x credits/review x $/credit.
+#     flat      CodeAnt and Vercel: the monthly fee x window.days / 30.
+#     none      No figure: the rate is null, missing, or unreadable. spend_usd is
+#               then null, never 0, and a note names the missing input.
+#   Events are kept inside the inclusive window (since 00:00:00Z through until
+#   23:59:59Z; no upper bound without --until); an event with no timestamp is
+#   left out and counted in a note. Receipts and estimates cover only the PRs
+#   this run samples — merged in the window, up to --limit — so reviews of open,
+#   closed-unmerged, or later-merged PRs are not counted: they are a floor on
+#   the window's account spend, never the whole of it. Rates come only from
+#   the fenced `review-stack-rates` block (--pricing). The money rules live in
+#   .claude/scripts/lib/review_ledger.py, imported only in ledger mode.
+#   Multi-repo: a flat fee is account-level, so each repo gets a share by that
+#   tool's prs_touched (even split when all are zero) and the shares sum to the
+#   prorated fee to the cent; each total spend_usd is the sum of the per-repo
+#   figures, and any null per-repo figure makes the total null. A single-repo
+#   ledger run attributes the whole prorated fee to its one repo.
+#   The vendor dashboard stays the authority for the real bill. Live ledger runs
+#   cost one extra gh call per PR plus one per commit.
 #
 # FIXTURE FORMAT
 #   {"repo": "owner/name",
@@ -80,6 +121,11 @@
 #             "reviews":        [{"user": "coderabbitai[bot]", "state": "APPROVED", "body": ""}],
 #             "pr_comments":    [{"user": "coderabbitai[bot]", "body": ""}],
 #             "issue_comments": [{"user": "coderabbitai[bot]", "body": ""}]}]}
+#
+#   Ledger fields (optional, read only in ledger mode): `created_at` on an
+#   issue comment, and a per-PR `check_runs` list of
+#   {"id", "name": "Cursor Bugbot", "started_at"} objects (REST envelopes with a
+#   `check_runs` array are accepted too). A PR without `check_runs` has none.
 #
 #   Multi-repo: {"repos": [{"repo": "owner/name", "truncated": false,
 #                           "prs": [ ...as above... ]}]}
@@ -98,7 +144,8 @@
 #     "tools": [{"key", "login", "observed_state", "plan_observed",
 #                "prs_touched", "review_objects", "approved",
 #                "changes_requested", "inline_findings", "issue_comments",
-#                "sole_provider_on", "cap_signals": [...], "cap_kinds": [...]}],
+#                "sole_provider_on", "cap_signals": [...], "cap_kinds": [...],
+#                "spend_usd", "spend_source"}],   # spend_*: ledger mode only
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
 #     "unclassified_hits": N,   # bodies (review body, inline comment, or
 #                               # conversation comment) carrying >=1 unexplained
@@ -124,7 +171,9 @@
 #                       # sole_provider_on, which stays a count.
 #     "unclassified": [...],        # merged, `pr` repo-qualified
 #     "unclassified_hits": N,       # summed
-#     "notes": ["owner/name: <note>", ...]   # merged, each tagged with its repo
+#     "notes": ["owner/name: <note>", ...]   # merged, each tagged with its repo;
+#                                            # run-wide notes (plan disagreement,
+#                                            # ledger rates) follow, untagged
 #   }
 #
 # EXIT STATUS
@@ -138,6 +187,7 @@
 #   .claude/skills/review-stack-audit/measure.sh --days 30 --summary
 #   .claude/skills/review-stack-audit/measure.sh --since 2026-06-27 | jq '.tools[]'
 #   .claude/skills/review-stack-audit/measure.sh --all-repos --days 7 --summary
+#   .claude/skills/review-stack-audit/measure.sh --ledger --since 2026-10-01 --until 2026-10-31 --summary
 
 set -euo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "${HOME:-/tmp}/.claude/script-usage.log" || true
@@ -157,9 +207,12 @@ REPO=""
 REPOS_CSV=""
 ALL_REPOS=0
 SINCE=""
+UNTIL=""
 DAYS=""
 LIMIT="60"
 FIXTURE=""
+LEDGER=0
+PRICING=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -182,6 +235,17 @@ while [[ $# -gt 0 ]]; do
       SINCE="$2"; shift 2 ;;
     --since=*)
       SINCE="${1#--since=}"; [[ -n "$SINCE" ]] || usage_error "--since value cannot be empty"; shift ;;
+    --until)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--until requires a value"
+      UNTIL="$2"; shift 2 ;;
+    --until=*)
+      UNTIL="${1#--until=}"; [[ -n "$UNTIL" ]] || usage_error "--until value cannot be empty"; shift ;;
+    --ledger) LEDGER=1; shift ;;
+    --pricing)
+      [[ $# -ge 2 && -n "$2" ]] || usage_error "--pricing requires a value"
+      PRICING="$2"; shift 2 ;;
+    --pricing=*)
+      PRICING="${1#--pricing=}"; [[ -n "$PRICING" ]] || usage_error "--pricing value cannot be empty"; shift ;;
     --days)
       [[ $# -ge 2 && -n "$2" ]] || usage_error "--days requires a value"
       DAYS="$2"; shift 2 ;;
@@ -239,6 +303,21 @@ fi
 # opaque error, and a zero-PR "measurement" is not a window worth reporting.
 [[ "$LIMIT" =~ ^[0-9]+$ ]] && [[ "$LIMIT" -gt 0 ]] || usage_error "--limit must be a positive integer"
 [[ -z "$SINCE" ]] || [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "--since must be YYYY-MM-DD"
+# --until closes a window --since opened. Alone it would pair an explicit end
+# with a start derived from today's clock — a window nobody asked for.
+if [[ -n "$UNTIL" ]]; then
+  [[ -n "$SINCE" ]] || usage_error "--until is valid only with --since"
+  [[ "$UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "--until must be YYYY-MM-DD"
+  # Same fixed-width YYYY-MM-DD shape, so string order is date order.
+  [[ ! "$UNTIL" < "$SINCE" ]] || usage_error "--until ($UNTIL) is before --since ($SINCE)"
+fi
+# Ledger mode (issue #1809): asked for, or implied by a multi-repo run, whose
+# cross-repo total is what the account is billed against.
+[[ -n "$REPOS_CSV" || "$ALL_REPOS" -eq 1 ]] && LEDGER=1
+if [[ -n "$PRICING" ]]; then
+  [[ "$LEDGER" -eq 1 ]] || usage_error "--pricing is valid only in ledger mode (--ledger, --repos or --all-repos)"
+  [[ -r "$PRICING" && -f "$PRICING" ]] || { echo "measure.sh: pricing file not readable: $PRICING" >&2; exit 1; }
+fi
 [[ -z "$FIXTURE" ]] || [[ -r "$FIXTURE" ]] || { echo "measure.sh: fixture not readable: $FIXTURE" >&2; exit 1; }
 
 if [[ -z "$FIXTURE" ]]; then
@@ -276,9 +355,44 @@ fi
 MULTI=0
 [[ -n "$REPOS_CSV" || "$ALL_REPOS" -eq 1 ]] && MULTI=1
 
+# Ledger mode resolves its library and default rates here, and only here: the
+# legacy path never touches either, so neither can break it.
+LEDGER_LIB_DIR=""
+if [[ "$LEDGER" -eq 1 ]]; then
+  # This checkout's own .claude/ first (`cd -P` resolves the published
+  # ~/.claude/skills symlink to the worktree), then the published locations.
+  _claude_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || _claude_dir=""
+  for _c in \
+    ${_claude_dir:+"$_claude_dir/scripts/lib"} \
+    "$HOME/.claude/skills-worktree/.claude/scripts/lib" \
+    "$HOME/.claude/scripts/lib" \
+    ".claude/scripts/lib"; do
+    if [[ -r "$_c/review_ledger.py" ]]; then LEDGER_LIB_DIR="$_c"; break; fi
+  done
+  [[ -n "$LEDGER_LIB_DIR" ]] \
+    || { echo "ERROR: review_ledger.py not found (checked this checkout's .claude/scripts/lib and all three published paths) — spend ledger unavailable" >&2; exit 1; }
+  if [[ -z "$PRICING" ]]; then
+    for _c in \
+      ${_claude_dir:+"$_claude_dir/reference/pricing-matrix.md"} \
+      "$HOME/.claude/skills-worktree/.claude/reference/pricing-matrix.md" \
+      "$HOME/.claude/reference/pricing-matrix.md" \
+      ".claude/reference/pricing-matrix.md"; do
+      if [[ -r "$_c" && -f "$_c" ]]; then PRICING="$_c"; break; fi
+    done
+    # Not fatal: CodeRabbit's receipts need no rate. Every rate-priced tool
+    # then reads null with a note naming why — never 0.
+    [[ -n "$PRICING" ]] \
+      || echo "DEGRADED: pricing-matrix.md not found (checked this checkout's .claude/reference and all three published paths) — rate-priced spend unavailable, continuing without it" >&2
+  fi
+fi
+
 MEASURE_MODE="$MODE" \
 MEASURE_REPO="$REPO" \
 MEASURE_MULTI="$MULTI" \
+MEASURE_UNTIL="$UNTIL" \
+MEASURE_LEDGER="$LEDGER" \
+MEASURE_PRICING="$PRICING" \
+MEASURE_LIB_DIR="$LEDGER_LIB_DIR" \
 MEASURE_REPOS="$REPOS_LIST" \
 MEASURE_SINCE="$SINCE" \
 MEASURE_DAYS="$DAYS" \
@@ -300,11 +414,25 @@ since_arg = os.environ.get("MEASURE_SINCE", "")
 days_arg = os.environ.get("MEASURE_DAYS", "")
 limit = int(os.environ.get("MEASURE_LIMIT", "60"))
 fixture = os.environ.get("MEASURE_FIXTURE", "")
+until_arg = os.environ.get("MEASURE_UNTIL", "")
+ledger_mode = os.environ.get("MEASURE_LEDGER", "0") == "1"
+pricing_path = os.environ.get("MEASURE_PRICING", "")
 
 
 def fail(msg):
     print("measure.sh: %s" % msg, file=sys.stderr)
     sys.exit(1)
+
+
+# The ledger library is imported ONLY in ledger mode (issue #1809), so neither
+# its absence nor a fault in it can reach the legacy measurement path.
+ledger = None
+if ledger_mode:
+    sys.path.insert(0, os.environ.get("MEASURE_LIB_DIR", ""))
+    try:
+        import review_ledger as ledger
+    except Exception as exc:  # any import-time fault fails the ledger run closed
+        fail("could not import the spend ledger library (review_ledger.py): %s" % exc)
 
 
 # --- the review stack ---------------------------------------------------------
@@ -495,9 +623,20 @@ if since_arg:
     except ValueError:
         fail("--since is not a valid date: %s" % since_arg)
     days = (now - since_dt).days
+    if until_arg:
+        # Inclusive on both ends: --since 2026-10-01 --until 2026-10-31 is 31 days.
+        try:
+            until_dt = datetime.strptime(until_arg, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            fail("--until is not a valid date: %s" % until_arg)
+        days = (until_dt - since_dt).days + 1
 else:
     days = int(days_arg) if days_arg else 30
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+# Without --until the window ends today, exactly as it always has.
+until = until_arg or now.strftime("%Y-%m-%d")
+# Search and event window: open-ended above unless --until closed it.
+search_range = ("merged:%s..%s" % (since, until_arg)) if until_arg else ("merged:>=%s" % since)
 
 multi_requested = os.environ.get("MEASURE_MULTI", "0") == "1"
 repos_requested = []
@@ -519,7 +658,7 @@ def fetch_prs(repo):
     quietly left out the repo it failed to read."""
     listed = run_gh([
         "pr", "list", "--repo", repo, "--state", "merged",
-        "--search", "merged:>=%s" % since,
+        "--search", search_range,
         "--limit", str(limit),
         "--json", "number,mergedAt",
     ])
@@ -531,7 +670,7 @@ def fetch_prs(repo):
         reviews = run_gh(["api", "repos/%s/pulls/%d/reviews?per_page=100" % (repo, num), "--paginate"])
         pr_comments = run_gh(["api", "repos/%s/pulls/%d/comments?per_page=100" % (repo, num), "--paginate"])
         issue_comments = run_gh(["api", "repos/%s/issues/%d/comments?per_page=100" % (repo, num), "--paginate"])
-        prs.append({
+        pr = {
             "number": num,
             "merged_at": row.get("mergedAt"),
             "reviews": [{"user": (r.get("user") or {}).get("login", ""),
@@ -539,10 +678,42 @@ def fetch_prs(repo):
                          "body": r.get("body") or ""} for r in reviews],
             "pr_comments": [{"user": (c.get("user") or {}).get("login", ""),
                              "body": c.get("body") or ""} for c in pr_comments],
+            # created_at places a receipt or trigger in the ledger window; the
+            # legacy path never reads it and never emits normalized data.
             "issue_comments": [{"user": (c.get("user") or {}).get("login", ""),
-                                "body": c.get("body") or ""} for c in issue_comments],
-        })
+                                "body": c.get("body") or "",
+                                "created_at": c.get("created_at")} for c in issue_comments],
+        }
+        if ledger is not None:
+            pr["check_runs"] = fetch_bugbot_runs(repo, num)
+        prs.append(pr)
     return prs
+
+
+def fetch_bugbot_runs(repo, num):
+    """Every `Cursor Bugbot` check-run on every commit of one PR (ledger only).
+
+    BugBot posts no receipt, so its runs are the only count to price. Each push
+    can be a run, so every commit is read, not just HEAD; `filter=all` keeps
+    reruns, which bill again. A run reachable from two commits dedupes by id
+    in review_ledger.bugbot_runs."""
+    commits = run_gh(["api", "repos/%s/pulls/%d/commits?per_page=100" % (repo, num), "--paginate"])
+    runs = []
+    for commit in commits:
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not sha:
+            continue
+        pages = run_gh(["api", "repos/%s/commits/%s/check-runs?per_page=100&filter=all"
+                        "&check_name=Cursor%%20Bugbot" % (repo, sha), "--paginate"])
+        if isinstance(pages, dict):
+            pages = [pages]
+        for run in ledger.bugbot_runs(pages):
+            runs.append({"id": run.get("id"), "name": run.get("name"),
+                         "head_sha": run.get("head_sha"),
+                         "app": (run.get("app") or {}).get("slug"),
+                         "started_at": run.get("started_at"),
+                         "completed_at": run.get("completed_at")})
+    return runs
 
 
 # --- classify -----------------------------------------------------------------
@@ -735,13 +906,16 @@ def measure_repo(repo, source, prs, truncated):
             "noise."
             % (len(unclassified), unclassified_hits))
 
+    if ledger is not None:
+        notes.extend(apply_spend(tools_out, prs))
+
     snapshot = {
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo": repo,
         "source": source,
         "window": {
             "since": since,
-            "until": now.strftime("%Y-%m-%d"),
+            "until": until,
             "days": days,
             "pr_count": len(prs),
             "limit": limit,
@@ -753,6 +927,47 @@ def measure_repo(repo, source, prs, truncated):
         "notes": notes,
     }
     return snapshot, sole_prs
+
+
+def apply_spend(tools_out, prs):
+    """Attach `spend_usd` and `spend_source` to each tool (ledger mode only).
+
+    The rules — what counts as a receipt, a run, a trigger, how a window and a
+    rate turn into dollars — all live in review_ledger.py; this only gathers the
+    repo's raw events for it. Returns this repo's own notes: events left out of
+    spend because no timestamp could place them in the window."""
+    comments = []
+    check_runs = []
+    for pr in prs:
+        for c in pr.get("issue_comments", []) or []:
+            if isinstance(c, dict):
+                tagged = dict(c)
+                tagged["pr"] = pr.get("number")
+                comments.append(tagged)
+        check_runs.append(pr.get("check_runs") or [])
+    open_until = until_arg or None
+    charges, undated_charges = ledger.filter_window(
+        ledger.extract_charges(comments), since, open_until, "created_at")
+    runs, undated_runs = ledger.filter_window(
+        ledger.bugbot_runs(check_runs), since, open_until, "started_at")
+    triggers, undated_triggers = ledger.filter_window(
+        ledger.greptile_triggers(comments), since, open_until, "created_at")
+    signals = {"charges": [e["amount"] for e in charges],
+               "bugbot_runs": len(runs),
+               "greptile_triggers": len(triggers)}
+    for s in tools_out:
+        usd, label = ledger.compute_spend(s["key"], signals, rates, days)
+        s["spend_usd"] = ledger.to_number(usd)
+        s["spend_source"] = label
+    notes = []
+    for count, what in ((undated_charges, "CodeRabbit receipt(s)"),
+                        (undated_runs, "Cursor Bugbot check-run(s)"),
+                        (undated_triggers, "@greptileai trigger comment(s)")):
+        if count:
+            notes.append(
+                "%d %s carried no timestamp, so no window could hold them; they are "
+                "left out of spend_usd, which may be understated." % (count, what))
+    return notes
 
 
 def observed_state(s):
@@ -767,15 +982,27 @@ def observed_state(s):
 
 
 def summary_lines(tools):
-    return ["%s\t%s\t%d\t%d\t%d" % (s["key"], s["observed_state"],
-                                    s["prs_touched"], s["inline_findings"],
-                                    s["sole_provider_on"]) for s in tools]
+    lines = ["%s\t%s\t%d\t%d\t%d" % (s["key"], s["observed_state"],
+                                     s["prs_touched"], s["inline_findings"],
+                                     s["sole_provider_on"]) for s in tools]
+    if ledger is None:
+        return lines
+    # Ledger mode appends the spend columns; null stays visibly `null`.
+    return ["%s\t%s\t%s" % (line,
+                            "null" if s["spend_usd"] is None else "%.2f" % s["spend_usd"],
+                            s["spend_source"]) for line, s in zip(lines, tools)]
 
 
 def qualify(repo, pr_number):
     """A PR identifier that survives leaving its repo: `owner/name#N`."""
     return "%s#%s" % (repo, pr_number)
 
+
+# Rates are read once per run (ledger mode only). Their notes describe the
+# pricing file, not any repo, so they are reported once rather than per repo.
+rates, rate_notes = None, []
+if ledger is not None:
+    rates, rate_notes = ledger.parse_rates(pricing_path)
 
 bundle = None
 if fixture:
@@ -814,6 +1041,12 @@ if not multi:
 
     truncated = (not fixture) and len(prs) >= limit
     snapshot, _ = measure_repo(repo, source, prs, truncated)
+    if ledger is not None:
+        snapshot["notes"].extend(rate_notes)
+        snapshot["notes"].append(
+            "Flat monthly fees are account-level: this single-repo ledger run "
+            "attributes the whole %d-day prorated fee to %s. --repos / --all-repos "
+            "split it across repos by each tool's prs_touched." % (days, repo))
     if mode == "summary":
         for line in summary_lines(snapshot["tools"]):
             print(line)
@@ -862,6 +1095,23 @@ for repo in targets:
     doc, sole = measure_repo(repo, source, prs, truncated)
     results.append((repo, doc, sole))
 
+# A flat fee is billed once to the account, not once per repo. Each repo's share
+# is that tool's prs_touched share of the one prorated fee, allocated in whole
+# cents so the shares sum to the fee exactly (issue #1809). A null rate stays
+# null in every repo, which nulls the total below.
+if ledger is not None:
+    for t in TOOLS:
+        if ledger.TOOL_RULES[t["key"]]["method"] != "flat":
+            continue
+        monthly = rates["usd"].get(t["key"]) if rates else None
+        if monthly is None:
+            continue
+        entries = [next(x for x in doc["tools"] if x["key"] == t["key"]) for _, doc, _ in results]
+        shares = ledger.allocate(ledger.prorate_flat(monthly, days),
+                                 [e["prs_touched"] for e in entries])
+        for entry, share in zip(entries, shares):
+            entry["spend_usd"] = ledger.to_number(share)
+
 # The cross-repo total per tool. Same fields as a single-repo tool entry, so
 # drift.sh — which reads only `tools[]`, `window.truncated` and `unclassified`
 # — compares an account-level total against the baseline with no change.
@@ -898,7 +1148,17 @@ for t in TOOLS:
                 % (t["name"], "; ".join("%s: %s" % (r, p) for r, p in plans)))
     agg["cap_kinds"] = sorted({c["kind"] for c in agg["cap_signals"]})
     agg["observed_state"] = observed_state(agg)
+    if ledger is not None:
+        # The total is the sum of the per-repo figures printed beside it, in
+        # cents; one null repo makes the total null rather than a quiet partial.
+        spend, label = ledger.sum_spend([
+            (ledger.to_decimal(rt["spend_usd"]), rt["spend_source"])
+            for rt in (next(x for x in doc["tools"] if x["key"] == t["key"])
+                       for _, doc, _ in results)])
+        agg["spend_usd"] = ledger.to_number(spend)
+        agg["spend_source"] = label
     totals.append(agg)
+notes.extend(rate_notes)
 
 merged_notes = ["%s: %s" % (repo, n) for repo, doc, _ in results for n in doc["notes"]]
 unclassified_all = []
@@ -915,7 +1175,7 @@ rollup = {
     "per_repo": [doc for _, doc, _ in results],
     "window": {
         "since": since,
-        "until": now.strftime("%Y-%m-%d"),
+        "until": until,
         "days": days,
         "pr_count": sum(doc["window"]["pr_count"] for _, doc, _ in results),
         "limit": limit,

@@ -15,6 +15,8 @@ Demand window: **2026-07-22 → 2026-08-21**, 245 merged PRs
 >
 > **Distinct wallet.** This file is the **review-stack** wallet — CodeRabbit, BugBot, Greptile, CodeAnt. The owner's **AI coding-assistant subscriptions** (Claude Max, ChatGPT Pro / Codex, Cursor Ultra) and what continuing past their caps costs live in [`ai-quotas.md`](./ai-quotas.md) §"Overage — what continuing costs". No price is copied between the two files: a figure that appears in both is a figure that will be updated in one and silently stale in the other.
 >
+> **The wallet is account-level, with a per-repo breakdown** ([#1809](https://github.com/auerbachb/claude-code-config/issues/1809)). Each vendor bills one account across every repo it reviews, so the review-stack audit's spend ledger (`measure.sh --repos` / `--all-repos`) reports each tool's spend per repo and as a cross-repo total. Every ledger figure carries a label — `receipt` (CodeRabbit's own `Charged: $X` lines, a floor: a later review can overwrite a receipt), `estimate` (a count times a unit rate), `flat` (a monthly fee prorated to the window), or `none` (no figure; null, never 0). **The vendor dashboard remains the authority for the real bill**; the ledger is an observation that can disagree with it, never a substitute. Its unit rates come only from the block in §[Machine-readable rates](#machine-readable-rates-review-stack-ratesv1).
+>
 > **Redactions.** This repository is **public**. Personal email addresses read from the dashboards have been removed (#1227), matching the practice [`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md) §Redactions set in PR [#1203](https://github.com/auerbachb/claude-code-config/pull/1203): seat holders are named by role ("the account owner") or by GitHub handle. Redaction is not a rewrite — every figure, reading, and verdict below stands exactly as recorded on 2026-08-21, and the point-in-time exemption still forbids updating them. The findings survive the removal: what matters is *that* the commit-author identity holds no seat, not which addresses do.
 
 ## Executive summary
@@ -213,6 +215,115 @@ Source — *public:* [pricing](https://graphite.com/pricing), retrieved 2026-08-
 | **CLI** (`gt`) | Same account | Stacking/PR CLI on every tier including free Hobby — **no AI review quota attached** | — | — | n/a — does not consume AI review quota | per-seat | n/a |
 
 **The $20 tier is a trap for this use case.** Starter buys org-repo support, Slack notifications, and team insights. Its AI review allowance is published as **"Limited"** — the same label free Hobby carries, with **no number attached to either**, so there is **no documented increase** between them. Graphite may in fact grant Starter more reviews than Hobby; nothing on the page says so, and confirming it would take dashboard access or a measured trial. Only **Team at $40/user/mo annual** states Unlimited AI Reviews, plus review customization, automations, and merge queue. Any "spend $20 to get more Graphite reviews" reasoning is buying an undocumented change.
+
+## Machine-readable rates (review-stack-rates/v1)
+
+The spend ledger in `/review-stack-audit` ([#1809](https://github.com/auerbachb/claude-code-config/issues/1809)) reads **only** the fenced block below — never the prose tables above. A reworded sentence must not be able to move a number, so a rate changes here or nowhere. The parser (`review_ledger.py` in `.claude/scripts/lib/`) selects the one fence whose info string carries `review-stack-rates`, requires `"schema": "review-stack-rates/v1"`, and refuses a duplicated, unterminated, or malformed block outright — every rate-priced figure then reads null with a note, rather than a guess.
+
+Rules the block keeps:
+
+- **Every figure carries `usd`, `unit`, `source`, and `retrieved`.** An unknown value is `null`, never `0`; `basis: "unknown"` with a number is rejected. `0` means a known price of nothing (Vercel).
+- **Units are checked.** The ledger prices BugBot per `review`, Greptile per `credit`, and flat fees per `month`. An entry in any other unit is unusable, and the ledger says so rather than multiplying it as if it matched.
+- **CodeRabbit's rate is informational.** The ledger prices CodeRabbit from its own receipts; the $0.25/file figure is here for reference and is never multiplied.
+- **Estimates are not bills.** BugBot's rate is a measured average, not a price list. Greptile's is the public list price, which this account's discount halves on flex credits, and a trigger is not always a completed review. Read each `source` before quoting a figure.
+- **Caps are account-level** and recorded for reference. This block enforces nothing.
+
+```json review-stack-rates
+{
+  "schema": "review-stack-rates/v1",
+  "as_of": "2026-10-08",
+  "tools": [
+    {
+      "key": "coderabbit",
+      "usd": 0.25,
+      "unit": "file",
+      "basis": "published",
+      "informational": true,
+      "source": "CodeRabbit usage-based add-on: $1.00 per credit, 4 files per credit (docs.coderabbit.ai/management/usage-based-addon). The ledger prices CodeRabbit from its own `Charged: $X` receipts and never multiplies this rate.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "bugbot",
+      "usd": 1.58,
+      "unit": "review",
+      "basis": "observed_average",
+      "source": "Cursor invoice line github_bugbot: $815.58 over 516 billed reviews (dashboard, #1204; attribution settled as BugBot by #1228). Measured run range $0.48-$3.68; vendor-stated average $1.00-$1.50.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "greptile",
+      "usd": 1.0,
+      "unit": "credit",
+      "credits_per_review": 1,
+      "basis": "published",
+      "source": "greptile.com/pricing: $1 per additional credit; a Base review costs 1 credit (Plus 3, Apex 10), so triggers x 1 credit is a floor on credits. Overstates the marginal bill: this account's flex line bills $0.50 per credit after its discount (dashboard, 2026-08-22), Pro includes 50 credits per seat, and a trigger is not always a completed review.",
+      "retrieved": "2026-10-08"
+    },
+    {
+      "key": "codeant",
+      "usd": 48,
+      "unit": "month",
+      "basis": "observed",
+      "source": "CodeAnt Premium, 2 of 2 seats, about $48/month, unlimited PR reviews (dashboard, #1204).",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "graphite",
+      "usd": null,
+      "unit": "month",
+      "basis": "unknown",
+      "source": "Graphite is newly paid and its tier was never read (#1204 scoped it out). Stays null until someone reads the dashboard.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "vercel",
+      "usd": 0,
+      "unit": "month",
+      "basis": "baseline_assertion",
+      "source": "review-stack-baseline.json records Vercel Agent as billed: free (role off on this repo).",
+      "retrieved": "2026-08-26"
+    }
+  ],
+  "caps": [
+    {
+      "key": "bugbot_monthly",
+      "tool": "bugbot",
+      "usd": 300,
+      "unit": "month",
+      "basis": "operator_instruction",
+      "source": "Operator instruction ticked in auerbachb/sales-kit Issue #178 (2026-10-01): a $300/month BugBot cap, or, if BugBot has no cap of its own, the account-wide on-demand limit left as is. Which of the two the dashboard now holds was not recorded; see cursor_on_demand_monthly.",
+      "retrieved": "2026-10-01"
+    },
+    {
+      "key": "cursor_on_demand_monthly",
+      "tool": "bugbot",
+      "usd": 1000,
+      "unit": "month",
+      "basis": "dashboard",
+      "source": "Cursor on-demand Monthly Limit, Fixed, read at $999.87 of $1,000.00 consumed (dashboard, #1204). Shared by BugBot and IDE usage on the account.",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "key": "coderabbit_usage_monthly",
+      "tool": "coderabbit",
+      "usd": 300,
+      "unit": "month",
+      "basis": "operator_instruction",
+      "source": "Operator instruction ticked in auerbachb/sales-kit Issue #178 (2026-10-01): usage-based add-on set to On demand with a $300/month cap.",
+      "retrieved": "2026-10-01"
+    },
+    {
+      "key": "greptile_flex",
+      "tool": "greptile",
+      "usd": 100,
+      "unit": "month",
+      "basis": "account_configured",
+      "source": "Greptile flex usage cap on the auerbachb org: 'Stop flex usage after $100' (ai-review-billing-dashboard-2026-08.md, #1228).",
+      "retrieved": "2026-08-22"
+    }
+  ]
+}
+```
 
 ## Reconciling observed limits against documented ones
 
