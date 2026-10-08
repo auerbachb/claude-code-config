@@ -5,6 +5,10 @@ ledger mode (--ledger, implied by --repos and --all-repos), so nothing here can
 reach the legacy single-repo path: a failure to import or a bug in this file
 fails a ledger run and leaves the measurement-only path untouched.
 
+review-daily-cap.sh (issue #1812, increment 5/5) is the second importer: it
+prices one ET day's events with these same extraction and spend rules, so the
+account-level daily cap and the audit can never disagree on what a run costs.
+
 WHAT A SPEND FIGURE IS
   Every tool gets two fields: `spend_usd` and `spend_source`. The label says
   where the number came from, because an estimate and a receipt look identical
@@ -190,8 +194,7 @@ def parse_rates(path):
     never does.
     """
     def unusable(why):
-        return None, ["rates unavailable: %s (%s); every rate-priced tool reports "
-                      "spend_usd null" % (why, path or "no pricing file")]
+        return _unusable(why, path or "no pricing file")
 
     if not path:
         return unusable("no pricing file resolved")
@@ -211,6 +214,24 @@ def parse_rates(path):
         doc = json.loads(bodies[0])
     except ValueError as exc:
         return unusable("the `%s` block is not valid JSON: %s" % (FENCE_TAG, exc))
+    return rates_from_doc(doc, path)
+
+
+def _unusable(why, where):
+    return None, ["rates unavailable: %s (%s); every rate-priced tool reports "
+                  "spend_usd null" % (why, where)]
+
+
+def rates_from_doc(doc, where):
+    """Validate an already-parsed review-stack-rates/v1 document.
+
+    The half of parse_rates that runs after the fence is found, so a caller
+    holding the JSON itself (review-daily-cap.sh's fixtures, issue #1812) gets
+    exactly the same validation and the same (rates, notes) result. `where`
+    names the source in a note."""
+    def unusable(why):
+        return _unusable(why, where)
+
     if not isinstance(doc, dict):
         return unusable("the `%s` block is not a JSON object" % FENCE_TAG)
     if doc.get("schema") != SCHEMA:
@@ -412,6 +433,13 @@ def _parse_ts(value):
     return dt
 
 
+def parse_ts(value):
+    """An ISO-8601 or YYYY-MM-DD string as an aware datetime (UTC when no zone
+    is given), or None. Public for review-daily-cap.sh, which pages PRs by
+    updatedAt with the same reading every ledger window uses."""
+    return _parse_ts(value)
+
+
 def filter_window(events, since, until, ts_key):
     """Keep events whose `ts_key` falls in the inclusive window.
 
@@ -423,6 +451,14 @@ def filter_window(events, since, until, ts_key):
     lo = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc) if since else None
     hi = (datetime.strptime(until, "%Y-%m-%d").replace(tzinfo=timezone.utc)
           + timedelta(days=1)) if until else None
+    return filter_between(events, lo, hi, ts_key)
+
+
+def filter_between(events, lo, hi, ts_key):
+    """Keep events whose `ts_key` falls in [lo, hi) — aware datetimes, either
+    None for an open bound. filter_window's UTC-day window is one caller; the
+    daily cap's ET day (review-daily-cap.sh, issue #1812) is the other, so both
+    read timestamps through the one _parse_ts. Returns (kept, undated)."""
     kept = []
     undated = 0
     for ev in events or []:

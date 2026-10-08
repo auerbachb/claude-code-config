@@ -30,3 +30,20 @@ discovery_marker = ac-gate.yml
 - auerbachb/meeting_insights_and_actions
 - auerbachb/sales-kit
 - auerbachb/still-point
+
+## Review daily caps
+
+<!-- One soft cap per paid reviewer, in USD per America/New_York day, for the
+     whole account: review-daily-cap.sh sums today's spend for a platform across
+     every repo in `## Review repos` and skips a paid trigger that would pass it
+     (issue #1812). Soft: an unreadable tally reads `unknown` and the trigger
+     still posts — the vendors' own caps stay the hard stop. Each key can be
+     overridden by an environment variable of the same name; a value that is not
+     a non-negative decimal warns and falls back to 10. Policy:
+     .claude/reference/review-policy.md "Account-level daily cap". -->
+
+```ini
+REVIEW_DAILY_CAP_USD_BUGBOT = 10
+REVIEW_DAILY_CAP_USD_CODERABBIT = 10
+REVIEW_DAILY_CAP_USD_GREPTILE = 10
+```
