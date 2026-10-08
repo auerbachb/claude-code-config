@@ -79,9 +79,12 @@ SELECT r.rule, r.until, r.rule IN ('away', 'focus') AS held, r.source
 SQL
 }
 
-# The first minute after NOW, within a day, at which the clock in :'hq_tz'
-# reaches one of :'hq_times'; NULL when none does. It walks the day minute by
-# minute (1,440 rows) rather than adding a day to a local time, because local
+# The first minute after NOW, within 24 hours, at which the clock in :'hq_tz'
+# reaches one of :'hq_times'; NULL when none does. The window is `24 hours`,
+# never `1 day`: a timestamptz plus a day keeps the wall clock of the
+# session's TimeZone, so it would stretch or shrink with that zone's
+# daylight-saving changes. It walks the window minute by minute (1,440 rows)
+# rather than adding a day to a local time, because local
 # arithmetic is wrong across a daylight-saving change: at 1:05 EDT on the
 # night the clock falls back, `1:30` read as a local time is the later 1:30
 # EST, an hour late, and on the night it springs forward `2:30` (a time that
@@ -95,7 +98,7 @@ hq_sql_focus_until() {
     "                x AT TIME ZONE :'hq_tz' AS cur," \
     "                (x - interval '1 minute') AT TIME ZONE :'hq_tz' AS prev" \
     "           FROM generate_series(date_trunc('minute', $now) + interval '1 minute'," \
-    "                                $now + interval '1 day'," \
+    "                                $now + interval '24 hours'," \
     "                                interval '1 minute') AS x) c," \
     "        unnest(string_to_array(nullif(:'hq_times', ''), ',')) AS t" \
     "  WHERE c.cur = c.cur::date + t::time" \

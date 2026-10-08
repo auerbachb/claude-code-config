@@ -23,6 +23,12 @@
 #
 # BEHAVIOR
 #   Sleep first, then each cycle:
+#     0. Read desk/policy.json again, through the same parser, so an edit
+#        reaches a running loop at its next tick as it reaches the capture
+#        hook at its next call: RULE below follows it, and when the
+#        live-desk bound has dropped to the interval or below, the loop
+#        sleeps 30 seconds less than the bound (at least 1) from then on, so
+#        the desk stays live. The cadence itself is fixed at start.
 #     1. `control-status --json`. When the registered control session is no
 #        longer SESSION (another desk registered, so the last registration
 #        wins), print `desk-tick GEN replaced` and exit 0: two desks must
@@ -173,12 +179,17 @@ if [ -z "$dt_py" ]; then
   exit 1
 fi
 
-# The policy, from the capture hook's own parser (one parser, not two):
-# the live-desk bound, the default cadence, and the interrupt rule that holds
-# until the operator sets one at the desk. An unreadable or missing hook
-# leaves the documented defaults; an invalid policy file is the defaults too
-# (desk-policy.sh is what warns about it).
-dt_policy=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'POLICY'
+# dt_read_policy — the policy, from the capture hook's own parser (one
+# parser, not two), into dt_live (the live-desk bound), dt_policy_cadence
+# (the default cadence), and dt_rule (the interrupt rule that holds until the
+# operator sets one at the desk). An unreadable or missing hook leaves the
+# documented defaults; an invalid policy file is the defaults too
+# (desk-policy.sh is what warns about it). Read at start and again before
+# every cycle, so an edit reaches a running loop at its next tick, as it
+# reaches the capture hook at its next call.
+dt_read_policy() {
+  local policy
+  policy=$("$dt_py" -I - "$dt_capture" 2>/dev/null <<'POLICY'
 import importlib.util
 import sys
 
@@ -189,21 +200,39 @@ policy, _ = mod.load_policy()
 sys.stdout.write("%s %s %s" % (policy[mod.POLICY_KEY], policy["tick_cadence_min"],
                                policy["interrupt_rule"]))
 POLICY
-) || dt_policy=""
-dt_live="" dt_policy_cadence="" dt_rule=""
-read -r dt_live dt_policy_cadence dt_rule <<EOF
-$dt_policy
+) || policy=""
+  dt_live="" dt_policy_cadence="" dt_rule=""
+  read -r dt_live dt_policy_cadence dt_rule <<EOF
+$policy
 EOF
-case "$dt_live" in
-  ''|*[!0-9]*) dt_live=15 ;;
-esac
-case "$dt_policy_cadence" in
-  ''|*[!0-9]*) dt_policy_cadence=5 ;;
-esac
-case "$dt_rule" in
-  everything|away) ;;
-  *) dt_rule=everything ;;
-esac
+  case "$dt_live" in
+    ''|*[!0-9]*) dt_live=15 ;;
+  esac
+  case "$dt_policy_cadence" in
+    ''|*[!0-9]*) dt_policy_cadence=5 ;;
+  esac
+  case "$dt_rule" in
+    everything|away) ;;
+    *) dt_rule=everything ;;
+  esac
+}
+
+# dt_interval — the seconds to sleep before the next cycle: dt_secs, or,
+# when the live-desk bound has since dropped to it or below (the policy was
+# edited while the loop runs), 30 seconds less than the bound (at least 1),
+# so the desk stays live for the capture hook.
+dt_interval() {
+  local bound=$((10#$dt_live * 60))
+  if [ "$dt_secs" -lt "$bound" ]; then
+    printf '%s' "$dt_secs"
+  elif [ "$bound" -gt 30 ]; then
+    printf '%s' "$((bound - 30))"
+  else
+    printf '1'
+  fi
+}
+
+dt_read_policy
 if [ "$dt_cadence_given" -eq 0 ]; then
   dt_cadence="$dt_policy_cadence"
 fi
@@ -374,6 +403,7 @@ if [ "$dt_once" -eq 1 ]; then
   dt_cycle
   exit 0
 fi
-while sleep "$dt_secs"; do
+while sleep "$(dt_interval)"; do
+  dt_read_policy
   dt_cycle
 done

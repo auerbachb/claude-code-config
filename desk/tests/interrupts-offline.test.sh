@@ -241,6 +241,36 @@ check "--cadence overrides the policy's" "$RC:$(cat "$STUB_DIR/slept" 2>/dev/nul
 dtick "$TMP/wide.json" --cadence 30
 check_contains "--cadence at the policy's live bound: refused" "$RC:$ERR" "4:desk-tick: --cadence must be shorter than the live-desk bound (30 min"
 
+# The loop reads the policy again each cycle: an edit after start reaches the
+# next tick, and a live bound lowered to the interval or below shortens it.
+# This `sleep` swaps in the edited policy on its first call, then ends the
+# loop on its second.
+mkdir -p "$TMP/sleepbin2"
+cat > "$TMP/sleepbin2/sleep" <<'EOF'
+#!/usr/bin/env bash
+n=$(cat "$STUB_DIR/sleeps" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$STUB_DIR/sleeps"
+printf '%s\n' "$1" >> "$STUB_DIR/slept"
+if [ "$n" -eq 1 ]; then
+  cp "$NEXT_POLICY" "$HUMAN_QUEUE_POLICY"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$TMP/sleepbin2/sleep"
+printf '{"interrupt_rule": "away"}\n' > "$TMP/live-pol.json"
+printf '{"tick_cadence_min": 2, "live_desk_max_tick_age_min": 3}\n' > "$TMP/live-next.json"
+rm -f "$STUB_DIR/args" "$STUB_DIR/slept" "$STUB_DIR/sleeps"
+RC=0
+env STUB_DIR="$STUB_DIR" HUMAN_QUEUE_CLI="$TSTUB" HUMAN_QUEUE_DATABASE_URL="$FAKE_URL" \
+  HUMAN_QUEUE_POLICY="$TMP/live-pol.json" NEXT_POLICY="$TMP/live-next.json" PATH="$TMP/sleepbin2:$PATH" \
+  bash "$BIN/desk-tick.sh" --session desk-1 --generation g1 >"$TMP/out" 2>"$TMP/err" </dev/null || RC=$?
+check "a policy edited while the loop runs: the next tick follows its rule" \
+  "$RC:$(grep '^tick ' "$STUB_DIR/args" 2>/dev/null)" "0:tick --session desk-1 --interrupts everything"
+check "... and a live bound lowered past the interval: 30 s inside it" \
+  "$(tr '\n' ' ' < "$STUB_DIR/slept" 2>/dev/null)" "300 150 "
+
 # --------------------------------------------------------------------- CLI
 printf '== CLI\n'
 

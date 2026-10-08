@@ -165,7 +165,7 @@ SELECT CASE
          WHEN :'hq_rule' <> 'focus' THEN ''
          WHEN :'hq_until' = '' THEN 'the focus time could not be worked out'
          WHEN nullif(:'hq_until', '')::timestamptz <= statement_timestamp() THEN 'the focus time is in the past'
-         WHEN nullif(:'hq_until', '')::timestamptz > statement_timestamp() + interval '1 day'
+         WHEN nullif(:'hq_until', '')::timestamptz > statement_timestamp() + interval '24 hours'
            THEN 'the focus time is more than a day ahead (use away instead)'
          ELSE ''
        END AS hq_problem \gset

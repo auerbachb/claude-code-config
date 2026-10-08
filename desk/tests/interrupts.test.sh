@@ -236,8 +236,9 @@ check "focus until 3:30pm ET: within a day" \
 # a time the clock shows twice, the jump for one it skips.
 # shellcheck source=../bin/lib/interrupts.sh
 . "$HQ_BIN_DIR/lib/interrupts.sh"
-focus_at() { # NOW TIMES -> the focus's end, UTC
-  printf '%s\n' "SELECT to_char($(hq_sql_focus_until "'$1'::timestamptz") AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI');" \
+focus_at() { # NOW TIMES [SESSION_TZ] -> the focus's end, UTC
+  printf '%s\n' "SET TIME ZONE '${3:-UTC}';" \
+    "SELECT to_char($(hq_sql_focus_until "'$1'::timestamptz") AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI');" \
     | hq_psql -At -v "hq_tz=America/New_York" -v "hq_times=$2" -f - 2>&1
 }
 check "until 15:30 at 15:00 EDT: 15:30 today" "$(focus_at '2026-10-07 19:00Z' '15:30')" "2026-10-07 19:30"
@@ -250,6 +251,11 @@ check "fall back, until 1:00 at 1:30 EDT: 1:00 EST" "$(focus_at '2026-11-01 05:3
 check "spring forward, until 2:30 at 1:05 EST: 3:00 EDT" "$(focus_at '2026-03-08 06:05Z' '02:30')" "2026-03-08 07:00"
 check "spring forward, until 3:00 at 1:05 EST: 3:00 EDT" "$(focus_at '2026-03-08 06:05Z' '03:00')" "2026-03-08 07:00"
 check "spring forward, until 3:30 at 1:05 EST: 3:30 EDT" "$(focus_at '2026-03-08 06:05Z' '03:30')" "2026-03-08 07:30"
+# The window is 24 hours whatever the session's TimeZone: London springs
+# forward overnight, so `1 day` from noon there would end an hour early and
+# miss 7:30 EDT, 23.5 hours ahead.
+check "a session zone's own clock change: still a 24-hour window" \
+  "$(focus_at '2026-03-28 12:00Z' '07:30' 'Europe/London')" "2026-03-29 11:30"
 
 PAST=$(sql_in "SELECT to_char((now() - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
 FAR=$(sql_in "SELECT to_char((now() + interval '2 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"')")
