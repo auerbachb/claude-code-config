@@ -54,6 +54,27 @@
 #   the policy invalid. Fenced blocks and <!-- --> comments are removed from
 #   the whole file first, so a fenced example is never the live section.
 #
+# ESCALATION SWITCH (issue #1807)
+#   The same section may carry a fenced ```ini block with one knob:
+#     ```ini
+#     REVIEW_ESCALATION=off
+#     ```
+#   on  (the default when the key is absent) — the CR → BugBot → Greptile
+#       escalation chain runs as today.
+#   off — never invite BugBot or Greptile, on any gate. bugbot-tier-excluded.sh
+#       and escalate-review.sh act on it; this script only reports it.
+#   The key is read with active-work-cap.sh's KEY=value rule (`KEY=value` or
+#   `key: value`, key case-insensitive, first occurrence wins), and ONLY from
+#   a live ```ini fence inside the section the table comes from: the section's
+#   bounds are taken from the fence- and comment-free text, so a fenced
+#   `## Review policy` elsewhere is never the live one. A key in prose, in a
+#   comment, or in another fence is ignored with one stderr warning. `on` and
+#   `off` match in any case; any other value, empty included, reads as `off`
+#   with one stderr warning — an unclear cost switch fails toward not
+#   spending. A near-miss heading's section is read the same way. The table
+#   and the switch are independent: an ini-only section is policy "absent"
+#   (gate legacy) and still reports its switch.
+#
 # RESOLUTION (strictest wins: full > ci+codeant-one-round > ci-only)
 #   Candidates = the tiers every changed file matches, plus every tier whose
 #   label is on the PR, plus `default` when some file matched no path and no
@@ -73,7 +94,10 @@
 #     {"policy":"absent|present|invalid","gate":"...","tier":"<name>"|null,
 #      "source":"<where the policy came from>","error":"<why invalid>"|null,
 #      "matches":[{"tier","gate","via":"path|label|default|truncated",
-#                  "count":N,"examples":[up to 5 items]}]}
+#                  "count":N,"examples":[up to 5 items]}],
+#      "escalation":"on|off"}
+#   escalation is on every line, whatever the policy; with no readable
+#   switch it is "on". Plain output never carries it.
 #   policy "absent"  — no section, or a section with no table → gate legacy:
 #                      every consumer keeps today's behaviour.
 #   policy "invalid" — unknown gate, missing Tier/Gate column, no header
@@ -277,9 +301,14 @@ fi
 #   opener with nothing after it. An unclosed fence hides the rest of the file,
 #   exactly as GitHub renders it. An indented code block (4+ spaces or a tab,
 #   after a blank line or another such line) is hidden the same way.
+# `strip_hidden ini` is the complement used for the escalation switch: it
+# keeps ONLY the content lines of live fences whose info string is `ini`, and
+# blanks everything else, with the same line count. One parser decides what
+# is a fence for both, so the switch and the table can never disagree about
+# which lines are live.
 strip_hidden() {
-  awk '
-    BEGIN { fence = 0; comment = 0; prev_blank = 1; in_icode = 0 }
+  awk -v want="${1:-visible}" '
+    BEGIN { fence = 0; comment = 0; prev_blank = 1; in_icode = 0; ini = 0 }
     {
       line = $0
       if (!fence && !comment && (line ~ /^(    |\t)/) && (prev_blank || in_icode)) {
@@ -288,13 +317,16 @@ strip_hidden() {
       in_icode = 0
       prev_blank = (line ~ /^[ \t]*$/)
       if (fence) {
+        # A content line of a live ini fence is kept in ini mode; the closing
+        # line never is, and closing clears `ini` along with `fence`.
+        keep = (want == "ini" && ini)
         if (line ~ /^ ? ? ?[`~]/) {
           s = line; sub(/^ */, "", s)
           n = 0
           while (substr(s, n + 1, 1) == fch) n++
-          if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) fence = 0
+          if (n >= flen && substr(s, n + 1) ~ /^[ \t]*$/) { fence = 0; ini = 0; keep = 0 }
         }
-        print ""; next
+        print (keep ? line : ""); next
       }
       if (comment) {
         i = index(line, "-->")
@@ -306,6 +338,8 @@ strip_hidden() {
         info = substr(line, RSTART + RLENGTH)
         if (!(substr(s, 1, 1) == "`" && index(info, "`") > 0)) {
           fch = substr(s, 1, 1); flen = length(s); fence = 1
+          lang = info; sub(/^[ \t]+/, "", lang); sub(/[ \t].*$/, "", lang)
+          ini = (tolower(lang) == "ini")
           print ""; next
         }
       }
@@ -315,7 +349,7 @@ strip_hidden() {
         if (index(rest, "-->") > 0) { line = pre substr(rest, index(rest, "-->") + 3) }
         else { line = pre; comment = 1; break }
       }
-      print line
+      print ((want == "ini") ? "" : line)
     }
   '
 }
@@ -383,8 +417,10 @@ fi
 
 SECTION_BODY=""
 POLICY_VISIBLE="$TMP_DIR/pm-config.visible.md"
+POLICY_INI="$TMP_DIR/pm-config.ini.md"
 if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   strip_hidden < "$POLICY_COPY" > "$POLICY_VISIBLE" || die_read "could not pre-process the policy file"
+  strip_hidden ini < "$POLICY_COPY" > "$POLICY_INI" || die_read "could not pre-process the policy file"
   rc=0
   SECTION_BODY="$("$GETTER" --section "$SECTION" --file "$POLICY_VISIBLE" 2>/dev/null)" || rc=$?
   case $rc in
@@ -394,16 +430,103 @@ if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   esac
 fi
 
+# ---------------------------------------------------- escalation switch -----
+
+ESC_KEY="REVIEW_ESCALATION"
+ESCALATION="on"
+ESC_SECTION_FOUND=0
+
+# The body line range "<first> <last>" of the live section, found in the
+# fence- and comment-free text with pm-config-get.sh's heading rule (`## ` at
+# column 1, trailing whitespace ignored, first match wins, ends at the next
+# `## `). strip_hidden keeps the line count, so the same numbers address the
+# raw and the ini-only copies. $1, when given, is a near-miss heading line to
+# start from instead; it travels through ENVIRON, not -v, so awk never
+# rewrites a backslash in it. Prints nothing when there is no such heading.
+section_range() {
+  ESC_NEAR_LINE="${1-}" awk -v target="$SECTION" '
+    function is_start(l,    h) {
+      if (near != "") return (l == near)
+      if (l !~ /^## /) return 0
+      h = l; sub(/^## /, "", h); sub(/[ \t]+$/, "", h)
+      return (h == target)
+    }
+    BEGIN { near = ENVIRON["ESC_NEAR_LINE"] }
+    start == 0 { if (is_start($0)) start = NR + 1; next }
+    /^## / { last = NR - 1; ended = 1; exit }
+    END { if (start) print start, (ended ? last : NR) }
+  ' "$POLICY_VISIBLE"
+}
+
+# active-work-cap.sh's KEY=value rule, copied rather than sourced: a line
+# `KEY=value` or `key: value` whose text before its first `=` or `:`, trimmed,
+# equals the key as a whole string, ignoring case (a plain string comparison,
+# never a regex built from the key). The first such line wins; its value is
+# trimmed. Two deliberate differences from the original: a found key prints
+# with a leading `=`, so an empty value (`REVIEW_ESCALATION=`) is told apart
+# from an absent key; and the input is always read to the end rather than
+# abandoned at the first match, so the `sed | awk` feeding it can never die of
+# SIGPIPE under pipefail and read as a failure.
+extract_knob_value() {
+  awk -v key="$1" '
+    done { next }
+    {
+      i = match($0, /[=:]/)
+      if (i == 0) next
+      k = substr($0, 1, i - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      v = substr($0, i + 1)
+      sub(/^[[:space:]]*/, "", v)
+      sub(/[[:space:]]*$/, "", v)
+      print "=" v
+      done = 1
+    }
+  '
+}
+
+# Sets ESCALATION from the section (or near-miss section $1). Runs in the main
+# shell so die_read exits the script.
+resolve_escalation() {
+  local range first last found stray value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $ESC_KEY"
+  [[ -n "$range" ]] || return 0
+  ESC_SECTION_FOUND=1
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$ESC_KEY")" \
+    || die_read "could not read $ESC_KEY from ## $SECTION"
+  if [[ -z "$found" ]]; then
+    stray="$(sed -n "${first},${last}p" "$POLICY_COPY" | extract_knob_value "$ESC_KEY")" || stray=""
+    [[ -z "$stray" ]] || warn "$ESC_KEY in ## $SECTION is not inside a live \`\`\`ini block (it is in prose, a comment, or another fence) — ignored; escalation stays on"
+    return 0
+  fi
+  value="${found#=}"
+  case "$(lower "$value")" in
+    on|off) ESCALATION="$(lower "$value")" ;;
+    *)
+      warn "$ESC_KEY='$value' in ## $SECTION is not on or off — treating escalation as off (an unclear cost switch fails toward not spending)"
+      ESCALATION="off"
+      ;;
+  esac
+}
+
+if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
+  resolve_escalation
+fi
+
 emit() {
   # emit <policy> <gate> <tier-or-empty> <error-or-empty> <matches-json>
+  # `escalation` is appended last, after every pre-#1807 key.
   if [[ $JSON -eq 1 ]]; then
     jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
-      --arg error "$4" --argjson matches "$5" \
+      --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
       '{policy: $policy, gate: $gate,
         tier: (if $tier == "" then null else $tier end),
         source: $source,
         error: (if $error == "" then null else $error end),
-        matches: $matches}'
+        matches: $matches,
+        escalation: $escalation}'
   else
     printf '%s\n' "$2"
   fi
@@ -419,6 +542,10 @@ if [[ -z "$SECTION_BODY" ]]; then
     NEAR="$(awk '{ l = tolower($0) } l ~ /^##[ \t]+review[ \t]+policy[ \t]*$/ && $0 !~ /^## Review policy[ \t]*$/ { print; exit }' "$POLICY_VISIBLE")"
   fi
   if [[ -n "$NEAR" ]]; then
+    # The switch in a near-miss section is honoured too: the gate fails
+    # toward more review, the switch toward less spend. An exact heading,
+    # even with an empty visible body, already answered.
+    [[ $ESC_SECTION_FOUND -eq 1 ]] || resolve_escalation "$NEAR"
     warn "## $SECTION is invalid (heading '$NEAR' must read exactly '## $SECTION') — resolving to the full gate"
     emit invalid full "" "heading '$NEAR' must read exactly '## $SECTION'" '[]'
     exit 0

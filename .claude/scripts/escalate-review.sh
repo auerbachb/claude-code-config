@@ -35,12 +35,22 @@
 #                             trigger nothing, keep the current reviewer, and keep
 #                             polling — merge-gate.sh applies the tier's gate. Not
 #                             a stop and not self-review. An unresolvable tier
-#                             emits switch_bugbot as before (fail-open)
+#                             emits switch_bugbot as before (fail-open).
+#                             ALSO emitted, with the same meaning, when the repo
+#                             turned escalation off (REVIEW_ESCALATION=off in
+#                             `## Review policy`, issue #1807): on ANY gate,
+#                             full and legacy included, in place of switch_bugbot
+#                             AND of trigger_greptile / budget_exhausted. The
+#                             Greptile budget is then never read or consumed. A
+#                             full PR needs a CodeRabbit or CodeAnt APPROVED on
+#                             HEAD, with no fallback reviewer
 #     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
 #                             invited and then timed out; trigger Greptile. NOT
 #                             emitted for a BugBot that was never invited — that
-#                             case is switch_bugbot (or tier_gate) above
-#     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile
+#                             case is switch_bugbot (or tier_gate) above — nor
+#                             when escalation is off (tier_gate instead)
+#     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile.
+#                             Not emitted when escalation is off (tier_gate)
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
 # EXIT STATUS
@@ -67,6 +77,15 @@
 #   SCOPE: this covers exits from a script that STARTED. It cannot cover a
 #   failure to launch the interpreter itself (a corrupted PATH, `env: bash: No
 #   such file or directory` — issue #1556), because no in-script trap runs then.
+#
+# ESCALATION OFF — KNOWN LIMIT (issue #1807)
+#   The switch is read through review-tier.sh, once per run and only on a
+#   cycle that reaches a BugBot or Greptile hand-off. If the tier cannot be
+#   resolved (review-tier.sh missing, exiting non-zero, or answering without a
+#   readable `escalation`), the switch reads as ON and the chain runs as
+#   before — the fail-open direction of issue #1728. A repo that turned
+#   escalation off can therefore still see one BugBot or Greptile hand-off
+#   while its policy is unreadable. The merge gate is unaffected.
 
 set -euo pipefail
 
@@ -147,16 +166,47 @@ emit() {
 # exit but 0 (full and legacy are exit 1). `|| tier_rc=$?` keeps a failing or
 # unlaunchable helper (126/127) away from `set -e` and the EXIT trap: an
 # unreadable policy has a defined answer here, the pre-#1728 one.
+#
+# The helper also answers 0 on ANY gate when the repo turned escalation off
+# (REVIEW_ESCALATION=off, issue #1807), and names that reason on its own
+# stderr line — so this arm needs no lookup of its own.
 emit_switch_bugbot() {
   local helper="$SCRIPT_DIR/bugbot-tier-excluded.sh" gate="" tier_rc=0
   if [[ -x "$helper" ]]; then
     gate="$("$helper" "$PR_NUMBER" --repo "$OWNER/$REPO")" || tier_rc=$?
     if [[ "$tier_rc" -eq 0 ]]; then
-      echo "escalate-review.sh: review tier gate '$gate' excludes BugBot — tier_gate, not switch_bugbot (issue #1728)" >&2
+      echo "escalate-review.sh: bugbot-tier-excluded.sh skips BugBot (gate '$gate') — tier_gate, not switch_bugbot (issues #1728, #1807)" >&2
       emit "tier_gate"
     fi
   fi
   emit "switch_bugbot"
+}
+
+# Has the repo turned escalation off (REVIEW_ESCALATION=off in `## Review
+# policy`, issue #1807)? Asked only by the Greptile arm at the tail, so no
+# cycle that ends earlier pays for the lookup, and cached so a run asks
+# review-tier.sh at most once. FAILS OPEN to "on" exactly as emit_switch_bugbot
+# does: a missing resolver, a non-zero exit, or an answer without a readable
+# `escalation` keeps today's chain (see ESCALATION OFF — KNOWN LIMIT above).
+# Run through bash, as bugbot-tier-excluded.sh runs it, so a checkout that
+# dropped the executable bit still resolves; `|| rc=$?` keeps a failing or
+# unlaunchable resolver away from `set -e` and the EXIT trap.
+ESCALATION_STATE=""
+escalation_off() {
+  if [[ -z "$ESCALATION_STATE" ]]; then
+    ESCALATION_STATE="on"
+    local resolver="$SCRIPT_DIR/review-tier.sh" out="" rc=0 value=""
+    if [[ -f "$resolver" ]]; then
+      out="$(bash "$resolver" "$PR_NUMBER" --repo "$OWNER/$REPO" --json)" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        echo "escalate-review.sh: review-tier.sh exited $rc — REVIEW_ESCALATION unresolved, treating escalation as on (fail-open, issue #1807)" >&2
+      else
+        value="$(jq -r 'if type == "object" then (.escalation // "" | tostring) else "" end' <<<"$out" 2>/dev/null)" || value=""
+        [[ "$value" == "off" ]] && ESCALATION_STATE="off"
+      fi
+    fi
+  fi
+  [[ "$ESCALATION_STATE" == "off" ]]
 }
 
 while [[ $# -gt 0 ]]; do
@@ -1116,6 +1166,17 @@ if [[ -n "$CR_BANNER_TS" && "$CR_REVIEW_ON_HEAD" != "true" \
   if [[ "$CR_BANNER_AGE" -le "$AGE_SECONDS" && "$CR_BANNER_AGE" -lt "$CR_BANNER_WINDOW_S" ]]; then
     emit "polling_cr"
   fi
+fi
+
+# Escalation off (issue #1807). By here the only verdicts left are
+# trigger_greptile and budget_exhausted, and a repo that turned escalation off
+# wants neither: Greptile is never invited, so its budget is neither consumed
+# (that is the caller's job after trigger_greptile, which is never emitted)
+# nor even read. Placed AFTER the CR retry-window grace so a free wait still
+# wins over a hand-off that will not happen.
+if escalation_off; then
+  echo "escalate-review.sh: REVIEW_ESCALATION=off — Greptile not invited; tier_gate, not trigger_greptile/budget_exhausted (issue #1807)" >&2
+  emit "tier_gate"
 fi
 
 BUDGET_CHECK_RC=0

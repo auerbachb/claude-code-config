@@ -427,6 +427,141 @@ write_policy <<'EOF'
 EOF
 expect_invalid "empty tier name" "empty Tier"
 
+# --------------------------------------------------- escalation switch -----
+# REVIEW_ESCALATION in a ```ini block of the section (issue #1807). Reported
+# on every --json line as "escalation"; plain output never carries it.
+
+ini_block() { printf '```ini\n%s\n```\n' "$1"; }
+# esc_json — the JSON line for docs/a.md against $POLICY; ESC_ERR gets stderr.
+ESC_ERR="$TMP_DIR/esc.err"
+esc_json() {
+  printf 'docs/a.md' | bash "$SUT" --files-from - --config "$POLICY" --json 2>"$ESC_ERR"
+}
+esc_err_lines() { grep -c . "$ESC_ERR" | tr -d ' '; }
+
+printf '# PM Config\n\n## Active work\n\n```ini\nACTIVE_WORK_CAP=6\n```\n' > "$POLICY"
+out="$(esc_json)"
+check "escalation: no Review policy section → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: is the last key, after every pre-#1807 key" "escalation" "$(jq -r 'keys_unsorted | last' <<<"$out")"
+
+write_policy <<<"$STANDARD_TABLE"
+out="$(esc_json)"
+check "escalation: a table without the switch → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …and stderr stays silent" "0" "$(esc_err_lines)"
+
+{ printf '%s\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } | write_policy
+out="$(esc_json)"
+check "escalation: table + ini off → off" "off" "$(jq -r .escalation <<<"$out")"
+check "escalation: …the gate is untouched" "ci-only" "$(jq -r .gate <<<"$out")"
+check "escalation: …the policy is still present" "present" "$(jq -r .policy <<<"$out")"
+check "escalation: …and stderr stays silent" "0" "$(esc_err_lines)"
+check "escalation: plain output is still the gate alone" "ci-only" "$(gate_for 'docs/a.md')"
+
+for spec in 'OFF:off' 'Off:off' 'ON:on' 'on:on'; do
+  { printf '%s\n\n' "$STANDARD_TABLE"; ini_block "REVIEW_ESCALATION=${spec%%:*}"; } | write_policy
+  check "escalation: value '${spec%%:*}' (any case) → ${spec#*:}" "${spec#*:}" "$(esc_json | jq -r .escalation)"
+done
+{ printf '%s\n\n' "$STANDARD_TABLE"; ini_block 'review_escalation : off'; } | write_policy
+check "escalation: lower-case key, colon form, spaces → off" "off" "$(esc_json | jq -r .escalation)"
+{ printf '%s\n\n' "$STANDARD_TABLE"; ini_block $'# REVIEW_ESCALATION=on is the default\nREVIEW_ESCALATION=off\nREVIEW_ESCALATION=on'; } | write_policy
+check "escalation: an ini comment is not the key; the first live key wins" "off" "$(esc_json | jq -r .escalation)"
+
+# An unclear cost switch fails toward not spending.
+for bad_value in 'maybe' 'false' '"off"' 'on # default' ''; do
+  { printf '%s\n\n' "$STANDARD_TABLE"; ini_block "REVIEW_ESCALATION=$bad_value"; } | write_policy
+  out="$(esc_json)"
+  check "escalation: invalid value '$bad_value' → off" "off" "$(jq -r .escalation <<<"$out")"
+  check "escalation: invalid value '$bad_value' → exactly one stderr warning" "1" "$(esc_err_lines)"
+  check "escalation: …which names the key" "1" "$(grep -c 'REVIEW_ESCALATION' "$ESC_ERR" | tr -d ' ')"
+  check "escalation: invalid value '$bad_value' leaves the gate alone" "ci-only" "$(jq -r .gate <<<"$out")"
+done
+
+# An ini-only section is no policy for the gate, but the switch still holds.
+ini_block 'REVIEW_ESCALATION=off' | write_policy
+out="$(esc_json)"
+check "escalation: ini-only section → policy absent" "absent" "$(jq -r .policy <<<"$out")"
+check "escalation: ini-only section → gate legacy" "legacy" "$(jq -r .gate <<<"$out")"
+check "escalation: ini-only section → off" "off" "$(jq -r .escalation <<<"$out")"
+check "escalation: ini-only section → stderr silent" "0" "$(esc_err_lines)"
+check "escalation: ini-only section → plain output legacy" "legacy" "$(gate_for 'docs/a.md')"
+ini_block 'REVIEW_ESCALATION=on' | write_policy
+check "escalation: ini-only section with on → on" "on" "$(esc_json | jq -r .escalation)"
+ini_block 'REVIEW_ESCALATION=nope' | write_policy
+check "escalation: ini-only section with an invalid value → off" "off" "$(esc_json | jq -r .escalation)"
+
+# The table and the switch are independent: an invalid table still reports it.
+{ printf '| Tier | Gate |\n|---|---|\n| docs | nope |\n\n'; ini_block 'REVIEW_ESCALATION=off'; } | write_policy
+out="$(esc_json)"
+check "escalation: invalid table → policy invalid" "invalid" "$(jq -r .policy <<<"$out")"
+check "escalation: invalid table → gate full" "full" "$(jq -r .gate <<<"$out")"
+check "escalation: invalid table + ini off → off" "off" "$(jq -r .escalation <<<"$out")"
+
+# A near-miss heading is invalid for the gate; its switch is still honoured,
+# since an off there fails toward not spending.
+printf '# PM Config\n\n## Review Policy\n\n```ini\nREVIEW_ESCALATION=off\n```\n\n## Notes\n\nx\n' > "$POLICY"
+out="$(esc_json)"
+check "escalation: near-miss heading → policy invalid" "invalid" "$(jq -r .policy <<<"$out")"
+check "escalation: near-miss heading → gate full" "full" "$(jq -r .gate <<<"$out")"
+check "escalation: near-miss heading + ini off → off" "off" "$(jq -r .escalation <<<"$out")"
+printf '# PM Config\n\n## Review Policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n' > "$POLICY"
+check "escalation: near-miss heading without the switch → on" "on" "$(esc_json | jq -r .escalation)"
+
+# Only a LIVE ```ini fence counts. Anywhere else the key is ignored, with one
+# warning so a misplaced cost switch is never silent.
+write_policy <<'EOF'
+REVIEW_ESCALATION=off
+EOF
+out="$(esc_json)"
+check "escalation: key in prose → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …with a warning that it was ignored" "1" "$(grep -c 'REVIEW_ESCALATION.*ignored' "$ESC_ERR" | tr -d ' ')"
+{ printf '%s\n\n' "$STANDARD_TABLE"; printf '```\nREVIEW_ESCALATION=off\n```\n'; } | write_policy
+out="$(esc_json)"
+check "escalation: key in a fence with no info string → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …with exactly one warning" "1" "$(esc_err_lines)"
+{ printf '%s\n\n' "$STANDARD_TABLE"; printf '```bash\nREVIEW_ESCALATION=off\n```\n'; } | write_policy
+check "escalation: key in a bash fence → on" "on" "$(esc_json | jq -r .escalation)"
+{ printf '%s\n\n<!--\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; printf -- '-->\n'; } | write_policy
+check "escalation: an ini block inside an HTML comment → on" "on" "$(esc_json | jq -r .escalation)"
+{ printf '%s\n\n' "$STANDARD_TABLE"; printf '~~~ ini\nREVIEW_ESCALATION=off\n~~~\n'; } | write_policy
+check "escalation: a tilde fence with info 'ini' counts → off" "off" "$(esc_json | jq -r .escalation)"
+{ printf '%s\n\n' "$STANDARD_TABLE"; printf '```INI\nREVIEW_ESCALATION=off\n```\n'; } | write_policy
+check "escalation: the info string matches in any case → off" "off" "$(esc_json | jq -r .escalation)"
+
+# The section's bounds come from the fence- and comment-free text, as the
+# table's do: a fenced `## ` line inside the live section does not end it,
+# and a fenced `## Review policy` elsewhere is never the live one.
+{ printf '%s\n\n```markdown\n## Example\n```\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } | write_policy
+check "escalation: a fenced '## ' line inside the section does not end it → off" "off" "$(esc_json | jq -r .escalation)"
+{
+  printf '# PM Config\n\n## Notes\n\n````markdown\n## Review policy\n\n'
+  ini_block 'REVIEW_ESCALATION=off'
+  printf '````\n\n## Review policy\n\n%s\n' "$STANDARD_TABLE"
+} > "$POLICY"
+out="$(esc_json)"
+check "escalation: a fenced example section elsewhere is not read → on" "on" "$(jq -r .escalation <<<"$out")"
+check "escalation: …and the live table still governs" "ci-only" "$(jq -r .gate <<<"$out")"
+{ printf '# PM Config\n\n## Review policy\n\n%s\n\n## Notes\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } > "$POLICY"
+check "escalation: an ini block under the NEXT section is not read → on" "on" "$(esc_json | jq -r .escalation)"
+
+# A section far larger than a pipe buffer, with the key on its first ini
+# line: reading the key must not abandon the rest of the input, or the stage
+# feeding it dies of SIGPIPE under pipefail and the run fails as a read error.
+{
+  printf '%s\n\n' "$STANDARD_TABLE"
+  printf '```ini\nREVIEW_ESCALATION=off\n'
+  awk 'BEGIN { for (i = 0; i < 20000; i++) printf "; padding line %06d ..............................\n", i }'
+  printf '```\n'
+} | write_policy
+out="$(esc_json)"; rc=$?
+check "escalation: a section larger than a pipe buffer still resolves (exit 0)" "0" "$rc"
+check "escalation: …and reads the key → off" "off" "$(jq -r .escalation <<<"$out")"
+
+# CRLF files read the same.
+{ printf '%s\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } | write_policy
+awk '{ printf "%s\r\n", $0 }' "$POLICY" > "$TMP_DIR/crlf.md"
+check "escalation: a CRLF policy reads the same → off" "off" \
+  "$(printf 'docs/a.md' | bash "$SUT" --files-from - --config "$TMP_DIR/crlf.md" --json 2>/dev/null | jq -r .escalation)"
+
 # --------------------------------------------------------------- usage -----
 
 bash "$SUT" >/dev/null 2>&1; check "no arguments → exit 2" "2" "$?"
@@ -495,6 +630,29 @@ cp "$POLICY" "$FAKE_BASE_CONFIG"
 check "PR mode reads files + base-branch policy" "ci-only" "$(FAKE_FILES=$'docs/a.md\nREADME.md' FAKE_CHANGED=2 pr_gate)"
 out="$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --json)"
 check "PR mode source names the base ref" "base:main" "$(jq -r .source <<<"$out")"
+check "PR mode: a base policy without the switch → escalation on" "on" "$(jq -r .escalation <<<"$out")"
+
+# The switch comes from the same base-branch contents read as the table.
+cp "$FAKE_BASE_CONFIG" "$TMP_DIR/base-backup.md"
+{ printf '%s\n\n' "$STANDARD_TABLE"; ini_block 'REVIEW_ESCALATION=off'; } | write_policy
+cp "$POLICY" "$FAKE_BASE_CONFIG"
+: > "$FAKE_GH_LOG"
+out="$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --json)"
+check "PR mode: the base branch's ini off → escalation off" "off" "$(jq -r .escalation <<<"$out")"
+check "PR mode: …with the gate the base table gives" "ci-only" "$(jq -r .gate <<<"$out")"
+check "PR mode: …from the one contents read" "1" "$(grep -c 'contents/.claude/pm-config.md' "$FAKE_GH_LOG")"
+check "PR mode: plain output is still the gate alone" "ci-only" "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate)"
+ini_block 'REVIEW_ESCALATION=off' | write_policy
+cp "$POLICY" "$FAKE_BASE_CONFIG"
+: > "$FAKE_GH_LOG"
+out="$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --json --base main)"
+check "PR mode: an ini-only base section → legacy" "legacy" "$(jq -r .gate <<<"$out")"
+check "PR mode: …and escalation off" "off" "$(jq -r .escalation <<<"$out")"
+check "PR mode: …without listing the PR's files" "0" "$(grep -c 'pulls/7/files' "$FAKE_GH_LOG")"
+check "PR mode: a base branch without pm-config.md (404) → escalation on" "on" \
+  "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_CONTENT_MODE=404 pr_gate --json | jq -r .escalation)"
+cp "$TMP_DIR/base-backup.md" "$FAKE_BASE_CONFIG"
+write_policy <<<"$STANDARD_TABLE"
 check "PR mode labels come from the PR" "full" \
   "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 FAKE_LABELS='[{"name":"tier:core"}]' pr_gate)"
 # A rename out of a core directory classifies the old path too.
@@ -564,7 +722,7 @@ cp "$POLICY" "$TMP_DIR/local-copy.md"
 LOCAL_REPO="$TMP_DIR/local-repo"
 mkdir -p "$LOCAL_REPO/.claude"
 git -C "$LOCAL_REPO" init -q
-printf '# PM Config\n\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n' > "$LOCAL_REPO/.claude/pm-config.md"
+printf '# PM Config\n\n## Review policy\n\n| Tier | Gate |\n|---|---|\n| default | ci-only |\n\n```ini\nREVIEW_ESCALATION=off\n```\n' > "$LOCAL_REPO/.claude/pm-config.md"
 ln -s "$TMP_DIR/gone.md" "$TMP_DIR/dangling-repo-config.md"
 DANGLING_REPO="$TMP_DIR/dangling-repo"
 mkdir -p "$DANGLING_REPO/.claude"; git -C "$DANGLING_REPO" init -q
@@ -575,9 +733,15 @@ check "offline mode: dangling pm-config.md symlink → nothing on stdout" "" "$o
 
 check "sanity: the throwaway repo's own policy is ci-only offline" "ci-only" \
   "$(cd "$LOCAL_REPO" && printf 'docs/a.md' | bash "$SUT" --files-from - 2>/dev/null)"
+check "offline mode reads the checkout's switch → escalation off" "off" \
+  "$(cd "$LOCAL_REPO" && printf 'docs/a.md' | bash "$SUT" --files-from - --json 2>/dev/null | jq -r .escalation)"
 printf '# PM Config\n' > "$FAKE_BASE_CONFIG"
 check "PR mode ignores the local checkout; base has no policy → legacy" "legacy" \
   "$(cd "$LOCAL_REPO" && FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate)"
+check "PR mode ignores the local checkout's switch → escalation on" "on" \
+  "$(cd "$LOCAL_REPO" && FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --json | jq -r .escalation)"
+check "--config supplies the switch in PR mode → escalation off" "off" \
+  "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --config "$LOCAL_REPO/.claude/pm-config.md" --json | jq -r .escalation)"
 check "--config overrides the base-branch read in PR mode" "ci-only" \
   "$(FAKE_FILES=$'docs/a.md' FAKE_CHANGED=1 pr_gate --config "$TMP_DIR/local-copy.md")"
 # No ambient override: an environment variable must never re-point the gate.
