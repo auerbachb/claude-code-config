@@ -51,6 +51,10 @@ SPEND_SOURCES = ("receipt", "estimate", "flat", "none")
 TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "graphite", "vercel")
 CODERABBIT_LOGIN = "coderabbitai[bot]"
 BUGBOT_CHECK_NAME = "Cursor Bugbot"
+# No price, cap, or credit count comes near a billion. Anything at or above it
+# is a typo, and Decimal's default 28-digit context could not quantize the cents
+# it would produce, so the block refuses it rather than crash a later pricing.
+MAX_FIGURE = 10 ** 9
 # The publisher, not the name, identifies BugBot: any app can post a check
 # named `Cursor Bugbot` (the merge gate and escalate-review.sh match both).
 BUGBOT_APP_SLUG = "cursor"
@@ -136,8 +140,8 @@ def _check_figure(entry, where):
     if "usd" not in entry:
         return "%s has no `usd` (an unknown value is null, never omitted)" % where
     usd = entry["usd"]
-    if usd is not None and (not _is_number(usd) or usd < 0):
-        return "%s `usd` must be a non-negative number or null" % where
+    if usd is not None and (not _is_number(usd) or usd < 0 or usd >= MAX_FIGURE):
+        return "%s `usd` must be a non-negative number below %d, or null" % (where, MAX_FIGURE)
     for field in ("unit", "source"):
         if not isinstance(entry.get(field), str) or not entry[field].strip():
             return "%s needs a non-empty `%s`" % (where, field)
@@ -207,8 +211,13 @@ def parse_rates(path):
         if err:
             return unusable(err)
         cpr = entry.get("credits_per_review")
-        if cpr is not None and (not _is_number(cpr) or cpr <= 0):
-            return unusable("tool %r `credits_per_review` must be a positive number" % key)
+        if cpr is not None and (not _is_number(cpr) or cpr <= 0 or cpr >= MAX_FIGURE):
+            return unusable("tool %r `credits_per_review` must be a positive number below %d"
+                            % (key, MAX_FIGURE))
+        # Only a real boolean: the string "false" is truthy and would silently
+        # drop a valid rate from the ledger.
+        if "informational" in entry and not isinstance(entry["informational"], bool):
+            return unusable("tool %r `informational` must be true or false" % key)
         tools[key] = entry
     cap_keys = set()
     for i, entry in enumerate(caps):

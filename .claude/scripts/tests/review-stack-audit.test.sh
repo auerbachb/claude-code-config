@@ -1433,8 +1433,12 @@ cases = {
 # Python's json reads NaN and Infinity; neither is a price.
 for bad in ("NaN", "Infinity", "-Infinity"):
     cases["non-finite-%s" % bad] = parse("nf-" + bad, good.replace('"usd": 2.0', '"usd": %s' % bad, 1))[0] is None
-# ...while an integer too big for a float is still a finite number, not a crash.
-cases["huge-int-parses"] = parse("huge", good.replace('"usd": 2.0', '"usd": ' + "9" * 400, 1))[0] is not None
+# A figure no price could be (a 400-digit int, 1e300) is refused, not a crash
+# later when cents() cannot quantize it.
+cases["huge-int-refused"] = parse("huge", good.replace('"usd": 2.0', '"usd": ' + "9" * 400, 1))[0] is None
+cases["huge-float-refused"] = parse("hugef", good.replace('"usd": 2.0', '"usd": 1e300', 1))[0] is None
+# `informational` is a real boolean: the string "false" would silently drop a rate.
+cases["informational-string-refused"] = parse("info", good.replace('"informational": true', '"informational": "false"', 1))[0] is None
 r, n = parse("unit", good.replace('"unit": "review"', '"unit": "month"'))
 cases["wrong-unit-unusable"] = r is not None and r["usd"]["bugbot"] is None and any("bugbot is priced per 'month'" in x for x in n)
 print(";".join("%s=%s" % (k, "ok" if v else "BAD") for k, v in cases.items()))

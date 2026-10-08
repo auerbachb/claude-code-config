@@ -1,7 +1,7 @@
 ---
 name: review-stack-audit
 description: Use when asking whether the AI review tools still earn what we pay for them — "audit the review stack", "are we still paying for Greptile", "did a cap change", "re-check review tool costs", or the monthly check. Re-measures each tool's billed state, caps, throughput, and unique value, compares against the recorded baseline, and files drift issues. Advisory only — never edits rules.
-argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD] [--days N] [--limit N] [--repos a/b,c/d | --all-repos] [--arm] [--stop]"
+argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD [--until YYYY-MM-DD]] [--days N] [--limit N] [--repos a/b,c/d | --all-repos] [--arm] [--stop]"
 ---
 
 # review-stack-audit — do the review tools still earn their keep?
@@ -77,8 +77,9 @@ logic here.
 | `/review-stack-audit --arm` | Enable the monthly session-start nudge. |
 | `/review-stack-audit --stop` | Disable it. |
 
-`--since` / `--days` / `--limit` pass straight through to `measure.sh` and combine
-with any mode. `--arm` and `--stop` are lifecycle modes and mutually exclusive
+`--since` / `--until` / `--days` / `--limit` pass straight through to `measure.sh`
+and combine with any mode; `--until` closes a `--since` window (alone, or before
+`--since`, `measure.sh` exits 2 and Step 3 fails closed). `--arm` and `--stop` are lifecycle modes and mutually exclusive
 with the rest.
 
 `--repos a/b,c/d` / `--all-repos` also pass through (issue #1808): the vendors
@@ -179,7 +180,7 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
+if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1
