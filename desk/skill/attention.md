@@ -16,7 +16,7 @@ Print the CLI's output and nothing else. It is already the page: a bold title na
 "$HQ" report; echo "exit=$?"
 ```
 
-For another week, run `"$HQ" report --week 2026-10-05` (any day of that week). A week runs Monday to Sunday on the America/New_York calendar; "this week" is the store's clock, and a week still running is titled `(to date)`.
+For another week, run `"$HQ" report --week 2026-10-05` (any day of that week). A week runs Monday to Sunday on the America/New_York calendar; "this week" is the store's clock, a week still running (its Sunday included) is titled `(to date)`, and a week not started yet `(not started)`.
 
 The measures, all computed from the events table when the report runs (`"$HQ" report --help` defines each):
 

@@ -85,8 +85,14 @@ EXPECTED='**Attention report · week of 2026-09-07 to 2026-09-13**
 check "4.1 the fixture week: a numbered list and a small table" "$(render)" "$EXPECTED"
 check "a week still running is titled (to date)" "$(render '.today = "2026-09-10"' | sed -n 1p)" \
   "**Attention report · week of 2026-09-07 to 2026-09-13 (to date)**"
-check "the week's last day is not (to date)" "$(render '.today = "2026-09-13"' | sed -n 1p)" \
+check "the week's last day is still (to date)" "$(render '.today = "2026-09-13"' | sed -n 1p)" \
+  "**Attention report · week of 2026-09-07 to 2026-09-13 (to date)**"
+check "the week's first day is (to date)" "$(render '.today = "2026-09-07"' | sed -n 1p)" \
+  "**Attention report · week of 2026-09-07 to 2026-09-13 (to date)**"
+check "the day after the week is over: no note" "$(render '.today = "2026-09-14"' | sed -n 1p)" \
   "**Attention report · week of 2026-09-07 to 2026-09-13**"
+check "a week not started yet is titled (not started)" "$(render '.today = "2026-09-06"' | sed -n 1p)" \
+  "**Attention report · week of 2026-09-07 to 2026-09-13 (not started)**"
 
 SINGLE=$(render '.minutes = {"total": 3, "sittings": 1}
   | .handled = {"total": 1, "desk_days": 1, "per_desk_day": 1}

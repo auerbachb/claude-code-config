@@ -24,9 +24,10 @@
 #        model read from a fixture transcript (`unknown` when it has none)
 #   4.1  `report --week <any day of it>` prints that as a numbered list and a
 #        small table; any day of the week reports the same week; the next
-#        week and an empty week; the default week is this one on the
-#        store's clock; the report records nothing; before migration 008 it
-#        exits 1 naming migrate
+#        week and an empty week; a week not started yet has no open
+#        Decisions and is titled (not started); the default week is this
+#        one on the store's clock; the report records nothing; before
+#        migration 008 it exits 1 naming migrate
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -234,6 +235,16 @@ EMPTY='**Attention report · week of 2026-08-03 to 2026-08-09**
 
 No thread was tagged this week.'
 check "an empty week renders every measure as none" "$OUT" "$EMPTY"
+
+# --- a week not started yet ----------------------------------------------------
+# D-4 and D-7 are open now; that makes neither open in a week still to come.
+hq report --week 2099-01-07 --json
+check "a week not started yet: no open Decisions" "$RC:$(jqo '.open_age')" \
+  '0:{"decisions":0,"median_minutes":null,"still_open":0}'
+check "a week not started yet: no days, nothing handled" "$(jqo '[.days, .handled.total, .minutes.sittings]')" '[[],0,0]'
+hq report --week 2099-01-07
+check "a week not started yet is titled (not started)" "$RC:$(printf '%s\n' "$OUT" | sed -n 1p)" \
+  "0:**Attention report · week of 2099-01-05 to 2099-01-11 (not started)**"
 
 # --- the default week is this one on the store's clock -------------------------
 TODAY=$(sql_in "SELECT to_char(statement_timestamp() AT TIME ZONE 'America/New_York', 'YYYY-MM-DD')")

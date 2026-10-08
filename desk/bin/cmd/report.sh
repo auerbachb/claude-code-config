@@ -46,7 +46,8 @@ MEASURES
   3. Median age of an open Decision: over every Decision open at some time
      in the week (asked before it ended, not answered before it began), the
      time from its `asked` event to its first `answered` event, or, when it
-     was still open at the week's end, to that end (or now, if sooner).
+     was still open at the week's end, to that end (or now, if sooner). A
+     week that has not started yet has none.
   4. Interrupts tagged not important: items tagged `not-important` that
      week, beside the number of Decisions shown that week.
   5. Questions tagged should have defaulted: items tagged
@@ -57,6 +58,9 @@ MEASURES
      that thread's latest reply ran on, read from its Claude Code transcript
      on this machine when the report runs (`unknown` when the thread ran
      elsewhere). At most 10 threads are printed; --json lists every one.
+     A Decision asked that week counts for the thread that is its return
+     address when the report runs: an `asked` event names no session, so
+     one another thread has since bumped counts for that thread.
 
 OUTPUT
   Markdown, one page: a bold title naming the week, the five measures as a
@@ -175,7 +179,8 @@ WITH p AS (
                                            p.we, statement_timestamp()) - d.asked_at), 0) / 60 AS age,
          d.answered_at IS NULL OR d.answered_at >= p.we AS still_open
     FROM dec d, p
-   WHERE d.asked_at < p.we
+   WHERE p.ws <= statement_timestamp()
+     AND d.asked_at < p.we
      AND (d.answered_at IS NULL OR d.answered_at >= p.ws)
 ), tg AS (
   SELECT item_id, note AS tag, session_id FROM ev

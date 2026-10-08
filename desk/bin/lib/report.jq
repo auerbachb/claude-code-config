@@ -24,11 +24,18 @@ def report_cell: tostring | gsub("[|`\\\\\r\n]"; "?");
 def report_thread:
   if . == null then "(no thread)" else (.[0:8] | report_cell) end;
 
+# report_when: the title's note on where today sits. Through its Sunday a
+# week is still running, so its last day is `(to date)` too.
+def report_when:
+  if .today < .week.start then " (not started)"
+  elif .today <= .week.end then " (to date)"
+  else "" end;
+
 def report_text:
   . as $r
   | ($r.threads | length) as $nthreads
   | [
-      "**Attention report · week of \($r.week.start) to \($r.week.end)\(if $r.today < $r.week.end then " (to date)" else "" end)**",
+      "**Attention report · week of \($r.week.start) to \($r.week.end)\($r | report_when)**",
       "",
       "1. Minutes spent answering: "
         + (if $r.minutes.sittings == 0 then "0 (no desk activity)"
