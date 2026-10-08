@@ -313,15 +313,25 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       | select(.key == "codeant" or .key == "cursor" or .key == "graphite")
       | select(.value.allowed | not) | {key, value: {kind: .value.kind, reason: .value.reason}} ] | from_entries' <<<"$TRIGGER_JSON")"
   DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ]' <<<"$TRIGGER_JSON")"
-  BUGBOT_CAP_JSON="$(jq -c '.reviewers.cursor.daily_cap // null' <<<"$TRIGGER_JSON")"
   # bugbot_skipped keeps its pre-#1749 shape for the reasons it already had.
-  BUGBOT_SKIPPED_JSON="$(jq -c '
-    .gate as $g | .reviewers.cursor as $c
-    | if $c.allowed then null
-      elif $c.reason == "refused_head" then {reason: "refused_head", gate: null}
-      elif $c.reason == "daily_cap" then {reason: "daily_cap", gate: null, tally: $c.daily_cap}
-      elif $c.reason == "tier_excluded" or $c.reason == "escalation_off" then {reason: "review_tier", gate: $g}
-      else {reason: $c.reason, gate: $g} end' <<<"$TRIGGER_JSON")"
+  # <helper json> [reason]: a denied claim passes its own reason, so the report
+  # follows the claim's re-evaluation, not the earlier answer.
+  bugbot_report() {
+    BUGBOT_CAP_JSON="$(jq -c '.reviewers.cursor.daily_cap // null' <<<"$1" 2>/dev/null)"
+    BUGBOT_SKIPPED_JSON="$(jq -c --arg why "${2-}" '
+      .gate as $g | .reviewers.cursor as $c
+      | (if $why != "" then $why elif ($c.allowed // false) then "" else ($c.reason // "") end) as $r
+      | if $r == "" then null
+        elif $r == "refused_head" then {reason: "refused_head", gate: null}
+        elif $r == "daily_cap" then {reason: "daily_cap", gate: null, tally: ($c.daily_cap // null)}
+        elif $r == "tier_excluded" or $r == "escalation_off" then {reason: "review_tier", gate: $g}
+        else {reason: $r, gate: $g} end' <<<"$1" 2>/dev/null)"
+    [[ -n "$BUGBOT_CAP_JSON" ]] || BUGBOT_CAP_JSON="null"
+    if [[ -z "$BUGBOT_SKIPPED_JSON" ]]; then
+      BUGBOT_SKIPPED_JSON="$(jq -cn --arg r "${2-}" '(if $r == "" then null else {reason: $r, gate: null} end)')"
+    fi
+  }
+  bugbot_report "$TRIGGER_JSON"
   ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ] | join(", ")' <<<"$TRIGGER_JSON")"
   step_allowed() { [[ "$(jq -r --arg r "$1" '.reviewers[$r].allowed' <<<"$TRIGGER_JSON")" == "true" ]]; }
   skips_text() { jq -r 'to_entries | map("\(.key)=\(.value.reason)") | join(", ") | if . == "" then "none" else . end' <<<"$TRIGGER_SKIPS_JSON"; }
@@ -398,6 +408,12 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
       [[ "$ckind" == "excluded" ]] || ckind="deferred"
       echo "maybe-trigger-ai-review.sh: skipping $body — claim denied ($creason, rc=$CLAIM_RC)" >&2
       TRIGGER_SKIPS_JSON="$(jq -c --arg r "$step" --arg k "$ckind" --arg why "$creason" '.[$r] = {kind: $k, reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+      if [[ "$step" == "cursor" ]]; then
+        PRIOR_CAP_JSON="$BUGBOT_CAP_JSON"
+        bugbot_report "$CLAIM_JSON" "$creason"
+        # A claim that never reached the cap keeps this run's earlier tally.
+        [[ "$BUGBOT_CAP_JSON" != "null" ]] || BUGBOT_CAP_JSON="$PRIOR_CAP_JSON"
+      fi
       if [[ "$ckind" == "deferred" ]]; then
         ANY_DEFERRED=1
         DEFERRED_JSON="$(jq -c --arg r "$step" '. + [$r] | unique' <<<"$DEFERRED_JSON")"

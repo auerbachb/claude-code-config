@@ -63,6 +63,11 @@ EOF
 cat > "$S/review-daily-cap.sh" <<'EOF'
 #!/usr/bin/env bash
 if [[ " $* " == *" --rate "* ]]; then echo 1.58; exit 0; fi
+# FIXTURE_CAP_FLIP=<counter file>: the first tally is ok, every later one over.
+if [[ -n "${FIXTURE_CAP_FLIP:-}" ]]; then
+  n=$(( $(cat "$FIXTURE_CAP_FLIP" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIXTURE_CAP_FLIP"
+  if (( n > 1 )); then printf '%s\n' "$FIXTURE_CAP_OVER"; exit 1; fi
+fi
 printf '%s\n' "$FIXTURE_CAP_OUT"
 exit "${FIXTURE_CAP_RC:-0}"
 EOF
@@ -122,6 +127,7 @@ OK_CAP='{"platform":"bugbot","date":"2026-10-08","spent_usd":1,"add_usd":1.58,"c
 reset() { # <tier json>
   export FIXTURE_TIER_OUT="$1" FIXTURE_TIER_RC=0 FIXTURE_HEAD="$HEAD" FIXTURE_ROUNDS=3
   export FIXTURE_REFUSED="" FIXTURE_CAP_OUT="$OK_CAP" FIXTURE_CAP_RC=0 FIXTURE_POST_FAIL="" FIXTURE_INVISIBLE=""
+  export FIXTURE_CAP_FLIP="" FIXTURE_CAP_OVER=""
   rm -f "$HOME/.claude/session-state.json"
   : > "$POSTED"
   echo '[]' > "$FX/comments.json"
@@ -209,6 +215,13 @@ check_eq "  bugbot_daily_cap reported" "over" "$(f .bugbot_daily_cap.status)"
 check_eq "  deferred, so the next tick re-asks" '["cursor"]' "$(f '.deferred | tostring')"
 run
 check_eq "  and it does: not a duplicate tick, still only CodeAnt" "@codeant-ai review;:daily_cap" "$(posted):$(f .trigger_skips.cursor.reason)"
+reset "$(tier_json present full)"
+export FIXTURE_CAP_FLIP="$TMP/cap-flip" FIXTURE_CAP_OVER='{"platform":"bugbot","date":"2026-10-08","spent_usd":9.9,"add_usd":1.58,"cap_usd":10,"status":"over"}'
+rm -f "$FIXTURE_CAP_FLIP"
+run
+check_eq "the cap flips to over at claim time: only CodeAnt" "@codeant-ai review;:daily_cap" "$(posted):$(f .trigger_skips.cursor.reason)"
+check_eq "  bugbot_skipped follows the claim, with its tally" "daily_cap:9.9" "$(f '"\(.bugbot_skipped.reason):\(.bugbot_skipped.tally.spent_usd)"')"
+check_eq "  bugbot_daily_cap is the claim's tally" "over" "$(f .bugbot_daily_cap.status)"
 reset "$(tier_json present full)"
 export FIXTURE_REFUSED=1
 run

@@ -302,6 +302,10 @@ unset COMPLEXITY_TRIGGER_SETTLE_SECONDS
 printf '## Complexity triggers\n\n```ini\nTRIGGER_SETTLE_SECONDS=45\n```\n\n## Notes\nTRIGGER_SETTLE_SECONDS=999999\n' > "$WORK/.claude/pm-config.md"
 run
 check_eq "pm-config key (section-scoped) sets 45s" "45:true" "$(f '"\(.settled.threshold_s):\(.settled.settled)"')"
+export COMPLEXITY_TRIGGER_SETTLE_SECONDS=soon
+run
+check_eq "a junk override beside a valid pm-config value is the default, not 45" "600" "$(f .settled.threshold_s)"
+unset COMPLEXITY_TRIGGER_SETTLE_SECONDS
 
 reset "$(tier_json present full)"
 set_checks "$(run_check build success github-actions 7200)"
@@ -311,10 +315,18 @@ run
 check_eq "a force-push 2 min ago resets the clock" "deferred:head_not_settled" "$(dec cursor)"
 reset "$(tier_json present full)"
 set_checks "$GREEN_OLD"
-export FAIL_TIMELINE=1 FAIL_COMMIT=1
+export FAIL_TIMELINE=1
 set_checks "$(run_check build success github-actions 7200)"
 run
-check_eq "timeline + commit unreadable: the check-run anchor still settles" "allowed:tier_allows" "$(dec cursor)"
+check_eq "timeline unreadable: never settled, though the check-run anchor is old" "deferred:head_not_settled" "$(dec cursor)"
+check_eq "  codeant is not held by it" "allowed:tier_allows" "$(dec codeant)"
+check_eq "  warned" "yes" "$( [[ "$ERR" == *"could not read PR #$PR's timeline"* ]] && echo yes || echo no )"
+export FAIL_TIMELINE="" FAIL_COMMIT=1
+run
+check_eq "commit unreadable: never settled either" "deferred:head_not_settled" "$(dec cursor)"
+export FAIL_COMMIT=""
+run
+check_eq "  control — both readable: the same old anchors settle" "allowed:tier_allows" "$(dec cursor)"
 
 reset "$(tier_json present full)"
 set_checks "$(run_check build null github-actions 30 in_progress)"

@@ -43,4 +43,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-BugBot doesn't auto-review pushes. With no `## Review policy`, after a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set — necessary, not sufficient: a refusal on that HEAD still suppresses; otherwise post it manually — one nudge per HEAD. With one, post only once `review-triggers-allowed.sh --claim cursor` exits 0.
+BugBot doesn't auto-review pushes. With no `## Review policy`, after a fix push CI posts `@cursor review` when `CURSOR_REVIEW_PAT` is set — necessary, not sufficient: a refusal on that HEAD still suppresses; otherwise post manually — one nudge per HEAD. With one, post only once `review-triggers-allowed.sh <PR> --claim cursor` exits 0.

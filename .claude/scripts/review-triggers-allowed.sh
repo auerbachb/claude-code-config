@@ -69,7 +69,12 @@
 #                allowed `codeant_unavailable` once CodeAnt was invited and
 #                no CodeAnt artifact appeared within the timeout (after the CI
 #                gate); deferred `codeant_pending` inside that window;
-#                otherwise excluded `not_fallback`.
+#                otherwise excluded `not_fallback`. No lifetime cap, by
+#                design: while CodeAnt is down the `full` gate needs a
+#                CodeRabbit APPROVED on every HEAD, so a cap would strand the
+#                PR after its first fix push. Each caller's per-HEAD
+#                already-present check and cr-review-hourly.sh bound it; its
+#                ledger count is reported, never capped.
 #   Before the per-gate rules, after the static exclusions above: deferred
 #   `head_moved` (see --head) and deferred `facts_unreadable` (a PR read
 #   failed). The CI gate is BUILD CI on HEAD — `ci-status.sh
@@ -104,7 +109,8 @@
 #   committer date, the newest head_ref_pushed / head_ref_force_pushed
 #   timeline event (the anchor pr-preflight.sh uses), and the earliest
 #   check-run created on HEAD (GitHub's own clock, at about push time). An
-#   unreadable anchor is never settled.
+#   unreadable anchor is never settled: a failed timeline or commit read keeps
+#   BugBot `head_not_settled` rather than settling on the anchors left.
 #
 # CODEANT UNAVAILABLE
 #   CodeAnt was invited (count >= 1) and no `codeant-ai[bot]` comment
@@ -118,7 +124,7 @@
 #     TRIGGER_SETTLE_SECONDS=600        COMPLEXITY_TRIGGER_SETTLE_SECONDS
 #     CODEANT_UNAVAILABLE_SECONDS=1800  COMPLEXITY_CODEANT_UNAVAILABLE_SECONDS
 #   A value must be a non-negative integer; anything else warns on stderr and
-#   uses the default.
+#   uses the default — a junk override included, whatever pm-config sets.
 #
 # OUTPUT
 #   One JSON line on stdout (all modes):
@@ -355,21 +361,23 @@ read_cfg() { # <key> -> value from ## Complexity triggers of the local pm-config
       }
     }' "$cfg" 2>/dev/null || true
 }
-apply_cfg() { # <var name> <pm-config key> <env name>
+apply_cfg() { # <var name> <pm-config key> <env name> <default>
+  # A junk value at either layer means the default, as documented — never the
+  # other layer's value (review-daily-cap.sh resolves its cap the same way).
   local v env_v
   v="$(read_cfg "$2")"
   if [[ -n "$v" ]]; then
     if [[ "$v" =~ ^(0|[1-9][0-9]*)$ ]]; then printf -v "$1" '%s' "$v"
-    else warn "pm-config $2='$v' is not a non-negative integer — using the default"; fi
+    else warn "pm-config $2='$v' is not a non-negative integer — using the default $4"; printf -v "$1" '%s' "$4"; fi
   fi
   env_v="${!3-}"
   if [[ -n "$env_v" ]]; then
     if [[ "$env_v" =~ ^(0|[1-9][0-9]*)$ ]]; then printf -v "$1" '%s' "$env_v"
-    else warn "$3='$env_v' is not a non-negative integer — using the default"; fi
+    else warn "$3='$env_v' is not a non-negative integer — using the default $4"; printf -v "$1" '%s' "$4"; fi
   fi
 }
-apply_cfg SETTLE_S TRIGGER_SETTLE_SECONDS COMPLEXITY_TRIGGER_SETTLE_SECONDS
-apply_cfg CODEANT_TIMEOUT_S CODEANT_UNAVAILABLE_SECONDS COMPLEXITY_CODEANT_UNAVAILABLE_SECONDS
+apply_cfg SETTLE_S TRIGGER_SETTLE_SECONDS COMPLEXITY_TRIGGER_SETTLE_SECONDS 600
+apply_cfg CODEANT_TIMEOUT_S CODEANT_UNAVAILABLE_SECONDS COMPLEXITY_CODEANT_UNAVAILABLE_SECONDS 1800
 
 # ---------------------------------------------------------------------------
 # 3. Facts (tiered mode). Any read failure defers every reviewer the gate does
@@ -445,12 +453,25 @@ if [[ "$READ_FACTS" -eq 1 && "$FACTS_OK" -eq 1 ]]; then
   fi
 fi
 
-# Settle anchor parts — read only on `full`, the one gate that needs them.
+# Settle anchor parts — read only on `full`, the one gate that needs them. An
+# anchor that cannot be read is never settled: dropping it would let the
+# others settle a HEAD on their own, and the timeline is the only anchor that
+# sees a re-push of an older SHA, whose check-runs and committer date are old.
+SETTLE_READ_OK=true
 if [[ "$FACTS_OK" -eq 1 && "$GATE" == '"full"' ]]; then
-  PUSHED="$(gh api --paginate "repos/$REPO/issues/$PR/timeline?per_page=100" \
-    --jq '.[]? | select(.event == "head_ref_force_pushed" or .event == "head_ref_pushed") | (.created_at // empty)' 2>/dev/null \
-    | LC_ALL=C sort | tail -1)" || PUSHED=""
-  COMMITTED="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date // empty' 2>/dev/null)" || COMMITTED=""
+  PUSHED=""; COMMITTED=""
+  if gh api --paginate "repos/$REPO/issues/$PR/timeline?per_page=100" \
+       --jq '.[]? | select(.event == "head_ref_force_pushed" or .event == "head_ref_pushed") | (.created_at // empty)' \
+       >"$TMPD/t" 2>/dev/null; then
+    PUSHED="$(LC_ALL=C sort "$TMPD/t" | tail -1)"
+  else
+    SETTLE_READ_OK=false
+    warn "could not read PR #$PR's timeline — HEAD is not settled (an unreadable anchor never is)"
+  fi
+  if ! COMMITTED="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date // empty' 2>/dev/null)"; then
+    COMMITTED=""; SETTLE_READ_OK=false
+    warn "could not read ${HEAD_SHA:0:7}'s committer date — HEAD is not settled (an unreadable anchor never is)"
+  fi
   ANCHOR_TIMES="$(jq -c --arg p "$PUSHED" --arg c "$COMMITTED" '. + ([$p, $c] | map(select(. != "")))' <<<"$ANCHOR_TIMES" 2>/dev/null || echo '[]')"
 fi
 
@@ -469,7 +490,7 @@ evaluate() {
     --argjson facts_ok "$( [[ "$FACTS_OK" -eq 1 ]] && echo true || echo false )" \
     --argjson head_moved "$HEAD_MOVED" --argjson pr_open "$PR_OPEN" \
     --argjson settle_s "$SETTLE_S" --argjson codeant_timeout_s "$CODEANT_TIMEOUT_S" \
-    --argjson anchors "$ANCHOR_TIMES" \
+    --argjson anchors "$ANCHOR_TIMES" --argjson settle_read_ok "$SETTLE_READ_OK" \
     --argjson l_codeant "$l_codeant" --argjson l_cursor "$l_cursor" --argjson l_coderabbit "$l_coderabbit" \
     --slurpfile comments "$TMPD/comments.json" --slurpfile reviews "$TMPD/reviews.json" \
     --slurpfile checks "$TMPD/checks.json" '
@@ -518,7 +539,7 @@ evaluate() {
     # Settled HEAD.
     | ($anchors | map(epoch) | map(select(. != null)) | max) as $anchor
     | (if $anchor == null then null else ($now - $anchor) end) as $age
-    | ($ci == "green" and $age != null and $age >= $settle_s) as $settled
+    | ($ci == "green" and $settle_read_ok and $age != null and $age >= $settle_s) as $settled
     | (if $ci == "green" then null
        elif $ci == "red" then deny("deferred"; "ci_red")
        elif $ci == "pending" then deny("deferred"; "ci_pending")
