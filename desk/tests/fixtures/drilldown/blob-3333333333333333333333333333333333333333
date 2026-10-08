@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# gadget
+set -eu
+
+echo gizmo
+
+exit 0
+
+# end
+# eof

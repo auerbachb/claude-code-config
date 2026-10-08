@@ -1,0 +1,14 @@
+{
+ "number": 505,
+ "state": "closed",
+ "merged_at": "2026-10-07T14:00:00Z",
+ "head": {
+  "sha": "5a5e505000000000000000000000000000000505"
+ },
+ "base": {
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ },
+ "changed_files": 5,
+ "additions": 16,
+ "deletions": 5
+}

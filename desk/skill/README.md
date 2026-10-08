@@ -16,6 +16,7 @@ here).
 | `wakeups.md` | Wake-up retries on the next three ticks, then `answer-parked`, shown once (#1781) |
 | `history.md` | `show D-<n>` (an item's sub-thread) and `history` (today's answered items), with no state line (#1781) |
 | `reviews.md` | The Reviews view: `reviews`, `open R-<n>` (level 2, cached), `diff R-<n> [path]` (level 3, live), `reviewed`, `reviewed all today`, `flag`, `follow up`; its rendering is `reviews_view` and `review_header` in `desk.jq` (#1782) |
+| `drilldown.md` | The PR drill-down: `outline R-<n>`, `open R-<n> <node>…`, `ask R-<n>: <question>`, through `desk/bin/pr-outline.sh`; nothing stored (#1768) |
 | `ideas.md` | `idea:` / `file:` files an issue through `/issue-maker`'s one-shot entry without capture mode; `repo:` sets where ideas go (#1766) |
 | `attention.md` | `report`: the weekly attention report, one page computed from the events table (`human-queue.sh report`), offered once after Friday's end-of-day sweep (#1771) |
 | `todo.md` | The operator's own to-do layer: `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, `mine`, `my list`; the paper copy's line is `todo_line` in `desk.jq` (#1769) |

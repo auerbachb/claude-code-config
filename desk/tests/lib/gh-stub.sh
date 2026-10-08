@@ -9,12 +9,20 @@
 #   api graphql ... -F number=N
 #                         -> graphql-N.json
 #   pr diff N ...         -> pr-N.diff
+#   api [FLAGS] repos/O/R/pulls/N
+#                         -> pull-N.json (the PR drill-down, issue #1768)
+#   api [FLAGS] repos/O/R/pulls/N/files...
+#                         -> pull-N-files.json
+#   api [FLAGS] repos/O/R/git/blobs/SHA
+#                         -> blob-SHA (the file's raw content)
 #   issue create ...      -> issue-create.txt (the new issue's URL); the file
 #                            given to --body-file is copied to
 #                            issue-create.body
 # For a fixture NAME.EXT, an optional NAME.rc holds the exit code to return
 # after printing it (GitHub's NOT_FOUND answer comes with exit 1, for
-# example) and NAME.err the text to print on stderr. A file `sleep` delays
+# example) and NAME.err the text to print on stderr. NAME.EXT.then1,
+# .then2, ... are the answers to later calls: after each call the next one
+# replaces NAME.EXT (a PR pushed to between two reads). A file `sleep` delays
 # every call by that many seconds (for deadline tests). Every call's
 # arguments are appended, one call per line (newlines flattened), to
 # calls.log. Any other command exits 64, so an unexpected call fails the
@@ -43,6 +51,20 @@ case "${1:-} ${2:-}" in
     done
     ;;
   "pr diff") name="pr-${3:-}.diff" ;;
+  "api "*)
+    # The REST reads the PR drill-down makes (issue #1768): the endpoint is
+    # the one argument that starts with repos/, whatever flags come first.
+    for a in "$@"; do
+      case "$a" in
+        repos/*/*/pulls/*/files*)
+          a="${a%/files*}"
+          name="pull-${a##*/}-files.json"
+          ;;
+        repos/*/*/pulls/*) name="pull-${a##*/}.json" ;;
+        repos/*/*/git/blobs/*) name="blob-${a##*/}" ;;
+      esac
+    done
+    ;;
   "issue create")
     # The desk's follow-up issue (issue #1782): keep the body it filed, which
     # the desk's block deletes once gh returns.
@@ -64,6 +86,14 @@ if [ ! -f "$dir/$name" ]; then
   exit 1
 fi
 cat "$dir/$name"
+if [ -f "$dir/$name.then1" ]; then
+  mv "$dir/$name.then1" "$dir/$name"
+  k=2
+  while [ -f "$dir/$name.then$k" ]; do
+    mv "$dir/$name.then$k" "$dir/$name.then$((k - 1))"
+    k=$((k + 1))
+  done
+fi
 base="${name%.*}"
 if [ -f "$dir/$base.err" ]; then
   cat "$dir/$base.err" >&2

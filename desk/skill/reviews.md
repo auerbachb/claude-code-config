@@ -13,7 +13,7 @@ Loaded when the operator's whole message is one of the Reviews verbs below (`SKI
 | `flag R-<n> "what to follow up"` | Flags it with that note, then offers a follow-up issue |
 | `follow up R-<n>` | Files the follow-up issue for a flagged Review in its own repo (`follow up R-<n> again` after a filing that was never recorded) |
 
-**Out of scope here:** interrupts, the interrupt policy, and feedback tags are `interrupts.md` (#1783); the day plan and the end-of-day sweep are `plan.md` and `sweep.md` (#1784); the numbered file-to-hunk outline and "ask about this PR" are #1768. None of them has a verb in this file.
+**Out of scope here:** interrupts, the interrupt policy, and feedback tags are `interrupts.md` (#1783); the day plan and the end-of-day sweep are `plan.md` and `sweep.md` (#1784); the numbered file-to-hunk outline, `open R-<n> <node>`, and "ask about this PR" are `drilldown.md` (#1768). None of them has a verb in this file.
 
 ## Rules for every verb
 
@@ -138,7 +138,7 @@ echo "exit=$?"
 
 `exit=0` → print the header lines, a blank line, and the summary exactly as cached, then the hint. `exit=4` `already has a level-2 summary` → another desk cached one first: run the `open` block again and print what it shows. Any other `exit=4` → the shape was refused (its line says why): fix it and cache again. Never print a summary the store refused as if it were cached.
 
-The hint, one line: `diff R-2 [path] for the code · reviewed · flag R-2 "…"`. Remember R-2 as the item on screen, for a bare `reviewed`.
+The hint, one line: `outline R-2 or diff R-2 [path] for the code · reviewed · flag R-2 "…"` (for an issue, leave out `outline R-2`: an issue has no diff). Remember R-2 as the item on screen, for a bare `reviewed`.
 
 ## `diff R-<n> [path]`: level 3, never stored
 
