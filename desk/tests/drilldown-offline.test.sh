@@ -12,7 +12,8 @@
 #            two test files lists the three files, their hunks with line
 #            ranges and counts, and the two tests as leaves under the files
 #            they touch (by stem and by a name in the diff), then a Tests
-#            section; it fetches the PR and its file list and nothing else.
+#            section; it reads the PR, its file list, and the PR again (one
+#            head on both sides), nothing else.
 #            Test 5.2: `2.3` is the hunk widened to twenty lines below and,
 #            above, only up to hunk 2.2 (marked); `2.1` starts at the top of
 #            the file, `2.4` stops at its end; `2` is the whole file's patch
@@ -23,7 +24,10 @@
 #            patch that does not add up, a rename with no change, a file at
 #            head that does not match the patch, a fetch that fails, an
 #            unattached test, a partial file list, pages printed one after
-#            another, control characters printed as "?". Not found (exit 3),
+#            another, control characters printed as "?", a newline in a path
+#            printed as "?". One head: a push between the reads lists the
+#            files again under the new head; a PR pushed to on every read
+#            stops after three listings (exit 1). Not found (exit 3),
 #            an unknown node (exit 3, naming the ids there are, nothing on
 #            stdout), GitHub failing and a deadline (exit 1). No temp file
 #            outlives a run, and the helper never touches the store.
@@ -32,7 +36,8 @@
 #            blocks extract, parse, write nothing, and, run against a stub
 #            CLI under bash and zsh, print the header and the outline or
 #            the node, `kind=issue` for an issue, and the store's exit;
-#            `ask` requires the Read: line naming the nodes and the head.
+#            `ask` requires the Read: line naming the nodes and the head;
+#            its id check is the helper's own node pattern.
 #   The answer `ask` writes is model behaviour: the PR records a live run.
 #
 # Every helper case runs under `bash` and, when /bin/bash is 3.x (macOS),
@@ -176,8 +181,9 @@ for SH in $SHELLS; do
     "T1 tests/widget.test.sh,T2 tests/gizmo_test.sh"
   check "[$SH] 5.1 test leaves: T1 under 2 (stem), T2 under 1 (named in its diff) and 3 (stem)" \
     "$(printf '%s\n' "$OUT" | awk '/^[0-9]+ /{f=$1} /^  test /{print f ":" $2}' | paste -sd, -)" "1:T2,2:T1,3:T2"
-  check "[$SH] 5.1 fetches the PR and its file list only" \
-    "$(calls 'repos/acme/widgets/pulls/505'),$(calls 'git/blobs')" "2,0"
+  check "[$SH] 5.1 reads the PR, its file list, and the PR again, nothing else" \
+    "$(calls 'repos/acme/widgets/pulls/505$'),$(calls 'repos/acme/widgets/pulls/505/files'),$(calls 'git/blobs'),$(hq_t_lines "$(cat "$STUB_DIR/calls.log")")" \
+    "2,1,0,3"
   check_contains "[$SH] 5.1 the file list is paginated" "$(cat "$STUB_DIR/calls.log")" \
     "api --paginate repos/acme/widgets/pulls/505/files?per_page=100"
 
@@ -283,6 +289,54 @@ $(widget_ctx 111 120)
   check "[$SH] a rename with no change opens to its header" "$(node_section "$OUT" 4)" \
     "=== 4 src/was.sh → src/moved.sh · renamed · +0 -0 · renamed only: no content change · head 5a5e506"
 
+  # --- one head: a push between the reads (PRs 508, 509) ------------------------
+  # The stub answers each later call with the next .thenK file: PR 508 is
+  # pushed to once (head a… → b…, its file list old.sh → new.sh) while it is
+  # read; PR 509 is pushed to on every read.
+  sha40() { printf '%s%0*d' "$1" $((40 - ${#1})) 0; }
+  pullj() { printf '{"number": %s, "state": "open", "head": {"sha": "%s"}, "changed_files": 1, "additions": 1, "deletions": 1}\n' "$1" "$2"; }
+  filesj() { printf '[{"sha": "%s", "filename": "%s", "status": "modified", "additions": 1, "deletions": 1, "changes": 2, "patch": "@@ -1,3 +1,3 @@\\n a\\n-b\\n+c\\n d"}]\n' "$(sha40 9)" "$1"; }
+  pullj 508 "$(sha40 a508)" >"$STUB_DIR/pull-508.json"
+  pullj 508 "$(sha40 b508)" >"$STUB_DIR/pull-508.json.then1"
+  filesj src/old.sh >"$STUB_DIR/pull-508-files.json"
+  filesj src/new.sh >"$STUB_DIR/pull-508-files.json.then1"
+  reset_calls
+  po "$SH" acme/widgets 508
+  check "[$SH] a push between the reads: exit 0" "$RC" "0"
+  check "[$SH] a push between the reads: the new head and the files listed under it" \
+    "$(printf '%s\n' "$OUT" | sed -n '1,2p' | paste -sd'|' -)" \
+    "PR acme/widgets#508 · head b508000 · 1 files · +1 -1|1 src/new.sh · modified · +1 -1"
+  check_absent "[$SH] a push between the reads: nothing from the old list" "$OUT" "old.sh"
+  check "[$SH] a push between the reads: the PR read three times, the files twice" \
+    "$(calls 'repos/acme/widgets/pulls/508$'),$(calls 'repos/acme/widgets/pulls/508/files')" "3,2"
+  pullj 509 "$(sha40 a509)" >"$STUB_DIR/pull-509.json"
+  pullj 509 "$(sha40 b509)" >"$STUB_DIR/pull-509.json.then1"
+  pullj 509 "$(sha40 c509)" >"$STUB_DIR/pull-509.json.then2"
+  pullj 509 "$(sha40 d509)" >"$STUB_DIR/pull-509.json.then3"
+  filesj src/moving.sh >"$STUB_DIR/pull-509-files.json"
+  reset_calls
+  po_rc "$SH" 1 "a PR pushed to on every read" "acme/widgets#509 kept being pushed to while it was read (head d509000)" \
+    acme/widgets 509 1.1
+  check "[$SH] a PR pushed to on every read: three listings, then it stops" \
+    "$(calls 'repos/acme/widgets/pulls/509/files'),$(calls 'git/blobs')" "3,0"
+
+  # --- a newline inside a path (PR 510) ------------------------------------------
+  po "$SH" acme/widgets 510
+  check "[$SH] a newline in a path: exit 0" "$RC" "0"
+  check "[$SH] a newline in a path prints as ?, never a line of its own" "$OUT" \
+    "PR acme/widgets#510 · head 5a5e510 · 2 files · +2 -1
+1 src/evil?2 forged.sh · modified · +1 -1
+  1.1 lines 1-3 · +1 -1
+  test T1 tests/evil?2 forged.test.sh · +1 -0
+
+Tests
+T1 tests/evil?2 forged.test.sh · added · +1 -0 · touches 1
+  T1.1 line 1 · +1 -0"
+  po "$SH" acme/widgets 510 1 T1
+  check "[$SH] a newline in a path: opened nodes keep it on the === line" \
+    "$(printf '%s\n' "$OUT" | grep -E '^(===|[0-9]|T[0-9])' | paste -sd'|' -)" \
+    "=== 1 src/evil?2 forged.sh · modified · +1 -1 · head 5a5e510|=== T1 tests/evil?2 forged.test.sh · added · +1 -0 · head 5a5e510"
+
   # --- not found, unknown nodes, failures -----------------------------------------
   po_rc "$SH" 3 "a PR that does not exist" "no PR acme/widgets#404" acme/widgets 404
   po_rc "$SH" 3 "an unknown hunk" "no hunk 2.9: 2 has 2.1-2.4" acme/widgets 505 2.9
@@ -330,7 +384,8 @@ NEEDLES
 contract drilldown.md "$DRILL" <<'NEEDLES'
 **Nothing is stored.**
 no `summary set`, no `comment`, no `flag`, no `review`, no `state set`, and no file that outlives the block
-`T?[0-9]+(\.[0-9]+)?`
+`T?[1-9][0-9]{0,5}(\.[1-9][0-9]{0,5})?`, the helper's own pattern
+`exit=4` → its stderr line in one line
 The question in `ask` never goes into a command
 `kind=issue` → `R-2 is an issue: it has no diff.
 **End with the `Read:` line**
@@ -340,6 +395,11 @@ never fill a gap from memory of the codebase or a guess
 Open them in one call
 Plain text only, never AskUserQuestion.
 NEEDLES
+# The skill's id check is the helper's: an id the skill lets through is never
+# refused by the helper as malformed, and the other way round.
+NODE_RE=$(sed -n "s/.*local node_re='^\(.*\)\$'.*/\1/p" "$OUTLINE")
+check "the helper's node pattern is found" "$([ -n "$NODE_RE" ] && echo yes)" "yes"
+check_contains "drilldown.md checks ids with the helper's node pattern" "$DRILL" "\`$NODE_RE\`"
 contract reviews.md "$REVIEWS" <<'NEEDLES'
 `drilldown.md` (#1768)
 `outline R-2 or diff R-2 [path] for the code

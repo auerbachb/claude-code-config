@@ -1082,7 +1082,10 @@ rebuilds the outline from GitHub.
   recomputed `@@` line, stopping at a neighbouring hunk or the file's edge
   and saying so. Each node starts with `=== ID · PATH · … · head SHA`.
 - **GitHub calls.** `repos/O/R/pulls/N`, then `repos/O/R/pulls/N/files`
-  (paginated), and, for opened hunks of changed files only, the file's blob
+  (paginated), then `pulls/N` again: the file list has no SHA of its own, so
+  a push in between lists the files again under the new head (up to three
+  listings; a PR still moving exits 1, never pairing one head with another
+  head's diff). Then, for opened hunks of changed files only, the file's blob
   at head (`git/blobs/<sha>`, raw), once per file per call. Each goes through
   `bin/lib/github.sh`, so `HUMAN_QUEUE_GH` and `HUMAN_QUEUE_GH_TIMEOUT` apply.
 - **What it will not guess.** A file GitHub sent no patch for shows no hunks
@@ -1090,8 +1093,10 @@ rebuilds the outline from GitHub.
   file's counts is marked `patch incomplete`; a file at head that does not
   match the patch, or a fetch that fails, prints the hunk as GitHub gave it
   with one `(more context unavailable: …)` line; a partial file list says how
-  many files it holds. GitHub's text prints with control characters as `?`.
-- **Exit codes.** 0 ok; 1 GitHub failed (or a deadline); 3 no such PR, an
+  many files it holds. GitHub's text prints with control characters as `?`,
+  and a newline inside a path as `?`, so a path never starts a line.
+- **Exit codes.** 0 ok; 1 GitHub failed (or a deadline, or a PR pushed to
+  during each of three listings); 3 no such PR, an
   `issue-N` key (no GitHub call), or a node the outline lacks (its line names
   the ids it has; nothing on stdout); 4 usage (a node that is not `F`, `F.H`,
   `Tn`, or `Tn.H`, a context cap outside 1 to 500).
@@ -1100,6 +1105,8 @@ rebuilds the outline from GitHub.
   source files and two test files; test 5.2's `open 2.3` (eight lines above,
   stopped at hunk 2.2; twenty below), `open 2.1`/`2.4` at the file's edges,
   `open 2` with its markers; one fetch per file; the edge cases above;
+  a push between the reads (listed again, the new head cited) and a PR that
+  keeps moving (exit 1); a newline in a path;
   not found, unknown nodes, failures, the deadline; no temp file left; the
   skill's blocks under bash and zsh against a stub CLI. Under bash and
   `/bin/bash` 3.2. What `ask` answers is checked by a live run.

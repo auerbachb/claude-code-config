@@ -47,8 +47,15 @@
 #
 # OUTPUT
 #   GitHub's text is untrusted: a CRLF prints as LF, and every other control
-#   character but tab and newline prints as "?". Nothing is written anywhere
-#   but stdout: no store, no cache, and the temp files go on exit.
+#   character but tab and newline prints as "?"; a newline inside a path
+#   prints as "?" too, so a path never starts a line. Nothing is written
+#   anywhere but stdout: no store, no cache, and the temp files go on exit.
+#
+# ONE HEAD
+#   The file list carries no SHA of its own, so the PR is read again after
+#   its files are listed. When a push landed in between, the files are
+#   listed again, up to three listings in all, until the head is the same
+#   before and after one; the SHA every line cites is that head.
 #
 # ENVIRONMENT
 #   HUMAN_QUEUE_GH           gh binary override (tests point it at a stub)
@@ -58,8 +65,9 @@
 #
 # EXIT CODES
 #   0  ok
-#   1  GitHub failed: gh or jq missing, not authenticated, timed out, or an
-#      answer that could not be read
+#   1  GitHub failed: gh or jq missing, not authenticated, timed out, an
+#      answer that could not be read, or a PR pushed to during each of
+#      three listings
 #   3  no PR with that number, an issue-N key, or a node the outline does
 #      not have (the stderr line names the ids it does have); nothing is
 #      printed on stdout
@@ -167,8 +175,11 @@ def safe: gsub("\r\n"; "\n") | gsub("\r$"; "")
   | map(if (. < 32 and . != 9 and . != 10) or (. >= 127 and . < 160) then 63 else . end)
   | implode;
 def short: .[0:7];
+# A path is one line: a newline in a filename (git allows one) prints as "?",
+# so it can never start a line of its own (a forged node or file line).
+def flat: gsub("\n"; "?");
 def path_label: if .previous_filename != null and .previous_filename != .filename
-                then .previous_filename + " → " + .filename else .filename end;
+                then (.previous_filename | flat) + " → " + (.filename | flat) else .filename | flat end;
 def counts: "+" + ((.additions // 0) | tostring) + " -" + ((.deletions // 0) | tostring);
 def span($s; $c): if $c == 1 then "line " + ($s | tostring)
                   else "lines " + ($s | tostring) + "-" + (($s + $c - 1) | tostring) end;
@@ -203,7 +214,7 @@ outline_jq() {
    + [ $m.files[] | . as $f
        | file_line,
          ($f.hunks[] | "  " + hunk_line),
-         ($m.tests[] | select(any(.touches[]; . == $f.id)) | "  test " + .id + " " + .filename + " · " + counts) ]
+         ($m.tests[] | select(any(.touches[]; . == $f.id)) | "  test " + .id + " " + (.filename | flat) + " · " + counts) ]
    + (if ($m.tests | length) == 0 then ["", "No test files changed in this PR."]
       else ["", "Tests"]
            + [ $m.tests[]
@@ -326,9 +337,32 @@ node_jq() {
 JQ
 }
 
+# read_pull DEST ERR REPO N — the PR's own JSON into DEST; exits 3 when there
+# is no such PR, 1 when GitHub fails or answers without a head SHA.
+read_pull() {
+  local dest="$1" err="$2" repo="$3" n="$4" rc=0 nf
+  hq_gh "$dest" "$err" api "repos/$repo/pulls/$n" || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    die_gh "GitHub did not answer within $(hq__gh_timeout)s"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    # A missing repository or PR is a 404: gh exits non-zero, and both its
+    # answer and its error line say so. Anything else is a failure.
+    nf=$(hq_jq -r 'if (.status // "") == "404" or (.message // "") == "Not Found" then "yes" else "no" end' \
+           "$dest" 2>/dev/null || true)
+    if [ "$nf" = yes ] || grep -q 'HTTP 404' "$err" 2>/dev/null; then
+      die_not_found "no PR $repo#$n"
+    fi
+    die_gh "GitHub failed: $(hq_gh_first_error "$err")"
+  fi
+  if ! hq_jq -e '(.head.sha // "") | test("^[0-9a-f]{40}$")' "$dest" >/dev/null 2>&1; then
+    die_gh "GitHub returned an unexpected answer for $repo#$n"
+  fi
+}
+
 main() {
   local repo="" raw_n="" n nodes="" ctx
-  local pull files model err empty rc=0 nf line plan id want fid sha
+  local pull files model err empty again head now tries rc=0 line plan id want fid sha
   local blob blob_have blob_why fetched first=1 rendered i found
   local -a cache_fid=() cache_file=() cache_why=()
   local repo_re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' num_re='^[1-9][0-9]{0,9}$'
@@ -392,32 +426,36 @@ main() {
   hq_mktemp model
   hq_mktemp err
 
-  hq_gh "$pull" "$err" api "repos/$repo/pulls/$n" || rc=$?
-  if [ "$rc" -eq 124 ]; then
-    die_gh "GitHub did not answer within $(hq__gh_timeout)s"
-  fi
-  if [ "$rc" -ne 0 ]; then
-    # A missing repository or PR is a 404: gh exits non-zero, and both its
-    # answer and its error line say so. Anything else is a failure.
-    nf=$(hq_jq -r 'if (.status // "") == "404" or (.message // "") == "Not Found" then "yes" else "no" end' \
-           "$pull" 2>/dev/null || true)
-    if [ "$nf" = yes ] || grep -q 'HTTP 404' "$err" 2>/dev/null; then
-      die_not_found "no PR $repo#$n"
-    fi
-    die_gh "GitHub failed: $(hq_gh_first_error "$err")"
-  fi
-  if ! hq_jq -e '(.head.sha // "") | test("^[0-9a-f]{40}$")' "$pull" >/dev/null 2>&1; then
-    die_gh "GitHub returned an unexpected answer for $repo#$n"
-  fi
+  read_pull "$pull" "$err" "$repo" "$n"
+  head=$(hq_jq -r '.head.sha' "$pull")
 
-  rc=0
-  hq_gh "$files" "$err" api --paginate "repos/$repo/pulls/$n/files?per_page=100" || rc=$?
-  if [ "$rc" -eq 124 ]; then
-    die_gh "GitHub did not list the files within $(hq__gh_timeout)s"
-  fi
-  if [ "$rc" -ne 0 ]; then
-    die_gh "GitHub did not list the files: $(hq_gh_first_error "$err")"
-  fi
+  # The file list has no SHA of its own: a push between reading the PR and
+  # listing its files would pair the old head with the new diff. So the PR
+  # is read again after every listing, and the files are listed again (at
+  # most three listings) until the head is the same on both sides of one.
+  hq_mktemp again
+  tries=0
+  while :; do
+    tries=$((tries + 1))
+    rc=0
+    hq_gh "$files" "$err" api --paginate "repos/$repo/pulls/$n/files?per_page=100" || rc=$?
+    if [ "$rc" -eq 124 ]; then
+      die_gh "GitHub did not list the files within $(hq__gh_timeout)s"
+    fi
+    if [ "$rc" -ne 0 ]; then
+      die_gh "GitHub did not list the files: $(hq_gh_first_error "$err")"
+    fi
+    read_pull "$again" "$err" "$repo" "$n"
+    now=$(hq_jq -r '.head.sha' "$again")
+    if [ "$now" = "$head" ]; then
+      break
+    fi
+    if [ "$tries" -ge 3 ]; then
+      die_gh "$repo#$n kept being pushed to while it was read (head ${now:0:7}); try again"
+    fi
+    cat "$again" >"$pull"
+    head="$now"
+  done
 
   rc=0
   hq_jq -s --slurpfile pullv "$pull" --arg repo "$repo" --argjson number "$n" \

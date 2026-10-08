@@ -20,7 +20,9 @@
 #                            issue-create.body
 # For a fixture NAME.EXT, an optional NAME.rc holds the exit code to return
 # after printing it (GitHub's NOT_FOUND answer comes with exit 1, for
-# example) and NAME.err the text to print on stderr. A file `sleep` delays
+# example) and NAME.err the text to print on stderr. NAME.EXT.then1,
+# .then2, ... are the answers to later calls: after each call the next one
+# replaces NAME.EXT (a PR pushed to between two reads). A file `sleep` delays
 # every call by that many seconds (for deadline tests). Every call's
 # arguments are appended, one call per line (newlines flattened), to
 # calls.log. Any other command exits 64, so an unexpected call fails the
@@ -84,6 +86,14 @@ if [ ! -f "$dir/$name" ]; then
   exit 1
 fi
 cat "$dir/$name"
+if [ -f "$dir/$name.then1" ]; then
+  mv "$dir/$name.then1" "$dir/$name"
+  k=2
+  while [ -f "$dir/$name.then$k" ]; do
+    mv "$dir/$name.then$k" "$dir/$name.then$((k - 1))"
+    k=$((k + 1))
+  done
+fi
 base="${name%.*}"
 if [ -f "$dir/$base.err" ]; then
   cat "$dir/$base.err" >&2
