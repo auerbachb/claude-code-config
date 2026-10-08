@@ -19,7 +19,7 @@ rules are (`.claude/rules/skill-symlinks.md`). Sections are read with
      Add a repo by hand when we review it without running the harness there —
      it still draws down the account caps, and discovery cannot see it.
      One Markdown bullet per repo; the first token is owner/name. Every
-     bullet in this section is read as a repo, so keep notes in comments. -->
+     bullet outside a comment is read as a repo, so keep notes in comments. -->
 
 ```ini
 owner = auerbachb

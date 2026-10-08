@@ -156,6 +156,25 @@ printf '## Review repos\n\n- acme/ok\n- acme-sales-kit\n' > "$BAD_CONFIG"
 run "CLAUDE_ACCOUNT_CONFIG=$BAD_CONFIG" --
 expect_fail_closed "config: a slash-less bullet fails the list instead of being skipped"
 
+# A bullet inside an HTML comment is a note, not an entry — on one line or
+# spanning several, and whether or not it is a well-formed owner/name (a
+# malformed one would otherwise fail the list, a well-formed one would add an
+# unreviewed repo). Text either side of a comment on the same line survives.
+COMMENTED="$TMP_DIR/commented-config.md"
+cat > "$COMMENTED" <<'MD'
+## Review repos
+
+<!-- - acme/retired -->
+<!--
+- acme/also-retired
+- not-a-repo
+-->
+- acme/alpha <!-- kept: the comment is trailing -->
+- <!-- leading comment --> acme/beta
+MD
+run "CLAUDE_ACCOUNT_CONFIG=$COMMENTED" --
+expect_list "config: bullets inside HTML comments are notes, not entries" $'acme/alpha\nacme/beta'
+
 mkdir -p "$TMP_DIR/config-is-a-dir"
 run "CLAUDE_ACCOUNT_CONFIG=$TMP_DIR/config-is-a-dir" --
 expect_fail_closed "config: a config path that is not a readable file fails rather than falling to discovery"
@@ -198,6 +217,13 @@ expect_fail_closed "discovery: an unknown owner is a failure, not an empty list"
   printf '{"errors":[{"message":"rate limited"}]}'; } > "$TMP_DIR/partial.json"
 run "CLAUDE_ACCOUNT_CONFIG=$NO_CONFIG" -- --fixture "$TMP_DIR/partial.json"
 expect_fail_closed "discovery: an error on a later page discards the earlier pages (no partial list)"
+
+# GraphQL's partial-result shape: `data` AND `errors` on the same page. The
+# nodes it did return are well-formed, so only the errors check refuses it.
+printf '{"data":{"repositoryOwner":{"repositories":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"nameWithOwner":"acme/live","isArchived":false,"object":{"id":"x"}}]}}},"errors":[{"message":"Something went wrong"}]}' \
+  > "$TMP_DIR/data-and-errors.json"
+run "CLAUDE_ACCOUNT_CONFIG=$NO_CONFIG" -- --fixture "$TMP_DIR/data-and-errors.json"
+expect_fail_closed "discovery: a page with errors beside its data is refused (partial result)"
 
 printf '{not json' > "$TMP_DIR/garbage.json"
 run "CLAUDE_ACCOUNT_CONFIG=$NO_CONFIG" -- --fixture "$TMP_DIR/garbage.json"

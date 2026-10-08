@@ -27,7 +27,8 @@
 #        EVERY Markdown bullet in the section is a list entry, and its first
 #        token (backticks stripped) must be owner/name — a bullet that is not
 #        fails the whole list, so a typo such as `- acme-sales-kit` can never
-#        be skipped quietly. Notes belong in plain lines or HTML comments.
+#        be skipped quietly. Notes belong in plain lines or HTML comments;
+#        comments are stripped first, so a bullet inside one is a note.
 #     3. Discovery — every non-archived repo owned by `owner` whose default
 #        branch carries .github/workflows/<discovery_marker>. Both keys come
 #        from `key = value` lines in the same section; defaults are the
@@ -183,6 +184,25 @@ if [[ -e "$CONFIG" || -L "$CONFIG" ]]; then
   if [[ -n "$section" ]]; then
     # One pass, tagged lines: `repo <v>`, `owner <v>`, `marker <v>`.
     parsed="$(printf '%s\n' "$section" | awk '
+      # HTML comments are notes, never entries: strip them first, including
+      # ones spanning lines, so a bullet or key=value line inside a comment is
+      # invisible here just as it is in the rendered Markdown (same stripping
+      # as review-tier.sh).
+      {
+        line = $0; out = ""
+        while (1) {
+          if (comment) {
+            i = index(line, "-->")
+            if (i == 0) { line = ""; break }
+            line = substr(line, i + 3); comment = 0
+          } else {
+            i = index(line, "<!--")
+            if (i == 0) { out = out line; break }
+            out = out substr(line, 1, i - 1); line = substr(line, i + 4); comment = 1
+          }
+        }
+        $0 = out
+      }
       /^[[:space:]]*[-*+][[:space:]]+/ {
         line = $0
         sub(/^[[:space:]]*[-*+][[:space:]]+/, "", line)
@@ -258,11 +278,16 @@ fi
 
 # Each page is filtered on its own (gh --paginate concatenates them). A page
 # with no repositoryOwner — unknown owner, or a GraphQL error envelope — is a
-# failed discovery, never an empty one.
+# failed discovery, never an empty one. So is a page carrying `errors` beside
+# its `data`: GraphQL returns partial data that way, and its nodes may be
+# missing repos. `gh api graphql` normally exits non-zero on such a page, but
+# this check does not rely on that, and it is the only guard on --fixture.
 ERRF="$(mktemp)" || die "mktemp failed"
 if ! discovered="$(printf '%s' "$raw" | jq -r --arg owner "$OWNER" '
   if (type != "object") or ((.data.repositoryOwner? // null) == null)
   then error("response has no repositoryOwner (unknown owner or GraphQL error)")
+  elif ((.errors // []) | length) > 0
+  then error("response carries GraphQL errors beside its data (partial result)")
   else .data.repositoryOwner.repositories.nodes[]
     | select((.isArchived // false) | not)
     | select(.object != null)
