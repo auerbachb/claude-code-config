@@ -206,9 +206,10 @@ hq__export_pandoc() {
   # The items' text comes from agent threads: export.jq escapes it, so it
   # reads as text. As a second guard the reader takes raw TeX, HTML,
   # attributes, and $math$ as text too (math would reach the PDF engine as
-  # TeX), and a YAML block never sets the template's variables.
+  # TeX), and a YAML block never sets the template's variables. No smart
+  # punctuation: `--force` stays `--force`, not an en dash.
   hq__export_run "$(hq__export_limit 120)" '' "$hq__work/pandoc.out" "$hq__work/pandoc.err" \
-    "$hq__bin" --from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars --standalone \
+    "$hq__bin" --from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars-smart --standalone \
     --output "$hq__pdf" "$hq__md" || rc=$?
   if [ "$rc" -eq 0 ] && hq__export_is_pdf "$hq__pdf"; then return 0; fi
   hq__export_note pandoc "$rc"

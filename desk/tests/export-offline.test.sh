@@ -331,8 +331,8 @@ P="$STUBS/pandoc" C="$STUBS/chrome" U="$STUBS/cupsfilter"
 
 check "pandoc first" "$(render HUMAN_QUEUE_PANDOC="$P" HUMAN_QUEUE_CHROME="$C" HUMAN_QUEUE_CUPSFILTER="$U")" "0 pandoc | "
 check "pandoc gets the Markdown" "$(sed 's/.*--output [^ ]* //' "$TMP/log/pandoc.args")" "$TMP/r.md"
-check_contains "pandoc reads raw TeX, HTML, attributes, YAML blocks, and math as text" "$(cat "$TMP/log/pandoc.args")" \
-  "--from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars "
+check_contains "pandoc reads raw TeX, HTML, attributes, YAML blocks, and math as text, without smart punctuation" "$(cat "$TMP/log/pandoc.args")" \
+  "--from markdown-raw_tex-raw_html-raw_attribute-yaml_metadata_block-tex_math_dollars-smart "
 check "pandoc: its temp files in the scratch directory" "$(cat "$TMP/log/pandoc.tmp")" "$TMP/w/tmp $TMP/w/tmp"
 check "the PDF is where it was asked for" "$(head -c 5 "$TMP/w/out.pdf")" "%PDF-"
 check "the store's URL never reaches a renderer" "$(cat "$TMP/log/pandoc.env")" "clean"

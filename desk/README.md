@@ -1281,8 +1281,10 @@ lands on the right item.
   from one item model, reusing `skill/desk.jq`'s labels and links.
 - **Renderers.** No new dependency: the first of these that produces a PDF
   is used. pandoc (the Markdown, when pandoc and a PDF engine are
-  installed; the items' raw TeX, HTML, attributes, YAML blocks, and images
-  are read as text, so nothing in them reaches the engine or is fetched);
+  installed; the items' text is escaped and read literally: its Markdown,
+  raw TeX and HTML, math, YAML blocks, and images stay text, so nothing in
+  it reaches the engine or is fetched, and no smart punctuation turns
+  `--force` into a dash);
   headless Google Chrome or Chromium (the HTML, under a throwaway profile,
   so a running Chrome is never touched; offline, since no host name
   resolves; stopped once it reports the file written, because on macOS it
