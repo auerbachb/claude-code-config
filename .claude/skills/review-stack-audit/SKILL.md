@@ -1,7 +1,7 @@
 ---
 name: review-stack-audit
 description: Use when asking whether the AI review tools still earn what we pay for them — "audit the review stack", "are we still paying for Greptile", "did a cap change", "re-check review tool costs", or the monthly check. Re-measures each tool's billed state, caps, throughput, and unique value, compares against the recorded baseline, and files drift issues. Advisory only — never edits rules.
-argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD] [--days N] [--limit N] [--repos a/b,c/d | --all-repos] [--arm] [--stop]"
+argument-hint: "[--tick] [--report-only] [--report-to-repo] [--since YYYY-MM-DD [--until YYYY-MM-DD]] [--days N] [--limit N] [--repos a/b,c/d | --all-repos] [--arm] [--stop]"
 ---
 
 # review-stack-audit — do the review tools still earn their keep?
@@ -77,9 +77,11 @@ logic here.
 | `/review-stack-audit --arm` | Enable the monthly session-start nudge. |
 | `/review-stack-audit --stop` | Disable it. |
 
-`--since` / `--days` / `--limit` pass straight through to `measure.sh` and combine
-with any mode. `--arm` and `--stop` are lifecycle modes and mutually exclusive
-with the rest.
+`--since` / `--until` / `--days` / `--limit` pass straight through to `measure.sh`;
+`--until` closes a `--since` window (alone, or before `--since`, `measure.sh` exits
+2 and Step 3 fails closed). `--days` and `--limit` combine with any mode, `--since`
+and `--until` with every mode but `--tick` (below). `--arm` and `--stop` are
+lifecycle modes and mutually exclusive with the rest.
 
 `--repos a/b,c/d` / `--all-repos` also pass through (issue #1808): the vendors
 bill one account across every repo they review, so these measure several repos in
@@ -89,10 +91,21 @@ top-level `tools[]` is then the cross-repo total, so Steps 4–6 compare the
 account-level figure against the baseline unchanged; each repo's own figures stay
 in `per_repo[]`, and the report states which repos were measured. With neither
 flag, the run measures the current repo exactly as before. They combine with the
-on-demand and `--report-only` runs only. **`--tick` with `--repos` or
-`--all-repos` is a usage error — refuse it here, before Step 2:** the tick's
-watermark is one month for one selection, so a tick always measures the current
-repo and Step 3 never forwards a repo selection on a tick.
+on-demand and `--report-only` runs only. **`--tick` with `--repos`,
+`--all-repos`, `--since` or `--until` is a usage error — refuse it here, before
+Step 2:** the tick's watermark is one month for one selection, so a tick always
+measures the current repo up to today (a `--since`/`--until` window could lie in
+the past yet still mark this month audited), and Step 3 never forwards a repo
+selection or an explicit window on a tick.
+
+A multi-repo run is also a **spend-ledger** run (issue #1809): each tool in
+`per_repo[]` and in the total carries `spend_usd` and a `spend_source` label —
+`receipt` (CodeRabbit's own charge lines, a floor), `estimate` (a count times a
+unit rate), `flat` (a monthly fee prorated to the window's elapsed days), or `none` (null, never
+0). Rates come only from the `review-stack-rates` block in the pricing matrix;
+`measure.sh --help` (SPEND LEDGER) has the rules. Quote a figure with its label —
+the vendor dashboard, not the ledger, is the bill. The drift comparison does not
+read spend.
 
 ```bash
 REPO_ROOT="$("$REPO_ROOT_SH")"
@@ -170,7 +183,7 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
+if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1
