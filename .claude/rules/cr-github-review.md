@@ -82,7 +82,7 @@ Verdicts: `gate_met`, `polling_cr`, `switch_bugbot`, `tier_gate`, `trigger_grept
 
 1. Fetch latest CR comments via `gh api`, verify each finding against the actual file (for the judgment layer — when to accept, decline, or push back — invoke `/receiving-code-review`)
 2. Fix **all valid findings**, commit and push **once**
-3. **Reply to every thread** ("Fixed in `abc1234`: <what changed>"). Try inline reply; on 404, PR-level comment with `@coderabbitai Fixed in ...`
+3. **Reply to every thread** via `reply-thread.sh … --verdict <fixed|deferred|declined> --defect <real|not>` — flags mandatory on every bot-finding reply. `real` = a behaviour the code would actually have gotten wrong; never style, duplication, or a reviewer misreading. Mechanism: `.claude/reference/review-stack-audit.md` §The marker
 4. **Resolve via `.claude/scripts/resolve-review-threads.sh <PR> --thread-ids <id1,id2>`** — **NEVER call `resolveReviewThread` inline** (mutations: `.claude/reference/graphql-thread-resolution.md`)
 5. Resume polling; repeat until CR has no more findings
 

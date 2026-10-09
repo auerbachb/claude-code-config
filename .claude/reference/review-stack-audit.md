@@ -302,6 +302,60 @@ first, so the marker never lands in code where the ledger would skip it. The
 coding agent without a second collection pass; this increment does not
 aggregate by it.
 
+#### The mandate (issue #1842)
+
+The flags were optional at first, and adoption, not reviewer quality, set the
+numbers: the first ledger-mode snapshot (2026-10-09, four repos, 138 PRs, 473
+findings) had `real_defects` of 17 for CodeAnt, 4 for CodeRabbit, 2 for
+Graphite, and 0 for BugBot and Greptile. So **every agent reply to a bot
+finding now carries the marker.** Every reply path an agent follows spells the
+flags out — `cr-github-review.md` §Processing CR Feedback step 3, `bugbot.md`
+§Processing BugBot Findings, `greptile-reply-format.md`, the Phase A and
+Phase B agents (and their copies embedded in `/subagent`), `/fixpr` Step 4, and
+`/go-on`'s reply step:
+
+```bash
+reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
+  --body "Fixed in \`SHA\`: <what changed>" --pr N \
+  --verdict fixed|deferred|declined --defect real|not
+```
+
+`--agent` keeps its default, `claude-code`, so the study can still split by
+coding agent. A raw `gh api …/replies` or `gh pr comment` posts no marker, so
+agents reply through the helper only.
+
+**Choosing `defect`.** `real` when the finding named a behaviour the code would
+actually have gotten wrong; `not` for style, duplication, or a reviewer
+misreading. It is a judgment made at reply time, where the evidence is; the
+one-line rule keeps agents consistent rather than automating the call.
+
+**Choosing `verdict`** for `/fixpr`'s reply categories:
+
+| `/fixpr` category | `--verdict` | Usual `--defect` |
+|---|---|---|
+| fix, already-fixed | `fixed` | per the rule above |
+| deferred to a follow-up issue | `deferred` | per the rule above |
+| decline-high-confidence, surface-low-confidence, outdated | `declined` | `not` |
+
+**It triggers nothing.** The marker is an HTML comment on its own line with no
+`@mention`, so the plain-text rules for BugBot and Greptile replies (no
+`@cursor`, no `@greptileai`) are unchanged, and it cannot request a review.
+
+**Exit reports.** Phase A and Phase B print `VERDICTS_POSTED: N/M` — replies
+carrying a marker over replies posted to bot findings (`0/0` when none;
+`exit-report-format.md`). `N < M` is a reply that skipped the flags.
+
+**`unmarked_replies` (advisory).** `pr-state.sh` adds a top-level integer
+`unmarked_replies`: inline review comments written by a GitHub `User` account
+(login not ending `[bot]`) that reply (`in_reply_to_id`) to a root comment by
+one of the five review-bot logins, and carry no line starting
+`<!-- review-verdict: fixed|deferred|declined `. `/wrap` Step 1.2 prints the
+count when it is non-zero. It never blocks a merge, never joins the findings
+`/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
+two ways: a human typing on the same account counts as an agent reply, and a
+PR-level fallback reply (the 404 path) is not an inline reply, so it is not
+counted — the same gap the ledger has (Limits below; issue #1829).
+
 ### The fields
 
 | Field | Definition |
@@ -341,6 +395,14 @@ flat fee after the split.
 - **Fallback replies are outside the thread.** `reply-thread.sh` posts a PR-level
   comment when the inline reply 404s, and the ledger reads only thread replies,
   so that finding reads `unanswered`.
+- **`real_defects` is a floor before the mandate and a measurement after it.**
+  From **2026-10-09 (UTC)** — the landing of the issue #1842 mandate above; if
+  the `feat(#1842)` squash commit on `main` is dated later, its UTC date governs
+  — every agent reply to a bot finding carries a marker. Before that date a real
+  defect replied to without the flags reads as not real, so `real_defects` and
+  `cost_per_real_defect_usd` for earlier PRs are lower bounds that reflect
+  marker adoption. On and after it, a missing marker is a process miss that
+  `unmarked_replies` surfaces, and the figure is a measurement.
 
 ### Comparing with sales-kit Issue #184
 
@@ -381,7 +443,7 @@ way.
 | Column | Field | Notes |
 |---|---|---|
 | Spend | `spend_usd` (`spend_source`) | The label travels with the figure: `$62.00 (flat)`, `$3.30 (receipt)`, `— (none)` |
-| Real defects | `real_defects` | Marker-stamped only (Value fields above) |
+| Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement after it |
 | Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect |
 | Precision | `precision` | As a percentage, one decimal |
 | Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
