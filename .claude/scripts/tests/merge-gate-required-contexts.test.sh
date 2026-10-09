@@ -45,6 +45,16 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/merge-gate-test-fixtures.sh"
 
+# Defined here, as in the other suites that use it: the "(a) outage trace: the
+# missing[] reason names the context" assertion below called it undefined, so
+# bash printed `command not found` and the check never ran (found fixing issue #1846).
+check_contains() { # needle haystack label
+  case "$2" in
+    *"$1"*) ok "$3" ;;
+    *) bad "$3 (missing '$1' in: $2)" ;;
+  esac
+}
+
 OUT=""
 RC=0
 run_gate() { # $1 = check-runs JSON; extra args forwarded to merge-gate.sh
