@@ -765,6 +765,35 @@ for body in $'Log:\n```\nline\n```\nDone.' $'Log:\n~~~\nline\n~~~~~' $'See:\n> `
   check_bytes "no fence added for: $(printf '%q' "$body")" "$TMP/expected_closed" "$TMP/posted_body"
 done
 
+echo "== (36) the Phase B agent's documented reply step stamps exactly one marker (issue #1842) =="
+# Extract the fenced reply command from phase-b-reviewer.md itself, so the test
+# runs what the agent is told to run — not a hand-copied paraphrase of it.
+# run_script is the agent's resolver; here it runs the script under test.
+run_script() { local _name="$1"; shift; bash "$SCRIPT" "$@"; }
+PHASE_B_DOC="$REPO_ROOT/.claude/agents/phase-b-reviewer.md"
+MARKER_FRC='<!-- review-verdict: fixed defect=real agent=claude-code -->'
+for rev in bugbot greptile; do
+  block="$(awk -v want="run_script reply-thread.sh <comment_id> --reviewer $rev " '
+    /^```/ { if (infence) { if (hit) { printf "%s", buf; exit } infence=0; buf=""; hit=0; next }
+             infence=1; buf=""; next }
+    infence { buf = buf $0 "\n"; if (index($0, want) == 1) hit=1 }
+  ' "$PHASE_B_DOC")"
+  check_contains "phase-b $rev block: found and carries the verdict flags" "--verdict fixed --defect real" "$block"
+  cmd="${block//<comment_id>/1234567}"
+  cmd="${cmd//\{\{PR_NUMBER\}\}/1}"
+  cmd="${cmd//SHA/abc1234}"
+  cmd="${cmd//<what changed>/guarded the index}"
+  reset_recorded
+  OUT="$(eval "$cmd" 2>&1)"; RC=$?
+  read_recorded
+  check_eq "phase-b $rev block: exit 0" 0 "$RC"
+  check_eq "phase-b $rev block: last line is exactly the marker" "$MARKER_FRC" \
+    "$(tail -n 1 "$TMP/posted_body" 2>/dev/null)"
+  check_eq "phase-b $rev block: exactly one marker line" 1 \
+    "$(grep -c 'review-verdict:' "$TMP/posted_body" 2>/dev/null || true)"
+done
+unset -f run_script
+
 ############################################################################
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

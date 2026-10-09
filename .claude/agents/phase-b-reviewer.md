@@ -236,8 +236,11 @@ Use the shared helper — it tries the inline reply endpoint first, falls back t
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer bugbot \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real
 ```
+
+The `--verdict`/`--defect` flags are mandatory — substitute per finding as in "Processing Findings" step 3 below. The marker they stamp is an HTML comment and triggers no reviewer.
 
 ### Re-Reviews
 
@@ -279,8 +282,11 @@ Use Greptile's severity badges. After fixing:
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer greptile \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real
 ```
+
+The `--verdict`/`--defect` flags are mandatory — substitute per finding as in "Processing Findings" step 3 below. The marker they stamp is an HTML comment and triggers no reviewer.
 
 Use 👍/👎 reactions on findings for feedback (Greptile's only learning mechanism).
 
@@ -309,7 +315,7 @@ jq '.check_runs.in_progress_runs' "$STATE"
 
 1. Verify each finding against actual code before fixing
 2. Fix ALL valid findings in one commit, push once
-3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`)
+3. Reply to every thread (CR: include `@coderabbitai`; BugBot: plain text only, no `@cursor`; Greptile: plain text only, no `@greptileai`) through `reply-thread.sh` **with the mandatory verdict flags** (issue #1842): `--verdict fixed|deferred|declined --defect real|not`. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `not` for style, duplication, or a reviewer misreading. Leave `--agent` at its default. Mapping: `.claude/reference/review-stack-audit.md` §The marker.
 4. Resolve threads via `resolve-review-threads.sh` — **NEVER call `resolveReviewThread` inline**; use `run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>` (or `--thread-ids-file`)
 5. Resume polling
 
@@ -395,6 +401,7 @@ HEAD_SHA: <current HEAD>
 REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <clean|fixes_pushed|merge_ready|exhaustion>
 FILES_CHANGED: <comma-separated paths, or empty>
+VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
 NEXT_PHASE: <C or B>
 HANDOFF_FILE: {{HANDOFF_FILE}}
 ```
