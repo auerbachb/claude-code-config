@@ -205,6 +205,48 @@ printf '%s' "$(bundle "$(cr 1 test success 100)")" \
 check_eq 1 "$(grep -c 'ci-status.sh' "$HOME/.claude/script-usage.log")" \
   "telemetry: append still lands when ~/.claude exists"
 
+# --------------------------------------------------------------------------
+# 10. --exclude-reviewers (issue #1749): build CI only. A reviewer's own check
+#     can neither hold the verdict pending nor turn it red, and identity is the
+#     exact app slug — never the check name.
+# --------------------------------------------------------------------------
+run_excl() { OUT=$(printf '%s' "$1" | "$SUT" "$SHA" --format json --check-runs-stdin --exclude-reviewers 2>/dev/null); RC=$?; }
+
+PENDING_REVIEWER="$(bundle "$(cr 1 build success 100)" "$(cr 2 "Cursor Bugbot" null 200 cursor in_progress)")"
+run_stdin "$PENDING_REVIEWER"
+check_eq 1 "$RC" "exclude-reviewers control: without the flag a pending reviewer check is pending"
+run_excl "$PENDING_REVIEWER"
+check_eq 0 "$RC" "exclude-reviewers: a pending reviewer check with green build checks is clean"
+check_eq 1 "$(field .total)" "exclude-reviewers: only the build check is counted"
+
+FAILED_REVIEWER="$(bundle "$(cr 1 build success 100)" "$(cr 2 "CodeAnt AI" failure 200 codeant-ai)" "$(cr 3 review failure 300 coderabbitai)")"
+run_stdin "$FAILED_REVIEWER"
+check_eq 3 "$RC" "exclude-reviewers control: without the flag a failed reviewer check is red"
+run_excl "$FAILED_REVIEWER"
+check_eq 0 "$RC" "exclude-reviewers: failed reviewer checks with green build checks are clean"
+
+for slug in codeant cursor-com coderabbit graphite-app graphite greptile-apps greptile; do
+  run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 r failure 200 "$slug")")"
+  check_eq 0 "$RC" "exclude-reviewers: slug $slug is a reviewer"
+done
+
+# A check NAMED after a reviewer but published by a workflow is build CI.
+run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 "CodeAnt AI" failure 200 github-actions)")"
+check_eq 3 "$RC" "exclude-reviewers: a reviewer-named check from another app still counts"
+run_excl "$(bundle "$(cr 1 build success 100)" "$(cr 2 lint failure 200 codeant-ai-fork)")"
+check_eq 3 "$RC" "exclude-reviewers: a look-alike slug still counts"
+
+# Build failures and pending build checks are unaffected.
+run_excl "$(bundle "$(cr 1 build failure 100)" "$(cr 2 "Cursor Bugbot" success 200 cursor)")"
+check_eq 3 "$RC" "exclude-reviewers: a failing build check still exits 3"
+run_excl "$(bundle "$(cr 1 build null 100 gha in_progress)")"
+check_eq 1 "$RC" "exclude-reviewers: a pending build check still exits 1"
+
+# Only reviewer checks left: pending, exactly like an empty list.
+run_excl "$(bundle "$(cr 1 "CodeAnt AI" success 100 codeant-ai)")"
+check_eq 1 "$RC" "exclude-reviewers: no build check left reads as pending"
+check_eq "(no check-runs reported yet)" "$(field '.in_progress_runs[0].name')" "exclude-reviewers: empty build list carries the sentinel"
+
 echo "----------------------------------------"
 echo "ci-status.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

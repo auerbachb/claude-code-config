@@ -230,6 +230,10 @@ export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"
 # every scenario written before it keeps the no-helper path, which posts. The
 # tier scenarios at the end opt in with a real helper over a stub resolver.
 export PREFLIGHT_BUGBOT_TIER_SH="$TMP/no-such-bugbot-tier-excluded.sh"
+# The tier-aware trigger helper (issue #1749) is inert the same way: with no
+# helper, every scenario here takes the unchanged legacy loop. Its tier-aware
+# path is covered by pr-preflight-tier-triggers.test.sh.
+export PREFLIGHT_TRIGGERS_ALLOWED_SH="$TMP/no-such-review-triggers-allowed.sh"
 enable_state_dedupe()  { export PREFLIGHT_SESSION_STATE_SH="$STATE_STUB"; reset_state; }
 disable_state_dedupe() { export PREFLIGHT_SESSION_STATE_SH="$TMP/no-such-session-state.sh"; }
 

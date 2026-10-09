@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # /fixpr Step 3b consults the account daily cap last and notes a skip once per HEAD (issue #1812).
-# catalog: tests — Runs `/fixpr` Step 3b's real `@cursor review` decision block against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win
+# catalog: tests — Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win
 #
 # WHAT IS UNDER TEST
-#   SKILL.md is a procedure, not a script, but Step 3b's BugBot decision is one
-#   fenced bash block. This suite EXTRACTS that block verbatim and runs it with
-#   the helpers it resolves stubbed under $HOME/.claude/scripts/ — except
-#   pr-body-review-note.sh, which is the real script — and gh stubbed on PATH.
-#   So the assertions are about the text Claude executes, not a paraphrase.
+#   Step 3b's bash lives in fixpr-reviewer-triggers.sh since issue #1749. This
+#   suite runs that script — the text Claude executes — on a repo with no
+#   review policy (the legacy path), with every helper it resolves stubbed
+#   beside it except pr-body-review-note.sh, which is the real script, and gh
+#   stubbed on PATH. reviewer-activity.sh reports CodeRabbit, Graphite and
+#   CodeAnt as already active, so the only post in play is `@cursor review`.
 #
-#   The extraction asserts its own premise first: a block that moved or was
-#   renamed fails here loudly instead of passing on an empty program.
+#   The premise is asserted first: a script that moved or lost its cursor post
+#   fails here loudly instead of passing on an empty program.
 
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SKILL="$REPO_ROOT/.claude/skills/fixpr/SKILL.md"
+SRC="$REPO_ROOT/.claude/scripts/fixpr-reviewer-triggers.sh"
 TMP="$(mktemp -d)"
 TMP_HOME="$(mktemp -d)"
 cleanup() { rm -rf "$TMP" "$TMP_HOME"; }
@@ -32,30 +33,35 @@ check_eq() {
   fi
 }
 
-echo "== premise: Step 3b's BugBot block can be extracted =="
-BLOCK="$(awk '/^# BugBot may ALREADY have refused this fresh HEAD/ { f = 1 } f && /^```$/ { exit } f { print }' "$SKILL")"
-check_eq "the block starts at the refusal comment and holds the cursor post" "yes" \
-  "$( [[ -n "$BLOCK" && "$BLOCK" == *'gh pr comment "$PR_NUMBER" --body "@cursor review"'* ]] && echo yes || echo no )"
-if [[ -z "$BLOCK" ]]; then
+echo "== premise: Step 3b's script exists and holds the cursor post =="
+check_eq "the script posts @cursor review" "yes" \
+  "$( [[ -r "$SRC" ]] && grep -qF -- '--body "@cursor review"' "$SRC" && echo yes || echo no )"
+if [[ ! -r "$SRC" ]]; then
   echo "== summary: $PASS passed, $((FAIL)) failed =="; exit 1
 fi
+LEGACY="$(awk '/^if \[\[ "\$TRIGGER_MODE" == "legacy" \]\]; then$/ { f = 1 } f { print } f && /^  exit 0$/ { exit }' "$SRC")"
+check_eq "the legacy block was located" "yes" "$( [[ -n "$LEGACY" && "$LEGACY" == *'@cursor review'* ]] && echo yes || echo no )"
 
 echo "== static: the cap is the LAST gate and the note names the pushed HEAD =="
-ln_of() { grep -nF -- "$1" <<<"$BLOCK" | head -1 | cut -d: -f1; }
+ln_of() { grep -nF -- "$1" <<<"$LEGACY" | head -1 | cut -d: -f1; }
 TIER_LN="$(ln_of 'TIER_GATE=$("$BUGBOT_TIER_SH"')"
 REFUSED_LN="$(ln_of '"$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA"')"
 CAP_LN="$(ln_of 'elif bugbot_cap_over; then')"
 check_eq "tier, then refused-HEAD, then the cap" "yes" \
   "$( [[ -n "$TIER_LN" && -n "$REFUSED_LN" && -n "$CAP_LN" && "$TIER_LN" -lt "$REFUSED_LN" && "$REFUSED_LN" -lt "$CAP_LN" ]] && echo yes || echo no )"
-check_eq "the note is keyed to \$PUSHED_SHA" "1" "$(grep -cF -- '--head "$PUSHED_SHA" --key bugbot-daily-cap' <<<"$BLOCK" | tr -d ' ')"
+check_eq "the note is keyed to \$PUSHED_SHA" "1" "$(grep -cF -- '--head "$PUSHED_SHA" --key bugbot-daily-cap' "$SRC" | tr -d ' ')"
 check_eq "the note text is the issue's" "1" \
-  "$(grep -cF -- "'BugBot skipped: daily cap (\$%.2f of \$%.2f today)'" <<<"$BLOCK" | tr -d ' ')"
+  "$(grep -cF -- "'BugBot skipped: daily cap (\$%.2f of \$%.2f today)'" "$SRC" | tr -d ' ')"
 
 # ---- stubs ---------------------------------------------------------------------
 export HOME="$TMP_HOME"
-S="$HOME/.claude/scripts"
-mkdir -p "$S" "$TMP/work" "$TMP/bin"
-cp "$REPO_ROOT/.claude/scripts/pr-body-review-note.sh" "$S/"
+S="$TMP/scripts"
+mkdir -p "$S" "$TMP/work" "$TMP/bin" "$HOME/.claude"
+cp "$SRC" "$REPO_ROOT/.claude/scripts/pr-body-review-note.sh" "$S/"
+cat > "$S/reviewer-activity.sh" <<'EOF'
+#!/usr/bin/env bash
+echo '{"coderabbit":true,"graphite":true,"codeant":true}'
+EOF
 cat > "$S/bugbot-tier-excluded.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CALLS"
@@ -85,13 +91,14 @@ case "$1 $2" in
   "pr edit")
     prev=""
     for a in "$@"; do [[ "$prev" == "--body-file" ]] && cp "$a" "$GH_BODY"; prev="$a"; done ;;
+  "api --paginate") echo '[]' ;;
   *) exit 1 ;;
 esac
 EOF
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
 export CALLS="$TMP/calls" POSTED="$TMP/posted" GH_BODY="$TMP/body.md"
-export PR_NUMBER=1840 OWNER=acme REPO=one
+PR_NUMBER=1840
 SHA_A="1111111111111111111111111111111111111111"
 SHA_B="2222222222222222222222222222222222222222"
 
@@ -106,7 +113,8 @@ reset() {   # <cap out> <cap rc>
 }
 STDOUT=""
 step3b() {   # <pushed sha>
-  STDOUT="$(cd "$TMP/work" && PUSHED_SHA="$1" bash -c "$BLOCK" 2>"$TMP/err")"
+  STDOUT="$(cd "$TMP/work" && bash "$S/fixpr-reviewer-triggers.sh" "$PR_NUMBER" --repo acme/one \
+    --pushed-sha "$1" --pushed-at 2026-10-08T12:00:00Z 2>"$TMP/err")"
 }
 cursor_posts() { grep -cFx "@cursor review" "$POSTED" | tr -d ' '; }
 note_lines() { grep -cF 'BugBot skipped: daily cap ($9.50 of $10.00 today)' "$GH_BODY" | tr -d ' '; }
@@ -116,9 +124,11 @@ echo "== over: no @cursor review, and the note lands once across two runs on one
 reset "$over" 1
 step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
+check_eq "nothing else posted either (the other three were active)" "" "$(cat "$POSTED")"
 check_eq "the note is in the body" "1" "$(note_lines)"
 check_eq "under ## Review notes" "1" "$(grep -c '^## Review notes' "$GH_BODY" | tr -d ' ')"
 check_eq "it says so" "yes" "$( [[ "$STDOUT" == *'skipping @cursor review — BugBot skipped: daily cap ($9.50 of $10.00 today)'* ]] && echo yes || echo no )"
+check_eq "it ran the legacy path" "yes" "$( [[ "$STDOUT" == *'TRIGGER_MODE=legacy'* ]] && echo yes || echo no )"
 step3b "$SHA_A"
 check_eq "second run, same HEAD: still exactly one line" "1" "$(note_lines)"
 check_eq "  and still no @cursor review" "0" "$(cursor_posts)"
@@ -172,6 +182,7 @@ step3b "$SHA_A"
 check_eq "no @cursor review" "0" "$(cursor_posts)"
 check_eq "no cap call" "0" "$(grep -c '^cap ' "$CALLS" | tr -d ' ')"
 check_eq "no note (the tier, not the cap, skipped)" "0" "$(note_lines)"
+check_eq "the tier helper was asked about this repo" "$PR_NUMBER --repo acme/one" "$(grep -v '^refused\|^cap' "$CALLS" | head -1)"
 echo "== precedence: a refused HEAD wins; the cap is never asked =="
 reset "$over" 1
 export FIXTURE_REFUSED=1

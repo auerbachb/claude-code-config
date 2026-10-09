@@ -28,6 +28,19 @@
 # the skip as `bugbot_skipped: {"reason":"daily_cap","gate":null,"tally":{...}}`
 # and the tally itself as `bugbot_daily_cap` whenever the cap was consulted.
 #
+# Tier-aware repos (issue #1749): once the round gates pass, the sibling
+# review-triggers-allowed.sh decides every post. A repo with no `## Review
+# policy` (mode `legacy`), or a missing helper, takes the unchanged path above.
+# Otherwise each of the three steps posts only when the helper allows it, and
+# only after `--claim` records it (a failed post `--release`s it): Graphite
+# never, CodeAnt once, BugBot on a settled green HEAD at most twice, with the
+# refused-HEAD guard and the daily cap applied inside the helper, the cap last.
+# A deferred step (CI pending, HEAD not settled, daily cap) leaves the step
+# record open so the next tick re-asks instead of stopping at
+# duplicate_poll_tick. --json adds `trigger_mode`, `trigger_skips` (reviewer ->
+# {kind, reason}) and `deferred`; status is `triggered` when something posted,
+# else `skipped` with reason `tier_deferred` or `tier_excluded`.
+#
 # Config: `.claude/pm-config.md` section **Complexity triggers** (see template in repo).
 # Env vars COMPLEXITY_THRESHOLD_SCORE, COMPLEXITY_FIRST_CR_ROUND, COMPLEXITY_CADENCE_ROUNDS
 # override file values when set.
@@ -263,6 +276,184 @@ if [[ -n "$SKIP_REASON" ]]; then
     emit_json_skip
   else
     echo "skipped: $SKIP_REASON (cr_rounds=$CR_ROUNDS score=$SCORE threshold=$THRESHOLD_SCORE)"
+  fi
+  exit 0
+fi
+
+# Tier-aware triggers (issue #1749). One shared helper decides which reviewers
+# a repo with a `## Review policy` may invite on this HEAD; the block below acts
+# on its answer and exits. A repo with no policy gets mode `legacy`, and the
+# code after this block — the pre-#1749 path, BugBot tier/refusal/cap guards
+# included — runs unchanged. A missing helper (a partial install) also takes
+# that path and says so; an unusable answer from a present helper posts
+# nothing this tick (fail closed), and the next tick asks again.
+TRIGGERS_SH="${SCRIPT_DIR}/review-triggers-allowed.sh"
+TRIGGER_MODE="legacy"
+TRIGGER_JSON=""
+if [[ -x "$TRIGGERS_SH" ]]; then
+  RC=0; TRIGGER_JSON="$("$TRIGGERS_SH" "$PR_NUM" --head "$HEAD_SHA")" || RC=$?
+  if (( RC == 0 )) && jq -e '.mode == "legacy" or .mode == "tiered" or .mode == "fail_closed"' <<<"$TRIGGER_JSON" >/dev/null 2>&1; then
+    TRIGGER_MODE="$(jq -r '.mode' <<<"$TRIGGER_JSON")"
+  else
+    echo "maybe-trigger-ai-review.sh: review-triggers-allowed.sh gave no usable answer (rc=$RC) — posting no reviewer trigger this tick (fail closed)" >&2
+    TRIGGER_MODE="fail_closed"
+    TRIGGER_JSON="$(jq -cn '{mode: "fail_closed", gate: null, allowed: [],
+      reviewers: ({codeant: 0, cursor: 0, graphite: 0}
+        | with_entries(.value = {allowed: false, kind: "deferred", reason: "helper_unusable"})),
+      deferred: ["codeant", "cursor", "graphite"]}')"
+  fi
+else
+  echo "maybe-trigger-ai-review.sh: DEGRADED: review-triggers-allowed.sh not found beside this script — tier-aware triggers unavailable, continuing with the legacy path" >&2
+fi
+
+if [[ "$TRIGGER_MODE" != "legacy" ]]; then
+  TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
+  # The three reviewers this script invites; CodeRabbit is never one of them.
+  TRIGGER_SKIPS_JSON="$(jq -c '[ .reviewers | to_entries[]
+      | select(.key == "codeant" or .key == "cursor" or .key == "graphite")
+      | select(.value.allowed | not) | {key, value: {kind: .value.kind, reason: .value.reason}} ] | from_entries' <<<"$TRIGGER_JSON")"
+  DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ]' <<<"$TRIGGER_JSON")"
+  # bugbot_skipped keeps its pre-#1749 shape for the reasons it already had.
+  # <helper json> [reason]: a denied claim passes its own reason, so the report
+  # follows the claim's re-evaluation, not the earlier answer.
+  bugbot_report() {
+    BUGBOT_CAP_JSON="$(jq -c '.reviewers.cursor.daily_cap // null' <<<"$1" 2>/dev/null)"
+    BUGBOT_SKIPPED_JSON="$(jq -c --arg why "${2-}" '
+      .gate as $g | .reviewers.cursor as $c
+      | (if $why != "" then $why elif ($c.allowed // false) then "" else ($c.reason // "") end) as $r
+      | if $r == "" then null
+        elif $r == "refused_head" then {reason: "refused_head", gate: null}
+        elif $r == "daily_cap" then {reason: "daily_cap", gate: null, tally: ($c.daily_cap // null)}
+        elif $r == "tier_excluded" or $r == "escalation_off" then {reason: "review_tier", gate: $g}
+        else {reason: $r, gate: $g} end' <<<"$1" 2>/dev/null)"
+    [[ -n "$BUGBOT_CAP_JSON" ]] || BUGBOT_CAP_JSON="null"
+    if [[ -z "$BUGBOT_SKIPPED_JSON" ]]; then
+      BUGBOT_SKIPPED_JSON="$(jq -cn --arg r "${2-}" '(if $r == "" then null else {reason: $r, gate: null} end)')"
+    fi
+  }
+  bugbot_report "$TRIGGER_JSON"
+  ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ] | join(", ")' <<<"$TRIGGER_JSON")"
+  step_allowed() { [[ "$(jq -r --arg r "$1" '.reviewers[$r].allowed' <<<"$TRIGGER_JSON")" == "true" ]]; }
+  skips_text() { jq -r 'to_entries | map("\(.key)=\(.value.reason)") | join(", ") | if . == "" then "none" else . end' <<<"$TRIGGER_SKIPS_JSON"; }
+
+  emit_tiered_json() { # <status> <reason or "">
+    jq -n \
+      --arg status "$1" --arg reason "$2" \
+      --argjson cr_rounds "$CR_ROUNDS" --argjson score "$SCORE" --arg head "$HEAD_SHA" \
+      --arg mode "$TRIGGER_MODE" --argjson skips "$TRIGGER_SKIPS_JSON" --argjson deferred "$DEFERRED_JSON" \
+      --argjson bugbot_skipped "$BUGBOT_SKIPPED_JSON" --argjson bugbot_daily_cap "$BUGBOT_CAP_JSON" \
+      '{status: $status} + (if $reason == "" then {} else {reason: $reason} end)
+       + {cr_rounds: $cr_rounds, score: $score, head_sha: $head, trigger_mode: $mode,
+          trigger_skips: $skips, deferred: $deferred,
+          bugbot_skipped: $bugbot_skipped, bugbot_daily_cap: $bugbot_daily_cap}'
+  }
+
+  if (( DRY_RUN )); then
+    # Evaluated, never claimed: a dry run posts nothing and records nothing.
+    if (( JSON_OUT )); then
+      emit_tiered_json dry_run ""
+    else
+      echo "[DRY-RUN] review tier $TIER_GATE_TXT ($TRIGGER_MODE): would post ${ALLOWED_LIST:-nothing}; skipped $(skips_text) cr_rounds=$CR_ROUNDS score=$SCORE"
+    fi
+    exit 0
+  fi
+
+  if [[ ! -x "$STATE_HELPER" ]]; then
+    echo "maybe-trigger-ai-review.sh: session-state.sh missing or not executable: $STATE_HELPER (required to dedupe triggers)" >&2
+    exit 4
+  fi
+  T_STEPS="$(jq -cn --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '{head_sha: $h, cr_rounds: $r, codeant: false, cursor: false, graphite: false}')"
+  if [[ -f "$STATE_FILE" ]]; then
+    EXISTING="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // empty" 2>/dev/null || true)"
+    if [[ -n "$EXISTING" && "$EXISTING" != "null" ]]; then
+      MATCH="$(jq -cn --argjson ex "$EXISTING" --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '$ex | select(.head_sha == $h and .cr_rounds == $r)' 2>/dev/null || true)"
+      [[ -n "$MATCH" && "$MATCH" != "null" ]] && T_STEPS="$MATCH"
+    fi
+  fi
+  if ! "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=$T_STEPS"; then
+    echo "maybe-trigger-ai-review.sh: failed to persist trigger step state — aborting without posting comments" >&2
+    exit 4
+  fi
+
+  T_POSTED=0
+  ANY_DEFERRED=0
+  [[ "$DEFERRED_JSON" != "[]" ]] && ANY_DEFERRED=1
+  for step in codeant cursor graphite; do
+    case "$step" in
+      codeant) body="@codeant-ai review" ;;
+      cursor) body="@cursor review" ;;
+      graphite) body="@graphite-app re-review" ;;
+    esac
+    done_already="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step\"] // empty" 2>/dev/null || true)"
+    [[ "$done_already" == "true" ]] && continue
+    if ! step_allowed "$step"; then
+      reason="$(jq -r --arg r "$step" '.reviewers[$r].reason' <<<"$TRIGGER_JSON")"
+      echo "maybe-trigger-ai-review.sh: skipping $body — review tier $TIER_GATE_TXT: $reason (#1749)" >&2
+      # A refusal is a fact about THIS HEAD: handled, as the legacy path records
+      # it. Every other skip stays open, so a resumed run asks again.
+      if [[ "$reason" == "refused_head" ]]; then
+        "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step\"]=true" >/dev/null 2>&1 \
+          || echo "maybe-trigger-ai-review.sh: failed to record the suppressed $step step — may re-check on retry" >&2
+      fi
+      continue
+    fi
+    # Claim BEFORE posting: the ledger bounds the lifetime caps across racing
+    # runs and the seconds before GitHub lists the new comment.
+    CLAIM_RC=0
+    CLAIM_JSON="$("$TRIGGERS_SH" "$PR_NUM" --head "$HEAD_SHA" --claim "$step")" || CLAIM_RC=$?
+    if (( CLAIM_RC != 0 )); then
+      creason="$(jq -r --arg r "$step" '.reviewers[$r].reason // "claim_failed"' <<<"$CLAIM_JSON" 2>/dev/null)" || creason=""
+      ckind="$(jq -r --arg r "$step" '.reviewers[$r].kind // "deferred"' <<<"$CLAIM_JSON" 2>/dev/null)" || ckind=""
+      [[ -n "$creason" ]] || creason="claim_failed"
+      [[ "$ckind" == "excluded" ]] || ckind="deferred"
+      echo "maybe-trigger-ai-review.sh: skipping $body — claim denied ($creason, rc=$CLAIM_RC)" >&2
+      TRIGGER_SKIPS_JSON="$(jq -c --arg r "$step" --arg k "$ckind" --arg why "$creason" '.[$r] = {kind: $k, reason: $why}' <<<"$TRIGGER_SKIPS_JSON")"
+      if [[ "$step" == "cursor" ]]; then
+        PRIOR_CAP_JSON="$BUGBOT_CAP_JSON"
+        bugbot_report "$CLAIM_JSON" "$creason"
+        # A claim that never reached the cap keeps this run's earlier tally.
+        [[ "$BUGBOT_CAP_JSON" != "null" ]] || BUGBOT_CAP_JSON="$PRIOR_CAP_JSON"
+      fi
+      if [[ "$ckind" == "deferred" ]]; then
+        ANY_DEFERRED=1
+        DEFERRED_JSON="$(jq -c --arg r "$step" '. + [$r] | unique' <<<"$DEFERRED_JSON")"
+      fi
+      continue
+    fi
+    if ! gh pr comment "$PR_NUM" --body "$body"; then
+      "$TRIGGERS_SH" "$PR_NUM" --release "$step" >/dev/null 2>&1 \
+        || echo "maybe-trigger-ai-review.sh: could not release the $step claim — its lifetime count may over-read by one" >&2
+      echo "maybe-trigger-ai-review.sh: failed posting $body" >&2
+      exit 5
+    fi
+    "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"$step\"]=true" >/dev/null 2>&1 \
+      || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the claim ledger still bounds a re-post" >&2
+    T_POSTED=$((T_POSTED + 1))
+  done
+
+  if (( ANY_DEFERRED )); then
+    # Leave the step record open: steps_incomplete() then lets the next tick
+    # past duplicate_poll_tick, and that tick asks the helper again.
+    STATUS="skipped"; REASON="tier_deferred"
+  else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if ! "$STATE_HELPER" \
+      --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_cr_round=$CR_ROUNDS" \
+      --set ".prs[\"${PR_KEY}\"].ai_review_trigger_head_sha=$HEAD_SHA" \
+      --set ".prs[\"${PR_KEY}\"].ai_review_trigger_last_at=\"$NOW_ISO\"" \
+      --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps=null"; then
+      echo "maybe-trigger-ai-review.sh: failed to persist completion markers" >&2
+      exit 4
+    fi
+    STATUS="skipped"; REASON="tier_excluded"
+  fi
+  if (( T_POSTED > 0 )); then STATUS="triggered"; REASON=""; fi
+  if (( JSON_OUT )); then
+    emit_tiered_json "$STATUS" "$REASON"
+  elif [[ "$STATUS" == "triggered" ]]; then
+    echo "triggered: posted $T_POSTED AI reviewer comment(s) under review tier $TIER_GATE_TXT (cr_rounds=$CR_ROUNDS score=$SCORE; skipped: $(skips_text))"
+  else
+    echo "skipped: $REASON under review tier $TIER_GATE_TXT (cr_rounds=$CR_ROUNDS score=$SCORE; skipped: $(skips_text))"
   fi
   exit 0
 fi

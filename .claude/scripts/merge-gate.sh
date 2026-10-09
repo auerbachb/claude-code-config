@@ -1686,27 +1686,17 @@ case "$REVIEW_TIER_GATE" in
     #       the CodeAnt app itself: slug `codeant-ai`, the app behind the
     #       codeant-ai[bot] login. A check NAME is not identity — any workflow
     #       in the PR can name a job "CodeAnt", and this signal relaxes a gate.
-    CODEANT_ROUND_RECORD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r '
-      [ .[]?
-        | select((.user.login // "") == "codeant-ai[bot]")
-        | (.body // "")
-        | scan("<!--[[:space:]]*codeant-review-status:([\\s\\S]*?)-->")
-        | (if type == "array" then (.[0] // "") else . end)
-        | (fromjson? // empty)
-        | (if type == "array" then .[] else empty end)
-        | select(type == "object" and .done == true) ]
-      | length' 2>/dev/null || echo 0)
-    CODEANT_ROUND_REVIEWS=$(echo "$REVIEWS_JSON" | jq -r '
-      [ .[]?
-        | select((.user.login // "") == "codeant-ai[bot]")
-        | select((.state // "") == "COMMENTED" or (.state // "") == "CHANGES_REQUESTED") ]
-      | length' 2>/dev/null || echo 0)
-    CODEANT_ROUND_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -r '
-      [ .check_runs[]?
-        | select((.status // "") == "completed")
-        | select((.conclusion // "") | IN("success", "neutral", "failure"))
-        | select((.app.slug // "") == "codeant-ai") ]
-      | length' 2>/dev/null || echo 0)
+    # The three filters live in lib/codeant-round.jq, shared with
+    # review-triggers-allowed.sh (issue #1749), so "a completed round" means
+    # the same thing to the gate and to the trigger that must never re-invite
+    # CodeAnt once a round exists. A jq failure, the module missing included,
+    # counts 0 and the round stays missing: fail closed.
+    CODEANT_ROUND_RECORD=$(echo "$ISSUE_COMMENTS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_record_count' 2>/dev/null || echo 0)
+    CODEANT_ROUND_REVIEWS=$(echo "$REVIEWS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_review_count' 2>/dev/null || echo 0)
+    CODEANT_ROUND_CHECK=$(echo "$CHECK_RUNS_JSON" | jq -r -L "$SCRIPT_DIR/lib" \
+      'include "codeant-round"; codeant_round_check_count' 2>/dev/null || echo 0)
     if [[ "${CODEANT_ROUND_RECORD:-0}" -eq 0 && "${CODEANT_ROUND_REVIEWS:-0}" -eq 0 && "${CODEANT_ROUND_CHECK:-0}" -eq 0 ]]; then
       MISSING+=("review tier ci+codeant-one-round: no completed CodeAnt round on any commit of this PR — an APPROVED alone is not a round; comment @codeant-ai review")
     fi

@@ -216,7 +216,7 @@ If CR remains silent or cannot produce a current-HEAD approval, keep using the R
 
 ## BugBot Review Path (when `reviewer` = `bugbot`)
 
-**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK. That verdict is judged per-SHA, so it also arrives for a PR BugBot *did* answer on an earlier SHA once the current HEAD is uninvited and has no footprint (issue #948) — the `bugbot_installed` cache described above no longer suppresses it. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
+**Invite BugBot before polling it.** BugBot does NOT auto-review pushes — something has to post `@cursor review`, normally the `cursor-review-pr-comment.yml` CI job, which posts nothing when `CURSOR_REVIEW_PAT` is unprovisioned (issue #905). So `switch_bugbot` now also arrives for a PR BugBot was never invited to (issue #935): if `cursor[bot]` has no review/comment and there is no `Cursor Bugbot` check-run on HEAD, post `gh pr comment {{PR_NUMBER}} --body "@cursor review"` first — duplicates are OK, except on a tier-aware repo (issue #1749), where you post only once `review-triggers-allowed.sh {{PR_NUMBER}} --claim cursor` exits 0. A denied claim (exit 1) posts nothing and is not an invitation, so read `.reviewers.cursor.kind` from its JSON: `deferred` (CI pending/red, HEAD not settled, daily cap) — re-ask every cycle and start the 10-minute BugBot timeout only from a successful claim; `excluded` (lifetime cap, refused HEAD, escalation off) — BugBot will not review this HEAD, so take the timeout fallback below (Greptile budget check) now instead of waiting it out. That verdict is judged per-SHA, so it also arrives for a PR BugBot *did* answer on an earlier SHA once the current HEAD is uninvited and has no footprint (issue #948) — the `bugbot_installed` cache described above no longer suppresses it. Then poll for `cursor[bot]` reviews on all 3 endpoints every 60 seconds.
 
 ### Polling
 
@@ -224,7 +224,7 @@ Same shared `$STATE` bundle as the CR path. Filter by `.user.login == "cursor[bo
 
 **Completion:** check-run `status: "completed"` (any conclusion — BugBot uses `neutral` for reviews with findings). Also check for review objects from `cursor[bot]`.
 
-**Timeout:** 10 minutes from push. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
+**Timeout:** 10 minutes from push — on a tier-aware repo, from the successful `--claim cursor` instead; a deferred claim starts no clock and never reaches the Greptile fallback. Polling cadence stays 60 s; a `Cursor Bugbot` check-run with `status: "completed"` short-circuits the wait — exit polling as soon as the review lands, do not keep polling to 10 min. If no BugBot review after 10 min, run the Greptile Daily Budget Check below: if budget allows, trigger Greptile; if exhausted, fall back to self-review and report the blocker.
 
 ### BugBot Merge Gate
 
@@ -241,7 +241,7 @@ run_script reply-thread.sh <comment_id> --reviewer bugbot \
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK.
+After fixing BugBot findings and pushing, expect `@cursor review` from CI on every push (`cursor-review-pr-comment.yml`). If BugBot still hasn't landed after polling, post again: `gh pr comment {{PR_NUMBER}} --body "@cursor review"` — duplicates are OK. **Tier-aware repo** (a `## Review policy` exists — issue #1749): CI does not nudge there; post only when `review-triggers-allowed.sh {{PR_NUMBER}}` reports cursor `allowed` and `--claim cursor` exits 0, never as a duplicate (`.claude/reference/review-policy.md` "Trigger eligibility"). A denied claim is handled as in "Invite BugBot before polling it" above.
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 

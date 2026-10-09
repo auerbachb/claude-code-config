@@ -17,12 +17,16 @@ THRESHOLD_SCORE=100
 FIRST_CR_ROUND=3
 CADENCE_ROUNDS=2
 FILE_WEIGHT=5
+TRIGGER_SETTLE_SECONDS=600
+CODEANT_UNAVAILABLE_SECONDS=1800
 ```
 
 - **THRESHOLD_SCORE** — minimum `complexity-score.sh` value before auto-trigger; must be a **non-negative integer**. Repo file sets the default; **`COMPLEXITY_THRESHOLD_SCORE` env overrides** when set.
 - **FIRST_CR_ROUND** — first fire at this CodeRabbit round count (must be **≥ 3**; scripts error out otherwise — needs ≥ 2 completed CR rounds before first fire). Uses `cycle-count.sh <PR> --cr-only`. **`COMPLEXITY_FIRST_CR_ROUND` env overrides** when set.
 - **CADENCE_ROUNDS** — after the first fire, fire again every N additional CR rounds (e.g. 2 → rounds 3, 5, 7…); must be **≥ 1**. **`COMPLEXITY_CADENCE_ROUNDS` env overrides** when set.
 - **FILE_WEIGHT** — multiplier on `changedFiles` inside the score; must be a **positive integer** (0 and non-positive values are rejected). **`COMPLEXITY_FILE_WEIGHT` env overrides** when set.
+- **TRIGGER_SETTLE_SECONDS** — tier-aware repos only (issue #1749): how long a green HEAD must have been observed before `review-triggers-allowed.sh` lets anything invite BugBot; a **non-negative integer** (junk warns and keeps 600). **`COMPLEXITY_TRIGGER_SETTLE_SECONDS` env overrides** when set.
+- **CODEANT_UNAVAILABLE_SECONDS** — tier-aware repos only (issue #1749): how long after a CodeAnt invitation with no CodeAnt artifact before CodeRabbit may be invited as the fallback on a `full` PR; a **non-negative integer** (junk warns and keeps 1800). **`COMPLEXITY_CODEANT_UNAVAILABLE_SECONDS` env overrides** when set.
 
 ## Active work
 

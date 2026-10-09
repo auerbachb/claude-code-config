@@ -136,11 +136,28 @@
 #     }
 #   reviewer status ∈ already-present | triggered | skipped-rate-cap |
 #                     trigger-failed | dry-run-would-trigger |
-#                     skipped-tier-excluded
-#   `skipped-tier-excluded` is cursor-only (issue #1728): the PR's review tier
-#   (gate ci-only or ci+codeant-one-round) never needs BugBot, so nothing was
-#   posted and nothing is pending — it counts toward `clean` like
-#   already-present. An unresolvable tier posts as before (fail-open).
+#                     skipped-tier-excluded | skipped-tier-deferred
+#   `skipped-tier-excluded`: the PR's review tier rules this reviewer out —
+#   nothing was posted and nothing is pending, so it counts toward `clean`
+#   like already-present. With no `## Review policy` it is cursor-only
+#   (issue #1728: gate ci-only or ci+codeant-one-round never needs BugBot; an
+#   unresolvable tier posts, fail-open). In a tier-aware repo it can name any
+#   reviewer (issue #1749, below).
+#   `skipped-tier-deferred` (issue #1749, tier-aware repos only): not now —
+#   CI on HEAD is red or pending, HEAD has not settled, the daily cap is
+#   reached, the tier could not be resolved. Something is pending, so it is
+#   NOT clean; a later run asks again.
+#
+# TIER-AWARE REPOS (issue #1749)
+#   The sibling review-triggers-allowed.sh is asked once per run. Mode
+#   `legacy` (no `## Review policy`), or a missing helper, runs the reviewer
+#   loop exactly as before. Otherwise, after the already-present check, each
+#   reviewer posts only when the helper allows it — Graphite never, CodeAnt
+#   once per PR, BugBot on a settled green HEAD at most twice, CodeRabbit only
+#   as the CodeAnt-unavailable fallback (still behind cr-review-hourly.sh) —
+#   and only after `--claim` records it; a failed post `--release`s the claim.
+#   A dry run evaluates but never claims. A helper that answers nothing
+#   usable defers every reviewer this run (fail closed).
 #
 #   Status vocabulary and decision semantics are unchanged by #576 — only the
 #   inputs to the decision became SHA-aware, and the JSON gains the additive
@@ -169,6 +186,8 @@
 #   helper is missing AND no budget can be confirmed — fail-closed on CR only).
 #   Optionally session-state.sh, for the per-SHA trigger dedupe described below;
 #   when missing, the on-PR comment scan alone provides idempotency.
+#   Optionally review-triggers-allowed.sh (sibling first; override
+#   PREFLIGHT_TRIGGERS_ALLOWED_SH), for the tier-aware path above.
 #
 # PER-SHA TRIGGER DEDUPE (issue #576)
 #   After posting a trigger we record `.prs[N].preflight_trigger_head_sha` and
@@ -321,6 +340,27 @@ resolve_bugbot_tier() {
   return 1
 }
 BUGBOT_TIER_SH="$(resolve_bugbot_tier || true)"
+
+# --- resolve review-triggers-allowed.sh (tier-aware triggers; env override for tests) ---
+# Same contract as resolve_bugbot_tier(). Absent means "legacy": the reviewer
+# loop runs exactly as before (issue #1749), with one stderr line.
+resolve_triggers_allowed() {
+  if [[ -n "${PREFLIGHT_TRIGGERS_ALLOWED_SH:-}" ]]; then
+    [[ -x "${PREFLIGHT_TRIGGERS_ALLOWED_SH}" ]] && { echo "$PREFLIGHT_TRIGGERS_ALLOWED_SH"; return 0; }
+    return 1
+  fi
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/review-triggers-allowed.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/review-triggers-allowed.sh" \
+    "$HOME/.claude/scripts/review-triggers-allowed.sh" \
+    ".claude/scripts/review-triggers-allowed.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+TRIGGERS_ALLOWED_SH="$(resolve_triggers_allowed || true)"
 
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
@@ -834,6 +874,82 @@ bugbot_tier_excluded() {
   "$BUGBOT_TIER_SH" "$PR" 2>/dev/null
 }
 
+# Tier-aware triggers (issue #1749): ask the shared helper once.
+TRIGGER_MODE="legacy"
+TRIGGER_JSON=""
+if [[ -n "$TRIGGERS_ALLOWED_SH" ]]; then
+  T_RC=0
+  TRIGGER_JSON="$("$TRIGGERS_ALLOWED_SH" "$PR" ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null)" || T_RC=$?
+  if (( T_RC == 0 )) && jq -e '.mode == "legacy" or .mode == "tiered" or .mode == "fail_closed"' <<<"$TRIGGER_JSON" >/dev/null 2>&1; then
+    TRIGGER_MODE="$(jq -r '.mode' <<<"$TRIGGER_JSON")"
+  else
+    TRIGGER_MODE="fail_closed"
+    TRIGGER_JSON='{"mode":"fail_closed","gate":null}'
+    surface "WARNING: review-triggers-allowed.sh gave no usable answer (rc=$T_RC) — deferring every reviewer trigger this run (fail closed)"
+  fi
+else
+  echo "pr-preflight.sh: DEGRADED: review-triggers-allowed.sh not found (checked beside this script and the three standard paths) — tier-aware triggers unavailable, continuing with the legacy reviewer loop" >&2
+fi
+
+# Prints "<kind> <reason>" for one reviewer from a helper answer; anything
+# unreadable is "deferred helper_unusable" — never allowed.
+tier_decision() { # <helper json> <key>
+  local d
+  d="$(jq -r --arg k "$2" '.reviewers[$k] | select(type == "object") | "\(.kind) \(.reason)"' <<<"$1" 2>/dev/null)" || d=""
+  case "${d%% *}" in
+    allowed|excluded|deferred) printf '%s' "$d" ;;
+    *) printf '%s' "deferred helper_unusable" ;;
+  esac
+}
+
+if [[ "$TRIGGER_MODE" != "legacy" ]]; then
+  TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON" 2>/dev/null || echo unresolved)"
+  for key in "${REVIEWER_KEYS[@]}"; do
+    login="$(reviewer_login "$key")"
+    trigger="$(reviewer_trigger "$key")"
+    # Same HEAD-scoped idempotency as the legacy loop, checked first.
+    if login_fresh_on_head "$login" "$key" \
+       || trigger_fresh_for_head "$trigger" \
+       || triggered_for_head_in_state "$key"; then
+      set_status "$key" "already-present"
+      continue
+    fi
+    decision="$(tier_decision "$TRIGGER_JSON" "$key")"
+    kind="${decision%% *}"; reason="${decision#* }"
+    if [[ "$kind" == "allowed" && "$key" == "coderabbit" ]] && ! cr_budget_allows; then
+      set_status "$key" "skipped-rate-cap"
+      surface "skipping @coderabbitai full review — CR rate cap hit"
+      continue
+    fi
+    if [[ "$kind" == "allowed" ]] && (( ! DRY_RUN )); then
+      # Claim BEFORE posting: the lifetime caps hold across racing runs.
+      C_RC=0
+      CLAIM_JSON="$("$TRIGGERS_ALLOWED_SH" "$PR" ${HEAD_SHA:+--head "$HEAD_SHA"} --claim "$key" 2>/dev/null)" || C_RC=$?
+      if (( C_RC != 0 )); then
+        decision="$(tier_decision "$CLAIM_JSON" "$key")"
+        kind="${decision%% *}"; reason="${decision#* }"
+        [[ "$kind" == "allowed" ]] && { kind="deferred"; reason="claim_failed"; }
+      fi
+    fi
+    case "$kind" in
+      allowed)
+        post_trigger "$key"
+        if [[ "$(get_status "$key")" == "trigger-failed" ]]; then
+          "$TRIGGERS_ALLOWED_SH" "$PR" --release "$key" >/dev/null 2>&1 \
+            || surface "WARNING: could not release the $key claim — its lifetime count may over-read by one"
+        fi
+        ;;
+      excluded)
+        set_status "$key" "skipped-tier-excluded"
+        surface "skipping $trigger — review tier $TIER_GATE_TXT: $reason"
+        ;;
+      *)
+        set_status "$key" "skipped-tier-deferred"
+        surface "deferring $trigger — review tier $TIER_GATE_TXT: $reason"
+        ;;
+    esac
+  done
+else
 for key in "${REVIEWER_KEYS[@]}"; do
   login="$(reviewer_login "$key")"
   trigger="$(reviewer_trigger "$key")"
@@ -863,11 +979,13 @@ for key in "${REVIEWER_KEYS[@]}"; do
     post_trigger "$key"
   fi
 done
+fi
 
 # --- 5. clean determination + summary ---
 # Clean ⇒ nothing was done and nothing is pending: not flipped, and every
-# reviewer was already-present (no triggers, no skips, no failures) — or, for
-# cursor, excluded by the PR's review tier, which leaves nothing pending either.
+# reviewer was already-present (no triggers, no skips, no failures) — or
+# excluded by the PR's review tier, which leaves nothing pending either. A
+# tier-DEFERRED reviewer is pending, so it is not clean (issue #1749).
 CLEAN=true
 # Any draft action other than a genuine "not-draft" means work happened or the PR
 # is still a draft (marked-ready / skipped-not-author / ready-failed) — not clean.

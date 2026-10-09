@@ -18,7 +18,7 @@
 # merge gate.
 #
 # Usage:
-#   ci-status.sh <head_sha_or_pr_number> [--format json|summary] [--check-runs-stdin]
+#   ci-status.sh <head_sha_or_pr_number> [--format json|summary] [--check-runs-stdin] [--exclude-reviewers]
 #   ci-status.sh --help
 #
 # Input resolution:
@@ -33,6 +33,17 @@
 #   `--paginate`-style stream of concatenated objects. Requires a full SHA input
 #   (PR-number resolution still calls `gh pr view`, but the check-runs fetch is
 #   skipped).
+#
+# --exclude-reviewers (issue #1749):
+#   Opt-in. Drop the AI reviewers' own check-runs before classifying, so the
+#   verdict is BUILD CI only. Matched by exact app slug, never by check name:
+#   codeant-ai, codeant, cursor, cursor-com, coderabbitai, coderabbit,
+#   graphite-app, graphite, greptile-apps, greptile. Without it a reviewer that
+#   was never invited can hold CI "pending" forever, and one that failed can
+#   hold it "red" — so a trigger gated on green CI would deadlock waiting for
+#   itself (review-triggers-allowed.sh). Applied after the dedup. When no build
+#   check is left, the result is pending, exactly as for an empty run list.
+#   Without the flag the output and exit codes are unchanged.
 #
 # Output (JSON, default):
 #   {
@@ -80,6 +91,7 @@ fi
 FORMAT="json"
 INPUT=""
 CHECK_RUNS_STDIN=0
+EXCLUDE_REVIEWERS=0
 
 print_usage() {
   awk '
@@ -119,6 +131,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --check-runs-stdin)
       CHECK_RUNS_STDIN=1
+      shift
+      ;;
+    --exclude-reviewers)
+      EXCLUDE_REVIEWERS=1
       shift
       ;;
     -*)
@@ -242,6 +258,20 @@ RUNS_JSON=$(printf '%s\n' "$CHECK_RUNS_RAW" | "$CHECK_RUNS_DEDUP" 2>/dev/null ||
 if [[ -z "$RUNS_JSON" ]]; then
   echo "ERROR: could not parse check-runs JSON" >&2
   exit 5
+fi
+
+# Build-CI-only view (--exclude-reviewers, issue #1749). Exact slugs, so a
+# workflow job that merely NAMES itself after a reviewer still counts as build CI.
+if [[ "$EXCLUDE_REVIEWERS" -eq 1 ]]; then
+  RUNS_JSON=$(printf '%s' "$RUNS_JSON" | jq -c '
+    ["codeant-ai", "codeant", "cursor", "cursor-com", "coderabbitai", "coderabbit",
+     "graphite-app", "graphite", "greptile-apps", "greptile"] as $reviewers
+    | [ .[] | select((.app.slug // "") as $s | ($reviewers | any(. == $s)) | not) ]
+  ' 2>/dev/null || true)
+  if [[ -z "$RUNS_JSON" ]]; then
+    echo "ERROR: could not filter reviewer check-runs" >&2
+    exit 5
+  fi
 fi
 
 # --------------------------------------------------------------------------

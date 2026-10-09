@@ -19,6 +19,11 @@
 #   step skips the nudge when the PR's review tier (ci-only /
 #   ci+codeant-one-round) excludes BugBot, and posts on full, legacy, a failed
 #   resolver, or a missing helper.
+#   Scenarios (t9)-(t15) cover tier-aware repos (issue #1749): the same step
+#   first asks review-triggers-allowed.sh --mode-only and stands down on ANY
+#   tiered mode, `full` included, and on a policy repo whose tier cannot be
+#   resolved; a policy-free repo, a missing helper, or an unusable answer falls
+#   through to the #1728 check unchanged.
 #
 # HOW IT IS OBSERVED
 #   The guard's shell body is EXTRACTED FROM THE WORKFLOW by step id and run
@@ -775,6 +780,96 @@ check_eq "tier step passes the PR's base branch" "\${{ github.event.pull_request
 check_eq "tier step never fails the job" "True" "$(wf_query step-field "$TIER_STEP_ID" continue-on-error)"
 check_eq "tier step is gated on the PAT" "env.HAS_TRIGGER_TOKEN == 'true'" \
   "$(wf_query step-field "$TIER_STEP_ID" if)"
+
+############################################################################
+# TIER-AWARE REPOS (issue #1749)
+#
+# With a `## Review policy`, the agent's trigger helper owns every BugBot
+# invitation (full gate only, CI green on a settled HEAD, at most two per PR),
+# so the tier-check step stands down on ANY tiered mode — `full` included — and
+# on a policy repo whose tier cannot be resolved. A policy-free repo falls
+# through to the #1728 check and posts as before. The REAL
+# review-triggers-allowed.sh runs from the workspace, over a logging resolver
+# stub that can also answer the helper's offline probe of the checkout.
+TRIGGERS_HELPER="$WORK/.claude/scripts/review-triggers-allowed.sh"
+cp "$REPO_ROOT/.claude/scripts/review-triggers-allowed.sh" "$TRIGGERS_HELPER"
+cat > "$WORK/.claude/scripts/review-tier.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TIER_CALLS"
+if [[ " $* " == *" --files-from "* ]]; then
+  if [[ -n "${FIXTURE_PROBE_OUT:-}" ]]; then printf '%s\n' "$FIXTURE_PROBE_OUT"; fi
+  exit "${FIXTURE_PROBE_RC:-0}"
+fi
+if [[ -n "${FIXTURE_TIER_OUT:-}" ]]; then printf '%s\n' "$FIXTURE_TIER_OUT"; fi
+exit "${FIXTURE_TIER_RC:-0}"
+STUB
+# The checkout CI leaves behind is a clone of this repo; the helper's probe
+# only trusts a checkout whose origin is the PR's repository.
+git -C "$WORK" init -q
+git -C "$WORK" remote add origin "https://github.com/$GH_REPO_FIXTURE.git"
+absent_json() { printf '{"policy":"absent","gate":"legacy","tier":null,"source":"base:main","error":null,"matches":[],"escalation":"on"}'; }
+ONE_CALL="$PR_NUM --repo $GH_REPO_FIXTURE --base $BASE_REF_FIXTURE --json;"
+
+echo "== (t9): the tier body asks the trigger helper first, from the base checkout =="
+check_contains "tier body invokes the trigger helper with --mode-only" \
+  'bash "$TRIGGERS" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF" --mode-only' "$TIER_BODY"
+
+for gate in full ci-only ci+codeant-one-round; do
+  echo "== (t10): tier-aware gate $gate -> the per-push nudge stands down =="
+  tier_setup "$(tier_json "$gate")"
+  export FIXTURE_PROBE_OUT="" FIXTURE_PROBE_RC=0
+  run_tier; RC=$?
+  check_eq "step succeeded" "0" "$RC"
+  check_eq "wrote excluded=true and the gate" "excluded=truegate=$gate" "$(emitted)"
+  check_eq "one resolver call — the helper's, about this PR on the base branch" "$ONE_CALL" "$(tier_calls)"
+done
+
+echo "== (t11): LEGACY — no review policy -> falls through to the #1728 check, which posts =="
+tier_setup "$(absent_json)"
+export FIXTURE_PROBE_OUT="" FIXTURE_PROBE_RC=0
+run_tier; RC=$?
+check_eq "step succeeded" "0" "$RC"
+check_eq "wrote excluded=false" "excluded=false" "$(emitted)"
+check_eq "the helper, then the #1728 check, each asked once" "$ONE_CALL$ONE_CALL" "$(tier_calls)"
+
+echo "== (t12): FAIL CLOSED — tier unresolved on a checkout that declares a policy -> stands down =="
+tier_setup "" 4
+export FIXTURE_PROBE_OUT="$(tier_json full)" FIXTURE_PROBE_RC=0
+run_tier; RC=$?
+check_eq "step succeeded" "0" "$RC"
+check_eq "wrote excluded=true, gate unresolved" "excluded=truegate=unresolved" "$(emitted)"
+check_eq "the probe ran offline" "yes" "$(grep -q -- '--files-from - --json' "$TIER_CALLS" && echo yes || echo no)"
+
+echo "== (t13): tier unresolved on a policy-free checkout -> legacy -> the #1728 check fails open =="
+tier_setup "" 4
+export FIXTURE_PROBE_OUT="$(absent_json)" FIXTURE_PROBE_RC=0
+run_tier; RC=$?
+check_eq "step succeeded" "0" "$RC"
+check_eq "wrote excluded=false (posts, as before #1749)" "excluded=false" "$(emitted)"
+
+echo "== (t14): an unusable trigger-helper answer falls through to the #1728 check =="
+cp "$TRIGGERS_HELPER" "$TMP/triggers-helper.real"
+for spec in "0:not json" "0:{\"mode\":\"weird\"}" "2:" "4:"; do
+  code="${spec%%:*}"; out="${spec#*:}"
+  tier_setup "$(tier_json ci-only)"
+  printf '#!/usr/bin/env bash\nprintf "%%s" %q\nexit %s\n' "$out" "$code" > "$TRIGGERS_HELPER"
+  run_tier; RC=$?
+  check_eq "helper exit $code / '$out' keeps the step green" "0" "$RC"
+  check_eq "  and the #1728 check decides (ci-only -> excluded)" "excluded=truegate=ci-only" "$(emitted)"
+done
+tier_setup "$(tier_json full)"
+printf '#!/usr/bin/env bash\nprintf "garbage"\nexit 0\n' > "$TRIGGERS_HELPER"
+run_tier; RC=$?
+check_eq "a garbled answer on full falls through and posts" "0:excluded=false" "$RC:$(emitted)"
+cp "$TMP/triggers-helper.real" "$TRIGGERS_HELPER"
+
+echo "== (t15): BOOTSTRAP — trigger helper absent from the base branch -> the #1728 check decides =="
+tier_setup "$(tier_json full)"
+mv "$TRIGGERS_HELPER" "$TMP/triggers-helper.bak"
+run_tier; RC=$?
+mv "$TMP/triggers-helper.bak" "$TRIGGERS_HELPER"
+check_eq "step succeeded" "0" "$RC"
+check_eq "full without the helper posts, as before #1749" "excluded=false" "$(emitted)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

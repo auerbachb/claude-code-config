@@ -57,7 +57,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 ## How this skill is structured
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` script (Step 3b delegate), which requires a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` scripts (Step 3b delegates), which need a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
 All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
@@ -69,7 +69,7 @@ All mechanical GitHub API work — pagination, GraphQL queries, comment classifi
 | 2. Classify CI failures | Judgment | AI reads `check-runs/<id>.output.summary` |
 | 3. Fix & push | Judgment | AI edits files, commits, pushes |
 | 3a. Dismiss stale bot `CHANGES_REQUESTED` | Mechanical | `dismiss-stale-bot-changes.sh` after push when `DID_PUSH=1`; optional `--handoff-file` append |
-| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, detect CR/Graphite/CodeAnt activity on the new SHA, post triggers for missing bots, post `@cursor review` unless the PR's review tier excludes BugBot or BugBot already refused this HEAD |
+| 3b. Trigger missing AI reviewers | Mechanical | wait 2 minutes, then `fixpr-reviewer-triggers.sh` on the pushed SHA: no review policy → post triggers for missing bots and `@cursor review` unless the tier excludes BugBot, BugBot refused this HEAD, or the daily cap is reached; tier-aware repo → only what `review-triggers-allowed.sh` allows (#1749) |
 | 4. Reply & resolve | Mechanical | `gh api` calls against IDs from the JSON |
 | 4c. Post-push thread verify (if Step 3 pushed) | Mechanical | Re-fetch threads on new HEAD; explicitly resolve any touched thread still `isResolved: false` (fixes unchanged-line orphans), then `--verify-only` |
 | 4d. Review-wait loop (issue #454) | Mechanical | Poll `pr-state.sh` on the pushed SHA every 30–60s, capped at 20 min; early-exit on full bot+CI verdict; new findings → next sweep |
@@ -457,22 +457,7 @@ The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` �
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
 
-> **Graphite known outage (issue #610):** the `@graphite-app re-review` trigger below has produced zero engagement (no comments, no check-runs) on any PR since 2026-05-08 — a confirmed external GitHub App issue, not something this step can fix. Still posted (cheap, self-healing); see `.claude/reference/codeant-graphite-supplemental.md` for evidence and the re-enablement path.
-
-Re-resolve the hourly helper path (Step 3 may not have run in the same shell):
-
-```bash
-CR_HOURLY_SCRIPT=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/cr-review-hourly.sh" \
-  "$HOME/.claude/scripts/cr-review-hourly.sh" \
-  ".claude/scripts/cr-review-hourly.sh"; do
-  if [[ -x "$candidate" ]]; then
-    CR_HOURLY_SCRIPT="$candidate"
-    break
-  fi
-done
-```
+> **Graphite known outage (issue #610):** the `@graphite-app re-review` trigger has produced zero engagement (no comments, no check-runs) on any PR since 2026-05-08 — a confirmed external GitHub App issue, not something this step can fix. Still posted on repos with no review policy (cheap, self-healing); see `.claude/reference/codeant-graphite-supplemental.md` for evidence and the re-enablement path.
 
 Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
@@ -482,143 +467,31 @@ echo "[REVIEWERS] waiting 120s for auto-triggered reviewers on ${PUSHED_SHA:0:7}
 sleep 120
 ```
 
-Detect activity from the 3 conditionally triggered reviewers (CodeRabbit, Graphite, CodeAnt) on the pushed SHA. Check all three PR comment endpoints plus check-runs for activity after `$PUSHED_AT`. Conversation-level comments do not expose a `commit_id`, so they only count as activity on the pushed SHA when the body mentions the full SHA or short SHA; otherwise, use SHA-scoped reviews, inline comments, or check-runs to avoid treating a late summary from the previous SHA as coverage for the new one:
+Then run the extracted trigger script once, with the SHA you just pushed (issue #1749 — it was inline bash here, which no test could run against a fixture policy). It detects which reviewers already auto-triggered on the pushed SHA (`reviewer-activity.sh`) and posts one dedicated PR-level comment per missing reviewer — never batched; combined-mention comments fail to trigger reliably:
 
 ```bash
-# Delegate reviewer-activity detection to the extracted script.
-# The script fetches all 3 comment endpoints + check-runs and emits
-# { coderabbit, graphite, codeant } booleans. The trigger rate-cap /
-# @coderabbitai full review decision logic stays below (in-turn judgment).
-# Full detection logic: .claude/scripts/reviewer-activity.sh
-REVIEWER_ACTIVITY_SH=""
+FIXPR_TRIGGERS_SH=""
 for _candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/reviewer-activity.sh" \
-  "$HOME/.claude/scripts/reviewer-activity.sh" \
-  ".claude/scripts/reviewer-activity.sh"; do
-  if [[ -x "$_candidate" ]]; then REVIEWER_ACTIVITY_SH="$_candidate"; break; fi
+  "$HOME/.claude/skills-worktree/.claude/scripts/fixpr-reviewer-triggers.sh" \
+  "$HOME/.claude/scripts/fixpr-reviewer-triggers.sh" \
+  ".claude/scripts/fixpr-reviewer-triggers.sh"; do
+  if [[ -x "$_candidate" ]]; then FIXPR_TRIGGERS_SH="$_candidate"; break; fi
 done
-if [[ -n "$REVIEWER_ACTIVITY_SH" ]]; then
-  REVIEWER_ACTIVITY=$("$REVIEWER_ACTIVITY_SH" "$PR_NUMBER" "$PUSHED_SHA" "$PUSHED_AT")
+if [[ -n "$FIXPR_TRIGGERS_SH" ]]; then
+  "$FIXPR_TRIGGERS_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" --pushed-sha "$PUSHED_SHA" --pushed-at "$PUSHED_AT"
 else
-  echo "[REVIEWERS] reviewer-activity.sh not found — re-run after .claude/scripts/ is synced from main" >&2
-  REVIEWER_ACTIVITY='{"coderabbit":false,"graphite":false,"codeant":false}'
+  echo "ERROR: fixpr-reviewer-triggers.sh not found (checked all three paths) — post-push reviewer triggers unavailable; pr-preflight.sh (Step 0c, /babysit-pr) still invites them" >&2
 fi
 ```
 
-For each of **coderabbit**, **graphite**, **codeant** whose value is `false`, post exactly one dedicated PR-level trigger comment. Do not batch mentions; combined-mention comments fail to trigger reliably. Post these comments sequentially in this order, skipping reviewers that already auto-triggered. CodeRabbit is additionally capped at 2 manual `@coderabbitai full review` triggers per PR in the trailing hour:
+What it posts depends on the repo's review policy (`.claude/reference/review-policy.md` "Trigger eligibility"):
 
-```bash
-jq -r 'to_entries[] | "[REVIEWERS] \(.key): \(if .value then "auto-triggered" else "missing" end)"' <<<"$REVIEWER_ACTIVITY"
+- **No `## Review policy` (`legacy`)** — the pre-#1749 Step 3b, unchanged: `@coderabbitai full review` for a missing CodeRabbit unless 2 were posted on the PR in the trailing hour (a successful post records the slot via `cr-review-hourly.sh --record-explicit`), then `@graphite-app re-review`, then `@codeant-ai review`, each only when missing on the pushed SHA, then `@cursor review` once per push. The BugBot post is skipped when `bugbot-tier-excluded.sh` excludes it, then when `bugbot-refused-head.sh` says BugBot already refused the pushed SHA, then — **last** — when the account daily cap (`review-daily-cap.sh`, #1812) answers a validated `over`; that skip appends `BugBot skipped: daily cap ($X of $Y today)` once per HEAD under the PR body's `## Review notes`. An `unknown` cap or a missing helper posts.
+- **A tier-aware repo** — only what `review-triggers-allowed.sh` allows on the pushed SHA: Graphite never, CodeAnt once per PR, BugBot on a settled green HEAD at most twice, CodeRabbit only as the CodeAnt-unavailable fallback. Each post is claimed first and released if it fails; the BugBot refusal and daily-cap guards run inside the helper, and a daily-cap skip still writes the PR-body note. CI is usually still running two minutes after a push, so this step often posts **nothing** on such a repo — expected: `pr-preflight.sh` (Step 0c, every `/babysit-pr` and `/pr-monitor-and-manage` tick) and `maybe-trigger-ai-review.sh` ask again once CI is green.
 
-CR_TRIGGER_COUNT_LAST_HOUR=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" | jq -s '
-  (add // [])
-  | map(select(
-      (.body // "") == "@coderabbitai full review"
-      and ((.created_at // "") >= (now - 3600 | strftime("%Y-%m-%dT%H:%M:%SZ")))
-    ))
-  | length
-')
+Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so it is skipped when auto-trigger activity is already present on the new SHA. BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit; it auto-runs on push, so a refusal can land before this step even executes, which is why the refusal check is asked about `$PUSHED_SHA`. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
-if [[ "$(jq -r '.coderabbit' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
-  if [[ "$CR_TRIGGER_COUNT_LAST_HOUR" -lt 2 ]]; then
-    if gh pr comment "$PR_NUMBER" --body "@coderabbitai full review"; then
-      # Persist explicit trigger only when the comment actually posted (avoid ghost timestamps on gh failure)
-      if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
-        "$CR_HOURLY_SCRIPT" --record-explicit "$PR_NUMBER" || true
-      fi
-    else
-      echo "[REVIEWERS] FAILED to post @coderabbitai full review — check gh auth scopes; not recording explicit trigger" >&2
-    fi
-  else
-    echo "[REVIEWERS] coderabbit trigger budget exhausted (>=2 in the last hour); skipping manual trigger"
-    if [[ -n "$CR_HOURLY_SCRIPT" ]]; then
-      echo "[REVIEWERS] Surface to user: this PR has hit 2 explicit @coderabbitai full review posts in the last hour — CodeRabbit may be rate-limited; wait for reviews or use local CR (cr-local-review.md)."
-    fi
-  fi
-fi
-if [[ "$(jq -r '.graphite' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
-  gh pr comment "$PR_NUMBER" --body "@graphite-app re-review"
-fi
-if [[ "$(jq -r '.codeant' <<<"$REVIEWER_ACTIVITY")" != "true" ]]; then
-  gh pr comment "$PR_NUMBER" --body "@codeant-ai review"
-fi
-# BugBot may ALREADY have refused this fresh HEAD: it auto-runs on push, so by
-# the time Step 3b executes a usage-limit refusal can be sitting on the very
-# commit we just created (observed on PR #1203 — refusal, CI nudge, second
-# refusal, all within seven seconds). One shared check answers it; it fails open,
-# so an unreadable or unattributable state still posts.
-BUGBOT_REFUSED_SH=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-refused-head.sh" \
-  "$HOME/.claude/scripts/bugbot-refused-head.sh" \
-  ".claude/scripts/bugbot-refused-head.sh"; do
-  if [[ -x "$candidate" ]]; then BUGBOT_REFUSED_SH="$candidate"; break; fi
-done
-# The PR's review tier may exclude BugBot altogether (gate ci-only or
-# ci+codeant-one-round — issue #1728). Exit 0 alone skips; any other exit, or a
-# missing helper, posts as before (fail-open).
-BUGBOT_TIER_SH=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/bugbot-tier-excluded.sh" \
-  "$HOME/.claude/scripts/bugbot-tier-excluded.sh" \
-  ".claude/scripts/bugbot-tier-excluded.sh"; do
-  if [[ -x "$candidate" ]]; then BUGBOT_TIER_SH="$candidate"; break; fi
-done
-# The account-level daily cap (issue #1812) is asked LAST, so the tier and
-# refused-HEAD skips keep their precedence. Only a validated `over` skips; an
-# `unknown` tally or a missing helper posts and says so. A skip is recorded
-# once per HEAD under the PR body's `## Review notes`.
-REVIEW_DAILY_CAP_SH=""
-PR_BODY_NOTE_SH=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/review-daily-cap.sh" \
-  "$HOME/.claude/scripts/review-daily-cap.sh" \
-  ".claude/scripts/review-daily-cap.sh"; do
-  if [[ -x "$candidate" ]]; then REVIEW_DAILY_CAP_SH="$candidate"; break; fi
-done
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/scripts/pr-body-review-note.sh" \
-  "$HOME/.claude/scripts/pr-body-review-note.sh" \
-  ".claude/scripts/pr-body-review-note.sh"; do
-  if [[ -x "$candidate" ]]; then PR_BODY_NOTE_SH="$candidate"; break; fi
-done
-BUGBOT_CAP_JSON=""
-bugbot_cap_over() {   # exit 0 only on a validated `over`
-  local rate rc=0
-  if [[ -z "$REVIEW_DAILY_CAP_SH" ]]; then
-    echo "[REVIEWERS] DEGRADED: review-daily-cap.sh not found (checked all three paths) — BugBot daily cap unknown, posting"
-    return 1
-  fi
-  rate=$("$REVIEW_DAILY_CAP_SH" bugbot --rate 2>/dev/null) || rate=0
-  [[ "$rate" =~ ^[0-9]+(\.[0-9]+)?$ ]] || rate=0
-  BUGBOT_CAP_JSON=$("$REVIEW_DAILY_CAP_SH" bugbot --add-usd "$rate") || rc=$?
-  if [[ "$rc" -eq 1 && "$(jq -r '.status // ""' <<<"$BUGBOT_CAP_JSON" 2>/dev/null)" == "over" ]]; then
-    return 0
-  fi
-  [[ "$(jq -r '.status // ""' <<<"$BUGBOT_CAP_JSON" 2>/dev/null)" == "ok" ]] \
-    || echo "[REVIEWERS] BugBot daily cap unknown (rc=$rc) — posting; the vendor cap stays the hard stop"
-  return 1
-}
-if [[ -n "$BUGBOT_TIER_SH" ]] && TIER_GATE=$("$BUGBOT_TIER_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" 2>/dev/null); then
-  echo "[REVIEWERS] skipping @cursor review — review tier $TIER_GATE excludes BugBot (#1728)"
-elif [[ -n "$BUGBOT_REFUSED_SH" ]] && "$BUGBOT_REFUSED_SH" "$PR_NUMBER" "$PUSHED_SHA" >/dev/null 2>&1; then
-  echo "[REVIEWERS] skipping @cursor review — BugBot already refused this HEAD for a Cursor usage/spend limit (#1204)"
-elif bugbot_cap_over; then
-  CAP_NOTE=$(LC_ALL=C printf 'BugBot skipped: daily cap ($%.2f of $%.2f today)' \
-    "$(jq -r '.spent_usd' <<<"$BUGBOT_CAP_JSON")" "$(jq -r '.cap_usd' <<<"$BUGBOT_CAP_JSON")")
-  echo "[REVIEWERS] skipping @cursor review — $CAP_NOTE (#1812)"
-  if [[ -z "$PR_BODY_NOTE_SH" ]] || ! "$PR_BODY_NOTE_SH" "$PR_NUMBER" --repo "$OWNER/$REPO" \
-      --head "$PUSHED_SHA" --key bugbot-daily-cap --line "$CAP_NOTE" >/dev/null; then
-    echo "[REVIEWERS] could not record the daily-cap skip in the PR body's ## Review notes" >&2
-  fi
-else
-  gh pr comment "$PR_NUMBER" --body "@cursor review"
-fi
-```
-
-Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so skip it when auto-trigger activity is already present on the new SHA. **`@cursor review` is posted once per push, gated on `bugbot-tier-excluded.sh` and `bugbot-refused-head.sh`** — the first skips a PR whose review tier (`ci-only` / `ci+codeant-one-round`) never needs BugBot, `.claude/reference/review-policy.md` (composes with CI and issue #370’s four-reviewer triggers). BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit, so the trigger is skipped when `cursor[bot]` has already refused *this* HEAD. It auto-runs on push, so that refusal can land before Step 3b even executes; the check is shared with `maybe-trigger-ai-review.sh` and fails open. A third, last gate is the account-level daily cap (`review-daily-cap.sh`, #1812): today's ET BugBot spend across every registered repo plus one review must stay under the account config's `## Review daily caps`, or the nudge is skipped and noted once per HEAD in the PR body — policy in `.claude/reference/review-policy.md` "Account-level daily cap". Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
-
-**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires up to three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push, and asks the same review-tier helper on a tier-aware repo. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 
 ---
 
@@ -907,7 +780,7 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 - **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule — a Greptile or other status whose text happens to contain "rate limit" is not CR rate-limiting and falls through to the rules below.
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop.
-- No activity from CodeRabbit, Graphite, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment. Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds.
+- No activity from CodeRabbit, Graphite, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a reviewer Step 3b logged as `skipping … — review tier …` (kind `excluded`, e.g. every bot on `ci-only`) was never invited and is not coming, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
 
 ---
 
@@ -947,7 +820,7 @@ The guard **never repairs anything**; recovery (`git rebase --abort`, or resetti
 | `mergeable` | `CONFLICTING` | **Run `diff-survival-check.sh snapshot` before the rebase and `verify` before the force-push — Step 6a is mandatory on both branches of this row.** **Default (interactive):** Rebase onto main: `git fetch origin main && git rebase origin/main`. Fix conflicts (optionally run **`/merge-conflict`** — `.claude/skills/merge-conflict/SKILL.md` — to fetch main, auto-resolve *simple* hunks, stage clean files, and list *complex* hunks), continue, force-push. **Safe-only mode (`BABYSIT_SAFE_CONFLICT_MODE=1`):** invoked by `/babysit-pr --auto-resolve-conflicts` for unattended resolution. After `git fetch origin main && git rebase origin/main` stops on conflicts, locate and invoke `resolve_merge_conflicts.py --repo "$(git rev-parse --show-toplevel)" --json` directly (candidate-path lookup: skills-worktree first, then in-repo). Branch on exit code: exit `0` (all hunks simple, files staged, empty `complex_report`) → run `git rebase --continue`, then **run the Step 6a `verify` gate before anything else** and only on `GUARD_RC == 0` treat it as push-equivalent (force-push, run Step 3a + Step 3b + Step 4d on the new SHA); exit `1` (any complex hunk, partial resolution, or stage failure) → run `git rebase --abort`, do NOT attempt any manual/semantic resolution, and emit the following lines so the caller can capture the structured report — then return with `Status: CONFLICTS` and `FIXPR_WRAP_STATUS: CONFLICTS`: <br><br>```text`<br>CONFLICT_COMPLEX_REPORT_JSON: <the raw JSON value of complex_report from the resolver's --json output>`<br>```<br><br>Store the emitted `CONFLICT_COMPLEX_REPORT_JSON` line into `.babysit.last_dispatch.complex_report` (or parse it from the fixpr output) so T-END can render each `{file, location, reason}` entry verbatim in the termination report. In safe-only mode, **never** attempt to hand-resolve or semantically merge a complex hunk — abort and report only. |
 | `mergeable` | `UNKNOWN` | GitHub still computing — note and re-run `/fixpr` later. |
 | `mergeStateStatus` | `BEHIND` | **First run `"$CLEAN_BEHIND_SH" "$PR_NUMBER"` (issues #631, #667).** Exit 0 (`safe_to_offer`: gate green except BEHIND, not CONFLICTING, AC verified, base delta line ranges don't intersect PR line ranges at hunk level — conservative file-level fallback when patches unavailable) → **stop looping rebases and run `"$ADMIN_MERGE_SH" "$PR_NUMBER" --auto-plain --ac-verified`** (issue #754) — but **only after completing `cr-merge-gate.md` Step 2** (verify every Test Plan checkbox against the source at this SHA; ticked boxes are the proxy `clean-behind-check.sh` already checked, not verification). Any criterion that fails → fix it, do not merge; the script refuses without `--ac-verified`. Exit 0 → merged; relay its `AUTO_PLAIN_MERGED` evidence block. **No `AskUserQuestion`** — the plain shape modifies no branch protection, so it needs no user turn. Exit 8 → the shape needs a protection change (or an auto attempt already ran): **offer `/admin-merge` as a user choice** (AskUserQuestion, or print the command when running non-interactively) and **never auto-run** it. Exit 1 → not safe after re-validation (e.g. main advanced); fall through to the rebase path below. The `churn.advisory` field is context, not a gate (sensitivity configurable via `--churn-threshold N` or `CHURN_THRESHOLD` env var, default 1). Exit 1 (not safe — especially a base-delta↔PR-file overlap, or any residual blocker) → **capture the Step 6a snapshot (`diff-survival-check.sh snapshot`), then** rebase onto main: `git fetch origin main && git rebase origin/main`. If conflicts arise mid-rebase (replaying commits individually can conflict even when a three-way merge wouldn't), resolve them the same way as `CONFLICTING` above (including optional **`/merge-conflict`**), then `git rebase --continue`. **Run the Step 6a `verify` gate; force-push only on `GUARD_RC == 0`** — a non-zero verdict blocks the push and returns `Status: CONFLICTS`. When `FIXPR_WAIT_ITER < FIXPR_MAX_ITERATIONS`, treat the force-push as push-equivalent: set `PUSHED_SHA=$(git rev-parse HEAD)`, `PUSHED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")`, `DID_PUSH=1`, run **Step 3a** (dismiss stale bot reviews), **Step 3b** (reviewer triggers + 120s wait), then **Step 4d** on the new SHA. Do **not** jump straight to Step 4d without 3a/3b — bots are never kicked on the rebased SHA otherwise. |
-| `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author. |
+| `mergeStateStatus` | `BLOCKED` | Required checks/reviews missing — already covered by 5c/5d. If CodeRabbit, Greptile, or CodeAnt is in CODEOWNERS and the last approval is stale/dismissed after a push, recover by triggering that bot (`@coderabbitai full review`, `@greptileai`, or `@codeant-ai review`) instead of escalating to the author — on a tier-aware repo, only a CodeRabbit or CodeAnt trigger `review-triggers-allowed.sh` allows (claim it first). |
 | `mergeStateStatus` | `UNSTABLE` | A non-required check pending/failing — typically CR/Greptile on the new SHA. If 5d emitted `REVIEW_PENDING`, stop with that status. |
 | `reviewDecision` | `CHANGES_REQUESTED` | Changes were requested. **Stale** bot `CHANGES_REQUESTED` (wrong `commit_id` vs HEAD) are cleared by Step 3a after each push — not escalation. If a **human** left `CHANGES_REQUESTED` on the current HEAD, report as non-automatable. |
 
