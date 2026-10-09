@@ -179,6 +179,17 @@ For each finding:
 
 **Do not stop here.** Record whether any items remain classified as `finding` as **`WRAP_PHASE1_FINDINGS`** — count + short list. Unresolved bot findings are a **trigger** for Phase 2's `/fixpr` delegation path, not a hard stop.
 
+**Unmarked verdict replies (advisory — issue #1842).** Read the bundle's top-level count and print one line only when it is non-zero:
+
+```bash
+UNMARKED=$(jq -r '.unmarked_replies // 0' < "$BUNDLE")
+if [[ "$UNMARKED" =~ ^[0-9]+$ ]] && (( UNMARKED > 0 )); then
+  echo "Advisory: $UNMARKED agent repl(y/ies) to review-bot threads carry no review-verdict marker (reply-thread.sh --verdict/--defect)"
+fi
+```
+
+It counts User-account replies to review-bot threads that skipped the mandatory `--verdict`/`--defect` flags, so the review-cost ledger cannot score them (`.claude/reference/review-stack-audit.md` §The marker). **Information only:** it never joins `WRAP_PHASE1_FINDINGS`, never changes an unresolved-thread count, never dispatches `/fixpr`, and never changes the merge-gate outcome or `/wrap`'s exit status.
+
 **Unresolved-threads detection (issue #455):**
 
 ```bash
