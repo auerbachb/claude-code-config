@@ -224,8 +224,9 @@ edit `~/.zshrc` yourself** — the tool does not either. Run `launchers` again a
 written by hand is moved aside as `launchers.zsh.pre-share` and said so.
 
 - Exit `3` — two accounts would define the same function (two Claude accounts both
-  nicknamed "Work", say). The message names both; the fix is `nick <label> <name>` on one
-  of them, then re-run. Nothing was written.
+  nicknamed "Work", say), or the registry holds one `(provider, label)` pair twice. The
+  message names both; the fix is `nick <label> <name>` on one of them (or repairing the
+  duplicate row), then re-run. Nothing was written.
 - Exit `5` — `HOME` is unset (and `AI_QUOTAS_LAUNCHERS_FILE` is not), or the file could
   not be written. Relay and stop.
 

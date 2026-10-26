@@ -1339,12 +1339,13 @@ One zsh function per registered `claude` and `codex` account (override the path 
 launchers` marker on its second line: a file with the marker is overwritten in place on
 the next run, a file without it — the hand-written original — is moved aside as
 `launchers.zsh.pre-share` (a timestamped sibling when that name is taken) and never
-deleted. The action ends by printing the one line to add to `~/.zshrc`; the tool never
-edits `~/.zshrc`.
+deleted. It carries no timestamp, so two runs over the same registry produce the same
+bytes, and it is written mode `600` like the registry whose labels it carries. The action
+ends by printing the one line to add to `~/.zshrc`; the tool never edits `~/.zshrc`.
 
 ```zsh
 _ai_profile_dir() { … "$setup" list --json | jq -r '.[] | select(.provider == $p and .label == $l) | .profile_dir' … }
-_ai_launch()      { … printf '\e]1;%s\a\e]2;%s\a' "$nick" "$nick"; CLAUDE_CONFIG_DIR="$dir" command claude "$@" … }
+_ai_launch()      { … [[ -t 1 ]] && printf '\e]1;%s\a\e]2;%s\a' "$nick" "$nick"; CLAUDE_CONFIG_DIR="$dir" command claude "$@" … }
 
 claude-work()     { _ai_launch claude 'work@example.com'     'Claude Work'     "$@"; }
 claude-personal() { _ai_launch claude 'personal@example.com' 'Claude Personal' "$@"; }
@@ -1359,8 +1360,10 @@ of non-alphanumerics collapsed to one `-`, and a leading provider word (`claude`
 (or one that is only the provider word) uses the local part of its label:
 `someone@example.com` → `claude-someone`. Two accounts that would share a name are
 refused with exit `3` naming both — zsh would not complain, the second definition would
-silently win, and the owner would get the wrong account with no message. Claude functions
-come first, then Codex, registry order within each.
+silently win, and the owner would get the wrong account with no message. So is a
+`(provider, label)` pair the registry holds twice (`add` refuses it, a hand edit can
+produce it): the by-label lookup would return two directories. Claude functions come
+first, then Codex, registry order within each.
 
 **Resolution is by label, at run time.** The function passes its provider and label to
 `_ai_profile_dir`, which runs `ai-quotas-setup.sh list --json` and selects that row's
@@ -1373,9 +1376,10 @@ durable locations first, so a file generated from a checkout keeps working after
 worktree is gone.
 
 **What a function does.** Sets the terminal tab and window title to the nickname (the
-`ESC ] 1 ;` / `ESC ] 2 ;` OSC sequences, so parallel sessions stay distinguishable), then
-runs `command claude` or `command codex` with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set for
-that one invocation, forwarding every argument. A label with no
+`ESC ] 1 ;` / `ESC ] 2 ;` OSC sequences, so parallel sessions stay distinguishable) —
+only when stdout is a terminal, so `claude-work -p … | jq` is never handed the escape —
+then runs `command claude` or `command codex` with `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+set for that one invocation, forwarding every argument. A label with no
 registry row, or a `profile_dir` that no longer exists, returns `1` with a message naming
 the account; nothing is launched. The CLI finds its own credential inside the profile; the
 launcher never touches one.
