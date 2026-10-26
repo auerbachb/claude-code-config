@@ -10,10 +10,14 @@
 #   - it is a reply (`in_reply_to_id` non-null) whose target comment was written
 #     by one of the five review-bot logins below;
 #   - its author is a GitHub `User` account whose login does not end in `[bot]`;
-#   - its body has no line, outside a fenced code block, that starts with
-#     `<!-- review-verdict: fixed|deferred|declined ` — the marker
-#     reply-thread.sh --verdict appends as its own line. A quoted (`> …`) or
-#     inline-code marker does not start the line, so it does not count.
+#   - its body has no line, outside a fenced code block, that is exactly the
+#     complete marker reply-thread.sh --verdict appends as its own line:
+#     `<!-- review-verdict: <fixed|deferred|declined> defect=<real|not>
+#     agent=<name> -->` (trailing whitespace allowed). A partial marker — no
+#     `defect`, no `agent`, or no closing `-->` (which the ledger cannot parse
+#     at all) — skipped the mandatory flags, so it does not count. A quoted
+#     (`> …`) or inline-code marker does not start the line, so it does not
+#     count either.
 #
 # ADVISORY ONLY. Nothing gates on this count: merge-gate.sh never reads it and
 # /wrap prints it without routing it to /fixpr. It is a proxy — a human typing
@@ -28,6 +32,11 @@
 def review_bot_logins:
   ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"];
 
+# The whole marker line reply-thread.sh writes; the agent token shape is its
+# `agent_re`.
+def verdict_marker_line:
+  "^<!-- review-verdict: (fixed|deferred|declined) defect=(real|not) agent=[A-Za-z0-9][A-Za-z0-9._-]{0,63} -->[ \t]*$";
+
 # True when a marker line sits outside every fenced block. Fences follow
 # CommonMark: an opener of 3+ backticks or tildes (up to 3 leading spaces)
 # closes on a line holding only a run of the same character at least as long;
@@ -39,7 +48,7 @@ def has_verdict_marker:
     elif .fence == null then
       ($line | capture("^ {0,3}(?<f>`{3,}|~{3,})")? // null) as $open
       | if $open != null then .fence = $open.f
-        elif ($line | test("^<!-- review-verdict: (fixed|deferred|declined) ")) then .found = true
+        elif ($line | test(verdict_marker_line)) then .found = true
         else . end
     else
       (.fence) as $f
