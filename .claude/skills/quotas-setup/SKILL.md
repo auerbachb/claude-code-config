@@ -249,9 +249,10 @@ the way is moved aside as `<name>.pre-share` and **never deleted** — the summa
 so and gives the counts. A primary item that does not exist is `skipped` rather than
 linked to nowhere. Report the per-item lines as printed; they name paths only.
 
-- Exit `3` — a `cursor` account (no profile directory), or a `profile_dir` that resolves
-  to the primary install itself — the refusal that keeps this action from moving the real
-  `~/.claude/skills` aside and linking it to itself. Relay and stop.
+- Exit `3` — a `cursor` account (no profile directory), a `profile_dir` that resolves to
+  the primary install itself — the refusal that keeps this action from moving the real
+  `~/.claude/skills` aside and linking it to itself — or one that sits outside the profile
+  root (a hand-edited registry row). Relay and stop.
 - Exit `4` — no such label; `list` to show the exact labels.
 - Exit `5` — the profile directory does not exist yet (`relogin` first), the primary
   install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides (on top
@@ -261,9 +262,11 @@ linked to nowhere. Report the per-item lines as printed; they name paths only.
   session on that profile is writing it: nothing was replaced, re-run when it is idle.
   Relay and stop; do not repair the file by hand.
 
-Neither action reads or prints a credential: `.credentials.json`, `auth.json`, and the
-Keychain are never opened, and nothing from `.claude.json` is printed — an MCP server
-entry can carry an API key in its `env` block, so the merge reports a count, never a name.
+Neither action opens a login credential — `.credentials.json`, `auth.json`, and the
+Keychain are never touched — and nothing from `.claude.json` is printed. One thing the
+merge does carry across is the `mcpServers` block itself, and an MCP server entry can hold
+an API key in its `env` block: it is copied byte for byte into the profile, which is what
+sharing the server means, and the report line gives a count, never a name or a value.
 
 ## Step 4 — Report the result
 

@@ -97,8 +97,12 @@
 #             and copy config.toml from ~/.codex. Anything already in the
 #             wanted state is left alone, so a re-run is a no-op; anything in
 #             the way is moved aside as <name>.pre-share, never deleted. A
-#             profile_dir that resolves to the primary install itself is
-#             refused (exit 3), as is a cursor account.
+#             profile_dir that resolves to the primary install itself, or
+#             sits outside the profile root, is refused (exit 3), as is a
+#             cursor account. Neither action opens a login credential
+#             (.credentials.json, auth.json, the Keychain); the mcpServers
+#             block share-config copies can carry an API key in an env
+#             entry — copied byte for byte, never printed.
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
@@ -2069,10 +2073,13 @@ action_launchers() {
   {
     echo "# AI account launchers — one isolated login profile per subscription (claude-code-config #1851)."
     echo "$LAUNCHERS_MARKER"
-    echo "# Generated from ${CONFIG_FILE}."
+    # A newline or carriage return in the config path would end this comment
+    # and make the rest of the path executable on every source (CodeAnt); the
+    # path is informational here, so such a character is shown as `?`.
+    echo "# Generated from ${CONFIG_FILE//[$'\n\r']/?}."
     echo "# Each function resolves its profile directory from the ai-quotas registry BY LABEL at run time,"
     echo "# so it stays correct even if a profile directory is renamed (claude-code-config #1850)."
-    echo "# Launch only: nothing here reads or prints a credential — the provider CLI finds its own inside the profile."
+    echo "# Launch only: nothing here reads or prints a login credential — the provider CLI finds its own inside the profile."
     echo
     echo '_ai_profile_dir() { # <provider> <label> -> profile_dir on stdout'
     echo '  local setup="" candidate'
@@ -2290,6 +2297,16 @@ action_share_config() {
   esac
   [[ -d "$dir" ]] || die 5 "profile directory does not exist: $dir — run 'relogin $label $provider' first"
   [[ -d "$primary_dir" ]] || die 5 "primary install not found: $primary_dir"
+  # Symlink targets are written as `$primary_dir/<name>`, and `ln -s` resolves
+  # a relative target from the LINK's directory, not the caller's — so a
+  # relative override would produce eight links to nowhere (CodeAnt). Made
+  # absolute once, here; the per-item targets below then stay unresolved
+  # (`~/.claude/rules` may itself be a symlink, and that indirection is kept).
+  case "$primary_dir" in
+    /*) ;;
+    *) primary_dir="$( (cd "$primary_dir" 2>/dev/null && pwd) || true )"
+       [[ -n "$primary_dir" ]] || die 5 "could not resolve the primary install directory" ;;
+  esac
 
   # The one way this action could destroy the primary install is being pointed
   # at it: every `linked` step would first move the real ~/.claude/skills aside
@@ -2301,6 +2318,17 @@ action_share_config() {
   if [[ "$phys_dir" == "$phys_primary" ]]; then
     die 3 "refusing: $provider '$label' profile_dir resolves to the primary install itself ($phys_primary)"
   fi
+  # And it must sit under the profile root. Every profile `add` creates does;
+  # a hand-edited row pointing anywhere else would have this action moving
+  # that directory's files aside and linking into it (CodeAnt). Physical
+  # paths again, so a symlinked row cannot slip past.
+  local root_phys
+  root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$root_phys" ]] || die 5 "could not resolve the profile root: $PROFILE_ROOT"
+  case "$phys_dir" in
+    "$root_phys"/*) : ;;
+    *) die 3 "refusing: $provider '$label' profile_dir ($dir) resolves to $phys_dir, outside the profile root $root_phys — fix the registry row before sharing into it" ;;
+  esac
 
   echo "${SELF_NAME}: share-config $provider '$label' ($dir) from $primary_dir"
   local name

@@ -1330,7 +1330,7 @@ half it got.
 The registry alone leaves two gaps: nothing *starts* a CLI against one account's profile,
 and a fresh profile has a login and nothing else. Two actions on `ai-quotas-setup.sh`
 close them. Both are display/config operations like everything else here — they gate
-nothing — and neither reads or prints a credential.
+nothing — and neither opens a login credential or prints anything from `.claude.json`.
 
 ### `launchers` — `~/.claude/ai-quotas/launchers.zsh`
 
@@ -1418,19 +1418,25 @@ starts from an empty object — it never writes through a link into another inst
 file. A primary item that does not exist is `skipped` — no dangling symlink is ever
 created.
 
-**Refusals.** Exit `3` for a `cursor` account (no profile directory) and for a
+**Refusals.** Exit `3` for a `cursor` account (no profile directory), for a
 `profile_dir` whose physical path *is* the primary install — compared with `pwd -P`, so a
 symlinked `profile_dir` cannot slip past — because every `linked` step would otherwise
-first move the real `~/.claude/skills` aside and then link it to itself. Exit `5` when the
+first move the real `~/.claude/skills` aside and then link it to itself, and for a
+`profile_dir` whose physical path is outside the profile root (every profile `add` creates
+is under it; only a hand-edited row is not). A relative `AI_QUOTAS_PRIMARY_*` directory is
+made absolute before any link is written, since `ln -s` resolves a relative target from
+the link's own directory. Exit `5` when the
 profile directory does not exist yet (`relogin` first), the primary install is missing,
 `HOME` is unset without the overrides, or the profile's `.claude.json` is not a JSON
 object — which is never rewritten.
 
-**No credential, no printing.** `.credentials.json`, `auth.json`, and the Keychain are
-never opened. The only JSON parsed is `.claude.json`, and nothing from it is printed — an
-MCP server entry can carry an API key in its `env` block, so the merge line reports a
-count, never a name. The suite plants a credential-shaped fixture in every profile and
-asserts it reaches no output and no file either action writes.
+**No login credential, no printing.** `.credentials.json`, `auth.json`, and the Keychain
+are never opened. The only JSON parsed is `.claude.json`, and nothing from it is printed.
+What the merge does carry across is the `mcpServers` block, and an MCP server entry can
+hold an API key in its `env` block — that is copied byte for byte into the profile, since
+sharing the server is the point, and the merge line reports a count, never a name or a
+value. The suite plants a login-credential-shaped fixture in every profile and asserts it
+reaches no output and no file either action writes.
 
 ## Symlink
 

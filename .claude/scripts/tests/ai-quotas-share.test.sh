@@ -455,12 +455,41 @@ ln -s "$PRIMARY" "$CASE_DIR/alias-to-primary"
 jq --arg d "$CASE_DIR/alias-to-primary" '.accounts |= map(if .provider == "claude" and .label == "'"$WORK_LABEL"'" then .profile_dir = $d else . end)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
 run share-config "$WORK_LABEL" claude
 check_eq "$RC" "3" "a symlinked profile_dir that resolves to the primary is refused too"
+# A row pointing anywhere else is refused too — before anything in that directory is touched.
+mkdir -p "$CASE_DIR/unrelated/skills"
+jq --arg d "$CASE_DIR/unrelated" '.accounts |= map(if .provider == "claude" and .label == "'"$WORK_LABEL"'" then .profile_dir = $d else . end)' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "3" "a profile_dir outside the profile root is refused"
+check_contains "$OUT" "outside the profile root" "saying so"
+check_eq "$(test -d "$CASE_DIR/unrelated/skills" -a ! -L "$CASE_DIR/unrelated/skills" && echo intact || echo DAMAGED)" "intact" "control(-): nothing in that directory was moved aside or linked"
 write_registry
 
 rm -rf "$WORK_DIR"
 run share-config "$WORK_LABEL" claude
 check_eq "$RC" "5" "a missing profile directory is exit 5"
 check_contains "$OUT" "run 'relogin $WORK_LABEL claude' first" "pointing at relogin"
+
+# A relative primary override must not produce links relative to the PROFILE.
+new_case "share-relative-primary"
+REL_OUT="$(cd "$FAKE_HOME" && HOME="$FAKE_HOME" AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux \
+  AI_QUOTAS_PRIMARY_CLAUDE_DIR=".claude" "$SCRIPT" share-config "$WORK_LABEL" claude 2>&1)" && REL_RC=0 || REL_RC=$?
+printf '%s\n' "$REL_OUT" >> "$ALL_OUTPUT"
+check_eq "$REL_RC" "0" "a relative AI_QUOTAS_PRIMARY_CLAUDE_DIR runs"
+check_eq "$(link_target "$WORK_DIR/skills")" "$FAKE_HOME/.claude/skills" "and the link target is made absolute"
+check_eq "$(test -d "$WORK_DIR/skills/" && echo resolves || echo DANGLING)" "resolves" "so the link resolves"
+
+new_case "launchers-config-path-newline"
+# No slash in the payload: it has to stay one file NAME for cp to accept it.
+NL_CONFIG="$CASE_DIR/cfg"$'\n'"touch pwned-nl-marker"
+cp "$CONFIG" "$NL_CONFIG"
+NL_OUT="$(HOME="$FAKE_HOME" AI_QUOTAS_CONFIG="$NL_CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux "$SCRIPT" launchers 2>&1)" && NL_RC=0 || NL_RC=$?
+printf '%s\n' "$NL_OUT" >> "$ALL_OUTPUT"
+check_eq "$NL_RC" "0" "a config path with a newline in it still generates"
+check_eq "$(grep -c '^touch pwned-nl-marker' "$LAUNCHERS")" "0" "the newline cannot end the generated comment"
+if [[ -n "$ZSH_BIN" ]]; then
+  (cd "$CASE_DIR" && HOME="$FAKE_HOME" "$ZSH_BIN" -c "source '$LAUNCHERS'" >/dev/null 2>&1)
+  check_eq "$(test -e "$CASE_DIR/pwned-nl-marker" && echo RAN || echo inert)" "inert" "and sourcing the file runs nothing from the path"
+fi
 
 new_case "share-primary-items-missing"
 rm -rf "$PRIMARY/agents" "$PRIMARY/account-config.md" "$PRIMARY/settings.json"
