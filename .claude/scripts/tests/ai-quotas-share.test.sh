@@ -398,7 +398,9 @@ check_contains "$OUT" "linked 8, copied 1, merged 1, kept 0, moved aside 3, skip
 check_contains "$OUT" "Nothing was deleted" "and says nothing was deleted"
 check_eq "$(cat "$WORK_DIR/.credentials.json")" "{\"claudeAiOauth\":{\"accessToken\":\"$FIXTURE_SECRET\"}}" "the profile's credential file is untouched"
 # script-usage.log is the script's own telemetry line, written under HOME on every run.
-primary_listing() { local f out=""; for f in "$PRIMARY"/*; do f="$(basename "$f")"; [[ "$f" == script-usage.log ]] || out+="$f "; done; printf '%s' "$out"; }
+# Sorted in byte order explicitly: a glob expands in the locale's collation,
+# which on the macOS CI runner puts `account-config.md` before `CLAUDE.md`.
+primary_listing() { local f; for f in "$PRIMARY"/*; do f="$(basename "$f")"; [[ "$f" == script-usage.log ]] || printf '%s\n' "$f"; done | LC_ALL=C sort | tr '\n' ' '; }
 check_eq "$(primary_listing)" "CLAUDE.md account-config.md agents hooks plugins projects rules settings.json skills " "the primary install is untouched"
 
 run share-config "$WORK_LABEL" claude
