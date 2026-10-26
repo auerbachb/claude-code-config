@@ -1978,16 +1978,25 @@ file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
   printf '%s' "$m"
 }
 
-# Moves <path> to <path>.pre-share — or, when that name is already taken by an
-# earlier run's keepsake, to a timestamped sibling — and prints the destination.
-# Nothing is ever deleted: the thing in the way may be the only copy of a
-# working config, and the owner decides when to drop it.
-move_aside() { # <path>
+# The keepsake name for <path>: <path>.pre-share, or — when that name is
+# already taken by an earlier run's keepsake — a timestamped sibling. One
+# rule, used both by move_aside and by the .claude.json merge, which keeps a
+# COPY under this name so the live path never disappears.
+pre_share_dest() { # <path>
   local dest="$1.pre-share"
   if [[ -e "$dest" || -L "$dest" ]]; then
     dest="$1.pre-share.$(date -u +%Y%m%dT%H%M%SZ)"
     [[ ! -e "$dest" && ! -L "$dest" ]] || die 5 "could not move $1 aside: $dest already exists"
   fi
+  printf '%s' "$dest"
+}
+
+# Moves <path> to its keepsake name and prints the destination. Nothing is
+# ever deleted: the thing in the way may be the only copy of a working
+# config, and the owner decides when to drop it.
+move_aside() { # <path>
+  local dest
+  dest="$(pre_share_dest "$1")"
   mv "$1" "$dest" || die 5 "could not move $1 aside to $dest"
   printf '%s' "$dest"
 }
@@ -2248,10 +2257,16 @@ share_merge_mcp() { # <profile_dir> <primary_json>
       rm -f "$tmp"
       die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
     fi
-    dest="$(move_aside "$path")"
+    # The keepsake is a COPY, and the merged file is then renamed over the
+    # original: the path never disappears, so a session that recreates the
+    # file in a move-then-install gap has no gap to hit, and a failed rename
+    # leaves the original in place rather than only under .pre-share
+    # (CodeRabbit).
+    dest="$(pre_share_dest "$path")"
+    cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
     share_note_moved ".claude.json" "$dest"
   fi
-  mv "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
+  mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
   SHARE_MERGED=$((SHARE_MERGED + 1))
   echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
 }
