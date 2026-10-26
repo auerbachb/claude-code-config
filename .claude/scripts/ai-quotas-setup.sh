@@ -1965,6 +1965,19 @@ launcher_name() { # <provider> <nickname|""> <label>
   printf '%s-%s' "$provider" "$slug"
 }
 
+# The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
+# and exits 0 printing `?p` for the BSD directive, so the BSD-first
+# `stat -f … || stat -c …` chain never reached its fallback on Linux and the
+# merged file was silently forced to 600 there (Graphite). Each answer is
+# checked for shape instead of trusting an exit code.
+file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
+  local m
+  m="$(stat -c '%a' "$1" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m=600
+  printf '%s' "$m"
+}
+
 # Moves <path> to <path>.pre-share — or, when that name is already taken by an
 # earlier run's keepsake, to a timestamped sibling — and prints the destination.
 # Nothing is ever deleted: the thing in the way may be the only copy of a
@@ -2208,7 +2221,7 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     snapshot="$(cat "$path")" || die 5 "could not read $path"
     existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
       || die 5 "$path is not a JSON object — refusing to touch it"
-    mode="$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null || echo 600)"
+    mode="$(file_mode "$path")"
   else
     existing='{}'
     mode=600

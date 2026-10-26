@@ -172,6 +172,9 @@ function_names() { grep -oE '^[a-z0-9-]+\(\)' "$LAUNCHERS" | tr -d '()' | tr '\n
 helper_names() { grep -oE '^_ai_[a-z_]+\(\)' "$LAUNCHERS" | tr -d '()' | tr '\n' ' ' | sed 's/ $//'; }
 zshrc_untouched() { cmp -s "$FAKE_HOME/.zshrc" "$CASE_DIR/zshrc.before" && echo untouched || echo CHANGED; }
 link_target() { readlink "$1" 2>/dev/null || echo "<not-a-link>"; }
+# GNU stat first, shape-checked: on Linux `stat -f` is filesystem status and
+# exits 0 printing `?p`, so a BSD-first `||` chain reads garbage there.
+mode_of() { local m; m="$(stat -c '%a' "$1" 2>/dev/null || true)"; [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"; printf '%s' "$m"; }
 count_pre_share() { find "$1" -maxdepth 1 -name '*.pre-share*' | wc -l | tr -d ' '; }
 
 echo "== ai-quotas-setup.sh launchers / share-config =="
@@ -211,7 +214,7 @@ check_contains "$(cat "$LAUNCHERS")" 'CLAUDE_CONFIG_DIR="$dir" command claude "$
 check_contains "$(cat "$LAUNCHERS")" 'CODEX_HOME="$dir" command codex "$@"' "codex launches with CODEX_HOME set to the resolved dir"
 check_contains "$(cat "$LAUNCHERS")" "_ai_launch claude '$WORK_LABEL' 'Claude Work'" "the work launcher passes its label and nickname"
 check_not_contains "$(cat "$LAUNCHERS")" "$PROFILES" "no profile directory is baked into the file — it is resolved at run time"
-check_eq "$(stat -f '%Lp' "$LAUNCHERS" 2>/dev/null || stat -c '%a' "$LAUNCHERS")" "600" "the file is mode 600, like the registry whose labels it carries"
+check_eq "$(mode_of "$LAUNCHERS")" "600" "the file is mode 600, like the registry whose labels it carries"
 check_contains "$(cat "$LAUNCHERS")" "[[ -t 1 ]] && printf '\\e]1;%s\\a\\e]2;%s\\a' \"\$nick\" \"\$nick\"" "the title escape is guarded on stdout being a terminal"
 check_not_contains "$(cat "$LAUNCHERS")" "$(date -u +%Y-%m-%d)" "no timestamp in the file — a re-run over the same registry is byte-identical"
 cp "$LAUNCHERS" "$CASE_DIR/launchers.first"
@@ -378,7 +381,7 @@ done
 check_eq "$(test -d "$WORK_DIR/plugins.pre-share/own" && echo kept || echo LOST)" "kept" "the profile's own plugins dir was moved aside, not deleted"
 check_eq "$(cat "$WORK_DIR/settings.json")" '{"theme":"dark","model":"opus"}' "settings.json is a copy of the primary"
 check_eq "$(test -L "$WORK_DIR/settings.json" && echo link || echo file)" "file" "a copy, not a link"
-check_eq "$(stat -f '%Lp' "$WORK_DIR/settings.json" 2>/dev/null || stat -c '%a' "$WORK_DIR/settings.json")" "600" "carrying the primary's 600 mode"
+check_eq "$(mode_of "$WORK_DIR/settings.json")" "600" "carrying the primary's 600 mode"
 check_eq "$(cat "$WORK_DIR/settings.json.pre-share")" '{"theme":"light"}' "the old settings.json is the keepsake"
 check_eq "$(jq -r '.oauthAccount.emailAddress' "$WORK_DIR/.claude.json")" "$WORK_LABEL" ".claude.json keeps the profile's own login field"
 check_eq "$(jq -r '.userID' "$WORK_DIR/.claude.json")" "work-user" "and its own userID — nothing of the primary's identity came across"
@@ -387,7 +390,7 @@ check_eq "$(jq -r '.mcpServers | keys | join(",")' "$WORK_DIR/.claude.json")" "a
 check_eq "$(jq -r '.mcpServers.alpha.command' "$WORK_DIR/.claude.json")" "alpha-mcp" "the primary wins on a shared server name"
 check_eq "$(jq -r 'has("projects")' "$WORK_DIR/.claude.json")" "false" "the primary's other keys (projects) did not come across"
 check_eq "$(jq -r '.mcpServers.alpha' "$WORK_DIR/.claude.json.pre-share" | jq -r .command)" "old-alpha" "the old .claude.json is the keepsake"
-check_eq "$(stat -f '%Lp' "$WORK_DIR/.claude.json" 2>/dev/null || stat -c '%a' "$WORK_DIR/.claude.json")" "600" "the merged file keeps the profile file's mode"
+check_eq "$(mode_of "$WORK_DIR/.claude.json")" "600" "the merged file keeps the profile file's mode"
 check_contains "$OUT" "merged  2 primary mcpServers into .claude.json" "the merge reports a count"
 check_not_contains "$OUT" "alpha-mcp" "and never an entry"
 check_not_contains "$OUT" "primary-alpha" "nor an env value"
@@ -506,7 +509,7 @@ run share-config "$WORK_LABEL" claude
 check_eq "$RC" "0" "a profile with no .claude.json yet is fine"
 check_eq "$(jq -r '.mcpServers | keys | join(",")' "$WORK_DIR/.claude.json")" "alpha,beta" "it is created holding only the merged mcpServers"
 check_eq "$(jq -r 'keys | join(",")' "$WORK_DIR/.claude.json")" "mcpServers" "and nothing else"
-check_eq "$(stat -f '%Lp' "$WORK_DIR/.claude.json" 2>/dev/null || stat -c '%a' "$WORK_DIR/.claude.json")" "600" "at mode 600"
+check_eq "$(mode_of "$WORK_DIR/.claude.json")" "600" "at mode 600"
 
 new_case "share-home-unset"
 NOHOME_OUT="$(env -u HOME AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux "$SCRIPT" share-config "$WORK_LABEL" claude 2>&1)" && NOHOME_RC=0 || NOHOME_RC=$?
