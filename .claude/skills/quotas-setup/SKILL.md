@@ -1,6 +1,6 @@
 ---
 name: quotas-setup
-description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, or installing the daily unattended usage snapshot. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
+description: Use when registering the AI subscription accounts whose quotas you track, adding a second paid Claude Code / Codex / Cursor account, re-logging in an expired one, nicknaming an account, asking which are logged in, installing the daily unattended usage snapshot, generating the shell launchers (`claude-work`, `codex-personal`, …) that start a CLI against one account, or sharing the primary install's skills, rules, hooks, plugins, and MCP servers into an account's profile. Gives each account an isolated login profile — a config dir or a CODEX_HOME; Cursor instead uses the login the Cursor IDE already holds. Display and config only — reads no usage figures, gates no work.
 triggers:
   - quotas-setup
   - register my AI accounts
@@ -12,7 +12,10 @@ triggers:
   - nickname my AI account
   - install the daily quota snapshot
   - is the quota snapshot job running
-argument-hint: "[list [--json] | add <claude|codex|cursor> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N]]"
+  - generate the account launchers
+  - make a shell function for my second Claude account
+  - share my skills and rules with the other profile
+argument-hint: "[list [--json] | add <claude|codex|cursor> <label> [--nick <name>] [--no-login] | nick <label> <name> [provider] | remove <label> [provider] | relogin <label> [provider] | schedule <install|remove|status> [--hour N] | launchers | share-config <label> [provider]]"
 model: sonnet
 allowed-tools:
   - Read
@@ -73,6 +76,8 @@ profile directories drift apart.
 | "take a reading every day", "install the snapshot job" | `"$AI_QUOTAS_SETUP_SH" schedule install` |
 | "is the daily job running" | `"$AI_QUOTAS_SETUP_SH" schedule status` |
 | "stop the daily job" | `"$AI_QUOTAS_SETUP_SH" schedule remove` |
+| "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
+| "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
 
 `list` is the default when no action is given. `--json` is available on `list` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
@@ -200,6 +205,61 @@ last unattended reading happened.
   keeps working until that worktree is removed. Re-run `schedule install` once the skills
   worktree is in place.
 
+## Step 3d — Launchers: one shell function per account (#1851)
+
+`launchers` writes `~/.claude/ai-quotas/launchers.zsh`: one zsh function per registered
+`claude` and `codex` account, named `<provider>-<nickname slug>` — `Claude Work` becomes
+`claude-work`, `GPT Personal` becomes `codex-personal` (a leading provider word is dropped
+so the prefix is not doubled; an account with no nickname uses the local part of its
+label). Each function sets the terminal tab title to the nickname, then resolves the
+account's profile directory **from the registry by label** through `list --json` and runs
+the CLI with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to it. It never builds the path from
+the label — #1850 records that the directories can be named backwards — and it reads no
+credential: the CLI finds its own inside the profile. Cursor accounts are skipped with a
+note; there is no CLI to launch.
+
+The action ends by printing the one line to add to `~/.zshrc`. **Relay that line; never
+edit `~/.zshrc` yourself** — the tool does not either. Run `launchers` again after every
+`add`, `remove`, or `nick`; a file it generated is overwritten in place, while a file
+written by hand is moved aside as `launchers.zsh.pre-share` and said so.
+
+- Exit `3` — two accounts would define the same function (two Claude accounts both
+  nicknamed "Work", say). The message names both; the fix is `nick <label> <name>` on one
+  of them, then re-run. Nothing was written.
+- Exit `5` — `HOME` is unset (and `AI_QUOTAS_LAUNCHERS_FILE` is not), or the file could
+  not be written. Relay and stop.
+
+## Step 3e — share-config: make a profile behave like the primary install (#1851)
+
+A fresh profile has a login and nothing else — no skills, rules, hooks, plugins, memory,
+or MCP servers. `share-config <label> [<provider>]` links or copies them in from the
+primary install:
+
+- **`claude`** — symlinks `skills`, `agents`, `rules`, `hooks`, `plugins`, `projects`,
+  `CLAUDE.md`, and `account-config.md` to the `~/.claude` equivalents; copies
+  `settings.json`; merges the `mcpServers` block of `~/.claude.json` into the profile's
+  own `.claude.json`, keeping every other field that file already holds (its login and
+  onboarding state is what makes it that account's).
+- **`codex`** — symlinks `rules` and copies `config.toml` from `~/.codex`.
+
+Anything already in the wanted state is `kept`, so a re-run changes nothing; anything in
+the way is moved aside as `<name>.pre-share` and **never deleted** — the summary line says
+so and gives the counts. A primary item that does not exist is `skipped` rather than
+linked to nowhere. Report the per-item lines as printed; they name paths only.
+
+- Exit `3` — a `cursor` account (no profile directory), or a `profile_dir` that resolves
+  to the primary install itself — the refusal that keeps this action from moving the real
+  `~/.claude/skills` aside and linking it to itself. Relay and stop.
+- Exit `4` — no such label; `list` to show the exact labels.
+- Exit `5` — the profile directory does not exist yet (`relogin` first), the primary
+  install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides, or the
+  profile's `.claude.json` is not parseable JSON — which is never rewritten. Relay and
+  stop; do not repair the file by hand.
+
+Neither action reads or prints a credential: `.credentials.json`, `auth.json`, and the
+Keychain are never opened, and nothing from `.claude.json` is printed — an MCP server
+entry can carry an API key in its `env` block, so the merge reports a count, never a name.
+
 ## Step 4 — Report the result
 
 After any action, run `list` and show the table. Each account reports as:
@@ -225,5 +285,6 @@ wrote, which is all anyone needs.
 Config schema (including the `nickname` field and its limits), the exact per-provider
 re-login commands, where each provider keeps its credential, how the Cursor IDE token is
 read and why no browser is involved, the LaunchAgent this skill writes — every plist key,
-why 09:00, and why the `PATH` has to name Homebrew — and the increment boundary:
+why 09:00, and why the `PATH` has to name Homebrew — the generated `launchers.zsh` and
+what `share-config` links, copies, and merges, and the increment boundary:
 `.claude/reference/ai-quotas.md`.
