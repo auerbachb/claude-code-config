@@ -348,8 +348,10 @@ carrying a marker over replies posted to bot findings (`0/0` when none;
 **`unmarked_replies` (advisory).** `pr-state.sh` adds a top-level integer
 `unmarked_replies`: inline review comments written by a GitHub `User` account
 (login not ending `[bot]`) that reply (`in_reply_to_id`) to a root comment by
-one of the five review-bot logins, and carry no line starting
-`<!-- review-verdict: fixed|deferred|declined `. `/wrap` Step 1.2 prints the
+one of the five review-bot logins, and carry no complete marker line —
+`<!-- review-verdict: <verdict> defect=<real|not> agent=<name> -->`, exactly as
+`reply-thread.sh` writes it; a partial marker (no `defect`, no `agent`, or no
+closing `-->`) skipped the mandatory flags and counts. `/wrap` Step 1.2 prints the
 count when it is non-zero. It never blocks a merge, never joins the findings
 `/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
 two ways: a human typing on the same account counts as an agent reply, and a
@@ -399,10 +401,13 @@ flat fee after the split.
   From **2026-10-09 (UTC)** — the landing of the issue #1842 mandate above; if
   the `feat(#1842)` squash commit on `main` is dated later, its UTC date governs
   — every agent reply to a bot finding carries a marker. Before that date a real
-  defect replied to without the flags reads as not real, so `real_defects` and
-  `cost_per_real_defect_usd` for earlier PRs are lower bounds that reflect
-  marker adoption. On and after it, a missing marker is a process miss that
-  `unmarked_replies` surfaces, and the figure is a measurement.
+  defect replied to without the flags reads as not real, so for earlier PRs
+  `real_defects` is a lower bound and `cost_per_real_defect_usd` — spend over
+  that undercounted figure — an upper bound; both reflect marker adoption. On
+  and after it, a missing marker is a process miss that `unmarked_replies`
+  surfaces, and both figures measure the marked thread replies. A PR-level
+  fallback reply (the bullet above) still escapes the ledger, so neither figure
+  is guaranteed complete after the cutoff either.
 
 ### Comparing with sales-kit Issue #184
 
@@ -443,8 +448,8 @@ way.
 | Column | Field | Notes |
 |---|---|---|
 | Spend | `spend_usd` (`spend_source`) | The label travels with the figure: `$62.00 (flat)`, `$3.30 (receipt)`, `— (none)` |
-| Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement after it |
-| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect |
+| Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement of marked thread replies after it |
+| Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect; a ceiling for PRs before the mandate cutoff (Limits above) |
 | Precision | `precision` | As a percentage, one decimal |
 | Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
 

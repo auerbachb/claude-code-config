@@ -7,7 +7,8 @@
 #   1. Two User replies to a review-bot root, one marked and one not -> 1;
 #      both marked -> 0.
 #   2. A reply to a human root is excluded; a bot-authored reply is excluded.
-#   3. A quoted, inline-code, or fenced-block marker does not count as a marker.
+#   3. A quoted, inline-code, fenced-block, or partial (no defect/agent/closing
+#      `-->`) marker does not count as a marker.
 #   4. An empty or null inventory -> 0.
 #   5. The filter's review-bot list equals pr-state.sh's `$botlist`.
 #   6. pr-state.sh wires the filter into a top-level `unmarked_replies` field.
@@ -110,6 +111,21 @@ Fixed in abc1234." "Fixed; see \`$MARK\`." "Example:
 $MARK
 \`\`\`"
 check_eq "quoted / inline-code / fenced markers stay unmarked -> 3" "3" "$(count "$TMP/fakes.json")"
+
+# 3a. Partial markers skipped the mandatory flags: no defect/agent, no agent,
+#     no closing `-->`, or an unknown defect value all stay unmarked.
+mk_fixture "$TMP/partial.json" "Fixed.
+<!-- review-verdict: fixed -->" "Fixed.
+<!-- review-verdict: fixed defect=real -->" "Fixed.
+<!-- review-verdict: fixed defect=real agent=claude-code" "Fixed.
+<!-- review-verdict: fixed defect=maybe agent=claude-code -->" "Fixed.
+<!-- review-verdict: fixed defect=real agent=claude-code --> trailing text"
+check_eq "partial / unclosed / malformed markers stay unmarked -> 5" "5" "$(count "$TMP/partial.json")"
+
+# 3a'. Trailing whitespace after the closing marker is tolerated.
+mk_fixture "$TMP/trailing-ws.json" "Fixed in abc1234.
+$MARK   "
+check_eq "complete marker with trailing whitespace counts as marked -> 0" "0" "$(count "$TMP/trailing-ws.json")"
 
 # 3b. A marker after a closed fence counts (the helper closes an open fence first).
 mk_fixture "$TMP/after-fence.json" "Fixed:
