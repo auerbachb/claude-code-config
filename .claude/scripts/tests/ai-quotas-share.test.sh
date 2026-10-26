@@ -333,13 +333,31 @@ run launchers
 check_eq "$(count_pre_share "$(dirname "$LAUNCHERS")")" "2" "a second foreign file gets a timestamped keepsake when .pre-share is taken"
 check_eq "$(test -f "$LAUNCHERS.pre-share" && grep -c 'hand-written launchers' "$LAUNCHERS.pre-share")" "1" "and the first keepsake is untouched"
 
+# An override path a shell would expand inside double quotes must reach the
+# printed source line single-quoted, or pasting it into ~/.zshrc runs it.
+new_case "launchers-source-line-hostile-path"
+HOSTILE_DIR="$FAKE_HOME/we\"ird\$(touch \"$CASE_DIR/pwned\")\`id\`"
+mkdir -p "$HOSTILE_DIR"
+NOHOME_OUT="$(HOME="$FAKE_HOME" AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux \
+  AI_QUOTAS_LAUNCHERS_FILE="$HOSTILE_DIR/l.zsh" "$SCRIPT" launchers 2>&1)" && NOHOME_RC=0 || NOHOME_RC=$?
+printf '%s\n' "$NOHOME_OUT" >> "$ALL_OUTPUT"
+check_eq "$NOHOME_RC" "0" "a hostile override path still generates"
+SOURCE_LINE="$(printf '%s\n' "$NOHOME_OUT" | grep '&& source ' | sed 's/^  //')"
+check_contains "$SOURCE_LINE" "source '$HOSTILE_DIR/l.zsh'" "the source line single-quotes a path with \$( ), backticks, or quotes in it"
+check_not_contains "$SOURCE_LINE" '"$HOME/' "and does not use the \$HOME form for it"
+if [[ -n "$ZSH_BIN" ]]; then
+  HOME="$FAKE_HOME" "$ZSH_BIN" -c "$SOURCE_LINE; whence -w claude-work" > "$CASE_DIR/sourced.out" 2>&1
+  check_contains "$(cat "$CASE_DIR/sourced.out")" "claude-work: function" "pasting the printed line sources the file"
+  check_eq "$(test -e "$CASE_DIR/pwned" && echo RAN || echo inert)" "inert" "and the \$( ) in the path did not run"
+fi
+
 new_case "launchers-home-unset"
 NOHOME_OUT="$(env -u HOME AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux "$SCRIPT" launchers 2>&1)" && NOHOME_RC=0 || NOHOME_RC=$?
 check_eq "$NOHOME_RC" "5" "launchers with HOME unset and no override is refused"
 check_contains "$NOHOME_OUT" "AI_QUOTAS_LAUNCHERS_FILE" "naming the override that lifts it"
 NOHOME_OUT="$(env -u HOME AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" AI_QUOTAS_PLATFORM=Linux AI_QUOTAS_LAUNCHERS_FILE="$CASE_DIR/elsewhere/l.zsh" "$SCRIPT" launchers 2>&1)" && NOHOME_RC=0 || NOHOME_RC=$?
 check_eq "$NOHOME_RC" "0" "with the override it runs HOME-less"
-check_contains "$NOHOME_OUT" "source \"$CASE_DIR/elsewhere/l.zsh\"" "and prints the literal path in the source line"
+check_contains "$NOHOME_OUT" "source '$CASE_DIR/elsewhere/l.zsh'" "and prints the literal path, single-quoted, in the source line"
 printf '%s\n' "$NOHOME_OUT" >> "$ALL_OUTPUT"
 
 # --- 5. share-config: a claude profile ---------------------------------------
@@ -466,6 +484,22 @@ run share-config "$WORK_LABEL" claude
 check_eq "$RC" "5" "an unparseable profile .claude.json is exit 5"
 check_eq "$(cat "$WORK_DIR/.claude.json")" '{not json' "and is never rewritten"
 check_eq "$(link_target "$WORK_DIR/skills")" "$PRIMARY/skills" "the links before it were still made"
+
+new_case "share-profile-json-in-the-way"
+mkdir -p "$WORK_DIR/.claude.json/stray"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "a DIRECTORY at .claude.json does not fail the run"
+check_eq "$(test -d "$WORK_DIR/.claude.json.pre-share/stray" && echo kept || echo LOST)" "kept" "it is moved aside as .claude.json.pre-share"
+check_eq "$(test -f "$WORK_DIR/.claude.json" && echo file || echo other)" "file" "and a real file holds the merge"
+check_eq "$(jq -r '.mcpServers | keys | join(",")' "$WORK_DIR/.claude.json")" "alpha,beta" "with the primary servers"
+check_eq "$(test -e "$WORK_DIR/.claude.json.pre-share/.claude.json" -o -e "$WORK_DIR/.claude.json.pre-share/stray/.claude.json" && echo INSIDE || echo clean)" "clean" "control(-): nothing was dropped inside the directory"
+rm -rf "$WORK_DIR/.claude.json" "$WORK_DIR/.claude.json.pre-share"
+ln -s "$CASE_DIR/nowhere.json" "$WORK_DIR/.claude.json"
+run share-config "$WORK_LABEL" claude
+check_eq "$RC" "0" "a dangling symlink at .claude.json does not fail the run"
+check_eq "$(link_target "$WORK_DIR/.claude.json.pre-share")" "$CASE_DIR/nowhere.json" "it is moved aside as a keepsake link"
+check_eq "$(test -f "$WORK_DIR/.claude.json" -a ! -L "$WORK_DIR/.claude.json" && echo file || echo other)" "file" "and a real file holds the merge"
+check_eq "$(test -e "$CASE_DIR/nowhere.json" && echo WRITTEN || echo untouched)" "untouched" "control(-): nothing was written through the link"
 
 new_case "share-profile-json-absent"
 run share-config "$WORK_LABEL" claude

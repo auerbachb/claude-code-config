@@ -227,8 +227,9 @@ written by hand is moved aside as `launchers.zsh.pre-share` and said so.
   nicknamed "Work", say), or the registry holds one `(provider, label)` pair twice. The
   message names both; the fix is `nick <label> <name>` on one of them (or repairing the
   duplicate row), then re-run. Nothing was written.
-- Exit `5` — `HOME` is unset (and `AI_QUOTAS_LAUNCHERS_FILE` is not), or the file could
-  not be written. Relay and stop.
+- Exit `5` — `HOME` is unset without `AI_QUOTAS_LAUNCHERS_FILE` (on top of the
+  `AI_QUOTAS_CONFIG` and `AI_QUOTAS_PROFILE_ROOT` every HOME-less run already needs), or
+  the file could not be written. Relay and stop.
 
 ## Step 3e — share-config: make a profile behave like the primary install (#1851)
 
@@ -253,9 +254,12 @@ linked to nowhere. Report the per-item lines as printed; they name paths only.
   `~/.claude/skills` aside and linking it to itself. Relay and stop.
 - Exit `4` — no such label; `list` to show the exact labels.
 - Exit `5` — the profile directory does not exist yet (`relogin` first), the primary
-  install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides, or the
-  profile's `.claude.json` is not parseable JSON — which is never rewritten. Relay and
-  stop; do not repair the file by hand.
+  install is missing, `HOME` is unset without the `AI_QUOTAS_PRIMARY_*` overrides (on top
+  of the `AI_QUOTAS_CONFIG` and `AI_QUOTAS_PROFILE_ROOT` every HOME-less run already
+  needs), the profile's `.claude.json` is not parseable JSON — which is never rewritten —
+  or that file changed while the merge was being computed, which means a Claude Code
+  session on that profile is writing it: nothing was replaced, re-run when it is idle.
+  Relay and stop; do not repair the file by hand.
 
 Neither action reads or prints a credential: `.credentials.json`, `auth.json`, and the
 Keychain are never opened, and nothing from `.claude.json` is printed — an MCP server

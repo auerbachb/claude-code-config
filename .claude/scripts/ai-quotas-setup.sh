@@ -2106,11 +2106,20 @@ action_launchers() {
     echo "${SELF_NAME}: skipped $s — the Cursor IDE holds that login; there is no CLI to launch"
   done
   # The source line, with the home prefix written as $HOME so the same line
-  # works in a dotfile that is checked in or copied between machines.
-  local shown="$LAUNCHERS_FILE"
-  [[ -n "$_HOME" && "$LAUNCHERS_FILE" == "$_HOME/"* ]] && shown="\$HOME/${LAUNCHERS_FILE#"$_HOME"/}"
+  # works in a dotfile that is checked in or copied between machines. The
+  # rest of the path goes inside double quotes ONLY when it carries nothing
+  # the shell would expand there — a `$(`, a backtick, a `"` or a `\` in an
+  # override path would otherwise be pasted into ~/.zshrc as live syntax
+  # (CodeAnt). Anything else is single-quoted whole, with `'` escaped.
+  local shown rest
+  if [[ -n "$_HOME" && "$LAUNCHERS_FILE" == "$_HOME/"* ]] \
+      && rest="${LAUNCHERS_FILE#"$_HOME"/}" && [[ "$rest" != *[\$\`\"\\]* ]]; then
+    shown="\"\$HOME/${rest}\""
+  else
+    shown="$(zsh_squote "$LAUNCHERS_FILE")"
+  fi
   echo "Add this line to ~/.zshrc (this tool never edits it), then open a new shell:"
-  echo "  [ -f \"${shown}\" ] && source \"${shown}\""
+  echo "  [ -f ${shown} ] && source ${shown}"
 }
 
 # --- share-config helpers ----------------------------------------------------
@@ -2186,11 +2195,18 @@ share_merge_mcp() { # <profile_dir> <primary_json>
     echo "  skipped .claude.json — the primary install has no mcpServers to share"
     return 0
   fi
-  if [[ -L "$path" ]]; then
-    die 5 "$path is a symlink — refusing to rewrite it through a link; replace it with a real file first"
+  # A symlink (even a dangling one) or a directory at this name is a thing in
+  # the way, moved aside like any other: the merge never writes through a link
+  # into another install's file, and `mv tmp dir/` would otherwise drop the
+  # new file INSIDE a directory and report success (CodeAnt).
+  if [[ -L "$path" || ( -e "$path" && ! -f "$path" ) ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved ".claude.json" "$dest"
   fi
+  local snapshot=""
   if [[ -f "$path" ]]; then
-    existing="$(jq -ce 'select(type == "object")' "$path" 2>/dev/null)" \
+    snapshot="$(cat "$path")" || die 5 "could not read $path"
+    existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
       || die 5 "$path is not a JSON object — refusing to touch it"
     mode="$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null || echo 600)"
   else
@@ -2208,6 +2224,17 @@ share_merge_mcp() { # <profile_dir> <primary_json>
   chmod "$mode" "$tmp" 2>/dev/null || chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
   printf '%s\n' "$merged" | jq . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize $path"; }
   if [[ -f "$path" ]]; then
+    # Claude Code rewrites its own .claude.json while a session runs, and it
+    # does not honour any lock this script could take. So the file is re-read
+    # right before it is replaced: a change since the snapshot means a live
+    # session wrote login or onboarding state the merge would overwrite with
+    # a stale copy — refused, nothing moved, re-run when the session is idle
+    # (CodeAnt). The window between this read and the rename is as small as
+    # it can be made without a lock the other writer would respect.
+    if [[ "$(cat "$path")" != "$snapshot" ]]; then
+      rm -f "$tmp"
+      die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
+    fi
     dest="$(move_aside "$path")"
     share_note_moved ".claude.json" "$dest"
   fi

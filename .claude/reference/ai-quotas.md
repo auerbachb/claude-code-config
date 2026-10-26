@@ -1339,7 +1339,10 @@ One zsh function per registered `claude` and `codex` account (override the path 
 launchers` marker on its second line: a file with the marker is overwritten in place on
 the next run, a file without it — the hand-written original — is moved aside as
 `launchers.zsh.pre-share` (a timestamped sibling when that name is taken) and never
-deleted. It carries no timestamp, so two runs over the same registry produce the same
+deleted. The printed `source` line writes the path as `"$HOME/…"` only when the rest of
+the path carries nothing the shell would expand inside double quotes; an override path
+with a `$`, backtick, `"` or `\` in it is single-quoted whole, so the line is safe to
+paste whatever `AI_QUOTAS_LAUNCHERS_FILE` holds. It carries no timestamp, so two runs over the same registry produce the same
 bytes, and it is written mode `600` like the registry whose labels it carries. The action
 ends by printing the one line to add to `~/.zshrc`; the tool never edits `~/.zshrc`.
 
@@ -1396,7 +1399,7 @@ Makes a profile behave like the primary install. For a **claude** profile:
 |------|--------|-----|
 | `skills`, `agents`, `rules`, `hooks`, `plugins`, `projects`, `CLAUDE.md`, `account-config.md` | symlink → `~/.claude/<name>` | One copy of the harness config and memory; a profile that lagged the primary would behave differently in ways nobody would think to check. The target is the primary *path* — `~/.claude/rules` is itself a symlink into the skills worktree, and linking to the path rather than its resolution keeps that indirection. |
 | `settings.json` | copy (`cp -p`, mode carried across) | Claude Code rewrites it in place; a symlink would make two installs fight over one file. |
-| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. |
+| `.claude.json` | merge the primary's `mcpServers` into the profile's own | The file is also the account's login and onboarding state (`oauthAccount`, `userID`, `hasCompletedOnboarding`, …). Only `mcpServers` crosses: the union of the profile's own and the primary's, the primary winning on a shared name. Every other key of the profile's file is kept; nothing else of the primary's comes across. Claude Code rewrites this file itself while a session runs and honours no lock, so the file is re-read right before it is replaced: if it changed since the snapshot the merge was computed from, the action refuses (exit `5`, nothing moved or replaced) rather than overwrite live login state with a stale copy — re-run when that session is idle. |
 
 For a **codex** profile: `rules` symlinked to `~/.codex/rules`, `config.toml` copied from
 `~/.codex`. The primary locations default from `HOME` and are overridable
@@ -1409,8 +1412,11 @@ target, a copy already identical, a `.claude.json` already holding every primary
 is `kept`, so a re-run changes nothing. **Nothing is deleted:** a directory, file, or
 wrong-pointing symlink in the way is moved to `<name>.pre-share` (timestamped when that
 name is taken), and the old `.claude.json` becomes `.claude.json.pre-share` before the
-merged one is installed at the same mode. A primary item that does not exist is
-`skipped` — no dangling symlink is ever created.
+merged one is installed at the same mode. That holds for `.claude.json` too: a symlink
+(dangling or not) or a directory at that name is moved aside first, and the merge then
+starts from an empty object — it never writes through a link into another install's
+file. A primary item that does not exist is `skipped` — no dangling symlink is ever
+created.
 
 **Refusals.** Exit `3` for a `cursor` account (no profile directory) and for a
 `profile_dir` whose physical path *is* the primary install — compared with `pwd -P`, so a
