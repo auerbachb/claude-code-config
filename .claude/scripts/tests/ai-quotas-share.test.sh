@@ -334,6 +334,11 @@ check_not_contains "$OUT" "moved the previous" "and no move is reported"
 printf '# another hand-written file\n' > "$LAUNCHERS"
 run launchers
 check_eq "$(count_pre_share "$(dirname "$LAUNCHERS")")" "2" "a second foreign file gets a timestamped keepsake when .pre-share is taken"
+# A hand-written file that QUOTES the marker further down is still not ours.
+{ printf '# my own launchers\n# (kept from an old generated file, whose second line read:)\n'; sed -n '2p' "$LAUNCHERS"; printf 'claude-work() { echo mine; }\n'; } > "$LAUNCHERS"
+run launchers
+check_eq "$(count_pre_share "$(dirname "$LAUNCHERS")")" "3" "a hand-written file quoting the marker below line 2 is moved aside, not overwritten"
+check_eq "$(grep -l 'echo mine' "$(dirname "$LAUNCHERS")"/launchers.zsh.pre-share.* | wc -l | tr -d ' ')" "1" "and its contents survive in the keepsake"
 check_eq "$(test -f "$LAUNCHERS.pre-share" && grep -c 'hand-written launchers' "$LAUNCHERS.pre-share")" "1" "and the first keepsake is untouched"
 
 # An override path a shell would expand inside double quotes must reach the

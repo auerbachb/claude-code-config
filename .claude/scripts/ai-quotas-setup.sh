@@ -1987,10 +1987,16 @@ file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
 # rule, used both by move_aside and by the .claude.json merge, which keeps a
 # COPY under this name so the live path never disappears.
 pre_share_dest() { # <path>
-  local dest="$1.pre-share"
+  local dest="$1.pre-share" stamp n=1
   if [[ -e "$dest" || -L "$dest" ]]; then
-    dest="$1.pre-share.$(date -u +%Y%m%dT%H%M%SZ)"
-    [[ ! -e "$dest" && ! -L "$dest" ]] || die 5 "could not move $1 aside: $dest already exists"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    dest="$1.pre-share.$stamp"
+    # Two keepsakes within one second get a numbered suffix rather than a
+    # refusal: the timestamp is for the owner's eyes, not a uniqueness claim.
+    while [[ -e "$dest" || -L "$dest" ]]; do
+      dest="$1.pre-share.$stamp.$n"; n=$((n + 1))
+      (( n < 1000 )) || die 5 "could not move $1 aside: too many keepsakes at $1.pre-share.$stamp.*"
+    done
   fi
   printf '%s' "$dest"
 }
@@ -2118,9 +2124,13 @@ action_launchers() {
   chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
 
   # A file of ours is replaced in place; anyone else's is moved aside first.
+  # "Ours" means the marker is the file's SECOND LINE, where this action puts
+  # it — a hand-written file that merely quotes the marker further down (a
+  # note on how the file was once generated, say) is not ours, and treating
+  # it as ours would overwrite it instead of keeping it aside (CodeAnt).
   if [[ -e "$LAUNCHERS_FILE" || -L "$LAUNCHERS_FILE" ]]; then
     if [[ ! -L "$LAUNCHERS_FILE" && -f "$LAUNCHERS_FILE" ]] \
-        && LC_ALL=C grep -qF -- "$LAUNCHERS_MARKER" "$LAUNCHERS_FILE" 2>/dev/null; then
+        && [[ "$(sed -n '2p' "$LAUNCHERS_FILE" 2>/dev/null)" == "$LAUNCHERS_MARKER" ]]; then
       :
     else
       moved="$(move_aside "$LAUNCHERS_FILE")"
