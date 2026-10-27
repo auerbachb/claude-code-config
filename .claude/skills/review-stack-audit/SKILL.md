@@ -88,7 +88,7 @@ lifecycle modes and mutually exclusive with the rest.
 `--repos a/b,c/d` / `--all-repos` also pass through (issue #1808): the vendors
 bill one account across every repo they review, so these measure several repos in
 one run. `--all-repos` reads the registered list from `review-repos.sh` (the
-`## Review repos` section of `~/.claude/account-config.md`). The snapshot's
+`## Review repos` section of `~/.claude/account-config.md`, plus the optional private overlay `~/.claude/account-config.local.md`). The snapshot's
 top-level `tools[]` is then the cross-repo total, so Steps 4–6 compare the
 account-level figure against the baseline unchanged; each repo's own figures stay
 in `per_repo[]`, and the report states which repos were measured. With neither

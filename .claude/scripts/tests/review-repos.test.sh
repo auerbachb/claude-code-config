@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for .claude/scripts/review-repos.sh (issue #1808).
-# catalog: tests — Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list, `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves
+# catalog: tests — Tests `review-repos.sh` offline — `REVIEW_REPOS` env, the account config's explicit list and its private untracked overlay (#1860), `--fixture` discovery (archived/no-marker/foreign-owner filtering), fail-closed discovery and malformed entries, and that the shipped `.claude/account-config.md` resolves
 #
 # Every case is OFFLINE: discovery is driven through --fixture, which runs the
 # same jq filter the live GraphQL response goes through. HOME is sandboxed so
@@ -24,7 +24,7 @@ cleanup() { chmod -R u+rwx "$TMP_DIR" 2>/dev/null || true; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME/.claude"
-unset REVIEW_REPOS CLAUDE_ACCOUNT_CONFIG
+unset REVIEW_REPOS CLAUDE_ACCOUNT_CONFIG CLAUDE_ACCOUNT_CONFIG_LOCAL
 
 FAILED=0
 fail() { echo "FAIL: $*" >&2; FAILED=1; }
@@ -178,6 +178,79 @@ expect_list "config: bullets inside HTML comments are notes, not entries" $'acme
 mkdir -p "$TMP_DIR/config-is-a-dir"
 run "CLAUDE_ACCOUNT_CONFIG=$TMP_DIR/config-is-a-dir" --
 expect_fail_closed "config: a config path that is not a readable file fails rather than falling to discovery"
+
+# ---------------------------------------------------------------------------
+# 2b. The private overlay (#1860): an untracked sibling file whose bullets are
+#     appended to the tracked list. It exists so repos whose names must not be
+#     published never have to appear in a tracked file.
+# ---------------------------------------------------------------------------
+
+OVERLAY_CONFIG="$TMP_DIR/overlay-account-config.md"
+OVERLAY="$TMP_DIR/overlay-account-config.local.md"   # the default sibling of OVERLAY_CONFIG
+cp "$CONFIG" "$OVERLAY_CONFIG"
+cat > "$OVERLAY" <<'MD'
+<!-- private: never committed -->
+## Review repos
+
+- acme/gamma
+- `acme/delta` — backticks stripped here too
+- ACME/Alpha
+<!-- - acme/retired -->
+MD
+
+run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" --
+expect_list "overlay: its bullets follow the tracked list; a case-variant duplicate folds into the tracked spelling" \
+  $'acme/alpha\nacme/beta\nacme/gamma\nacme/delta'
+
+run "REVIEW_REPOS=x/y" "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" --
+expect_list "overlay: REVIEW_REPOS still wins over tracked list and overlay" 'x/y'
+
+# Same overlay content, explicit path: CLAUDE_ACCOUNT_CONFIG_LOCAL overrides the sibling.
+ELSEWHERE="$TMP_DIR/elsewhere-overlay.md"
+printf '## Review repos\n\n- acme/epsilon\n' > "$ELSEWHERE"
+run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" "CLAUDE_ACCOUNT_CONFIG_LOCAL=$ELSEWHERE" --
+expect_list "overlay: CLAUDE_ACCOUNT_CONFIG_LOCAL replaces the sibling default" $'acme/alpha\nacme/beta\nacme/epsilon'
+
+# A missing overlay is the normal case and changes nothing.
+run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" "CLAUDE_ACCOUNT_CONFIG_LOCAL=$TMP_DIR/no-such-overlay.md" --
+expect_list "overlay: a missing overlay leaves the tracked list unchanged" $'acme/alpha\nacme/beta'
+
+# The tracked config needs no bullets of its own: an overlay alone is a complete list.
+BARE="$TMP_DIR/bare-config.md"
+printf '## Review repos\n\n```ini\nowner = acme\n```\n' > "$BARE"
+printf '## Review repos\n\n- acme/only-private\n' > "$TMP_DIR/bare-config.local.md"
+run "CLAUDE_ACCOUNT_CONFIG=$BARE" -- --no-discovery
+expect_list "overlay: an overlay alone satisfies the list, so discovery is never reached" 'acme/only-private'
+
+# ...and so does an overlay with no tracked config file at all.
+run "CLAUDE_ACCOUNT_CONFIG=$TMP_DIR/absent.md" "CLAUDE_ACCOUNT_CONFIG_LOCAL=$ELSEWHERE" -- --no-discovery
+expect_list "overlay: works when the tracked config file does not exist" 'acme/epsilon'
+
+# The overlay contributes bullets only. Its owner and marker lines must not steer
+# discovery: with no bullets anywhere, discovery runs under the TRACKED owner.
+printf '## Review repos\n\nowner = intruder\ndiscovery_marker = evil.yml\n' > "$TMP_DIR/bare-config.local.md"
+DISC_OWNER="$TMP_DIR/disc-owner.json"
+page '[{"nameWithOwner":"acme/found","isArchived":false,"object":{"id":"x"}},
+       {"nameWithOwner":"intruder/found","isArchived":false,"object":{"id":"x"}}]' > "$DISC_OWNER"
+run "CLAUDE_ACCOUNT_CONFIG=$BARE" -- --fixture "$DISC_OWNER"
+expect_list "overlay: its owner= line is ignored; discovery keeps the tracked owner" 'acme/found'
+
+# Fail closed, never partial: a bad overlay must not let the tracked half through.
+printf '## Review repos\n\n- acme/fine\n- acme-no-slash\n' > "$OVERLAY"
+run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" --
+expect_fail_closed "overlay: a malformed overlay bullet fails the whole list (no partial tracked list)"
+
+rm -f "$OVERLAY"; mkdir -p "$OVERLAY"
+run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" --
+expect_fail_closed "overlay: an overlay path that is not a readable file fails rather than being ignored"
+rmdir "$OVERLAY"
+
+# The default location is ~/.claude/account-config.local.md beside the default config.
+cp "$CONFIG" "$HOME/.claude/account-config.md"
+printf '## Review repos\n\n- acme/from-home-overlay\n' > "$HOME/.claude/account-config.local.md"
+run --
+expect_list "overlay: the default path is ~/.claude/account-config.local.md" $'acme/alpha\nacme/beta\nacme/from-home-overlay'
+rm -f "$HOME/.claude/account-config.md" "$HOME/.claude/account-config.local.md"
 
 # ---------------------------------------------------------------------------
 # 3. Discovery (--fixture stands in for the GraphQL response)
