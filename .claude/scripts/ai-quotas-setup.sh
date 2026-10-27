@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-quotas-setup.sh — Register AI subscription accounts and their isolated
 # per-account login profiles (issue #1666).
-# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, and report which accounts are currently logged in — labels and paths only, never a credential value
+# catalog: token-measurement — Register AI subscription accounts in `~/.claude/ai-quotas.json` — `claude` and `codex` each get an isolated per-account login profile, `cursor` gets a registry entry alone because the Cursor IDE holds that login — name them with short nicknames, install or remove the macOS LaunchAgent that takes one unattended usage reading a day, generate the `launchers.zsh` shell functions that start a provider CLI against one account's profile, share the primary install's skills, rules, hooks, plugins, and MCP servers into a profile, and report which accounts are currently logged in — labels and paths only, never a credential value
 #
 # PURPOSE
 #   The owner runs several premium AI coding subscriptions side by side and
@@ -30,6 +30,8 @@
 #   ai-quotas-setup.sh remove <label> [<provider>]
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
+#   ai-quotas-setup.sh launchers
+#   ai-quotas-setup.sh share-config <label> [<provider>]
 #   ai-quotas-setup.sh --help | -h
 #
 # ACTIONS
@@ -68,6 +70,39 @@
 #             The job is a RECORDER, never a gate: it reads figures and
 #             appends them, and nothing in this repo consults them to decide
 #             whether work may proceed.
+#   launchers Write ~/.claude/ai-quotas/launchers.zsh (#1851): one zsh
+#             function per registered claude/codex account, named
+#             `<provider>-<nickname slug>` (`Claude Work` -> claude-work,
+#             `GPT Personal` -> codex-personal; a leading provider word is
+#             dropped from the slug, and an account with no nickname uses the
+#             local part of its label). Each function sets the terminal tab
+#             title to the nickname, resolves the account's profile directory
+#             from the registry BY LABEL through `list --json` (never from a
+#             path built out of the label — #1850 records the directories
+#             can be named backwards), and runs the provider CLI with
+#             CLAUDE_CONFIG_DIR or CODEX_HOME set to it. cursor accounts are
+#             skipped with a note. Two accounts that would share a function
+#             name are refused (exit 3) rather than one silently shadowing
+#             the other. Prints the one `source` line to add to ~/.zshrc —
+#             this script never edits ~/.zshrc. A pre-existing file not
+#             written by this action is moved aside as launchers.zsh.pre-share.
+#   share-config
+#             Make a profile behave like the primary install. For a claude
+#             profile: symlink skills, agents, rules, hooks, plugins,
+#             projects, CLAUDE.md, and account-config.md to the ~/.claude
+#             equivalents, copy settings.json, and merge the primary
+#             ~/.claude.json mcpServers block into the profile's .claude.json
+#             (every other field of the profile's file — its login and
+#             onboarding state — is kept). For a codex profile: symlink rules
+#             and copy config.toml from ~/.codex. Anything already in the
+#             wanted state is left alone, so a re-run is a no-op; anything in
+#             the way is moved aside as <name>.pre-share, never deleted. A
+#             profile_dir that resolves to the primary install itself, or
+#             sits outside the profile root, is refused (exit 3), as is a
+#             cursor account. Neither action opens a login credential
+#             (.credentials.json, auth.json, the Keychain); the mcpServers
+#             block share-config copies can carry an API key in an env
+#             entry — copied byte for byte, never printed.
 #
 # PROVIDERS
 #   claude    Per-account CLAUDE_CONFIG_DIR, logged in by running `claude`
@@ -96,6 +131,8 @@
 #   Agent     ~/Library/LaunchAgents/com.claude.ai-quotas.plist  (mode 644,
 #             macOS only, written by `schedule install`)
 #   Job log   ~/.claude/ai-quotas/launchd.log
+#   Launchers ~/.claude/ai-quotas/launchers.zsh — written by `launchers`,
+#             sourced from ~/.zshrc by a line the owner adds
 #   History   ~/.claude/ai-quotas-history.jsonl — written by ai-quotas.sh,
 #             read here only to answer `schedule status`.
 #
@@ -116,6 +153,17 @@
 #   AI_QUOTAS_LAUNCHD_LOG   Path the job's stdout/stderr are directed to.
 #   AI_QUOTAS_SCHEDULE_HOUR Default hour for `schedule install` when --hour
 #                           is not given (0-23; the built-in default is 9).
+#   AI_QUOTAS_LAUNCHERS_FILE
+#                           Path `launchers` writes (default above).
+#   AI_QUOTAS_PRIMARY_CLAUDE_DIR
+#                           The primary Claude Code config dir `share-config`
+#                           links a claude profile to (default ~/.claude).
+#   AI_QUOTAS_PRIMARY_CLAUDE_JSON
+#                           The primary ~/.claude.json whose mcpServers block
+#                           `share-config` merges into a claude profile.
+#   AI_QUOTAS_PRIMARY_CODEX_HOME
+#                           The primary CODEX_HOME `share-config` shares from
+#                           into a codex profile (default ~/.codex).
 #   AI_QUOTAS_CLAUDE_BIN    Path to the `claude` CLI.
 #   AI_QUOTAS_CODEX_BIN     Path to the `codex` CLI.
 #   AI_QUOTAS_SECURITY_BIN  Path to macOS `security(1)`.
@@ -151,11 +199,17 @@
 #       cron line that ran the reader without them would record `needs-login`
 #       every day and call it history.
 #   3   Usage error: bad action, provider, or label; already-registered pair;
-#       an ambiguous label that matches more than one provider.
-#   4   No account matches the given label (remove / relogin / nick).
+#       an ambiguous label that matches more than one provider; two accounts
+#       that would share a launcher name; `share-config` on a cursor account
+#       or on a profile_dir that is the primary install itself.
+#   4   No account matches the given label (remove / relogin / nick /
+#       share-config).
 #   5   Dependency or write failure: `jq` missing, config unreadable,
 #       unparseable, or written by a different schema major (never rewritten),
-#       profile directory or config write failed.
+#       profile directory or config write failed; `launchers` or
+#       `share-config` could not write its file, or `share-config` found the
+#       profile directory missing or a .claude.json it cannot parse (never
+#       rewritten).
 #   6   The provider's login CLI could not be found. For `claude` and `codex`
 #       the exact command to run by hand is printed. For `cursor` the missing
 #       tool is sqlite3 — what reads the IDE state store, not a login CLI, so
@@ -295,7 +349,7 @@ case "$ACTION" in
     ARG_PROVIDER="${POSITIONAL[1]}"
     ARG_LABEL="${POSITIONAL[2]}"
     ;;
-  remove|relogin)
+  remove|relogin|share-config)
     [[ ${#POSITIONAL[@]} -ge 2 && ${#POSITIONAL[@]} -le 3 ]] \
       || die_usage "$ACTION requires <label> [<provider>]"
     ARG_LABEL="${POSITIONAL[1]}"
@@ -324,6 +378,9 @@ case "$ACTION" in
       ARG_PROVIDER="${POSITIONAL[3]}"
     fi
     ;;
+  launchers)
+    [[ ${#POSITIONAL[@]} -eq 1 ]] || die_usage "launchers takes no arguments"
+    ;;
   schedule)
     [[ ${#POSITIONAL[@]} -eq 2 ]] \
       || die_usage "schedule requires one of: install, remove, status"
@@ -334,7 +391,7 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, add, nick, remove, relogin, schedule)"
+    die_usage "unknown action: $ACTION (expected list, add, nick, remove, relogin, schedule, launchers, share-config)"
     ;;
 esac
 
@@ -1846,6 +1903,461 @@ action_list() {
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 }
 
+# --- launchers + share-config (#1851) ----------------------------------------
+# Both actions turn a registered profile into something the owner can USE:
+# `launchers` writes the shell functions that start a provider CLI against one
+# account's profile, and `share-config` makes a profile behave like the primary
+# install (same skills, rules, hooks, plugins, memory, MCP servers). Neither
+# reads a credential: the launcher resolves a DIRECTORY and the provider's own
+# CLI finds its credential inside it, and share-config never opens
+# `.credentials.json`, `auth.json`, or the Keychain — the only JSON it parses
+# is `.claude.json`, whose `mcpServers` block it copies and never prints.
+
+LAUNCHERS_FILE="${AI_QUOTAS_LAUNCHERS_FILE:-${_HOME}/.claude/ai-quotas/launchers.zsh}"
+PRIMARY_CLAUDE_DIR="${AI_QUOTAS_PRIMARY_CLAUDE_DIR:-${_HOME}/.claude}"
+PRIMARY_CLAUDE_JSON="${AI_QUOTAS_PRIMARY_CLAUDE_JSON:-${_HOME}/.claude.json}"
+PRIMARY_CODEX_HOME="${AI_QUOTAS_PRIMARY_CODEX_HOME:-${_HOME}/.codex}"
+# The marker a generated launchers file carries on its second line. A file
+# WITHOUT it was written by someone else and is moved aside, never overwritten.
+LAUNCHERS_MARKER="# GENERATED by ai-quotas-setup.sh launchers — re-run that action after adding, removing, or renaming an account; edits here are overwritten."
+
+# Mirrors require_schedule_home: with HOME unset the defaults above resolve to
+# `/.claude/...`, a path at the filesystem root, which is refused rather than
+# written to. An explicit override for every path the action touches lifts
+# the requirement, which is how the suite runs these actions HOME-less.
+require_share_home() { # <action> <override-env-names...>
+  [[ -n "$_HOME" ]] && return 0
+  local action="$1" name; shift
+  for name in "$@"; do
+    [[ -n "${!name:-}" ]] || die 5 "HOME is unset and $name is not set — '$action' would resolve a path under / ; set HOME (or every override) and re-run"
+  done
+}
+
+# Single-quote a value for a zsh source file. A label cannot carry a quote
+# (valid_label), but a nickname is free display text that may — `Bob's` — and
+# an unescaped one would end the string and hand the rest to the shell.
+zsh_squote() { # <text>
+  local s="$1"
+  s=${s//"'"/"'\\''"}
+  printf "'%s'" "$s"
+}
+
+# The slug half of a launcher name. Lowercase, every run of non-alphanumerics
+# collapsed to one `-`, trimmed. A leading provider word is dropped so
+# `Claude Work` becomes `claude-work` rather than `claude-claude-work` and
+# `GPT Personal` becomes `codex-personal` rather than `codex-gpt-personal`.
+slugify() { # <text>
+  printf '%s' "$1" \
+    | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C tr -c 'a-z0-9' '-' \
+    | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//'
+}
+
+launcher_name() { # <provider> <nickname|""> <label>
+  local provider="$1" nick="$2" label="$3" slug=""
+  if [[ -n "$nick" ]]; then
+    slug="$(slugify "$nick")"
+    case "$slug" in
+      claude-*|codex-*|gpt-*|chatgpt-*|openai-*) slug="${slug#*-}" ;;
+      claude|codex|gpt|chatgpt|openai) slug="" ;;
+    esac
+  fi
+  # No nickname, or one that was only the provider word: the label's local
+  # part (`someone` of `someone@example.com`) keeps the name short.
+  [[ -n "$slug" ]] || slug="$(slugify "${label%%@*}")"
+  [[ -n "$slug" ]] || slug="$(slugify "$label")"
+  printf '%s-%s' "$provider" "$slug"
+}
+
+# The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
+# and exits 0 printing `?p` for the BSD directive, so the BSD-first
+# `stat -f … || stat -c …` chain never reached its fallback on Linux and the
+# merged file was silently forced to 600 there (Graphite). Each answer is
+# checked for shape instead of trusting an exit code.
+file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
+  local m
+  m="$(stat -c '%a' "$1" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m=600
+  printf '%s' "$m"
+}
+
+# The keepsake name for <path>: <path>.pre-share, or — when that name is
+# already taken by an earlier run's keepsake — a timestamped sibling. One
+# rule, used both by move_aside and by the .claude.json merge, which keeps a
+# COPY under this name so the live path never disappears.
+pre_share_dest() { # <path>
+  local dest="$1.pre-share" stamp n=1
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    dest="$1.pre-share.$stamp"
+    # Two keepsakes within one second get a numbered suffix rather than a
+    # refusal: the timestamp is for the owner's eyes, not a uniqueness claim.
+    while [[ -e "$dest" || -L "$dest" ]]; do
+      dest="$1.pre-share.$stamp.$n"; n=$((n + 1))
+      (( n < 1000 )) || die 5 "could not move $1 aside: too many keepsakes at $1.pre-share.$stamp.*"
+    done
+  fi
+  printf '%s' "$dest"
+}
+
+# Moves <path> to its keepsake name and prints the destination. Nothing is
+# ever deleted: the thing in the way may be the only copy of a working
+# config, and the owner decides when to drop it.
+move_aside() { # <path>
+  local dest
+  dest="$(pre_share_dest "$1")"
+  mv "$1" "$dest" || die 5 "could not move $1 aside to $dest"
+  printf '%s' "$dest"
+}
+
+action_launchers() {
+  require_share_home launchers AI_QUOTAS_LAUNCHERS_FILE
+  local config count i provider label nickname name
+  config="$(read_config)"
+  count="$(printf '%s' "$config" | jq '.accounts | length')"
+
+  # Pass 1: name every claude/codex account and refuse a collision. Two
+  # functions of one name would not be an error to zsh — the second definition
+  # silently wins — so the owner would get the wrong account with no message.
+  local names=() labels=() providers=() nicks=() skipped=()
+  for (( i = 0; i < count; i++ )); do
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].provider')"
+    label="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i].label')"
+    nickname="$(printf '%s' "$config" | jq -r --argjson i "$i" \
+      '.accounts[$i].nickname // "" | if type == "string" then . else "" end')"
+    case "$provider" in
+      claude|codex) ;;
+      *) skipped+=("$provider '$label'"); continue ;;
+    esac
+    valid_nickname "$nickname" || nickname=""
+    name="$(launcher_name "$provider" "$nickname" "$label")"
+    local j
+    for (( j = 0; j < ${#names[@]}; j++ )); do
+      # A duplicate (provider, label) row — which `add` refuses but a hand
+      # edit can produce — would make the launcher's by-label lookup return
+      # two directories; refused here, where it can be named, not at launch.
+      if [[ "${providers[$j]}" == "$provider" && "${labels[$j]}" == "$label" ]]; then
+        die 3 "the registry holds $provider '$label' twice — the launcher could not tell which profile to start; fix $CONFIG_FILE first"
+      fi
+      if [[ "${names[$j]}" == "$name" ]]; then
+        die 3 "launcher name '$name' would be defined by both ${providers[$j]} '${labels[$j]}' and $provider '$label' — give one a different nickname (nick <label> <name>) and re-run"
+      fi
+    done
+    names+=("$name"); labels+=("$label"); providers+=("$provider"); nicks+=("${nickname:-$name}")
+  done
+
+  # Pass 2: render. Claude functions first, then Codex, registry order within
+  # each — grouped so the file reads as two short blocks rather than one
+  # interleaved list.
+  # No timestamp in the file: two runs over the same registry produce the
+  # same bytes, so a diff of the file is a diff of the registry.
+  local body="" group ordered=()
+  for group in claude codex; do
+    local block=""
+    for (( i = 0; i < ${#names[@]}; i++ )); do
+      [[ "${providers[$i]}" == "$group" ]] || continue
+      ordered+=("${names[$i]}")
+      block+="$(printf '%s() { _ai_launch %s %s %s "$@"; }' \
+        "${names[$i]}" "$group" "$(zsh_squote "${labels[$i]}")" "$(zsh_squote "${nicks[$i]}")")"$'\n'
+    done
+    [[ -n "$block" ]] || continue
+    case "$group" in
+      claude) body+="# Claude Code — CLAUDE_CONFIG_DIR points the CLI at one account's profile."$'\n' ;;
+      codex)  body+="# Codex — CODEX_HOME points the CLI at one account's profile."$'\n' ;;
+    esac
+    body+="$block"$'\n'
+  done
+
+  local dir tmp moved=""
+  dir="$(dirname "$LAUNCHERS_FILE")"
+  mkdir -p "$dir" || die 5 "could not create $dir"
+  tmp="$(mktemp "${dir}/.launchers.XXXXXX")" || die 5 "could not create a temp file in $dir"
+  # The resolver prefers the durable ~/.claude locations and falls back to the
+  # script that generated the file, so a file written from a checkout still
+  # works after the skills worktree is in place — and vice versa.
+  {
+    echo "# AI account launchers — one isolated login profile per subscription (claude-code-config #1851)."
+    echo "$LAUNCHERS_MARKER"
+    # A newline or carriage return in the config path would end this comment
+    # and make the rest of the path executable on every source (CodeAnt); the
+    # path is informational here, so such a character is shown as `?`.
+    echo "# Generated from ${CONFIG_FILE//[$'\n\r']/?}."
+    echo "# Each function resolves its profile directory from the ai-quotas registry BY LABEL at run time,"
+    echo "# so it stays correct even if a profile directory is renamed (claude-code-config #1850)."
+    echo "# Launch only: nothing here reads or prints a login credential — the provider CLI finds its own inside the profile."
+    echo
+    echo '_ai_profile_dir() { # <provider> <label> -> profile_dir on stdout'
+    echo '  local setup="" candidate'
+    echo '  for candidate in \'
+    echo '    "$HOME/.claude/skills-worktree/.claude/scripts/ai-quotas-setup.sh" \'
+    echo '    "$HOME/.claude/scripts/ai-quotas-setup.sh" \'
+    printf '    %s; do\n' "$(zsh_squote "${SELF_DIR}/${SELF_NAME}")"
+    echo '    [[ -x "$candidate" ]] && { setup="$candidate"; break; }'
+    echo '  done'
+    echo '  [[ -n "$setup" ]] || { echo "launcher: ai-quotas-setup.sh not found — re-run: ai-quotas-setup.sh launchers" >&2; return 1; }'
+    echo '  "$setup" list --json 2>/dev/null \'
+    echo "    | jq -r --arg p \"\$1\" --arg l \"\$2\" '.[] | select(.provider == \$p and .label == \$l) | .profile_dir // empty'"
+    echo '}'
+    echo
+    echo '_ai_launch() { # <provider> <label> <tab-title> [cli args...]'
+    echo '  local provider=$1 label=$2 nick=$3; shift 3'
+    echo '  local dir; dir=$(_ai_profile_dir "$provider" "$label")'
+    echo '  if [[ -z "$dir" || ! -d "$dir" ]]; then'
+    echo '    echo "launcher: no $provider profile registered for $label — run: ai-quotas-setup.sh list" >&2'
+    echo '    return 1'
+    echo '  fi'
+    echo '  # Name the terminal tab and window after the account so parallel sessions stay distinguishable —'
+    echo '  # only when stdout is a terminal, so `claude-work -p … | jq` is not handed the escape sequence.'
+    echo "  [[ -t 1 ]] && printf '\\e]1;%s\\a\\e]2;%s\\a' \"\$nick\" \"\$nick\""
+    echo '  case $provider in'
+    echo '    claude) CLAUDE_CONFIG_DIR="$dir" command claude "$@" ;;'
+    echo '    codex)  CODEX_HOME="$dir" command codex "$@" ;;'
+    echo '    *) echo "launcher: unknown provider $provider" >&2; return 1 ;;'
+    echo '  esac'
+    echo '}'
+    echo
+    printf '%s' "$body"
+  } > "$tmp" || { rm -f "$tmp"; die 5 "could not write $tmp"; }
+  # 600 like the registry it is derived from: the file names the owner's
+  # subscription emails, which is the registry's own reason for 600.
+  chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
+
+  # A file of ours is replaced in place; anyone else's is moved aside first.
+  # "Ours" means the marker is the file's SECOND LINE, where this action puts
+  # it — a hand-written file that merely quotes the marker further down (a
+  # note on how the file was once generated, say) is not ours, and treating
+  # it as ours would overwrite it instead of keeping it aside (CodeAnt).
+  if [[ -e "$LAUNCHERS_FILE" || -L "$LAUNCHERS_FILE" ]]; then
+    if [[ ! -L "$LAUNCHERS_FILE" && -f "$LAUNCHERS_FILE" ]] \
+        && [[ "$(sed -n '2p' "$LAUNCHERS_FILE" 2>/dev/null)" == "$LAUNCHERS_MARKER" ]]; then
+      :
+    else
+      moved="$(move_aside "$LAUNCHERS_FILE")"
+    fi
+  fi
+  mv "$tmp" "$LAUNCHERS_FILE" || { rm -f "$tmp"; die 5 "could not install $LAUNCHERS_FILE"; }
+
+  echo "${SELF_NAME}: wrote ${LAUNCHERS_FILE} — ${#ordered[@]} launcher(s)${ordered[*]:+: ${ordered[*]}}"
+  [[ -z "$moved" ]] || echo "${SELF_NAME}: moved the previous $(basename "$LAUNCHERS_FILE") aside to $(basename "$moved") (it was not generated by this tool)"
+  local s
+  for s in "${skipped[@]+"${skipped[@]}"}"; do
+    echo "${SELF_NAME}: skipped $s — the Cursor IDE holds that login; there is no CLI to launch"
+  done
+  # The source line, with the home prefix written as $HOME so the same line
+  # works in a dotfile that is checked in or copied between machines. The
+  # rest of the path goes inside double quotes ONLY when it carries nothing
+  # the shell would expand there — a `$(`, a backtick, a `"` or a `\` in an
+  # override path would otherwise be pasted into ~/.zshrc as live syntax
+  # (CodeAnt). Anything else is single-quoted whole, with `'` escaped.
+  local shown rest
+  if [[ -n "$_HOME" && "$LAUNCHERS_FILE" == "$_HOME/"* ]] \
+      && rest="${LAUNCHERS_FILE#"$_HOME"/}" && [[ "$rest" != *[\$\`\"\\]* ]]; then
+    shown="\"\$HOME/${rest}\""
+  else
+    shown="$(zsh_squote "$LAUNCHERS_FILE")"
+  fi
+  echo "Add this line to ~/.zshrc (this tool never edits it), then open a new shell:"
+  echo "  [ -f ${shown} ] && source ${shown}"
+}
+
+# --- share-config helpers ----------------------------------------------------
+# Each reports one line on stdout — `linked`, `copied`, `merged`, `kept`,
+# `skipped` — and bumps the matching counter so the summary line adds up.
+SHARE_LINKED=0; SHARE_COPIED=0; SHARE_MERGED=0; SHARE_KEPT=0; SHARE_MOVED=0; SHARE_SKIPPED=0
+
+share_note_moved() { # <name> <dest>
+  SHARE_MOVED=$((SHARE_MOVED + 1))
+  echo "  moved   $1 aside to $(basename "$2")"
+}
+
+share_link() { # <profile_dir> <name> <target>
+  local path="$1/$2" target="$3" dest
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped $2 — $target does not exist in the primary install"
+    return 0
+  fi
+  if [[ -L "$path" && "$(readlink "$path")" == "$target" ]]; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    $2 (already linked)"
+    return 0
+  fi
+  if [[ -e "$path" || -L "$path" ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved "$2" "$dest"
+  fi
+  ln -s "$target" "$path" || die 5 "could not link $path -> $target"
+  SHARE_LINKED=$((SHARE_LINKED + 1))
+  echo "  linked  $2 -> $target"
+}
+
+share_copy() { # <profile_dir> <name> <source>
+  local path="$1/$2" source="$3" dest
+  if [[ ! -f "$source" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped $2 — $source does not exist in the primary install"
+    return 0
+  fi
+  if [[ ! -L "$path" && -f "$path" ]] && cmp -s "$source" "$path"; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    $2 (identical to the primary copy)"
+    return 0
+  fi
+  if [[ -e "$path" || -L "$path" ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved "$2" "$dest"
+  fi
+  # `-p` carries the primary file's mode across: a 600 settings file stays 600.
+  cp -p "$source" "$path" || die 5 "could not copy $source to $path"
+  SHARE_COPIED=$((SHARE_COPIED + 1))
+  echo "  copied  $2 from $source"
+}
+
+# Merges the primary `.claude.json`'s `mcpServers` into the profile's own,
+# primary entries winning on a shared name, and leaves EVERY other key of the
+# profile's file alone — its `oauthAccount`, onboarding flags, and project
+# list are what make it that account's. Nothing from either file is printed:
+# an MCP server entry can carry an API key in its env block.
+share_merge_mcp() { # <profile_dir> <primary_json>
+  local path="$1/.claude.json" primary="$2" servers n existing merged tmp mode dest
+  if [[ ! -f "$primary" ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped .claude.json — $primary does not exist in the primary install"
+    return 0
+  fi
+  servers="$(jq -ce '.mcpServers // {} | select(type == "object")' "$primary" 2>/dev/null)" \
+    || die 5 "could not read mcpServers from $primary (not valid JSON, or mcpServers is not an object)"
+  n="$(printf '%s' "$servers" | jq 'length')"
+  if [[ "$n" -eq 0 ]]; then
+    SHARE_SKIPPED=$((SHARE_SKIPPED + 1))
+    echo "  skipped .claude.json — the primary install has no mcpServers to share"
+    return 0
+  fi
+  # A symlink (even a dangling one) or a directory at this name is a thing in
+  # the way, moved aside like any other: the merge never writes through a link
+  # into another install's file, and `mv tmp dir/` would otherwise drop the
+  # new file INSIDE a directory and report success (CodeAnt).
+  if [[ -L "$path" || ( -e "$path" && ! -f "$path" ) ]]; then
+    dest="$(move_aside "$path")"
+    share_note_moved ".claude.json" "$dest"
+  fi
+  local snapshot=""
+  if [[ -f "$path" ]]; then
+    snapshot="$(cat "$path")" || die 5 "could not read $path"
+    existing="$(printf '%s' "$snapshot" | jq -ce 'select(type == "object")' 2>/dev/null)" \
+      || die 5 "$path is not a JSON object — refusing to touch it"
+    mode="$(file_mode "$path")"
+  else
+    existing='{}'
+    mode=600
+  fi
+  merged="$(printf '%s' "$existing" | jq -c --argjson s "$servers" '.mcpServers = ((.mcpServers // {}) + $s)')" \
+    || die 5 "could not merge mcpServers into $path"
+  if [[ "$(printf '%s' "$existing" | jq -S .)" == "$(printf '%s' "$merged" | jq -S .)" ]]; then
+    SHARE_KEPT=$((SHARE_KEPT + 1))
+    echo "  kept    .claude.json (all $n primary mcpServers already present)"
+    return 0
+  fi
+  tmp="$(mktemp "$1/.claude.json.XXXXXX")" || die 5 "could not create a temp file in $1"
+  chmod "$mode" "$tmp" 2>/dev/null || chmod 600 "$tmp" || { rm -f "$tmp"; die 5 "could not chmod $tmp"; }
+  printf '%s\n' "$merged" | jq . > "$tmp" || { rm -f "$tmp"; die 5 "could not serialize $path"; }
+  if [[ -f "$path" ]]; then
+    # Claude Code rewrites its own .claude.json while a session runs, and it
+    # does not honour any lock this script could take. So the file is re-read
+    # right before it is replaced: a change since the snapshot means a live
+    # session wrote login or onboarding state the merge would overwrite with
+    # a stale copy — refused, nothing moved, re-run when the session is idle
+    # (CodeAnt). The window between this read and the rename is as small as
+    # it can be made without a lock the other writer would respect.
+    if [[ "$(cat "$path")" != "$snapshot" ]]; then
+      rm -f "$tmp"
+      die 5 "$path changed while the merge was computed (a Claude Code session on this profile is writing it) — nothing was replaced; re-run share-config when that session is idle"
+    fi
+    # The keepsake is a COPY, and the merged file is then renamed over the
+    # original: the path never disappears, so a session that recreates the
+    # file in a move-then-install gap has no gap to hit, and a failed rename
+    # leaves the original in place rather than only under .pre-share
+    # (CodeRabbit).
+    dest="$(pre_share_dest "$path")"
+    cp -p "$path" "$dest" || { rm -f "$tmp"; die 5 "could not keep $path as $dest"; }
+    share_note_moved ".claude.json" "$dest"
+  fi
+  mv -f "$tmp" "$path" || { rm -f "$tmp"; die 5 "could not install $path"; }
+  SHARE_MERGED=$((SHARE_MERGED + 1))
+  echo "  merged  $n primary mcpServers into .claude.json (the profile's own fields kept)"
+}
+
+action_share_config() {
+  local config index provider label dir primary_dir phys_dir phys_primary
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
+  provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+  label="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].label')"
+  dir="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].profile_dir')"
+
+  case "$provider" in
+    claude)
+      require_share_home share-config AI_QUOTAS_PRIMARY_CLAUDE_DIR AI_QUOTAS_PRIMARY_CLAUDE_JSON
+      primary_dir="$PRIMARY_CLAUDE_DIR" ;;
+    codex)
+      require_share_home share-config AI_QUOTAS_PRIMARY_CODEX_HOME
+      primary_dir="$PRIMARY_CODEX_HOME" ;;
+    *) die 3 "share-config applies to claude and codex profiles — $provider '$label' has no profile directory (the Cursor IDE holds that login)" ;;
+  esac
+  [[ -d "$dir" ]] || die 5 "profile directory does not exist: $dir — run 'relogin $label $provider' first"
+  [[ -d "$primary_dir" ]] || die 5 "primary install not found: $primary_dir"
+  # Symlink targets are written as `$primary_dir/<name>`, and `ln -s` resolves
+  # a relative target from the LINK's directory, not the caller's — so a
+  # relative override would produce eight links to nowhere (CodeAnt). Made
+  # absolute once, here; the per-item targets below then stay unresolved
+  # (`~/.claude/rules` may itself be a symlink, and that indirection is kept).
+  case "$primary_dir" in
+    /*) ;;
+    *) primary_dir="$( (cd "$primary_dir" 2>/dev/null && pwd) || true )"
+       [[ -n "$primary_dir" ]] || die 5 "could not resolve the primary install directory" ;;
+  esac
+
+  # The one way this action could destroy the primary install is being pointed
+  # at it: every `linked` step would first move the real ~/.claude/skills aside
+  # and then link it to itself. Compared on the physical paths, so a symlinked
+  # profile_dir cannot slip past a string comparison.
+  phys_dir="$( (cd -P "$dir" 2>/dev/null && pwd -P) || true )"
+  phys_primary="$( (cd -P "$primary_dir" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$phys_dir" && -n "$phys_primary" ]] || die 5 "could not resolve $dir or $primary_dir"
+  if [[ "$phys_dir" == "$phys_primary" ]]; then
+    die 3 "refusing: $provider '$label' profile_dir resolves to the primary install itself ($phys_primary)"
+  fi
+  # And it must sit under the profile root. Every profile `add` creates does;
+  # a hand-edited row pointing anywhere else would have this action moving
+  # that directory's files aside and linking into it (CodeAnt). Physical
+  # paths again, so a symlinked row cannot slip past.
+  local root_phys
+  root_phys="$( (cd -P "$PROFILE_ROOT" 2>/dev/null && pwd -P) || true )"
+  [[ -n "$root_phys" ]] || die 5 "could not resolve the profile root: $PROFILE_ROOT"
+  case "$phys_dir" in
+    "$root_phys"/*) : ;;
+    *) die 3 "refusing: $provider '$label' profile_dir ($dir) resolves to $phys_dir, outside the profile root $root_phys — fix the registry row before sharing into it" ;;
+  esac
+
+  echo "${SELF_NAME}: share-config $provider '$label' ($dir) from $primary_dir"
+  local name
+  case "$provider" in
+    claude)
+      for name in skills agents rules hooks plugins projects CLAUDE.md account-config.md; do
+        share_link "$dir" "$name" "$primary_dir/$name"
+      done
+      share_copy "$dir" settings.json "$primary_dir/settings.json"
+      share_merge_mcp "$dir" "$PRIMARY_CLAUDE_JSON"
+      ;;
+    codex)
+      share_link "$dir" rules "$primary_dir/rules"
+      share_copy "$dir" config.toml "$primary_dir/config.toml"
+      ;;
+  esac
+  echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
+}
+
 case "$ACTION" in
   list)     action_list ;;
   add)      action_add ;;
@@ -1853,4 +2365,6 @@ case "$ACTION" in
   remove)   action_remove ;;
   relogin)  action_relogin ;;
   schedule) action_schedule ;;
+  launchers)    action_launchers ;;
+  share-config) action_share_config ;;
 esac
