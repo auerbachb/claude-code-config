@@ -245,6 +245,15 @@ run "CLAUDE_ACCOUNT_CONFIG=$OVERLAY_CONFIG" --
 expect_fail_closed "overlay: an overlay path that is not a readable file fails rather than being ignored"
 rmdir "$OVERLAY"
 
+# A config inside a checkout puts the default overlay inside it too (the shipped
+# .claude/account-config.md is exactly that), so git must ignore the filename or
+# `git add .` would commit the private repo names.
+if git -C "$REPO_ROOT" check-ignore -q .claude/account-config.local.md; then
+  ok "overlay: the default sibling filename is git-ignored, so a config inside a checkout cannot commit it"
+else
+  fail "overlay: .claude/account-config.local.md is not git-ignored"
+fi
+
 # The default location is ~/.claude/account-config.local.md beside the default config.
 cp "$CONFIG" "$HOME/.claude/account-config.md"
 printf '## Review repos\n\n- acme/from-home-overlay\n' > "$HOME/.claude/account-config.local.md"

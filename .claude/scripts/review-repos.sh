@@ -41,6 +41,10 @@
 #        the overlay; its `owner` and `discovery_marker` lines are ignored. A
 #        missing overlay is fine. One that exists but cannot be read, or holds a
 #        bullet that is not owner/name, fails the whole list.
+#        The overlay's default path is a sibling of the config, so it lands
+#        inside a checkout when CLAUDE_ACCOUNT_CONFIG points at a checked-in
+#        file. This repo's .gitignore lists account-config.local.md so it
+#        cannot be committed by accident; a checkout of your own needs the same.
 #     3. Discovery — every non-archived repo owned by `owner` whose default
 #        branch carries .github/workflows/<discovery_marker>. Both keys come
 #        from `key = value` lines in the same section; defaults are the
