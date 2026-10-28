@@ -623,6 +623,19 @@ epoch_to_et_short() { # <epoch>
   fi
 }
 
+# `Nov 6` — a date with no time, for a deadline measured in days (#1862): a
+# reset credit expires on a day, and a clock time would claim a precision the
+# provider does not state.
+epoch_to_et_date_short() { # <epoch>
+  local e="${1:-}"
+  [[ -n "$e" && "$e" =~ ^[0-9]+$ ]] || return 0
+  if [[ "$DATE_IS_GNU" -eq 1 ]]; then
+    TZ='America/New_York' date -d "@$e" '+%b %-d' 2>/dev/null || true
+  else
+    TZ='America/New_York' date -r "$e" '+%b %-d' 2>/dev/null || true
+  fi
+}
+
 # `{"window_start_epoch": N}` merged into a provider's extra object, or that
 # object unchanged when this row has no window to place. Both arguments must be
 # plain integers: a reset this reader could not parse, or a duration the
@@ -784,6 +797,10 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       # shape the note above exists to prevent.
       free_resets_remaining: null,
       credits_remaining_usd: null,
+      # #1862. The soonest expiry among the reset credits that are still
+      # available, and the same instant as an Eastern date for the table.
+      free_reset_expires_epoch: null,
+      free_reset_expires_et_short: null,
       # #1701. `window_start_epoch` is the one figure only the PROVIDER PATH
       # knows — a Claude week is `resets_at - 7 days`, a Codex window is
       # `resets_at - windowDurationMins`, a Cursor cycle starts where the
@@ -1723,15 +1740,19 @@ codex_app_server_read() { # <profile_dir> <codex_bin>
 # the thing worth surfacing.
 # A LIVE overage figure from the rate-limits payload, when one is there.
 #
-# No captured Codex payload has ever carried either key — the reset balance
-# lives in the ChatGPT usage UI, not in `account/rateLimits/read`. This is a
-# hook, not an observation, and it is written so that being wrong costs
-# nothing: a key that is absent, or present with a value that is not a plain
-# number, contributes NOTHING to the row, and the month watermark in
-# quotas-cheapest-next.sh answers instead. What it must never do is invent a
-# balance — hence the explicit numeric guard rather than a bare `tonumber`.
-# If OpenAI ships the figure under a third name, add it here and to
-# .claude/reference/ai-quotas.md; until then the fallback is the answer.
+# The reset balance IS in the payload (#1862), just not under the key this
+# hook first guessed: `account/rateLimits/read` carries
+# `rateLimitResetCredits: {availableCount, credits: [{status, grantedAt,
+# expiresAt, …}]}` beside `rateLimits`, and the HTTP body carries
+# `rate_limit_reset_credits: {available_count}`. Credits EXPIRE, so the soonest
+# expiry among the still-available ones is read too. The older guessed keys
+# stay as harmless fallbacks.
+#
+# Written so that being wrong costs nothing: a key that is absent, or present
+# with a value that is not a plain number, contributes NOTHING to the row, and
+# the month watermark in quotas-cheapest-next.sh answers instead. What it must
+# never do is invent a balance — hence the explicit numeric guard rather than a
+# bare `tonumber`.
 codex_live_overage() { # <snapshot-json-file>
   # Type-guarded at every step. `.resets.freeRemaining` on a payload whose
   # `resets` is an array or a number is a jq TYPE ERROR, which aborts the
@@ -1744,9 +1765,18 @@ codex_live_overage() { # <snapshot-json-file>
                 else null end;
     def obj: if type == "object" then . else {} end;
     (. | obj) as $s
+    | ($s.rateLimitResetCredits | obj) as $rc
     | {free_resets_remaining:
          (($s.freeResetsRemaining // $s.free_resets_remaining
-           // ($s.resets | obj | .freeRemaining) // null) | as_num),
+           // ($s.resets | obj | .freeRemaining)
+           // $rc.availableCount
+           // ($s.rate_limit_reset_credits | obj | .available_count)
+           // null) | as_num),
+       free_reset_expires_epoch:
+         (if ($rc.credits | type) == "array"
+          then ([$rc.credits[] | obj | select(.status == "available")
+                 | (.expiresAt | as_num) | select(. != null)] | min)
+          else null end),
        credits_remaining_usd:
          (($s.creditBalanceUsd // ($s.credits | obj | .balanceUsd) // null) | as_num)}
     | with_entries(select(.value != null))' "$1" 2>/dev/null \
@@ -1762,6 +1792,12 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
   plan="$(jq -r '.planType // empty' "$snap" 2>/dev/null || true)"
   live="$(codex_live_overage "$snap")"
   printf '%s' "$live" | jq -e 'type == "object"' >/dev/null 2>&1 || live="{}"
+  local exp_epoch exp_date
+  exp_epoch="$(printf '%s' "$live" | jq -r '.free_reset_expires_epoch // empty' 2>/dev/null || true)"
+  exp_date="$(epoch_to_et_date_short "$exp_epoch")"
+  if [[ -n "$exp_date" ]]; then
+    live="$(printf '%s' "$live" | jq -c --arg d "$exp_date" '. + {free_reset_expires_et_short: $d}' 2>/dev/null || printf '%s' "$live")"
+  fi
   weekly="$(jq -c '[.primary, .secondary] | map(select(. != null))
                    | (map(select(.windowDurationMins == 10080)) | first)
                      // (map(select(.windowDurationMins != null))
@@ -1891,7 +1927,12 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
 
   # The HTTP payload nests the same snapshot one or two levels down
   # depending on the caller; take the first object that carries a window.
-  jq '(.rate_limits // .rateLimits // .usage.rateLimits // .)' "$body" > "$snap" 2>/dev/null || : > "$snap"
+  # The reset-credit summary is a sibling of the window data here too, under
+  # `rate_limit_reset_credits` (#1862), so keep it when the windows are nested.
+  jq '. as $top | (.rate_limits // .rateLimits // .usage.rateLimits // .) as $s
+      | if ($s | type) == "object" and ($top.rate_limit_reset_credits | type) == "object"
+        then $s + {rate_limit_reset_credits: $top.rate_limit_reset_credits}
+        else $s end' "$body" > "$snap" 2>/dev/null || : > "$snap"
   if ! codex_render_snapshot "$label" "$email" "$snap" "http" "$why"; then
     local keys
     keys="$(jq -r 'if type == "object" then (keys_unsorted | join(", ")) else type end' "$body" 2>/dev/null || echo "unreadable")"
@@ -1925,7 +1966,12 @@ read_codex_account() { # <label> <profile_dir>
       # pipeline reports failure, and the `|| :` then truncates the snapshot
       # jq had just written correctly — a good read discarded by its own
       # error handling, and only when more than one line matches.
-      jq -sc 'map(select(.id == 2) | (.result.rateLimits // empty)) | first // empty' \
+      # `rateLimitResetCredits` is a SIBLING of `rateLimits` in the reply, not
+      # a child (#1862). Carry it into the snapshot, or the balance Codex shows
+      # in its own banner is thrown away here.
+      jq -sc 'map(select(.id == 2) | (.result // empty) | select(.rateLimits != null)
+                  | (.rateLimits + {rateLimitResetCredits: (.rateLimitResetCredits // null)}))
+              | first // empty' \
         "$CODEX_RESULT_FILE" > "$snap" 2>/dev/null || : > "$snap"
       if [[ -s "$snap" ]] && codex_render_snapshot "$label" "$email" "$snap" "app-server"; then
         return 0
