@@ -2827,8 +2827,8 @@ check_eq "$(field_of codex-one@example.com "7-day" free_resets_remaining)" "2" \
 # took the minimum over every credit would report it.
 check_eq "$(field_of codex-one@example.com "7-day" free_reset_expires_epoch)" "$EXP_SOON" \
   "the expiry is the soonest among credits still available, not among all of them"
-check_eq "$(field_of codex-one@example.com "7-day" free_reset_expires_et_short)" "Nov 6" \
-  "and is rendered as an Eastern date"
+check_eq "$(field_of codex-one@example.com "7-day" free_reset_expires_et_short)" "Nov 6 6:31 PM ET" \
+  "and is rendered as an Eastern date and time, since the last day turns on the hour"
 
 reset_state
 X1="$(seed_codex_profile codex-one@example.com "$(rc_snapshot '{"availableCount": 0, "credits": []}')")"
@@ -2856,6 +2856,14 @@ check_eq "$(field_of codex-one@example.com "7-day" free_reset_expires_epoch)" "n
   "and credits that are not a list contribute no expiry"
 check_eq "$(field_of codex-one@example.com "7-day" status)" "ok" \
   "and the row still reads ok"
+
+# A malformed value in an EARLIER key must not hide a valid count in a later one.
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly | jq -c '. + {freeResetsRemaining: "n/a", rateLimitResetCredits: {availableCount: 5}}')")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+run --json
+check_eq "$(field_of codex-one@example.com "7-day" free_resets_remaining)" "5" \
+  "the first candidate that is a number wins, not the first key that is present"
 
 reset_state
 X1="$(seed_codex_profile codex-one@example.com "$(rc_snapshot '{"availableCount": 3}')")"

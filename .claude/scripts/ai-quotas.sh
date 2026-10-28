@@ -623,16 +623,17 @@ epoch_to_et_short() { # <epoch>
   fi
 }
 
-# `Nov 6` — a date with no time, for a deadline measured in days (#1862): a
-# reset credit expires on a day, and a clock time would claim a precision the
-# provider does not state.
-epoch_to_et_date_short() { # <epoch>
+# `Nov 6 6:31 PM ET` — a deadline as an instant (#1862). The provider states the
+# expiry to the second, and on a credit's last day the hour decides whether it
+# can still be used, so a bare date would mislead. The zone is spelled out
+# because this cell, unlike the RESETS column, has no ET heading.
+epoch_to_et_datetime_short() { # <epoch>
   local e="${1:-}"
   [[ -n "$e" && "$e" =~ ^[0-9]+$ ]] || return 0
   if [[ "$DATE_IS_GNU" -eq 1 ]]; then
-    TZ='America/New_York' date -d "@$e" '+%b %-d' 2>/dev/null || true
+    TZ='America/New_York' date -d "@$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
   else
-    TZ='America/New_York' date -r "$e" '+%b %-d' 2>/dev/null || true
+    TZ='America/New_York' date -r "$e" '+%b %-d %-I:%M %p ET' 2>/dev/null || true
   fi
 }
 
@@ -798,7 +799,7 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
       free_resets_remaining: null,
       credits_remaining_usd: null,
       # #1862. The soonest expiry among the reset credits that are still
-      # available, and the same instant as an Eastern date for the table.
+      # available, and the same instant as an Eastern date and time.
       free_reset_expires_epoch: null,
       free_reset_expires_et_short: null,
       # #1701. `window_start_epoch` is the one figure only the PROVIDER PATH
@@ -1767,11 +1768,13 @@ codex_live_overage() { # <snapshot-json-file>
     (. | obj) as $s
     | ($s.rateLimitResetCredits | obj) as $rc
     | {free_resets_remaining:
-         (($s.freeResetsRemaining // $s.free_resets_remaining
-           // ($s.resets | obj | .freeRemaining)
-           // $rc.availableCount
-           // ($s.rate_limit_reset_credits | obj | .available_count)
-           // null) | as_num),
+         # The first candidate that is a plain number wins. `//` alone would stop
+         # at the first key that is merely PRESENT, so a malformed value in an
+         # earlier key would hide a valid count in a later one.
+         ([$s.freeResetsRemaining, $s.free_resets_remaining,
+           ($s.resets | obj | .freeRemaining), $rc.availableCount,
+           ($s.rate_limit_reset_credits | obj | .available_count)]
+          | map(as_num) | map(select(. != null)) | first),
        free_reset_expires_epoch:
          (if ($rc.credits | type) == "array"
           then ([$rc.credits[] | obj | select(.status == "available")
@@ -1794,7 +1797,7 @@ codex_render_snapshot() { # <label> <email> <snapshot-json-file> <source> [<note
   printf '%s' "$live" | jq -e 'type == "object"' >/dev/null 2>&1 || live="{}"
   local exp_epoch exp_date
   exp_epoch="$(printf '%s' "$live" | jq -r '.free_reset_expires_epoch // empty' 2>/dev/null || true)"
-  exp_date="$(epoch_to_et_date_short "$exp_epoch")"
+  exp_date="$(epoch_to_et_datetime_short "$exp_epoch")"
   if [[ -n "$exp_date" ]]; then
     live="$(printf '%s' "$live" | jq -c --arg d "$exp_date" '. + {free_reset_expires_et_short: $d}' 2>/dev/null || printf '%s' "$live")"
   fi

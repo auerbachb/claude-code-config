@@ -550,16 +550,16 @@ check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "3-hour" \
 # --- 10. a live reset balance names its expiry, and a live zero is zero (#1862) --
 
 reset_state
-run "$(rows "$(row codex c 7-day 4 ok '{"free_resets_remaining": 1, "free_reset_expires_et_short": "Nov 6"}')")"
-check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset, expires Nov 6" \
+run "$(rows "$(row codex c 7-day 4 ok '{"free_resets_remaining": 1, "free_reset_expires_et_short": "Nov 6 6:31 PM ET"}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset, expires Nov 6 6:31 PM ET" \
   "a live balance with an expiry names the day the soonest credit lapses"
 check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason')" \
-  "4 % weekly left, 1 free reset, the soonest expires Nov 6" \
+  "4 % weekly left, 1 free reset, the soonest expires Nov 6 6:31 PM ET" \
   "and the hint says so, without calling a live balance a monthly one"
 
 # Discriminating: an expiry on a row whose balance is only the table's ASSUMPTION
 # must not appear, or the label would date a credit nobody proved exists.
-run "$(rows "$(row codex c 7-day 4 ok '{"free_reset_expires_et_short": "Nov 6"}')")"
+run "$(rows "$(row codex c 7-day 4 ok '{"free_reset_expires_et_short": "Nov 6 6:31 PM ET"}')")"
 check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset" \
   "an expiry without a live count is ignored"
 check_contains "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason')" "this month" \
