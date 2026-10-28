@@ -327,7 +327,7 @@ A value must be a non-negative decimal. Anything else, such as `$10`, warns on s
 .claude/scripts/review-daily-cap.sh <platform> --rate
 ```
 
-The day is the **America/New_York** calendar day, the same boundary `greptile-budget.sh` uses. The UTC date never decides it. The helper lists the repos from `review-repos.sh`, reads every PR updated since ET midnight, and prices that day's events with `lib/review_ledger.py`, the `/review-stack-audit` ledger's own rules:
+The day is the **America/New_York** calendar day, the same boundary `greptile-budget.sh` uses. The UTC date never decides it. The helper lists the repos from `review-repos.sh` (the tracked `## Review repos` list plus the optional untracked overlay `~/.claude/account-config.local.md`, #1860, so private repo names never enter a tracked file), reads every PR updated since ET midnight, and prices that day's events with `lib/review_ledger.py`, the `/review-stack-audit` ledger's own rules:
 
 | Platform | Spend |
 |---|---|

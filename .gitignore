@@ -10,3 +10,8 @@ __pycache__/
 
 # Operator backlog priority (/desk -> /pm, issue #1767): runtime state, never committed
 .claude/pm-priority.json*
+
+# Private overlay for account-config.md (review-repos.sh, #1860). It holds repo names that
+# must never be committed, and its default path is a sibling of the config in use, which
+# lands inside a checkout whenever CLAUDE_ACCOUNT_CONFIG points at the checked-in file.
+account-config.local.md

@@ -19,7 +19,14 @@ rules are (`.claude/rules/skill-symlinks.md`). Sections are read with
      Add a repo by hand when we review it without running the harness there —
      it still draws down the account caps, and discovery cannot see it.
      One Markdown bullet per repo; the first token is owner/name. Every
-     bullet outside a comment is read as a repo, so keep notes in comments. -->
+     bullet outside a comment is read as a repo, so keep notes in comments.
+
+     This file is tracked, and may be public. Repos whose names you would rather
+     not publish go in a PRIVATE OVERLAY instead: an untracked file at
+     ~/.claude/account-config.local.md (or the path in CLAUDE_ACCOUNT_CONFIG_LOCAL)
+     with its own `## Review repos` section of bullets. review-repos.sh appends
+     them to this list, de-duplicated, tracked entries first. Only bullets are
+     read from the overlay; owner and discovery_marker stay here (#1860). -->
 
 ```ini
 owner = auerbachb

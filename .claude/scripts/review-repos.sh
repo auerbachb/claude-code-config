@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # review-repos.sh — Print the repos we run AI review in, one owner/name per line.
-# catalog: review-escalation — Resolve the registered AI-review repos (`REVIEW_REPOS`, then the account config's `## Review repos` list, then `ac-gate.yml` discovery) for `/review-stack-audit`'s multi-repo roll-up
+# catalog: review-escalation — Resolve the registered AI-review repos (`REVIEW_REPOS`, then the account config's `## Review repos` list plus its private untracked overlay, then `ac-gate.yml` discovery) for `/review-stack-audit`'s multi-repo roll-up
 #
 # PURPOSE
 #   The AI review vendors bill one account across every repo they review, so a
@@ -18,7 +18,9 @@
 #   review-repos.sh --help | -h
 #
 # RESOLUTION ORDER
-#   The first source that yields a repo wins; sources never merge.
+#   The first source that yields a repo wins; sources 1, 2 and 3 never merge
+#   with each other. Within source 2 the tracked list and a private overlay are
+#   combined.
 #     1. REVIEW_REPOS env — owner/name entries separated by commas and/or
 #        whitespace. Set but blank counts as unset.
 #     2. The explicit list in the account config's `## Review repos` section,
@@ -29,6 +31,20 @@
 #        fails the whole list, so a typo such as `- acme-sales-kit` can never
 #        be skipped quietly. Notes belong in plain lines or HTML comments;
 #        comments are stripped first, so a bullet inside one is a note.
+#        PRIVATE OVERLAY (#1860): an untracked file, ~/.claude/account-config.local.md
+#        by default (a sibling of the config in use; override with
+#        CLAUDE_ACCOUNT_CONFIG_LOCAL), may carry its own `## Review repos`
+#        section. Its bullets are appended to the tracked list, tracked entries
+#        first, and the combined list is de-duplicated. Put repos there whose
+#        names should not be published, because the tracked config is a
+#        symlink into a checkout that may be public. Only bullets are read from
+#        the overlay; its `owner` and `discovery_marker` lines are ignored. A
+#        missing overlay is fine. One that exists but cannot be read, or holds a
+#        bullet that is not owner/name, fails the whole list.
+#        The overlay's default path is a sibling of the config, so it lands
+#        inside a checkout when CLAUDE_ACCOUNT_CONFIG points at a checked-in
+#        file. This repo's .gitignore lists account-config.local.md so it
+#        cannot be committed by accident; a checkout of your own needs the same.
 #     3. Discovery — every non-archived repo owned by `owner` whose default
 #        branch carries .github/workflows/<discovery_marker>. Both keys come
 #        from `key = value` lines in the same section; defaults are the
@@ -62,6 +78,7 @@
 #
 # EXAMPLES
 #   review-repos.sh
+#   CLAUDE_ACCOUNT_CONFIG_LOCAL=/path/to/private-repos.md review-repos.sh
 #   REVIEW_REPOS=auerbachb/claude-code-config,auerbachb/sales-kit review-repos.sh
 #   CLAUDE_ACCOUNT_CONFIG=/tmp/account-config.md review-repos.sh
 
@@ -163,76 +180,101 @@ if [[ -n "${REVIEW_REPOS:-}" ]]; then
   fi
 fi
 
-# --- 2. The account config's explicit list ---------------------------------------
+# --- 2. The account config's explicit list (tracked list + private overlay) -------
 CONFIG="${CLAUDE_ACCOUNT_CONFIG:-$HOME/.claude/account-config.md}"
+# The private overlay defaults to a SIBLING of whichever config is in use, so a
+# caller that points CLAUDE_ACCOUNT_CONFIG elsewhere (a test, a second account)
+# never reads another account's overlay. It is untracked by construction: the
+# config is a symlink into a (possibly public) checkout, and the overlay is a
+# real file beside the symlink, outside any worktree, so nothing in it is ever
+# committed. Issue #1860.
+LOCAL="${CLAUDE_ACCOUNT_CONFIG_LOCAL:-${CONFIG%.md}.local.md}"
 OWNER=""
 MARKER=""
-if [[ -e "$CONFIG" || -L "$CONFIG" ]]; then
-  # Present but unreadable is a broken record, not an absent one: falling
-  # through to discovery would silently replace the list a human wrote.
-  [[ -f "$CONFIG" && -r "$CONFIG" ]] || die "account config is not a readable file: $CONFIG"
-  PM_CONFIG_GET="$(resolve_helper pm-config-get.sh)" \
-    || die "pm-config-get.sh not found (checked this checkout and all three published paths) — cannot read $CONFIG"
-  section="$("$PM_CONFIG_GET" --file "$CONFIG" --section "Review repos")"
+
+# review_section_tags <file> <label> — print the file's `## Review repos` section
+# as tagged lines: `repo <v>`, `owner <v>`, `marker <v>`. Prints nothing when the
+# file has no such section. A file that is present but unreadable, or a helper
+# that fails, is a broken record and dies: falling through to discovery would
+# silently replace the list a human wrote.
+review_section_tags() {
+  local file="$1" label="$2" helper section rc
+  [[ -f "$file" && -r "$file" ]] || die "$label is not a readable file: $file"
+  helper="$(resolve_helper pm-config-get.sh)" \
+    || die "pm-config-get.sh not found (checked this checkout and all three published paths) — cannot read $file"
+  section="$("$helper" --file "$file" --section "Review repos")"
   rc=$?
   case "$rc" in
     0) ;;
-    1) section="" ;;                 # no such section, or empty: discovery
-    *) die "pm-config-get.sh failed reading $CONFIG (rc=$rc)" ;;
+    1) return 0 ;;                   # no such section, or empty
+    *) die "pm-config-get.sh failed reading $file (rc=$rc)" ;;
   esac
-
-  if [[ -n "$section" ]]; then
-    # One pass, tagged lines: `repo <v>`, `owner <v>`, `marker <v>`.
-    parsed="$(printf '%s\n' "$section" | awk '
-      # HTML comments are notes, never entries: strip them first, including
-      # ones spanning lines, so a bullet or key=value line inside a comment is
-      # invisible here just as it is in the rendered Markdown (same stripping
-      # as review-tier.sh).
-      {
-        line = $0; out = ""
-        while (1) {
-          if (comment) {
-            i = index(line, "-->")
-            if (i == 0) { line = ""; break }
-            line = substr(line, i + 3); comment = 0
-          } else {
-            i = index(line, "<!--")
-            if (i == 0) { out = out line; break }
-            out = out substr(line, 1, i - 1); line = substr(line, i + 4); comment = 1
-          }
+  [[ -n "$section" ]] || return 0
+  printf '%s\n' "$section" | awk '
+    # HTML comments are notes, never entries: strip them first, including
+    # ones spanning lines, so a bullet or key=value line inside a comment is
+    # invisible here just as it is in the rendered Markdown (same stripping
+    # as review-tier.sh).
+    {
+      line = $0; out = ""
+      while (1) {
+        if (comment) {
+          i = index(line, "-->")
+          if (i == 0) { line = ""; break }
+          line = substr(line, i + 3); comment = 0
+        } else {
+          i = index(line, "<!--")
+          if (i == 0) { out = out line; break }
+          out = out substr(line, 1, i - 1); line = substr(line, i + 4); comment = 1
         }
-        $0 = out
       }
-      /^[[:space:]]*[-*+][[:space:]]+/ {
-        line = $0
-        sub(/^[[:space:]]*[-*+][[:space:]]+/, "", line)
-        split(line, f, /[[:space:]]+/)
-        tok = f[1]
-        gsub(/`/, "", tok)
-        # Every bullet is an entry: emit it even when it is not owner/name,
-        # so emit_validated refuses the list instead of this parser dropping
-        # the bad line.
-        print "repo\t" tok
-        next
-      }
-      /^[[:space:]]*owner[[:space:]]*=/ {
-        v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
-        print "owner\t" v; next
-      }
-      /^[[:space:]]*discovery_marker[[:space:]]*=/ {
-        v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
-        print "marker\t" v; next
-      }
-    ')" || die "could not parse the Review repos section of $CONFIG"
-    OWNER="$(printf '%s\n' "$parsed" | awk -F'\t' '$1 == "owner" { v = $2 } END { print v }')"
-    MARKER="$(printf '%s\n' "$parsed" | awk -F'\t' '$1 == "marker" { v = $2 } END { print v }')"
-    config_list="$(printf '%s\n' "$parsed" | awk -F'\t' '$1 == "repo" { print $2 }')"
-    if [[ -n "$config_list" ]]; then
-      out="$(printf '%s\n' "$config_list" | emit_validated "account config ($CONFIG)")" || exit 1
-      printf '%s\n' "$out"
-      exit 0
-    fi
-  fi
+      $0 = out
+    }
+    /^[[:space:]]*[-*+][[:space:]]+/ {
+      line = $0
+      sub(/^[[:space:]]*[-*+][[:space:]]+/, "", line)
+      split(line, f, /[[:space:]]+/)
+      tok = f[1]
+      gsub(/`/, "", tok)
+      # Every bullet is an entry: emit it even when it is not owner/name,
+      # so emit_validated refuses the list instead of this parser dropping
+      # the bad line.
+      print "repo\t" tok
+      next
+    }
+    /^[[:space:]]*owner[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+      print "owner\t" v; next
+    }
+    /^[[:space:]]*discovery_marker[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+      print "marker\t" v; next
+    }
+  ' || die "could not parse the Review repos section of $file"
+}
+
+config_tags=""
+local_tags=""
+# `|| exit 1`: a die inside a command substitution only ends the substitution.
+if [[ -e "$CONFIG" || -L "$CONFIG" ]]; then
+  config_tags="$(review_section_tags "$CONFIG" "account config")" || exit 1
+fi
+if [[ -e "$LOCAL" || -L "$LOCAL" ]]; then
+  local_tags="$(review_section_tags "$LOCAL" "account config overlay")" || exit 1
+fi
+# Discovery's owner and marker come from the tracked config only; the overlay
+# contributes repo bullets and nothing else.
+OWNER="$(printf '%s\n' "$config_tags" | awk -F'\t' '$1 == "owner" { v = $2 } END { print v }')"
+MARKER="$(printf '%s\n' "$config_tags" | awk -F'\t' '$1 == "marker" { v = $2 } END { print v }')"
+config_list="$(printf '%s\n' "$config_tags" | awk -F'\t' '$1 == "repo" { print $2 }')"
+local_list="$(printf '%s\n' "$local_tags" | awk -F'\t' '$1 == "repo" { print $2 }')"
+explicit_list="$(printf '%s\n%s\n' "$config_list" "$local_list")"
+if grep -q '[^[:space:]]' <<<"$explicit_list"; then
+  label="account config ($CONFIG)"
+  [[ -z "$local_list" ]] || label="account config ($CONFIG) + overlay ($LOCAL)"
+  out="$(printf '%s\n' "$explicit_list" | emit_validated "$label")" || exit 1
+  printf '%s\n' "$out"
+  exit 0
 fi
 
 # --- 3. Discovery ---------------------------------------------------------------
