@@ -49,7 +49,7 @@ cat > "$STUB_TREE/.claude/scripts/quota-reserve.sh" <<EOF
 echo "\$1" >> "$STUB_LOG"
 cat >/dev/null
 [[ -n "\${STUB_CRASH:-}" ]] && exit 1
-printf '%s\n' "\${STUB_VERDICT:-allow}"
+printf '%s\n' "\${STUB_VERDICT-allow}"
 EOF
 chmod +x "$STUB_TREE/.claude/scripts/quota-reserve.sh"
 S_GUARD="$STUB_TREE/.claude/hooks/quota-reserve-guard.sh"

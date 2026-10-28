@@ -285,7 +285,8 @@ spawn_refresh() {
   [[ "$last" =~ ^[0-9]+$ ]] || last=0
   if [[ "$last" -le "$now" && $(( now - last )) -lt "$throttle" ]]; then return 0; fi
   mkdir -p "$DIR" 2>/dev/null || return 0
-  printf '%s\n' "$now" > "$f" 2>/dev/null || true
+  # Write the attempt time atomically so a concurrent reader never sees a torn file.
+  local tmpf; tmpf="$(mktemp "$DIR/attempt.XXXXXX" 2>/dev/null)" && { printf '%s\n' "$now" > "$tmpf" && mv -f "$tmpf" "$f"; } 2>/dev/null || true
   ( nohup "$SELF" --refresh >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
 }
 
