@@ -265,7 +265,7 @@ check_eq "$V" "allow interactive turn" "reserve: the owner's own Read is allowed
 check_eq "$(decide "$(payload Edit)")" "allow interactive turn" "reserve: the owner's own Edit is allowed"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"gh pr view 1"}}')")" "allow interactive turn" \
   "reserve: the owner's own foreground shell is allowed"
-for t in Agent Workflow Monitor CronCreate ScheduleWakeup RemoteTrigger mcp__ccd_session__start_session mcp__ccd_session__hand_off_to_session; do
+for t in Agent Workflow Monitor CronCreate ScheduleWakeup RemoteTrigger mcp__ccd_session__start_session mcp__ccd_session__spawn_task mcp__ccd_session__hand_off_to_session mcp__ccd_session__move_to_cloud mcp__scheduled-tasks__create_scheduled_task mcp__scheduled-tasks__run_scheduled_task mcp__scheduled-tasks__update_scheduled_task; do
   V="$(decide "$(payload "$t")")"
   check_contains "$V" "deny" "reserve: $t is a launch and is blocked even in an interactive turn"
 done
@@ -282,9 +282,9 @@ check_contains "$(decide "$(payload Bash '{"tool_input":{"command":"gh pr view 1
 check_contains "$(decide "$(payload mcp__Figma__get_design_context)")" "deny" "reserve, automated turn: an MCP tool is blocked"
 check_eq "$(decide "$(payload Read)")" "allow read-only while reserved" "reserve, automated turn: reads still work"
 check_eq "$(decide "$(payload Grep)")" "allow read-only while reserved" "reserve, automated turn: grep still works"
-check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/x/session-state.sh --set a=1"}}')")" "allow bookkeeping while reserved" \
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/x/.claude/scripts/session-state.sh --set a=1"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: session-state bookkeeping still works, so a pipeline can checkpoint"
-check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd /r && handoff-state.sh --owner-repo o/r --path 4"}}')")" "allow bookkeeping while reserved" \
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd /r && .claude/scripts/handoff-state.sh --owner-repo o/r --path 4"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: handoff writing still works"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"FOO=1 .claude/scripts/execution-pause.sh --status"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: a VAR=value prefix is fine"
@@ -303,7 +303,11 @@ for bad in \
   'session-state.sh --get a > /tmp/out' \
   'cat .claude/scripts/session-state.sh' \
   'bash -c "session-state.sh --get a"' \
-  'cd /r; handoff-state.sh --path 4' \
+  'cd /r; .claude/scripts/handoff-state.sh --path 4' \
+  '/tmp/session-state.sh --get a' \
+  'session-state.sh --get a' \
+  './session-state.sh --get a' \
+  '/tmp/scripts/session-state.sh --get a' \
   $'session-state.sh --get a\ngh pr merge 1' \
   $'session-state.sh --get a\r\ngh pr merge 1'; do
   V="$(decide "$(jq -nc --arg c "$bad" '{tool_name:"Bash", session_id:"sess-1", tool_input:{command:$c}}')")"
@@ -341,6 +345,8 @@ for lead in '<ci-monitor-event>x' '<task-notification>x' '<side-sessions-event>x
 done
 classify "$(jq -nc '{session_id:"s3", prompt:"\n\n   <task-notification>x"}')"
 check_eq "$(kind s3)" "automated" "leading whitespace does not hide an automated wrapper"
+classify "$(jq -nc --arg p "$(printf '%600s<ci-monitor-event>x' '')" '{session_id:"s6", prompt:$p}')"
+check_eq "$(kind s6)" "automated" "600 characters of padding before the wrapper do not hide it"
 classify "$(jq -nc '{session_id:"s4", prompt:"why does <ci-monitor-event> show up in the log?"}')"
 check_eq "$(kind s4)" "interactive" "the marker text in the middle of a sentence does not make it automated"
 classify "$(jq -nc '{session_id:"s2", prompt:"thanks, now do the next one"}')"

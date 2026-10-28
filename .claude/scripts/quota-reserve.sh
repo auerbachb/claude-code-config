@@ -42,7 +42,8 @@
 #
 # WHAT IS BLOCKED, in a session on an account at or above the threshold
 #   Always: launches (Agent, Workflow, Monitor, CronCreate, ScheduleWakeup,
-#   RemoteTrigger, starting another session, background Bash).
+#   RemoteTrigger, starting or spawning another session, moving one to the cloud,
+#   creating or running a scheduled task, background Bash).
 #   In a subagent or an automated turn: everything except reads and the harness's
 #   own bookkeeping scripts, so a pipeline can still checkpoint and park.
 #   Never: ordinary tool calls in the owner's own interactive turns (launches are still blocked there).
@@ -256,9 +257,11 @@ do_classify() {
   input="$(cat 2>/dev/null || true)"
   sid="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)"
   [[ -n "$sid" && "$sid" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
-  prompt="$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null | head -c 400)"
-  # Leading whitespace, blank lines included, must not hide a wrapper.
+  prompt="$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null)"
+  # Trim leading whitespace (blank lines included) BEFORE looking at the start, so no amount of
+  # padding can push a wrapper out of view; only then is the head of the text compared.
   prompt="${prompt#"${prompt%%[![:space:]]*}"}"
+  prompt="${prompt:0:400}"
   kind=interactive
   case "$prompt" in
     "<ci-monitor-event>"*|"<task-notification>"*|"<side-sessions-event>"*|"[SYSTEM NOTIFICATION"*|\
@@ -329,7 +332,9 @@ do_decide() {
 
   # Launches are autonomous work by construction.
   case "$tool" in
-    Agent|Workflow|Monitor|CronCreate|ScheduleWakeup|RemoteTrigger|mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session)
+    Agent|Workflow|Monitor|CronCreate|ScheduleWakeup|RemoteTrigger|\
+    mcp__ccd_session__start_session|mcp__ccd_session__spawn_task|mcp__ccd_session__hand_off_to_session|mcp__ccd_session__move_to_cloud|\
+    mcp__scheduled-tasks__create_scheduled_task|mcp__scheduled-tasks__run_scheduled_task|mcp__scheduled-tasks__update_scheduled_task)
       echo "deny $reason Launching $tool is blocked."; return 0 ;;
     Bash) [[ "$bg" == true ]] && { echo "deny $reason Background shell commands are blocked."; return 0; } ;;
   esac
@@ -348,11 +353,12 @@ do_decide() {
   case "$tool" in
     Read|Glob|Grep|TaskStop|TaskOutput|ToolSearch) echo "allow read-only while reserved"; return 0 ;;
     Bash)
-      # A real invocation of one bookkeeping script: optionally `cd <dir> &&`, optionally
-      # VAR=value prefixes, then the script, then plain arguments. No chaining, pipes,
+      # A real invocation of one bookkeeping script, run from a harness `.claude/scripts/`
+      # directory (so a same-named script elsewhere does not qualify): optionally `cd <dir> &&`,
+      # optionally VAR=value prefixes, then the script, then plain arguments. No chaining, pipes,
       # redirects, or substitution anywhere, so a command that merely MENTIONS a script
       # name (`rm -rf x # session-state.sh`) or chains other work after it is not let through.
-      local bk='^[[:space:]]*(cd[[:space:]]+[^;&|`$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|`$()<>[:space:]]*[[:space:]]+)*([^;&|`$()<>[:space:]]*/)?(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\.sh([[:space:]][^;&|`$()<>]*)?[[:space:]]*$'
+      local bk='^[[:space:]]*(cd[[:space:]]+[^;&|`$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|`$()<>[:space:]]*[[:space:]]+)*([^;&|`$()<>[:space:]]*\.claude/scripts/)(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\.sh([[:space:]][^;&|`$()<>]*)?[[:space:]]*$'
       # A newline or carriage return is a command separator that the regex's argument class would
       # otherwise accept, so a multi-line command is never a plain invocation.
       if [[ "$cmd" != *$'\n'* && "$cmd" != *$'\r'* && "$cmd" =~ $bk ]]; then

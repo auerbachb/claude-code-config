@@ -35,8 +35,8 @@ ai-quotas.sh --json  ──▶  quota-reserve.sh --refresh  ──▶  ~/.claude
 
 | Call | Result |
 |---|---|
-| `Agent`, `Workflow`, `Monitor`, `CronCreate`, `ScheduleWakeup`, `RemoteTrigger`, starting or handing off a session, background `Bash` | Blocked, always. These start autonomous work. |
-| Any tool call from a subagent (`agent_id` present) or an automated turn | Blocked, except reads (`Read`, `Glob`, `Grep`, `TaskStop`, `TaskOutput`, `ToolSearch`) and a plain invocation of one of the harness's own bookkeeping scripts (`session-state.sh`, `handoff-state.sh`, `execution-pause.sh`, `quota-reserve.sh`, `bgwork-ceiling.sh`, `issue-claim.sh`), so a pipeline can checkpoint and park. "Plain" means optionally `cd <dir> &&` and `VAR=value` prefixes, then the script and simple arguments, with no chaining, pipes, redirects or substitution. A command that only mentions a script name does not qualify. |
+| `Agent`, `Workflow`, `Monitor`, `CronCreate`, `ScheduleWakeup`, `RemoteTrigger`, starting, spawning or handing off a session, moving one to the cloud, creating, running or updating a scheduled task, background `Bash` | Blocked, always. These start autonomous work. |
+| Any tool call from a subagent (`agent_id` present) or an automated turn | Blocked, except reads (`Read`, `Glob`, `Grep`, `TaskStop`, `TaskOutput`, `ToolSearch`) and a plain invocation of one of the harness's own bookkeeping scripts (`session-state.sh`, `handoff-state.sh`, `execution-pause.sh`, `quota-reserve.sh`, `bgwork-ceiling.sh`, `issue-claim.sh`), so a pipeline can checkpoint and park. "Plain" means optionally `cd <dir> &&` and `VAR=value` prefixes, then the script run from a `.claude/scripts/` directory, and simple arguments, with no chaining, pipes, redirects, substitution or newlines. A command that only mentions a script name, or runs a same-named script from elsewhere, does not qualify. |
 | Anything in a turn the owner started | Allowed, apart from the launches above. |
 
 The block message tells an agent to park: write the handoff and stop, per `subagent-thread-limit-park.md`.
