@@ -1770,10 +1770,13 @@ codex_live_overage() { # <snapshot-json-file>
     | {free_resets_remaining:
          # The first candidate that is a plain number wins. `//` alone would stop
          # at the first key that is merely PRESENT, so a malformed value in an
-         # earlier key would hide a valid count in a later one.
-         ([$s.freeResetsRemaining, $s.free_resets_remaining,
-           ($s.resets | obj | .freeRemaining), $rc.availableCount,
-           ($s.rate_limit_reset_credits | obj | .available_count)]
+         # earlier key would hide a valid count in a later one. MEASURED keys come
+         # first (a real payload carried them), the old guessed keys after: a
+         # guess nobody has seen must never outrank the figure Codex really sent.
+         ([$rc.availableCount,
+           ($s.rate_limit_reset_credits | obj | .available_count),
+           $s.freeResetsRemaining, $s.free_resets_remaining,
+           ($s.resets | obj | .freeRemaining)]
           | map(as_num) | map(select(. != null)) | first),
        free_reset_expires_epoch:
          (if ($rc.credits | type) == "array"

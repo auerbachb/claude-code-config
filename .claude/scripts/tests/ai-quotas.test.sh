@@ -2857,6 +2857,15 @@ check_eq "$(field_of codex-one@example.com "7-day" free_reset_expires_epoch)" "n
 check_eq "$(field_of codex-one@example.com "7-day" status)" "ok" \
   "and the row still reads ok"
 
+# A measured count outranks a guessed key: a guess nobody has seen must not override
+# what Codex really sent, even when the guess is a valid number.
+reset_state
+X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly | jq -c '. + {freeResetsRemaining: 1, rateLimitResetCredits: {availableCount: 0}}')")"
+write_config "$(account_json codex codex-one@example.com "$X1")"
+run --json
+check_eq "$(field_of codex-one@example.com "7-day" free_resets_remaining)" "0" \
+  "the measured rateLimitResetCredits count outranks a guessed freeResetsRemaining"
+
 # A malformed value in an EARLIER key must not hide a valid count in a later one.
 reset_state
 X1="$(seed_codex_profile codex-one@example.com "$(codex_snapshot_primary_weekly | jq -c '. + {freeResetsRemaining: "n/a", rateLimitResetCredits: {availableCount: 5}}')")"
