@@ -176,11 +176,12 @@ do_refresh() {
       return 0
     fi
   fi
-  # shellcheck disable=SC2064
-  trap "rmdir '$lock' 2>/dev/null || true" RETURN
+  REFRESH_LOCK="$lock"
+  trap 'rmdir "$REFRESH_LOCK" 2>/dev/null || true' RETURN
 
   reader="${QUOTA_RESERVE_AI_QUOTAS_SH:-}"
   if [[ -z "$reader" ]]; then reader="$(resolve_helper ai-quotas.sh)" || { warn "ai-quotas.sh not found"; return 3; }; fi
+  [[ -f "$reader" && -x "$reader" ]] || { warn "the quota reader is not an executable file: $reader"; return 3; }
   # The reader appends to a history file on every run; point it somewhere inert so
   # a refresh every few minutes does not bury the daily record `/quotas` projects from.
   rows="$(AI_QUOTAS_HISTORY="$DIR/reader-history.jsonl" "$reader" --json 2>/dev/null)" \
@@ -271,7 +272,20 @@ do_classify() {
 }
 
 # ------------------------------------------------------------------ --decide ---
+# Start a detached refresh, at most once per throttle window. Without this, a
+# reader that keeps failing (a rate-limited provider, say) leaves the marker old,
+# so EVERY tool call would start another attempt and hammer the very endpoint that
+# is already refusing. The attempt is recorded before launching so a failure is
+# throttled too.
 spawn_refresh() {
+  local throttle="${QUOTA_RESERVE_SPAWN_THROTTLE_SECONDS:-120}" last now f="$DIR/refresh-attempt"
+  [[ "$throttle" =~ ^[0-9]+$ ]] || throttle=120
+  now="$(now_epoch)"
+  last="$(cat "$f" 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if [[ "$last" -le "$now" && $(( now - last )) -lt "$throttle" ]]; then return 0; fi
+  mkdir -p "$DIR" 2>/dev/null || return 0
+  printf '%s\n' "$now" > "$f" 2>/dev/null || true
   ( nohup "$SELF" --refresh >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
 }
 
@@ -333,10 +347,12 @@ do_decide() {
   case "$tool" in
     Read|Glob|Grep|TaskStop|TaskOutput|ToolSearch) echo "allow read-only while reserved"; return 0 ;;
     Bash)
-      case "$cmd" in
-        *session-state.sh*|*handoff-state.sh*|*execution-pause.sh*|*quota-reserve.sh*|*bgwork-ceiling.sh*|*issue-claim.sh*)
-          echo "allow bookkeeping while reserved"; return 0 ;;
-      esac ;;
+      # A real invocation of one bookkeeping script: optionally `cd <dir> &&`, optionally
+      # VAR=value prefixes, then the script, then plain arguments. No chaining, pipes,
+      # redirects, or substitution anywhere, so a command that merely MENTIONS a script
+      # name (`rm -rf x # session-state.sh`) or chains other work after it is not let through.
+      local bk='^[[:space:]]*(cd[[:space:]]+[^;&|`$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|`$()<>[:space:]]*[[:space:]]+)*([^;&|`$()<>[:space:]]*/)?(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\.sh([[:space:]][^;&|`$()<>]*)?[[:space:]]*$'
+      if [[ "$cmd" =~ $bk ]]; then echo "allow bookkeeping while reserved"; return 0; fi ;;
   esac
   echo "deny $reason Park this work: write the handoff and stop (see .claude/reference/subagent-thread-limit-park.md)."
   return 0

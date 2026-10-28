@@ -13,6 +13,7 @@
 set -uo pipefail
 INPUT="$(cat 2>/dev/null || true)"
 
+[[ -n "${HOME:-}" ]] || exit 0   # no home, no marker: nothing to read, so allow
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
 SCRIPT="${HERE%/hooks}/scripts/quota-reserve.sh"
 [[ -x "$SCRIPT" ]] || exit 0
@@ -23,7 +24,8 @@ REFRESH="${QUOTA_RESERVE_REFRESH_SECONDS:-600}"
 
 if [[ -f "$MARKER" ]] && ! grep -q '"state": *"reserve"' "$MARKER" 2>/dev/null; then
   NOW="${QUOTA_RESERVE_NOW:-$(date +%s)}"
-  MTIME="$(stat -f %m "$MARKER" 2>/dev/null || stat -c %Y "$MARKER" 2>/dev/null || echo 0)"
+  # GNU stat first: on Linux `stat -f` means filesystem status and can print a number that is not a mtime.
+  MTIME="$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)"
   [[ "$MTIME" =~ ^[0-9]+$ ]] || MTIME=0
   if [[ "$NOW" =~ ^[0-9]+$ ]] && (( NOW - MTIME >= 0 && NOW - MTIME < REFRESH )); then
     exit 0

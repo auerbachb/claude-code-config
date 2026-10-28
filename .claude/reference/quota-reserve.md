@@ -36,7 +36,7 @@ ai-quotas.sh --json  ──▶  quota-reserve.sh --refresh  ──▶  ~/.claude
 | Call | Result |
 |---|---|
 | `Agent`, `Workflow`, `Monitor`, `CronCreate`, `ScheduleWakeup`, `RemoteTrigger`, starting or handing off a session, background `Bash` | Blocked, always. These start autonomous work. |
-| Any tool call from a subagent (`agent_id` present) or an automated turn | Blocked, except reads (`Read`, `Glob`, `Grep`, `TaskStop`, `TaskOutput`, `ToolSearch`) and the harness's own bookkeeping scripts (`session-state.sh`, `handoff-state.sh`, `execution-pause.sh`, `quota-reserve.sh`, `bgwork-ceiling.sh`, `issue-claim.sh`), so a pipeline can checkpoint and park. |
+| Any tool call from a subagent (`agent_id` present) or an automated turn | Blocked, except reads (`Read`, `Glob`, `Grep`, `TaskStop`, `TaskOutput`, `ToolSearch`) and a plain invocation of one of the harness's own bookkeeping scripts (`session-state.sh`, `handoff-state.sh`, `execution-pause.sh`, `quota-reserve.sh`, `bgwork-ceiling.sh`, `issue-claim.sh`), so a pipeline can checkpoint and park. "Plain" means optionally `cd <dir> &&` and `VAR=value` prefixes, then the script and simple arguments, with no chaining, pipes, redirects or substitution. A command that only mentions a script name does not qualify. |
 | Anything in a turn the owner started | Allowed, apart from the launches above. |
 
 The block message tells an agent to park: write the handoff and stop, per `subagent-thread-limit-park.md`.
@@ -45,7 +45,7 @@ An **automated turn** is one whose prompt arrives wrapped by the app or harness:
 
 ## Resuming
 
-Nothing needs to be switched back. When the provider's reset brings the reading under the threshold, the next refresh clears the state and the guard allows everything. Parked pipelines resume with `/go-on`. The owner gets a desktop notification once when an account crosses in either direction.
+Nothing needs to be switched back. When the provider's reset brings the reading under the threshold, the first refresh after it (started by the next tool call once the marker is ten minutes old) clears the state and the guard allows everything. Parked pipelines resume with `/go-on`. The owner gets a desktop notification once when an account crosses in either direction.
 
 ## Fails open
 
@@ -66,7 +66,7 @@ Nothing needs to be switched back. When the provider's reset brings the reading 
 
 - **Codex.** The marker holds the Codex accounts and the notification names them, but nothing stops Codex sessions. Codex has lifecycle hooks and a `queue` command; whether a hook can deny work needs a spike. Tracked in #1867.
 - **Cursor.** The IDE has no hook surface, and its limit is a dollar cap, which `review-daily-cap.sh` already watches.
-- **A turn already running when the line is crossed.** Launches and subagent calls stop at once. The main thread's tool calls stop on the next automated event, because the turn record is written at the start of each turn.
+- **A turn already running when the line is crossed.** It keeps the kind it started with. Launches and subagent calls stop at once. An automated turn stops at its next tool call; a turn the owner started carries on, by design.
 - **Profiles created before this shipped.** A profile's `settings.json` is a copy. Re-run `/quotas-setup share-config <label>` so it picks up the two hooks.
 
 ## Related

@@ -229,18 +229,33 @@ check_eq "$(decide "$(payload Agent)")" "allow unknown" "an account whose readin
 session_as "A@Example.COM"
 check_contains "$(decide "$(payload Agent)")" "deny" "the account email match is case-insensitive"
 export QUOTA_RESERVE_NOW=$(( 3000000 + 1801 ))
-check_eq "$(decide "$(payload Agent)")" "allow stale reading" "a reading older than 30 minutes is ignored"
+check_eq "$(QUOTA_RESERVE_REFRESH_SECONDS=99999999 decide "$(payload Agent)")" "allow stale reading" "a reading older than 30 minutes is ignored"
 export QUOTA_RESERVE_NOW=3000000
 printf 'garbage' > "$QUOTA_RESERVE_DIR/marker.json"
 check_eq "$(decide "$(payload Agent)")" "allow unreadable marker" "an unreadable marker is allowed"
 wait_refresh   # that decision started a repairing refresh in the background; let it finish
 check_eq "$(jq -r '.accounts | type' "$QUOTA_RESERVE_DIR/marker.json" 2>/dev/null)" "array" "and the background refresh repairs the marker"
 rm -f "$QUOTA_RESERVE_DIR/marker.json"
+export QUOTA_RESERVE_NOW=$(( 3000000 + 200 ))   # past the spawn throttle that the previous case started
 check_eq "$(decide "$(payload Agent)")" "allow no reading yet" "no marker yet is allowed"
 # …and that first decision starts a background refresh that creates the marker.
 wait_refresh
 check_eq "$([[ -f "$QUOTA_RESERVE_DIR/marker.json" ]] && echo built || echo missing)" "built" \
   "and a missing marker starts a background refresh"
+
+# a failing reader must not be retried on every tool call
+rm -rf "$QUOTA_RESERVE_DIR" "$READER_LOG"; "$SCRIPT" --refresh --force
+touch "$STUB_FAIL"; export QUOTA_RESERVE_NOW=$(( 3000000 + 5000 ))
+decide "$(payload Read)" >/dev/null; wait_refresh; sleep 1
+C1="$(reader_calls)"
+for _ in 1 2 3 4 5; do decide "$(payload Read)" >/dev/null; done
+sleep 1
+check_eq "$(reader_calls)" "$C1" "five more tool calls inside the throttle window start no further refresh attempts"
+export QUOTA_RESERVE_NOW=$(( 3000000 + 5000 + 121 ))
+decide "$(payload Read)" >/dev/null; sleep 1
+check_eq "$(reader_calls)" "$(( C1 + 1 ))" "and once the window passes, exactly one more attempt is made"
+rm -f "$STUB_FAIL"; export QUOTA_RESERVE_NOW=3000000
+rm -rf "$QUOTA_RESERVE_DIR"; "$SCRIPT" --refresh --force
 
 # the account in reserve
 "$SCRIPT" --refresh --force
@@ -271,6 +286,27 @@ check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/x/session-state.
   "reserve, automated turn: session-state bookkeeping still works, so a pipeline can checkpoint"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd /r && handoff-state.sh --owner-repo o/r --path 4"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: handoff writing still works"
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"FOO=1 .claude/scripts/execution-pause.sh --status"}}')")" "allow bookkeeping while reserved" \
+  "reserve, automated turn: a VAR=value prefix is fine"
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/.claude/skills-worktree/.claude/scripts/session-state.sh --get .prs[\"4\"]"}}')")" "allow bookkeeping while reserved" \
+  "reserve, automated turn: a published-path invocation with a jq path argument is fine"
+# Discriminating: each of these MENTIONS or CHAINS to a bookkeeping script and must not pass.
+for bad in \
+  'gh pr merge 1 # session-state.sh' \
+  'rm -rf /tmp/x # handoff-state.sh' \
+  'session-state.sh --get a; gh pr merge 1' \
+  'session-state.sh --get a && gh pr merge 1' \
+  'session-state.sh --get a || gh pr merge 1' \
+  'echo hi | session-state.sh --set a=1' \
+  'session-state.sh --get $(gh pr merge 1)' \
+  'session-state.sh --get `gh pr merge 1`' \
+  'session-state.sh --get a > /tmp/out' \
+  'cat .claude/scripts/session-state.sh' \
+  'bash -c "session-state.sh --get a"' \
+  'cd /r; handoff-state.sh --path 4'; do
+  V="$(decide "$(jq -nc --arg c "$bad" '{tool_name:"Bash", session_id:"sess-1", tool_input:{command:$c}}')")"
+  check_contains "$V" "deny" "reserve, automated turn: '${bad:0:44}' is not a plain bookkeeping call"
+done
 check_contains "$(decide "$(payload Edit)")" "Park this work" "and the refusal tells the agent to park"
 printf 'interactive\n' > "$QUOTA_RESERVE_DIR/turns/sess-1"
 check_contains "$(decide "$(payload Edit '{"agent_id":"sub-9"}')")" "deny" "reserve, subagent call: blocked even inside an interactive turn"
