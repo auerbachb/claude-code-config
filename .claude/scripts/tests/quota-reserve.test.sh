@@ -322,6 +322,9 @@ for bad in \
   './session-state.sh --get a' \
   '/tmp/scripts/session-state.sh --get a' \
   'cd /tmp && ./session-state.sh --get a' \
+  '/tmp/not.claude/scripts/session-state.sh --get a' \
+  'cd /tmp/not.claude/scripts && ./session-state.sh --get a' \
+  'cd /tmp/x.claude/scripts/ && session-state.sh --get a' \
   'cd /r/.claude/scripts && ./other.sh --get a' \
   'cd /r/.claude/scripts && ./session-state.sh --get a; rm -rf x' \
   'cd /r/.claude/scripts && ./session-state.sh --get a && gh pr merge 1' \
