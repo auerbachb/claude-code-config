@@ -45,7 +45,7 @@ An **automated turn** is one whose prompt arrives wrapped by the app or harness:
 
 ## Resuming
 
-Nothing needs to be switched back. When the provider's reset brings the reading under the threshold, the first refresh after it (started by the next tool call once the marker is ten minutes old) clears the state and the guard allows everything. Parked pipelines resume with `/go-on`. The owner gets a desktop notification once when an account crosses in either direction.
+Nothing needs to be switched back. When the provider's reset brings the reading under the threshold, the first refresh after it (started by the next tool call once the marker is ten minutes old) clears the state and the guard allows everything. Parked pipelines resume with `/go-on`. On macOS the owner also gets a desktop notification once when an account crosses in either direction, on a best-effort basis: a notifier that is missing or fails is ignored, and a crossing is only noticed when a session is active to trigger a refresh. `QUOTA_RESERVE_NOTIFY_CMD` points it at another notifier.
 
 ## Fails open
 

@@ -71,6 +71,15 @@ wait_refresh() {
   done
   return 1
 }
+# Wait (bounded) until the reader log holds at least <n> calls. Polling beats a fixed sleep on a loaded runner.
+wait_calls() {
+  local _ n="$1"
+  for _ in $(seq 1 40); do
+    if [[ "$(reader_calls)" -ge "$n" ]]; then return 0; fi
+    sleep 0.5
+  done
+  return 1
+}
 reader_calls() { [[ -f "$READER_LOG" ]] && wc -l < "$READER_LOG" | tr -d ' ' || echo 0; }
 session_as() { jq -n --arg e "$1" '{oauthAccount: {emailAddress: $e}}' > "$QUOTA_RESERVE_CLAUDE_JSON"; }
 decide() { # <payload-json> -> verdict line
@@ -90,7 +99,7 @@ rows \
   "$(row claude a@example.com 'Claude A' $CLAUDE_A 7-day ok 94)" \
   "$(row claude a@example.com 'Claude A' $CLAUDE_A 5-hour ok 99)" \
   "$(row claude b@example.com 'Claude B' $CLAUDE_B 7-day ok 95)" \
-  "$(row claude b@example.com 'Claude B' $CLAUDE_B '7-day opus' ok 97)" \
+  "$(row claude b@example.com 'Claude B' $CLAUDE_B '7-day (opus)' ok 97)" \
   "$(row claude d@example.com 'Claude D' $CLAUDE_D 7-day needs-login null)" \
   "$(row claude e@example.com 'Claude E' e@example.com 7-day ok 95)" \
   "$(row codex c@example.com 'GPT C' c@example.com 7-day ok 20)" \
@@ -246,13 +255,13 @@ check_eq "$([[ -f "$QUOTA_RESERVE_DIR/marker.json" ]] && echo built || echo miss
 # a failing reader must not be retried on every tool call
 rm -rf "$QUOTA_RESERVE_DIR" "$READER_LOG"; "$SCRIPT" --refresh --force
 touch "$STUB_FAIL"; export QUOTA_RESERVE_NOW=$(( 3000000 + 5000 ))
-decide "$(payload Read)" >/dev/null; wait_refresh; sleep 1
+decide "$(payload Read)" >/dev/null; wait_calls 2; sleep 0.5
 C1="$(reader_calls)"
 for _ in 1 2 3 4 5; do decide "$(payload Read)" >/dev/null; done
 sleep 1
 check_eq "$(reader_calls)" "$C1" "five more tool calls inside the throttle window start no further refresh attempts"
 export QUOTA_RESERVE_NOW=$(( 3000000 + 5000 + 121 ))
-decide "$(payload Read)" >/dev/null; sleep 1
+decide "$(payload Read)" >/dev/null; wait_calls $(( C1 + 1 )); sleep 1
 check_eq "$(reader_calls)" "$(( C1 + 1 ))" "and once the window passes, exactly one more attempt is made"
 rm -f "$STUB_FAIL"; export QUOTA_RESERVE_NOW=3000000
 rm -rf "$QUOTA_RESERVE_DIR"; "$SCRIPT" --refresh --force
