@@ -554,8 +554,12 @@ def overage_for($row):
       | $t
         + {label: (if $free >= 1
                    then (if $free == 1 then $t.free_label else "\($free) free resets" end)
-                        # A live balance names the day the soonest credit lapses (#1862).
-                        + (if $live_n != null and $exp != null then ", expires \($exp)" else "" end)
+                        # A live balance says when the soonest credit lapses (#1862). The cell
+                        # is compact because this column sets the table width: "Nov 6 6:31 PM ET"
+                        # becomes "Nov 6 6:31PM". The full instant stays on the row and in the hint.
+                        + (if $live_n != null and $exp != null
+                           then ", exp \($exp | sub(" ET$"; "") | sub(" (?<ap>[AP]M)$"; "\(.ap)"))"
+                           else "" end)
                    else $t.paid_label end),
            free_reset_expires_et_short: (if $live_n != null then $exp else null end),
            # The table's own wording, kept beside the rendered one. The column
