@@ -1,8 +1,8 @@
 # Quota reserve — pause autonomous work before an account runs dry (#1863)
 
-> **Always:** gate only on the weekly used-percent the provider itself reports. Fail open on anything unreadable or stale. Leave the owner's own interactive turns alone.
+> **Always:** gate only on the weekly used-percent the provider itself reports. Fail open on anything unreadable or stale. Leave the owner's own interactive turns alone, apart from launches.
 > **Ask first:** changing the threshold default, or extending the gate to a window other than the weekly one.
-> **Never:** gate on a locally estimated figure, block an interactive turn, or stop work on a reading that is not both fresh and known.
+> **Never:** gate on a locally estimated figure, block the ordinary tool calls of a turn the owner started (launches are blocked there too), or stop work on a reading that is not both fresh and known.
 
 The owner runs several paid AI coding accounts and wants headroom left to ask questions before one is exhausted. Once an account's weekly usage reaches the threshold (95% by default), work running unattended on it stops. This is the third carve-out in `.claude/rules/safety.md` §Anthropic Quota & Spend Authority. `/quotas` stays display-only; this feature reads the same provider numbers for a different purpose.
 

@@ -61,9 +61,9 @@ mk_marker() { # <state> [age-seconds]
       accounts: [{provider: "claude", label: "a", email: "a@example.com", nickname: "A", used_pct: 50, state: $s}]}' \
     > "$QUOTA_RESERVE_DIR/marker.json"
   if [[ -n "${2:-}" ]]; then
-    # touch -t reads LOCAL time, so format the target instant in local time (BSD date -r, GNU date -d).
+    # touch -t reads LOCAL time, so format the target instant in local time (GNU date -d, else BSD date -r).
     local when=$(( $(date +%s) - $2 ))
-    touch -t "$(date -r "$when" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$when" +%Y%m%d%H%M.%S)" "$QUOTA_RESERVE_DIR/marker.json"
+    touch -t "$(date -d "@$when" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$when" +%Y%m%d%H%M.%S)" "$QUOTA_RESERVE_DIR/marker.json"
   fi
 }
 run_guard() { # <guard> <stdin>  -> sets RC, ERR

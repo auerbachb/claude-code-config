@@ -45,7 +45,7 @@
 #   RemoteTrigger, starting another session, background Bash).
 #   In a subagent or an automated turn: everything except reads and the harness's
 #   own bookkeeping scripts, so a pipeline can still checkpoint and park.
-#   Never: the owner's own interactive turns.
+#   Never: ordinary tool calls in the owner's own interactive turns (launches are still blocked there).
 #
 # FAILS OPEN. No marker, a stale marker, an unreadable account file, a session
 # whose account is not in the marker, or an unknown reading all allow. Work is
@@ -352,7 +352,11 @@ do_decide() {
       # redirects, or substitution anywhere, so a command that merely MENTIONS a script
       # name (`rm -rf x # session-state.sh`) or chains other work after it is not let through.
       local bk='^[[:space:]]*(cd[[:space:]]+[^;&|`$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|`$()<>[:space:]]*[[:space:]]+)*([^;&|`$()<>[:space:]]*/)?(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\.sh([[:space:]][^;&|`$()<>]*)?[[:space:]]*$'
-      if [[ "$cmd" =~ $bk ]]; then echo "allow bookkeeping while reserved"; return 0; fi ;;
+      # A newline or carriage return is a command separator that the regex's argument class would
+      # otherwise accept, so a multi-line command is never a plain invocation.
+      if [[ "$cmd" != *$'\n'* && "$cmd" != *$'\r'* && "$cmd" =~ $bk ]]; then
+        echo "allow bookkeeping while reserved"; return 0
+      fi ;;
   esac
   echo "deny $reason Park this work: write the handoff and stop (see .claude/reference/subagent-thread-limit-park.md)."
   return 0

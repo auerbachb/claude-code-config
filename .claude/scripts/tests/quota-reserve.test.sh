@@ -303,7 +303,9 @@ for bad in \
   'session-state.sh --get a > /tmp/out' \
   'cat .claude/scripts/session-state.sh' \
   'bash -c "session-state.sh --get a"' \
-  'cd /r; handoff-state.sh --path 4'; do
+  'cd /r; handoff-state.sh --path 4' \
+  $'session-state.sh --get a\ngh pr merge 1' \
+  $'session-state.sh --get a\r\ngh pr merge 1'; do
   V="$(decide "$(jq -nc --arg c "$bad" '{tool_name:"Bash", session_id:"sess-1", tool_input:{command:$c}}')")"
   check_contains "$V" "deny" "reserve, automated turn: '${bad:0:44}' is not a plain bookkeeping call"
 done
