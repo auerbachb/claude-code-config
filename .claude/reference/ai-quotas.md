@@ -882,9 +882,9 @@ toward a $90 purchase, and it must not come from a parse failure.
 **One record, not one per account.** The file carries no account dimension, so recording a
 reset marks the free reset spent for *every* Codex account that falls back to the
 watermark. Accounts reporting a live free-reset figure are unaffected — a live figure is
-preferred over the watermark, and since #1862 every account that answers over app-server or
-the HTTP fallback reports one, so the watermark is now only a fallback for an account whose
-reply lacks the section. With more than one Codex account registered, read the
+preferred over the watermark, and since #1862 an account whose reply includes the
+reset-credit section reports one. The watermark still answers for any reply without that
+section, so it remains the fallback it was. With more than one Codex account registered, read the
 verdict as "a reset was used somewhere this month", not as a per-account balance. Keying
 it by account is issue #1696.
 
