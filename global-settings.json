@@ -166,6 +166,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/quota-reserve-guard.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -189,6 +198,11 @@
           {
             "type": "command",
             "command": "/path/to/claude-code-config/.claude/hooks/skill-command-tracker.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/quota-reserve-turn.sh",
             "timeout": 5
           }
         ]

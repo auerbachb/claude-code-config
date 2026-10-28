@@ -88,3 +88,5 @@ Anthropic's in-app usage UI is **authoritative**; locally-computed spend estimat
 
 **Horizon carve-out (#1427):** the harness-injected in-context remaining-token counter (`<total_tokens>N tokens left</total_tokens>`) is an **upstream authoritative** signal — printed by the harness, never derived here — so horizon decisions may gate on `usage-horizon.sh` (`--observe` the figure, `--check` the verdict).
 Local token/spend estimation stays banned exactly as written above: that script only compares a number handed to it, and its `unknown` is never `clear`. Probe 0: `budget-source-probe.md`.
+
+**Reserve carve-out (#1863):** the weekly used-percent a provider itself reports, read by `quota-reserve.sh` (never an estimate), may pause autonomous work on that account at or above the owner's threshold (default 95%): launches and unattended tool calls, never the owner's own turns. Unreadable or stale readings fail open. Detail: `.claude/reference/quota-reserve.md`.

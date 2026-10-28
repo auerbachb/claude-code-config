@@ -54,3 +54,15 @@ REVIEW_DAILY_CAP_USD_BUGBOT = 10
 REVIEW_DAILY_CAP_USD_CODERABBIT = 10
 REVIEW_DAILY_CAP_USD_GREPTILE = 10
 ```
+
+## Quota reserve
+
+<!-- Read by quota-reserve.sh (#1863). When a Claude account's provider-reported weekly
+     usage reaches threshold_pct, autonomous work on that account pauses and the owner's
+     own turns keep working. The environment variables QUOTA_RESERVE_THRESHOLD_PCT and
+     QUOTA_RESERVE_ENABLED win over these. Set enabled = false to turn the guard off. -->
+
+```ini
+threshold_pct = 95
+enabled = true
+```

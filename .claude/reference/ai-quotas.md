@@ -1445,3 +1445,7 @@ reaches no output and no file either action writes.
 Per `.claude/rules/skill-symlinks.md`, `/quotas-setup` and `/quotas` are symlinked into
 `~/.claude/skills/` through the skills worktree **after** their PRs merge — never before,
 and never directly to the root repo.
+
+## The one consumer that acts on these readings (#1863)
+
+The table and projections are display-only. `quota-reserve.sh` is the single exception: it reads the same provider-reported weekly used-percent and, at the owner's threshold (95% default), pauses *autonomous* work on that account, never the owner's own turns. It is an owner-approved carve-out in `.claude/rules/safety.md`, evaluated only against the provider's reading and failing open on anything unreadable or stale. Mechanism, what is blocked, and what is deliberately not covered: [`quota-reserve.md`](./quota-reserve.md).

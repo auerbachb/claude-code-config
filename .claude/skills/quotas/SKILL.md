@@ -51,6 +51,11 @@ what continuing past it would cost — one row per account per window.
 > counter. The earlier `/quota` skill was rolled back in issue #499 for exactly this —
 > gating agent decisions on locally-read numbers. Answer the user's question and stop.
 
+> **One narrow exception lives elsewhere (#1863).** `quota-reserve.sh` reads the same provider-reported
+> weekly percentages to pause *autonomous* work on an account at the owner's threshold. That is a
+> separate, owner-approved carve-out in `safety.md`; `/quotas` and this skill stay display-only, and
+> you must not act on this table yourself.
+
 > **No credential value ever passes through you.** The helper borrows each account's
 > live token in place for one request — for Cursor, the token the Cursor IDE already
 > holds for the signed-in user, turned into a session cookie in memory — and never
