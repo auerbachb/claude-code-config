@@ -358,10 +358,12 @@ do_decide() {
       # optionally VAR=value prefixes, then the script, then plain arguments. No chaining, pipes,
       # redirects, or substitution anywhere, so a command that merely MENTIONS a script
       # name (`rm -rf x # session-state.sh`) or chains other work after it is not let through.
-      local bk='^[[:space:]]*(cd[[:space:]]+[^;&|`$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|`$()<>[:space:]]*[[:space:]]+)*([^;&|`$()<>[:space:]]*\.claude/scripts/)(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\.sh([[:space:]][^;&|`$()<>]*)?[[:space:]]*$'
+      local bk="^[[:space:]]*(cd[[:space:]]+[^;&|\`\$()<>[:space:]]+[[:space:]]*&&[[:space:]]*)?([A-Za-z_][A-Za-z0-9_]*=[^;&|\`\$()<>[:space:]]*[[:space:]]+)*([^;&|\`\$()<>[:space:]]*\\.claude/scripts/)(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\\.sh([[:space:]][^;&|\`\$()<>]*)?[[:space:]]*\$"
+      # The other plain form: `cd` INTO a harness scripts directory, then run the script by name from there.
+      local bk_in_dir="^[[:space:]]*cd[[:space:]]+[^;&|\`\$()<>[:space:]]*\\.claude/scripts/?[[:space:]]*&&[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^;&|\`\$()<>[:space:]]*[[:space:]]+)*(\\./)?(session-state|handoff-state|execution-pause|quota-reserve|bgwork-ceiling|issue-claim)\\.sh([[:space:]][^;&|\`\$()<>]*)?[[:space:]]*\$"
       # A newline or carriage return is a command separator that the regex's argument class would
       # otherwise accept, so a multi-line command is never a plain invocation.
-      if [[ "$cmd" != *$'\n'* && "$cmd" != *$'\r'* && "$cmd" =~ $bk ]]; then
+      if [[ "$cmd" != *$'\n'* && "$cmd" != *$'\r'* && ( "$cmd" =~ $bk || "$cmd" =~ $bk_in_dir ) ]]; then
         echo "allow bookkeeping while reserved"; return 0
       fi ;;
   esac

@@ -295,6 +295,10 @@ check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/x/.claude/script
   "reserve, automated turn: session-state bookkeeping still works, so a pipeline can checkpoint"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd /r && .claude/scripts/handoff-state.sh --owner-repo o/r --path 4"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: handoff writing still works"
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd /r/.claude/scripts && ./handoff-state.sh --owner-repo o/r --path 4"}}')")" "allow bookkeeping while reserved" \
+  "reserve, automated turn: cd into a scripts directory and run the script by name is also a plain call"
+check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"cd .claude/scripts && session-state.sh --get a"}}')")" "allow bookkeeping while reserved" \
+  "reserve, automated turn: the relative form of that is fine too"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"FOO=1 .claude/scripts/execution-pause.sh --status"}}')")" "allow bookkeeping while reserved" \
   "reserve, automated turn: a VAR=value prefix is fine"
 check_eq "$(decide "$(payload Bash '{"tool_input":{"command":"~/.claude/skills-worktree/.claude/scripts/session-state.sh --get .prs[\"4\"]"}}')")" "allow bookkeeping while reserved" \
@@ -317,6 +321,10 @@ for bad in \
   'session-state.sh --get a' \
   './session-state.sh --get a' \
   '/tmp/scripts/session-state.sh --get a' \
+  'cd /tmp && ./session-state.sh --get a' \
+  'cd /r/.claude/scripts && ./other.sh --get a' \
+  'cd /r/.claude/scripts && ./session-state.sh --get a; rm -rf x' \
+  'cd /r/.claude/scripts && ./session-state.sh --get a && gh pr merge 1' \
   $'session-state.sh --get a\ngh pr merge 1' \
   $'session-state.sh --get a\r\ngh pr merge 1'; do
   V="$(decide "$(jq -nc --arg c "$bad" '{tool_name:"Bash", session_id:"sess-1", tool_input:{command:$c}}')")"
