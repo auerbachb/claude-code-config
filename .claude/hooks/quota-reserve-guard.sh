@@ -22,12 +22,15 @@ MARKER="${QUOTA_RESERVE_DIR:-$HOME/.claude/quota-reserve}/marker.json"
 REFRESH="${QUOTA_RESERVE_REFRESH_SECONDS:-600}"
 [[ "$REFRESH" =~ ^[0-9]+$ ]] || REFRESH=600
 
-if [[ -f "$MARKER" ]] && ! grep -q '"state": *"reserve"' "$MARKER" 2>/dev/null; then
+if [[ -f "$MARKER" ]]; then
   NOW="${QUOTA_RESERVE_NOW:-$(date +%s)}"
+  # Read the mtime before the content: a refresh that swaps the marker in between then shows up
+  # as reserve content, instead of old content being paired with the new file's fresh mtime.
   # GNU stat first: on Linux `stat -f` means filesystem status and can print a number that is not a mtime.
   MTIME="$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null || echo 0)"
   [[ "$MTIME" =~ ^[0-9]+$ ]] || MTIME=0
-  if [[ "$NOW" =~ ^[0-9]+$ ]] && (( NOW - MTIME >= 0 && NOW - MTIME < REFRESH )); then
+  if ! grep -q '"state": *"reserve"' "$MARKER" 2>/dev/null \
+    && [[ "$NOW" =~ ^[0-9]+$ ]] && (( NOW - MTIME >= 0 && NOW - MTIME < REFRESH )); then
     exit 0
   fi
 fi
