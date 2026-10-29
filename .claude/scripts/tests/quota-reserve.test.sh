@@ -379,6 +379,18 @@ touch -t 202001010000 "$QUOTA_RESERVE_DIR/turns/s1"
 classify "$(jq -nc '{session_id:"s5", prompt:"hi"}')"
 check_eq "$(kind s1)" "none" "turn records older than three days are removed"
 
+# A clock rollback makes an otherwise reserved snapshot untrustworthy.
+reset_state
+export QUOTA_RESERVE_NOW=3000000
+rows "$(row claude a@example.com 'Claude A' $CLAUDE_A 7-day ok 96)"
+"$SCRIPT" --refresh --force
+session_as "$CLAUDE_A"
+export QUOTA_RESERVE_NOW=2999999
+check_eq "$(decide "$(payload Agent)")" "allow future-dated reading" "a clock rollback cannot keep blocking on a future-dated reserve reading"
+wait_calls 2
+wait_refresh
+check_eq "$(jq -r .read_at "$QUOTA_RESERVE_DIR/marker.json")" "2999999" "a future-dated reading requests a fresh provider snapshot"
+
 # ------------------------------------------------------------------------------
 # 6. --status and the command line
 # ------------------------------------------------------------------------------

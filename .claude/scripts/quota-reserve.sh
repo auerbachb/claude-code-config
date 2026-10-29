@@ -308,6 +308,7 @@ do_decide() {
   read_at="$(jq -r '.read_at' "$MARKER" 2>/dev/null || echo 0)"
   [[ "$read_at" =~ ^[0-9]+$ ]] || { echo "allow unreadable marker"; return 0; }
   age=$(( now - read_at ))
+  if [[ "$age" -lt 0 ]]; then spawn_refresh; echo "allow future-dated reading"; return 0; fi
   if [[ "$age" -ge "$REFRESH_SECONDS" ]]; then spawn_refresh; fi
   if [[ "$age" -gt "$STALE_SECONDS" ]]; then echo "allow stale reading"; return 0; fi
 

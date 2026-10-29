@@ -53,6 +53,7 @@ Nothing needs to be switched back. When the provider's reset brings the reading 
 |---|---|
 | No marker yet | Allow, and start a refresh. |
 | Marker older than the stale limit (30 min) | Allow. A failed refresh does not advance the read time, so a dead reader ages out. |
+| Marker dated in the future after a clock rollback | Allow and request a fresh reading. |
 | Reading unknown (`needs-login`, rate-limited, unreachable) | The account is `unknown`; allow. |
 | Session's account not in the marker, or `.claude.json` unreadable | Allow. |
 | Hook payload unreadable, script missing, `jq` missing | Allow. |
@@ -67,6 +68,7 @@ Nothing needs to be switched back. When the provider's reset brings the reading 
 - **Codex.** The marker holds the Codex accounts and the notification names them, but nothing stops Codex sessions. Codex has lifecycle hooks and a `queue` command; whether a hook can deny work needs a spike. Tracked in #1867.
 - **Cursor.** The IDE has no hook surface, and its limit is a dollar cap, which `review-daily-cap.sh` already watches.
 - **A turn already running when the line is crossed.** It keeps the kind it started with. Launches and subagent calls stop at once. An automated turn stops at its next tool call; a turn the owner started carries on, by design.
+- **Programs started inside an owner's foreground shell call.** Background Bash means the harness's `run_in_background` flag. The reserve does not parse arbitrary shell programs or prevent their child processes; the owner's foreground shell remains available. Automated-turn and subagent shell calls still require the bookkeeping allowlist.
 - **Profiles created before this shipped.** A profile's `settings.json` is a copy. Re-run `/quotas-setup share-config <label>` so it picks up the two hooks.
 
 ## Related
