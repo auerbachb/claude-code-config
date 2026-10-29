@@ -542,6 +542,10 @@ def overage_for($row):
   | if $t == null then null
     elif ($row.provider? // "") == "codex" then
       (field($row; "free_resets_remaining")) as $live
+      # `field` returns numbers only, and the expiry is a date string like "Nov 6".
+      | (if (($row.free_reset_expires_et_short? // null) | type) == "string"
+            and ($row.free_reset_expires_et_short | length) > 0
+         then $row.free_reset_expires_et_short else null end) as $exp
       | (if $live != null then ($live | floor) else null end) as $live_n
       | (if $live_n != null then $live_n
          elif $ctx.codex_free_reset then 1
@@ -550,7 +554,14 @@ def overage_for($row):
       | $t
         + {label: (if $free >= 1
                    then (if $free == 1 then $t.free_label else "\($free) free resets" end)
+                        # A live balance says when the soonest credit lapses (#1862). The cell
+                        # is compact because this column sets the table width: "Nov 6 6:31 PM ET"
+                        # becomes "Nov 6 6:31PM". The full instant stays on the row and in the hint.
+                        + (if $live_n != null and $exp != null
+                           then ", exp \($exp | sub(" ET$"; "") | sub(" (?<ap>[AP]M)$"; "\(.ap)"))"
+                           else "" end)
                    else $t.paid_label end),
+           free_reset_expires_et_short: (if $live_n != null then $exp else null end),
            # The table's own wording, kept beside the rendered one. The column
            # shows the live label ("2 free resets", "on-demand $1007.50 of
            # $1000"); the hint's prose reads better with the generic term, and
@@ -673,7 +684,13 @@ def overage_for($row):
      # week untouched. The tiers order the choice; they do not describe it.
      | (if $w.tier <= 1 then
           "\($rem_text) % \($phrase) left"
-          + (if $w.has_free_reset then ", \($w.overage.free_resets_remaining) free reset\(if $w.overage.free_resets_remaining == 1 then "" else "s" end) this month" else "" end)
+          + (if $w.has_free_reset
+             then ", \($w.overage.free_resets_remaining) free reset\(if $w.overage.free_resets_remaining == 1 then "" else "s" end)"
+                  # A live balance is not a monthly allowance; only the assumed one is (#1862).
+                  + (if ($w.overage.figure_source? // "") == "live"
+                     then (if ($w.overage.free_reset_expires_et_short? // null) != null then ", the soonest expires \($w.overage.free_reset_expires_et_short)" else "" end)
+                     else " this month" end)
+             else "" end)
         elif ($w.overage.kind? // "") == "reset" then
           "\($rem_text) % \($phrase) left; the next reset costs \($w.overage.paid_label // $w.overage.base_label // $w.overage.label)"
         else

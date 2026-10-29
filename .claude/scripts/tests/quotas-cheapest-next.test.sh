@@ -547,6 +547,39 @@ run "$(rows "$(row codex a 3-hour 8 ok)" "$(row codex a 1-hour 99 ok)")"
 check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.window')" "3-hour" \
   "an all-hourly account ranks on its longest window, not its shortest"
 
+# --- 10. a live reset balance names its expiry, and a live zero is zero (#1862) --
+
+reset_state
+run "$(rows "$(row codex c 7-day 4 ok '{"free_resets_remaining": 1, "free_reset_expires_et_short": "Nov 6 6:31 PM ET"}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset, exp Nov 6 6:31PM" \
+  "a live balance with an expiry names when the soonest credit lapses, compactly because the column sets the table width"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason')" \
+  "4 % weekly left, 1 free reset, the soonest expires Nov 6 6:31 PM ET" \
+  "and the hint says so, without calling a live balance a monthly one"
+
+# Discriminating: an expiry on a row whose balance is only the table's ASSUMPTION
+# must not appear, or the label would date a credit nobody proved exists.
+run "$(rows "$(row codex c 7-day 4 ok '{"free_reset_expires_et_short": "Nov 6 6:31 PM ET"}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset" \
+  "an expiry without a live count is ignored"
+check_contains "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason')" "this month" \
+  "and the assumed balance keeps the monthly wording"
+
+# A live zero is a measurement, not an absence: it must price the paid reset and
+# must not be rescued by the table's monthly assumption.
+run "$(rows "$(row codex c 7-day 4 ok '{"free_resets_remaining": 0}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.free_resets_remaining')" "0" \
+  "a live balance of zero stays zero"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.paid_label')" \
+  "and the row is priced as a paid reset"
+check_eq "$(printf '%s' "$OUT" | jq -r '.cheapest_next.reason | contains("free reset")')" "false" \
+  "and the hint does not claim a free reset"
+
+# A non-string expiry is not a date.
+run "$(rows "$(row codex c 7-day 4 ok '{"free_resets_remaining": 1, "free_reset_expires_et_short": 12345}')")"
+check_eq "$(printf '%s' "$OUT" | jq -r '.rows[0].overage.label')" "1 free reset" \
+  "a numeric expiry is ignored rather than printed as a date"
+
 # --- summary -----------------------------------------------------------------
 
 echo

@@ -847,14 +847,16 @@ live one wins and the row says so in `overage.figure_source`:
 | Row field | Provider source | Renders as |
 |-----------|-----------------|------------|
 | `spend_limit_used_usd`, `spend_limit_usd` | Cursor's `spendLimitUsage.individualUsed` / `.individualLimit`, cents ÷ 100 — the on-demand block of the captured response documented above | `on-demand $1007.50 of $1000`, `figure_source: "live"` |
-| `free_resets_remaining` | Codex — **speculative**. No captured `account/rateLimits/read` payload has ever carried it; the reader looks for `freeResetsRemaining`, `free_resets_remaining`, and `resets.freeRemaining` and contributes **nothing** when none is a plain number | `2 free resets`, `figure_source: "live"` |
+| `free_resets_remaining` | Codex — **measured (#1862)**. `account/rateLimits/read` carries `rateLimitResetCredits.availableCount` as a sibling of `rateLimits`; the HTTP fallback carries `rate_limit_reset_credits.available_count`. The older guessed keys (`freeResetsRemaining`, `free_resets_remaining`, `resets.freeRemaining`) stay as fallbacks. Contributes **nothing** when none is a plain number | `2 free resets`, `figure_source: "live"` |
+| `free_reset_expires_epoch`, `free_reset_expires_et_short` | Codex — the soonest `expiresAt` among `rateLimitResetCredits.credits` whose `status` is `available`, as an epoch and as an Eastern date and time. App-server path only: the HTTP summary carries a count and no credit list. Credits expire, so this is what answers "when must I use it by" | `1 free reset, exp Nov 6 6:31PM` in the table cell (compact, as this column sets the table width); the full `Nov 6 6:31 PM ET` stays on the row and in the hint |
 | `credits_remaining_usd` | Codex — speculative on the same terms (`creditBalanceUsd`, `credits.balanceUsd`) | reported in the `overage` object, not yet in the label |
 
-The Codex lookups are a hook, not an observation, and they are written so that being wrong
-costs nothing: a key that is absent, or present with a value that is not a plain number,
+The count above was a hook until 2026-10-27, when a real payload settled where it lives: the
+reader had been keeping only `.result.rateLimits` and discarding the sibling that holds the
+balance. The lookups are still written so that being wrong costs nothing: a key that is absent, or present with a value that is not a plain number,
 leaves the watermark to answer. A bare `tonumber` there would turn `"n/a"` into `0` and
 render `0 free resets` — a figure nobody sent, pointing straight at a paid reset. If
-OpenAI ships the balance under a third name, add it in `codex_live_overage` and here.
+OpenAI renames the balance again, add it in `codex_live_overage` and here.
 
 ### The Codex reset watermark
 
@@ -880,7 +882,10 @@ toward a $90 purchase, and it must not come from a parse failure.
 **One record, not one per account.** The file carries no account dimension, so recording a
 reset marks the free reset spent for *every* Codex account that falls back to the
 watermark. Accounts reporting a live free-reset figure are unaffected — a live figure is
-preferred over the watermark. With more than one Codex account registered, read the
+preferred over the watermark, and since #1862 an account whose reply includes the
+reset-credit section reports one, provided that section supplies a valid number. The
+watermark still answers for any reply without the section, or whose count is not a number,
+so it remains the fallback it was. The measured keys outrank the older guessed ones. With more than one Codex account registered, read the
 verdict as "a reset was used somewhere this month", not as a per-account balance. Keying
 it by account is issue #1696.
 
