@@ -301,3 +301,13 @@ Registered on **`Stop`** with a 5 s timeout.
 - **Fails open:** no jq, bad input, an unreadable transcript — nothing printed. Always exits `0`. Needs no database.
 
 **Contract:** `desk/hooks/README.md`, "The prose-question nudge". **Tests:** `desk/tests/question-leak-warn.test.sh`.
+
+## quota-reserve-guard.sh + quota-reserve-turn.sh
+
+Pause autonomous work on a Claude account that is nearly out of weekly allowance (issue #1863). Detail: `.claude/reference/quota-reserve.md`.
+
+- **`quota-reserve-turn.sh`** (UserPromptSubmit, 5 s): records whether the turn was started by the owner or by an automated event. Writes a small per-session record; never blocks.
+- **`quota-reserve-guard.sh`** (PreToolUse, no matcher, 5 s): when the account this session runs on is at or above the threshold (95% default, from the provider's own reading), blocks launches and any subagent or automated-turn tool call beyond reads and the harness's bookkeeping scripts. The owner's interactive turns keep working: only launches are blocked there. A fresh marker with nobody in reserve costs one `grep` and one `stat`.
+- **Fails open:** no marker, a stale marker, an unknown reading, an unreadable account file, or a missing script all allow the call.
+
+**Tests:** `.claude/hooks/tests/quota-reserve-hooks.test.sh`.
