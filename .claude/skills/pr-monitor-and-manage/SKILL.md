@@ -44,6 +44,7 @@ REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 PR_STATE_SH=$(resolve_script pr-state.sh || true)
+PMM_PRE_DISPATCH_SH=$(resolve_script pmm-pre-dispatch.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ```
 
@@ -52,6 +53,7 @@ These bindings are in scope for every step of the tick, including the `reference
 **When something does not resolve, say so in one line; never skip the contract silently.**
 
 - `SESSION_STATE_SH` or `MERGE_GATE_SH` empty → **required, and fatal for the tick**. Print `ERROR: <name> not found (checked all three paths) — PR fleet management unavailable` and exit without acting. Every verdict this skill reaches is a merge decision; a fleet manager that cannot read the gate or persist a hard block must not guess, and must not act on a guess.
+- `PMM_PRE_DISPATCH_SH` empty → **optional for the current interactive/model tick**, which can continue under the ordinary gates; fatal only when arming or replacing a Monitor. Step 7 refuses to arm a model-dispatching loop without it.
 - `MERGE_SEQUENCE_SH` empty → **optional**. Print `DEGRADED: merge-sequence.sh not found (checked all three paths) — overlap-aware sequencing unavailable, merging one PR per tick` and serialize merges rather than sequencing them.
 - `USAGE_HORIZON_SH` empty → **optional, and conservative**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — horizon consult unavailable, holding "unknown" (no new subagent dispatch)` and run Step 3.7 with the verdict it already produces for an unresolved helper. `unknown` is the fail-closed posture, never `clear`: it suppresses *new* fixer dispatch while leaving merge-ready `/wrap` and rebases alone, so the fleet keeps landing work instead of freezing (`subagent-thread-limit-park.md` §8.1).
 - `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH`, `PR_STATE_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution, reviewer-engagement matrix), then continue with that one capability off. An empty `PR_STATE_SH` renders every engagement cell as `?` — the tick still runs.
@@ -64,26 +66,56 @@ Monitor-emitted invocations carry the internal `--tick` flag; direct user invoca
 that distinction before pause-resume logic so an event already emitted before `TaskStop` cannot
 resume or restart the fleet after pause/stop:
 
+<!-- test-anchor: pmm-pre-dispatch-tick-gate -->
 ```bash
 PMM_INTERNAL_TICK=false
+PMM_UNPERSISTED_DIAGNOSTIC=false
 [[ " $ARGUMENTS " == *" --tick "* ]] && PMM_INTERNAL_TICK=true
+[[ " $ARGUMENTS " == *" --pre-dispatch-diagnostic "* ]] && PMM_UNPERSISTED_DIAGNOSTIC=true
 PMM_TICK_GENERATION=""
+PMM_DISPATCH_EVENT=""
 _PMM_EXPECT_GENERATION=false
+_PMM_EXPECT_EVENT=false
 for _PMM_ARG in $ARGUMENTS; do
+  if [[ "$_PMM_EXPECT_EVENT" == true ]]; then
+    if [[ -z "$_PMM_ARG" || "$_PMM_ARG" == --* ]]; then
+      echo "ERROR: --dispatch-event requires an event ID before the next option." >&2
+      exit 2
+    fi
+    [[ "$_PMM_ARG" =~ ^[a-f0-9]{64}$ ]] || { echo "ERROR: invalid dispatch event ID" >&2; exit 2; }
+    PMM_DISPATCH_EVENT="$_PMM_ARG"
+    _PMM_EXPECT_EVENT=false
+    continue
+  fi
   if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
+    [[ "$_PMM_ARG" =~ ^[A-Za-z0-9_.-]+$ && "$_PMM_ARG" != --* ]] || { echo "ERROR: invalid Monitor generation" >&2; exit 2; }
     PMM_TICK_GENERATION="$_PMM_ARG"
     _PMM_EXPECT_GENERATION=false
     continue
   fi
   [[ "$_PMM_ARG" == "--monitor-generation" ]] && _PMM_EXPECT_GENERATION=true
+  [[ "$_PMM_ARG" == "--dispatch-event" ]] && _PMM_EXPECT_EVENT=true
 done
 if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
   echo "ERROR: --monitor-generation requires a token." >&2
   exit 2
 fi
+if [[ "$_PMM_EXPECT_EVENT" == true ]]; then
+  echo "ERROR: --dispatch-event requires an event ID." >&2
+  exit 2
+fi
+if [[ -n "$PMM_DISPATCH_EVENT" && "$PMM_INTERNAL_TICK" != true ]]; then
+  echo "ERROR: --dispatch-event is runtime-only and requires --tick." >&2
+  exit 2
+fi
 if [[ "$PMM_INTERNAL_TICK" != true && -n "$PMM_TICK_GENERATION" ]]; then
   echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
   exit 2
+fi
+if [[ "$PMM_UNPERSISTED_DIAGNOSTIC" == true ]]; then
+  [[ "$PMM_INTERNAL_TICK" == true ]] || { echo "ERROR: diagnostic flag is runtime-only" >&2; exit 2; }
+  echo "ERROR: non-durable PMM pre-dispatch failure — inspect helper/state diagnostics and repair before retrying; no PR action is authorized and no event can be acknowledged." >&2
+  exit 1
 fi
 PMM_ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo false)
 PMM_STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
@@ -95,6 +127,26 @@ if [[ "$PMM_INTERNAL_TICK" == true ]]; then
     exit 0
   fi
 fi
+PMM_EVENT_PACKET='{}'
+if [[ -n "$PMM_DISPATCH_EVENT" ]]; then
+  PMM_EVENT_PACKET=$("$SESSION_STATE_SH" --get-json '.pmm_pre_dispatch.pending_event' 2>/dev/null) || {
+    echo "ERROR: pre-dispatch event state is unreadable — leaving $PMM_DISPATCH_EVENT queued" >&2
+    exit 1
+  }
+  if ! jq -e --arg id "$PMM_DISPATCH_EVENT" '.event_id == $id' >/dev/null <<<"$PMM_EVENT_PACKET"; then
+    PMM_LAST_ACKNOWLEDGED_EVENT=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.last_acknowledged_event_id' 2>/dev/null || echo null)
+    PMM_ACK_HISTORY=$("$SESSION_STATE_SH" --get-json '.pmm_pre_dispatch.acknowledged_events // []' 2>/dev/null || echo '[]')
+    if [[ "$PMM_LAST_ACKNOWLEDGED_EVENT" == "$PMM_DISPATCH_EVENT" ]] || jq -e --arg id "$PMM_DISPATCH_EVENT" --arg gen "$PMM_TICK_GENERATION" 'any(.[]; .event_id==$id and .generation==$gen)' >/dev/null <<<"$PMM_ACK_HISTORY"; then
+      echo "[PMM] Ignoring already-acknowledged event $PMM_DISPATCH_EVENT."
+      exit 0
+    fi
+    echo "ERROR: pre-dispatch event $PMM_DISPATCH_EVENT is not the pending event — refusing to act" >&2
+    exit 1
+  fi
+  if ! jq -e --arg gen "$PMM_TICK_GENERATION" '.generation==$gen' >/dev/null <<<"$PMM_EVENT_PACKET"; then
+    echo "ERROR: pending packet generation differs from invocation" >&2; exit 1
+  fi
+fi
 if [[ "$PMM_INTERNAL_TICK" == true && ( "$PMM_ACTIVE" != true || "$PMM_STOP_PENDING" == true ) ]]; then
   echo "[PMM] Ignoring a queued Monitor tick after pause/stop."
   exit 0
@@ -103,10 +155,27 @@ if [[ "$PMM_INTERNAL_TICK" != true && "$PMM_STOP_PENDING" == true ]]; then
   echo "ERROR: PMM teardown is incomplete — retry /pmm-stop and repair the retained Monitor task before starting or resuming." >&2
   exit 1
 fi
+PMM_SKIP_ACTIONS=false
+PMM_DUPLICATE_COMPLETED_EVENT=false
+if [[ -n "$PMM_DISPATCH_EVENT" ]]; then
+  PMM_ACTIONS_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.actions_completed_event_id' 2>/dev/null || echo null)
+  PMM_LIFECYCLE_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.lifecycle_completed_event_id' 2>/dev/null || echo null)
+  if [[ "$PMM_ACTIONS_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]]; then
+    PMM_SKIP_ACTIONS=true
+    [[ "$PMM_LIFECYCLE_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]] && PMM_DUPLICATE_COMPLETED_EVENT=true
+  fi
+fi
 ```
 
-`--tick` and `--monitor-generation <token>` are runtime-only: ignore them during ordinary flag
-parsing, never persist them in `config_at_pause`, and never copy the generation across a re-arm.
+Keep `$PMM_EVENT_PACKET` as wake context for this tick. Its `trigger`, `delta`, and evidence paths
+identify the relevant review/classification module and PRs; they do not replace normal current
+discovery, gate, ownership, or safety checks.
+
+`--tick`, `--monitor-generation <token>`, and `--dispatch-event <id>` are runtime-only: ignore
+them during ordinary flag parsing, never persist them in `config_at_pause`, and never copy the
+generation or event ID across a re-arm. `--dispatch-event` is valid only with `--tick` and a
+matching current Monitor generation. `--pre-dispatch-diagnostic` marks a non-ackable shell failure when no outbox could be persisted; run diagnosis only and stop before any PR action or acknowledgement; never treat it as a clean result. Do not persist that internal flag. Direct owner messages remain normal interactive turns and
+do not pass through the scheduled-tick gate.
 The generation check must precede pause/resume/discovery so a queued event from a stopped task
 cannot operate on a newer Monitor that reused the same skill arguments.
 
@@ -179,7 +248,7 @@ full table without prematurely mutating the pause marker.
 
 ## Step 1: Parse arguments + identify the fleet (every tick)
 
-Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal `--tick` and `--monitor-generation <token>` fields:
+Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal `--tick`, `--monitor-generation <token>`, `--dispatch-event <id>`, and `--pre-dispatch-diagnostic` fields:
 
 - `--author <login>` — whose PRs to manage. **Default:** current authenticated user via `gh api user --jq .login`.
 - `--repo <owner/repo>` — which repo. **Default:** current repo. `--repo` scopes discovery and reads; per-PR helpers and git actions operate on the **current checkout**. If `--repo` names a different repo than the current checkout, **stop and reconcile**. Full constraint: `references/pmm-scope.md`.
@@ -222,6 +291,16 @@ if [ -n "$PMM_REPO" ] && [ "$PMM_REPO" != "$CURRENT_REPO" ]; then
 fi
 OWNER="${OWNER_REPO%/*}"; REPO="${OWNER_REPO#*/}"
 REPO_FLAG=(--repo "$OWNER_REPO")
+PMM_FORWARD_ARGS="--author $PMM_AUTHOR --repo $OWNER_REPO --cadence $PMM_CADENCE --max-parallel $PMM_MAX_PARALLEL --idle-pause-after $PMM_IDLE_PAUSE_AFTER --auto-wake-cadence $PMM_AUTO_WAKE_CADENCE"
+[ "$PMM_AUTO_WAKE" = true ] && PMM_FORWARD_ARGS="$PMM_FORWARD_ARGS --auto-wake"
+[ "$PMM_CONFIRM_MERGES" = true ] && PMM_FORWARD_ARGS="$PMM_FORWARD_ARGS --confirm-merges"
+PMM_MONITOR_CONFIG=$(jq -cnS --arg repo "$OWNER_REPO" --arg author "$PMM_AUTHOR" \
+  --arg base "$PMM_CADENCE" --arg idle "$PMM_IDLE_PAUSE_AFTER" --arg args "$PMM_FORWARD_ARGS" \
+  '{repo:$repo,author:$author,base:$base,idle:$idle,args:$args}')
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  jq -e --arg repo "$OWNER_REPO" --arg author "$PMM_AUTHOR" '.repo==$repo and .author==$author' \
+    >/dev/null <<<"$PMM_EVENT_PACKET" || { echo "ERROR: pending event belongs to a different fleet" >&2; exit 1; }
+fi
 echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL idle-pause-after:$PMM_IDLE_PAUSE_AFTER auto-wake:$PMM_AUTO_WAKE confirm-merges:$PMM_CONFIRM_MERGES"
 ```
 
@@ -340,6 +419,34 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 Full per-row rationale, VERDICTS_JSON accumulation, findings pre-fetch, refinement-pass bash: `references/pmm-classify.md`.
 
+**Completed event replay guard.** A durable actions receipt suppresses Step 5 on a repeated ID, but
+the tick still completes Step 7 so a failed pause, stop, or Monitor replacement can recover.
+Continue through discovery, ownership checks, and fresh per-PR gate collection before either
+skipping actions or acknowledging. Only a durable lifecycle receipt permits the duplicate
+acknowledgement below. Step 2.5 cleanup is idempotent and may still drain completed-agent state. A failure
+between an external action and writing its actions receipt remains at-least-once; existing
+per-action locks and dispatch idempotency govern that crash window.
+
+<!-- test-anchor: pmm-pre-dispatch-replay-guard -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ] && ! jq -e 'type == "object" and all(.[]; (.verdict|type)=="string" and .verdict != "error")' >/dev/null <<<"$VERDICTS_JSON"; then
+  echo "[PMM] Event $PMM_DISPATCH_EVENT fresh gate is unreadable; leaving it queued before actions or lifecycle writes." >&2
+  exit 1
+fi
+if [ "$PMM_DUPLICATE_COMPLETED_EVENT" = true ]; then
+  if ! jq -e 'type == "object" and all(.[]; (.verdict|type)=="string" and .verdict != "error")' >/dev/null <<<"$VERDICTS_JSON"; then
+    echo "[PMM] Completed event $PMM_DISPATCH_EVENT was redelivered, but a fresh gate is unreadable; leaving it queued." >&2
+    exit 1
+  fi
+  echo "[PMM] Completed event $PMM_DISPATCH_EVENT was redelivered; fresh gates and lifecycle state are complete."
+  "$PMM_PRE_DISPATCH_SH" --ack "$PMM_DISPATCH_EVENT" || \
+    echo "[PMM] Could not acknowledge completed event $PMM_DISPATCH_EVENT; it remains queued."
+  exit 0
+fi
+# When PMM_SKIP_ACTIONS=true, skip Steps 5.0–5f, reuse completed Step 6, and
+# continue through Step 7 to finish/persist lifecycle routing before acknowledging the event.
+```
+
 ---
 
 ## Step 3.6: Overlap-aware merge sequencing (read-only, still pre-action — issue #756)
@@ -424,6 +531,8 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
+When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep substep. Reuse completed Step 6 state and continue with Step 7 so a replay can finish pause/stop/re-arm state after actions already completed.
+
 **Horizon gate (issue #1444), applied before every dispatch in this step:** `WATCH_LAUNCH_OK=false` skips Step 5.0 **and** Step 5c entirely — no pre-flight runs and no new `phase-a-fixer` is spawned, and each held PR keeps its `fixpr` verdict for the next tick rather than being reclassified. Step 5.0 is on this list because `pr-preflight.sh` flips drafts ready and engages four reviewers: that starts a fresh round of bot reviews and CI, which is new work by the same measure Step 5c is. The skip costs nothing — pre-flight is idempotent, so the first `clear` tick runs it in full — and it does not strand a merge: under `approaching` a `merge-ready` PR still reaches Step 5d without a trigger. `WATCH_FINISH_OK=false` additionally skips Steps 5a/5b/5b′/5d, so a `critical` tick starts nothing new. **Step 5e's exhaustion respawn is the one dispatch neither flag bars**, and deliberately so: an exhausted fixer is an in-flight pipeline that ran out of tokens mid-PR, so respawning it *continues* work already started — the same call §7.2 makes when it lets A→B and B→C successors run inside a park while barring a new pipeline. Barring it would strand a half-finished fix with no owner for the length of the window, which is the outcome the landing window exists to prevent. **In-flight work is never touched by either flag**: Step 2.5 still aggregates prior-tick exit reports, Step 5e's Dedicated Monitor Mode still runs, and a fixer already working keeps working — suppressing a *launch* is the whole intervention, and stopping a healthy subagent mid-push is the over-reaction the landing window exists to avoid. A held tick that dispatched nothing sets `TICK_HAD_ACTION=false`, which is correct: no new work was started, so the idle counter should see an idle tick. A 5e respawn is the exception there too — it did work, so it sets the flag exactly as an unheld dispatch would.
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
@@ -503,45 +612,80 @@ Cheap when nothing is pending — one state read and it returns. Its output obey
 
 ## Step 6: Stable-state backoff + idle streak (per `scheduling-reliability.md`)
 
-`DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` come from Step 4 — do not recompute. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision.
+**Actions-receipt replay:** when `PMM_SKIP_ACTIONS=true`, Step 6 already completed. Do not increment its streaks or write its receipt again. Restore `STREAK`, `IDLE_STREAK`, and `EFFECTIVE_CADENCE` from `.pmm_digest_streak`, `.pmm_idle_streak`, and `.pmm_cadence`, then go directly to Step 7. A replay must finish the lifecycle without counting the same poll twice.
 
+`DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` come from Step 4 — do not recompute. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision. When the pre-dispatch gate returns no event, it advances the same state digest streak and idle counter in shell so a quiet poll does not need to wake this model to maintain scheduling state.
+
+<!-- test-anchor: pmm-pre-dispatch-backoff -->
 ```bash
-STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null || echo 0)
-[ "$STREAK" = null ] && STREAK=0
-if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
-"$SESSION_STATE_SH" --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
-  --set ".pmm_row_digest=\"$ROW_DIGEST\""
-
-BASE_CADENCE_MIN=${PMM_CADENCE%m}
-WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
-[ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
-if [ "$STREAK" -ge 3 ]; then
-  EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"
+if [ "${PMM_SKIP_ACTIONS:-false}" = true ]; then
+  STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null) || { echo "ERROR: completed-event digest streak unreadable" >&2; exit 1; }
+  IDLE_STREAK=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null) || { echo "ERROR: completed-event idle streak unreadable" >&2; exit 1; }
+  EFFECTIVE_CADENCE=$("$SESSION_STATE_SH" --get '.pmm_cadence' 2>/dev/null) || { echo "ERROR: completed-event cadence unreadable" >&2; exit 1; }
+  [[ "$STREAK" =~ ^[0-9]{1,8}$ && "$IDLE_STREAK" =~ ^[0-9]{1,8}$ && "$EFFECTIVE_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || {
+    echo "ERROR: completed-event scheduling state is invalid" >&2
+    exit 1
+  }
 else
-  EFFECTIVE_CADENCE="$PMM_CADENCE"
+  STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null || echo 0)
+  [ "$STREAK" = null ] && STREAK=0
+  if [ "$PMM_INTERNAL_TICK" != true ]; then STREAK=0
+  elif [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
+  "$SESSION_STATE_SH" --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
+    --set ".pmm_row_digest=\"$ROW_DIGEST\""
+
+  BASE_CADENCE_MIN=${PMM_CADENCE%m}
+  WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
+  [ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
+  if [ "$STREAK" -ge 3 ]; then
+    EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"
+  else
+    EFFECTIVE_CADENCE="$PMM_CADENCE"
+  fi
 fi
 ```
 
-Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)` and re-arm the persistent
-Monitor at that derived cadence; digest change or user message → reset to 0; **streak ≥ 9** →
-route to Pause in Step 7 and stop the exact Monitor. The derived cadence is always slower than a
-valid base cadence, including a custom base longer than 15m.
+Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
+On a quiet shell-only poll, no model action ran by construction; the gate advances the idle counter
+only when the state digest is unchanged and there are no active Phase A agents, PMM locks, or merge
+holds. A wake at `--idle-pause-after` returns a lifecycle event so this skill can execute the
+ordinary Pause route.
+
+<!-- test-anchor: pmm-pre-dispatch-idle -->
 ```bash
-IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
-[ "$IDLE_PREV" = null ] && IDLE_PREV=0
-ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
-  <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '{}')")
-HELD_COUNT=0
-[ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
-if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
-  IDLE_STREAK=$((IDLE_PREV + 1))
-else
-  IDLE_STREAK=0
+if [ "${PMM_SKIP_ACTIONS:-false}" != true ]; then
+  IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
+  [ "$IDLE_PREV" = null ] && IDLE_PREV=0
+  PMM_AGENTS_JSON=$("$SESSION_STATE_SH" --get-json '.active_agents // {}') || { echo "ERROR: active agents unreadable; idle state remains unknown" >&2; exit 1; }
+  ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
+    <<<"$PMM_AGENTS_JSON") || exit 1
+  HELD_COUNT=0
+  [ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
+  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
+    IDLE_STREAK=$((IDLE_PREV + 1))
+  else
+    IDLE_STREAK=0
+  fi
+  "$SESSION_STATE_SH" --set ".pmm_idle_streak=$IDLE_STREAK"
 fi
-"$SESSION_STATE_SH" --set ".pmm_idle_streak=$IDLE_STREAK"
+```
+
+**Persist the actions receipt only after this tick completed discovery, gate checks, authorized
+actions, and Step 6 state writes.** The event is evidence that woke the model, never a cached
+action verdict; every delayed or repeated event re-runs the normal current-HEAD and ownership checks
+above. The actions receipt prevents Step 5 from repeating while Step 7 finishes:
+
+<!-- test-anchor: pmm-pre-dispatch-actions-receipt -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  "$SESSION_STATE_SH" --set ".pmm_pre_dispatch.actions_completed_event_id=\"$PMM_DISPATCH_EVENT\"" || {
+    echo "[PMM] Could not persist actions receipt for event $PMM_DISPATCH_EVENT — leaving it queued for idempotent retry" >&2
+    exit 1
+  }
+fi
 ```
 
 ---
@@ -573,12 +717,32 @@ Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and drop
 
 **Verify or re-arm the Monitor.** A persistent `Monitor` is the canonical primitive (`scheduling-reliability.md`). Its command sleeps first, then emits the skill invocation as an out-of-turn chat event:
 
+Before arming or replacing the Monitor, require `PMM_PRE_DISPATCH_SH`; if it is empty, print
+`ERROR: pmm-pre-dispatch.sh not found — refusing to arm a model-dispatching PMM loop` and stop.
+This shell gate runs before stdout becomes a chat event. Its quiet result is truly empty output, so
+the model is not woken for unchanged ticks. Direct owner messages bypass it. Event schema, state
+projection, retry/ack, evidence paths, and wake predicates: `references/pmm-pre-dispatch.md`.
+
+<!-- test-anchor: pmm-pre-dispatch-monitor-loop -->
 ```bash
 NEW_MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-while sleep "<EFFECTIVE_CADENCE in seconds>"; do
-  printf '%s\n' "/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>"
-done
+PMM_MONITOR_COMMAND=$("$PMM_PRE_DISPATCH_SH" --monitor-command --repo "$OWNER_REPO" \
+  --author "$PMM_AUTHOR" --generation "$NEW_MONITOR_GENERATION" \
+  --base-cadence-min "${PMM_CADENCE%m}" --idle-pause-after "$PMM_IDLE_PAUSE_AFTER" \
+  --skill-args "$PMM_FORWARD_ARGS") || {
+  echo "ERROR: could not build the pre-dispatch Monitor command; no Monitor was armed" >&2
+  exit 1
+}
 ```
+
+Pass **the exact `$PMM_MONITOR_COMMAND` string** to `Monitor.command`. The helper binds the absolute
+helper/state paths, repository, author, already-minted generation, base cadence, idle limit, and
+validated flags as quoted literals. The out-of-turn shell requires no caller environment. Never
+mint another generation inside the saved loop or substitute a direct skill-printing command.
+
+The event line carries `--dispatch-event <id>`. The PMM tick still runs the normal discovery,
+current-head merge gate, and ownership checks before acting; the pre-dispatch snapshot is wake
+evidence only. Re-emitted IDs remain pending until the completed tick explicitly acknowledges them.
 
 Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
 `.pmm_monitor_task_id`. Generate a fresh non-secret `$NEW_MONITOR_GENERATION` before each arm and
@@ -589,24 +753,31 @@ them here for a new direct start / transactional resume) and read the actual cad
 MONITOR_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
 MONITOR_GENERATION=$("$SESSION_STATE_SH" --get '.pmm_monitor_generation' 2>/dev/null || echo null)
 CURRENT_MONITOR_CADENCE=$("$SESSION_STATE_SH" --get '.pmm_cadence' 2>/dev/null || echo null)
+CURRENT_PRE_DISPATCH_VERSION=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch_version' 2>/dev/null || echo null)
+CURRENT_PRE_DISPATCH_CONFIG=$("$SESSION_STATE_SH" --get-json '.pmm_pre_dispatch_config' 2>/dev/null || echo null)
 if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
   MONITOR_TASK_ID=null
   MONITOR_GENERATION=null
   CURRENT_MONITOR_CADENCE=null
+  CURRENT_PRE_DISPATCH_VERSION=null
+  CURRENT_PRE_DISPATCH_CONFIG=null
 fi
 ```
 
-Keep the existing task only when both pieces of its recorded identity are present and its cadence
-equals `$EFFECTIVE_CADENCE`. If no task ID is recorded on a new direct start or after
+Keep the existing task only when both pieces of its recorded identity are present and
+`CURRENT_PRE_DISPATCH_VERSION == 2` and the canonical `CURRENT_PRE_DISPATCH_CONFIG` equals `$PMM_MONITOR_CONFIG`. A changed repo, author, base cadence, idle limit, or forwarded option requires exact stop and replacement with the new bound configuration. The shell loop reads `.pmm_cadence` before every sleep, so the
+pre-dispatch gate can widen/reset the cadence without waking a model or replacing the Monitor. This
+one-time version check replaces older PMM Monitors that emit a model event before running the shell
+gate. If no task ID is recorded on a new direct start or after
 `RESUMING_FROM_PAUSE` completed exact teardown, arm the first Monitor. A missing ID or generation
 while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
 `.pmm.stop_requested=true`, report the missing identity, and abort rather than risking a duplicate.
-If an ID exists and the cadences differ, first set `.pmm.stop_requested=true`, then stop that exact
-old task with `TaskStop`, require success, and arm the replacement. Publishing the guard before the
+If the pre-dispatch version or bound configuration differs, first set `.pmm.stop_requested=true`, then stop that exact old
+task with `TaskStop`, require success, and arm the replacement. Publishing the guard before the
 stop makes an already-emitted old-generation event exit at the tick gate during the
 stop-to-publication gap. If the stop fails, retain the complete old identity and cadence with the
 guard still true, report incomplete teardown, and abort; do not let the old task continue as if the
-cadence transition succeeded.
+gate migration succeeded.
 
 Immediately after a new Monitor arm succeeds, bind the identity that its command actually carries:
 
@@ -640,6 +811,8 @@ NOW=$(date -u +%FT%TZ)
   --set '.pmm_active=true' \
   --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
   --set ".pmm_monitor_generation=\"$MONITOR_GENERATION\"" \
+  --set '.pmm_pre_dispatch_version=2' \
+  --set ".pmm_pre_dispatch_config=$PMM_MONITOR_CONFIG" \
   --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"" \
   --set ".pmm_author=\"$PMM_AUTHOR\"" \
   --set ".pmm_last_tick_at=\"$NOW\"" \
@@ -713,6 +886,24 @@ Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report 
 
 The lifecycle reference owns exact teardown and conditional task-identity cleanup. Clear
 `.pmm.stop_requested` and each task ID+generation pair only after every required `TaskStop` succeeds.
+
+After the selected Step 7 route (including any Pause teardown and marker write) completes its
+Monitor stop/arm and final state publication, persist the lifecycle receipt and then acknowledge
+the outbox ID. A failed lifecycle write or stop leaves the event pending; on replay the actions
+receipt skips Steps 5 and 6 while Step 7 retries. If acknowledgement fails after both receipts, the next
+delivery revalidates fresh gates and acknowledges without repeating actions or lifecycle work.
+
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-receipt -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  "$SESSION_STATE_SH" --set ".pmm_pre_dispatch.lifecycle_completed_event_id=\"$PMM_DISPATCH_EVENT\"" || {
+    echo "[PMM] Could not persist lifecycle receipt for event $PMM_DISPATCH_EVENT — leaving it queued" >&2
+    exit 1
+  }
+  "$PMM_PRE_DISPATCH_SH" --ack "$PMM_DISPATCH_EVENT" || \
+    echo "[PMM] Could not acknowledge event $PMM_DISPATCH_EVENT; completed receipts make the retry safe"
+fi
+```
 
 ---
 
