@@ -17,6 +17,8 @@ The single writer is `.claude/hooks/lib/spend-telemetry-recorder.sh`; it appends
 
 Claude Code's [Hooks reference](https://code.claude.com/docs/en/hooks) defines these hook fields. The locally installed CLI during the #1877 repair was `2.1.312`. Hooks do not expose token totals or billed cost directly. Transcript parsing accepts only assistant metadata: `id`/`uuid`, `timestamp` (including its original fractional precision), `sessionId`, `requestedModel`, `model`, and nested `usage` fields. A metadata-only inspection of installed-runtime transcripts confirmed these fields and repeated provider message IDs; message content was neither emitted nor retained. Session identity resolves from the payload, then `CLAUDE_CODE_SESSION_ID`, then `CLAUDE_SESSION_ID`; unresolved placeholders and literal default/unknown values never establish a join. Transcript `sessionId` is a supported fallback when both hook and environment lack a real ID.
 
+The installed CLI's event catalog includes both `TaskCreated` and `TaskCompleted`. Compatibility also depends on the actual registrar: `register-hooks.py` now retains every canonical event for a shared hook script, rather than pruning all but one. An isolated temp-HOME CLI test installs the real repository manifest twice and verifies that `spend-task-tracker.sh` remains registered exactly once under each lifecycle event and `spend-session-tracker.sh` under both `SessionStart` and `SessionEnd`, with no second-run rewrite. Synthetic update tests also verify stale-event cleanup, legacy path migration, and preservation of custom timeouts, arguments, and unmanaged hooks. This establishes declaration and installer compatibility; it is not evidence of live event capture or deployment to the user's settings.
+
 ### Schema v3 columns
 
 The first eight fields retain the legacy contract:
@@ -79,6 +81,7 @@ Run the local checks:
 
 ```bash
 bash .claude/scripts/spend-telemetry-report.sh --days 30
+bash .claude/hooks/tests/register-hooks.test.sh
 bash .claude/hooks/tests/spend-telemetry-tracker.test.sh
 bash .claude/hooks/tests/spend-telemetry-maintenance.test.sh
 bash .claude/scripts/tests/spend-telemetry-report.test.sh
