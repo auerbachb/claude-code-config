@@ -70,9 +70,10 @@ Unreleased merge holds wake for a sequencing recheck on the next poll: the exist
 The collector keeps the prior snapshot across process restarts and records tick, dispatch,
 transition, and cumulative error counts, with a separate consecutive `error_streak`. A persisted transition sequence prevents two same-second changes from sharing an event ID. A new Monitor identity forces an initial scan. It validates each
 PR-state bundle against required comment/check fields, PR/repository identity, collection time, and both the discovered and fresh merge-gate HEAD before
-classification. Unknown ownership/merge state, malformed input, future timestamps, and snapshots/bundles older than
-one hour wake for a fresh comparison; this bound is intentionally independent of the quiet-state
-digest. Within one generation pending events are not overwritten while waiting for acknowledgement, so changes observed
+classification. Unknown ownership/merge state, malformed input, future timestamps, and source bundles
+older than one hour wake for a fresh comparison. Cached snapshots wake when older than two persisted
+poll intervals, with a one-hour minimum, so a widened cadence does not turn every unchanged poll into
+a stale-data event. This freshness bound is independent of the quiet-state digest. Within one generation pending events are not overwritten while waiting for acknowledgement, so changes observed
 after a delayed event are compared on a later tick.
 
 ## Runtime integration limits

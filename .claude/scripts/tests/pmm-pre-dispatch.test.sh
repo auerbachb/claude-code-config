@@ -462,6 +462,14 @@ for expected in (2,3):
     retry_result=run(e=ef);d=json.loads(statefile.read_text());assert retry_result.stdout=='' and d['pmm_pre_dispatch']['deadline_unknown_checks']==expected,(retry_result.returncode,retry_result.stdout,retry_result.stderr,d)
 r=run(e=ef);d=json.loads(statefile.read_text());assert r.returncode==0 and d['pmm_pre_dispatch']['pending_event']['reasons'].count('deadline_state_unknown')==1 and d['pmm_pre_dispatch']['deadline_unknown_checks']==4 and d['pmm_pre_dispatch']['error_streak']==0,(r.stdout,r.stderr,d)
 print('PASS: acknowledged unknown deadlines re-notify on their own interval despite separate collector diagnostics')
+# Snapshot freshness scales to the persisted poll cadence, while remaining bounded.
+hf=home('stale-cadence');stale_file=hf/'.claude/session-state.json';stale_env=dict(env,HOME=str(hf));r=run(e=stale_env);assert r.returncode==0 and r.stdout.startswith('/pr-monitor-and-manage '),(r.stdout,r.stderr)
+stale_data=json.loads(stale_file.read_text());first=stale_data['pmm_pre_dispatch']['pending_event'];assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',first['event_id']],e=stale_env).returncode==0
+stale_data=json.loads(stale_file.read_text());stale_data['pmm_digest']=hashlib.sha256(b'[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]').hexdigest();stale_data['pmm_cadence']='60m';stale_data['pmm_pre_dispatch']['snapshot']['recorded_at']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=70)).strftime('%Y-%m-%dT%H:%M:%SZ');stale_file.write_text(json.dumps(stale_data))
+r=run(e=stale_env);assert r.returncode==0 and r.stdout=='',(r.returncode,r.stdout,r.stderr,stale_file.read_text())
+stale_data=json.loads(stale_file.read_text());stale_data['pmm_pre_dispatch']['snapshot']['recorded_at']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=130)).strftime('%Y-%m-%dT%H:%M:%SZ');stale_file.write_text(json.dumps(stale_data))
+r=run(e=stale_env);d=json.loads(stale_file.read_text());assert r.returncode==0 and 'snapshot_stale' in d['pmm_pre_dispatch']['pending_event']['reasons'],(r.stdout,r.stderr,d)
+print('PASS: snapshot freshness tolerates one widened 60-minute interval and still wakes after two')
 # Unknown gate state never becomes a quiet unchanged comparison.
 hf=home('unknown-gate');eg=dict(env,HOME=str(hf));g=json.loads(gate);g['authorship']='unknown';eg['STUB_GATE_JSON']=json.dumps(g);r=run(e=eg);pg=json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event'];assert r.returncode==5 and pg['diagnostic'],(r.stdout,r.stderr)
 print('PASS: unknown ownership/merge evidence always wakes diagnosis')

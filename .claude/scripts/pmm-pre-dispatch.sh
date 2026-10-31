@@ -450,12 +450,23 @@ if [[ "$deadline_unknown_count" -gt 0 ]]; then
 fi
 snapshot_stale="false"
 if [[ "$previous" != null ]]; then
+  # Allow a missed poll at a widened cadence without turning every late poll
+  # into a model wake. Keep at least the historical one-hour bound.
+  snapshot_stale_limit=3600
+  prior_cadence="$(read_field '.pmm_cadence')" || queue_diagnostic "persisted PMM cadence unreadable for snapshot age"
+  [[ "$prior_cadence" != null ]] || prior_cadence="${BASE_CADENCE_MIN}m"
+  if [[ "$prior_cadence" =~ ^([1-9][0-9]{0,5})m$ ]]; then
+    cadence_stale_limit=$((10#${BASH_REMATCH[1]} * 120))
+    (( cadence_stale_limit > snapshot_stale_limit )) && snapshot_stale_limit=$cadence_stale_limit
+  else
+    queue_diagnostic "persisted PMM cadence invalid for snapshot age"
+  fi
   recorded_at="$(jq -r '.snapshot.recorded_at // empty' <<<"$STATE_JSON")"
   if [[ -z "$recorded_at" ]]; then snapshot_stale="true"
   else
     recorded_epoch="$(jq -nr --arg ts "$recorded_at" 'try ($ts | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) catch -1')"
     [[ "$recorded_epoch" -ge 0 ]] || snapshot_stale="true"
-    if [[ "$recorded_epoch" -ge 0 && ( $((now_epoch-recorded_epoch)) -gt 3600 || "$recorded_epoch" -gt $((now_epoch+60)) ) ]]; then snapshot_stale="true"; fi
+    if [[ "$recorded_epoch" -ge 0 && ( $((now_epoch-recorded_epoch)) -gt $snapshot_stale_limit || "$recorded_epoch" -gt $((now_epoch+60)) ) ]]; then snapshot_stale="true"; fi
   fi
 fi
 delta="$(jq -cn --argjson old "$previous" --argjson new "$CURRENT" --argjson deadlines "$deadline_due" --argjson deadline_unknown "$deadline_unknown" '
