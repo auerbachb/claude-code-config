@@ -27,7 +27,7 @@
 #
 # Guarded surfaces:
 #   Every directory published by setup-skills-worktree.sh from
-#   .claude/skills/*/ (SKILL.md + references/*.md)
+#   .claude/skills/*/ (SKILL.md + references/*.md, plus the issue-maker pilot modules/**/*.md)
 #   .claude/agents/*.md
 #   .claude/reference/chip-launching.md
 #
@@ -103,6 +103,25 @@ for skill in "${SKILLS[@]}"; do
     continue
   fi
   guarded_files+=("$f")
+  # Only the issue-maker pilot currently uses the dispatcher modules/ layout.
+  # Treat a failed enumeration as missing coverage, never an empty clean set.
+  if [[ "$skill" == "issue-maker" ]]; then
+    module_files=""
+    if [[ ! -d ".claude/skills/${skill}/modules" ]]; then
+      echo "::error::Guarded module directory missing: .claude/skills/${skill}/modules"
+      missing=$((missing + 1))
+    elif ! module_files=$(find ".claude/skills/${skill}/modules" -type f -name '*.md' -print | sort); then
+      echo "::error::Cannot enumerate guarded modules: .claude/skills/${skill}/modules"
+      missing=$((missing + 1))
+      module_files=""
+    elif [[ -z "$module_files" ]]; then
+      echo "::error::No guarded module sources: .claude/skills/${skill}/modules"
+      missing=$((missing + 1))
+    fi
+    while IFS= read -r module; do
+      [[ -n "$module" ]] && guarded_files+=("$module")
+    done <<< "$module_files"
+  fi
   # pr-monitor-and-manage and issue-maker split procedure text into references/
   if [[ -d ".claude/skills/${skill}/references" ]]; then
     while IFS= read -r ref; do
@@ -304,6 +323,9 @@ elif [[ "$canonical_claim" != *"$WORKTREE_PREFIX"issue-claim.sh* ]]; then
 else
   for skill in pm prompt wave issue-maker; do
     f=".claude/skills/${skill}/SKILL.md"
+    if [[ "$skill" == "issue-maker" ]]; then
+      f=".claude/skills/${skill}/modules/handoff.md"
+    fi
     bullet_rc=0
     bullet="$(claim_bullet "$f")" || bullet_rc=$?
     if (( bullet_rc > 1 )); then

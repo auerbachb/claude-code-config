@@ -29,7 +29,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TEST_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SCRIPTS_DIR/../.." && pwd)"
 SCRIPT="$SCRIPTS_DIR/issue-file.sh"
-SKILL_MD="$REPO_ROOT/.claude/skills/issue-maker/SKILL.md"
+SKILL_MD="$REPO_ROOT/.claude/skills/issue-maker/modules/create/file.md"
+REFLECT_MD="$REPO_ROOT/.claude/skills/issue-maker/modules/create/reflect-and-draft.md"
 ONE_SHOT="$REPO_ROOT/.claude/skills/issue-maker/references/one-shot-filing.md"
 IDEAS_MD="$REPO_ROOT/desk/skill/ideas.md"
 
@@ -257,7 +258,7 @@ printf '%s\n' "$BLOCK" | awk -v tf="$VALID" '
 run_create() {
   (
     cd "$TMP" || exit 1
-    HOME="$FAKE_HOME" REPO=acme/widgets TITLE="An idea" ACCEPTED_LABELS=$'skill\nnope' STUB_MODE="$1" \
+    DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" HOME="$FAKE_HOME" REPO=acme/widgets TITLE="An idea" ACCEPTED_LABELS=$'skill\nnope' STUB_MODE="$1" \
       bash -c '. ./create-block.sh; printf "URL=%s\nNUM=%s\nLABELS=%s\n" "$ISSUE_URL" "$ISSUE_NUMBER" "$(printf "%s" "$ACCEPTED_LABELS" | tr "\n" ",")"'
   ) 2>"$TMP/create.err"
 }
@@ -272,15 +273,15 @@ check_not_contains "create block: a dropped label is not logged" "nope" "$(print
 OUT=$(run_create create-fail)
 check_contains "create block, gh fails: FILE_RC=4" "FILE_RC=4" "$OUT"
 check_eq "create block, gh fails: ISSUE_URL empty" "URL=" "$(printf '%s\n' "$OUT" | grep '^URL=')"
-OUT=$(cd "$TMP" && HOME="$TMP/empty-home" REPO=acme/widgets TITLE=x ACCEPTED_LABELS="" bash -c '. ./create-block.sh' 2>&1)
+OUT=$(cd "$TMP" && DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" HOME="$TMP/empty-home" REPO=acme/widgets TITLE=x ACCEPTED_LABELS="" bash -c '. ./create-block.sh' 2>&1)
 check_contains "create block, script missing: says so" "ERROR: issue-file.sh not found (checked all three paths)" "$OUT"
-check_contains "create block, script missing: FILE_RC=4" "FILE_RC=4" "$OUT"
+check_contains "create block, script missing: FILE_RC=5" "FILE_RC=5" "$OUT"
 
 # --- 3. the shared entry (AC 4.1) -----------------------------------------------
 if [ -f "$ONE_SHOT" ]; then pass "references/one-shot-filing.md exists"; else fail "references/one-shot-filing.md is missing"; fi
 check_contains "one-shot-filing.md creates through issue-file.sh" "issue-file.sh --repo" "$(cat "$ONE_SHOT")"
 check_contains "one-shot-filing.md excludes capture mode" "never switches the caller's thread into capture mode" "$(cat "$ONE_SHOT")"
-check_contains "issue-maker SKILL.md names the one-shot entry" "references/one-shot-filing.md" "$(cat "$SKILL_MD")"
+check_contains "issue-maker reflection module names the one-shot entry" "references/one-shot-filing.md" "$(cat "$REFLECT_MD")"
 DESK_BLOCK=$(extract_skill_bash "$IDEAS_MD" desk-idea-file) || { echo "FATAL: could not extract desk-idea-file" >&2; exit 1; }
 check_contains "the desk's create block calls the same script" '"$ISSUE_FILE" --repo "$IDEA_REPO"' "$DESK_BLOCK"
 check_contains "the desk's create block resolves issue-file.sh through the skills worktree" \

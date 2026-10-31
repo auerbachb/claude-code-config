@@ -13,6 +13,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-stack-baseline.json` — the review stack's recorded roles, billed state, and expected caps, schema `review-stack-baseline/v1`; the baseline `/review-stack-audit` compares each run against. Seeded from the 2026-06 audit; Issue #1199's decision record replaces its `tools` array (#1201)
 
 ### Runbooks and long command forms
+- `incremental-skill-loading.md` — operation/phase loading contract, source-measured `/issue-maker` pilot traces, recovery and parity checklist, and ordered migration roadmap for `/pm`, `/subagent`, `/wrap`, and `/pr-monitor-and-manage` (#1872)
 
 - `ac-gate.md` — exemption logic, exact heading, three ordered checks, exit codes, and both real regression failures (PR #588 / PR #593) for `ac-gate.sh` CI gate (#1281)
 - `admin-merge-auto-plain.md` — mechanism and contracts for the one `admin-merge.sh --auto-plain` shape Claude may execute itself; plain vs protection-modifying shape distinction (#754)

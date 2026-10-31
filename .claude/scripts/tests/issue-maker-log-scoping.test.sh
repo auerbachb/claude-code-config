@@ -17,7 +17,7 @@
 # WHAT THIS SUITE ASSERTS
 #   Every test runs the REAL production code, never a paraphrase:
 #     - scripts/resolve-log.sh is executed directly;
-#     - the SKILL.md bash is EXTRACTED by test-anchor via lib/skill-bash.sh, so
+#     - the phase-module bash is EXTRACTED by test-anchor via lib/skill-bash.sh, so
 #       the skill and the test cannot drift apart.
 #
 #   Each corruption gets a paired NEGATIVE CONTROL that replays the pre-fix
@@ -31,7 +31,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="${SCRIPT_DIR}/../../skills/issue-maker"
-SKILL_MD="${SKILL_DIR}/SKILL.md"
+SKILL_MD="${SKILL_DIR}/modules/session-state.md"
+POSTFILE_MD="${SKILL_DIR}/modules/create/postfile.md"
 RESOLVE_LOG="${SKILL_DIR}/scripts/resolve-log.sh"
 SET_LOG="${SKILL_DIR}/scripts/set-log.sh"
 
@@ -60,10 +61,12 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 # would stay green forever.
 # ---------------------------------------------------------------------------
 BLOCK_RESOLVE="$(extract_skill_bash "$SKILL_MD" issue-maker-step1-resolve-log)" || exit 1
+BLOCK_WRITER="$(sed -n '/^SET_LOG=""/,/^set_log() {.*; }/p' "$SKILL_MD")"
 BLOCK_HELPER="$(extract_skill_bash "$SKILL_MD" issue-maker-log-write-helper)"   || exit 1
-BLOCK_STAMP="$(extract_skill_bash "$SKILL_MD" issue-maker-step9c-offer-stamp)"  || exit 1
+BLOCK_STAMP="$(extract_skill_bash "$POSTFILE_MD" issue-maker-step9c-offer-stamp)"  || exit 1
 BLOCK_RETARGET="$(extract_skill_bash "$SKILL_MD" issue-maker-step1-retarget-guard)" || exit 1
-ok "all four SKILL.md test-anchors extract non-empty bash"
+BLOCK_HELPER="$BLOCK_WRITER"$'\n'"$BLOCK_HELPER"
+ok "all four phase-module test-anchors extract non-empty bash"
 
 # make_home — a temp HOME with the issue-maker skill "installed" where the
 # SKILL.md resolution loop looks for it.
@@ -835,3 +838,6 @@ fi
 echo
 echo "issue-maker-log-scoping: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1
+
+# The discovered CI suite also exercises the incremental caller/behavior fixtures.
+bash "$SCRIPT_DIR/../../../tests/test-issue-maker-dispatch.sh"
