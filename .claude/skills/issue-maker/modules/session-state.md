@@ -96,18 +96,21 @@ if [ -f "$LOG" ]; then
       else "Light"
       end' "$LOG")
   jq -r --argjson accepted "$OFFER_ACCEPTED" --arg dmode "$DELIVERY_MODE" --arg repo "$REPO" \
-    "$MINE_DEF"'"Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|mine]|length)) issue(s) opened so far:",
-     (if .handoff_checkpoint then "  Handoff recovery needed — \(.handoff_checkpoint.state); registry \(.reg_tid // "unavailable")" else empty end),
+    "$MINE_DEF"'.handoff_checkpoint.spawn_status as $spawn_status | "Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|mine]|length)) issue(s) opened so far:",
+     (if .handoff_checkpoint then "  Handoff recovery needed — \(.handoff_checkpoint.state); registry \(.reg_tid // "unavailable"); task \(.handoff_checkpoint.task_id // "unknown"); spawn \(.handoff_checkpoint.spawn_status // "unknown")" else empty end),
      (.issues[] | select(same_repo) | "  #\(.number) — \(.title) [\(.status)]" +
-                  (if .chip_task_id and ($accepted | not) and ($dmode == "chip-pending") then " — chip started; receipt needs reconciliation"
-                   elif .chip_task_id and ($accepted | not) and ($dmode == "chip") then " — chip running"
+                  (if .chip_task_id and ($accepted | not) and ($dmode == "chip-pending") then (if $spawn_status == "spawned" then " — chip spawned; task receipt needs reconciliation" else " — spawn outcome unknown; reconcile before any retry" end)
+                   elif .chip_task_id and ($accepted | not) and ($dmode == "chip-reserved") then " — capacity reserved; no spawn confirmed"
+                   elif .chip_task_id and ($accepted | not) and ($dmode == "chip") then " — chip spawned; task ID recorded"
                    elif .chip_task_id and ($accepted | not) then " — offer pending"
                    elif .chip_task_id and $accepted then " — offer accepted, running"
                    else "" end))' "$LOG"
 fi
 ```
 
-Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue starts as a locally-generated offer token stamped at offer-emit time; in chip mode, a successful `spawn_task` call replaces it with the returned task ID. `offer_accepted: true` means the user said yes and `/subagent` was invoked. `delivery_mode` (`"inline"`, `"chip-pending"`, or `"chip"`) distinguishes a pending inline offer, a spawned chip whose final receipt write needs reconciliation, and a recorded running chip after compaction.
+Offer tokens are not launch receipts. `inline` means a printed/pending inline offer; `chip-reserved` means no spawn was attempted; `chip-pending` means a launch may have occurred; `chip` with a returned task ID confirms success. Legacy `chip-pending`/`reserved` receipts without the new `spawn_status` are **unknown**, never proof that a chip started. A persisted `spawned` or `spawned-receipt-pending` task ID is affirmative evidence; a failed second write may leave only `spawn-uncertain`. Do not claim unknown work happened or release its capacity.
+
+For an outstanding receipt, the next active phase is `offer:handoff` reconciliation only. Read the checkpoint repository (must equal target repo), registry ID, saved task ID, and `spawn_status`. With `not-started` and state `reservation-intent`, `reserved`, or `cleanup-pending`, resolve the registry and read `--repo "$REPO" --list` for that exact ID before choosing cleanup; no automatic reserve/spawn replay. An absent/retracted/expired entry plus confirmed no-spawn permits local receipt cleanup; an offered entry permits repo-scoped release followed by local cleanup. Running/pr-backed entries override stale local not-started assumptions and require task reconciliation. Registry read failure/ambiguous identity preserves the receipt. With unknown spawn, use the tool's task inventory/returned result to establish whether a task exists; absence of a registry entry alone proves nothing about spawn. Confirmed running tasks keep their registry ID until their actual terminal lifecycle transition. A closed captured issue is not proof of task termination. Never erase a receipt to enable another offer.
 
 If `OFFER_ACCEPTED` is false, re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If `OFFER_ACCEPTED` is true, re-affirm: *"Offer accepted — execution mode active. New issues filed here will be run inline via `/subagent`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -163,6 +166,10 @@ REPO="<owner/repo the user supplied>"
 # whitespace, or an incomplete owner/repository value in target_repo.
 if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "ERROR: expected owner/repo before retargeting; target_repo was not changed" >&2
+  exit 1
+fi
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+  echo "ERROR: reconcile the existing handoff in its saved repository before retargeting" >&2
   exit 1
 fi
 # Never flip target_repo out from under entries that belong to another repo —

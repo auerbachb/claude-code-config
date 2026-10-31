@@ -31,10 +31,14 @@ if [ ! -f "$LOG" ]; then
 fi
 
 NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-TMP=$(mktemp)
+TMP=$(mktemp "${LOG}.tmp.XXXXXX")
 
 if jq "$@" --arg __now "$NOW" "$FILTER | .last_updated_at = \$__now" "$LOG" > "$TMP"; then
-  mv "$TMP" "$LOG"
+  if ! mv "$TMP" "$LOG"; then
+    rm -f "$TMP"
+    echo "WARN: failed to atomically replace session log: $LOG" >&2
+    exit 1
+  fi
 else
   rm -f "$TMP"
   echo "WARN: failed to update session log ($FILTER)" >&2

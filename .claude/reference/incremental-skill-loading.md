@@ -14,17 +14,17 @@ On compaction or restart, reload the entry and the minimal session-state procedu
 
 Source measured on 2026-10-30: bytes and whitespace-delimited words, **not runtime tokens**. The former committed entry is 98112 bytes / 15208 words. Claude Code 2.1.312 is installed; no private harness-loader trace is available, so actual runtime reads, token/cache effects, and model adherence remain unknown.
 
-The executable trace fixtures record caller-selected module paths, nested reference reads, bounded export excerpts, repeated-read reuse, and recovery from a persisted operation/phase. They validate this loading contract, not hidden harness behavior. Normal inline offers do not read chip-launching or the on-request payload module. The sizing rationale and ask-menu references remain conditional (rationale requests and blocking questions respectively); their bytes are additional when triggered. No fixture claims to execute LLM reflection. Offline behavior checks execute the production Markdown blocks against temporary logs/stubbed gh and verify repository/origin isolation, update metadata, uncertain close results, retained cleanup tokens, and survivor chain coordinates. Existing issue-file and log-scoping suites exercise real helper paths and canonical body/ownership outcomes.
+The executable trace fixtures record caller-selected module paths, nested reference reads, bounded export excerpts, repeated-read reuse, and recovery from a persisted operation/phase. They validate this loading contract, not hidden harness behavior. Normal inline offers do not read chip-launching or the on-request payload module. The sizing rationale and ask-menu references remain conditional (rationale requests and blocking questions respectively); their bytes are additional when triggered. No fixture claims to execute LLM reflection. Offline behavior checks execute the production Markdown blocks against temporary logs/stubbed gh and verify repository/origin isolation, update metadata, uncertain close results, retained cleanup tokens, and survivor chain coordinates. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Atomic log replacements use a temporary file beside the log. Existing issue-file and log-scoping suites exercise real helper paths and canonical body/ownership outcomes.
 
 | Representative context / phase trace | Bytes | Words |
 |---|---:|---:|
-| Initial capture setup | 25,486 | 3,630 |
-| Normal create (modules only) | 82,513 | 12,345 |
-| Normal create including nested references | 155,027 | 23,511 |
-| Chain/batch including nested references | 164,204 | 24,998 |
-| Update / recovery at update phase | 33,798 | 4,846 |
-| Ordinary retract | 36,444 | 5,275 |
-| On-request handoff after normal create | 223,130 | 33,689 |
+| Initial capture setup | 27,198 | 3,851 |
+| Normal create (modules only) | 85,225 | 12,706 |
+| Normal create including nested references | 157,739 | 23,872 |
+| Chain/batch including nested references | 166,916 | 25,359 |
+| Update / recovery at update phase | 35,510 | 5,067 |
+| Ordinary retract | 40,393 | 5,763 |
+| On-request handoff after normal create | 230,362 | 34,575 |
 | Comparable old create plus same nested references | 170,626 | 26,374 |
 | Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,151 | 11,273 |
 
@@ -42,13 +42,13 @@ Setup is the initial capture row above. A restart adds that setup plus the activ
 | `modules/create/dedup.md` | 5,900 | 859 |
 | `modules/create/file.md` | 6,944 | 958 |
 | `modules/create/increment-draft.md` | 4,867 | 771 |
-| `modules/create/postfile.md` | 24,130 | 3,792 |
+| `modules/create/postfile.md` | 25,130 | 3,932 |
 | `modules/create/reflect-and-draft.md` | 20,053 | 3,106 |
-| `modules/handoff.md` | 12,216 | 1,764 |
+| `modules/handoff.md` | 16,736 | 2,289 |
 | `modules/portable-prompt.md` | 7,781 | 1,196 |
-| `modules/retract.md` | 10,958 | 1,645 |
+| `modules/retract.md` | 13,195 | 1,912 |
 | `modules/session-mode.md` | 1,279 | 188 |
-| `modules/session-state.md` | 17,486 | 2,510 |
+| `modules/session-state.md` | 19,198 | 2,731 |
 | `modules/update.md` | 8,312 | 1,216 |
 
 Reproduce the exact inventory with `wc -wc .claude/skills/issue-maker/SKILL.md .claude/skills/issue-maker/modules/*.md .claude/skills/issue-maker/modules/create/*.md`; run `bash tests/test-issue-maker-dispatch.sh` for the caller trace and offline workflow checks. Sum each trace's distinct source paths and bounded excerpts, including the references listed above. No migration percentage is promised before runtime instrumentation.

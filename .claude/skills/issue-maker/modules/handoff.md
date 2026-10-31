@@ -42,23 +42,58 @@ If this thread has no `## Active Work` table, bootstrap one (`/pm` Step 3.2's sc
 
 The merge-authority bullet is the shared contract from `chip-launching.md` "Merge-authority line" — reproduce it **verbatim**, never softened into an approval request. The claim bullet is **Form A** of that file's "Claim line" — `/issue-maker` holds no claim, so the launched thread takes each one. Both are written out here as literal text rather than cited, for the same reason that file gives: a generated hand-off may land in a repo where `chip-launching.md` does not resolve, and a rule that lives only in prose never reaches the prompt. The only local addition is the **nested sub-bullet** scoping the claim to each issue in the list — kept off the canonical line on purpose, because `skill-portability-lint.sh` compares that whole line byte-for-byte and an appended clause fails it.
 
-**Reserve before stamping or emitting.** A declined/deferred inline offer may have left no token, so never assume one exists. Before this block, set `CHIP_TOOL_AVAILABLE` from tool discovery and build `ISSUE_ARGS` as one `--issue N` pair for every open issue covered by the hand-off. For a new request with the chip tool available, perform the cap admission and registry reservation first. Exit 7 means the cap was consumed concurrently: defer without stamping or emitting anything, so `/wave` does not hide an offer that was never sent. Any other registry error follows the documented degraded, uncounted path. A successful reservation ID must be persisted before `spawn_task`; if that write fails, do not spawn. If the chip tool is absent, skip reservation and proceed to the printed-block fallback. Do not run these steps for a replay of an already emitted payload.
+**Reservation and launch receipts.** Replays use the saved payload and never reserve or launch again. A fresh handoff must have no outstanding registry/launch receipt. Registry `--reserve` creates an `offered` entry; that is capacity accounting, not proof that `spawn_task` happened. Every registry call, including reads and cleanup, uses the exact target `--repo "$REPO"`. Resolve the helpers and cap as below. Exit 7 defers without emitting or stamping an offer. Missing helpers/read failures before reservation retain the documented degraded uncounted path.
+
+Persist a unique caller-generated registry ID **before** the external reservation. Do not retry `--reserve` with that ID: the helper appends duplicates rather than providing idempotency. After an uncertain response, read the exact ID from `--list` in the same repository; unknown state stops. All local writes use the atomic session writer. These receipts distinguish `reservation-intent`, `reserved`, `spawn-uncertain`, `spawned-receipt-pending`, and `cleanup-pending`; only confirmed tool success establishes a task ID. Keep the checkpoint repository and registry ID until confirmed cleanup or terminal reconciliation.
 
 ```bash
+# The release function is legal ONLY before spawn or after an explicit result
+# proving no task was created. Never call it for a timeout/lost spawn response.
+handoff_release_unstarted() {
+  # Validate the persisted phase/owner even when called after a restart.
+  if ! jq -e --arg repo "$REPO" --arg reg "$REG_TID" '
+    ((.reg_tid // "") == $reg) and
+    ((.handoff_checkpoint.repository // .target_repo) == $repo) and
+    (if .handoff_checkpoint == null then ((.delivery_mode // "inline") == "inline")
+     else (.handoff_checkpoint.spawn_status == "not-started" and .handoff_checkpoint.task_id == null and (.handoff_checkpoint.state == "reservation-intent" or .handoff_checkpoint.state == "reserved" or .handoff_checkpoint.state == "cleanup-pending")) end)' "$LOG" >/dev/null; then
+    echo "HOLD: receipt does not prove an unstarted handoff in this repository; do not release" >&2
+    return 1
+  fi
+  if [ -n "$REG_TID" ]; then
+    SNAPSHOT=$("$REGISTRY" --repo "$REPO" --list 2>/dev/null) || return 1
+    if ! printf '%s' "$SNAPSHOT" | jq -e --arg id "$REG_TID" '
+      type == "array" and ([.[] | select(.task_id == $id)] as $m |
+      ($m|length)==0 or (($m|length)==1 and $m[0].emitter=="issue-maker" and ($m[0].state=="offered" or $m[0].state=="retracted" or $m[0].state=="expired")))' >/dev/null; then
+      echo "HOLD: registry identity/state may represent running work; preserve receipt" >&2
+      return 1
+    fi
+    if ! "$REGISTRY" --repo "$REPO" --retract --task-id "$REG_TID" >/dev/null 2>&1; then
+      set_log '.handoff_checkpoint = {state:"cleanup-pending", spawn_status:"not-started", repository:$repo, task_id:null}' --arg repo "$REPO" || true
+      echo "ERROR: reservation cleanup uncertain; keep reg_tid and retry cleanup only" >&2
+      return 1
+    fi
+  fi
+  set_log '.reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null' || {
+    echo "ERROR: reservation released but session cleanup could not be persisted; reconcile before another offer" >&2
+    return 1
+  }
+  REG_TID=""
+}
+```
+
+```bash
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" or .offer_accepted == true' "$LOG" >/dev/null; then
+  echo "ERROR: reconcile the saved handoff receipt before reserving or spawning again" >&2
+  exit 1
+fi
 REGISTRY=""
 CAP_SH=""; CAP_ADMISSION=""
 REG_TID=""; REG_TID_RC=0
 if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
-  for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh" \
-    "$HOME/.claude/scripts/active-work-cap.sh" \
-    ".claude/scripts/active-work-cap.sh"; do
+  for candidate in     "$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh"     "$HOME/.claude/scripts/active-work-cap.sh"     ".claude/scripts/active-work-cap.sh"; do
     [ -x "$candidate" ] && { CAP_SH="$candidate"; break; }
   done
-  for candidate in \
-    "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" \
-    "$HOME/.claude/scripts/chip-offer-registry.sh" \
-    ".claude/scripts/chip-offer-registry.sh"; do
+  for candidate in     "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh"     "$HOME/.claude/scripts/chip-offer-registry.sh"     ".claude/scripts/chip-offer-registry.sh"; do
     [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
   done
 fi
@@ -70,9 +105,9 @@ if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
     CAP_JSON=$("$CAP_SH" --json --repo "$REPO" 2>/dev/null) || CAP_JSON_RC=$?
     FREE_RC=0; FREE=$(printf '%s' "$CAP_JSON" | jq -r '.free // empty' 2>/dev/null) || FREE_RC=$?
     BASELINE_RC=0; REG_BASELINE=$(printf '%s' "$CAP_JSON" | jq -r '.registry_baseline // empty' 2>/dev/null) || BASELINE_RC=$?
-    if [ "$CAP_JSON_RC" -ne 0 ] || [ "$FREE_RC" -ne 0 ] || [ "$BASELINE_RC" -ne 0 ] \
-       || ! [[ "$FREE" =~ ^[0-9]+$ ]] || ! [[ "$REG_BASELINE" =~ ^[0-9]+$ ]]; then
-      echo "DEGRADED: active-work cap could not be read — continuing uncounted" >&2
+    if [ "$CAP_JSON_RC" -ne 0 ] || [ "$FREE_RC" -ne 0 ] || [ "$BASELINE_RC" -ne 0 ]        || ! [[ "$FREE" =~ ^[0-9]+$ ]] || ! [[ "$REG_BASELINE" =~ ^[0-9]+$ ]]; then
+      echo "DEFERRED: resolved active-work cap is unreadable; no reservation, stamp, or spawn attempted" >&2
+      exit 1
     elif [ "$FREE" -eq 0 ]; then
       echo "DEFERRED: repo-wide active-work cap is full; no offer was stamped or emitted" >&2
       exit 7
@@ -80,79 +115,92 @@ if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
       echo "DEGRADED: chip-offer-registry.sh not found — continuing uncounted" >&2
     else
       CAP_ADMISSION=$((REG_BASELINE + FREE))
-      ISSUE_NUMBERS=$(jq -r --arg repo "$REPO" "$MINE_DEF"'.issues[] | mine | .number' "$LOG") || {
-        echo "ERROR: could not enumerate the open issues covered by this hand-off" >&2
-        exit 1
-      }
+      ISSUE_NUMBERS=$(jq -r --arg repo "$REPO" "$MINE_DEF"'.issues[] | mine | .number' "$LOG") || exit 1
       [ -n "$ISSUE_NUMBERS" ] || { echo "ERROR: no open session issues to hand off" >&2; exit 1; }
       ISSUE_ARGS=()
       while IFS= read -r issue_number; do
         [ -n "$issue_number" ] && ISSUE_ARGS+=(--issue "$issue_number")
       done <<< "$ISSUE_NUMBERS"
-      REG_TID=$("$REGISTRY" --repo "$REPO" --reserve --emitter issue-maker "${ISSUE_ARGS[@]}" \
-        --cap-free "$CAP_ADMISSION" 2>/dev/null) || REG_TID_RC=$?
+      REG_TID="offer-$(date -u +%s)-$$-$RANDOM-$RANDOM"
+      if ! set_log '.reg_tid = $reg | .delivery_mode = "chip-reserved" | .handoff_checkpoint = {state:"reservation-intent", spawn_status:"not-started", repository:$repo, task_id:null}' --arg reg "$REG_TID" --arg repo "$REPO"; then
+        echo "ERROR: reservation intent could not be persisted; no reservation or spawn attempted" >&2
+        exit 1
+      fi
+      REG_RESPONSE=$("$REGISTRY" --repo "$REPO" --reserve --emitter issue-maker "${ISSUE_ARGS[@]}"         --cap-free "$CAP_ADMISSION" --task-id "$REG_TID" 2>/dev/null) || REG_TID_RC=$?
       if [ "$REG_TID_RC" -eq 7 ]; then
+        handoff_release_unstarted || exit 1
         echo "DEFERRED: active-work cap was consumed before handoff reservation; no offer was stamped or emitted" >&2
         exit 7
-      elif [ "$REG_TID_RC" -ne 0 ]; then
-        echo "DEGRADED: chip registry unavailable (exit $REG_TID_RC) — continuing uncounted" >&2
-        REG_TID=""
+      fi
+      # A failed response can follow a committed write; inspect, never re-reserve.
+      REG_SNAPSHOT=$("$REGISTRY" --repo "$REPO" --list 2>/dev/null) || {
+        echo "ERROR: reservation result unknown; retain reservation-intent receipt and do not spawn" >&2; exit 1;
+      }
+      REG_STATE=$(printf '%s' "$REG_SNAPSHOT" | jq -er --arg id "$REG_TID" '
+        if type != "array" then error("registry array required") else
+        [.[] | select(.task_id == $id)] as $matches |
+        if ($matches|length)==0 then "absent"
+        elif ($matches|length)==1 and $matches[0].emitter=="issue-maker" then $matches[0].state
+        else error("ambiguous reservation identity") end end') || exit 1
+      if [ "$REG_STATE" = absent ]; then
+        handoff_release_unstarted || exit 1
+        echo "DEGRADED: registry confirms no reservation — continuing uncounted" >&2
+      elif [ "$REG_STATE" != offered ]; then
+        echo "ERROR: reservation is $REG_STATE; reconcile without spawning" >&2; exit 1
+      elif ! set_log '.handoff_checkpoint.state = "reserved"'; then
+        handoff_release_unstarted || exit 1
+        echo "ERROR: reserved receipt failed; no chip was started" >&2; exit 1
       fi
     fi
   fi
 fi
 
-if [ -n "$REG_TID" ]; then
-  if ! set_log '.reg_tid = $reg | .delivery_mode = "chip-pending" | .handoff_checkpoint = {state:"reserved", task_id:null}' \
-      --arg reg "$REG_TID"; then
-    "$REGISTRY" --retract --task-id "$REG_TID" >/dev/null 2>&1 || true
-    echo "ERROR: reservation could not be persisted; no chip was started" >&2
-    exit 1
-  fi
-fi
-
-# Stamp immediately before the first actual emission (spawn or printed block).
-OFFER_TOKEN="offer-$(date +%s%N)"
+# Stamp before first emission; chip-reserved does not imply a task was started.
+OFFER_TOKEN="offer-$(date -u +%s)-$$-$RANDOM-$RANDOM"
 OFFER_MODE=inline
-[ -n "$REG_TID" ] && OFFER_MODE=chip-pending
-if ! set_log "$MINE_DEF"'.delivery_mode = $mode | (.issues[] | mine | .chip_task_id) = $tok' \
-    --arg mode "$OFFER_MODE" --arg tok "$OFFER_TOKEN" --arg repo "$REPO"; then
-  if [ -n "$REG_TID" ]; then
-    "$REGISTRY" --retract --task-id "$REG_TID" >/dev/null 2>&1 || true
-  fi
-  echo "ERROR: offer stamp could not be persisted; do not spawn or emit the handoff" >&2
+[ -n "$REG_TID" ] && OFFER_MODE=chip-reserved
+if ! set_log "$MINE_DEF"'.delivery_mode = $mode | (.issues[] | mine | .chip_task_id) = $tok'     --arg mode "$OFFER_MODE" --arg tok "$OFFER_TOKEN" --arg repo "$REPO"; then
+  handoff_release_unstarted || exit 1
+  echo "ERROR: offer stamp could not be persisted; no spawn or emission occurred" >&2
   exit 1
 fi
 ```
 
-- **Chip mode** (`mcp__ccd_session__spawn_task` present): use the reserved `REG_TID` above. **Retain it** separately from `chip_task_id` for later `--transition` calls (`running` on start, `pr-backed` when a PR opens, `done`/`retracted` on terminal events). Call `spawn_task` **once** with `title` (verb-first, ≤60 chars — e.g. `Run 5 captured issues (#1230 first)`), `prompt` (the block above, verbatim), `tldr` (1–2 plain sentences), `cwd` (repo root). After success, make one checked atomic log write that replaces the offer token with returned `task_id`, retains `reg_tid`, sets `delivery_mode` to `"chip"`, and clears the pending checkpoint. If that write fails, the pre-spawn reservation record remains in `$LOG`; stop and report that the chip started as `$TASK_ID` but its receipt needs reconciliation. Do not clear or overwrite `reg_tid`. Print only the short summary per `chip-launching.md` "Short-summary transcript format".
-- **Fallback mode** (tool absent or spawn failed): print the full fenced block above once. Leave `chip_task_id` holding the offer token (not null). Note the fallback once. If `REG_TID` was reserved before the spawn failure, run the cleanup below before printing. Leave the stamped issue token intact for the copyable handoff.
+**Before the tool call**, persist this checked write. A crash after it is an uncertain launch, even if the tool had not yet been invoked; that conservative uncertainty prevents duplicate work. Failure stops before calling the tool.
 
 ```bash
-if [ -n "$REG_TID" ]; then
-  if "$REGISTRY" --retract --task-id "$REG_TID" >/dev/null 2>&1; then
-    if ! set_log '.reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null'; then
-      echo "ERROR: reservation released but session cleanup could not be persisted; retry local reconciliation before another offer" >&2
-      exit 1
-    fi
-  else
-    set_log '.handoff_checkpoint = {state:"cleanup-pending", task_id:null}' || true
-    echo "ERROR: chip reservation cleanup is uncertain; reg_tid remains persisted" >&2
-  fi
-fi
-```
-
-After a successful spawn, persist its receipt in one checked write:
-
-```bash
-if ! set_log "$MINE_DEF"'.delivery_mode = "chip" | .reg_tid = $reg | .handoff_checkpoint = null | (.issues[] | mine | .chip_task_id) = $task' \
-    --arg reg "$REG_TID" --arg task "$TASK_ID" --arg repo "$REPO"; then
-  # Best-effort checkpoint-only recovery keeps the returned task ID too.
-  set_log '.handoff_checkpoint = {state:"spawned-receipt-pending", task_id:$task}' \
-    --arg task "$TASK_ID" || true
-  echo "ERROR: chip started as $TASK_ID but its receipt needs reconciliation; the pre-spawn reg_tid remains persisted" >&2
+if ! set_log '.delivery_mode = "chip-pending" | .handoff_checkpoint = {state:"spawn-uncertain", spawn_status:"unknown", repository:$repo, task_id:null}' --arg repo "$REPO"; then
+  handoff_release_unstarted || exit 1
+  echo "ERROR: launch intent failed; no spawn attempted" >&2
   exit 1
 fi
 ```
 
-If the user asks to "print the full prompt for #N", re-emit that issue's complete block verbatim (Model line + guard preamble included) — same as `chip-launching.md` "Print-on-demand replay".
+**Chip mode:** call `mcp__ccd_session__spawn_task` **once** with verb-first title (≤60 chars), the prompt above verbatim, plain tldr, and repo-root cwd. Classify the actual result: `spawned` only with returned `TASK_ID`; `not-started` only if the tool was absent or its explicit result guarantees no task was created; otherwise `unknown` (timeout, disconnect, lost response). Never classify generic tool failure as proof of non-creation. Retain `REG_TID` separately for lifecycle transitions using `chip-offer-registry.sh --repo "$REPO" --transition --task-id "$REG_TID" --state <running|pr-backed|done>`; closing a captured issue is not a terminal event for the task. A replay never launches again.
+
+After confirmed success, persist the returned task ID. If both writes fail, the prior `spawn-uncertain` receipt remains; report the returned ID for reconciliation without claiming it is recorded. Never release capacity or print an executable fallback after possible/confirmed spawn. Print the short summary per `chip-launching.md` only for confirmed success.
+
+```bash
+[ -n "$TASK_ID" ] || { echo "ERROR: no confirmed task ID; retain unknown spawn receipt" >&2; exit 1; }
+if ! set_log "$MINE_DEF"'.delivery_mode = "chip" | .reg_tid = $reg | .handoff_checkpoint = {state:"spawned", spawn_status:"spawned", repository:$repo, task_id:$task} | (.issues[] | mine | .chip_task_id) = $task'     --arg reg "$REG_TID" --arg task "$TASK_ID" --arg repo "$REPO"; then
+  set_log '.handoff_checkpoint = {state:"spawned-receipt-pending", spawn_status:"spawned", repository:$repo, task_id:$task}' --arg task "$TASK_ID" --arg repo "$REPO" || true
+  echo "ERROR: chip started as $TASK_ID but its receipt needs reconciliation; preserve reg_tid" >&2
+  exit 1
+fi
+```
+
+**Fallback mode:** only when no task was created, set `SPAWN_OUTCOME=not-started` from the actual result (or tool absence), then run this cleanup before printing the full fenced prompt once. Keep the stamped issue token for the printed block. Unknown/possibly running tasks stop without releasing, re-spawning, or printing another executable handoff. The release function above must be loaded from this same handoff phase after recovery; it is not a reason to load unrelated modules.
+
+```bash
+if [ "$SPAWN_OUTCOME" != not-started ]; then
+  echo "ERROR: spawn outcome uncertain; preserve receipt and reservation, reconcile the tool result" >&2
+  exit 1
+fi
+if ! set_log '.handoff_checkpoint = {state:"cleanup-pending", spawn_status:"not-started", repository:$repo, task_id:null}' --arg repo "$REPO"; then
+  echo "ERROR: no task was created but cleanup intent could not be persisted; reconcile before fallback" >&2
+  exit 1
+fi
+handoff_release_unstarted || exit 1
+```
+
+If the user asks to "print the full prompt for #N", re-emit the saved prompt verbatim (Model line + guard preamble included) as a replay; never re-reserve or infer a successful launch from an offer token.

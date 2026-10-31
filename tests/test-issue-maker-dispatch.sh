@@ -163,7 +163,7 @@ assert_eq "$expected" "$actual" 'dispatcher resolves modules from its install pa
 # Parity guards for remote-write uncertainty and shared single/batch handoff gates.
 assert_eq 0 "$(grep -q 'do not retry blindly' .claude/skills/issue-maker/modules/update.md; echo $?)" 'update uncertainty requires remote verification before logging'
 assert_eq 0 "$(grep -q 'log state was not changed' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract uncertainty leaves the log unchanged'
-assert_eq 0 "$(grep -q 'chip-pending' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract can release reservations persisted before a chip receipt write'
+assert_eq 0 "$(grep -q 'chip-pending' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract distinguishes pending chips before any release'
 assert_eq 0 "$(grep -q 'Handoff recovery needed' .claude/skills/issue-maker/modules/session-state.md; echo $?)" 'compaction surfaces a persisted handoff reservation checkpoint'
 assert_eq 0 "$(grep -q 'Resolve `active-work-cap.sh`' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'single and batch postfile share the cap census procedure'
 assert_eq 0 "$(grep -q 'only on explicit request' .claude/skills/issue-maker/modules/batch.md; echo $?)" 'batch handoff wording keeps inline as the default'
@@ -298,37 +298,108 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     print('ok workflow: re-cut updates survivor title, coordinates, and active plan total together')
     # First handoff emission after a declined inline offer has no token to reuse.
     seed([row(1,origin='create'),row(2,origin='update')])
-    handoff_stamp=next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN=' in b)
+    release_block=next(b for b in blocks('modules/handoff.md') if 'handoff_release_unstarted()' in b)
+    handoff_stamp=release_block+'\n'+next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN=' in b)
     r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+handoff_stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]['chip_task_id'].startswith('offer-') and rows[1]['chip_task_id'] is None
     print('ok workflow: explicit fallback handoff after decline stamps only session-filed rows')
-    # A concurrent reservation denial exits before a fresh offer stamp, so
-    # /wave cannot hide work for a handoff that was never emitted.
-    seed([row(1,origin='create')]); before=log.read_bytes()
+    # Execute the production reservation/stamp/launch/receipt/cleanup fences with
+    # the REAL registry helper. Only boundary failures are injected by a shim.
     home=pathlib.Path(td)/'reserve-home'; registry=home/'.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh'; registry.parent.mkdir(parents=True)
-    cap=registry.parent/'active-work-cap.sh'
-    cap_args=pathlib.Path(td)/'cap-args'; cap.write_text('')
+    cap=registry.parent/'active-work-cap.sh'; cap_args=pathlib.Path(td)/'cap-args'
     cap.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(cap_args))+'\nprintf \'{"free":1,"registry_baseline":0}\\n\'\n'); cap.chmod(0o755)
     registry_args=pathlib.Path(td)/'registry-args'
-    registry.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(registry_args))+'\nexit 7\n'); registry.chmod(0o755)
-    r=run(setup+'export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'+handoff_stamp)
-    assert r.returncode==7 and log.read_bytes()==before and 'no offer was stamped or emitted' in r.stderr,(r.returncode,r.stdout,r.stderr,log.read_text())
-    assert cap_args.read_text().splitlines()==['--json','--repo','owner/repo'],cap_args.read_text()
-    assert registry_args.read_text().splitlines()==['--repo','owner/repo','--reserve','--emitter','issue-maker','--issue','1','--cap-free','1'],registry_args.read_text()
-    print('ok workflow: registry cap race defers before writing an offer stamp')
-    # Persist the reserved registry ID before spawn. If the post-spawn receipt
-    # write fails, the session still has the ID needed for later retraction.
-    registry.write_text('#!/usr/bin/env bash\nprintf reg-123\n'); registry.chmod(0o755)
-    r=run(setup+'export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'+handoff_stamp)
-    data=json.loads(log.read_text()); assert r.returncode==0 and data['reg_tid']=='reg-123' and data['delivery_mode']=='chip-pending' and data['issues'][0]['chip_task_id'].startswith('offer-'),(r.returncode,r.stderr,data)
+    registry.write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> '''+shlex.quote(str(registry_args))+'''
+case " $* " in
+  *" --reserve "*)
+    [[ "${FAULT:-}" == deny ]] && exit 7
+    if [[ "${FAULT:-}" == reserve-lost ]]; then bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''' "$@" >/dev/null; exit 4; fi ;;
+  *" --list "*) [[ "${FAULT:-}" == list-fail ]] && exit 4 ;;
+  *" --retract "*) [[ "${FAULT:-}" == retract-fail ]] && exit 4 ;;
+esac
+exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''' "$@"
+'''); registry.chmod(0o755)
+    env_setup='export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'
+    state_file=home/'.claude/session-state.json'
+    def fresh():
+        seed([row(1,origin='create'),row(2,origin='update'),dict(row(3,origin='create'),url='https://github.com/foreign/repo/issues/3')])
+        state_file.write_text('{"repos":{"foreign/repo":{"chip_offers":[{"task_id":"foreign","state":"running"}]}}}')
+        registry_args.write_text('')
+    def offers(): return json.loads(state_file.read_text())['repos'].get('owner/repo',{}).get('chip_offers',[])
+    def invoke(extra='',body=handoff_stamp): return run(setup+env_setup+extra+'\n'+body)
+    launch=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip-pending"' in b)
     receipt=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip" | .reg_tid = $reg' in b)
-    r=run(setup+'set_log() { return 1; }\nREG_TID=reg-123\nTASK_ID=task-456\n'+receipt)
-    data=json.loads(log.read_text()); assert r.returncode==1 and data['reg_tid']=='reg-123' and data['delivery_mode']=='chip-pending' and data['issues'][0]['chip_task_id'].startswith('offer-') and 'task-456' in r.stderr,(r.returncode,r.stderr,data)
-    print('ok workflow: failed post-spawn receipt update leaves the pre-persisted registry ID recoverable')
-    cleanup=next(b for b in blocks('modules/handoff.md') if 'reservation released but session cleanup' in b)
-    r=run(setup+'REGISTRY='+shlex.quote(str(registry))+'\nREG_TID=reg-123\n'+cleanup)
-    data=json.loads(log.read_text()); assert r.returncode==0 and data['reg_tid'] is None and data['delivery_mode']=='inline' and data['issues'][0]['chip_task_id'].startswith('offer-'),(r.returncode,r.stderr,data)
-    print('ok workflow: confirmed registry release clears only registry state and retains the printed-block offer token')
+    fallback=next(b for b in blocks('modules/handoff.md') if 'SPAWN_OUTCOME' in b)
+    # A resolved-but-unreadable cap never takes the uncounted admission path.
+    cap_good=cap.read_text();cap.write_text('#!/usr/bin/env bash\nexit 4\n')
+    fresh();r=invoke();assert r.returncode==1 and not offers() and not registry_args.read_text()
+    cap.write_text(cap_good)
+    # Failure before reservation intent cannot write either external store.
+    fresh(); r=invoke('set_log() { return 1; }'); assert r.returncode==1 and not offers() and not registry_args.read_text()
+    # A cap race may checkpoint admission intent but never stamps/emits or leaks a slot.
+    fresh();r=invoke('export FAULT=deny');d=json.loads(log.read_text());assert r.returncode==7 and d.get('reg_tid') is None and d['issues'][0]['chip_task_id'] is None and not offers(),(r.stderr,d)
+    assert cap_args.read_text().splitlines()==['--json','--repo','owner/repo']
+    # Lost successful reserve response is reconciled by exact caller ID, not retried.
+    fresh();r=invoke('export FAULT=reserve-lost');d=json.loads(log.read_text());assert r.returncode==0 and len(offers())==1 and d['reg_tid']==offers()[0]['task_id'] and d['delivery_mode']=='chip-reserved' and offers()[0]['issues']==[1],(r.stderr,d,offers())
+    assert d['issues'][1]['chip_task_id'] is None and d['issues'][2]['chip_task_id'] is None
+    # Restart before any spawn is described as reservation, never a started chip.
+    recovery=next(b for b in blocks('modules/session-state.md') if 'if [ -f "$LOG" ]' in b)
+    r=run(setup+recovery);assert r.returncode==0 and 'capacity reserved; no spawn confirmed' in r.stdout and 'chip started' not in r.stdout,r.stdout
+    before=log.read_bytes();r=invoke();assert r.returncode==1 and log.read_bytes()==before and len(offers())==1
+    # Unknown registry read preserves intent and blocks a launch (no stamp yet).
+    fresh();r=invoke('export FAULT=list-fail');d=json.loads(log.read_text());assert r.returncode==1 and d['handoff_checkpoint']['state']=='reservation-intent' and d['issues'][0]['chip_task_id'] is None and len(offers())==1
+    # Failed offer stamp with confirmed release clears the pre-persisted receipt.
+    fail_stamp='set_log() { if [[ "$1" == *"chip_task_id) = $tok"* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }'
+    # Literal $tok must be matched, not expanded under nounset.
+    fail_stamp=fail_stamp.replace('== *"chip_task_id) = $tok"*','== *\'chip_task_id) = $tok\'*')
+    fresh();r=invoke(fail_stamp);d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] is None and d['handoff_checkpoint'] is None and offers()[0]['state']=='retracted' and d['issues'][0]['chip_task_id'] is None,(r.stderr,d,offers())
+    fresh();r=invoke('export FAULT=retract-fail\n'+fail_stamp);d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] and d['handoff_checkpoint']['state']=='cleanup-pending' and d['handoff_checkpoint']['spawn_status']=='not-started' and offers()[0]['state']=='offered'
+    # A failed local cleanup after successful retract retains enough for restart.
+    fresh();r=invoke(fail_stamp.replace("then return 1; fi;", "then return 1; fi; if [[ \"$1\" == '.reg_tid = null'* ]]; then return 1; fi;",1));d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] and offers()[0]['state']=='retracted'
+    # Pre-tool intent failure stops; no tool was invoked and reservation is released.
+    fresh();r=invoke();assert r.returncode==0,r.stderr
+    reg=json.loads(log.read_text())['reg_tid']; base_state=log.read_bytes(); base_registry=state_file.read_bytes()
+    def saved(): log.write_bytes(base_state);state_file.write_bytes(base_registry)
+    launch_fail='set_log() { if [[ "$1" == *\'spawn-uncertain\'* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }'
+    r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\n'+launch_fail,release_block+'\n'+launch);assert r.returncode==1 and offers()[0]['state']=='retracted'
+    # A restart during tool invocation has unknown outcome; fallback cannot release it.
+    saved();r=invoke('',launch);assert r.returncode==0,r.stderr
+    pending_state=log.read_bytes();r=run(setup+recovery);assert 'spawn outcome unknown' in r.stdout and 'chip started' not in r.stdout,r.stdout
+    r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nSPAWN_OUTCOME=unknown',release_block+'\n'+fallback);assert r.returncode==1 and log.read_bytes()==pending_state and offers()[0]['state']=='offered'
+    # The release helper itself refuses unknown spawn and wrong-repo identities.
+    for guard_args in ('','REPO=other/repo\n'):
+        r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\n'+guard_args,release_block+'\nhandoff_release_unstarted')
+        assert r.returncode==1 and log.read_bytes()==pending_state and offers()[0]['state']=='offered'
+    # Inline refresh/accept/decline cannot overwrite a pending chip receipt.
+    for inline_block in [b for b in blocks('modules/create/postfile.md') if 'HOLD: reconcile existing chip' in b]:
+        r=run(setup+inline_block);assert r.returncode==1 and log.read_bytes()==pending_state,(r.stderr,log.read_text())
+    # A malformed atomic update leaves the prior log intact and no temp file.
+    before=log.read_bytes();r=run(setup+"set_log 'this is invalid jq'\n")
+    assert r.returncode!=0 and log.read_bytes()==before and not list(log.parent.glob(log.name+'.tmp.*'))
+    # Confirmed spawn, failed primary receipt, and failed BOTH writes retain reg ID.
+    for failure in ('none','first','all'):
+        log.write_bytes(pending_state);state_file.write_bytes(base_registry)
+        fail='' if failure=='none' else ('set_log() { return 1; }' if failure=='all' else 'set_log() { if [[ "$1" == *\'.delivery_mode = "chip" |\'* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }')
+        r=invoke('REG_TID='+shlex.quote(reg)+'\nTASK_ID=task-confirmed\n'+fail,receipt);d=json.loads(log.read_text())
+        assert d['reg_tid']==reg and offers()[0]['state']=='offered'
+        assert (r.returncode,d['handoff_checkpoint']['state'])==((0,'spawned') if failure=='none' else (1,'spawned-receipt-pending' if failure=='first' else 'spawn-uncertain')),(r.stderr,d)
+        rec=run(setup+recovery);assert ('spawn outcome unknown' in rec.stdout)==(failure=='all'),rec.stdout
+    # Explicit no-creation response releases and leaves the copyable offer token.
+    log.write_bytes(pending_state);state_file.write_bytes(base_registry)
+    r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nSPAWN_OUTCOME=not-started',release_block+'\n'+fallback);d=json.loads(log.read_text());assert r.returncode==0 and d['reg_tid'] is None and d['delivery_mode']=='inline' and d['issues'][0]['chip_task_id'].startswith('offer-') and offers()[0]['state']=='retracted'
+    # Retract after confirmed remote close: reserved can release; unknown/spawned cannot.
+    retract_cleanup=next(b for b in blocks('modules/retract.md') if 'CLOSED_NUMBERS_JSON=' in b)
+    for mode,status,should_release in [('chip-reserved','not-started',True),('chip-pending','unknown',False),('chip','spawned',False)]:
+        saved();d=json.loads(log.read_text());d['issues'][0]['status']='closed';d['delivery_mode']=mode;d['handoff_checkpoint']['spawn_status']=status;log.write_text(json.dumps(d))
+        tok=d['issues'][0]['chip_task_id'];r=invoke('N=1\nSHARERS=0\nOFFER_TOKEN='+shlex.quote(tok),retract_cleanup);after=json.loads(log.read_text())
+        assert (r.returncode==0)==should_release,(r.stderr,after)
+        assert offers()[0]['state']==('retracted' if should_release else 'offered')
+        assert (after['issues'][0]['chip_task_id'] is None)==should_release
+    # Receipt ownership and every external registry operation are exact-repo scoped.
+    for line in registry_args.read_text().splitlines(): assert line.startswith('--repo owner/repo '),line
+    assert json.loads(state_file.read_text())['repos']['foreign/repo']['chip_offers'][0]['state']=='running'
+    print('ok workflow: real registry reservation/stamp/spawn/recovery/retract failure matrix preserves ownership and truthful monotonic receipts')
     # Execute the actual filing block with a missing postfile module: no gh write.
     fake=pathlib.Path(td)/'skill'; (fake/'scripts').mkdir(parents=True)
     dispatcher=fake/'scripts/dispatch-module.sh'; dispatcher.write_text((skill/'scripts/dispatch-module.sh').read_text())

@@ -100,12 +100,50 @@ SHARERS=$(jq -r --arg n "$N" --arg t "$OFFER_TOKEN" --arg repo "$REPO" \
   "$MINE_DEF"'[.issues[] | mine | select(.chip_task_id == $t and .number != ($n|tonumber))] | length' "$LOG")
 ```
 
-- **Offer already accepted** (`OFFER_ACCEPTED == true`) — the batch is already running via `/subagent`. The issue is already confirmed closed; clear `chip_task_id` to `null`; the running pipeline will skip a claimed issue it can no longer reach. Do not attempt to withdraw the offer — execution is in flight.
-- **No `OFFER_TOKEN`** (never offered, or already cleared) — no offer cleanup is needed.
-- **`OFFER_TOKEN` present (offer pending, not yet accepted) and `SHARERS > 0`** — shed this issue from the pending offer: recompute the batch tier from the remaining open issues (Step 9b rules — take the maximum across what remains), re-emit the offer text covering only those issues (refresh in-thread, including the recomputed tier), and clear this issue's `chip_task_id` to `null`. The offer token on remaining issues is unchanged — no new token needed.
-- **`OFFER_TOKEN` present (offer pending) and `SHARERS == 0`** — this was the last issue the offer covered. Withdraw the offer entirely: clear `chip_task_id` to `null` and say so (*"Offer withdrawn — no remaining open issues."*). Use `delivery_mode` (read from `$LOG`) to determine cleanup: if `"inline"`, no chip dismiss is needed (the token is locally-generated, not a `spawn_task` ID); if `"chip"` or `"chip-pending"`, read `reg_tid` from `$LOG` and release it with `chip-offer-registry.sh --retract --task-id "$REG_TID"` — only on confirmed release success clear both `chip_task_id` and `reg_tid` to `null` and `delivery_mode` to `null` in the log.
+- **Offer already accepted** — execution is in flight; clear only confirmed-closed filed rows, never release a possibly running task's registry entry.
+- **No token and no receipt** — no offer cleanup needed.
+- **Sharers remain** — refresh only an inline offer. For reserved/unknown/spawned chips, do not re-emit or alter the launched payload: report the close and reconcile the saved handoff. A registry reservation covers the original batch; never infer task termination from issue closure.
+- **Last covered issue** — a plain inline token can be withdrawn. A confirmed **unstarted** reservation may be released, followed by atomic local cleanup. A possible/confirmed spawn keeps the receipt and capacity until actual tool lifecycle evidence proves terminal; closing the issue does not dismiss the task. Use the production block below after GitHub confirms all intended closes. For whole-chain cleanup set `CLOSED_NUMBERS_JSON` to the verified closed member list; ordinary retract uses `[N]`.
 
-**Cleanup failure:** retain the affected row token, `reg_tid`, and `delivery_mode` when a registry transition fails or is uncertain; checkpoint cleanup as the next step and report that withdrawal is pending. Do not claim that the live chip was withdrawn. For a successful refresh, accepted offer, or inline withdrawal, clear only the confirmed-closed affected rows with `.number` plus `same_repo`; whole-chain cleanup uses the confirmed closed member list, never all closed rows.
+```bash
+# OFFER_TOKEN is the pre-close snapshot. Never sweep unrelated closed rows.
+CLOSED_NUMBERS_JSON=${CLOSED_NUMBERS_JSON:-[$N]}
+DELIVERY_MODE=$(jq -r '.delivery_mode // "inline"' "$LOG") || exit 1
+REG_TID=$(jq -r '.reg_tid // empty' "$LOG") || exit 1
+SPAWN_STATUS=$(jq -r '.handoff_checkpoint.spawn_status // "unknown"' "$LOG") || exit 1
+RECEIPT_REPO=$(jq -r '.handoff_checkpoint.repository // .target_repo // empty' "$LOG") || exit 1
+[[ "$RECEIPT_REPO" == "$REPO" ]] || { echo "ERROR: handoff repository mismatch; preserve receipt" >&2; exit 1; }
+if [ "$SHARERS" -eq 0 ] && [ -n "$REG_TID" ]; then
+  if ! jq -e '.handoff_checkpoint.spawn_status == "not-started" and .handoff_checkpoint.task_id == null and (.handoff_checkpoint.state == "reservation-intent" or .handoff_checkpoint.state == "reserved" or .handoff_checkpoint.state == "cleanup-pending")' "$LOG" >/dev/null; then
+    echo "HOLD: task may be running; issue closed, but reservation/launch receipt retained" >&2
+    exit 1
+  fi
+  # Resolve REGISTRY via the standard three executable paths; fail closed if absent.
+  REGISTRY=""
+  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+    [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
+  done
+  [ -n "$REGISTRY" ] || { echo "ERROR: registry unavailable; preserve cleanup receipt" >&2; exit 1; }
+  SNAPSHOT=$("$REGISTRY" --repo "$REPO" --list) || exit 1
+  REG_STATE=$(printf '%s' "$SNAPSHOT" | jq -er --arg id "$REG_TID" '
+    if type != "array" then error("registry array required") else
+    [.[] | select(.task_id == $id)] as $m |
+    if ($m|length)==0 then "absent" elif ($m|length)==1 and $m[0].emitter=="issue-maker" then $m[0].state else error("ambiguous ID") end end') || exit 1
+  case "$REG_STATE" in
+    offered) "$REGISTRY" --repo "$REPO" --retract --task-id "$REG_TID" || { echo "ERROR: release uncertain; receipt retained" >&2; exit 1; } ;;
+    absent|retracted|expired) : ;;
+    *) echo "HOLD: registry task is $REG_STATE; reconcile actual task lifecycle" >&2; exit 1 ;;
+  esac
+  # Only confirmed release/absence AND no-spawn permits clearing the receipt.
+  set_log '.reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null' || exit 1
+elif [ "$DELIVERY_MODE" = chip ] || [ "$DELIVERY_MODE" = chip-pending ]; then
+  echo "HOLD: preserve possibly running handoff, including uncounted launch receipts" >&2
+  exit 1
+fi
+set_log "$MINE_DEF"'(.issues[] | select(same_repo and session_filed and .status == "closed" and (.number as $n | $closed | index($n)) and .chip_task_id == $tok) | .chip_task_id) = null'   --arg repo "$REPO" --arg tok "$OFFER_TOKEN" --argjson closed "$CLOSED_NUMBERS_JSON" || exit 1
+```
+
+**Cleanup failure:** retain the affected tokens and registry/launch receipt when an external or local operation fails. A successful release followed by failed local cleanup is recoverable by the exact repo-scoped registry read; never reserve a replacement before reconciliation. Report withdrawal only after both stores confirm it. For possible/confirmed tasks say the issue was closed while task reconciliation remains pending, not that the chip was withdrawn.
 
 Clearing `chip_task_id` to `null` in `$LOG` is the shared-record cleanup — `/wave` and `/pm` read this same log, so nulled entries stop counting as offered work for them too. In chip mode, the registry entry (`reg_tid`) is a second store — clear it as described above.
 

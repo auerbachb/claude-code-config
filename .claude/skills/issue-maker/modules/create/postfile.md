@@ -136,6 +136,10 @@ A capture session ends by **offering to run every open issue it filed, right her
 
 <!-- test-anchor: issue-maker-step9c-offer-stamp -->
 ```bash
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+  echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
+  exit 1
+fi
 OFFER_TOKEN="offer-$(date +%s%N)"
 set_log "$MINE_DEF"'.delivery_mode = "inline" | (.issues[] | mine | .chip_task_id) = $tok' \
   --arg tok "$OFFER_TOKEN" --arg repo "$REPO"
@@ -158,10 +162,14 @@ Say **yes** to run them now in this thread. Say **no** to leave them filed; you 
 
 In **rapid-fire mode**, use terser framing: *"Run {N} issue(s) inline — {TIER} ({MODEL}/{EFFORT})? [yes/no]"*; prepend the same applicable model step-up warning from Step 9b (including the Heavy-on-lower-tier recommendation), keeping it to one concise line. Rapid-fire trims commentary, never the pre-acceptance model/effort information
 
-**On yes — acceptance.** Invoke `/subagent #{a} #{b} …` first; if it succeeds, end capture mode (`offer_accepted: true`) and clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. If the invocation fails, leave `offer_accepted` unset so the offer can be re-attempted or withdrawn via Step 12. Issue-maker adds no orchestration: claims, the pipeline ceiling, Step 6.0b chain serialization, and too-big routing all belong to `/subagent`.
+**On yes — acceptance.** Check that no chip reservation/launch receipt exists before invoking any execution. Then invoke `/subagent #{a} #{b} …` first; if it succeeds, end capture mode (`offer_accepted: true`) and clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. If the invocation fails, leave `offer_accepted` unset so the offer can be re-attempted or withdrawn via Step 12. Issue-maker adds no orchestration: claims, the pipeline ceiling, Step 6.0b chain serialization, and too-big routing all belong to `/subagent`.
 
 ```bash
-# /subagent #{a} #{b} ...  ← invoke first
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+  echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
+  exit 1
+fi
+# /subagent #{a} #{b} ...  ← invoke only after the receipt guard above
 if ! set_log "$MINE_DEF"'.offer_accepted = true | (.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"; then
   echo "ERROR: /subagent started, but offer acceptance and token cleanup could not be persisted; stop and reconcile the session log before another offer" >&2
   exit 1
@@ -171,6 +179,10 @@ fi
 **On no — decline.** Leave all issues filed and launch nothing. Clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. The inline offer is withdrawn; the on-request hand-off block below remains available on explicit request (`"give me the chip"`, `"print the hand-off"`, etc.).
 
 ```bash
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+  echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
+  exit 1
+fi
 set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
 ```
 
