@@ -60,7 +60,12 @@ rc=0; run_report --days abc 2>/dev/null || rc=$?
 [[ $rc -eq 2 ]] || fail "--days abc should exit 2, got $rc"
 echo "PASS: --days abc exits 2"
 
-# Test 6: basic log with known records produces expected output
+# Test 6: --days= with no value exits 2
+rc=0; run_report --days= 2>/dev/null || rc=$?
+[[ $rc -eq 2 ]] || fail "--days= should exit 2, got $rc"
+echo "PASS: --days= exits 2"
+
+# Test 7: basic log with known records produces expected output
 reset
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Write stub log: 2 thread lines + 1 inline line
@@ -83,7 +88,7 @@ echo "PASS: n/a shown for empty token fields"
 # Test 8: token sum appears when tokens are present
 # The inline record has 1500 tokens; check it appears in output
 out="$(run_report)"
-grep -q "1.5K\|1500" <<<"$out" || fail "token sum not shown: $out"
+grep -q "1,500\|1500" <<<"$out" || fail "token sum not shown: $out"
 echo "PASS: token sum appears in output"
 
 # Test 9: --days windowing — future records included, old records excluded
@@ -139,10 +144,10 @@ echo "--- revert-verify: inversion check ---"
 reset
 printf '%s\tsession_start\tthread\topus\tsession\tsess-1\t\t\n' "$NOW" >> "$LOG"
 out="$(run_report)"
-# If we strip the n/a rendering (simulated by checking it IS there), the test passes.
-# Simulated inversion: pretend n/a was replaced with "0"
-if grep -q "| 0 |" <<<"$out"; then
-  fail "revert-verify: n/a replaced with 0 (logic broken)"
+# Count tables may legitimately contain zeroes; assert only the token-value
+# column stays n/a when no token-bearing legacy event exists.
+if grep -Eq '^\| (opus|sonnet|haiku|fable|unknown) \| [0-9]+/[0-9]+ \| 0 \|' <<<"$out"; then
+  fail "revert-verify: missing tokens were presented as a zero token sum"
 fi
 grep -q "n/a" <<<"$out" || fail "revert-verify: n/a not rendered for empty tokens"
 echo "PASS: revert-verify confirms n/a rendering is required"

@@ -27,6 +27,7 @@ resolve_script() {
   return 1
 }
 ISSUE_CLAIM=$(resolve_script issue-claim.sh || true)
+SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 CR_PLAN=$(resolve_script cr-plan.sh || true)
 ISSUE_DEDUP=$(resolve_script issue-dedup.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
@@ -39,6 +40,7 @@ Read reference docs through the same order — `$HOME/.claude/skills-worktree/.c
 
 - `chip-launching.md` unreadable → **required**. Print `ERROR: chip-launching.md not found (checked all three paths) — PM-context inline gate unavailable` and stop before offering a chip; without the gate a subagent-fit issue routes to its own thread instead of the inline pipeline (#1189).
 - `ISSUE_CLAIM` empty → **optional**, but loud. Print `DEGRADED: issue-claim.sh not found (checked all three paths) — Step 2b gate cannot run, proceeding unclaimed` and continue. Say it once, in the visible output — an unclaimed start that nobody was told about is how two threads end up on one issue.
+- `SPEND_TELEMETRY_LINK` empty → **optional**. Record `DEGRADED: spend-telemetry-link.sh not found (checked all three paths) — issue/session correlation unavailable` and continue; telemetry must never gate starting work.
 - `CR_PLAN` empty → **optional**. Print `DEGRADED: cr-plan.sh not found (checked all three paths) — CR plan detection skipped` and go straight to Step 4; Claude's own plan and the issue-body merge are still mandatory.
 - `ISSUE_DEDUP` empty → **optional**. Print `DEGRADED: issue-dedup.sh not found (checked all three paths) — duplicate search skipped` and continue.
 - `REPO_ROOT_SH` empty → **optional**. Fall back to `git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /, ""); print; exit}'`; no warning needed, the inline form is equivalent.
@@ -117,6 +119,16 @@ if ! "$ISSUE_CLAIM" "$ISSUE_NUMBER" --claim --holder "$CLAIM_HOLDER"; then
   # Either way the claim is NOT held — STOP, same as a `claimed` verdict above.
   echo "Issue #$ISSUE_NUMBER — could not take the claim; not starting." >&2
   exit 1
+fi
+```
+
+**Best-effort telemetry correlation.** After the claim succeeds, record only an explicit runtime session, repository slug, and issue number; do not infer a session ID from the claim holder or branch. The helper resolves and validates the repository from `GH_REPO` or the local `origin` remote. If the runtime session ID or helper is unavailable, continue without a session correlation. The recorder is metadata-only and non-blocking:
+
+```bash
+TELEMETRY_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$TELEMETRY_SESSION_ID" ]]; then
+  "$SPEND_TELEMETRY_LINK" --session "$TELEMETRY_SESSION_ID" \
+    --issue "$ISSUE_NUMBER" --source start_issue_claim >/dev/null 2>&1 || true
 fi
 ```
 

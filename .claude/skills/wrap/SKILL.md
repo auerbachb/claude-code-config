@@ -97,6 +97,7 @@ RELEASE_DECIDE=$(resolve_script release-decide.sh || true)
 RELEASE_SWEEP=$(resolve_script release-sweep.sh || true)
 PR_ISSUE_REF_SH=$(resolve_script pr-issue-ref.sh || true)
 ISSUE_CLAIM_SH=$(resolve_script issue-claim.sh || true)
+SPEND_TELEMETRY_LINK=$(resolve_script spend-telemetry-link.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 DIRTY_MAIN_GUARD_SH=$(resolve_script dirty-main-guard.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
@@ -341,6 +342,25 @@ fi
 Releasing an issue you do not hold is safe and silent: `issue-claim.sh --release` compares logins and drops **your own** claim only, never a collaborator's, so an extra number in the set is a documented no-op rather than a stomp.
 
 Best-effort by design: the merge has already landed, so a failed release is a warning, never a non-zero exit from `/wrap`. An unreleased claim ages out on its own within `CLAIM_STALE_HOURS`; failing an already-completed merge would be far worse. This is the only release call on the merge path — Phase C (`phase-c-merger.md`) runs `/wrap` and inherits it, so do not add a second one there.
+
+**Record explicit telemetry correlation after the merge gate and AC verification.** This optional metadata-only helper is described in `.claude/reference/spend-telemetry-pipeline.md`. Pass `--gate-passed` only after Steps 2.1 and 2.2 succeed, with the full `head_sha` and structured result from that successful `GATE_JSON` (`met:true`). An already-merged or special-path run without that passing result remains unverified telemetry. Pass a session ID only when supplied by the runtime; never infer one. A merge alone is not verified completion. Failures are non-blocking.
+
+```bash
+if [[ -n "$SPEND_TELEMETRY_LINK" && -n "$MERGED_ISSUES" ]]; then
+  GATE_HEAD_SHA=$(printf '%s' "$GATE_JSON" | jq -r '.head_sha // empty' 2>/dev/null || true)
+  printf '%s\n' "$MERGED_ISSUES" | while IFS= read -r MERGED_ISSUE; do
+    [ -n "$MERGED_ISSUE" ] || continue
+    TELEMETRY_ARGS=(--issue "$MERGED_ISSUE" --pr "$PR_NUM" \
+      --source wrap_post_merge)
+    if [[ "$GATE_HEAD_SHA" =~ ^[a-fA-F0-9]{40}$ ]] && printf '%s' "$GATE_JSON" | jq -e '.met == true' >/dev/null 2>&1; then
+      TELEMETRY_ARGS+=(--gate-passed --gate-head-sha "$GATE_HEAD_SHA" --gate-result "$GATE_JSON")
+    fi
+    TELEMETRY_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+    [[ -n "$TELEMETRY_SESSION_ID" ]] && TELEMETRY_ARGS+=(--session "$TELEMETRY_SESSION_ID")
+    "$SPEND_TELEMETRY_LINK" "${TELEMETRY_ARGS[@]}" >/dev/null 2>&1 || true
+  done
+fi
+```
 
 **Append actuals log entry** — after the merge and claim-release, on either merge path, append one row to `~/.claude/estimate-log.jsonl`. This is best-effort: a logging failure prints one `WARN:` line and never blocks or delays anything downstream.
 
