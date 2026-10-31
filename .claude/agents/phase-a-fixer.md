@@ -134,8 +134,11 @@ Reply to EVERY review comment thread acknowledging the fix. Use the shared helpe
 
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
-  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}}
+  --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
+  --verdict fixed --defect real
 ```
+
+**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
 
 Exit codes: `0` reply posted — by either the inline endpoint or the PR-level fallback (the fallback also emits a note to stderr); `1` unused/reserved; `2` usage error (unknown `--reviewer`, or a body left empty after the @mention strip); `3` PR number could not be resolved from the comment and no `--pr` was supplied, OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error, including a non-404 failure of the PR-number lookup. Treat `0` as success. See `run_script reply-thread.sh --help` for the full contract.
 
@@ -242,6 +245,7 @@ HEAD_SHA: <pushed commit SHA for pushed_fixes, or current HEAD for no_findings/e
 REVIEWER: <cr, bugbot, or greptile>
 OUTCOME: <pushed_fixes|no_findings|exhaustion|blocked>
 FILES_CHANGED: <comma-separated file paths, empty if none>
+VERDICTS_POSTED: <N/M — replies carrying a review-verdict marker / replies posted to bot findings; 0/0 if none>
 NEXT_PHASE: <B for pushed_fixes or no_findings, A for exhaustion>
 HANDOFF_FILE: ~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json
 ```

@@ -884,6 +884,7 @@ Body:
    REVIEWER: cr
    OUTCOME: {pushed_fixes|no_findings|exhaustion}
    FILES_CHANGED: {comma-separated file paths}
+   VERDICTS_POSTED: {N/M — marked replies / replies posted to bot findings; 0/0 if none}
    NEXT_PHASE: B
    HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}
    ```
@@ -1563,7 +1564,7 @@ If missing, reconstruct state from GitHub API.
    - `self_review`: perform/report self-review fallback; merge remains blocked.
 6. Check commit status for CR completion signal and rate-limit fast-path.
 7. If CR rate-limited or silent past the gate threshold, do NOT hand-roll fallback timing — use the escalation gate verdict above. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait. Rate-limit signals override the timeout and are handled by `escalate-review.sh`.
-8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread, resolve threads via GraphQL.
+8. Process findings: fix all valid ones in ONE commit, push once, reply to every thread through `reply-thread.sh` with the mandatory verdict flags (`--verdict fixed|deferred|declined --defect real|not` — issue #1842; rule and mapping: `review-stack-audit.md` §The marker), resolve threads via GraphQL.
 9. Merge gate:
    - CR-only: 1 explicit CR APPROVED review on the current HEAD SHA (commit_id must match HEAD; acks / check-run completion alone do NOT count).
    - Greptile: severity-gated (no P0 after fix = merge-ready).
@@ -1589,6 +1590,7 @@ If missing, reconstruct state from GitHub API.
     REVIEWER: {cr|bugbot|greptile|self_review}
     OUTCOME: {clean|fixes_pushed|merge_ready|blocked_self_review|exhaustion}
     FILES_CHANGED: {files changed in this phase}
+    VERDICTS_POSTED: {N/M — marked replies / replies posted to bot findings; 0/0 if none}
     NEXT_PHASE: {C|B}
     HANDOFF_FILE: ~/.claude/handoffs/{owner}/{repo}/pr-{PR_NUMBER}-handoff.json  # resolve with: handoff-state.sh --owner-repo owner/repo --path {PR_NUMBER}
     ```

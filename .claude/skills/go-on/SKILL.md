@@ -846,9 +846,13 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      ```bash
      # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author)
+     # $VERDICT: fixed | deferred | declined; $DEFECT: real | not — mandatory (issue #1842)
      "$REPLY_THREAD_SH" <comment_id> --reviewer "$REVIEWER" \
-       --body "Fixed in \`$SHA\`: <what changed>" --pr N
+       --body "Fixed in \`$SHA\`: <what changed>" --pr N \
+       --verdict "$VERDICT" --defect "$DEFECT"
      ```
+
+     The verdict flags stamp the `review-verdict` marker the review-cost ledger reads. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `not` for style, duplication, or a reviewer misreading. Mapping: `review-stack-audit.md` §The marker.
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 

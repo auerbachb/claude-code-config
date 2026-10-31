@@ -12,6 +12,7 @@ HEAD_SHA: abc1234
 REVIEWER: cr
 OUTCOME: pushed_fixes
 FILES_CHANGED: src/foo.ts, src/bar.ts
+VERDICTS_POSTED: 3/3
 NEXT_PHASE: B
 HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 ```
@@ -26,6 +27,7 @@ HANDOFF_FILE: ~/.claude/handoffs/pr-618-handoff.json
 | `REVIEWER` | `cr`, `bugbot`, `greptile`, or `none` for non-phase agents | Which reviewer owns this PR |
 | `OUTCOME` | see below | What happened |
 | `FILES_CHANGED` | comma-separated paths | Files modified (empty string if none) |
+| `VERDICTS_POSTED` | `N/M` | (Phase A and Phase B only) review-thread replies this phase posted carrying a `review-verdict` marker (`N`) over replies it posted to bot findings (`M`); `0/0` when it posted none. `N < M` means a reply skipped the mandatory `--verdict`/`--defect` flags (issue #1842; `review-stack-audit.md` §The marker). Omit for Phase C, `pm-worker`, and `researcher`. |
 | `NEXT_PHASE` | `B`, `C`, `none` | What parent should launch next |
 | `HANDOFF_FILE` | path | Handoff file path |
 | `FIXPR_WAIT_ITERATIONS` | integer | (when the phase ran `/fixpr`) wait-loop iterations executed — issue #454 |

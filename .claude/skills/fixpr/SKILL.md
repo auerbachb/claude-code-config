@@ -520,9 +520,13 @@ Post the reply via the shared helper — it handles inline-first, PR-comment-fal
 
 ```bash
 # $REVIEWER: cr | bugbot | greptile (from the audit classification)
+# $VERDICT / $DEFECT: per entry, from the mapping below (mandatory — issue #1842)
 "$REPLY_THREAD_SH" "$DBID" --reviewer "$REVIEWER" \
-  --body "$REPLY" --pr "$PR_NUMBER"
+  --body "$REPLY" --pr "$PR_NUMBER" \
+  --verdict "$VERDICT" --defect "$DEFECT"
 ```
+
+**`--verdict` and `--defect` are mandatory on every reply** — they stamp the hidden `<!-- review-verdict: … -->` marker the review-cost ledger reads, and only the marker can record `defect=real`. Set them per entry: **fix** and **already-fixed** → `--verdict fixed`; **decline-high-confidence**, **surface-low-confidence**, and **outdated** → `--verdict declined` (usually `--defect not`); a finding deferred to a follow-up issue → `--verdict deferred`. `--defect real` only when the finding named a behaviour the code would actually have gotten wrong; `--defect not` for style, duplication, or a reviewer misreading. Leave `--agent` at its default. Rationale and the mandate's landing date: `.claude/reference/review-stack-audit.md` §The marker.
 
 The script strips any `@greptileai` tokens from the body in greptile mode and any `@cursor` tokens in bugbot mode — so even a stray mention in `$REPLY` cannot trigger a paid Greptile re-review ($0.50–$1.00). `@greptileai` is reserved exclusively for intentionally requesting a new review. See `reply-thread.sh --help` for the full exit-code contract.
 

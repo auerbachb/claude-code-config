@@ -32,6 +32,12 @@
 #   unchanged: still "write the bundle to a tempfile, print only the path".
 #   Rationale and the full measurement: .claude/reference/compact-result-contract.md
 #
+# unmarked_replies (issue #1842): top-level integer - User-account inline
+#   replies to a review-bot thread that carry no `review-verdict` marker line.
+#   ADVISORY ONLY: never a merge blocker, never a finding. It is a proxy (a human
+#   on the agent's account counts; PR-level fallback replies are not counted).
+#   Contract: lib/pr-state-unmarked-replies.jq; .claude/reference/review-stack-audit.md.
+#
 # Check-run projection (issue #956): entries in check_runs.all, .failing_runs and
 #   .in_progress_runs each carry `app: {slug, id}` — the GitHub App that published
 #   the run. A check NAME identifies nothing on its own (any app may publish a
@@ -341,7 +347,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_STATE_CR_SPLIT_JQ="$SCRIPT_DIR/lib/pr-state-cr-split.jq"
 PR_STATE_CLASSIFY_JQ="$SCRIPT_DIR/lib/pr-state-classify.jq"
-for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ"; do
+PR_STATE_UNMARKED_JQ="$SCRIPT_DIR/lib/pr-state-unmarked-replies.jq"
+for required_filter in "$PR_STATE_CR_SPLIT_JQ" "$PR_STATE_CLASSIFY_JQ" "$PR_STATE_UNMARKED_JQ"; do
   if [[ ! -f "$required_filter" || ! -r "$required_filter" ]]; then
     echo "ERROR: required pr-state jq filter not readable: $required_filter" >&2
     exit 5
@@ -546,6 +553,22 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
                                created_at, updated_at, url, html_url, author_association}]")
 
 # ----------------------------------------------------------------------
+# 5b. Advisory unmarked-reply count (issue #1842)
+#    User-account inline replies to a review-bot thread whose body carries no
+#    `<!-- review-verdict: ... -->` marker line. ADVISORY ONLY - nothing gates on
+#    it (merge-gate.sh never reads it; /wrap Step 1.2 only prints it). A proxy:
+#    a human typing on the agent's account counts, and PR-level fallback replies
+#    are not inline, so they are never counted (issue #1829). Computed from the
+#    full inline inventory, independent of --since and of thread resolution.
+#    Contract: lib/pr-state-unmarked-replies.jq.
+# ----------------------------------------------------------------------
+UNMARKED_REPLIES=$(jq -f "$PR_STATE_UNMARKED_JQ" <<<"$INLINE")
+if ! [[ "$UNMARKED_REPLIES" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: unmarked-replies filter produced a non-integer: '$UNMARKED_REPLIES'" >&2
+  exit 5
+fi
+
+# ----------------------------------------------------------------------
 # 6. New-since-baseline classification (only when --since given)
 #    The canonical jq program and its load-bearing branch-order rationale live
 #    in lib/pr-state-classify.jq. fixpr/SKILL.md Step 5b documents the contract.
@@ -586,6 +609,7 @@ jq -n \
   --argjson inline "$INLINE" \
   --argjson conversation "$CONVO" \
   --argjson new_since "$NEW_SINCE" \
+  --argjson unmarked_replies "$UNMARKED_REPLIES" \
   '{
     schema_version: $schema,
     pr: {
@@ -615,6 +639,7 @@ jq -n \
       conversation: $conversation
     },
     new_since_baseline: $new_since,
+    unmarked_replies: $unmarked_replies,
     merge_state: {
       mergeable: $mergeable,
       mergeStateStatus: $merge_state,
