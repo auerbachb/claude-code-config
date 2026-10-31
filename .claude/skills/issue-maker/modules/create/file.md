@@ -53,19 +53,46 @@ EOF
   while IFS= read -r l; do
     if [ -n "$l" ]; then LABEL_ARGS+=(--label "$l"); fi
   done <<< "$ACCEPTED_LABELS"
+  ATTEMPT_STARTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   FILED=$("$ISSUE_FILE" --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" \
     ${LABEL_ARGS[@]+"${LABEL_ARGS[@]}"} --json) || FILE_RC=$?
-  rm -f "$BODY_FILE"
   if [ "$FILE_RC" -eq 0 ]; then
     ISSUE_URL=$(printf '%s' "$FILED" | jq -r '.url')
     ISSUE_NUMBER=$(printf '%s' "$FILED" | jq -r '.number')
     # The labels actually applied, so Step 9 logs what the issue carries.
     ACCEPTED_LABELS=$(printf '%s' "$FILED" | jq -r '.labels[]')
+  elif [ "$FILE_RC" -eq 4 ]; then
+    # A dropped response can follow a successful GitHub create. Reconcile only
+    # an exact title/body match created during this attempt; never retry blindly.
+    if CANDIDATES=$(gh issue list --repo "$REPO" --state all --search "in:title $TITLE" \
+      --limit 100 --json number,url,title,body,createdAt,labels); then
+      MATCHES=$(printf '%s' "$CANDIDATES" | jq -c --arg repo "$REPO" --arg title "$TITLE" \
+        --arg body "$(cat "$BODY_FILE")" --arg started "$ATTEMPT_STARTED_AT" '
+        [.[] | select(.title == $title and .body == $body and (.createdAt // "") >= $started)
+          | select((.url | split("/")[-4:-2]) == ($repo | split("/"))
+            and (.url | split("/")[-1]) == (.number | tostring))]') || MATCHES="[]"
+      MATCH_COUNT=$(printf '%s' "$MATCHES" | jq 'length' 2>/dev/null) || MATCH_COUNT=0
+      if [ "$MATCH_COUNT" -eq 1 ]; then
+        MATCH=$(printf '%s' "$MATCHES" | jq -c '.[0]')
+        ISSUE_URL=$(printf '%s' "$MATCH" | jq -r '.url')
+        ISSUE_NUMBER=$(printf '%s' "$MATCH" | jq -r '.number')
+        ACCEPTED_LABELS=$(printf '%s' "$MATCH" | jq -r '.labels[]?.name')
+        FILE_RC=0
+        echo "WARN: issue-file.sh lost its create response; recovered exact matching issue #$ISSUE_NUMBER and will record its receipt" >&2
+      else
+        FILE_RC=6
+        echo "ERROR: create response was uncertain and recent issues contained $MATCH_COUNT exact matches; do not retry or log until reconciled" >&2
+      fi
+    else
+      FILE_RC=6
+      echo "ERROR: create response was uncertain and the repository could not be checked; do not retry or log until reconciled" >&2
+    fi
   fi
+  rm -f "$BODY_FILE"
 fi
 echo "FILE_RC=$FILE_RC"
 ```
 
-**`FILE_RC` non-zero → this issue was not filed.** Report `issue-file.sh`'s stderr lines and the exit code, write **no** log row (Step 9), and print no URL for it. Exit 5 means the local helper is unavailable and no GitHub write was attempted; repair installation before retrying. Exit 3 means nothing reached GitHub: fix the title or body it named and run the block again. Exit 4 means `gh` failed, and the issue may have landed anyway (a lost response after the write): check the repo's newest issues before filing again, so a retry never files a duplicate. A label it dropped is not a failure — name it in the decision points (Step 9a).
+**`FILE_RC` non-zero blocks the next phase.** For exit 3, nothing reached GitHub: fix the title/body and rerun after its gates. Exit 5 means the local helper is unavailable and no GitHub write was attempted; repair installation before retrying. The issue-file helper's exit 4 is reconciled above: a unique exact title/body match created during this attempt supplies the verified number/URL and continues normally; no match, multiple matches, or an unreadable repository becomes `FILE_RC=6`, with no log row, no URL, and no retry until the uncertain result is reconciled. A label it dropped is not a failure — name it in the decision points (Step 9a).
 
 ---

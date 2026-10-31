@@ -12,7 +12,10 @@ IS_INCREMENT=true
 CHAIN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())') || exit 1
 POSITION=1
 set_log '.active_chain = {chain_id:$id, total:$total, repository:$repo}' \
-  --arg id "$CHAIN_ID" --argjson total "$TOTAL" --arg repo "$REPO"
+  --arg id "$CHAIN_ID" --argjson total "$TOTAL" --arg repo "$REPO" || {
+  echo "ERROR: could not persist the active chain; do not run dedup or file an increment" >&2
+  exit 1
+}
 ```
 
 Keep that identity for every member and increment `POSITION` after each confirmed filing. After all `TOTAL` members are recorded, clear `.active_chain`; the rows retain their chain objects for retraction/recovery. For a genuinely new standalone ask, reset `IS_INCREMENT=false`, `CHAIN_ID=""`, and `CHAIN_JSON=null` before drafting so a prior chain cannot leak into it. A restarted active chain restores its identity instead of resetting it.

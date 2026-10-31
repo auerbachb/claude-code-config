@@ -61,6 +61,7 @@ trap 'rm -rf "$TMP"' EXIT
 # HOME keeps the test's calls out of the developer's real log.
 export HOME="$TMP/test-home"
 mkdir -p "$HOME/.claude"
+mkdir -p "$TMP/bin"
 
 # --- the gh stub -----------------------------------------------------------
 # STUB_MODE: ok (default) | create-fail | wrong-repo | labels-fail
@@ -74,8 +75,15 @@ case "$1 $2" in
     printf '[{"name":"enhancement"},{"name":"Skill"},{"name":"blocked"},{"name":"docs"}]\n'
     ;;
   "issue create")
+    # Preserve the attempted body for the lost-response fixture below.
+    prev=""
+    for a in "$@"; do
+      if [ "$prev" = "--body-file" ]; then cp "$a" "$STUB_BODY"; fi
+      prev="$a"
+    done
     case "${STUB_MODE:-ok}" in
       create-fail) echo "GraphQL: Could not resolve to a Repository" >&2; exit 1 ;;
+      create-uncertain) echo "connection dropped after create" >&2; exit 1 ;;
       wrong-repo) echo "https://github.com/someone/else/issues/9" ;;
       *) echo "Creating issue in acme/widgets"; echo "https://github.com/acme/widgets/issues/4242" ;;
     esac
@@ -87,10 +95,20 @@ case "$1 $2" in
       prev="$a"
     done
     ;;
+  "issue list")
+    if [ "${STUB_MODE:-ok}" = create-uncertain ]; then
+      jq -nc --arg body "$(cat "$STUB_BODY")" --arg created "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+        '[{number:4242,url:"https://github.com/acme/widgets/issues/4242",title:"An idea",body:$body,createdAt:$created,labels:[{name:"Skill"}]}]'
+    else
+      printf '[]\n'
+    fi
+    ;;
   *) echo "gh-stub: unexpected: $*" >&2; exit 64 ;;
 esac
 EOF
 chmod +x "$GH_STUB"
+ln -s "$GH_STUB" "$TMP/bin/gh"
+export PATH="$TMP/bin:$PATH"
 export STUB_LOG="$TMP/calls.log" STUB_BODY="$TMP/sent-body.md" ISSUE_FILE_GH="$GH_STUB"
 
 # run ARGS... — sets OUT, ERR, RC; the stub log starts empty each time.
@@ -192,7 +210,7 @@ check_eq "an extra section between the seven files" "0" "$RC"
 # --- 1c. gh failures (exit 4, no URL) -------------------------------------------
 STUB_MODE=create-fail run --repo acme/widgets --title T --body-file "$VALID"
 check_eq "create fails: exit 4" "4" "$RC"
-check_eq "create fails: nothing on stdout" "" "$OUT"
+check_eq "create fails: no create URL" "" "$OUT"
 check_contains "create fails: gh's message is named" "Could not resolve to a Repository" "$ERR"
 check_contains "create fails: says to check before refiling" "check acme/widgets's newest issues before filing again" "$ERR"
 
@@ -271,8 +289,13 @@ check_contains "create block: ACCEPTED_LABELS becomes what was applied" "LABELS=
 check_not_contains "create block: a dropped label is not logged" "nope" "$(printf '%s\n' "$OUT" | grep '^LABELS=')"
 : > "$STUB_LOG"
 OUT=$(run_create create-fail)
-check_contains "create block, gh fails: FILE_RC=4" "FILE_RC=4" "$OUT"
+check_contains "create block, ambiguous remote result: FILE_RC=6" "FILE_RC=6" "$OUT"
 check_eq "create block, gh fails: ISSUE_URL empty" "URL=" "$(printf '%s\n' "$OUT" | grep '^URL=')"
+OUT=$(run_create create-uncertain)
+check_contains "create block, exact lost-response match recovers: FILE_RC=0" "FILE_RC=0" "$OUT"
+check_contains "create block, exact lost-response match recovers URL" "URL=https://github.com/acme/widgets/issues/4242" "$OUT"
+check_contains "create block, recovered label metadata" "LABELS=Skill" "$OUT"
+check_contains "create block, explains exact recovery" "recovered exact matching issue #4242" "$(cat "$TMP/create.err")"
 OUT=$(cd "$TMP" && DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" HOME="$TMP/empty-home" REPO=acme/widgets TITLE=x ACCEPTED_LABELS="" bash -c '. ./create-block.sh' 2>&1)
 check_contains "create block, script missing: says so" "ERROR: issue-file.sh not found (checked all three paths)" "$OUT"
 check_contains "create block, script missing: FILE_RC=5" "FILE_RC=5" "$OUT"

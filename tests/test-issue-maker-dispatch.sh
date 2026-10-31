@@ -165,6 +165,8 @@ assert_eq 0 "$(grep -q 'do not retry blindly' .claude/skills/issue-maker/modules
 assert_eq 0 "$(grep -q 'log state was not changed' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract uncertainty leaves the log unchanged'
 assert_eq 0 "$(grep -q 'Resolve `active-work-cap.sh`' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'single and batch postfile share the cap census procedure'
 assert_eq 0 "$(grep -q 'only on explicit request' .claude/skills/issue-maker/modules/batch.md; echo $?)" 'batch handoff wording keeps inline as the default'
+assert_eq "$ROOT/.claude/skills/issue-maker/modules/session-mode.md" "$("$DISPATCH" session mode)" 'mode-switch requests dispatch to the dedicated mode module'
+assert_eq 0 "$(grep -q 'switch to rapid-fire mode.*session:mode' .claude/skills/issue-maker/SKILL.md; echo $?)" 'entry classifies explicit mode switches'
 
 
 set +e
@@ -238,6 +240,14 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]==before and rows[1]['origin']=='update' and rows[1]['title']=='Fetched title' and rows[1]['status']=='closed',rows
     print('ok workflow: update fetch assigns metadata and backfills the right repo without creating offered work')
+    # A mode switch is a persisted session operation, not an initial-argument re-seed.
+    seed([]); data=json.loads(log.read_text()); data['mode']='default'; log.write_text(json.dumps(data))
+    mode_block=blocks('modules/session-mode.md')[0]
+    r=run(setup+'REQUESTED_MODE=rapid-fire\n'+mode_block+'\nprintf "%s" "$MODE"')
+    assert r.returncode==0 and r.stdout=='rapid-fire' and json.loads(log.read_text())['mode']=='rapid-fire',(r.stdout,r.stderr,log.read_text())
+    r=run(setup+'REQUESTED_MODE=default\n'+mode_block+'\nprintf "%s" "$MODE"')
+    assert r.returncode==0 and r.stdout=='default' and json.loads(log.read_text())['mode']=='default',(r.stdout,r.stderr,log.read_text())
+    print('ok workflow: explicit mode switches persist in the recovered session log')
     close=next(b for b in blocks('modules/retract.md') if 'if ! gh issue close' in b)
     for remote,view_rc,expected_rc,expected_status in [('OPEN',0,1,'open'),('',1,1,'open'),('CLOSED',0,0,'closed')]:
         seed([dict(row(42,origin='create'),chip_task_id='offer-original')]); before=log.read_bytes()
@@ -247,11 +257,17 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
         rows=json.loads(log.read_text())['issues']; assert rows[0]['status']==expected_status and rows[0]['chip_task_id']=='offer-original',rows
         if expected_rc: assert log.read_bytes()==before,'uncertain or failed close mutated state'
     print('ok workflow: failed/uncertain close leaves state byte-identical; verified lost response logs only closed status and retains cleanup token')
+    seed([row(42,origin='create',chain={'chain_id':'c','position':1,'total':2})])
+    data=json.loads(log.read_text()); data['active_chain']={'chain_id':'c','total':2,'repository':'owner/repo'}; log.write_text(json.dumps(data))
+    r=run(setup+'N=42\nCHAIN_ID=c\ngh() { return 0; }\n'+close)
+    data=json.loads(log.read_text()); assert r.returncode==0 and data['issues'][0]['status']=='closed' and data['active_chain'] is None,(r.stderr,data)
+    print('ok workflow: retracting the last filed member clears its cancelled active-chain recovery receipt')
     seed([row(42,origin='create',chain={'chain_id':'c','position':3,'total':4}),dict(row(42,origin='create',chain={'chain_id':'c','position':3,'total':4}),url='https://github.com/foreign/repo/issues/42')])
+    data=json.loads(log.read_text()); data['active_chain']={'chain_id':'c','total':4,'repository':'owner/repo'}; log.write_text(json.dumps(data))
     recut=next(b for b in blocks('modules/retract.md') if 'SURVIVOR_N' in b)
     r=run(setup+'SURVIVOR_N=42\nCHAIN_ID=c\nNEW_TITLE="Theme 2/3"\nNEW_POSITION=2\nNEW_TOTAL=3\n'+recut);assert r.returncode==0,r.stderr
-    rows=json.loads(log.read_text())['issues']; assert rows[0]['title']=='Theme 2/3' and rows[0]['chain']=={'chain_id':'c','position':2,'total':3} and rows[1]['chain']['position']==3,rows
-    print('ok workflow: re-cut updates survivor title and coordinates together with repository isolation')
+    data=json.loads(log.read_text()); rows=data['issues']; assert rows[0]['title']=='Theme 2/3' and rows[0]['chain']=={'chain_id':'c','position':2,'total':3} and rows[1]['chain']['position']==3 and data['active_chain']['total']==3,(rows,data)
+    print('ok workflow: re-cut updates survivor title, coordinates, and active plan total together')
     # First handoff emission after a declined inline offer has no token to reuse.
     seed([row(1,origin='create'),row(2,origin='update')])
     handoff_stamp=next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN=' in b)
@@ -274,6 +290,9 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     # A chain identity exists before dedup; recovery restores it without minting.
     seed([])
     init=blocks('modules/create/increment-draft.md')[0]
+    r=run('set +e\nTOTAL=2\nREPO=owner/repo\nset_log() { return 1; }\n'+init+'\nprintf AFTER')
+    assert r.returncode==1 and 'AFTER' not in r.stdout and 'could not persist the active chain' in r.stderr,(r.returncode,r.stdout,r.stderr)
+    print('ok workflow: failed active-chain receipt stops before dedup/file')
     r=run(setup+'TOTAL=2\n'+init+'\nprintf \'%s\' "$CHAIN_ID"'); assert r.returncode==0,r.stderr
     chain_id=r.stdout; assert json.loads(log.read_text())['active_chain']['chain_id']==chain_id
     r=run(setup+recovery+'\nprintf \'RESTORED=%s|%s|%s\' "$CHAIN_ID" "$TOTAL" "$POSITION"')

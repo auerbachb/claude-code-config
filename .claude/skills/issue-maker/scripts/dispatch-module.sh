@@ -29,6 +29,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 case "$operation:$phase" in
   session:state) relative='modules/session-state.md' ;;
+  session:mode) relative='modules/session-mode.md' ;;
   create:reflect) relative='modules/create/reflect-and-draft.md' ;;
   create:increment-draft) relative='modules/create/increment-draft.md' ;;
   create:dedup) relative='modules/create/dedup.md' ;;

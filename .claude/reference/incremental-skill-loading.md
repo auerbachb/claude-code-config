@@ -18,15 +18,15 @@ The executable trace fixtures record caller-selected module paths, nested refere
 
 | Representative context / phase trace | Bytes | Words |
 |---|---:|---:|
-| Initial capture setup | 24,180 | 3,444 |
-| Normal create (modules only) | 77,689 | 11,710 |
-| Normal create including nested references | 150,203 | 22,876 |
-| Chain/batch including nested references | 159,270 | 24,341 |
-| Update / recovery at update phase | 31,845 | 4,597 |
-| Ordinary retract | 34,505 | 4,994 |
-| On-request handoff after normal create | 213,943 | 32,468 |
+| Initial capture setup | 24,390 | 3,475 |
+| Normal create (modules only) | 79,621 | 11,947 |
+| Normal create including nested references | 152,135 | 23,113 |
+| Chain/batch including nested references | 161,312 | 24,600 |
+| Update / recovery at update phase | 32,055 | 4,628 |
+| Ordinary retract | 35,351 | 5,119 |
+| On-request handoff after normal create | 215,875 | 32,705 |
 | Comparable old create plus same nested references | 170,626 | 26,374 |
-| Export (entry, export module, bounded body/handoff excerpts, chip reference) | 74,872 | 11,235 |
+| Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,082 | 11,266 |
 
 Create phase order: entry → session → reflection/tier/estimate → dedup/resolution reference/duplicate policy → optional chain/link modules → file → postfile; the chip module/reference is reached only on explicit handoff request. Chain sizing reads the estimate before its independent time threshold decision. Update trace: entry → session → update. After compaction at update: entry → session → active update phase only; completed create phases stay unread. The create dependency preflight checks required paths without reading their contents, and missing modules block remote writes.
 
@@ -36,17 +36,18 @@ Setup is the initial capture row above. A restart adds that setup plus the activ
 
 | Path | Bytes | Words |
 |---|---:|---:|
-| `SKILL.md` | 7,721 | 1,082 |
+| `SKILL.md` | 7,931 | 1,113 |
 | `modules/batch.md` | 1,893 | 315 |
 | `modules/create/crossrefs.md` | 2,417 | 401 |
 | `modules/create/dedup.md` | 4,696 | 704 |
-| `modules/create/file.md` | 4,803 | 694 |
-| `modules/create/increment-draft.md` | 4,757 | 749 |
+| `modules/create/file.md` | 6,525 | 900 |
+| `modules/create/increment-draft.md` | 4,867 | 771 |
 | `modules/create/postfile.md` | 23,957 | 3,762 |
 | `modules/create/reflect-and-draft.md` | 20,053 | 3,106 |
 | `modules/handoff.md` | 7,853 | 1,178 |
 | `modules/portable-prompt.md` | 7,781 | 1,196 |
-| `modules/retract.md` | 10,325 | 1,550 |
+| `modules/retract.md` | 10,961 | 1,644 |
+| `modules/session-mode.md` | 1,279 | 188 |
 | `modules/session-state.md` | 16,459 | 2,362 |
 | `modules/update.md` | 7,665 | 1,153 |
 

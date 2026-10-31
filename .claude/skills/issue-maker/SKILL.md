@@ -35,6 +35,7 @@ When `spawn_task` emits an on-request chip (or a fallback block is printed), the
    - New issue description → `create:reflect`; explicit multi-issue input (`batch:` or list of distinct requests) → `create:reflect` plus `batch:chain`.
    - `/update #N`, `edit #N`, or equivalent → `update:edit`.
    - `close #N`, `retract #N`, or equivalent → `retract:close`.
+   - "switch to rapid-fire mode" or "switch to default mode" → `session:mode` after recovering the session log.
    - Explicit chip/handoff request or handoff replay → `offer:handoff`; tally, full issue-body reprint, inline-offer acceptance/decline/refresh → `report:status`. These operations file nothing.
    - `--export-prompt` → `export:prompt` only; it files nothing.
 2. For every capture-session operation except portable export, initialize or recover the session by reading `session:state` once per context. For portable export, do not enter capture mode.
@@ -64,6 +65,7 @@ MODULE=$(bash "$DISPATCHER" "$OPERATION" "$PHASE") || exit $?
 | Operation / phase | Module | Trigger |
 |---|---|---|
 | session / state | `modules/session-state.md` | Start or recover a capture session |
+| session / mode | `modules/session-mode.md` | Explicit switch between default and rapid-fire |
 | create / reflect | `modules/create/reflect-and-draft.md` | One new issue, before duplicate check |
 | create / increment-draft | `modules/create/increment-draft.md` | A sizing result requires an increment chain |
 | create / dedup | `modules/create/dedup.md` | Draft exists and duplicate screening is next |

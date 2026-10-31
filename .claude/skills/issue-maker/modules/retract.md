@@ -60,8 +60,14 @@ fi
 
 # Only remote confirmation authorizes a local status change. Retain the token
 # until offer/registry cleanup confirms success, so cleanup can be retried.
-set_log "$MINE_DEF"'(.issues[] | select(.number == ($n|tonumber) and same_repo) | .status) = "closed"' \
-  --arg n "$N" --arg repo "$REPO"
+set_log "$MINE_DEF"'(.issues[] | select(.number == ($n|tonumber) and same_repo) | .status) = "closed" |
+  if .active_chain.chain_id == $chain and .active_chain.repository == $repo
+     and ([.issues[] | mine | select(.chain.chain_id == $chain)] | length) == 0
+  then .active_chain = null else . end' \
+  --arg n "$N" --arg repo "$REPO" --arg chain "${CHAIN_ID:-}" || {
+  echo "ERROR: GitHub confirms the close, but the session log update failed; keep the checkpoint and retry local reconciliation" >&2
+  exit 1
+}
 ```
 
 ### Re-cut bookkeeping (only after confirmed remote edits)
@@ -72,9 +78,14 @@ For a re-cut, resolve/read `update:edit` and use its fetch → concrete diff →
 # SURVIVOR_N, NEW_TITLE, NEW_POSITION, NEW_TOTAL come from the confirmed re-cut plan.
 set_log "$MINE_DEF"'(.issues[] | select(same_repo and .number == ($n|tonumber)
   and .chain.chain_id == $chain)) |=
-  (.title = $title | .chain.position = $position | .chain.total = $total)' \
+  (.title = $title | .chain.position = $position | .chain.total = $total) |
+  if .active_chain.chain_id == $chain and .active_chain.repository == $repo
+  then .active_chain.total = $total else . end' \
   --arg repo "$REPO" --arg n "$SURVIVOR_N" --arg chain "$CHAIN_ID" \
-  --arg title "$NEW_TITLE" --argjson position "$NEW_POSITION" --argjson total "$NEW_TOTAL"
+  --arg title "$NEW_TITLE" --argjson position "$NEW_POSITION" --argjson total "$NEW_TOTAL" || {
+  echo "ERROR: remote edit is confirmed but re-cut bookkeeping failed; keep the checkpoint and retry reconciliation" >&2
+  exit 1
+}
 ```
 
 Recompute the plan from the log and confirmed remote titles/dependencies after a restart; do not renumber already completed survivors twice. Keep the re-cut checkpoint until every surviving row and issue agrees. A whole-chain retract closes/logs each member independently; on partial failure retain the unclosed members and resume those only. Refresh/withdraw the common offer once after all intended closes succeed, or report the partial result without implying the remainder was cancelled.
