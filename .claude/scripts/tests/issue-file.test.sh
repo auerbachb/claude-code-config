@@ -11,7 +11,7 @@
 #      call carries --repo and none carries --assignee; a gh failure and a URL
 #      for another repo exit 4 with nothing on stdout; --dry-run creates
 #      nothing; --template passes its own checks.
-#   2. The REAL `issue-maker-create` block from /issue-maker's SKILL.md
+#   2. The REAL `issue-maker-create` block from /issue-maker's create/file.md module
 #      (extracted by lib/skill-bash.sh), run with HOME pointing at a scratch
 #      tree whose skills-worktree holds this repo's issue-file.sh: it files
 #      through the script, refreshes ACCEPTED_LABELS from what was applied,
@@ -273,11 +273,19 @@ printf '%s\n' "$BLOCK" | awk -v tf="$VALID" '
   skip && /^_Captured via \/issue-maker\._$/ { skip = 0; done = 1; next }
   skip { next }
   { print }' > "$TMP/create-block.sh"
+# Each call starts a clean shell: runtime/install environment must not silently
+# satisfy a missing earlier-phase input. Both the extracted module and preferred
+# helper are pinned to this checkout, never the developer's installed skill.
 run_create() {
   (
     cd "$TMP" || exit 1
-    DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" HOME="$FAKE_HOME" REPO=acme/widgets TITLE="An idea" ACCEPTED_LABELS=$'skill\nnope' STUB_MODE="$1" \
-      bash -c '. ./create-block.sh; printf "URL=%s\nNUM=%s\nLABELS=%s\n" "$ISSUE_URL" "$ISSUE_NUMBER" "$(printf "%s" "$ACCEPTED_LABELS" | tr "\n" ",")"'
+    env -i PATH="$PATH" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+      DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" \
+      REPO=acme/widgets TITLE="An idea" ACCEPTED_LABELS=$'skill\nnope' \
+      ISSUE_TIER=Standard DELIVERS="One independently testable change" EST_BOUND=20 \
+      IS_INCREMENT=false STUB_MODE="$1" STUB_LOG="$STUB_LOG" STUB_BODY="$STUB_BODY" \
+      ISSUE_FILE_GH="$GH_STUB" "${@:2}" \
+      bash --noprofile --norc -c '. ./create-block.sh; printf "URL=%s\nNUM=%s\nLABELS=%s\n" "$ISSUE_URL" "$ISSUE_NUMBER" "$(printf "%s" "$ACCEPTED_LABELS" | tr "\n" ",")"'
   ) 2>"$TMP/create.err"
 }
 : > "$STUB_LOG"
@@ -291,14 +299,39 @@ check_not_contains "create block: a dropped label is not logged" "nope" "$(print
 OUT=$(run_create create-fail)
 check_contains "create block, ambiguous remote result: FILE_RC=6" "FILE_RC=6" "$OUT"
 check_eq "create block, gh fails: ISSUE_URL empty" "URL=" "$(printf '%s\n' "$OUT" | grep '^URL=')"
+check_not_contains "create block, uncertain failure: no confirmed receipt" 'CREATE_RECEIPT=' "$OUT"
 OUT=$(run_create create-uncertain)
 check_contains "create block, exact lost-response match recovers: FILE_RC=0" "FILE_RC=0" "$OUT"
 check_contains "create block, exact lost-response match recovers URL" "URL=https://github.com/acme/widgets/issues/4242" "$OUT"
 check_contains "create block, recovered label metadata" "LABELS=Skill" "$OUT"
 check_contains "create block, explains exact recovery" "recovered exact matching issue #4242" "$(cat "$TMP/create.err")"
-OUT=$(cd "$TMP" && DISPATCHER="$REPO_ROOT/.claude/skills/issue-maker/scripts/dispatch-module.sh" HOME="$TMP/empty-home" REPO=acme/widgets TITLE=x ACCEPTED_LABELS="" bash -c '. ./create-block.sh' 2>&1)
-check_contains "create block, script missing: says so" "ERROR: issue-file.sh not found (checked all three paths)" "$OUT"
+# Receipt survives the tool-process boundary with the complete drafting context.
+OUT=$(run_create ok)
+RECEIPT=$(printf '%s\n' "$OUT" | sed -n 's/^CREATE_RECEIPT=//p')
+check_eq "create receipt freezes standalone scope and repo" \
+  '["acme/widgets","Standard","One independently testable change",20,null,4242,["Skill"]]' \
+  "$(printf '%s' "$RECEIPT" | jq -c '[.repo,.tier,.delivers,.bound,.chain,.number,.labels]')"
+OUT=$(run_create ok IS_INCREMENT=true CHAIN_ID=chain-fixture POSITION=2 TOTAL=3)
+RECEIPT=$(printf '%s\n' "$OUT" | sed -n 's/^CREATE_RECEIPT=//p')
+check_eq "create receipt freezes increment identity" \
+  '{"chain_id":"chain-fixture","position":2,"total":3}' \
+  "$(printf '%s' "$RECEIPT" | jq -c '.chain')"
+# Missing earlier-phase fields must abort before any external action, regardless
+# of what a developer happens to export in the invoking shell.
+for field in ISSUE_TIER DELIVERS EST_BOUND; do
+  : > "$STUB_LOG"
+  CREATE_RC=0
+  OUT=$(run_create ok "$field=") || CREATE_RC=$?
+  if [ "$CREATE_RC" -ne 0 ]; then pass "create block: missing $field fails"; else fail "create block: missing $field accepted"; fi
+  check_eq "create block: missing $field sends no gh call" "" "$(cat "$STUB_LOG")"
+  check_not_contains "create block: missing $field emits no receipt" 'CREATE_RECEIPT=' "$OUT"
+done
+: > "$STUB_LOG"
+OUT=$(run_create ok HOME="$TMP/empty-home")
+check_contains "create block, script missing: says so" "ERROR: issue-file.sh not found (checked all three paths)" "$(cat "$TMP/create.err")"
 check_contains "create block, script missing: FILE_RC=5" "FILE_RC=5" "$OUT"
+check_eq "create block, script missing: no gh call" "" "$(cat "$STUB_LOG")"
+check_not_contains "create block, script missing: no receipt" 'CREATE_RECEIPT=' "$OUT"
 
 # --- 3. the shared entry (AC 4.1) -----------------------------------------------
 if [ -f "$ONE_SHOT" ]; then pass "references/one-shot-filing.md exists"; else fail "references/one-shot-filing.md is missing"; fi
