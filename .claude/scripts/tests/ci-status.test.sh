@@ -104,11 +104,33 @@ for concl in failure timed_out action_required startup_failure stale; do
   check_eq 3 "$RC" "blocking conclusion '$concl' on the newest run still exits 3"
 done
 
-# Non-blocking conclusions stay non-blocking.
+# Non-blocking conclusions stay non-blocking. `cancelled` here is the preserved
+# policy for checks that are NOT required (issues #211, #1361): this script counts
+# every check-run and has no notion of required contexts. A cancelled REQUIRED
+# check is held by merge-gate.sh instead — merge-gate-required-cancelled.test.sh
+# (issue #1846) — so do not tighten this loop to "fix" that case.
 for concl in success neutral skipped cancelled; do
   run_stdin "$(bundle "$(cr 1 test failure 100)" "$(cr 2 test "$concl" 200)")"
   check_eq 0 "$RC" "non-blocking conclusion '$concl' on the newest run exits 0"
 done
+
+# Fail closed (issue #1846): the non-blocking set is a whitelist, so a conclusion
+# nobody has listed — one GitHub adds later — blocks instead of passing silently.
+run_stdin "$(bundle "$(cr 1 test success 100)" "$(cr 2 test brand_new_conclusion 200)")"
+check_eq 3 "$RC" "unknown conclusion on the newest run: exit 3, not a silent pass"
+check_eq 1 "$(field .failing)" "unknown conclusion: counted failing"
+check_eq 0 "$(field .passing)" "unknown conclusion: not counted passing"
+check_eq "brand_new_conclusion" "$(field '.blocking[0].conclusion')" "unknown conclusion: named in blocking"
+
+# A run marked completed that carries no conclusion cannot be read as a pass either.
+run_stdin "$(bundle "$(cr 1 test null 100 gha completed)")"
+check_eq 3 "$RC" "completed with no conclusion: exit 3"
+check_eq "none" "$(field '.blocking[0].conclusion')" "completed with no conclusion: reported as 'none'"
+
+# ...while a run that has not completed is still WAIT, never a failure.
+run_stdin "$(bundle "$(cr 1 test null 100 gha in_progress)")"
+check_eq 1 "$RC" "in-progress run with no conclusion: exit 1 (WAIT), unchanged"
+check_eq 0 "$(field .failing)" "in-progress run with no conclusion: not failing"
 
 # --------------------------------------------------------------------------
 # 5. Same name from two different apps must not collapse into each other.

@@ -6,6 +6,17 @@
 # "all check-runs must be status=completed AND none in the blocking conclusion set".
 # Blocking conclusions: failure, timed_out, action_required, startup_failure, stale.
 # Non-blocking: success, neutral, skipped, cancelled.
+# Fail closed (issue #1846): a completed run is non-blocking ONLY with one of the four
+# conclusions above. A completed run with a missing conclusion, or one GitHub adds later,
+# counts as blocking (reported as `none` when missing) instead of silently passing.
+#
+# `cancelled` is non-blocking HERE because this script counts every check-run, required
+# or not, and a superseded or concurrency-cancelled optional run must not hold a merge
+# (issues #211, #1361). That policy does NOT extend to a branch-protection REQUIRED
+# context: this script has no notion of required contexts, and merge-gate.sh evaluates
+# those separately, accepting only success, neutral, or skipped. So a cancelled required
+# check is counted as passing here yet holds the merge there; do not read an exit 0 from
+# this script as "every required check passed" — run merge-gate.sh for that.
 #
 # Check-runs are deduped through check-runs-dedup.sh before classification: per
 # (app, check name) only runs from that check's newest check suite are counted, so a
@@ -283,7 +294,11 @@ fi
 # checks have even started. Surface total==0 as in_progress in the JSON AND
 # via exit 1, not just implicitly via exit 0.
 SPLIT=$(echo "$RUNS_JSON" | jq -c --arg head_sha "$HEAD_SHA" '
-  def is_blocking: . == "failure" or . == "timed_out" or . == "action_required" or . == "startup_failure" or . == "stale";
+  # Whitelist of what does NOT block (issue #1846), so an unknown or missing
+  # conclusion fails closed. The explicit blocking set in the file header is a subset
+  # of what this rejects; it documents the known values and is not the test.
+  def non_blocking: . == "success" or . == "neutral" or . == "skipped" or . == "cancelled";
+  def is_blocking: non_blocking | not;
   . as $runs
   | ([$runs[] | select(.status != "completed")]) as $incomplete
   | {
@@ -292,7 +307,7 @@ SPLIT=$(echo "$RUNS_JSON" | jq -c --arg head_sha "$HEAD_SHA" '
     passing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking | not))] | length),
     failing: ([$runs[] | select(.status == "completed" and (.conclusion | is_blocking))] | length),
     in_progress: (($incomplete | length) + (if ($runs | length) == 0 then 1 else 0 end)),
-    blocking: [$runs[] | select(.status == "completed" and (.conclusion | is_blocking)) | {id, name, conclusion}],
+    blocking: [$runs[] | select(.status == "completed" and (.conclusion | is_blocking)) | {id, name, conclusion: (.conclusion // "none")}],
     in_progress_runs: (($incomplete | map({id, name, status})) + (if ($runs | length) == 0 then [{id: null, name: "(no check-runs reported yet)", status: "queued"}] else [] end))
   }
 ' 2>/dev/null)
