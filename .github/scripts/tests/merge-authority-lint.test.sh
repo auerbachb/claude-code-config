@@ -17,6 +17,8 @@ make_fixture() {
   mkdir -p "$dir/.claude/reference" \
     "$dir/.claude/skills"/{pm,prompt,start-issue,issue-maker,wave,subagent}
   cp "$REPO_ROOT/.claude/reference/chip-launching.md" "$dir/.claude/reference/"
+  mkdir -p "$dir/.claude/skills/issue-maker/modules"
+  cp "$REPO_ROOT/.claude/skills/issue-maker/modules/handoff.md" "$dir/.claude/skills/issue-maker/modules/"
   cp "$REPO_ROOT/CLAUDE.md" "$dir/CLAUDE.md"
   for skill in pm prompt start-issue issue-maker wave subagent; do
     cp "$REPO_ROOT/.claude/skills/${skill}/SKILL.md" "$dir/.claude/skills/${skill}/"
@@ -123,7 +125,7 @@ expect "missing merge-authority bullet in prompt emitter fails" 1 \
 
 expect "missing merge-authority bullet in issue-maker emitter fails" 1 \
   'issue-maker merge-authority bullet' \
-  sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/issue-maker/SKILL.md
+  sed -i.bak '/Merging is automatic and yours to do/d' .claude/skills/issue-maker/modules/handoff.md
 
 expect "truncated canonical bullet fails (verbatim, not prefix)" 1 \
   'pm merge-authority bullet' \
