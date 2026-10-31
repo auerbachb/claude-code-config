@@ -177,3 +177,107 @@ print('PASS: relative child source identities stay distinct and a bounded cursor
 PY
 
 echo "PASS: contention spools durably, report exposes pending count, and duplicate drain is idempotent"
+
+# Exercise production helpers with deterministic byte/time limits and process
+# restarts. No wall-clock race is needed to prove durable progress or fairness.
+python3 - "$ROOT" "$TMP/bounded-queues" <<'PY'
+import hashlib,importlib.util,json,os,pathlib,sys
+root=pathlib.Path(sys.argv[1]);base=pathlib.Path(sys.argv[2]);base.mkdir()
+module_path=root/'.claude/scripts/lib/spend-telemetry-maintenance.py'
+def load():
+    spec=importlib.util.spec_from_file_location('maintenance',module_path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    module.LOG_SCAN_BYTES=64
+    return module
+log=base/'telemetry.log';queue=base/'spend-telemetry-pending';queue.mkdir()
+log.write_bytes(b''.join(('existing-row-%04d\n'%i).encode() for i in range(80)))
+spool=queue/'pending-target.tsv';spool.write_bytes(b'new-queued-row\n')
+# Every refresh is smaller than the log. Reload the module as a new CLI process.
+offsets=[]
+for attempt in range(40):
+    m=load();result=m.drain_spool(str(log),str(queue))
+    if not spool.exists():break
+    saved=json.loads((queue/'.drain-scan.json').read_text());offsets.append(saved['offset'])
+    # An independent hook's later append must not reset the checkpoint.
+    if attempt==1:
+        with log.open('ab') as output:output.write(b'concurrent-hook-row\n')
+assert result[:2]==(1,0) and len(offsets)>2 and offsets==sorted(set(offsets))
+assert log.read_bytes().count(b'new-queued-row\n')==1
+assert (queue/'.drain-scan.json').stat().st_mode & 0o777==0o600
+assert queue.stat().st_mode & 0o777==0o700
+# Crash AFTER durable append, BEFORE unlink. It must resume from the saved
+# pre-append EOF and recognize the just-appended tail, rather than duplicate it.
+spool.write_bytes(b'crash-tail-row\n');m=load();m.LOG_SCAN_BYTES=10**6
+real_fsync=m.os.fsync;log_inode=log.stat().st_ino
+def crash_on_log_sync(fd):
+    real_fsync(fd)
+    if os.fstat(fd).st_ino==log_inode:raise RuntimeError('simulated crash after log fsync')
+m.os.fsync=crash_on_log_sync
+try:
+    try:m.drain_spool(str(log),str(queue));assert False,'crash not reached'
+    except RuntimeError:pass
+finally:m.os.fsync=real_fsync
+saved=json.loads((queue/'.drain-scan.json').read_text())
+assert saved['offset'] < log.stat().st_size and spool.exists()
+assert load().drain_spool(str(log),str(queue))[:2]==(0,1)
+assert log.read_bytes().count(b'crash-tail-row\n')==1
+# Rotation/truncation invalidate both progress AND previously matched rows.
+for rotate in (True,False):
+    raw=b'matched-before-replacement\n';spool.write_bytes(raw)
+    log.write_bytes(raw+b'x'*10+b'\n'+b''.join(b'long-old-row\n' for _ in range(40)))
+    m=load();assert m.drain_spool(str(log),str(queue))[3]=='log_scan_limit'
+    if rotate:
+        log.rename(base/'old-rotation.log');log.write_bytes(b'replacement\n')
+    else:log.write_bytes(b'truncated\n')
+    assert load().drain_spool(str(log),str(queue))[:2]==(1,0)
+    assert log.read_bytes().count(raw)==1
+# Partial log tails are never acknowledged or concatenated with a queued row.
+spool.write_bytes(b'after-tail\n');log.write_bytes(b'complete\npartial')
+assert load().drain_spool(str(log),str(queue))[3]=='log_scan_limit' and spool.exists()
+with log.open('ab') as output:output.write(b'-finished\n')
+assert load().drain_spool(str(log),str(queue))[:2]==(1,0)
+assert b'partial-finished\nafter-tail\n' in log.read_bytes()
+
+cursors=base/'cursors';cursors.mkdir();source=base/'child.jsonl';source.write_text('source\n')
+for i in range(300):
+    identity=hashlib.sha256(('session\0worker-%d\0subagent\0%s'%(i,source)).encode()).hexdigest()
+    meta=dict(cursor_identity=identity,cursor_path_input=str(source),transcript_path=str(source),exec_type='inline',session_id='session',agent_id='worker-%d'%i,agent_type='general-purpose',cwd=str(base),repo_root='',repo_slug='',phase='unknown',transcript_scope='subagent')
+    (cursors/(identity+'.offset')).write_text(json.dumps(dict(offset=0,metadata=meta)))
+paths=sorted(cursors.glob('*.offset'));target=json.loads(paths[-1].read_text())['metadata']['agent_id']
+# Invalid, complete, and unavailable entries before the target consume visits,
+# too. Early valid cursors remain pending and make no progress indefinitely.
+paths[1].write_text('{}')
+complete=json.loads(paths[2].read_text());st=source.stat()
+complete.update(offset=st.st_size,device=st.st_dev,inode=st.st_ino,size=st.st_size,mtime_ns=st.st_mtime_ns);paths[2].write_text(json.dumps(complete))
+missing=json.loads(paths[3].read_text());missing['metadata']['transcript_path']=str(base/'missing.jsonl');paths[3].write_text(json.dumps(missing))
+seen=[]
+for refresh in range(40):
+    m=load();clock=[0.0];m.time.monotonic=lambda:clock[0]
+    def run(args,**kwargs):
+        assert 0 < kwargs['timeout'] <= 4.5
+        seen.append(json.loads(kwargs['input'])['agent_id']);clock[0]+=2.0
+    m.subprocess.run=run
+    before=len(seen);m.resume_children(str(cursors),'unused-hook')
+    assert len(seen)-before<=10 and clock[0]<=20
+    if target in seen:break
+assert target in seen and refresh>0,'later cursor starved across process restarts'
+assert (cursors/'.resume-queue.json').stat().st_mode & 0o777==0o600
+# With fast children, raw cursor inspections still have a hard 128-visit cap.
+m=load();visits=[]
+previous=json.loads((cursors/'.resume-queue.json').read_text())['after']
+rotated=[p for p in paths if p.name>previous]+[p for p in paths if p.name<=previous]
+m.subprocess.run=lambda *args,**kwargs:visits.append(json.loads(kwargs['input'])['agent_id'])
+m.resume_children(str(cursors),'unused-hook')
+after=json.loads((cursors/'.resume-queue.json').read_text())['after']
+assert after==rotated[127].name and len(visits)<=128
+# A concurrent refresh cannot regress the persisted selection checkpoint.
+import fcntl
+with (cursors/'.resume-queue.lock').open('w') as lock:
+    fcntl.flock(lock.fileno(),fcntl.LOCK_EX)
+    assert m.resume_children(str(cursors),'unused-hook')[0]==0
+assert json.loads((cursors/'.resume-queue.json').read_text())['after']==after
+# A bounded status prefix must never masquerade as a complete pending count.
+m.MAX_STATUS_CURSORS=2
+assert m.pending_summary(str(log),str(cursors))['pending_children']==-1
+print('PASS: bounded spool scans persist progress, replay safely after crash/rotation/truncation/tails; child visits rotate fairly across restarts')
+PY

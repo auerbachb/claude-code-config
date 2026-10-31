@@ -544,7 +544,7 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 timestamp=""
                 try:
                     stamp=datetime.fromisoformat(row.get("timestamp", "").replace("Z", "+00:00"))
-                    if stamp.tzinfo: timestamp=stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if stamp.tzinfo: timestamp=stamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
                 except Exception: pass
                 key_material="\0".join((row_session,agent_id,scope,str(stat.st_ino),str(row_offset)))
                 event_key=message_id or hashlib.sha256(key_material.encode()).hexdigest()[:24]
@@ -558,6 +558,8 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 evidence["transcript_id"]=cursor_key
                 evidence["session_source"]=row_session_source
                 evidence["message_identity_source"]=identity_source
+                evidence["source_mtime_ns"]=stat.st_mtime_ns
+                evidence["source_offset"]=row_offset
                 values=[timestamp,"assistant_message",exec_type,family(actual),agent_type,row_session,agent_id,total_field,"3",event_key,repo_root,phase,row_requested,row_requested_source,actual,actual_source,*fields,"","unsupported:no_authoritative_per_event_cost_field","","unknown",scope,usage_source,json.dumps(evidence,separators=(",",":"))]
                 out.append("\t".join(map(safe,values))+"\n")
             if scanned%128==0: checkpoint()

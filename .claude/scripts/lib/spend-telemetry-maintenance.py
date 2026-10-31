@@ -7,12 +7,15 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 
 LOCK_WAIT_SECONDS = 0.25
 LOG_SCAN_SECONDS = 2.0
+LOG_SCAN_BYTES = 4 * 1024 * 1024
+MAX_STATUS_CURSORS = 4096
 REFRESH_SECONDS = 20.0
 MAX_PENDING_ROWS = 256
 MAX_CHILD_CURSORS = 128
@@ -51,14 +54,19 @@ def cursor_metadata(cursor_path):
         return None
 
 
-def child_cursors(cursor_dir):
+def child_cursors(cursor_dir, paths=None, deadline=None):
     pending = []
     unavailable = 0
     try:
-        cursors = sorted(Path(cursor_dir).glob("*.offset"))
+        cursors = paths if paths is not None else sorted(Path(cursor_dir).glob("*.offset"))
     except OSError:
         return pending, unavailable
-    for cursor in cursors:
+    deadline = deadline if deadline is not None else time.monotonic() + LOG_SCAN_SECONDS
+    complete = len(cursors) <= MAX_STATUS_CURSORS
+    for cursor in cursors[:MAX_STATUS_CURSORS]:
+        if time.monotonic() >= deadline:
+            complete = False
+            break
         saved = cursor_metadata(cursor)
         if saved is None:
             continue
@@ -78,7 +86,7 @@ def child_cursors(cursor_dir):
         same_size_rewrite = saved.get("size") == stat.st_size and saved.get("mtime_ns") != stat.st_mtime_ns
         if not same_file or same_size_rewrite or offset > stat.st_size or offset < stat.st_size:
             pending.append((cursor, saved))
-    return pending, unavailable
+    return pending, unavailable if complete else -1
 
 
 def pending_summary(log_path, cursor_dir):
@@ -86,28 +94,72 @@ def pending_summary(log_path, cursor_dir):
     children, unavailable = child_cursors(cursor_dir)
     return {"drained": 0, "duplicate_spool_rows_removed": 0,
             "pending_writes": len(pending_files(queue)), "resumed_children": 0,
-            "pending_children": len(children), "unavailable_child_sources": unavailable,
+            "pending_children": len(children) if unavailable >= 0 else -1, "unavailable_child_sources": unavailable,
             "status": "observed"}
 
 
 def line_fingerprint(line):
-    return hashlib.sha256(line.encode("utf-8", errors="replace")).digest()
+    raw = line.encode("utf-8") if isinstance(line, str) else line
+    return hashlib.sha256(raw).hexdigest()
 
 
-def drain_spool(log_path, queue):
+def save_private(path, state):
+    """Atomic, durable metadata checkpoint; never acknowledge before fsync."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".checkpoint-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(state, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+
+def load_private(path):
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.load(stream)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def spool_line(path):
+    try:
+        raw = path.read_bytes()
+        if raw.endswith(b"\n") and raw.count(b"\n") == 1:
+            raw.decode("utf-8")
+            return raw
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+def scan_boundary(stream, offset):
+    stream.seek(max(0, offset - 256))
+    return line_fingerprint(stream.read(min(offset, 256)))
+
+
+def drain_spool(log_path, queue, refresh_deadline=None):
     files = pending_files(queue)
     if not files:
-        return 0, 0, len(files), "empty"
-    lock_path = log_path + ".lock"
+        return 0, 0, 0, "empty"
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         os.makedirs(queue, mode=0o700, exist_ok=True)
         os.chmod(queue, 0o700)
-        lock = open(lock_path, "a", encoding="ascii")
+        lock = open(log_path + ".lock", "a", encoding="ascii")
     except OSError:
-        return 0, 0, len(pending_files(queue)), "storage_unavailable"
+        return 0, 0, len(files), "storage_unavailable"
     with lock:
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        deadline = min(time.monotonic() + LOCK_WAIT_SECONDS, refresh_deadline or float("inf"))
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -116,67 +168,117 @@ def drain_spool(log_path, queue):
                 if time.monotonic() >= deadline:
                     return 0, 0, len(pending_files(queue)), "log_lock_busy"
                 time.sleep(.01)
+        checkpoint = os.path.join(queue, ".drain-scan.json")
+        saved = load_private(checkpoint)
+        # Freeze a bounded batch. New spool files cannot invalidate its progress.
+        batch = saved.get("batch")
+        if not isinstance(batch, dict) or not batch or len(batch) > MAX_PENDING_ROWS:
+            batch = {}
+            for spool in files[:MAX_PENDING_ROWS]:
+                raw = spool_line(spool)
+                if raw is not None: batch[spool.name] = line_fingerprint(raw)
+            saved = {}
+        lines = {}
+        for name, fingerprint in batch.items():
+            if not isinstance(name, str) or Path(name).name != name or not name.startswith("pending-"):
+                continue
+            raw = spool_line(Path(queue) / name)
+            if raw is not None and line_fingerprint(raw) == fingerprint:
+                lines[name] = raw
+        if not lines:
+            save_private(checkpoint, {})
+            return 0, 0, len(pending_files(queue)), "invalid_spool_rows"
         try:
-            output = open(log_path, "a+", encoding="utf-8")
+            output = open(log_path, "a+b")
         except OSError:
             return 0, 0, len(pending_files(queue)), "storage_unavailable"
         with output:
-            fingerprints = set()
-            scan_deadline = time.monotonic() + LOG_SCAN_SECONDS
-            output.seek(0)
-            for existing in output:
-                if time.monotonic() >= scan_deadline:
-                    return 0, 0, len(pending_files(queue)), "log_scan_limit"
-                fingerprints.add(line_fingerprint(existing))
+            stat = os.fstat(output.fileno())
+            offset = saved.get("offset", 0)
+            valid = (type(offset) is int and 0 <= offset <= stat.st_size and
+                saved.get("device") == stat.st_dev and saved.get("inode") == stat.st_ino and
+                not (saved.get("size") == stat.st_size and saved.get("mtime_ns") != stat.st_mtime_ns) and
+                saved.get("boundary") == scan_boundary(output, offset))
+            matched = set(saved.get("matched", [])) & set(batch.values()) if valid else set()
+            if not valid: offset = 0
+            output.seek(offset)
+            scan_start = offset
+            deadline = min(time.monotonic() + LOG_SCAN_SECONDS, refresh_deadline or float("inf"))
+            target = stat.st_size
+            while offset < target and offset - scan_start < LOG_SCAN_BYTES and time.monotonic() < deadline:
+                raw = output.readline(LOG_SCAN_BYTES + 1)
+                # Do not checkpoint past or append behind a partial log record.
+                if not raw.endswith(b"\n"): break
+                offset = output.tell()
+                fingerprint = line_fingerprint(raw)
+                if fingerprint in batch.values(): matched.add(fingerprint)
+            state = dict(batch=batch, offset=offset, device=stat.st_dev, inode=stat.st_ino,
+                         size=stat.st_size, mtime_ns=stat.st_mtime_ns,
+                         boundary=scan_boundary(output, offset), matched=sorted(matched))
+            save_private(checkpoint, state)
+            if offset < target:
+                return 0, 0, len(pending_files(queue)), "log_scan_limit"
+            # The durable checkpoint stays at PRE-APPEND EOF. If we crash after
+            # append, the next refresh scans that tail and recognizes the replay.
+            current = os.stat(log_path)
+            if (current.st_dev, current.st_ino) != (stat.st_dev, stat.st_ino):
+                return 0, 0, len(pending_files(queue)), "log_rotated"
             output.seek(0, os.SEEK_END)
             drained = duplicates = 0
-            changed = False
-            remove_after_sync = []
-            for spool in files[:MAX_PENDING_ROWS]:
-                try:
-                    raw = spool.read_bytes()
-                    if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
-                        continue
-                    line = raw.decode("utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-                fingerprint = line_fingerprint(line)
-                if fingerprint not in fingerprints:
-                    output.write(line)
-                    fingerprints.add(fingerprint)
-                    drained += 1
-                    changed = True
-                else:
+            for raw in lines.values():
+                fingerprint = line_fingerprint(raw)
+                if fingerprint in matched:
                     duplicates += 1
-                remove_after_sync.append(spool)
-            if changed:
-                output.flush()
-                os.fsync(output.fileno())
-            for spool in remove_after_sync:
-                try:
-                    spool.unlink()
-                except OSError:
-                    continue
-        if drained or duplicates:
-            try:
-                directory_fd = os.open(queue, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                pass
+                else:
+                    output.write(raw)
+                    matched.add(fingerprint)
+                    drained += 1
+            output.flush()
+            os.fsync(output.fileno())  # Includes duplicate-only cleanup.
+            current = os.stat(log_path)
+            if (current.st_dev, current.st_ino) != (stat.st_dev, stat.st_ino):
+                return drained, duplicates, len(pending_files(queue)), "log_rotated"
+            for name in lines:
+                try: (Path(queue) / name).unlink()
+                except OSError: pass
+            directory_fd = os.open(queue, os.O_RDONLY)
+            try: os.fsync(directory_fd)
+            finally: os.close(directory_fd)
+            save_private(checkpoint, {})
     return drained, duplicates, len(pending_files(queue)), "drained"
 
 
-def resume_children(cursor_dir, hook_path):
-    candidates, unavailable = child_cursors(cursor_dir)
-    candidates = candidates[:MAX_CHILD_CURSORS]
-    deadline = time.monotonic() + REFRESH_SECONDS
+def resume_children(cursor_dir, hook_path, deadline=None):
+    deadline = deadline if deadline is not None else time.monotonic() + REFRESH_SECONDS
+    os.makedirs(cursor_dir, mode=0o700, exist_ok=True)
+    os.chmod(cursor_dir, 0o700)
+    fd = os.open(os.path.join(cursor_dir, ".resume-queue.lock"), os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        # Concurrent refreshes must not move the durable rotation pointer back.
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            children, unavailable = child_cursors(cursor_dir, deadline=deadline)
+            return 0, len(children) if unavailable >= 0 else -1, unavailable, False
+        return resume_children_locked(cursor_dir, hook_path, deadline)
+
+
+def resume_children_locked(cursor_dir, hook_path, deadline):
+    progress_path = os.path.join(cursor_dir, ".resume-queue.json")
+    previous = load_private(progress_path).get("after", "")
+    paths = sorted(Path(cursor_dir).glob("*.offset"))
+    # Rotate RAW cursor paths, so invalid/completed/unavailable prefix entries
+    # also consume a bounded visit and cannot starve later pending sources.
+    paths = [p for p in paths if p.name > str(previous)] + [p for p in paths if p.name <= str(previous)]
     resumed = 0
-    for cursor, saved in candidates:
+    for cursor in paths[:MAX_CHILD_CURSORS]:
         if time.monotonic() >= deadline:
             break
+        save_private(progress_path, {"after": cursor.name})
+        candidates, _ = child_cursors(cursor_dir, [cursor], deadline)
+        if not candidates:
+            continue
+        _, saved = candidates[0]
         meta = saved["metadata"]
         path = meta["transcript_path"]
         if not os.path.isfile(path):
@@ -210,7 +312,7 @@ def resume_children(cursor_dir, hook_path):
                 resumed += 1
             except (OSError, subprocess.TimeoutExpired):
                 break
-            still_pending, _ = child_cursors(cursor_dir)
+            still_pending, _ = child_cursors(cursor_dir, [cursor], deadline)
             updated = next((item for candidate, item in still_pending if candidate == cursor), None)
             if updated is None:
                 break
@@ -218,8 +320,8 @@ def resume_children(cursor_dir, hook_path):
             if type(offset) is not int or offset <= previous_offset:
                 break
             previous_offset = offset
-    remaining_children, unavailable_after = child_cursors(cursor_dir)
-    return resumed, len(remaining_children), max(unavailable, unavailable_after), time.monotonic() >= deadline
+    remaining_children, unavailable_after = child_cursors(cursor_dir, deadline=deadline)
+    return resumed, len(remaining_children) if unavailable_after >= 0 else -1, unavailable_after, time.monotonic() >= deadline
 
 
 def main():
@@ -231,8 +333,11 @@ def main():
         print(json.dumps(pending_summary(log_path, cursor_dir), separators=(",", ":")))
         return
     hook_path = str(Path(__file__).resolve().parents[2] / "hooks" / "spend-subagent-tracker.sh")
-    resumed, child_pending, unavailable, timed_out = resume_children(cursor_dir, hook_path)
-    drained, duplicates, writes_pending, drain_status = drain_spool(log_path, queue)
+    deadline = time.monotonic() + REFRESH_SECONDS
+    drained, duplicates, writes_pending, drain_status = drain_spool(log_path, queue, deadline)
+    resumed, child_pending, unavailable, timed_out = resume_children(cursor_dir, hook_path, deadline)
+    # Child checkpoints can themselves spool while another hook holds the log.
+    writes_pending = len(pending_files(queue))
     print(json.dumps({"drained": drained, "duplicate_spool_rows_removed": duplicates,
         "pending_writes": writes_pending, "resumed_children": resumed,
         "pending_children": child_pending, "unavailable_child_sources": unavailable,

@@ -73,20 +73,59 @@ def parse_row(parts, line_number):
     return row
 
 
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+
+
+def field_observations(row, key):
+    if "_observations" in row:
+        return row["_observations"].get(key, [])
+    value = row.get(key)
+    if value is None:
+        return []
+    evidence = row["evidence"]
+    source = evidence.get("transcript_id")
+    revision, offset = evidence.get("source_mtime_ns"), evidence.get("source_offset")
+    return [(value, row.get("ts"), source if isinstance(source, str) else None,
+             revision if type(revision) is int else None, offset if type(offset) is int else None)]
+
+
+def observation_after(new, old):
+    # File revision and byte position order observations of the SAME source,
+    # including legitimate downward corrections and replayed old snapshots.
+    if new[1] and old[1] and new[1] != old[1]:
+        return new[1] > old[1]
+    if new[2] and new[2] == old[2] and all(type(x) is int for x in (*new[3:], *old[3:])):
+        return new[3:] > old[3:]
+    # Across sources only the original observation timestamp establishes order.
+    # Append order is scan order; numeric maxima are not a provider contract.
+    return False
+
+
 def merge_message(old, new):
-    """Transcript entries repeat provider-message usage, never additive deltas."""
-    merged=dict(old)
-    for key in ("input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"):
-        if new.get(key) is not None: merged[key]=new[key]
+    """Merge per-field source observations, preserving uncertain conflicts."""
+    merged = dict(old)
+    observations = {}
+    ambiguous = []
+    for key in USAGE_FIELDS:
+        values = list(dict.fromkeys(field_observations(old, key) + field_observations(new, key)))
+        observations[key] = values
+        latest = [item for item in values if not any(observation_after(other, item) for other in values)]
+        known = {item[0] for item in latest}
+        merged[key] = next(iter(known)) if len(known) == 1 else None
+        if values and len(known) != 1:
+            ambiguous.append(key)
+    # Retain the observations through both within-scope and cross-scope merges.
+    # Otherwise a scope's earlier field can inherit another field's newer date.
+    merged["_observations"] = observations
+    merged["_ambiguous_usage"] = ambiguous
     for key in ("actual_model","actual_source","requested_model","requested_source"):
         if new.get(key) and new[key] not in ("unavailable","unknown"): merged[key]=new[key]
-    # A child transcript provides the explicit worker/phase for a parent mirror.
     if new.get("agent_id") and not old.get("agent_id"):
         for key in ("agent_id","agent_type","exec_type","phase","transcript_scope"):
             merged[key]=new[key]
     if merged.get("phase")=="unknown" and new.get("phase")!="unknown": merged["phase"]=new["phase"]
-    fields=[merged.get(k) for k in ("input_tokens","output_tokens","cache_read_tokens","cache_write_tokens")]
-    merged["legacy_tokens"]=sum(fields) if all(v is not None for v in fields) else None
+    fields = [merged.get(k) for k in USAGE_FIELDS]
+    merged["legacy_tokens"] = sum(fields) if all(v is not None for v in fields) else None
     return merged
 
 
@@ -220,6 +259,9 @@ def render_v2(v2, heading):
     for (event_type, exec_type, source_status), count in sorted(source_rows.items()):
         print(f"| {event_type} | {exec_type} | {source_status} | {count} |")
     print()
+    ambiguous = sum(bool(row.get("_ambiguous_usage")) for row in messages)
+    if ambiguous:
+        print(f"Usage conflicts with no provable newest observation: {ambiguous} message(s); conflicting fields remain unavailable and are excluded from sums. Observed sums are partial usage.\n")
     actual_known = sum(bool(row["actual_model"]) for row in messages)
     print(f"**Assistant-message denominator:** {len(messages)} unique message record(s).")
     print(f"**Actual model:** {actual_known}/{len(messages)} known; requested model is retained separately with provenance.\n")

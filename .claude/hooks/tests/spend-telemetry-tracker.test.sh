@@ -330,6 +330,40 @@ assert m['actual_model']=='claude-opus-5-5' and m['input_tokens']==11 and m['out
 with transcript.open('a') as f: f.write(json.dumps(assistant('changing',output_tokens=0,cache_creation_input_tokens=3))+'\n')
 hook('spend-subagent-tracker.sh',payload)
 m=messages()[0];assert len(messages())==1 and (m['input_tokens'],m['output_tokens'],m['cache_read_tokens'],m['cache_write_tokens'])==(11,0,0,3)
+# Original timestamps and per-field provenance survive BOTH merge stages.
+# Parent scan order may bracket an old child mirror; usage is not monotonic.
+import itertools, copy, contextlib, io
+prototype=rows()[0]
+def snapshot(source, stamp, offset, **usage):
+    r=copy.deepcopy(prototype)
+    r.update(event_key='temporal-response',ts_str=stamp,ts=report.parse_ts(stamp),
+             agent_id='child' if source=='child' else '',transcript_scope=source)
+    r['evidence'].update(transcript_id=source,source_mtime_ns=100,source_offset=offset)
+    for field in report.USAGE_FIELDS:r[field]=usage.get(field)
+    return r
+parent_old=snapshot('parent','2026-10-30T12:00:00.001Z',0,input_tokens=7,output_tokens=10)
+child_old=snapshot('child','2026-10-30T12:00:00.001Z',0,output_tokens=10,cache_read_tokens=0)
+parent_new=snapshot('parent','2026-10-30T12:00:00.002Z',200,output_tokens=20)
+for permutation in itertools.permutations([parent_old,child_old,parent_new]):
+    merged=report.unique_messages(report.dedupe(permutation))
+    assert len(merged)==1 and (merged[0]['input_tokens'],merged[0]['output_tokens'],merged[0]['cache_read_tokens'])==(7,20,0)
+# A later downward correction (including zero) wins; maxima would be wrong.
+correction=snapshot('child','2026-10-30T12:00:00.003Z',300,output_tokens=0)
+assert report.unique_messages(report.dedupe([parent_old,child_old,parent_new,correction]))[0]['output_tokens']==0
+# A sparse newer output must not give an older input a newer timestamp.
+conflict=snapshot('child','2026-10-30T12:00:00.0015Z',100,input_tokens=9)
+assert report.unique_messages(report.dedupe([parent_old,parent_new,conflict]))[0]['input_tokens']==9
+# Tied/missing timestamps across sources cannot order conflicting values.
+ambiguous=snapshot('child','2026-10-30T12:00:00.001Z',0,output_tokens=9)
+for timestamp in ('2026-10-30T12:00:00.001Z',''):
+    ambiguous['ts']=report.parse_ts(timestamp)
+    merged=report.unique_messages(report.dedupe([parent_old,ambiguous]))[0]
+    assert merged['output_tokens'] is None and merged['_ambiguous_usage']==['output_tokens']
+    assert merged['input_tokens']==7
+capture=io.StringIO()
+with contextlib.redirect_stdout(capture):report.render_v2([parent_old,ambiguous],'Ambiguous fixture')
+assert 'conflicting fields remain unavailable' in capture.getvalue()
+
 # Same-length replacement on same inode must invalidate a cursor at EOF.
 text=transcript.read_text();transcript.write_text(text.replace('changing','replaced'))
 hook('spend-subagent-tracker.sh',payload)
@@ -429,6 +463,12 @@ for evidence in ({'checks':[]},{'checks':{'total':'x'}},{'verified_completion':T
 pathlib.Path(env['HOME'],'.claude/estimate-log.jsonl').write_text('[]\nnull\n'+json.dumps(dict(repo='owner/repo',pr=7,actual_min=float('nan'),rounds=True))+'\n')
 subprocess.run(['bash',str(root/'.claude/scripts/spend-telemetry-report.sh'),'--days','999999999999'],env=workflow_env,capture_output=True,text=True,check=True)
 assert report.parse_ts('2026-10-30T12:00:00') is None
+# Recorder preserves the installed schema's fractional timestamp precision.
+precise=assistant('precise',output_tokens=1);precise['timestamp']='2026-10-30T12:00:00.123456Z'
+with transcript.open('a') as f:f.write(json.dumps(precise)+'\n')
+hook('spend-subagent-tracker.sh',payload)
+assert next(r for r in rows() if r['event_key']=='precise')['ts_str']=='2026-10-30T12:00:00.123456Z'
+
 print('PASS: runtime IDs, nested metadata, sparse/repeated usage, cursor replacement/truncation/tails, concurrent scans, workflow fences, actual gate schema, actor vs assignment, ambiguous allocation, and malformed evidence')
 PY
 
