@@ -425,6 +425,15 @@ step4_code='SESSION_STATE_SH='+shlex.quote(str(live/'session-state.sh'))+'\nSTEP
 r=subprocess.run(['bash','-eu','-c',step4_code],env=step4_env,text=True,capture_output=True);assert r.returncode==0 and r.stdout=='1|1|5m',(r.stdout,r.stderr)
 quiet=run(e=step4_env);assert quiet.returncode==0 and quiet.stdout=='',(quiet.stdout,quiet.stderr,step4_state.read_text())
 print('PASS: Step 4 fleet digest plus actual Step 6 blocks persists the baseline and the following collector tick is quiet')
+# Canonical Step2.5 cleanup leaves a null map value, not a deleted key.
+cleared=subprocess.run([str(live/'session-state.sh'),'--set','.pmm_in_flight["7"]=null'],env=step4_env,text=True,capture_output=True);assert cleared.returncode==0,(cleared.stdout,cleared.stderr)
+cleared_tick=run(e=step4_env);cleared_data=json.loads(step4_state.read_text());assert cleared_tick.returncode==0,(cleared_tick.stdout,cleared_tick.stderr)
+cleared_event=cleared_data['pmm_pre_dispatch'].get('pending_event')
+if cleared_event:
+ assert not cleared_event.get('diagnostic'),cleared_event
+ assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',cleared_event['event_id']],e=step4_env).returncode==0
+cleared_tick=run(e=step4_env);assert cleared_tick.returncode==0 and cleared_tick.stdout=='',(cleared_tick.stdout,cleared_tick.stderr)
+print('PASS: actual canonical null lock cleanup remains valid and the next stable collector poll is quiet')
 # Actions-receipt replay must restore completed Step 6 state without advancing
 # either counter or changing the cadence a second time.
 step4_data=json.loads(step4_state.read_text());step4_data.update(pmm_digest_streak=4,pmm_idle_streak=7,pmm_cadence='15m');step4_state.write_text(json.dumps(step4_data))
@@ -492,6 +501,7 @@ r=step6_call(step6_code+'\nprintf "%s" "$IDLE_STREAK"',extra='PMM_SKIP_ACTIONS=t
 for step6_name,step6_work,step6_idle_expected in [
  ('active-wrap',{'pmm_in_flight':{'7':step6_lock}},0),
  ('completed-wrap',{'pmm_in_flight':{'7':{'status':'complete'}}},3),
+ ('cleared-wrap',{'pmm_in_flight':{'7':None}},3),
  ('unreleased-hold',{'pmm_merge_holds':{'7':{'released':False}}},0),
  ('released-hold',{'pmm_merge_holds':{'7':{'released':True}}},3),
  ('active-agent',{'active_agents':{'worker':{'phase':'A','status':'running'}}},0),
@@ -795,7 +805,9 @@ print('PASS: failed main/wake sentinel count computation cannot be mistaken for 
 # fixed-size samples + per-PR aggregate hashes/counts, including unsampled edits.
 stress_home=home('large-review-fleet');stress_env=dict(fleet_env,HOME=str(stress_home))
 stress_env['STUB_PULLS_JSON']=json.dumps([{'number':n,'headRefOid':'abc123','url':f'https://github.com/org/repo/pull/{n}'} for n in range(1,26)])
-long_path='/'.join(['fixture']*180)
+# Linux ARG_MAX varies with stack limits; size the actual fixture from this host.
+arg_max=os.sysconf('SC_ARG_MAX');assert 0<arg_max<=64*1024*1024,arg_max
+long_path='/'.join(['fixture']*max(180,arg_max//(2000*8)+2))
 stress_comments=[dict(comment,id=10000+i,body='Minor fix',path=long_path) for i in range(2000)]
 write_bundle(stress_comments);raw_size=bundle.stat().st_size;assert raw_size>os.sysconf('SC_ARG_MAX'),raw_size
 r=run(e=stress_env);assert r.returncode==0 and 'Argument list too long' not in r.stderr,(r.stdout,r.stderr)

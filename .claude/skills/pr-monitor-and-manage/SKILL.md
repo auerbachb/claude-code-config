@@ -672,7 +672,7 @@ PMM_STEP6_ROOT=$("$SESSION_STATE_SH" --get-json '{pmm_digest,pmm_digest_streak,p
   jq -e '.pmm_rearm==null and ((.active_agents // {})|type)=="object"
     and ((.pmm_in_flight // {})|type)=="object" and ((.pmm_merge_holds // {})|type)=="object"
     and all((.active_agents // {})[]; (.phase|type)=="string" and (.status|type)=="string")
-    and all((.pmm_in_flight // {})[]; type=="object" and (.status|type)=="string")
+    and all((.pmm_in_flight // {})[]; .==null or (type=="object" and (.status|type)=="string"))
     and all((.pmm_merge_holds // {})[]; type=="object")' >/dev/null <<<"$PMM_STEP6_ROOT" || {
     echo 'ERROR: live work/lifecycle state is unknown; idle and completion remain uncommitted' >&2; exit 1; }
   if [ "$PMM_INTERNAL_TICK" = true ]; then

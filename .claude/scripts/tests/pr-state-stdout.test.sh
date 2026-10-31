@@ -45,7 +45,9 @@ else:sys.exit(2)
  os.killpg(p.pid,signal.SIGTERM);out,err=p.communicate(timeout=3)
  assert p.returncode!=0 and not out and (t/'temps').read_bytes()==before
  # Actual source assembly receives a projected history larger than ARG_MAX.
- large=t/'large-inline.json';record={'body':'Minor fix','user':{'login':'coderabbitai[bot]'},'created_at':'2026-10-31T02:00:00Z','updated_at':'2026-10-31T02:00:00Z','path':'/'.join(['fixture']*180),'html_url':'https://github.com/org/repo/pull/7#discussion_r1'}
+ # Bound fixture memory while accommodating Linux stack-dependent ARG_MAX.
+ arg_max=os.sysconf('SC_ARG_MAX');assert 0<arg_max<=64*1024*1024,arg_max
+ large=t/'large-inline.json';record={'body':'Minor fix','user':{'login':'coderabbitai[bot]'},'created_at':'2026-10-31T02:00:00Z','updated_at':'2026-10-31T02:00:00Z','path':'/'.join(['fixture']*max(180,arg_max//(2000*8)+2)),'html_url':'https://github.com/org/repo/pull/7#discussion_r1'}
  large.write_text(json.dumps([dict(record,id=10000+i) for i in range(2000)]))
  assert large.stat().st_size>os.sysconf('SC_ARG_MAX')
  r=run('--stdout',LARGE_INLINE=str(large));assert r.returncode==0 and len(json.loads(r.stdout)['comments']['inline'])==2000 and (t/'temps').read_bytes()==before,(r.stdout[:100],r.stderr)
@@ -54,7 +56,7 @@ else:sys.exit(2)
  r=run('--since','2000-01-01T00:00:00Z',LARGE_INLINE=str(large));assert r.returncode==0,(r.stdout,r.stderr)
  retained=pathlib.Path(r.stdout.strip());data=json.loads(retained.read_text());retained.unlink();assert len(data['comments']['inline'])==2000 and data['new_since_baseline']['finding_count']==2000
  print('PASS: large-history --since classification streams through canonical filter in stdout and default retained-file modes')
- threads=t/'large-threads.json';threads.write_text(json.dumps([{'id':'T'+str(i),'isResolved':False,'comments':{'nodes':[{'body':'Minor finding. '*2048,'author':{'login':'coderabbitai[bot]'}}]}} for i in range(100)]))
+ threads=t/'large-threads.json';threads.write_text(json.dumps([{'id':'T'+str(i),'isResolved':False,'comments':{'nodes':[{'body':'Minor finding. '*max(2048,arg_max//(100*15)+2),'author':{'login':'coderabbitai[bot]'}}]}} for i in range(100)]))
  assert threads.stat().st_size>os.sysconf('SC_ARG_MAX')
  r=run('--stdout',LARGE_THREADS=str(threads));assert r.returncode==0 and json.loads(r.stdout)['threads']['unresolved_count']==100,(r.stdout[:100],r.stderr)
  print('PASS: oversized GraphQL thread page and final arrays also stream without E2BIG')
