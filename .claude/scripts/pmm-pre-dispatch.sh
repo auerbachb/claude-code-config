@@ -49,6 +49,10 @@ usage() {
 }
 fail() { echo "pmm-pre-dispatch.sh: $*" >&2; exit 2; }
 emit_unpersisted_diagnostic() {
+  if [[ -n "$ACK_ID" ]]; then
+    printf 'pmm-pre-dispatch.sh: cannot acknowledge: %s\n' "$1" >&2
+    exit 4
+  fi
   printf 'pmm-pre-dispatch.sh: %s; no durable event was written; retry next tick.\n' "$1" >&2
   printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
     "${GENERATION:-unknown}" "${SKILL_ARGS_SHELL:+ $SKILL_ARGS_SHELL}"
@@ -139,19 +143,9 @@ source "$BOUND_RUN_LIB" || {
     "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
   exit 1
 }
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch.XXXXXX")" || {
-  echo "pmm-pre-dispatch Monitor: cannot create bounded capture; waking for diagnosis and stopping this loop" >&2
-  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
-    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
-  exit 1
-}
-CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch-err.XXXXXX")" || {
-  rm -f "$CAPTURE"
-  echo "pmm-pre-dispatch Monitor: cannot create bounded error capture; waking for diagnosis and stopping this loop" >&2
-  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
-    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
-  exit 1
-}
+# Each poll owns fresh paths: even an unreaped I/O-wedged child can only
+# write its old, unlinked descriptors, never the next poll's evidence.
+CAPTURE=""; CAPTURE_ERR=""
 cleanup_captures() { rm -f "$CAPTURE" "$CAPTURE_ERR"; }
 trap cleanup_captures EXIT
 trap 'exit 0' HUP INT TERM
@@ -160,6 +154,19 @@ while :; do
   cadence=$("$STATE_HELPER" --get '.pmm_cadence' 2>/dev/null) || cadence="${BASE}m"
   [[ "$cadence" =~ ^([1-9][0-9]{0,5})m$ ]] || cadence="${BASE}m"
   sleep "$(( ${cadence%m} * 60 ))" || exit 0
+  CAPTURE="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch.XXXXXX")" || {
+    echo "pmm-pre-dispatch Monitor: cannot create bounded capture; waking for diagnosis and stopping this loop" >&2
+    printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+      "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+    exit 1
+  }
+  CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch-err.XXXXXX")" || {
+    rm -f "$CAPTURE"
+    echo "pmm-pre-dispatch Monitor: cannot create bounded error capture; waking for diagnosis and stopping this loop" >&2
+    printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+      "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+    exit 1
+  }
   rc=0
   run_bounded "$TIMEOUT_SECS" "$GATE" --repo "$REPO" --author "$AUTHOR" --generation "$GENERATION" \
     --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --max-deep-prs "$MAX_DEEP" --skill-args "$FORWARD" || rc=$?
@@ -179,6 +186,8 @@ while :; do
         "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
     }
   fi
+  cleanup_captures
+  CAPTURE=""; CAPTURE_ERR=""
 done
 COMMAND
   exit 0

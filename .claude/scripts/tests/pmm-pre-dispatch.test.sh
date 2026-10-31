@@ -309,7 +309,7 @@ check "missing PR-state comment/check data wakes diagnostically rather than as u
 check "completed-event receipts distinguish actions from lifecycle completion" 'grep -Fq "actions_completed_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "lifecycle_completed_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "last_acknowledged_event_id" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "fresh gate is unreadable" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md" && grep -Fq "PMM_SKIP_ACTIONS=true" "$ROOT/.claude/skills/pr-monitor-and-manage/SKILL.md"'
 
 python3 - "$ROOT" "$TMP" "$LIVE" "$BIN" "$BASE_GATE" <<'PYTEST'
-import datetime, hashlib, json, os, pathlib, subprocess, sys, re, shlex
+import datetime, hashlib, json, os, pathlib, subprocess, sys, re, shlex, shutil
 root,tmp,live,binpath,gate=sys.argv[1:];root=pathlib.Path(root);tmp=pathlib.Path(tmp);live=pathlib.Path(live)
 real_gate=json.loads(gate)
 now=lambda: datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -335,6 +335,75 @@ def ack(p):
     r=run([str(live/'pmm-pre-dispatch.sh'),'--ack',p['event_id']]);assert r.returncode==0,r.stderr
     d=read();d['pmm_digest']=subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).decode().rstrip('\n');import hashlib
     d['pmm_digest']=hashlib.sha256(d['pmm_digest'].encode()).hexdigest();d['pmm_digest_streak']=0;d['pmm_idle_streak']=0;put(d)
+# Dependency/helper failures during acknowledgement must not schedule a new model.
+missing_env=tmp/'missing-dependency-env.sh'
+missing_env.write_text('command() { if [[ "${1:-}" == -v && "${2:-}" == "$MISSING_DEP" ]]; then return 1; fi; builtin command "$@"; }\n')
+for missing_dep in ('jq','shasum'):
+ before=state.read_bytes();fault_env=dict(env,BASH_ENV=str(missing_env),MISSING_DEP=missing_dep)
+ r=run([str(live/'pmm-pre-dispatch.sh'),'--ack','missing-dependency'],e=fault_env)
+ assert r.returncode==4 and not r.stdout and 'cannot acknowledge' in r.stderr and state.read_bytes()==before,(missing_dep,r.stdout,r.stderr)
+ r=run(e=fault_env);assert r.returncode==5 and len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout,(missing_dep,r.stdout,r.stderr)
+no_helper=tmp/'missing-ack-helper';no_helper.mkdir();shutil.copy2(live/'pmm-pre-dispatch.sh',no_helper/'pmm-pre-dispatch.sh')
+r=run([str(no_helper/'pmm-pre-dispatch.sh'),'--ack','missing-helper']);assert r.returncode==4 and not r.stdout and 'cannot acknowledge' in r.stderr,(r.stdout,r.stderr)
+print('PASS: missing jq/shasum/helper acknowledge with exit4 and no event; collection retains exit5 diagnostic semantics')
+
+# Run the exact generated loop and real bounded-run, suppressing only signal
+# delivery to emulate an I/O-wedged child that survives the bounded reap.
+# The old collector writes after the next collector starts: its descriptors
+# must never be the next poll's files. No shared helper source is changed.
+orphan_dir=tmp/'orphan-replay';orphan_dir.mkdir();orphan_bin=orphan_dir/'bin';orphan_bin.mkdir();orphan_captures=orphan_dir/'captures';orphan_captures.mkdir()
+orphan_bound=orphan_dir/'bounded-run.sh';orphan_bound.write_text((live/'lib/bounded-run.sh').read_text()+'\nkill_child() { :; }\n')
+orphan_gate=orphan_dir/'collector.sh';orphan_calls=orphan_dir/'calls';orphan_done=orphan_dir/'late-write-done';orphan_next=orphan_dir/'next-poll-started'
+orphan_gate.write_text('''#!/usr/bin/env bash
+n=0; [[ ! -f "$ORPHAN_CALLS" ]] || n=$(cat "$ORPHAN_CALLS"); n=$((n+1)); printf '%s' "$n" > "$ORPHAN_CALLS"
+if [[ "$n" == 1 ]]; then
+  # Handshake proves the late write occurs after the fresh poll starts.
+  for i in {1..200}; do [[ ! -f "$ORPHAN_NEXT" ]] || break; /bin/sleep .05; done
+  [[ -f "$ORPHAN_NEXT" ]] || exit 9
+  printf '/pr-monitor-and-manage --stale-orphan-event\n'; printf 'stale-orphan-error\n' >&2
+  : > "$ORPHAN_DONE"
+else
+  : > "$ORPHAN_NEXT"
+  for i in {1..60}; do [[ ! -f "$ORPHAN_DONE" ]] || exit 0; /bin/sleep .05; done
+  exit 9
+fi
+''');orphan_gate.chmod(0o755)
+(orphan_bin/'sleep').write_text('''#!/usr/bin/env bash
+if [[ "$1" =~ ^[0-9]+$ && "$1" -ge 60 ]]; then
+ n=0; [[ ! -f "$ORPHAN_SLEEPS" ]] || n=$(cat "$ORPHAN_SLEEPS"); n=$((n+1)); printf '%s' "$n" > "$ORPHAN_SLEEPS"; [[ "$n" -lt 3 ]]; exit $?
+fi
+/bin/sleep "$@"
+''');(orphan_bin/'sleep').chmod(0o755)
+orphan_command=run([str(live/'pmm-pre-dispatch.sh'),'--monitor-command','--repo','org/repo','--author','alice','--generation','gen-live']).stdout
+assert 'while :; do' in orphan_command
+orphan_command=re.sub(r'^GATE=.*$',lambda m:'GATE='+shlex.quote(str(orphan_gate)),orphan_command,flags=re.M)
+orphan_command=re.sub(r'^BOUND_RUN_LIB=.*$',lambda m:'BOUND_RUN_LIB='+shlex.quote(str(orphan_bound)),orphan_command,flags=re.M)
+orphan_env=dict(env,PATH=str(orphan_bin)+':'+env['PATH'],TMPDIR=str(orphan_captures),PMM_PRE_DISPATCH_TIMEOUT_SECS='1',ORPHAN_CALLS=str(orphan_calls),ORPHAN_DONE=str(orphan_done),ORPHAN_NEXT=str(orphan_next),ORPHAN_SLEEPS=str(orphan_dir/'sleeps'))
+r=subprocess.run(['bash','-c',orphan_command],env=orphan_env,text=True,capture_output=True,timeout=20)
+assert r.returncode==0 and orphan_calls.read_text()=='2' and orphan_done.exists(),(r.stdout,r.stderr)
+assert len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout and 'stale-orphan' not in r.stdout+r.stderr,(r.stdout,r.stderr)
+assert not list(orphan_captures.iterdir()),list(orphan_captures.iterdir())
+print('PASS: exact generated loop isolates unreaped-child late stdout/stderr from the next quiet poll and cleans captures')
+
+# Capture allocation failures on either first/second poll stop with one diagnosis
+# and remove any already-created owned file. They cannot relay prior output.
+allocation_gate=orphan_dir/'quiet-collector.sh';allocation_gate.write_text('#!/usr/bin/env bash\nexit 0\n');allocation_gate.chmod(0o755)
+allocation_command=re.sub(r'^GATE=.*$',lambda m:'GATE='+shlex.quote(str(allocation_gate)),orphan_command,flags=re.M)
+allocation_command=re.sub(r'^BOUND_RUN_LIB=.*$',lambda m:'BOUND_RUN_LIB='+shlex.quote(str(live/'lib/bounded-run.sh')),allocation_command,flags=re.M)
+real_mktemp=shutil.which('mktemp');assert real_mktemp
+(orphan_bin/'mktemp').write_text('''#!/usr/bin/env bash
+case "$*" in *'/pmm-pre-dispatch.'*|*'/pmm-pre-dispatch-err.'*) ;; *) exec '''+shlex.quote(real_mktemp)+''' "$@" ;; esac
+n=0; [[ ! -f "$ALLOC_COUNT" ]] || n=$(cat "$ALLOC_COUNT"); n=$((n+1)); printf '%s' "$n" > "$ALLOC_COUNT"
+[[ "$n" != "$ALLOC_FAIL" ]] || exit 1
+exec '''+shlex.quote(real_mktemp)+''' "$@"
+''');(orphan_bin/'mktemp').chmod(0o755)
+for failure in (1,2,3,4):
+ for marker in (orphan_dir/'sleeps',orphan_dir/'alloc-count'):
+  if marker.exists():marker.unlink()
+ r=subprocess.run(['bash','-c',allocation_command],env=dict(orphan_env,ALLOC_COUNT=str(orphan_dir/'alloc-count'),ALLOC_FAIL=str(failure)),text=True,capture_output=True,timeout=10)
+ assert r.returncode==1 and len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout and not list(orphan_captures.iterdir()),(failure,r.stdout,r.stderr,list(orphan_captures.iterdir()))
+print('PASS: stdout/stderr capture allocation failures on either poll diagnose once, stop and clean partial files')
+
 p=packet(run());ack(p)
 # Real collector new/edited body and endpoint identity, no coarse gate movement.
 comment={'id':91,'body':'Fix the null dereference in this changed function.','user':{'login':'coderabbitai[bot]'},'created_at':now(),'updated_at':now(),'html_url':'https://github.com/org/repo/pull/7#discussion_r91'}
