@@ -39,7 +39,10 @@ IDLE_PAUSE_AFTER=3
 DIAGNOSTIC_WAKE_INTERVAL=3
 DEADLINE_UNKNOWN_WAKE_INTERVAL=3
 
-usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+usage() {
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
+    { printf '%s: --help header extraction produced no output\n' "$0" >&2; exit 70; }
+}
 fail() { echo "pmm-pre-dispatch.sh: $*" >&2; exit 2; }
 emit_unpersisted_diagnostic() {
   printf 'pmm-pre-dispatch.sh: %s; no durable event was written; retry next tick.\n' "$1" >&2
