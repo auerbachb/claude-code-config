@@ -27,7 +27,13 @@ Monitor behavior are recorded in `.claude/reference/bgwork-ceiling.md` and
 - The outbox is stored at `.pmm_pre_dispatch.pending_event` through `session-state.sh`. Delivery is
   at-least-once: the same event ID is re-emitted until an exact-ID acknowledgement arrives after
   the full PMM tick's discovery, current gate/ownership checks, authorized actions, Step 7
-  lifecycle work, and state writes. Separate durable actions and lifecycle receipts let a repeated
+  lifecycle work, and state writes. The actions receipt is committed atomically with Step6 digest/streak/idle/cadence after authorized
+actions finish; the later receipt fence only verifies proof and cannot create it after a failed
+write. Step6 compares a refreshed coherent scheduler/lifecycle/live-work snapshot under the existing
+CAS lock. A changed pending event, generation, or active work defeats the whole batch. A replay
+refreshes that committed state and performs no counter write. Active wrap locks and unreleased
+persisted merge holds block idle on both shell and model paths.
+Separate durable actions and lifecycle receipts let a repeated
   delivery re-run fresh checks, skip completed Step 5 actions while reusing completed Step 6 state and finishing Step 7, and
   acknowledge the same ID only after lifecycle completion. A crash between an external action and
   writing that receipt remains governed by each action's existing lock/idempotency contract; the
@@ -43,8 +49,13 @@ The collector reuses `gh pr list`, `merge-gate.sh`, `pr-state.sh`, and the canon
 `lib/pr-state-classify.jq`. It compares fleet membership; HEAD, merge/review/CI/blocker state; new
 actionable finding source IDs and body hashes; active agent, PMM lock, and merge-sequencing hold transitions; and their
 safety/recovery deadlines.
-Discovery remains capped at 500, but deep collection has a configurable `--max-deep-prs` bound
-(default 25, allowed 1..500) included in saved Monitor arguments/configuration. A fleet above that
+The supported fleet cap remains 500. Collector, main discovery, and paused wake scan request
+501 results solely as an overflow sentinel. Observing more than 500 means **at least 501**, not
+an exact full-fleet count; refuse before per-PR work/comparison/snapshot pruning and preserve the
+prior snapshot and pending evidence. A missing member in a truncated subset is never treated as
+closed. Exactly 500 is accepted only when the sentinel request returns no extra member.
+Deep collection separately has a configurable `--max-deep-prs` bound (default 25, allowed 1..500)
+included in saved Monitor arguments/configuration. A fleet above that
 bound emits an unresolved diagnostic before calling any per-PR helper and retains the prior
 snapshot; unpolled PRs are never classified as removed or clean. Pending events replay first.
 This is a work bound, **not a GitHub quota guarantee**: merge-gate and pr-state independently fetch

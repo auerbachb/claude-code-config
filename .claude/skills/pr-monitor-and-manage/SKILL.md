@@ -282,7 +282,7 @@ Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args
 - `--author <login>` — whose PRs to manage. **Default:** current authenticated user via `gh api user --jq .login`.
 - `--repo <owner/repo>` — which repo. **Default:** current repo. `--repo` scopes discovery and reads; per-PR helpers and git actions operate on the **current checkout**. If `--repo` names a different repo than the current checkout, **stop and reconcile**. Full constraint: `references/pmm-scope.md`.
 - `--cadence Nm` — base poll interval. **Default:** `5m`.
-- `--max-deep-prs N` — shell collector deep-fleet limit, 1..500. **Default:** `25`. Discovery stays capped at 500; a larger fleet diagnoses before any per-PR fetch and preserves its last snapshot. This bounds work, not GitHub quota safety (pagination and other clients vary). Raising it requires an operator choosing that API load.
+- `--max-deep-prs N` — shell collector deep-fleet limit, 1..500. **Default:** `25`. Supported fleet size remains 500; discovery requests 501 as an overflow sentinel and refuses an incomplete fleet before per-PR work. A fleet above the configured deep limit also diagnoses and preserves its last snapshot. This bounds work, not GitHub quota safety (pagination and other clients vary). Raising it requires an operator choosing that API load.
 - `--max-parallel N` — max concurrent `phase-a-fixer` subagents. **Default:** `3`.
 - `--idle-pause-after N` — consecutive idle ticks before auto-pause. **Default:** `3`.
 - `--auto-wake` — keep a low-frequency re-scan running after an idle pause, instead of going fully quiet. **Default:** off.
@@ -344,15 +344,28 @@ echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max
 
 **Rediscover the fleet on every single tick.** A PR may have merged, closed, or been opened since the last tick — a cached list silently rots.
 
+<!-- test-anchor: pmm-discovery-cap -->
 ```bash
-PMM_LIMIT=500   # high cap so a real fleet is never silently truncated
-PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,title,headRefName,headRefOid,mergeStateStatus,reviewDecision --limit "$PMM_LIMIT")
-PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST")
-PR_COUNT=$(jq 'length' <<<"$PR_LIST")
+PMM_LIMIT=500   # supported fleet, never a silently truncated subset
+PMM_FETCH_LIMIT=501   # one overflow sentinel; never process it as a larger fleet
+if ! PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
+  --json number,title,headRefName,headRefOid,mergeStateStatus,reviewDecision --limit "$PMM_FETCH_LIMIT"); then
+  echo 'ERROR: fleet discovery failed; no partial fleet is actionable' >&2; exit 1
+fi
+jq -e 'type=="array"' >/dev/null <<<"$PR_LIST" || { echo 'ERROR: invalid fleet response' >&2; exit 1; }
+PR_COUNT=$(jq 'length' <<<"$PR_LIST") || { echo 'ERROR: fleet count failed; no partial fleet is actionable' >&2; exit 1; }
+if (( PR_COUNT > PMM_LIMIT )); then
+  echo 'ERROR: at least 501 open PRs; supported fleet cap is 500. Refusing partial discovery; preserve prior fleet/recovery state.' >&2
+  exit 1
+fi
+PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST") || { echo 'ERROR: fleet number projection failed' >&2; exit 1; }
 ```
 
-Warn when `PR_COUNT == PMM_LIMIT` (silent truncation risk). **Empty fleet → immediate Pause** (Step 8) with reason `empty fleet` — no 3-tick wait.
+Exactly 500 is accepted only after the 501-result request returned no overflow sentinel.
+Overflow is an **at-least-501 high-water observation**, not an exact total or evidence that a
+previously known PR closed. Stop before classification, dispatch, or snapshot pruning; retain
+pending/recovery state. **Empty complete fleet → immediate Pause** (Step 8) with reason
+`empty fleet` — no 3-tick wait.
 
 **Authorship guard (issue #733).** PMM dispatches writes — so it manages only PRs **you** authored. `--author` defaults to the authenticated user.
 
@@ -648,40 +661,59 @@ Cheap when nothing is pending — one state read and it returns. Its output obey
 
 **Actions-receipt replay:** when `PMM_SKIP_ACTIONS=true`, Step 6 already completed. Do not increment its streaks or write its receipt again. Restore `STREAK`, `IDLE_STREAK`, and `EFFECTIVE_CADENCE` from `.pmm_digest_streak`, `.pmm_idle_streak`, and `.pmm_cadence`, then go directly to Step 7. A replay must finish the lifecycle without counting the same poll twice.
 
-`DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` come from Step 4 — do not recompute. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision. When the pre-dispatch gate returns no event, it advances the same state digest streak and idle counter in shell so a quiet poll does not need to wake this model to maintain scheduling state. The collector reads its outbox plus relevant root scheduler/lifecycle/orchestration fields in one fixed projection, then uses `session-state.sh --cas ... --expect-root <literal-field-object>` to compare all of them under the existing write lock. A competing Step 6/7, owner, wake, or stop write defeats the whole stale collector batch; its diagnostic retry retains those original expectations and cannot overwrite the winner. Unrelated root fields do not participate. A lost comparison emits a diagnostic rather than claiming an unchanged successful tick; a later tick reads a fresh projection.
+`DIGEST` and `ROW_DIGEST` come from Step 4 — do not recompute. Step6 compares them with a fresh coherent root baseline; Step4's prior values remain table-rendering evidence. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision. When the pre-dispatch gate returns no event, it advances the same state digest streak and idle counter in shell so a quiet poll does not need to wake this model to maintain scheduling state. The collector reads its outbox plus relevant root scheduler/lifecycle/orchestration fields in one fixed projection, then uses `session-state.sh --cas ... --expect-root <literal-field-object>` to compare all of them under the existing write lock. A competing Step 6/7, owner, wake, or stop write defeats the whole stale collector batch; its diagnostic retry retains those original expectations and cannot overwrite the winner. Unrelated root fields do not participate. A lost comparison emits a diagnostic rather than claiming an unchanged successful tick; a later tick reads a fresh projection.
 
 <!-- test-anchor: pmm-pre-dispatch-backoff -->
 ```bash
+# Run backoff and idle fences in one Bash call. Capture exactly the root inputs
+# the atomic Step6 commit will compare, including live work and lifecycle state.
+PMM_STEP6_ROOT=$("$SESSION_STATE_SH" --get-json '{pmm_digest,pmm_digest_streak,pmm_row_digest,pmm_idle_streak,pmm_cadence,pmm_monitor_generation,pmm_monitor_task_id,pmm_active,pmm,pmm_rearm,active_agents,pmm_in_flight,pmm_merge_holds}') || {
+  echo 'ERROR: Step6 state unreadable; counters/receipt remain uncommitted' >&2; exit 1; }
+  jq -e '.pmm_rearm==null and ((.active_agents // {})|type)=="object"
+    and ((.pmm_in_flight // {})|type)=="object" and ((.pmm_merge_holds // {})|type)=="object"
+    and all((.active_agents // {})[]; (.phase|type)=="string" and (.status|type)=="string")
+    and all((.pmm_in_flight // {})[]; type=="object" and (.status|type)=="string")
+    and all((.pmm_merge_holds // {})[]; type=="object")' >/dev/null <<<"$PMM_STEP6_ROOT" || {
+    echo 'ERROR: live work/lifecycle state is unknown; idle and completion remain uncommitted' >&2; exit 1; }
+  if [ "$PMM_INTERNAL_TICK" = true ]; then
+    jq -e --arg gen "${PMM_TICK_GENERATION:-}" '.pmm_monitor_generation==$gen and $gen!="" and .pmm_active==true and (.pmm.stop_requested // false)==false and (.pmm.paused_at // null)==null' \
+      >/dev/null <<<"$PMM_STEP6_ROOT" || { echo 'ERROR: stale or stopped Step6 tick' >&2; exit 1; }
+  fi
+  ACTIVE_FIXERS=$(jq '[.active_agents // {} | .[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  ACTIVE_WRAPS=$(jq '[.pmm_in_flight // {} | .[] | select(.status == "active")] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  HELD_COUNT=$(jq '[.pmm_merge_holds // {} | .[] | select(.released != true)] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  if [ -n "${SEQ:-}" ]; then
+    jq -e 'type=="object" and (.plan|type)=="array"' >/dev/null <<<"$SEQ" || { echo 'ERROR: merge plan unreadable; idle state remains unknown' >&2; exit 1; }
+    PLAN_HELD_COUNT=$(jq '[.plan[] | select(.action == "hold")] | length' <<<"$SEQ") || exit 1
+    HELD_COUNT=$((HELD_COUNT+PLAN_HELD_COUNT))
+  fi
 if [ "${PMM_SKIP_ACTIONS:-false}" = true ]; then
-  STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null) || { echo "ERROR: completed-event digest streak unreadable" >&2; exit 1; }
-  IDLE_STREAK=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null) || { echo "ERROR: completed-event idle streak unreadable" >&2; exit 1; }
-  EFFECTIVE_CADENCE=$("$SESSION_STATE_SH" --get '.pmm_cadence' 2>/dev/null) || { echo "ERROR: completed-event cadence unreadable" >&2; exit 1; }
+  STREAK=$(jq -r '.pmm_digest_streak' <<<"$PMM_STEP6_ROOT") || exit 1
+  IDLE_STREAK=$(jq -r '.pmm_idle_streak' <<<"$PMM_STEP6_ROOT") || exit 1
+  EFFECTIVE_CADENCE=$(jq -r '.pmm_cadence' <<<"$PMM_STEP6_ROOT") || exit 1
   [[ "$STREAK" =~ ^[0-9]{1,8}$ && "$IDLE_STREAK" =~ ^[0-9]{1,8}$ && "$EFFECTIVE_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || {
-    echo "ERROR: completed-event scheduling state is invalid" >&2
-    exit 1
-  }
+    echo "ERROR: completed-event scheduling state is invalid" >&2; exit 1; }
+  # New live work may appear after the original commit. It blocks idle routing
+  # now without advancing or rewriting the completed event's counters.
+  if [ "$ACTIVE_FIXERS" -gt 0 ] || [ "$ACTIVE_WRAPS" -gt 0 ] || [ "$HELD_COUNT" -gt 0 ]; then IDLE_STREAK=0; fi
 else
-  STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null || echo 0)
-  [ "$STREAK" = null ] && STREAK=0
+  STREAK=$(jq -r '.pmm_digest_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
+  [[ "$STREAK" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid digest streak' >&2; exit 1; }
+  PMM_STEP6_SAME_DIGEST=false
+  STEP6_PRIOR_DIGEST=$(jq -r '.pmm_digest // ""' <<<"$PMM_STEP6_ROOT") || exit 1
+  [ "$DIGEST" = "$STEP6_PRIOR_DIGEST" ] && PMM_STEP6_SAME_DIGEST=true
   if [ "$PMM_INTERNAL_TICK" != true ]; then STREAK=0
-  elif [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
-  "$SESSION_STATE_SH" --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
-    --set ".pmm_row_digest=\"$ROW_DIGEST\""
-
+  elif [ "$PMM_STEP6_SAME_DIGEST" = true ]; then STREAK=$((10#$STREAK+1)); else STREAK=0; fi
   BASE_CADENCE_MIN=${PMM_CADENCE%m}
   WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
   [ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
-  if [ "$STREAK" -ge 3 ]; then
-    EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"
-  else
-    EFFECTIVE_CADENCE="$PMM_CADENCE"
-  fi
+  if [ "$STREAK" -ge 3 ]; then EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"; else EFFECTIVE_CADENCE="$PMM_CADENCE"; fi
 fi
 ```
 
 Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
 
-**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
+**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
 On a quiet shell-only poll, no model action ran by construction; the gate advances the idle counter
 only when the state digest is unchanged and there are no active Phase A agents, PMM locks, or merge
@@ -691,34 +723,46 @@ ordinary Pause route.
 <!-- test-anchor: pmm-pre-dispatch-idle -->
 ```bash
 if [ "${PMM_SKIP_ACTIONS:-false}" != true ]; then
-  IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
-  [ "$IDLE_PREV" = null ] && IDLE_PREV=0
-  PMM_AGENTS_JSON=$("$SESSION_STATE_SH" --get-json '.active_agents // {}') || { echo "ERROR: active agents unreadable; idle state remains unknown" >&2; exit 1; }
-  ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
-    <<<"$PMM_AGENTS_JSON") || exit 1
-  HELD_COUNT=0
-  [ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
-  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
-    IDLE_STREAK=$((IDLE_PREV + 1))
+  : "${PMM_STEP6_ROOT:?run Step6 backoff and idle together}"
+  IDLE_PREV=$(jq -r '.pmm_idle_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
+  [[ "$IDLE_PREV" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid idle streak' >&2; exit 1; }
+  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
+    IDLE_STREAK=$((10#$IDLE_PREV+1))
   else
     IDLE_STREAK=0
   fi
-  "$SESSION_STATE_SH" --set ".pmm_idle_streak=$IDLE_STREAK"
+  STEP6_DIGEST_JSON=$(jq -cn --arg value "$DIGEST" '$value') || exit 1
+  STEP6_ROW_JSON=$(jq -cn --arg value "$ROW_DIGEST" '$value') || exit 1
+  STEP6_WRITES=(--set ".pmm_digest=$STEP6_DIGEST_JSON" --set ".pmm_digest_streak=$STREAK"
+    --set ".pmm_row_digest=$STEP6_ROW_JSON" --set ".pmm_idle_streak=$IDLE_STREAK"
+    --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"")
+  if [ -n "${PMM_DISPATCH_EVENT:-}" ]; then
+    STEP6_EXPECT=$(jq -cn --arg id "$PMM_DISPATCH_EVENT" '$id') || exit 1
+    STEP6_CAS=".pmm_pre_dispatch.pending_event.event_id=$STEP6_EXPECT"
+    STEP6_WRITES+=(--set ".pmm_pre_dispatch.actions_completed_event_id=$STEP6_EXPECT")
+  else
+    STEP6_CAS=".pmm_digest=$STEP6_DIGEST_JSON"
+    STEP6_EXPECT=$(jq -c '.pmm_digest' <<<"$PMM_STEP6_ROOT") || exit 1
+  fi
+  # Counters, cadence and actions receipt form ONE guarded local transaction.
+  # A stale generation, changed live work, or failed write commits none of them.
+  "$SESSION_STATE_SH" --cas "$STEP6_CAS" --expect "$STEP6_EXPECT" --expect-root "$PMM_STEP6_ROOT" "${STEP6_WRITES[@]}" || {
+    echo 'ERROR: Step6 commit failed or lost ownership; event remains pending and no completion may be claimed' >&2; exit 1; }
 fi
 ```
 
-**Persist the actions receipt only after this tick completed discovery, gate checks, authorized
-actions, and Step 6 state writes.** The event is evidence that woke the model, never a cached
+**Commit the actions receipt in the SAME atomic Step6 transaction as all scheduling fields, after discovery, gate checks and authorized actions finish.** Run the backoff/idle fences together; a failure exits before completion. The later fence only verifies that durable receipt, including after compaction. The event is evidence that woke the model, never a cached
 action verdict; every delayed or repeated event re-runs the normal current-HEAD and ownership checks
 above. The actions receipt prevents Step 5 from repeating while Step 7 finishes:
 
 <!-- test-anchor: pmm-pre-dispatch-actions-receipt -->
 ```bash
 if [ -n "$PMM_DISPATCH_EVENT" ]; then
-  "$SESSION_STATE_SH" --set ".pmm_pre_dispatch.actions_completed_event_id=\"$PMM_DISPATCH_EVENT\"" || {
-    echo "[PMM] Could not persist actions receipt for event $PMM_DISPATCH_EVENT — leaving it queued for idempotent retry" >&2
-    exit 1
-  }
+  # Verification only: the preceding atomic Step6 batch is the sole writer.
+  # Executing this fence after a failed/incomplete Step6 cannot manufacture proof.
+  PMM_ACTIONS_RECEIPT=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.actions_completed_event_id') || exit 1
+  [[ "$PMM_ACTIONS_RECEIPT" == "$PMM_DISPATCH_EVENT" ]] || {
+    echo "ERROR: Step6 did not commit event $PMM_DISPATCH_EVENT; leave it pending" >&2; exit 1; }
 fi
 ```
 
@@ -924,7 +968,7 @@ fi
   --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"" \
   --set ".pmm_author=\"$PMM_AUTHOR\"" \
   --set ".pmm_last_tick_at=\"$NOW\"" \
-  --set ".pmm_idle_streak=$IDLE_STREAK" ${resume_args[@]+"${resume_args[@]}"} || {
+  ${resume_args[@]+"${resume_args[@]}"} || {
     echo 'ERROR: Monitor publication lost ownership; stop only the new task, preserve current state, and reconcile' >&2
     exit 1
   }

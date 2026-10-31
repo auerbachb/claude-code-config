@@ -223,7 +223,14 @@ cat > "$BIN/gh" <<'SH'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "pr list" ]]; then
   [[ -z "${GH_ARGS_PATH:-}" ]] || printf '%s\n' "$@" > "$GH_ARGS_PATH"
-  printf '%s\n' "$STUB_PULLS_JSON"
+  # Match gh's real --limit behavior, so overflow fixtures cannot pass merely
+  # because this stub returned more rows than the production request permitted.
+  limit=30; previous=""
+  for arg in "$@"; do
+    [[ "$previous" != --limit ]] || limit="$arg"
+    previous="$arg"
+  done
+  printf '%s\n' "$STUB_PULLS_JSON" | jq --argjson limit "$limit" '.[0:$limit]'
 else
   exit 2
 fi
@@ -238,7 +245,7 @@ HOME="$LIVE_HOME" PATH="$BIN:$PATH" STUB_PULLS_JSON="$STUB_PULLS_JSON" STUB_GATE
   "$LIVE/pmm-pre-dispatch.sh" --repo org/repo --author alice --generation gen-live --base-cadence-min 5 \
   --idle-pause-after 99 > "$TMP/live-initial.out"
 LIVE_EVENT="$(event_from "$TMP/live-initial.out" "$LIVE_HOME")"
-check "production fleet discovery requests the skill's 500-PR cap" '[[ "$(grep -Fxc -- "--limit" "$GH_ARGS_PATH")" == 1 && "$(tail -n 1 "$GH_ARGS_PATH")" == 500 ]]'
+check "production discovery requests a 501 sentinel for the supported 500-PR fleet" '[[ "$(grep -Fxc -- "--limit" "$GH_ARGS_PATH")" == 1 && "$(tail -n 1 "$GH_ARGS_PATH")" == 501 ]]'
 LIVE_TUPLE="$(jq -cnS '[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]')"
 LIVE_DIGEST="$(printf '%s' "$LIVE_TUPLE" | shasum -a 256 | awk '{print $1}')"
 HOME="$LIVE_HOME" "$LIVE/session-state.sh" --set ".pmm_digest=\"$LIVE_DIGEST\"" --set '.pmm_digest_streak=0' --set '.pmm_idle_streak=0' --set '.pmm_cadence="5m"'
@@ -393,7 +400,9 @@ hs=home('receipt-home');es=dict(env,HOME=str(hs));rs=run(e=es);ps=json.loads((hs
 base='SESSION_STATE_SH='+str(live/'session-state.sh')+'\nPMM_PRE_DISPATCH_SH='+str(live/'pmm-pre-dispatch.sh')+'\nARGUMENTS="--tick --monitor-generation gen-live --dispatch-event '+eid+'"\n'
 def skill_run(code):return subprocess.run(['bash','-eu','-c',base+code],env=es,text=True,capture_output=True)
 r=skill_run(block('pmm-pre-dispatch-tick-gate')+'\nprintf "%s|%s" "$PMM_SKIP_ACTIONS" "$PMM_DUPLICATE_COMPLETED_EVENT"');assert r.returncode==0 and r.stdout=='false|false',(r.stdout,r.stderr)
-r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-actions-receipt'));assert r.returncode==0,r.stderr
+r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-actions-receipt'));assert r.returncode!=0 and 'Step6 did not commit' in r.stderr
+receipt_stage6='PMM_DISPATCH_EVENT='+eid+'\nPMM_TICK_GENERATION=gen-live\nPMM_INTERNAL_TICK=true\nDIGEST=receipt-digest\nROW_DIGEST=receipt-row\nPMM_CADENCE=5m\nTICK_HAD_ACTION=true\nSEQ=""\n'
+r=skill_run(receipt_stage6+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\n'+block('pmm-pre-dispatch-actions-receipt'));assert r.returncode==0,r.stderr
 r=skill_run(block('pmm-pre-dispatch-tick-gate')+'\nprintf "%s|%s" "$PMM_SKIP_ACTIONS" "$PMM_DUPLICATE_COMPLETED_EVENT"');assert r.returncode==0 and r.stdout=='true|false',(r.stdout,r.stderr)
 r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-lifecycle-receipt'));assert r.returncode==0,r.stderr
 r=skill_run(block('pmm-pre-dispatch-tick-gate'));assert r.returncode==0 and 'already-acknowledged' in r.stdout
@@ -411,7 +420,7 @@ print('PASS: a dispatch-event tick fails before action when the helper is unavai
 step4_home=home('step4-digest-home');step4_env=dict(env,HOME=str(step4_home));step4_state=step4_home/'.claude/session-state.json'
 initial=run(e=step4_env);assert initial.returncode==0 and initial.stdout.startswith('/pr-monitor-and-manage '),(initial.stdout,initial.stderr)
 step4_event=json.loads(step4_state.read_text())['pmm_pre_dispatch']['pending_event'];ack_result=run([str(live/'pmm-pre-dispatch.sh'),'--ack',step4_event['event_id']],e=step4_env);assert ack_result.returncode==0,ack_result.stderr
-step4_script='FLEET_TUPLE_SORTED=$(jq -cS \'[.prs[] | [.number,.gate.head_sha,.gate.merge_state,.gate.review_decision,.gate.ci_status.failing,.gate.unresolved_thread_count]] | sort_by(.[0])\' "$STEP4_SNAPSHOT")\nDIGEST=$(printf "%s" "$FLEET_TUPLE_SORTED" | shasum -a 256 | awk \'{print $1}\')\nPREV="$DIGEST"\nROW_DIGEST=step4-row\nPMM_CADENCE=5m\nPMM_INTERNAL_TICK=true\nTICK_HAD_ACTION=false\nSEQ=""\n'+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\nprintf "%s|%s|%s" "$STREAK" "$IDLE_STREAK" "$EFFECTIVE_CADENCE"'
+step4_script='FLEET_TUPLE_SORTED=$(jq -cS \'[.prs[] | [.number,.gate.head_sha,.gate.merge_state,.gate.review_decision,.gate.ci_status.failing,.gate.unresolved_thread_count]] | sort_by(.[0])\' "$STEP4_SNAPSHOT")\nDIGEST=$(printf "%s" "$FLEET_TUPLE_SORTED" | shasum -a 256 | awk \'{print $1}\')\nPREV="$DIGEST"\n"$SESSION_STATE_SH" --set ".pmm_digest=\\"$DIGEST\\""\nROW_DIGEST=step4-row\nPMM_CADENCE=5m\nPMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nTICK_HAD_ACTION=false\nSEQ=""\n'+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\nprintf "%s|%s|%s" "$STREAK" "$IDLE_STREAK" "$EFFECTIVE_CADENCE"'
 step4_code='SESSION_STATE_SH='+shlex.quote(str(live/'session-state.sh'))+'\nSTEP4_SNAPSHOT='+shlex.quote(str(tmp/'base.json'))+'\n'+step4_script
 r=subprocess.run(['bash','-eu','-c',step4_code],env=step4_env,text=True,capture_output=True);assert r.returncode==0 and r.stdout=='1|1|5m',(r.stdout,r.stderr)
 quiet=run(e=step4_env);assert quiet.returncode==0 and quiet.stdout=='',(quiet.stdout,quiet.stderr,step4_state.read_text())
@@ -419,7 +428,7 @@ print('PASS: Step 4 fleet digest plus actual Step 6 blocks persists the baseline
 # Actions-receipt replay must restore completed Step 6 state without advancing
 # either counter or changing the cadence a second time.
 step4_data=json.loads(step4_state.read_text());step4_data.update(pmm_digest_streak=4,pmm_idle_streak=7,pmm_cadence='15m');step4_state.write_text(json.dumps(step4_data))
-replay_code='SESSION_STATE_SH='+shlex.quote(str(live/'session-state.sh'))+'\nPMM_SKIP_ACTIONS=true\nPMM_INTERNAL_TICK=true\nDIGEST=changed\nPREV=old\nROW_DIGEST=changed-row\nPMM_CADENCE=5m\nTICK_HAD_ACTION=false\nSEQ=""\n'+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\nprintf "%s|%s|%s" "$STREAK" "$IDLE_STREAK" "$EFFECTIVE_CADENCE"'
+replay_code='SESSION_STATE_SH='+shlex.quote(str(live/'session-state.sh'))+'\nPMM_SKIP_ACTIONS=true\nPMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nDIGEST=changed\nPREV=old\nROW_DIGEST=changed-row\nPMM_CADENCE=5m\nTICK_HAD_ACTION=false\nSEQ=""\n'+block('pmm-pre-dispatch-backoff')+'\n'+block('pmm-pre-dispatch-idle')+'\nprintf "%s|%s|%s" "$STREAK" "$IDLE_STREAK" "$EFFECTIVE_CADENCE"'
 r=subprocess.run(['bash','-eu','-c',replay_code],env=step4_env,text=True,capture_output=True);assert r.returncode==0 and r.stdout=='4|7|15m',(r.stdout,r.stderr)
 after=json.loads(step4_state.read_text());assert (after['pmm_digest_streak'],after['pmm_idle_streak'],after['pmm_cadence'])==(4,7,'15m'),after
 print('PASS: actions-receipt replay restores completed counters and cadence without incrementing or writing them')
@@ -447,6 +456,56 @@ hf=home('cas-race');ef=dict(env,HOME=str(hf));r=run(e=ef);assert r.returncode==5
 shutil.copy2(real_state,state_helper)
 print('PASS: failed jq/write and concurrent receipt CAS produce diagnostics and preserve state')
 
+# One atomic Step6 batch owns all counters/cadence and the actions receipt.
+# Execute real fences without errexit: explicit failures must stop completion.
+step6_backoff=block('pmm-pre-dispatch-backoff');step6_idle=block('pmm-pre-dispatch-idle');step6_verify=block('pmm-pre-dispatch-actions-receipt')
+step6_home=home('step6-atomic');step6_env=dict(env,HOME=str(step6_home));write_bundle()
+step6_initial=run(e=step6_env);assert step6_initial.returncode==0,(step6_initial.stdout,step6_initial.stderr)
+step6_file=step6_home/'.claude/session-state.json';step6_seed=json.loads(step6_file.read_text());step6_event=step6_seed['pmm_pre_dispatch']['pending_event']['event_id']
+step6_seed.update(pmm_digest='same',pmm_row_digest='old-row',pmm_digest_streak=2,pmm_idle_streak=2,pmm_cadence='5m');step6_file.write_text(json.dumps(step6_seed))
+def step6_call(code,helper=real_state,extra=''):
+ prefix='SESSION_STATE_SH='+shlex.quote(str(helper))+'\nPMM_PRE_DISPATCH_SH='+shlex.quote(str(live/'pmm-pre-dispatch.sh'))+'\nPMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nPMM_DISPATCH_EVENT='+step6_event+'\nARGUMENTS="--tick --monitor-generation gen-live --dispatch-event '+step6_event+'"\nDIGEST=same\nROW_DIGEST=new-row\nPMM_CADENCE=5m\nTICK_HAD_ACTION=false\nSEQ=""\n'+extra
+ return subprocess.run(['bash','-u','-c',prefix+code],env=step6_env,text=True,capture_output=True)
+step6_code=step6_backoff+'\n'+step6_idle+'\n'+step6_verify
+step6_fault=tmp/'step6-write-fault.sh';executable(step6_fault,'for arg in "$@"; do [[ "$arg" != --cas ]] || exit 5; done\nexec '+shlex.quote(str(real_state))+' "$@"\n')
+step6_before=step6_file.read_bytes();r=step6_call(step6_code,helper=step6_fault);assert r.returncode!=0 and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
+r=step6_call(step6_verify);assert r.returncode!=0 and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
+r=step6_call(block('pmm-pre-dispatch-tick-gate')+'\nprintf "%s" "$PMM_SKIP_ACTIONS"');assert r.returncode==0 and r.stdout=='false',(r.stdout,r.stderr)
+# A writer that starts /wrap after the snapshot defeats the whole CAS; it cannot
+# create a false completion receipt or advance only one of the counters.
+step6_race=tmp/'step6-live-race.sh';step6_once=tmp/'step6-race-once'
+step6_lock={'status':'active','dispatched_at':now(),'head_sha':'abc123'}
+executable(step6_race,'for arg in "$@"; do if [[ "$arg" == --cas ]] && mkdir '+shlex.quote(str(step6_once))+' 2>/dev/null; then '+shlex.quote(str(real_state))+' --set '+shlex.quote('.pmm_in_flight["7"]='+json.dumps(step6_lock))+'; fi; done\nexec '+shlex.quote(str(real_state))+' "$@"\n')
+r=step6_call(step6_code,helper=step6_race);step6_after=json.loads(step6_file.read_text());assert r.returncode!=0 and step6_after['pmm_in_flight']['7']['status']=='active',(r.stdout,r.stderr)
+for key in ['pmm_digest','pmm_row_digest','pmm_digest_streak','pmm_idle_streak','pmm_cadence','pmm_pre_dispatch']:assert step6_after.get(key)==step6_seed.get(key),(key,step6_after)
+# Retry refreshes live work, resets idle, and commits receipt+all counters at once.
+r=step6_call(step6_code,extra='ACTIVE_WRAPS=0\nACTIVE_FIXERS=0\nHELD_COUNT=0\n');assert r.returncode==0,(r.stdout,r.stderr)
+step6_done=json.loads(step6_file.read_text());assert (step6_done['pmm_digest_streak'],step6_done['pmm_idle_streak'],step6_done['pmm_cadence'])==(3,0,'15m') and step6_done['pmm_pre_dispatch']['actions_completed_event_id']==step6_event
+step6_before=step6_file.read_bytes();r=step6_call(step6_code,extra='PMM_SKIP_ACTIONS=true\n');assert r.returncode==0 and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
+print('PASS: failed/stale Step6 atomic commit cannot advance counters or fabricate actions completion; fresh retry sees /wrap and replay never double-counts')
+# A delayed receipt replay must observe work that started after an earlier idle
+# commit, suppress idle routing, and leave the original counters untouched.
+step6_delayed=json.loads(json.dumps(step6_done));step6_delayed['pmm_idle_streak']=9;step6_file.write_text(json.dumps(step6_delayed));step6_before=step6_file.read_bytes()
+r=step6_call(step6_code+'\nprintf "%s" "$IDLE_STREAK"',extra='PMM_SKIP_ACTIONS=true\n');assert r.returncode==0 and r.stdout=='0' and step6_file.read_bytes()==step6_before,(r.stdout,r.stderr)
+
+# Canonical live-work classes, with stale shell flags deliberately set to zero.
+for step6_name,step6_work,step6_idle_expected in [
+ ('active-wrap',{'pmm_in_flight':{'7':step6_lock}},0),
+ ('completed-wrap',{'pmm_in_flight':{'7':{'status':'complete'}}},3),
+ ('unreleased-hold',{'pmm_merge_holds':{'7':{'released':False}}},0),
+ ('released-hold',{'pmm_merge_holds':{'7':{'released':True}}},3),
+ ('active-agent',{'active_agents':{'worker':{'phase':'A','status':'running'}}},0),
+ ('completed-agent',{'active_agents':{'worker':{'phase':'A','status':'complete'}}},3)]:
+ step6_case=json.loads(json.dumps(step6_seed));step6_case.update(step6_work);step6_file.write_text(json.dumps(step6_case))
+ r=step6_call(step6_code,extra='ACTIVE_WRAPS=0\nACTIVE_FIXERS=0\nHELD_COUNT=0\n');step6_result=json.loads(step6_file.read_text());assert r.returncode==0 and step6_result['pmm_idle_streak']==step6_idle_expected,(step6_name,r.stdout,r.stderr,step6_result)
+step6_file.write_text(json.dumps(step6_seed));step6_before=step6_file.read_bytes();r=step6_call(step6_code,extra='SEQ='+shlex.quote('{"bogus":true}')+'\n');assert r.returncode!=0 and step6_file.read_bytes()==step6_before
+step6_case=json.loads(json.dumps(step6_seed));step6_case['pmm_in_flight']={'7':{}};step6_file.write_text(json.dumps(step6_case));step6_before=step6_file.read_bytes();r=step6_call(step6_code);assert r.returncode!=0 and step6_file.read_bytes()==step6_before
+# The quiet collector also treats a partial lock as unknown, not an idle fleet.
+assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',step6_event],e=step6_env).returncode==0
+r=run(e=step6_env);step6_result=json.loads(step6_file.read_text());assert r.returncode==5 and step6_result['pmm_pre_dispatch']['pending_event']['diagnostic'],(r.stdout,r.stderr)
+step6_case=json.loads(json.dumps(step6_seed));step6_case['pmm_monitor_generation']='new-owner';step6_file.write_text(json.dumps(step6_case));step6_before=step6_file.read_bytes();r=step6_call(step6_code);assert r.returncode!=0 and step6_file.read_bytes()==step6_before
+print('PASS: refreshed active wraps/agents/unreleased holds block idle; completed/released work permits idle; partial locks and stale generations cannot complete')
+
 # Inject real production Step6/Step7 schedule publication AFTER the collector's
 # coherent read, immediately before its CAS. First race changes ROOT ONLY so the
 # old gate-only CAS would overwrite it. Second race also publishes an outbox.
@@ -462,8 +521,8 @@ for outbox_race in (False,True):
  run([str(live/'pmm-pre-dispatch.sh'),'--ack',initial['event_id']],e=ef)
  sf=hf/'.claude/session-state.json';d=json.loads(sf.read_text());d['pmm_digest']=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest();d['pmm_digest_streak']=0;d['pmm_idle_streak']=0;sf.write_text(json.dumps(d))
  before_gate=d['pmm_pre_dispatch'];writer=tmp/('schedule-writer-'+str(outbox_race)+'.sh');winner=tmp/('schedule-winner-'+str(outbox_race)+'.json');once=tmp/('schedule-once-'+str(outbox_race))
- setup='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nDIGEST=owner-digest\nPREV=old-digest\nROW_DIGEST=owner-row\nPMM_CADENCE=10m\n'
- setup+=backoff+'\nIDLE_STREAK=17\nEFFECTIVE_CADENCE=30m\nMONITOR_TASK_ID=77\nMONITOR_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\nPMM_AUTHOR=alice\nPMM_TICK_GENERATION=gen-live\nNEW_MONITOR_GENERATION=fixture-next\n'+claim+'\n'+publication+'\n'
+ setup='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nTICK_HAD_ACTION=false\nSEQ=""\nDIGEST=owner-digest\nPREV=old-digest\nROW_DIGEST=owner-row\nPMM_CADENCE=10m\n'
+ setup+=backoff+'\n'+block('pmm-pre-dispatch-idle')+'\nIDLE_STREAK=17\nEFFECTIVE_CADENCE=30m\nMONITOR_TASK_ID=77\nMONITOR_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\nPMM_AUTHOR=alice\nPMM_TICK_GENERATION=gen-live\nNEW_MONITOR_GENERATION=fixture-next\n'+claim+'\n'+publication+'\n'
  setup+='"$SESSION_STATE_SH" --set '+shlex.quote('.pmm_next_expected_tick_at="2099-01-01T00:00:00Z"')+' --set '+shlex.quote('.unrelated_owner_marker="keep"')+'\n'
  if outbox_race:
   owner_event=dict(initial,event_id='c'*64)
@@ -474,7 +533,7 @@ for outbox_race in (False,True):
  r=run(e=ef);after=json.loads(sf.read_text());expected=json.loads(winner.read_text())
  assert r.returncode==5 and len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout,(r.stdout,r.stderr)
  assert after==expected,'stale collector/diagnostic overwrote concurrent schedule or outbox'
- assert after['pmm_digest']=='owner-digest' and after['pmm_row_digest']=='owner-row' and after['pmm_cadence']=='30m' and after['pmm_idle_streak']==17 and after['pmm_next_expected_tick_at']=='2099-01-01T00:00:00Z'
+ assert after['pmm_digest']=='owner-digest' and after['pmm_row_digest']=='owner-row' and after['pmm_cadence']=='30m' and after['pmm_idle_streak']==0 and after['pmm_next_expected_tick_at']=='2099-01-01T00:00:00Z'
  if not outbox_race: assert after['pmm_pre_dispatch']==before_gate
  else: assert after['pmm_pre_dispatch']['pending_event']['event_id']=='c'*64 and after['pmm_pre_dispatch']['actions_completed_event_id']=='owner-actions'
  shutil.copy2(real_state,state_helper)
@@ -483,7 +542,7 @@ for outbox_race in (False,True):
   assert r.returncode==0 and 'state_digest' in fresh['reasons'],(r.stdout,r.stderr,fresh)
   # Fresh owner processing (actual Step6) aligns the changed digest, then ack.
   fresh_digest=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest()
-  fresh_owner='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nPMM_CADENCE=30m\nDIGEST='+fresh_digest+'\nPREV=owner-digest\nROW_DIGEST=fresh-row\n'+backoff
+  fresh_owner='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nTICK_HAD_ACTION=false\nSEQ=""\nPMM_CADENCE=30m\nDIGEST='+fresh_digest+'\nPREV=owner-digest\nROW_DIGEST=fresh-row\n'+backoff+'\n'+block('pmm-pre-dispatch-idle')
   subprocess.run(['bash','-c',fresh_owner],env=ef,check=True,capture_output=True,text=True)
   assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',fresh['event_id']],e=ef).returncode==0
   r=run(e=ef);assert r.returncode==0 and r.stdout=='',(r.stdout,r.stderr)
@@ -672,6 +731,65 @@ prior=json.loads(fs.read_text())['pmm_pre_dispatch']['snapshot'];r=run(e=fleet_e
 assert r.returncode==5 and d['pmm_pre_dispatch']['snapshot']==prior and d['pmm_pre_dispatch']['pending_event']['diagnostic'] and len(countlog.read_text().splitlines())==50
 fleet_env['HOME']=str(home('small-bound'));small=argv+['--max-deep-prs','2'];r=run(small,e=fleet_env);assert r.returncode==5 and len(countlog.read_text().splitlines())==50
 print('PASS: default25 fleet executes50 helper calls;500 discovery and smaller configured bound perform zero deep polls, retain prior snapshot/pending evidence, and diagnose')
+# Boundary proof without issuing 1000 fake deep fetches: exactly500 passes the
+# production preflight and enters the first injected-failure helper.501 must
+# stop before every deep helper, even with max-deep-prs500.
+cap_records=[{'number':n,'headRefOid':'abc123','url':f'https://github.com/org/repo/pull/{n}','mergeStateStatus':'CLEAN'} for n in range(1,502)]
+cap_calls=tmp/'sentinel-helper-calls';cap_calls.write_text('')
+cap_gate_path=live/'merge-gate.sh';cap_gate_saved=cap_gate_path.read_text()
+cap_gate_path.write_text('#!/usr/bin/env bash\nprintf "gate %s\\n" "$1" >> "$FLEET_CALLS"\nexit 4\n')
+cap500_home=home('exact500-preflight');cap500_env=dict(env,HOME=str(cap500_home),FLEET_CALLS=str(cap_calls),STUB_PULLS_JSON=json.dumps(cap_records[:500]))
+cap_args=argv+['--max-deep-prs','500']
+r=run(cap_args,e=cap500_env);cap500_data=json.loads((cap500_home/'.claude/session-state.json').read_text())
+assert r.returncode==5 and cap_calls.read_text().splitlines()==['gate 1'] and cap500_data['pmm_pre_dispatch']['last_error'].startswith('merge-gate unavailable'),(r.stdout,r.stderr,cap500_data)
+cap_calls.write_text('');cap_home=home('overflow501');cap_env=dict(env,HOME=str(cap_home),FLEET_CALLS=str(cap_calls),STUB_PULLS_JSON=json.dumps(cap_records))
+cap_snapshot=tmp/'prior-known501.json';cap_snapshot.write_text(json.dumps({'repo':'org/repo','author':'alice','collected_at':now(),'prs':[dict(number=501,url=cap_records[-1]['url'],gate=real_gate,findings=[])],'evidence':[{'pr':501,'source':'prior-confirmed'}],'orchestration':{'active_agents':{},'pmm_in_flight':{},'merge_holds':{}}}))
+r=run(argv+['--fixture',str(cap_snapshot)],e=cap_env);assert r.returncode==0,(r.stdout,r.stderr)
+cap_state=cap_home/'.claude/session-state.json';cap_data=json.loads(cap_state.read_text());cap_pending=cap_data['pmm_pre_dispatch']['pending_event'];cap_previous=cap_data['pmm_pre_dispatch']['snapshot']
+# Negative control models the real CLI: an old limit500 response omits the
+# previously known still-open501st PR and cannot establish that it closed.
+cap_truncated=subprocess.run(['gh','pr','list','--limit','500'],env=cap_env,text=True,capture_output=True);assert cap_truncated.returncode==0
+assert len(json.loads(cap_truncated.stdout))==500 and 501 not in [x['number'] for x in json.loads(cap_truncated.stdout)]
+r=run(cap_args,e=cap_env);cap_data=json.loads(cap_state.read_text())
+assert r.returncode==0 and cap_data['pmm_pre_dispatch']['pending_event']==cap_pending and cap_data['pmm_pre_dispatch']['snapshot']==cap_previous and cap_calls.read_text()==''
+assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',cap_pending['event_id']],e=cap_env).returncode==0
+r=run(cap_args,e=cap_env);cap_data=json.loads(cap_state.read_text());cap_diag=cap_data['pmm_pre_dispatch']['pending_event']
+assert r.returncode==5 and cap_diag['diagnostic'] and 'at least 501' in cap_diag['reason'] and cap_calls.read_text()==''
+assert cap_data['pmm_pre_dispatch']['snapshot']==cap_previous and cap_data['pmm_pre_dispatch']['snapshot']['data']['prs'][0]['number']==501 and 'delta' not in cap_diag
+cap_gate_path.write_text(cap_gate_saved)
+print('PASS: exactly500 enters deep preflight;501 sentinel preserves pending/prior known omitted501 and diagnoses before all helpers/snapshot pruning')
+
+# Execute the other two production discovery fences against the same CLI-limit
+# stub: the normal main entry and paused wake scan also refuse partial fleets.
+cap_main=re.search(r'<!-- test-anchor: pmm-discovery-cap -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+cap_main_prefix='PMM_AUTHOR=alice\nREPO_FLAG=(--repo org/repo)\n'
+cap_main500=subprocess.run(['bash','-c',cap_main_prefix+cap_main+'\nprintf "COUNT=%s" "$PR_COUNT"'],env=cap500_env,text=True,capture_output=True)
+assert cap_main500.returncode==0 and cap_main500.stdout=='COUNT=500',(cap_main500.stdout,cap_main500.stderr)
+cap_before=cap_state.read_bytes();cap_main501=subprocess.run(['bash','-c',cap_main_prefix+cap_main],env=cap_env,text=True,capture_output=True)
+assert cap_main501.returncode!=0 and 'at least 501' in cap_main501.stderr and cap_state.read_bytes()==cap_before
+cap_wake_scan=re.search(r'<!-- test-anchor: pmm-wake-step-4a-scan -->\s*```bash\n(.*?)\n```',wake_text,re.S).group(1)
+cap_wake_compare=re.search(r'<!-- test-anchor: pmm-wake-step-4a-compare -->\s*```bash\n(.*?)\n```',wake_text,re.S).group(1)
+cap_wake_home=home('sentinel-paused-wake');cap_wake_file=cap_wake_home/'.claude/session-state.json'
+cap_wake_saved=[{'pr':x['number'],'head_sha':x['headRefOid'],'state':'CLEAN'} for x in cap_records[:500]]
+cap_wake_file.write_text(json.dumps({'pmm':{'paused_at':now(),'config_at_pause':{'author':'alice','repo':'org/repo'},'fleet_at_pause':cap_wake_saved}}))
+cap_wake_env=dict(cap500_env,HOME=str(cap_wake_home));cap_before=cap_wake_file.read_bytes()
+cap_wake_prefix='SESSION_STATE_SH='+shlex.quote(str(real_state))+'\n'
+cap_wr=subprocess.run(['bash','-c',cap_wake_prefix+cap_wake_scan+'\n'+cap_wake_compare],env=cap_wake_env,text=True,capture_output=True)
+assert cap_wr.returncode==0 and 'Fleet unchanged' in cap_wr.stdout and cap_wake_file.read_bytes()==cap_before,(cap_wr.stdout,cap_wr.stderr)
+cap_wr=subprocess.run(['bash','-c',cap_wake_prefix+cap_wake_scan+'\n'+cap_wake_compare],env=dict(cap_wake_env,STUB_PULLS_JSON=json.dumps(cap_records)),text=True,capture_output=True)
+assert cap_wr.returncode!=0 and 'at least 501' in cap_wr.stderr and cap_wake_file.read_bytes()==cap_before,(cap_wr.stdout,cap_wr.stderr)
+print('PASS: actual main and paused-wake fences accept complete500, reject501 high-water, and preserve state instead of treating omitted members as closed')
+cap_jq_dir=tmp/'cap-count-fault';cap_jq_dir.mkdir();cap_jq=cap_jq_dir/'jq'
+cap_jq.write_text('#!/usr/bin/env bash\n[[ "${1:-}" != length ]] || exit 7\nexec '+shlex.quote(shutil.which('jq'))+' "$@"\n');cap_jq.chmod(0o755)
+cap_fault_env=dict(cap500_env,PATH=str(cap_jq_dir)+':'+cap500_env['PATH'])
+cap_mr=subprocess.run(['bash','-c',cap_main_prefix+cap_main],env=cap_fault_env,text=True,capture_output=True)
+assert cap_mr.returncode!=0 and 'fleet count failed' in cap_mr.stderr,(cap_mr.stdout,cap_mr.stderr)
+cap_before=cap_wake_file.read_bytes()
+cap_wr=subprocess.run(['bash','-c',cap_wake_prefix+cap_wake_scan+'\n'+cap_wake_compare],env=dict(cap_wake_env,PATH=str(cap_jq_dir)+':'+cap_wake_env['PATH']),text=True,capture_output=True)
+assert cap_wr.returncode!=0 and 'could not count' in cap_wr.stderr and cap_wake_file.read_bytes()==cap_before,(cap_wr.stdout,cap_wr.stderr)
+print('PASS: failed main/wake sentinel count computation cannot be mistaken for a complete fleet')
+
+
 # Raw history exceeds this host's argv limit, multiplied across the default25
 # fleet. Complete IDs/bodies stay on stdin; persisted/model-visible state remains
 # fixed-size samples + per-PR aggregate hashes/counts, including unsampled edits.

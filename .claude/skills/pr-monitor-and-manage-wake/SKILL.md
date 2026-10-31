@@ -170,13 +170,19 @@ scan_failed() {
 # and folding them in would corrupt otherwise-valid JSON.
 SCAN_RC=0
 CURRENT=$(gh pr list --state open --author "$AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,headRefOid,mergeStateStatus --limit 500 2>/dev/null) || SCAN_RC=$?
+  --json number,headRefOid,mergeStateStatus --limit 501 2>/dev/null) || SCAN_RC=$?
 
 [[ $SCAN_RC -eq 0 ]] || scan_failed "gh pr list exited $SCAN_RC"
 [[ -n "$CURRENT" ]]  || scan_failed "gh pr list returned empty output"
 # `[]` is a VALID empty fleet (every PR landed) — a real change, never a failure.
 jq -e 'type == "array"' <<<"$CURRENT" >/dev/null 2>&1 \
   || scan_failed "gh pr list output is not a JSON array"
+# The extra result is a sentinel, never a new supported fleet size. Do not
+# compare a truncated fleet to the saved pause snapshot or infer a closed PR.
+CURRENT_COUNT=$(jq 'length' <<<"$CURRENT") || scan_failed "could not count the discovered fleet"
+[[ "$CURRENT_COUNT" -le 500 ]] \
+  || scan_failed "at least 501 open PRs; supported fleet cap is 500; incomplete discovery"
+
 
 # The saved snapshot is the other half of the comparison: a null or malformed
 # .pmm.fleet_at_pause makes SAVED_FLEET empty, so a perfectly good CURRENT_FLEET

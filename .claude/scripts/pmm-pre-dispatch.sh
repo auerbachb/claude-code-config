@@ -38,7 +38,9 @@ BASE_CADENCE_MIN=5
 IDLE_PAUSE_AFTER=3
 DIAGNOSTIC_WAKE_INTERVAL=3
 DEADLINE_UNKNOWN_WAKE_INTERVAL=3
-# Discovery is capped at 500; deep collection is deliberately a smaller pilot.
+# At most 500 PRs are supported; one extra result detects truncation safely.
+SUPPORTED_FLEET_CAP=500
+DISCOVERY_FETCH_LIMIT=501
 MAX_DEEP_PRS=25
 
 usage() {
@@ -315,13 +317,16 @@ else
   holds="$(jq -c '.pmm_merge_holds // {}' <<<"$ROOT_EXPECT")" || queue_diagnostic "PMM merge-hold state unreadable"
   orchestration="$(jq -cn --argjson agents "$agents" --argjson locks "$locks" --argjson holds "$holds" '{active_agents:$agents,pmm_in_flight:$locks,merge_holds:$holds}')" || queue_diagnostic "orchestration state malformed"
   pulls=""
-  if ! pulls="$(gh pr list --repo "$REPO" --author "$AUTHOR" --state open --json number,url,headRefOid,title --limit 500)"; then
+  if ! pulls="$(gh pr list --repo "$REPO" --author "$AUTHOR" --state open --json number,url,headRefOid,title --limit "$DISCOVERY_FETCH_LIMIT")"; then
     queue_diagnostic "open PR discovery failed"
   fi
   if ! jq -e 'type == "array" and all(.[]; (.number|type)=="number" and .number>0 and (.headRefOid|type)=="string" and (.headRefOid|length)>0 and (.url|type)=="string") and ([.[].number]|unique|length)==length' >/dev/null <<<"$pulls"; then
     queue_diagnostic "open PR discovery returned malformed data"
   fi
   fleet_count=$(jq 'length' <<<"$pulls") || queue_diagnostic "fleet size unreadable"
+  if (( fleet_count > SUPPORTED_FLEET_CAP )); then
+    queue_diagnostic "fleet has at least 501 open PRs; supported fleet cap is 500; refusing an incomplete fleet snapshot"
+  fi
   if (( fleet_count > MAX_DEEP_PRS )); then
     queue_diagnostic "fleet has $fleet_count PRs; deep collection limit is $MAX_DEEP_PRS; narrow the author scope before retrying"
   fi
@@ -387,7 +392,7 @@ else
     '{repo:$repo,author:$author,collected_at:$now,prs:$prs,evidence:$evidence,orchestration:$orchestration}')"
 fi
 
-if ! jq -e --arg repo "$REPO" --arg author "$AUTHOR" 'type == "object" and .repo==$repo and .author==$author and (.collected_at|type)=="string" and (.prs|type)=="array" and ([.prs[].number]|unique|length)==(.prs|length) and (.evidence|type)=="array" and (.orchestration|type)=="object" and (.orchestration.active_agents|type)=="object" and (.orchestration.pmm_in_flight|type)=="object" and (.orchestration.merge_holds|type)=="object" and all(.orchestration.active_agents[]; (.phase|type)=="string" and (.status|type)=="string") and all(.prs[]; (.number|type)=="number" and (.gate.head_sha|type)=="string" and (.gate.head_sha|length)>0 and (.gate.met|type)=="boolean" and (.gate.merge_state|type)=="string" and (.gate.review_decision|type)=="string" and (.gate.mergeable|type)=="string" and (.gate.authorship|type)=="string" and (.gate.ci_status.total|type)=="number" and (.gate.ci_status.passing|type)=="number" and (.gate.ci_status.in_progress|type)=="number" and (.gate.ci_status.failing|type)=="number" and (.gate.unresolved_thread_count|type)=="number" and (.findings|type)=="array")' >/dev/null 2>&1 <<<"$CURRENT"; then
+if ! jq -e --arg repo "$REPO" --arg author "$AUTHOR" 'type == "object" and .repo==$repo and .author==$author and (.collected_at|type)=="string" and (.prs|type)=="array" and ([.prs[].number]|unique|length)==(.prs|length) and (.evidence|type)=="array" and (.orchestration|type)=="object" and (.orchestration.active_agents|type)=="object" and (.orchestration.pmm_in_flight|type)=="object" and (.orchestration.merge_holds|type)=="object" and all(.orchestration.active_agents[]; (.phase|type)=="string" and (.status|type)=="string") and all(.orchestration.pmm_in_flight[]; type=="object" and (.status|type)=="string") and all(.prs[]; (.number|type)=="number" and (.gate.head_sha|type)=="string" and (.gate.head_sha|length)>0 and (.gate.met|type)=="boolean" and (.gate.merge_state|type)=="string" and (.gate.review_decision|type)=="string" and (.gate.mergeable|type)=="string" and (.gate.authorship|type)=="string" and (.gate.ci_status.total|type)=="number" and (.gate.ci_status.passing|type)=="number" and (.gate.ci_status.in_progress|type)=="number" and (.gate.ci_status.failing|type)=="number" and (.gate.unresolved_thread_count|type)=="number" and (.findings|type)=="array")' >/dev/null 2>&1 <<<"$CURRENT"; then
   queue_diagnostic "collected snapshot is malformed"
 fi
 
