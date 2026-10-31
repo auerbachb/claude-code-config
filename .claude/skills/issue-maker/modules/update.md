@@ -16,6 +16,8 @@ A first-class command for adding information to an existing issue **without leav
    ISSUE_URL=$(printf '%s' "$ISSUE_JSON" | jq -er '.url') || exit 1
    ISSUE_STATUS=$(printf '%s' "$ISSUE_JSON" | jq -er '.state | ascii_downcase') || exit 1
    CURRENT_BODY=$(printf '%s' "$ISSUE_JSON" | jq -r '.body')
+   UPDATE_SNAPSHOT=$(printf '%s' "$ISSUE_JSON" | jq -ce '{title,body}') || exit 1
+   printf 'UPDATE_SNAPSHOT=%s\n' "$UPDATE_SNAPSHOT"
    ```
 2. **Classify** the statement — is it best added as:
    - a new checkbox under `## Acceptance Criteria` (precise, implementer-facing detail), or
@@ -31,11 +33,23 @@ A first-class command for adding information to an existing issue **without leav
    **Freshness check before a whole-body write.** Immediately before applying a confirmed body edit, fetch the current title and body again. If either differs from the snapshot used for the proposal, do not write the stale proposal; rebuild it from the latest issue and get confirmation again. This is a best-effort stale check, not compare-and-swap: `gh issue edit --body` replaces the whole body and exposes no conditional revision, so a concurrent edit in the small interval between this final read and the write can still be overwritten. The post-write refetch verifies the resulting title/body, but cannot prove that a racing edit was not overwritten. When another editor is actively changing the issue, coordinate or use a comment instead of claiming the body update is atomic.
 
    ```bash
+   [ "${UPDATE_CONFIRMED:-false}" = true ] || { echo "HOLD: confirmed edit proposal required" >&2; exit 1; }
+   WRITE_RC=0
    if [ "${UPDATE_KIND:-body}" = comment ]; then
      gh issue comment "$N" --repo "$REPO" --body "$COMMENT" || WRITE_RC=$?
-     [ "${WRITE_RC:-0}" -eq 0 ] || exit 1
+     [ "$WRITE_RC" -eq 0 ] || exit 1
+     VERIFIED=$(gh issue view "$N" --repo "$REPO" --json title,url,state) || exit 1
+     TITLE=$(printf '%s' "$VERIFIED" | jq -er '.title') || exit 1
+     ISSUE_URL=$(printf '%s' "$VERIFIED" | jq -er '.url') || exit 1
+     ISSUE_STATUS=$(printf '%s' "$VERIFIED" | jq -er '.state | ascii_downcase') || exit 1
    else
-     NEW_TITLE="${NEW_TITLE:-$TITLE}"  # preserve fetched title unless the proposal changed it
+     : "${UPDATE_SNAPSHOT:?restore the snapshot used for the confirmed proposal}"
+     FRESH=$(gh issue view "$N" --repo "$REPO" --json title,body) || exit 1
+     printf '%s' "$FRESH" | jq -e --argjson before "$UPDATE_SNAPSHOT" '.title == $before.title and .body == $before.body' >/dev/null || {
+       echo "HOLD: issue changed during confirmation; rebuild and confirm a new proposal before writing" >&2
+       exit 1
+     }
+     NEW_TITLE="${NEW_TITLE:-$(printf '%s' "$UPDATE_SNAPSHOT" | jq -er '.title')}"  # preserve fetched title unless the proposal changed it
      WRITE_RC=0
      gh issue edit "$N" --repo "$REPO" --title "$NEW_TITLE" --body "$NEW_BODY" || WRITE_RC=$?
      # Verify after both success and uncertain failure; never retry blindly.
@@ -50,11 +64,21 @@ A first-class command for adding information to an existing issue **without leav
      ISSUE_URL=$(printf '%s' "$VERIFIED" | jq -er '.url') || exit 1
      ISSUE_STATUS=$(printf '%s' "$VERIFIED" | jq -er '.state | ascii_downcase') || exit 1
    fi
+   UPDATE_RECEIPT=$(jq -cn --arg title "$TITLE" --arg url "$ISSUE_URL" --arg status "$ISSUE_STATUS" --arg repo "$REPO" --arg n "$N" --arg delivers "${DELIVERS:-}" --arg bound "${EST_BOUND:-}" '{repo:$repo,number:($n|tonumber),title:$title,url:$url,status:$status,delivers:$delivers,bound:$bound}') || exit 1
+   printf 'UPDATE_RECEIPT=%s\n' "$UPDATE_RECEIPT"
    ```
+   Carry `UPDATE_SNAPSHOT` across confirmation and `UPDATE_RECEIPT` across the apply/record tool boundary explicitly; shell variables do not survive separate tool calls.
    Use the fetch → modify → write-whole-body pattern (`gh issue edit --body` replaces the entire body — never truncate the existing content). do not retry blindly. For a comment update, a failed or uncertain response blocks the log update; inspect the remote comments before retrying.
 6. Set `TITLE` and `ISSUE_URL` from that verified refetch; refresh `ISSUE_STATUS` if the edit changes state. **Only after the remote write is confirmed**, record `edited_at` on the log entry — **plus any summary-table field the edit actually changed** — and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
 
    ```bash
+   : "${UPDATE_RECEIPT:?restore confirmed update receipt before local logging}"
+   printf '%s' "$UPDATE_RECEIPT" | jq -e --arg repo "$REPO" --arg n "$N" '.repo == $repo and .number == ($n|tonumber)' >/dev/null || exit 1
+   TITLE=$(printf '%s' "$UPDATE_RECEIPT" | jq -er '.title') || exit 1
+   ISSUE_URL=$(printf '%s' "$UPDATE_RECEIPT" | jq -er '.url') || exit 1
+   ISSUE_STATUS=$(printf '%s' "$UPDATE_RECEIPT" | jq -er '.status') || exit 1
+   DELIVERS=$(printf '%s' "$UPDATE_RECEIPT" | jq -r '.delivers // ""') || exit 1
+   EST_BOUND=$(printf '%s' "$UPDATE_RECEIPT" | jq -r '.bound // ""') || exit 1
    # DELIVERS / EST_BOUND: re-read from the body you just wrote, and set ONLY
    # when this edit changed them — empty string means "unchanged, leave the
    # stored value alone". EST_BOUND is the `plan on` bound in minutes.
@@ -71,7 +95,7 @@ A first-class command for adding information to an existing issue **without leav
                               chain:null, tier:null, delivers:null, est_bound:null}] end' \
      --arg n "$N" --arg t "$TITLE" --arg u "$ISSUE_URL" --arg repo "$REPO" --arg status "$ISSUE_STATUS" \
      --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-     --arg delivers "${DELIVERS:-}" --arg bound "${EST_BOUND:-}"
+     --arg delivers "${DELIVERS:-}" --arg bound "${EST_BOUND:-}" || exit 1
    ```
 
    **An edit that changes what the issue delivers, or its estimate, must refresh those two fields — otherwise the running tally reports create-time values as current.** The log is the tally's source of truth after compaction (Step 9), so a `delivers`/`est_bound` left at its filing-time value survives as a confident-looking row that no longer matches the issue. Refresh on the two edits that move them: a body edit that changes the `## Estimate` line (re-read the `plan on` bound) or that materially changes the delivered scope (re-state the one-clause `Delivers`, `|` escaped as `\|`). A comment-only update and an AC clarification that moves neither leave both empty and change nothing. `tier` is deliberately not refreshed here — re-inferring a model tier is a fresh reflection pass (Step 3), not a byproduct of an append; if an edit genuinely re-sizes the work, that is the split conversation in sub-step 3, not a silent field rewrite.

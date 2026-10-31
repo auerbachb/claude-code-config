@@ -239,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     assert r.returncode==0 and r.stdout.endswith('RESULT=180/120') and not th_args.exists() and 'current checkout does not match owner/repo' in r.stderr,(r.returncode,r.stdout,r.stderr)
     print('ok workflow: sizing reads target repo thresholds and degrades explicitly when checkout origin differs')
     seed([row(1,origin='create'),row(2,origin='update'),row(3),row(4,edited_at='2026-10-31'),row(5,edited_at='2026-10-31',tier='Light'),dict(row(6),url='https://github.com/other/repo/issues/6')])
-    stamp=next(b for b in blocks('modules/create/postfile.md') if 'OFFER_TOKEN=' in b)
+    stamp=next(b for b in blocks('modules/create/postfile.md') if 'OFFER_TOKEN="offer-' in b)
     r=run(setup+stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']
     assert [x['number'] for x in rows if x['chip_task_id']]==[1,3,5],rows
@@ -249,11 +249,11 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     print('ok workflow: offers and cleanup include filed/legacy-created rows, exclude update-only/foreign/ambiguous rows')
     fetch=blocks('modules/update.md')[0]
     r=run(setup+'\nN=42\nDELIVERS=stale\nEST_BOUND=300\ngh() { printf \'%s\' \'{"title":"Fetched title","url":"https://github.com/owner/repo/issues/42","state":"CLOSED","body":"old body"}\'; }\n'+fetch+'\nprintf \'%s|%s|%s|%s|%s\' "$TITLE" "$ISSUE_URL" "$ISSUE_STATUS" "$DELIVERS" "$EST_BOUND"')
-    assert r.returncode==0 and r.stdout=='Fetched title|https://github.com/owner/repo/issues/42|closed||',(r.stdout,r.stderr)
+    assert r.returncode==0 and r.stdout.endswith('Fetched title|https://github.com/owner/repo/issues/42|closed||'),(r.stdout,r.stderr)
     update=next(b for b in blocks('modules/update.md') if 'set_log' in b)
     seed([dict(row(42),url='https://github.com/foreign/repo/issues/42')])
     before=json.loads(log.read_text())['issues'][0]
-    r=run(setup+'N=42\nTITLE="Fetched title"\nISSUE_URL=https://github.com/owner/repo/issues/42\nISSUE_STATUS=closed\n'+update)
+    r=run(setup+'N=42\nUPDATE_RECEIPT='+shlex.quote(json.dumps(dict(repo='owner/repo',number=42,title='Fetched title',url='https://github.com/owner/repo/issues/42',status='closed')))+'\n'+update)
     assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]==before and rows[1]['origin']=='update' and rows[1]['title']=='Fetched title' and rows[1]['status']=='closed',rows
     print('ok workflow: update fetch assigns metadata and backfills the right repo without creating offered work')
@@ -282,15 +282,19 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
         r=run('export HOME='+shlex.quote(str(home))+'\nexport DISPATCHER='+shlex.quote(str(dispatcher.resolve()))+'\nLOG='+shlex.quote(str(helper_log))+'\n'+writer_setup+'\nset_log \'.mode = $v\' --arg v rapid-fire\nprintf "%s" "$SET_LOG"',cwd='/tmp')
         assert r.returncode==0 and r.stdout==str((skill_root/'scripts/set-log.sh').resolve()) and json.loads(helper_log.read_text())['mode']=='rapid-fire',(label,r.returncode,r.stdout,r.stderr,helper_log.read_text())
     print('ok workflow: bundled and installed invocations resolve session helpers from DISPATCHER outside the repo cwd')
-    # Offer acceptance is one atomic, checked write for both state changes.
+    # A shell guard cannot stand in for explicit user acceptance or skill execution.
     seed([dict(row(1,origin='create'),chip_task_id='offer-token'),dict(row(2,origin='create'),chip_task_id='foreign-token',url='https://github.com/other/repo/issues/2')])
-    accept=next(b for b in blocks('modules/create/postfile.md') if "offer_accepted = true |" in b)
-    r=run(setup+accept)
-    data=json.loads(log.read_text()); assert r.returncode==0 and data['offer_accepted'] is True and data['issues'][0]['chip_task_id'] is None and data['issues'][1]['chip_task_id']=='foreign-token',(r.stdout,r.stderr,data)
-    calls=pathlib.Path(td)/'accept-calls'; failing='set_log() { printf x >> '+shlex.quote(str(calls))+'; return 1; }\n'
-    r=run(setup+failing+accept+'\nprintf AFTER')
-    assert r.returncode==1 and 'AFTER' not in r.stdout and calls.read_text()=='x' and 'started' in r.stderr,(r.returncode,r.stdout,r.stderr)
-    print('ok workflow: acceptance and token cleanup share one checked write; failed persistence stops')
+    inline_guard=next(b for b in blocks('modules/create/postfile.md') if 'INLINE_REQUEST=' in b)
+    accept=next(b for b in blocks('modules/create/postfile.md') if 'INLINE_RESULT' in b)
+    before=log.read_bytes();r=run(setup+inline_guard);assert r.returncode==1 and log.read_bytes()==before
+    r=run(setup+'USER_ACCEPTED=true\n'+inline_guard);assert r.returncode==0,r.stderr
+    data=json.loads(log.read_text());assert not data.get('offer_accepted') and data['issues'][0]['chip_task_id']=='offer-token' and data['inline_checkpoint']['issues']==[1]
+    pending=log.read_bytes();r=run(setup+accept);assert r.returncode==1 and log.read_bytes()==pending
+    r=run(setup+'INLINE_RESULT=failed\n'+accept);assert r.returncode==1 and log.read_bytes()==pending
+    calls=pathlib.Path(td)/'accept-calls';failing='set_log() { printf x >> '+shlex.quote(str(calls))+'; return 1; }\n'
+    r=run(setup+failing+'INLINE_RESULT=success\n'+accept+'\nprintf AFTER');assert r.returncode==1 and log.read_bytes()==pending and 'AFTER' not in r.stdout
+    r=run(setup+'INLINE_RESULT=success\n'+accept);data=json.loads(log.read_text());assert r.returncode==0 and data['offer_accepted'] is True and data['inline_checkpoint'] is None and data['issues'][0]['chip_task_id'] is None and data['issues'][1]['chip_task_id']=='foreign-token',(r.stderr,data)
+    print('ok workflow: separate guard/invocation/receipt calls cannot autoaccept, failure retains intent, confirmed success clears only covered tokens')
     close=next(b for b in blocks('modules/retract.md') if 'if ! gh issue close' in b)
     for remote,view_rc,expected_rc,expected_status in [('OPEN',0,1,'open'),('',1,1,'open'),('CLOSED',0,0,'closed')]:
         seed([dict(row(42,origin='create'),chip_task_id='offer-original')]); before=log.read_bytes()
@@ -314,7 +318,7 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     # First handoff emission after a declined inline offer has no token to reuse.
     seed([row(1,origin='create'),row(2,origin='update')])
     release_block=next(b for b in blocks('modules/handoff.md') if 'handoff_release_unstarted()' in b)
-    handoff_stamp=release_block+'\n'+next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN=' in b)
+    handoff_stamp=release_block+'\n'+next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN="offer-' in b)
     r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+handoff_stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]['chip_task_id'].startswith('offer-') and rows[1]['chip_task_id'] is None
     print('ok workflow: explicit fallback handoff after decline stamps only session-filed rows')
@@ -342,7 +346,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         state_file.write_text('{"repos":{"foreign/repo":{"chip_offers":[{"task_id":"foreign","state":"running"}]}}}')
         registry_args.write_text('')
     def offers(): return json.loads(state_file.read_text())['repos'].get('owner/repo',{}).get('chip_offers',[])
-    def invoke(extra='',body=handoff_stamp): return run(setup+env_setup+extra+'\n'+body)
+    def invoke(extra='',body=handoff_stamp): return run(setup+env_setup+release_block+'\n'+extra+'\n'+body)
     launch=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip-pending"' in b)
     receipt=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip" | .reg_tid = $reg' in b)
     fallback=next(b for b in blocks('modules/handoff.md') if 'SPAWN_OUTCOME' in b)
@@ -371,16 +375,17 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     fresh();r=invoke(fail_stamp);d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] is None and d['handoff_checkpoint'] is None and offers()[0]['state']=='retracted' and d['issues'][0]['chip_task_id'] is None,(r.stderr,d,offers())
     fresh();r=invoke('export FAULT=retract-fail\n'+fail_stamp);d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] and d['handoff_checkpoint']['state']=='cleanup-pending' and d['handoff_checkpoint']['spawn_status']=='not-started' and offers()[0]['state']=='offered'
     # A failed local cleanup after successful retract retains enough for restart.
-    fresh();r=invoke(fail_stamp.replace("then return 1; fi;", "then return 1; fi; if [[ \"$1\" == '.reg_tid = null'* ]]; then return 1; fi;",1));d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] and offers()[0]['state']=='retracted'
+    fresh();r=invoke(fail_stamp.replace("then return 1; fi;", "then return 1; fi; if [[ \"$1\" == *'.reg_tid = null'* ]]; then return 1; fi;",1));d=json.loads(log.read_text());assert r.returncode==1 and d['reg_tid'] and offers()[0]['state']=='retracted'
     # Pre-tool intent failure stops; no tool was invoked and reservation is released.
     fresh();r=invoke();assert r.returncode==0,r.stderr
     reg=json.loads(log.read_text())['reg_tid']; base_state=log.read_bytes(); base_registry=state_file.read_bytes()
     def saved(): log.write_bytes(base_state);state_file.write_bytes(base_registry)
     launch_fail='set_log() { if [[ "$1" == *\'spawn-uncertain\'* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }'
-    r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\n'+launch_fail,release_block+'\n'+launch);assert r.returncode==1 and offers()[0]['state']=='retracted'
+    r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nOFFER_TOKEN='+shlex.quote(json.loads(base_state)['issues'][0]['chip_task_id'])+'\n'+launch_fail,release_block+'\n'+launch);assert r.returncode==1 and offers()[0]['state']=='retracted' and json.loads(log.read_text())['issues'][0]['chip_task_id'] is None
     # A restart during tool invocation has unknown outcome; fallback cannot release it.
     saved();r=invoke('',launch);assert r.returncode==0,r.stderr
     pending_state=log.read_bytes();r=run(setup+recovery);assert 'spawn outcome unknown' in r.stdout and 'chip started' not in r.stdout,r.stdout
+    r=invoke('',launch);assert r.returncode==1 and log.read_bytes()==pending_state,'launch fence must reject replay after intent'
     r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nSPAWN_OUTCOME=unknown',release_block+'\n'+fallback);assert r.returncode==1 and log.read_bytes()==pending_state and offers()[0]['state']=='offered'
     # The release helper itself refuses unknown spawn and wrong-repo identities.
     for guard_args in ('','REPO=other/repo\n'):
@@ -400,6 +405,10 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         assert d['reg_tid']==reg and offers()[0]['state']=='offered'
         assert (r.returncode,d['handoff_checkpoint']['state'])==((0,'spawned') if failure=='none' else (1,'spawned-receipt-pending' if failure=='first' else 'spawn-uncertain')),(r.stderr,d)
         rec=run(setup+recovery);assert ('spawn outcome unknown' in rec.stdout)==(failure=='all'),rec.stdout
+    # Confirmed spawned receipt cannot be overwritten by a false fallback classification.
+    log.write_bytes(pending_state);state_file.write_bytes(base_registry)
+    r=invoke('TASK_ID=task-confirmed\n',receipt);assert r.returncode==0,r.stderr
+    confirmed=log.read_bytes();r=invoke('SPAWN_OUTCOME=not-started\n',fallback);assert r.returncode==1 and log.read_bytes()==confirmed
     # Explicit no-creation response releases and leaves the copyable offer token.
     log.write_bytes(pending_state);state_file.write_bytes(base_registry)
     r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nSPAWN_OUTCOME=not-started',release_block+'\n'+fallback);d=json.loads(log.read_text());assert r.returncode==0 and d['reg_tid'] is None and d['delivery_mode']=='inline' and d['issues'][0]['chip_task_id'].startswith('offer-') and offers()[0]['state']=='retracted'
@@ -411,6 +420,11 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         assert (r.returncode==0)==should_release,(r.stderr,after)
         assert offers()[0]['state']==('retracted' if should_release else 'offered')
         assert (after['issues'][0]['chip_task_id'] is None)==should_release
+    # Release+closed-token cleanup is one local write: failure retains BOTH receipts.
+    saved();d=json.loads(log.read_text());d['issues'][0]['status']='closed';log.write_text(json.dumps(d));before=log.read_bytes()
+    r=invoke('N=1\nset_log() { return 1; }\n',retract_cleanup)
+    assert r.returncode==1 and log.read_bytes()==before and offers()[0]['state']=='retracted'
+    r=invoke('N=1\n',retract_cleanup);d=json.loads(log.read_text());assert r.returncode==0 and d['reg_tid'] is None and d['issues'][0]['chip_task_id'] is None,r.stderr
     # Receipt ownership and every external registry operation are exact-repo scoped.
     for line in registry_args.read_text().splitlines(): assert line.startswith('--repo owner/repo '),line
     assert json.loads(state_file.read_text())['repos']['foreign/repo']['chip_offers'][0]['state']=='running'
@@ -418,7 +432,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     # Execute the actual filing block with a missing postfile module: no gh write.
     fake=pathlib.Path(td)/'skill'; (fake/'scripts').mkdir(parents=True)
     dispatcher=fake/'scripts/dispatch-module.sh'; dispatcher.write_text((skill/'scripts/dispatch-module.sh').read_text())
-    create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
+    create_block='ISSUE_TIER=Light\nDELIVERS=Safe\nEST_BOUND=60\n'+next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
     r=run('DISPATCHER='+shlex.quote(str(dispatcher))+'\n'+create_block)
     assert r.returncode==3 and 'required module missing' in r.stderr,(r.returncode,r.stderr)
     print('ok workflow: missing postfile dependency exits before the actual create block can call GitHub')
@@ -452,7 +466,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
 
     # The body delimiter is chosen after content exists; even the former marker
     # and shell-looking body lines remain literal file content.
-    create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
+    create_block='ISSUE_TIER=Light\nDELIVERS=Safe\nEST_BOUND=60\n'+next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
     marker='ISSUE_BODY_7f34d1c9'; unique='ISSUE_BODY_generated_42'
     create_block=create_block.replace(marker,unique)
     body='## Background\n'+marker+'\n$(touch '+str(pathlib.Path(td)/'body-executed')+')\n_Captured via /issue-maker._'
@@ -469,7 +483,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     # structured receipt output must carry the remote write across that boundary.
     receipt_line=next(line for line in r.stdout.splitlines() if line.startswith('CREATE_RECEIPT='))
     receipt=json.loads(receipt_line.split('=',1)[1])
-    assert receipt=={'number':7,'url':'https://github.com/owner/repo/issues/7','title':'Safe title','labels':[]},receipt
+    assert receipt=={'repo':'owner/repo','tier':'Light','delivers':'Safe','bound':60,'chain':None,'number':7,'url':'https://github.com/owner/repo/issues/7','title':'Safe title','labels':[]},receipt
     seed([])
     record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
     restore='CREATE_RECEIPT='+shlex.quote(json.dumps(receipt))+'\n'
@@ -485,7 +499,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
 
     # Uncertain create reconciliation compares the body byte-for-byte from its
     # file and fails closed for same-second exact duplicates from another session.
-    create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
+    create_block='ISSUE_TIER=Light\nDELIVERS=Safe\nEST_BOUND=60\n'+next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
     body='## Background\nbody\n_Captured via /issue-maker._\n'
     create_block=create_block.replace('## Background\n...\n_Captured via /issue-maker._',body)
     home=pathlib.Path(td)/'recover-home'; helper=home/'.claude/skills-worktree/.claude/scripts/issue-file.sh'; helper.parent.mkdir(parents=True)
@@ -497,7 +511,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         return 'HOME='+shlex.quote(str(home))+'\nDISPATCHER='+shlex.quote(str(dispatcher))+'\nREPO=owner/repo\nTITLE="Safe title"\nACCEPTED_LABELS=""\ndate() { printf "2026-10-30T12:00:00Z"; }\ngh() { printf %s '+shlex.quote(payload)+'; }\n'
     env=recovery_env(candidate)
     r=run(env+create_block)
-    assert r.returncode==0 and 'FILE_RC=0' in r.stdout and 'CREATE_RECEIPT={"number":8,"url":"https://github.com/owner/repo/issues/8","title":"Safe title","labels":[]}' in r.stdout,(r.returncode,r.stdout,r.stderr)
+    assert r.returncode==0 and 'FILE_RC=0' in r.stdout and json.loads(next(x for x in r.stdout.splitlines() if x.startswith('CREATE_RECEIPT=')).split('=',1)[1])['number']==8,(r.returncode,r.stdout,r.stderr)
     # Same-second candidate is ambiguous and therefore cannot be claimed.
     candidate['createdAt']='2026-10-30T12:00:00Z'
     env=recovery_env(candidate)
@@ -510,16 +524,34 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     assert r.returncode==0 and 'FILE_RC=6' in r.stdout,(r.returncode,r.stdout,r.stderr)
     print('ok workflow: uncertain create recovery preserves body newlines and rejects same-second ownership ambiguity')
 
-    # Update apply refetches and checks both remote fields before the receipt path.
+    # Execute fresh-read/write/verify and comment flows with separate external
+    # stub processes. Disk counters survive Bash command-substitution processes.
     update_apply=next(b for b in blocks('modules/update.md') if 'UPDATE_KIND' in b)
-    update_args=pathlib.Path(td)/'update-args'
-    ghstub='gh() { if [[ "$2" == edit ]]; then printf "%s\\n" "$@" > '+shlex.quote(str(update_args))+'; return 4; fi; printf \'%s\' "$REMOTE_JSON"; }\n'
-    remote=json.dumps({'title':'Proposed title','body':'confirmed body','url':'https://github.com/owner/repo/issues/42','state':'OPEN'})
-    r=run('N=42\nREPO=owner/repo\nTITLE="Old title"\nNEW_TITLE="Proposed title"\nNEW_BODY="confirmed body"\nREMOTE_JSON='+shlex.quote(remote)+'\n'+ghstub+update_apply+'\nprintf "%s|%s|%s" "$TITLE" "$ISSUE_URL" "$ISSUE_STATUS"')
-    assert r.returncode==0 and r.stdout=='Proposed title|https://github.com/owner/repo/issues/42|open' and update_args.read_text().splitlines()==['issue','edit','42','--repo','owner/repo','--title','Proposed title','--body','confirmed body'],(r.stdout,r.stderr,update_args.read_text())
-    r=run('N=42\nREPO=owner/repo\nTITLE="Old title"\nNEW_TITLE="Proposed title"\nNEW_BODY="confirmed body"\nREMOTE_JSON='+shlex.quote(json.dumps({**json.loads(remote),'title':'Stale title'}))+'\n'+ghstub+update_apply)
-    assert r.returncode==1 and 'no session receipt was written' in r.stderr,(r.returncode,r.stderr)
-    print('ok workflow: update accepts a verified title/body after uncertain write and rejects stale remote state')
+    update_record=next(b for b in blocks('modules/update.md') if 'UPDATE_RECEIPT:?' in b)
+    fake_bin=pathlib.Path(td)/'update-bin';fake_bin.mkdir();gh=fake_bin/'gh'
+    scenario=pathlib.Path(td)/'update-scenario.json';actions=pathlib.Path(td)/'update-actions.json'
+    gh.write_text('#!/usr/bin/env python3\nimport json,pathlib,sys\np=pathlib.Path('+repr(str(scenario))+');s=json.loads(p.read_text());a=pathlib.Path('+repr(str(actions))+');old=json.loads(a.read_text()) if a.exists() else [];old.append(sys.argv[1:]);a.write_text(json.dumps(old))\nif sys.argv[2]=="view":\n v=s["views"].pop(0);p.write_text(json.dumps(s));print(json.dumps(v));sys.exit(0)\nsys.exit(s.get("write_rc",0))\n');gh.chmod(0o755)
+    snap=dict(title='Old title',body='old body\n')
+    final=dict(title='Proposed title',body='confirmed body',url='https://github.com/owner/repo/issues/42',state='CLOSED')
+    update_env='export PATH='+shlex.quote(str(fake_bin))+':"$PATH"\nN=42\nREPO=owner/repo\nUPDATE_CONFIRMED=true\nUPDATE_SNAPSHOT='+shlex.quote(json.dumps(snap))+'\nNEW_TITLE="Proposed title"\nNEW_BODY="confirmed body"\n'
+    for freshness,write_rc,expected in [(snap,4,0),(dict(snap,body='concurrent body'),0,1),(dict(snap,title='Concurrent title'),0,1)]:
+        scenario.write_text(json.dumps(dict(views=[freshness,final],write_rc=write_rc)));actions.write_text('[]')
+        r=run(update_env+update_apply)
+        assert r.returncode==expected,(r.stdout,r.stderr)
+        recorded_actions=json.loads(actions.read_text())
+        assert sum(x[1]=='edit' for x in recorded_actions)==(1 if expected==0 else 0),recorded_actions
+        if expected==0:
+            update_receipt=json.loads(next(x.split('=',1)[1] for x in r.stdout.splitlines() if x.startswith('UPDATE_RECEIPT=')))
+            seed([row(42,origin='create')]);r=run(setup+'N=42\nUPDATE_RECEIPT='+shlex.quote(json.dumps(update_receipt))+'\n'+update_record)
+            assert r.returncode==0 and json.loads(log.read_text())['issues'][0]['status']=='closed',r.stderr
+    # Comment success refetches fresh state; failed response writes no receipt.
+    for write_rc in (0,4):
+        scenario.write_text(json.dumps(dict(views=[final],write_rc=write_rc)));actions.write_text('[]')
+        r=run(update_env+'UPDATE_KIND=comment\nCOMMENT=context\n'+update_apply)
+        assert r.returncode==(0 if write_rc==0 else 1),(r.stdout,r.stderr)
+        assert ('UPDATE_RECEIPT=' in r.stdout)==(write_rc==0)
+        if write_rc==0:assert json.loads(r.stdout.split('UPDATE_RECEIPT=',1)[1])['status']=='closed'
+    print('ok workflow: actual prewrite freshness check blocks stale writes, uncertain writes verify once, and comments emit fresh cross-process metadata receipts')
 
     # A chain identity exists before dedup; recovery restores it without minting.
     seed([])
@@ -536,14 +568,29 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     assert r.returncode==0 and json.loads(r.stdout)=={'chain_id':chain_id,'position':1,'total':2},(r.stdout,r.stderr)
     r=run(setup+'IS_INCREMENT=false\nCHAIN_JSON=stale\n'+chain_init+'\nprintf \'%s\' "$CHAIN_JSON"')
     assert r.returncode==0 and r.stdout=='null',(r.stdout,r.stderr)
-    record=next(b for b in blocks('modules/create/postfile.md') if "set_log '.issues +=" in b)
+    record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
     for position in [1,2]:
         params='IS_INCREMENT=true\nCHAIN_ID='+shlex.quote(chain_id)+'\nPOSITION='+str(position)+'\nTOTAL=2\nISSUE_NUMBER='+str(position)+'\nTITLE=Increment\nISSUE_URL=https://github.com/owner/repo/issues/'+str(position)+'\nACCEPTED_LABELS=""\nISSUE_TIER=Light\nDELIVERS=Slice\nEST_BOUND=60\n'
-        r=run(setup+params+chain_init+'\n'+record); assert r.returncode==0,r.stderr
+        rcpt=dict(repo='owner/repo',number=position,title='Increment',url='https://github.com/owner/repo/issues/'+str(position),labels=[],tier='Light',delivers='Slice',bound=60,chain=dict(chain_id=chain_id,position=position,total=2))
+        r=run(setup+params+'CREATE_RECEIPT='+shlex.quote(json.dumps(rcpt))+'\n'+record); assert r.returncode==0,r.stderr
         data=json.loads(log.read_text())
         assert data['issues'][-1]['chain']=={'chain_id':chain_id,'position':position,'total':2}
         assert (data['active_chain'] is None)==(position==2)
     print('ok workflow: chain identity precedes dedup, survives phase recovery, and record initialization clears stale standalone metadata')
+    # New standalone intent never erases an active chain before confirmed recording.
+    seed([]);old_chain=dict(chain_id='older-chain',total=3,repository='owner/repo');d=json.loads(log.read_text());d['active_chain']=old_chain;log.write_text(json.dumps(d))
+    new_ask=next(b for b in blocks('modules/create/reflect-and-draft.md') if '.create_intent =' in b)
+    r=run(setup+new_ask);assert r.returncode==0 and json.loads(log.read_text())['active_chain']==old_chain
+    r=run(setup+recovery+'\nprintf "INCREMENT=%s" "$IS_INCREMENT"');assert 'INCREMENT=false' in r.stdout,r.stdout
+    standalone=dict(repo='owner/repo',number=91,title='Standalone',url='https://github.com/owner/repo/issues/91',labels=[],tier='Light',delivers='Fresh ask',bound=60,chain=None)
+    before=log.read_bytes()
+    for rc in (3,5,6):
+        r=run(setup+'FILE_RC='+str(rc)+'\n[ "$FILE_RC" -eq 0 ] || exit "$FILE_RC"\n'+record)
+        assert r.returncode==rc and log.read_bytes()==before
+    r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(standalone))+'\nset_log() { return 1; }\n'+record);assert r.returncode==1 and log.read_bytes()==before
+    r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(standalone))+'\n'+record);d=json.loads(log.read_text());assert r.returncode==0 and d['active_chain'] is None and d['create_intent'] is None and len(d['issues'])==1,(r.stderr,d)
+    r=run(setup+'CREATE_RECEIPT='+shlex.quote(json.dumps(standalone))+'\n'+record);assert r.returncode==0 and len(json.loads(log.read_text())['issues'])==1
+    print('ok workflow: new standalone/resume selection and failed/uncertain/local-failed creates preserve the prior plan; confirmed recording clears it once')
     labels=blocks('modules/create/file.md')[0]
     gh_labels='gh() { if [[ " $* " == *" --limit 1000 "* ]]; then printf \'first\nlabel-after-30\n\'; else printf \'first\n\'; fi; }\n'
     r=run(setup+gh_labels+labels+'\nprintf \'%s\' "$REPO_LABELS"')

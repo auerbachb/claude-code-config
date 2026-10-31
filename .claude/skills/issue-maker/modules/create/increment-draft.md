@@ -11,14 +11,14 @@ After the sizing/cap decision and before any member's dedup, initialize one iden
 IS_INCREMENT=true
 CHAIN_ID=$(python3 -c 'import uuid; print(uuid.uuid4())') || exit 1
 POSITION=1
-set_log '.active_chain = {chain_id:$id, total:$total, repository:$repo}' \
+set_log '.active_chain as $prior | .active_chain = {chain_id:$id, total:$total, repository:$repo} | .create_intent = {kind:"chain", repository:$repo, chain_id:$id, superseded_chain:$prior}' \
   --arg id "$CHAIN_ID" --argjson total "$TOTAL" --arg repo "$REPO" || {
   echo "ERROR: could not persist the active chain; do not run dedup or file an increment" >&2
   exit 1
 }
 ```
 
-Keep that identity for every member and increment `POSITION` after each confirmed filing. After all `TOTAL` members are recorded, clear `.active_chain`; the rows retain their chain objects for retraction/recovery. For a genuinely new standalone ask, reset `IS_INCREMENT=false`, `CHAIN_ID=""`, and `CHAIN_JSON=null` before drafting so a prior chain cannot leak into it. A restarted active chain restores its identity instead of resetting it.
+Keep that identity for every member and increment `POSITION` after each confirmed filing. After all `TOTAL` members are recorded, clear `.active_chain`; the rows retain their chain objects for retraction/recovery. For a genuinely new standalone ask, reset `IS_INCREMENT=false`, `CHAIN_ID=""`, and `CHAIN_JSON=null` using the checked new-ask block in `create:reflect` before drafting. Successful standalone recording atomically clears the superseded `.active_chain`; failures retain it. A restarted active chain restores its identity instead of resetting it.
 
 ### Increment issues — the variant shape for a chain (sizing check failed)
 

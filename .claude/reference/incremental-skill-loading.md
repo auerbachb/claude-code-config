@@ -14,17 +14,17 @@ On compaction or restart, reload the entry and the minimal session-state procedu
 
 Source measured on 2026-10-30: bytes and whitespace-delimited words, **not runtime tokens**. The former committed entry is 98112 bytes / 15208 words. Claude Code 2.1.312 is installed; no private harness-loader trace is available, so actual runtime reads, token/cache effects, and model adherence remain unknown.
 
-The executable trace fixtures record caller-selected module paths, nested reference reads, bounded export excerpts, repeated-read reuse, and recovery from a persisted operation/phase. They validate this loading contract, not hidden harness behavior. Normal inline offers do not read chip-launching or the on-request payload module. The sizing rationale and ask-menu references remain conditional (rationale requests and blocking questions respectively); their bytes are additional when triggered. No fixture claims to execute LLM reflection. Offline behavior checks execute the production Markdown blocks against temporary logs/stubbed gh and verify repository/origin isolation, update metadata, uncertain close results, retained cleanup tokens, and survivor chain coordinates. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Atomic log replacements use a temporary file beside the log. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Create results cross the file/postfile boundary as structured output, and split-threshold reads use the matching target checkout or explicitly degrade when the checkout origin differs. Atomic log replacements use a temporary file beside the log. Existing issue-file and log-scoping suites exercise real helper paths and canonical body/ownership outcomes.
+The executable trace fixtures record caller-selected module paths, nested reference reads, bounded export excerpts, repeated-read reuse, and recovery from a persisted operation/phase. They validate this loading contract, not hidden harness behavior. Normal inline offers do not read chip-launching or the on-request payload module. The sizing rationale and ask-menu references remain conditional (rationale requests and blocking questions respectively); their bytes are additional when triggered. No fixture claims to execute LLM reflection. Offline behavior checks execute the production Markdown blocks against temporary logs/stubbed gh and verify repository/origin isolation, update metadata, uncertain close results, retained cleanup tokens, and survivor chain coordinates. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Atomic log replacements use a temporary file beside the log. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Atomic log replacements use a temporary file beside the log. The reservation/launch failure matrix uses the real repo-scoped registry helper with injected boundary failures, including lost responses, atomic local receipt failures, unknown spawn, recovery, and retract. Caller IDs persist before reserve; only confirmed unstarted work can release capacity. Required launch intent prevents duplicate automatic recovery; possibly running work remains held for tool reconciliation. Create results cross the file/postfile boundary as structured output, and split-threshold reads use the matching target checkout or explicitly degrade when the checkout origin differs. Atomic log replacements use a temporary file beside the log. Existing issue-file and log-scoping suites exercise real helper paths and canonical body/ownership outcomes.
 
 | Representative context / phase trace | Bytes | Words |
 |---|---:|---:|
-| Initial capture setup | 27,198 | 3,851 |
-| Normal create (modules only) | 87,057 | 12,903 |
-| Normal create including nested references | 159,571 | 24,069 |
-| Chain/batch including nested references | 168,748 | 25,556 |
-| Update / recovery at update phase | 36,295 | 5,191 |
-| Ordinary retract | 40,393 | 5,763 |
-| On-request handoff after normal create | 232,194 | 34,772 |
+| Initial capture setup | 28,410 | 4,010 |
+| Normal create (modules only) | 92,094 | 13,526 |
+| Normal create including nested references | 164,608 | 24,692 |
+| Chain/batch including nested references | 174,019 | 26,200 |
+| Update / recovery at update phase | 39,676 | 5,625 |
+| Ordinary retract | 42,439 | 6,041 |
+| On-request handoff after normal create | 239,338 | 35,666 |
 | Comparable old create plus same nested references | 170,626 | 26,374 |
 | Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,151 | 11,273 |
 
@@ -40,16 +40,16 @@ Setup is the initial capture row above. A restart adds that setup plus the activ
 | `modules/batch.md` | 1,893 | 315 |
 | `modules/create/crossrefs.md` | 2,417 | 401 |
 | `modules/create/dedup.md` | 5,900 | 859 |
-| `modules/create/file.md` | 7,920 | 1,082 |
-| `modules/create/increment-draft.md` | 4,867 | 771 |
-| `modules/create/postfile.md` | 25,130 | 3,932 |
-| `modules/create/reflect-and-draft.md` | 20,909 | 3,179 |
-| `modules/handoff.md` | 16,736 | 2,289 |
+| `modules/create/file.md` | 8,572 | 1,149 |
+| `modules/create/increment-draft.md` | 5,101 | 792 |
+| `modules/create/postfile.md` | 27,879 | 4,269 |
+| `modules/create/reflect-and-draft.md` | 21,333 | 3,239 |
+| `modules/handoff.md` | 18,843 | 2,560 |
 | `modules/portable-prompt.md` | 7,781 | 1,196 |
-| `modules/retract.md` | 13,195 | 1,912 |
+| `modules/retract.md` | 14,029 | 2,031 |
 | `modules/session-mode.md` | 1,279 | 188 |
-| `modules/session-state.md` | 19,198 | 2,731 |
-| `modules/update.md` | 9,097 | 1,340 |
+| `modules/session-state.md` | 20,410 | 2,890 |
+| `modules/update.md` | 11,266 | 1,615 |
 
 Reproduce the exact inventory with `wc -wc .claude/skills/issue-maker/SKILL.md .claude/skills/issue-maker/modules/*.md .claude/skills/issue-maker/modules/create/*.md`; run `bash tests/test-issue-maker-dispatch.sh` for the caller trace and offline workflow checks. Sum each trace's distinct source paths and bounded excerpts, including the references listed above. No migration percentage is promised before runtime instrumentation.
 

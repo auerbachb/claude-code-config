@@ -39,6 +39,12 @@ for candidate in \
   ".claude/scripts/issue-file.sh"; do
   if [ -x "$candidate" ]; then ISSUE_FILE="$candidate"; break; fi
 done
+# Freeze recording metadata before the remote write; emit it with the result.
+: "${ISSUE_TIER:?infer tier before filing}" "${DELIVERS:?record delivered scope before filing}" "${EST_BOUND:?record planning bound before filing}"
+RECORD_CHAIN=null
+if [ "${IS_INCREMENT:-false}" = true ]; then
+  RECORD_CHAIN=$(jq -cn --arg id "$CHAIN_ID" --argjson position "$POSITION" --argjson total "$TOTAL" '{chain_id:$id,position:$position,total:$total}') || exit 1
+fi
 ISSUE_URL=""; ISSUE_NUMBER=""; FILE_RC=0
 if [ -z "$ISSUE_FILE" ]; then
   echo "ERROR: issue-file.sh not found (checked all three paths) — issue creation unavailable" >&2
@@ -96,8 +102,8 @@ fi
 echo "FILE_RC=$FILE_RC"
 if [ "$FILE_RC" -eq 0 ]; then
   CREATE_RECEIPT=$(jq -cn --arg number "$ISSUE_NUMBER" --arg url "$ISSUE_URL" \
-    --arg title "$TITLE" --arg labels "${ACCEPTED_LABELS:-}" \
-    '{number:($number|tonumber),url:$url,title:$title,labels:($labels|split("\n")|map(select(length>0)))}') || {
+    --arg title "$TITLE" --arg labels "${ACCEPTED_LABELS:-}" --arg repo "$REPO" --arg tier "$ISSUE_TIER" --arg delivers "$DELIVERS" --argjson bound "$EST_BOUND" --argjson chain "$RECORD_CHAIN" \
+    '{repo:$repo,tier:$tier,delivers:$delivers,bound:$bound,chain:$chain,number:($number|tonumber),url:$url,title:$title,labels:($labels|split("\n")|map(select(length>0)))}') || {
     echo "ERROR: remote create is confirmed, but its receipt could not be serialized; do not retry" >&2
     exit 1
   }

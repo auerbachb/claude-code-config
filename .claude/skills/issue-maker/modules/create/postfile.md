@@ -11,7 +11,7 @@ After **every** create — and after every update/close — append/refresh the s
 
 **Two orderings sit under that rule, and neither weakens it.** (a) In a batch or chain, each create's URL line is **intermediate** output and only the **last** issue's URL closes the response (Step 6). (b) The summary table (Step 9a) is emitted **immediately before** that final URL, never after it. So the response still ends with an issue URL in every case — what varies is only which URL, and what precedes it.
 
-**Initialize `CHAIN_JSON` before recording.** `create:increment-draft` minted/restored the stable identity before dedup. Every record starts with null so ordinary issues cannot inherit a prior chain object:
+**Initialize `CHAIN_JSON` for drafting.** The emitted create receipt freezes the selected chain coordinates; recording below restores them so separate shell calls cannot inherit stale coordinates. `create:increment-draft` minted/restored the stable identity before dedup. Every record starts with null so ordinary issues cannot inherit a prior chain object:
 
 ```bash
 CHAIN_JSON=null
@@ -27,20 +27,35 @@ fi
 Build the labels as a JSON array from the accepted labels (the same set passed via `--label` flags in Step 5/7), then record the issue through the `set_log` helper:
 
 ```bash
+# Restore the emitted remote+recording receipt in this fresh shell process.
+: "${CREATE_RECEIPT:?restore confirmed create output before recording}"
+printf '%s' "$CREATE_RECEIPT" | jq -e --arg repo "$REPO" '.repo == $repo and (.number|type)=="number" and .number>0 and (.labels|type)=="array" and (.bound|type)=="number" and .bound>0 and (.tier|type)=="string" and (.delivers|type)=="string"' >/dev/null || exit 1
+ISSUE_NUMBER=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.number') || exit 1
+TITLE=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.title') || exit 1
+ISSUE_URL=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.url') || exit 1
+ACCEPTED_LABELS=$(printf '%s' "$CREATE_RECEIPT" | jq -r '.labels[]') || exit 1
+ISSUE_TIER=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.tier') || exit 1
+DELIVERS=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.delivers') || exit 1
+EST_BOUND=$(printf '%s' "$CREATE_RECEIPT" | jq -er '.bound') || exit 1
+CHAIN_JSON=$(printf '%s' "$CREATE_RECEIPT" | jq -c '.chain // null') || exit 1
 # ACCEPTED_LABELS holds the labels applied to this issue, one per line
 # (empty if none). Convert to a JSON array — `[]` when there are none.
 LABELS_JSON=$(printf '%s\n' "$ACCEPTED_LABELS" | jq -R . | jq -s 'map(select(length>0))')
 
-set_log '.issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
+set_log "$MINE_DEF"'if any(.issues[]; same_repo and .number == ($n|tonumber)) then . else .issues += [{number:($n|tonumber), title:$t, url:$u, labels:$labels,
                       created_at:$ts, origin:"create", status:"open", chip_task_id:null, chain:$chain,
                       tier:$tier, delivers:$delivers, est_bound:($bound|tonumber)}]
-         | if $chain != null and $chain.position == $chain.total
+         | if $chain == null and .create_intent.kind == "new-standalone"
+           then if .create_intent.repository != $repo or .active_chain != .create_intent.superseded_chain
+                then error("create intent changed; reconcile confirmed receipt")
+                else .active_chain = null | .create_intent = null end
+           elif $chain != null and $chain.position == $chain.total
               and .active_chain.chain_id == $chain.chain_id
-           then .active_chain = null else . end' \
-  --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
+           then .active_chain = null | .create_intent = null else . end end' \
+  --arg repo "$REPO" --arg n "$ISSUE_NUMBER" --arg t "$TITLE" --arg u "$ISSUE_URL" \
   --arg ts "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --argjson labels "$LABELS_JSON" \
   --argjson chain "$CHAIN_JSON" --arg tier "$ISSUE_TIER" \
-  --arg delivers "$DELIVERS" --arg bound "$EST_BOUND"
+  --arg delivers "$DELIVERS" --arg bound "$EST_BOUND" || exit 1
 ```
 
 **`DELIVERS` and `EST_BOUND` are the summary table's two per-row inputs, persisted here on purpose.** `DELIVERS` is the row's one-clause `Delivers` text — **one line, with any `|` escaped as `\|`**, since it is dropped straight into a markdown table cell and a raw pipe or newline splits the row — and `EST_BOUND` the raw `plan on` bound in minutes from the body's `## Estimate` line — both already in hand when the issue is drafted (Step 3 sub-step 4, Step 5). Writing them to the log is what lets the running tally re-render the canonical table after compaction, when the in-context values are gone and only `$LOG` survives; `tier` covers the `Model` column the same way. A tally that had to re-derive them would drift from the table printed at filing time. Because they are persisted rather than re-derived, a later `/update` that changes the delivered scope or the estimate has to write them back — Step 10 sub-step 6 owns that refresh.
@@ -136,7 +151,7 @@ A capture session ends by **offering to run every open issue it filed, right her
 
 <!-- test-anchor: issue-maker-step9c-offer-stamp -->
 ```bash
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
   echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
   exit 1
 fi
@@ -162,16 +177,30 @@ Say **yes** to run them now in this thread. Say **no** to leave them filed; you 
 
 In **rapid-fire mode**, use terser framing: *"Run {N} issue(s) inline — {TIER} ({MODEL}/{EFFORT})? [yes/no]"*; prepend the same applicable model step-up warning from Step 9b (including the Heavy-on-lower-tier recommendation), keeping it to one concise line. Rapid-fire trims commentary, never the pre-acceptance model/effort information
 
-**On yes — acceptance.** Check that no chip reservation/launch receipt exists before invoking any execution. Then invoke `/subagent #{a} #{b} …` first; if it succeeds, end capture mode (`offer_accepted: true`) and clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. If the invocation fails, leave `offer_accepted` unset so the offer can be re-attempted or withdrawn via Step 12. Issue-maker adds no orchestration: claims, the pipeline ceiling, Step 6.0b chain serialization, and too-big routing all belong to `/subagent`.
+**On yes — acceptance.** Explicit user acceptance is required. The guard below records an invocation intent, not success. Set `USER_ACCEPTED=true` only from the user's actual yes; a guard's exit0 never authorizes marking execution accepted.
 
 ```bash
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
-  echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
+[ "${USER_ACCEPTED:-false}" = true ] || { echo "HOLD: explicit inline acceptance required" >&2; exit 1; }
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+  echo "HOLD: reconcile existing execution receipt before invoking /subagent" >&2
   exit 1
 fi
-# /subagent #{a} #{b} ...  ← invoke only after the receipt guard above
-if ! set_log "$MINE_DEF"'.offer_accepted = true | (.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"; then
-  echo "ERROR: /subagent started, but offer acceptance and token cleanup could not be persisted; stop and reconcile the session log before another offer" >&2
+set_log "$MINE_DEF"'.inline_checkpoint = {state:"invocation-pending", repository:$repo, issues:[.issues[] | mine | .number]}' --arg repo "$REPO" || exit 1
+printf 'INLINE_REQUEST=%s\n' "$(jq -c '.inline_checkpoint' "$LOG")"
+```
+
+**Separate skill action:** invoke `/subagent` once with the issue numbers in the emitted `INLINE_REQUEST`. Do not execute the next shell block until that actual invocation returns confirmed success. A failed, partial, or lost invocation response leaves the intent for reconciliation and never authorizes an automatic retry. If evidence proves nothing started, clear only `.inline_checkpoint` and keep the offer pending. No shell comment substitutes for this skill action.
+
+**Post-success receipt, in a separate tool call:** set `INLINE_RESULT=success` only from that actual successful invocation. Missing or non-success result stops without changing acceptance/tokens. The pending issue list, rather than newly filed rows, bounds cleanup.
+
+```bash
+[ "${INLINE_RESULT:-unknown}" = success ] || { echo "HOLD: /subagent success was not confirmed" >&2; exit 1; }
+if ! set_log "$MINE_DEF"'if .inline_checkpoint.state != "invocation-pending" or .inline_checkpoint.repository != $repo
+  then error("inline invocation receipt missing/mismatched") else
+  .inline_checkpoint.issues as $covered | .offer_accepted = true |
+  (.issues[] | mine | select(.number as $n | $covered | index($n)) | .chip_task_id) = null |
+  .inline_checkpoint = null end' --arg repo "$REPO"; then
+  echo "ERROR: /subagent started, but receipt persistence failed; retain pending intent and reconcile before another run" >&2
   exit 1
 fi
 ```
@@ -179,7 +208,7 @@ fi
 **On no — decline.** Leave all issues filed and launch nothing. Clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. The inline offer is withdrawn; the on-request hand-off block below remains available on explicit request (`"give me the chip"`, `"print the hand-off"`, etc.).
 
 ```bash
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
   echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
   exit 1
 fi

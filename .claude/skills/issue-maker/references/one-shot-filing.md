@@ -2,7 +2,7 @@
 
 The per-issue create flow of `/issue-maker` (its Step 3, sub-steps 1–7), for a caller that files **one** idea and then goes back to what it was doing. Its first caller is the desk's `idea:` / `file:` intent (`desk/skill/ideas.md`, issue #1766). `/issue-maker` runs the same steps inside its capture session, and both create through the same script, `issue-file.sh`, so a filing from either place has the same reflection, duplicate search, labels, seven-section body, and footer.
 
-The selected `/issue-maker` modules stay canonical; this file summarizes them for the one-shot path. A change to the create reflection/draft, dedup, filing, or cross-reference modules updates this file in the same edit.
+The selected `/issue-maker` modules stay canonical; this file summarizes them for the one-shot path. A change to the create reflection/draft, `modules/create/increment-draft.md`, dedup, filing, or cross-reference modules updates this file in the same edit.
 
 ## The contract
 

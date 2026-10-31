@@ -119,7 +119,14 @@ Defaults you MUST honor for those three sections:
 
 ## Step 3: Reflect, then draft, then auto-file (the create flow)
 
-For each genuinely new ask, reset `IS_INCREMENT=false`, `CHAIN_ID=""`, and `CHAIN_JSON=null` before reflection; recovery of an in-progress chain restores `.active_chain` instead. For each issue the user describes (see Step 6 for batches):
+For a genuinely new ask, run this reset before reflection. It preserves the old active chain until a new standalone issue is actually confirmed and recorded; a failed or uncertain create cannot erase that plan. Resume/continue requests skip this block and restore the selected chain. Cancelling this new draft clears only `.create_intent`, then restores the saved active chain; it never closes filed members.
+
+```bash
+IS_INCREMENT=false; CHAIN_ID=""; CHAIN_JSON=null
+set_log '.create_intent = {kind:"new-standalone", repository:$repo, superseded_chain:.active_chain}' --arg repo "$REPO" || exit 1
+```
+
+ For each issue the user describes (see Step 6 for batches):
 
 1. **Reflect** — run the reflection pass from the top-level rule (narrow / expand / split / **sizing** / ambiguity / assumptions). You make these calls yourself; they resurface as decision points in the report (Step 9a). Ask up front only on a genuinely blocking call (top-level rule); otherwise proceed. Record the deliverable-fit result now, but do not finalize the single-versus-chain decision before computing the estimate in sub-step 4.
 2. **Draft a minimal proposed title and problem statement** from the reflection before duplicate screening; these are the required inputs to the body-aware search. Do not file or publish them yet.

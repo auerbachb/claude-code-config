@@ -47,9 +47,24 @@ The merge-authority bullet is the shared contract from `chip-launching.md` "Merg
 Persist a unique caller-generated registry ID **before** the external reservation. Do not retry `--reserve` with that ID: the helper appends duplicates rather than providing idempotency. After an uncertain response, read the exact ID from `--list` in the same repository; unknown state stops. All local writes use the atomic session writer. These receipts distinguish `reservation-intent`, `reserved`, `spawn-uncertain`, `spawned-receipt-pending`, and `cleanup-pending`; only confirmed tool success establishes a task ID. Keep the checkpoint repository and registry ID until confirmed cleanup or terminal reconciliation.
 
 ```bash
+# Run this definitions fence together with EACH later handoff phase block;
+# shell functions and variables do not survive separate tool invocations.
+handoff_restore() {
+  REG_TID=$(jq -r '.reg_tid // empty' "$LOG") || return 1
+  OFFER_TOKEN=$(jq -r '.handoff_checkpoint.offer_token // empty' "$LOG") || return 1
+  jq -e --arg repo "$REPO" '.handoff_checkpoint.repository == $repo' "$LOG" >/dev/null || return 1
+  REGISTRY=""
+  if [ -n "$REG_TID" ]; then
+    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+      [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
+    done
+    [ -n "$REGISTRY" ] || return 1
+  fi
+}
 # The release function is legal ONLY before spawn or after an explicit result
 # proving no task was created. Never call it for a timeout/lost spawn response.
 handoff_release_unstarted() {
+  local clear_token="${1:-}"
   # Validate the persisted phase/owner even when called after a restart.
   if ! jq -e --arg repo "$REPO" --arg reg "$REG_TID" '
     ((.reg_tid // "") == $reg) and
@@ -73,7 +88,7 @@ handoff_release_unstarted() {
       return 1
     fi
   fi
-  set_log '.reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null' || {
+  set_log "$MINE_DEF"'.reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null | if $clear == "" then . else (.issues[] | mine | select(.chip_task_id == $clear) | .chip_task_id) = null end' --arg repo "$REPO" --arg clear "$clear_token" || {
     echo "ERROR: reservation released but session cleanup could not be persisted; reconcile before another offer" >&2
     return 1
   }
@@ -82,7 +97,7 @@ handoff_release_unstarted() {
 ```
 
 ```bash
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" or .offer_accepted == true' "$LOG" >/dev/null; then
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" or .offer_accepted == true' "$LOG" >/dev/null; then
   echo "ERROR: reconcile the saved handoff receipt before reserving or spawning again" >&2
   exit 1
 fi
@@ -159,7 +174,7 @@ fi
 OFFER_TOKEN="offer-$(date -u +%s)-$$-$RANDOM-$RANDOM"
 OFFER_MODE=inline
 [ -n "$REG_TID" ] && OFFER_MODE=chip-reserved
-if ! set_log "$MINE_DEF"'.delivery_mode = $mode | (.issues[] | mine | .chip_task_id) = $tok'     --arg mode "$OFFER_MODE" --arg tok "$OFFER_TOKEN" --arg repo "$REPO"; then
+if ! set_log "$MINE_DEF"'.delivery_mode = $mode | .handoff_checkpoint = {state:"reserved",spawn_status:"not-started",repository:$repo,task_id:null,offer_token:$tok} | (.issues[] | mine | .chip_task_id) = $tok'     --arg mode "$OFFER_MODE" --arg tok "$OFFER_TOKEN" --arg repo "$REPO"; then
   handoff_release_unstarted || exit 1
   echo "ERROR: offer stamp could not be persisted; no spawn or emission occurred" >&2
   exit 1
@@ -169,8 +184,15 @@ fi
 **Before the tool call**, persist this checked write. A crash after it is an uncertain launch, even if the tool had not yet been invoked; that conservative uncertainty prevents duplicate work. Failure stops before calling the tool.
 
 ```bash
-if ! set_log '.delivery_mode = "chip-pending" | .handoff_checkpoint = {state:"spawn-uncertain", spawn_status:"unknown", repository:$repo, task_id:null}' --arg repo "$REPO"; then
-  handoff_release_unstarted || exit 1
+handoff_restore || exit 1
+jq -e '.handoff_checkpoint.state == "reserved" and .handoff_checkpoint.spawn_status == "not-started" and .handoff_checkpoint.task_id == null' "$LOG" >/dev/null || { echo "HOLD: launch intent already exists; reconcile, never spawn twice" >&2; exit 1; }
+if [ -n "$REG_TID" ]; then
+  READY=$("$REGISTRY" --repo "$REPO" --list) || exit 1
+  printf '%s' "$READY" | jq -e --arg id "$REG_TID" '[.[] | select(.task_id == $id and .emitter == "issue-maker" and .state == "offered")] | length == 1' >/dev/null || { echo "HOLD: reservation no longer offered; reconcile before launch" >&2; exit 1; }
+fi
+[ -n "$OFFER_TOKEN" ] || { echo "ERROR: offer receipt missing before launch" >&2; exit 1; }
+if ! set_log '.delivery_mode = "chip-pending" | .handoff_checkpoint = {state:"spawn-uncertain", spawn_status:"unknown", repository:$repo, task_id:null,offer_token:$tok}' --arg repo "$REPO" --arg tok "$OFFER_TOKEN"; then
+  handoff_release_unstarted "$OFFER_TOKEN" || exit 1
   echo "ERROR: launch intent failed; no spawn attempted" >&2
   exit 1
 fi
@@ -181,6 +203,7 @@ fi
 After confirmed success, persist the returned task ID. If both writes fail, the prior `spawn-uncertain` receipt remains; report the returned ID for reconciliation without claiming it is recorded. Never release capacity or print an executable fallback after possible/confirmed spawn. Print the short summary per `chip-launching.md` only for confirmed success.
 
 ```bash
+handoff_restore || exit 1
 [ -n "$TASK_ID" ] || { echo "ERROR: no confirmed task ID; retain unknown spawn receipt" >&2; exit 1; }
 if ! set_log "$MINE_DEF"'.delivery_mode = "chip" | .reg_tid = $reg | .handoff_checkpoint = {state:"spawned", spawn_status:"spawned", repository:$repo, task_id:$task} | (.issues[] | mine | .chip_task_id) = $task'     --arg reg "$REG_TID" --arg task "$TASK_ID" --arg repo "$REPO"; then
   set_log '.handoff_checkpoint = {state:"spawned-receipt-pending", spawn_status:"spawned", repository:$repo, task_id:$task}' --arg task "$TASK_ID" --arg repo "$REPO" || true
@@ -192,6 +215,8 @@ fi
 **Fallback mode:** only when no task was created, set `SPAWN_OUTCOME=not-started` from the actual result (or tool absence), then run this cleanup before printing the full fenced prompt once. Keep the stamped issue token for the printed block. Unknown/possibly running tasks stop without releasing, re-spawning, or printing another executable handoff. The release function above must be loaded from this same handoff phase after recovery; it is not a reason to load unrelated modules.
 
 ```bash
+handoff_restore || exit 1
+jq -e '.handoff_checkpoint.task_id == null and .handoff_checkpoint.spawn_status != "spawned"' "$LOG" >/dev/null || { echo "HOLD: confirmed task cannot become an unstarted fallback" >&2; exit 1; }
 if [ "$SPAWN_OUTCOME" != not-started ]; then
   echo "ERROR: spawn outcome uncertain; preserve receipt and reservation, reconcile the tool result" >&2
   exit 1

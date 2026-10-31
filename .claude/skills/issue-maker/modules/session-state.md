@@ -76,7 +76,7 @@ if [ -f "$LOG" ]; then
   # Restore the chain identity even when the active phase is dedup/file/postfile;
   # recovery must not need to re-run the new-chain drafting module.
   IS_INCREMENT=false; CHAIN_ID=""; CHAIN_JSON=null
-  if jq -e '.active_chain != null' "$LOG" >/dev/null; then
+  if jq -e '.active_chain != null and .create_intent.kind != "new-standalone"' "$LOG" >/dev/null; then
     CHAIN_REPO=$(jq -er '.active_chain.repository' "$LOG") || exit 1
     [[ "$CHAIN_REPO" == "$REPO" ]] || { echo "FATAL: active chain belongs to another repository" >&2; exit 1; }
     CHAIN_ID=$(jq -er '.active_chain.chain_id' "$LOG") || exit 1
@@ -112,7 +112,19 @@ Offer tokens are not launch receipts. `inline` means a printed/pending inline of
 
 For an outstanding receipt, the next active phase is `offer:handoff` reconciliation only. Read the checkpoint repository (must equal target repo), registry ID, saved task ID, and `spawn_status`. With `not-started` and state `reservation-intent`, `reserved`, or `cleanup-pending`, resolve the registry and read `--repo "$REPO" --list` for that exact ID before choosing cleanup; no automatic reserve/spawn replay. An absent/retracted/expired entry plus confirmed no-spawn permits local receipt cleanup; an offered entry permits repo-scoped release followed by local cleanup. Running/pr-backed entries override stale local not-started assumptions and require task reconciliation. Registry read failure/ambiguous identity preserves the receipt. With unknown spawn, use the tool's task inventory/returned result to establish whether a task exists; absence of a registry entry alone proves nothing about spawn. Confirmed running tasks keep their registry ID until their actual terminal lifecycle transition. A closed captured issue is not proof of task termination. Never erase a receipt to enable another offer.
 
-If `OFFER_ACCEPTED` is false, re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If `OFFER_ACCEPTED` is true, re-affirm: *"Offer accepted — execution mode active. New issues filed here will be run inline via `/subagent`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
+If `.inline_checkpoint` exists, report that the inline invocation needs reconciliation; do not retry execution or offer another run. A guard is not invocation success. If `.create_intent.kind` is `new-standalone`, recover that pending new ask rather than resuming the superseded chain. For explicit cancellation/resumption of a superseded plan, use the selected draft-cancel block below; it does not close issues. A partially filed new chain needs an explicit close/re-cut decision, not silent erasure.
+
+```bash
+set_log 'if .create_intent != null and .create_intent.repository != $repo then error("draft repository mismatch") elif .create_intent.kind == "chain" then
+  .create_intent.chain_id as $id |
+  if any(.issues[]; .chain.chain_id == $id) then error("filed chain requires explicit close/re-cut")
+  else .active_chain = .create_intent.superseded_chain | .create_intent = null end
+  else .create_intent = null end' --arg repo "$REPO" || exit 1
+```
+
+Reload the selected chain identity only after that explicit draft cancellation/resume succeeds.
+
+If `OFFER_ACCEPTED` is false and no inline invocation is pending, re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If `OFFER_ACCEPTED` is true, re-affirm: *"Offer accepted — execution mode active. New issues filed here will be run inline via `/subagent`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
 **If `$LOG` does not exist:** initialize it and print the mode banner.
 
@@ -168,7 +180,7 @@ if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "ERROR: expected owner/repo before retargeting; target_repo was not changed" >&2
   exit 1
 fi
-if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
+if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .create_intent != null or .active_chain != null or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved"' "$LOG" >/dev/null; then
   echo "ERROR: reconcile the existing handoff in its saved repository before retargeting" >&2
   exit 1
 fi
