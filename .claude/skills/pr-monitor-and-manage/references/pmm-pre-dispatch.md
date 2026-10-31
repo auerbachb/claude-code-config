@@ -52,7 +52,16 @@ Active Phase A agent deadlines follow PMM's existing windows: 15 minutes for PMM
 `pmm-fix-*` records and 60 minutes for foreign records. Active `/wrap` locks use the existing
 60-minute stale-lock window. Due IDs are persisted once so an acknowledged deadline does not wake
 on every later tick; a changed record gets a new deadline key. Missing or malformed timestamps
-produce `deadline_state_unknown` and wake for diagnosis.
+produce `deadline_state_unknown` and wake immediately. The separate deadline-unknown fingerprint
+continues local checks and re-notifies on observations 1, 4, 7, and so on for the same keyset; a new
+keyset wakes immediately. This durable unresolved state is not treated as clean.
+
+Collector diagnostics also keep a fingerprint separate from deadline state. A new failure reason
+wakes immediately; identical acknowledged failures retry locally on every poll and re-notify on
+observations 1, 4, 7, and so on. A healthy collection clears the collector-error streak. Until then,
+the prior snapshot and unresolved fingerprint are retained: failures wake only for a new reason or
+at that repeat interval, and are never recorded as a clean comparison. A pending event always
+replays with its original ID before either retry policy runs.
 
 CAS updates are confined to `.pmm_pre_dispatch`: concurrent acknowledgement/receipt writes cause a retryable diagnostic instead of overwriting one another. Old-generation shell processes exit before collection; a newly published generation retains an old outbox as `superseded_event` and performs fresh comparison. A bounded 64-entry acknowledgement history makes delayed delivery benign after newer events have completed. Pending replays increment tick/dispatch/replay counters while meaningful transitions remain counted separately.
 

@@ -17,7 +17,7 @@
 # "unchanged" result. Pending event packets stay in session-state until --ack
 # consumes their exact ID.
 #
-# Exit codes: 0 success/event, 2 usage, 4 unreadable state, 5 collection failure.
+# Exit codes: 0 success/event, 2 usage, 4 acknowledgement failure, 5 collection/dispatch diagnostic.
 set -Eeuo pipefail
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>/dev/null >> "$HOME/.claude/script-usage.log" || true
 
@@ -36,6 +36,8 @@ SKILL_ARGS=""
 SKILL_ARGS_SHELL=""
 BASE_CADENCE_MIN=5
 IDLE_PAUSE_AFTER=3
+DIAGNOSTIC_WAKE_INTERVAL=3
+DEADLINE_UNKNOWN_WAKE_INTERVAL=3
 
 usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 fail() { echo "pmm-pre-dispatch.sh: $*" >&2; exit 2; }
@@ -110,15 +112,64 @@ for dep in jq shasum; do command -v "$dep" >/dev/null 2>&1 || emit_unpersisted_d
 # environment. Values are validated above and every literal is shell-quoted.
 if [[ "$PRINT_COMMAND" == true ]]; then
   [[ -z "$ACK_ID" && -z "$FIXTURE" ]] || fail "--monitor-command cannot acknowledge or use fixtures"
-  printf 'STATE_HELPER=%q\nGATE=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nFORWARD=%q\n' \
-    "$STATE_HELPER" "$SCRIPT_DIR/pmm-pre-dispatch.sh" "$REPO" "$AUTHOR" "$GENERATION" "$BASE_CADENCE_MIN" "$IDLE_PAUSE_AFTER" "$SKILL_ARGS"
+  BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
+  [[ -r "$BOUNDED_RUN_LIB" ]] || fail "bounded-run.sh unavailable; refusing an unbounded Monitor command"
+  printf 'STATE_HELPER=%q\nGATE=%q\nBOUND_RUN_LIB=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nFORWARD=%q\nFORWARD_SHELL=%q\n' \
+    "$STATE_HELPER" "$SCRIPT_DIR/pmm-pre-dispatch.sh" "$BOUNDED_RUN_LIB" "$REPO" "$AUTHOR" "$GENERATION" \
+    "$BASE_CADENCE_MIN" "$IDLE_PAUSE_AFTER" "$SKILL_ARGS" "$SKILL_ARGS_SHELL"
   cat <<'COMMAND'
+if [[ ! -r "$BOUND_RUN_LIB" ]]; then
+  echo "pmm-pre-dispatch Monitor: bounded-run.sh unavailable; waking for diagnosis and stopping this loop" >&2
+  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  exit 1
+fi
+source "$BOUND_RUN_LIB" || {
+  echo "pmm-pre-dispatch Monitor: bounded-run.sh could not be loaded; waking for diagnosis and stopping this loop" >&2
+  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  exit 1
+}
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch.XXXXXX")" || {
+  echo "pmm-pre-dispatch Monitor: cannot create bounded capture; waking for diagnosis and stopping this loop" >&2
+  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  exit 1
+}
+CAPTURE_ERR="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch-err.XXXXXX")" || {
+  rm -f "$CAPTURE"
+  echo "pmm-pre-dispatch Monitor: cannot create bounded error capture; waking for diagnosis and stopping this loop" >&2
+  printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+    "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  exit 1
+}
+cleanup_captures() { rm -f "$CAPTURE" "$CAPTURE_ERR"; }
+trap cleanup_captures EXIT
+trap 'exit 0' HUP INT TERM
+TIMEOUT_SECS="$(normalize_bound "${PMM_PRE_DISPATCH_TIMEOUT_SECS:-300}" 300)"
 while :; do
   cadence=$("$STATE_HELPER" --get '.pmm_cadence' 2>/dev/null) || cadence="${BASE}m"
   [[ "$cadence" =~ ^([1-9][0-9]{0,5})m$ ]] || cadence="${BASE}m"
   sleep "$(( ${cadence%m} * 60 ))" || exit 0
-  "$GATE" --repo "$REPO" --author "$AUTHOR" --generation "$GENERATION" \
-    --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --skill-args "$FORWARD"
+  rc=0
+  run_bounded "$TIMEOUT_SECS" "$GATE" --repo "$REPO" --author "$AUTHOR" --generation "$GENERATION" \
+    --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --skill-args "$FORWARD" || rc=$?
+  [[ ! -s "$CAPTURE_ERR" ]] || cat "$CAPTURE_ERR" >&2 || true
+  if [[ "$BOUNDED_TIMED_OUT" == 1 || "$BOUNDED_CLOCK_UNREADABLE" == 1 ]]; then
+    echo "pmm-pre-dispatch Monitor: collector did not complete inside its bound; waking for diagnosis and retry" >&2
+    printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+      "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  elif [[ "$rc" -ne 0 && ! -s "$CAPTURE" ]]; then
+    echo "pmm-pre-dispatch Monitor: collector failed without a durable event (exit $rc); waking for diagnosis" >&2
+    printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+      "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+  else
+    cat "$CAPTURE" || {
+      echo "pmm-pre-dispatch Monitor: collector output could not be relayed; waking for diagnosis" >&2
+      printf '/pr-monitor-and-manage --tick --monitor-generation %s --pre-dispatch-diagnostic%s\n' \
+        "$GENERATION" "${FORWARD_SHELL:+ $FORWARD_SHELL}"
+    }
+  fi
 done
 COMMAND
   exit 0
@@ -158,16 +209,26 @@ emit_event() {
 event_id() { jq -cS . <<<"$1" | shasum -a 256 | awk '{print $1}'; }
 queue_diagnostic() {
   trap - ERR
-  local reason="$1" at event id next
+  local reason="$1" at event id next fingerprint prior_fingerprint prior_streak next_streak
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || emit_unpersisted_diagnostic "$reason; clock unavailable"
+  fingerprint="$(printf '%s' "$reason" | shasum -a 256 | awk '{print $1}')" || emit_unpersisted_diagnostic "$reason; fingerprint calculation failed"
+  prior_fingerprint="$(jq -r '.diagnostic_fingerprint // empty' <<<"$STATE_JSON")" || emit_unpersisted_diagnostic "$reason; retry fingerprint unreadable"
+  prior_streak="$(jq -er '(.error_streak // 0) | select(type=="number" and .>=0 and floor==.)' <<<"$STATE_JSON")" || emit_unpersisted_diagnostic "$reason; retry counter unreadable"
+  if [[ "$prior_fingerprint" == "$fingerprint" ]]; then next_streak=$((prior_streak+1)); else next_streak=1; fi
+  if [[ "$prior_fingerprint" == "$fingerprint" ]] && (( (next_streak - 1) % DIAGNOSTIC_WAKE_INTERVAL != 0 )); then
+    next="$(jq -c --arg now "$at" --arg reason "$reason" --arg fingerprint "$fingerprint" --argjson streak "$next_streak" \
+      '.ticks=((.ticks // 0)+1) | .errors=((.errors // 0)+1) | .error_streak=$streak | .diagnostic_fingerprint=$fingerprint | .last_tick_at=$now | .last_error_at=$now | .last_error=$reason' <<<"$STATE_JSON")" || emit_unpersisted_diagnostic "$reason; retry state invalid"
+    write_state "$next" || emit_unpersisted_diagnostic "$reason; could not persist local retry state"
+    exit 0
+  fi
   event="$(jq -cn --arg repo "$REPO" --arg author "$AUTHOR" --arg generation "$GENERATION" \
     --arg detected "$at" --arg reason "$reason" --argjson sequence "$(jq -r "(.transitions // 0)+1" <<<"$STATE_JSON")" \
     '{repo:$repo,author:$author,generation:$generation,sequence:$sequence,detected_at:$detected,reason:$reason,
       reasons:["collector_error"],diagnostic:true,trigger:"pmm-diagnose",evidence:[]}')" || emit_unpersisted_diagnostic "$reason; diagnostic construction failed"
   id="$(event_id "$event")" || emit_unpersisted_diagnostic "$reason; diagnostic hashing failed"
   event="$(jq -c --arg id "$id" '. + {event_id:$id}' <<<"$event")" || emit_unpersisted_diagnostic "$reason; diagnostic ID failed"
-  next="$(jq -c --argjson event "$event" --arg now "$at" \
-    '.ticks=((.ticks // 0)+1) | .errors=((.errors // 0)+1) | .error_streak=((.error_streak // 0)+1) | .last_tick_at=$now | .dispatches=((.dispatches // 0)+1) | .transitions=((.transitions // 0)+1) | .last_error_at=$now | .last_event_at=$now | .pending_event=$event' <<<"$STATE_JSON")" || emit_unpersisted_diagnostic "$reason; diagnostic state invalid"
+  next="$(jq -c --argjson event "$event" --arg now "$at" --arg reason "$reason" --arg fingerprint "$fingerprint" --argjson streak "$next_streak" \
+    '.ticks=((.ticks // 0)+1) | .errors=((.errors // 0)+1) | .error_streak=$streak | .diagnostic_fingerprint=$fingerprint | .last_tick_at=$now | .dispatches=((.dispatches // 0)+1) | .transitions=((.transitions // 0)+1) | .last_error_at=$now | .last_error=$reason | .last_event_at=$now | .pending_event=$event' <<<"$STATE_JSON")" || emit_unpersisted_diagnostic "$reason; diagnostic state invalid"
   write_state "$next" || emit_unpersisted_diagnostic "$reason; session-state write failed"
   emit_event "$event"
   exit 5
@@ -370,6 +431,23 @@ deadline_state="$(jq -c --argjson now "$now_epoch" --argjson marks "$(jq -c '.de
 ' <<<"$CURRENT")" || queue_diagnostic "recovery deadline calculation failed"
 deadline_due="$(jq -c '.due' <<<"$deadline_state")" || queue_diagnostic "recovery deadline due-state unreadable"
 deadline_unknown="$(jq -c '.unknown' <<<"$deadline_state")" || queue_diagnostic "recovery deadline unknown-state unreadable"
+DEADLINE_UNKNOWN_CHECKS=0
+DEADLINE_UNKNOWN_FINGERPRINT=""
+DEADLINE_UNKNOWN_DUE=false
+deadline_unknown_count="$(jq -r 'length' <<<"$deadline_unknown")" || queue_diagnostic "recovery deadline unknown count unreadable"
+if [[ "$deadline_unknown_count" -gt 0 ]]; then
+  deadline_unknown_tuple="$(jq -cS 'sort' <<<"$deadline_unknown")" || queue_diagnostic "recovery deadline unknown fingerprint input invalid"
+  DEADLINE_UNKNOWN_FINGERPRINT="$(printf '%s' "$deadline_unknown_tuple" | shasum -a 256 | awk '{print $1}')" || queue_diagnostic "recovery deadline fingerprint failed"
+  previous_unknown_fingerprint="$(jq -r '.deadline_unknown_fingerprint // empty' <<<"$STATE_JSON")" || queue_diagnostic "recovery deadline fingerprint state unreadable"
+  previous_unknown_checks="$(jq -er '(.deadline_unknown_checks // 0) | select(type=="number" and .>=0 and floor==.)' <<<"$STATE_JSON")" || queue_diagnostic "recovery deadline retry counter unreadable"
+  if [[ "$previous_unknown_fingerprint" == "$DEADLINE_UNKNOWN_FINGERPRINT" ]]; then
+    DEADLINE_UNKNOWN_CHECKS=$((previous_unknown_checks + 1))
+    if (( (DEADLINE_UNKNOWN_CHECKS - 1) % DEADLINE_UNKNOWN_WAKE_INTERVAL == 0 )); then DEADLINE_UNKNOWN_DUE=true; fi
+  else
+    DEADLINE_UNKNOWN_CHECKS=1
+    DEADLINE_UNKNOWN_DUE=true
+  fi
+fi
 snapshot_stale="false"
 if [[ "$previous" != null ]]; then
   recorded_at="$(jq -r '.snapshot.recorded_at // empty' <<<"$STATE_JSON")"
@@ -407,7 +485,7 @@ reasons="$(jq -cn --argjson old "$previous" --argjson delta "$delta" --arg diges
   --arg pmm_digest "$PMM_STATE_DIGEST" --arg pmm_prev "$PMM_PREV_DIGEST" \
   --argjson same_digest "$PMM_SAME_DIGEST" --argjson streak "$PMM_NEXT_STREAK" \
   --argjson idle "$PMM_NEXT_IDLE" --argjson held "$merge_holds_count" --argjson idle_threshold "$IDLE_PAUSE_AFTER" \
-  --argjson stale "$snapshot_stale" --argjson identity_changed "$identity_changed" '
+  --argjson stale "$snapshot_stale" --argjson identity_changed "$identity_changed" --argjson deadline_unknown_due "$DEADLINE_UNKNOWN_DUE" '
   [if $old == null then "initial" else empty end]
   + [if ($old != null and $identity_changed) then "monitor_identity_changed" else empty end]
   + [if (($delta.added|length)>0 or ($delta.removed|length)>0) then "fleet" else empty end]
@@ -418,7 +496,7 @@ reasons="$(jq -cn --argjson old "$previous" --argjson delta "$delta" --arg diges
   + [if (($delta.hold_changes|length)>0) then "merge_hold_state" else empty end]
   + [if $old != null and $held > 0 then "merge_hold_recheck" else empty end]
   + [if (($delta.deadlines|length)>0) then "deadline" else empty end]
-  + [if (($delta.deadline_unknown|length)>0) then "deadline_state_unknown" else empty end]
+  + [if (($delta.deadline_unknown|length)>0 and $deadline_unknown_due) then "deadline_state_unknown" else empty end]
   + [if $stale then "snapshot_stale" else empty end]
   + [if ($old != null and ($pmm_prev == "null" or $pmm_prev != $pmm_digest)) then "state_digest" else empty end]
   + [if $same_digest and ($streak >= 9) then "stable_freeze_due" else empty end]
@@ -442,8 +520,9 @@ state_changed=false
 if [[ "$meaningful" == true ]]; then
   event="$(jq -c --arg id "$id" '. + {event_id:$id}' <<<"$base")"
   next="$(jq -c --argjson snap "$CURRENT" --arg digest "$curr_digest" --argjson event "$event" --arg now "$NOW" \
-    --arg repo "$REPO" --arg author "$AUTHOR" --arg generation "$GENERATION" \
-    '.snapshot={data:$snap,digest:$digest,recorded_at:$now} | .digest=$digest | .pending_event=$event | .monitor_repo=$repo | .monitor_author=$author | .monitor_generation=$generation | .deadline_marks=((.deadline_marks // []) + ($event.delta.deadlines // []) | unique) | .ticks=((.ticks // 0)+1) | .dispatches=((.dispatches // 0)+1) | .transitions=((.transitions // 0)+1) | .last_tick_at=$now | .last_event_at=$now' <<<"$STATE_JSON")"
+    --arg repo "$REPO" --arg author "$AUTHOR" --arg generation "$GENERATION" --arg deadline_unknown_fingerprint "$DEADLINE_UNKNOWN_FINGERPRINT" \
+    --argjson deadline_unknown_checks "$DEADLINE_UNKNOWN_CHECKS" \
+    '.snapshot={data:$snap,digest:$digest,recorded_at:$now} | .digest=$digest | .pending_event=$event | .monitor_repo=$repo | .monitor_author=$author | .monitor_generation=$generation | .deadline_marks=((.deadline_marks // []) + ($event.delta.deadlines // []) | unique) | .deadline_unknown_fingerprint=$deadline_unknown_fingerprint | .deadline_unknown_checks=$deadline_unknown_checks | .error_streak=0 | .diagnostic_fingerprint=null | .ticks=((.ticks // 0)+1) | .dispatches=((.dispatches // 0)+1) | .transitions=((.transitions // 0)+1) | .last_tick_at=$now | .last_event_at=$now' <<<"$STATE_JSON")"
   if [[ "$state_changed" == true ]]; then
     cadence_args=(--set '.pmm_digest_streak=0' --set '.pmm_idle_streak=0')
     cadence_min="$BASE_CADENCE_MIN"
@@ -465,8 +544,9 @@ if [[ "$meaningful" == true ]]; then
   emit_event "$event"
 else
   next="$(jq -c --argjson snap "$CURRENT" --arg digest "$curr_digest" --arg now "$NOW" \
-    --arg repo "$REPO" --arg author "$AUTHOR" --arg generation "$GENERATION" \
-    '.snapshot={data:$snap,digest:$digest,recorded_at:$now} | .digest=$digest | .monitor_repo=$repo | .monitor_author=$author | .monitor_generation=$generation | .ticks=((.ticks // 0)+1) | .last_tick_at=$now | .error_streak=0' <<<"$STATE_JSON")"
+    --arg repo "$REPO" --arg author "$AUTHOR" --arg generation "$GENERATION" --arg deadline_unknown_fingerprint "$DEADLINE_UNKNOWN_FINGERPRINT" \
+    --argjson deadline_unknown_checks "$DEADLINE_UNKNOWN_CHECKS" \
+    '.snapshot={data:$snap,digest:$digest,recorded_at:$now} | .digest=$digest | .monitor_repo=$repo | .monitor_author=$author | .monitor_generation=$generation | .deadline_unknown_fingerprint=$deadline_unknown_fingerprint | .deadline_unknown_checks=$deadline_unknown_checks | .ticks=((.ticks // 0)+1) | .last_tick_at=$now | .error_streak=0 | .diagnostic_fingerprint=null' <<<"$STATE_JSON")"
   schedule_args=()
   expected_tick="$(date -u -d "+${PMM_NEXT_CADENCE_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+"${PMM_NEXT_CADENCE_MIN}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || queue_diagnostic "could not calculate the next PMM tick"
   while IFS= read -r -d '' arg; do schedule_args+=("$arg"); done < <(schedule_state_args "$PMM_NEXT_CADENCE_MIN" "$expected_tick")

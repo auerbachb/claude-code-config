@@ -53,7 +53,7 @@ These bindings are in scope for every step of the tick, including the `reference
 **When something does not resolve, say so in one line; never skip the contract silently.**
 
 - `SESSION_STATE_SH` or `MERGE_GATE_SH` empty → **required, and fatal for the tick**. Print `ERROR: <name> not found (checked all three paths) — PR fleet management unavailable` and exit without acting. Every verdict this skill reaches is a merge decision; a fleet manager that cannot read the gate or persist a hard block must not guess, and must not act on a guess.
-- `PMM_PRE_DISPATCH_SH` empty → **optional for the current interactive/model tick**, which can continue under the ordinary gates; fatal only when arming or replacing a Monitor. Step 7 refuses to arm a model-dispatching loop without it.
+- `PMM_PRE_DISPATCH_SH` empty → **optional for an interactive tick**, which can continue under the ordinary gates; a tick carrying `--dispatch-event` fails with status 1 and leaves the event queued. Arming or replacing a Monitor also fails closed without this helper.
 - `MERGE_SEQUENCE_SH` empty → **optional**. Print `DEGRADED: merge-sequence.sh not found (checked all three paths) — overlap-aware sequencing unavailable, merging one PR per tick` and serialize merges rather than sequencing them.
 - `USAGE_HORIZON_SH` empty → **optional, and conservative**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — horizon consult unavailable, holding "unknown" (no new subagent dispatch)` and run Step 3.7 with the verdict it already produces for an unresolved helper. `unknown` is the fail-closed posture, never `clear`: it suppresses *new* fixer dispatch while leaving merge-ready `/wrap` and rebases alone, so the fleet keeps landing work instead of freezing (`subagent-thread-limit-park.md` §8.1).
 - `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH`, `PR_STATE_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution, reviewer-engagement matrix), then continue with that one capability off. An empty `PR_STATE_SH` renders every engagement cell as `?` — the tick still runs.
@@ -107,6 +107,10 @@ fi
 if [[ -n "$PMM_DISPATCH_EVENT" && "$PMM_INTERNAL_TICK" != true ]]; then
   echo "ERROR: --dispatch-event is runtime-only and requires --tick." >&2
   exit 2
+fi
+if [[ -n "$PMM_DISPATCH_EVENT" && -z "$PMM_PRE_DISPATCH_SH" ]]; then
+  echo "ERROR: pre-dispatch helper unavailable; leaving event $PMM_DISPATCH_EVENT queued without acting." >&2
+  exit 1
 fi
 if [[ "$PMM_INTERNAL_TICK" != true && -n "$PMM_TICK_GENERATION" ]]; then
   echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2

@@ -141,6 +141,12 @@ snapshot "$TMP/deadline-unknown.json" "$two_rows" "$bad_agent"
 run_gate "$TMP/deadline-unknown.json" > "$TMP/deadline-unknown.out"
 check "unknown recovery deadline wakes diagnostically" '[[ "$(event_from "$TMP/deadline-unknown.out" | jq -r ".reasons|index(\"deadline_state_unknown\") != null")" == true ]]'
 ack_event "$(event_from "$TMP/deadline-unknown.out" | jq -r .event_id)"
+run_gate "$TMP/deadline-unknown.json" > "$TMP/deadline-unknown-2.out"
+run_gate "$TMP/deadline-unknown.json" > "$TMP/deadline-unknown-3.out"
+check "identical unknown deadline retries locally for two observations" '[[ ! -s "$TMP/deadline-unknown-2.out" && ! -s "$TMP/deadline-unknown-3.out" && "$(jq -r .pmm_pre_dispatch.deadline_unknown_checks "$TEST_HOME/.claude/session-state.json")" == 3 ]]'
+run_gate "$TMP/deadline-unknown.json" > "$TMP/deadline-unknown-4.out"
+check "unresolved unknown deadline re-notifies on the three-observation interval" '[[ "$(event_from "$TMP/deadline-unknown-4.out" | jq -r ".reasons|index(\"deadline_state_unknown\") != null")" == true && "$(jq -r .pmm_pre_dispatch.deadline_unknown_checks "$TEST_HOME/.claude/session-state.json")" == 4 ]]'
+ack_event "$(event_from "$TMP/deadline-unknown-4.out" | jq -r .event_id)"
 
 # Stale state and collection errors cannot become an unchanged result.
 HOME="$TEST_HOME" "$STATE" --set '.pmm_pre_dispatch.snapshot.recorded_at="2020-01-01T00:00:00Z"'
@@ -197,6 +203,7 @@ BIN="$TMP/live-bin"
 LIVE_HOME="$TMP/live-home"
 mkdir -p "$LIVE/lib" "$BIN" "$LIVE_HOME/.claude"
 cp "$SCRIPT" "$LIVE/pmm-pre-dispatch.sh"
+cp "$ROOT/.claude/scripts/lib/bounded-run.sh" "$LIVE/lib/bounded-run.sh"
 cp "$ROOT/.claude/scripts/lib/pr-state-classify.jq" "$LIVE/lib/pr-state-classify.jq"
 cp "$STATE" "$LIVE/session-state.sh"
 cp "$ROOT/.claude/scripts/state-lock.sh" "$LIVE/state-lock.sh"
@@ -205,6 +212,7 @@ mkdir -p "$LIVE/../reference"
 cp "$ROOT/.claude/reference/session-state-schema.json" "$LIVE/../reference/session-state-schema.json"
 cat > "$LIVE/merge-gate.sh" <<'SH'
 #!/usr/bin/env bash
+if [[ "${STUB_GATE_DELAY:-0}" =~ ^[1-9][0-9]*$ ]]; then /bin/sleep "$STUB_GATE_DELAY"; fi
 printf '%s\n' "$STUB_GATE_JSON"
 SH
 cat > "$LIVE/pr-state.sh" <<'SH'
@@ -237,12 +245,15 @@ HOME="$LIVE_HOME" "$LIVE/session-state.sh" --set ".pmm_digest=\"$LIVE_DIGEST\"" 
 HOME="$LIVE_HOME" "$LIVE/pmm-pre-dispatch.sh" --ack "$(jq -r .event_id <<<"$LIVE_EVENT")"
 cat > "$BIN/sleep" <<'SH'
 #!/usr/bin/env bash
+if [[ "$1" =~ ^[0-9]+$ && "$1" -ge 60 ]]; then
 count=0
 [[ -f "$SLEEP_COUNT" ]] && count="$(cat "$SLEEP_COUNT")"
 count=$((count + 1))
 printf '%s' "$count" > "$SLEEP_COUNT"
 if [[ "$count" -ge 2 ]]; then exit 1; fi
 exit 0
+fi
+/bin/sleep "$@"
 SH
 chmod +x "$BIN/sleep"
 MONITOR_COMMAND=$(HOME="$LIVE_HOME" "$LIVE/pmm-pre-dispatch.sh" --monitor-command \
@@ -255,6 +266,20 @@ HOME="$LIVE_HOME" PATH="$BIN:$PATH" SLEEP_COUNT="$TMP/sleep-count" \
 monitor_rc=$?
 set -e
 check "exact generated Monitor loop collects before zero-output pre-model dispatch" '[[ "$monitor_rc" == 0 && ! -s "$TMP/live-quiet.out" && "$(cat "$TMP/sleep-count")" == 2 ]]'
+MISSING_BOUND_COMMAND="${MONITOR_COMMAND//$LIVE\/lib\/bounded-run.sh/$TMP\/missing-bounded-run.sh}"
+set +e
+HOME="$LIVE_HOME" PATH="$BIN:$PATH" SLEEP_COUNT="$TMP/missing-bound-sleep-count" \
+  bash -c "$MISSING_BOUND_COMMAND" > "$TMP/missing-bound.out" 2> "$TMP/missing-bound.err"
+missing_bound_rc=$?
+set -e
+check "missing bounded-run support emits diagnosis and stops before polling" '[[ "$missing_bound_rc" == 1 && "$(wc -l < "$TMP/missing-bound.out" | tr -d " ")" == 1 && "$(grep -F -- "--pre-dispatch-diagnostic" "$TMP/missing-bound.out")" ]]'
+set +e
+HOME="$LIVE_HOME" PATH="$BIN:$PATH" SLEEP_COUNT="$TMP/timeout-sleep-count" PMM_PRE_DISPATCH_TIMEOUT_SECS=1 \
+  STUB_PULLS_JSON="$STUB_PULLS_JSON" STUB_GATE_JSON="$STUB_GATE_JSON" STUB_BUNDLE_PATH="$TMP/bundle.json" STUB_GATE_DELAY=2 \
+  bash -c "$MONITOR_COMMAND" > "$TMP/timeout.out" 2> "$TMP/timeout.err"
+timeout_monitor_rc=$?
+set -e
+check "bounded collector timeout wakes diagnosis instead of returning a quiet tick" '[[ "$timeout_monitor_rc" == 0 && "$(wc -l < "$TMP/timeout.out" | tr -d " ")" == 1 && "$(grep -F -- "--pre-dispatch-diagnostic" "$TMP/timeout.out")" && "$(grep -F "inside its bound" "$TMP/timeout.err")" ]]'
 # Historical pre-pilot Monitor template, with only its cadence/args placeholders
 # concretized. Execute it under the same fake sleep and count actual stdout events.
 BASELINE_COMMAND='while sleep 300; do printf "%s\n" "/pr-monitor-and-manage --tick --monitor-generation gen-live --author alice --repo org/repo"; done'
@@ -316,9 +341,15 @@ missing_time=dict(comment);missing_time.pop('created_at');write_bundle([missing_
 print('PASS: missing actionable-comment timestamps diagnose rather than disappearing during classification')
 
 # Stale, partial, mismatched identity/HEAD and malformed inputs cannot be quiet.
+last_error_count=read().get('pmm_pre_dispatch',{}).get('errors',0)
 for name,mutate in [('old-cache',lambda d:d.update(run_started_at='2020-01-01T00:00:00Z')),('wrong-pr',lambda d:d['pr'].update(number=8)),('wrong-repo',lambda d:d['pr'].update(repo='elsewhere')),('wrong-head',lambda d:d['pr'].update(head_sha='new-head')),('partial-checks',lambda d:d.update(check_runs={})),('future',lambda d:d.update(run_started_at='2099-01-01T00:00:00Z'))]:
-    d=write_bundle();mutate(d);bundle.write_text(json.dumps(d));r=run();p=packet(r);assert r.returncode==5 and p['diagnostic'],(name,r.returncode,r.stdout,r.stderr);ack(p)
-print('PASS: collector rejects stale/partial/wrong PR/repo/HEAD/future evidence')
+    d=write_bundle();mutate(d);bundle.write_text(json.dumps(d));prior=read()['pmm_pre_dispatch']['snapshot'];r=run();d=read();assert r.returncode in (0,5) and d['pmm_pre_dispatch']['errors']==last_error_count+1 and d['pmm_pre_dispatch']['error_streak']>0 and d['pmm_pre_dispatch']['snapshot']==prior,(name,r.returncode,r.stdout,r.stderr,d)
+    if r.stdout:
+        p=d['pmm_pre_dispatch']['pending_event'];assert p['diagnostic'];ack(p)
+    else:
+        assert d['pmm_pre_dispatch']['pending_event'] is None,(name,d)
+    last_error_count=d['pmm_pre_dispatch']['errors']
+print('PASS: stale/partial/wrong PR/repo/HEAD/future evidence stays unresolved, locally retries, and re-notifies on schedule')
 # Unknown state parse errors must not get reset to {}.
 state.write_text('{broken');r=run();assert r.returncode==5 and '--pre-dispatch-diagnostic' in r.stdout and len(r.stdout.splitlines())==1 and state.read_text()=='{broken'
 put({'pmm_active':True,'pmm_monitor_generation':'gen-live'});write_bundle()
@@ -351,6 +382,14 @@ r=skill_run(block('pmm-pre-dispatch-tick-gate')+'\nprintf "%s|%s" "$PMM_SKIP_ACT
 r=skill_run('PMM_DISPATCH_EVENT='+eid+'\n'+block('pmm-pre-dispatch-lifecycle-receipt'));assert r.returncode==0,r.stderr
 r=skill_run(block('pmm-pre-dispatch-tick-gate'));assert r.returncode==0 and 'already-acknowledged' in r.stdout
 print('PASS: actual tick/actions/lifecycle blocks distinguish action replay and late acknowledged delivery')
+missing_helper_home=home('missing-helper-home');missing_helper_env=dict(env,HOME=str(missing_helper_home));missing_helper_run=run(e=missing_helper_env)
+assert missing_helper_run.returncode==0 and missing_helper_run.stdout.startswith('/pr-monitor-and-manage '),(missing_helper_run.stdout,missing_helper_run.stderr)
+missing_helper_event=json.loads((missing_helper_home/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event'];missing_helper_id=missing_helper_event['event_id']
+missing_helper_base='SESSION_STATE_SH='+shlex.quote(str(live/'session-state.sh'))+'\nPMM_PRE_DISPATCH_SH=""\nARGUMENTS="--tick --monitor-generation gen-live --dispatch-event '+missing_helper_id+'"\n'
+missing_helper_code=subprocess.run(['bash','-eu','-c',missing_helper_base+block('pmm-pre-dispatch-tick-gate')],env=missing_helper_env,text=True,capture_output=True)
+assert missing_helper_code.returncode==1 and 'leaving event '+missing_helper_id+' queued' in missing_helper_code.stderr,(missing_helper_code.stdout,missing_helper_code.stderr)
+assert json.loads((missing_helper_home/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event']['event_id']==missing_helper_id
+print('PASS: a dispatch-event tick fails before action when the helper is unavailable and leaves its event queued')
 # Reconstruct Step 4's sorted fleet tuple, run its actual digest command and Step 6
 # blocks, then prove the next collector tick stays quiet against that digest.
 step4_home=home('step4-digest-home');step4_env=dict(env,HOME=str(step4_home));step4_state=step4_home/'.claude/session-state.json'
@@ -391,6 +430,38 @@ executable(state_helper,'for arg in "$@"; do if [[ "$arg" == --cas ]]; then '+sh
 hf=home('cas-race');ef=dict(env,HOME=str(hf));r=run(e=ef);assert r.returncode==5 and '--pre-dispatch-diagnostic' in r.stdout and json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['actions_completed_event_id']=='external-receipt',(r.stdout,r.stderr)
 shutil.copy2(real_state,state_helper)
 print('PASS: failed jq/write and concurrent receipt CAS produce diagnostics and preserve state')
+# Identical acknowledged collector errors retry locally, with a durable wake every
+# third observation; new fingerprints wake immediately and clean collection resets them.
+def ack_home(home_path, env_args, event):
+    result=run([str(live/'pmm-pre-dispatch.sh'),'--ack',event['event_id']],e=env_args);assert result.returncode==0,result.stderr
+hf=home('diagnostic-retry');ef=dict(env,HOME=str(hf));g=json.loads(gate);g['authorship']='unknown';ef['STUB_GATE_JSON']=json.dumps(g)
+r=run(e=ef);assert r.returncode==5 and r.stdout.startswith('/pr-monitor-and-manage '),(r.stdout,r.stderr);first=json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event'];assert first['diagnostic'];ack_home(hf,ef,first)
+for expected in (2,3):
+    r=run(e=ef);d=json.loads((hf/'.claude/session-state.json').read_text());assert r.returncode==0 and r.stdout=='' and d['pmm_pre_dispatch']['pending_event'] is None and d['pmm_pre_dispatch']['error_streak']==expected,(expected,r.stdout,r.stderr,d)
+r=run(e=ef);d=json.loads((hf/'.claude/session-state.json').read_text());fourth=d['pmm_pre_dispatch']['pending_event'];assert r.returncode==5 and fourth['diagnostic'] and fourth['event_id']!=first['event_id'] and d['pmm_pre_dispatch']['error_streak']==4,(r.stdout,r.stderr,d)
+# A pending diagnostic takes precedence over newly observed bad data.
+replayed_env=dict(ef,STUB_GATE_JSON='{}');r=run(e=replayed_env);d=json.loads((hf/'.claude/session-state.json').read_text());replayed_id=re.search(r'--dispatch-event ([a-f0-9]{64})',r.stdout).group(1);assert r.returncode==0 and replayed_id==fourth['event_id'] and d['pmm_pre_dispatch']['errors']==4,(r.stdout,r.stderr,d)
+ack_home(hf,ef,fourth)
+# A different failure fingerprint is a new diagnosis and wakes immediately.
+r=run(e=replayed_env);d=json.loads((hf/'.claude/session-state.json').read_text());new_error=d['pmm_pre_dispatch']['pending_event'];assert r.returncode==5 and new_error['diagnostic'] and new_error['event_id']!=fourth['event_id'] and d['pmm_pre_dispatch']['error_streak']==1,(r.stdout,r.stderr,d)
+ack_home(hf,replayed_env,new_error)
+# Once collection recovers, it records a normal meaningful event and clears only
+# collector-error throttling state.
+recovered_env=dict(env,HOME=str(hf));r=run(e=recovered_env);d=json.loads((hf/'.claude/session-state.json').read_text());assert r.returncode==0 and not d['pmm_pre_dispatch']['pending_event'].get('diagnostic',False) and d['pmm_pre_dispatch']['error_streak']==0 and d['pmm_pre_dispatch']['diagnostic_fingerprint'] is None,(r.stdout,r.stderr,d)
+print('PASS: collector diagnostic fingerprints retry locally, re-notify at threshold, preserve pending events, and reset on recovery')
+# Deadline-unknown cadence and collector-error cadence keep independent fingerprints.
+hf=home('deadline-error-independent');statefile=hf/'.claude/session-state.json';state_data=json.loads(statefile.read_text());state_data['pmm_digest']=hashlib.sha256(b'[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]').hexdigest();state_data['pmm_digest_streak']=0;state_data['pmm_idle_streak']=0;statefile.write_text(json.dumps(state_data));ef=dict(env,HOME=str(hf))
+# Establish a prior snapshot so only the deadline and collector failure state
+# participate in the retry assertions below.
+r=run(e=ef);assert r.returncode==0 and r.stdout.startswith('/pr-monitor-and-manage '),(r.stdout,r.stderr);ack_home(hf,ef,json.loads(statefile.read_text())['pmm_pre_dispatch']['pending_event'])
+state_data=json.loads(statefile.read_text());state_data['active_agents']={'foreign':{'pr':7,'phase':'A','status':'running'}};statefile.write_text(json.dumps(state_data))
+r=run(e=ef);assert r.returncode==0 and r.stdout.startswith('/pr-monitor-and-manage '),(r.stdout,r.stderr);deadline_event=json.loads(statefile.read_text())['pmm_pre_dispatch']['pending_event'];assert deadline_event['reasons'].count('deadline_state_unknown')==1;ack_home(hf,ef,deadline_event)
+bad_gate=json.loads(gate);bad_gate['merge_state']='UNKNOWN';bad_env=dict(ef,STUB_GATE_JSON=json.dumps(bad_gate));r=run(e=bad_env);d=json.loads(statefile.read_text());assert r.returncode==5 and d['pmm_pre_dispatch']['error_streak']==1 and d['pmm_pre_dispatch']['deadline_unknown_checks']==1,(r.stdout,r.stderr,d)
+ack_home(hf,bad_env,d['pmm_pre_dispatch']['pending_event'])
+for expected in (2,3):
+    retry_result=run(e=ef);d=json.loads(statefile.read_text());assert retry_result.stdout=='' and d['pmm_pre_dispatch']['deadline_unknown_checks']==expected,(retry_result.returncode,retry_result.stdout,retry_result.stderr,d)
+r=run(e=ef);d=json.loads(statefile.read_text());assert r.returncode==0 and d['pmm_pre_dispatch']['pending_event']['reasons'].count('deadline_state_unknown')==1 and d['pmm_pre_dispatch']['deadline_unknown_checks']==4 and d['pmm_pre_dispatch']['error_streak']==0,(r.stdout,r.stderr,d)
+print('PASS: acknowledged unknown deadlines re-notify on their own interval despite separate collector diagnostics')
 # Unknown gate state never becomes a quiet unchanged comparison.
 hf=home('unknown-gate');eg=dict(env,HOME=str(hf));g=json.loads(gate);g['authorship']='unknown';eg['STUB_GATE_JSON']=json.dumps(g);r=run(e=eg);pg=json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event'];assert r.returncode==5 and pg['diagnostic'],(r.stdout,r.stderr)
 print('PASS: unknown ownership/merge evidence always wakes diagnosis')
@@ -409,10 +480,10 @@ r=skill_run('PMM_DUPLICATE_COMPLETED_EVENT=true\nPMM_DISPATCH_EVENT='+eid+'\nVER
 print('PASS: bounded ack history handles delayed old events and malformed fresh gates refuse acknowledgement')
 # Telemetry distinguishes cumulative errors from a recoverable consecutive streak.
 hm=home('metric-home');em=dict(env,HOME=str(hm));bad=write_bundle();bad['check_runs']={};bundle.write_text(json.dumps(bad));ids=[]
-for _ in range(2):
-    r=run(e=em);md=json.loads((hm/'.claude/session-state.json').read_text());mp=md['pmm_pre_dispatch']['pending_event'];assert r.returncode==5;ids.append(mp['event_id'])
-    assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',mp['event_id']],e=em).returncode==0
-assert ids[0]!=ids[1] and md['pmm_pre_dispatch']['errors']==2 and md['pmm_pre_dispatch']['ticks']==2
+r=run(e=em);md=json.loads((hm/'.claude/session-state.json').read_text());mp=md['pmm_pre_dispatch']['pending_event'];assert r.returncode==5;ids.append(mp['event_id'])
+assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',mp['event_id']],e=em).returncode==0
+r=run(e=em);md=json.loads((hm/'.claude/session-state.json').read_text());assert r.returncode==0 and r.stdout=='' and md['pmm_pre_dispatch']['pending_event'] is None
+assert md['pmm_pre_dispatch']['errors']==2 and md['pmm_pre_dispatch']['ticks']==2 and md['pmm_pre_dispatch']['error_streak']==2
 write_bundle();r=run(e=em);mp=json.loads((hm/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event'];run([str(live/'pmm-pre-dispatch.sh'),'--ack',mp['event_id']],e=em)
 md=json.loads((hm/'.claude/session-state.json').read_text());md['pmm_digest']=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest();md['pmm_digest_streak']=0;md['pmm_idle_streak']=0;(hm/'.claude/session-state.json').write_text(json.dumps(md))
 r=run(e=em);md=json.loads((hm/'.claude/session-state.json').read_text())['pmm_pre_dispatch'];assert r.returncode==0 and not r.stdout and md['errors']==2 and md['error_streak']==0 and md['last_error_at']
