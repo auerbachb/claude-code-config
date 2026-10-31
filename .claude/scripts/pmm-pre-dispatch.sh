@@ -113,7 +113,7 @@ if [[ -z "$ACK_ID" ]]; then
   [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "--repo must be owner/name"
   [[ "$AUTHOR" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "--author must be a login"
   [[ "$GENERATION" =~ ^[A-Za-z0-9_.-]+$ && "$GENERATION" != --* ]] || fail "--generation must be a non-secret token"
-  [[ "$BASE_CADENCE_MIN" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--base-cadence-min must be a positive integer"
+  [[ "$BASE_CADENCE_MIN" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--base-cadence-min must be 1..999999"
   [[ "$IDLE_PAUSE_AFTER" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--idle-pause-after must be a positive integer"
   [[ "$MAX_DEEP_PRS" =~ ^[1-9][0-9]{0,2}$ && "$MAX_DEEP_PRS" -le 500 ]] || fail "--max-deep-prs must be 1..500"
   normalize_skill_args
@@ -152,7 +152,7 @@ trap 'exit 0' HUP INT TERM
 TIMEOUT_SECS="$(normalize_bound "${PMM_PRE_DISPATCH_TIMEOUT_SECS:-300}" 300)"
 while :; do
   cadence=$("$STATE_HELPER" --get '.pmm_cadence' 2>/dev/null) || cadence="${BASE}m"
-  [[ "$cadence" =~ ^([1-9][0-9]{0,5})m$ ]] || cadence="${BASE}m"
+  [[ "$cadence" =~ ^([1-9][0-9]{0,6})m$ && "${cadence%m}" -le 2999997 ]] || cadence="${BASE}m"
   sleep "$(( ${cadence%m} * 60 ))" || exit 0
   CAPTURE="$(mktemp "${TMPDIR:-/tmp}/pmm-pre-dispatch.XXXXXX")" || {
     echo "pmm-pre-dispatch Monitor: cannot create bounded capture; waking for diagnosis and stopping this loop" >&2
@@ -428,11 +428,12 @@ PMM_PREV_DIGEST="$(read_field '.pmm_digest')" || queue_diagnostic "PMM digest st
 PMM_PREV_STREAK="$(read_field '.pmm_digest_streak')" || queue_diagnostic "PMM digest streak unreadable"
 PMM_PREV_IDLE="$(read_field '.pmm_idle_streak')" || queue_diagnostic "PMM idle streak unreadable"
 PMM_PREV_CADENCE="$(read_field '.pmm_cadence')" || queue_diagnostic "PMM cadence state unreadable"
-[[ "$PMM_PREV_CADENCE" == null || "$PMM_PREV_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || queue_diagnostic "persisted PMM cadence is invalid"
+[[ "$PMM_PREV_CADENCE" == null ]] || [[ "$PMM_PREV_CADENCE" =~ ^[1-9][0-9]{0,6}m$ && "${PMM_PREV_CADENCE%m}" -le 2999997 ]] || queue_diagnostic "persisted PMM cadence is invalid"
 [[ "$PMM_PREV_STREAK" != null ]] || PMM_PREV_STREAK=0
 [[ "$PMM_PREV_IDLE" != null ]] || PMM_PREV_IDLE=0
 [[ "$PMM_PREV_STREAK" =~ ^[0-9]{1,8}$ && "$PMM_PREV_IDLE" =~ ^[0-9]{1,8}$ ]] || queue_diagnostic "persisted PMM counters are invalid"
 PMM_PREV_STREAK=$((10#$PMM_PREV_STREAK)); PMM_PREV_IDLE=$((10#$PMM_PREV_IDLE))
+# Six-digit base configuration produces at most 2999997 effective minutes.
 PMM_WIDE_CADENCE_MIN=$((BASE_CADENCE_MIN * 3))
 [[ "$PMM_WIDE_CADENCE_MIN" -ge 15 ]] || PMM_WIDE_CADENCE_MIN=15
 if [[ "$PMM_PREV_DIGEST" == "$PMM_STATE_DIGEST" ]]; then
@@ -494,7 +495,7 @@ if [[ "$previous" != null ]]; then
   snapshot_stale_limit=3600
   prior_cadence="$(read_field '.pmm_cadence')" || queue_diagnostic "persisted PMM cadence unreadable for snapshot age"
   [[ "$prior_cadence" != null ]] || prior_cadence="${BASE_CADENCE_MIN}m"
-  if [[ "$prior_cadence" =~ ^([1-9][0-9]{0,5})m$ ]]; then
+  if [[ "$prior_cadence" =~ ^([1-9][0-9]{0,6})m$ && "${prior_cadence%m}" -le 2999997 ]]; then
     cadence_stale_limit=$((10#${BASH_REMATCH[1]} * 120))
     (( cadence_stale_limit > snapshot_stale_limit )) && snapshot_stale_limit=$cadence_stale_limit
   else
@@ -587,7 +588,7 @@ if [[ "$meaningful" == true ]]; then
   else
     cadence_args=()
     cadence_min="$PMM_NEXT_CADENCE_MIN"
-    if [[ "$PMM_PREV_CADENCE" =~ ^([1-9][0-9]{0,5})m$ ]]; then cadence_min="${BASH_REMATCH[1]}"; fi
+    if [[ "$PMM_PREV_CADENCE" =~ ^([1-9][0-9]{0,6})m$ ]]; then cadence_min="${BASH_REMATCH[1]}"; fi
   fi
   schedule_args=()
   expected_tick="$(date -u -d "+${cadence_min} minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+"${cadence_min}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || queue_diagnostic "could not calculate the next PMM tick"

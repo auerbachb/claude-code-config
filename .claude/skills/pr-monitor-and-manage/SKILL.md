@@ -308,8 +308,8 @@ if [ -n "${SAVED:-}" ] && [ "$SAVED" != "{}" ]; then
   [[ "$ARGUMENTS" != *"--confirm-merges"* ]]    && PMM_CONFIRM_MERGES=$(jq -r '.confirm_merges // false' <<<"$SAVED")
 fi
 
-[[ "$PMM_CADENCE" =~ ^[1-9][0-9]*m$ ]] || {
-  echo "ERROR: --cadence must be a positive whole-minute value such as 5m." >&2; exit 2; }
+[[ "$PMM_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || {
+  echo "ERROR: --cadence must be 1..999999 whole minutes, such as 5m." >&2; exit 2; }
 
 [[ "$PMM_MAX_DEEP_PRS" =~ ^[1-9][0-9]{0,2}$ && "$PMM_MAX_DEEP_PRS" -le 500 ]] || {
   echo "ERROR: --max-deep-prs must be 1..500." >&2; exit 2; }
@@ -691,7 +691,7 @@ if [ "${PMM_SKIP_ACTIONS:-false}" = true ]; then
   STREAK=$(jq -r '.pmm_digest_streak' <<<"$PMM_STEP6_ROOT") || exit 1
   IDLE_STREAK=$(jq -r '.pmm_idle_streak' <<<"$PMM_STEP6_ROOT") || exit 1
   EFFECTIVE_CADENCE=$(jq -r '.pmm_cadence' <<<"$PMM_STEP6_ROOT") || exit 1
-  [[ "$STREAK" =~ ^[0-9]{1,8}$ && "$IDLE_STREAK" =~ ^[0-9]{1,8}$ && "$EFFECTIVE_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || {
+  [[ "$STREAK" =~ ^[0-9]{1,8}$ && "$IDLE_STREAK" =~ ^[0-9]{1,8}$ && "$EFFECTIVE_CADENCE" =~ ^[1-9][0-9]{0,6}m$ && "${EFFECTIVE_CADENCE%m}" -le 2999997 ]] || {
     echo "ERROR: completed-event scheduling state is invalid" >&2; exit 1; }
   # New live work may appear after the original commit. It blocks idle routing
   # now without advancing or rewriting the completed event's counters.
@@ -704,6 +704,7 @@ else
   [ "$DIGEST" = "$STEP6_PRIOR_DIGEST" ] && PMM_STEP6_SAME_DIGEST=true
   if [ "$PMM_INTERNAL_TICK" != true ]; then STREAK=0
   elif [ "$PMM_STEP6_SAME_DIGEST" = true ]; then STREAK=$((10#$STREAK+1)); else STREAK=0; fi
+  [[ "$PMM_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || { echo 'ERROR: base cadence must be 1..999999 minutes' >&2; exit 2; }
   BASE_CADENCE_MIN=${PMM_CADENCE%m}
   WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
   [ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
@@ -711,7 +712,7 @@ else
 fi
 ```
 
-Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
+Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. Configured base cadence is 1..999999 minutes; derived cadence is at most 2999997 minutes and remains valid for the Monitor, collector and completed-event replay. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
 
 **Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 

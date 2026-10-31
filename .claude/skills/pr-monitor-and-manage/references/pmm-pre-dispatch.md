@@ -129,3 +129,5 @@ PMM skill bumps `.pmm_pre_dispatch_version` so its first tick replaces an older 
 that directly emitted a model event without this shell gate.
 
 Focused executable replay: `.claude/scripts/tests/pmm-pre-dispatch.test.sh`.
+
+Base cadence accepts 1..999999 whole minutes. Stable backoff keeps `max(15, 3 × base)`, so effective scheduler cadence may reach 2999997 minutes. The generated Monitor, collector freshness/schedule reads and completed-event replay accept that bounded effective range; larger or malformed persisted values remain invalid.

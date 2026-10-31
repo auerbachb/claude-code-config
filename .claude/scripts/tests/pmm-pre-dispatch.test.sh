@@ -891,6 +891,43 @@ assert len(json.dumps(sp).encode())<os.sysconf('SC_ARG_MAX')//4 and stress_file.
 print('PASS:25x2000 comments (raw per-PR bytes='+str(raw_size)+') exceed ARG_MAX without E2BIG; bounded persisted packets and aggregate changes detect unsampled edits on all25PRs')
 
 
+# Configured cadence stays six digits; tripled backoff is a separately bounded
+# effective value consumed by every runtime path, including saved shell/replay.
+main_cadence_guard='[[ "$PMM_CADENCE"'+skill.split('[[ "$PMM_CADENCE"',1)[1].split('\n\n',1)[0]
+for base_value,valid in [('1m',True),('999999m',True),('0m',False),('01m',False),('1000000m',False),('999999999999999999999m',False)]:
+ r=subprocess.run(['bash','-c','PMM_CADENCE='+shlex.quote(base_value)+'\n'+main_cadence_guard],text=True,capture_output=True)
+ assert (r.returncode==0)==valid,(base_value,r.stdout,r.stderr)
+ r=run(argv+['--base-cadence-min',base_value[:-1],'--monitor-command']);assert (r.returncode==0)==valid,(base_value,r.stdout,r.stderr)
+write_bundle()
+cadence_sleep_bin=tmp/'cadence-sleep-bin';cadence_sleep_bin.mkdir();cadence_sleep_record=tmp/'cadence-sleep-record'
+(cadence_sleep_bin/'sleep').write_text('#!/usr/bin/env bash\nprintf "%s" "$1" > "$CADENCE_SLEEP_RECORD"\nexit 1\n');(cadence_sleep_bin/'sleep').chmod(0o755)
+for cadence_base in (333333,333334,999999):
+ cadence_wide=cadence_base*3
+ # Actual Step6 writes the seven-digit value and replay accepts it unchanged.
+ cadence_seed=json.loads(json.dumps(step6_seed));step6_file.write_text(json.dumps(cadence_seed))
+ r=step6_call(step6_code,extra='PMM_CADENCE='+str(cadence_base)+'m\n');assert r.returncode==0,(cadence_base,r.stdout,r.stderr)
+ cadence_completed=json.loads(step6_file.read_text());assert cadence_completed['pmm_cadence']==str(cadence_wide)+'m',cadence_completed
+ cadence_before=step6_file.read_bytes();r=step6_call(step6_code,extra='PMM_CADENCE='+str(cadence_base)+'m\nPMM_SKIP_ACTIONS=true\n');assert r.returncode==0 and step6_file.read_bytes()==cadence_before,(cadence_base,r.stdout,r.stderr)
+ # Real collector produces backoff, consumes it again without diagnosis, and
+ # the exact saved Monitor command sleeps the full effective interval.
+ cadence_home=home('cadence-'+str(cadence_base));cadence_env=dict(env,HOME=str(cadence_home),FLEET_CALLS=str(countlog));cadence_args=argv+['--base-cadence-min',str(cadence_base)]
+ r=run(cadence_args,e=cadence_env);assert r.returncode==0,(r.stdout,r.stderr)
+ cadence_file=cadence_home/'.claude/session-state.json';cadence_data=json.loads(cadence_file.read_text());cadence_event=cadence_data['pmm_pre_dispatch']['pending_event']['event_id']
+ assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',cadence_event],e=cadence_env).returncode==0
+ cadence_data=json.loads(cadence_file.read_text());cadence_data.update(pmm_digest=hashlib.sha256(b'[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]').hexdigest(),pmm_digest_streak=2,pmm_idle_streak=0,pmm_cadence=str(cadence_base)+'m');cadence_file.write_text(json.dumps(cadence_data))
+ for cadence_tick in range(2):
+  r=run(cadence_args,e=cadence_env);assert r.returncode==0 and r.stdout=='',(cadence_base,cadence_tick,r.stdout,r.stderr)
+  assert json.loads(cadence_file.read_text())['pmm_cadence']==str(cadence_wide)+'m'
+ cadence_command=run(cadence_args+['--monitor-command','--skill-args','--cadence '+str(cadence_base)+'m'],e=cadence_env);assert cadence_command.returncode==0,cadence_command.stderr
+ r=subprocess.run(['bash','-c',cadence_command.stdout],env=dict(cadence_env,PATH=str(cadence_sleep_bin)+':'+env['PATH'],CADENCE_SLEEP_RECORD=str(cadence_sleep_record)),text=True,capture_output=True)
+ assert r.returncode==0 and not r.stdout and cadence_sleep_record.read_text()==str(cadence_wide*60),(cadence_base,r.stdout,r.stderr,cadence_sleep_record.read_text())
+# An out-of-domain persisted interval still diagnoses and cannot change the
+# comparison baseline. Main Step6 replay likewise rejects it without writing.
+cadence_data=json.loads(cadence_file.read_text());cadence_snapshot=cadence_data['pmm_pre_dispatch']['snapshot'];cadence_data['pmm_cadence']='2999998m';cadence_file.write_text(json.dumps(cadence_data))
+r=run(cadence_args,e=cadence_env);assert r.returncode==5 and json.loads(cadence_file.read_text())['pmm_pre_dispatch']['pending_event']['diagnostic'] and json.loads(cadence_file.read_text())['pmm_pre_dispatch']['snapshot']==cadence_snapshot,(r.stdout,r.stderr)
+cadence_completed['pmm_cadence']='2999998m';step6_file.write_text(json.dumps(cadence_completed));cadence_before=step6_file.read_bytes();r=step6_call(step6_code,extra='PMM_SKIP_ACTIONS=true\n');assert r.returncode!=0 and step6_file.read_bytes()==cadence_before,(r.stdout,r.stderr)
+print('PASS: base cadence boundaries, tripled seven-digit producer/collector/Monitor/replay parity and out-of-range fail-closed behavior')
+
 PYTEST
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
