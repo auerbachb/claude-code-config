@@ -35,6 +35,9 @@ AGENT_ID="$(_spend_payload_field "$INPUT" agent_id)"
 AGENT_TYPE="$(_spend_payload_field "$INPUT" agent_type)"
 
 TRANSCRIPT_PATH="$(_spend_payload_field "$INPUT" agent_transcript_path)"
+RESUME_CURSOR_PATH_INPUT=""
+[ "${CLAUDE_SPEND_TELEMETRY_RESUME:-}" = "1" ] && \
+  RESUME_CURSOR_PATH_INPUT="$(_spend_payload_field "$INPUT" resume_cursor_path_input)"
 
 CWD="$(_spend_payload_field "$INPUT" cwd)"
 SESSION_ID="$(_spend_resolve_session "$SESSION_ID")"
@@ -69,7 +72,7 @@ REQUESTED_SOURCE="unavailable"
 if [ -f "$TRANSCRIPT_PATH" ]; then
   record_spend_transcript "$TRANSCRIPT_PATH" "inline" "$SESSION_ID" "$AGENT_ID" \
     "$AGENT_TYPE" "$CWD" "$REQUESTED_MODEL" "$REQUESTED_SOURCE" "subagent" \
-    "$REPO_ROOT" "$REPO_SLUG"
+    "$REPO_ROOT" "$REPO_SLUG" "$RESUME_CURSOR_PATH_INPUT"
 else
   # Keep an event denominator even when the installed runtime omits the child
   # transcript path. The actual model and usage remain explicitly unavailable.

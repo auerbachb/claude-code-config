@@ -184,7 +184,12 @@ def resume_children(cursor_dir, hook_path):
         payload = {"session_id": meta["session_id"], "agent_id": meta["agent_id"],
                    "agent_type": meta["agent_type"], "cwd": meta["cwd"],
                    "repo_root": meta["repo_root"], "repo_slug": meta["repo_slug"],
-                   "agent_transcript_path": meta["cursor_path_input"]}
+                   # Reopen via the validated absolute path. Preserve the
+                   # original input separately because it participates in the
+                   # stable cursor identity, and may have been relative to a
+                   # worktree that has since disappeared.
+                   "agent_transcript_path": path,
+                   "resume_cursor_path_input": meta["cursor_path_input"]}
         resume_env = os.environ.copy()
         resume_env["CLAUDE_SPEND_TELEMETRY_RESUME"] = "1"
         # A persisted unknown is not a license to borrow the report process's

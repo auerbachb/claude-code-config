@@ -333,6 +333,7 @@ record_spend_transcript() {
        agent_id="${4:-}" agent_type="${5:-}" cwd="${6:-}" \
        requested_model="${7:-}" requested_source="${8:-unavailable}" \
        transcript_scope="${9:-unknown}" repo_root="${10:-}" repo_slug="${11:-}" \
+       cursor_path_input="${12:-}" \
        phase="unknown" cursor_dir="${HOME}/.claude/spend-telemetry-cursors" \
        explicit_repo_metadata=0
   [ "$#" -ge 10 ] && explicit_repo_metadata=1
@@ -351,11 +352,12 @@ record_spend_transcript() {
   mkdir -p "$(dirname "$SPEND_TELEMETRY_LOG")" "$cursor_dir" 2>/dev/null || return 0
   python3 - "$transcript" "$SPEND_TELEMETRY_LOG" "$cursor_dir" "$exec_type" \
       "$session_id" "$agent_id" "$agent_type" "$cwd" "$repo_root" "$phase" \
-      "$requested_model" "$requested_source" "$transcript_scope" "$repo_slug" <<'PY' 2>/dev/null || true
+      "$requested_model" "$requested_source" "$transcript_scope" "$repo_slug" \
+      "$cursor_path_input" <<'PY' 2>/dev/null || true
 import fcntl, hashlib, json, os, re, sys, tempfile, time, uuid
 from datetime import datetime, timezone
 
-path, log_path, cursor_dir, exec_type, session_id, agent_id, agent_type, cwd, repo_root, phase, requested, requested_source, scope, repo_slug = sys.argv[1:]
+path, log_path, cursor_dir, exec_type, session_id, agent_id, agent_type, cwd, repo_root, phase, requested, requested_source, scope, repo_slug, cursor_path_input = sys.argv[1:]
 families = ("opus", "sonnet", "haiku", "fable")
 
 def identifier(value):
@@ -388,12 +390,32 @@ def lock_until(lock, deadline):
             time.sleep(.01)
     return False
 
-cursor_key = hashlib.sha256("\0".join((session_id, agent_id, scope, path)).encode("utf-8", errors="replace")).hexdigest()
+absolute_path = os.path.realpath(path)
+if not cursor_path_input:
+    # New cursors use canonical source identity so equal relative path strings
+    # from different worktrees cannot collide. If an existing legacy cursor
+    # uses the raw runtime path, retain it only when its saved absolute source
+    # proves it is this same transcript.
+    legacy_key = hashlib.sha256("\0".join((session_id, agent_id, scope, path)).encode("utf-8", errors="replace")).hexdigest()
+    legacy_path = os.path.join(cursor_dir, legacy_key + ".offset")
+    try:
+        legacy_saved = json.load(open(legacy_path, encoding="utf-8"))
+        legacy_meta = legacy_saved.get("metadata", {}) if isinstance(legacy_saved, dict) else {}
+        if (isinstance(legacy_meta, dict) and
+                legacy_meta.get("cursor_identity") == legacy_key and
+                legacy_meta.get("cursor_path_input") == path and
+                legacy_meta.get("transcript_path") == os.path.abspath(path)):
+            cursor_path_input = path
+        else:
+            cursor_path_input = absolute_path
+    except (OSError, ValueError, TypeError):
+        cursor_path_input = absolute_path
+cursor_key = hashlib.sha256("\0".join((session_id, agent_id, scope, cursor_path_input)).encode("utf-8", errors="replace")).hexdigest()
 cursor_path = os.path.join(cursor_dir, cursor_key + ".offset")
 os.makedirs(cursor_dir, mode=0o700, exist_ok=True)
 os.chmod(cursor_dir, 0o700)
-cursor_metadata={"cursor_identity":cursor_key,"transcript_path":os.path.abspath(path),
-                 "cursor_path_input":path,
+cursor_metadata={"cursor_identity":cursor_key,"transcript_path":absolute_path,
+                 "cursor_path_input":cursor_path_input,
                  "exec_type":exec_type,"session_id":session_id,"agent_id":agent_id,
                  "agent_type":agent_type,"cwd":cwd,"repo_root":repo_root,"repo_slug":repo_slug,
                  "phase":phase,"transcript_scope":scope}
