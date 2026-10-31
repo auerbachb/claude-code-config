@@ -27,8 +27,9 @@
 #               zsh): the propose block prints test 5.1's card, the store
 #               block hands `plan set` the record on stdin, operator text
 #               passes through quoted here-documents untouched, the sweep
-#               block numbers the list through set-open and writes the paper
-#               copy; the router and the files around it
+#               block numbers the list through set-open and writes no file
+#               (the paper copy is export.md's, #1759); the router and the
+#               files around it
 set -uo pipefail
 
 TESTS_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -621,11 +622,9 @@ for anchor in desk-plan-parse desk-plan-propose desk-plan-store desk-plan-revise
   hq_t_skill_block "$PLAN_MD" "$anchor" > "$TMP/block-$anchor.sh" 2>"$TMP/err" || RC=$?
   check "plan.md: anchor $anchor extracts" "$RC:$(cat "$TMP/err")" "0:"
 done
-for anchor in desk-sweep desk-sweep-export; do
-  RC=0
-  hq_t_skill_block "$SWEEP_MD" "$anchor" > "$TMP/block-$anchor.sh" 2>"$TMP/err" || RC=$?
-  check "sweep.md: anchor $anchor extracts" "$RC:$(cat "$TMP/err")" "0:"
-done
+RC=0
+hq_t_skill_block "$SWEEP_MD" desk-sweep > "$TMP/block-desk-sweep.sh" 2>"$TMP/err" || RC=$?
+check "sweep.md: anchor desk-sweep extracts" "$RC:$(cat "$TMP/err")" "0:"
 
 # The stub CLI the blocks run against: it serves the fixtures, logs each
 # call's arguments on one line, and keeps what `plan set` read on stdin.
@@ -649,7 +648,6 @@ case "$1 ${2:-}" in
   "plan clear") echo '{"cleared": true}' ;;
   "sweep list") cat "$FIX/sweep.json" ;;
   "set-open"*) echo '{"set_id": 31, "items": [{"n": 1, "id": "D-44"}, {"n": 2, "id": "D-41"}, {"n": 3, "id": "D-45"}, {"n": 4, "id": "R-9"}]}' ;;
-  "export --help") exit 4 ;;
 esac
 EOF
 chmod +x "$HSTUB"
@@ -668,7 +666,7 @@ run_block() {
      PLAN_NOW="2026-10-08T13:00:00Z" TMPDIR="$TMP/blocktmp" "$1" "$2") 2>&1
 }
 hq_args() { cat "$STUB_DIR/hq-args" 2>/dev/null; }
-leftovers() { find "$TMP/blocktmp" -type f ! -name 'desk-sweep-*.md' | wc -l | tr -d ' '; }
+leftovers() { find "$TMP/blocktmp" -mindepth 1 | wc -l | tr -d ' '; }
 
 SENTENCE='I need to work on the PRD, 30 minutes a section'
 with_line "$TMP/block-desk-plan-parse.sh" "<the operator's message, verbatim>" "$SENTENCE" \
@@ -747,7 +745,6 @@ for SH in $BLOCK_SHELLS; do
   OUT=$(run_block "$SH" "$TMP/block-desk-plan-clear.sh")
   check "[$SH] desk-plan-clear: the command" "$(hq_args)" "plan clear --session desk-1 --json"
 
-  rm -f "$TMP"/blocktmp/desk-sweep-*.md
   OUT=$(run_block "$SH" "$TMP/block-desk-sweep.sh")
   check "[$SH] desk-sweep: exit=0" "$(printf '%s\n' "$OUT" | tail -1)" "exit=0"
   check "[$SH] 5.2 desk-sweep: set-open numbers the list in its order" "$(hq_args | grep '^set-open')" \
@@ -756,16 +753,9 @@ for SH in $BLOCK_SHELLS; do
   check_contains "[$SH] 5.2 desk-sweep: item 1" "$OUT" "> 1. D-44 · Retry the flaky upload test once? (widgets · pr-12) · parked"
   check_contains "[$SH] 5.2 desk-sweep: item 4" "$OUT" "> 4. R-9 · Issue #202 · Idea: export gadgets (title; not summarized yet)"
   check_contains "[$SH] desk-sweep: the paper offer" "$OUT" "Take it to paper: say \`export\` for a numbered PDF (#1759)."
-  MD=$(printf '%s\n' "$OUT" | sed -n 's/^md=//p')
-  check "[$SH] desk-sweep: the paper copy's name" "${MD##*/}" "desk-sweep-2026-10-08-set31.md"
-  check "[$SH] desk-sweep: the paper copy sits in a private directory" "$(ls -ld "${MD%/*}" 2>/dev/null | cut -c1-10)" "drwx------"
-  check "[$SH] desk-sweep: the paper copy" "$(cat "$MD" 2>/dev/null | sed -n '1p;3p;6p')" \
-    "# End of day · 2026-10-08
-1. D-44 · Retry the flaky upload test once? (widgets · pr-12) · parked
-4. R-9 · Issue #202 · Idea: export gadgets (title; not summarized yet)"
-  check "[$SH] desk-sweep: removes its temp files" "$(leftovers)" "0"
-  OUT=$(run_block "$SH" "$TMP/block-desk-sweep-export.sh")
-  check "[$SH] desk-sweep-export: no export subcommand yet" "$OUT" "export=missing"
+  # The paper copy is export.md's now (#1759): the sweep writes no file.
+  check_absent "[$SH] desk-sweep: no Markdown copy of its own" "$OUT" "md="
+  check "[$SH] desk-sweep: removes its temp files and writes none" "$(leftovers)" "0"
 done
 
 # The router and the files around it.
@@ -781,7 +771,7 @@ contract SKILL.md "$(cat "$SKILL_DIR/SKILL.md")" <<'NEEDLES'
 | `sweep.md` |
 | `desk-tick <GEN> eod` |
 **A plan verb** as the whole message — `plan`, `plan?`, `plan off`, or `plan: …` — → load `plan.md`
-**`sweep`**, or **`export`** after a sweep → load `sweep.md`
+**`sweep`** → load `sweep.md`
 6. **A plan sentence**
 7. Any other message is ordinary conversation.
 (#1784)
