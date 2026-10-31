@@ -21,19 +21,36 @@ A first-class command for adding information to an existing issue **without leav
    - a new checkbox under `## Acceptance Criteria` (precise, implementer-facing detail), or
    - an addendum to an existing section (Background / Problem / Notes), or
    - a new top-level section, or
+   - a title edit when the request explicitly changes the issue title, or
    - a **comment** on the issue rather than a body edit (status/context that doesn't belong in the canonical spec)?
 
    Default bias: prefer **body edits** for AC/scope, prefer **comments** for status/context.
 3. **Reflect before proposing the edit** — check whether the ask is narrower than it sounds, needs an adjacent concern, contains distinct issues, exceeds one bounded reviewable PR/pipeline, or contains material ambiguity; state the assumptions in the concrete proposal. If scope or estimate changes, evaluate both deliverable fit and the new planning bound. Resolve `split-thresholds.sh` through the three standard script candidates and use its coherent `--json` pair (documented missing/unusable fallback 180/120 with a `DEGRADED:` note); compare the bound with `split_over_min` using strict `>`. A natural seam plus an over-threshold bound triggers the split conversation even for one deliverable; with no independently mergeable seam, retain the long estimate and state why. If the new statement implies the issue should be **split**, surface that instead of blindly appending. This update operation never starts filing a chain silently.
-4. **Propose** the concrete diff (the edited body, or the comment text) and ask for confirmation.
+4. **Propose** the concrete diff, including the proposed title when it changes, the edited body, or the comment text, and ask for confirmation.
 5. **Apply** once confirmed and capture the write result:
    ```bash
-   gh issue edit "$N" --repo "$REPO" --body "$NEW_BODY"   # body edit
-   # or
-   gh issue comment "$N" --repo "$REPO" --body "$COMMENT" # comment
+   if [ "${UPDATE_KIND:-body}" = comment ]; then
+     gh issue comment "$N" --repo "$REPO" --body "$COMMENT" || WRITE_RC=$?
+     [ "${WRITE_RC:-0}" -eq 0 ] || exit 1
+   else
+     NEW_TITLE="${NEW_TITLE:-$TITLE}"  # preserve fetched title unless the proposal changed it
+     WRITE_RC=0
+     gh issue edit "$N" --repo "$REPO" --title "$NEW_TITLE" --body "$NEW_BODY" || WRITE_RC=$?
+     # Verify after both success and uncertain failure; never retry blindly.
+     VERIFIED=$(gh issue view "$N" --repo "$REPO" --json title,body,url,state) || exit 1
+     VERIFIED_TITLE=$(printf '%s' "$VERIFIED" | jq -er '.title') || exit 1
+     VERIFIED_BODY=$(printf '%s' "$VERIFIED" | jq -er '.body') || exit 1
+     [ "$VERIFIED_TITLE" = "$NEW_TITLE" ] && [ "$VERIFIED_BODY" = "$NEW_BODY" ] || {
+       echo "ERROR: remote issue does not match the confirmed title/body; no session receipt was written" >&2
+       exit 1
+     }
+     TITLE="$VERIFIED_TITLE"
+     ISSUE_URL=$(printf '%s' "$VERIFIED" | jq -er '.url') || exit 1
+     ISSUE_STATUS=$(printf '%s' "$VERIFIED" | jq -er '.state | ascii_downcase') || exit 1
+   fi
    ```
-   Use the fetch → modify → write-whole-body pattern (`gh issue edit --body` replaces the entire body — never truncate the existing content). A zero exit confirms the write. If the command fails or its response is uncertain, fetch the issue again and compare the remote body/comment with the proposed content before doing anything else; do not retry blindly. If the result cannot be verified, stop without changing the log or reporting success.
-6. For a title edit, set `TITLE` to the confirmed remote title; refresh `ISSUE_STATUS` if the edit changes state. **Only after the remote write is confirmed**, record `edited_at` on the log entry — **plus any summary-table field the edit actually changed** — and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
+   Use the fetch → modify → write-whole-body pattern (`gh issue edit --body` replaces the entire body — never truncate the existing content). do not retry blindly. For a comment update, a failed or uncertain response blocks the log update; inspect the remote comments before retrying.
+6. Set `TITLE` and `ISSUE_URL` from that verified refetch; refresh `ISSUE_STATUS` if the edit changes state. **Only after the remote write is confirmed**, record `edited_at` on the log entry — **plus any summary-table field the edit actually changed** — and **print the updated issue URL as the closing line.** If the issue isn't already tracked in this thread's log (e.g. you're updating an issue opened elsewhere), add a minimal entry for it instead of silently skipping:
 
    ```bash
    # DELIVERS / EST_BOUND: re-read from the body you just wrote, and set ONLY
@@ -57,7 +74,7 @@ A first-class command for adding information to an existing issue **without leav
 
    **An edit that changes what the issue delivers, or its estimate, must refresh those two fields — otherwise the running tally reports create-time values as current.** The log is the tally's source of truth after compaction (Step 9), so a `delivers`/`est_bound` left at its filing-time value survives as a confident-looking row that no longer matches the issue. Refresh on the two edits that move them: a body edit that changes the `## Estimate` line (re-read the `plan on` bound) or that materially changes the delivered scope (re-state the one-clause `Delivers`, `|` escaped as `\|`). A comment-only update and an AC clarification that moves neither leave both empty and change nothing. `tier` is deliberately not refreshed here — re-inferring a model tier is a fresh reflection pass (Step 3), not a byproduct of an append; if an edit genuinely re-sizes the work, that is the split conversation in sub-step 3, not a silent field rewrite.
 
-   **A backfilled entry carries nulls for the summary-table fields, and the tally shows that honestly.** An issue opened elsewhere was never drafted here, so this thread inferred no tier and read no estimate. Record `null` rather than guessing: the running tally renders `—` in `Delivers`, `Model`, or `Est` for any row whose log entry lacks that value — one rule for all three, no per-column fallback. A fabricated tier would read as a genuine inference — the row would claim Opus work on no evidence — which is worse than an empty cell.
+   **Update-only backfills are excluded from `mine` and the session tally.** Their summary fields remain `null` because this thread inferred no tier and read no estimate. Rows included in the tally render missing `delivers`, `tier`, or `est_bound` as `—`; do not fabricate values.
 
    **Chips are create-time only.** `/update`/edit-in-place never spawns or refreshes a chip — a chip offered at Step 9 stays as-is even if the body changes materially afterward. Re-planning the chip itself is out of scope for this skill (open question in issue #635's Notes); if the drift matters, retract and re-create. This also means `/update` can never cause the reverse double-offer (`/wave` or `/pm` already offered a chip for this issue, then someone edits it here via `/update`): the step above never *reads* an existing `chip_task_id` to decide anything, and the only value it ever *writes* is `null` (when backfilling a minimal entry for an issue this thread's log didn't already track) — never a live one, so it has no way to spawn a competing chip.
 

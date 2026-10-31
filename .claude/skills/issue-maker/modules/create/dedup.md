@@ -19,8 +19,18 @@ for candidate in \
   if [ -x "$candidate" ]; then ISSUE_DEDUP="$candidate"; break; fi
 done
 DEDUP_RC=0
+SIBLING_NUMBERS=""
+if [ -n "${CHAIN_ID:-}" ]; then
+  SIBLING_NUMBERS=$(jq -r "$MINE_DEF"'[.issues[] | mine | select(.chain.chain_id == $chain_id) | .number] | join(",")' \
+    "$LOG" --arg repo "$REPO" --arg chain_id "$CHAIN_ID") || {
+    echo "ERROR: could not identify same-chain issues; duplicate screening is pending" >&2
+    exit 1
+  }
+fi
 if [ -n "$KEYWORDS" ] && [ -n "$ISSUE_DEDUP" ]; then
-  "$ISSUE_DEDUP" "$KEYWORDS" ${REPO:+--repo "$REPO"} || DEDUP_RC=$?
+  DEDUP_ARGS=("$KEYWORDS" --repo "$REPO")
+  [ -z "$SIBLING_NUMBERS" ] || DEDUP_ARGS+=(--exclude "$SIBLING_NUMBERS")
+  "$ISSUE_DEDUP" "${DEDUP_ARGS[@]}" || DEDUP_RC=$?
 fi
 # Only exit 1 means "searched, found nothing". Exit 2/4 (usage, gh/env failure)
 # means the check did not run — fall back below and say so; never present an
@@ -29,6 +39,18 @@ fi
 
 - **Guard:** if no significant keywords remain, skip the dedup search.
 - **Helper missing, or `DEDUP_RC` ≥ 2:** fall back to the title-only `gh issue list --repo "$REPO" --state all --search "$KEYWORDS in:title" --limit 100 --json number,title,url,state,closedAt` over open and recently-closed issues, and say so in one line when surfacing results — `DEGRADED: issue-dedup.sh not found (checked all three paths) — title-only duplicate search` for the missing-helper case, naming the exit code instead when the helper ran and failed. Filter closed results to the same recent window as the helper (30 days); retain open results. If this fallback also fails, stop with duplicate screening pending rather than claiming no match or filing unscreened. Never present an unrun or downgraded check as a clean result.
+- Apply the same `$SIBLING_NUMBERS` exclusion to fallback results before ranking them. The exclusion must happen before any top-candidate selection. If the log read needed to build it fails, stop duplicate screening.
+
+```bash
+CANDIDATES=$(gh issue list --repo "$REPO" --state all --search "$KEYWORDS in:title" \
+  --limit 100 --json number,title,url,state,closedAt) || exit 1
+CANDIDATES=$(printf '%s' "$CANDIDATES" | jq -c --arg exclude "$SIBLING_NUMBERS" '
+  ($exclude | split(",")) as $excluded
+  | [.[] | . as $candidate
+    | select((($candidate.state | ascii_upcase) == "OPEN")
+      or (try (($candidate.closedAt | fromdateiso8601) >= (now - 2592000)) catch false))
+    | select(($excluded | index($candidate.number | tostring)) == null)]') || exit 1
+```
 - **Filter same-run increment siblings out of the candidate list first** — before anything below reads a "top" candidate. See the sibling bullet at the end of this list for why; the ordering matters because every rule below acts on whichever candidate ranks first.
 - **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top surviving** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
 - **Default mode — pause only on a strong or exact match:** if the top candidate clears that bar, surface it and present the choice via **`AskUserQuestion`** when available (options: `"Skip — looks like a duplicate (Recommended)"`, `"File anyway"`; prose fallback `"Looks like a duplicate of #N — file anyway? (y/N)"` in headless runs). On a weak/ambiguous match, **do not block** — file, and name the near-duplicate as a decision point (Step 9a: "possibly overlaps #N"). No match → file normally. See `ask-menu.md` for the full vehicle convention.

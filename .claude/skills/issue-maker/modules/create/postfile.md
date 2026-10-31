@@ -162,8 +162,10 @@ In **rapid-fire mode**, use terser framing: *"Run {N} issue(s) inline — {TIER}
 
 ```bash
 # /subagent #{a} #{b} ...  ← invoke first
-set_log '.offer_accepted = true'
-set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
+if ! set_log "$MINE_DEF"'.offer_accepted = true | (.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"; then
+  echo "ERROR: /subagent started, but offer acceptance and token cleanup could not be persisted; stop and reconcile the session log before another offer" >&2
+  exit 1
+fi
 ```
 
 **On no — decline.** Leave all issues filed and launch nothing. Clear `chip_task_id` from all covered issues so they are no longer counted as pending offered work in the cap census. The inline offer is withdrawn; the on-request hand-off block below remains available on explicit request (`"give me the chip"`, `"print the hand-off"`, etc.).

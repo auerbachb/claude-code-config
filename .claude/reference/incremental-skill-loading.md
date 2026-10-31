@@ -18,13 +18,13 @@ The executable trace fixtures record caller-selected module paths, nested refere
 
 | Representative context / phase trace | Bytes | Words |
 |---|---:|---:|
-| Initial capture setup | 24,390 | 3,475 |
-| Normal create (modules only) | 79,621 | 11,947 |
-| Normal create including nested references | 152,135 | 23,113 |
-| Chain/batch including nested references | 161,312 | 24,600 |
-| Update / recovery at update phase | 32,055 | 4,628 |
-| Ordinary retract | 35,351 | 5,119 |
-| On-request handoff after normal create | 215,875 | 32,705 |
+| Initial capture setup | 24,701 | 3,521 |
+| Normal create (modules only) | 81,572 | 12,218 |
+| Normal create including nested references | 154,086 | 23,384 |
+| Chain/batch including nested references | 163,263 | 24,871 |
+| Update / recovery at update phase | 33,013 | 4,737 |
+| Ordinary retract | 35,662 | 5,165 |
+| On-request handoff after normal create | 217,826 | 32,976 |
 | Comparable old create plus same nested references | 170,626 | 26,374 |
 | Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,082 | 11,266 |
 
@@ -39,17 +39,17 @@ Setup is the initial capture row above. A restart adds that setup plus the activ
 | `SKILL.md` | 7,931 | 1,113 |
 | `modules/batch.md` | 1,893 | 315 |
 | `modules/create/crossrefs.md` | 2,417 | 401 |
-| `modules/create/dedup.md` | 4,696 | 704 |
-| `modules/create/file.md` | 6,525 | 900 |
+| `modules/create/dedup.md` | 5,900 | 859 |
+| `modules/create/file.md` | 6,788 | 940 |
 | `modules/create/increment-draft.md` | 4,867 | 771 |
-| `modules/create/postfile.md` | 23,957 | 3,762 |
+| `modules/create/postfile.md` | 24,130 | 3,792 |
 | `modules/create/reflect-and-draft.md` | 20,053 | 3,106 |
 | `modules/handoff.md` | 7,853 | 1,178 |
 | `modules/portable-prompt.md` | 7,781 | 1,196 |
 | `modules/retract.md` | 10,961 | 1,644 |
 | `modules/session-mode.md` | 1,279 | 188 |
-| `modules/session-state.md` | 16,459 | 2,362 |
-| `modules/update.md` | 7,665 | 1,153 |
+| `modules/session-state.md` | 16,770 | 2,408 |
+| `modules/update.md` | 8,312 | 1,216 |
 
 Reproduce the exact inventory with `wc -wc .claude/skills/issue-maker/SKILL.md .claude/skills/issue-maker/modules/*.md .claude/skills/issue-maker/modules/create/*.md`; run `bash tests/test-issue-maker-dispatch.sh` for the caller trace and offline workflow checks. Sum each trace's distinct source paths and bounded excerpts, including the references listed above. No migration percentage is promised before runtime instrumentation.
 

@@ -151,6 +151,12 @@ checkpoint() {
 <!-- test-anchor: issue-maker-step1-retarget-guard -->
 ```bash
 REPO="<owner/repo the user supplied>"
+# Persist only the slug format accepted by recovery. Do not store a URL, path,
+# whitespace, or an incomplete owner/repository value in target_repo.
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "ERROR: expected owner/repo before retargeting; target_repo was not changed" >&2
+  exit 1
+fi
 # Never flip target_repo out from under entries that belong to another repo —
 # that is one of the three #1369 corruptions. Warn and hold instead.
 # A row whose url cannot be attributed is not counted: it cannot be shown to be

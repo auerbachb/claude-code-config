@@ -26,6 +26,7 @@ Before the create below, confirm reflection and final sizing, dedup disposition,
 
 **Create through `issue-file.sh`** — the one create path `/issue-maker` and the desk's `idea:` intent share (#1766), so the two can never file differently. Before any `gh` call it refuses a title over 70 characters, a body missing one of the seven sections (or with them out of order), and a body whose last line is not the footer — exit 3, nothing sent. It drops labels the repo does not have and the four that hide an issue from `/pm` (`blocked`, `on-hold`, `wontfix`, `duplicate`), never assigns, and prints a URL only for an issue it actually created. `issue-file.sh --template` prints the skeleton above. Write the body to a file with a quoted heredoc so nothing in it expands:
 
+Before running this block, replace `ISSUE_BODY_7f34d1c9` with a newly generated delimiter and verify that it does not occur as a whole line in the finalized body. Keep the delimiter quoted; this makes body content data and prevents delimiter collisions from ending the heredoc early.
 <!-- test-anchor: issue-maker-create -->
 ```bash
 # The entry resolved DISPATCHER. Check the post-write dependency before any gh call.
@@ -44,11 +45,11 @@ if [ -z "$ISSUE_FILE" ]; then
   FILE_RC=5  # local dependency missing: nothing reached GitHub
 else
   BODY_FILE=$(mktemp)
-  cat > "$BODY_FILE" <<'EOF'
+  cat > "$BODY_FILE" <<'ISSUE_BODY_7f34d1c9'
 ## Background
 ...
 _Captured via /issue-maker._
-EOF
+ISSUE_BODY_7f34d1c9
   LABEL_ARGS=()
   while IFS= read -r l; do
     if [ -n "$l" ]; then LABEL_ARGS+=(--label "$l"); fi
@@ -93,6 +94,6 @@ fi
 echo "FILE_RC=$FILE_RC"
 ```
 
-**`FILE_RC` non-zero blocks the next phase.** For exit 3, nothing reached GitHub: fix the title/body and rerun after its gates. Exit 5 means the local helper is unavailable and no GitHub write was attempted; repair installation before retrying. The issue-file helper's exit 4 is reconciled above: a unique exact title/body match created during this attempt supplies the verified number/URL and continues normally; no match, multiple matches, or an unreadable repository becomes `FILE_RC=6`, with no log row, no URL, and no retry until the uncertain result is reconciled. A label it dropped is not a failure — name it in the decision points (Step 9a).
+**`FILE_RC` non-zero blocks the next phase.** For exit 3, nothing reached GitHub: fix the title/body and rerun after its gates. Exit 5 means the local helper is unavailable and no GitHub write was attempted; repair installation before retrying. Exit 4 means the create response was uncertain; the reconciliation above either finds one exact issue created during this attempt and continues with its verified receipt, or returns `FILE_RC=6`. For 6, do not retry or write a log row until the remote result is reconciled. A label it dropped is not a failure — name it in the decision points (Step 9a).
 
 ---

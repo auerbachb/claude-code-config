@@ -248,6 +248,15 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     r=run(setup+'REQUESTED_MODE=default\n'+mode_block+'\nprintf "%s" "$MODE"')
     assert r.returncode==0 and r.stdout=='default' and json.loads(log.read_text())['mode']=='default',(r.stdout,r.stderr,log.read_text())
     print('ok workflow: explicit mode switches persist in the recovered session log')
+    # Offer acceptance is one atomic, checked write for both state changes.
+    seed([dict(row(1,origin='create'),chip_task_id='offer-token'),dict(row(2,origin='create'),chip_task_id='foreign-token',url='https://github.com/other/repo/issues/2')])
+    accept=next(b for b in blocks('modules/create/postfile.md') if "offer_accepted = true |" in b)
+    r=run(setup+accept)
+    data=json.loads(log.read_text()); assert r.returncode==0 and data['offer_accepted'] is True and data['issues'][0]['chip_task_id'] is None and data['issues'][1]['chip_task_id']=='foreign-token',(r.stdout,r.stderr,data)
+    calls=pathlib.Path(td)/'accept-calls'; failing='set_log() { printf x >> '+shlex.quote(str(calls))+'; return 1; }\n'
+    r=run(setup+failing+accept+'\nprintf AFTER')
+    assert r.returncode==1 and 'AFTER' not in r.stdout and calls.read_text()=='x' and 'started' in r.stderr,(r.returncode,r.stdout,r.stderr)
+    print('ok workflow: acceptance and token cleanup share one checked write; failed persistence stops')
     close=next(b for b in blocks('modules/retract.md') if 'if ! gh issue close' in b)
     for remote,view_rc,expected_rc,expected_status in [('OPEN',0,1,'open'),('',1,1,'open'),('CLOSED',0,0,'closed')]:
         seed([dict(row(42,origin='create'),chip_task_id='offer-original')]); before=log.read_bytes()
@@ -286,6 +295,54 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     r=run(setup+recovery)
     assert r.returncode==1 and log.read_bytes()==before and 'no target repository' in r.stderr,(r.returncode,r.stderr)
     print('ok workflow: recovery with unknown target repository refuses operation work without mutating state')
+
+    # A user-supplied retarget is validated before the first target_repo write.
+    retarget=next(b for b in blocks('modules/session-state.md') if 'FOREIGN=$(jq' in b)
+    retarget=retarget.replace('REPO="<owner/repo the user supplied>"','REPO="__TEST_REPO__"')
+    seed([]); before=log.read_bytes()
+    r=run(setup+retarget.replace('__TEST_REPO__','https://github.com/owner/repo'))
+    assert r.returncode==1 and log.read_bytes()==before and 'expected owner/repo' in r.stderr,(r.returncode,r.stderr)
+    r=run(setup+retarget.replace('__TEST_REPO__','new-owner/new-repo'))
+    assert r.returncode==0 and json.loads(log.read_text())['target_repo']=='new-owner/new-repo',(r.returncode,r.stderr,log.read_text())
+    print('ok workflow: retarget validates slug format before mutation and stores a valid owner/repo')
+
+    # Siblings are excluded before the helper's result cap and in fallback results.
+    seed([row(11,origin='create',chain={'chain_id':'chain-a','position':1,'total':3}),row(12,origin='create',chain={'chain_id':'chain-a','position':2,'total':3}),row(13,origin='create',chain={'chain_id':'chain-b','position':1,'total':2})])
+    home=pathlib.Path(td)/'dedup-home'; helper=home/'.claude/scripts/issue-dedup.sh'; helper.parent.mkdir(parents=True); args_file=pathlib.Path(td)/'dedup-args'
+    helper.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(args_file))+'\n'); helper.chmod(0o755)
+    dedup=blocks('modules/create/dedup.md')[0].replace('KEYWORDS="<significant words from the title and problem statement>"','KEYWORDS="alpha beta"')
+    r=run(setup+'HOME='+shlex.quote(str(home))+'\nCHAIN_ID=chain-a\n'+dedup)
+    assert r.returncode==0 and args_file.read_text().splitlines()==['alpha beta','--repo','owner/repo','--exclude','11,12'],(r.returncode,r.stderr,args_file.read_text() if args_file.exists() else None)
+    fallback=blocks('modules/create/dedup.md')[1]
+    r=run('REPO=owner/repo\nKEYWORDS=alpha\nSIBLING_NUMBERS=11,12\nCANDIDATES='+shlex.quote('[{"number":11,"state":"OPEN"},{"number":13,"state":"OPEN"},{"number":14,"state":"CLOSED","closedAt":"2020-01-01T00:00:00Z"}]')+'\ngh() { printf "%s" "$CANDIDATES"; }\n'+fallback+'\nprintf "%s" "$CANDIDATES"')
+    assert r.returncode==0 and json.loads(r.stdout)==[{'number':13,'state':'OPEN'}],(r.stdout,r.stderr)
+    print('ok workflow: chain siblings reach helper exclusion before its cap and are filtered from fallback candidates')
+
+    # The body delimiter is chosen after content exists; even the former marker
+    # and shell-looking body lines remain literal file content.
+    create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
+    marker='ISSUE_BODY_7f34d1c9'; unique='ISSUE_BODY_generated_42'
+    create_block=create_block.replace(marker,unique)
+    body='## Background\n'+marker+'\n$(touch '+str(pathlib.Path(td)/'body-executed')+')\n_Captured via /issue-maker._'
+    create_block=create_block.replace('## Background\n...\n_Captured via /issue-maker._',body)
+    home=pathlib.Path(td)/'file-home'; helper=home/'.claude/skills-worktree/.claude/scripts/issue-file.sh'; helper.parent.mkdir(parents=True)
+    captured=pathlib.Path(td)/'captured-body'
+    helper.write_text('#!/usr/bin/env bash\nwhile [ "$#" -gt 0 ]; do case "$1" in --body-file) cp "$2" '+shlex.quote(str(captured))+'; shift 2;; *) shift;; esac; done\nprintf \'{"url":"https://github.com/owner/repo/issues/7","number":7,"labels":[]}\'\n'); helper.chmod(0o755)
+    dispatcher=pathlib.Path(td)/'dispatcher.sh'; dispatcher.write_text('#!/usr/bin/env bash\nexit 0\n'); dispatcher.chmod(0o755)
+    r=run('HOME='+shlex.quote(str(home))+'\nDISPATCHER='+shlex.quote(str(dispatcher))+'\nREPO=owner/repo\nTITLE="Safe title"\nACCEPTED_LABELS=""\n'+create_block)
+    assert r.returncode==0 and not (pathlib.Path(td)/'body-executed').exists() and marker in captured.read_text() and '$(touch' in captured.read_text(),(r.returncode,r.stdout,r.stderr,captured.read_text() if captured.exists() else None)
+    print('ok workflow: generated quoted heredoc delimiter keeps delimiter-like and shell-looking issue body lines literal')
+
+    # Update apply refetches and checks both remote fields before the receipt path.
+    update_apply=next(b for b in blocks('modules/update.md') if 'UPDATE_KIND' in b)
+    update_args=pathlib.Path(td)/'update-args'
+    ghstub='gh() { if [[ "$2" == edit ]]; then printf "%s\\n" "$@" > '+shlex.quote(str(update_args))+'; return 4; fi; printf \'%s\' "$REMOTE_JSON"; }\n'
+    remote=json.dumps({'title':'Proposed title','body':'confirmed body','url':'https://github.com/owner/repo/issues/42','state':'OPEN'})
+    r=run('N=42\nREPO=owner/repo\nTITLE="Old title"\nNEW_TITLE="Proposed title"\nNEW_BODY="confirmed body"\nREMOTE_JSON='+shlex.quote(remote)+'\n'+ghstub+update_apply+'\nprintf "%s|%s|%s" "$TITLE" "$ISSUE_URL" "$ISSUE_STATUS"')
+    assert r.returncode==0 and r.stdout=='Proposed title|https://github.com/owner/repo/issues/42|open' and update_args.read_text().splitlines()==['issue','edit','42','--repo','owner/repo','--title','Proposed title','--body','confirmed body'],(r.stdout,r.stderr,update_args.read_text())
+    r=run('N=42\nREPO=owner/repo\nTITLE="Old title"\nNEW_TITLE="Proposed title"\nNEW_BODY="confirmed body"\nREMOTE_JSON='+shlex.quote(json.dumps({**json.loads(remote),'title':'Stale title'}))+'\n'+ghstub+update_apply)
+    assert r.returncode==1 and 'no session receipt was written' in r.stderr,(r.returncode,r.stderr)
+    print('ok workflow: update accepts a verified title/body after uncertain write and rejects stale remote state')
 
     # A chain identity exists before dedup; recovery restores it without minting.
     seed([])
