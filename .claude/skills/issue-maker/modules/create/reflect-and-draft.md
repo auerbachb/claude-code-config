@@ -48,7 +48,24 @@ if [ -n "$SPLIT_THRESHOLDS" ]; then
   # strictly below the split line), and two reads could in principle straddle a
   # config edit and produce a pair the helper would have rejected as one.
   # Parsed with jq, never `eval`: eval would execute whatever the helper printed.
-  THRESHOLDS_JSON=$("$SPLIT_THRESHOLDS" --json 2>/dev/null) || THRESHOLDS_JSON=""
+  TARGET_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || TARGET_REPO_ROOT=""
+  CHECKOUT_ORIGIN=""
+  if [ -n "$TARGET_REPO_ROOT" ]; then
+    CHECKOUT_ORIGIN=$(git -C "$TARGET_REPO_ROOT" remote get-url origin 2>/dev/null) || CHECKOUT_ORIGIN=""
+  fi
+  case "$CHECKOUT_ORIGIN" in
+    https://github.com/*) CHECKOUT_REPO=${CHECKOUT_ORIGIN#https://github.com/} ;;
+    ssh://git@github.com/*) CHECKOUT_REPO=${CHECKOUT_ORIGIN#ssh://git@github.com/} ;;
+    git@github.com:*) CHECKOUT_REPO=${CHECKOUT_ORIGIN#git@github.com:} ;;
+    *) CHECKOUT_REPO="" ;;
+  esac
+  CHECKOUT_REPO=${CHECKOUT_REPO%.git}
+  THRESHOLDS_JSON=""
+  if [ -n "$TARGET_REPO_ROOT" ] && [ "$CHECKOUT_REPO" = "$REPO" ]; then
+    THRESHOLDS_JSON=$("$SPLIT_THRESHOLDS" --json --path "$TARGET_REPO_ROOT" 2>/dev/null) || THRESHOLDS_JSON=""
+  else
+    echo "DEGRADED: current checkout does not match $REPO; target thresholds are unavailable, using defaults 180/120" >&2
+  fi
   S=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.split_over_min // empty' 2>/dev/null) || S=""
   B=$(printf '%s' "$THRESHOLDS_JSON" | jq -r '.increment_bound_min // empty' 2>/dev/null) || B=""
   # Both or neither: a half-applied pair is the incoherent state the helper's own

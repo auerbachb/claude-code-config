@@ -94,8 +94,19 @@ ISSUE_BODY_7f34d1c9
   rm -f "$BODY_FILE"
 fi
 echo "FILE_RC=$FILE_RC"
+if [ "$FILE_RC" -eq 0 ]; then
+  CREATE_RECEIPT=$(jq -cn --arg number "$ISSUE_NUMBER" --arg url "$ISSUE_URL" \
+    --arg title "$TITLE" --arg labels "${ACCEPTED_LABELS:-}" \
+    '{number:($number|tonumber),url:$url,title:$title,labels:($labels|split("\n")|map(select(length>0)))}') || {
+    echo "ERROR: remote create is confirmed, but its receipt could not be serialized; do not retry" >&2
+    exit 1
+  }
+  printf 'CREATE_RECEIPT=%s\n' "$CREATE_RECEIPT"
+fi
 ```
 
 **`FILE_RC` non-zero blocks the next phase.** For exit 3, nothing reached GitHub: fix the title/body and rerun after its gates. Exit 5 means the local helper is unavailable and no GitHub write was attempted; repair installation before retrying. Exit 4 means the create response was uncertain; the reconciliation above either finds one exact issue created during this attempt and continues with its verified receipt, or returns `FILE_RC=6`. For 6, do not retry or write a log row until the remote result is reconciled. A label it dropped is not a failure — name it in the decision points (Step 9a).
+
+**Phase-boundary receipt.** On `FILE_RC=0`, `CREATE_RECEIPT` is the confirmed remote number, URL, title, and applied-label array. Carry it into `create:postfile` and restore `ISSUE_NUMBER`, `ISSUE_URL`, `TITLE`, and `ACCEPTED_LABELS` from that JSON before writing the session row. After compaction, recover the same values from the tool output; never rerun the create block when a confirmed receipt exists. If the log write fails, keep the receipt in the recovery note and stop before reporting or offering a handoff.
 
 ---

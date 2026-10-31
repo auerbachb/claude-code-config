@@ -223,6 +223,19 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     setup=selector+'\n'+f'LOG={shlex.quote(str(log))}\nREPO=owner/repo\n'+f'set_log() {{ {shlex.quote(str(skill/"scripts/set-log.sh"))} "$LOG" "$@"; }}\n'
     def seed(rows): log.write_text(json.dumps({'issues':rows,'target_repo':'owner/repo'}))
     def row(n,**kw): return dict(number=n,title=f'Issue {n}',url=f'https://github.com/owner/repo/issues/{n}',status='open',chip_task_id=None,created_at='2026-10-30',**kw)
+    # Threshold configuration is read from the target checkout only; a helper
+    # installed elsewhere must not silently apply the invoking repo's policy.
+    thresholds=next(b for b in blocks('modules/create/reflect-and-draft.md') if 'SPLIT_THRESHOLDS=' in b)
+    th_home=pathlib.Path(td)/'threshold-home'; th_helper=th_home/'.claude/scripts/split-thresholds.sh'; th_helper.parent.mkdir(parents=True)
+    th_args=pathlib.Path(td)/'threshold-args'
+    th_helper.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(th_args))+"\nprintf '{\\\"split_over_min\\\":240,\\\"increment_bound_min\\\":120}\\n'\n"); th_helper.chmod(0o755)
+    git_stub='git() { if [[ "$1" == rev-parse ]]; then printf /target/root; else printf "%s" "$ORIGIN_URL"; fi; }\n'
+    r=run('HOME='+shlex.quote(str(th_home))+'\nORIGIN_URL=git@github.com:owner/repo.git\n'+git_stub+setup+thresholds+'\nprintf "RESULT=%s/%s" "$SPLIT_OVER_MIN" "$INCREMENT_BOUND_MIN"')
+    assert r.returncode==0 and r.stdout.endswith('RESULT=240/120') and th_args.read_text().splitlines()==['--json','--path','/target/root'],(r.returncode,r.stdout,r.stderr,th_args.read_text() if th_args.exists() else None)
+    th_args.unlink()
+    r=run('HOME='+shlex.quote(str(th_home))+'\nORIGIN_URL=git@github.com:other/repo.git\n'+git_stub+setup+thresholds+'\nprintf "RESULT=%s/%s" "$SPLIT_OVER_MIN" "$INCREMENT_BOUND_MIN"')
+    assert r.returncode==0 and r.stdout.endswith('RESULT=180/120') and not th_args.exists() and 'current checkout does not match owner/repo' in r.stderr,(r.returncode,r.stdout,r.stderr)
+    print('ok workflow: sizing reads target repo thresholds and degrades explicitly when checkout origin differs')
     seed([row(1,origin='create'),row(2,origin='update'),row(3),row(4,edited_at='2026-10-31'),row(5,edited_at='2026-10-31',tier='Light'),dict(row(6),url='https://github.com/other/repo/issues/6')])
     stamp=next(b for b in blocks('modules/create/postfile.md') if 'OFFER_TOKEN=' in b)
     r=run(setup+stamp); assert r.returncode==0,r.stderr
@@ -450,6 +463,24 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     assert r.returncode==0 and not (pathlib.Path(td)/'body-executed').exists() and marker in captured.read_text() and '$(touch' in captured.read_text(),(r.returncode,r.stdout,r.stderr,captured.read_text() if captured.exists() else None)
     print('ok workflow: generated quoted heredoc delimiter keeps delimiter-like and shell-looking issue body lines literal')
 
+    # The issue-file phase and postfile phase run as separate invocations. The
+    # structured receipt output must carry the remote write across that boundary.
+    receipt_line=next(line for line in r.stdout.splitlines() if line.startswith('CREATE_RECEIPT='))
+    receipt=json.loads(receipt_line.split('=',1)[1])
+    assert receipt=={'number':7,'url':'https://github.com/owner/repo/issues/7','title':'Safe title','labels':[]},receipt
+    seed([])
+    record=next(b for b in blocks('modules/create/postfile.md') if '.issues +=' in b)
+    restore='CREATE_RECEIPT='+shlex.quote(json.dumps(receipt))+'\n'
+    restore+='ISSUE_NUMBER=$(printf %s "$CREATE_RECEIPT" | jq -er .number)\n'
+    restore+='ISSUE_URL=$(printf %s "$CREATE_RECEIPT" | jq -er .url)\n'
+    restore+='TITLE=$(printf %s "$CREATE_RECEIPT" | jq -er .title)\n'
+    restore+='ACCEPTED_LABELS=$(printf %s "$CREATE_RECEIPT" | jq -r \' .labels[]? \')\n'
+    restore+='CHAIN_JSON=null\nIS_INCREMENT=false\nISSUE_TIER=Light\nDELIVERS="Safe issue receipt"\nEST_BOUND=60\n'
+    recorded=run(setup+restore+record)
+    rows=json.loads(log.read_text())['issues']
+    assert recorded.returncode==0 and len(rows)==1 and rows[0]['number']==7 and rows[0]['url']==receipt['url'],(recorded.returncode,recorded.stderr,rows)
+    print('ok workflow: create receipt survives a separate postfile invocation and records the confirmed issue')
+
     # Uncertain create reconciliation compares the body byte-for-byte from its
     # file and fails closed for same-second exact duplicates from another session.
     create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
@@ -464,7 +495,7 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         return 'HOME='+shlex.quote(str(home))+'\nDISPATCHER='+shlex.quote(str(dispatcher))+'\nREPO=owner/repo\nTITLE="Safe title"\nACCEPTED_LABELS=""\ndate() { printf "2026-10-30T12:00:00Z"; }\ngh() { printf %s '+shlex.quote(payload)+'; }\n'
     env=recovery_env(candidate)
     r=run(env+create_block)
-    assert r.returncode==0 and 'FILE_RC=0' in r.stdout and 'ISSUE_NUMBER=8' not in r.stdout,(r.returncode,r.stdout,r.stderr)
+    assert r.returncode==0 and 'FILE_RC=0' in r.stdout and 'CREATE_RECEIPT={"number":8,"url":"https://github.com/owner/repo/issues/8","title":"Safe title","labels":[]}' in r.stdout,(r.returncode,r.stdout,r.stderr)
     # Same-second candidate is ambiguous and therefore cannot be claimed.
     candidate['createdAt']='2026-10-30T12:00:00Z'
     env=recovery_env(candidate)
