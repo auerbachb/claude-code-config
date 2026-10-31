@@ -404,10 +404,21 @@ def render_v2(v2, heading):
     print("- The report is observational only and never feeds quota, budget, or dispatch gates.\n")
 
 
-def render(days, path):
+def render(days, path, maintenance):
+    def count_text(key):
+        value=maintenance.get(key)
+        return str(value) if type(value) is int and value>=0 else "unknown"
+
+    def render_maintenance():
+        if maintenance.get("status")=="observed":
+            print(f"> Queued hook writes awaiting explicit drain: {count_text('pending_writes')}; pending child transcript sources: {count_text('pending_children')}; unavailable child cursors: {count_text('unavailable_child_sources')}. Use `--resume-pending` for a bounded refresh.\n")
+        else:
+            print(f"> Explicit refresh: drained {count_text('drained')} queued write(s), removed {count_text('duplicate_spool_rows_removed')} duplicate spool row(s), resumed {count_text('resumed_children')} child source(s); pending writes: {count_text('pending_writes')}; pending child sources: {count_text('pending_children')}; status: {maintenance.get('status', 'unknown')}.\n")
+
     if not os.path.exists(path):
         print("## Spend / Thread-Type Telemetry Report\n")
         print(f"No telemetry log found at `{path}`.")
+        render_maintenance()
         print("The log is created automatically when the spend-telemetry hooks fire.")
         print("Run a new Claude Code session to generate the first record.")
         return
@@ -426,7 +437,8 @@ def render(days, path):
     print("> Data source: `~/.claude/spend-telemetry.log`")
     print(f"> Generated: `{now.strftime('%Y-%m-%dT%H:%M:%SZ')}`")
     print(">")
-    print("> Metadata-only report. Missing values stay unknown; this report does not estimate cost or gate work.\n")
+    print("> Metadata-only report. Missing values stay unknown; this report does not estimate cost or gate work.")
+    render_maintenance()
 
     legacy = [row for row in records if row["schema_version"] < 2]
     render_legacy(legacy, "Legacy event coverage (pre-v2 schema)")
@@ -457,4 +469,9 @@ def render(days, path):
 
 
 if __name__ == "__main__":
-    render(int(sys.argv[1]), sys.argv[2])
+    try:
+        maintenance=json.loads(sys.argv[3]) if len(sys.argv)>3 else {"status":"observed"}
+        if not isinstance(maintenance,dict): maintenance={"status":"maintenance_unavailable"}
+    except (TypeError, ValueError):
+        maintenance={"status":"maintenance_unavailable"}
+    render(int(sys.argv[1]), sys.argv[2], maintenance)

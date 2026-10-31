@@ -162,18 +162,50 @@ _spend_append_log() {
 _spend_locked_append_line() {
   local line="${1:-}"
   python3 - "$SPEND_TELEMETRY_LOG" "$line" <<'PY' 2>/dev/null || return 1
-import fcntl, os, sys, time
+import fcntl, os, sys, tempfile, time, uuid
 path, line = sys.argv[1:]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path + ".lock", "a", encoding="ascii") as lock:
     deadline=time.monotonic()+.25
+    acquired=False
     while True:
-        try: fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB); break
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired=True
+            break
         except BlockingIOError:
-            if time.monotonic()>=deadline: raise TimeoutError("telemetry lock busy")
+            if time.monotonic()>=deadline: break
             time.sleep(.01)
-    with open(path, "a", encoding="utf-8") as output:
-        output.write(line + "\n")
+    if acquired:
+        with open(path, "a", encoding="utf-8") as output:
+            output.write(line + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+    else:
+        # Never lose a hook row just because another process holds the bounded
+        # append lock. The private spool is drained explicitly by the report
+        # refresh path; the hook itself still exits within its normal bound.
+        pending_dir=os.path.join(os.path.dirname(path), "spend-telemetry-pending")
+        os.makedirs(pending_dir, mode=0o700, exist_ok=True)
+        os.chmod(pending_dir, 0o700)
+        fd, temporary=tempfile.mkstemp(prefix=".pending-", suffix=".tmp", dir=pending_dir)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as pending:
+                pending.write(line + "\n")
+                pending.flush()
+                os.fsync(pending.fileno())
+            final=os.path.join(pending_dir, "pending-"+uuid.uuid4().hex+".tsv")
+            os.replace(temporary, final)
+            directory_fd=os.open(pending_dir, os.O_RDONLY)
+            try: os.fsync(directory_fd)
+            finally: os.close(directory_fd)
+        except Exception:
+            try: os.close(fd)
+            except OSError: pass
+            try: os.unlink(temporary)
+            except OSError: pass
+            raise
 PY
 }
 
@@ -235,6 +267,10 @@ _spend_append_v2() {
 
   local values field line
   session_id="$(_spend_resolve_session "$session_id")"
+  if [ -z "$event_key" ]; then
+    event_key="$(_spend_event_key "$event_type" "$exec_type" "$session_id" \
+      "$agent_id" "$task_id" "$(date -u +%FT%TZ)" "$$" "$RANDOM")"
+  fi
   values=("$event_type" "$exec_type" "$model_tier" "$agent_type" "$session_id" \
           "$agent_id" "$tokens" "3" "$event_key" "$repo_root" "$phase" \
           "$requested_model" "$requested_source" "$actual_model" "$actual_source" \
@@ -312,12 +348,12 @@ record_spend_transcript() {
 
   mkdir -p "$(dirname "$SPEND_TELEMETRY_LOG")" "$cursor_dir" 2>/dev/null || return 0
   python3 - "$transcript" "$SPEND_TELEMETRY_LOG" "$cursor_dir" "$exec_type" \
-      "$session_id" "$agent_id" "$agent_type" "$repo_root" "$phase" \
+      "$session_id" "$agent_id" "$agent_type" "$cwd" "$repo_root" "$phase" \
       "$requested_model" "$requested_source" "$transcript_scope" "$repo_slug" <<'PY' 2>/dev/null || true
-import fcntl, hashlib, json, os, re, sys, time
+import fcntl, hashlib, json, os, re, sys, tempfile, time, uuid
 from datetime import datetime, timezone
 
-path, log_path, cursor_dir, exec_type, session_id, agent_id, agent_type, repo_root, phase, requested, requested_source, scope, repo_slug = sys.argv[1:]
+path, log_path, cursor_dir, exec_type, session_id, agent_id, agent_type, cwd, repo_root, phase, requested, requested_source, scope, repo_slug = sys.argv[1:]
 families = ("opus", "sonnet", "haiku", "fable")
 
 def identifier(value):
@@ -352,14 +388,24 @@ def lock_until(lock, deadline):
 
 cursor_key = hashlib.sha256("\0".join((session_id, agent_id, scope, path)).encode("utf-8", errors="replace")).hexdigest()
 cursor_path = os.path.join(cursor_dir, cursor_key + ".offset")
+os.makedirs(cursor_dir, mode=0o700, exist_ok=True)
+os.chmod(cursor_dir, 0o700)
+cursor_metadata={"cursor_identity":cursor_key,"transcript_path":os.path.abspath(path),
+                 "cursor_path_input":path,
+                 "exec_type":exec_type,"session_id":session_id,"agent_id":agent_id,
+                 "agent_type":agent_type,"cwd":cwd,"repo_root":repo_root,"repo_slug":repo_slug,
+                 "phase":phase,"transcript_scope":scope}
 with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
     if not lock_until(cursor_lock, time.monotonic()+.25):
         sys.exit(0)
     try:
-        saved = json.load(open(cursor_path, encoding="ascii"))
+        saved = json.load(open(cursor_path, encoding="utf-8"))
         if not isinstance(saved,dict): saved = {}
     except Exception:
         saved = {}
+    saved_metadata=saved.get("metadata") if isinstance(saved.get("metadata"),dict) else {}
+    if any(saved_metadata.get(key)!=value for key,value in cursor_metadata.items()):
+        saved={}
     with open(path, "rb") as stream:
         stat = os.fstat(stream.fileno())
         offset = saved.get("offset",0)
@@ -376,23 +422,63 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
         boundary_key=saved.get("boundary_key") if offset else None
         out=[]
         scanned=0
-        deadline=time.monotonic()+(2 if exec_type=="inline" else 20)
+        deadline_seconds=2 if exec_type=="inline" else 20
+        if exec_type=="inline" and os.environ.get("CLAUDE_SPEND_TELEMETRY_TEST_MODE")=="1":
+            try:
+                override=float(os.environ.get("CLAUDE_SPEND_TELEMETRY_TEST_INLINE_BUDGET", "2"))
+                if 0<=override<=2: deadline_seconds=override
+            except (TypeError, ValueError): pass
+        deadline=time.monotonic()+deadline_seconds
 
         def append_rows(rows):
             if not rows: return
+            def spool_rows():
+                pending_dir=os.path.join(os.path.dirname(log_path), "spend-telemetry-pending")
+                os.makedirs(pending_dir, mode=0o700, exist_ok=True)
+                os.chmod(pending_dir, 0o700)
+                for row_line in rows:
+                    fd, temporary=tempfile.mkstemp(prefix=".pending-", suffix=".tmp", dir=pending_dir)
+                    try:
+                        os.fchmod(fd,0o600)
+                        with os.fdopen(fd,"w",encoding="utf-8") as pending:
+                            pending.write(row_line.rstrip("\n")+"\n")
+                            pending.flush()
+                            os.fsync(pending.fileno())
+                        final=os.path.join(pending_dir,"pending-"+uuid.uuid4().hex+".tsv")
+                        os.replace(temporary,final)
+                    except Exception:
+                        try: os.close(fd)
+                        except OSError: pass
+                        try: os.unlink(temporary)
+                        except OSError: pass
+                        raise
+                directory_fd=os.open(pending_dir,os.O_RDONLY)
+                try: os.fsync(directory_fd)
+                finally: os.close(directory_fd)
             with open(log_path+".lock","a",encoding="ascii") as log_lock:
-                if not lock_until(log_lock,time.monotonic()+.25): raise TimeoutError("telemetry log busy")
-                with open(log_path,"a",encoding="utf-8") as log:
-                    log.write("".join(rows))
+                acquired=lock_until(log_lock,time.monotonic()+.25)
+                if acquired:
+                    with open(log_path,"a",encoding="utf-8") as log:
+                        log.write("".join(rows))
+                        log.flush()
+                        os.fsync(log.fileno())
+                    return
+            spool_rows()
 
         def checkpoint():
             nonlocal_state={"offset":new_offset,"device":stat.st_dev,"inode":stat.st_ino,
                             "boundary_offset":boundary_offset,"boundary_key":boundary_key,
-                            "size":stat.st_size,"mtime_ns":stat.st_mtime_ns}
+                            "size":stat.st_size,"mtime_ns":stat.st_mtime_ns,
+                            "metadata":cursor_metadata}
             append_rows(out)
             out.clear()
             temporary=cursor_path+".tmp-"+str(os.getpid())
-            with open(temporary,"w",encoding="ascii") as cursor: json.dump(nonlocal_state,cursor)
+            fd=os.open(temporary, os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
+            with os.fdopen(fd,"w",encoding="utf-8") as cursor:
+                os.fchmod(cursor.fileno(),0o600)
+                json.dump(nonlocal_state,cursor)
+                cursor.flush()
+                os.fsync(cursor.fileno())
             os.replace(temporary,cursor_path)
 
         while time.monotonic()<deadline:

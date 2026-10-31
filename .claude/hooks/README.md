@@ -233,6 +233,7 @@ Registered on **`SessionStart`** with a 5 s timeout and **`SessionEnd`** with a 
 - Extracts `session_id` and the optional active `model` from SessionStart. The runtime model is recorded as actual with `session_start.model` provenance; an omitted model stays unknown.
 - SessionEnd reads only assistant-message IDs, timestamps, model, and usage from the main transcript. A hashed per-session cursor checks file identity and boundary metadata, checkpoints incremental progress, and records the latest complete/pending scan status; message text, prompts, code, tool input, and credentials are ignored.
 - Appends through the shared recorder. Legacy eight-column TSV rows remain readable; new rows carry `schema_version=3`, requested/actual model provenance, repo/session/worker/phase identifiers, per-field usage, and explicit unavailable cost/outcome fields. Explicit issue/PR correlation rows use the same writer.
+- If the bounded log lock is busy, metadata rows are durably queued in a private pending directory instead of being silently dropped. The report displays queued writes and partial child cursors; `spend-telemetry-report.sh --resume-pending` explicitly drains the queue and resumes child cursors within a 20-second total budget.
 - Always exits `0` and emits `{}` — never blocks the session.
 
 **Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
@@ -255,6 +256,7 @@ Registered on **`SubagentStop`** with a 5 s timeout.
 - Uses transcript `requestedModel` when available; otherwise treats an agent definition's frontmatter `model:` as a requested default with `agent_frontmatter_default` provenance. Actual model comes from each assistant transcript message's `model` field and is never filled from frontmatter.
 - Reads assistant-message `id`, `timestamp`, `model`, and nested `usage` fields (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). Missing fields remain blank and are reported against their own denominator.
 - Appends one v3 metadata row per assistant message to `~/.claude/spend-telemetry.log`; replayed transcript reads are skipped by the cursor, and report-level event-key dedup remains a second guard. Missing transcript path creates an explicit unavailable event row.
+- Cursor checkpoints keep private transcript-path/source metadata under `~/.claude/spend-telemetry-cursors/` (`0700` directory, `0600` files). A pending child scan can be resumed by the explicit bounded `spend-telemetry-report.sh --resume-pending` refresh; the normal report only shows the pending count.
 - Always exits `0` and emits `{}` — never blocks the session.
 
 **Observational-only.** Data produced here MUST NOT gate any agent decision or quota check (`safety.md` §"Anthropic Quota & Spend Authority").
@@ -265,7 +267,7 @@ Registered on **`SubagentStop`** with a 5 s timeout.
 
 **Schema and caveats:** `.claude/reference/spend-telemetry-pipeline.md`
 
-**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh`
+**Tests:** `.claude/hooks/tests/spend-telemetry-tracker.test.sh` and `.claude/hooks/tests/spend-telemetry-maintenance.test.sh`
 
 ## spend-task-tracker.sh
 

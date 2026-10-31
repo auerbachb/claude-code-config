@@ -41,6 +41,7 @@ if ! out="$(run_report --help)"; then
 fi
 grep -qi "spend-telemetry-report" <<<"$out" || fail "--help output missing script name"
 grep -q -- "--days" <<<"$out" || fail "--help output missing --days option"
+grep -q -- "--resume-pending" <<<"$out" || fail "--help output missing explicit pending refresh option"
 grep -q -- "--help" <<<"$out" || fail "--help output missing --help option"
 grep -q "EXIT STATUS" <<<"$out" || fail "--help output missing EXIT STATUS section"
 echo "PASS: --help works"
