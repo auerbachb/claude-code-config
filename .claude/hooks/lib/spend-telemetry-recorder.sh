@@ -85,8 +85,8 @@ _spend_payload_field() {
   python3 -c 'import json,re,sys
 try:
  p=json.load(sys.stdin); v=p.get(sys.argv[1]) if isinstance(p,dict) else None
- path=sys.argv[1] in ("cwd","transcript_path","agent_transcript_path")
- valid=isinstance(v,str) and (path or (len(v)<=512 and re.fullmatch(r"[A-Za-z0-9_.:/@+\[\]-]*",v)))
+ path=sys.argv[1] in ("cwd","transcript_path","agent_transcript_path","resume_cursor_path_input")
+ valid=isinstance(v,str) and ((path and len(v)<=4096) or (not path and len(v)<=512 and re.fullmatch(r"[A-Za-z0-9_.:/@+\[\]-]*",v)))
  print(v if valid else "")
 except Exception: print("")' "$2" <<<"$1" 2>/dev/null || true
 }
@@ -391,6 +391,7 @@ def lock_until(lock, deadline):
     return False
 
 absolute_path = os.path.realpath(path)
+legacy_adoption = False
 if not cursor_path_input:
     # New cursors use canonical source identity so equal relative path strings
     # from different worktrees cannot collide. If an existing legacy cursor
@@ -401,11 +402,15 @@ if not cursor_path_input:
     try:
         legacy_saved = json.load(open(legacy_path, encoding="utf-8"))
         legacy_meta = legacy_saved.get("metadata", {}) if isinstance(legacy_saved, dict) else {}
+        current_stat = os.stat(path)
         if (isinstance(legacy_meta, dict) and
                 legacy_meta.get("cursor_identity") == legacy_key and
                 legacy_meta.get("cursor_path_input") == path and
-                legacy_meta.get("transcript_path") == os.path.abspath(path)):
+                legacy_meta.get("transcript_path") == os.path.abspath(path) and
+                legacy_saved.get("device") == current_stat.st_dev and
+                legacy_saved.get("inode") == current_stat.st_ino):
             cursor_path_input = path
+            legacy_adoption = True
         else:
             cursor_path_input = absolute_path
     except (OSError, ValueError, TypeError):
@@ -428,6 +433,12 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
     except Exception:
         saved = {}
     saved_metadata=saved.get("metadata") if isinstance(saved.get("metadata"),dict) else {}
+    if legacy_adoption and saved_metadata.get("transcript_path") == os.path.abspath(path):
+        # Upgrade legacy symlink/relative path metadata in place only after the
+        # legacy key and its exact original source path were verified above.
+        saved_metadata = dict(saved_metadata)
+        saved_metadata["transcript_path"] = absolute_path
+        saved["metadata"] = saved_metadata
     if any(saved_metadata.get(key)!=value for key,value in cursor_metadata.items()):
         saved={}
     with open(path, "rb") as stream:

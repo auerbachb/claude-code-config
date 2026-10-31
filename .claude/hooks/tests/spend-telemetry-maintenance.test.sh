@@ -83,25 +83,29 @@ home=base/'home'; (home/'.claude').mkdir(parents=True)
 env=dict(os.environ,HOME=str(home),CLAUDE_CODE_SESSION_ID='',CLAUDE_SESSION_ID='')
 report_env=dict(env,CLAUDE_CODE_SESSION_ID='report-session')
 log=home/'.claude/spend-telemetry.log'; cursors=home/'.claude/spend-telemetry-cursors'
-transcript=base/'child.jsonl'
+deep_parts=['segment-'+chr(97+i)*120 for i in range(4)]
+transcript=base/'deep'/pathlib.Path(*deep_parts)/'child space (ü).jsonl'
+transcript.parent.mkdir(parents=True)
 old_cwd=base/'deleted-worktree'; old_cwd.mkdir()
 subprocess.run(['git','init','-q',str(old_cwd)],check=True)
 subprocess.run(['git','-C',str(old_cwd),'remote','add','origin','https://github.com/example/telemetry-test.git'],check=True)
+transcript_alias=old_cwd/'child space (ü).jsonl'; transcript_alias.symlink_to(transcript)
 with transcript.open('w') as stream:
     for i in range(500):
         row={'type':'assistant','timestamp':'2026-10-30T12:00:00Z','message':{'id':f'refresh-msg-{i}','model':'claude-sonnet-4-6','content':[{'text':'NEVER_LOG_CHILD_CONTENT'}],'usage':{'input_tokens':i+1,'output_tokens':1}}}
         stream.write(json.dumps(row)+'\n')
-relative_transcript=os.path.relpath(transcript,old_cwd)
+relative_transcript=transcript_alias.name
 payload=json.dumps({'session_id':'unknown','agent_id':'refresh-agent','agent_type':'general-purpose','cwd':str(old_cwd),'agent_transcript_path':relative_transcript})
-cutoff_env=dict(env,CLAUDE_SPEND_TELEMETRY_TEST_MODE='1',CLAUDE_SPEND_TELEMETRY_TEST_INLINE_BUDGET='0.000001')
+cutoff_env=dict(env,CLAUDE_SPEND_TELEMETRY_TEST_MODE='1',CLAUDE_SPEND_TELEMETRY_TEST_INLINE_BUDGET='0.01')
 subagent=root/'.claude/hooks/spend-subagent-tracker.sh'; report=root/'.claude/scripts/spend-telemetry-report.sh'
 subprocess.run(['bash',str(subagent)],input=payload,text=True,env=cutoff_env,capture_output=True,check=True,timeout=10,cwd=old_cwd)
-other_transcript=base/'other'/'child.jsonl'; other_transcript.parent.mkdir()
-other_cwd=other_transcript.parent/'deleted-worktree'; other_cwd.mkdir()
+other_transcript=base/'other'/'deep'/pathlib.Path(*deep_parts)/transcript.name; other_transcript.parent.mkdir(parents=True)
+other_cwd=base/'other'/'deleted-worktree'; other_cwd.mkdir()
 subprocess.run(['git','init','-q',str(other_cwd)],check=True)
 subprocess.run(['git','-C',str(other_cwd),'remote','add','origin','https://github.com/example/telemetry-test.git'],check=True)
 other_transcript.write_text(json.dumps({'type':'assistant','timestamp':'2026-10-30T12:00:00Z','message':{'id':'second-relative-msg','model':'claude-sonnet-4-6','usage':{'input_tokens':2}}})+'\n')
-other_relative=os.path.relpath(other_transcript,other_cwd)
+other_alias=other_cwd/transcript_alias.name; other_alias.symlink_to(other_transcript)
+other_relative=other_alias.name
 assert other_relative==relative_transcript
 other_payload=json.dumps({'session_id':'unknown','agent_id':'refresh-agent','agent_type':'general-purpose','cwd':str(other_cwd),'agent_transcript_path':other_relative})
 subprocess.run(['bash',str(subagent)],input=other_payload,text=True,env=cutoff_env,capture_output=True,check=True,timeout=10,cwd=other_cwd)
@@ -115,24 +119,30 @@ cursor_file,cursor=cursors_by_path[os.path.realpath(transcript)]
 assert cursor['offset'] < transcript.stat().st_size
 assert cursor['metadata']['session_id']=='unknown'
 assert cursor['metadata']['cursor_path_input']==os.path.realpath(transcript)
+assert len(cursor['metadata']['cursor_path_input'])>512
 assert cursor['metadata']['repo_root']==str(old_cwd.resolve())
 assert cursor['metadata']['repo_slug']=='example/telemetry-test'
 assert len({saved['metadata']['cursor_identity'] for _,saved in cursors_by_path.values()})==2
 assert all(cursor_file.stat().st_mode & 0o777 == 0o600 for cursor_file,_ in cursors_by_path.values())
 assert cursors.stat().st_mode & 0o777 == 0o700
 assert 'NEVER_LOG_CHILD_CONTENT' not in cursor_file.read_text(encoding='utf-8')
-# A cursor from the previous raw-relative identity scheme remains usable only
-# when its saved absolute source confirms that it belongs to this transcript.
-legacy_identity=hashlib.sha256('\0'.join(('unknown','refresh-agent','subagent',relative_transcript)).encode()).hexdigest()
+# Migrate a legacy cursor through a symlinked relative path. Its old absolute
+# path must be proven, then upgraded without resetting its saved byte offset.
+other_cursor_file,other_cursor=cursors_by_path[os.path.realpath(other_transcript)]
+legacy_identity=hashlib.sha256('\0'.join(('unknown','refresh-agent','subagent',other_relative)).encode()).hexdigest()
 legacy_file=cursors/(legacy_identity+'.offset')
-cursor['metadata']['cursor_identity']=legacy_identity
-cursor['metadata']['cursor_path_input']=relative_transcript
-legacy_file.write_text(json.dumps(cursor),encoding='utf-8'); legacy_file.chmod(0o600)
-cursor_file.unlink()
-subprocess.run(['bash',str(subagent)],input=payload,text=True,env=cutoff_env,capture_output=True,check=True,timeout=10,cwd=old_cwd)
+legacy_offset=other_cursor['offset']
+other_cursor['metadata']['cursor_identity']=legacy_identity
+other_cursor['metadata']['cursor_path_input']=other_relative
+other_cursor['metadata']['transcript_path']=os.path.join(str(other_cwd.resolve()),other_relative)
+legacy_file.write_text(json.dumps(other_cursor),encoding='utf-8'); legacy_file.chmod(0o600)
+other_cursor_file.unlink()
+subprocess.run(['bash',str(subagent)],input=other_payload,text=True,env=cutoff_env,capture_output=True,check=True,timeout=10,cwd=other_cwd)
 legacy_saved=json.loads(legacy_file.read_text(encoding='utf-8'))
 assert legacy_saved['metadata']['cursor_identity']==legacy_identity
-assert legacy_saved['metadata']['cursor_path_input']==relative_transcript
+assert legacy_saved['metadata']['cursor_path_input']==other_relative
+assert legacy_saved['metadata']['transcript_path']==os.path.realpath(other_transcript)
+assert legacy_saved['offset']==legacy_offset
 assert len(list(cursors.glob('*.offset')))==2
 shutil.rmtree(old_cwd)
 shutil.rmtree(other_cwd)
