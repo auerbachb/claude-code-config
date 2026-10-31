@@ -430,6 +430,46 @@ executable(state_helper,'for arg in "$@"; do if [[ "$arg" == --cas ]]; then '+sh
 hf=home('cas-race');ef=dict(env,HOME=str(hf));r=run(e=ef);assert r.returncode==5 and '--pre-dispatch-diagnostic' in r.stdout and json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['actions_completed_event_id']=='external-receipt',(r.stdout,r.stderr)
 shutil.copy2(real_state,state_helper)
 print('PASS: failed jq/write and concurrent receipt CAS produce diagnostics and preserve state')
+
+# Inject real production Step6/Step7 schedule publication AFTER the collector's
+# coherent read, immediately before its CAS. First race changes ROOT ONLY so the
+# old gate-only CAS would overwrite it. Second race also publishes an outbox.
+skill_text=(root/'.claude/skills/pr-monitor-and-manage/SKILL.md').read_text()
+backoff=re.search(r'<!-- test-anchor: pmm-pre-dispatch-backoff -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+publication=next(b for b in re.findall(r'```bash\n(.*?)\n```',skill_text,re.S) if b.startswith('NOW=$(date -u +%FT%TZ)') and 'pmm_pre_dispatch_version' in b)
+for outbox_race in (False,True):
+ hf=home('schedule-race-'+str(outbox_race));ef=dict(env,HOME=str(hf));write_bundle()
+ r=run(e=ef);initial=json.loads((hf/'.claude/session-state.json').read_text())['pmm_pre_dispatch']['pending_event']
+ run([str(live/'pmm-pre-dispatch.sh'),'--ack',initial['event_id']],e=ef)
+ sf=hf/'.claude/session-state.json';d=json.loads(sf.read_text());d['pmm_digest']=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest();d['pmm_digest_streak']=0;d['pmm_idle_streak']=0;sf.write_text(json.dumps(d))
+ before_gate=d['pmm_pre_dispatch'];writer=tmp/('schedule-writer-'+str(outbox_race)+'.sh');winner=tmp/('schedule-winner-'+str(outbox_race)+'.json');once=tmp/('schedule-once-'+str(outbox_race))
+ setup='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nDIGEST=owner-digest\nPREV=old-digest\nROW_DIGEST=owner-row\nPMM_CADENCE=10m\n'
+ setup+=backoff+'\nIDLE_STREAK=17\nEFFECTIVE_CADENCE=30m\nMONITOR_TASK_ID=77\nMONITOR_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\nPMM_AUTHOR=alice\n'+publication+'\n'
+ setup+='"$SESSION_STATE_SH" --set '+shlex.quote('.pmm_next_expected_tick_at="2099-01-01T00:00:00Z"')+' --set '+shlex.quote('.unrelated_owner_marker="keep"')+'\n'
+ if outbox_race:
+  owner_event=dict(initial,event_id='c'*64)
+  setup+='"$SESSION_STATE_SH" --set '+shlex.quote('.pmm_pre_dispatch.pending_event='+json.dumps(owner_event))+' --set '+shlex.quote('.pmm_pre_dispatch.actions_completed_event_id="owner-actions"')+'\n'
+ setup+='cp "$HOME/.claude/session-state.json" '+shlex.quote(str(winner))+'\n'
+ writer.write_text(setup)
+ executable(state_helper,'for arg in "$@"; do if [[ "$arg" == --cas ]] && mkdir '+shlex.quote(str(once))+' 2>/dev/null; then bash '+shlex.quote(str(writer))+' || exit $?; fi; done\nexec '+shlex.quote(str(real_state))+' "$@"\n')
+ r=run(e=ef);after=json.loads(sf.read_text());expected=json.loads(winner.read_text())
+ assert r.returncode==5 and len(r.stdout.splitlines())==1 and '--pre-dispatch-diagnostic' in r.stdout,(r.stdout,r.stderr)
+ assert after==expected,'stale collector/diagnostic overwrote concurrent schedule or outbox'
+ assert after['pmm_digest']=='owner-digest' and after['pmm_row_digest']=='owner-row' and after['pmm_cadence']=='30m' and after['pmm_idle_streak']==17 and after['pmm_next_expected_tick_at']=='2099-01-01T00:00:00Z'
+ if not outbox_race: assert after['pmm_pre_dispatch']==before_gate
+ else: assert after['pmm_pre_dispatch']['pending_event']['event_id']=='c'*64 and after['pmm_pre_dispatch']['actions_completed_event_id']=='owner-actions'
+ shutil.copy2(real_state,state_helper)
+ if not outbox_race:
+  r=run(e=ef);fresh=json.loads(sf.read_text())['pmm_pre_dispatch']['pending_event']
+  assert r.returncode==0 and 'state_digest' in fresh['reasons'],(r.stdout,r.stderr,fresh)
+  # Fresh owner processing (actual Step6) aligns the changed digest, then ack.
+  fresh_digest=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest()
+  fresh_owner='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nPMM_CADENCE=30m\nDIGEST='+fresh_digest+'\nPREV=owner-digest\nROW_DIGEST=fresh-row\n'+backoff
+  subprocess.run(['bash','-c',fresh_owner],env=ef,check=True,capture_output=True,text=True)
+  assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',fresh['event_id']],e=ef).returncode==0
+  r=run(e=ef);assert r.returncode==0 and r.stdout=='',(r.stdout,r.stderr)
+print('PASS: real production schedule-writer race preserves whole winning transaction and outbox; stale diagnostic cannot write; fresh quiet retry is silent')
+
 # Identical acknowledged collector errors retry locally, with a durable wake every
 # third observation; new fingerprints wake immediately and clean collection resets them.
 def ack_home(home_path, env_args, event):

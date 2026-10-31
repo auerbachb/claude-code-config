@@ -175,29 +175,33 @@ COMMAND
   exit 0
 fi
 
+# One fixed projection captures exactly the inputs used by this collector:
+# scheduler fields it derives/writes, lifecycle identity, and orchestration.
+# Unrelated root data is not compared. Root keys are literal JSON data.
+ROOT_PROJECTION='{pmm_digest,pmm_digest_streak,pmm_idle_streak,pmm_cadence,pmm_last_tick_at,pmm_next_expected_tick_at,pmm_row_digest,pmm_active,pmm_monitor_generation,pmm,active_agents,pmm_in_flight,pmm_merge_holds}'
 read_state() {
-  local rc=0
-  STATE_JSON="$("$STATE_HELPER" --get-json '.pmm_pre_dispatch' 2>/dev/null)" || rc=$?
-  if [[ $rc -eq 3 ]]; then STATE_EXPECT=null; STATE_JSON='{}'; return 0; fi
-  [[ $rc -eq 0 ]] || return 1
-  STATE_EXPECT="$STATE_JSON"
-  if [[ "$STATE_JSON" == "null" ]]; then STATE_JSON='{}'; return 0; fi
-  if [[ $rc -ne 0 ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$STATE_JSON"; then
-    return 1
-  fi
+  local rc=0 snapshot
+  snapshot="$("$STATE_HELPER" --get-json "{gate:.pmm_pre_dispatch,root:$ROOT_PROJECTION}" 2>/dev/null)" || rc=$?
+  if [[ $rc -eq 3 ]]; then snapshot="$(jq -cn "{gate:null,root:({}|$ROOT_PROJECTION)}")"; elif [[ $rc -ne 0 ]]; then return 1; fi
+  jq -e 'type=="object" and (.root|type)=="object" and (.gate==null or (.gate|type)=="object")' <<<"$snapshot" >/dev/null || return 1
+  STATE_EXPECT="$(jq -c '.gate' <<<"$snapshot")" || return 1
+  ROOT_EXPECT="$(jq -c '.root' <<<"$snapshot")" || return 1
+  STATE_JSON="$(jq -c '.gate // {}' <<<"$snapshot")" || return 1
 }
+
 write_state() {
   local value="$1"
   shift
-  # CAS only this gate's outbox/state: a concurrent ack/receipt cannot be lost.
-  "$STATE_HELPER" --cas ".pmm_pre_dispatch=$value" --expect "$STATE_EXPECT" "$@" >/dev/null || return $?
+  # Compare gate/outbox AND the captured scheduler inputs under one lock.
+  # A stale diagnostic uses these same expectations and cannot overwrite a winner.
+  "$STATE_HELPER" --cas ".pmm_pre_dispatch=$value" --expect "$STATE_EXPECT" --expect-root "$ROOT_EXPECT" "$@" >/dev/null || return $?
   STATE_EXPECT="$value"; STATE_JSON="$value"
+  # Callers do not perform a second scheduler transaction in one tick. Gate-only
+  # replay/ack updates retain the captured root preconditions unchanged.
 }
 read_field() {
   local path="$1" value rc=0
-  value="$("$STATE_HELPER" --get "$path" 2>/dev/null)" || rc=$?
-  if [[ $rc -eq 3 ]]; then printf 'null'; return 0; fi
-  [[ $rc -eq 0 ]] || return 1
+  value="$(jq -r "$path" <<<"$ROOT_EXPECT")" || return 1
   printf '%s' "$value"
 }
 emit_event() {
@@ -299,9 +303,9 @@ if [[ -n "$FIXTURE" ]]; then
   CURRENT="$(cat "$FIXTURE")" || queue_diagnostic "snapshot fixture read failed"
 else
   [[ -x "$MERGE_GATE" && -x "$PR_STATE" && -r "$CLASSIFIER" ]] || queue_diagnostic "required PMM state helpers unavailable"
-  agents="$("$STATE_HELPER" --get-json '.active_agents // {}' 2>/dev/null)" || queue_diagnostic "active-agent state unreadable"
-  locks="$("$STATE_HELPER" --get-json '.pmm_in_flight // {}' 2>/dev/null)" || queue_diagnostic "PMM lock state unreadable"
-  holds="$("$STATE_HELPER" --get-json '.pmm_merge_holds // {}' 2>/dev/null)" || queue_diagnostic "PMM merge-hold state unreadable"
+  agents="$(jq -c '.active_agents // {}' <<<"$ROOT_EXPECT")" || queue_diagnostic "active-agent state unreadable"
+  locks="$(jq -c '.pmm_in_flight // {}' <<<"$ROOT_EXPECT")" || queue_diagnostic "PMM lock state unreadable"
+  holds="$(jq -c '.pmm_merge_holds // {}' <<<"$ROOT_EXPECT")" || queue_diagnostic "PMM merge-hold state unreadable"
   orchestration="$(jq -cn --argjson agents "$agents" --argjson locks "$locks" --argjson holds "$holds" '{active_agents:$agents,pmm_in_flight:$locks,merge_holds:$holds}')" || queue_diagnostic "orchestration state malformed"
   pulls=""
   if ! pulls="$(gh pr list --repo "$REPO" --author "$AUTHOR" --state open --json number,url,headRefOid,title --limit 500)"; then
