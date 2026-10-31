@@ -688,6 +688,39 @@ case "$RACE_REC" in
     FAIL=$((FAIL + 1)); echo "FAIL — composed race: record mixes both writers or is partial ($RACE_REC)" ;;
 esac
 
+# Sparse root preconditions are literal data and gate ALL assignments under
+# the existing CAS lock. Existing123 cases above prove legacy API compatibility.
+python3 - "$SCRIPT" "$HOME" <<'PYROOT'
+import json,os,pathlib,subprocess,sys
+script,home=sys.argv[1:];state=pathlib.Path(home)/'.claude/session-state.json'
+def run(*args):return subprocess.run(['bash',script,*args],capture_output=True,text=True)
+def seed():state.write_text(json.dumps({'pmm_pre_dispatch':{'ticks':1},'pmm_digest':'old','pmm_idle_streak':0,'pmm_cadence':'5m','unrelated':{'preserve':True}}))
+def cas(expected):return run('--cas','.pmm_pre_dispatch={"ticks":2}','--expect','{"ticks":1}','--expect-root',json.dumps(expected),'--set','.pmm_cadence="15m"')
+seed();r=cas({'pmm_digest':'old','pmm_idle_streak':0});assert r.returncode==0,r.stderr
+assert json.loads(state.read_text())['pmm_cadence']=='15m'
+seed();before=state.read_bytes();r=cas({'pmm_digest':'stale','pmm_idle_streak':0});assert r.returncode==7 and state.read_bytes()==before,(r.returncode,r.stderr)
+seed();before=state.read_bytes();r=cas({'pmm_digest':'old','pmm_idle_streak':False});assert r.returncode==7 and state.read_bytes()==before
+seed();r=cas({'absent':None,'unrelated':{'preserve':True},'literal | error("not code")':None});assert r.returncode==0,r.stderr
+# Every scheduler field independently loses after a real competing write.
+for key,value in {'pmm_digest':'changed','pmm_digest_streak':4,'pmm_idle_streak':5,'pmm_cadence':'30m','pmm_last_tick_at':'owner-time','pmm_next_expected_tick_at':'next-time','pmm_row_digest':'row','pmm_active':False,'pmm_monitor_generation':'new-generation','pmm':{'stop_requested':True},'active_agents':{'owner':{'status':'active'}},'pmm_in_flight':{'7':{'status':'active'}},'pmm_merge_holds':{'7':'hold'}}.items():
+ seed();snapshot=json.loads(state.read_text());expected={key:snapshot.get(key)}
+ assert run('--set','.'+key+'='+json.dumps(value)).returncode==0
+ before=state.read_bytes();r=cas(expected);assert r.returncode==7 and state.read_bytes()==before,(key,r.returncode,r.stderr)
+# Extra root writes outside the sparse projection do not cause false conflicts.
+seed();assert run('--set','.unrelated.extra=42').returncode==0
+assert cas({'pmm_digest':'old'}).returncode==0
+assert json.loads(state.read_text())['unrelated']['extra']==42
+# Invalid/repeated/multidocument expectations are usage errors without mutation.
+for args in [('--expect-root','{}'),('--expect-root','null'),('--expect-root','[]'),('--expect-root','bad'),('--expect-root','{} {}'),('--expect-root','{"x":1}','--expect-root','{"x":1}')]:
+ seed();before=state.read_bytes();r=run('--cas','.pmm_pre_dispatch={}','--expect','{"ticks":1}',*args);assert r.returncode==2 and state.read_bytes()==before,(args,r.returncode,r.stderr)
+seed();before=state.read_bytes();r=run('--set','.pmm_idle_streak=8','--expect-root','{"pmm_digest":"old"}');assert r.returncode==2 and state.read_bytes()==before
+# The existing --repo CAS remains scoped while root guards remain literal root.
+seed();assert run('--repo','org/repo','--cas','.prs["7"].claim="owner"','--expect','null','--expect-root','{"pmm_digest":"old"}').returncode==0
+assert json.loads(state.read_text())['repos']['org/repo']['prs']['7']['claim']=='owner'
+print('PASS: sparse root-precondition atomicity, all scheduler inputs, data-only keys, JSON types, validation, unrelated writes and repo compatibility')
+PYROOT
+if [[ $? -ne 0 ]]; then FAIL=$((FAIL+1)); else PASS=$((PASS+1)); fi
+
 # ---------------------------------------------------------------------------
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

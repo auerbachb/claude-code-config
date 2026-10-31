@@ -44,6 +44,7 @@ REVIEWER_OF_SH=$(resolve_script reviewer-of.sh || true)
 CR_HOURLY_SH=$(resolve_script cr-review-hourly.sh || true)
 REPO_ROOT_SH=$(resolve_script repo-root.sh || true)
 PR_STATE_SH=$(resolve_script pr-state.sh || true)
+PMM_PRE_DISPATCH_SH=$(resolve_script pmm-pre-dispatch.sh || true)
 USAGE_HORIZON_SH=$(resolve_script usage-horizon.sh || true)
 ```
 
@@ -52,6 +53,7 @@ These bindings are in scope for every step of the tick, including the `reference
 **When something does not resolve, say so in one line; never skip the contract silently.**
 
 - `SESSION_STATE_SH` or `MERGE_GATE_SH` empty → **required, and fatal for the tick**. Print `ERROR: <name> not found (checked all three paths) — PR fleet management unavailable` and exit without acting. Every verdict this skill reaches is a merge decision; a fleet manager that cannot read the gate or persist a hard block must not guess, and must not act on a guess.
+- `PMM_PRE_DISPATCH_SH` empty → **optional for an interactive tick**, which can continue under the ordinary gates; a tick carrying `--dispatch-event` fails with status 1 and leaves the event queued. Arming or replacing a Monitor also fails closed without this helper.
 - `MERGE_SEQUENCE_SH` empty → **optional**. Print `DEGRADED: merge-sequence.sh not found (checked all three paths) — overlap-aware sequencing unavailable, merging one PR per tick` and serialize merges rather than sequencing them.
 - `USAGE_HORIZON_SH` empty → **optional, and conservative**. Print `DEGRADED: usage-horizon.sh not found (checked all three paths) — horizon consult unavailable, holding "unknown" (no new subagent dispatch)` and run Step 3.7 with the verdict it already produces for an unresolved helper. `unknown` is the fail-closed posture, never `clear`: it suppresses *new* fixer dispatch while leaving merge-ready `/wrap` and rebases alone, so the fleet keeps landing work instead of freezing (`subagent-thread-limit-park.md` §8.1).
 - `REVIEWER_OF_SH`, `PR_ISSUE_REF_SH`, `CR_HOURLY_SH`, `REPO_ROOT_SH`, `PR_STATE_SH` empty → **optional**. Print one `DEGRADED:` line naming the script and what is lost (reviewer re-trigger routing, issue back-reference, CR budget accounting, root-repo resolution, reviewer-engagement matrix), then continue with that one capability off. An empty `PR_STATE_SH` renders every engagement cell as `?` — the tick still runs.
@@ -64,26 +66,77 @@ Monitor-emitted invocations carry the internal `--tick` flag; direct user invoca
 that distinction before pause-resume logic so an event already emitted before `TaskStop` cannot
 resume or restart the fleet after pause/stop:
 
+<!-- test-anchor: pmm-pre-dispatch-tick-gate -->
 ```bash
 PMM_INTERNAL_TICK=false
+PMM_UNPERSISTED_DIAGNOSTIC=false
 [[ " $ARGUMENTS " == *" --tick "* ]] && PMM_INTERNAL_TICK=true
+[[ " $ARGUMENTS " == *" --pre-dispatch-diagnostic "* ]] && PMM_UNPERSISTED_DIAGNOSTIC=true
 PMM_TICK_GENERATION=""
+PMM_DISPATCH_EVENT=""
+PMM_RESUME_REQUIRED_PAUSE=""; PMM_RESUME_REQUIRED_CONFIG_SHA=""; PMM_RESUME_EXPECT=null; PMM_RESUME_BOUND_REQUEST=false
 _PMM_EXPECT_GENERATION=false
+_PMM_EXPECT_EVENT=false
 for _PMM_ARG in $ARGUMENTS; do
+  case "$_PMM_ARG" in
+    --resume-paused-at=*) PMM_RESUME_BOUND_REQUEST=true; PMM_RESUME_REQUIRED_PAUSE="${_PMM_ARG#*=}"; continue ;;
+    --resume-config-sha=*) PMM_RESUME_BOUND_REQUEST=true; PMM_RESUME_REQUIRED_CONFIG_SHA="${_PMM_ARG#*=}"; continue ;;
+  esac
+  if [[ "$_PMM_EXPECT_EVENT" == true ]]; then
+    if [[ -z "$_PMM_ARG" || "$_PMM_ARG" == --* ]]; then
+      echo "ERROR: --dispatch-event requires an event ID before the next option." >&2
+      exit 2
+    fi
+    [[ "$_PMM_ARG" =~ ^[a-f0-9]{64}$ ]] || { echo "ERROR: invalid dispatch event ID" >&2; exit 2; }
+    PMM_DISPATCH_EVENT="$_PMM_ARG"
+    _PMM_EXPECT_EVENT=false
+    continue
+  fi
   if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
+    [[ "$_PMM_ARG" =~ ^[A-Za-z0-9_.-]+$ && "$_PMM_ARG" != --* ]] || { echo "ERROR: invalid Monitor generation" >&2; exit 2; }
     PMM_TICK_GENERATION="$_PMM_ARG"
     _PMM_EXPECT_GENERATION=false
     continue
   fi
   [[ "$_PMM_ARG" == "--monitor-generation" ]] && _PMM_EXPECT_GENERATION=true
+  [[ "$_PMM_ARG" == "--dispatch-event" ]] && _PMM_EXPECT_EVENT=true
 done
 if [[ "$_PMM_EXPECT_GENERATION" == true ]]; then
   echo "ERROR: --monitor-generation requires a token." >&2
   exit 2
 fi
+if [[ "$_PMM_EXPECT_EVENT" == true ]]; then
+  echo "ERROR: --dispatch-event requires an event ID." >&2
+  exit 2
+fi
+if [[ -n "$PMM_DISPATCH_EVENT" && "$PMM_INTERNAL_TICK" != true ]]; then
+  echo "ERROR: --dispatch-event is runtime-only and requires --tick." >&2
+  exit 2
+fi
+if [[ -n "$PMM_DISPATCH_EVENT" && -z "$PMM_PRE_DISPATCH_SH" ]]; then
+  echo "ERROR: pre-dispatch helper unavailable; leaving event $PMM_DISPATCH_EVENT queued without acting." >&2
+  exit 1
+fi
 if [[ "$PMM_INTERNAL_TICK" != true && -n "$PMM_TICK_GENERATION" ]]; then
   echo "ERROR: --monitor-generation is runtime-only and requires --tick." >&2
   exit 2
+fi
+if [[ "$PMM_UNPERSISTED_DIAGNOSTIC" == true ]]; then
+  [[ "$PMM_INTERNAL_TICK" == true ]] || { echo "ERROR: diagnostic flag is runtime-only" >&2; exit 2; }
+  echo "ERROR: non-durable PMM pre-dispatch failure — inspect helper/state diagnostics and repair before retrying; no PR action is authorized and no event can be acknowledged." >&2
+  exit 1
+fi
+# A delayed wake is not a fresh owner request. Bind it to the pause/config
+# observed before wake teardown, before discovery or any external action.
+if [[ "$PMM_RESUME_BOUND_REQUEST" == true ]]; then
+  [[ "$PMM_INTERNAL_TICK" == false && "$PMM_RESUME_REQUIRED_PAUSE" =~ ^[0-9TZ:.-]+$ && "$PMM_RESUME_REQUIRED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]] || {
+    echo 'ERROR: invalid pause-bound resume request' >&2; exit 2; }
+  PMM_RESUME_EXPECT=$("$SESSION_STATE_SH" --get-json '{paused_at:.pmm.paused_at,config:.pmm.config_at_pause,root:{pmm_monitor_task_id,pmm_monitor_generation,pmm,pmm_rearm}}') || exit 1
+  PMM_CURRENT_RESUME_SHA=$(printf '%s' "$(jq -cS '.config' <<<"$PMM_RESUME_EXPECT")" | shasum -a 256 | awk '{print $1}') || exit 1
+  [[ "$(jq -r '.paused_at' <<<"$PMM_RESUME_EXPECT")" == "$PMM_RESUME_REQUIRED_PAUSE" && "$PMM_CURRENT_RESUME_SHA" == "$PMM_RESUME_REQUIRED_CONFIG_SHA" ]] || {
+    echo '[PMM] Ignoring a superseded pause-bound wake request.' >&2; exit 1; }
+  RESUMING_FROM_PAUSE=true
+  printf 'PMM_RESUME_EXPECT=%s\n' "$PMM_RESUME_EXPECT"
 fi
 PMM_ACTIVE=$("$SESSION_STATE_SH" --get '.pmm_active' 2>/dev/null || echo false)
 PMM_STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
@@ -95,6 +148,26 @@ if [[ "$PMM_INTERNAL_TICK" == true ]]; then
     exit 0
   fi
 fi
+PMM_EVENT_PACKET='{}'
+if [[ -n "$PMM_DISPATCH_EVENT" ]]; then
+  PMM_EVENT_PACKET=$("$SESSION_STATE_SH" --get-json '.pmm_pre_dispatch.pending_event' 2>/dev/null) || {
+    echo "ERROR: pre-dispatch event state is unreadable — leaving $PMM_DISPATCH_EVENT queued" >&2
+    exit 1
+  }
+  if ! jq -e --arg id "$PMM_DISPATCH_EVENT" '.event_id == $id' >/dev/null <<<"$PMM_EVENT_PACKET"; then
+    PMM_LAST_ACKNOWLEDGED_EVENT=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.last_acknowledged_event_id' 2>/dev/null || echo null)
+    PMM_ACK_HISTORY=$("$SESSION_STATE_SH" --get-json '.pmm_pre_dispatch.acknowledged_events // []' 2>/dev/null || echo '[]')
+    if [[ "$PMM_LAST_ACKNOWLEDGED_EVENT" == "$PMM_DISPATCH_EVENT" ]] || jq -e --arg id "$PMM_DISPATCH_EVENT" --arg gen "$PMM_TICK_GENERATION" 'any(.[]; .event_id==$id and .generation==$gen)' >/dev/null <<<"$PMM_ACK_HISTORY"; then
+      echo "[PMM] Ignoring already-acknowledged event $PMM_DISPATCH_EVENT."
+      exit 0
+    fi
+    echo "ERROR: pre-dispatch event $PMM_DISPATCH_EVENT is not the pending event — refusing to act" >&2
+    exit 1
+  fi
+  if ! jq -e --arg gen "$PMM_TICK_GENERATION" '.generation==$gen' >/dev/null <<<"$PMM_EVENT_PACKET"; then
+    echo "ERROR: pending packet generation differs from invocation" >&2; exit 1
+  fi
+fi
 if [[ "$PMM_INTERNAL_TICK" == true && ( "$PMM_ACTIVE" != true || "$PMM_STOP_PENDING" == true ) ]]; then
   echo "[PMM] Ignoring a queued Monitor tick after pause/stop."
   exit 0
@@ -103,10 +176,27 @@ if [[ "$PMM_INTERNAL_TICK" != true && "$PMM_STOP_PENDING" == true ]]; then
   echo "ERROR: PMM teardown is incomplete — retry /pmm-stop and repair the retained Monitor task before starting or resuming." >&2
   exit 1
 fi
+PMM_SKIP_ACTIONS=false
+PMM_DUPLICATE_COMPLETED_EVENT=false
+if [[ -n "$PMM_DISPATCH_EVENT" ]]; then
+  PMM_ACTIONS_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.actions_completed_event_id' 2>/dev/null || echo null)
+  PMM_LIFECYCLE_COMPLETED_EVENT_ID=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.lifecycle_completed_event_id' 2>/dev/null || echo null)
+  if [[ "$PMM_ACTIONS_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]]; then
+    PMM_SKIP_ACTIONS=true
+    [[ "$PMM_LIFECYCLE_COMPLETED_EVENT_ID" == "$PMM_DISPATCH_EVENT" ]] && PMM_DUPLICATE_COMPLETED_EVENT=true
+  fi
+fi
 ```
 
-`--tick` and `--monitor-generation <token>` are runtime-only: ignore them during ordinary flag
-parsing, never persist them in `config_at_pause`, and never copy the generation across a re-arm.
+Keep `$PMM_EVENT_PACKET` as wake context for this tick. Its `trigger`, `delta`, and evidence paths
+identify the relevant review/classification module and PRs; they do not replace normal current
+discovery, gate, ownership, or safety checks.
+
+`--tick`, `--monitor-generation <token>`, and `--dispatch-event <id>` are runtime-only: ignore
+them during ordinary flag parsing, never persist them in `config_at_pause`, and never copy the
+generation or event ID across a re-arm. `--dispatch-event` is valid only with `--tick` and a
+matching current Monitor generation. `--pre-dispatch-diagnostic` marks a non-ackable shell failure when no outbox could be persisted; run diagnosis only and stop before any PR action or acknowledgement; never treat it as a clean result. Do not persist that internal flag. Direct owner messages remain normal interactive turns and
+do not pass through the scheduled-tick gate.
 The generation check must precede pause/resume/discovery so a queued event from a stopped task
 cannot operate on a newer Monitor that reused the same skill arguments.
 
@@ -148,17 +238,25 @@ On **every** invocation, before Step 1, check for a pause marker. If present, th
 marker until Step 7 has armed and recorded the main Monitor. Full transactional resume logic:
 `references/pmm-lifecycle.md` "Step 0a: Resume from pause".
 
+<!-- test-anchor: pmm-resume-capture -->
 ```bash
-PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
-if [ "$PAUSED_AT" != null ] && [ -n "$PAUSED_AT" ]; then
-  SAVED=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
+PMM_RESUME_OBSERVED=$("$SESSION_STATE_SH" --get-json '{paused_at:.pmm.paused_at,config:.pmm.config_at_pause,root:{pmm_monitor_task_id,pmm_monitor_generation,pmm,pmm_rearm}}') || exit 1
+if [[ "${PMM_RESUME_EXPECT:-null}" == null ]]; then
+  PMM_RESUME_EXPECT="$PMM_RESUME_OBSERVED"
+fi
+PAUSED_AT=$(jq -r '.paused_at // "null"' <<<"$PMM_RESUME_EXPECT")
+if [[ "$PAUSED_AT" != null && -n "$PAUSED_AT" ]]; then
+  if [[ "${PMM_INTERNAL_TICK:-false}" == true ]]; then
+    echo '[PMM] Ignoring a queued Monitor tick during pause/resume.'
+    exit 0
+  fi
+  jq -e --argjson observed "$PMM_RESUME_OBSERVED" '.paused_at==$observed.paused_at and .config==$observed.config and .root==$observed.root and .root.pmm_rearm==null' \
+    >/dev/null <<<"$PMM_RESUME_EXPECT" || { echo '[PMM] Resume ownership changed; no task teardown authorized.' >&2; exit 1; }
+  SAVED=$(jq -c '.config' <<<"$PMM_RESUME_EXPECT")
   RESUMING_FROM_PAUSE=true
-  # Stop the exact recorded main and auto-wake tasks; clear each successfully
-  # stopped ID+generation pair while preserving the marker, and abort with any
-  # failed identity pair retained.
-  # Marker clear + active publication are deferred until Step 7 records the main Monitor.
-  # (full contract in references/pmm-lifecycle.md)
-  echo "[PMM] Resuming from pause (paused_at=$PAUSED_AT) — flags on this invocation override saved config."
+  # Execute references/pmm-lifecycle.md's separate authorize/tool/clear phases
+  # for main and auto tasks. Targets come ONLY from this frozen snapshot.
+  printf 'PMM_RESUME_EXPECT=%s\n' "$PMM_RESUME_EXPECT"
 fi
 ```
 
@@ -179,11 +277,12 @@ full table without prematurely mutating the pause marker.
 
 ## Step 1: Parse arguments + identify the fleet (every tick)
 
-Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal `--tick` and `--monitor-generation <token>` fields:
+Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args, treat them as the source of truth, never a cached value). Ignore the internal pause-bound `--resume-paused-at=...`/`--resume-config-sha=...` fields and `--tick`, `--monitor-generation <token>`, `--dispatch-event <id>`, and `--pre-dispatch-diagnostic` fields:
 
 - `--author <login>` — whose PRs to manage. **Default:** current authenticated user via `gh api user --jq .login`.
 - `--repo <owner/repo>` — which repo. **Default:** current repo. `--repo` scopes discovery and reads; per-PR helpers and git actions operate on the **current checkout**. If `--repo` names a different repo than the current checkout, **stop and reconcile**. Full constraint: `references/pmm-scope.md`.
 - `--cadence Nm` — base poll interval. **Default:** `5m`.
+- `--max-deep-prs N` — shell collector deep-fleet limit, 1..500. **Default:** `25`. Supported fleet size remains 500; discovery requests 501 as an overflow sentinel and refuses an incomplete fleet before per-PR work. A fleet above the configured deep limit also diagnoses and preserves its last snapshot. This bounds work, not GitHub quota safety (pagination and other clients vary). Raising it requires an operator choosing that API load.
 - `--max-parallel N` — max concurrent `phase-a-fixer` subagents. **Default:** `3`.
 - `--idle-pause-after N` — consecutive idle ticks before auto-pause. **Default:** `3`.
 - `--auto-wake` — keep a low-frequency re-scan running after an idle pause, instead of going fully quiet. **Default:** off.
@@ -191,7 +290,7 @@ Parse `$ARGUMENTS` (re-parse every tick — a Monitor event passes the same args
 - `--confirm-merges` — require an explicit user confirmation before each `/wrap` merge dispatch. **Default:** off (invocation is authorization). This flag only adds a prompt before the `/wrap` dispatch — it never overrides hard stops (`BLOCKED:*` verdicts, gate failures, AC failures). Safety checks in `/wrap` still apply.
 
 ```bash
-PMM_AUTHOR=""; PMM_REPO=""; PMM_CADENCE="5m"; PMM_MAX_PARALLEL=3
+PMM_AUTHOR=""; PMM_REPO=""; PMM_CADENCE="5m"; PMM_MAX_PARALLEL=3; PMM_MAX_DEEP_PRS=25
 PMM_IDLE_PAUSE_AFTER=3; PMM_AUTO_WAKE=false; PMM_AUTO_WAKE_CADENCE="60m"
 PMM_CONFIRM_MERGES=false
 # parse $ARGUMENTS into the vars above; bare flags override defaults
@@ -201,6 +300,7 @@ if [ -n "${SAVED:-}" ] && [ "$SAVED" != "{}" ]; then
   [[ "$ARGUMENTS" != *"--author"* ]]            && PMM_AUTHOR=$(jq -r '.author // empty' <<<"$SAVED")
   [[ "$ARGUMENTS" != *"--repo"* ]]              && PMM_REPO=$(jq -r '.repo // empty' <<<"$SAVED")
   [[ "$ARGUMENTS" != *"--cadence"* ]]           && PMM_CADENCE=$(jq -r '.cadence // "5m"' <<<"$SAVED")
+  [[ "$ARGUMENTS" != *"--max-deep-prs"* ]]      && PMM_MAX_DEEP_PRS=$(jq -r '.max_deep_prs // 25' <<<"$SAVED")
   [[ "$ARGUMENTS" != *"--max-parallel"* ]]      && PMM_MAX_PARALLEL=$(jq -r '.max_parallel // 3' <<<"$SAVED")
   [[ "$ARGUMENTS" != *"--idle-pause-after"* ]]  && PMM_IDLE_PAUSE_AFTER=$(jq -r '.idle_pause_after // 3' <<<"$SAVED")
   [[ "$ARGUMENTS" != *"--auto-wake-cadence"* ]] && PMM_AUTO_WAKE_CADENCE=$(jq -r '.auto_wake_cadence // "60m"' <<<"$SAVED")
@@ -210,6 +310,9 @@ fi
 
 [[ "$PMM_CADENCE" =~ ^[1-9][0-9]*m$ ]] || {
   echo "ERROR: --cadence must be a positive whole-minute value such as 5m." >&2; exit 2; }
+
+[[ "$PMM_MAX_DEEP_PRS" =~ ^[1-9][0-9]{0,2}$ && "$PMM_MAX_DEEP_PRS" -le 500 ]] || {
+  echo "ERROR: --max-deep-prs must be 1..500." >&2; exit 2; }
 
 if [ -z "$PMM_AUTHOR" ]; then
   PMM_AUTHOR=$(gh api user --jq .login 2>/dev/null || true)
@@ -222,6 +325,16 @@ if [ -n "$PMM_REPO" ] && [ "$PMM_REPO" != "$CURRENT_REPO" ]; then
 fi
 OWNER="${OWNER_REPO%/*}"; REPO="${OWNER_REPO#*/}"
 REPO_FLAG=(--repo "$OWNER_REPO")
+PMM_FORWARD_ARGS="--author $PMM_AUTHOR --repo $OWNER_REPO --cadence $PMM_CADENCE --max-parallel $PMM_MAX_PARALLEL --max-deep-prs $PMM_MAX_DEEP_PRS --idle-pause-after $PMM_IDLE_PAUSE_AFTER --auto-wake-cadence $PMM_AUTO_WAKE_CADENCE"
+[ "$PMM_AUTO_WAKE" = true ] && PMM_FORWARD_ARGS="$PMM_FORWARD_ARGS --auto-wake"
+[ "$PMM_CONFIRM_MERGES" = true ] && PMM_FORWARD_ARGS="$PMM_FORWARD_ARGS --confirm-merges"
+PMM_MONITOR_CONFIG=$(jq -cnS --arg repo "$OWNER_REPO" --arg author "$PMM_AUTHOR" \
+  --arg base "$PMM_CADENCE" --arg idle "$PMM_IDLE_PAUSE_AFTER" --arg max_deep "$PMM_MAX_DEEP_PRS" --arg args "$PMM_FORWARD_ARGS" \
+  '{repo:$repo,author:$author,base:$base,idle:$idle,max_deep:$max_deep,args:$args}')
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  jq -e --arg repo "$OWNER_REPO" --arg author "$PMM_AUTHOR" '.repo==$repo and .author==$author' \
+    >/dev/null <<<"$PMM_EVENT_PACKET" || { echo "ERROR: pending event belongs to a different fleet" >&2; exit 1; }
+fi
 echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max-parallel:$PMM_MAX_PARALLEL idle-pause-after:$PMM_IDLE_PAUSE_AFTER auto-wake:$PMM_AUTO_WAKE confirm-merges:$PMM_CONFIRM_MERGES"
 ```
 
@@ -231,15 +344,28 @@ echo "[PMM] fleet = author:$PMM_AUTHOR repo:$OWNER_REPO cadence:$PMM_CADENCE max
 
 **Rediscover the fleet on every single tick.** A PR may have merged, closed, or been opened since the last tick — a cached list silently rots.
 
+<!-- test-anchor: pmm-discovery-cap -->
 ```bash
-PMM_LIMIT=500   # high cap so a real fleet is never silently truncated
-PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,title,headRefName,headRefOid,mergeStateStatus,reviewDecision --limit "$PMM_LIMIT")
-PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST")
-PR_COUNT=$(jq 'length' <<<"$PR_LIST")
+PMM_LIMIT=500   # supported fleet, never a silently truncated subset
+PMM_FETCH_LIMIT=501   # one overflow sentinel; never process it as a larger fleet
+if ! PR_LIST=$(gh pr list --state open --author "$PMM_AUTHOR" "${REPO_FLAG[@]}" \
+  --json number,title,headRefName,headRefOid,mergeStateStatus,reviewDecision --limit "$PMM_FETCH_LIMIT"); then
+  echo 'ERROR: fleet discovery failed; no partial fleet is actionable' >&2; exit 1
+fi
+jq -e 'type=="array"' >/dev/null <<<"$PR_LIST" || { echo 'ERROR: invalid fleet response' >&2; exit 1; }
+PR_COUNT=$(jq 'length' <<<"$PR_LIST") || { echo 'ERROR: fleet count failed; no partial fleet is actionable' >&2; exit 1; }
+if (( PR_COUNT > PMM_LIMIT )); then
+  echo 'ERROR: at least 501 open PRs; supported fleet cap is 500. Refusing partial discovery; preserve prior fleet/recovery state.' >&2
+  exit 1
+fi
+PR_NUMS=$(jq -r '.[].number' <<<"$PR_LIST") || { echo 'ERROR: fleet number projection failed' >&2; exit 1; }
 ```
 
-Warn when `PR_COUNT == PMM_LIMIT` (silent truncation risk). **Empty fleet → immediate Pause** (Step 8) with reason `empty fleet` — no 3-tick wait.
+Exactly 500 is accepted only after the 501-result request returned no overflow sentinel.
+Overflow is an **at-least-501 high-water observation**, not an exact total or evidence that a
+previously known PR closed. Stop before classification, dispatch, or snapshot pruning; retain
+pending/recovery state. **Empty complete fleet → immediate Pause** (Step 8) with reason
+`empty fleet` — no 3-tick wait.
 
 **Authorship guard (issue #733).** PMM dispatches writes — so it manages only PRs **you** authored. `--author` defaults to the authenticated user.
 
@@ -340,6 +466,34 @@ Read `merge_state` / `mergeable` **literally** from the gate JSON. **Do NOT infe
 
 Full per-row rationale, VERDICTS_JSON accumulation, findings pre-fetch, refinement-pass bash: `references/pmm-classify.md`.
 
+**Completed event replay guard.** A durable actions receipt suppresses Step 5 on a repeated ID, but
+the tick still completes Step 7 so a failed pause, stop, or Monitor replacement can recover.
+Continue through discovery, ownership checks, and fresh per-PR gate collection before either
+skipping actions or acknowledging. Only a durable lifecycle receipt permits the duplicate
+acknowledgement below. Step 2.5 cleanup is idempotent and may still drain completed-agent state. A failure
+between an external action and writing its actions receipt remains at-least-once; existing
+per-action locks and dispatch idempotency govern that crash window.
+
+<!-- test-anchor: pmm-pre-dispatch-replay-guard -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ] && ! jq -e 'type == "object" and all(.[]; (.verdict|type)=="string" and .verdict != "error")' >/dev/null <<<"$VERDICTS_JSON"; then
+  echo "[PMM] Event $PMM_DISPATCH_EVENT fresh gate is unreadable; leaving it queued before actions or lifecycle writes." >&2
+  exit 1
+fi
+if [ "$PMM_DUPLICATE_COMPLETED_EVENT" = true ]; then
+  if ! jq -e 'type == "object" and all(.[]; (.verdict|type)=="string" and .verdict != "error")' >/dev/null <<<"$VERDICTS_JSON"; then
+    echo "[PMM] Completed event $PMM_DISPATCH_EVENT was redelivered, but a fresh gate is unreadable; leaving it queued." >&2
+    exit 1
+  fi
+  echo "[PMM] Completed event $PMM_DISPATCH_EVENT was redelivered; fresh gates and lifecycle state are complete."
+  "$PMM_PRE_DISPATCH_SH" --ack "$PMM_DISPATCH_EVENT" || \
+    echo "[PMM] Could not acknowledge completed event $PMM_DISPATCH_EVENT; it remains queued."
+  exit 0
+fi
+# When PMM_SKIP_ACTIONS=true, skip Steps 5.0–5f, reuse completed Step 6, and
+# continue through Step 7 to finish/persist lifecycle routing before acknowledging the event.
+```
+
 ---
 
 ## Step 3.6: Overlap-aware merge sequencing (read-only, still pre-action — issue #756)
@@ -424,6 +578,8 @@ Exact block format and the gap-line wording: `references/pmm-classify.md` "Revie
 
 Initialize `TICK_HAD_ACTION=false` and `MERGED_THIS_TICK='[]'` at Step 5 start. Skip PRs in `HARD_BLOCK[]`; `waiting`/`gone`/`error` verdicts do no work.
 
+When `PMM_SKIP_ACTIONS=true`, skip every Step 5 dispatch and release-sweep substep. Reuse completed Step 6 state and continue with Step 7 so a replay can finish pause/stop/re-arm state after actions already completed.
+
 **Horizon gate (issue #1444), applied before every dispatch in this step:** `WATCH_LAUNCH_OK=false` skips Step 5.0 **and** Step 5c entirely — no pre-flight runs and no new `phase-a-fixer` is spawned, and each held PR keeps its `fixpr` verdict for the next tick rather than being reclassified. Step 5.0 is on this list because `pr-preflight.sh` flips drafts ready and engages four reviewers: that starts a fresh round of bot reviews and CI, which is new work by the same measure Step 5c is. The skip costs nothing — pre-flight is idempotent, so the first `clear` tick runs it in full — and it does not strand a merge: under `approaching` a `merge-ready` PR still reaches Step 5d without a trigger. `WATCH_FINISH_OK=false` additionally skips Steps 5a/5b/5b′/5d, so a `critical` tick starts nothing new. **Step 5e's exhaustion respawn is the one dispatch neither flag bars**, and deliberately so: an exhausted fixer is an in-flight pipeline that ran out of tokens mid-PR, so respawning it *continues* work already started — the same call §7.2 makes when it lets A→B and B→C successors run inside a park while barring a new pipeline. Barring it would strand a half-finished fix with no owner for the length of the window, which is the outcome the landing window exists to prevent. **In-flight work is never touched by either flag**: Step 2.5 still aggregates prior-tick exit reports, Step 5e's Dedicated Monitor Mode still runs, and a fixer already working keeps working — suppressing a *launch* is the whole intervention, and stopping a healthy subagent mid-push is the over-reaction the landing window exists to avoid. A held tick that dispatched nothing sets `TICK_HAD_ACTION=false`, which is correct: no new work was started, so the idle counter should see an idle tick. A 5e respawn is the exception there too — it did work, so it sets the flag exactly as an unheld dispatch would.
 
 ### Step 5.0: Pre-flight per discovered PR (before any dispatch — issue #493)
@@ -503,45 +659,111 @@ Cheap when nothing is pending — one state read and it returns. Its output obey
 
 ## Step 6: Stable-state backoff + idle streak (per `scheduling-reliability.md`)
 
-`DIGEST`/`PREV` and `ROW_DIGEST`/`ROW_PREV` come from Step 4 — do not recompute. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision.
+**Actions-receipt replay:** when `PMM_SKIP_ACTIONS=true`, Step 6 already completed. Do not increment its streaks or write its receipt again. Restore `STREAK`, `IDLE_STREAK`, and `EFFECTIVE_CADENCE` from `.pmm_digest_streak`, `.pmm_idle_streak`, and `.pmm_cadence`, then go directly to Step 7. A replay must finish the lifecycle without counting the same poll twice.
 
+`DIGEST` and `ROW_DIGEST` come from Step 4 — do not recompute. Step6 compares them with a fresh coherent root baseline; Step4's prior values remain table-rendering evidence. Only the state digest feeds the streak; `ROW_DIGEST` exists solely for Step 4's table decision. When the pre-dispatch gate returns no event, it advances the same state digest streak and idle counter in shell so a quiet poll does not need to wake this model to maintain scheduling state. The collector reads its outbox plus relevant root scheduler/lifecycle/orchestration fields in one fixed projection, then uses `session-state.sh --cas ... --expect-root <literal-field-object>` to compare all of them under the existing write lock. A competing Step 6/7, owner, wake, or stop write defeats the whole stale collector batch; its diagnostic retry retains those original expectations and cannot overwrite the winner. Unrelated root fields do not participate. A lost comparison emits a diagnostic rather than claiming an unchanged successful tick; a later tick reads a fresh projection.
+
+<!-- test-anchor: pmm-pre-dispatch-backoff -->
 ```bash
-STREAK=$("$SESSION_STATE_SH" --get '.pmm_digest_streak' 2>/dev/null || echo 0)
-[ "$STREAK" = null ] && STREAK=0
-if [ "$DIGEST" = "$PREV" ]; then STREAK=$((STREAK+1)); else STREAK=0; fi
-"$SESSION_STATE_SH" --set ".pmm_digest=\"$DIGEST\"" --set ".pmm_digest_streak=$STREAK" \
-  --set ".pmm_row_digest=\"$ROW_DIGEST\""
-
-BASE_CADENCE_MIN=${PMM_CADENCE%m}
-WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
-[ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
-if [ "$STREAK" -ge 3 ]; then
-  EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"
+# Run backoff and idle fences in one Bash call. Capture exactly the root inputs
+# the atomic Step6 commit will compare, including live work and lifecycle state.
+PMM_STEP6_ROOT=$("$SESSION_STATE_SH" --get-json '{pmm_digest,pmm_digest_streak,pmm_row_digest,pmm_idle_streak,pmm_cadence,pmm_monitor_generation,pmm_monitor_task_id,pmm_active,pmm,pmm_rearm,active_agents,pmm_in_flight,pmm_merge_holds}') || {
+  echo 'ERROR: Step6 state unreadable; counters/receipt remain uncommitted' >&2; exit 1; }
+  jq -e '.pmm_rearm==null and ((.active_agents // {})|type)=="object"
+    and ((.pmm_in_flight // {})|type)=="object" and ((.pmm_merge_holds // {})|type)=="object"
+    and all((.active_agents // {})[]; (.phase|type)=="string" and (.status|type)=="string")
+    and all((.pmm_in_flight // {})[]; .==null or (type=="object" and (.status|type)=="string"))
+    and all((.pmm_merge_holds // {})[]; type=="object")' >/dev/null <<<"$PMM_STEP6_ROOT" || {
+    echo 'ERROR: live work/lifecycle state is unknown; idle and completion remain uncommitted' >&2; exit 1; }
+  if [ "$PMM_INTERNAL_TICK" = true ]; then
+    jq -e --arg gen "${PMM_TICK_GENERATION:-}" '.pmm_monitor_generation==$gen and $gen!="" and .pmm_active==true and (.pmm.stop_requested // false)==false and (.pmm.paused_at // null)==null' \
+      >/dev/null <<<"$PMM_STEP6_ROOT" || { echo 'ERROR: stale or stopped Step6 tick' >&2; exit 1; }
+  fi
+  ACTIVE_FIXERS=$(jq '[.active_agents // {} | .[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  ACTIVE_WRAPS=$(jq '[.pmm_in_flight // {} | .[] | select(.status == "active")] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  HELD_COUNT=$(jq '[.pmm_merge_holds // {} | .[] | select(.released != true)] | length' <<<"$PMM_STEP6_ROOT") || exit 1
+  if [ -n "${SEQ:-}" ]; then
+    jq -e 'type=="object" and (.plan|type)=="array"' >/dev/null <<<"$SEQ" || { echo 'ERROR: merge plan unreadable; idle state remains unknown' >&2; exit 1; }
+    PLAN_HELD_COUNT=$(jq '[.plan[] | select(.action == "hold")] | length' <<<"$SEQ") || exit 1
+    HELD_COUNT=$((HELD_COUNT+PLAN_HELD_COUNT))
+  fi
+if [ "${PMM_SKIP_ACTIONS:-false}" = true ]; then
+  STREAK=$(jq -r '.pmm_digest_streak' <<<"$PMM_STEP6_ROOT") || exit 1
+  IDLE_STREAK=$(jq -r '.pmm_idle_streak' <<<"$PMM_STEP6_ROOT") || exit 1
+  EFFECTIVE_CADENCE=$(jq -r '.pmm_cadence' <<<"$PMM_STEP6_ROOT") || exit 1
+  [[ "$STREAK" =~ ^[0-9]{1,8}$ && "$IDLE_STREAK" =~ ^[0-9]{1,8}$ && "$EFFECTIVE_CADENCE" =~ ^[1-9][0-9]{0,5}m$ ]] || {
+    echo "ERROR: completed-event scheduling state is invalid" >&2; exit 1; }
+  # New live work may appear after the original commit. It blocks idle routing
+  # now without advancing or rewriting the completed event's counters.
+  if [ "$ACTIVE_FIXERS" -gt 0 ] || [ "$ACTIVE_WRAPS" -gt 0 ] || [ "$HELD_COUNT" -gt 0 ]; then IDLE_STREAK=0; fi
 else
-  EFFECTIVE_CADENCE="$PMM_CADENCE"
+  STREAK=$(jq -r '.pmm_digest_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
+  [[ "$STREAK" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid digest streak' >&2; exit 1; }
+  PMM_STEP6_SAME_DIGEST=false
+  STEP6_PRIOR_DIGEST=$(jq -r '.pmm_digest // ""' <<<"$PMM_STEP6_ROOT") || exit 1
+  [ "$DIGEST" = "$STEP6_PRIOR_DIGEST" ] && PMM_STEP6_SAME_DIGEST=true
+  if [ "$PMM_INTERNAL_TICK" != true ]; then STREAK=0
+  elif [ "$PMM_STEP6_SAME_DIGEST" = true ]; then STREAK=$((10#$STREAK+1)); else STREAK=0; fi
+  BASE_CADENCE_MIN=${PMM_CADENCE%m}
+  WIDE_CADENCE_MIN=$(( BASE_CADENCE_MIN * 3 ))
+  [ "$WIDE_CADENCE_MIN" -lt 15 ] && WIDE_CADENCE_MIN=15
+  if [ "$STREAK" -ge 3 ]; then EFFECTIVE_CADENCE="${WIDE_CADENCE_MIN}m"; else EFFECTIVE_CADENCE="$PMM_CADENCE"; fi
 fi
 ```
 
-Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)` and re-arm the persistent
-Monitor at that derived cadence; digest change or user message → reset to 0; **streak ≥ 9** →
-route to Pause in Step 7 and stop the exact Monitor. The derived cadence is always slower than a
-valid base cadence, including a custom base longer than 15m.
+Backoff: **streak ≥ 3** → widen to `max(15m, 3 × base)`; digest change or user message → reset to 0; **streak ≥ 9** → route to Pause in Step 7 and stop the exact Monitor. The Monitor shell reads `.pmm_cadence` before each sleep, so the pre-dispatch gate can widen/reset its interval without replacing the Monitor or waking a model. The derived cadence is always slower than a valid base cadence, including a custom base longer than 15m.
 
-**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
+**Idle streak (`pmm_idle_streak`)** — an **idle tick** requires ALL of: (1) `TICK_HAD_ACTION=false`; (2) digest unchanged; (3) no blocking Phase A agents; (4) no active `pmm_in_flight` wrap/dispatch locks; (5) nothing held by merge sequencing. Orthogonal to cadence widening — widening must **not** reset the idle counter.
 
+On a quiet shell-only poll, no model action ran by construction; the gate advances the idle counter
+only when the state digest is unchanged and there are no active Phase A agents, PMM locks, or merge
+holds. A wake at `--idle-pause-after` returns a lifecycle event so this skill can execute the
+ordinary Pause route.
+
+<!-- test-anchor: pmm-pre-dispatch-idle -->
 ```bash
-IDLE_PREV=$("$SESSION_STATE_SH" --get '.pmm_idle_streak' 2>/dev/null || echo 0)
-[ "$IDLE_PREV" = null ] && IDLE_PREV=0
-ACTIVE_FIXERS=$(jq '[.[] | select(.phase == "A" and (.status != "complete" and .status != "failed"))] | length' \
-  <<<"$("$SESSION_STATE_SH" --get '.active_agents' 2>/dev/null || echo '{}')")
-HELD_COUNT=0
-[ -n "${SEQ:-}" ] && HELD_COUNT=$(jq '[.plan[]? | select(.action == "hold")] | length' <<<"$SEQ" 2>/dev/null || echo 0)
-if [ "$TICK_HAD_ACTION" = false ] && [ "$DIGEST" = "$PREV" ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
-  IDLE_STREAK=$((IDLE_PREV + 1))
-else
-  IDLE_STREAK=0
+if [ "${PMM_SKIP_ACTIONS:-false}" != true ]; then
+  : "${PMM_STEP6_ROOT:?run Step6 backoff and idle together}"
+  IDLE_PREV=$(jq -r '.pmm_idle_streak // 0' <<<"$PMM_STEP6_ROOT") || exit 1
+  [[ "$IDLE_PREV" =~ ^[0-9]{1,8}$ ]] || { echo 'ERROR: invalid idle streak' >&2; exit 1; }
+  if [ "$PMM_INTERNAL_TICK" = true ] && [ "$TICK_HAD_ACTION" = false ] && [ "$PMM_STEP6_SAME_DIGEST" = true ] && [ "$ACTIVE_FIXERS" -eq 0 ] && [ "$ACTIVE_WRAPS" -eq 0 ] && [ "$HELD_COUNT" -eq 0 ]; then
+    IDLE_STREAK=$((10#$IDLE_PREV+1))
+  else
+    IDLE_STREAK=0
+  fi
+  STEP6_DIGEST_JSON=$(jq -cn --arg value "$DIGEST" '$value') || exit 1
+  STEP6_ROW_JSON=$(jq -cn --arg value "$ROW_DIGEST" '$value') || exit 1
+  STEP6_WRITES=(--set ".pmm_digest=$STEP6_DIGEST_JSON" --set ".pmm_digest_streak=$STREAK"
+    --set ".pmm_row_digest=$STEP6_ROW_JSON" --set ".pmm_idle_streak=$IDLE_STREAK"
+    --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"")
+  if [ -n "${PMM_DISPATCH_EVENT:-}" ]; then
+    STEP6_EXPECT=$(jq -cn --arg id "$PMM_DISPATCH_EVENT" '$id') || exit 1
+    STEP6_CAS=".pmm_pre_dispatch.pending_event.event_id=$STEP6_EXPECT"
+    STEP6_WRITES+=(--set ".pmm_pre_dispatch.actions_completed_event_id=$STEP6_EXPECT")
+  else
+    STEP6_CAS=".pmm_digest=$STEP6_DIGEST_JSON"
+    STEP6_EXPECT=$(jq -c '.pmm_digest' <<<"$PMM_STEP6_ROOT") || exit 1
+  fi
+  # Counters, cadence and actions receipt form ONE guarded local transaction.
+  # A stale generation, changed live work, or failed write commits none of them.
+  "$SESSION_STATE_SH" --cas "$STEP6_CAS" --expect "$STEP6_EXPECT" --expect-root "$PMM_STEP6_ROOT" "${STEP6_WRITES[@]}" || {
+    echo 'ERROR: Step6 commit failed or lost ownership; event remains pending and no completion may be claimed' >&2; exit 1; }
 fi
-"$SESSION_STATE_SH" --set ".pmm_idle_streak=$IDLE_STREAK"
+```
+
+**Commit the actions receipt in the SAME atomic Step6 transaction as all scheduling fields, after discovery, gate checks and authorized actions finish.** Run the backoff/idle fences together; a failure exits before completion. The later fence only verifies that durable receipt, including after compaction. The event is evidence that woke the model, never a cached
+action verdict; every delayed or repeated event re-runs the normal current-HEAD and ownership checks
+above. The actions receipt prevents Step 5 from repeating while Step 7 finishes:
+
+<!-- test-anchor: pmm-pre-dispatch-actions-receipt -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  # Verification only: the preceding atomic Step6 batch is the sole writer.
+  # Executing this fence after a failed/incomplete Step6 cannot manufacture proof.
+  PMM_ACTIONS_RECEIPT=$("$SESSION_STATE_SH" --get '.pmm_pre_dispatch.actions_completed_event_id') || exit 1
+  [[ "$PMM_ACTIONS_RECEIPT" == "$PMM_DISPATCH_EVENT" ]] || {
+    echo "ERROR: Step6 did not commit event $PMM_DISPATCH_EVENT; leave it pending" >&2; exit 1; }
+fi
 ```
 
 ---
@@ -573,45 +795,134 @@ Hard-blocked PRs do **not** trigger Stop or Pause — they are reported and drop
 
 **Verify or re-arm the Monitor.** A persistent `Monitor` is the canonical primitive (`scheduling-reliability.md`). Its command sleeps first, then emits the skill invocation as an out-of-turn chat event:
 
+Before arming or replacing the Monitor, require `PMM_PRE_DISPATCH_SH`; if it is empty, print
+`ERROR: pmm-pre-dispatch.sh not found — refusing to arm a model-dispatching PMM loop` and stop.
+This shell gate runs before stdout becomes a chat event. Its quiet result is truly empty output, so
+the model is not woken for unchanged ticks. Direct owner messages bypass it. Event schema, state
+projection, retry/ack, evidence paths, and wake predicates: `references/pmm-pre-dispatch.md`.
+
+<!-- test-anchor: pmm-pre-dispatch-monitor-loop -->
 ```bash
 NEW_MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-while sleep "<EFFECTIVE_CADENCE in seconds>"; do
-  printf '%s\n' "/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>"
-done
+PMM_MONITOR_COMMAND=$("$PMM_PRE_DISPATCH_SH" --monitor-command --repo "$OWNER_REPO" \
+  --author "$PMM_AUTHOR" --generation "$NEW_MONITOR_GENERATION" \
+  --base-cadence-min "${PMM_CADENCE%m}" --idle-pause-after "$PMM_IDLE_PAUSE_AFTER" --max-deep-prs "$PMM_MAX_DEEP_PRS" \
+  --skill-args "$PMM_FORWARD_ARGS") || {
+  echo "ERROR: could not build the pre-dispatch Monitor command; no Monitor was armed" >&2
+  exit 1
+}
 ```
 
+Pass **the exact `$PMM_MONITOR_COMMAND` string** to `Monitor.command`. The helper binds the absolute
+helper/state paths, repository, author, already-minted generation, base cadence, idle limit, and
+validated flags as quoted literals. The out-of-turn shell requires no caller environment. Never
+mint another generation inside the saved loop or substitute a direct skill-printing command.
+
+The event line carries `--dispatch-event <id>`. The PMM tick still runs the normal discovery,
+current-head merge gate, and ownership checks before acting; the pre-dispatch snapshot is wake
+evidence only. Re-emitted IDs remain pending until the completed tick explicitly acknowledges them.
+
 Call `Monitor` with `persistent: true` and description `PR fleet monitor`. Capture its task ID in
-`.pmm_monitor_task_id`. Generate a fresh non-secret `$NEW_MONITOR_GENERATION` before each arm and
+`MONITOR_TASK_ID`; only the conditional publication below writes `.pmm_monitor_task_id`. Generate a fresh non-secret `$NEW_MONITOR_GENERATION` before each arm and
 embed it in that task's command. Reuse the ID and generation read by the identity preflight (or read
 them here for a new direct start / transactional resume) and read the actual cadence from state:
 
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-claim -->
 ```bash
-MONITOR_TASK_ID=$("$SESSION_STATE_SH" --get '.pmm_monitor_task_id' 2>/dev/null || echo null)
-MONITOR_GENERATION=$("$SESSION_STATE_SH" --get '.pmm_monitor_generation' 2>/dev/null || echo null)
-CURRENT_MONITOR_CADENCE=$("$SESSION_STATE_SH" --get '.pmm_cadence' 2>/dev/null || echo null)
-if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
-  MONITOR_TASK_ID=null
-  MONITOR_GENERATION=null
-  CURRENT_MONITOR_CADENCE=null
+# Capture lifecycle identity/config together; compare against the event's original
+# generation, not just the identity newly read after an owner might have rearmed.
+PMM_LIFECYCLE_EXPECT=$("$SESSION_STATE_SH" --get-json '{pmm_active,pmm_monitor_task_id,pmm_monitor_generation,pmm_pre_dispatch_version,pmm_pre_dispatch_config,pmm_author,pmm_cadence,pmm,pmm_rearm}') || exit 1
+if [[ "${PMM_INTERNAL_TICK:-false}" == true ]]; then
+  jq -e --arg gen "$PMM_TICK_GENERATION" '.pmm_monitor_generation==$gen and .pmm_active==true and (.pmm.stop_requested // false)==false and (.pmm.paused_at // null)==null' \
+    >/dev/null <<<"$PMM_LIFECYCLE_EXPECT" || { echo '[PMM] Lifecycle changed; stale tick cannot rearm.' >&2; exit 1; }
 fi
+if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
+  jq -e --argjson resume "${PMM_RESUME_EXPECT:-null}" '
+    $resume!=null and .pmm.paused_at==$resume.paused_at and .pmm.config_at_pause==$resume.config
+    and .pmm_monitor_task_id==null and .pmm_monitor_generation==null
+  ' >/dev/null <<<"$PMM_LIFECYCLE_EXPECT" || {
+    echo '[PMM] Pause/config/teardown changed; this resume cannot rearm.' >&2; exit 1; }
+fi
+if [[ "$(jq -r '.pmm_rearm // null' <<<"$PMM_LIFECYCLE_EXPECT")" != null ]]; then
+  echo 'ERROR: a Monitor lifecycle operation is pending; reconcile its exact task before another arm' >&2
+  exit 1
+fi
+MONITOR_TASK_ID=$(jq -r '.pmm_monitor_task_id // "null"' <<<"$PMM_LIFECYCLE_EXPECT")
+MONITOR_GENERATION=$(jq -r '.pmm_monitor_generation // "null"' <<<"$PMM_LIFECYCLE_EXPECT")
+CURRENT_MONITOR_CADENCE=$(jq -r '.pmm_cadence // "null"' <<<"$PMM_LIFECYCLE_EXPECT")
+CURRENT_PRE_DISPATCH_VERSION=$(jq -r '.pmm_pre_dispatch_version // "null"' <<<"$PMM_LIFECYCLE_EXPECT")
+CURRENT_PRE_DISPATCH_CONFIG=$(jq -cS '.pmm_pre_dispatch_config' <<<"$PMM_LIFECYCLE_EXPECT")
+: "${NEW_MONITOR_GENERATION:?build the bound Monitor command before claiming lifecycle}"
+PMM_REARM_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
+PMM_REARM_CLAIM=$(jq -cn --arg token "$PMM_REARM_TOKEN" --argjson prior "$PMM_LIFECYCLE_EXPECT" \
+  --argjson requested "$PMM_MONITOR_CONFIG" --arg next "$NEW_MONITOR_GENERATION" '{token:$token,prior:$prior,requested:$requested,next_generation:$next,phase:"claimed"}') || exit 1
+"$SESSION_STATE_SH" --cas ".pmm_rearm=$PMM_REARM_CLAIM" --expect null --expect-root "$PMM_LIFECYCLE_EXPECT" \
+  --set '.pmm.stop_requested=true' || { echo '[PMM] Lifecycle claim lost; no task action authorized.' >&2; exit 1; }
+PMM_LIFECYCLE_EXPECT=$(jq -c --argjson claim "$PMM_REARM_CLAIM" '.pmm_rearm=$claim | .pmm=(.pmm // {}) | .pmm.stop_requested=true' <<<"$PMM_LIFECYCLE_EXPECT") || exit 1
 ```
 
-Keep the existing task only when both pieces of its recorded identity are present and its cadence
-equals `$EFFECTIVE_CADENCE`. If no task ID is recorded on a new direct start or after
+The claim must succeed **before any Step7 TaskStop or Monitor call**. A resumed invocation
+also compares its preserved pause marker/config and requires the prior identity to be torn down;
+losing to a newer owner aborts rather than adopting its task as drift. A wake passes the original
+pause/config as validated runtime fields; they are not persisted in forwarded Monitor arguments. Every direct start, resume,
+replacement, and ordinary keep-existing publication uses this same claim. A competing owner/tick
+fails before a remote action. A retained claim is uncertainty, never permission to retry a stop or
+arm blindly; reconcile the exact task and prior identity before explicit recovery. Do not expire a
+claim by age. Its `next_generation` identifies the saved command for tool inspection; a `claimed`
+phase is reserved intent, not proof that a task was launched. Before manual recovery changes it, use its exact prior/armed identity and the tool
+result to establish stopped/running/unknown; unknown retains the claim. Any clear/adoption must
+compare the entire current claim plus captured identity/config using the same CAS contract, never
+stop the currently recorded newer task as cleanup of this claim. For a completed transactional pause resume the old identity was already torn down;
+use the captured null identity rather than erasing a live one in shell variables.
+
+Before each exact `TaskStop` and each `Monitor` call, execute this check with the claim's variables:
+
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-authorize -->
+```bash
+# Same-lock no-op CAS verifies claim plus identity/config; never adopts a newer task.
+"$SESSION_STATE_SH" --cas ".pmm_rearm=$PMM_REARM_CLAIM" --expect "$PMM_REARM_CLAIM" \
+  --expect-root "$PMM_LIFECYCLE_EXPECT" || { echo '[PMM] Lifecycle ownership changed; no task action authorized.' >&2; exit 1; }
+```
+
+Keep the existing task only when both pieces of its recorded identity are present and
+`CURRENT_PRE_DISPATCH_VERSION == 2` and the canonical `CURRENT_PRE_DISPATCH_CONFIG` equals `$PMM_MONITOR_CONFIG`. A changed repo, author, base cadence, idle limit, or forwarded option requires exact stop and replacement with the new bound configuration. The shell loop reads `.pmm_cadence` before every sleep, so the
+pre-dispatch gate can widen/reset the cadence without waking a model or replacing the Monitor. This
+one-time version check replaces older PMM Monitors that emit a model event before running the shell
+gate. If no task ID is recorded on a new direct start or after
 `RESUMING_FROM_PAUSE` completed exact teardown, arm the first Monitor. A missing ID or generation
 while `$PMM_ACTIVE == true` on an ordinary tick is degraded state: set
 `.pmm.stop_requested=true`, report the missing identity, and abort rather than risking a duplicate.
-If an ID exists and the cadences differ, first set `.pmm.stop_requested=true`, then stop that exact
-old task with `TaskStop`, require success, and arm the replacement. Publishing the guard before the
+If the pre-dispatch version or bound configuration differs, the successful claim already set `.pmm.stop_requested=true`; then stop that exact old
+task with `TaskStop`, require success, and arm the replacement. Publishing the guard before the
 stop makes an already-emitted old-generation event exit at the tick gate during the
 stop-to-publication gap. If the stop fails, retain the complete old identity and cadence with the
 guard still true, report incomplete teardown, and abort; do not let the old task continue as if the
-cadence transition succeeded.
+gate migration succeeded.
 
 Immediately after a new Monitor arm succeeds, bind the identity that its command actually carries:
 
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-armed-receipt -->
 ```bash
+[[ -n "${MONITOR_TASK_ID:-}" && "$MONITOR_TASK_ID" != null ]] || {
+  echo 'ERROR: Monitor returned no task identity; retain the claim and reconcile, never claim an arm succeeded' >&2
+  exit 1
+}
+jq -e --arg next "$NEW_MONITOR_GENERATION" '.next_generation==$next' >/dev/null <<<"$PMM_REARM_CLAIM" || {
+  printf 'ERROR: confirmed task %s has a different generation context; retain tool evidence and reconcile, never re-arm blindly\n' "$MONITOR_TASK_ID" >&2
+  exit 1
+}
 MONITOR_GENERATION="$NEW_MONITOR_GENERATION"
+# Confirmed tool result only. Retain a recoverable exact identity before final
+# publication; never use this fence to guess whether an uncertain arm succeeded.
+PMM_ARMED_RECEIPT=$(jq -c --arg id "$MONITOR_TASK_ID" --arg generation "$MONITOR_GENERATION" \
+  '.phase="armed" | .armed={task_id:$id,generation:$generation}' <<<"$PMM_REARM_CLAIM") || exit 1
+"$SESSION_STATE_SH" --cas ".pmm_rearm=$PMM_ARMED_RECEIPT" --expect "$PMM_REARM_CLAIM" \
+  --expect-root "$PMM_LIFECYCLE_EXPECT" || {
+    printf 'ERROR: confirmed new task %s generation %s could not be recorded; stop this exact task and retain tool-result evidence\n' "$MONITOR_TASK_ID" "$MONITOR_GENERATION" >&2
+    exit 1
+  }
+PMM_REARM_CLAIM="$PMM_ARMED_RECEIPT"
+PMM_LIFECYCLE_EXPECT=$(jq -c --argjson claim "$PMM_REARM_CLAIM" '.pmm_rearm=$claim' <<<"$PMM_LIFECYCLE_EXPECT") || exit 1
 ```
 
 Do this before the publication batch below; never publish the old or null generation beside the
@@ -622,28 +933,45 @@ cadence, and `.pmm.stop_requested=true`. Do not write `$EFFECTIVE_CADENCE` or cl
 this comparison and exact stop succeed.
 
 After a new Monitor is armed, publish its ID, generation, `$EFFECTIVE_CADENCE`, and
-`.pmm.stop_requested=false` in the same atomic state write below. If replacement arming fails, set `pmm_active=false`, clear the
-known-stopped task ID and generation together, set `.pmm.stop_requested=false`, retain the prior cadence as audit state, and report
-the stopped monitor — never claim the fleet is watched.
-If the publication write fails, `TaskStop` the exact new task. When rollback succeeds, clear the
-known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`. When rollback fails, best-effort persist
-`.pmm.stop_requested=true`, `pmm_active=false`, and the exact new task ID plus generation so
-`/pmm-stop` can retry it; never leave the already-stopped old identity as the only recorded one. On the first tick, say:
+`.pmm.stop_requested=false` with the claim CAS below. If arming fails or its result is uncertain,
+retain the guarded claim and exact known identity for reconciliation; do not claim the fleet is
+watched or clear a possibly running task. If publication fails, `TaskStop` only the exact newly
+created task. Preserve the winning current state even when rollback succeeds; if rollback fails,
+report that new task ID/generation and retain the claim/recovery evidence. An external stop can
+still race a remote tool call; local CAS does not promise a transaction across Claude tools and
+session-state. The stop guard, exact IDs, conditional publication, and required reconciliation
+prevent a stale invocation from replacing the recorded newer owner. On the first tick, say:
 `To stop: /pmm-stop (or "stop monitoring PRs").`
 
-Record monitoring state every tick:
+Record monitoring state every tick through the claim. Publication loss must stop only a newly
+armed task (if any), retain the winner's state, and report the unrecorded task if rollback fails.
+Never perform an unconditional rollback write over a newer owner.
 
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-publish -->
 ```bash
 NOW=$(date -u +%FT%TZ)
-"$SESSION_STATE_SH" \
+resume_args=()
+if [[ "${RESUMING_FROM_PAUSE:-false}" == true ]]; then
+  resume_args=(--set '.pmm.paused_at=null' --set '.pmm.pause_cause=null'
+    --set '.pmm.fleet_at_pause=null' --set '.pmm.config_at_pause=null'
+    --set '.pmm.auto_wake_monitor_task_id=null' --set '.pmm.auto_wake_monitor_generation=null'
+    --set '.pmm_digest=null' --set '.pmm_row_digest=null' --set '.pmm_idle_streak=0'
+    --set '.pmm_next_expected_tick_at=null')
+fi
+"$SESSION_STATE_SH" --cas '.pmm_rearm=null' --expect "$PMM_REARM_CLAIM" --expect-root "$PMM_LIFECYCLE_EXPECT" \
   --set '.pmm.stop_requested=false' \
   --set '.pmm_active=true' \
   --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
   --set ".pmm_monitor_generation=\"$MONITOR_GENERATION\"" \
+  --set '.pmm_pre_dispatch_version=2' \
+  --set ".pmm_pre_dispatch_config=$PMM_MONITOR_CONFIG" \
   --set ".pmm_cadence=\"$EFFECTIVE_CADENCE\"" \
   --set ".pmm_author=\"$PMM_AUTHOR\"" \
   --set ".pmm_last_tick_at=\"$NOW\"" \
-  --set ".pmm_idle_streak=$IDLE_STREAK"
+  ${resume_args[@]+"${resume_args[@]}"} || {
+    echo 'ERROR: Monitor publication lost ownership; stop only the new task, preserve current state, and reconcile' >&2
+    exit 1
+  }
 ```
 
 When `RESUMING_FROM_PAUSE=true`, extend this **same atomic write** with
@@ -652,7 +980,7 @@ When `RESUMING_FROM_PAUSE=true`, extend this **same atomic write** with
 `.pmm_digest=null`, and `.pmm_row_digest=null`.
 Do not publish any of those clears before the main Monitor returns a task ID. If arming or the
 write fails, stop the newly armed task and leave the pause marker/config intact; if that rollback
-`TaskStop` fails, best-effort set `.pmm.stop_requested=true` and `.pmm_active=false`, then report the
+`TaskStop` fails, preserve the claim and current winning state, then report the
 exact new task ID and generation for diagnosis. The tick gate must block the unrecorded task from starting work or
 admitting another Monitor while runtime repair is pending.
 
@@ -713,6 +1041,24 @@ Reached from Step 7 when the **user** invokes `/pmm-stop`. Tear down and report 
 
 The lifecycle reference owns exact teardown and conditional task-identity cleanup. Clear
 `.pmm.stop_requested` and each task ID+generation pair only after every required `TaskStop` succeeds.
+
+After the selected Step 7 route (including any Pause teardown and marker write) completes its
+Monitor stop/arm and final state publication, persist the lifecycle receipt and then acknowledge
+the outbox ID. A failed lifecycle write or stop leaves the event pending; on replay the actions
+receipt skips Steps 5 and 6 while Step 7 retries. If acknowledgement fails after both receipts, the next
+delivery revalidates fresh gates and acknowledges without repeating actions or lifecycle work.
+
+<!-- test-anchor: pmm-pre-dispatch-lifecycle-receipt -->
+```bash
+if [ -n "$PMM_DISPATCH_EVENT" ]; then
+  "$SESSION_STATE_SH" --set ".pmm_pre_dispatch.lifecycle_completed_event_id=\"$PMM_DISPATCH_EVENT\"" || {
+    echo "[PMM] Could not persist lifecycle receipt for event $PMM_DISPATCH_EVENT — leaving it queued" >&2
+    exit 1
+  }
+  "$PMM_PRE_DISPATCH_SH" --ack "$PMM_DISPATCH_EVENT" || \
+    echo "[PMM] Could not acknowledge event $PMM_DISPATCH_EVENT; completed receipts make the retry safe"
+fi
+```
 
 ---
 
