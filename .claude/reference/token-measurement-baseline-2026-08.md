@@ -4,9 +4,9 @@
 
 **Date:** 2026-08-10
 
-**Related precedent:** [`token-efficiency-audit-2026-07.md`](token-efficiency-audit-2026-07.md) (FU-6 source, MCP schema cost figures, `permissions.deny` rationale), [Issue #710](https://github.com/auerbachb/claude-code-config/issues/710) (spend/thread-type telemetry pipeline — in-flight; data from there will supersede the manual figures here once available), [`harness-model-audit-2026-06.md`](harness-model-audit-2026-06.md) (static-evidence convention this doc follows)
+**Related precedent:** [`token-efficiency-audit-2026-07.md`](token-efficiency-audit-2026-07.md) (FU-6 source, MCP schema cost figures, `permissions.deny` rationale), [Issue #710](https://github.com/auerbachb/claude-code-config/issues/710) (legacy spend telemetry, repaired by [#1877](https://github.com/auerbachb/claude-code-config/issues/1877)), [`harness-model-audit-2026-06.md`](harness-model-audit-2026-06.md) (static-evidence convention this doc follows)
 
-**Scope guard:** This document covers per-repo context-floor measurement, MCP prune inventory, and junk-dir read-denial. It is NOT Issue #710's spend/thread-type telemetry pipeline and does NOT build a new per-session settings-sync mechanism.
+**Scope guard:** This document covers per-repo context-floor measurement, MCP prune inventory, and junk-dir read-denial. Spend telemetry does not measure `/context` startup floors or MCP schema share. [Issue #1158](https://github.com/auerbachb/claude-code-config/issues/1158) still tracks the first manual `/context` capture and [Issue #1160](https://github.com/auerbachb/claude-code-config/issues/1160) tracks deferred-MCP schema measurement; neither pending row is superseded without replacement evidence.
 
 ---
 
@@ -18,7 +18,7 @@
 3. Append a dated row to the [Baseline Table](#baseline-table)
 4. Re-classify MCP servers if the installed set changes
 
-**Gap acknowledgment:** Until Issue #710's telemetry pipeline ships, context-floor figures come from the manual `/context` procedure below. The `ccusage` figures are accurate at run time; the `/context` figures depend on the session configuration at capture time.
+**Gap acknowledgment:** Context-floor figures still require the manual `/context` procedure below. The current spend telemetry repair records message-level model and token metadata but cannot report startup context floors or MCP schema share. The `ccusage` figures are accurate at run time; `/context` figures depend on the session configuration at capture time.
 
 ---
 
@@ -83,7 +83,7 @@ npm install -g ccusage
 
 | Date | Context floor (tokens) | MCP schema share (tokens) | Active block cost (USD) | Window cost (USD) | Window tokens | Notes |
 |------|----------------------|--------------------------|------------------------|-------------------|---------------|-------|
-| 2026-08-10 | PENDING MANUAL CAPTURE | See MCP Inventory below | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | Initial baseline; Issue #710 telemetry not yet available |
+| 2026-08-10 | PENDING MANUAL CAPTURE | See MCP Inventory below | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | run `ccusage-baseline.sh` | Initial baseline; #1158 `/context` and #1160 deferred-MCP measurements remain open |
 
 **How to fill in the context floor:** Run `/context` during a session in this repo, copy the token counts from the System prompt + System tools + MCP tools + Memory sections, sum them, and enter here.
 
@@ -198,5 +198,5 @@ The `deny` array is added as a new sub-key under `permissions` in `global-settin
 
 - [ ] **FU-6a (this issue):** Capture first manual `/context` reading and fill in the Baseline Table
 - [ ] **FU-6b:** Re-measure after disabling `graphite-mcp@claude-code-graphite` to quantify the schema savings
-- [ ] **FU-6c:** Once Issue #710 telemetry is live, replace manual context-floor rows with automated data and retire the manual procedure
+- [ ] **FU-6c:** Issue #1877 repairs message-usage telemetry but does not measure context-floor rows; keep manual `/context` capture until a supported source replaces it
 - [ ] **FU-6d:** Re-evaluate Tool Search Tool opt-in — check if the harness currently enables deferred MCP schemas and measure impact

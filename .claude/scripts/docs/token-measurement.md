@@ -17,7 +17,8 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [quota-reserve.sh](../quota-reserve.sh) | Refresh a per-account reserve marker from the providers' own reported weekly usage (`/quotas`' reader) and decide, for a Claude Code hook, whether a tool call is autonomous work to block once an account crosses the owner's threshold (95% default); fails open on unreadable or stale readings |
 | [quotas-cheapest-next.sh](../quotas-cheapest-next.sh) | Annotate `ai-quotas.sh --json` rows with each provider's overage cost (Codex free-or-paid reset, Claude API rate, Cursor on-demand) from a checked-in table with `last verified` dates, prefer a live figure when the row carries one, and name the cheapest account to continue on when any account is at or below the configurable remaining threshold; informational only, never a dispatch or spend gate |
 | [quotas-forecast.sh](../quotas-forecast.sh) | Annotate `ai-quotas.sh --json` rows with a burn-rate projection read from `~/.claude/ai-quotas-history.jsonl` — when usage started in the current window (with a `floor` marker when the record does not reach back to the window start), percent per day, and days left at that pace, capped by the window reset; informational only, never a dispatch or spend gate |
-| [spend-telemetry-report.sh](../spend-telemetry-report.sh) | Summarize thread-vs-inline spend and model-tier telemetry from `~/.claude/spend-telemetry.log` |
+| [spend-telemetry-link.sh](../spend-telemetry-link.sh) | Record explicit session/task to issue/PR correlation and bounded post-merge evidence |
+| [spend-telemetry-report.sh](../spend-telemetry-report.sh) | Summarize model, usage, lifecycle, and coverage from `~/.claude/spend-telemetry.log` |
 | [usage-horizon.sh](../usage-horizon.sh) | Turn the harness-injected remaining-token counter into a `clear` / `approaching` / `critical` / `unknown` verdict |
 <!-- catalog:rows:end -->
 
