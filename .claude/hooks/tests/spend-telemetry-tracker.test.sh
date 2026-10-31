@@ -338,6 +338,11 @@ assert {m['event_key'] for m in messages()}=={'changing','replaced'}
 text=transcript.read_text();transcript.write_text(text.replace('"input_tokens": 11','"input_tokens": 12'))
 hook('spend-subagent-tracker.sh',payload)
 assert next(m for m in messages() if m['event_key']=='replaced')['input_tokens']==12
+# A variable-length edit before the saved boundary shifts its byte offset. The
+# boundary marker must invalidate the stale cursor even though the inode is same.
+text=transcript.read_text();transcript.write_text(text.replace('"id": "replaced"','"id": "replaced-with-longer-id"'))
+hook('spend-subagent-tracker.sh',payload)
+assert any(m['event_key']=='replaced-with-longer-id' for m in messages())
 # Atomic replacement, truncation, malformed lines, and incomplete final record.
 replacement=base/'replacement';replacement.write_text(json.dumps(assistant('atomic',input_tokens=2))+'\n');replacement.replace(transcript)
 hook('spend-subagent-tracker.sh',payload)
@@ -367,6 +372,19 @@ assert any(r['event_key']=='transcript-only' and r['session_id']=='transcript-se
 for name in ('spend-session-tracker.sh','spend-task-tracker.sh','spend-subagent-tracker.sh'):
     for invalid in ([],None,dict(agent_type={'PRIVATE_OBJECT_SENTINEL':'secret'},model=['PRIVATE_OBJECT_SENTINEL'])):hook(name,invalid,unknown)
 assert 'PRIVATE_CONTENT_SENTINEL' not in log.read_text() and 'PRIVATE_OBJECT_SENTINEL' not in log.read_text()
+# Parent/child source rows without message.id or transcript uuid cannot be
+# safely deduplicated from shared request/time/usage metadata alone. Preserve
+# both raw observations but exclude their usage from unique-message totals.
+anonymous=dict(type='assistant',timestamp='2026-10-30T12:01:00Z',sessionId='runtime-primary',requestId='same-provider-request',message=dict(model='claude-sonnet-4-6',usage=dict(input_tokens=5,output_tokens=2)))
+parent_transcript=base/'anonymous-parent.jsonl';child_transcript=base/'anonymous-child.jsonl'
+parent_transcript.write_text(json.dumps(anonymous)+'\n');child_transcript.write_text(json.dumps(anonymous)+'\n')
+hook('spend-session-tracker.sh',dict(hook_event_name='SessionEnd',session_id='runtime-primary',cwd=str(repo),transcript_path=str(parent_transcript)))
+hook('spend-subagent-tracker.sh',dict(session_id='runtime-primary',agent_id='anonymous-worker',agent_type='general-purpose',cwd=str(repo),agent_transcript_path=str(child_transcript)))
+anonymous_rows=[r for r in rows() if r['event_type']=='assistant_message' and r['evidence'].get('message_identity_source')=='transcript_scope_offset']
+assert len(anonymous_rows)==2 and anonymous_rows[0]['event_key']!=anonymous_rows[1]['event_key']
+assert not any(m['event_key'] in {r['event_key'] for r in anonymous_rows} for m in messages())
+out=subprocess.run(['bash',str(root/'.claude/scripts/spend-telemetry-report.sh')],env=env,capture_output=True,text=True,check=True).stdout
+assert 'unidentifiable observations excluded from message totals: 2' in out and 'usage is excluded because parent/child duplicates cannot be recognized' in out
 # Actual workflow fences: real runtime IDs, gate met:false cannot be promoted by a SHA.
 link=root/'.claude/scripts/spend-telemetry-link.sh'
 start=(root/'.claude/skills/start-issue/SKILL.md').read_text()
@@ -395,6 +413,13 @@ args=['bash',str(link),'--session','runtime-primary','--repo','owner/repo','--is
 subprocess.run(args,cwd=repo,env=workflow_env,check=True,timeout=15)
 out=subprocess.run(['bash',str(root/'.claude/scripts/spend-telemetry-report.sh')],env=workflow_env,capture_output=True,text=True,check=True).stdout
 assert 'TaskCompleted + merged gate verified' in out and 'owner/repo / PR 7 / allocated' in out
+# Task completion needs task identity, not an optional worker/assignee. It can
+# verify the outcome while usage stays unknown without an explicit assignment.
+hook('spend-task-tracker.sh',dict(hook_event_name='TaskCompleted',session_id='runtime-primary',task_id='unassigned-completed',cwd=str(repo)))
+subprocess.run(['bash',str(link),'--session','runtime-primary','--repo','owner/repo','--issue','42','--pr','7','--task','unassigned-completed','--gate-passed','--gate-head-sha','a'*40,'--gate-result',json.dumps(gate)],cwd=repo,env=workflow_env,check=True,timeout=15)
+out=subprocess.run(['bash',str(root/'.claude/scripts/spend-telemetry-report.sh')],env=workflow_env,capture_output=True,text=True,check=True).stdout
+assert re.search(r'\| owner/repo \| 42 \| 7 \| runtime-primary \| unassigned-completed \| unknown \| TaskCompleted \+ merged gate verified \|',out)
+assert re.search(r'\| owner/repo / PR 7 / unassigned-completed \| unknown \| unknown \| unknown \| unknown \| unknown \| unavailable \|',out)
 # Reusing the same worker for another task cannot allocate its entire transcript twice.
 args[args.index('allocated')]='second-task';subprocess.run(args,cwd=repo,env=workflow_env,check=True,timeout=15)
 out=subprocess.run(['bash',str(root/'.claude/scripts/spend-telemetry-report.sh')],env=workflow_env,capture_output=True,text=True,check=True).stdout

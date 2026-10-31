@@ -111,6 +111,11 @@ def unique_messages(rows):
     """Preserve raw source scopes, count one provider message in usage totals."""
     seen={}; result=[]
     for row in rows:
+        identity_source=row["evidence"].get("message_identity_source")
+        if row["schema_version"]>=3 and identity_source not in ("message.id","transcript.uuid"):
+            # The raw row remains in the log, but without a stable source ID we
+            # cannot know whether another transcript contains the same message.
+            continue
         # Unknown sessions cannot establish parent/child identity.
         key=(row["session_id"],row["evidence"].get("repo_slug", ""),row["event_key"],
              "" if row["session_id"] else (row["agent_id"],row["transcript_scope"],row["evidence"].get("transcript_id") or row["line"]))
@@ -195,8 +200,12 @@ def verified_pr(evidence):
 def render_v2(v2, heading):
     print(f"### {heading}\n")
     source_messages=[row for row in v2 if row["event_type"]=="assistant_message"]
+    unidentified=sum(1 for row in source_messages if row["schema_version"]>=3 and row["evidence"].get("message_identity_source") not in ("message.id","transcript.uuid"))
     messages=unique_messages(source_messages)
-    print(f"Transcript source records: {len(source_messages)}; parent/child mirrors collapsed: {len(source_messages)-len(messages)}. Counts below are unique provider messages, not additive transcript copies.\n")
+    mirrors_collapsed=len(source_messages)-unidentified-len(messages)
+    print(f"Transcript source records: {len(source_messages)}; parent/child mirrors collapsed: {mirrors_collapsed}; unidentifiable observations excluded from message totals: {unidentified}. Counts below use stable message.id/uuid identities, not additive transcript copies.\n")
+    if unidentified:
+        print("Unidentifiable assistant-message observations remain in raw telemetry, but their usage is excluded because parent/child duplicates cannot be recognized without a stable message ID or transcript UUID.\n")
     scans={}
     for row in v2:
         if row["event_type"]=="transcript_scan": scans[scope_key(row)+(row["evidence"].get("transcript_id", ""),)]=row
@@ -342,14 +351,16 @@ def render_v2(v2, heading):
         pr = str(evidence.get("pr") or "unknown")
         task_id, agent_id = link["task_id"], link["agent_id"]
         ambiguous=bool(agent_id and len(worker_prs[(link["session_id"],repo.lower(),agent_id)])>1) or (not agent_id and len(session_prs[(link["session_id"],repo.lower())])>1) or bool(task_id and len(task_workers[(link["session_id"],repo.lower(),agent_id)])>1)
-        linked_messages=[] if ambiguous else [r for r in messages if r["session_id"]==link["session_id"] and r["evidence"].get("repo_slug", "").lower()==repo.lower() and (not agent_id or r["agent_id"]==agent_id) and (not task_id or bool(agent_id))]
+        assignment_unknown=bool(task_id and not agent_id)
+        usage_unknown=ambiguous or assignment_unknown
+        linked_messages=[] if usage_unknown else [r for r in messages if r["session_id"]==link["session_id"] and r["evidence"].get("repo_slug", "").lower()==repo.lower() and (not agent_id or r["agent_id"]==agent_id)]
         message_joined.update((r["session_id"],r["evidence"].get("repo_slug", ""),r["event_key"]) for r in linked_messages)
-        task_complete=bool(task_id and agent_id and (link["session_id"],repo.lower(),task_id) in completed)
+        task_complete=bool(task_id and (link["session_id"],repo.lower(),task_id) in completed)
         verified=bool(task_complete and verified_pr(evidence))
         task_key=(repo.lower(),pr,link["session_id"],task_id,agent_id)
         if verified:
             verified_task_keys.add(task_key)
-            verified_usage.append((task_key,linked_messages,ambiguous))
+            verified_usage.append((task_key,linked_messages,usage_unknown))
         if task_id:
             outcome = "TaskCompleted + merged gate verified" if verified else ("TaskCompleted; outcome unverified" if task_complete else "task completion unavailable")
         else:
@@ -365,7 +376,7 @@ def render_v2(v2, heading):
         actual_text = f"{float(actual_min):.1f}" if type(actual_min) in (int,float) and math.isfinite(actual_min) and actual_min>=0 else "n/a"
         rounds = estimate.get("rounds")
         rounds_text = str(rounds) if type(rounds) is int and rounds>=0 else "n/a"
-        print(f"| {repo} | {issue} | {pr} | {link['session_id']} | {task_id or 'session'} | {'unknown' if ambiguous else len(linked_messages)} | {outcome} | {gate_head_match} | {evidence.get('review_decision', 'unavailable')} | {check_text} | {merge_sha} | {actual_text} | {rounds_text} |")
+        print(f"| {repo} | {issue} | {pr} | {link['session_id']} | {task_id or 'session'} | {'unknown' if usage_unknown else len(linked_messages)} | {outcome} | {gate_head_match} | {evidence.get('review_decision', 'unavailable')} | {check_text} | {merge_sha} | {actual_text} | {rounds_text} |")
     print(f"\nVerified task/PR joins: {len(verified_task_keys)}; linked assistant-message records: {len(message_joined)}/{len(messages)}.")
     print("\n### Usage per verified completed task\n")
     print("| Repo / PR / task | Observed messages | Input (available/observed; sum) | Output | Cache read | Cache write | Billed cost |")
@@ -376,7 +387,7 @@ def render_v2(v2, heading):
             values=[r[name] for r in group if r[name] is not None]
             cells.append("unknown" if ambiguous else f"{len(values)}/{len(group)}; {fmt_number(sum(values) if values else None)}")
         print(f"| {key[0]} / PR {key[1]} / {key[3]} | {'unknown' if ambiguous else len(group)} | "+" | ".join(cells)+" | unavailable |")
-    print("Ambiguous multi-PR sessions or reused worker/task mappings retain unknown allocation; their usage is never assigned in full to each task. Hook actor IDs do not imply task assignment.\n")
+    print("Tasks with no explicit worker mapping and ambiguous multi-PR/reused worker-task mappings retain unknown usage allocation; task completion can still be verified by session/repo/task ID. Hook actor IDs do not imply task assignment.\n")
     print("Estimate-log actual minutes are elapsed-time records keyed by exact repo+PR. Its rounds field counts commits, not paid reviewer rounds or CI retries.")
     print("Current GitHub check rollup is a snapshot, not retry history. Exact paid review rounds, historical CI reruns, and escalation reasons remain unavailable; cost remains unavailable.")
     if unresolved_links:

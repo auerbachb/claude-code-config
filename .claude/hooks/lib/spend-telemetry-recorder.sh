@@ -416,6 +416,7 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 row_requested_source="transcript.requestedModel" if runtime_requested else requested_source
                 row_session=session_id if session_id!="unknown" else (identifier(row.get("sessionId")) or "unknown")
                 message_id=identifier(message.get("id")) or identifier(row.get("uuid"))
+                identity_source="message.id" if identifier(message.get("id")) else "transcript.uuid" if identifier(row.get("uuid")) else "transcript_scope_offset"
                 timestamp=""
                 try:
                     stamp=datetime.fromisoformat(row.get("timestamp", "").replace("Z", "+00:00"))
@@ -432,6 +433,7 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 evidence={"repo_slug":repo_slug,"repo_source":"git.origin"} if repo_slug else {}
                 evidence["transcript_id"]=cursor_key
                 evidence["session_source"]="hook_or_runtime_env" if session_id!="unknown" else "transcript.sessionId"
+                evidence["message_identity_source"]=identity_source
                 values=[timestamp,"assistant_message",exec_type,family(actual),agent_type,row_session,agent_id,total_field,"3",event_key,repo_root,phase,row_requested,row_requested_source,actual,actual_source,*fields,"","unsupported:no_authoritative_per_event_cost_field","","unknown",scope,usage_source,json.dumps(evidence,separators=(",",":"))]
                 out.append("\t".join(map(safe,values))+"\n")
             if scanned%128==0: checkpoint()
