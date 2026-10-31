@@ -162,6 +162,8 @@ assert_eq "$expected" "$actual" 'dispatcher resolves modules from its install pa
 
 # Parity guards for remote-write uncertainty and shared single/batch handoff gates.
 assert_eq 0 "$(grep -q 'do not retry blindly' .claude/skills/issue-maker/modules/update.md; echo $?)" 'update uncertainty requires remote verification before logging'
+assert_eq 0 "$(grep -q 'Immediately before applying a confirmed body edit' .claude/skills/issue-maker/modules/update.md; echo $?)" 'update refreshes the issue before applying a whole-body proposal'
+assert_eq 0 "$(grep -q 'not compare-and-swap' .claude/skills/issue-maker/modules/update.md; echo $?)" 'update documents the GitHub whole-body concurrency limit'
 assert_eq 0 "$(grep -q 'log state was not changed' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract uncertainty leaves the log unchanged'
 assert_eq 0 "$(grep -q 'chip-pending' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract distinguishes pending chips before any release'
 assert_eq 0 "$(grep -q 'Handoff recovery needed' .claude/skills/issue-maker/modules/session-state.md; echo $?)" 'compaction surfaces a persisted handoff reservation checkpoint'
