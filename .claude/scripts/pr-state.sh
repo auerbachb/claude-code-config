@@ -10,6 +10,7 @@
 # Usage:
 #   pr-state.sh                                  # Auto-detect PR from current branch
 #   pr-state.sh --pr 123                         # Use explicit PR number (skips branch detect)
+#   pr-state.sh --pr 123 --stdout                # JSON on stdout, no retained temp bundle
 #   pr-state.sh --since <iso-8601>               # Pre-classify bot comments posted since baseline
 #   pr-state.sh --pr 123 --since <iso>           # Combined
 #   pr-state.sh --infer-candidates               # List session-tracked PR candidates (no GitHub state)
@@ -94,6 +95,7 @@ run_gh() {
   printf '%s' "$output"
 }
 
+STDOUT_JSON=false
 PR_ARG=""
 SINCE=""
 INFER_CANDIDATES=0
@@ -102,6 +104,7 @@ WAIT_STATE_SHA=""
 WAIT_STATE_BUNDLE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --stdout) STDOUT_JSON=true; shift ;;
     --infer-candidates)
       INFER_CANDIDATES=1
       shift
@@ -424,9 +427,13 @@ RUN_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # temp file without the .json suffix, then rename. Both the base tempfile and
 # the renamed target are unique per-invocation, so the rename cannot clobber
 # another concurrent run's output.
-OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
-OUT="${OUT_BASE}.json"
-mv "$OUT_BASE" "$OUT"
+if [[ "$STDOUT_JSON" == true ]]; then
+  OUT=/dev/stdout
+else
+  OUT_BASE=$(mktemp "/tmp/pr-state-${PR_NUMBER}-$(date -u +%s)-XXXXXX")
+  OUT="${OUT_BASE}.json"
+  mv "$OUT_BASE" "$OUT"
+fi
 
 # ----------------------------------------------------------------------
 # 2. Review threads (GraphQL, paginated — authoritative for resolution)
@@ -462,8 +469,8 @@ while :; do
       }
     }
   }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -F cursor="$CURSOR")
-  ALL_THREADS=$(jq -n --argjson acc "$ALL_THREADS" --argjson page "$RESP" \
-    '$acc + $page.data.repository.pullRequest.reviewThreads.nodes')
+  ALL_THREADS=$(printf '%s\n' "$ALL_THREADS" "$RESP" | jq -s \
+    '.[0] + .[1].data.repository.pullRequest.reviewThreads.nodes')
   HAS_NEXT=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
   [[ "$HAS_NEXT" == "true" ]] || break
   CURSOR=$(echo "$RESP" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
@@ -552,18 +559,17 @@ CONVO=$(run_gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per
 # ----------------------------------------------------------------------
 NEW_SINCE="null"
 if [[ -n "$SINCE" ]]; then
-  NEW_SINCE=$(jq -n \
-    --argjson reviews "$REVIEWS" \
-    --argjson inline "$INLINE" \
-    --argjson conversation "$CONVO" \
-    --arg since "$SINCE" \
-    -f "$PR_STATE_CLASSIFY_JQ")
+  # Bind the canonical classifier's arrays from stdin, with a trusted static
+  # program prefix. No comment/body data is evaluated as jq or passed in argv.
+  NEW_SINCE=$(printf '%s\n' "$REVIEWS" "$INLINE" "$CONVO" | jq -s --arg since "$SINCE" \
+    -f <(printf '%s\n' '.[0] as $reviews | .[1] as $inline | .[2] as $conversation | null |'; cat "$PR_STATE_CLASSIFY_JQ"))
 fi
 
 # ----------------------------------------------------------------------
 # 7. Assemble final JSON
 # ----------------------------------------------------------------------
-jq -n \
+# Arrays travel through stdin, not exec argv (large review histories can exceed ARG_MAX).
+printf '%s\n' "$ALL_THREADS" "$UNRESOLVED" "$CR_SPLIT" "$STATUSES" "$BOT_STATUSES" "$REVIEWS" "$INLINE" "$CONVO" "$NEW_SINCE" | jq -s \
   --arg schema "1.0" \
   --argjson pr_number "$PR_NUMBER" \
   --arg branch "$BRANCH" \
@@ -577,16 +583,10 @@ jq -n \
   --arg review_decision "$REVIEW_DECISION" \
   --arg run_started_at "$RUN_STARTED_AT" \
   --arg since "$SINCE" \
-  --argjson threads_all "$ALL_THREADS" \
-  --argjson threads_unresolved "$UNRESOLVED" \
-  --argjson cr_split "$CR_SPLIT" \
-  --argjson statuses "$STATUSES" \
-  --argjson bot_statuses "$BOT_STATUSES" \
-  --argjson reviews "$REVIEWS" \
-  --argjson inline "$INLINE" \
-  --argjson conversation "$CONVO" \
-  --argjson new_since "$NEW_SINCE" \
-  '{
+  '.[0] as $threads_all | .[1] as $threads_unresolved | .[2] as $cr_split
+   | .[3] as $statuses | .[4] as $bot_statuses | .[5] as $reviews
+   | .[6] as $inline | .[7] as $conversation | .[8] as $new_since
+   | {
     schema_version: $schema,
     pr: {
       number: $pr_number,
@@ -622,4 +622,4 @@ jq -n \
     }
   }' > "$OUT"
 
-echo "$OUT"
+if [[ "$STDOUT_JSON" != true ]]; then echo "$OUT"; fi

@@ -125,11 +125,11 @@ require_ordered_binding .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
-require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'successfully stopped ID and generation immediately' \
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'pmm-resume-stop-record' \
   'fleet resume retries must not retain IDs for already-stopped tasks'
-require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'retain that failed identity pair' \
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'unknown tool results retain the identity' \
   'fleet resume must abort with a potentially-live failed task ID retained'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'Ignoring a queued Monitor tick after pause/stop' \
@@ -171,13 +171,13 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A failed stop retains the old ID and aborts the re-arm.' \
   'fleet cadence re-arm must fail closed on exact TaskStop'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'first set `.pmm.stop_requested=true`' \
+  'successful claim already set `.pmm.stop_requested=true`' \
   'fleet cadence re-arm must guard against queued old-generation events before TaskStop'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`' \
-  'fleet cadence re-arm must clear its guard after verified rollback teardown'
+  'Preserve the winning current state even when rollback succeeds' \
+  'fleet cadence re-arm rollback must preserve a newer owner'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "CURRENT_MONITOR_CADENCE=\$(\"\$SESSION_STATE_SH\" --get '.pmm_cadence'" \
+  "CURRENT_MONITOR_CADENCE=\$(jq -r '.pmm_cadence // \"null\"'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '`CURRENT_PRE_DISPATCH_VERSION == 2`' 'fleet monitoring must replace legacy Monitors that bypass the collector'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md '`CURRENT_PRE_DISPATCH_CONFIG` equals `$PMM_MONITOR_CONFIG`' 'fleet monitoring must replace a Monitor when its bound configuration changes'

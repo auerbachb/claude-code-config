@@ -217,7 +217,7 @@ printf '%s\n' "$STUB_GATE_JSON"
 SH
 cat > "$LIVE/pr-state.sh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$STUB_BUNDLE_PATH"
+if [[ "${3:-}" == --stdout ]]; then cat "$STUB_BUNDLE_PATH"; else printf '%s\n' "$STUB_BUNDLE_PATH"; fi
 SH
 cat > "$BIN/gh" <<'SH'
 #!/usr/bin/env bash
@@ -335,8 +335,24 @@ write_bundle([comment]);r=run();p=packet(r);assert p['delta']['new_findings'][0]
 assert not run().stdout
 comment['body']='Fix the second null dereference as well.';write_bundle([comment]);p=packet(run());assert len(p['delta']['new_findings'])==1;ack(p)
 d=write_bundle([]);d['comments']['conversation']=[comment];bundle.write_text(json.dumps(d));p=packet(run());assert p['delta']['new_findings'][0]['item']['endpoint']=='conversation';ack(p)
-assert 'second null' not in json.dumps(read()['pmm_pre_dispatch']['snapshot']),'full bodies leaked into compact state'
+assert read()['pmm_pre_dispatch']['snapshot']['data']['evidence'][0]['items'][0]['body_excerpt']==comment['body']
+assert 'body' not in read()['pmm_pre_dispatch']['snapshot']['data']['evidence'][0]['items'][0]
 print('PASS: real collector detects new and edited findings with stable gate and endpoint identity')
+deleted=dict(comment,user=None,id=92);write_bundle([deleted]);p=packet(run())
+assert p['delta']['new_findings'][0]['item']['id']==92 and not p.get('diagnostic')
+item=p['evidence'][0]['items'][0];assert item['actor'] is None and item['body_excerpt']==deleted['body'] and item['id']==92 and item['created_at']==deleted['created_at']
+assert bundle.exists(),'collector deleted a shared source fixture'
+# Restart/outbox replay needs no temp bundle; acknowledgement preserves latest
+# bounded snapshot evidence and clears only its pending delivery.
+bundle.unlink();replayed=packet(run());assert replayed==p;ack(p);write_bundle()
+print('PASS: deleted actor findings preserve identity/body/time as unknown and survive replay without source files')
+large_comments=[dict(comment,id=110+i,body='x'*1024+' P1: fix the late regression '+str(i)) for i in range(4)]
+write_bundle(large_comments);p=packet(run());ev=p['evidence'][0]
+assert len(p['delta']['new_findings'])==3 and len(ev['items'])==3 and ev['item_count']==4 and ev['items_truncated'] is True
+assert all(len(x['body_excerpt'])==256 and x['body_truncated'] for x in ev['items']);ack(p)
+large_comments[0]['body']+=' changed beyond sampled IDs/excerpts';write_bundle(large_comments);p=packet(run());assert len(p['delta']['new_findings'])==1 and p['delta']['new_findings'][0]['item']['endpoint']=='aggregate' and p['delta']['new_findings'][0]['requires_source_recovery'];ack(p)
+print('PASS: compact evidence caps3x256 while full classification/body hashes retain every finding and detect edits beyond excerpts')
+
 missing_time=dict(comment);missing_time.pop('created_at');write_bundle([missing_time]);r=run();p=packet(r);assert r.returncode==5 and p['diagnostic'],(r.stdout,r.stderr);ack(p)
 print('PASS: missing actionable-comment timestamps diagnose rather than disappearing during classification')
 
@@ -436,6 +452,9 @@ print('PASS: failed jq/write and concurrent receipt CAS produce diagnostics and 
 # old gate-only CAS would overwrite it. Second race also publishes an outbox.
 skill_text=(root/'.claude/skills/pr-monitor-and-manage/SKILL.md').read_text()
 backoff=re.search(r'<!-- test-anchor: pmm-pre-dispatch-backoff -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+claim=re.search(r'<!-- test-anchor: pmm-pre-dispatch-lifecycle-claim -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+authorize=re.search(r'<!-- test-anchor: pmm-pre-dispatch-lifecycle-authorize -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+armed=re.search(r'<!-- test-anchor: pmm-pre-dispatch-lifecycle-armed-receipt -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
 publication=next(b for b in re.findall(r'```bash\n(.*?)\n```',skill_text,re.S) if b.startswith('NOW=$(date -u +%FT%TZ)') and 'pmm_pre_dispatch_version' in b)
 for outbox_race in (False,True):
  hf=home('schedule-race-'+str(outbox_race));ef=dict(env,HOME=str(hf));write_bundle()
@@ -444,7 +463,7 @@ for outbox_race in (False,True):
  sf=hf/'.claude/session-state.json';d=json.loads(sf.read_text());d['pmm_digest']=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest();d['pmm_digest_streak']=0;d['pmm_idle_streak']=0;sf.write_text(json.dumps(d))
  before_gate=d['pmm_pre_dispatch'];writer=tmp/('schedule-writer-'+str(outbox_race)+'.sh');winner=tmp/('schedule-winner-'+str(outbox_race)+'.json');once=tmp/('schedule-once-'+str(outbox_race))
  setup='set -eu\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\nPMM_INTERNAL_TICK=true\nDIGEST=owner-digest\nPREV=old-digest\nROW_DIGEST=owner-row\nPMM_CADENCE=10m\n'
- setup+=backoff+'\nIDLE_STREAK=17\nEFFECTIVE_CADENCE=30m\nMONITOR_TASK_ID=77\nMONITOR_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\nPMM_AUTHOR=alice\n'+publication+'\n'
+ setup+=backoff+'\nIDLE_STREAK=17\nEFFECTIVE_CADENCE=30m\nMONITOR_TASK_ID=77\nMONITOR_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\nPMM_AUTHOR=alice\nPMM_TICK_GENERATION=gen-live\nNEW_MONITOR_GENERATION=fixture-next\n'+claim+'\n'+publication+'\n'
  setup+='"$SESSION_STATE_SH" --set '+shlex.quote('.pmm_next_expected_tick_at="2099-01-01T00:00:00Z"')+' --set '+shlex.quote('.unrelated_owner_marker="keep"')+'\n'
  if outbox_race:
   owner_event=dict(initial,event_id='c'*64)
@@ -469,6 +488,35 @@ for outbox_race in (False,True):
   assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',fresh['event_id']],e=ef).returncode==0
   r=run(e=ef);assert r.returncode==0 and r.stdout=='',(r.stdout,r.stderr)
 print('PASS: real production schedule-writer race preserves whole winning transaction and outbox; stale diagnostic cannot write; fresh quiet retry is silent')
+
+# Actual lifecycle fences: a tick that passed Step0 cannot adopt a later owner;
+# direct starts race on one claim and uncertain remote outcomes retain it.
+hc=home('lifecycle-claim');ec=dict(env,HOME=str(hc));sc=hc/'.claude/session-state.json'
+def lifecycle(body):
+ return subprocess.run(['bash','-c','set -eu\nNEW_MONITOR_GENERATION=fixture-next\nSESSION_STATE_SH='+shlex.quote(str(real_state))+'\n'+body],env=ec,text=True,capture_output=True)
+lifecycle_base='PMM_INTERNAL_TICK=true\nPMM_TICK_GENERATION=gen-live\nPMM_MONITOR_CONFIG={}\n'
+sc.write_text(json.dumps({'pmm_active':True,'pmm_monitor_generation':'new-owner','pmm_monitor_task_id':222,'pmm_pre_dispatch_config':{'repo':'new'}}));winner=sc.read_bytes()
+r=lifecycle(lifecycle_base+claim);assert r.returncode!=0 and sc.read_bytes()==winner,(r.stdout,r.stderr)
+sc.write_text(json.dumps({'pmm_active':True,'pmm_monitor_generation':'gen-live','pmm_monitor_task_id':111}))
+r=lifecycle(lifecycle_base+claim+'\nprintf "%s\n%s" "$PMM_REARM_CLAIM" "$PMM_LIFECYCLE_EXPECT"');assert r.returncode==0,r.stderr
+lines=r.stdout.splitlines();owned_claim=json.loads(lines[-2]);owned_expect=json.loads(lines[-1]);claimed=sc.read_bytes()
+r=lifecycle('PMM_INTERNAL_TICK=false\nPMM_MONITOR_CONFIG={"other":true}\n'+claim);assert r.returncode!=0 and sc.read_bytes()==claimed
+# Authorization before a tool call rejects a later stop/owner write without
+# rewriting it; conditional publication likewise cannot overwrite that owner.
+d=json.loads(claimed);d.update(pmm_monitor_generation='winner',pmm_monitor_task_id=333);sc.write_text(json.dumps(d));winner=sc.read_bytes()
+restore='PMM_REARM_CLAIM='+shlex.quote(json.dumps(owned_claim))+'\nPMM_LIFECYCLE_EXPECT='+shlex.quote(json.dumps(owned_expect))+'\n'
+r=lifecycle(restore+authorize);assert r.returncode!=0 and sc.read_bytes()==winner
+r=lifecycle(restore+'MONITOR_TASK_ID=444\nMONITOR_GENERATION=stale-arm\nPMM_MONITOR_CONFIG={}\nEFFECTIVE_CADENCE=5m\nPMM_AUTHOR=alice\nIDLE_STREAK=0\n'+publication);assert r.returncode!=0 and sc.read_bytes()==winner
+# Successful direct claim/publication releases the claim atomically. A crash or
+# unknown tool result prior to publication keeps the stop guard + receipt.
+sc.write_text('{}');r=lifecycle('PMM_INTERNAL_TICK=false\nPMM_MONITOR_CONFIG={}\nNEW_MONITOR_GENERATION=direct-start\n'+claim+'\n'+authorize+'\nMONITOR_TASK_ID=555\nNEW_MONITOR_GENERATION=direct-start\n'+armed+'\nEFFECTIVE_CADENCE=5m\nPMM_AUTHOR=alice\nIDLE_STREAK=0\n'+publication);assert r.returncode==0,(r.stdout,r.stderr)
+d=json.loads(sc.read_text());assert d['pmm_rearm'] is None and d['pmm_monitor_task_id']==555 and d['pmm']['stop_requested'] is False
+print('PASS: production lifecycle claim/action authorization/publication reject stale generations and concurrent starts, preserve uncertain receipts and newer owner')
+for missing_id in ('','null'):
+ before=sc.read_bytes();r=lifecycle('MONITOR_TASK_ID='+shlex.quote(missing_id)+'\nNEW_MONITOR_GENERATION=direct-start\n'+armed)
+ assert r.returncode!=0 and sc.read_bytes()==before,(r.stdout,r.stderr)
+print('PASS: missing/unknown Monitor task IDs cannot create an armed receipt')
+
 
 # Identical acknowledged collector errors retry locally, with a durable wake every
 # third observation; new fingerprints wake immediately and clean collection resets them.
@@ -536,6 +584,112 @@ write_bundle();r=run(e=em);mp=json.loads((hm/'.claude/session-state.json').read_
 md=json.loads((hm/'.claude/session-state.json').read_text());md['pmm_digest']=hashlib.sha256(subprocess.check_output(['jq','-cnS','[[7,"abc123","CLEAN","REVIEW_REQUIRED",0,0]]']).rstrip(b'\n')).hexdigest();md['pmm_digest_streak']=0;md['pmm_idle_streak']=0;(hm/'.claude/session-state.json').write_text(json.dumps(md))
 r=run(e=em);md=json.loads((hm/'.claude/session-state.json').read_text())['pmm_pre_dispatch'];assert r.returncode==0 and not r.stdout and md['errors']==2 and md['error_streak']==0 and md['last_error_at']
 print('PASS: error/recovery metrics retain cumulative counts and new transitions get distinct sequence IDs')
+
+
+# Wake carries the configured bound and invokes only the canonical main lifecycle.
+# Execute its actual flag/request/result fences; no live Skill/Monitor API exists
+# on this host, so tool invocation itself is deliberately not simulated as proof.
+lifecycle_text=(root/'.claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md').read_text()
+wake_text=(root/'.claude/skills/pr-monitor-and-manage-wake/SKILL.md').read_text()
+pause_config=next(b for b in re.findall(r'```bash\n(.*?)\n```',lifecycle_text,re.S) if 'CONFIG_AT_PAUSE=$(jq' in b)
+wake_flags=next(b for b in re.findall(r'```bash\n(.*?)\n```',wake_text,re.S) if b.startswith('CONFIG=$(jq') and 'PMM_FLAGS=' in b)
+wake_request=re.search(r'<!-- test-anchor: pmm-wake-resume-request -->\s*```bash\n(.*?)\n```',wake_text,re.S).group(1)
+wake_verify=re.search(r'<!-- test-anchor: pmm-wake-resume-verify -->\s*```bash\n(.*?)\n```',wake_text,re.S).group(1)
+sc.write_text('{}')
+pause_setup='PMM_AUTHOR=alice\nOWNER_REPO=org/repo\nPMM_CADENCE=5m\nPMM_MAX_PARALLEL=3\nPMM_MAX_DEEP_PRS=7\nPMM_IDLE_PAUSE_AFTER=3\nPMM_AUTO_WAKE=false\nPMM_AUTO_WAKE_CADENCE=60m\nPMM_CONFIRM_MERGES=true\nPR_LIST="[]"\n'
+r=lifecycle(pause_setup+pause_config+'\n"$SESSION_STATE_SH" --set ".pmm.config_at_pause=$CONFIG_AT_PAUSE"\nPMM_WAKE_EXPECT=$(jq -cn --argjson cfg "$CONFIG_AT_PAUSE" \'{paused_at:"2026-10-31T02:00:00Z",config:$cfg}\')\n'+wake_flags+'\n'+wake_request)
+assert r.returncode==0 and '--max-deep-prs 7' in r.stdout and r.stdout.startswith('/pr-monitor-and-manage '),(r.stdout,r.stderr)
+assert 'while sleep' not in wake_text[wake_text.index('## Step 4b:'):]
+# Bind a delayed wake to its original pause/config before work, and again at
+# claimed publication. Unknown/changed state cannot turn it into a fresh start.
+bound_request=r.stdout.strip()
+saved=json.loads(sc.read_text())['pmm']['config_at_pause']
+paused='2026-10-31T02:00:00Z'
+paused_state={'pmm_active':False,'pmm_monitor_task_id':None,'pmm_monitor_generation':None,'pmm':{'paused_at':paused,'config_at_pause':saved,'stop_requested':False}}
+sc.write_text(json.dumps(paused_state))
+bound_setup='ARGUMENTS='+shlex.quote(bound_request.split(' ',1)[1])+'\nPMM_PRE_DISPATCH_SH='+shlex.quote(str(live/'pmm-pre-dispatch.sh'))+'\n'
+r=lifecycle(bound_setup+block('pmm-pre-dispatch-tick-gate'));assert r.returncode==0,(r.stdout,r.stderr)
+for changed in [dict(paused_state,pmm={'paused_at':paused,'config_at_pause':dict(saved,author='bob')}),{'pmm_active':True,'pmm_monitor_task_id':999,'pmm_monitor_generation':'new-owner','pmm':{}}]:
+ sc.write_text(json.dumps(changed));winner=sc.read_bytes();r=lifecycle(bound_setup+block('pmm-pre-dispatch-tick-gate'));assert r.returncode!=0 and sc.read_bytes()==winner,(r.stdout,r.stderr)
+# Also catch a change AFTER the early gate, before lifecycle claim.
+sc.write_text(json.dumps(paused_state));resume_expected={'paused_at':paused,'config':saved}
+resume_setup='NEW_MONITOR_GENERATION=resumed\nPMM_INTERNAL_TICK=false\nRESUMING_FROM_PAUSE=true\nPMM_RESUME_EXPECT='+shlex.quote(json.dumps(resume_expected))+'\nPMM_MONITOR_CONFIG={}\n'
+changed=dict(paused_state,pmm_monitor_generation='newer',pmm_monitor_task_id=777);sc.write_text(json.dumps(changed));winner=sc.read_bytes()
+r=lifecycle(resume_setup+claim);assert r.returncode!=0 and sc.read_bytes()==winner,(r.stdout,r.stderr)
+sc.write_text(json.dumps(paused_state));r=lifecycle(resume_setup+claim+'\n'+authorize+'\nMONITOR_TASK_ID=555\nNEW_MONITOR_GENERATION=resumed\n'+armed+'\nEFFECTIVE_CADENCE=5m\nPMM_AUTHOR=alice\nIDLE_STREAK=8\n'+publication);assert r.returncode==0,(r.stdout,r.stderr)
+d=json.loads(sc.read_text());assert d['pmm']['paused_at'] is None and d['pmm']['config_at_pause'] is None and d['pmm_idle_streak']==0 and d['pmm_rearm'] is None and d['pmm_monitor_task_id']==555
+r=lifecycle('ARGUMENTS="--resume-paused-at= --resume-config-sha="\nPMM_PRE_DISPATCH_SH=x\n'+block('pmm-pre-dispatch-tick-gate'));assert r.returncode==2,(r.stdout,r.stderr)
+print('PASS: actual bound wake entry and resume claim reject newer owner/config; successful claimed publication clears pause/digests atomically; malformed binding never becomes direct start')
+# Execute resume capture/authorize/confirmed-clear in independent processes.
+# Stop itself is a typed fake result; there is no live Claude tool on this host.
+capture=re.search(r'<!-- test-anchor: pmm-resume-capture -->\s*```bash\n(.*?)\n```',skill_text,re.S).group(1)
+stop_authorize=re.search(r'<!-- test-anchor: pmm-resume-stop-authorize -->\s*```bash\n(.*?)\n```',lifecycle_text,re.S).group(1)
+stop_record=re.search(r'<!-- test-anchor: pmm-resume-stop-record -->\s*```bash\n(.*?)\n```',lifecycle_text,re.S).group(1)
+sc.write_text(json.dumps({'pmm_active':False,'pmm_monitor_task_id':111,'pmm_monitor_generation':'old-main','pmm':{'paused_at':paused,'config_at_pause':saved,'auto_wake_monitor_task_id':222,'auto_wake_monitor_generation':'old-auto'}}))
+r=lifecycle(capture);assert r.returncode==0,(r.stdout,r.stderr)
+frozen=json.loads(next(x for x in r.stdout.splitlines() if x.startswith('PMM_RESUME_EXPECT=')).split('=',1)[1])
+restore_stop='PMM_RESUME_EXPECT='+shlex.quote(json.dumps(frozen))+'\nPMM_RESUME_TASK_KIND=main\n'
+r=lifecycle(restore_stop+stop_authorize);assert r.returncode==0 and 'TASK_ID=111' in r.stdout,(r.stdout,r.stderr)
+frozen=json.loads(next(x for x in r.stdout.splitlines() if x.startswith('PMM_RESUME_EXPECT=')).split('=',1)[1])
+restore_stop='PMM_RESUME_EXPECT='+shlex.quote(json.dumps(frozen))+'\nPMM_RESUME_TASK_KIND=main\n'
+assert json.loads(sc.read_text())['pmm']['stop_requested'] is True
+# Even if the day interlock marked active, a queued tick cannot treat a pause
+# as a fresh resume or reach teardown.
+r=lifecycle('PMM_INTERNAL_TICK=true\n'+capture);assert r.returncode==0 and 'Ignoring a queued' in r.stdout
+
+original=sc.read_bytes();d=json.loads(original);d['pmm_monitor_task_id']=999;d['pmm_monitor_generation']='newer';sc.write_text(json.dumps(d));winner=sc.read_bytes()
+r=lifecycle(restore_stop+stop_authorize);assert r.returncode!=0 and sc.read_bytes()==winner
+r=lifecycle(restore_stop+'PMM_RESUME_STOP_REQUIRED=true\nPMM_RESUME_STOP_CONFIRMED=true\nPMM_CONFIRMED_STOP_TASK_ID=111\n'+stop_record);assert r.returncode!=0 and sc.read_bytes()==winner
+sc.write_bytes(original)
+r=lifecycle(restore_stop+'PMM_RESUME_STOP_REQUIRED=true\nPMM_RESUME_STOP_CONFIRMED=false\nPMM_CONFIRMED_STOP_TASK_ID=111\n'+stop_record);assert r.returncode!=0 and sc.read_bytes()==original
+r=lifecycle(restore_stop+'PMM_RESUME_STOP_REQUIRED=true\nPMM_RESUME_STOP_CONFIRMED=true\nPMM_CONFIRMED_STOP_TASK_ID=999\n'+stop_record);assert r.returncode!=0 and sc.read_bytes()==original
+r=lifecycle(restore_stop+'PMM_RESUME_STOP_REQUIRED=true\nPMM_RESUME_STOP_CONFIRMED=true\nPMM_CONFIRMED_STOP_TASK_ID=111\n'+stop_record);assert r.returncode==0,(r.stdout,r.stderr)
+frozen=json.loads(next(x for x in r.stdout.splitlines() if x.startswith('PMM_RESUME_EXPECT=')).split('=',1)[1]);d=json.loads(sc.read_text());assert d['pmm_monitor_task_id'] is None and d['pmm']['auto_wake_monitor_task_id']==222 and d['pmm']['paused_at']==paused
+r=lifecycle('PMM_RESUME_EXPECT='+shlex.quote(json.dumps(frozen))+'\nPMM_RESUME_TASK_KIND=auto\n'+stop_authorize+'\nPMM_RESUME_STOP_CONFIRMED=true\nPMM_CONFIRMED_STOP_TASK_ID=222\n'+stop_record);assert r.returncode==0,(r.stdout,r.stderr)
+d=json.loads(sc.read_text());assert d['pmm']['auto_wake_monitor_task_id'] is None and d['pmm']['config_at_pause']==saved
+print('PASS: separate-process resume teardown targets frozen IDs, rejects newer owner/wrong or uncertain tool results, and conditionally clears only confirmed old identities')
+
+
+sc.write_text(json.dumps({'pmm_active':True,'pmm_monitor_task_id':555,'pmm_monitor_generation':'wake','pmm_pre_dispatch_version':2,'pmm_pre_dispatch_config':{'repo':'org/repo','author':'alice','base':'5m','max_deep':'7'},'pmm':{}}))
+r=lifecycle('CONFIG='+shlex.quote(json.dumps(saved))+'\n'+wake_verify);assert r.returncode==0,(r.stdout,r.stderr)
+d=json.loads(sc.read_text());d['pmm_pre_dispatch_config']['repo']='other/repo';sc.write_text(json.dumps(d));winner=sc.read_bytes()
+r=lifecycle('CONFIG='+shlex.quote(json.dumps(saved))+'\n'+wake_verify);assert r.returncode!=0 and sc.read_bytes()==winner
+print('PASS: actual pause/wake fences retain configured bound, delegate arming, verify canonical publication, and reject a different fleet without writes')
+
+# Count actual deep-helper invocations at the configured default fleet limit.
+countlog=tmp/'fleet-call-count';fleet_home=home('bounded-fleet');fleet_env=dict(env,HOME=str(fleet_home),FLEET_CALLS=str(countlog))
+(live/'merge-gate.sh').write_text('#!/usr/bin/env bash\nprintf "gate %s\\n" "$1" >> "$FLEET_CALLS"\nprintf "%s" "$STUB_GATE_JSON"\n')
+(live/'pr-state.sh').write_text('#!/usr/bin/env bash\nprintf "state %s\\n" "$2" >> "$FLEET_CALLS"\njq --argjson n "$2" \'.pr.number=$n\' "$STUB_BUNDLE_PATH"\n')
+write_bundle()
+fleet_env['STUB_PULLS_JSON']=json.dumps([{'number':n,'headRefOid':'abc123','url':f'https://github.com/org/repo/pull/{n}'} for n in range(1,26)])
+r=run(e=fleet_env);assert r.returncode==0,(r.stdout,r.stderr)
+fs=fleet_home/'.claude/session-state.json';d=json.loads(fs.read_text());fp=d['pmm_pre_dispatch']['pending_event'];assert len(d['pmm_pre_dispatch']['snapshot']['data']['prs'])==25
+assert len(countlog.read_text().splitlines())==50
+fleet_env['STUB_PULLS_JSON']=json.dumps([{'number':n,'headRefOid':'abc123','url':f'https://github.com/org/repo/pull/{n}'} for n in range(1,501)])
+r=run(e=fleet_env);assert json.loads(fs.read_text())['pmm_pre_dispatch']['pending_event']==fp and len(countlog.read_text().splitlines())==50
+assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',fp['event_id']],e=fleet_env).returncode==0
+prior=json.loads(fs.read_text())['pmm_pre_dispatch']['snapshot'];r=run(e=fleet_env);d=json.loads(fs.read_text())
+assert r.returncode==5 and d['pmm_pre_dispatch']['snapshot']==prior and d['pmm_pre_dispatch']['pending_event']['diagnostic'] and len(countlog.read_text().splitlines())==50
+fleet_env['HOME']=str(home('small-bound'));small=argv+['--max-deep-prs','2'];r=run(small,e=fleet_env);assert r.returncode==5 and len(countlog.read_text().splitlines())==50
+print('PASS: default25 fleet executes50 helper calls;500 discovery and smaller configured bound perform zero deep polls, retain prior snapshot/pending evidence, and diagnose')
+# Raw history exceeds this host's argv limit, multiplied across the default25
+# fleet. Complete IDs/bodies stay on stdin; persisted/model-visible state remains
+# fixed-size samples + per-PR aggregate hashes/counts, including unsampled edits.
+stress_home=home('large-review-fleet');stress_env=dict(fleet_env,HOME=str(stress_home))
+stress_env['STUB_PULLS_JSON']=json.dumps([{'number':n,'headRefOid':'abc123','url':f'https://github.com/org/repo/pull/{n}'} for n in range(1,26)])
+long_path='/'.join(['fixture']*180)
+stress_comments=[dict(comment,id=10000+i,body='Minor fix',path=long_path) for i in range(2000)]
+write_bundle(stress_comments);raw_size=bundle.stat().st_size;assert raw_size>os.sysconf('SC_ARG_MAX'),raw_size
+r=run(e=stress_env);assert r.returncode==0 and 'Argument list too long' not in r.stderr,(r.stdout,r.stderr)
+stress_file=stress_home/'.claude/session-state.json';sd=json.loads(stress_file.read_text());sp=sd['pmm_pre_dispatch']['pending_event'];sr=sd['pmm_pre_dispatch']['snapshot']['data']['prs']
+assert len(sr)==25 and all(x['finding_count']==2000 and len(x['findings'])==3 and len(x['finding_fingerprint'])==64 for x in sr)
+assert len(json.dumps(sp).encode())<os.sysconf('SC_ARG_MAX')//4 and stress_file.stat().st_size<os.sysconf('SC_ARG_MAX')//2
+assert run([str(live/'pmm-pre-dispatch.sh'),'--ack',sp['event_id']],e=stress_env).returncode==0
+stress_comments[0]['body']='Minor edited finding outside every retained ID sample';write_bundle(stress_comments)
+r=run(e=stress_env);assert r.returncode==0,(r.stdout,r.stderr)
+sd=json.loads(stress_file.read_text());sp=sd['pmm_pre_dispatch']['pending_event'];assert not sp['delta']['changed'] and len(sp['delta']['new_findings'])==25 and all(x['item']['endpoint']=='aggregate' and x['requires_source_recovery'] for x in sp['delta']['new_findings'])
+assert len(json.dumps(sp).encode())<os.sysconf('SC_ARG_MAX')//4 and stress_file.stat().st_size<os.sysconf('SC_ARG_MAX')//2
+print('PASS:25x2000 comments (raw per-PR bytes='+str(raw_size)+') exceed ARG_MAX without E2BIG; bounded persisted packets and aggregate changes detect unsampled edits on all25PRs')
 
 
 PYTEST

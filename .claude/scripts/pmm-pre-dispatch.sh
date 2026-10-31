@@ -4,7 +4,7 @@
 #
 # Usage:
 #   pmm-pre-dispatch.sh --repo owner/name --author login --generation TOKEN \
-#     [--base-cadence-min MIN] [--idle-pause-after TICKS] [--skill-args 'PMM_FLAGS']
+#     [--base-cadence-min MIN] [--idle-pause-after TICKS] [--max-deep-prs N] [--skill-args 'PMM_FLAGS']
 #   pmm-pre-dispatch.sh --repo owner/name --author login --generation TOKEN --monitor-command
 #   pmm-pre-dispatch.sh --ack EVENT_ID [--repo owner/name]
 #   pmm-pre-dispatch.sh --repo owner/name --author login --generation TOKEN --fixture snapshot.json
@@ -38,6 +38,8 @@ BASE_CADENCE_MIN=5
 IDLE_PAUSE_AFTER=3
 DIAGNOSTIC_WAKE_INTERVAL=3
 DEADLINE_UNKNOWN_WAKE_INTERVAL=3
+# Discovery is capped at 500; deep collection is deliberately a smaller pilot.
+MAX_DEEP_PRS=25
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; n = 1; next } { exit } END { exit(n ? 0 : 1) }' "$0" ||
@@ -64,14 +66,14 @@ normalize_skill_args() {
         SKILL_ARGS_SHELL+=" $quoted"
         ((i+=1))
         ;;
-      --repo|--author|--cadence|--max-parallel|--idle-pause-after|--auto-wake-cadence)
+      --repo|--author|--cadence|--max-parallel|--idle-pause-after|--max-deep-prs|--auto-wake-cadence)
         (( i + 1 < ${#tokens[@]} )) || fail "skill arg $arg is missing its value"
         value="${tokens[$((i+1))]}"
         case "$arg" in
           --repo) [[ "$value" == "$REPO" ]] || fail "forwarded repo differs from collector repo" ;;
           --author) [[ "$value" == "$AUTHOR" ]] || fail "forwarded author differs from collector author" ;;
           --cadence|--auto-wake-cadence) [[ "$value" =~ ^[1-9][0-9]{0,5}m$ ]] || fail "invalid forwarded cadence" ;;
-          --max-parallel|--idle-pause-after) [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "invalid forwarded integer for $arg" ;;
+          --max-parallel|--idle-pause-after|--max-deep-prs) [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "invalid forwarded integer for $arg" ;;
         esac
         printf -v quoted '%q' "$arg"
         SKILL_ARGS_SHELL+=" $quoted"
@@ -95,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --fixture) FIXTURE="${2:-}"; [[ -n "$FIXTURE" ]] || fail "--fixture requires a JSON snapshot path"; shift 2 ;;
     --skill-args) SKILL_ARGS="${2:-}"; shift 2 ;;
     --base-cadence-min) BASE_CADENCE_MIN="${2:-}"; shift 2 ;;
+    --max-deep-prs) MAX_DEEP_PRS="${2:-}"; shift 2 ;;
     --idle-pause-after) IDLE_PAUSE_AFTER="${2:-}"; shift 2 ;;
     *) fail "unknown argument: $1" ;;
   esac
@@ -106,6 +109,7 @@ if [[ -z "$ACK_ID" ]]; then
   [[ "$GENERATION" =~ ^[A-Za-z0-9_.-]+$ && "$GENERATION" != --* ]] || fail "--generation must be a non-secret token"
   [[ "$BASE_CADENCE_MIN" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--base-cadence-min must be a positive integer"
   [[ "$IDLE_PAUSE_AFTER" =~ ^[1-9][0-9]{0,5}$ ]] || fail "--idle-pause-after must be a positive integer"
+  [[ "$MAX_DEEP_PRS" =~ ^[1-9][0-9]{0,2}$ && "$MAX_DEEP_PRS" -le 500 ]] || fail "--max-deep-prs must be 1..500"
   normalize_skill_args
 fi
 for dep in jq shasum; do command -v "$dep" >/dev/null 2>&1 || emit_unpersisted_diagnostic "required dependency $dep is unavailable"; done
@@ -117,9 +121,9 @@ if [[ "$PRINT_COMMAND" == true ]]; then
   [[ -z "$ACK_ID" && -z "$FIXTURE" ]] || fail "--monitor-command cannot acknowledge or use fixtures"
   BOUNDED_RUN_LIB="$SCRIPT_DIR/lib/bounded-run.sh"
   [[ -r "$BOUNDED_RUN_LIB" ]] || fail "bounded-run.sh unavailable; refusing an unbounded Monitor command"
-  printf 'STATE_HELPER=%q\nGATE=%q\nBOUND_RUN_LIB=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nFORWARD=%q\nFORWARD_SHELL=%q\n' \
+  printf 'STATE_HELPER=%q\nGATE=%q\nBOUND_RUN_LIB=%q\nREPO=%q\nAUTHOR=%q\nGENERATION=%q\nBASE=%q\nIDLE=%q\nMAX_DEEP=%q\nFORWARD=%q\nFORWARD_SHELL=%q\n' \
     "$STATE_HELPER" "$SCRIPT_DIR/pmm-pre-dispatch.sh" "$BOUNDED_RUN_LIB" "$REPO" "$AUTHOR" "$GENERATION" \
-    "$BASE_CADENCE_MIN" "$IDLE_PAUSE_AFTER" "$SKILL_ARGS" "$SKILL_ARGS_SHELL"
+    "$BASE_CADENCE_MIN" "$IDLE_PAUSE_AFTER" "$MAX_DEEP_PRS" "$SKILL_ARGS" "$SKILL_ARGS_SHELL"
   cat <<'COMMAND'
 if [[ ! -r "$BOUND_RUN_LIB" ]]; then
   echo "pmm-pre-dispatch Monitor: bounded-run.sh unavailable; waking for diagnosis and stopping this loop" >&2
@@ -156,7 +160,7 @@ while :; do
   sleep "$(( ${cadence%m} * 60 ))" || exit 0
   rc=0
   run_bounded "$TIMEOUT_SECS" "$GATE" --repo "$REPO" --author "$AUTHOR" --generation "$GENERATION" \
-    --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --skill-args "$FORWARD" || rc=$?
+    --base-cadence-min "$BASE" --idle-pause-after "$IDLE" --max-deep-prs "$MAX_DEEP" --skill-args "$FORWARD" || rc=$?
   [[ ! -s "$CAPTURE_ERR" ]] || cat "$CAPTURE_ERR" >&2 || true
   if [[ "$BOUNDED_TIMED_OUT" == 1 || "$BOUNDED_CLOCK_UNREADABLE" == 1 ]]; then
     echo "pmm-pre-dispatch Monitor: collector did not complete inside its bound; waking for diagnosis and retry" >&2
@@ -317,47 +321,61 @@ else
   if ! jq -e 'type == "array" and all(.[]; (.number|type)=="number" and .number>0 and (.headRefOid|type)=="string" and (.headRefOid|length)>0 and (.url|type)=="string") and ([.[].number]|unique|length)==length' >/dev/null <<<"$pulls"; then
     queue_diagnostic "open PR discovery returned malformed data"
   fi
+  fleet_count=$(jq 'length' <<<"$pulls") || queue_diagnostic "fleet size unreadable"
+  if (( fleet_count > MAX_DEEP_PRS )); then
+    queue_diagnostic "fleet has $fleet_count PRs; deep collection limit is $MAX_DEEP_PRS; narrow the author scope before retrying"
+  fi
+  # --stdout creates no bundle on disk, including failed/interrupted calls.
+  # Minimal source evidence is carried in bounded session-state snapshots.
   PRS='[]'; EVIDENCE='[]'; FINDINGS='[]'; ERROR=""
   numbers=$(jq -r '.[].number' <<<"$pulls" | sort -n -u) || queue_diagnostic "PR-number projection failed"
   for number in $numbers; do
     gate=""; gate_rc=0
     gate="$(cd "$PWD" && "$MERGE_GATE" "$number")" || gate_rc=$?
     if [[ $gate_rc -gt 1 ]] || ! jq -e 'type == "object" and (.head_sha|type)=="string" and (.met|type)=="boolean" and (.merge_state|type)=="string" and (.mergeable|type)=="string" and (.review_decision|type)=="string" and (.ci_status|type)=="object" and (.ci_status.failing|type)=="number" and (.unresolved_thread_count|type)=="number" and (.missing|type)=="array" and (.human_changes_requested|type)=="array" and (.authorship|type)=="string"' >/dev/null 2>&1 <<<"$gate"; then ERROR="merge-gate unavailable or malformed for PR #$number"; break; fi
-    bundle_path=""; bundle_rc=0
-    bundle_path="$("$PR_STATE" --pr "$number")" || bundle_rc=$?
-    if [[ $bundle_rc -ne 0 || ! -r "$bundle_path" ]]; then ERROR="pr-state unavailable for PR #$number"; break; fi
+    bundle_rc=0
+    bundle_json="$("$PR_STATE" --pr "$number" --stdout)" || bundle_rc=$?
+    if [[ $bundle_rc -ne 0 || -z "$bundle_json" ]]; then ERROR="pr-state unavailable for PR #$number"; break; fi
     discovered_sha=$(jq -r --argjson n "$number" '.[] | select(.number==$n) | .headRefOid' <<<"$pulls")
     [[ "$(jq -r .head_sha <<<"$gate")" == "$discovered_sha" ]] || { ERROR="HEAD changed during collection for PR #$number"; break; }
-    if ! jq -e --argjson n "$number" --arg owner "${REPO%/*}" --arg repo "${REPO#*/}" --arg sha "$(jq -r '.head_sha' <<<"$gate")" 'type == "object" and .pr.number==$n and (.pr.owner|ascii_downcase)==($owner|ascii_downcase) and (.pr.repo|ascii_downcase)==($repo|ascii_downcase) and .pr.head_sha==$sha and (.run_started_at|type)=="string" and (.comments.reviews|type)=="array" and (.comments.inline|type)=="array" and (.comments.conversation|type)=="array" and (.check_runs.all|type)=="array" and (.check_runs.passing_runs|type)=="array" and (.check_runs.failing_runs|type)=="array" and (.check_runs.in_progress_runs|type)=="array" and (.commit_statuses|type)=="array" and all((.comments.reviews[]?,.comments.inline[]?,.comments.conversation[]?); (.id|type)=="number" and (.user.login|type)=="string" and (.body==null or (.body|type)=="string")) and all(.comments.inline[],.comments.conversation[]; (.created_at|type)=="string") and all(.comments.reviews[]; (.submitted_at|type)=="string" or .state=="PENDING")'  >/dev/null 2>&1 "$bundle_path"; then
+    if ! jq -e --argjson n "$number" --arg owner "${REPO%/*}" --arg repo "${REPO#*/}" --arg sha "$(jq -r '.head_sha' <<<"$gate")" 'type == "object" and .pr.number==$n and (.pr.owner|ascii_downcase)==($owner|ascii_downcase) and (.pr.repo|ascii_downcase)==($repo|ascii_downcase) and .pr.head_sha==$sha and (.run_started_at|type)=="string" and (.comments.reviews|type)=="array" and (.comments.inline|type)=="array" and (.comments.conversation|type)=="array" and (.check_runs.all|type)=="array" and (.check_runs.passing_runs|type)=="array" and (.check_runs.failing_runs|type)=="array" and (.check_runs.in_progress_runs|type)=="array" and (.commit_statuses|type)=="array" and all((.comments.reviews[]?,.comments.inline[]?,.comments.conversation[]?); (.id|type)=="number" and (.user==null or ((.user|type)=="object" and (.user.login|type)=="string")) and (.body==null or (.body|type)=="string")) and all(.comments.inline[],.comments.conversation[]; (.created_at|type)=="string") and all(.comments.reviews[]; (.submitted_at|type)=="string" or .state=="PENDING")'  >/dev/null 2>&1 <<<"$bundle_json"; then
       ERROR="pr-state bundle malformed for PR #$number"; break
     fi
-    if ! jq -e --argjson now "$(date -u +%s)" '(.run_started_at | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) as $at | $at <= ($now+60) and ($now-$at) <= 3600' "$bundle_path" >/dev/null 2>&1; then
+    if ! jq -e --argjson now "$(date -u +%s)" '(.run_started_at | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) as $at | $at <= ($now+60) and ($now-$at) <= 3600' <<<"$bundle_json" >/dev/null 2>&1; then
       ERROR="pr-state bundle stale or has invalid time for PR #$number"; break
     fi
-    evidence="$bundle_path"
-    # Use the repo's canonical comment classifier. Hash finding ID + current body
-    # so a new or edited actionable comment wakes even if the coarse gate digest
-    # did not move. Acknowledgment-only comments do not produce wake events.
-    classified="$(jq -n \
-      --argjson reviews "$(jq -c '[.comments.reviews[]? | . + {__endpoint:"review"}]' "$bundle_path")" \
-      --argjson inline "$(jq -c '[.comments.inline[]? | . + {__endpoint:"inline"}]' "$bundle_path")" \
-      --argjson conversation "$(jq -c '[.comments.conversation[]? | . + {__endpoint:"conversation"}]' "$bundle_path")" \
-      --arg since '' -f "$CLASSIFIER")" || { ERROR="comment classification failed for PR #$number"; break; }
-    candidates=$(jq -c '(.reviews[] | . + {endpoint:"review"}),(.inline[] | . + {endpoint:"inline"}),(.conversation[] | . + {endpoint:"conversation"}) | select(.classification.class == "finding")' <<<"$classified")
+    # Array mode classifies unknown actors without pretending they are bots or
+    # silently dropping deleted users. Known human routing stays with PMM.
+    classified="$(jq '[
+      (.comments.reviews[]? | . + {endpoint:"review"}),
+      (.comments.inline[]? | . + {endpoint:"inline"}),
+      (.comments.conversation[]? | . + {endpoint:"conversation"})
+      | select(.user==null or (.user.login as $login | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] | index($login)!=null))
+      | . + {url:(.html_url // .url),actor:(.user.login // null)}
+    ]' <<<"$bundle_json" | jq --argjson reviews '[]' --argjson inline '[]' --argjson conversation '[]' --arg since '' -f "$CLASSIFIER")" || { ERROR="comment classification failed for PR #$number"; break; }
+    # Complete source bodies/identities feed one aggregate via stdin. Only three
+    # ID/hash samples survive in state; large review fleets never become argv.
+    finding_fingerprint=$(jq -cS '[.[] | select(.classification.class=="finding") | {endpoint,id,url,actor,state,created_at,submitted_at,updated_at,body}] | sort_by(.endpoint,.id)' <<<"$classified" | shasum -a 256 | awk '{print $1}') || { ERROR="finding fingerprint failed for PR #$number"; break; }
+    finding_count=$(jq '[.[] | select(.classification.class=="finding")] | length' <<<"$classified") || { ERROR="finding count failed for PR #$number"; break; }
+    candidates=$(jq -c '[.[] | select(.classification.class=="finding")] | sort_by(.endpoint,.id) | .[-3:][]' <<<"$classified")
+    evidence=$(jq -cn --argjson n "$number" --arg sha "$discovered_sha" \
+      --arg collected "$(jq -r .run_started_at <<<"$bundle_json")" --argjson count "$finding_count" \
+      --argjson items "$(jq -c '[.[] | select(.classification.class=="finding")] | sort_by(.endpoint,.id) | .[-3:] | map({endpoint,id,url,actor,created_at,submitted_at,updated_at,classification,body_excerpt:((.body // "")[0:256]),body_truncated:((.body // ""|length)>256)})' <<<"$classified")" \
+      '{pr:$n,head_sha:$sha,collected_at:$collected,items:$items,item_count:$count,items_truncated:($count>3)}') || { ERROR="evidence projection failed for PR #$number"; break; }
     finding_keys='[]'
     while IFS= read -r candidate; do
       [[ -n "$candidate" ]] || continue
       body_hash=$(jq -j '.body' <<<"$candidate" | shasum -a 256 | awk '{print $1}')
-      observed=$(jq -r --argjson item "$candidate" '.comments[(if $item.endpoint=="review" then "reviews" elif $item.endpoint=="inline" then "inline" else "conversation" end)][] | select(.id==$item.id) | .updated_at // .submitted_at // .created_at // empty' "$bundle_path")
-      key=$(jq -c --arg hash "$body_hash" --arg observed "$observed" '{endpoint,id,url,observed_at:$observed,body_hash:$hash}' <<<"$candidate")
+      observed=$(jq -r '.updated_at // .submitted_at // .created_at // empty' <<<"$candidate")
+      key=$(jq -c --arg hash "$body_hash" --arg observed "$observed" '{endpoint,id,url,actor,observed_at:$observed,body_hash:$hash}' <<<"$candidate")
       finding_keys=$(jq -c --argjson key "$key" '. + [$key] | sort_by(.endpoint,.id)' <<<"$finding_keys")
     done <<< "$candidates"
     gate_projection="$(jq -cS '{head_sha,met,reviewer,path,missing:(.missing|sort),ci_status:(.ci_status|{total,passing,failing,in_progress,blocking:(.blocking // []|sort),incomplete:(.incomplete // []|sort)}),merge_state,mergeable,review_decision,stale_bot_changes_requested_count:(.stale_bot_changes_requested_count // 0),human_changes_requested:(.human_changes_requested|sort),unresolved_thread_count,authorship}' <<<"$gate")"
     row="$(jq -cn --argjson number "$number" --arg url "$(jq -r --argjson n "$number" '.[]|select(.number==$n)|.url' <<<"$pulls")" \
-      --argjson gate "$gate_projection" --argjson findings "$finding_keys" \
-      '{number:$number,url:$url,gate:$gate,findings:$findings}')"
+      --argjson gate "$gate_projection" --argjson findings "$finding_keys" --arg fingerprint "$finding_fingerprint" --argjson count "$finding_count" \
+      '{number:$number,url:$url,gate:$gate,findings:$findings,finding_fingerprint:$fingerprint,finding_count:$count}')"
     PRS="$(jq -c --argjson row "$row" '. + [$row]' <<<"$PRS")"
-    EVIDENCE="$(jq -c --argjson n "$number" --arg path "$evidence" '. + [{pr:$n,path:$path}]' <<<"$EVIDENCE")"
+    EVIDENCE="$(jq -c --argjson item "$evidence" '. + [$item]' <<<"$EVIDENCE")"
     FINDINGS="$(jq -c --argjson n "$number" --argjson ids "$finding_keys" '. + [{pr:$n,items:$ids}]' <<<"$FINDINGS")"
   done
   if [[ -n "$ERROR" ]]; then
@@ -489,9 +507,14 @@ delta="$(jq -cn --argjson old "$previous" --argjson new "$CURRENT" --argjson dea
      changed:([$b|keys[] as $k | select($a[$k] != null and $a[$k].gate != $b[$k].gate)
        | {pr:($k|tonumber),before:($a[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship}),
           after:($b[$k].gate|{head_sha,met,reviewer,path,missing,human_changes_requested,stale_bot_changes_requested_count,ci_status,merge_state,mergeable,review_decision,unresolved_thread_count,authorship})}]),
-     new_findings:([$b|to_entries[] as $p | ($p.value.findings // [])[] as $f
-       | select((($a[$p.key].findings // []) | index($f)) == null)
-       | {pr:($p.key|tonumber),head_sha:$p.value.gate.head_sha,item:{endpoint:$f.endpoint,id:$f.id,url:$f.url,observed_at:$f.observed_at}}]),
+     new_findings:([$b|to_entries[] as $p
+       | [($p.value.findings // [])[] as $f | select((($a[$p.key].findings // []) | index($f)) == null) | $f] as $sample
+       | if ($sample|length)>0 then $sample[] as $f
+           | {pr:($p.key|tonumber),head_sha:$p.value.gate.head_sha,item:{endpoint:$f.endpoint,id:$f.id,url:$f.url,observed_at:$f.observed_at},finding_count:($p.value.finding_count // ($p.value.findings|length)),requires_source_recovery:(($p.value.finding_count // 0)>3)}
+         elif ($p.value.finding_fingerprint != null and $p.value.finding_fingerprint != ($a[$p.key].finding_fingerprint // null)
+               and (($p.value.finding_count // 0)>0 or ($a[$p.key].finding_count // ($a[$p.key].findings // []|length))>0)) then
+           {pr:($p.key|tonumber),head_sha:$p.value.gate.head_sha,item:{endpoint:"aggregate",id:null,url:$p.value.url,observed_at:null},finding_count:$p.value.finding_count,finding_fingerprint:$p.value.finding_fingerprint,requires_source_recovery:true}
+         else empty end]),
      agent_changes:(agent_states($old) as $oa | agent_states($new) as $na | if $oa == $na then [] else [$oa,$na] end),
      lock_changes:(lock_states($old) as $ol | lock_states($new) as $nl | if $ol == $nl then [] else [$ol,$nl] end),
      hold_changes:(hold_states($old) as $oh | hold_states($new) as $nh | if $oh == $nh then [] else [$oh,$nh] end),

@@ -124,6 +124,7 @@ opt-in of issue #1544.
 | [pr-state-check-runs.test.sh](../tests/pr-state-check-runs.test.sh) | Tests the canonical `pr-state-cr-split.jq` program invoked by `pr-state.sh` |
 | [pr-state-classify.test.sh](../tests/pr-state-classify.test.sh) | Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since` |
 | [pr-state-infer-candidates.test.sh](../tests/pr-state-infer-candidates.test.sh) | Tests `pr-state.sh --infer-candidates` |
+| [pr-state-stdout.test.sh](../tests/pr-state-stdout.test.sh) | Verify pr-state stdout parity and absence of temp bundles on success, failure, and interruption |
 | [publish-agent-symlinks.test.sh](../tests/publish-agent-symlinks.test.sh) | Tests for `publish-agent-symlinks.sh` against a throwaway `HOME` |
 | [publish-skill-symlinks.test.sh](../tests/publish-skill-symlinks.test.sh) | Tests `publish-skill-symlinks.sh` against a throwaway `HOME` — all five `migrate_symlink` states, the ownership predicate, pruning (absolute and relative legacy links alike), the exit-code contract for an un-removable link, the `account-config.md` leg, and the `setup-skills-worktree.sh` delegation guard |
 | [quota-reserve.test.sh](../tests/quota-reserve.test.sh) | Tests `quota-reserve.sh` offline — marker building from reported weekly usage (threshold, weekly-only, unknown, config and env precedence), refresh freshness/locking/failure handling, once-per-crossing notification, and the `--decide` matrix (launches, subagents, automated vs interactive turns, every fail-open path) plus turn classification |

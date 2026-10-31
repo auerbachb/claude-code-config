@@ -14,7 +14,7 @@ Monitor behavior are recorded in `.claude/reference/bgwork-ceiling.md` and
 - Meaningful transition: one `/pr-monitor-and-manage --tick ... --dispatch-event <id>` invocation.
   The compact event packet is persisted in the outbox, and the skill reads it by the exact ID
   before acting. It contains repo/author context, PR IDs and HEADs for fleet changes/findings,
-  changed PR projections, finding IDs, evidence paths, trigger, and detection time/latency where
+  changed PR projections, finding IDs, bounded source evidence, trigger, and detection time/latency where
   comment timestamps are available. Keeping it in state lets Monitor stdout contain exactly one
   chat event per transition (and one same-ID event per pending replay).
 - Unknown, stale, malformed, or failed collection: a diagnostic event, never a clean/unchanged
@@ -43,10 +43,35 @@ The collector reuses `gh pr list`, `merge-gate.sh`, `pr-state.sh`, and the canon
 `lib/pr-state-classify.jq`. It compares fleet membership; HEAD, merge/review/CI/blocker state; new
 actionable finding source IDs and body hashes; active agent, PMM lock, and merge-sequencing hold transitions; and their
 safety/recovery deadlines.
-Finding IDs are checked independently of the coarse merge-gate projection, so a new actionable
+Discovery remains capped at 500, but deep collection has a configurable `--max-deep-prs` bound
+(default 25, allowed 1..500) included in saved Monitor arguments/configuration. A fleet above that
+bound emits an unresolved diagnostic before calling any per-PR helper and retains the prior
+snapshot; unpolled PRs are never classified as removed or clean. Pending events replay first.
+This is a work bound, **not a GitHub quota guarantee**: merge-gate and pr-state independently fetch
+state; there is no shared bundle/API cache. An offline single-page pr-state fixture makes six API
+calls (one GraphQL plus five REST) and two CLI views; merge-gate, pagination, protection and other
+clients add variable calls. The former 500-PR scan must not be advertised as API-budget safe.
+Raising the bound explicitly opts into that load; source unavailability always stays unknown.
+
+A per-PR aggregate SHA/count covers every actionable source ID, actor, timestamp, and complete body,
+independently of the coarse merge-gate projection, so a new actionable
 comment still wakes when the ordinary state digest is unchanged. A finding packet includes IDs and
-URLs rather than full comment bodies; the evidence bundle path is passed for the normal PMM module
-to inspect.
+URLs, actor login or null (unknown), timestamps, and body hashes. `pr-state.sh --stdout` returns
+complete JSON without allocating its default retained `/tmp` bundle. The collector keeps that
+JSON only in memory; success, errors, and interrupted collection therefore leave no per-poll
+bundle to clean and never delete another consumer's file. Classification sees complete bodies.
+The durable event/snapshot carries at most 3 actionable source excerpts per PR, each at most 256 characters,
+with count/truncation indicators. Only three ID/body-hash samples are persisted per PR; the complete aggregate SHA/count still
+covers every finding. If an unsampled item changes, the event marks `requires_source_recovery`
+and names the PR/HEAD/count/fingerprint, without inventing which ID changed. PMM re-fetches source
+on demand. Raw classification and fingerprint inputs use stdin, never unbounded `--argjson` argv.
+PR-state final assembly also streams its full arrays on stdin; its default retained-file contract
+and complete bodies are unchanged. A 25-PR/2000-comments-per-PR stress fixture exceeds the host
+argument limit in each raw source bundle while bounded evidence/ID samples remain below it.
+Unknown/deleted actors are classified using the canonical array mode rather than guessed as bot or
+human; actionable bodies cannot disappear because `.user` is null. Normal PMM fetches fresh source
+before acting. Pending, latest snapshot, and one superseded packet bound retained evidence across
+restart; acknowledgement clears its pending delivery, not the latest comparison snapshot.
 
 Active Phase A agent deadlines follow PMM's existing windows: 15 minutes for PMM-owned
 `pmm-fix-*` records and 60 minutes for foreign records. Active `/wrap` locks use the existing
@@ -63,7 +88,15 @@ the prior snapshot and unresolved fingerprint are retained: failures wake only f
 at that repeat interval, and are never recorded as a clean comparison. A pending event always
 replays with its original ID before either retry policy runs.
 
-CAS updates are confined to `.pmm_pre_dispatch`: concurrent acknowledgement/receipt writes cause a retryable diagnostic instead of overwriting one another. Old-generation shell processes exit before collection; a newly published generation retains an old outbox as `superseded_event` and performs fresh comparison. A bounded 64-entry acknowledgement history makes delayed delivery benign after newer events have completed. Pending replays increment tick/dispatch/replay counters while meaningful transitions remain counted separately.
+Collector CAS compares `.pmm_pre_dispatch` plus its fixed sparse root scheduler/lifecycle inputs:
+concurrent acknowledgement, schedule, owner, wake, or stop writes cause a retryable diagnostic
+instead of overwriting one another. Step7 independently claims `.pmm_rearm` with coherent identity,
+configuration, and original tick-generation preconditions before any remote stop/arm. Direct starts
+share this claim. It revalidates before each tool action, records a confirmed arm's exact identity,
+and conditionally publishes/clears the claim. A stale invocation cannot adopt and stop a newer
+recorded generation. A failed/unknown action retains its guarded claim for explicit exact-task
+reconciliation; no timeout or automatic re-arm guesses success. Local CAS cannot make a remote
+TaskStop/Monitor operation and state write atomic, so uncertain cross-system results remain unknown. Old-generation shell processes exit before collection; a newly published generation retains an old outbox as `superseded_event` and performs fresh comparison. A bounded 64-entry acknowledgement history makes delayed delivery benign after newer events have completed. Pending replays increment tick/dispatch/replay counters while meaningful transitions remain counted separately.
 
 Unreleased merge holds wake for a sequencing recheck on the next poll: the existing sequencing helper owns tick-based stall release, so suppressing those polls would strand held work. Released audit entries do not prevent idle convergence. Quiet polls advance scheduling counters; event polls leave the increment to PMM Step 6, and actions-receipt replays reuse the completed counters instead of counting twice.
 
