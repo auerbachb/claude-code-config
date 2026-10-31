@@ -9,17 +9,21 @@ The thread's capture state lives in a session log so it survives context compact
 
 **The log must be private to this conversation.** `scripts/resolve-log.sh` owns that decision — never derive the path inline. It uses `$CLAUDE_SESSION_ID` when the harness exports one and otherwise mints a stable per-conversation fallback key, because `CLAUDE_SESSION_ID` resolves *empty* inside Bash tool subshells: the old `${CLAUDE_SESSION_ID:-default}` expression silently pointed every concurrent session at one shared file, and on 2026-08-26 two sessions interleaved writes on it (issue #1369).
 
+Resolve both session helpers relative to the already-selected dispatcher so a bundled or installed skill uses the matching scripts even when invoked outside the repository working directory.
+
 <!-- test-anchor: issue-maker-step1-resolve-log -->
 ```bash
 mkdir -p "$HOME/.claude/handoffs"
+: "${DISPATCHER:?resolve the issue-maker dispatcher before session setup}"
+# The dispatcher is the authority for the skill root. Do not guess from cwd or
+# derive a session-log path here; resolve-log.sh retains the private-key logic.
+ISSUE_MAKER_ROOT=$(cd -- "$(dirname -- "$DISPATCHER")/.." && pwd -P) || {
+  echo "FATAL: could not resolve the issue-maker skill root from DISPATCHER" >&2
+  exit 1
+}
 RESOLVE_LOG=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/resolve-log.sh" \
-  "$HOME/.claude/skills/issue-maker/scripts/resolve-log.sh"; do
-  [ -x "$candidate" ] && { RESOLVE_LOG="$candidate"; break; }
-done
-# No inline fallback on purpose: a guessed path is how the shared-`default`
-# collision happened. Stop instead.
+candidate="$ISSUE_MAKER_ROOT/scripts/resolve-log.sh"
+[ -x "$candidate" ] && RESOLVE_LOG="$candidate"
 [ -n "$RESOLVE_LOG" ] || { echo "FATAL: scripts/resolve-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
 LOG="$("$RESOLVE_LOG")" || { echo "FATAL: resolve-log.sh could not resolve a session log path" >&2; exit 1; }
 SESSION_ID="$("$RESOLVE_LOG" --key --quiet)"
@@ -93,15 +97,17 @@ if [ -f "$LOG" ]; then
       end' "$LOG")
   jq -r --argjson accepted "$OFFER_ACCEPTED" --arg dmode "$DELIVERY_MODE" --arg repo "$REPO" \
     "$MINE_DEF"'"Resuming \(if $accepted then "execution" else "capture" end) mode for \(.target_repo) — \(.mode) mode. \(([.issues[]|mine]|length)) issue(s) opened so far:",
+     (if .handoff_checkpoint then "  Handoff recovery needed — \(.handoff_checkpoint.state); registry \(.reg_tid // "unavailable")" else empty end),
      (.issues[] | select(same_repo) | "  #\(.number) — \(.title) [\(.status)]" +
-                  (if .chip_task_id and ($accepted | not) and ($dmode == "chip") then " — chip running"
+                  (if .chip_task_id and ($accepted | not) and ($dmode == "chip-pending") then " — chip started; receipt needs reconciliation"
+                   elif .chip_task_id and ($accepted | not) and ($dmode == "chip") then " — chip running"
                    elif .chip_task_id and ($accepted | not) then " — offer pending"
                    elif .chip_task_id and $accepted then " — offer accepted, running"
                    else "" end))' "$LOG"
 fi
 ```
 
-Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue starts as a locally-generated offer token stamped at offer-emit time; in chip mode, a successful `spawn_task` call replaces it with the returned task ID. `offer_accepted: true` means the user said yes and `/subagent` was invoked. `delivery_mode` (`"inline"` or `"chip"`) is written to the log at offer-emit time and, for chip mode, updated on spawn success — it is the unambiguous discriminator after compaction between a pending inline offer and a running chip task.
+Offer state survives compaction because it lives in `$LOG` (Step 9c writes `chip_task_id` and `offer_accepted` there, not just in-memory) — the recap line above surfaces it back after a fresh invocation. `chip_task_id` on an issue starts as a locally-generated offer token stamped at offer-emit time; in chip mode, a successful `spawn_task` call replaces it with the returned task ID. `offer_accepted: true` means the user said yes and `/subagent` was invoked. `delivery_mode` (`"inline"`, `"chip-pending"`, or `"chip"`) distinguishes a pending inline offer, a spawned chip whose final receipt write needs reconciliation, and a recorded running chip after compaction.
 
 If `OFFER_ACCEPTED` is false, re-affirm: *"Still in capture mode — describe issues to create, or use `/update #N …`, `edit #N …`, or `close #N`."* If `OFFER_ACCEPTED` is true, re-affirm: *"Offer accepted — execution mode active. New issues filed here will be run inline via `/subagent`."* If the log is corrupt/unreadable, warn the user and offer to start a fresh session log.
 
@@ -127,11 +133,13 @@ Resolve this once after `$LOG` is selected and before the repo-retarget guard wr
 
 ```bash
 SET_LOG=""
-for candidate in \
-  "$HOME/.claude/skills-worktree/.claude/skills/issue-maker/scripts/set-log.sh" \
-  "$HOME/.claude/skills/issue-maker/scripts/set-log.sh"; do
-  [ -x "$candidate" ] && { SET_LOG="$candidate"; break; }
-done
+: "${DISPATCHER:?resolve the issue-maker dispatcher before log writes}"
+ISSUE_MAKER_ROOT=$(cd -- "$(dirname -- "$DISPATCHER")/.." && pwd -P) || {
+  echo "FATAL: could not resolve the issue-maker skill root from DISPATCHER" >&2
+  exit 1
+}
+candidate="$ISSUE_MAKER_ROOT/scripts/set-log.sh"
+[ -x "$candidate" ] && SET_LOG="$candidate"
 [[ -n "$SET_LOG" ]] || { echo "FATAL: scripts/set-log.sh not found — is the issue-maker skill installed?" >&2; exit 1; }
 set_log() { "$SET_LOG" "$LOG" "$@"; }
 

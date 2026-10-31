@@ -163,6 +163,8 @@ assert_eq "$expected" "$actual" 'dispatcher resolves modules from its install pa
 # Parity guards for remote-write uncertainty and shared single/batch handoff gates.
 assert_eq 0 "$(grep -q 'do not retry blindly' .claude/skills/issue-maker/modules/update.md; echo $?)" 'update uncertainty requires remote verification before logging'
 assert_eq 0 "$(grep -q 'log state was not changed' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract uncertainty leaves the log unchanged'
+assert_eq 0 "$(grep -q 'chip-pending' .claude/skills/issue-maker/modules/retract.md; echo $?)" 'retract can release reservations persisted before a chip receipt write'
+assert_eq 0 "$(grep -q 'Handoff recovery needed' .claude/skills/issue-maker/modules/session-state.md; echo $?)" 'compaction surfaces a persisted handoff reservation checkpoint'
 assert_eq 0 "$(grep -q 'Resolve `active-work-cap.sh`' .claude/skills/issue-maker/modules/create/postfile.md; echo $?)" 'single and batch postfile share the cap census procedure'
 assert_eq 0 "$(grep -q 'only on explicit request' .claude/skills/issue-maker/modules/batch.md; echo $?)" 'batch handoff wording keeps inline as the default'
 assert_eq "$ROOT/.claude/skills/issue-maker/modules/session-mode.md" "$("$DISPATCH" session mode)" 'mode-switch requests dispatch to the dedicated mode module'
@@ -210,11 +212,11 @@ rm -f "$STATE_LOG"
 # Execute the production Markdown blocks against offline state and gh stubs.
 # These validate state changes and failure behavior, not LLM prose inference.
 python3 - "$ROOT" <<'PY'
-import json, pathlib, re, shlex, subprocess, sys, tempfile
+import json, pathlib, re, shlex, shutil, subprocess, sys, tempfile
 root=pathlib.Path(sys.argv[1]); skill=root/'.claude/skills/issue-maker'
 def source(name): return (skill/name).read_text()
 def blocks(name): return re.findall(r'```bash\n(.*?)\n\s*```', source(name), re.S)
-def run(script): return subprocess.run(['bash','-eu','-c',script],text=True,capture_output=True)
+def run(script,cwd=None): return subprocess.run(['bash','-eu','-c',script],text=True,capture_output=True,cwd=cwd)
 selector=re.search(r"^MINE_DEF=.*$",source('modules/session-state.md'),re.M)[0]
 with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     log=pathlib.Path(td)/'log.json'
@@ -248,6 +250,23 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     r=run(setup+'REQUESTED_MODE=default\n'+mode_block+'\nprintf "%s" "$MODE"')
     assert r.returncode==0 and r.stdout=='default' and json.loads(log.read_text())['mode']=='default',(r.stdout,r.stderr,log.read_text())
     print('ok workflow: explicit mode switches persist in the recovered session log')
+    # Session helper resolution follows the selected dispatcher root, even when
+    # the invocation runs outside the repository or uses an installed copy.
+    resolve_setup=blocks('modules/session-state.md')[0]
+    writer_setup=next(b for b in blocks('modules/session-state.md') if 'SET_LOG=""' in b)
+    installed=pathlib.Path(td)/'installed/.claude/skills/issue-maker'; (installed/'scripts').mkdir(parents=True)
+    for name in ['dispatch-module.sh','resolve-log.sh','set-log.sh']:
+        shutil.copy2(skill/'scripts'/name,installed/'scripts'/name)
+    for label,skill_root,home in [('bundled',skill,pathlib.Path(td)/'home-bundled'),('installed',installed,pathlib.Path(td)/'home-installed')]:
+        home.mkdir(parents=True)
+        dispatcher=skill_root/'scripts/dispatch-module.sh'
+        r=run('export HOME='+shlex.quote(str(home))+'\nexport DISPATCHER='+shlex.quote(str(dispatcher.resolve()))+'\nexport CLAUDE_SESSION_ID=local-'+label+'\n'+resolve_setup+'\nprintf "RESOLVE=%s|LOG=%s|SESSION=%s" "$RESOLVE_LOG" "$LOG" "$SESSION_ID"',cwd='/tmp')
+        fields=dict(part.split('=',1) for part in r.stdout.split('|')) if r.stdout else {}
+        assert r.returncode==0 and fields.get('RESOLVE')==str((skill_root/'scripts/resolve-log.sh').resolve()) and fields.get('SESSION'),(label,r.returncode,r.stdout,r.stderr)
+        helper_log=home/'.claude/handoffs/writer-check.json'; helper_log.parent.mkdir(parents=True,exist_ok=True); helper_log.write_text('{"issues":[]}')
+        r=run('export HOME='+shlex.quote(str(home))+'\nexport DISPATCHER='+shlex.quote(str(dispatcher.resolve()))+'\nLOG='+shlex.quote(str(helper_log))+'\n'+writer_setup+'\nset_log \'.mode = $v\' --arg v rapid-fire\nprintf "%s" "$SET_LOG"',cwd='/tmp')
+        assert r.returncode==0 and r.stdout==str((skill_root/'scripts/set-log.sh').resolve()) and json.loads(helper_log.read_text())['mode']=='rapid-fire',(label,r.returncode,r.stdout,r.stderr,helper_log.read_text())
+    print('ok workflow: bundled and installed invocations resolve session helpers from DISPATCHER outside the repo cwd')
     # Offer acceptance is one atomic, checked write for both state changes.
     seed([dict(row(1,origin='create'),chip_task_id='offer-token'),dict(row(2,origin='create'),chip_task_id='foreign-token',url='https://github.com/other/repo/issues/2')])
     accept=next(b for b in blocks('modules/create/postfile.md') if "offer_accepted = true |" in b)
@@ -280,9 +299,36 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     # First handoff emission after a declined inline offer has no token to reuse.
     seed([row(1,origin='create'),row(2,origin='update')])
     handoff_stamp=next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN=' in b)
-    r=run(setup+handoff_stamp); assert r.returncode==0,r.stderr
+    r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+handoff_stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]['chip_task_id'].startswith('offer-') and rows[1]['chip_task_id'] is None
     print('ok workflow: explicit fallback handoff after decline stamps only session-filed rows')
+    # A concurrent reservation denial exits before a fresh offer stamp, so
+    # /wave cannot hide work for a handoff that was never emitted.
+    seed([row(1,origin='create')]); before=log.read_bytes()
+    home=pathlib.Path(td)/'reserve-home'; registry=home/'.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh'; registry.parent.mkdir(parents=True)
+    cap=registry.parent/'active-work-cap.sh'
+    cap_args=pathlib.Path(td)/'cap-args'; cap.write_text('')
+    cap.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(cap_args))+'\nprintf \'{"free":1,"registry_baseline":0}\\n\'\n'); cap.chmod(0o755)
+    registry_args=pathlib.Path(td)/'registry-args'
+    registry.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(registry_args))+'\nexit 7\n'); registry.chmod(0o755)
+    r=run(setup+'export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'+handoff_stamp)
+    assert r.returncode==7 and log.read_bytes()==before and 'no offer was stamped or emitted' in r.stderr,(r.returncode,r.stdout,r.stderr,log.read_text())
+    assert cap_args.read_text().splitlines()==['--json','--repo','owner/repo'],cap_args.read_text()
+    assert registry_args.read_text().splitlines()==['--repo','owner/repo','--reserve','--emitter','issue-maker','--issue','1','--cap-free','1'],registry_args.read_text()
+    print('ok workflow: registry cap race defers before writing an offer stamp')
+    # Persist the reserved registry ID before spawn. If the post-spawn receipt
+    # write fails, the session still has the ID needed for later retraction.
+    registry.write_text('#!/usr/bin/env bash\nprintf reg-123\n'); registry.chmod(0o755)
+    r=run(setup+'export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'+handoff_stamp)
+    data=json.loads(log.read_text()); assert r.returncode==0 and data['reg_tid']=='reg-123' and data['delivery_mode']=='chip-pending' and data['issues'][0]['chip_task_id'].startswith('offer-'),(r.returncode,r.stderr,data)
+    receipt=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip" | .reg_tid = $reg' in b)
+    r=run(setup+'set_log() { return 1; }\nREG_TID=reg-123\nTASK_ID=task-456\n'+receipt)
+    data=json.loads(log.read_text()); assert r.returncode==1 and data['reg_tid']=='reg-123' and data['delivery_mode']=='chip-pending' and data['issues'][0]['chip_task_id'].startswith('offer-') and 'task-456' in r.stderr,(r.returncode,r.stderr,data)
+    print('ok workflow: failed post-spawn receipt update leaves the pre-persisted registry ID recoverable')
+    cleanup=next(b for b in blocks('modules/handoff.md') if 'reservation released but session cleanup' in b)
+    r=run(setup+'REGISTRY='+shlex.quote(str(registry))+'\nREG_TID=reg-123\n'+cleanup)
+    data=json.loads(log.read_text()); assert r.returncode==0 and data['reg_tid'] is None and data['delivery_mode']=='inline' and data['issues'][0]['chip_task_id'].startswith('offer-'),(r.returncode,r.stderr,data)
+    print('ok workflow: confirmed registry release clears only registry state and retains the printed-block offer token')
     # Execute the actual filing block with a missing postfile module: no gh write.
     fake=pathlib.Path(td)/'skill'; (fake/'scripts').mkdir(parents=True)
     dispatcher=fake/'scripts/dispatch-module.sh'; dispatcher.write_text((skill/'scripts/dispatch-module.sh').read_text())
@@ -332,6 +378,33 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     r=run('HOME='+shlex.quote(str(home))+'\nDISPATCHER='+shlex.quote(str(dispatcher))+'\nREPO=owner/repo\nTITLE="Safe title"\nACCEPTED_LABELS=""\n'+create_block)
     assert r.returncode==0 and not (pathlib.Path(td)/'body-executed').exists() and marker in captured.read_text() and '$(touch' in captured.read_text(),(r.returncode,r.stdout,r.stderr,captured.read_text() if captured.exists() else None)
     print('ok workflow: generated quoted heredoc delimiter keeps delimiter-like and shell-looking issue body lines literal')
+
+    # Uncertain create reconciliation compares the body byte-for-byte from its
+    # file and fails closed for same-second exact duplicates from another session.
+    create_block=next(b for b in blocks('modules/create/file.md') if 'FILED=$(' in b)
+    body='## Background\nbody\n_Captured via /issue-maker._\n'
+    create_block=create_block.replace('## Background\n...\n_Captured via /issue-maker._',body)
+    home=pathlib.Path(td)/'recover-home'; helper=home/'.claude/skills-worktree/.claude/scripts/issue-file.sh'; helper.parent.mkdir(parents=True)
+    helper.write_text('#!/usr/bin/env bash\nexit 4\n'); helper.chmod(0o755)
+    dispatcher=pathlib.Path(td)/'dispatcher.sh'; dispatcher.write_text('#!/usr/bin/env bash\nexit 0\n'); dispatcher.chmod(0o755)
+    candidate={'number':8,'url':'https://github.com/owner/repo/issues/8','title':'Safe title','body':body+'\n','createdAt':'2026-10-30T12:00:01Z','labels':[]}
+    def recovery_env(candidate):
+        payload=json.dumps([candidate])
+        return 'HOME='+shlex.quote(str(home))+'\nDISPATCHER='+shlex.quote(str(dispatcher))+'\nREPO=owner/repo\nTITLE="Safe title"\nACCEPTED_LABELS=""\ndate() { printf "2026-10-30T12:00:00Z"; }\ngh() { printf %s '+shlex.quote(payload)+'; }\n'
+    env=recovery_env(candidate)
+    r=run(env+create_block)
+    assert r.returncode==0 and 'FILE_RC=0' in r.stdout and 'ISSUE_NUMBER=8' not in r.stdout,(r.returncode,r.stdout,r.stderr)
+    # Same-second candidate is ambiguous and therefore cannot be claimed.
+    candidate['createdAt']='2026-10-30T12:00:00Z'
+    env=recovery_env(candidate)
+    r=run(env+create_block)
+    assert r.returncode==0 and 'FILE_RC=6' in r.stdout and 'exact matches' in r.stderr,(r.returncode,r.stdout,r.stderr)
+    # A body with a missing trailing newline is not normalized into a match.
+    candidate['body']=body.rstrip('\n'); candidate['createdAt']='2026-10-30T12:00:01Z'
+    env=recovery_env(candidate)
+    r=run(env+create_block)
+    assert r.returncode==0 and 'FILE_RC=6' in r.stdout,(r.returncode,r.stdout,r.stderr)
+    print('ok workflow: uncertain create recovery preserves body newlines and rejects same-second ownership ambiguity')
 
     # Update apply refetches and checks both remote fields before the receipt path.
     update_apply=next(b for b in blocks('modules/update.md') if 'UPDATE_KIND' in b)

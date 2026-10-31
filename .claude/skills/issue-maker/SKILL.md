@@ -75,7 +75,7 @@ MODULE=$(bash "$DISPATCHER" "$OPERATION" "$PHASE") || exit $?
 | batch / chain | `modules/batch.md` | Multi-issue batch or increment chain |
 | update / edit | `modules/update.md` | Existing issue edit request |
 | retract / close | `modules/retract.md` | Existing issue close request |
-| offer / handoff | `modules/handoff.md` | Explicit chip/block or replay request |
+| offer / handoff | `modules/handoff.md` | Explicit chip/block or replay request; chip creation calls `chip-offer-registry.sh --reserve` before spawn |
 | report / status | `modules/create/postfile.md` | Tally, body reprint, offer response/refresh |
 | export / prompt | `modules/portable-prompt.md` | Explicit portable prompt export |
 

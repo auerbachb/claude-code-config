@@ -18,15 +18,15 @@ The executable trace fixtures record caller-selected module paths, nested refere
 
 | Representative context / phase trace | Bytes | Words |
 |---|---:|---:|
-| Initial capture setup | 24,701 | 3,521 |
-| Normal create (modules only) | 81,572 | 12,218 |
-| Normal create including nested references | 154,086 | 23,384 |
-| Chain/batch including nested references | 163,263 | 24,871 |
-| Update / recovery at update phase | 33,013 | 4,737 |
-| Ordinary retract | 35,662 | 5,165 |
-| On-request handoff after normal create | 217,826 | 32,976 |
+| Initial capture setup | 25,486 | 3,630 |
+| Normal create (modules only) | 82,513 | 12,345 |
+| Normal create including nested references | 155,027 | 23,511 |
+| Chain/batch including nested references | 164,204 | 24,998 |
+| Update / recovery at update phase | 33,798 | 4,846 |
+| Ordinary retract | 36,444 | 5,275 |
+| On-request handoff after normal create | 223,130 | 33,689 |
 | Comparable old create plus same nested references | 170,626 | 26,374 |
-| Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,082 | 11,266 |
+| Export (entry, export module, bounded body/handoff excerpts, chip reference) | 75,151 | 11,273 |
 
 Create phase order: entry → session → reflection/tier/estimate → dedup/resolution reference/duplicate policy → optional chain/link modules → file → postfile; the chip module/reference is reached only on explicit handoff request. Chain sizing reads the estimate before its independent time threshold decision. Update trace: entry → session → update. After compaction at update: entry → session → active update phase only; completed create phases stay unread. The create dependency preflight checks required paths without reading their contents, and missing modules block remote writes.
 
@@ -36,19 +36,19 @@ Setup is the initial capture row above. A restart adds that setup plus the activ
 
 | Path | Bytes | Words |
 |---|---:|---:|
-| `SKILL.md` | 7,931 | 1,113 |
+| `SKILL.md` | 8,000 | 1,120 |
 | `modules/batch.md` | 1,893 | 315 |
 | `modules/create/crossrefs.md` | 2,417 | 401 |
 | `modules/create/dedup.md` | 5,900 | 859 |
-| `modules/create/file.md` | 6,788 | 940 |
+| `modules/create/file.md` | 6,944 | 958 |
 | `modules/create/increment-draft.md` | 4,867 | 771 |
 | `modules/create/postfile.md` | 24,130 | 3,792 |
 | `modules/create/reflect-and-draft.md` | 20,053 | 3,106 |
-| `modules/handoff.md` | 7,853 | 1,178 |
+| `modules/handoff.md` | 12,216 | 1,764 |
 | `modules/portable-prompt.md` | 7,781 | 1,196 |
-| `modules/retract.md` | 10,961 | 1,644 |
+| `modules/retract.md` | 10,958 | 1,645 |
 | `modules/session-mode.md` | 1,279 | 188 |
-| `modules/session-state.md` | 16,770 | 2,408 |
+| `modules/session-state.md` | 17,486 | 2,510 |
 | `modules/update.md` | 8,312 | 1,216 |
 
 Reproduce the exact inventory with `wc -wc .claude/skills/issue-maker/SKILL.md .claude/skills/issue-maker/modules/*.md .claude/skills/issue-maker/modules/create/*.md`; run `bash tests/test-issue-maker-dispatch.sh` for the caller trace and offline workflow checks. Sum each trace's distinct source paths and bounded excerpts, including the references listed above. No migration percentage is promised before runtime instrumentation.

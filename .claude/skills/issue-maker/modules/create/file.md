@@ -68,8 +68,10 @@ ISSUE_BODY_7f34d1c9
     if CANDIDATES=$(gh issue list --repo "$REPO" --state all --search "in:title $TITLE" \
       --limit 100 --json number,url,title,body,createdAt,labels); then
       MATCHES=$(printf '%s' "$CANDIDATES" | jq -c --arg repo "$REPO" --arg title "$TITLE" \
-        --arg body "$(cat "$BODY_FILE")" --arg started "$ATTEMPT_STARTED_AT" '
-        [.[] | select(.title == $title and .body == $body and (.createdAt // "") >= $started)
+        --rawfile body "$BODY_FILE" --arg started "$ATTEMPT_STARTED_AT" '
+        # GitHub timestamps are second-granularity here. Equal-second creates
+        # are ambiguous across sessions, so fail closed and require reconciliation.
+        [.[] | select(.title == $title and .body == $body and (.createdAt // "") > $started)
           | select((.url | split("/")[-4:-2]) == ($repo | split("/"))
             and (.url | split("/")[-1]) == (.number | tostring))]') || MATCHES="[]"
       MATCH_COUNT=$(printf '%s' "$MATCHES" | jq 'length' 2>/dev/null) || MATCH_COUNT=0

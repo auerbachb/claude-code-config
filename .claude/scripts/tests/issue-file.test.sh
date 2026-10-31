@@ -97,7 +97,7 @@ case "$1 $2" in
     ;;
   "issue list")
     if [ "${STUB_MODE:-ok}" = create-uncertain ]; then
-      jq -nc --arg body "$(cat "$STUB_BODY")" --arg created "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+      jq -nc --rawfile body "$STUB_BODY" --arg created "2099-01-01T00:00:01Z" \
         '[{number:4242,url:"https://github.com/acme/widgets/issues/4242",title:"An idea",body:$body,createdAt:$created,labels:[{name:"Skill"}]}]'
     else
       printf '[]\n'
