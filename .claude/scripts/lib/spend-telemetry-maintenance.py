@@ -196,7 +196,9 @@ def resume_children(cursor_dir, hook_path):
         # session identity. The transcript may supply one; otherwise it stays unknown.
         resume_env["CLAUDE_CODE_SESSION_ID"] = ""
         resume_env["CLAUDE_SESSION_ID"] = ""
-        previous_offset = saved.get("offset", 0)
+        previous_offset = saved.get("offset")
+        if type(previous_offset) is not int or previous_offset < 0:
+            previous_offset = -1
         for _ in range(10):
             remaining = deadline - time.monotonic()
             if remaining <= 0:

@@ -56,8 +56,8 @@ slug=p.get("repo_slug", "")
 if not isinstance(root,str) or len(root)>4096 or (root and not os.path.isabs(root)) or any(ord(c)<32 for c in root): root=""
 if not isinstance(slug,str) or len(slug)>255 or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",slug): slug=""
 print(root.replace("\x1f", "")+"\x1f"+slug.replace("\x1f", ""))
-' <<<"$INPUT" 2>/dev/null)" || RESUME_REPO_FIELDS=$''
-  IFS=$'' read -r REPO_ROOT REPO_SLUG <<< "$RESUME_REPO_FIELDS"
+' <<<"$INPUT" 2>/dev/null)" || RESUME_REPO_FIELDS=$'\x1f'
+  IFS=$'\x1f' read -r REPO_ROOT REPO_SLUG <<< "$RESUME_REPO_FIELDS"
 else
   if [ -n "$CWD" ]; then
     REPO_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"

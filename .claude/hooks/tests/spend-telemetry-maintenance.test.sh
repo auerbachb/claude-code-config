@@ -144,6 +144,10 @@ assert legacy_saved['metadata']['cursor_path_input']==other_relative
 assert legacy_saved['metadata']['transcript_path']==os.path.realpath(other_transcript)
 assert legacy_saved['offset']==legacy_offset
 assert len(list(cursors.glob('*.offset')))==2
+# A malformed saved child offset is observable as pending and is normalized
+# before comparing the next cursor value, rather than aborting bounded refresh.
+cursor['offset']='invalid'
+cursor_file.write_text(json.dumps(cursor),encoding='utf-8'); cursor_file.chmod(0o600)
 shutil.rmtree(old_cwd)
 shutil.rmtree(other_cwd)
 observed=subprocess.run(['bash',str(report)],env=report_env,text=True,capture_output=True,check=True,timeout=15).stdout
@@ -158,7 +162,7 @@ def message_ids():
 assert len(message_ids())==501 and len(set(message_ids()))==501
 raw_rows=[line.split('\t') for line in log.read_text().splitlines()]
 raw_messages=[parts for parts in raw_rows if len(parts)>9 and parts[1]=='assistant_message' and (parts[9].startswith('refresh-msg-') or parts[9]=='second-relative-msg')]
-assert len(raw_messages)==501 and all(parts[5]=='unknown' for parts in raw_messages)
+assert len(raw_messages)>=501 and all(parts[5]=='unknown' for parts in raw_messages)
 records=[module.parse_row(parts,n) for n,parts in enumerate(raw_rows)]
 messages=[row for row in records if row['event_type']=='assistant_message' and (row['event_key'].startswith('refresh-msg-') or row['event_key']=='second-relative-msg')]
 assert all(row['session_id']=='' for row in messages)

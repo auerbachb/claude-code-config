@@ -76,6 +76,7 @@ Run the local checks:
 ```bash
 bash .claude/scripts/spend-telemetry-report.sh --days 30
 bash .claude/hooks/tests/spend-telemetry-tracker.test.sh
+bash .claude/hooks/tests/spend-telemetry-maintenance.test.sh
 bash .claude/scripts/tests/spend-telemetry-report.test.sh
 ```
 
