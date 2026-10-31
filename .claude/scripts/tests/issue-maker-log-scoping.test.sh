@@ -73,8 +73,9 @@ ok "all four phase-module test-anchors extract non-empty bash"
 # SKILL.md resolution loop looks for it.
 make_home() {
   local d="$TMP_DIR/home-$1"
-  mkdir -p "$d/.claude/handoffs" "$d/.claude/skills/issue-maker/scripts"
+  mkdir -p "$d/.claude/handoffs" "$d/.claude/skills/issue-maker/scripts" "$d/.claude/scripts"
   cp "$RESOLVE_LOG" "$SET_LOG" "$DISPATCHER" "$d/.claude/skills/issue-maker/scripts/"
+  cp "$SCRIPT_DIR/../state-lock.sh" "$d/.claude/scripts/state-lock.sh"
   chmod +x "$d/.claude/skills/issue-maker/scripts/"*.sh
   printf '%s' "$d"
 }

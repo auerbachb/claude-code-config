@@ -111,6 +111,7 @@ if jq -e '.inline_checkpoint != null' "$LOG" >/dev/null; then
   echo "HOLD: inline execution may be running; close confirmed, retain invocation receipt" >&2
   exit 1
 fi
+RETRACT_RECEIPT=$(jq -c '{reg_tid:(.reg_tid // ""),checkpoint:.handoff_checkpoint,inline:.inline_checkpoint}' "$LOG") || exit 1
 CLOSED_NUMBERS_JSON=${CLOSED_NUMBERS_JSON:-[$N]}
 # Reconstruct operation inputs in a new shell; no prior variable is a receipt.
 OFFER_TOKEN=$(jq -er --arg repo "$REPO" --argjson closed "$CLOSED_NUMBERS_JSON" "$MINE_DEF"'
@@ -123,34 +124,47 @@ SPAWN_STATUS=$(jq -r '.handoff_checkpoint.spawn_status // "unknown"' "$LOG") || 
 RECEIPT_REPO=$(jq -r '.handoff_checkpoint.repository // .target_repo // empty' "$LOG") || exit 1
 [[ "$RECEIPT_REPO" == "$REPO" ]] || { echo "ERROR: handoff repository mismatch; preserve receipt" >&2; exit 1; }
 CLEAR_REGISTRY=false
-if [ "$SHARERS" -eq 0 ] && [ -n "$REG_TID" ]; then
+HAS_HANDOFF=$(printf '%s' "$RETRACT_RECEIPT" | jq -r '.checkpoint != null') || exit 1
+if [ "$SHARERS" -eq 0 ] && { [ -n "$REG_TID" ] || [ "$HAS_HANDOFF" = true ]; }; then
   if ! jq -e '.handoff_checkpoint.spawn_status == "not-started" and .handoff_checkpoint.task_id == null and (.handoff_checkpoint.state == "reservation-intent" or .handoff_checkpoint.state == "reserved" or .handoff_checkpoint.state == "cleanup-pending")' "$LOG" >/dev/null; then
     echo "HOLD: task may be running; issue closed, but reservation/launch receipt retained" >&2
     exit 1
   fi
-  # Resolve REGISTRY via the standard three executable paths; fail closed if absent.
-  REGISTRY=""
-  for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
-    [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
-  done
-  [ -n "$REGISTRY" ] || { echo "ERROR: registry unavailable; preserve cleanup receipt" >&2; exit 1; }
-  SNAPSHOT=$("$REGISTRY" --repo "$REPO" --list) || exit 1
-  REG_STATE=$(printf '%s' "$SNAPSHOT" | jq -er --arg id "$REG_TID" '
-    if type != "array" then error("registry array required") else
-    [.[] | select(.task_id == $id)] as $m |
-    if ($m|length)==0 then "absent" elif ($m|length)==1 and $m[0].emitter=="issue-maker" then $m[0].state else error("ambiguous ID") end end') || exit 1
-  case "$REG_STATE" in
-    offered) "$REGISTRY" --repo "$REPO" --retract --task-id "$REG_TID" || { echo "ERROR: release uncertain; receipt retained" >&2; exit 1; } ;;
-    absent|retracted|expired) : ;;
-    *) echo "HOLD: registry task is $REG_STATE; reconcile actual task lifecycle" >&2; exit 1 ;;
-  esac
+  # Take the cleanup stage under the same lock as launch's reserved -> unknown CAS.
+  set_log "$MINE_DEF"'if {reg_tid:(.reg_tid // ""),checkpoint:.handoff_checkpoint,inline:.inline_checkpoint} != $expected
+      or .inline_checkpoint != null or ([.issues[] | mine | select(.chip_task_id == $tok)] | length) != 0
+    then error("stale cleanup receipt or new offer sharer") else .handoff_checkpoint.state = "cleanup-pending" end' \
+    --arg repo "$REPO" --arg tok "$OFFER_TOKEN" --argjson expected "$RETRACT_RECEIPT" || exit 1
+  RETRACT_RECEIPT=$(printf '%s' "$RETRACT_RECEIPT" | jq -c '.checkpoint.state = "cleanup-pending"') || exit 1
+  if [ -n "$REG_TID" ]; then
+    # Resolve REGISTRY via the standard three executable paths; fail closed if absent.
+    REGISTRY=""
+    for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/chip-offer-registry.sh" "$HOME/.claude/scripts/chip-offer-registry.sh" ".claude/scripts/chip-offer-registry.sh"; do
+      [ -x "$candidate" ] && { REGISTRY="$candidate"; break; }
+    done
+    [ -n "$REGISTRY" ] || { echo "ERROR: registry unavailable; preserve cleanup receipt" >&2; exit 1; }
+    SNAPSHOT=$("$REGISTRY" --repo "$REPO" --list) || exit 1
+    REG_STATE=$(printf '%s' "$SNAPSHOT" | jq -er --arg id "$REG_TID" '
+      if type != "array" then error("registry array required") else
+      [.[] | select(.task_id == $id)] as $m |
+      if ($m|length)==0 then "absent" elif ($m|length)==1 and $m[0].emitter=="issue-maker" then $m[0].state else error("ambiguous ID") end end') || exit 1
+    case "$REG_STATE" in
+      offered) "$REGISTRY" --repo "$REPO" --retract --task-id "$REG_TID" || { echo "ERROR: release uncertain; receipt retained" >&2; exit 1; } ;;
+      absent)
+        printf '%s' "$RETRACT_RECEIPT" | jq -e '.checkpoint.reservation_complete == true' >/dev/null || {
+          echo "HOLD: reservation call may still be in flight; retain cleanup receipt" >&2; exit 1;
+        } ;;
+      retracted|expired) : ;;
+      *) echo "HOLD: registry task is $REG_STATE; reconcile actual task lifecycle" >&2; exit 1 ;;
+    esac
+  fi
   # Only confirmed release/absence AND no-spawn permits clearing the receipt.
   CLEAR_REGISTRY=true
 elif [ "$DELIVERY_MODE" = chip ] || [ "$DELIVERY_MODE" = chip-pending ]; then
   echo "HOLD: preserve possibly running handoff, including uncounted launch receipts" >&2
   exit 1
 fi
-set_log "$MINE_DEF"'(.issues[] | select(same_repo and session_filed and .status == "closed" and (.number as $n | $closed | index($n)) and .chip_task_id == $tok) | .chip_task_id) = null | if $clear then .reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null else . end' --argjson clear "$CLEAR_REGISTRY" --arg repo "$REPO" --arg tok "$OFFER_TOKEN" --argjson closed "$CLOSED_NUMBERS_JSON" || exit 1
+set_log "$MINE_DEF"'if {reg_tid:(.reg_tid // ""),checkpoint:.handoff_checkpoint,inline:.inline_checkpoint} != $expected then error("stale cleanup receipt") else . end | (.issues[] | select(same_repo and session_filed and .status == "closed" and (.number as $n | $closed | index($n)) and .chip_task_id == $tok) | .chip_task_id) = null | if $clear then .reg_tid = null | .delivery_mode = "inline" | .handoff_checkpoint = null else . end' --argjson clear "$CLEAR_REGISTRY" --arg repo "$REPO" --arg tok "$OFFER_TOKEN" --argjson closed "$CLOSED_NUMBERS_JSON" --argjson expected "$RETRACT_RECEIPT" || exit 1
 ```
 
 **Cleanup failure:** retain the affected tokens and registry/launch receipt when an external or local operation fails. A successful release followed by failed local cleanup is recoverable by the exact repo-scoped registry read; never reserve a replacement before reconciliation. Report withdrawal only after both stores confirm it. For possible/confirmed tasks say the issue was closed while task reconciliation remains pending, not that the chip was withdrawn.

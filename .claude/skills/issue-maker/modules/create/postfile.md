@@ -156,7 +156,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   exit 1
 fi
 OFFER_TOKEN="offer-$(date +%s%N)"
-set_log "$MINE_DEF"'.delivery_mode = "inline" | (.issues[] | mine | .chip_task_id) = $tok' \
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | .delivery_mode = "inline" | (.issues[] | mine | .chip_task_id) = $tok' \
   --arg tok "$OFFER_TOKEN" --arg repo "$REPO"
 ```
 
@@ -185,21 +185,25 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   echo "HOLD: reconcile existing execution receipt before invoking /subagent" >&2
   exit 1
 fi
-set_log "$MINE_DEF"'.inline_checkpoint = {state:"invocation-pending", repository:$repo, issues:[.issues[] | mine | .number]}' --arg repo "$REPO" || exit 1
+INLINE_ATTEMPT_ID="inline-$(date -u +%s)-$$-$RANDOM-$RANDOM"
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | [.issues[] | mine | .number] as $covered |
+  if ($covered|length)==0 then error("no session issues") else
+  .inline_checkpoint = {attempt_id:$attempt,state:"invocation-pending", repository:$repo, issues:$covered} end' --arg repo "$REPO" --arg attempt "$INLINE_ATTEMPT_ID" || exit 1
 printf 'INLINE_REQUEST=%s\n' "$(jq -c '.inline_checkpoint' "$LOG")"
 ```
 
 **Separate skill action:** invoke `/subagent` once with the issue numbers in the emitted `INLINE_REQUEST`. Do not execute the next shell block until that actual invocation returns confirmed success. A failed, partial, or lost invocation response leaves the intent for reconciliation and never authorizes an automatic retry. If evidence proves nothing started, clear only `.inline_checkpoint` and keep the offer pending. No shell comment substitutes for this skill action.
 
-**Post-success receipt, in a separate tool call:** set `INLINE_RESULT=success` only from that actual successful invocation. Missing or non-success result stops without changing acceptance/tokens. The pending issue list, rather than newly filed rows, bounds cleanup.
+**Post-success receipt, in a separate tool call:** set `INLINE_RESULT=success` only from that actual successful invocation. Pass `INLINE_ATTEMPT_ID` from the emitted request into this later invocation (recover it from the pending receipt only for that invocation). Missing or non-success result stops without changing acceptance/tokens. The pending issue list, rather than newly filed rows, bounds cleanup.
 
 ```bash
+[ -n "${INLINE_ATTEMPT_ID:-}" ] || { echo "HOLD: supply the saved inline attempt ID" >&2; exit 1; }
 [ "${INLINE_RESULT:-unknown}" = success ] || { echo "HOLD: /subagent success was not confirmed" >&2; exit 1; }
-if ! set_log "$MINE_DEF"'if .inline_checkpoint.state != "invocation-pending" or .inline_checkpoint.repository != $repo
+if ! set_log "$MINE_DEF"'if .inline_checkpoint.state != "invocation-pending" or .inline_checkpoint.repository != $repo or .inline_checkpoint.attempt_id != $attempt
   then error("inline invocation receipt missing/mismatched") else
   .inline_checkpoint.issues as $covered | .offer_accepted = true |
   (.issues[] | mine | select(.number as $n | $covered | index($n)) | .chip_task_id) = null |
-  .inline_checkpoint = null end' --arg repo "$REPO"; then
+  .inline_checkpoint = null end' --arg repo "$REPO" --arg attempt "$INLINE_ATTEMPT_ID"; then
   echo "ERROR: /subagent started, but receipt persistence failed; retain pending intent and reconcile before another run" >&2
   exit 1
 fi
@@ -212,7 +216,7 @@ if jq -e '(.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_check
   echo "HOLD: reconcile existing chip reservation/launch before changing inline offers" >&2
   exit 1
 fi
-set_log "$MINE_DEF"'(.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
+set_log "$MINE_DEF"'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null or .offer_accepted == true or .delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved" then error("reconcile existing execution receipt") else . end | (.issues[] | mine | .chip_task_id) = null' --arg repo "$REPO"
 ```
 
 **Refresh before acceptance.** When more issues arrive in later turns before acceptance, refresh the offer: re-emit the offer text covering all open issues (including the new ones), update `chip_task_id` on the new issues to the same offer token, and append the new issues to the offer.

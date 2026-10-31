@@ -134,10 +134,18 @@ REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || tr
 # "rapid-fire" in $ARGUMENTS) starts in rapid-fire; otherwise default.
 MODE="default"; case "$ARGUMENTS" in *rapid-fire*) MODE="rapid-fire";; esac
 NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-TMP=$(mktemp)
+TMP=$(mktemp "${LOG}.init.XXXXXX") || exit 1
 jq -n --arg repo "$REPO" --arg now "$NOW" --arg sid "$SESSION_ID" --arg mode "$MODE" \
   '{schema_version:"1", session_id:$sid, target_repo:$repo, mode:$mode,
-    created_at:$now, last_updated_at:$now, issues:[]}' > "$TMP" && mv "$TMP" "$LOG"
+    created_at:$now, last_updated_at:$now, issues:[]}' > "$TMP" || { rm -f "$TMP"; exit 1; }
+# Publish complete bytes only if absent. A stale missing-log check must never
+# overwrite another initializer's issues, reservation, or launch receipt.
+if ! ln "$TMP" "$LOG" 2>/dev/null; then
+  rm -f "$TMP"
+  echo "HOLD: session log already initialized; reload recovery before any mutation" >&2
+  exit 1
+fi
+rm -f "$TMP"
 ```
 
 Banner: *"Thread is now in issue-capture mode. I will only create, edit, or close issues — no implementation, no worktrees, no branches. Describe an issue and I'll open it, then report a quick summary and the scope calls I made."*
@@ -195,7 +203,13 @@ FOREIGN=$(jq -r --arg repo "$REPO" '
    | ((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) as $r
    | select(($r | length) > 0 and $r != ($repo | ascii_downcase))] | length' "$LOG") || FOREIGN=""
 case "$FOREIGN" in
-  0) set_log '.target_repo = $v' --arg v "$REPO" ;;  # see the write-log helper below
+  0) set_log 'if (.reg_tid // "") != "" or .handoff_checkpoint != null or .inline_checkpoint != null
+       or .create_intent != null or .active_chain != null or .offer_accepted == true
+       or (.delivery_mode == "chip" or .delivery_mode == "chip-pending" or .delivery_mode == "chip-reserved")
+       or any(.issues[]; .status == "open" and
+         (((.url // "") | (try capture("^https?://[^/]+/(?<r>[^/]+/[^/]+)/issues/") catch {r:""}) // {r:""} | .r | ascii_downcase) as $r |
+          ($r | length) > 0 and $r != ($v | ascii_downcase)))
+       then error("retarget raced an execution receipt or foreign row") else .target_repo = $v end' --arg v "$REPO" || exit 1 ;;
   ''|*[!0-9]*)
     echo "WARN: could not read $LOG to check for foreign entries — refusing to retarget to $REPO (issue #1369). Fix or replace the log first." >&2; exit 1 ;;
   *)
@@ -207,7 +221,7 @@ Every `gh issue …` call below passes `--repo "$REPO"`.
 
 ### Writing to the session log (one canonical helper)
 
-Every mutation of `$LOG` goes through `scripts/set-log.sh` (skill-local) — an atomic read-modify-write helper. Resolve and bind it once per invocation, together with the repo-scoped row selector every batch-wide write must use:
+Every mutation of `$LOG` goes through `scripts/set-log.sh` (skill-local) — a locked read-modify-write helper with atomic replacement. Resolve and bind it once per invocation, together with the repo-scoped row selector every batch-wide write must use:
 
 **The repo/origin selector was initialized before recovery; use it for every session-wide read and write.**
 

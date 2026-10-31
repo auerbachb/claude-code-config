@@ -25,11 +25,11 @@ assert_eq() {
 
 read_path_once() {
   local key="$1" path="$2"
-  [[ -n "${loaded[$key]:-}" ]] && return 0
+  [[ "$loaded" == *"|$key|"* ]] && return 0
   [[ -r "$path" ]] || return 1
   cat "$path" >/dev/null
   printf '%s\n' "$(cd -- "$(dirname -- "$path")" && pwd -P)/$(basename -- "$path")" >> "$TRACE"
-  loaded[$key]=1
+  loaded="${loaded}|$key|"
 }
 
 load_once() {
@@ -46,7 +46,7 @@ load_reference() {
   read_path_once "reference:$2" "$2"
 }
 
-declare -A loaded=()
+loaded=""
 load_once session state
 load_once create reflect
 load_reference tier-inference .claude/skills/issue-maker/references/tier-inference.md
@@ -74,7 +74,7 @@ expected=$(printf '%s\n' "$expected" | sed "s#^#$ROOT/#")
 assert_eq "$expected" "$actual" 'create trace reads selected phases and required nested references; repeat is reused'
 
 : > "$TRACE"
-loaded=()
+loaded=""
 load_once session state
 load_once update edit
 actual=$(cat "$TRACE")
@@ -87,7 +87,7 @@ expected=$(printf '%s\n' "$expected" | sed "s#^#$ROOT/#")
 assert_eq "$expected" "$actual" 'update trace does not read create, batch, retract, export, or references'
 
 : > "$TRACE"
-loaded=()
+loaded=""
 load_once session state
 load_once retract close
 actual=$(cat "$TRACE")
@@ -100,7 +100,7 @@ expected=$(printf '%s\n' "$expected" | sed "s#^#$ROOT/#")
 assert_eq "$expected" "$actual" 'retract trace reads only session and retract modules'
 
 : > "$TRACE"
-loaded=()
+loaded=""
 load_once session state
 load_once create reflect
 load_once create increment-draft
@@ -133,7 +133,7 @@ expected=$(printf '%s\n' "$expected" | sed "s#^#$ROOT/#")
 assert_eq "$expected" "$actual" 'batch trace loads increment rules, chain steps, and required nested references'
 
 : > "$TRACE"
-loaded=()
+loaded=""
 load_once export prompt
 # Bounded literal sources are emitted by a tool, rather than loaded as workflows.
 reflect="$ROOT/.claude/skills/issue-maker/modules/create/reflect-and-draft.md"
@@ -203,7 +203,7 @@ assert_eq 'owner/repo' "$recovered_repo" 'session recovery restores target repos
 
 # A restarted context routes directly from the persisted checkpoint.
 : > "$TRACE"
-loaded=()
+loaded=""
 load_once session state
 load_once "$(jq -r '.checkpoint.operation' "$STATE_LOG")" "$(jq -r '.checkpoint.module_phase' "$STATE_LOG")"
 assert_eq "$ROOT/.claude/skills/issue-maker/modules/session-state.md
@@ -214,7 +214,7 @@ rm -f "$STATE_LOG"
 # Execute the production Markdown blocks against offline state and gh stubs.
 # These validate state changes and failure behavior, not LLM prose inference.
 python3 - "$ROOT" <<'PY'
-import json, pathlib, re, shlex, shutil, subprocess, sys, tempfile
+import json, pathlib, re, shlex, shutil, subprocess, sys, tempfile, time
 root=pathlib.Path(sys.argv[1]); skill=root/'.claude/skills/issue-maker'
 def source(name): return (skill/name).read_text()
 def blocks(name): return re.findall(r'```bash\n(.*?)\n\s*```', source(name), re.S)
@@ -225,6 +225,26 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     setup=selector+'\n'+f'LOG={shlex.quote(str(log))}\nREPO=owner/repo\n'+f'set_log() {{ {shlex.quote(str(skill/"scripts/set-log.sh"))} "$LOG" "$@"; }}\n'
     def seed(rows): log.write_text(json.dumps({'issues':rows,'target_repo':'owner/repo'}))
     def row(n,**kw): return dict(number=n,title=f'Issue {n}',url=f'https://github.com/owner/repo/issues/{n}',status='open',chip_task_id=None,created_at='2026-10-30',**kw)
+    # The production writer must serialize reads as well as atomic renames.
+    seed([])
+    writers=[subprocess.Popen(['bash','-eu','-c',setup+"set_log '.counter = ((.counter // 0) + 1)'"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=root) for _ in range(12)]
+    results=[p.communicate(timeout=20) for p in writers]
+    assert all(p.returncode==0 for p in writers) and json.loads(log.read_text())['counter']==12,results
+    before=log.read_bytes()
+    for bad_filter in ('empty','., .','42','if .counter != 0 then error("stale") else . end'):
+        r=run(setup+'set_log '+shlex.quote(bad_filter))
+        assert r.returncode!=0 and log.read_bytes()==before and not list(log.parent.glob(log.name+'.tmp.*')),(bad_filter,r.stderr)
+    print('ok workflow: locked writer preserves concurrent updates and rejects stale/empty/multiple/nonobject results without changing the log')
+    # First-session setup is an exclusive complete-file publish. A late first
+    # invocation must not replace a winner after it records external work.
+    initialize=next(b for b in blocks('modules/session-state.md') if 'created_at:$now' in b)
+    seed([row(1,origin='create')]);data=json.loads(log.read_text());data['handoff_checkpoint']={'state':'spawn-uncertain','task_id':None};log.write_text(json.dumps(data));before=log.read_bytes()
+    r=run(setup+'ARGUMENTS=""\nSESSION_ID=late-initializer\ngh() { printf owner/repo; }\n'+initialize)
+    assert r.returncode==1 and log.read_bytes()==before and not list(log.parent.glob(log.name+'.init.*')),(r.stderr,log.read_text())
+    log.unlink()
+    r=run(setup+'ARGUMENTS=rapid-fire\nSESSION_ID=fresh-initializer\ngh() { printf owner/repo; }\n'+initialize)
+    assert r.returncode==0 and json.loads(log.read_text())['mode']=='rapid-fire' and json.loads(log.read_text())['session_id']=='fresh-initializer' and not list(log.parent.glob(log.name+'.init.*')),(r.stderr,log.read_text())
+    print('ok workflow: session initialization publishes complete bytes exclusively and preserves a concurrent winner receipt')
     # Threshold configuration is read from the target checkout only; a helper
     # installed elsewhere must not silently apply the invoking repo's policy.
     thresholds=next(b for b in blocks('modules/create/reflect-and-draft.md') if 'SPLIT_THRESHOLDS=' in b)
@@ -272,6 +292,8 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     installed=pathlib.Path(td)/'installed/.claude/skills/issue-maker'; (installed/'scripts').mkdir(parents=True)
     for name in ['dispatch-module.sh','resolve-log.sh','set-log.sh']:
         shutil.copy2(skill/'scripts'/name,installed/'scripts'/name)
+    (installed/'../../scripts').resolve().mkdir(parents=True,exist_ok=True)
+    shutil.copy2(root/'.claude/scripts/state-lock.sh',(installed/'../../scripts/state-lock.sh').resolve())
     for label,skill_root,home in [('bundled',skill,pathlib.Path(td)/'home-bundled'),('installed',installed,pathlib.Path(td)/'home-installed')]:
         home.mkdir(parents=True)
         dispatcher=skill_root/'scripts/dispatch-module.sh'
@@ -281,6 +303,15 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
         helper_log=home/'.claude/handoffs/writer-check.json'; helper_log.parent.mkdir(parents=True,exist_ok=True); helper_log.write_text('{"issues":[]}')
         r=run('export HOME='+shlex.quote(str(home))+'\nexport DISPATCHER='+shlex.quote(str(dispatcher.resolve()))+'\nLOG='+shlex.quote(str(helper_log))+'\n'+writer_setup+'\nset_log \'.mode = $v\' --arg v rapid-fire\nprintf "%s" "$SET_LOG"',cwd='/tmp')
         assert r.returncode==0 and r.stdout==str((skill_root/'scripts/set-log.sh').resolve()) and json.loads(helper_log.read_text())['mode']=='rapid-fire',(label,r.returncode,r.stdout,r.stderr,helper_log.read_text())
+    # Published skills are directory symlinks; bind the lock to that physical
+    # installation too, rather than accidentally using an ambient global copy.
+    linked=pathlib.Path(td)/'linked-skill';linked.symlink_to(installed,target_is_directory=True)
+    r=run('LOG='+shlex.quote(str(helper_log))+'\n'+shlex.quote(str(linked/'scripts/set-log.sh'))+' "$LOG" \' .symlink_writer = true \'',cwd='/tmp')
+    assert r.returncode==0 and json.loads(helper_log.read_text())['symlink_writer'] is True,r.stderr
+    (installed/'../../scripts/state-lock.sh').resolve().unlink()
+    before=helper_log.read_bytes()
+    r=run('LOG='+shlex.quote(str(helper_log))+'\n'+shlex.quote(str(linked/'scripts/set-log.sh'))+' "$LOG" \' .unexpected = true \'',cwd=root)
+    assert r.returncode!=0 and helper_log.read_bytes()==before and 'state-lock.sh missing' in r.stderr,(r.returncode,r.stderr)
     print('ok workflow: bundled and installed invocations resolve session helpers from DISPATCHER outside the repo cwd')
     # A shell guard cannot stand in for explicit user acceptance or skill execution.
     seed([dict(row(1,origin='create'),chip_task_id='offer-token'),dict(row(2,origin='create'),chip_task_id='foreign-token',url='https://github.com/other/repo/issues/2')])
@@ -289,6 +320,8 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     before=log.read_bytes();r=run(setup+inline_guard);assert r.returncode==1 and log.read_bytes()==before
     r=run(setup+'USER_ACCEPTED=true\n'+inline_guard);assert r.returncode==0,r.stderr
     data=json.loads(log.read_text());assert not data.get('offer_accepted') and data['issues'][0]['chip_task_id']=='offer-token' and data['inline_checkpoint']['issues']==[1]
+    inline_attempt=data['inline_checkpoint']['attempt_id']
+    accept='INLINE_ATTEMPT_ID='+shlex.quote(inline_attempt)+'\n'+accept
     pending=log.read_bytes();r=run(setup+accept);assert r.returncode==1 and log.read_bytes()==pending
     r=run(setup+'INLINE_RESULT=failed\n'+accept);assert r.returncode==1 and log.read_bytes()==pending
     calls=pathlib.Path(td)/'accept-calls';failing='set_log() { printf x >> '+shlex.quote(str(calls))+'; return 1; }\n'
@@ -318,8 +351,9 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     # First handoff emission after a declined inline offer has no token to reuse.
     seed([row(1,origin='create'),row(2,origin='update')])
     release_block=next(b for b in blocks('modules/handoff.md') if 'handoff_release_unstarted()' in b)
+    payload_setup='HANDOFF_ISSUES_JSON=$(jq -c --arg repo \"$REPO\" \"$MINE_DEF\"\'[.issues[] | mine | .number]\' \"$LOG\")\nHANDOFF_PAYLOAD=\'**Model:** fixture\n**Effort:** fixture\nVerbatim prompt with shell-looking $(literal) and `literal` text.\n\'\n'
     handoff_stamp=release_block+'\n'+next(b for b in blocks('modules/handoff.md') if 'OFFER_TOKEN="offer-' in b)
-    r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+handoff_stamp); assert r.returncode==0,r.stderr
+    r=run(setup+'CHIP_TOOL_AVAILABLE=false\nISSUE_ARGS=()\n'+payload_setup+handoff_stamp); assert r.returncode==0,r.stderr
     rows=json.loads(log.read_text())['issues']; assert rows[0]['chip_task_id'].startswith('offer-') and rows[1]['chip_task_id'] is None
     print('ok workflow: explicit fallback handoff after decline stamps only session-filed rows')
     # Execute the production reservation/stamp/launch/receipt/cleanup fences with
@@ -328,27 +362,35 @@ with tempfile.TemporaryDirectory(prefix='issue-maker-behavior-') as td:
     cap=registry.parent/'active-work-cap.sh'; cap_args=pathlib.Path(td)/'cap-args'
     cap.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > '+shlex.quote(str(cap_args))+'\nprintf \'{"free":1,"registry_baseline":0}\\n\'\n'); cap.chmod(0o755)
     registry_args=pathlib.Path(td)/'registry-args'
+    reserve_started=pathlib.Path(td)/'reserve-started'; reserve_continue=pathlib.Path(td)/'reserve-continue'
     registry.write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> '''+shlex.quote(str(registry_args))+'''
 case " $* " in
   *" --reserve "*)
     [[ "${FAULT:-}" == deny ]] && exit 7
+    if [[ "${FAULT:-}" == reserve-hold ]]; then
+      : > '''+shlex.quote(str(reserve_started))+'''
+      for wait_tick in {1..500}; do [ ! -f '''+shlex.quote(str(reserve_continue))+''' ] || break; sleep .02; done
+      [ -f '''+shlex.quote(str(reserve_continue))+''' ] || exit 4
+    fi
     if [[ "${FAULT:-}" == reserve-lost ]]; then bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''' "$@" >/dev/null; exit 4; fi ;;
   *" --list "*) [[ "${FAULT:-}" == list-fail ]] && exit 4 ;;
   *" --retract "*) [[ "${FAULT:-}" == retract-fail ]] && exit 4 ;;
 esac
 exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''' "$@"
 '''); registry.chmod(0o755)
-    env_setup='export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'
+    env_setup='export HOME='+shlex.quote(str(home))+'\nCHIP_TOOL_AVAILABLE=true\n'+payload_setup
     state_file=home/'.claude/session-state.json'
     def fresh():
         seed([row(1,origin='create'),row(2,origin='update'),dict(row(3,origin='create'),url='https://github.com/foreign/repo/issues/3')])
         state_file.write_text('{"repos":{"foreign/repo":{"chip_offers":[{"task_id":"foreign","state":"running"}]}}}')
         registry_args.write_text('')
     def offers(): return json.loads(state_file.read_text())['repos'].get('owner/repo',{}).get('chip_offers',[])
-    def invoke(extra='',body=handoff_stamp): return run(setup+env_setup+release_block+'\n'+extra+'\n'+body)
+    def invoke(extra='',body=handoff_stamp):
+        attempt=json.loads(log.read_text()).get('handoff_checkpoint') or {}
+        return run(setup+env_setup+release_block+'\nHANDOFF_ATTEMPT_ID='+shlex.quote(attempt.get('attempt_id',''))+'\n'+extra+'\n'+body)
     launch=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip-pending"' in b)
-    receipt=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip" | .reg_tid = $reg' in b)
+    receipt=next(b for b in blocks('modules/handoff.md') if '.delivery_mode = "chip" | .reg_tid =' in b)
     fallback=next(b for b in blocks('modules/handoff.md') if 'SPAWN_OUTCOME' in b)
     # A resolved-but-unreadable cap never takes the uncounted admission path.
     cap_good=cap.read_text();cap.write_text('#!/usr/bin/env bash\nexit 4\n')
@@ -356,6 +398,11 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     cap.write_text(cap_good)
     # Failure before reservation intent cannot write either external store.
     fresh(); r=invoke('set_log() { return 1; }'); assert r.returncode==1 and not offers() and not registry_args.read_text()
+    # Payload-save/preflight failure stops before reservation or any tool action.
+    fresh();before=log.read_bytes();r=invoke('python3() { return 1; }')
+    assert r.returncode==1 and log.read_bytes()==before and not offers() and not registry_args.read_text(),r.stderr
+    fresh();before=log.read_bytes();r=invoke('HANDOFF_ISSUES_JSON="[999]"')
+    assert r.returncode==1 and log.read_bytes()==before and not offers() and not registry_args.read_text(),r.stderr
     # A cap race may checkpoint admission intent but never stamps/emits or leaks a slot.
     fresh();r=invoke('export FAULT=deny');d=json.loads(log.read_text());assert r.returncode==7 and d.get('reg_tid') is None and d['issues'][0]['chip_task_id'] is None and not offers(),(r.stderr,d)
     assert cap_args.read_text().splitlines()==['--json','--repo','owner/repo']
@@ -380,8 +427,38 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     fresh();r=invoke();assert r.returncode==0,r.stderr
     reg=json.loads(log.read_text())['reg_tid']; base_state=log.read_bytes(); base_registry=state_file.read_bytes()
     def saved(): log.write_bytes(base_state);state_file.write_bytes(base_registry)
+    replay=next(b for b in blocks('modules/handoff.md') if '# Load the definitions fence above' in b)
+    attempt=json.loads(base_state)['handoff_checkpoint']['attempt_id']
+    replay_receipt=json.loads(base_state)['handoff_replays'][attempt]
+    frozen=pathlib.Path(replay_receipt['path']);frozen_bytes=frozen.read_bytes()
+    assert frozen.stat().st_mode & 0o077 == 0 and frozen_bytes.endswith(b'\n') and replay_receipt['issues']==[1]
+    assert replay_receipt['sha256']==__import__('hashlib').sha256(frozen_bytes).hexdigest()
+    # Replaying uses only the saved file; changing current issue text cannot
+    # regenerate or change it, and live-offer cleanup keeps its replay receipt.
+    r=invoke('', 'handoff_restore && handoff_release_unstarted "$OFFER_TOKEN"');assert r.returncode==0,r.stderr
+    after=json.loads(log.read_text());assert after['handoff_checkpoint'] is None and after['handoff_replays'][attempt]==replay_receipt
+    after['issues'][0]['title']='Changed after offer cleanup';log.write_text(json.dumps(after));before=log.read_bytes();args=registry_args.read_text()
+    r=invoke('HANDOFF_ATTEMPT_ID='+shlex.quote(attempt),replay)
+    assert r.returncode==0 and r.stdout.encode()==frozen_bytes and log.read_bytes()==before and registry_args.read_text()==args,(r.stdout,r.stderr)
+    frozen.chmod(0o600);frozen.write_bytes(b'tampered');frozen.chmod(0o400)
+    r=invoke('HANDOFF_ATTEMPT_ID='+shlex.quote(attempt),replay)
+    assert r.returncode==1 and not r.stdout and 'hash mismatch' in r.stderr and registry_args.read_text()==args,r.stderr
+    frozen.chmod(0o600);frozen.write_bytes(frozen_bytes);frozen.chmod(0o400)
+    saved()
+    print('ok workflow: private per-attempt frozen payload/hash/issue receipt survives cleanup and replays exact bytes; failed save/stale input/tamper cannot emit or launch')
     launch_fail='set_log() { if [[ "$1" == *\'spawn-uncertain\'* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }'
     r=invoke('REGISTRY='+shlex.quote(str(registry))+'\nREG_TID='+shlex.quote(reg)+'\nOFFER_TOKEN='+shlex.quote(json.loads(base_state)['issues'][0]['chip_task_id'])+'\n'+launch_fail,release_block+'\n'+launch);assert r.returncode==1 and offers()[0]['state']=='retracted' and json.loads(log.read_text())['issues'][0]['chip_task_id'] is None
+    # A writer can commit and lose its response. A committed launch intent
+    # remains unknown and cannot be rolled back as proof of non-creation.
+    saved()
+    lost_launch='set_log() { '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@" || return $?; [[ "$1" != *\'spawn-uncertain\'* ]]; }'
+    r=invoke(lost_launch,launch);d=json.loads(log.read_text())
+    assert r.returncode==1 and d['handoff_checkpoint']['spawn_status']=='unknown' and offers()[0]['state']=='offered',(r.stderr,d,offers())
+    # A committed stamp with a lost response is cleaned by its exact token.
+    fresh()
+    lost_stamp='set_log() { '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@" || return $?; [[ "$1" != *\'chip_task_id) = $tok\'* ]]; }'
+    r=invoke(lost_stamp);d=json.loads(log.read_text())
+    assert r.returncode==1 and d['reg_tid'] is None and d['handoff_checkpoint'] is None and d['issues'][0]['chip_task_id'] is None and offers()[0]['state']=='retracted',(r.stderr,d,offers())
     # A restart during tool invocation has unknown outcome; fallback cannot release it.
     saved();r=invoke('',launch);assert r.returncode==0,r.stderr
     pending_state=log.read_bytes();r=run(setup+recovery);assert 'spawn outcome unknown' in r.stdout and 'chip started' not in r.stdout,r.stdout
@@ -422,9 +499,75 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
         assert (after['issues'][0]['chip_task_id'] is None)==should_release
     # Release+closed-token cleanup is one local write: failure retains BOTH receipts.
     saved();d=json.loads(log.read_text());d['issues'][0]['status']='closed';log.write_text(json.dumps(d));before=log.read_bytes()
-    r=invoke('N=1\nset_log() { return 1; }\n',retract_cleanup)
-    assert r.returncode==1 and log.read_bytes()==before and offers()[0]['state']=='retracted'
+    r=invoke('N=1\nset_log() { if [[ \"$1\" == *\'.chip_task_id) = null | if $clear\'* ]]; then return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' \"$LOG\" \"$@\"; }\n',retract_cleanup)
+    after=json.loads(log.read_text()); assert r.returncode==1 and after['reg_tid']==reg and after['issues'][0]['chip_task_id']==d['issues'][0]['chip_task_id'] and after['handoff_checkpoint']['state']=='cleanup-pending' and offers()[0]['state']=='retracted',(r.stderr,after,offers())
     r=invoke('N=1\n',retract_cleanup);d=json.loads(log.read_text());assert r.returncode==0 and d['reg_tid'] is None and d['issues'][0]['chip_task_id'] is None,r.stderr
+    # A launch-intent failure followed by failed release retains its token.
+    saved();r=invoke('export FAULT=retract-fail\n'+launch_fail,launch)
+    rollback=json.loads(log.read_text()); token=rollback['issues'][0]['chip_task_id']
+    assert r.returncode==1 and rollback['reg_tid']==reg and rollback['handoff_checkpoint']['offer_token']==token and rollback['handoff_checkpoint']['state']=='cleanup-pending',(r.stderr,rollback)
+    rollback['issues'][0]['status']='closed';log.write_text(json.dumps(rollback))
+    r=invoke('', 'handoff_restore && handoff_release_unstarted "$OFFER_TOKEN"')
+    after=json.loads(log.read_text());assert r.returncode==0 and after['reg_tid'] is None and after['handoff_checkpoint'] is None and after['issues'][0]['chip_task_id'] is None,(r.stderr,after)
+    # Different callers cannot adopt another attempt merely by using its log.
+    for phase in (launch,receipt,fallback,'handoff_release_unstarted'):
+        saved();before=log.read_bytes();args=registry_args.read_text()
+        r=invoke('HANDOFF_ATTEMPT_ID=unrelated\nTASK_ID=wrong-task\nSPAWN_OUTCOME=not-started',phase)
+        assert r.returncode==1 and log.read_bytes()==before and registry_args.read_text()==args,(r.stderr,phase)
+    # A full-checkpoint CAS rejects same-attempt stale writes as well.
+    saved();r=invoke('', 'handoff_restore\nset_log \' .handoff_checkpoint.offer_token = "newer-token" \'\nhandoff_write \' .handoff_checkpoint.state = "spawn-uncertain" \'')
+    assert r.returncode!=0 and json.loads(log.read_text())['handoff_checkpoint']['offer_token']=='newer-token' and json.loads(log.read_text())['handoff_checkpoint']['state']=='reserved',r.stderr
+    # Put both callers just before the REAL locked writer, with identical reads.
+    def race(bodies,pattern):
+        barrier=pathlib.Path(tempfile.mkdtemp(prefix='race-',dir=td));release=barrier/'go'
+        attempt=(json.loads(log.read_text()).get('handoff_checkpoint') or {}).get('attempt_id','')
+        wrapper='set_log() { if [[ "$1" == *'+shlex.quote(pattern)+'* ]]; then : > '+shlex.quote(str(barrier))+'/"$$"; for wait_tick in {1..500}; do [ ! -f '+shlex.quote(str(release))+' ] || break; sleep .02; done; [ -f '+shlex.quote(str(release))+' ] || return 1; fi; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }\n'
+        procs=[subprocess.Popen(['bash','-eu','-c',setup+env_setup+release_block+'\nHANDOFF_ATTEMPT_ID='+shlex.quote(attempt)+'\n'+wrapper+body],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=root) for body in bodies]
+        deadline=time.monotonic()+10
+        while len(list(barrier.iterdir()))<len(procs) and time.monotonic()<deadline: time.sleep(.02)
+        ready=len(list(barrier.iterdir()));release.touch()
+        outputs=[p.communicate(timeout=15) for p in procs]
+        assert ready==len(procs),(ready,outputs)
+        return [p.returncode for p in procs],outputs
+    cap.write_text(cap_good.replace('"free":1','"free":4'))
+    fresh();codes,outputs=race([handoff_stamp,handoff_stamp],'attempt_id:$attempt,state:"reservation-intent"')
+    d=json.loads(log.read_text());assert sorted(codes)==[0,1] and len(offers())==1 and d['reg_tid']==offers()[0]['task_id'],(codes,outputs,d,offers())
+    assert sum(' --reserve ' in (' '+line+' ') for line in registry_args.read_text().splitlines())==1,registry_args.read_text()
+    concurrent_state=log.read_bytes();concurrent_registry=state_file.read_bytes()
+    codes,outputs=race([launch,launch],'spawn-uncertain')
+    assert sorted(codes)==[0,1] and json.loads(log.read_text())['handoff_checkpoint']['spawn_status']=='unknown' and offers()[0]['state']=='offered',(codes,outputs,log.read_text(),offers())
+    # Cleanup and launch contend on the same receipt; at most one can proceed.
+    log.write_bytes(concurrent_state);state_file.write_bytes(concurrent_registry)
+    cleanup='handoff_release_unstarted'
+    # Both phase changes contain this prefix; later cleanup writes cannot reach
+    # the barrier until the parent has released its first two arrivals.
+    codes,outputs=race([launch,cleanup],'.handoff_checkpoint.state =')
+    d=json.loads(log.read_text());assert sorted(codes)==[0,1],(codes,outputs,d)
+    assert (d.get('handoff_checkpoint') is None and offers()[0]['state']=='retracted') or (d['handoff_checkpoint']['spawn_status']=='unknown' and offers()[0]['state']=='offered'),(d,offers())
+    # Explicit acceptance still needs one atomic invocation claim; concurrent
+    # accepted callers cannot both proceed to the separate skill action.
+    seed([dict(row(1,origin='create'),chip_task_id='inline-offer')])
+    codes,outputs=race(['USER_ACCEPTED=true\n'+inline_guard]*2,'.inline_checkpoint =')
+    d=json.loads(log.read_text());assert sorted(codes)==[0,1] and not d.get('offer_accepted') and d['inline_checkpoint']['issues']==[1],(codes,outputs,d)
+    before=log.read_bytes()
+    raw_accept=next(b for b in blocks('modules/create/postfile.md') if 'INLINE_RESULT' in b)
+    r=run(setup+'INLINE_ATTEMPT_ID=stale-caller\nINLINE_RESULT=success\n'+raw_accept)
+    assert r.returncode==1 and log.read_bytes()==before,r.stderr
+    cap.write_text(cap_good)
+    print('ok workflow: concurrent fresh/launch/cleanup calls, stale callers and failed rollback preserve one durable attempt and every cleanup token')
+    # An absent row while reserve is still executing cannot authorize cleanup.
+    fresh()
+    proc=subprocess.Popen(['bash','-eu','-c',setup+env_setup+release_block+'\nexport FAULT=reserve-hold\n'+handoff_stamp],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=root)
+    deadline=time.monotonic()+10
+    while not reserve_started.exists() and time.monotonic()<deadline: time.sleep(.02)
+    assert reserve_started.exists(),'reserve did not reach its external boundary'
+    r=invoke('', 'handoff_release_unstarted')
+    inflight=json.loads(log.read_text())
+    assert r.returncode==1 and inflight['reg_tid'] and inflight['handoff_checkpoint']['state']=='cleanup-pending' and not offers(),(r.stderr,inflight,offers())
+    reserve_continue.touch();out,err=proc.communicate(timeout=15)
+    after=json.loads(log.read_text())
+    assert proc.returncode==1 and len(offers())==1 and offers()[0]['state']=='retracted' and after['reg_tid'] is None and after['handoff_checkpoint'] is None,(out,err,after,offers())
+    print('ok workflow: cleanup during an in-flight reserve preserves intent until the committed reservation can be reconciled and released')
     # Receipt ownership and every external registry operation are exact-repo scoped.
     for line in registry_args.read_text().splitlines(): assert line.startswith('--repo owner/repo '),line
     assert json.loads(state_file.read_text())['repos']['foreign/repo']['chip_offers'][0]['state']=='running'
@@ -450,6 +593,11 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     assert r.returncode==1 and log.read_bytes()==before and 'expected owner/repo' in r.stderr,(r.returncode,r.stderr)
     r=run(setup+retarget.replace('__TEST_REPO__','new-owner/new-repo'))
     assert r.returncode==0 and json.loads(log.read_text())['target_repo']=='new-owner/new-repo',(r.returncode,r.stderr,log.read_text())
+    # Insert a handoff claim AFTER the advisory read, before the real write.
+    seed([]);data=json.loads(log.read_text());data['target_repo']='old/repo';log.write_text(json.dumps(data))
+    intercept='set_log() { '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" \' .handoff_checkpoint = {state:"reservation-intent",repository:"old/repo",attempt_id:"other-caller"} | .reg_tid = "other-caller" \' || return $?; '+shlex.quote(str(skill/'scripts/set-log.sh'))+' "$LOG" "$@"; }\n'
+    r=run(setup+intercept+retarget.replace('__TEST_REPO__','owner/repo'))
+    d=json.loads(log.read_text());assert r.returncode==1 and d['target_repo']=='old/repo' and d['reg_tid']=='other-caller',(r.stderr,d)
     print('ok workflow: retarget validates slug format before mutation and stores a valid owner/repo')
 
     # Siblings are excluded before the helper's result cap and in fallback results.
@@ -460,8 +608,8 @@ exec bash '''+shlex.quote(str(root/'.claude/scripts/chip-offer-registry.sh'))+''
     r=run(setup+'HOME='+shlex.quote(str(home))+'\nCHAIN_ID=chain-a\n'+dedup)
     assert r.returncode==0 and args_file.read_text().splitlines()==['alpha beta','--repo','owner/repo','--exclude','11,12'],(r.returncode,r.stderr,args_file.read_text() if args_file.exists() else None)
     fallback=blocks('modules/create/dedup.md')[1]
-    r=run('REPO=owner/repo\nKEYWORDS=alpha\nSIBLING_NUMBERS=11,12\nCANDIDATES='+shlex.quote('[{"number":11,"state":"OPEN"},{"number":13,"state":"OPEN"},{"number":14,"state":"CLOSED","closedAt":"2020-01-01T00:00:00Z"}]')+'\ngh() { printf "%s" "$CANDIDATES"; }\n'+fallback+'\nprintf "%s" "$CANDIDATES"')
-    assert r.returncode==0 and json.loads(r.stdout)==[{'number':13,'state':'OPEN'}],(r.stdout,r.stderr)
+    r=run('REPO=owner/repo\nKEYWORDS=alpha\nSIBLING_NUMBERS=11,12\nCANDIDATES='+shlex.quote('[{"number":11,"state":"OPEN"},{"number":13,"state":"OPEN"},{"number":14,"state":"CLOSED","closedAt":"2020-01-01T00:00:00Z"}]')+'\ngh() { printf "%s" "$CANDIDATES"; }\n'+fallback)
+    assert r.returncode==0 and r.stdout.startswith('DEDUP_CANDIDATES=') and json.loads(r.stdout.split('=',1)[1])==[{'number':13,'state':'OPEN'}],(r.stdout,r.stderr)
     print('ok workflow: chain siblings reach helper exclusion before its cap and are filtered from fallback candidates')
 
     # The body delimiter is chosen after content exists; even the former marker

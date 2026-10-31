@@ -50,6 +50,7 @@ CANDIDATES=$(printf '%s' "$CANDIDATES" | jq -c --arg exclude "$SIBLING_NUMBERS" 
     | select((($candidate.state | ascii_upcase) == "OPEN")
       or (try (($candidate.closedAt | fromdateiso8601) >= (now - 2592000)) catch false))
     | select(($excluded | index($candidate.number | tostring)) == null)]') || exit 1
+printf 'DEDUP_CANDIDATES=%s\n' "$CANDIDATES"
 ```
 - **Filter same-run increment siblings out of the candidate list first** — before anything below reads a "top" candidate. See the sibling bullet at the end of this list for why; the ordering matters because every rule below acts on whichever candidate ranks first.
 - **Interpreting matches:** `/issue-maker` always has a human in the loop, so it only ever *surfaces* candidates — it never auto-comments in place of filing. Use the strong/weak/none thresholds in `autofile-dedup.md` — read through the standard candidate order, `$HOME/.claude/skills-worktree/.claude/reference/` first, then `$HOME/.claude/reference/`, then `.claude/reference/` (`portable-skill-resolution.md`) — to classify the **top surviving** candidate: a **strong match** or an **exact title match** is a genuine pause point; weak/ambiguous matches are not.
