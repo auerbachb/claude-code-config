@@ -332,11 +332,13 @@ record_spend_transcript() {
   local transcript="${1:-}" exec_type="${2:-unknown}" session_id="${3:-unknown}" \
        agent_id="${4:-}" agent_type="${5:-}" cwd="${6:-}" \
        requested_model="${7:-}" requested_source="${8:-unavailable}" \
-       transcript_scope="${9:-unknown}" repo_root="" repo_slug="" phase="unknown" \
-       cursor_dir="${HOME}/.claude/spend-telemetry-cursors"
+       transcript_scope="${9:-unknown}" repo_root="${10:-}" repo_slug="${11:-}" \
+       phase="unknown" cursor_dir="${HOME}/.claude/spend-telemetry-cursors" \
+       explicit_repo_metadata=0
+  [ "$#" -ge 10 ] && explicit_repo_metadata=1
   [ -f "$transcript" ] || return 0
   session_id="$(_spend_resolve_session "$session_id")"
-  if [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
+  if [ "$explicit_repo_metadata" -eq 0 ] && [ -n "$cwd" ] && command -v git >/dev/null 2>&1; then
     repo_root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
     repo_slug="$(_spend_repo_slug_from_cwd "$cwd")"
   fi
@@ -500,7 +502,10 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 runtime_requested=identifier(row.get("requestedModel"))
                 row_requested=runtime_requested or identifier(requested)
                 row_requested_source="transcript.requestedModel" if runtime_requested else requested_source
-                row_session=session_id if session_id!="unknown" else (identifier(row.get("sessionId")) or "unknown")
+                transcript_session=identifier(row.get("sessionId"))
+                row_session=session_id if session_id!="unknown" else (transcript_session or "unknown")
+                row_session_source=("hook_or_runtime_env" if session_id!="unknown" else
+                                    "transcript.sessionId" if transcript_session else "unavailable")
                 message_id=identifier(message.get("id")) or identifier(row.get("uuid"))
                 identity_source="message.id" if identifier(message.get("id")) else "transcript.uuid" if identifier(row.get("uuid")) else "transcript_scope_offset"
                 timestamp=""
@@ -518,7 +523,7 @@ with open(cursor_path + ".lock", "a", encoding="ascii") as cursor_lock:
                 usage_source=("transcript.message.usage" if isinstance(nested_usage,dict) and message is not row else "transcript.usage") if usage else "unsupported:no_message_usage"
                 evidence={"repo_slug":repo_slug,"repo_source":"git.origin"} if repo_slug else {}
                 evidence["transcript_id"]=cursor_key
-                evidence["session_source"]="hook_or_runtime_env" if session_id!="unknown" else "transcript.sessionId"
+                evidence["session_source"]=row_session_source
                 evidence["message_identity_source"]=identity_source
                 values=[timestamp,"assistant_message",exec_type,family(actual),agent_type,row_session,agent_id,total_field,"3",event_key,repo_root,phase,row_requested,row_requested_source,actual,actual_source,*fields,"","unsupported:no_authoritative_per_event_cost_field","","unknown",scope,usage_source,json.dumps(evidence,separators=(",",":"))]
                 out.append("\t".join(map(safe,values))+"\n")

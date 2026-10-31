@@ -183,7 +183,14 @@ def resume_children(cursor_dir, hook_path):
             continue
         payload = {"session_id": meta["session_id"], "agent_id": meta["agent_id"],
                    "agent_type": meta["agent_type"], "cwd": meta["cwd"],
+                   "repo_root": meta["repo_root"], "repo_slug": meta["repo_slug"],
                    "agent_transcript_path": meta["cursor_path_input"]}
+        resume_env = os.environ.copy()
+        resume_env["CLAUDE_SPEND_TELEMETRY_RESUME"] = "1"
+        # A persisted unknown is not a license to borrow the report process's
+        # session identity. The transcript may supply one; otherwise it stays unknown.
+        resume_env["CLAUDE_CODE_SESSION_ID"] = ""
+        resume_env["CLAUDE_SESSION_ID"] = ""
         previous_offset = saved.get("offset", 0)
         for _ in range(10):
             remaining = deadline - time.monotonic()
@@ -192,8 +199,7 @@ def resume_children(cursor_dir, hook_path):
             try:
                 subprocess.run(["bash", hook_path], input=json.dumps(payload), text=True,
                     encoding="utf-8", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    cwd=meta["cwd"] or None, timeout=min(4.5, max(.1, remaining)),
-                    check=False)
+                    env=resume_env, timeout=min(4.5, max(.1, remaining)), check=False)
                 resumed += 1
             except (OSError, subprocess.TimeoutExpired):
                 break

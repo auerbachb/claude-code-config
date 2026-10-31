@@ -40,7 +40,27 @@ CWD="$(_spend_payload_field "$INPUT" cwd)"
 SESSION_ID="$(_spend_resolve_session "$SESSION_ID")"
 
 REPO_ROOT=""
-[ -n "$CWD" ] && REPO_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+REPO_SLUG=""
+if [ "${CLAUDE_SPEND_TELEMETRY_RESUME:-}" = "1" ]; then
+  RESUME_REPO_FIELDS="$(python3 -c '
+import json, os, re, sys
+try:
+    p=json.load(sys.stdin)
+except Exception:
+    p={}
+root=p.get("repo_root", "")
+slug=p.get("repo_slug", "")
+if not isinstance(root,str) or len(root)>4096 or (root and not os.path.isabs(root)) or any(ord(c)<32 for c in root): root=""
+if not isinstance(slug,str) or len(slug)>255 or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",slug): slug=""
+print(root.replace("\x1f", "")+"\x1f"+slug.replace("\x1f", ""))
+' <<<"$INPUT" 2>/dev/null)" || RESUME_REPO_FIELDS=$''
+  IFS=$'' read -r REPO_ROOT REPO_SLUG <<< "$RESUME_REPO_FIELDS"
+else
+  if [ -n "$CWD" ]; then
+    REPO_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+    REPO_SLUG="$(_spend_repo_slug_from_cwd "$CWD")"
+  fi
+fi
 
 REQUESTED_MODEL="$(_spend_requested_model_from_agent_type "$AGENT_TYPE")"
 REQUESTED_SOURCE="unavailable"
@@ -48,7 +68,8 @@ REQUESTED_SOURCE="unavailable"
 
 if [ -f "$TRANSCRIPT_PATH" ]; then
   record_spend_transcript "$TRANSCRIPT_PATH" "inline" "$SESSION_ID" "$AGENT_ID" \
-    "$AGENT_TYPE" "$CWD" "$REQUESTED_MODEL" "$REQUESTED_SOURCE" "subagent"
+    "$AGENT_TYPE" "$CWD" "$REQUESTED_MODEL" "$REQUESTED_SOURCE" "subagent" \
+    "$REPO_ROOT" "$REPO_SLUG"
 else
   # Keep an event denominator even when the installed runtime omits the child
   # transcript path. The actual model and usage remain explicitly unavailable.
