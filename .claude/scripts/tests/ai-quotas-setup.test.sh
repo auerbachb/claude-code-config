@@ -1725,6 +1725,45 @@ check_eq "$RC" "3" "schedule with no operation is a usage error"
 run schedule bogus
 check_eq "$RC" "3" "and an unknown operation is too"
 
+# --- source preferences (#1884) ----------------------------------------------
+new_case "source-controls"
+run add codex sources-fixture --no-login
+run sources sources-fixture http,app-server
+check_eq "$RC" "0" "source order is configurable"
+check_eq "$(jq -r '.accounts[0].sources|join(",")' "$CONFIG")" "http,app-server" "configured source order is retained"
+run sources threshold 2
+check_eq "$RC" "0" "failure recommendation threshold is configurable"
+run nick sources-fixture "Friendly"
+check_eq "$(jq -r '.source_failure_threshold' "$CONFIG")" "2" "nickname updates retain recommendation threshold"
+check_eq "$(jq -r '.accounts[0].sources|join(",")' "$CONFIG")" "http,app-server" "nickname updates retain source order"
+run sources sources-fixture browser
+check_eq "$RC" "3" "setup rejects sources unsupported by provider"
+run sources threshold 0
+check_eq "$RC" "3" "setup refuses a zero failure threshold"
+run sources sources-fixture default
+check_eq "$(jq -r '.accounts[0]|has("sources")' "$CONFIG")" "false" "source default removes override"
+jq '.accounts[0].sources="bad-type"' "$CONFIG" > "$CASE_DIR/bad-config"
+mv "$CASE_DIR/bad-config" "$CONFIG"
+run list
+check_eq "$RC" "5" "setup validator refuses wrong-type source order"
+
+new_case "source-label-edge-cases"
+run add codex threshold --no-login
+run sources threshold http,app-server
+check_eq "$RC" "0" "account named threshold accepts a source order"
+check_eq "$(jq -r '.accounts[0].sources|join(",")' "$CONFIG")" "http,app-server" "threshold label does not overwrite the global setting"
+run sources threshold default
+check_eq "$RC" "0" "account named threshold can restore defaults"
+run add claude shared-source-label --no-login
+run add codex shared-source-label --no-login
+run sources shared-source-label oauth-usage claude
+check_eq "$RC" "0" "shared label accepts an explicit Claude provider"
+run sources shared-source-label http,app-server codex
+check_eq "$RC" "0" "shared label accepts an explicit Codex provider"
+check_eq "$(jq -r '.accounts[]|select(.label=="shared-source-label" and .provider=="codex")|.sources|join(",")' "$CONFIG")" "http,app-server" "provider-qualified order changes only the selected account"
+run sources shared-source-label http,app-server
+check_eq "$RC" "3" "ambiguous label still requires its provider"
+
 # --- 17. no case, anywhere, asked for a credential value ---------------------
 # Cumulative, so it runs last: the stub records every `-w` request across the
 # whole suite, and asserting here covers the cases that come after the
