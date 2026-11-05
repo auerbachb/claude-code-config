@@ -1733,6 +1733,229 @@ check_eq "$RC" "3" "and an unknown operation is too"
 check_eq "$(wc -c < "$STUB_SECURITY_VALUE_REQUESTS" | tr -d ' ')" "0" \
   "no case in this suite ever asked security(1) for a credential value (-w)"
 
+# --- layout doctor and transactional repair (issue #1850) ---------------------
+
+layout_fixture() {
+  new_case "$1"
+  run add claude alpha
+  run add claude beta
+  # Distinct opaque fixture bytes; assertions use cmp, never display contents.
+  printf 'opaque-alpha\n' > "$PROFILES/alpha/claude/marker"
+  printf 'opaque-beta\n' > "$PROFILES/beta/claude/marker"
+  printf '%s\n' '{"claudeAiOauth":{"accessToken":"fixture-layout-alpha"}}' > "$PROFILES/alpha/claude/.credentials.json"
+  printf '%s\n' '{"claudeAiOauth":{"accessToken":"fixture-layout-beta"}}' > "$PROFILES/beta/claude/.credentials.json"
+  cp "$PROFILES/alpha/claude/.credentials.json" "$CASE_DIR/alpha-credential"
+  cp "$PROFILES/beta/claude/.credentials.json" "$CASE_DIR/beta-credential"
+  jq --arg root "$PROFILES" '.accounts |= map(. + {extra:"preserve"} | .profile_dir = ($root + "/" + (if .label == "alpha" then "beta" else "alpha" end) + "/claude"))' "$CONFIG" > "$CASE_DIR/swapped"
+  mv "$CASE_DIR/swapped" "$CONFIG"
+  cp "$CONFIG" "$CASE_DIR/before"
+}
+
+layout_fixture layout-swap
+run doctor --json
+check_eq "$RC" 8 'doctor flags swapped label paths'
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.finding == "label-mismatch")] | length')" 2 'doctor finds both swap peers'
+check_contains "$OUT" 'swap peer:' 'doctor names swap peer'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'doctor does not rewrite registry' || bad 'doctor changed registry'
+run list --json
+check_not_contains "$OUT" 'finding' 'list JSON contract unchanged'
+run list
+check_contains "$OUT" 'doctor' 'text list directs operator to doctor'
+run repair-layout claude
+check_eq "$RC" 0 'repair swaps directory layout successfully'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'alpha keeps credential directory it originally referenced'
+check_eq "$(cat "$PROFILES/beta/claude/marker")" opaque-alpha 'beta keeps credential directory it originally referenced'
+cmp -s "$CASE_DIR/alpha-credential" "$PROFILES/beta/claude/.credentials.json" && ok 'credential bytes preserved by rename' || bad 'credential changed'
+cmp -s "$CASE_DIR/beta-credential" "$PROFILES/alpha/claude/.credentials.json" && ok 'second distinct credential stays with its label' || bad 'second credential changed'
+check_not_contains "$OUT" 'fixture-layout-' 'repair output never contains either fixture credential'
+check_eq "$(jq '[.accounts[] | select(.extra == "preserve")] | length' "$CONFIG")" 2 'unknown registry metadata survives repair'
+check_not_contains "$OUT" "$FIXTURE_SECRET" 'repair output does not contain credentials'
+run doctor --json
+check_eq "$RC" 0 'repaired layout is clean'
+run repair-layout claude
+check_eq "$RC" 0 'second repair is idempotent'
+check_contains "$OUT" 'Nothing to repair' 'second repair does nothing'
+run relogin alpha claude
+check_eq "$RC" 0 'relogin preserves repaired path'
+check_eq "$(jq -r '.accounts[] | select(.label == "alpha") | .profile_dir' "$CONFIG")" "$PROFILES/alpha/claude" 'relogin path stays label derived'
+run remove beta claude
+run add claude beta
+check_eq "$(jq -r '.accounts[] | select(.label == "beta") | .profile_dir' "$CONFIG")" "$PROFILES/beta/claude" 'remove plus add reuses only its label path'
+run repair-layout cursor
+check_eq "$RC" 3 'repair rejects cursor'
+run repair-layout future
+check_eq "$RC" 3 'repair rejects unknown provider'
+
+layout_fixture layout-collision
+jq ' .accounts |= map(select(.label == "alpha"))' "$CONFIG" > "$CASE_DIR/one"
+mv "$CASE_DIR/one" "$CONFIG"
+cp "$CONFIG" "$CASE_DIR/before"
+run repair-layout claude
+check_eq "$RC" 5 'unregistered target collision refuses entire repair'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'collision leaves registry unchanged' || bad 'collision changed registry'
+
+layout_fixture layout-missing
+mv "$PROFILES/beta/claude" "$CASE_DIR/missing-source"
+run repair-layout claude
+check_eq "$RC" 5 'missing source refuses entire repair'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'missing source leaves registry unchanged' || bad 'missing source changed registry'
+
+layout_fixture layout-shared
+jq --arg d "$PROFILES/beta/claude" '.accounts[].profile_dir = $d' "$CONFIG" > "$CASE_DIR/shared"
+mv "$CASE_DIR/shared" "$CONFIG"
+run repair-layout claude
+check_eq "$RC" 5 'shared directory refuses repair'
+
+layout_fixture layout-keychain
+jq '.accounts[0].credential_ref = {kind:"macos-keychain",service:"fixture-service"}' "$CONFIG" > "$CASE_DIR/keychain"
+mv "$CASE_DIR/keychain" "$CONFIG"
+cp "$CONFIG" "$CASE_DIR/before"
+run repair-layout claude
+check_eq "$RC" 5 'Keychain-bound Claude layout refuses repair'
+check_contains "$OUT" 'Keychain binding' 'Keychain refusal explains path binding'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'Keychain refusal preserves registry' || bad 'Keychain refusal changed registry'
+
+jq --arg root "$PROFILES" '.accounts |= map(.profile_dir = ($root + "/" + .label + "/claude"))' "$CONFIG" > "$CASE_DIR/healthy-keychain"
+mv "$CASE_DIR/healthy-keychain" "$CONFIG"
+run doctor --json
+check_eq "$RC" 0 'correctly laid out Keychain profile is healthy'
+check_not_contains "$OUT" 'repair refused' 'healthy Keychain row has no repair refusal warning'
+
+layout_fixture layout-symlink
+mv "$PROFILES/beta/claude" "$CASE_DIR/redirected"
+ln -s "$CASE_DIR/redirected" "$PROFILES/beta/claude"
+run repair-layout claude
+check_eq "$RC" 5 'symlinked profile refuses repair'
+
+layout_fixture layout-credential-symlink
+mv "$PROFILES/beta/claude/.credentials.json" "$CASE_DIR/retained-credential"
+ln -s "$CASE_DIR/retained-credential" "$PROFILES/beta/claude/.credentials.json"
+run repair-layout claude
+check_eq "$RC" 5 'credential-file symlink refuses repair'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'credential symlink refusal preserves registry' || bad 'credential symlink refusal changed registry'
+[[ -L "$PROFILES/beta/claude/.credentials.json" ]] && ok 'credential symlink is untouched' || bad 'repair moved credential symlink'
+
+layout_fixture layout-custom
+jq --arg d "$CASE_DIR/custom" '.accounts[0].profile_dir = $d' "$CONFIG" > "$CASE_DIR/custom-config"
+mv "$CASE_DIR/custom-config" "$CONFIG"
+mkdir -p "$CASE_DIR/custom"
+run doctor --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.label == "alpha") | .finding')" custom 'custom profile is informational only'
+
+new_case layout-codex-auth-backing
+run add codex alpha
+run add codex beta
+cp "$PROFILES/beta/codex/auth.json" "$CASE_DIR/beta-auth"
+jq --arg root "$PROFILES" '.accounts |= map(.profile_dir = ($root + "/" + (if .label == "alpha" then "beta" else "alpha" end) + "/codex"))' "$CONFIG" > "$CASE_DIR/swapped"
+mv "$CASE_DIR/swapped" "$CONFIG"
+cp "$CONFIG" "$CASE_DIR/before"
+mv "$PROFILES/beta/codex/auth.json" "$CASE_DIR/absent-auth"
+run repair-layout codex
+check_eq "$RC" 5 'Codex repair refuses unproven non-file credential backing'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'Codex backing refusal preserves registry' || bad 'Codex backing refusal changed registry'
+mv "$CASE_DIR/absent-auth" "$PROFILES/beta/codex/auth.json"
+run repair-layout codex
+check_eq "$RC" 0 'file-backed Codex layout repairs successfully'
+cmp -s "$CASE_DIR/beta-auth" "$PROFILES/alpha/codex/auth.json" && ok 'Codex credential directory follows original label association' || bad 'Codex credential association changed'
+
+layout_fixture layout-slot-contention
+mkdir -p "$PROFILES/.relogin-slots/beta__claude"
+printf '%s\n' "$$" > "$PROFILES/.relogin-slots/beta__claude/pid"
+run repair-layout claude
+check_eq "$RC" 7 'active relogin slot refuses repair'
+[[ ! -e "$PROFILES/.relogin-slots/alpha__claude" ]] && ok 'partial slot claims released on contention' || bad 'repair leaked first slot'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'slot contention leaves registry unchanged' || bad 'slot contention changed registry'
+
+layout_fixture layout-lock-contention
+mkdir "$CONFIG.lock"
+export CLAUDE_STATE_LOCK_TIMEOUT=1
+run repair-layout claude
+unset CLAUDE_STATE_LOCK_TIMEOUT
+check_eq "$RC" 7 'registry lock contention refuses repair'
+[[ -d "$CONFIG.lock" ]] && ok 'repair preserves foreign registry lock' || bad 'repair removed foreign registry lock'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'lock contention leaves registry unchanged' || bad 'lock contention changed registry'
+[[ ! -e "$PROFILES/.layout-repair" ]] && ok 'lock contention moves no profiles' || bad 'lock contention staged profiles'
+
+new_case layout-malformed
+printf 'broken-json\n' > "$CONFIG"
+run doctor --json
+check_eq "$RC" 5 'doctor fails closed on malformed registry'
+
+# Destination-based faults exercise profile installation, publication and rollback
+# independently of incidental lock-owner or temporary-file renames.
+REAL_MV="$(command -v mv)"
+cat > "$BIN/mv" <<'SHIM'
+#!/usr/bin/env bash
+destination="${!#}"
+if [[ -n "${LAYOUT_FAIL_DEST:-}" && "$destination" == "$LAYOUT_FAIL_DEST" && ! -e "$LAYOUT_FAULT_STATE/forward" ]]; then
+  : > "$LAYOUT_FAULT_STATE/forward"; exit 1
+fi
+if [[ -n "${LAYOUT_ROLLBACK_DEST:-}" && "$destination" == "$LAYOUT_ROLLBACK_DEST" && -e "$LAYOUT_FAULT_STATE/forward" ]]; then exit 1; fi
+if [[ "$destination" == "$LAYOUT_REGISTRY" && "$LAYOUT_FAIL_COMMIT" -eq 1 ]]; then exit 1; fi
+"$LAYOUT_REAL_MV" "$@" || exit $?
+if [[ ( "$destination" == "$LAYOUT_REGISTRY" && "$LAYOUT_SIGNAL_PUBLISH" -eq 1 ) || ( "$LAYOUT_SIGNAL_ROLLBACK" -eq 1 && -e "$LAYOUT_FAULT_STATE/forward" && "$destination" == "$LAYOUT_ROLLBACK_SIGNAL_DEST" ) ]]; then
+  kill -TERM "$(cat "$LAYOUT_SIGNAL_PID_FILE")"
+fi
+exit 0
+SHIM
+chmod +x "$BIN/mv"
+
+layout_fault_run() { # <forward|commit|signal|rollback>
+  export LAYOUT_REAL_MV="$REAL_MV" LAYOUT_REGISTRY="$CONFIG"
+  export LAYOUT_FAULT_STATE="$CASE_DIR/fault-state" LAYOUT_FAIL_DEST='' LAYOUT_ROLLBACK_DEST=''
+  export LAYOUT_FAIL_COMMIT=0 LAYOUT_SIGNAL_PUBLISH=0 LAYOUT_SIGNAL_ROLLBACK=0
+  export LAYOUT_ROLLBACK_SIGNAL_DEST="$PROFILES/alpha/claude"
+  export LAYOUT_SIGNAL_PID_FILE="$PROFILES/.relogin-slots/alpha__claude/pid"
+  mkdir -p "$LAYOUT_FAULT_STATE"
+  case "$1" in
+    forward) LAYOUT_FAIL_DEST="$PROFILES/beta/claude" ;;
+    commit) LAYOUT_FAIL_COMMIT=1 ;;
+    signal) LAYOUT_SIGNAL_PUBLISH=1 ;;
+    rollback-signal) LAYOUT_FAIL_DEST="$PROFILES/beta/claude"; LAYOUT_SIGNAL_ROLLBACK=1 ;;
+    rollback) LAYOUT_FAIL_DEST="$PROFILES/beta/claude"; LAYOUT_ROLLBACK_DEST="$PROFILES/.layout-repair/0" ;;
+  esac
+  OUT="$(PATH="$BIN:$PATH" HOME="$CASE_DIR/home" AI_QUOTAS_CONFIG="$CONFIG" AI_QUOTAS_PROFILE_ROOT="$PROFILES" "$SCRIPT" repair-layout claude 2>&1)"; RC=$?
+}
+
+layout_fixture layout-rollback
+layout_fault_run forward
+check_eq "$RC" 5 'failed final rename rolls back transaction'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'failed rename leaves registry byte identical' || bad 'failed rename changed registry'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-alpha 'rollback restores first original directory'
+check_eq "$(cat "$PROFILES/beta/claude/marker")" opaque-beta 'rollback restores second original directory'
+[[ ! -e "$PROFILES/.layout-repair" ]] && ok 'successful rollback cleans staging' || bad 'rollback left staging'
+
+layout_fixture layout-commit-fails
+layout_fault_run commit
+check_eq "$RC" 5 'failed atomic registry publication rolls directories back'
+cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'failed publication preserves registry bytes' || bad 'failed publication changed registry'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-alpha 'failed publication restores original profile'
+
+layout_fixture layout-publication-signal
+layout_fault_run signal
+check_eq "$RC" 0 'termination during publication cannot roll back a committed registry'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'publication signal preserves committed directory association'
+
+layout_fixture layout-rollback-signal
+layout_fault_run rollback-signal
+check_eq "$RC" 5 'termination during rollback preserves original failure status'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-alpha 'rollback signal restores first original profile'
+check_eq "$(cat "$PROFILES/beta/claude/marker")" opaque-beta 'rollback signal restores second original profile'
+[[ ! -e "$PROFILES/.layout-repair" ]] && ok 'rollback signal still cleans staging' || bad 'rollback signal left staging'
+
+layout_fixture layout-rollback-fails
+layout_fault_run rollback
+check_eq "$RC" 9 'failed rollback requires manual recovery'
+[[ -f "$PROFILES/.layout-repair/plan.json" ]] && ok 'failed rollback retains recovery plan' || bad 'failed rollback lost plan'
+run doctor --json
+check_eq "$RC" 8 'doctor reports interrupted repair'
+check_contains "$OUT" interrupted-repair 'interrupted repair visible'
+run repair-layout claude
+check_eq "$RC" 5 'new repair refuses interrupted transaction'
+unset LAYOUT_REAL_MV LAYOUT_REGISTRY LAYOUT_FAULT_STATE LAYOUT_FAIL_DEST LAYOUT_ROLLBACK_DEST
+unset LAYOUT_FAIL_COMMIT LAYOUT_SIGNAL_PUBLISH LAYOUT_SIGNAL_PID_FILE LAYOUT_SIGNAL_ROLLBACK LAYOUT_ROLLBACK_SIGNAL_DEST
+rm -f "$BIN/mv"
+
 # --- summary -----------------------------------------------------------------
 
 echo
