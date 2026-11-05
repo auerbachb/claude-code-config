@@ -3,7 +3,19 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 CLI="$ROOT/.claude/scripts/ai-account-ledger.sh"
-HOME="$(mktemp -d)"; export HOME; export AI_ACCOUNT_LEDGER="$HOME/.claude/ai-account-ledger.jsonl"
+fixture_home="$(mktemp -d)"; readonly fixture_home
+HOME="$fixture_home"; export HOME
+# Remove only this test's direct temp child; preserve any protected environment fixture.
+cleanup_fixture() {
+  python3 - "$fixture_home" <<'CLEANUP'
+import os,pathlib,shutil,sys,tempfile
+root=pathlib.Path(sys.argv[1]); base=pathlib.Path(tempfile.gettempdir()).resolve()
+if root.parent.resolve()==base and root.name.startswith('tmp.') and not root.is_symlink():
+ protected=any(name.lower().startswith('.env') for _,_,files in os.walk(root,followlinks=False) for name in files)
+ if not protected: shutil.rmtree(root,ignore_errors=True)
+CLEANUP
+}
+trap cleanup_fixture EXIT; export AI_ACCOUNT_LEDGER="$HOME/.claude/ai-account-ledger.jsonl"
 mkdir -p "$HOME/.claude" "$HOME/profile/sessions/2026/11/01" "$HOME/profile/archived_sessions" "$HOME/repo"
 git init -q "$HOME/repo"; git -C "$HOME/repo" checkout -qb issue-999-today
 export AI_QUOTAS_CONFIG="$HOME/.claude/ai-quotas.json"
@@ -47,6 +59,7 @@ jq -nrc 'now as $now | [
  {ts:(($now-3600)|todateiso8601),provider:"claude",label:"unknown",repo:null,session_id:"unknown-resume"},
  {ts:(($now-15*86400)|todateiso8601),provider:"codex",label:"work",repo:"old"},
  {ts:(($now-86400)|todateiso8601),provider:"claude",label:"unknown",repo:null},
+ {ts:(($now-86400)|todateiso8601),provider:"claude",label:"safe-test",repo:"unsafe\u001b]0;injected\u0007\n\u007f"},
  {ts:(($now-86400)|todateiso8601),provider:"claude",label:"imported@example.test",account_email:"other@example.test\n",repo:"invalid-import"},
  {ts:(($now-86400)|todateiso8601),provider:"claude",label:"wrong@example.test",account_email:"right@example.test",repo:"b"}
 ][]' > "$AI_ACCOUNT_LEDGER"
@@ -55,6 +68,15 @@ printf 'broken\n{}\n' >> "$AI_ACCOUNT_LEDGER"
 "$CLI" report --days 30 --provider codex --json | jq -e '(.accounts|length)==1 and (.accounts[0].projects|length)==2' >/dev/null
 report_text=$("$CLI" report)
 grep -Fq 'codex work (Office): a ×3' <<< "$report_text"
+python3 - "$CLI" <<'DISPLAY'
+import json,subprocess,sys
+text=subprocess.check_output([sys.argv[1],'report'],text=True)
+assert not any(ord(c)<32 and c!='\n' or ord(c)==127 for c in text)
+raw=subprocess.check_output([sys.argv[1],'report','--json'],text=True)
+assert '\x1b' not in raw and '\x7f' not in raw
+repo=next(a for a in json.loads(raw)['accounts'] if a['label']=='safe-test')['projects'][0]['repo']
+assert repo=='unsafe\x1b]0;injected\x07\n\x7f'
+DISPLAY
 AI_ACCOUNT_LEDGER="$HOME/missing" "$CLI" report --json | jq -e '.accounts==[] and .unknown_sessions==0' >/dev/null
 # Hook installation preserves other hooks, is idempotent, and never touches config.toml.
 printf 'original config\n' > "$HOME/profile/config.toml"
@@ -73,6 +95,13 @@ jq -e '(.hooks.SessionStart|length)==2 and .hooks.SessionStart[1].matcher=="resu
 cp "$HOME/profile/hooks.json" "$HOME/covered-hooks.json"
 "$CLI" install-codex-hooks
 cmp "$HOME/covered-hooks.json" "$HOME/profile/hooks.json"
+# Invalid structural types must not be normalized into overwritten configuration.
+for shape in '{"hooks":false}' '{"hooks":{"SessionStart":false}}'; do
+  printf '%s\n' "$shape" > "$HOME/profile/hooks.json"
+  cp "$HOME/profile/hooks.json" "$HOME/invalid-shape.json"
+  if "$CLI" install-codex-hooks; then exit 1; fi
+  cmp "$HOME/invalid-shape.json" "$HOME/profile/hooks.json"
+done
 # Empty or multi-document configuration must be rejected without publication.
 printf '{}\n{}\n' > "$HOME/profile/hooks.json"
 cp "$HOME/profile/hooks.json" "$HOME/multi-hooks.json"
@@ -86,4 +115,36 @@ printf 'broken\n' > "$HOME/profile/hooks.json"
 if "$CLI" install-codex-hooks; then exit 1; fi
 [ "$(cat "$HOME/profile/hooks.json")" = broken ]
 [ -z "$(find "$HOME/profile" -name '.ledger-hooks.*' -print)" ]
+# Both public setup and direct installer refuse malformed registries before any writes.
+mkdir -p "$HOME/.codex"
+printf '{"hooks":{"Stop":[]}}\n' > "$HOME/.codex/hooks.json"
+cp "$HOME/.codex/hooks.json" "$HOME/default-hooks-before.json"
+for invalid in broken '42' '{"accounts":false}' '{"accounts":[]}{}' '{"accounts":[{"provider":"codex","label":"bad","profile_dir":null}]}'; do
+  printf '%s\n' "$invalid" > "$HOME/invalid-registry.json"
+  if AI_QUOTAS_CONFIG="$HOME/invalid-registry.json" "$CLI" install-codex-hooks; then exit 1; fi
+  if AI_QUOTAS_CONFIG="$HOME/invalid-registry.json" "$ROOT/.claude/scripts/ai-quotas-setup.sh" ledger-hooks; then exit 1; fi
+  cmp "$HOME/default-hooks-before.json" "$HOME/.codex/hooks.json"
+done
+# Special-file inputs fail promptly instead of waiting for a FIFO writer.
+mkfifo "$HOME/fifo-ledger" "$HOME/fifo-registry"
+python3 - "$CLI" "$HOME/profile" <<'PYTEST'
+import os,subprocess,sys
+cli,profile=sys.argv[1:]; home=os.environ['HOME']
+for action in ['report','backfill-codex']:
+ result=subprocess.run([cli,action],env=dict(os.environ,AI_ACCOUNT_LEDGER=home+'/fifo-ledger'),text=True,capture_output=True,timeout=5)
+ assert result.returncode==5 and 'regular file' in result.stderr
+# A special registry supplies no account mapping, while valid metadata stays capturable.
+result=subprocess.run([cli,'backfill-codex','--codex-home',profile],env=dict(os.environ,AI_QUOTAS_CONFIG=home+'/fifo-registry',AI_ACCOUNT_LEDGER=home+'/fifo-registry-rows.jsonl'),text=True,capture_output=True,timeout=5)
+assert result.returncode==0
+import json
+assert all(json.loads(line)['label']=='unknown' for line in open(home+'/fifo-registry-rows.jsonl'))
+os.unlink(profile+'/hooks.json'); os.mkfifo(profile+'/hooks.json')
+result=subprocess.run([cli,'install-codex-hooks'],text=True,capture_output=True,timeout=5)
+assert result.returncode==5 and 'non-regular' in result.stderr
+# The public entry point must reject a FIFO before its own read_config/cat.
+import pathlib
+setup=str(pathlib.Path(cli).with_name('ai-quotas-setup.sh'))
+result=subprocess.run([setup,'ledger-hooks'],env=dict(os.environ,AI_QUOTAS_CONFIG=home+'/fifo-registry'),text=True,capture_output=True,timeout=5)
+assert result.returncode==5 and 'regular file' in result.stderr
+PYTEST
 printf 'PASS account ledger\n'

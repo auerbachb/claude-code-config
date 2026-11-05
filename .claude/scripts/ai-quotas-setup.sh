@@ -2431,7 +2431,13 @@ action_share_config() {
 source "$SELF_DIR/lib/ai-quotas-layout.sh"
 
 case "$ACTION" in
-  ledger-hooks) "$SELF_DIR/ai-account-ledger.sh" install-codex-hooks ;;
+  ledger-hooks)
+    if [[ -e "$CONFIG_FILE" || -L "$CONFIG_FILE" ]]; then
+      [[ -f "$CONFIG_FILE" && -r "$CONFIG_FILE" ]] || die 5 "registry must be a readable regular file — refusing ledger-hooks"
+    fi
+    read_config >/dev/null
+    "$SELF_DIR/ai-account-ledger.sh" install-codex-hooks
+    ;;
   list)     action_list ;;
   doctor)   action_doctor ;;
   repair-layout) action_repair_layout ;;

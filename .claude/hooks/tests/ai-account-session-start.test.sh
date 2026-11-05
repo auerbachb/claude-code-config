@@ -2,7 +2,19 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/ai-account-session-start.sh"
-HOME="$(mktemp -d)"; export HOME
+fixture_home="$(mktemp -d)"; readonly fixture_home
+HOME="$fixture_home"; export HOME
+# Remove only this test's direct temp child; preserve any protected environment fixture.
+cleanup_fixture() {
+  python3 - "$fixture_home" <<'CLEANUP'
+import os,pathlib,shutil,sys,tempfile
+root=pathlib.Path(sys.argv[1]); base=pathlib.Path(tempfile.gettempdir()).resolve()
+if root.parent.resolve()==base and root.name.startswith('tmp.') and not root.is_symlink():
+ protected=any(name.lower().startswith('.env') for _,_,files in os.walk(root,followlinks=False) for name in files)
+ if not protected: shutil.rmtree(root,ignore_errors=True)
+CLEANUP
+}
+trap cleanup_fixture EXIT
 export AI_ACCOUNT_LEDGER="$HOME/.claude/ai-account-ledger.jsonl"
 mkdir -p "$HOME/.claude" "$HOME/personal/claude" "$HOME/work/claude" "$HOME/unknown" "$HOME/codex"
 export AI_QUOTAS_CONFIG="$HOME/.claude/ai-quotas.json"

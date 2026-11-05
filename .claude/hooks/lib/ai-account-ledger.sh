@@ -1,11 +1,15 @@
 #!/bin/bash
 # Shared metadata-only account attribution. Bash 3.2; no credential reads.
+# Resolve provider/profile to one physical registry match; set PROFILE and LABEL globals.
+# Args: provider, directory, optional pre-parsed TSV rows. Missing/ambiguous means unknown.
 ledger_profile() {
   LEDGER_PROFILE="$(cd -P "$2" 2>/dev/null && pwd -P)" || LEDGER_PROFILE="$2"
   LEDGER_LABEL=unknown
   local rows path label physical matches=0
   if [ "$#" -ge 3 ]; then rows="$3"; else
-  rows=$(jq -r --arg p "$1" '.accounts[] | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | [.profile_dir,.label] | @tsv' "${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}" 2>/dev/null) || return 0
+  local registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
+  [ -f "$registry" ] && [ -r "$registry" ] || return 0
+  rows=$(jq -r --arg p "$1" '.accounts[] | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | [.profile_dir,.label] | @tsv' "$registry" 2>/dev/null) || return 0
   fi
   while IFS=$'\t' read -r path label; do
     [ -n "$path" ] || continue
@@ -16,10 +20,12 @@ ledger_profile() {
   done <<< "$rows"
   [ "$matches" = 1 ] || LEDGER_LABEL=unknown
 }
+# Extract an issue-N branch token into LEDGER_ISSUE, or leave it empty.
 ledger_issue() {
   LEDGER_ISSUE=""
   if [[ "$1" =~ (^|[/_-])issue-([0-9]+)($|[/_-]) ]]; then LEDGER_ISSUE="${BASH_REMATCH[2]}"; fi
 }
+# Set LEDGER_REPO from an allowlisted GitHub URL; reject userinfo/query/fragment forms.
 ledger_repo_url() {
   local slug=""
   case "$1" in
@@ -31,6 +37,7 @@ ledger_repo_url() {
     LEDGER_REPO=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
   else LEDGER_REPO=""; fi
 }
+# Resolve cwd metadata into REPO/BRANCH globals. Optional basename mode avoids live origin/HEAD.
 ledger_repo() {
   LEDGER_REPO=""; LEDGER_BRANCH=""
   local fields root gitdir head="" origin
@@ -44,6 +51,7 @@ ledger_repo() {
   ledger_repo_url "$origin"
   [ -n "$LEDGER_REPO" ] || LEDGER_REPO="${root##*/}"
 }
+# Append one compact JSON row to the owner-only regular ledger; return nonzero on failure.
 ledger_append() {
   local file="${AI_ACCOUNT_LEDGER:-$HOME/.claude/ai-account-ledger.jsonl}" parent
   parent="${file%/*}"; [ "$parent" != "$file" ] || parent=.
@@ -55,6 +63,8 @@ ledger_append() {
   if [ -e "$file" ]; then chmod 600 "$file" || return 1; fi
   printf '%s\n' "$1" >> "$file"
 }
+# Serialize globals plus args: UTC timestamp, provider, session ID, source, capture mode.
+# Never open account/auth stores; email evidence remains null during capture.
 ledger_row() {
   jq -cn --arg ts "$1" --arg provider "$2" --arg label "$LEDGER_LABEL" \
     --arg repo "$LEDGER_REPO" --arg branch "$LEDGER_BRANCH" --arg issue "$LEDGER_ISSUE" \
