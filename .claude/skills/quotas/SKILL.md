@@ -255,7 +255,7 @@ daily job runs from, and the display-only rule that keeps both out of every disp
 gate: the same reference, §"Snapshot history, the daily job, nicknames".
 
 `--json` emits a **document** — `{schema_version, threshold_pct, basis, rows,
-cheapest_next, last_scheduled_snapshot_at}` — not the bare row array it emitted
+cheapest_next, last_scheduled_snapshot_at, account_reliability}` — not the bare row array it emitted
 before #1669. Every row carries `nickname` (`null` when unset) and still carries
 `remaining_pct`, `provider`, `resets_at_et`, `plan`, and `source` even though the table
 no longer shows them, plus the #1701 fields: `window_start_epoch`, `resets_at_et_short`,
@@ -268,3 +268,14 @@ and "no account matched" exits emit that same object with an empty `rows`, and a
 whose pricing helper was unavailable emits it with `threshold_pct` and `basis` `null` and
 `overage` `null` on every row — one shape in every case, so there is nothing to
 special-case.
+
+## Account read reliability
+
+The RELIABILITY footer (JSON: top-level `account_reliability`) reports each attempted
+account's failure rate over 7 and 30 days and its consecutive-failure streak.
+For reporting, call a streak of at least 3 failed attempts repeated failures. Call
+the 7-day failure rate high at 25% or more only when it includes at least 4 attempts
+and at least 3 failures; show the 30-day rate as context. Describe a lone failure as
+one missed read rather than chronic failure, even when its small-sample rate is
+100%. Streaks count attempts, not calendar days. These are reporting guidelines;
+the sibling outcomes ledger never gates dispatch or spending.

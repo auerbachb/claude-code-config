@@ -1454,3 +1454,36 @@ and never directly to the root repo.
 ## The one consumer that acts on these readings (#1863)
 
 The table and projections are display-only. `quota-reserve.sh` is the single exception: it reads the same provider-reported weekly used-percent and, at the owner's threshold (95% default), pauses *autonomous* work on that account, never the owner's own turns. It is an owner-approved carve-out in `.claude/rules/safety.md`, evaluated only against the provider's reading and failing open on anything unreadable or stale. Mechanism, what is blocked, and what is deliberately not covered: [`quota-reserve.md`](./quota-reserve.md).
+
+## Read-outcome ledger (Issue #1883)
+
+Every supported account read records one terminal attempt, independently of how many
+usage windows it produces. Successful window history keeps its existing schema and
+retention; outcomes live in `<history-stem>.outcomes.jsonl` beside `AI_QUOTAS_HISTORY`
+(default `~/.claude/ai-quotas-history.outcomes.jsonl`). This keeps forecast consumers
+and redirected reserve/history reads isolated. No history destination means no
+outcome persistence. Each row has `ts`, `provider`, `label`, `source`, `status`,
+`error_class`, and `trigger` (`manual`/`scheduled`). Unsupported providers and excluded
+accounts are not attempted.
+
+Statuses: `ok`, `logged_out` (the display row remains `needs-login`), `unreadable`
+(transport/tool failure), `rate_limited`, `timeout` (curl exit 28), `parse_error`
+(invalid JSON or unusable response shape). The terminal source reflects the source
+that produced the result, including a successful Codex HTTP fallback. Only fixed
+error classes and numeric HTTP/curl codes are allowed (`[a-z0-9_]{1,40}`); unknown
+classes become `other`, and successful attempts have null error class. Details,
+response bodies, and credentials never enter this ledger.
+
+The Python 3 helper retains 45 days and at most 50,000 rows, tolerates malformed
+lines, refuses symlink/non-regular destinations, and atomically replaces mode-600
+files under a bounded OS advisory lock. Lock files remain in place; process exit
+automatically releases their locks, avoiding stale-lock recovery races. Persistence
+failure warns and leaves the report working. Python 3 is required for this optional
+ledger; missing Python disables outcomes with an explicit warning.
+
+JSON `account_reliability` and the table's RELIABILITY footer show per-account 7d/30d
+attempt counts, failure counts/rates (fractions), and the consecutive failure streak
+(`streak_count`, `streak_status`, `streak_since`). Statistics include the current run
+exactly once, even if persistence fails, and only show accounts attempted this run.
+Same-timestamp attempts retain append order; the streak counts reads, not days.
+Unattended `--quiet` runs still record outcomes but suppress the footer.
