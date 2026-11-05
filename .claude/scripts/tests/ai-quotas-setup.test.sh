@@ -1798,6 +1798,8 @@ layout_fixture layout-missing
 mv "$PROFILES/beta/claude" "$CASE_DIR/missing-source"
 run repair-layout claude
 check_eq "$RC" 5 'missing source refuses entire repair'
+run list
+check_contains "$OUT" 'Layout warning' 'missing profile list includes recovery guidance'
 cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'missing source leaves registry unchanged' || bad 'missing source changed registry'
 
 layout_fixture layout-shared
@@ -1820,6 +1822,8 @@ mv "$CASE_DIR/healthy-keychain" "$CONFIG"
 run doctor --json
 check_eq "$RC" 0 'correctly laid out Keychain profile is healthy'
 check_not_contains "$OUT" 'repair refused' 'healthy Keychain row has no repair refusal warning'
+run list
+check_not_contains "$OUT" 'Layout warning' 'healthy profiles have no layout warning'
 
 layout_fixture layout-symlink
 mv "$PROFILES/beta/claude" "$CASE_DIR/redirected"
@@ -1936,6 +1940,24 @@ layout_fault_run signal
 check_eq "$RC" 0 'termination during publication cannot roll back a committed registry'
 check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'publication signal preserves committed directory association'
 
+layout_fixture layout-staging-signal
+export LAYOUT_STAGE_SIGNAL_DEST="$PROFILES/.layout-repair"
+export LAYOUT_STAGE_SIGNAL_PID="$PROFILES/.relogin-slots/alpha__claude/pid"
+cat > "$BIN/mkdir" <<'MKSHIM'
+#!/usr/bin/env bash
+/bin/mkdir "$@" || exit $?
+if [[ "${!#}" == "$LAYOUT_STAGE_SIGNAL_DEST" ]]; then
+  kill -TERM "$(cat "$LAYOUT_STAGE_SIGNAL_PID")"
+fi
+MKSHIM
+chmod +x "$BIN/mkdir"
+run repair-layout claude
+check_eq "$RC" 0 'termination immediately after staging mkdir cannot orphan ownership'
+check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'staging signal preserves repaired account association'
+[[ ! -e "$PROFILES/.layout-repair" ]] && ok 'staging signal leaves no planless marker' || bad 'staging signal left marker'
+rm -f "$BIN/mkdir"
+unset LAYOUT_STAGE_SIGNAL_DEST LAYOUT_STAGE_SIGNAL_PID
+
 layout_fixture layout-rollback-signal
 layout_fault_run rollback-signal
 check_eq "$RC" 5 'termination during rollback preserves original failure status'
@@ -1955,6 +1977,179 @@ check_eq "$RC" 5 'new repair refuses interrupted transaction'
 unset LAYOUT_REAL_MV LAYOUT_REGISTRY LAYOUT_FAULT_STATE LAYOUT_FAIL_DEST LAYOUT_ROLLBACK_DEST
 unset LAYOUT_FAIL_COMMIT LAYOUT_SIGNAL_PUBLISH LAYOUT_SIGNAL_PID_FILE LAYOUT_SIGNAL_ROLLBACK LAYOUT_ROLLBACK_SIGNAL_DEST
 rm -f "$BIN/mv"
+
+# --- metadata-only Keychain cycles (issue #1850 actual reported pair) ----------
+for MALFORMED_REF in null '[]' '"invalid"'; do
+  METADATA_OUT="$(printf '{"accounts":[{"provider":"claude","label":"alpha","profile_dir":"/profiles/beta/claude","credential_ref":%s},{"provider":"claude","label":"beta","profile_dir":"/profiles/alpha/claude","credential_ref":{}}]}' "$MALFORMED_REF" | python3 "$ROOT/.claude/scripts/lib/ai-quotas-keychain-plan.py" /profiles)"
+  check_eq "$METADATA_OUT" '[]' 'malformed Keychain reference fails closed without aborting doctor'
+done
+cat > "$BIN/claude-verified" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] || exit 1
+printf '2.1.312 (Claude Code)\n'
+SH
+cat > "$BIN/keychain-metadata" <<'PYADAPTER'
+#!/usr/bin/env python3
+import json,os,pathlib,sys
+p=pathlib.Path(os.environ['LAYOUT_KC_DB']);data=json.loads(p.read_text());mode=os.environ.get('LAYOUT_KC_FAULT','')
+args=sys.argv[1:];op=args[0];source=args[1];account=os.environ['LAYOUT_KC_ACCOUNT'];marker=p.with_suffix('.injected')
+if op=='inspect':
+    accounts=[data[source]['account']] if source in data else []
+    if mode=='collision' and '-layout-' in source:accounts=[account]
+    if mode=='ambiguous' and source in data:accounts=[account,account]
+    if mode=='wrong-account' and source in data:accounts=['different-fixture-account']
+    print(json.dumps({'accounts':accounts}));sys.exit(0)
+target=args[2];requested=args[3]
+if source not in data or data[source]['account']!=requested or target in data:sys.exit(5)
+second_source=os.environ['LAYOUT_KC_SECOND_SOURCE'];second_target=os.environ['LAYOUT_KC_SECOND_TARGET'];first_target=os.environ['LAYOUT_KC_FIRST_TARGET']
+fail_stage=mode=='stage' and source==second_source and '-layout-' in target
+fail_install=mode in ('install','rollback') and '-layout-' in source and target==second_target
+if not marker.exists() and (fail_stage or fail_install):marker.write_text('injected');sys.exit(5)
+if mode=='rollback' and marker.exists() and source==first_target and '-layout-' in target:sys.exit(5)
+data[target]=data.pop(source)
+tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(data,sort_keys=True,indent=2)+'\n');tmp.replace(p)
+PYADAPTER
+chmod +x "$BIN/claude-verified" "$BIN/keychain-metadata"
+
+keychain_fixture() {
+  layout_fixture "$1"
+  PLATFORM_UNDER_TEST=Darwin
+  CLAUDE_BIN_UNDER_TEST="$BIN/claude-verified"
+  export AI_QUOTAS_KEYCHAIN_ADAPTER_BIN="$BIN/keychain-metadata"
+  export LAYOUT_KC_DB="$CASE_DIR/keychain.json" LAYOUT_KC_FAULT=''
+  export LAYOUT_KC_ACCOUNT="$(id -un)"
+  unset CLAUDE_SECURESTORAGE_CONFIG_DIR
+  python3 - "$CONFIG" "$LAYOUT_KC_DB" "$LAYOUT_KC_ACCOUNT" <<'PYFIXTURE'
+import json,hashlib,pathlib,sys,unicodedata
+cfg_path=pathlib.Path(sys.argv[1]);cfg=json.loads(cfg_path.read_text());db={}
+for row in cfg['accounts']:
+    p=pathlib.Path(row['profile_dir']);(p/'.credentials.json').unlink()
+    raw=unicodedata.normalize('NFC',row['profile_dir']).encode();service='Claude Code-credentials-'+hashlib.sha256(raw).hexdigest()[:8]
+    row['credential_ref']={'kind':'macos-keychain','service':service,'extra':'preserve'}
+    (p.parent/'.keychain-service-claude').write_text(service+'\n')
+    (p/'account-marker').write_text(row['label'])
+    db[service]={'account':sys.argv[3],'value':'fixed-fixture-'+row['label'],'acl':'fixture-acl-'+row['label']}
+cfg_path.write_text(json.dumps(cfg,sort_keys=True,indent=2)+'\n');pathlib.Path(sys.argv[2]).write_text(json.dumps(db,sort_keys=True,indent=2)+'\n')
+PYFIXTURE
+  cp "$CONFIG" "$CASE_DIR/keychain-before"
+  cp "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before"
+  cp "$PROFILES/alpha/.keychain-service-claude" "$CASE_DIR/sidecar-alpha"
+  cp "$PROFILES/beta/.keychain-service-claude" "$CASE_DIR/sidecar-beta"
+  export LAYOUT_KC_SECOND_SOURCE="$(jq -r '.accounts[1].credential_ref.service' "$CONFIG")"
+  export LAYOUT_KC_SECOND_TARGET="$(jq -r '.accounts[0].credential_ref.service' "$CONFIG")"
+  export LAYOUT_KC_FIRST_TARGET="$(jq -r '.accounts[1].credential_ref.service' "$CONFIG")"
+}
+
+keychain_fixture keychain-cycle
+run doctor --json
+check_eq "$RC" 8 'doctor reports the observed Keychain cycle'
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.repairable)] | length')" 2 'both observed cycle rows are eligible for native validation'
+run repair-layout claude
+check_eq "$RC" 0 'Keychain-backed Claude cycle repairs successfully'
+check_not_contains "$OUT" 'fixed-fixture-' 'Keychain repair never prints fixture credential values'
+check_eq "$(cat "$PROFILES/alpha/claude/account-marker")" alpha 'first account directory follows its registry identity'
+check_eq "$(cat "$PROFILES/beta/claude/account-marker")" beta 'second account directory follows its registry identity'
+cmp -s "$CASE_DIR/sidecar-alpha" "$PROFILES/alpha/.keychain-service-claude" && ok 'first path-owned sidecar is unchanged' || bad 'first sidecar changed'
+cmp -s "$CASE_DIR/sidecar-beta" "$PROFILES/beta/.keychain-service-claude" && ok 'second path-owned sidecar is unchanged' || bad 'second sidecar changed'
+python3 - "$CONFIG" "$LAYOUT_KC_DB" <<'PYASSERT'
+import json,pathlib,hashlib,sys,unicodedata
+cfg=json.loads(pathlib.Path(sys.argv[1]).read_text());db=json.loads(pathlib.Path(sys.argv[2]).read_text())
+for row in cfg['accounts']:
+    p=pathlib.Path(row['profile_dir']);expected='Claude Code-credentials-'+hashlib.sha256(unicodedata.normalize('NFC',str(p)).encode()).hexdigest()[:8]
+    assert row['credential_ref']['service']==expected==(p.parent/'.keychain-service-claude').read_text().strip()
+    assert db[expected]['value']=='fixed-fixture-'+row['label']
+    assert db[expected]['acl']=='fixture-acl-'+row['label']
+    assert row['credential_ref']['extra']=='preserve'
+PYASSERT
+[[ $? -eq 0 ]] && ok 'final ref, sidecar and verified harness hash identify the original bytes and ACL per label' || bad 'Keychain identity binding changed'
+run doctor --json
+check_eq "$RC" 0 'repaired Keychain cycle is healthy'
+
+for KEYCHAIN_FAILURE in stage install; do
+  keychain_fixture "keychain-fails-$KEYCHAIN_FAILURE"
+  export LAYOUT_KC_FAULT="$KEYCHAIN_FAILURE"
+  run repair-layout claude
+  check_eq "$RC" 5 "Keychain $KEYCHAIN_FAILURE failure is reported"
+  cmp -s "$CONFIG" "$CASE_DIR/keychain-before" && ok "$KEYCHAIN_FAILURE failure preserves registry bytes" || bad "$KEYCHAIN_FAILURE changed registry"
+  cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok "$KEYCHAIN_FAILURE failure restores all synthetic services, values and ACLs" || bad "$KEYCHAIN_FAILURE changed Keychain state"
+  check_eq "$(cat "$PROFILES/beta/claude/account-marker")" alpha "$KEYCHAIN_FAILURE rollback restores original account directory"
+  [[ ! -e "$PROFILES/.layout-repair" ]] && ok "$KEYCHAIN_FAILURE rollback removes journal" || bad "$KEYCHAIN_FAILURE left journal"
+done
+
+cat > "$BIN/mv" <<'SHMV'
+#!/usr/bin/env bash
+[[ "${!#}" != "$LAYOUT_KC_MV_FAILURE_DEST" ]] || exit 1
+exec "$LAYOUT_KC_REAL_MV" "$@"
+SHMV
+chmod +x "$BIN/mv"
+for KEYCHAIN_FAILURE in directory publication; do
+  keychain_fixture "keychain-$KEYCHAIN_FAILURE-fails"
+  export LAYOUT_KC_REAL_MV="$REAL_MV"
+  if [[ "$KEYCHAIN_FAILURE" == directory ]]; then
+    export LAYOUT_KC_MV_FAILURE_DEST="$PROFILES/.layout-repair/1"
+  else
+    export LAYOUT_KC_MV_FAILURE_DEST="$CONFIG"
+  fi
+  PATH="$BIN:$PATH" run repair-layout claude
+  check_eq "$RC" 5 "Keychain $KEYCHAIN_FAILURE failure rolls back"
+  cmp -s "$CONFIG" "$CASE_DIR/keychain-before" && ok "$KEYCHAIN_FAILURE leaves registry bytes unchanged" || bad "$KEYCHAIN_FAILURE changed registry"
+  cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok "$KEYCHAIN_FAILURE restores service identities, values and ACLs" || bad "$KEYCHAIN_FAILURE changed Keychain state"
+  check_eq "$(cat "$PROFILES/beta/claude/account-marker")" alpha "$KEYCHAIN_FAILURE restores original profile location"
+  cmp -s "$CASE_DIR/sidecar-alpha" "$PROFILES/alpha/.keychain-service-claude" && ok "$KEYCHAIN_FAILURE preserves sidecar" || bad "$KEYCHAIN_FAILURE changed sidecar"
+done
+unset LAYOUT_KC_REAL_MV LAYOUT_KC_MV_FAILURE_DEST
+rm -f "$BIN/mv"
+
+for KEYCHAIN_FAILURE in collision ambiguous wrong-account; do
+  keychain_fixture "keychain-refuses-$KEYCHAIN_FAILURE"
+  export LAYOUT_KC_FAULT="$KEYCHAIN_FAILURE"
+  run repair-layout claude
+  check_eq "$RC" 5 "Keychain preflight refuses $KEYCHAIN_FAILURE"
+  cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok "$KEYCHAIN_FAILURE refusal changes no item" || bad "$KEYCHAIN_FAILURE changed item"
+  cmp -s "$CONFIG" "$CASE_DIR/keychain-before" && ok "$KEYCHAIN_FAILURE refusal preserves registry" || bad "$KEYCHAIN_FAILURE changed registry"
+done
+
+keychain_fixture keychain-sidecar-mismatch
+printf 'unverified-metadata-service\n' > "$PROFILES/alpha/.keychain-service-claude"
+run repair-layout claude
+check_eq "$RC" 5 'unverified Keychain sidecar refuses migration'
+cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok 'sidecar refusal changes no service' || bad 'sidecar refusal changed service'
+
+keychain_fixture keychain-unverified-version
+cat > "$BIN/claude-unverified" <<'SHVERSION'
+#!/usr/bin/env bash
+printf '9.9.9 (Claude Code)\n'
+SHVERSION
+chmod +x "$BIN/claude-unverified"
+CLAUDE_BIN_UNDER_TEST="$BIN/claude-unverified"
+run repair-layout claude
+check_eq "$RC" 5 'unverified Claude service-binding version refuses migration'
+cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok 'version refusal changes no service' || bad 'version refusal changed service'
+
+keychain_fixture keychain-secure-storage-override
+export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+run repair-layout claude
+check_eq "$RC" 5 'even an empty secure-storage override refuses Keychain migration'
+unset CLAUDE_SECURESTORAGE_CONFIG_DIR
+
+keychain_fixture keychain-rollback-failure
+export LAYOUT_KC_FAULT=rollback
+run repair-layout claude
+check_eq "$RC" 9 'failed Keychain rollback preserves manual recovery state'
+[[ -f "$PROFILES/.layout-repair/plan.json" ]] && ok 'Keychain rollback failure retains journal' || bad 'Keychain recovery journal missing'
+check_contains "$OUT" 'service rename' 'Keychain failure reports remaining metadata moves'
+cmp -s "$CONFIG" "$CASE_DIR/keychain-before" && ok 'failed rollback does not publish registry' || bad 'failed rollback published registry'
+python3 - "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" <<'PYVALUES'
+import json,pathlib,sys
+now=json.loads(pathlib.Path(sys.argv[1]).read_text());old=json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert sorted(json.dumps(x,sort_keys=True) for x in now.values())==sorted(json.dumps(x,sort_keys=True) for x in old.values())
+PYVALUES
+[[ $? -eq 0 ]] && ok 'failed rollback retains both synthetic byte/ACL payloads' || bad 'rollback lost synthetic payload'
+run doctor --json
+check_contains "$OUT" interrupted-repair 'doctor reports interrupted Keychain repair'
+
+unset AI_QUOTAS_KEYCHAIN_ADAPTER_BIN LAYOUT_KC_DB LAYOUT_KC_FAULT LAYOUT_KC_ACCOUNT
+unset LAYOUT_KC_SECOND_SOURCE LAYOUT_KC_SECOND_TARGET LAYOUT_KC_FIRST_TARGET
 
 # --- summary -----------------------------------------------------------------
 

@@ -314,15 +314,19 @@ authorization without asking again.
 First compare the current session’s `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
 (including their default profile locations) with every affected `profile_dir`.
 If this session uses an affected profile, stop: ask the user to run repair from
-a shell outside those profiles. Establish that other affected sessions, setup
+a shell outside those profiles, after this session has exited. If this session
+is still running, do not start repair from another shell. Establish that other affected sessions, setup
 commands and quota readers are stopped
 before `"$AI_QUOTAS_SETUP_SH" repair-layout claude` or `"$AI_QUOTAS_SETUP_SH" repair-layout codex`. Use available session
 evidence; if quiescence cannot be established, ask the user to confirm it. Never fix a mismatch by hand-editing `ai-quotas.json`:
 the credential directories must move together with their registry identities.
-Codex repair requires non-empty file-backed `auth.json`; report and stop if
-that requirement is not met. If Keychain-backed repair is refused, stop and
-report the path-derived service
-binding limitation. If exit 9 or `interrupted-repair` appears, preserve
-`.layout-repair/plan.json` and the remaining-rename instructions for recovery;
-report the situation to the user and stop; never delete or automatically retry
+Codex repair requires non-empty file-backed `auth.json`. Claude Keychain repair
+supports only fully observed homogeneous cycles with verified Claude Code 2.1.312
+service binding, matching refs/sidecars and no secure-storage override. It needs
+macOS Swift/Python 3 and accessible item metadata; no password is requested or
+replayed. Report a refusal and stop. Unsupported mixed/non-cycle migrations
+remain in Issue #1887. Doctor reports a journal but does not reconstruct rename
+steps. If exit 9 or `interrupted-repair` appears, preserve
+`.layout-repair/plan.json` and any recovery instructions printed by the failed
+repair; report the situation to the user and stop; never delete or automatically retry
 over the journal.

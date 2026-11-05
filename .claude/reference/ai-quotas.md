@@ -146,10 +146,12 @@ must never destroy a working login. Delete it by hand if that is what you mean.
 | `codex` | `<profile_dir>/auth.json` | file present and non-empty; if it is absent, `CODEX_HOME=<profile_dir> codex login status` is consulted and a zero exit counts as logged in. Its output is discarded, so no account detail is printed. |
 | `cursor` | the **Cursor IDE's own login**, in its state store (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`, keys `cursorAuth/accessToken` and `cursorAuth/cachedEmail`; Linux and Windows paths in the reader section). No profile directory is created. | `sqlite3 -readonly` asks whether `cursorAuth/accessToken` is a non-empty string and answers with an exit status. **Presence only** — the value is never fetched or printed. A token can be present and expired, so only `/quotas` proves it still works. |
 
-### The Keychain suffix is observed, never derived
+### Keychain services are observed at login
 
 Claude Code appends a suffix to the Keychain service name that is derived from
-`CLAUDE_CONFIG_DIR` by an undocumented function. The tool does **not** reimplement it.
+`CLAUDE_CONFIG_DIR` by an undocumented function. Registration observes names rather
+than reimplementing it; the separately verified cycle-repair guard is described
+in [layout recovery](#diagnose-and-repair-labelpath-layout-issue-1850).
 It lists the `Claude Code-credentials*` service **names** before and after running the
 login and records the one that appeared. Guessing the algorithm would fail silently the
 first time upstream changed it — and a status probe that silently reports `needs-login`
@@ -1519,13 +1521,39 @@ is required throughout the operation, not just at commit.
 
 Missing/shared paths, collisions, symlinks, duplicate identities and interrupted
 transactions are refused. Codex repair requires a non-empty file-backed
-`auth.json`; other credential stores cannot be relocated safely by this helper.
-Custom paths remain untouched. Claude Keychain-backed
-records and service sidecars are refused because Claude's service name is
-path-derived: merely preserving a recorded service could misdirect a later CLI
-login. No Keychain value is read or migrated. Use the supported diagnostic and
-repair commands rather than hand-editing the registry. Keychain repair requires
-a separately verified service-binding migration (Issue #1887).
+`auth.json`; other Codex credential stores cannot be relocated safely by this helper.
+Custom paths remain untouched.
+
+Claude Keychain repair supports complete, homogeneous cycles such as the two
+reported swapped profiles. Every destination must be another source in the
+same cycle. All recorded service names and path-owned sidecars must match
+`Claude Code-credentials-<SHA256(config-dir)[:8]>`; no credential files or
+inherited `CLAUDE_SECURESTORAGE_CONFIG_DIR` override may be present. This
+binding was verified against Claude Code **2.1.312** using synthetic config
+directories and a fake security command inside a sandbox denying real
+Keychain access. Other client versions fail closed until verified.
+
+The native macOS adapter requires Swift and Python3. It reads attributes only,
+requires one OAuth item for the current OS account, and refuses ambiguous or
+alternate API-key bindings. `SecItemUpdate` changes only the service attribute;
+it never retrieves or replaces secret bytes or changes ACLs. Services move
+through unique temporary names, directories move through the filesystem
+journal, then registry paths and service references publish together. Failed
+service, directory or registry updates roll both kinds of rename back; failed
+rollback preserves the journal and remaining service/path moves. Handled
+termination is ignored during mutation and rollback to protect those updates.
+
+The `.keychain-service-claude` sidecars live next to the provider directories,
+so a complete cycle leaves these path-owned files unchanged. Each final ref,
+sidecar and harness-derived destination service must agree. Native integration
+tests use only a private temporary Keychain with fixed synthetic credentials;
+they verify byte/ACL preservation and an unchanged user search list. Neither
+the tests nor this implementation authoring migrated production items.
+
+No password is stored or replayed. The adapter disables interactive prompts;
+locked or inaccessible Keychain metadata fails before moves. Non-cycle and
+mixed-store migrations remain unsupported (Issue #1887). Use the supported
+diagnostic and repair commands rather than hand-editing the registry.
 
 Stored-path semantics: `add` alone derives `<root>/<label>/<provider>`;
 `relogin` uses the stored path, and `remove` retains the directory. Supported
@@ -1538,12 +1566,16 @@ in order. Its `profile_dir` is the original source and `expected_profile_dir`
 is the intended destination. Stop every affected consumer and preserve a copy
 of the journal. Inspect the registry to determine whether its paths are still
 original sources or all intended destinations; absence of numbered entries
-alone does not prove success. If publication did not happen, evacuate remaining
-destinations into their numbered staging slots before restoring every original
-source so swaps cannot collide. If publication completed, verify every
+alone does not prove success. If publication did not happen, first restore any journaled Keychain services through
+their temporary names, then evacuate remaining directories into numbered staging
+slots before restoring every original source so swaps cannot collide. Keychain
+entries identify original, temporary and target service names plus OS account;
+these are metadata, never credential values. If publication completed, verify every
 destination and registry row instead. Verify credential file presence and each
 account's retained identity without printing values. Only when all affected
-rows and directories agree, no numbered entries remain, and doctor reports no
-findings other than the journal, may an operator remove the journal and empty
-staging directory. If publication or identity cannot be established, preserve
+rows, directories and service identities agree with one verified endpoint and
+no numbered entries remain may an operator remove the journal and empty staging
+directory. After a full rollback, the original label-mismatch findings are
+expected; there must be no new missing/shared findings. After completed repair,
+only the journal finding should remain. If publication or identity cannot be established, preserve
 everything for manual recovery; never guess or rerun repair over the journal.

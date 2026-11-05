@@ -113,7 +113,7 @@
 #             one). Credential lands in the macOS
 #             Keychain (service `Claude Code-credentials-<suffix>`, whose
 #             suffix this script learns by observing which item the login
-#             created — it is never derived or guessed) or, on other
+#             created; verified cycle repair additionally checks the binding) or, on other
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
@@ -130,7 +130,8 @@
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
 #   doctor reports layout mismatches without reading credentials; exit 8 means findings.
 #   repair-layout stages renames and atomically updates the registry. Stop affected
-#   sessions/readers first. Keychain-backed Claude profiles require manual support.
+#   sessions/readers first. Observed Claude Keychain cycles are supported on macOS
+#   with Swift/Python 3 and verified Claude Code 2.1.312; other bindings are refused.
 #   Exit 9 means rollback failed: preserve .layout-repair and its recovery plan.
 #
 #   Profiles  ~/.claude/ai-quotas/profiles/<label>/<provider>/   (mode 700)
@@ -231,6 +232,7 @@
 # DEPENDENCIES
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
+#   - macOS Swift compiler and Python 3 only for verified Keychain cycle repair
 #   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
 #     is sqlite3(1), which ships with macOS, and the Cursor IDE itself
 
@@ -563,7 +565,7 @@ write_config() { # <json>
 
 # --- keychain observation (macOS, claude only) -------------------------------
 # The Keychain service name Claude Code uses carries a suffix derived from
-# CLAUDE_CONFIG_DIR by an undocumented function. This script never derives it:
+# CLAUDE_CONFIG_DIR by an undocumented function. Registration observes names:
 # it lists the service NAMES before and after a login and records the one that
 # appeared. A name is not a secret, and `security` is never asked for a value
 # (`-w` is never passed), so nothing readable here is a credential.
@@ -1923,7 +1925,7 @@ action_list() {
     printf '%s' "$rows"
   }
   echo
-  if layout_report "$config" | jq -e 'any(.[]; .finding == "label-mismatch" or .finding == "shared")' >/dev/null; then
+  if layout_report "$config" | jq -e 'any(.[]; .finding == "label-mismatch" or .finding == "missing" or .finding == "shared" or .finding == "interrupted-repair")' >/dev/null; then
     echo "Layout warning — run: ${SELF_NAME} doctor"
   fi
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
