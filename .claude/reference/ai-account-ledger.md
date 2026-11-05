@@ -33,6 +33,9 @@ trailing slashes are distinct declarations; an unregistered spelling stays
 its credential identity to NFC, but this hook conservatively requires exact
 Unicode spelling too: an alternate NFC-equivalent declaration can remain
 `unknown` rather than guessing. Repository path resolution is independent.
+Cwd transport is lossless too; if Git returns newline-containing paths, repository
+and live branch metadata stay null because its combined path output is ambiguous.
+Historical branch metadata remains authoritative.
 No credentials are read or changed.
 
 `account_email` is evidence only; the report annotates
@@ -74,6 +77,10 @@ ai-account-ledger.sh backfill-codex [--codex-home DIR] [--dry-run]
 ```
 
 Without an explicit home it scans registered Codex paths and the default home.
+Profile iteration preserves newlines, tabs and literal backslashes. If a rollout
+scan fails, readable records may still be added, but the command warns and exits
+5; rerun after restoring access. Its temporary metadata inventory is removed on
+exit. Missing session/archive directories are normal and do not count as failures.
 Only `rollout-*.jsonl` under sessions/ and archived_sessions/ are considered.
 The first session_meta record supplies ID, original timestamp, cwd and git
 metadata. Historical branches/issues always come from that record; today’s branch

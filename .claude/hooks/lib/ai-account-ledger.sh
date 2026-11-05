@@ -9,9 +9,13 @@ ledger_profile() {
   if [ "$#" -ge 3 ]; then rows="$3"; else
   local registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
   [ -f "$registry" ] && [ -r "$registry" ] || return 0
-  rows=$(jq -r --arg p "$1" '.accounts[] | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | [.profile_dir,.label] | @tsv' "$registry" 2>/dev/null) || return 0
+  rows=$(jq -r --arg p "$1" '.accounts[] | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | select((.profile_dir|contains("\u0000")|not) and (.label|contains("\u0000")|not)) | [.profile_dir,.label] | @tsv' "$registry" 2>/dev/null) || return 0
   fi
   while IFS=$'\t' read -r path label; do
+    # jq @tsv escapes backslashes/tabs/newlines; decode without command substitution
+    # so trailing newlines remain part of the declared credential-realm spelling.
+    printf -v path '%b' "$path"
+    printf -v label '%b' "$label"
     [ -n "$path" ] || continue
     # Credential realms can differ for symlink, dot-segment or trailing-slash spellings.
     # Exact matching is conservative even when a provider normalizes Unicode to NFC.
@@ -42,7 +46,10 @@ ledger_repo_url() {
 ledger_repo() {
   LEDGER_REPO=""; LEDGER_BRANCH=""
   local fields root gitdir head="" origin
-  fields=$(git -C "$1" rev-parse --show-toplevel --absolute-git-dir 2>/dev/null) || return 0
+  # Preserve trailing newlines, then refuse Git's ambiguous multi-line path format.
+  fields=$(git -C "$1" rev-parse --show-toplevel --absolute-git-dir 2>/dev/null && printf '\037') || return 0
+  fields="${fields%$'\037'}"; fields="${fields%$'\n'}"
+  case "${fields#*$'\n'}" in *$'\n'*) return 0 ;; esac
   root="${fields%%$'\n'*}"; gitdir="${fields#*$'\n'}"
   if [ "${2:-}" = basename ]; then LEDGER_REPO="${root##*/}"; return 0; fi
   # HEAD supplies the current symbolic branch even before the first commit.

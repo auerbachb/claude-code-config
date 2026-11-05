@@ -38,25 +38,41 @@ case "$action" in
 esac
 # Emit candidate homes: an explicit argument, or registered Codex paths plus the default.
 profiles() {
-  if [ -n "$requested_codex_home" ]; then printf '%s\n' "$requested_codex_home"; return; fi
-  { jq -r '.accounts[]? | select(.provider=="codex") | .profile_dir | select(type=="string")' "$registry_input" 2>/dev/null || true; printf '%s\n' "$HOME/.codex"; } | sort -u
+  if [ -n "$requested_codex_home" ]; then printf '%s\0' "$requested_codex_home"; return; fi
+  jq -jnr --rawfile config "$registry_input" --arg default "$HOME/.codex" '
+    (try ($config|fromjson) catch {}) as $registry |
+    [((try $registry.accounts[]? catch empty) | select(type=="object" and .provider=="codex") | .profile_dir |
+      select(type=="string") | select(contains("\u0000")|not)), $default] |
+    unique[] | . + "\u0000"' 2>/dev/null
 }
 case "$action" in
   backfill-codex)
     ids="$(jq -Rr 'fromjson? | select(type=="object") | select(.provider=="codex") | .session_id | select(type=="string" and length>0)' "$ledger_input" 2>/dev/null || true)"
     # Bash3.2 has no associative arrays: build one exact newline-delimited lookup.
     ids=$'\n'"$ids"$'\n'
-    scanned=0; added=0; skipped=0; malformed=0
-    while IFS= read -r dir; do
+    scanned=0; added=0; skipped=0; malformed=0; scan_errors=0
+    scan_file=$(mktemp "${TMPDIR:-/tmp}/ai-account-backfill.XXXXXX") || exit 5
+    trap '[ -z "$scan_file" ] || [ ! -f "$scan_file" ] || unlink "$scan_file"' EXIT
+    while IFS= read -r -d '' dir; do
       [ -d "$dir" ] || continue
       ledger_profile codex "$dir"
+      roots=()
+      for root in "$dir/sessions" "$dir/archived_sessions"; do
+        [ ! -d "$root" ] || roots+=("$root")
+      done
+      [ "${#roots[@]}" -gt 0 ] || continue
+      if ! find "${roots[@]}" -type f -name 'rollout-*.jsonl' -print0 > "$scan_file" 2>/dev/null; then
+        scan_errors=$((scan_errors+1))
+        echo 'warning: Codex rollout scan failed; backfill may be incomplete' >&2
+      fi
       while IFS= read -r -d '' file; do
         scanned=$((scanned+1))
         # Read precisely the initial metadata record, never subsequent messages.
         first=""
         IFS= read -r first < "$file" 2>/dev/null || true
-        fields=$(printf '%s\n' "$first" | jq -er 'select(.type=="session_meta") | .payload | select(type=="object") | [(.id // .session_id),.timestamp,(.cwd // ""),(.git.branch // ""),(.git.repository_url // "")] | select(.[0]|type=="string" and length>0) | select(.[1]|type=="string" and (sub("\\.[0-9]+Z$";"Z") | try (fromdateiso8601 != null) catch false)) | map(if type=="string" then gsub("[\u001f\r\n]";"") else "" end) | join("\u001f")' 2>/dev/null) || { malformed=$((malformed+1)); continue; }
+        fields=$(printf '%s\n' "$first" | jq -er 'def path_field: if type=="string" then [.] | @tsv | gsub("\u001f";"\\037") else "" end; select(.type=="session_meta") | .payload | select(type=="object") | select((.cwd // "") | if type=="string" then (contains("\u0000")|not) else true end) | [(.id // .session_id),.timestamp,(.cwd // ""),(.git.branch // ""),(.git.repository_url // "")] | select(.[0]|type=="string" and length>0) | select(.[1]|type=="string" and (sub("\\.[0-9]+Z$";"Z") | try (fromdateiso8601 != null) catch false)) | to_entries | map(if .key==2 then (.value|path_field) else (.value | if type=="string" then gsub("[\u001f\r\n]";"") else "" end) end) | join("\u001f")' 2>/dev/null) || { malformed=$((malformed+1)); continue; }
         IFS=$'\x1f' read -r id ts cwd branch url <<< "$fields"
+        printf -v cwd '%b' "$cwd"
         # Quoting id keeps wildcard characters literal and avoids per-row processes.
         case "$ids" in *$'\n'"$id"$'\n'*) skipped=$((skipped+1)); continue ;; esac
         ledger_repo_url "$url"
@@ -66,9 +82,10 @@ case "$action" in
         row=$(ledger_row "$ts" codex "$id" backfill backfill) || { malformed=$((malformed+1)); continue; }
         if [ "$dry" = 1 ]; then :; else ledger_append "$row" || { echo 'could not append ledger' >&2; exit 5; }; fi
         ids="${ids}${id}"$'\n'; added=$((added+1))
-      done < <(find "$dir/sessions" "$dir/archived_sessions" -type f -name 'rollout-*.jsonl' -print0 2>/dev/null)
+      done < "$scan_file"
     done < <(profiles)
     printf 'files scanned: %s; rows %s: %s; skipped: %s; malformed: %s\n' "$scanned" "$([ "$dry" = 1 ] && echo planned || echo added)" "$added" "$skipped" "$malformed" >&2
+    [ "$scan_errors" = 0 ] || exit 5
     ;;
   report)
     registry_json=$(jq -c 'select(.accounts|type=="array")' "$registry_input" 2>/dev/null) || registry_json='{"accounts":[]}'
@@ -104,7 +121,7 @@ case "$action" in
       [ -f "$registry" ] && [ -r "$registry" ] || { echo 'registry must be a readable regular file' >&2; exit 5; }
       jq -es 'length==1 and (.[0] | type=="object" and (.accounts|type=="array")
         and (.accounts|all(type=="object" and (.provider|type=="string" and length>0)
-          and (.label|type=="string" and length>0) and (.profile_dir|type=="string" and length>0)))
+          and (.label|type=="string" and length>0) and (.profile_dir|type=="string" and length>0 and (contains("\u0000")|not))))
         and ((.schema_version // "1.0" | tostring | split(".")[0])=="1"))' "$registry" >/dev/null 2>&1 \
         || { echo 'invalid account registry; no hooks installed' >&2; exit 5; }
     fi
@@ -115,7 +132,7 @@ case "$action" in
       if [ -x "$candidate" ]; then hook="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"; break; fi
     done
     [ -n "$hook" ] || { echo 'account SessionStart hook unavailable' >&2; exit 5; }
-    while IFS= read -r dir; do
+    while IFS= read -r -d '' dir; do
       [ -d "$dir" ] || continue
       target="$dir/hooks.json"
       [ ! -L "$target" ] || { echo "refusing symlink: $target" >&2; exit 5; }
@@ -141,7 +158,7 @@ case "$action" in
       fi
       mv "$temp" "$target" || exit 5
       temp=""
-      printf 'Installed metadata hook: %s (Codex hook support is version-dependent; use backfill when unsupported)\n' "$dir"
+      printf 'Installed metadata hook: %q (Codex hook support is version-dependent; use backfill when unsupported)\n' "$dir"
     done < <(profiles)
     ;;
   *) usage ;;

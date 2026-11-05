@@ -147,4 +147,39 @@ setup=str(pathlib.Path(cli).with_name('ai-quotas-setup.sh'))
 result=subprocess.run([setup,'ledger-hooks'],env=dict(os.environ,AI_QUOTAS_CONFIG=home+'/fifo-registry'),text=True,capture_output=True,timeout=5)
 assert result.returncode==5 and 'regular file' in result.stderr
 PYTEST
+# Profile enumeration and command quoting preserve newlines, tabs and backslashes.
+control_profile="$HOME/"$'profile\nwith\ttab\\slash\n'
+mkdir -p "$control_profile/sessions"
+jq -n --arg path "$control_profile" '{accounts:[{provider:"codex",label:"control-profile",profile_dir:$path}]}' > "$HOME/control-registry.json"
+jq -cn '{type:"session_meta",payload:{id:"control-profile",timestamp:"2026-11-01T01:02:03Z"}}' > "$control_profile/sessions/rollout-control.jsonl"
+AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/control-ledger.jsonl" "$CLI" backfill-codex
+jq -se --arg path "$control_profile" 'length==1 and .[0].label=="control-profile" and .[0].profile_dir==$path' "$HOME/control-ledger.jsonl" >/dev/null
+AI_QUOTAS_CONFIG="$HOME/control-registry.json" "$CLI" install-codex-hooks >/dev/null
+command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$control_profile/hooks.json")
+printf '%s\n' '{"session_id":"control-hook"}' | AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/control-ledger.jsonl" bash -c "$command"
+jq -se --arg path "$control_profile" 'length==2 and all(.label=="control-profile" and .profile_dir==$path)' "$HOME/control-ledger.jsonl" >/dev/null
+# Historical cwd must preserve its actual filesystem spelling, not target a stripped repo.
+control_cwd="$HOME/"$'project\nwith\ttab\rand\037separator\\literal\n'
+stripped_cwd=$(jq -nr --arg path "$control_cwd" '$path|gsub("[\u001f\t\r\n]";"")')
+git init -q "$control_cwd"
+git init -q "$stripped_cwd"
+jq -cn --arg cwd "$control_cwd" '{type:"session_meta",payload:{id:"control-cwd",timestamp:"2026-11-01T01:02:03Z",cwd:$cwd,git:{branch:"historical-control"}}}' > "$control_profile/sessions/rollout-cwd.jsonl"
+AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/cwd-ledger.jsonl" "$CLI" backfill-codex
+jq -se 'any(.session_id=="control-cwd" and .repo==null and .branch=="historical-control")' "$HOME/cwd-ledger.jsonl" >/dev/null
+# A partial find result must warn, return nonzero, and clean its owned inventory.
+mkdir -p "$HOME/failing-bin" "$HOME/scan-tmp"
+export ACCOUNT_TEST_FIND
+ACCOUNT_TEST_FIND=$(command -v find)
+cat > "$HOME/failing-bin/find" <<'FIND'
+#!/bin/bash
+"$ACCOUNT_TEST_FIND" "$@"
+exit 1
+FIND
+chmod +x "$HOME/failing-bin/find"
+status=0
+PATH="$HOME/failing-bin:$PATH" TMPDIR="$HOME/scan-tmp" AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/partial-ledger.jsonl" "$CLI" backfill-codex > "$HOME/partial.out" 2> "$HOME/partial.err" || status=$?
+[ "$status" = 5 ]
+grep -Fq 'warning: Codex rollout scan failed; backfill may be incomplete' "$HOME/partial.err"
+jq -se 'length==2 and all(.label=="control-profile")' "$HOME/partial-ledger.jsonl" >/dev/null
+[ -z "$(find "$HOME/scan-tmp" -type f -print)" ]
 printf 'PASS account ledger\n'

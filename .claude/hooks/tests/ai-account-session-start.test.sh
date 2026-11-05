@@ -49,6 +49,38 @@ payload "$HOME/repo-a" | "$HOOK" --provider codex --codex-home "$HOME/codex"
 jq -e '.label=="codex-work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 jq -cn --arg path "$HOME/codex/sessions/2026/rollout.jsonl" '{transcript_path:$path}' | env -u CODEX_HOME "$HOOK" --provider codex
 jq -e '.label=="codex-work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+# A home containing session-container names must retain its full declared prefix.
+for pair in 'sessions nested/archived_sessions' 'archived_sessions nested/sessions'; do
+  read -r outer inner <<< "$pair"
+  nested="$HOME/$outer/$inner/profile"
+  jq --arg path "$nested" '.accounts += [{provider:"codex",label:"nested-codex",profile_dir:$path}]' "$AI_QUOTAS_CONFIG" > "$HOME/nested-registry.json"
+  for container in sessions archived_sessions; do
+    jq -cn --arg path "$nested/$container/2026/11/05/rollout.jsonl" '{transcript_path:$path}' | AI_QUOTAS_CONFIG="$HOME/nested-registry.json" env -u CODEX_HOME "$HOOK" --provider codex
+    jq -e --arg path "$nested" '.label=="nested-codex" and .profile_dir==$path' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+  done
+done
+# Transcript fallback must never select another registered spelling after stripping controls.
+control_home="$HOME/"$'line\nwith\ttab\rand\037separator\\literal\n'
+stripped_home=$(jq -nr --arg path "$control_home" '$path|gsub("[\u001f\t\r\n]";"")')
+jq --arg intended "$control_home" --arg other "$stripped_home" '.accounts += [{provider:"codex",label:"intended-control",profile_dir:$intended},{provider:"codex",label:"wrong-stripped",profile_dir:$other}]' "$AI_QUOTAS_CONFIG" > "$HOME/transcript-control-registry.json"
+for container in sessions archived_sessions; do
+  jq -cn --arg path "$control_home/$container/2026/rollout.jsonl" '{transcript_path:$path}' | AI_QUOTAS_CONFIG="$HOME/transcript-control-registry.json" env -u CODEX_HOME "$HOOK" --provider codex
+  jq -e --arg path "$control_home" '.label=="intended-control" and .profile_dir==$path' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
+before=$(wc -l < "$AI_ACCOUNT_LEDGER")
+printf '%s\n' '{"transcript_path":"invalid\u0000path/sessions/rollout.jsonl"}' | "$HOOK" --provider codex
+[ "$(wc -l < "$AI_ACCOUNT_LEDGER")" = "$before" ]
+# Repository lookup also preserves filesystem spelling instead of retargeting a stripped path.
+exact_cwd="$HOME/"$'project\nwith\ttab\rand\037separator\\literal\n'
+stripped_cwd=$(jq -nr --arg path "$exact_cwd" '$path|gsub("[\u001f\t\r\n]";"")')
+for path in "$exact_cwd" "$stripped_cwd"; do
+  git init -q "$path"
+  git -C "$path" checkout -qb issue-1885-control-cwd
+  slug=Wrong; [ "$path" != "$exact_cwd" ] || slug=Intended
+  git -C "$path" remote add origin "https://github.com/Example/$slug.git"
+done
+payload "$exact_cwd" | CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
+jq -e '.repo==null and .branch==null and .label=="work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 # A different spelling of the same filesystem location is not a registered identity.
 ln -s "$HOME/personal/claude" "$HOME/alias"
 for spelling in "$HOME/alias" "$HOME/personal/./claude" "$HOME/personal/claude/"; do
@@ -70,6 +102,15 @@ for spelling in "$nfc" "$nfd"; do
   payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/unicode-registry.json" CLAUDE_CONFIG_DIR="$spelling" "$HOOK" >/dev/null
   jq -e --arg spelling "$spelling" --arg label "$expected" '.label==$label and .profile_dir==$spelling' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 done
+# Decode TSV transport without dropping a trailing newline or literal backslash.
+spelling="$HOME/"$'line\nwith\ttab\\literal\n'
+jq --arg path "$spelling" '.accounts += [{provider:"claude",label:"control-path",profile_dir:$path}]' "$AI_QUOTAS_CONFIG" > "$HOME/control-registry.json"
+payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/control-registry.json" CLAUDE_CONFIG_DIR="$spelling" "$HOOK" >/dev/null
+jq -e --arg path "$spelling" '.label=="control-path" and .profile_dir==$path' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+# NUL cannot occur in an OS path and must never collapse to a different identity.
+jq --arg path "$HOME/personal/claude" '.accounts=[{provider:"claude",label:"invalid-nul",profile_dir:($path+"\u0000")}]' "$AI_QUOTAS_CONFIG" > "$HOME/nul-registry.json"
+payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/nul-registry.json" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
+jq -e '.label=="unknown"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 # Duplicate declared registrations are ambiguous.
 jq '.accounts += [.accounts[0]]' "$AI_QUOTAS_CONFIG" > "$HOME/duplicate.json"
 payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/duplicate.json" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
