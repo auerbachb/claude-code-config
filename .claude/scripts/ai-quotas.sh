@@ -50,6 +50,12 @@
 #                  uses; `AI_QUOTAS_SOURCE=scheduled` does the same for a
 #                  caller that cannot pass a flag.
 #
+# Read outcomes (#1883): each supported account attempt also writes one row
+# to <history-stem>.outcomes.jsonl (45 days / 50,000 rows, mode 600). JSON
+# account_reliability and the RELIABILITY footer show 7d/30d failure rates
+# and consecutive failures. python3 is required for outcomes; successful
+# snapshot reporting keeps working if the helper is unavailable.
+#
 # HISTORY — ONE SNAPSHOT PER ROW PER RUN (#1700)
 #   Every run appends one JSON line per SUCCESSFULLY READ row to
 #   ~/.claude/ai-quotas-history.jsonl (mode 600, created on first write):
@@ -299,6 +305,7 @@
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq, curl
+#   - Python 3 (Unix) for the optional read-outcome ledger and reliability stats
 #   - macOS security(1) for the Keychain credential path
 #   - the `codex` CLI for the preferred Codex path (the HTTP fallback needs
 #     only curl)
@@ -391,6 +398,9 @@ HISTORY_FILE="${AI_QUOTAS_HISTORY:-}"
 if [[ -z "$HISTORY_FILE" && -n "$_HOME" ]]; then
   HISTORY_FILE="${_HOME}/.claude/ai-quotas-history.jsonl"
 fi
+OUTCOMES_FILE=""
+[[ -z "$HISTORY_FILE" ]] || OUTCOMES_FILE="${HISTORY_FILE%.jsonl}.outcomes.jsonl"
+
 # `manual` unless this run says otherwise. The flag wins over the environment
 # so the LaunchAgent's argv is the readable record of what the job does, and
 # an unrecognised AI_QUOTAS_SOURCE is REFUSED rather than written through: a
@@ -445,6 +455,28 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 ROWS="$TMP/rows.jsonl"
 : > "$ROWS"
+OUTCOMES_RUN="$TMP/outcomes.jsonl"
+RELIABILITY="$TMP/reliability.json"
+: > "$OUTCOMES_RUN"
+printf '[]' > "$RELIABILITY"
+OUTCOME_STATUS=""
+OUTCOME_SOURCE=""
+OUTCOME_ERROR_CLASS=""
+OUTCOME_USABLE=0
+
+# Only constants and structured numeric codes enter the outcome ledger. Never
+# infer an error class from a response body, diagnostic, path, or credential.
+set_outcome() { # <status> <source> <fixed-error-class>
+  case "$1" in ok|logged_out|unreadable|rate_limited|timeout|parse_error) OUTCOME_STATUS="$1" ;; *) OUTCOME_STATUS="unreadable" ;; esac
+  OUTCOME_SOURCE="$2"
+  OUTCOME_ERROR_CLASS="$3"
+}
+
+transport_outcome() { # <curl-exit> <source>
+  if [[ "$1" == "28" ]]; then set_outcome timeout "$2" curl_28
+  else set_outcome unreadable "$2" "curl_${1}"; fi
+}
+
 
 # The two local CLI probes below (`claude --version`, `codex login status`)
 # are cheap in I/O terms and still unbounded in wall-clock terms, which is
@@ -706,6 +738,33 @@ ROW_NICKNAME=""
 
 emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|""> <status> <detail> <source> <plan> [<extra-json>]
   local used="${5:-}" resets="${6:-}"
+  local outcome_source="${9:-}"
+  if [[ -z "$outcome_source" ]]; then
+    case "$1:$7" in
+      claude:needs-login|codex:needs-login) outcome_source="credential-store" ;;
+      claude:*) outcome_source="oauth-usage" ;;
+      codex:*) outcome_source="app-server" ;;
+      cursor:*) outcome_source="ide-token" ;;
+    esac
+  fi
+  if [[ "$7" == "ok" ]]; then
+    # An account succeeds if at least one window supplies a usable figure.
+    # In particular, the intentional empty Codex short-window placeholder
+    # cannot turn an otherwise unreadable account into a successful read.
+    if [[ -n "$used" ]] && printf '%s' "$used" | jq -e 'type == "number" and (isinfinite | not) and (isnan | not)' >/dev/null 2>&1; then
+      OUTCOME_USABLE=1
+      set_outcome ok "$outcome_source" ""
+    elif [[ "$OUTCOME_USABLE" -eq 0 ]]; then
+      set_outcome parse_error "$outcome_source" invalid_usage
+    fi
+  elif [[ -z "$OUTCOME_STATUS" ]]; then
+    case "$7" in
+      needs-login) set_outcome logged_out "$outcome_source" credential_unavailable ;;
+      rate-limited) set_outcome rate_limited "$outcome_source" http_429 ;;
+      unreadable) set_outcome parse_error "$outcome_source" response_shape ;;
+      *) set_outcome unreadable "$outcome_source" reader_unavailable ;;
+    esac
+  fi
   # Optional 11th argument: a JSON OBJECT merged over the base row, which is
   # how a provider adds a field without forking the renderer (the cursor pool
   # rows use it, and #1669's overage column will). Validated here rather than
@@ -1175,8 +1234,10 @@ claude_refresh_access_token() {
   local hdrs="$TMP/claude-refresh-hdrs.txt"
   local code rc=0 access refresh expires_in merged err retry wb=0
   CLAUDE_REFRESH_DETAIL=""
+  OUTCOME_STATUS=""
 
   if [[ -z "$CLAUDE_REFRESH_TOKEN" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     CLAUDE_REFRESH_DETAIL="the stored credential carries no refresh token"
     return 1
   fi
@@ -1214,6 +1275,7 @@ claude_refresh_access_token() {
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
     rm -f "$bodyf" "$hdrs"
+    transport_outcome "$rc" oauth-refresh
     CLAUDE_REFRESH_DETAIL="could not reach the token endpoint (curl exit ${rc:-?})"
     return 2
   fi
@@ -1271,7 +1333,15 @@ claude_refresh_access_token() {
       CLAUDE_REFRESH_DETAIL="the stored refresh token was rejected (HTTP 401)"
       return 1
     fi
+    set_outcome unreadable oauth-refresh "http_${code}"
     CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP ${code}"
+    return 2
+  fi
+
+  if ! jq -e 'true' "$bodyf" >/dev/null 2>&1; then
+    set_outcome parse_error oauth-refresh invalid_json
+    CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP 200 with a body that is not JSON"
+    rm -f "$bodyf" "$hdrs"
     return 2
   fi
 
@@ -1284,6 +1354,7 @@ claude_refresh_access_token() {
     # HTTP 200 with no token in it is a CHANGED SHAPE, not a dead grant. Saying
     # needs-login here would send the owner through an interactive login that
     # could not fix it.
+    set_outcome parse_error oauth-refresh response_shape
     CLAUDE_REFRESH_DETAIL="the token endpoint answered HTTP 200 with no access token in it"
     return 2
   fi
@@ -1536,6 +1607,7 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   claude_forget_credentials
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
+    transport_outcome "$rc" oauth-usage
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "curl failed (exit ${rc:-?}) talking to ${ANTHROPIC_URL}" "oauth-usage" ""
     return 0
@@ -1575,12 +1647,14 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   fi
 
   if [[ "$code" != "200" ]]; then
+    set_outcome unreadable oauth-usage "http_${code}"
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "usage endpoint answered HTTP ${code}" "oauth-usage" ""
     return 0
   fi
 
   if ! jq -e . "$body" >/dev/null 2>&1; then
+    set_outcome parse_error oauth-usage invalid_json
     emit_row claude "$label" "" "7-day" "" "" unreachable \
       "usage endpoint answered HTTP 200 with a body that is not JSON" "oauth-usage" ""
     return 0
@@ -1602,6 +1676,7 @@ read_claude_account() { # <label> <profile_dir> <keychain_service>
   fi
 
   if [[ "$rendered" -eq 0 ]]; then
+    set_outcome parse_error oauth-usage response_shape
     # Never a silent 0 %: say what the payload actually contained, so a
     # changed response shape is diagnosable from the output alone.
     keys="$(jq -r 'if type == "object" then (keys_unsorted | join(", ")) else type end' "$body" 2>/dev/null || echo "unreadable")"
@@ -1896,6 +1971,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   token="$(jq -r '.tokens.access_token // empty' "$dir/auth.json" 2>/dev/null || true)"
   account="$(jq -r '.tokens.account_id // .account_id // empty' "$dir/auth.json" 2>/dev/null || true)"
   if [[ -z "$token" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     emit_row codex "$label" "$email" "7-day" "" "" needs-login \
       "${why}; auth.json holds no access token — run: $(relogin_hint codex "$label")" "http" ""
     return 0
@@ -1911,6 +1987,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   token=""
 
   if [[ "$rc" -ne 0 || -z "$code" ]]; then
+    transport_outcome "$rc" http
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
       "${why}; curl failed (exit ${rc:-?}) talking to ${CHATGPT_URL}" "http" ""
     return 0
@@ -1926,6 +2003,8 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
     return 0
   fi
   if [[ "$code" != "200" ]] || ! jq -e . "$body" >/dev/null 2>&1; then
+    if [[ "$code" == "200" ]]; then set_outcome parse_error http invalid_json
+    else set_outcome unreadable http "http_${code}"; fi
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
       "${why}; usage endpoint answered HTTP ${code}" "http" ""
     return 0
@@ -1940,6 +2019,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
         then $s + {rate_limit_reset_credits: $top.rate_limit_reset_credits}
         else $s end' "$body" > "$snap" 2>/dev/null || : > "$snap"
   if ! codex_render_snapshot "$label" "$email" "$snap" "http" "$why"; then
+    set_outcome parse_error http response_shape
     local keys
     keys="$(jq -r 'if type == "object" then (keys_unsorted | join(", ")) else type end' "$body" 2>/dev/null || echo "unreadable")"
     emit_row codex "$label" "$email" "7-day" "" "" unreachable \
@@ -2185,6 +2265,7 @@ cursor_api_call() { # <endpoint> <out-file>
         -H "Accept: application/json" \
         -d '{}' \
         -K - "${CURSOR_API_BASE}/${endpoint}" 2>/dev/null)" || rc=$?
+  printf '%s' "$rc" > "${out}.curl-status"
   if [[ "$rc" -ne 0 ]]; then
     printf '000'
     return 0
@@ -2267,6 +2348,7 @@ read_cursor_account() { # <label>
 
   case "$code" in
     000)
+      transport_outcome "$(cat "${usage_body}.curl-status" 2>/dev/null || echo 0)" "$source"
       # The email came from the local store, not the network, so a curl
       # failure has not invalidated it (CodeAnt). Every other failure branch
       # below carries it; dropping it here would blank the account identity on
@@ -2281,7 +2363,12 @@ read_cursor_account() { # <label>
         "the dashboard rejected the IDE token (HTTP ${code}) — ${CURSOR_SIGNIN_HINT}" "$source" ""
       return 0 ;;
     200) ;;
+    429)
+      set_outcome rate_limited "$source" http_429
+      emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" rate-limited "the usage endpoint answered HTTP 429" "$source" ""
+      return 0 ;;
     *)
+      set_outcome unreadable "$source" "http_${code}"
       emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" unreachable \
         "the usage endpoint answered HTTP ${code}" "$source" ""
       return 0 ;;
@@ -2474,6 +2561,7 @@ for (( i = 0; i < COUNT; i++ )); do
   # Every account is read on its own. A provider that fails takes its row
   # down with it and nothing else — which is the whole point of a report
   # across five subscriptions.
+  OUTCOME_STATUS=""; OUTCOME_SOURCE=""; OUTCOME_ERROR_CLASS=""; OUTCOME_USABLE=0
   case "$PROVIDER" in
     claude) read_claude_account "$LABEL" "$DIR" "$SERVICE" ;;
     codex)  read_codex_account "$LABEL" "$DIR" ;;
@@ -2483,6 +2571,16 @@ for (( i = 0; i < COUNT; i++ )); do
     *)
       emit_row "$PROVIDER" "$LABEL" "" "7-day" "" "" unsupported \
         "this reader knows claude, codex, and cursor; '${PROVIDER}' is not one of them" "" ""
+      ;;
+  esac
+  case "$PROVIDER" in
+    claude|codex|cursor)
+      [[ -n "$OUTCOME_STATUS" ]] || set_outcome unreadable unknown unclassified
+      jq -nc --arg provider "$PROVIDER" --arg account_label "$LABEL" \
+        --arg source "$OUTCOME_SOURCE" --arg status "$OUTCOME_STATUS" \
+        --arg error_class "$OUTCOME_ERROR_CLASS" --arg trigger "$SNAPSHOT_SOURCE" \
+        '{provider:$provider,label:$account_label,source:$source,status:$status,error_class:$error_class,trigger:$trigger}' \
+        >> "$OUTCOMES_RUN" || warn "could not build read outcome"
       ;;
   esac
 done
@@ -2895,13 +2993,33 @@ snapshot_footer() { # <iso|"">
   fi
 }
 
+# Persist attempts separately from successful window snapshots. The helper
+# returns account-level statistics including this run even if persistence fails.
+record_outcomes() {
+  local stamped="$TMP/outcomes.stamped.jsonl" ts
+  [[ -s "$OUTCOMES_RUN" ]] || return 0
+  ts="$(epoch_to_utc_iso "$NOW")"
+  if ! jq -c --arg ts "$ts" '. + {ts:$ts}' "$OUTCOMES_RUN" > "$stamped"; then
+    warn "could not timestamp read outcomes"; return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 && [[ -r "$SELF_DIR/lib/quotas-outcomes.py" ]]; then
+    if ! python3 "$SELF_DIR/lib/quotas-outcomes.py" "$OUTCOMES_FILE" "$stamped" "$NOW" > "$RELIABILITY"; then
+      printf '[]' > "$RELIABILITY"
+      warn "could not record read outcomes"
+    fi
+  else
+    warn "DEGRADED: python3 or lib/quotas-outcomes.py unavailable — read outcomes disabled"
+  fi
+}
+record_outcomes
+
 # Adds `last_scheduled_snapshot_at` to the document. Called on EVERY exit that
 # emits one, including the two empty ones, so --json has a single shape.
 stamp_snapshot_field() {
   local iso stamped="$TMP/doc.stamped.json"
   iso="$(last_scheduled_snapshot_at)"
-  if jq --arg v "$iso" \
-      '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end)}' \
+  if jq --arg v "$iso" --slurpfile reliability "$RELIABILITY" \
+      '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end), account_reliability: ($reliability[0] // [])}' \
       "$DOC" > "$stamped" 2>/dev/null && [[ -s "$stamped" ]]; then
     mv "$stamped" "$DOC" 2>/dev/null || warn "could not stamp last_scheduled_snapshot_at onto the report"
   else
@@ -3095,6 +3213,14 @@ fi
 if [[ "$QUIET" -eq 0 ]]; then
   echo
   printf '%s\n' "$(snapshot_footer "$(last_scheduled_snapshot_at)")"
+  jq -r '
+    .rows as $rows | (.account_reliability // [])[] |
+    . as $r | ($rows | map(select(.provider == $r.provider and .label == $r.label)) | first) as $row |
+    "RELIABILITY \($row.nickname // $row.reported_email // .label): " +
+    "7d \(.failures_7d)/\(.attempts_7d) failed (\(((.failure_rate_7d // 0) * 100) | round)%) · " +
+    "30d \(.failures_30d)/\(.attempts_30d) failed (\(((.failure_rate_30d // 0) * 100) | round)%) · " +
+    (if .streak_count == 0 then "no current streak"
+     else "\(.streak_status) × \(.streak_count) consecutive reads since \(.streak_since)" end)' "$DOC"
   echo
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 fi
