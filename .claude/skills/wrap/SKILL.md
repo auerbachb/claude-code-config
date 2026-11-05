@@ -185,7 +185,7 @@ For each finding:
 ```bash
 UNMARKED=$(jq -r '.unmarked_replies // 0' < "$BUNDLE")
 if [[ "$UNMARKED" =~ ^[0-9]+$ ]] && (( UNMARKED > 0 )); then
-  echo "Advisory: $UNMARKED agent repl(y/ies) to review-bot threads carry no review-verdict marker (reply-thread.sh --verdict/--defect)"
+  echo "Advisory: $UNMARKED User-account repl(y/ies) to review-bot threads carry no review-verdict marker (reply-thread.sh --verdict/--defect)"
 fi
 ```
 
