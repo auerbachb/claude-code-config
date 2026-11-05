@@ -706,7 +706,7 @@ field_of() { # <label> <window> <field>
 }
 
 reset_state() {
-  unset BROWSER_STUB_RESET
+  unset BROWSER_STUB_RESET BROWSER_STUB_STATUS
   : > "$STUB_CALL_LOG"; : > "$STUB_CURL_LOG"; : > "$STUB_SECURITY_LOG"
   : > "$STUB_KEYCHAIN_DB"; : > "$STUB_CURL_STDIN"
   rm -rf "$PROFILES"; mkdir -p "$PROFILES"
@@ -3070,11 +3070,12 @@ cat > "$AI_QUOTAS_BROWSER_CLI" <<'BROWSER_STUB'
 #!/usr/bin/env python3
 import json, os, sys
 with open(os.environ['BROWSER_STUB_LOG'], 'a') as log: log.write('read\n')
+sys.stdin.read()  # A CLI that reads stdin must not consume remaining source names.
 assert '--chrome' in sys.argv and '--settings' in sys.argv
 print(json.dumps({'structured_output': {'schema_version':1, 'provider':'cursor',
   'label':os.environ['BROWSER_STUB_LABEL'], 'email':'cursor-fixture@example.com',
-  'status':'ok', 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),
-  'rows':[{'window':'cursor-models','used_pct':37,'resets_at_epoch':float(os.environ['BROWSER_STUB_RESET']) if os.environ.get('BROWSER_STUB_RESET') else None}]}}))
+  'status':os.environ.get('BROWSER_STUB_STATUS','ok'), 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),
+  'rows':[] if os.environ.get('BROWSER_STUB_STATUS') else [{'window':'cursor-models','used_pct':37,'resets_at_epoch':float(os.environ['BROWSER_STUB_RESET']) if os.environ.get('BROWSER_STUB_RESET') else None}]}}))
 BROWSER_STUB
 chmod +x "$AI_QUOTAS_BROWSER_CLI"
 run --json --browser
@@ -3108,6 +3109,17 @@ run --json --browser
 check_not_contains "$ERR" "syntax error" "huge finite browser reset never reaches shell arithmetic"
 check_eq "$(printf '%s' "$OUT" | jq -r '.[0].resets_at_epoch')" "null" "out-of-range browser reset remains unknown"
 unset BROWSER_STUB_RESET
+export BROWSER_STUB_STATUS=unreadable
+printf 'ok' > "$STUB_CURSOR_MODE"
+run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "ide-token" "stdin-reading failed browser cannot consume the next source"
+check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.source')" "ide-token" "fallback after browser failure is recorded in ledger"
+unset BROWSER_STUB_STATUS
+printf 'ratelimit' > "$STUB_CURSOR_MODE"
+run --browser-results "" --json
+check_eq "$RC" "3" "empty browser-results filename is refused before enabling browser mode"
+run --browser-results
+check_eq "$RC" "3" "missing browser-results filename is a usage error"
 # Browser acquisition uses the same Claude resolver, including its explicit seam.
 cp "$BIN/claude" "$TMP/claude-before-browser"
 cp "$AI_QUOTAS_BROWSER_CLI" "$BIN/claude"

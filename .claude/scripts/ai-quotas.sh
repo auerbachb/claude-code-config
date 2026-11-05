@@ -374,7 +374,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) print_help; exit 0 ;;
     --json) JSON=1; shift ;;
     --browser) BROWSER=1; shift ;;
-    --browser-results) [[ $# -ge 2 ]] || die_usage "--browser-results requires a private file"; BROWSER_RESULTS="$2"; BROWSER=1; shift 2 ;;
+    --browser-results) [[ $# -ge 2 && -n "${2:-}" ]] || die_usage "--browser-results requires a private file"; BROWSER_RESULTS="$2"; BROWSER=1; shift 2 ;;
     --five-hour) FIVE_HOUR=1; shift ;;
     --quiet) QUIET=1; shift ;;
     --account)

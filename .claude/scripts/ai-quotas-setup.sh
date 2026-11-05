@@ -1939,7 +1939,7 @@ action_list() {
     detail="$CRED_DETAIL"
     local source_order
     source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
-    [[ "$JSON" -eq 1 ]] || detail="${detail}; sources: ${source_order}"
+    [[ "$JSON" -eq 1 ]] || detail="${detail:+$detail; }sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
