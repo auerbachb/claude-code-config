@@ -38,12 +38,13 @@ class Browser(unittest.TestCase):
             doc = observation()
             doc[change] = 'synthetic-never-read'
             with self.assertRaises(ValueError):
-                browser.validate(doc, 'fixture', '', 1000)
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
+        self.assertEqual(browser.validate(observation(), 'fixture', 'fixture@example.com', 1000)['status'], 'ok')
         for value in [True, -1, float('nan'), '35']:
             doc = observation()
             doc['rows'][0]['used_pct'] = value
             with self.assertRaises(ValueError):
-                browser.validate(doc, 'fixture', '', 1000)
+                browser.validate(doc, 'fixture', 'fixture@example.com', 1000)
 
     def test_private_results_file(self):
         """Accept private result files and refuse public or symlinked inputs."""

@@ -706,6 +706,7 @@ field_of() { # <label> <window> <field>
 }
 
 reset_state() {
+  unset BROWSER_STUB_RESET
   : > "$STUB_CALL_LOG"; : > "$STUB_CURL_LOG"; : > "$STUB_SECURITY_LOG"
   : > "$STUB_KEYCHAIN_DB"; : > "$STUB_CURL_STDIN"
   rm -rf "$PROFILES"; mkdir -p "$PROFILES"
@@ -3107,6 +3108,24 @@ run --json --browser
 check_not_contains "$ERR" "syntax error" "huge finite browser reset never reaches shell arithmetic"
 check_eq "$(printf '%s' "$OUT" | jq -r '.[0].resets_at_epoch')" "null" "out-of-range browser reset remains unknown"
 unset BROWSER_STUB_RESET
+# Browser acquisition uses the same Claude resolver, including its explicit seam.
+cp "$BIN/claude" "$TMP/claude-before-browser"
+cp "$AI_QUOTAS_BROWSER_CLI" "$BIN/claude"
+unset AI_QUOTAS_BROWSER_CLI
+run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "browser" "browser resolves Claude through the existing provider binary resolver"
+cp "$TMP/claude-before-browser" "$BIN/claude"
+export AI_QUOTAS_BROWSER_CLI="$BIN/browser-bridge"
+# Browser-first identity lookup applies the same control filter as the IDE reader.
+jq '.accounts[0].sources=["browser"]' "$CONFIG" > "$TMP/source-config"
+mv "$TMP/source-config" "$CONFIG"
+cp "$CURSOR_DB" "$TMP/browser-control-email.vscdb"
+"$SQLITE3_REAL" "$TMP/browser-control-email.vscdb" "update ItemTable set value='bad-' || char(9) || 'name' || char(10) || '@example.com' where key='cursorAuth/cachedEmail';"
+CURSOR_DB_UNDER_TEST="$TMP/browser-control-email.vscdb"
+run --json --browser
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].reported_email')" "cursor-browser" "controlled cached email is cleared before browser identity/output"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].status')" "unreadable" "unknown independent identity cannot establish browser usage"
+CURSOR_DB_UNDER_TEST=""
 
 jq '.accounts[0].sources=["unknown-source"]' "$CONFIG" > "$TMP/source-config"
 mv "$TMP/source-config" "$CONFIG"
@@ -3127,6 +3146,14 @@ check_eq "$RC" "3" "resume refuses an ambiguous cross-provider label"
 run --json --quiet --account shared-label --browser-results "$TMP/not-needed"
 check_eq "$RC" "0" "scheduled context ignores browser result mode"
 unset AI_QUOTAS_BROWSER_CLI
+reset_state
+bad_label="bad$(printf '\033')label"
+write_config "$(account_json cursor "$bad_label" "$TMP/browser-account" | jq '. + {sources:["unknown-source"]}')"
+run --json
+run --json
+run --json
+check_eq "$(printf '%s' "$DOC" | jq '.recommendations|length')" "1" "controlled-label fixture reaches recommendation threshold"
+check_eq "$(printf '%s' "$DOC" | jq '[.recommendations[0].message|explode[]|select(.<32 or .==127)]|length')" "0" "recommendation text excludes every terminal control character"
 
 # --- summary -----------------------------------------------------------------
 

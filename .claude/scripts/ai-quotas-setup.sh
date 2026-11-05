@@ -375,8 +375,9 @@ case "$ACTION" in
     fi
     ;;
   sources)
-    [[ ${#POSITIONAL[@]} -eq 3 ]] || die_usage "sources requires <label> <comma-separated sources|default>, or sources threshold <N>"
+    [[ ${#POSITIONAL[@]} -ge 3 && ${#POSITIONAL[@]} -le 4 ]] || die_usage "sources requires <label> <comma-separated sources|default> [<provider>], or sources threshold <N>"
     ARG_LABEL="${POSITIONAL[1]}"; ARG_NICK="${POSITIONAL[2]}"
+    [[ ${#POSITIONAL[@]} -ne 4 ]] || ARG_PROVIDER="${POSITIONAL[3]}"
     ;;
   nick)
     # The name is POSITIONAL here — `nick <label> <name>` reads the way the
@@ -1244,11 +1245,11 @@ action_sources() {
   config="$(read_config)"
   state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
   config="$(read_config)"
-  if [[ "$ARG_LABEL" == threshold ]]; then
+  if [[ "$ARG_LABEL" == threshold && "$ARG_NICK" =~ ^[0-9]+$ && -z "$ARG_PROVIDER" ]]; then
     [[ "$ARG_NICK" =~ ^[1-9][0-9]*$ && ${#ARG_NICK} -le 6 ]] || die_usage "threshold must be a positive integer (at most six digits)"
     config="$(printf '%s' "$config" | jq --argjson n "$ARG_NICK" '.source_failure_threshold=$n')"
   else
-    index="$(resolve_single_index "$config" "$ARG_LABEL" "")"
+    index="$(resolve_single_index "$config" "$ARG_LABEL" "$ARG_PROVIDER")"
     provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
     case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
     if [[ "$ARG_NICK" == default ]]; then

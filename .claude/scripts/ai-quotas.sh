@@ -1444,7 +1444,7 @@ claude_bin() {
   if candidate="$(command -v claude 2>/dev/null)" && [[ -n "$candidate" ]]; then
     printf '%s' "$candidate"; return 0
   fi
-  for candidate in "${_HOME}/.claude/local/claude" "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
+  for candidate in "${_HOME}/.local/bin/claude" "${_HOME}/.claude/local/claude" "/opt/homebrew/bin/claude" "/usr/local/bin/claude"; do
     [[ -x "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
   done
   return 1
@@ -2159,6 +2159,14 @@ CURSOR_TOKEN_DETAIL=""
 # "sign in again" — the one instruction that cannot fix it.
 CURSOR_TOKEN_STATUS=""
 
+# Read display-only IDE identity, clearing terminal controls identically for every source.
+cursor_cached_email() { # <state-db>
+  local email cleaned
+  email="$("$SQLITE3_BIN" -readonly "$1" "select value from ItemTable where key='cursorAuth/cachedEmail';" 2>/dev/null || true)"
+  cleaned="$(printf '%s' "$email" | LC_ALL=C tr -d '[:cntrl:]')"
+  [[ "$email" != "$cleaned" ]] || printf '%s' "$email"
+}
+
 cursor_token_for() { # <state-db>
   local db="$1" payload pad
   CURSOR_TOKEN=""
@@ -2196,20 +2204,7 @@ cursor_token_for() { # <state-db>
   fi
   # Best-effort: an account that reads fine but cannot name itself is still a
   # readable account, so a missing email falls back to the label in emit_row.
-  CURSOR_EMAIL="$("$SQLITE3_BIN" -readonly "$db" \
-    "select value from ItemTable where key='cursorAuth/cachedEmail';" 2>/dev/null || true)"
-  # Dropped if it carries a control character — the same invariant the main
-  # loop applies to ROW_NICKNAME, for the same reason: this value goes
-  # straight into a terminal table, where a tab splits the columns, a newline
-  # forges a row, and an escape sequence is executed by the terminal rather
-  # than shown. It comes from a local SQLite file this script does not own
-  # (CodeRabbit). CLEARED rather than sanitised, so emit_row falls back to the
-  # label exactly as it does for an account that reported no email at all.
-  if [[ -n "$CURSOR_EMAIL" ]]; then
-    local cleaned
-    cleaned="$(printf '%s' "$CURSOR_EMAIL" | LC_ALL=C tr -d '[:cntrl:]')"
-    [[ "$cleaned" == "$CURSOR_EMAIL" ]] || CURSOR_EMAIL=""
-  fi
+  CURSOR_EMAIL="$(cursor_cached_email "$db")"
 
   # The user id is the token's `sub` claim. Decoding a claim is not reading a
   # secret — the same reasoning codex_email_for documents — but the token
@@ -2537,15 +2532,17 @@ effective_sources() { # <provider> <account-index>
 }
 
 read_cursor_browser() { # <label>
-  local label="$1" email="$CURSOR_EMAIL" result row used reset window db
+  local label="$1" email="$CURSOR_EMAIL" result row used reset window db browser_cli
   if [[ -z "$email" ]]; then
     db="$(cursor_state_db)"
-    [[ ! -f "$db" ]] || email="$("$SQLITE3_BIN" -readonly "$db" "select value from ItemTable where key='cursorAuth/cachedEmail';" 2>/dev/null || true)"
+    [[ ! -f "$db" ]] || email="$(cursor_cached_email "$db")"
   fi
   [[ -n "$email" || "$label" != *@* ]] || email="$label"
   local identity_note="account not verified"
   [[ -z "$email" ]] || identity_note="account verified"
-  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "${AI_QUOTAS_BROWSER_CLI:-${_HOME}/.local/bin/claude}")"
+  browser_cli="${AI_QUOTAS_BROWSER_CLI:-}"
+  [[ -n "$browser_cli" ]] || browser_cli="$(claude_bin || true)"
+  result="$(python3 "$SELF_DIR/lib/quotas-browser.py" "$BROWSER_RESULTS" "$label" "$email" "$NOW" "$browser_cli")"
   if [[ "$(printf '%s' "$result" | jq -r '.status')" != "ok" ]]; then
     if [[ "$(printf '%s' "$result" | jq -r '.status')" == "logged_out" ]]; then
       set_outcome logged_out browser browser_logged_out
@@ -3104,7 +3101,8 @@ record_outcomes
 # emits one, including the two empty ones, so --json has a single shape.
 stamp_snapshot_field() {
   local iso stamped="$TMP/doc.stamped.json"
-  local threshold="$(printf '%s' "$CONFIG" | jq ' .source_failure_threshold // 3')"
+  local threshold
+  threshold="$(printf '%s' "$CONFIG" | jq '.source_failure_threshold // 3')" || threshold=3
   iso="$(last_scheduled_snapshot_at)"
   if jq --arg v "$iso" --argjson threshold "$threshold" --argjson config "$CONFIG" --slurpfile reliability "$RELIABILITY" \
       '. + {last_scheduled_snapshot_at: (if $v == "" then null else $v end), account_reliability: ($reliability[0] // []), recommendations: [($reliability[0] // [])[] |
@@ -3114,7 +3112,8 @@ stamp_snapshot_field() {
        select($failed != null) |
        {provider:.provider,label:.label,source:$failed.source,failures:$failed.consecutive_failures,
         next_source:($order[1] // null), message:("SOURCE " + .label + ": " + $failed.source + " failed " + ($failed.consecutive_failures | tostring) + " consecutive reads; " +
-          (if $order[1] == null then "no alternate source configured" else "try " + $order[1] + " with /quotas-setup sources " + .label + " " + ($order | reverse | join(",")) end))}]}'  \
+          (if $order[1] == null then "no alternate source configured" else "try " + $order[1] + " with /quotas-setup sources " + .label + " " + ($order | reverse | join(",")) + " " + .provider end))}
+       | .message |= gsub("[\u0000-\u001f\u007f]"; "")]}'  \
       "$DOC" > "$stamped" 2>/dev/null && [[ -s "$stamped" ]]; then
     mv "$stamped" "$DOC" 2>/dev/null || warn "could not stamp last_scheduled_snapshot_at onto the report"
   else

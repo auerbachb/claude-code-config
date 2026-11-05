@@ -73,6 +73,8 @@ profile directories drift apart.
 | "add \<provider\> \<label\>" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label>` |
 | "register it now, I'll log in later" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label> --no-login` |
 | "call it \<name\>", "nickname this account" | `"$AI_QUOTAS_SETUP_SH" nick <label> "<name>" [<provider>]` |
+| "use <order> for <label>", "reset source order" | `"$AI_QUOTAS_SETUP_SH" sources <label> <comma-separated order\|default> [<provider>]` |
+| "recommend a source change after N failures" | `"$AI_QUOTAS_SETUP_SH" sources threshold <N>` |
 | "remove \<label\>" | `"$AI_QUOTAS_SETUP_SH" remove <label> [<provider>]` |
 | "re-login \<label\>", an account showing `needs-login` | `"$AI_QUOTAS_SETUP_SH" relogin <label> [<provider>]` |
 | "take a reading every day", "install the snapshot job" | `"$AI_QUOTAS_SETUP_SH" schedule install` |
@@ -333,4 +335,4 @@ over the journal.
 
 ## Usage source preferences
 
-Run `ai-quotas-setup.sh sources <label> <comma-separated order>` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
+Run `ai-quotas-setup.sh sources <label> <comma-separated order> [<provider>]` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.
