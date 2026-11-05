@@ -33,7 +33,7 @@ On `STATUS=switch_bugbot`, **and** once the caller persists sticky ownership wit
 
 ## Processing BugBot Findings
 
-Verify all findings against actual code. Fix all valid findings in one commit, push once, reply to every thread, then resolve via `resolve-review-threads.sh <PR> --thread-ids <id1,id2>`.
+Verify all findings against actual code. Fix all valid findings in one commit, push once, reply to every thread with the same verdict flags (`cr-github-review.md` §Processing CR Feedback step 3), then resolve via `resolve-review-threads.sh <PR> --thread-ids <id1,id2>`.
 
 **Reply format:** plain text only, no `@cursor`.
 
