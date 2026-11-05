@@ -125,18 +125,21 @@ require_ordered_binding .claude/skills/pr-monitor-and-manage/SKILL.md \
 require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
   '.pmm.auto_wake_monitor_task_id' \
   'fleet auto-wake must persist its Monitor task ID'
-require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'successfully stopped ID and generation immediately' \
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'pmm-resume-stop-record' \
   'fleet resume retries must not retain IDs for already-stopped tasks'
-require_text .claude/skills/pr-monitor-and-manage-wake/SKILL.md \
-  'retain that failed identity pair' \
+require_text .claude/skills/pr-monitor-and-manage/references/pmm-lifecycle.md \
+  'unknown tool results retain the identity' \
   'fleet resume must abort with a potentially-live failed task ID retained'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'Ignoring a queued Monitor tick after pause/stop' \
   'fleet Monitor ticks must not restart after pause or stop'
-require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  '/pr-monitor-and-manage --tick --monitor-generation $NEW_MONITOR_GENERATION <original user args>' \
-  'fleet Monitor events must be distinguishable from direct user starts'
+# The collector emits after its pre-model decision. Assert the actual producer,
+# bound arm generation, and existing consumer guards rather than the retired
+# unconditional tick template.
+require_text .claude/scripts/pmm-pre-dispatch.sh '/pr-monitor-and-manage --tick --monitor-generation %s --dispatch-event %s%s' 'fleet collector events must be distinguishable from direct user starts'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md '--author "$PMM_AUTHOR" --generation "$NEW_MONITOR_GENERATION"' 'fleet Monitor command must bind its newly armed generation'
+
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   "RECORDED_MONITOR_GENERATION=\$(\"\$SESSION_STATE_SH\" --get '.pmm_monitor_generation'" \
   'fleet ticks must read the currently published Monitor generation'
@@ -168,17 +171,18 @@ require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A failed stop retains the old ID and aborts the re-arm.' \
   'fleet cadence re-arm must fail closed on exact TaskStop'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'first set `.pmm.stop_requested=true`' \
+  'successful claim already set `.pmm.stop_requested=true`' \
   'fleet cadence re-arm must guard against queued old-generation events before TaskStop'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'known-stopped old identity and set `pmm_active=false`, `.pmm.stop_requested=false`' \
-  'fleet cadence re-arm must clear its guard after verified rollback teardown'
+  'Preserve the winning current state even when rollback succeeds' \
+  'fleet cadence re-arm rollback must preserve a newer owner'
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  "CURRENT_MONITOR_CADENCE=\$(\"\$SESSION_STATE_SH\" --get '.pmm_cadence'" \
+  "CURRENT_MONITOR_CADENCE=\$(jq -r '.pmm_cadence // \"null\"'" \
   'fleet monitoring must compare the recorded Monitor cadence before deciding to keep it'
-require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
-  'Keep the existing task only when both pieces of its recorded identity are present and its cadence' \
-  'fleet monitoring must replace an existing Monitor on a tier crossing'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md '`CURRENT_PRE_DISPATCH_VERSION == 2`' 'fleet monitoring must replace legacy Monitors that bypass the collector'
+require_text .claude/skills/pr-monitor-and-manage/SKILL.md '`CURRENT_PRE_DISPATCH_CONFIG` equals `$PMM_MONITOR_CONFIG`' 'fleet monitoring must replace a Monitor when its bound configuration changes'
+require_text .claude/scripts/pmm-pre-dispatch.sh 'cadence=$("$STATE_HELPER" --get' 'fleet collector loop must read persisted cadence before each sleep'
+
 require_text .claude/skills/pr-monitor-and-manage/SKILL.md \
   'A missing ID or generation' \
   'fleet monitoring must not arm beside an active task whose identity was lost'

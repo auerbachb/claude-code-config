@@ -11,6 +11,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 |--------|---------|
 <!-- catalog:rows:begin -->
 | [infer-pr.sh](../infer-pr.sh) | Resolve a PR reference from an explicit URL/number or from session-state candidates |
+| [pmm-pre-dispatch.sh](../pmm-pre-dispatch.sh) | Compare PMM monitoring state before model dispatch and emit only actionable events |
 | [poll-watermarks.sh](../poll-watermarks.sh) | Track high-water IDs for the three PR comment endpoints to detect new bot findings |
 | [polling-state-gate.sh](../polling-state-gate.sh) | CR polling procedural gate — registers PR in session-state and runs merge-gate.sh each cycle |
 | [pr-authorship.sh](../pr-authorship.sh) | Hard authorship gate — verify the authenticated user authored a PR before any automated write |

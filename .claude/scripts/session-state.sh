@@ -20,7 +20,7 @@
 #   session-state.sh [--repo <owner/name>] --get <jq-path>
 #   session-state.sh [--repo <owner/name>] --get-json <jq-path>
 #   session-state.sh [--repo <owner/name>] --set <jq-path>=<value> [--set ...]
-#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--set ...]
+#   session-state.sh [--repo <owner/name>] --cas <jq-path>=<new-value> --expect <expected-value> [--expect-root <json-object>] [--set ...]
 #   session-state.sh --remove-agent <agent-id> [--remove-agent ...] [--set ...]
 #   session-state.sh [--repo <owner/name>] --session-view [--all-repos]
 #   session-state.sh --repo-key
@@ -61,6 +61,15 @@
 #   `.schema_version = 2`.
 #
 # MODES
+#   --expect-root <json-object>
+#                      Optional with --cas: compare this sparse object of literal
+#                      ROOT field names/JSON values in the same locked read as
+#                      --expect. Every precondition gates the entire write batch;
+#                      mismatch exits7 without writing. Keys are data, never jq
+#                      expressions. Root fields are not repo-path rewritten;
+#                      comparisons use the same migrated view as --get-json.
+#                      Null matches absent/null, as with --expect. Invalid JSON,
+#                      empty objects, repeats, or use without --cas exit2.
 #   --cas <path>=<new> Compare-and-set: read the current value at <jq-path>,
 #   --expect <val>     compare it with <expected-value>, and write <new-value>
 #                      only when they match — all under one lock hold.
@@ -1450,6 +1459,8 @@ CAS_PATH=""
 CAS_VALUE=""
 CAS_EXPECT=""
 CAS_EXPECT_SET=0
+CAS_ROOT_EXPECT='{}'
+CAS_ROOT_EXPECT_SET=0
 # For --remove-agent: agent ids to delete from the `.active_agents` map
 # (issue #1631). Kept as data, never interpolated into a jq program — each id
 # is bound to its own `--arg` at write time.
@@ -1601,6 +1612,13 @@ while [[ $# -gt 0 ]]; do
       CAS_VALUE="${cas_arg#*=}"
       shift 2
       ;;
+    --expect-root)
+      [[ $# -ge 2 && "$CAS_ROOT_EXPECT_SET" -eq 0 ]] || die_usage "--expect-root requires one JSON object and may only be given once"
+      command -v jq >/dev/null 2>&1 || { echo "session-state.sh: jq not found on PATH" >&2; exit 5; }
+      CAS_ROOT_EXPECT=$(jq -cse 'if length==1 and (.[0] | type=="object" and length>0) then .[0] else error("nonempty object required") end' <<<"$2" 2>/dev/null) || die_usage "--expect-root requires exactly one nonempty JSON object"
+      CAS_ROOT_EXPECT_SET=1
+      shift 2
+      ;;
     --expect)
       if [[ $# -lt 2 ]]; then
         die_usage "--expect requires a value"
@@ -1629,6 +1647,9 @@ if [[ -z "$MODE" ]]; then
   die_usage "one of --get, --get-json, --set, --cas, --remove-agent, --session-view, --repo-key or --migrate is required"
 fi
 
+if [[ "$CAS_ROOT_EXPECT_SET" -eq 1 && "$MODE" != cas ]]; then
+  die_usage "--expect-root is only valid with --cas"
+fi
 # --cas requires --expect; --expect without --cas is a usage error.
 if [[ "$MODE" == "cas" && "$CAS_EXPECT_SET" -eq 0 ]]; then
   die_usage "--cas requires --expect <expected-value>"
@@ -1998,7 +2019,7 @@ if [[ "$MODE" == "cas" ]]; then
   # Build jq --argjson or --arg for the expected value (same JSON-or-string
   # probe as --set: `--argjson` probe, not `jq -e .`, to reject null/false
   # from the argjson branch — issue #853).
-  CAS_COMPARE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY")
+  CAS_COMPARE_ARGS=(--argjson __pathmap "$CAS_PATHMAP" --arg __unknown "$UNKNOWN_REPO_KEY" --argjson __rootexpect "$CAS_ROOT_EXPECT")
   if jq -n --argjson __casexpect "$CAS_EXPECT" 'empty' >/dev/null 2>&1; then
     CAS_COMPARE_ARGS+=(--argjson __casexpect "$CAS_EXPECT")
   else
@@ -2012,7 +2033,7 @@ if [[ "$MODE" == "cas" ]]; then
   # before CAS_COMPARE_RC=$? is ever evaluated.
   CAS_COMPARE_RC=0
   CAS_COMPARE_RESULT="$(jq -r "${CAS_COMPARE_ARGS[@]}" \
-    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | $SCOPED_CAS_PATH as \$cur | if \$cur == \$__casexpect then \"match\" else \"mismatch\" end" \
+    "$MIGRATE_JQ migrate(\$__pathmap; \$__unknown) | . as \$doc | $SCOPED_CAS_PATH as \$cur | if \$cur == \$__casexpect and all(\$__rootexpect | to_entries[]; . as \$e | \$doc[\$e.key] == \$e.value) then \"match\" else \"mismatch\" end" \
     "$input_file" 2>"$CAS_ERR")" || CAS_COMPARE_RC=$?
 
   if [[ "$CAS_COMPARE_RC" -ne 0 ]]; then

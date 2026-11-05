@@ -84,8 +84,10 @@ generation into the replacement main Monitor; Step 4b generates a fresh one for 
 ## Step 2: Check pause marker
 
 ```bash
-PAUSED_AT=$("$SESSION_STATE_SH" --get '.pmm.paused_at' 2>/dev/null || echo null)
-STOP_PENDING=$("$SESSION_STATE_SH" --get '.pmm.stop_requested' 2>/dev/null || echo false)
+PMM_WAKE_EXPECT=$("$SESSION_STATE_SH" --get-json '{paused_at:.pmm.paused_at,config:.pmm.config_at_pause,stop_pending:.pmm.stop_requested}') || exit 1
+PAUSED_AT=$(jq -r '.paused_at // "null"' <<<"$PMM_WAKE_EXPECT")
+STOP_PENDING=$(jq -r '.stop_pending // false' <<<"$PMM_WAKE_EXPECT")
+printf 'PMM_WAKE_EXPECT=%s\n' "$PMM_WAKE_EXPECT"
 ```
 
 - If `$STOP_PENDING` is `true` → report incomplete PMM teardown and exit non-zero; never resume or
@@ -120,17 +122,11 @@ Resolve `usage-horizon.sh` with the same candidate order as `session-state.sh` (
 
 When `$MODE` is `--auto-check`, skip to Step 4a first; only cancel the re-scan from Step 4b after a fleet change is confirmed, or when `$MODE` is user-initiated resume (default).
 
-Read both task IDs and their matching generations (`.pmm.auto_wake_monitor_task_id` plus
-`.pmm.auto_wake_monitor_generation`, and `.pmm_monitor_task_id` plus
-`.pmm_monitor_generation`) and stop each recorded task with exact `TaskStop`. The main-task ID is
-normally null while paused, but a degraded pause retains it when teardown failed. Clear each
-successfully stopped ID and generation immediately through one atomic
-`session-state.sh` write while leaving the complete pause marker/config/fleet intact. If either
-present ID cannot be stopped, abort the resume: retain that failed identity pair, clear only
-identity pairs whose exact stops succeeded, and do not arm the replacement main Monitor. This prevents a later retry from
-treating an already-stopped task as a live teardown failure. Nothing is removed from
-`polling_jobs[]`; Issue #924 replaces the unreliable `/loop` re-scan with this recorded Monitor
-task.
+Teardown is deferred to the canonical main resume invoked by Step4b. Do not read/adopt task IDs,
+call `TaskStop`, clear identities, or clear a pause marker here. Main Step0a first validates the
+bound pause/config, freezes both old task identities, and authorizes each exact stop/conditional
+clear against that snapshot. This prevents a delayed wake from stopping a newer owner's task.
+The unchanged auto-check route still skips Step4b and leaves the re-scan running.
 
 ## Step 4a: `--auto-check` branch (lightweight scan)
 
@@ -174,13 +170,19 @@ scan_failed() {
 # and folding them in would corrupt otherwise-valid JSON.
 SCAN_RC=0
 CURRENT=$(gh pr list --state open --author "$AUTHOR" "${REPO_FLAG[@]}" \
-  --json number,headRefOid,mergeStateStatus --limit 500 2>/dev/null) || SCAN_RC=$?
+  --json number,headRefOid,mergeStateStatus --limit 501 2>/dev/null) || SCAN_RC=$?
 
 [[ $SCAN_RC -eq 0 ]] || scan_failed "gh pr list exited $SCAN_RC"
 [[ -n "$CURRENT" ]]  || scan_failed "gh pr list returned empty output"
 # `[]` is a VALID empty fleet (every PR landed) — a real change, never a failure.
 jq -e 'type == "array"' <<<"$CURRENT" >/dev/null 2>&1 \
   || scan_failed "gh pr list output is not a JSON array"
+# The extra result is a sentinel, never a new supported fleet size. Do not
+# compare a truncated fleet to the saved pause snapshot or infer a closed PR.
+CURRENT_COUNT=$(jq 'length' <<<"$CURRENT") || scan_failed "could not count the discovered fleet"
+[[ "$CURRENT_COUNT" -le 500 ]] \
+  || scan_failed "at least 501 open PRs; supported fleet cap is 500; incomplete discovery"
+
 
 # The saved snapshot is the other half of the comparison: a null or malformed
 # .pmm.fleet_at_pause makes SAVED_FLEET empty, so a perfectly good CURRENT_FLEET
@@ -209,12 +211,13 @@ fi
 
 ## Step 4b: Resume (user wake or auto-check detected change)
 
-Cancel the re-scan (Step 3) if not already done (user-initiated resume does it before this step; auto-check does it only after detecting a change).
+Defer the exact re-scan teardown through Step3; the canonical main resume performs it after validating the bound request. Do not stop anything before that validation.
 
-Read config and reconstruct invocation flags:
+Carry `PMM_WAKE_EXPECT` from Step2 across tool calls; do not adopt a newer pause/config.
+Read that frozen config and reconstruct invocation flags:
 
 ```bash
-CONFIG=$("$SESSION_STATE_SH" --get '.pmm.config_at_pause' 2>/dev/null || echo '{}')
+CONFIG=$(jq -c '.config' <<<"$PMM_WAKE_EXPECT")
 CADENCE=$(jq -r '.cadence // "5m"' <<<"$CONFIG")
 
 # Rebuild PMM_FLAGS from saved config (must include every persisted field)
@@ -224,6 +227,7 @@ REPO=$(jq -r '.repo // empty' <<<"$CONFIG")
 [ -n "$AUTHOR" ] && PMM_FLAGS="$PMM_FLAGS --author $AUTHOR"
 [ -n "$REPO" ]    && PMM_FLAGS="$PMM_FLAGS --repo $REPO"
 PMM_FLAGS="$PMM_FLAGS --cadence $(jq -r '.cadence // "5m"' <<<"$CONFIG")"
+PMM_FLAGS="$PMM_FLAGS --max-deep-prs $(jq -r '.max_deep_prs // 25' <<<"$CONFIG")"
 PMM_FLAGS="$PMM_FLAGS --max-parallel $(jq -r '.max_parallel // 3' <<<"$CONFIG")"
 PMM_FLAGS="$PMM_FLAGS --idle-pause-after $(jq -r '.idle_pause_after // 3' <<<"$CONFIG")"
 jq -e '.auto_wake == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --auto-wake"
@@ -231,53 +235,47 @@ PMM_FLAGS="$PMM_FLAGS --auto-wake-cadence $(jq -r '.auto_wake_cadence // "60m"' 
 jq -e '.confirm_merges == true' <<<"$CONFIG" >/dev/null 2>&1 && PMM_FLAGS="$PMM_FLAGS --confirm-merges"
 ```
 
-Arm the replacement at **base** cadence (not widened backoff) through a persistent `Monitor`:
+Build the canonical main-skill request, then invoke it as a **separate skill action**:
 
+<!-- test-anchor: pmm-wake-resume-request -->
 ```bash
-MONITOR_GENERATION="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}"
-while sleep "<CADENCE in seconds>"; do
-  printf '%s\n' "/pr-monitor-and-manage --tick --monitor-generation $MONITOR_GENERATION <PMM_FLAGS>"
-done
+PMM_RESUME_PAUSED_AT=$(jq -r '.paused_at' <<<"$PMM_WAKE_EXPECT")
+PMM_RESUME_CONFIG_SHA=$(printf '%s' "$(jq -cS . <<<"$CONFIG")" | shasum -a 256 | awk '{print $1}') || exit 1
+PMM_RESUME_REQUEST="/pr-monitor-and-manage$PMM_FLAGS --resume-paused-at=$PMM_RESUME_PAUSED_AT --resume-config-sha=$PMM_RESUME_CONFIG_SHA"
+printf '%s\n' "$PMM_RESUME_REQUEST"
 ```
 
-Call `Monitor` with `persistent: true` and description `PR fleet monitor`, then require a returned task ID. If arming fails or returns no ID, leave the pause marker/config/fleet intact, keep `pmm_active=false`, and report that resume failed (the auto-wake re-scan was already stopped in Step 3).
+Invoke the exact `$PMM_RESUME_REQUEST` now, as a pause-bound resume request (no
+`--tick`, Monitor generation, or dispatch-event). The runtime pause/config fields must remain
+bound to the captured snapshot; a newer owner or changed pause refuses this request. Do not call `Monitor` here. The main skill's Step0a
+reads the still-intact pause marker/config, and its Step7 claim, exact teardown, pre-dispatch
+command, confirmed-arm receipt, and conditional publication own **all** re-arming. This keeps
+wake and direct starts on one lifecycle transaction. A failed or unknown invocation keeps the
+pause/rearm recovery evidence; never clear it or arm a fallback from this skill.
 
-After a successful arm, clear the marker and publish the new task ID in one atomic write:
+Only after that action completes, verify its durable result before saying it resumed:
 
+<!-- test-anchor: pmm-wake-resume-verify -->
 ```bash
-# The two digest nulls MUST ride in this call: clearing .pmm.paused_at makes
-# the main skill's Step 0a reset branch ineligible on its first Monitor tick.
-# Mirror Step 0a exactly: .pmm_digest_streak is deliberately preserved.
-"$SESSION_STATE_SH" \
-  --set '.pmm.stop_requested=false' \
-  --set '.pmm.paused_at=null' \
-  --set '.pmm.pause_cause=null' \
-  --set '.pmm.fleet_at_pause=null' \
-  --set '.pmm.config_at_pause=null' \
-  --set '.pmm_idle_streak=0' \
-  --set '.pmm_active=true' \
-  --set ".pmm_monitor_task_id=$MONITOR_TASK_ID" \
-  --set ".pmm_monitor_generation=\"$MONITOR_GENERATION\"" \
-  --set '.pmm.auto_wake_monitor_task_id=null' \
-  --set '.pmm.auto_wake_monitor_generation=null' \
-  --set '.pmm_digest=null' \
-  --set '.pmm_row_digest=null' \
-  --set '.pmm_next_expected_tick_at=null'
+PMM_RESUME_STATE=$("$SESSION_STATE_SH" --get-json '{pmm_active,pmm_monitor_task_id,pmm_monitor_generation,pmm_pre_dispatch_version,pmm_pre_dispatch_config,pmm_rearm,pmm}') || exit 1
+jq -e --argjson saved "$CONFIG" '
+  .pmm_active==true and .pmm_monitor_task_id!=null and .pmm_monitor_generation!=null
+  and .pmm_pre_dispatch_version==2 and .pmm_rearm==null
+  and (.pmm.paused_at // null)==null and (.pmm.stop_requested // false)==false
+  and .pmm_pre_dispatch_config.repo==$saved.repo
+  and .pmm_pre_dispatch_config.author==$saved.author
+  and .pmm_pre_dispatch_config.base==($saved.cadence // "5m")
+  and .pmm_pre_dispatch_config.max_deep==(($saved.max_deep_prs // 25)|tostring)
+' >/dev/null <<<"$PMM_RESUME_STATE" || {
+  echo '[PMM] Resume did not publish this fleet as active; inspect its pause/claim and main-skill result. No fallback Monitor was armed.' >&2
+  exit 1
+}
 ```
 
-If that ID+generation publication write fails, stop the newly armed task with `TaskStop`; the atomic failure leaves the pause
-marker intact, so never claim resume. If the rollback stop also fails, report the exact new task ID
-and generation and retain the paused state; best-effort set `.pmm.stop_requested=true` and `.pmm_active=false` so
-the new task's internal `--tick` events are no-ops and no retry can arm a duplicate. An unrecorded
-live task must never be described as cleaned up.
-
-The next tick runs full discovery + per-PR state read. Print:
-
-```text
-PMM resumed — Monitor re-armed at <CADENCE>. Fleet will be rediscovered on the next tick.
-```
-
-For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re-scan stopped, main Monitor re-launched.`
+A main tick may legitimately pause again after evaluating an empty/stable fleet; report that
+result instead of claiming it is watched. A successful verified result may say `PMM resumed —
+pre-dispatch Monitor active at <CADENCE>`. The canonical publication clears pause fields and both
+digests atomically; wake never clears them first.
 
 ## Safety
 
@@ -287,6 +285,8 @@ For `--auto-check` with detected change, add: `[auto-check] Fleet changed — re
   stops succeeded have their matching generations cleared before the abort so a retry never wedges
   on stale task identity.
 - **A failed or unverifiable scan is never a fleet change.** If `gh pr list` errors, returns empty, or either snapshot fails to parse as a JSON array, Step 4a keeps the pause marker and the re-scan and exits non-zero — it never falls through to the comparison. Only a scan that *proves* a difference may resume.
-- **Step 4b must null `.pmm_digest` and `.pmm_row_digest` in the same `--set` batch that clears the marker.** It clears `.pmm.paused_at` before the main skill runs, so the main skill's Step 0a reset cannot fire on this path; the digests are what make its Step 4 print the full table on the first post-resume tick.
+- Step4b delegates to the canonical main lifecycle while the pause marker/config remain intact.
+  Both digests are reset in the main Step7 publication, alongside marker clear and claimed identity;
+  a separate wake write must never erase a newer owner or bypass the pre-dispatch gate.
 - `--auto-check` must **not** run full per-PR gate reads — only `gh pr list` + comparison.
 - Re-running `/pr-monitor-and-manage-wake` on a non-paused session is always a clean no-op (Step 2).
