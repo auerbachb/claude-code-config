@@ -2996,7 +2996,7 @@ run --json
 OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
 check_eq "$RC" "0" "Cursor429 fixture reaches the reader"
 check_eq "$(printf '%s' "$OUT" | jq -r '.[0].status')" "rate-limited" "Cursor429 report row names the rate limit"
-check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "rate_limited" "Cursor429 outcome agrees with the report"
+check_eq "$(jq -r 'select(.source == "ide-token") | .status' "$OUTCOMES_LEDGER" | tail -n 1)" "rate_limited" "Cursor429 outcome agrees with the report"
 
 # Credential-only failures in fallback/refresh preflight must not claim HTTP reads.
 reset_state
@@ -3054,6 +3054,79 @@ check_eq "$LAYOUT_RC" 0 'supported repair succeeds from reader fixture'
 run --json
 check_eq "$(field_of layout-alpha "7-day" status)" ok 'first repaired account remains readable'
 check_eq "$(field_of layout-beta "7-day" status)" ok 'second repaired account remains readable'
+
+# --- ordered source fallback (#1884) ------------------------------------------
+reset_state
+mkdir -p "$TMP/browser-account"
+write_config "$(account_json cursor cursor-browser "$TMP/browser-account")"
+printf 'ratelimit' > "$STUB_CURSOR_MODE"
+export AI_QUOTAS_BROWSER_CLI="$BIN/browser-bridge"
+export BROWSER_STUB_LOG="$TMP/browser-bridge.log"
+export BROWSER_STUB_LABEL=cursor-browser
+export BROWSER_STUB_NOW="$NOW"
+: > "$BROWSER_STUB_LOG"
+cat > "$AI_QUOTAS_BROWSER_CLI" <<'BROWSER_STUB'
+#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['BROWSER_STUB_LOG'], 'a') as log: log.write('read\n')
+assert '--chrome' in sys.argv and '--settings' in sys.argv
+print(json.dumps({'structured_output': {'schema_version':1, 'provider':'cursor',
+  'label':os.environ['BROWSER_STUB_LABEL'], 'email':'cursor-fixture@example.com',
+  'status':'ok', 'observed_at_epoch':int(os.environ['BROWSER_STUB_NOW']),
+  'rows':[{'window':'cursor-models','used_pct':37,'resets_at_epoch':float(os.environ['BROWSER_STUB_RESET']) if os.environ.get('BROWSER_STUB_RESET') else None}]}}))
+BROWSER_STUB
+chmod +x "$AI_QUOTAS_BROWSER_CLI"
+run --json --browser
+check_eq "$RC" "0" "interactive browser fallback completes"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].source')" "browser" "interactive Cursor fallback labels browser source"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].used_pct')" "37" "interactive bridge returns observed usage"
+OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
+check_eq "$(jq -s 'length' "$OUTCOMES_LEDGER")" "2" "ledger records primary and browser attempts"
+check_eq "$(printf '%s' "$DOC" | jq -r '.account_reliability[0].attempts_7d')" "1" "source attempts count as one terminal account read"
+run --json --browser
+run --json --browser
+check_eq "$(printf '%s' "$DOC" | jq -r '.recommendations[0].source')" "ide-token" "three primary failures recommend source change despite successful fallback"
+check_eq "$(printf '%s' "$DOC" | jq -r '.account_reliability[0].streak_count')" "0" "successful fallback leaves account failure streak clear"
+check_eq "$(wc -l < "$BROWSER_STUB_LOG" | tr -d ' ')" "3" "three interactive runs invoke actual bridge adapter"
+run --json --quiet --browser
+check_eq "$(wc -l < "$BROWSER_STUB_LOG" | tr -d ' ')" "3" "scheduled run never invokes browser even with explicit flag"
+check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.skip_reason')" "browser-unattended" "scheduled browser skip is recorded explicitly"
+check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "unreadable" "skip preserves the six-status ledger contract"
+# Custom ordering wins without touching the Cursor API, and unknown sources fail safely.
+jq '.accounts[0].sources=["browser","ide-token"] | .source_failure_threshold=2' "$CONFIG" > "$TMP/source-config"
+mv "$TMP/source-config" "$CONFIG"
+: > "$STUB_CURL_LOG"
+run --json --browser
+check_eq "$(wc -l < "$STUB_CURL_LOG" | tr -d ' ')" "0" "browser-first source preference avoids the failed primary"
+export BROWSER_STUB_RESET=1788897600.5
+run --json --browser
+check_not_contains "$ERR" "syntax error" "fractional browser reset never reaches integer shell arithmetic"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].resets_at_epoch')" "1788897600" "browser reset floors fractional epoch seconds"
+export BROWSER_STUB_RESET=1e100
+run --json --browser
+check_not_contains "$ERR" "syntax error" "huge finite browser reset never reaches shell arithmetic"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].resets_at_epoch')" "null" "out-of-range browser reset remains unknown"
+unset BROWSER_STUB_RESET
+
+jq '.accounts[0].sources=["unknown-source"]' "$CONFIG" > "$TMP/source-config"
+mv "$TMP/source-config" "$CONFIG"
+run --json
+check_eq "$RC" "0" "unknown configured source fails without aborting report"
+check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.error_class')" "source_unsupported" "unknown source gets a sanitized fixed class"
+# Result mode cannot invent browser rows for another provider or an ambiguous label.
+run --json --account cursor-browser --browser-results "$TMP/not-needed"
+check_eq "$RC" "3" "resume refuses a Cursor account with browser excluded"
+C1="$(seed_claude_profile resume-other Claude-resume-other)"
+write_config "$(account_json claude resume-other "$C1" Claude-resume-other)"
+run --json --account resume-other --browser-results "$TMP/not-needed"
+check_eq "$RC" "3" "resume refuses a non-Cursor label before any read"
+write_config "$(account_json cursor shared-label "$TMP/browser-account")" "$(account_json claude shared-label "$C1" Claude-resume-other)"
+run --json --account shared-label --browser-results "$TMP/not-needed"
+check_eq "$RC" "3" "resume refuses an ambiguous cross-provider label"
+# Scheduled context ignores resume flags and performs its normal source chain.
+run --json --quiet --account shared-label --browser-results "$TMP/not-needed"
+check_eq "$RC" "0" "scheduled context ignores browser result mode"
+unset AI_QUOTAS_BROWSER_CLI
 
 # --- summary -----------------------------------------------------------------
 

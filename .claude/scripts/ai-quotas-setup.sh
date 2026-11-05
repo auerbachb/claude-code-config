@@ -50,6 +50,7 @@
 #             launches it and waits — it never types or reads credentials.
 #             Refuses a (provider, label) pair that is already registered.
 #             `--nick <name>` records a short display name in the same step.
+#   sources   Configure <label> <comma-separated order|default>, or threshold <N>.
 #   nick      Set (or clear, with an empty name) an already-registered
 #             account's short display name. `/quotas` shows it in place of
 #             the label, which is what keeps a five-account table of full
@@ -373,6 +374,10 @@ case "$ACTION" in
       ARG_PROVIDER="${POSITIONAL[2]}"
     fi
     ;;
+  sources)
+    [[ ${#POSITIONAL[@]} -eq 3 ]] || die_usage "sources requires <label> <comma-separated sources|default>, or sources threshold <N>"
+    ARG_LABEL="${POSITIONAL[1]}"; ARG_NICK="${POSITIONAL[2]}"
+    ;;
   nick)
     # The name is POSITIONAL here — `nick <label> <name>` reads the way the
     # user says it — while `add` takes the same value through `--nick`,
@@ -407,7 +412,7 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, remove, relogin, schedule, launchers, share-config)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config)"
     ;;
 esac
 
@@ -517,6 +522,9 @@ read_config() {
   printf '%s' "$raw" | jq -e '
       type == "object"
       and (.accounts | type == "array")
+      and ((.source_failure_threshold // 3) | type == "number" and . >= 1 and . == floor)
+      and (.accounts | all((.sources == null) or
+             (.sources | type == "array" and length > 0 and all(type == "string" and test("^[a-z][a-z0-9_-]{0,39}$")))))
       and (.accounts | all(
             type == "object"
             and (.provider    | type == "string" and length > 0)
@@ -1230,6 +1238,34 @@ action_add() {
 
 # Set or clear an existing account's short display name. Registry-only: it
 # touches no profile directory, runs no login, and reads no credential.
+# Source configuration is independently locked and re-resolved, like nick/remove.
+action_sources() {
+  local config index provider allowed entry order
+  config="$(read_config)"
+  state_lock_acquire "$CONFIG_FILE" || die 7 "timed out waiting for the config write lock"
+  config="$(read_config)"
+  if [[ "$ARG_LABEL" == threshold ]]; then
+    [[ "$ARG_NICK" =~ ^[1-9][0-9]*$ && ${#ARG_NICK} -le 6 ]] || die_usage "threshold must be a positive integer (at most six digits)"
+    config="$(printf '%s' "$config" | jq --argjson n "$ARG_NICK" '.source_failure_threshold=$n')"
+  else
+    index="$(resolve_single_index "$config" "$ARG_LABEL" "")"
+    provider="$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].provider')"
+    case "$provider" in claude) allowed=oauth-usage ;; codex) allowed=app-server,http ;; cursor) allowed=ide-token,browser ;; *) die_usage "unsupported provider" ;; esac
+    if [[ "$ARG_NICK" == default ]]; then
+      config="$(printf '%s' "$config" | jq --argjson i "$index" 'del(.accounts[$i].sources)')"
+    else
+      order="$(jq -nc --arg order "$ARG_NICK" --arg allowed "$allowed" '
+        ($order|split(",")) as $s | ($allowed|split(",")) as $a |
+        if ($s|length)>0 and ($s|unique|length)==($s|length) and all($s[]; . as $v | $a|index($v))
+        then $s else error("invalid source order") end')" || die_usage "invalid source order for this provider"
+      config="$(printf '%s' "$config" | jq --argjson i "$index" --argjson order "$order" '.accounts[$i].sources=$order')"
+    fi
+  fi
+  write_config "$config"
+  state_lock_release || true
+  echo "${SELF_NAME}: usage source configuration updated."
+}
+
 action_nick() {
   local config index provider label
 
@@ -1900,14 +1936,17 @@ action_list() {
     account_status "$provider" "$dir" "$service"
     status="$ACCOUNT_STATUS"
     detail="$CRED_DETAIL"
+    local source_order
+    source_order="$(printf '%s' "$config" | jq -r --argjson i "$i" '.accounts[$i] | .sources // (if .provider=="claude" then ["oauth-usage"] elif .provider=="codex" then ["app-server","http"] else ["ide-token","browser"] end) | join(",")')"
+    [[ "$JSON" -eq 1 ]] || detail="${detail}; sources: ${source_order}"
     if [[ $JSON -eq 1 ]]; then
       json_rows="$(printf '%s' "$json_rows" | jq \
         --arg provider "$provider" --arg label "$label" --arg profile_dir "$dir" \
-        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" \
+        --arg status "$status" --arg detail "$detail" --arg nickname "$nickname" --arg order "$source_order" \
         '. += [{provider: $provider, label: $label,
                 nickname: (if $nickname == "" then null else $nickname end),
                 profile_dir: $profile_dir,
-                status: $status, detail: $detail}]')"
+                status: $status, detail: $detail, sources: ($order|split(","))}]')"
     else
       rows+="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$provider" "$label" "${nickname:--}" "$status" "${detail:--}" "$dir")"$'\n'
     fi
@@ -2394,6 +2433,7 @@ case "$ACTION" in
   repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
+  sources)  action_sources ;;
   remove)   action_remove ;;
   relogin)  action_relogin ;;
   schedule) action_schedule ;;

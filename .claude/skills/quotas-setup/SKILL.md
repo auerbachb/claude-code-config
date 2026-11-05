@@ -330,3 +330,7 @@ steps. If exit 9 or `interrupted-repair` appears, preserve
 `.layout-repair/plan.json` and any recovery instructions printed by the failed
 repair; report the situation to the user and stop; never delete or automatically retry
 over the journal.
+
+## Usage source preferences
+
+Run `ai-quotas-setup.sh sources <label> <comma-separated order>` to choose the account source order, or use `default` to restore it. Allowed sources: Claude `oauth-usage`; Codex `app-server,http`; Cursor `ide-token,browser`. `sources threshold <N>` sets the positive consecutive-failure recommendation threshold (default 3). Preferences contain source names only, never credentials. Listing shows effective sources. Browser remains interactive-only regardless of its position.

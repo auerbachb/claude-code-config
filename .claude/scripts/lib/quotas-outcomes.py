@@ -46,6 +46,12 @@ def validate(row):
     # Explicit field selection: never carry arbitrary input fields into the ledger.
     clean = {key: row[key] for key in ('ts', 'provider', 'label', 'source', 'status')}
     clean.update(error_class=error, trigger='scheduled' if row.get('trigger') == 'scheduled' else 'manual')
+    if isinstance(row.get('requested_source'), str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,39}', row['requested_source']):
+        clean['requested_source'] = row['requested_source']
+    if row.get('terminal') is False:
+        clean['terminal'] = False
+    if row.get('skip_reason') == 'browser-unattended':
+        clean.update(skip_reason='browser-unattended', terminal=False)
     return clean, timestamp
 
 
@@ -82,7 +88,7 @@ def reliability(rows, current, now):
     for provider, label in accounts:
         # A slower run can finish after one that started later. Preserve those
         # later-start records on disk, but anchor this report to its own clock.
-        attempts = sorted((item for item in rows if item[1] <= now and
+        attempts = sorted((item for item in rows if item[0].get('terminal', True) and item[1] <= now and
                            (item[0]['provider'], item[0]['label']) == (provider, label)),
                           key=lambda item: item[1])
         item = {'provider': provider, 'label': label}
@@ -98,6 +104,22 @@ def reliability(rows, current, now):
             streak.append(row)
         item.update(streak_count=len(streak), streak_status=streak[0]['status'] if streak else None,
                     streak_since=streak[-1]['ts'] if streak else None)
+        sources = []
+        source_names = sorted({r.get('requested_source', r['source']) for r, _ in rows if
+                               (r['provider'], r['label']) == (provider, label)})
+        for source in source_names:
+            history = sorted((entry for entry in rows if entry[1] <= now and
+                              (entry[0]['provider'], entry[0]['label'], entry[0].get('requested_source', entry[0]['source'])) ==
+                              (provider, label, source) and not entry[0].get('skip_reason')),
+                             key=lambda entry: entry[1])
+            failures = 0
+            for record, _ in reversed(history):
+                if record['status'] == 'ok':
+                    break
+                failures += 1
+            sources.append(dict(source=source, consecutive_failures=failures,
+                                last_status=history[-1][0]['status'] if history else None))
+        item['sources'] = sources
         result.append(item)
     return result
 

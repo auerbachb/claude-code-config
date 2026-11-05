@@ -150,6 +150,24 @@ class Ledger(unittest.TestCase):
         self.assertEqual(stats['streak_count'], 1)
         self.assertEqual(len(Path(self.ledger).read_text().splitlines()), 2)
 
+    def test_source_streak_separate_from_terminal_account_result(self):
+        """A winning fallback resets account failures while primary streak grows."""
+        primary = row(terminal=False, requested_source='oauth-usage')
+        fallback = row(status='ok', requested_source='browser')
+        fallback['source'] = 'browser'
+        self.process([primary, fallback])
+        stats = self.process([primary, fallback])[0]
+        self.assertEqual(stats['attempts_7d'], 2)
+        self.assertEqual(stats['streak_count'], 0)
+        sources = {source['source']: source for source in stats['sources']}
+        self.assertEqual(sources['oauth-usage']['consecutive_failures'], 2)
+        self.assertEqual(sources['browser']['consecutive_failures'], 0)
+        skip = row(terminal=False, skip_reason='browser-unattended')
+        skip['source'] = 'browser'
+        stats = self.process([skip])[0]
+        self.assertEqual(stats['attempts_7d'], 2)
+        self.assertEqual(next(s for s in stats['sources'] if s['source']=='browser')['consecutive_failures'], 0)
+
     def test_disabled_persistence_still_returns_current(self):
         """Disabled storage still returns current-run reliability data."""
         self.write(self.run, [row()])
