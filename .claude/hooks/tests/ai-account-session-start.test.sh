@@ -100,6 +100,17 @@ for shape in invalid mixed duplicate container; do
   [ "$(wc -l < "$AI_ACCOUNT_LEDGER")" -eq "$((before+1))" ]
   jq -e --arg label "$expected" '.label==$label and .session_id=="test"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 done
+# Invalid whole-registry documents cannot attribute a selected profile.
+for shape in empty scalar array multiple; do
+  case "$shape" in
+    empty) : > "$HOME/whole-registry.json" ;;
+    scalar) printf '42\n' > "$HOME/whole-registry.json" ;;
+    array) printf '[]\n' > "$HOME/whole-registry.json" ;;
+    multiple) { cat "$AI_QUOTAS_CONFIG"; printf '%s\n' '{"accounts":[]}'; } > "$HOME/whole-registry.json" ;;
+  esac
+  payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/whole-registry.json" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
+  jq -e '.label=="unknown" and .session_id=="test"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
 # A different spelling of the same filesystem location is not a registered identity.
 ln -s "$HOME/personal/claude" "$HOME/alias"
 for spelling in "$HOME/alias" "$HOME/personal/./claude" "$HOME/personal/claude/"; do

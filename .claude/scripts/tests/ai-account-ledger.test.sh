@@ -216,6 +216,59 @@ AI_QUOTAS_CONFIG="$HOME/mixed-report-registry.json" AI_ACCOUNT_LEDGER="$HOME/mix
 jq -e '.window.days==14 and .unknown_sessions==0 and (.accounts|length)==1 and .accounts[0].nickname=="Mixed office" and .accounts[0].projects[0].repo=="example/report" and .accounts[0].projects[0].sessions==1' "$HOME/mixed-report.json" >/dev/null
 AI_QUOTAS_CONFIG="$HOME/mixed-report-registry.json" AI_ACCOUNT_LEDGER="$HOME/mixed-report-ledger.jsonl" "$CLI" report > "$HOME/mixed-report.txt"
 grep -Fq 'codex control-profile (Mixed office): example/report ×1' "$HOME/mixed-report.txt"
+# Invalid whole registries preserve safe report rows and yield unknown backfill identity.
+for shape in absent empty scalar array multiple; do
+  whole_registry="$HOME/whole-$shape.json"
+  case "$shape" in
+    absent) : ;;
+    empty) : > "$whole_registry" ;;
+    scalar) printf '42\n' > "$whole_registry" ;;
+    array) printf '[]\n' > "$whole_registry" ;;
+    multiple) { jq -n --arg path "$minimal_profile" '{accounts:[{provider:"codex",label:"control-profile",profile_dir:$path,nickname:"Must not select"}]}'; printf '%s\n' '{"accounts":[]}'; } > "$whole_registry" ;;
+  esac
+  AI_QUOTAS_CONFIG="$whole_registry" AI_ACCOUNT_LEDGER="$HOME/mixed-report-ledger.jsonl" "$CLI" report --json > "$HOME/whole-report.json"
+  jq -e '(.accounts|length)==1 and .accounts[0].nickname==null and .accounts[0].projects[0].sessions==1' "$HOME/whole-report.json" >/dev/null
+  AI_QUOTAS_CONFIG="$whole_registry" AI_ACCOUNT_LEDGER="$HOME/whole-backfill-$shape.jsonl" "$CLI" backfill-codex --codex-home "$minimal_profile"
+  jq -se 'length==1 and .[0].label=="unknown"' "$HOME/whole-backfill-$shape.jsonl" >/dev/null
+done
+# Chronology preserves original UTC strings, including arbitrary fractional precision.
+python3 - "$HOME" <<'TIMECASES'
+import datetime,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);base=datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)-datetime.timedelta(minutes=2)
+def stamp(value):return value.strftime('%Y-%m-%dT%H:%M:%SZ')
+def fraction(value,digits):return stamp(value)[:-1]+'.'+digits+'Z'
+cases=[('same-second',[stamp(base),fraction(base,'05'),fraction(base,'500')],fraction(base,'500')),
+ ('cross-second',[fraction(base,'999999'),stamp(base+datetime.timedelta(seconds=1)),fraction(base+datetime.timedelta(seconds=1),'001')],fraction(base+datetime.timedelta(seconds=1),'001')),
+ ('cross-date',[fraction(base-datetime.timedelta(days=1),'999999'),stamp(base)],stamp(base)),
+ ('precision',[fraction(base,'123456789012345678901'),fraction(base,'123456789012345678902'),stamp(base)],fraction(base,'123456789012345678902'))]
+meta=[]
+for name,times,expected in cases:
+ for reverse in (False,True):
+  ordered=list(reversed(times)) if reverse else times;filename=f'time-{name}-{int(reverse)}.jsonl'
+  rows=[dict(ts=ts,provider='codex',label='control-profile',repo='example/time',session_id=f'{name}-{i}') for i,ts in enumerate(ordered)]
+  (root/filename).write_text(''.join(json.dumps(row)+'\n' for row in rows))
+  meta.append(dict(file=filename,expected=expected,count=len(rows)))
+(root/'time-cases.json').write_text(json.dumps(meta))
+TIMECASES
+while IFS=$'\t' read -r timestamp_case expected_ts expected_count; do
+  AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/$timestamp_case" "$CLI" report --json > "$HOME/time-report.json"
+  jq -e --arg expected "$expected_ts" --argjson count "$expected_count" '.accounts[0].projects[0].last_ts==$expected and .accounts[0].projects[0].sessions==$count' "$HOME/time-report.json" >/dev/null
+done < <(jq -r '.[] | [.file,.expected,.count] | @tsv' "$HOME/time-cases.json")
+# Unsupported action/flag combinations fail before creating hooks or a ledger.
+option_profile="$HOME/option-profile"
+mkdir -p "$option_profile/sessions"
+jq -n --arg path "$option_profile" '{accounts:[{provider:"codex",label:"options",profile_dir:$path}]}' > "$HOME/option-registry.json"
+jq -cn '{type:"session_meta",payload:{id:"option-fixture",timestamp:"2026-11-01T01:02:03Z"}}' > "$option_profile/sessions/rollout-options.jsonl"
+for spec in 'install-codex-hooks|--dry-run' 'install-codex-hooks|--json' 'install-codex-hooks|--days' 'install-codex-hooks|--provider' 'install-codex-hooks|--codex-home' 'backfill-codex|--json' 'backfill-codex|--days' 'backfill-codex|--provider' 'report|--dry-run' 'report|--codex-home' 'backfill-codex|empty-home' 'report|empty-provider'; do
+  rejected_action="${spec%%|*}";rejected_option="${spec#*|}"
+  rejected_args=("$rejected_option")
+  case "$rejected_option" in empty-home) rejected_args=(--codex-home "") ;; empty-provider) rejected_args=(--provider "") ;; --days) rejected_args+=(1) ;; --provider) rejected_args+=(codex) ;; --codex-home) rejected_args+=("$option_profile") ;; esac
+  status=0
+  AI_QUOTAS_CONFIG="$HOME/option-registry.json" AI_ACCOUNT_LEDGER="$HOME/rejected-options.jsonl" "$CLI" "$rejected_action" "${rejected_args[@]}" > "$HOME/rejected.out" 2> "$HOME/rejected.err" || status=$?
+  [ "$status" = 3 ]
+  [ ! -e "$option_profile/hooks.json" ]
+  [ ! -e "$HOME/rejected-options.jsonl" ]
+done
 # A partial find result must warn, return nonzero, and clean its owned inventory.
 mkdir -p "$HOME/failing-bin" "$HOME/scan-tmp"
 export ACCOUNT_TEST_FIND

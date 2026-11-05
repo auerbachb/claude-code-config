@@ -33,6 +33,7 @@
 #   ai-quotas-setup.sh relogin <label> [<provider>]
 #   ai-quotas-setup.sh schedule <install|remove|status> [--hour <0-23>]
 #   ai-quotas-setup.sh launchers
+#   ai-quotas-setup.sh ledger-hooks
 #   ai-quotas-setup.sh share-config <label> [<provider>]
 #   ai-quotas-setup.sh --help | -h
 #

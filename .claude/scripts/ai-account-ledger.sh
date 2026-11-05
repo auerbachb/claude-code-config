@@ -14,11 +14,11 @@ action="${1:-report}"; [ "$#" -eq 0 ] || shift
 days=14; provider=""; json=0; requested_codex_home=""; dry=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --days) [ "$#" -ge 2 ] || usage; days="$2"; shift 2 ;;
-    --provider) [ "$#" -ge 2 ] || usage; provider="$2"; shift 2 ;;
-    --json) json=1; shift ;;
-    --codex-home) [ "$#" -ge 2 ] || usage; requested_codex_home="$2"; shift 2 ;;
-    --dry-run) dry=1; shift ;;
+    --days) [ "$action" = report ] && [ "$#" -ge 2 ] || usage; days="$2"; shift 2 ;;
+    --provider) [ "$action" = report ] && [ "$#" -ge 2 ] && [ -n "$2" ] || usage; provider="$2"; shift 2 ;;
+    --json) [ "$action" = report ] || usage; json=1; shift ;;
+    --codex-home) [ "$action" = backfill-codex ] && [ "$#" -ge 2 ] && [ -n "$2" ] || usage; requested_codex_home="$2"; shift 2 ;;
+    --dry-run) [ "$action" = backfill-codex ] || usage; dry=1; shift ;;
     *) usage ;;
   esac
 done
@@ -94,13 +94,15 @@ case "$action" in
     [ "$scan_errors" = 0 ] || exit 5
     ;;
   report)
-    registry_json=$(jq -c 'select(.accounts|type=="array")' "$registry_input" 2>/dev/null) || registry_json='{"accounts":[]}'
+    registry_json=$(jq -cse 'select(length==1) | .[0] | select(type=="object" and (.accounts|type=="array"))' "$registry_input" 2>/dev/null) || registry_json='{"accounts":[]}'
     [ -n "$registry_json" ] || registry_json='{"accounts":[]}'
     input="$ledger_input"
     result=$(jq -Rn --argjson days "$days" --arg provider "$provider" --argjson registry "$registry_json" '
       def has_id: .session_id | if type=="string" then length>0 else false end;
       def session_count: ([.[] | select(has_id) | .session_id] | unique | length) + ([.[] | select(has_id|not)] | length);
       def epoch: sub("\\.[0-9]+Z$";"Z") | try fromdateiso8601 catch null;
+      # Preserve arbitrary fractional precision while ordering accepted UTC timestamps.
+      def time_key: [epoch, ([capture("\\.(?<digits>[0-9]+)Z$").digits][0] // "")];
       now as $end | ($end - $days*86400) as $start |
       [inputs | fromjson? | select(type=="object") | select(.provider=="claude" or .provider=="codex") |
         select(.label|type=="string") | select(.ts|type=="string") |
@@ -110,7 +112,7 @@ case "$action" in
       {window:{start:($start|todateiso8601),end:($end|todateiso8601),days:$days},
        accounts:($rows | group_by([.provider,.label]) | map(.[0] as $a |
          {provider:$a.provider,label:$a.label,nickname:([$registry.accounts[]? | objects | select(.provider==$a.provider and .label==$a.label) | .nickname // empty][0] // null),
-          projects:(group_by(.repo // "(no repo)") | map({repo:(.[0].repo // "(no repo)"),sessions:session_count,last_ts:(map(.ts)|max)}))})),
+          projects:(group_by(.repo // "(no repo)") | map({repo:(.[0].repo // "(no repo)"),sessions:session_count,last_ts:(max_by(.ts|time_key)|.ts)}))})),
        unknown_sessions:([$rows[] | select(.label=="unknown")] | group_by([.provider,.repo]) | map(session_count) | add // 0),
        annotations:([$rows[] | select(.provider=="claude" and (.label|contains("@"))) |
           select(.account_email|type=="string" and length<=254 and test("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,63}\\z")) |
