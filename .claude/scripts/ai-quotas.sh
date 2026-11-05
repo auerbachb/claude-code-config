@@ -740,7 +740,12 @@ emit_row() { # <provider> <label> <email> <window> <used_pct|""> <resets_epoch|"
   local used="${5:-}" resets="${6:-}"
   local outcome_source="${9:-}"
   if [[ -z "$outcome_source" ]]; then
-    case "$1" in claude) outcome_source="oauth-usage" ;; codex) outcome_source="app-server" ;; cursor) outcome_source="ide-token" ;; esac
+    case "$1:$7" in
+      claude:needs-login|codex:needs-login) outcome_source="credential-store" ;;
+      claude:*) outcome_source="oauth-usage" ;;
+      codex:*) outcome_source="app-server" ;;
+      cursor:*) outcome_source="ide-token" ;;
+    esac
   fi
   if [[ "$7" == "ok" ]]; then
     # An account succeeds if at least one window supplies a usable figure.
@@ -2358,7 +2363,7 @@ read_cursor_account() { # <label>
     200) ;;
     429)
       set_outcome rate_limited "$source" http_429
-      emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" unreachable "the usage endpoint answered HTTP 429" "$source" ""
+      emit_row cursor "$label" "$CURSOR_EMAIL" "$CURSOR_WINDOW" "" "" rate-limited "the usage endpoint answered HTTP 429" "$source" ""
       return 0 ;;
     *)
       set_outcome unreadable "$source" "http_${code}"

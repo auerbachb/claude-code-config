@@ -249,6 +249,7 @@ case "$url" in
         printf '{"somethingElse":{},"displayMessage":"hi"}' > "$out"; printf '200' ;;
       unauth) printf '{"error":"unauthorized"}' > "$out"; printf '401' ;;
       server) printf 'oops' > "$out"; printf '500' ;;
+      ratelimit) printf '{}' > "$out"; printf '429' ;;
       down)   echo "STUB-CURL: simulated cursor network failure" >&2; exit 7 ;;
       *) echo "STUB-CURL: unknown cursor mode '$mode'" >&2; exit 96 ;;
     esac
@@ -2910,6 +2911,7 @@ run --json
 OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
 check_eq "$(jq -s 'length' "$OUTCOMES_LEDGER")" "1" "one outcome for an empty-profile account attempt"
 check_eq "$(jq -r '.status' "$OUTCOMES_LEDGER")" "logged_out" "empty profile outcome is logged_out"
+check_eq "$(jq -r '.source' "$OUTCOMES_LEDGER")" "credential-store" "missing credentials identify their local preflight source"
 check_eq "$(printf '%s' "$DOC" | jq -r '.account_reliability[0].streak_count')" "1" "first failure has streak one"
 run --json --quiet
 check_eq "$(printf '%s' "$DOC" | jq -r '.account_reliability[0].streak_count')" "2" "second failure has streak two"
@@ -2984,6 +2986,17 @@ printf 'server' > "$STUB_TOKEN_MODE"
 run --json
 check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "unreadable" "HTTP500 refresh failure remains unreadable"
 check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.error_class')" "http_500" "refresh HTTP failure records only numeric status class"
+
+# Cursor rate limits use the existing display status and matching ledger status.
+reset_state
+mkdir -p "$TMP/outcomes-cursor-profile"
+write_config "$(account_json cursor outcomes-cursor "$TMP/outcomes-cursor-profile")"
+printf 'ratelimit' > "$STUB_CURSOR_MODE"
+run --json
+OUTCOMES_LEDGER="$CASE_HOME/.claude/ai-quotas-history.outcomes.jsonl"
+check_eq "$RC" "0" "Cursor429 fixture reaches the reader"
+check_eq "$(printf '%s' "$OUT" | jq -r '.[0].status')" "rate-limited" "Cursor429 report row names the rate limit"
+check_eq "$(tail -n 1 "$OUTCOMES_LEDGER" | jq -r '.status')" "rate_limited" "Cursor429 outcome agrees with the report"
 
 # --- summary -----------------------------------------------------------------
 

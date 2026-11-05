@@ -1487,3 +1487,8 @@ attempt counts, failure counts/rates (fractions), and the consecutive failure st
 exactly once, even if persistence fails, and only show accounts attempted this run.
 Same-timestamp attempts retain append order; the streak counts reads, not days.
 Unattended `--quiet` runs still record outcomes but suppress the footer.
+
+A missing Claude/Codex credential is a local `credential-store` preflight outcome,
+not an attempted usage-endpoint request. Existing endpoint source IDs remain
+unchanged once that reader runs. Cursor HTTP 429 uses the existing `rate-limited`
+display status and `rate_limited` ledger status.

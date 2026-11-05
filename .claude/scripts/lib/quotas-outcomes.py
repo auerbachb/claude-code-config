@@ -22,6 +22,7 @@ MAX_ROWS = 50000
 
 
 def validate(row):
+    """Return a sanitized outcome and timestamp, or None for invalid input."""
     if not isinstance(row, dict):
         return None
     if row.get('status') not in STATUSES:
@@ -49,6 +50,7 @@ def validate(row):
 
 
 def read_rows(path, now, strict=False):
+    """Read retained valid rows, propagating I/O failures when strict is enabled."""
     if not path:
         return []
     try:
@@ -60,7 +62,7 @@ def read_rows(path, now, strict=False):
             for line in stream:
                 try:
                     valid = validate(json.loads(line))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     continue
                 if valid and now - RETENTION <= valid[1]:
                     result.append(valid)
@@ -74,6 +76,7 @@ def read_rows(path, now, strict=False):
 
 
 def reliability(rows, current, now):
+    """Calculate account failure windows and chronological consecutive-failure streaks."""
     result = []
     accounts = sorted({(row['provider'], row['label']) for row, _ in current})
     for provider, label in accounts:
@@ -100,6 +103,7 @@ def reliability(rows, current, now):
 
 
 def process(ledger, run, now):
+    """Persist current outcomes safely and return reliability including this run."""
     current = read_rows(run, now)
     prior = read_rows(ledger, now)
     all_rows = prior + current
