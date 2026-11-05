@@ -53,7 +53,8 @@ jq -nrc 'now as $now | [
 printf 'broken\n{}\n' >> "$AI_ACCOUNT_LEDGER"
 "$CLI" report --json | jq -e '.window.days==14 and .unknown_sessions==2 and (.annotations|length)==1 and any(.accounts[]; .provider=="codex" and .nickname=="Office" and .projects==[{repo:"a",sessions:3,last_ts:.projects[0].last_ts}])' >/dev/null
 "$CLI" report --days 30 --provider codex --json | jq -e '(.accounts|length)==1 and (.accounts[0].projects|length)==2' >/dev/null
-"$CLI" report | grep -Fq 'codex work (Office): a ×3'
+report_text=$("$CLI" report)
+grep -Fq 'codex work (Office): a ×3' <<< "$report_text"
 AI_ACCOUNT_LEDGER="$HOME/missing" "$CLI" report --json | jq -e '.accounts==[] and .unknown_sessions==0' >/dev/null
 # Hook installation preserves other hooks, is idempotent, and never touches config.toml.
 printf 'original config\n' > "$HOME/profile/config.toml"
