@@ -11,7 +11,7 @@ while [ "$#" -gt 0 ]; do
 done
 trap 'if [ "$provider" != codex ]; then printf "{}\n"; fi; exit 0' EXIT
 exec 2>/dev/null
-command -v jq >/dev/null && command -v git >/dev/null || exit 0
+command -v jq >/dev/null || exit 0
 lib="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/lib/ai-account-ledger.sh"
 [ -r "$lib" ] || exit 0
 # shellcheck source=lib/ai-account-ledger.sh
@@ -58,5 +58,6 @@ esac
 ledger_profile "$provider" "$profile" "$rows"
 ledger_repo "${cwd:-$PWD}"
 ledger_issue "$LEDGER_BRANCH"
-row=$(ledger_row "$(date -u +%FT%TZ)" "$provider" "$session" "$source" hook) || exit 0
+ts=$(date -u +%FT%TZ) || exit 0
+row=$(ledger_row "$ts" "$provider" "$session" "$source" hook) || exit 0
 ledger_append "$row" || true

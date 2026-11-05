@@ -119,6 +119,23 @@ printf broken > "$HOME/broken.json"
 [ "$(payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/broken.json" "$HOOK")" = '{}' ]
 [ "$(payload "$HOME" | AI_ACCOUNT_LEDGER=/dev/null/ledger "$HOOK")" = '{}' ]
 [ "$(payload "$HOME" | PATH=/nonexistent /bin/bash "$HOOK")" = '{}' ]
+# Git is optional: keep known session/account fields while repository metadata is null.
+mkdir -p "$HOME/no-git-bin"
+for tool in jq date chmod; do ln -s "$(command -v "$tool")" "$HOME/no-git-bin/$tool"; done
+[ "$(payload "$HOME/repo-a" | PATH="$HOME/no-git-bin" AI_ACCOUNT_LEDGER="$HOME/gitless.jsonl" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK")" = '{}' ]
+jq -se 'length==1 and .[0].label=="work" and .[0].session_id=="test" and .[0].repo==null and .[0].branch==null and .[0].issue==null and (.[0].ts|test("Z$"))' "$HOME/gitless.jsonl" >/dev/null
+# Timestamp serialization is mandatory; a missing/failing date must not append a blank ts.
+mkdir -p "$HOME/no-date-bin"
+for tool in jq chmod; do ln -s "$(command -v "$tool")" "$HOME/no-date-bin/$tool"; done
+[ "$(payload "$HOME/repo-a" | PATH="$HOME/no-date-bin" AI_ACCOUNT_LEDGER="$HOME/dateless.jsonl" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK")" = '{}' ]
+[ ! -e "$HOME/dateless.jsonl" ]
+cat > "$HOME/no-date-bin/date" <<'DATE'
+#!/bin/bash
+exit 1
+DATE
+chmod +x "$HOME/no-date-bin/date"
+[ "$(payload "$HOME/repo-a" | PATH="$HOME/no-date-bin" AI_ACCOUNT_LEDGER="$HOME/dateless.jsonl" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK")" = '{}' ]
+[ ! -e "$HOME/dateless.jsonl" ]
 # FIFOs and special destinations must fail open without waiting for a reader.
 mkfifo "$HOME/ledger-fifo" "$HOME/registry-fifo" "$HOME/work/claude/.claude.json"
 python3 - "$HOOK" "$HOME/ledger-fifo" <<'PYTEST'
