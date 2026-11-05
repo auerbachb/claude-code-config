@@ -1734,6 +1734,8 @@ check_eq "$(wc -c < "$STUB_SECURITY_VALUE_REQUESTS" | tr -d ' ')" "0" \
   "no case in this suite ever asked security(1) for a credential value (-w)"
 
 # --- layout doctor and transactional repair (issue #1850) ---------------------
+ROOT_PHYSICAL="$(SELF_DIR="$ROOT/.claude/scripts" /bin/bash -euo pipefail -c 'source "$SELF_DIR/lib/ai-quotas-layout.sh"; layout_physical /')"
+check_eq "$ROOT_PHYSICAL" / 'physical resolver preserves the filesystem root'
 
 layout_fixture() {
   new_case "$1"
@@ -1828,6 +1830,41 @@ run repair-layout claude
 check_eq "$RC" 5 'physical profile aliases refuse repair'
 cmp -s "$CONFIG" "$CASE_DIR/alias-before" && ok 'physical alias refusal preserves registry' || bad 'physical alias refusal changed registry'
 [[ -L "$PROFILES/alpha/claude" ]] && ok 'physical alias refusal preserves the symlink' || bad 'physical alias refusal changed symlink'
+
+# A missing independent custom path is informational; a dangling target alias is not.
+for TARGET_BYSTANDER in independent dangling dot dotdot dotdot-symlink; do
+  layout_fixture "layout-target-bystander-$TARGET_BYSTANDER"
+  jq '.accounts |= map(select(.label == "alpha"))' "$CONFIG" > "$CASE_DIR/one-managed"
+  mv "$CASE_DIR/one-managed" "$CONFIG"
+  mv "$PROFILES/alpha/claude" "$CASE_DIR/unregistered-original"
+  rmdir "$PROFILES/alpha"
+  BYSTANDER_PATH="$CASE_DIR/custom-bystander"
+  case "$TARGET_BYSTANDER" in
+    dangling) ln -s "$PROFILES/alpha/claude" "$BYSTANDER_PATH" ;;
+    dot) BYSTANDER_PATH="$PROFILES/alpha/./claude" ;;
+    dotdot) BYSTANDER_PATH="$PROFILES/alpha/../alpha/claude" ;;
+    dotdot-symlink)
+      ln -s "$PROFILES/alpha" "$PROFILES/alias-parent"
+      BYSTANDER_PATH="$PROFILES/alpha/../alias-parent/claude"
+      ;;
+  esac
+  jq --arg path "$BYSTANDER_PATH" '.accounts += [.accounts[0] | .label="bystander" | .profile_dir=$path | del(.credential_ref)]' "$CONFIG" > "$CASE_DIR/with-bystander"
+  mv "$CASE_DIR/with-bystander" "$CONFIG"
+  cp "$CONFIG" "$CASE_DIR/bystander-before"
+  run doctor --json
+  check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.label == "bystander") | .finding')" custom "$TARGET_BYSTANDER missing custom path remains informational"
+  run repair-layout claude
+  if [[ "$TARGET_BYSTANDER" != independent ]]; then
+    check_eq "$RC" 5 "$TARGET_BYSTANDER custom target alias refuses repair"
+    cmp -s "$CONFIG" "$CASE_DIR/bystander-before" && ok 'target alias refusal preserves registry' || bad 'target alias refusal changed registry'
+    [[ ! -d "$PROFILES/alpha" && ! -e "$BYSTANDER_PATH" ]] && ok "$TARGET_BYSTANDER target alias stays absent without acquiring credentials" || bad 'target alias acquired profile data'
+    check_eq "$(cat "$PROFILES/beta/claude/marker")" opaque-beta 'target alias refusal preserves source identity'
+  else
+    check_eq "$RC" 0 'independent missing custom path does not block file repair'
+    check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'file repair preserves account association with missing custom bystander'
+    [[ ! -e "$BYSTANDER_PATH" ]] && ok 'independent missing custom directory stays absent' || bad 'repair created custom directory'
+  fi
+done
 
 layout_fixture layout-shared
 jq --arg d "$PROFILES/beta/claude" '.accounts[].profile_dir = $d' "$CONFIG" > "$CASE_DIR/shared"
@@ -2131,6 +2168,48 @@ check_eq "$RC" 0 'Keychain cycle repairs alongside an unrelated custom profile'
 check_eq "$(cat "$PROFILES/alpha/claude/account-marker")" alpha 'custom bystander does not alter repaired account identity'
 check_eq "$(jq -r '.accounts[] | select(.label == "custom") | .profile_dir' "$CONFIG")" "$CASE_DIR/custom/claude" 'custom registry path remains untouched'
 cmp -s "$CASE_DIR/custom-before" "$CASE_DIR/custom/claude/.credentials.json" && ok 'custom credential bytes remain untouched' || bad 'custom bystander credential changed'
+
+keychain_fixture keychain-missing-custom-bystander
+BYSTANDER_PATH="$CASE_DIR/missing-custom/claude"
+jq --arg path "$BYSTANDER_PATH" '.accounts += [.accounts[0] | .label="custom" | .profile_dir=$path | del(.credential_ref)]' "$CONFIG" > "$CASE_DIR/with-missing"
+mv "$CASE_DIR/with-missing" "$CONFIG"
+run doctor --json
+check_eq "$(printf '%s' "$OUT" | jq -r '.[] | select(.label == "custom") | .finding')" custom 'missing custom Keychain bystander remains informational'
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.repairable)] | length')" 2 'missing custom bystander leaves the observed cycle eligible'
+run repair-layout claude
+check_eq "$RC" 0 'missing independent custom path does not block Keychain cycle'
+check_eq "$(cat "$PROFILES/alpha/claude/account-marker")" alpha 'missing custom bystander preserves repaired Keychain identity'
+[[ ! -e "$BYSTANDER_PATH" ]] && ok 'Keychain cycle leaves missing custom directory absent' || bad 'Keychain cycle created custom directory'
+
+keychain_fixture keychain-custom-physical-alias
+BYSTANDER_PATH="$CASE_DIR/custom-link"
+ln -s "$PROFILES/beta/claude" "$BYSTANDER_PATH"
+jq --arg path "$BYSTANDER_PATH" '.accounts += [.accounts[0] | .label="custom" | .profile_dir=$path | del(.credential_ref)]' "$CONFIG" > "$CASE_DIR/with-alias"
+mv "$CASE_DIR/with-alias" "$CONFIG"
+cp "$CONFIG" "$CASE_DIR/alias-before"
+run doctor --json
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.finding == "shared")] | length')" 2 'custom physical alias remains a shared-identity hazard'
+run repair-layout claude
+check_eq "$RC" 5 'custom physical alias refuses Keychain cycle'
+cmp -s "$CONFIG" "$CASE_DIR/alias-before" && ok 'custom physical alias preserves registry' || bad 'custom physical alias changed registry'
+cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok 'custom physical alias moves no credential services' || bad 'custom physical alias changed service store'
+
+# Both missing and existing bystanders can depend on a moving Keychain service.
+for ALIAS_KIND in managed custom; do
+  for ALIAS_PRESENCE in existing missing; do
+    keychain_fixture "keychain-service-alias-$ALIAS_KIND-$ALIAS_PRESENCE"
+    if [[ "$ALIAS_KIND" == managed ]]; then BYSTANDER_PATH="$PROFILES/bystander/claude"; else BYSTANDER_PATH="$CASE_DIR/custom-service/claude"; fi
+    if [[ "$ALIAS_PRESENCE" == existing ]]; then mkdir -p "$BYSTANDER_PATH"; fi
+    jq --arg path "$BYSTANDER_PATH" '.accounts += [.accounts[0] | .label="bystander" | .profile_dir=$path]' "$CONFIG" > "$CASE_DIR/with-service-alias"
+    mv "$CASE_DIR/with-service-alias" "$CONFIG"
+    cp "$CONFIG" "$CASE_DIR/service-alias-before"
+    run repair-layout claude
+    check_eq "$RC" 5 "$ALIAS_KIND $ALIAS_PRESENCE service alias refuses rebinding"
+    cmp -s "$CONFIG" "$CASE_DIR/service-alias-before" && ok "$ALIAS_KIND $ALIAS_PRESENCE alias preserves registry" || bad 'service alias changed registry'
+    cmp -s "$LAYOUT_KC_DB" "$CASE_DIR/keychain-db-before" && ok "$ALIAS_KIND $ALIAS_PRESENCE alias preserves services and credential identities" || bad 'service alias changed credential store'
+    check_eq "$(cat "$PROFILES/beta/claude/account-marker")" alpha "$ALIAS_KIND $ALIAS_PRESENCE alias leaves source account in place"
+  done
+done
 
 for KEYCHAIN_FAILURE in stage install; do
   keychain_fixture "keychain-fails-$KEYCHAIN_FAILURE"

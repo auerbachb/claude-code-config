@@ -45,8 +45,17 @@ def cycle(config, root):
     targets = [f"{root}/{row['label']}/claude" for row in rows]
     if len(set(sources)) != len(rows) or set(sources) != set(targets):
         return []
-    if len({row.get("credential_ref", {}).get("service") for row in rows}) != len(rows):
+    moving_services = {row.get("credential_ref", {}).get("service") for row in rows}
+    if len(moving_services) != len(rows):
         return []
+    # Rebinding must not silently change an untouched account's credential identity.
+    for account in config["accounts"]:
+        if account in rows:
+            continue
+        ref = account.get("credential_ref")
+        other_service = ref.get("service") if isinstance(ref, dict) else None
+        if isinstance(other_service, str) and other_service in moving_services:
+            return []
     result = []
     for row, target in zip(rows, targets):
         source = row["profile_dir"]

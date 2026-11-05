@@ -4,15 +4,42 @@
 # shellcheck source=./ai-quotas-layout-keychain.sh
 source "$SELF_DIR/lib/ai-quotas-layout-keychain.sh"
 
-layout_physical() { # Resolve existing ancestors without creating anything.
-  local probe="$1" rest="" phys
+layout_physical() { # Resolve existing and future paths without creating anything.
+  local rest="$1" phys component probe link links=0
+  case "$rest" in
+    /*) phys=/ ;;
+    *) phys="$(pwd -P)" || return 1 ;;
+  esac
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$component" in
+      ''|.) continue ;;
+      ..) phys="${phys%/*}"; [[ -n "$phys" ]] || phys=/; continue ;;
+    esac
+    probe="${phys%/}/$component"
+    if [[ -L "$probe" ]]; then
+      links=$((links + 1)); [[ "$links" -le 40 ]] || return 1
+      link="$(readlink "$probe")" || return 1
+      case "$link" in /*) phys=/ ;; esac
+      rest="$link${rest:+/$rest}"
+    else
+      phys="$probe"
+    fi
+  done
+  # Preserve the OS's physical spelling of the existing prefix.
+  probe="$phys"; rest=""
   while [[ ! -d "$probe" ]]; do
-    [[ "$probe" != / && "$probe" != . ]] || return 1
-    rest="/$(basename "$probe")$rest"
-    probe="$(dirname "$probe")"
+    [[ "$probe" != / ]] || return 1
+    rest="/${probe##*/}$rest"
+    probe="${probe%/*}"; [[ -n "$probe" ]] || probe=/
   done
   phys="$(cd -P "$probe" && pwd -P)" || return 1
-  printf '%s%s' "$phys" "$rest"
+  if [[ "$phys" == / ]]; then
+    printf '/%s' "${rest#/}"
+  else
+    printf '%s%s' "$phys" "$rest"
+  fi
 }
 
 layout_physical_shared() { # Two registered paths resolve to one existing directory.
@@ -22,7 +49,7 @@ layout_physical_shared() { # Two registered paths resolve to one existing direct
     dir="$(printf '%s' "$row" | jq -r '.profile_dir // empty')"
     [[ -n "$dir" && -d "$dir" ]] || continue
     resolved="$(layout_physical "$dir")" || continue
-    if [[ "$resolved" == "$wanted" ]]; then
+    if [[ "$resolved" == "$wanted" || "$dir" -ef "$wanted" ]]; then
       count=$((count + 1))
       [[ "$count" -le 1 ]] || return 0
     fi
@@ -57,7 +84,7 @@ layout_report() { # <config-json> -> findings; paths and credential presence onl
             repairable=true
           fi
         fi
-        if [[ ! -d "$dir" ]]; then finding=missing; detail="missing directory; $detail"; repairable=false; fi
+        if [[ ! -d "$dir" && "$finding" != custom ]]; then finding=missing; detail="missing directory; $detail"; repairable=false; fi
         if [[ "$(printf '%s' "$1" | jq --arg d "$dir" '[.accounts[] | select(.profile_dir == $d)] | length')" -gt 1 ]] || layout_physical_shared "$1" "$actual"; then
           finding=shared; detail='multiple registry records share this directory'; repairable=false
         fi
@@ -169,7 +196,7 @@ layout_cleanup() {
 }
 
 layout_preflight() { # <config> -> LAYOUT_PLAN (metadata only)
-  local report row src dst label keychain_cycle
+  local report row src dst label keychain_cycle other other_dir other_physical target_physical
   [[ ! -e "$PROFILE_ROOT/.layout-repair" && ! -L "$PROFILE_ROOT/.layout-repair" ]] || die 5 'interrupted repair exists; preserve .layout-repair for recovery'
   report="$(layout_report "$1")"
   if printf '%s' "$report" | jq -e --arg p "$ARG_PROVIDER" 'any(.[]; .provider == $p and (.finding == "shared" or .finding == "missing"))' >/dev/null; then
@@ -189,6 +216,14 @@ layout_preflight() { # <config> -> LAYOUT_PLAN (metadata only)
       printf '%s' "$LAYOUT_PLAN" | jq -e --arg d "$dst" 'any(.[]; .profile_dir == $d)' >/dev/null || die 5 "repair refused: unregistered target collision at $dst"
     fi
     [[ ! -L "$src" && ! -L "$(dirname "$src")" && ! -L "$dst" && ! -L "$(dirname "$dst")" ]] || die 5 'repair refused: symlink in source/target path'
+    target_physical="$(layout_physical "$dst")" || die 5 'repair refused: unresolvable target path'
+    # An untouched bystander must not acquire this account through a target alias.
+    while IFS= read -r other; do
+      other_dir="$(printf '%s' "$other" | jq -r '.profile_dir // empty')"
+      [[ -n "$other_dir" ]] || continue
+      other_physical="$(layout_physical "$other_dir")" || continue
+      [[ "$other_physical" != "$target_physical" ]] || die 5 'repair refused: target is referenced by another account'
+    done < <(printf '%s' "$1" | jq -c --argjson plan "$LAYOUT_PLAN" '.accounts[] | . as $a | select(any($plan[]; .provider == $a.provider and .label == $a.label) | not)')
     if [[ "$ARG_PROVIDER" == claude && ( -e "$(keychain_sidecar_path "$dst")" || -L "$(keychain_sidecar_path "$dst")" ) ]] && ! printf '%s' "$row" | jq -e 'has("keychain")' >/dev/null; then
       die 5 'repair refused: target has a path-derived Keychain binding'
     fi
