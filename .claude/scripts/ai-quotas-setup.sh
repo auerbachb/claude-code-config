@@ -25,6 +25,8 @@
 #
 # USAGE
 #   ai-quotas-setup.sh [list] [--json]
+#   ai-quotas-setup.sh doctor [--json]
+#   ai-quotas-setup.sh repair-layout <claude|codex>
 #   ai-quotas-setup.sh add <provider> <label> [--nick <name>] [--no-login]
 #   ai-quotas-setup.sh nick <label> <name> [<provider>]
 #   ai-quotas-setup.sh remove <label> [<provider>]
@@ -111,7 +113,7 @@
 #             one). Credential lands in the macOS
 #             Keychain (service `Claude Code-credentials-<suffix>`, whose
 #             suffix this script learns by observing which item the login
-#             created — it is never derived or guessed) or, on other
+#             created; verified cycle repair additionally checks the binding) or, on other
 #             platforms, in `<profile_dir>/.credentials.json`.
 #   codex     Per-account CODEX_HOME. Credential lands in
 #             `<profile_dir>/auth.json`.
@@ -126,6 +128,12 @@
 #
 # LAYOUT
 #   Config    ~/.claude/ai-quotas.json                 (mode 600)
+#   doctor reports layout mismatches without reading credentials; exit 8 means findings.
+#   repair-layout stages renames and atomically updates the registry. Stop affected
+#   sessions/readers first. Observed Claude Keychain cycles are supported on macOS
+#   with Swift/Python 3 and verified Claude Code 2.1.312; other bindings are refused.
+#   Exit 9 means rollback failed: preserve .layout-repair and its recovery plan.
+#
 #   Profiles  ~/.claude/ai-quotas/profiles/<label>/<provider>/   (mode 700)
 #   Both live under ~/.claude/, never in a worktree (hook-storage rule).
 #   Agent     ~/Library/LaunchAgents/com.claude.ai-quotas.plist  (mode 644,
@@ -217,11 +225,14 @@
 #   7   Contention, refused rather than raced; nothing is changed. Either the
 #       config write lock was unavailable (timeout) or broken mid-update, or a
 #       `relogin` found another relogin already running for the same account.
+#   8   doctor found layout problems (diagnostic only).
+#   9   Repair rollback incomplete: preserve .layout-repair for manual recovery.
 #   70  --help header extraction produced no output (internal defect).
 #
 # DEPENDENCIES
 #   - bash 3.2+, jq
 #   - state-lock.sh (sibling library) for the config read-modify-write lock
+#   - macOS Swift compiler and Python 3 only for verified Keychain cycle repair
 #   - the provider's own CLI, only for `add` / `relogin`; for `cursor` that
 #     is sqlite3(1), which ships with macOS, and the Cursor IDE itself
 
@@ -341,8 +352,13 @@ else
 fi
 
 case "$ACTION" in
-  list)
-    [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "list takes no arguments"
+  list|doctor)
+    [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "$ACTION takes no arguments"
+    ;;
+  repair-layout)
+    [[ ${#POSITIONAL[@]} -eq 2 ]] || die_usage "repair-layout requires <claude|codex>"
+    ARG_PROVIDER="${POSITIONAL[1]}"
+    case "$ARG_PROVIDER" in claude|codex) ;; *) die_usage "repair-layout supports claude or codex only" ;; esac
     ;;
   add)
     [[ ${#POSITIONAL[@]} -eq 3 ]] || die_usage "add requires <provider> <label>"
@@ -391,12 +407,12 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, add, nick, remove, relogin, schedule, launchers, share-config)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, remove, relogin, schedule, launchers, share-config)"
     ;;
 esac
 
-if [[ $JSON -eq 1 && "$ACTION" != "list" ]]; then
-  die_usage "--json applies to list only"
+if [[ $JSON -eq 1 && "$ACTION" != "list" && "$ACTION" != "doctor" ]]; then
+  die_usage "--json applies to list or doctor only"
 fi
 if [[ $NO_LOGIN -eq 1 && "$ACTION" != "add" ]]; then
   die_usage "--no-login applies to add only"
@@ -544,12 +560,12 @@ write_config() { # <json>
     fi
     die 5 "could not install config: $CONFIG_FILE"
   fi
-  chmod 600 "$CONFIG_FILE" || die 5 "could not chmod 600 $CONFIG_FILE"
+  # The committed temp file already has mode 600. No fallible work after publish.
 }
 
 # --- keychain observation (macOS, claude only) -------------------------------
 # The Keychain service name Claude Code uses carries a suffix derived from
-# CLAUDE_CONFIG_DIR by an undocumented function. This script never derives it:
+# CLAUDE_CONFIG_DIR by an undocumented function. Registration observes names:
 # it lists the service NAMES before and after a login and records the one that
 # appeared. A name is not a secret, and `security` is never asked for a value
 # (`-w` is never passed), so nothing readable here is a credential.
@@ -1453,6 +1469,11 @@ action_relogin() {
   # leak the slot.
   claim_relogin_slot "$ARG_LABEL" "$provider"
   trap relogin_slot_trap EXIT
+  config="$(read_config)"
+  index="$(resolve_single_index "$config" "$ARG_LABEL" "$provider")"
+  entry="$(printf '%s' "$config" | jq --argjson i "$index" '.accounts[$i]')"
+  dir="$(printf '%s' "$entry" | jq -r '.profile_dir')"
+  service="$(printf '%s' "$entry" | jq -r '.credential_ref.service // ""')"
 
   # The cursor profile-retirement dance is gone with the browser it existed
   # for (#1703). It moved a Chromium profile aside so a second login could not
@@ -1491,6 +1512,10 @@ action_relogin() {
   if [[ -z "$index" ]]; then
     state_lock_release || true
     die 4 "account '$ARG_LABEL' disappeared from the registry while the login ran"
+  fi
+  if [[ "$(printf '%s' "$config" | jq -r --argjson i "$index" '.accounts[$i].profile_dir')" != "$dir" ]]; then
+    state_lock_release || true
+    die 7 "profile_dir changed during login; registry unchanged — retry"
   fi
   config="$(printf '%s' "$config" | jq --argjson i "$index" --arg service "$service" '
     .accounts[$i] = (.accounts[$i]
@@ -1855,6 +1880,7 @@ action_list() {
     else
       echo "No accounts registered yet."
       echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      layout_warning "$config"
     fi
     return 0
   fi
@@ -1900,6 +1926,7 @@ action_list() {
     printf '%s' "$rows"
   }
   echo
+  layout_warning "$config"
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 }
 
@@ -2358,8 +2385,13 @@ action_share_config() {
   echo "${SELF_NAME}: done — linked $SHARE_LINKED, copied $SHARE_COPIED, merged $SHARE_MERGED, kept $SHARE_KEPT, moved aside $SHARE_MOVED, skipped $SHARE_SKIPPED. Nothing was deleted; *.pre-share holds whatever was in the way."
 }
 
+# shellcheck source=./lib/ai-quotas-layout.sh
+source "$SELF_DIR/lib/ai-quotas-layout.sh"
+
 case "$ACTION" in
   list)     action_list ;;
+  doctor)   action_doctor ;;
+  repair-layout) action_repair_layout ;;
   add)      action_add ;;
   nick)     action_nick ;;
   remove)   action_remove ;;
