@@ -76,7 +76,8 @@ actual_env=dict(env,HOME=str(actual_home),MANAGED_LEGACY_HOOKS_DIR='')
 install(root,actual_env)
 installed=json.loads(actual_settings.read_text())
 for script,events in (('spend-task-tracker.sh',('TaskCreated','TaskCompleted')),
-                      ('spend-session-tracker.sh',('SessionStart','SessionEnd'))):
+                      ('spend-session-tracker.sh',('SessionStart','SessionEnd')),
+                      ('ai-account-session-start.sh',('SessionStart',))):
     for event in events:
         assert commands(installed,event).count(str(root/'.claude/hooks'/script))==1,(script,event)
 before=actual_settings.read_bytes();inode=actual_settings.stat().st_ino

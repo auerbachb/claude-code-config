@@ -226,6 +226,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/claude-code-config/.claude/hooks/ai-account-session-start.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionEnd": [

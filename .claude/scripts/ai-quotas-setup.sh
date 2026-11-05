@@ -73,6 +73,7 @@
 #             The job is a RECORDER, never a gate: it reads figures and
 #             appends them, and nothing in this repo consults them to decide
 #             whether work may proceed.
+#   ledger-hooks — Merge metadata-only Codex SessionStart hooks into per-profile hooks.json.
 #   launchers Write ~/.claude/ai-quotas/launchers.zsh (#1851): one zsh
 #             function per registered claude/codex account, named
 #             `<provider>-<nickname slug>` (`Claude Work` -> claude-work,
@@ -279,6 +280,7 @@ HISTORY_FILE="${AI_QUOTAS_HISTORY:-${_HOME}/.claude/ai-quotas-history.jsonl}"
 # a day apart rather than a day plus however long the owner slept in.
 SCHEDULE_HOUR_DEFAULT="9"
 
+# ledger-hooks installs metadata-only Codex hooks.json entries; unsupported versions use backfill.
 # --- help / usage ------------------------------------------------------------
 
 print_help() {
@@ -353,7 +355,7 @@ else
 fi
 
 case "$ACTION" in
-  list|doctor)
+  list|doctor|ledger-hooks)
     [[ ${#POSITIONAL[@]} -le 1 ]] || die_usage "$ACTION takes no arguments"
     ;;
   repair-layout)
@@ -413,7 +415,7 @@ case "$ACTION" in
     esac
     ;;
   *)
-    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config)"
+    die_usage "unknown action: $ACTION (expected list, doctor, repair-layout, add, nick, sources, remove, relogin, schedule, launchers, share-config, ledger-hooks)"
     ;;
 esac
 
@@ -2429,6 +2431,7 @@ action_share_config() {
 source "$SELF_DIR/lib/ai-quotas-layout.sh"
 
 case "$ACTION" in
+  ledger-hooks) "$SELF_DIR/ai-account-ledger.sh" install-codex-hooks ;;
   list)     action_list ;;
   doctor)   action_doctor ;;
   repair-layout) action_repair_layout ;;
