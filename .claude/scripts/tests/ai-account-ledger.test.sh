@@ -148,7 +148,7 @@ result=subprocess.run([setup,'ledger-hooks'],env=dict(os.environ,AI_QUOTAS_CONFI
 assert result.returncode==5 and 'regular file' in result.stderr
 PYTEST
 # Profile enumeration and command quoting preserve newlines, tabs and backslashes.
-control_profile="$HOME/"$'profile\nwith\ttab\\slash\n'
+control_profile="$HOME/"$'profile\nwith\ttab\\slash\'quote\n'
 mkdir -p "$control_profile/sessions"
 jq -n --arg path "$control_profile" '{accounts:[{provider:"codex",label:"control-profile",profile_dir:$path}]}' > "$HOME/control-registry.json"
 jq -cn '{type:"session_meta",payload:{id:"control-profile",timestamp:"2026-11-01T01:02:03Z"}}' > "$control_profile/sessions/rollout-control.jsonl"
@@ -156,8 +156,26 @@ AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/control-
 jq -se --arg path "$control_profile" 'length==1 and .[0].label=="control-profile" and .[0].profile_dir==$path' "$HOME/control-ledger.jsonl" >/dev/null
 AI_QUOTAS_CONFIG="$HOME/control-registry.json" "$CLI" install-codex-hooks >/dev/null
 command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$control_profile/hooks.json")
-printf '%s\n' '{"session_id":"control-hook"}' | AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/control-ledger.jsonl" bash -c "$command"
+python3 - "$command" "$ROOT/.claude/hooks/ai-account-session-start.sh" "$control_profile" <<'POSIX'
+import shlex,sys
+assert shlex.split(sys.argv[1],posix=True)==[sys.argv[2],'--provider','codex','--codex-home',sys.argv[3]]
+POSIX
+jq -cn --arg cwd "$HOME" '{session_id:"control-hook",cwd:$cwd}' | AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/control-ledger.jsonl" /bin/sh -c "$command"
 jq -se --arg path "$control_profile" 'length==2 and all(.label=="control-profile" and .profile_dir==$path)' "$HOME/control-ledger.jsonl" >/dev/null
+# Quote the executable as well as its argument under POSIX shell parsing.
+quoted_hook_home="$HOME/hook's home"
+mkdir -p "$quoted_hook_home/.claude/hooks/lib"
+cp "$ROOT/.claude/hooks/ai-account-session-start.sh" "$quoted_hook_home/.claude/hooks/ai-account-session-start.sh"
+cp "$ROOT/.claude/hooks/lib/ai-account-ledger.sh" "$quoted_hook_home/.claude/hooks/lib/ai-account-ledger.sh"
+control_registry="$HOME/control-registry.json"
+HOME="$quoted_hook_home" AI_QUOTAS_CONFIG="$control_registry" "$CLI" install-codex-hooks >/dev/null
+command=$(jq -r '.hooks.SessionStart[-1].hooks[0].command' "$control_profile/hooks.json")
+python3 - "$command" "$quoted_hook_home/.claude/hooks/ai-account-session-start.sh" "$control_profile" <<'POSIX'
+import shlex,sys
+assert shlex.split(sys.argv[1],posix=True)==[sys.argv[2],'--provider','codex','--codex-home',sys.argv[3]]
+POSIX
+jq -cn --arg cwd "$HOME" '{session_id:"quoted-hook",cwd:$cwd}' | AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/quoted-hook-ledger.jsonl" /bin/sh -c "$command"
+jq -se --arg path "$control_profile" 'length==1 and .[0].label=="control-profile" and .[0].profile_dir==$path' "$HOME/quoted-hook-ledger.jsonl" >/dev/null
 # Historical cwd must preserve its actual filesystem spelling, not target a stripped repo.
 control_cwd="$HOME/"$'project\nwith\ttab\rand\037separator\\literal\n'
 stripped_cwd=$(jq -nr --arg path "$control_cwd" '$path|gsub("[\u001f\t\r\n]";"")')
@@ -166,6 +184,31 @@ git init -q "$stripped_cwd"
 jq -cn --arg cwd "$control_cwd" '{type:"session_meta",payload:{id:"control-cwd",timestamp:"2026-11-01T01:02:03Z",cwd:$cwd,git:{branch:"historical-control"}}}' > "$control_profile/sessions/rollout-cwd.jsonl"
 AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/cwd-ledger.jsonl" "$CLI" backfill-codex
 jq -se 'any(.session_id=="control-cwd" and .repo==null and .branch=="historical-control")' "$HOME/cwd-ledger.jsonl" >/dev/null
+# An octal suffix after U1F cannot be consumed while decoding historical cwd.
+octal_cwd="$HOME/project"$'\037'"5"
+git init -q "$octal_cwd"
+jq -cn --arg cwd "$octal_cwd" '{type:"session_meta",payload:{id:"octal-cwd",timestamp:"2026-11-01T01:02:03Z",cwd:$cwd,git:{branch:"historical-octal"}}}' > "$control_profile/sessions/rollout-octal.jsonl"
+AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/octal-ledger.jsonl" "$CLI" backfill-codex
+jq -se --arg repo "${octal_cwd##*/}" 'any(.session_id=="octal-cwd" and .repo==$repo and .branch=="historical-octal")' "$HOME/octal-ledger.jsonl" >/dev/null
+# Standalone registry resolution ignores invalid array entries without losing valid matches.
+jq '.accounts=["bad",42,null,[],{},.accounts[0]]' "$HOME/control-registry.json" > "$HOME/mixed-registry.json"
+AI_QUOTAS_CONFIG="$HOME/mixed-registry.json" AI_ACCOUNT_LEDGER="$HOME/mixed-ledger.jsonl" "$CLI" backfill-codex
+jq -se 'length==3 and all(.label=="control-profile")' "$HOME/mixed-ledger.jsonl" >/dev/null
+jq '.accounts={bad:.accounts[0]}' "$HOME/control-registry.json" > "$HOME/nonarray-registry.json"
+AI_QUOTAS_CONFIG="$HOME/nonarray-registry.json" AI_ACCOUNT_LEDGER="$HOME/nonarray-ledger.jsonl" "$CLI" backfill-codex
+[ ! -e "$HOME/nonarray-ledger.jsonl" ]
+AI_QUOTAS_CONFIG="$HOME/nonarray-registry.json" AI_ACCOUNT_LEDGER="$HOME/nonarray-explicit.jsonl" "$CLI" backfill-codex --codex-home "$control_profile"
+jq -se 'length==3 and all(.label=="unknown")' "$HOME/nonarray-explicit.jsonl" >/dev/null
+AI_QUOTAS_CONFIG="$HOME/absent-registry.json" AI_ACCOUNT_LEDGER="$HOME/unregistered-ledger.jsonl" "$CLI" backfill-codex --codex-home "$control_profile"
+jq -se 'length==3 and all(.label=="unknown")' "$HOME/unregistered-ledger.jsonl" >/dev/null
+# Optional first-record metadata may be omitted or empty under Bash3.2 nounset.
+minimal_profile="$HOME/minimal-profile"
+mkdir -p "$minimal_profile/sessions"
+for kind in missing empty populated; do
+  jq -cn --arg kind "$kind" --arg cwd "$HOME/repo" '{type:"session_meta",payload:({id:$kind,timestamp:"2026-11-01T01:02:03Z"} + (if $kind=="missing" then {} elif $kind=="empty" then {cwd:"",git:{}} else {cwd:$cwd} end))}' > "$minimal_profile/sessions/rollout-minimal.jsonl"
+  AI_QUOTAS_CONFIG="$HOME/absent-registry.json" AI_ACCOUNT_LEDGER="$HOME/minimal-ledger.jsonl" "$CLI" backfill-codex --codex-home "$minimal_profile"
+done
+jq -se 'length==3 and all(.label=="unknown" and .branch==null and .issue==null) and all(.session_id=="populated" or .repo==null) and any(.session_id=="populated" and .repo=="repo")' "$HOME/minimal-ledger.jsonl" >/dev/null
 # A partial find result must warn, return nonzero, and clean its owned inventory.
 mkdir -p "$HOME/failing-bin" "$HOME/scan-tmp"
 export ACCOUNT_TEST_FIND
@@ -180,6 +223,6 @@ status=0
 PATH="$HOME/failing-bin:$PATH" TMPDIR="$HOME/scan-tmp" AI_QUOTAS_CONFIG="$HOME/control-registry.json" AI_ACCOUNT_LEDGER="$HOME/partial-ledger.jsonl" "$CLI" backfill-codex > "$HOME/partial.out" 2> "$HOME/partial.err" || status=$?
 [ "$status" = 5 ]
 grep -Fq 'warning: Codex rollout scan failed; backfill may be incomplete' "$HOME/partial.err"
-jq -se 'length==2 and all(.label=="control-profile")' "$HOME/partial-ledger.jsonl" >/dev/null
+jq -se 'length==3 and all(.label=="control-profile")' "$HOME/partial-ledger.jsonl" >/dev/null
 [ -z "$(find "$HOME/scan-tmp" -type f -print)" ]
 printf 'PASS account ledger\n'

@@ -20,11 +20,11 @@ registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
 [ -f "$registry" ] && [ -r "$registry" ] || registry=/dev/null
 parsed=$(jq -er --rawfile registry "$registry" --arg provider "$provider" '
   def clean: if type=="string" then gsub("[\u001f\t\r\n]";"") else "" end;
-  def path_field: if type=="string" then [.] | @tsv | gsub("\u001f";"\\037") else "" end;
+  def path_field: if type=="string" then [.] | @tsv | gsub("\u001f";"\\0037") else "" end;
   select([.cwd,.transcript_path] | all(if type=="string" then (contains("\u0000")|not) else true end)) |
   (([((.session_id // "")|clean),(.cwd|path_field),((.source // "startup")|clean)] | join("\u001f")) +
     "\u001f" + (.transcript_path | path_field)),
-  ((try ($registry|fromjson|.accounts[]) catch empty) | select(.provider==$provider) |
+  ((try ($registry|fromjson|.accounts|arrays|.[]|objects) catch empty) | select(.provider==$provider) |
     select((.profile_dir|type)=="string" and (.label|type)=="string") | select((.profile_dir|contains("\u0000")|not) and (.label|contains("\u0000")|not)) | [.profile_dir,.label] | @tsv)
 ') || exit 0
 fields="${parsed%%$'\n'*}"

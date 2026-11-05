@@ -81,6 +81,25 @@ for path in "$exact_cwd" "$stripped_cwd"; do
 done
 payload "$exact_cwd" | CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
 jq -e '.repo==null and .branch==null and .label=="work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+# Each escaped control followed by an octal digit must round-trip without consuming it.
+for suffix in 0 1 2 3 4 5 6 7; do
+  octal_home="$HOME/"$'field\037'"$suffix"$'nl\n'"$suffix"$'tab\t'"$suffix"$'cr\r'"$suffix"$'literal\\0375\\00375\\n5\\x1f5\\c\n'
+  jq -n --arg path "$octal_home" '{accounts:[{provider:"codex",label:"octal-control",profile_dir:$path}]}' > "$HOME/octal-registry.json"
+  jq -cn --arg path "$octal_home/sessions/2026/rollout.jsonl" '{transcript_path:$path}' | AI_QUOTAS_CONFIG="$HOME/octal-registry.json" env -u CODEX_HOME "$HOOK" --provider codex
+  jq -e --arg path "$octal_home" '.label=="octal-control" and .profile_dir==$path' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
+# Malformed entries cannot disable capture; only valid exact matches count.
+for shape in invalid mixed duplicate container; do
+  jq --arg shape "$shape" 'if $shape=="invalid" then .accounts=["bad",17,null,[],{}]
+    elif $shape=="mixed" then .accounts=["bad",17,null,[],{},.accounts[0]]
+    elif $shape=="duplicate" then .accounts=["bad",.accounts[0],.accounts[0]]
+    else .accounts={bad:.accounts[0]} end' "$AI_QUOTAS_CONFIG" > "$HOME/malformed-entry-registry.json"
+  expected=unknown; [ "$shape" != mixed ] || expected=work
+  before=$(wc -l < "$AI_ACCOUNT_LEDGER")
+  payload "$HOME/repo-a" | AI_QUOTAS_CONFIG="$HOME/malformed-entry-registry.json" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
+  [ "$(wc -l < "$AI_ACCOUNT_LEDGER")" -eq "$((before+1))" ]
+  jq -e --arg label "$expected" '.label==$label and .session_id=="test"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
 # A different spelling of the same filesystem location is not a registered identity.
 ln -s "$HOME/personal/claude" "$HOME/alias"
 for spelling in "$HOME/alias" "$HOME/personal/./claude" "$HOME/personal/claude/"; do

@@ -5,18 +5,18 @@
 ledger_profile() {
   LEDGER_PROFILE="$2"
   LEDGER_LABEL=unknown
-  local rows path label matches=0
+  local rows path="" label="" matches=0
   if [ "$#" -ge 3 ]; then rows="$3"; else
   local registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
   [ -f "$registry" ] && [ -r "$registry" ] || return 0
-  rows=$(jq -r --arg p "$1" '.accounts[] | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | select((.profile_dir|contains("\u0000")|not) and (.label|contains("\u0000")|not)) | [.profile_dir,.label] | @tsv' "$registry" 2>/dev/null) || return 0
+  rows=$(jq -r --arg p "$1" '.accounts | arrays | .[] | objects | select(.provider==$p) | select((.profile_dir|type)=="string" and (.label|type)=="string") | select((.profile_dir|contains("\u0000")|not) and (.label|contains("\u0000")|not)) | [.profile_dir,.label] | @tsv' "$registry" 2>/dev/null) || return 0
   fi
   while IFS=$'\t' read -r path label; do
     # jq @tsv escapes backslashes/tabs/newlines; decode without command substitution
     # so trailing newlines remain part of the declared credential-realm spelling.
-    printf -v path '%b' "$path"
-    printf -v label '%b' "$label"
-    [ -n "$path" ] || continue
+    printf -v path '%b' "${path:-}"
+    printf -v label '%b' "${label:-}"
+    [ -n "${path:-}" ] && [ -n "${label:-}" ] || continue
     # Credential realms can differ for symlink, dot-segment or trailing-slash spellings.
     # Exact matching is conservative even when a provider normalizes Unicode to NFC.
     if [ "$path" = "$LEDGER_PROFILE" ]; then

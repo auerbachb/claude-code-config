@@ -41,9 +41,15 @@ profiles() {
   if [ -n "$requested_codex_home" ]; then printf '%s\0' "$requested_codex_home"; return; fi
   jq -jnr --rawfile config "$registry_input" --arg default "$HOME/.codex" '
     (try ($config|fromjson) catch {}) as $registry |
-    [((try $registry.accounts[]? catch empty) | select(type=="object" and .provider=="codex") | .profile_dir |
+    [((try ($registry.accounts|arrays|.[]|objects) catch empty) | select(type=="object" and .provider=="codex") | .profile_dir |
       select(type=="string") | select(contains("\u0000")|not)), $default] |
     unique[] | . + "\u0000"' 2>/dev/null
+}
+# Quote one command argument for POSIX shells, retaining controls and trailing newlines.
+shell_quote() {
+  local value="$1"
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "$value"
 }
 case "$action" in
   backfill-codex)
@@ -70,15 +76,15 @@ case "$action" in
         # Read precisely the initial metadata record, never subsequent messages.
         first=""
         IFS= read -r first < "$file" 2>/dev/null || true
-        fields=$(printf '%s\n' "$first" | jq -er 'def path_field: if type=="string" then [.] | @tsv | gsub("\u001f";"\\037") else "" end; select(.type=="session_meta") | .payload | select(type=="object") | select((.cwd // "") | if type=="string" then (contains("\u0000")|not) else true end) | [(.id // .session_id),.timestamp,(.cwd // ""),(.git.branch // ""),(.git.repository_url // "")] | select(.[0]|type=="string" and length>0) | select(.[1]|type=="string" and (sub("\\.[0-9]+Z$";"Z") | try (fromdateiso8601 != null) catch false)) | to_entries | map(if .key==2 then (.value|path_field) else (.value | if type=="string" then gsub("[\u001f\r\n]";"") else "" end) end) | join("\u001f")' 2>/dev/null) || { malformed=$((malformed+1)); continue; }
+        fields=$(printf '%s\n' "$first" | jq -er 'def path_field: if type=="string" then [.] | @tsv | gsub("\u001f";"\\0037") else "" end; select(.type=="session_meta") | .payload | select(type=="object") | select((.cwd // "") | if type=="string" then (contains("\u0000")|not) else true end) | [(.id // .session_id),.timestamp,(.cwd // ""),(.git.branch // ""),(.git.repository_url // "")] | select(.[0]|type=="string" and length>0) | select(.[1]|type=="string" and (sub("\\.[0-9]+Z$";"Z") | try (fromdateiso8601 != null) catch false)) | to_entries | map(if .key==2 then (.value|path_field) else (.value | if type=="string" then gsub("[\u001f\r\n]";"") else "" end) end) | join("\u001f")' 2>/dev/null) || { malformed=$((malformed+1)); continue; }
         IFS=$'\x1f' read -r id ts cwd branch url <<< "$fields"
-        printf -v cwd '%b' "$cwd"
+        printf -v cwd '%b' "${cwd:-}"
         # Quoting id keeps wildcard characters literal and avoids per-row processes.
         case "$ids" in *$'\n'"$id"$'\n'*) skipped=$((skipped+1)); continue ;; esac
-        ledger_repo_url "$url"
-        if [ -z "$url" ] && [ -n "$cwd" ]; then ledger_repo "$cwd" basename; fi
+        ledger_repo_url "${url:-}"
+        if [ -z "${url:-}" ] && [ -n "${cwd:-}" ]; then ledger_repo "$cwd" basename; fi
         # Historical metadata is authoritative; never use today's branch.
-        LEDGER_BRANCH="$branch"; ledger_issue "$branch"
+        LEDGER_BRANCH="${branch:-}"; ledger_issue "$LEDGER_BRANCH"
         row=$(ledger_row "$ts" codex "$id" backfill backfill) || { malformed=$((malformed+1)); continue; }
         if [ "$dry" = 1 ]; then :; else ledger_append "$row" || { echo 'could not append ledger' >&2; exit 5; }; fi
         ids="${ids}${id}"$'\n'; added=$((added+1))
@@ -138,7 +144,7 @@ case "$action" in
       [ ! -L "$target" ] || { echo "refusing symlink: $target" >&2; exit 5; }
       [ ! -e "$target" ] || [ -f "$target" ] || { echo "refusing non-regular hooks configuration: $target" >&2; exit 5; }
       existing='{}'; if [ -e "$target" ]; then existing=$(cat "$target") || exit 5; fi
-      printf -v command '%q --provider codex --codex-home %q' "$hook" "$dir"
+      command="$(shell_quote "$hook") --provider codex --codex-home $(shell_quote "$dir")"
       umask 077
       temp=$(mktemp "$dir/.ledger-hooks.XXXXXX") || exit 5
       # Reject unexpected shapes instead of replacing user-owned hooks.
