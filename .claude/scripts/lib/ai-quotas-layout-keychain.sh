@@ -13,10 +13,16 @@ LAYOUT_REPAIR_ID=""
 layout_keychain_new_repair() { LAYOUT_REPAIR_ID="$$-$RANDOM"; }
 
 layout_keychain_metadata() { # Pure registry/sidecar metadata; safe for doctor.
+  local out
   if [[ "$PLATFORM" != Darwin ]] || ! command -v python3 >/dev/null 2>&1; then
     printf '[]\n'; return 0
   fi
-  printf '%s' "$1" | python3 "$SELF_DIR/lib/ai-quotas-keychain-plan.py" "$PROFILE_ROOT"
+  if out="$(printf '%s' "$1" | python3 "$SELF_DIR/lib/ai-quotas-keychain-plan.py" "$PROFILE_ROOT" 2>/dev/null)" \
+      && printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s\n' "$out"
+  else
+    printf '[]\n'
+  fi
 }
 
 layout_keychain_prepare() {

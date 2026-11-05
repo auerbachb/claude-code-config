@@ -71,7 +71,8 @@ func run() throws {
     do {
         try adapter.rename(services[0], services[1], account: account)
         throw ProbeFailure(step: "collision-not-refused", status: -1)
-    } catch is MetadataFailure { }
+    } catch let error as MetadataFailure
+        where error.operation == "ambiguous-or-occupied" && error.status == errSecDuplicateItem { }
     func rename(_ source: String, _ target: String) throws {
         try adapter.rename(source, target, account: account)
     }

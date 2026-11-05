@@ -1547,8 +1547,8 @@ The `.keychain-service-claude` sidecars live next to the provider directories,
 so a complete cycle leaves these path-owned files unchanged. Each final ref,
 sidecar and harness-derived destination service must agree. Native integration
 tests use only a private temporary Keychain with fixed synthetic credentials;
-they verify byte/ACL preservation and an unchanged user search list. Neither
-the tests nor this implementation authoring migrated production items.
+they verify byte/ACL preservation and an unchanged user search list. No
+production Keychain item was migrated during testing or development.
 
 No password is stored or replayed. The adapter disables interactive prompts;
 locked or inaccessible Keychain metadata fails before moves. Non-cycle and

@@ -1943,20 +1943,23 @@ check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'publication signa
 layout_fixture layout-staging-signal
 export LAYOUT_STAGE_SIGNAL_DEST="$PROFILES/.layout-repair"
 export LAYOUT_STAGE_SIGNAL_PID="$PROFILES/.relogin-slots/alpha__claude/pid"
+export LAYOUT_STAGE_SIGNAL_MARKER="$CASE_DIR/staging-signal-fired"
 cat > "$BIN/mkdir" <<'MKSHIM'
 #!/usr/bin/env bash
 /bin/mkdir "$@" || exit $?
 if [[ "${!#}" == "$LAYOUT_STAGE_SIGNAL_DEST" ]]; then
+  : > "$LAYOUT_STAGE_SIGNAL_MARKER"
   kill -TERM "$(cat "$LAYOUT_STAGE_SIGNAL_PID")"
 fi
 MKSHIM
 chmod +x "$BIN/mkdir"
-run repair-layout claude
+PATH="$BIN:$PATH" run repair-layout claude
+[[ -f "$LAYOUT_STAGE_SIGNAL_MARKER" ]] && ok 'staging signal shim actually ran' || bad 'staging signal shim did not run'
 check_eq "$RC" 0 'termination immediately after staging mkdir cannot orphan ownership'
 check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta 'staging signal preserves repaired account association'
 [[ ! -e "$PROFILES/.layout-repair" ]] && ok 'staging signal leaves no planless marker' || bad 'staging signal left marker'
 rm -f "$BIN/mkdir"
-unset LAYOUT_STAGE_SIGNAL_DEST LAYOUT_STAGE_SIGNAL_PID
+unset LAYOUT_STAGE_SIGNAL_DEST LAYOUT_STAGE_SIGNAL_PID LAYOUT_STAGE_SIGNAL_MARKER
 
 layout_fixture layout-rollback-signal
 layout_fault_run rollback-signal
@@ -1977,6 +1980,29 @@ check_eq "$RC" 5 'new repair refuses interrupted transaction'
 unset LAYOUT_REAL_MV LAYOUT_REGISTRY LAYOUT_FAULT_STATE LAYOUT_FAIL_DEST LAYOUT_ROLLBACK_DEST
 unset LAYOUT_FAIL_COMMIT LAYOUT_SIGNAL_PUBLISH LAYOUT_SIGNAL_PID_FILE LAYOUT_SIGNAL_ROLLBACK LAYOUT_ROLLBACK_SIGNAL_DEST
 rm -f "$BIN/mv"
+
+# A broken optional Python planner must not disable file-backed repair.
+cat > "$BIN/python3" <<'PYFAIL'
+#!/usr/bin/env bash
+case "$LAYOUT_PLANNER_MODE" in
+  failure) exit 9 ;;
+  malformed) printf 'not-json\n' ;;
+  non-array) printf '{}\n' ;;
+esac
+PYFAIL
+chmod +x "$BIN/python3"
+for LAYOUT_PLANNER_MODE in failure malformed non-array; do
+  export LAYOUT_PLANNER_MODE
+  layout_fixture "layout-planner-$LAYOUT_PLANNER_MODE"
+  PLATFORM_UNDER_TEST=Darwin
+  PATH="$BIN:$PATH" run doctor --json
+  check_eq "$RC" 8 "$LAYOUT_PLANNER_MODE planner leaves doctor findings available"
+  PATH="$BIN:$PATH" run repair-layout claude
+  check_eq "$RC" 0 "$LAYOUT_PLANNER_MODE planner permits file-backed repair"
+  check_eq "$(cat "$PROFILES/alpha/claude/marker")" opaque-beta "$LAYOUT_PLANNER_MODE planner preserves repaired account association"
+done
+rm -f "$BIN/python3"
+unset LAYOUT_PLANNER_MODE
 
 # --- metadata-only Keychain cycles (issue #1850 actual reported pair) ----------
 for MALFORMED_REF in null '[]' '"invalid"'; do
