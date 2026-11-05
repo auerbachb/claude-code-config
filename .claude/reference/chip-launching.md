@@ -416,8 +416,9 @@ waiting to be told is itself part of the failure (issue [#1367](https://github.c
 3. **Queue or launch it inline**, in this thread, through the ordinary pipeline —
    under `min(pipeline_ceiling, active_work_cap)` like any other pick. Below the
    ceiling it starts now; at or above it, it queues inline behind the running
-   pipelines ("Slot state schedules; it never routes" above). Cross-repo work is
-   no exception: a subagent gets its own worktree and the cap is per-repo.
+   pipelines ("Slot state schedules; it never routes" above). **This repo's work
+   only** (`CLAUDE.md` "Thread scope"): another repo's work stops at step 2's
+   filed issue, unless the operator says in chat to implement it here.
 
 **A chip already clicked is not recoverable this way** — a thread is running, and
 the correct handling is the ordinary duplicate-work check (does an open PR or a
