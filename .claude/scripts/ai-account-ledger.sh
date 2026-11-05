@@ -2,8 +2,9 @@
 # catalog: token-measurement — Capture metadata-only AI account sessions, backfill Codex rollouts, install Codex hooks, and report projects by registered account.
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+home="${HOME:-}"
 lib="$SELF_DIR/../hooks/lib/ai-account-ledger.sh"
-[ -r "$lib" ] || lib="$HOME/.claude/hooks/lib/ai-account-ledger.sh"
+[ -r "$lib" ] || lib="$home/.claude/hooks/lib/ai-account-ledger.sh"
 [ -r "$lib" ] || { echo 'account ledger library unavailable' >&2; exit 5; }
 # shellcheck source=../hooks/lib/ai-account-ledger.sh
 source "$lib"
@@ -24,8 +25,12 @@ while [ "$#" -gt 0 ]; do
 done
 [[ "$days" =~ ^[1-9][0-9]*$ ]] && [ "${#days}" -le 6 ] || usage
 case "$provider" in ''|claude|codex) ;; *) usage ;; esac
-registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
-ledger="${AI_ACCOUNT_LEDGER:-$HOME/.claude/ai-account-ledger.jsonl}"
+# Installation needs only the registry; HOME is required solely for used defaults.
+if [ -z "$home" ] && { [ -z "${AI_QUOTAS_CONFIG:-}" ] || { [ "$action" != install-codex-hooks ] && [ -z "${AI_ACCOUNT_LEDGER:-}" ]; }; }; then
+  echo 'HOME is unset; provide the account registry and, for report/backfill, ledger paths' >&2; exit 5
+fi
+registry="${AI_QUOTAS_CONFIG:-$home/.claude/ai-quotas.json}"
+ledger="${AI_ACCOUNT_LEDGER:-$home/.claude/ai-account-ledger.jsonl}"
 registry_input="$registry"
 [ -f "$registry_input" ] && [ -r "$registry_input" ] || registry_input=/dev/null
 ledger_input="$ledger"
@@ -39,10 +44,10 @@ esac
 # Emit candidate homes: an explicit argument, or registered Codex paths plus the default.
 profiles() {
   if [ -n "$requested_codex_home" ]; then printf '%s\0' "$requested_codex_home"; return; fi
-  jq -jnr --rawfile config "$registry_input" --arg default "$HOME/.codex" '
+  jq -jnr --rawfile config "$registry_input" --arg default "${home:+$home/.codex}" '
     (try ($config|fromjson) catch {}) as $registry |
     [((try ($registry.accounts|arrays|.[]|objects) catch empty) | select(type=="object" and .provider=="codex") | .profile_dir |
-      select(type=="string") | select(contains("\u0000")|not)), $default] |
+      select(type=="string") | select(contains("\u0000")|not)), ($default | select(length>0))] |
     unique[] | . + "\u0000"' 2>/dev/null
 }
 # Quote one command argument for POSIX shells, retaining controls and trailing newlines.
@@ -112,7 +117,7 @@ case "$action" in
       {window:{start:($start|todateiso8601),end:($end|todateiso8601),days:$days},
        accounts:($rows | group_by([.provider,.label]) | map(.[0] as $a |
          {provider:$a.provider,label:$a.label,nickname:([$registry.accounts[]? | objects | select(.provider==$a.provider and .label==$a.label) | .nickname // empty][0] // null),
-          projects:(group_by(.repo // "(no repo)") | map({repo:(.[0].repo // "(no repo)"),sessions:session_count,last_ts:(max_by(.ts|time_key)|.ts)}))})),
+          projects:(group_by(.repo) | map({repo:.[0].repo,sessions:session_count,last_ts:(max_by(.ts|time_key)|.ts)}))})),
        unknown_sessions:([$rows[] | select(.label=="unknown")] | group_by([.provider,.repo]) | map(session_count) | add // 0),
        annotations:([$rows[] | select(.provider=="claude" and (.label|contains("@"))) |
           select(.account_email|type=="string" and length<=254 and test("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,63}\\z")) |
@@ -120,7 +125,7 @@ case "$action" in
           {provider,label,kind:"possible_mislabel",account_email}]|unique)}' < "$input") || exit 5
     if [ "$json" = 1 ]; then printf '%s\n' "${result//$'\177'/\\u007f}"; else
       printf '%s\n' "$result" | jq -r 'def safe_text: tostring | gsub("(?<control>[\u0000-\u001f\u007f])"; if .control=="\u007f" then "\\u007f" else (.control|tojson|.[1:-1]) end);
-        (.accounts[] | "\(.provider|safe_text) \(.label|safe_text)\(if .nickname then " (\(.nickname|safe_text))" else "" end): " + ([.projects[] | "\(.repo|safe_text) ×\(.sessions) (last \(.last_ts|safe_text))"]|join(", "))), (.annotations[] | "WARNING possible mislabel: \(.provider|safe_text) \(.label|safe_text), account metadata \(.account_email)")'
+        (.accounts[] | "\(.provider|safe_text) \(.label|safe_text)\(if .nickname then " (\(.nickname|safe_text))" else "" end): " + ([.projects[] | "\((.repo // "(no repo)")|safe_text) ×\(.sessions) (last \(.last_ts|safe_text))"]|join(", "))), (.annotations[] | "WARNING possible mislabel: \(.provider|safe_text) \(.label|safe_text), account metadata \(.account_email)")'
     fi
     ;;
   install-codex-hooks)
@@ -136,7 +141,7 @@ case "$action" in
     temp=""
     trap '[ -z "$temp" ] || [ ! -f "$temp" ] || unlink "$temp"' EXIT
     hook=""
-    for candidate in "$HOME/.claude/skills-worktree/.claude/hooks/ai-account-session-start.sh" "$HOME/.claude/hooks/ai-account-session-start.sh" "$SELF_DIR/../hooks/ai-account-session-start.sh"; do
+    for candidate in "${home:+$home/.claude/skills-worktree/.claude/hooks/ai-account-session-start.sh}" "${home:+$home/.claude/hooks/ai-account-session-start.sh}" "$SELF_DIR/../hooks/ai-account-session-start.sh"; do
       if [ -x "$candidate" ]; then hook="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"; break; fi
     done
     [ -n "$hook" ] || { echo 'account SessionStart hook unavailable' >&2; exit 5; }

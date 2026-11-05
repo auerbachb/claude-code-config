@@ -95,6 +95,8 @@ JSON reports contain `window: {start,end,days}`, `accounts` with provider, label
 nickname and `projects: [{repo,sessions,last_ts}]`, `unknown_sessions`, and
 `annotations`. Session counts deduplicate nonempty session IDs within each account/project; rows lacking IDs remain individually countable. Text includes counts/last-seen dates; unknown is a separate account
 group. Malformed JSONL and rows without usable provider/label/timestamp are skipped.
+JSON keeps missing repository keys null, distinct from a project literally named `(no repo)`; text displays missing keys as `(no repo)`.
+
 The report is informational and never gates dispatch or spending.
 
 Cursor capture and an `AI-Account:` commit trailer are follow-ups outside Issue #1885.

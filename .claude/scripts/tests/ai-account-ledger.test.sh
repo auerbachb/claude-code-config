@@ -1,5 +1,5 @@
 #!/bin/bash
-# catalog: token-measurement — Verify metadata-only Codex backfill, idempotency, historical branch provenance, and rolling account/project reports.
+# catalog: tests — Verify metadata-only Codex backfill, idempotency, historical branch provenance, and rolling account/project reports.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 CLI="$ROOT/.claude/scripts/ai-account-ledger.sh"
@@ -39,6 +39,21 @@ jq -c '.capture="hook"' "$AI_ACCOUNT_LEDGER" >> "$HOME/hook-rows.jsonl"
 jq -nc 'range(0;10000) | {provider:"codex",session_id:("noise-" + tostring)}' >> "$HOME/hook-rows.jsonl"
 AI_ACCOUNT_LEDGER="$HOME/hook-rows.jsonl" "$CLI" backfill-codex
 [ "$(wc -l < "$HOME/hook-rows.jsonl" | tr -d ' ')" = 10003 ]
+# Missing repositories retain a typed JSON key, distinct from a literal basename.
+jq -cn '{ts:(now|strftime("%Y-%m-%dT%H:%M:%SZ")),provider:"codex",label:"work"} | . + {repo:null,session_id:"absent"}, . + {repo:"(no repo)",session_id:"literal"}' > "$HOME/grouping-ledger.jsonl"
+AI_ACCOUNT_LEDGER="$HOME/grouping-ledger.jsonl" "$CLI" report --json > "$HOME/grouping-report.json"
+jq -e '.accounts[0].projects | length==2 and any(.repo==null and .sessions==1) and any(.repo=="(no repo)" and .sessions==1)' "$HOME/grouping-report.json" >/dev/null
+# HOME-less installation honors explicit setup paths without requiring an unused ledger.
+mkdir -p "$HOME/homeless-profile"
+jq -n --arg path "$HOME/homeless-profile" '{accounts:[{provider:"codex",label:"homeless",profile_dir:$path}]}' > "$HOME/homeless-registry.json"
+env -u HOME -u AI_ACCOUNT_LEDGER AI_QUOTAS_CONFIG="$HOME/homeless-registry.json" AI_QUOTAS_PROFILE_ROOT="$HOME/homeless-root" "$ROOT/.claude/scripts/ai-quotas-setup.sh" ledger-hooks > "$HOME/homeless-install.out"
+jq -e '.hooks.SessionStart|length==1' "$HOME/homeless-profile/hooks.json" >/dev/null
+# Missing required defaults fail explicitly; explicit report paths remain usable.
+status=0
+env -u HOME -u AI_ACCOUNT_LEDGER AI_QUOTAS_CONFIG="$AI_QUOTAS_CONFIG" "$CLI" report > "$HOME/homeless-report.out" 2> "$HOME/homeless-report.err" || status=$?
+[ "$status" = 5 ]; grep -q 'HOME is unset' "$HOME/homeless-report.err"
+env -u HOME AI_ACCOUNT_LEDGER="$HOME/grouping-ledger.jsonl" AI_QUOTAS_CONFIG="$AI_QUOTAS_CONFIG" "$CLI" report --json > "$HOME/homeless-report.json"
+jq -e '.accounts[0].projects|length==2' "$HOME/homeless-report.json" >/dev/null
 # Present non-GitHub history must never adopt the current remote after a move.
 git -C "$HOME/repo" remote add origin https://github.com/Current/Moved.git
 mkdir -p "$HOME/nonnewline/sessions"
