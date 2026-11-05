@@ -1237,6 +1237,7 @@ claude_refresh_access_token() {
   OUTCOME_STATUS=""
 
   if [[ -z "$CLAUDE_REFRESH_TOKEN" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     CLAUDE_REFRESH_DETAIL="the stored credential carries no refresh token"
     return 1
   fi
@@ -1970,6 +1971,7 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
   token="$(jq -r '.tokens.access_token // empty' "$dir/auth.json" 2>/dev/null || true)"
   account="$(jq -r '.tokens.account_id // .account_id // empty' "$dir/auth.json" 2>/dev/null || true)"
   if [[ -z "$token" ]]; then
+    set_outcome logged_out credential-store credential_unavailable
     emit_row codex "$label" "$email" "7-day" "" "" needs-login \
       "${why}; auth.json holds no access token — run: $(relogin_hint codex "$label")" "http" ""
     return 0
