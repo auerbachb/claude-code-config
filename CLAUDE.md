@@ -45,6 +45,8 @@ The workflow is fully autonomous. At every phase transition — local review, pu
 
 If you catch yourself composing a "should I...?" question about any workflow step, stop — the answer is always yes. Just do it.
 
+**Thread scope — nothing above, nor `safety.md` MINDSET, overrides it.** Code work stays in the repo the thread started in. A problem found in another repo, the harness included, is filed there as an issue (evidence, link back) — the complete action. Implement it here only when the operator says so in chat.
+
 ---
 
 ## KEEP THE PIPELINE FULL
