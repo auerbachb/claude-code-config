@@ -84,6 +84,14 @@ mk_fixture "$TMP/deferred.json" "Deferred to #42.
 <!-- review-verdict: deferred defect=real agent=claude-code -->"
 check_eq "deferred marker counts as marked -> 0" "0" "$(count "$TMP/deferred.json")"
 
+# 1d. A marker carrying reply-thread.sh --fix (issue #1843) counts as marked;
+#     an unknown fix value is not a marker reply-thread.sh writes, so it does not.
+mk_fixture "$TMP/fix.json" "Fixed in abc1234.
+<!-- review-verdict: fixed defect=real agent=claude-code fix=as-given -->" "Fixed in abc1234.
+<!-- review-verdict: fixed defect=real agent=codex fix=none -->" "Fixed in abc1234.
+<!-- review-verdict: fixed defect=real agent=claude-code fix=perfect -->"
+check_eq "fix=as-given / fix=none marked, fix=perfect unmarked -> 1" "1" "$(count "$TMP/fix.json")"
+
 # 2. Reply to a human root is excluded; a bot reply on a bot root is excluded.
 jq -n '[
   {id: 1, in_reply_to_id: null, user: {login: "a-human", type: "User", id: 5}, body: "Nit?"},

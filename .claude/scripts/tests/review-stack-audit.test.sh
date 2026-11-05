@@ -1009,7 +1009,8 @@ import json, sys
 multi = json.load(open(sys.argv[1]))["per_repo"][int(sys.argv[3])]
 single = json.load(open(sys.argv[2]))
 VALUE = ("findings", "valid", "real_defects", "declined", "unanswered",
-         "precision", "cost_per_real_defect_usd", "median_response_min")
+         "precision", "cost_per_real_defect_usd", "median_response_min",
+         "fix_as_given", "fix_adapted", "fix_wrong", "fix_none", "fix_unknown", "fix_quality")
 for t in multi["tools"]:
     if t.get("spend_source") not in ("receipt", "estimate", "flat", "none") or "spend_usd" not in t:
         sys.exit(1)
@@ -1665,7 +1666,7 @@ r="$(jget "$TMP_DIR/value-null.out.json" "[(t['spend_usd'], t['real_defects'], t
 # Legacy parity: the same fixture without --ledger carries no value field.
 "$MEASURE" --fixture "$VALUE_F" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/value-legacy.out.json" \
   || fail "value: legacy run over the verdict fixture failed"
-r="$(jget "$TMP_DIR/value-legacy.out.json" "sorted({k for t in d['tools'] for k in t} & {'findings', 'valid', 'real_defects', 'declined', 'unanswered', 'precision', 'cost_per_real_defect_usd', 'median_response_min'})")"
+r="$(jget "$TMP_DIR/value-legacy.out.json" "sorted({k for t in d['tools'] for k in t} & {'findings', 'valid', 'real_defects', 'declined', 'unanswered', 'precision', 'cost_per_real_defect_usd', 'median_response_min', 'fix_as_given', 'fix_adapted', 'fix_wrong', 'fix_none', 'fix_unknown', 'fix_quality'})")"
 [[ "$r" == "[]" ]] && ok "value: a run without --ledger carries no value field" \
   || fail "value: legacy run leaked value fields: $r"
 
@@ -1727,7 +1728,7 @@ cat > "$VALUE_MULTI" <<'JSON'
      {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "y"},
                    {"user": "dev", "user_type": "User", "body": "Fixed in def5678"}]},
      {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "z"},
-                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: fixed defect=real agent=claude-code -->"}]}]}]},
+                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: fixed defect=real agent=claude-code fix=as-given -->"}]}]}]},
  {"repo": "acme/two", "prs": [
    {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
     "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:20:00Z"}],
@@ -1736,7 +1737,7 @@ cat > "$VALUE_MULTI" <<'JSON'
      {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "x"},
                    {"user": "dev", "user_type": "User", "body": "Declined: intended"}]},
      {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "z"},
-                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: deferred defect=real agent=codex -->"}]}]},
+                   {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: deferred defect=real agent=codex fix=adapted -->"}]}]},
    {"number": 2, "merged_at": "2025-10-04T00:00:00Z", "created_at": "2025-10-03T00:00:00Z",
     "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T00:30:00Z"}],
     "pr_comments": [], "issue_comments": []}]}
@@ -1759,6 +1760,61 @@ r="$(jget "$OUT" "[(t['key'], t['findings'], t['valid'], t['real_defects'], t['d
 [[ "$r" == "[('coderabbit', 3, 2, 0, 1, 0), ('codeant', 2, 2, 2, 0, 0)]" ]] \
   && ok "value: the total's counts are the sum of the per-repo counts" \
   || fail "value: total counts wrong: $r"
+# Fix quality (issue #1843) pools the same way: CodeAnt is as-given on acme/one
+# (1.0) and adapted on acme/two (0.0); the total recomputes 1/2 = 0.5 from the
+# summed counts. CodeRabbit has no real defect, so its fix_quality is null.
+r="$(jget "$OUT" "([[(x['fix_as_given'], x['fix_adapted'], x['fix_quality']) for x in r['tools'] if x['key']=='codeant'][0] for r in d['per_repo']], [(t['fix_as_given'], t['fix_adapted'], t['fix_wrong'], t['fix_none'], t['fix_unknown'], t['fix_quality']) for t in d['tools'] if t['key'] in ('codeant', 'coderabbit')])")"
+[[ "$r" == "([(1, 0, 1.0), (0, 1, 0.0)], [(0, 0, 0, 0, 0, None), (1, 1, 0, 0, 0, 0.5)])" ]] \
+  && ok "value: fix counts sum across repos and the total's fix_quality is recomputed from them (0.5)" \
+  || fail "value: pooled fix quality wrong: $r"
+
+# Fix quality (issue #1843). CodeRabbit: four real-defect threads marked
+# as-given, as-given, adapted, wrong -> fix_quality 2/4 = 0.5; plus three that
+# must score nothing: a declined real defect (fix=wrong), a defect=not finding
+# (fix=as-given), and a wording-only fix. BugBot: four real-defect threads with
+# no fix= token -> fix_unknown=4, fix_none=0, fix_quality null. Greptile: an
+# older marker's fix= is never borrowed by a later marker without one, and an
+# unknown fix= value reads as unknown; one fix=none counts as none, outside
+# the ratio.
+FIX_F="$TMP_DIR/fix.json"
+python3 - "$FIX_F" <<'PY'
+import json, sys
+def th(bot, *bodies):
+    return {"comments": [{"user": bot, "user_type": "Bot", "body": "finding"}]
+            + [{"user": "dev", "user_type": "User", "body": b} for b in bodies]}
+M = "<!-- review-verdict: %s -->"
+cr, bb, gr = "coderabbitai[bot]", "cursor[bot]", "greptile-apps[bot]"
+threads = [th(cr, M % ("fixed defect=real agent=claude-code fix=" + f)) for f in ("as-given", "as-given", "adapted", "wrong")]
+threads += [th(cr, M % "declined defect=real agent=claude-code fix=wrong"),
+            th(cr, M % "fixed defect=not agent=claude-code fix=as-given"),
+            th(cr, "Fixed in abc1234")]
+threads += [th(bb, M % "fixed defect=real agent=claude-code") for _ in range(4)]
+threads += [th(gr, M % "fixed defect=real agent=claude-code fix=as-given", M % "deferred defect=real agent=claude-code"),
+            th(gr, M % "fixed defect=real agent=claude-code fix=perfect"),
+            th(gr, M % "fixed defect=real agent=claude-code fix=none")]
+json.dump({"repo": "test/repo", "prs": [{"number": 1, "merged_at": "2025-10-05T00:00:00Z", "reviews": [],
+           "pr_comments": [], "issue_comments": [], "threads": threads}]}, open(sys.argv[1], "w"))
+PY
+OUT="$TMP_DIR/fix.out.json"
+"$MEASURE" --fixture "$FIX_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" 2>"$TMP_DIR/fix.err" \
+  || fail "value: ledger run over the fix-quality fixture failed: $(head -c 300 "$TMP_DIR/fix.err")"
+ft() { jget "$OUT" "[(t['fix_as_given'], t['fix_adapted'], t['fix_wrong'], t['fix_none'], t['fix_unknown'], t['fix_quality']) for t in d['tools'] if t['key']=='$1'][0]"; }
+r="$(ft coderabbit)"
+[[ "$r" == "(2, 1, 1, 0, 0, 0.5)" ]] \
+  && ok "value: as-given, as-given, adapted, wrong give fix_quality=0.5; a declined, a defect=not, and a wording-only finding score nothing" \
+  || fail "value: coderabbit fix counts wrong (as_given, adapted, wrong, none, unknown, quality): $r"
+r="$(jget "$OUT" "[(t['real_defects'], t['valid'], t['declined'], t['precision']) for t in d['tools'] if t['key']=='coderabbit'][0]")"
+[[ "$r" == "(5, 6, 1, 0.857)" ]] \
+  && ok "value: fix= leaves real_defects and precision unchanged (the declined real defect still counts as one)" \
+  || fail "value: fix= changed real_defects/precision: $r"
+r="$(ft bugbot)"
+[[ "$r" == "(0, 0, 0, 0, 4, None)" ]] \
+  && ok "value: real-defect markers with no fix= read as fix_unknown=4 (never fix_none), fix_quality null" \
+  || fail "value: bugbot absent-fix counts wrong: $r"
+r="$(ft greptile)"
+[[ "$r" == "(0, 0, 0, 1, 2, None)" ]] \
+  && ok "value: fix= comes from the deciding marker only; an unknown value is unknown; none stays out of the ratio" \
+  || fail "value: greptile deciding-marker fix counts wrong: $r"
 
 # The library directly: rounding, null rules, and parser parity edge cases a
 # fixture reaches only awkwardly.
@@ -1814,8 +1870,14 @@ checks = [
     ("other-repo-does-not-defer", verdict("Deferred to other/repo#77") is None),
     ("glued-number-does-not-defer", verdict("see abc#12") is None),
     ("same-repo-any-case-defers", verdict("Deferred to TEST/Repo#77") == "deferred"),
-    ("unknown-defect-is-not-real", L.parse_marker(" fixed defect=maybe agent=x ") == {"verdict": "fixed", "defect": None, "agent": "x"}),
+    ("unknown-defect-is-not-real", L.parse_marker(" fixed defect=maybe agent=x ") == {"verdict": "fixed", "defect": None, "agent": "x", "fix": None}),
     ("bad-agent-is-unnamed", L.parse_marker(" fixed defect=real agent=a<b ")["agent"] is None),
+    ("fix-as-given-parses", L.parse_marker(" fixed defect=real agent=x fix=as-given ")["fix"] == "as-given"),
+    ("fix-value-is-case-folded", L.parse_marker(" fixed defect=real FIX=Adapted ")["fix"] == "adapted"),
+    ("unknown-fix-is-unknown", L.parse_marker(" fixed defect=real fix=bogus ")["fix"] is None),
+    ("absent-fix-is-unknown-not-none", L.parse_marker(" fixed defect=real agent=x ")["fix"] is None),
+    ("fix-quality-null-without-scored", L.value_fields(tally(fix_none=2, fix_unknown=3), None)["fix_quality"] is None),
+    ("fix-quality-rounds-half-up", L.value_fields(tally(fix_as_given=1, fix_adapted=15), None)["fix_quality"] == 0.063),
     ("unknown-verdict-is-no-marker", L.parse_marker(" maybe defect=real ") is None),
     ("empty-marker-is-no-marker", L.parse_marker("   ") is None),
     ("fenced-marker-ignored", L.classify_reply("```\n<!-- review-verdict: fixed defect=real -->\n```\nok", [])[1] is None),
@@ -1958,9 +2020,27 @@ fi
 n="$(table_rows "$TMP_DIR/sc-all.md" '## Value per dollar' | grep -c '^| [0-9]')"
 [[ "$n" == "6" ]] && ok "scorecard: the ranked table has one row per measured tool (6)" \
   || fail "scorecard: expected 6 ranked rows, got $n"
-grep -q '^| 1 | CodeAnt | \$62.00 (flat) | 2 | \$31.00 | 100.0% | 0 |$' "$TMP_DIR/sc-all.md" \
-  && ok "scorecard: CodeAnt ranks first with its labelled \$62.00 flat spend, 2 real defects, \$31.00 each" \
+grep -q '^| 1 | CodeAnt | \$62.00 (flat) | 2 | \$31.00 | 100.0% | 50.0% | 0 |$' "$TMP_DIR/sc-all.md" \
+  && ok "scorecard: CodeAnt ranks first with its labelled \$62.00 flat spend, 2 real defects, \$31.00 each, fix quality 50.0%" \
   || fail "scorecard: CodeAnt's ranked row is wrong: $(grep 'CodeAnt' "$TMP_DIR/sc-all.md" | head -1)"
+grep -q '^| [0-9] | CodeRabbit | .* | 66.7% | — | [0-9]* |$' "$TMP_DIR/sc-all.md" \
+  && ok "scorecard: a null fix_quality renders '—' in the Fix quality column, after Precision" \
+  || fail "scorecard: CodeRabbit's null Fix quality cell is wrong: $(grep '| CodeRabbit |' "$TMP_DIR/sc-all.md" | head -1)"
+by_repo="$(awk '/<summary>By repo<\/summary>/ { on = 1; next } on && /<\/details>/ { exit } on' "$TMP_DIR/sc-all.md")"
+if grep -q '^| Repo | Rank | Tool | Spend | Real defects | Cost / real defect | Precision | Fix quality | Sole-source PRs |$' <<<"$by_repo" \
+   && grep -q '^| acme/one | [0-9] | CodeAnt | .* | 100.0% | 100.0% | [0-9]* |$' <<<"$by_repo" \
+   && grep -q '^| acme/two | [0-9] | CodeAnt | .* | 100.0% | 0.0% | [0-9]* |$' <<<"$by_repo"; then
+  ok "scorecard: the By repo fold carries the Fix quality column per repo (100.0%, 0.0%)"
+else
+  fail "scorecard: the By repo fold lacks the Fix quality column: $(head -c 600 <<<"$by_repo")"
+fi
+fix_fold="$(awk '/<summary>Fix quality counts<\/summary>/ { on = 1; next } on && /<\/details>/ { exit } on' "$TMP_DIR/sc-all.md")"
+if grep -q '^| Tool | as-given | adapted | wrong | none | unknown |$' <<<"$fix_fold" \
+   && grep -q '^| CodeAnt | 1 | 1 | 0 | 0 | 0 |$' <<<"$fix_fold"; then
+  ok "scorecard: the Fix quality counts fold lists each tool's as-given/adapted/wrong/none/unknown counts"
+else
+  fail "scorecard: the Fix quality counts fold is missing or wrong: $(head -c 600 <<<"$fix_fold")"
+fi
 table_rows "$TMP_DIR/sc-all.md" '## Vendor claims vs observed' > "$TMP_DIR/sc-claims.rows"
 n="$(wc -l < "$TMP_DIR/sc-claims.rows" | tr -d ' ')"
 bad="$(grep -vcE '<https://[^>]+> \| [0-9]{4}-[0-9]{2}-[0-9]{2} \|$' "$TMP_DIR/sc-claims.rows")"
@@ -1987,7 +2067,7 @@ grep -q '^| CodeAnt | .* | 100.0% | \$31.00 | <https://' "$TMP_DIR/sc-claims.row
 "$SCORECARD" --snapshot "$TMP_DIR/sc-null.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" --part value > "$TMP_DIR/sc-null.md" \
   || fail "scorecard: null-rate render failed"
 last="$(table_rows "$TMP_DIR/sc-null.md" '## Value per dollar' | grep '^| [0-9]' | tail -1)"
-[[ "$last" == "| 6 | BugBot (Cursor) | — (none) | 0 | — | — | 0 |" ]] \
+[[ "$last" == "| 6 | BugBot (Cursor) | — (none) | 0 | — | — | — | 0 |" ]] \
   && ok "scorecard: a null spend renders '— (none)', its cost cell '—', and it ranks last" \
   || fail "scorecard: the null-spend tool is not last with dashes: $last"
 
@@ -2017,10 +2097,10 @@ order="$(table_rows "$TMP_DIR/sc-rank.md" '## Value per dollar' | grep '^| [0-9]
   && ok "scorecard: ranked by cost ascending, precision breaking ties; zero-defect spend next; unknown spend last" \
   || fail "scorecard: rank order expected CBADFE, got $order"
 r="$(grep '^| 6 | E |' "$TMP_DIR/sc-rank.md")"
-[[ "$r" == "| 6 | E | — (none) | 3 | — | 100.0% | 5 |" ]] && ok "scorecard: a null cost is '—' even beside real figures" \
+[[ "$r" == "| 6 | E | — (none) | 3 | — | 100.0% | — | 5 |" ]] && ok "scorecard: a null cost is '—' even beside real figures" \
   || fail "scorecard: unknown-spend row wrong: $r"
 r="$(grep '^| 5 | F |' "$TMP_DIR/sc-rank.md")"
-[[ "$r" == "| 5 | F | \$0.00 (flat) | 0 | — | — | — |" ]] \
+[[ "$r" == "| 5 | F | \$0.00 (flat) | 0 | — | — | — | — |" ]] \
   && ok "scorecard: real zeros render '0' or '\$0.00'; nulls render '—', never '0'" \
   || fail "scorecard: zero-vs-null row wrong: $r"
 

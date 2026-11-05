@@ -602,6 +602,12 @@ def to_decimal(value):
 # reply without one is fixed, not a real defect.
 
 VERDICTS = ("fixed", "deferred", "declined")
+# Fix quality of the reviewer's suggestion (issue #1843), set at reply time with
+# reply-thread.sh --fix. The tally field for each is FIX_FIELDS[value].
+FIX_VALUES = ("as-given", "adapted", "wrong", "none")
+FIX_FIELDS = {"as-given": "fix_as_given", "adapted": "fix_adapted",
+              "wrong": "fix_wrong", "none": "fix_none"}
+FIX_COUNT_FIELDS = ("fix_as_given", "fix_adapted", "fix_wrong", "fix_none", "fix_unknown")
 DEFERRED_REFS_MODULE = "deferred-refs.jq"
 
 _MARKER_RE = re.compile(r"<!--[ \t]*review-verdict[ \t]*:([^\n]*?)-->", re.I)
@@ -693,13 +699,15 @@ def parse_bodies(items, lib_dir=None):
 def parse_marker(inner):
     """The fields of one marker's inside text, or None when its verdict is unknown.
 
-    Returns {"verdict", "defect": "real"|"not"|None, "agent": str|None}. Only the
-    verdict is required; an unknown `defect` value reads as not-real, and an
-    agent name outside a conservative token shape reads as unnamed."""
+    Returns {"verdict", "defect": "real"|"not"|None, "agent": str|None,
+    "fix": "as-given"|"adapted"|"wrong"|"none"|None}. Only the verdict is
+    required; an unknown `defect` value reads as not-real, an agent name outside
+    a conservative token shape reads as unnamed, and an absent or unknown `fix`
+    value reads as unknown (None) — never as `none`."""
     fields = inner.split()
     if not fields or fields[0].lower() not in VERDICTS:
         return None
-    marker = {"verdict": fields[0].lower(), "defect": None, "agent": None}
+    marker = {"verdict": fields[0].lower(), "defect": None, "agent": None, "fix": None}
     for field in fields[1:]:
         key, _, value = field.partition("=")
         key = key.lower()
@@ -707,6 +715,8 @@ def parse_marker(inner):
             marker["defect"] = value.lower() if value.lower() in ("real", "not") else None
         elif key == "agent":
             marker["agent"] = value if _AGENT_RE.fullmatch(value) else None
+        elif key == "fix":
+            marker["fix"] = value.lower() if value.lower() in FIX_VALUES else None
     return marker
 
 
@@ -740,22 +750,26 @@ def classify_reply(stripped, refs):
 
 
 def classify_thread(replies):
-    """{"verdict", "real_defect", "agent"} for one thread from its classified
-    replies, oldest first: [(wording, marker), ...]."""
+    """{"verdict", "real_defect", "agent", "fix"} for one thread from its
+    classified replies, oldest first: [(wording, marker), ...]. Every field
+    comes from the deciding (last) marker — `fix` is never borrowed from an
+    older one."""
     markers = [marker for _, marker in replies if marker]
     if markers:
         last = markers[-1]
         return {"verdict": last["verdict"], "real_defect": last["defect"] == "real",
-                "agent": last["agent"]}
+                "agent": last["agent"], "fix": last.get("fix")}
     worded = [wording for wording, _ in replies if wording]
     if worded:
-        return {"verdict": worded[-1], "real_defect": False, "agent": None}
-    return {"verdict": "unanswered", "real_defect": False, "agent": None}
+        return {"verdict": worded[-1], "real_defect": False, "agent": None, "fix": None}
+    return {"verdict": "unanswered", "real_defect": False, "agent": None, "fix": None}
 
 
 def _empty_tally():
-    return {"findings": 0, "valid": 0, "real_defects": 0, "declined": 0,
-            "unanswered": 0, "samples": []}
+    tally = {"findings": 0, "valid": 0, "real_defects": 0, "declined": 0,
+             "unanswered": 0, "samples": []}
+    tally.update((field, 0) for field in FIX_COUNT_FIELDS)
+    return tally
 
 
 def _minutes(delta):
@@ -771,7 +785,8 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
     ([{"comments": [{"user", "user_type", "body", "created_at"}],
     "comments_truncated"}]) and `created_at`. Returns (tallies, notes), where
     tallies[key] = {"findings", "valid", "real_defects", "declined",
-    "unanswered", "samples": [Fraction minutes]} for every key in tool_keys."""
+    "unanswered", "fix_as_given", "fix_adapted", "fix_wrong", "fix_none",
+    "fix_unknown", "samples": [Fraction minutes]} for every key in tool_keys."""
     tallies = {key: _empty_tally() for key in tool_keys}
     items = []
     threads = []      # (tool key, [item index of each qualifying reply])
@@ -825,6 +840,10 @@ def measure_value(prs, repo, login_to_key, tool_keys, lib_dir=None):
         tally["findings"] += 1
         if verdict["verdict"] in ("fixed", "deferred"):
             tally["valid"] += 1
+            # Fix quality is scored only for a real defect that was not
+            # declined (issue #1843); an absent or unknown value is unknown.
+            if verdict["real_defect"]:
+                tally[FIX_FIELDS.get(verdict["fix"], "fix_unknown")] += 1
         elif verdict["verdict"] == "declined":
             tally["declined"] += 1
         else:
@@ -893,7 +912,7 @@ def pool_tallies(tallies):
     """One tally from several repos' tallies for the same tool."""
     pooled = _empty_tally()
     for tally in tallies:
-        for field in ("findings", "valid", "real_defects", "declined", "unanswered"):
+        for field in ("findings", "valid", "real_defects", "declined", "unanswered") + FIX_COUNT_FIELDS:
             pooled[field] += tally[field]
         pooled["samples"].extend(tally["samples"])
     return pooled
@@ -918,6 +937,7 @@ def value_fields(tally, spend):
     valid = tally["valid"]
     declined = tally["declined"]
     samples = tally["samples"]
+    scored = tally["fix_as_given"] + tally["fix_adapted"] + tally["fix_wrong"]
     return {
         "findings": tally["findings"],
         "valid": valid,
@@ -930,4 +950,13 @@ def value_fields(tally, spend):
         "cost_per_real_defect_usd": to_number(cost_per_real_defect(spend, tally["real_defects"])),
         "median_response_min": (_round_half_up(Fraction(statistics.median(samples)), 1)
                                 if samples else None),
+        "fix_as_given": tally["fix_as_given"],
+        "fix_adapted": tally["fix_adapted"],
+        "fix_wrong": tally["fix_wrong"],
+        "fix_none": tally["fix_none"],
+        "fix_unknown": tally["fix_unknown"],
+        # `none` and `unknown` are not in the denominator: no suggestion, or no
+        # recorded judgement, is not a verdict on a suggestion's quality.
+        "fix_quality": (_round_half_up(Fraction(tally["fix_as_given"], scored), 3)
+                        if scored else None),
     }

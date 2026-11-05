@@ -252,7 +252,7 @@ Each reply is read, in order of precedence:
 
 | Rule | Verdict |
 |---|---|
-| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> -->` outside any code span or fenced block | the marker's verdict |
+| A marker `<!-- review-verdict: fixed\|deferred\|declined defect=real\|not agent=<name> [fix=as-given\|adapted\|wrong\|none] -->` outside any code span or fenced block | the marker's verdict |
 | The reply **starts** with `Declined`, `Not a defect`, or `Won't fix` (straight or curly apostrophe), after any leading @mentions, HTML comments, emphasis, or fenced code block | `declined` |
 | `Fixed in <sha>` anywhere outside a fenced code block (7–40 hex digits; backticks and a `commit` word tolerated) | `fixed` |
 | A follow-up link — `#N`, `owner/repo#N` for this repo, or an `/issues/N` URL | `deferred` |
@@ -262,7 +262,9 @@ the same character (backtick or tilde) at least as long as its opener, and an
 unclosed fence runs to the end of the reply. Emphasis is up to three `*` or `_`
 characters (`***Declined***`, `_Won't fix_`).
 
-Per thread, the **latest marker** wins over everything; with no marker, the
+Per thread, the **latest marker** wins over everything — and supplies every
+field, `fix` included: a later marker without `fix=` reads as unknown, never
+borrowing an older marker's value; with no marker, the
 **latest reply whose wording matched** wins ("Fixed in…" then "Declined: on
 reflection…" is declined); with neither, the thread is `unanswered`.
 
@@ -281,8 +283,8 @@ Two choices here are deliberate:
 
 A marker whose verdict is unknown is ignored and counted in a note; the reply is
 then read by its wording. Only `defect=real` counts as a real defect — an unknown
-or missing value reads as not real — and an `agent` outside a plain token shape
-reads as unnamed.
+or missing value reads as not real — an `agent` outside a plain token shape
+reads as unnamed, and a missing or unknown `fix` value reads as unknown.
 
 ### The marker
 
@@ -294,9 +296,10 @@ reader to build the wrong thing), and the fix closes a behavioral gap rather
 than style drift.
 
 `reply-thread.sh` writes the marker: `--verdict <v> --defect real|not` (plus
-`--agent <name>`, default `claude-code`) appends it as its own line after the
-reviewer's @mention rules run; without the flags a reply is byte-identical to
-before. A reply that ends inside an open fenced block gets that fence closed
+`--agent <name>`, default `claude-code`, and `--fix <q>`, issue #1843) appends
+it as its own line after the reviewer's @mention rules run; without the flags a
+reply is byte-identical to before, and without `--fix` the marker is
+byte-identical to its pre-#1843 form. An unknown `--fix` value exits 2. A reply that ends inside an open fenced block gets that fence closed
 first, so the marker never lands in code where the ledger would skip it. The
 `agent` field is recorded so a later study can split results by
 coding agent without a second collection pass; this increment does not
@@ -317,7 +320,8 @@ Phase B agents (and their copies embedded in `/subagent`), `/fixpr` Step 4, and
 ```bash
 reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
   --body "Fixed in \`SHA\`: <what changed>" --pr N \
-  --verdict fixed|deferred|declined --defect real|not
+  --verdict fixed|deferred|declined --defect real|not \
+  [--fix as-given|adapted|wrong|none]   # required when --defect real
 ```
 
 `--agent` keeps its default, `claude-code`, so the study can still split by
@@ -328,6 +332,24 @@ agents reply through the helper only.
 actually have gotten wrong; `not` for style, duplication, or a reviewer
 misreading. It is a judgment made at reply time, where the evidence is; the
 one-line rule keeps agents consistent rather than automating the call.
+
+**Choosing `fix`** (issue #1843; required with `--defect real`). It records the
+quality of the reviewer's suggested fix, the second of the study's criteria
+(issue #1747) — a reviewer that finds a real defect but proposes an unusable fix
+costs the agent a round of its own analysis:
+
+| `--fix` | Meaning |
+|---|---|
+| `as-given` | The suggestion was applied as proposed, or with trivial edits |
+| `adapted` | The direction was right, but the code had to be rewritten |
+| `wrong` | The proposed fix was incorrect or harmful |
+| `none` | The finding came with no fix suggestion |
+
+Four values rather than a score: at reply time an agent can tell "applied as
+written" from "rewrote it" reliably; it cannot calibrate a scalar across
+vendors. `none` is informative on its own — a reviewer that flags without
+proposing is cheaper to run but costs the agent more per finding. With
+`--defect not` the flag may be given but is never scored.
 
 **Choosing `verdict`** for `/fixpr`'s reply categories:
 
@@ -349,8 +371,8 @@ carrying a marker over replies posted to bot findings (`0/0` when none;
 `unmarked_replies`: inline review comments written by a GitHub `User` account
 (login not ending `[bot]`) that reply (`in_reply_to_id`) to a root comment by
 one of the five review-bot logins, and carry no complete marker line —
-`<!-- review-verdict: <verdict> defect=<real|not> agent=<name> -->`, exactly as
-`reply-thread.sh` writes it; a partial marker (no `defect`, no `agent`, or no
+`<!-- review-verdict: <verdict> defect=<real|not> agent=<name>[ fix=<q>] -->`,
+exactly as `reply-thread.sh` writes it (an unknown `fix` value is not); a partial marker (no `defect`, no `agent`, or no
 closing `-->`) skipped the mandatory flags and counts. `/wrap` Step 1.2 prints the
 count when it is non-zero. It never blocks a merge, never joins the findings
 `/wrap` routes to `/fixpr`, and `merge-gate.sh` never reads it. It is a proxy in
@@ -369,6 +391,18 @@ counted — the same gap the ledger has (Limits below; issue #1829).
 | `precision` | `valid / (valid + declined)`, 3 decimals; `null` when both are 0. Unanswered findings are left out: no verdict is not a no |
 | `cost_per_real_defect_usd` | `spend_usd / real_defects`, in cents; `null` when either is null or 0 — a $0.00 receipt floor per defect would read as free |
 | `median_response_min` | The median, over the PRs the tool reviewed or commented on, of the minutes from the start of its clock to its first review or comment |
+| `fix_as_given`, `fix_adapted`, `fix_wrong`, `fix_none` | Fix-quality-eligible findings by the deciding marker's `fix=` value (Choosing `fix` above) |
+| `fix_unknown` | Eligible findings whose deciding marker has no `fix=`, or an unknown value — never counted as `none` |
+| `fix_quality` | `fix_as_given / (fix_as_given + fix_adapted + fix_wrong)`, 3 decimals; `null` when that sum is 0. `none` and `unknown` are left out: no suggestion, or no recorded judgment, is not a verdict on a suggestion |
+
+**Fix-quality eligibility.** `fix=` is scored only for a finding whose deciding
+marker says `defect=real` and whose verdict is not `declined` (`fixed` or
+`deferred`). A declined finding's fix quality is not scored, nor is a
+`defect=not` one, even when its marker carries `fix=`. A deferred finding is
+scored too: `fix=` judges the suggestion as the agent read it at reply time,
+whether or not the fix has landed yet. The fix counts are
+distinct from `real_defects` and `precision`, which they never change: a
+declined real defect still counts in `real_defects`.
 
 The clock starts at the earliest **trigger comment** for that tool that precedes
 its first response, and at PR open otherwise — so a tool that reviews at open on
@@ -382,7 +416,7 @@ median and counted in a note: one where any of its responses has no timestamp
 or one with nothing to start from.
 
 Multi-repo totals are recomputed, never averaged: counts are summed, precision
-comes from the summed counts, the median pools every repo's response times, and
+and fix quality come from the summed counts, the median pools every repo's response times, and
 the cost divides the total spend. Each repo's cost divides its own share of a
 flat fee after the split.
 
@@ -451,6 +485,7 @@ way.
 | Real defects | `real_defects` | Marker-stamped only (Value fields above); a floor for PRs before the mandate cutoff (Limits above), a measurement of marked thread replies after it |
 | Cost / real defect | `cost_per_real_defect_usd` | Null when spend is null or 0, or there is no real defect; a ceiling for PRs before the mandate cutoff (Limits above) |
 | Precision | `precision` | As a percentage, one decimal |
+| Fix quality | `fix_quality` | As a percentage, one decimal; `—` when null. The four counts and `unknown` sit in a collapsed **Fix quality counts** table beneath |
 | Sole-source PRs | `sole_provider_on` | PRs where this tool alone posted an inline finding |
 
 **Ranking.** Tools with a cost per real defect come first, lowest cost first.
@@ -458,6 +493,7 @@ Tools with known spend but no cost follow, their spend still shown — "paid,
 found nothing" is a finding in its own right, so they stay in the table. Tools
 whose spend is unknown come last. Precision breaks ties inside each group
 (higher first, unknown last), then the tool key, so the order is deterministic.
+Fix quality is shown, never ranked on.
 
 **`—` is no figure, never zero.** Every null renders `—`, and only a real zero
 renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a

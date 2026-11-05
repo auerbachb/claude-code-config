@@ -141,6 +141,12 @@
 #                              when both are 0 (unanswered is left out)
 #     cost_per_real_defect_usd spend_usd / real_defects, in cents; null when
 #                              either is null or 0
+#     fix_as_given, fix_adapted, fix_wrong, fix_none, fix_unknown
+#                              real-defect findings not declined, by the
+#                              deciding marker's `fix=` value (issue #1843);
+#                              absent or unknown → fix_unknown, never fix_none
+#     fix_quality              fix_as_given / (as_given + adapted + wrong),
+#                              3 decimals; null when that sum is 0
 #     median_response_min      median minutes, over the PRs the tool reviewed
 #                              or commented on, from the earliest trigger
 #                              comment for it that precedes its first response
@@ -198,7 +204,9 @@
 #                "spend_usd", "spend_source",     # spend_*: ledger mode only
 #                "findings", "valid", "real_defects", "declined",
 #                "unanswered", "precision", "cost_per_real_defect_usd",
-#                "median_response_min"}],         # value fields: ledger only
+#                "median_response_min", "fix_as_given", "fix_adapted",
+#                "fix_wrong", "fix_none", "fix_unknown",
+#                "fix_quality"}],                 # value fields: ledger only
 #     "unclassified": [{"tool", "pr", "token", "excerpt"}],
 #     "unclassified_hits": N,   # bodies (review body, inline comment, or
 #                               # conversation comment) carrying >=1 unexplained
