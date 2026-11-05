@@ -204,7 +204,9 @@
 #                             coverage; it cannot manufacture a false mismatch
 #                             or bypass an existing wrong-commit hard block.
 #   self_report_mismatch      among that bot's conversation comments containing any
-#                             SHA-like token, the MOST RECENT one names no SHA
+#                             SHA-like token, the MOST RECENT one (by post time;
+#                             by latest edit for CodeAnt's in-place Review Status
+#                             table — issue #1894) names no SHA
 #                             matching HEAD, unless that bot also left inline
 #                             comments anchored to HEAD (inventory #416 / #1380).
 #                             SHA-like = \b[0-9a-f]{7,40}\b with at
@@ -792,6 +794,19 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
             created: (((.created_at // .updated_at) // "") | canon_ts),
             tokens:  $tok,
             names_head: ($tok | tokens_name_head),
+            # Self-report ordering key (issue #1894). Post time (.created) for
+            # every comment EXCEPT one carrying CodeAnt"s structured
+            # `codeant-review-status` payload: that Review Status table is the
+            # bot"s single per-run record, opened once and edited in place on
+            # every run, so its frozen created_at never advances and an older,
+            # never-edited summary ("PR Risk", `Assessed commit: <stale>`) would
+            # outrank it forever — live on PR #1845. For that one comment its
+            # latest edit (.ts) IS its latest post. Every other comment keeps
+            # post time, so (v)"s shape — an unstructured older comment edited
+            # later masking a newer SHA self-report (PR #883) — is unchanged.
+            selfrep_ts: (if (($b | run_markers) | length) > 0
+                         then (((.updated_at // .created_at) // "") | canon_ts)
+                         else (((.created_at // .updated_at) // "") | canon_ts) end),
             # This comment"s structured run record FOR HEAD, or null when it
             # carries no such payload or the payload covers only other commits.
             # SELECTED BY CONTENT, NEVER BY LIST POSITION (issue #1419). The
@@ -1032,8 +1047,11 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # status table — which records only push-triggered auto-reviews — must
         # not veto a genuine manual review. A long approval body or SHA-less
         # descriptive comment does NOT suppress it (rubber-stamp / #927).
+        # Issue #1894: ordered by .selfrep_ts, which is .created for every
+        # comment except CodeAnt"s in-place Review Status table (see its
+        # definition in $cidx) — the one comment whose edit time is its post time.
         | ( [ $mine[] | select((.tokens | length) > 0) ]
-            | sort_by(.created) | last )                                   as $selfrep
+            | sort_by(.selfrep_ts) | last )                                as $selfrep
         | ( $selfrep != null and ($selfrep.names_head | not)
             and (($inl | length) == 0) )                                   as $mismatch
 

@@ -67,6 +67,8 @@ profile directories drift apart.
 
 | The user asked | Run |
 |----------------|-----|
+| "doctor", "check profile layout" | `"$AI_QUOTAS_SETUP_SH" doctor [--json]` |
+| "repair-layout \<provider\>" | Complete [Layout mismatch recovery](#layout-mismatch-recovery), including profile-location and quiescence checks, before `"$AI_QUOTAS_SETUP_SH" repair-layout <provider>`. |
 | nothing, "list", "which accounts" | `"$AI_QUOTAS_SETUP_SH" list` |
 | "add \<provider\> \<label\>" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label>` |
 | "register it now, I'll log in later" | `"$AI_QUOTAS_SETUP_SH" add <provider> <label> --no-login` |
@@ -79,7 +81,7 @@ profile directories drift apart.
 | "generate the launchers", "give me a `claude-work` command", a new account was just added or renamed | `"$AI_QUOTAS_SETUP_SH" launchers` |
 | "share my skills/rules/MCP servers with \<label\>", "make the other profile behave like my main one" | `"$AI_QUOTAS_SETUP_SH" share-config <label> [<provider>]` |
 
-`list` is the default when no action is given. `--json` is available on `list` for
+`list` is the default when no action is given. `--json` is available on `list` and `doctor` for
 machine consumption (increment 2's `/quotas` reads the config directly). `--no-login`
 is available on `add`: it reserves the profile slot and records the account without
 launching a login, which is what you want when the user cannot complete an interactive
@@ -270,7 +272,10 @@ sharing the server means, and the report line gives a count, never a name or a v
 
 ## Step 4 — Report the result
 
-After any action, run `list` and show the table. Each account reports as:
+After a successful action, run `"$AI_QUOTAS_SETUP_SH" list` and show the table.
+For a failed or interrupted `repair-layout`, follow
+[Layout mismatch recovery](#layout-mismatch-recovery) instead of running `list`.
+Each account reports as:
 
 | Status | Meaning | What to do |
 |--------|---------|------------|
@@ -296,3 +301,32 @@ read and why no browser is involved, the LaunchAgent this skill writes — every
 why 09:00, and why the `PATH` has to name Homebrew — the generated `launchers.zsh` and
 what `share-config` links, copies, and merges, and the increment boundary:
 `.claude/reference/ai-quotas.md`.
+
+## Layout mismatch recovery
+
+If text `list` emits a layout warning, run `"$AI_QUOTAS_SETUP_SH" doctor`.
+Exit 8 is a diagnostic report, never a tool failure or a dispatch gate; do not
+pause or reroute unrelated work because of it. Report the findings. Run repair
+only when the user requested repair or already authorized it in the current
+task; a diagnostic warning alone is not repair authorization. Otherwise ask
+whether repair is desired before invoking either repair command. Honor standing
+authorization without asking again.
+First compare the current session’s `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+(including their default profile locations) with every affected `profile_dir`.
+If this session uses an affected profile, stop: ask the user to run repair from
+a shell outside those profiles, after this session has exited. If this session
+is still running, do not start repair from another shell. Establish that other affected sessions, setup
+commands and quota readers are stopped
+before `"$AI_QUOTAS_SETUP_SH" repair-layout claude` or `"$AI_QUOTAS_SETUP_SH" repair-layout codex`. Use available session
+evidence; if quiescence cannot be established, ask the user to confirm it. Never fix a mismatch by hand-editing `ai-quotas.json`:
+the credential directories must move together with their registry identities.
+Codex repair requires non-empty file-backed `auth.json`. Claude Keychain repair
+supports only fully observed homogeneous cycles with verified Claude Code 2.1.312
+service binding, matching refs/sidecars and no secure-storage override. It needs
+macOS Swift/Python 3 and accessible item metadata; no password is requested or
+replayed. Report a refusal and stop. Unsupported mixed/non-cycle migrations
+remain in Issue #1887. Doctor reports a journal but does not reconstruct rename
+steps. If exit 9 or `interrupted-repair` appears, preserve
+`.layout-repair/plan.json` and any recovery instructions printed by the failed
+repair; report the situation to the user and stop; never delete or automatically retry
+over the journal.
