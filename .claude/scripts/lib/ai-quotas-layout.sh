@@ -15,6 +15,21 @@ layout_physical() { # Resolve existing ancestors without creating anything.
   printf '%s%s' "$phys" "$rest"
 }
 
+layout_physical_shared() { # Two registered paths resolve to one existing directory.
+  local config="$1" wanted="$2" row dir resolved count=0
+  [[ -n "$wanted" ]] || return 1
+  while IFS= read -r row; do
+    dir="$(printf '%s' "$row" | jq -r '.profile_dir // empty')"
+    [[ -n "$dir" && -d "$dir" ]] || continue
+    resolved="$(layout_physical "$dir")" || continue
+    if [[ "$resolved" == "$wanted" ]]; then
+      count=$((count + 1))
+      [[ "$count" -le 1 ]] || return 0
+    fi
+  done < <(printf '%s' "$config" | jq -c '.accounts[]')
+  return 1
+}
+
 layout_report() { # <config-json> -> findings; paths and credential presence only
   local row provider label dir expected finding detail repairable root_phys actual target rel credential result='[]'
   local keychain_cycle
@@ -43,7 +58,7 @@ layout_report() { # <config-json> -> findings; paths and credential presence onl
           fi
         fi
         if [[ ! -d "$dir" ]]; then finding=missing; detail="missing directory; $detail"; repairable=false; fi
-        if [[ "$(printf '%s' "$1" | jq --arg d "$dir" '[.accounts[] | select(.profile_dir == $d)] | length')" -gt 1 ]]; then
+        if [[ "$(printf '%s' "$1" | jq --arg d "$dir" '[.accounts[] | select(.profile_dir == $d)] | length')" -gt 1 ]] || layout_physical_shared "$1" "$actual"; then
           finding=shared; detail='multiple registry records share this directory'; repairable=false
         fi
         if [[ "$actual" != "$root_phys/${dir#"$PROFILE_ROOT/"}" || "$target" != "$root_phys/$label/$provider" ]]; then
@@ -72,6 +87,12 @@ layout_report() { # <config-json> -> findings; paths and credential presence onl
     result="$(printf '%s' "$result" | jq '. + [{provider:"-",label:"-",finding:"interrupted-repair",detail:"preserve .layout-repair; manual recovery required",repairable:false}]')"
   fi
   printf '%s\n' "$result"
+}
+
+layout_warning() { # Text-only problem hint; keep list JSON unchanged.
+  if layout_report "$1" | jq -e 'any(.[]; .finding == "label-mismatch" or .finding == "missing" or .finding == "shared" or .finding == "interrupted-repair")' >/dev/null; then
+    echo "Layout warning — run: ${SELF_NAME} doctor"
+  fi
 }
 
 action_doctor() {

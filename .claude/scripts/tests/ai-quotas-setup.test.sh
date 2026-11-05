@@ -1802,6 +1802,33 @@ run list
 check_contains "$OUT" 'Layout warning' 'missing profile list includes recovery guidance'
 cmp -s "$CONFIG" "$CASE_DIR/before" && ok 'missing source leaves registry unchanged' || bad 'missing source changed registry'
 
+new_case layout-empty-journal
+mkdir -p "$PROFILES/.layout-repair"
+printf '[]\n' > "$PROFILES/.layout-repair/plan.json"
+run list
+check_eq "$RC" 0 'empty registry with journal remains display-only'
+check_contains "$OUT" 'Layout warning' 'empty list warns about interrupted repair'
+run list --json
+check_eq "$OUT" '[]' 'empty list journal does not change JSON contract'
+run doctor --json
+check_eq "$RC" 8 'doctor reports an interrupted journal without accounts'
+
+layout_fixture layout-canonical-alias
+jq --arg root "$PROFILES" '.accounts |= map(.profile_dir = ($root + "/" + .label + "/claude"))' "$CONFIG" > "$CASE_DIR/canonical"
+mv "$CASE_DIR/canonical" "$CONFIG"
+cp "$CONFIG" "$CASE_DIR/alias-before"
+mv "$PROFILES/alpha/claude" "$CASE_DIR/alpha-owned"
+ln -s "$PROFILES/beta/claude" "$PROFILES/alpha/claude"
+run doctor --json
+check_eq "$RC" 8 'canonical path symlink aliases are not healthy'
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.finding == "shared")] | length')" 2 'doctor detects physical sharing behind distinct expected paths'
+run list
+check_contains "$OUT" 'Layout warning' 'list warns about physical profile aliases'
+run repair-layout claude
+check_eq "$RC" 5 'physical profile aliases refuse repair'
+cmp -s "$CONFIG" "$CASE_DIR/alias-before" && ok 'physical alias refusal preserves registry' || bad 'physical alias refusal changed registry'
+[[ -L "$PROFILES/alpha/claude" ]] && ok 'physical alias refusal preserves the symlink' || bad 'physical alias refusal changed symlink'
+
 layout_fixture layout-shared
 jq --arg d "$PROFILES/beta/claude" '.accounts[].profile_dir = $d' "$CONFIG" > "$CASE_DIR/shared"
 mv "$CASE_DIR/shared" "$CONFIG"
@@ -2090,6 +2117,20 @@ PYASSERT
 [[ $? -eq 0 ]] && ok 'final ref, sidecar and verified harness hash identify the original bytes and ACL per label' || bad 'Keychain identity binding changed'
 run doctor --json
 check_eq "$RC" 0 'repaired Keychain cycle is healthy'
+
+keychain_fixture keychain-cycle-custom-bystander
+mkdir -p "$CASE_DIR/custom/claude"
+printf 'opaque-custom-credential\n' > "$CASE_DIR/custom/claude/.credentials.json"
+cp "$CASE_DIR/custom/claude/.credentials.json" "$CASE_DIR/custom-before"
+jq --arg path "$CASE_DIR/custom/claude" '.accounts += [.accounts[0] | .label="custom" | .profile_dir=$path | del(.credential_ref)]' "$CONFIG" > "$CASE_DIR/with-custom"
+mv "$CASE_DIR/with-custom" "$CONFIG"
+run doctor --json
+check_eq "$(printf '%s' "$OUT" | jq '[.[] | select(.repairable)] | length')" 2 'custom bystander does not hide an observed Keychain cycle'
+run repair-layout claude
+check_eq "$RC" 0 'Keychain cycle repairs alongside an unrelated custom profile'
+check_eq "$(cat "$PROFILES/alpha/claude/account-marker")" alpha 'custom bystander does not alter repaired account identity'
+check_eq "$(jq -r '.accounts[] | select(.label == "custom") | .profile_dir' "$CONFIG")" "$CASE_DIR/custom/claude" 'custom registry path remains untouched'
+cmp -s "$CASE_DIR/custom-before" "$CASE_DIR/custom/claude/.credentials.json" && ok 'custom credential bytes remain untouched' || bad 'custom bystander credential changed'
 
 for KEYCHAIN_FAILURE in stage install; do
   keychain_fixture "keychain-fails-$KEYCHAIN_FAILURE"

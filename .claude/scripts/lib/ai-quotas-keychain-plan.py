@@ -17,13 +17,27 @@ def service(path):
     return "Claude Code-credentials-" + hashlib.sha256(raw).hexdigest()[:8]
 
 
+def managed_mismatch(row, root):
+    """Match doctor's managed label mismatches; leave custom paths untouched."""
+    if row["provider"] != "claude":
+        return False
+    source = row["profile_dir"]
+    prefix, suffix = f"{root}/", "/claude"
+    if not source.startswith(prefix) or not source.endswith(suffix):
+        return False
+    path_label = source[len(prefix):-len(suffix)]
+    target = f"{root}/{row['label']}/claude"
+    return (bool(path_label) and "/" not in path_label
+            and path_label != row["label"]
+            and os.path.realpath(source) != os.path.realpath(target))
+
+
 def cycle(config, root):
     if "CLAUDE_SECURESTORAGE_CONFIG_DIR" in os.environ:
         return []
     rows = [
         row for row in config["accounts"]
-        if row["provider"] == "claude"
-        and row["profile_dir"] != f"{root}/{row['label']}/claude"
+        if managed_mismatch(row, root)
     ]
     if not rows:
         return []

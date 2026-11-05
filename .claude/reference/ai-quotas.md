@@ -1526,8 +1526,9 @@ Custom paths remain untouched.
 
 Claude Keychain repair supports complete, homogeneous cycles such as the two
 reported swapped profiles. Every destination must be another source in the
-same cycle. All recorded service names and path-owned sidecars must match
-`Claude Code-credentials-<SHA256(config-dir)[:8]>`; no credential files or
+same cycle. Service names and path-owned sidecars must match
+`Claude Code-credentials-<SHA256(NFC(config-dir))[:8]>`, hashing the
+NFC-normalized UTF-8 path; no credential files or
 inherited `CLAUDE_SECURESTORAGE_CONFIG_DIR` override may be present. This
 binding was verified against Claude Code **2.1.312** using synthetic config
 directories and a fake security command inside a sandbox denying real

@@ -1880,6 +1880,7 @@ action_list() {
     else
       echo "No accounts registered yet."
       echo "Add one with: ${SELF_NAME} add <claude|codex|cursor> <label>"
+      layout_warning "$config"
     fi
     return 0
   fi
@@ -1925,9 +1926,7 @@ action_list() {
     printf '%s' "$rows"
   }
   echo
-  if layout_report "$config" | jq -e 'any(.[]; .finding == "label-mismatch" or .finding == "missing" or .finding == "shared" or .finding == "interrupted-repair")' >/dev/null; then
-    echo "Layout warning — run: ${SELF_NAME} doctor"
-  fi
+  layout_warning "$config"
   echo "Display only — never a dispatch or spend gate (.claude/rules/safety.md §Anthropic Quota & Spend Authority)."
 }
 
