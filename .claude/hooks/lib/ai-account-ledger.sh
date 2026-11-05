@@ -1,11 +1,11 @@
 #!/bin/bash
 # Shared metadata-only account attribution. Bash 3.2; no credential reads.
-# Resolve provider/profile to one physical registry match; set PROFILE and LABEL globals.
+# Resolve provider/profile to one exact declared registry match; set PROFILE and LABEL globals.
 # Args: provider, directory, optional pre-parsed TSV rows. Missing/ambiguous means unknown.
 ledger_profile() {
-  LEDGER_PROFILE="$(cd -P "$2" 2>/dev/null && pwd -P)" || LEDGER_PROFILE="$2"
+  LEDGER_PROFILE="$2"
   LEDGER_LABEL=unknown
-  local rows path label physical matches=0
+  local rows path label matches=0
   if [ "$#" -ge 3 ]; then rows="$3"; else
   local registry="${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}"
   [ -f "$registry" ] && [ -r "$registry" ] || return 0
@@ -13,8 +13,9 @@ ledger_profile() {
   fi
   while IFS=$'\t' read -r path label; do
     [ -n "$path" ] || continue
-    physical=$(cd -P "$path" 2>/dev/null && pwd -P) || continue
-    if [ "$physical" = "$LEDGER_PROFILE" ]; then
+    # Credential realms can differ for symlink, dot-segment or trailing-slash spellings.
+    # Exact matching is conservative even when a provider normalizes Unicode to NFC.
+    if [ "$path" = "$LEDGER_PROFILE" ]; then
       matches=$((matches+1)); LEDGER_LABEL="$label"
     fi
   done <<< "$rows"

@@ -15,7 +15,7 @@ created with owner-only permissions (0600). Each row has:
 |---|---|
 | `ts` | UTC hook time, or the Codex session metadata timestamp for backfill |
 | `provider`, `label` | Claude/Codex and the unique matching registry row, or `unknown` |
-| `profile_dir` | Physical selected config directory (unresolvable paths remain literal) |
+| `profile_dir` | Exact selected config directory spelling; never resolved through symlinks |
 | `repo` | Lowercase GitHub owner/repo from origin, otherwise live repository basename; null outside Git or for unsupported historical URLs |
 | `branch`, `issue` | Captured branch and issue-N token; null for detached/non-repository contexts |
 | `session_id` | Runtime session identifier; backfill uses payload.id or payload.session_id |
@@ -23,11 +23,17 @@ created with owner-only permissions (0600). Each row has:
 | `source`, `capture` | startup/resume/fork with hook, or backfill/backfill |
 
 `${AI_QUOTAS_CONFIG:-$HOME/.claude/ai-quotas.json}` is the registry. Labels are
-resolved by provider and **physical stored `profile_dir`**, never by directory
+resolved by provider and **exact declared `profile_dir` string**, never by directory
 name, nickname, email, credential contents, or auth status. Zero or multiple
 matching registrations produce `unknown`. Issue #1850 added repair tools, but
 shipping them does not migrate live profiles. Cross-wired folder names are safe
-because only the registered paths are used. No credentials are read or changed.
+because only the registered paths are used. Symlink aliases, dot segments, and
+trailing slashes are distinct declarations; an unregistered spelling stays
+`unknown`, and the selected spelling is retained in the row. Claude normalizes
+its credential identity to NFC, but this hook conservatively requires exact
+Unicode spelling too: an alternate NFC-equivalent declaration can remain
+`unknown` rather than guessing. Repository path resolution is independent.
+No credentials are read or changed.
 
 `account_email` is evidence only; the report annotates
 Claude email labels that disagree with that evidence (case insensitive), useful

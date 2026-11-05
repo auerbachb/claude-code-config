@@ -49,7 +49,28 @@ payload "$HOME/repo-a" | "$HOOK" --provider codex --codex-home "$HOME/codex"
 jq -e '.label=="codex-work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
 jq -cn --arg path "$HOME/codex/sessions/2026/rollout.jsonl" '{transcript_path:$path}' | env -u CODEX_HOME "$HOOK" --provider codex
 jq -e '.label=="codex-work"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
-# A physical alias matching multiple registrations is ambiguous.
+# A different spelling of the same filesystem location is not a registered identity.
+ln -s "$HOME/personal/claude" "$HOME/alias"
+for spelling in "$HOME/alias" "$HOME/personal/./claude" "$HOME/personal/claude/"; do
+  payload "$HOME" | CLAUDE_CONFIG_DIR="$spelling" "$HOOK" >/dev/null
+  jq -e --arg spelling "$spelling" '.label=="unknown" and .profile_dir==$spelling' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
+# An explicitly registered alias has its own label despite sharing a physical target.
+jq --arg alias "$HOME/alias" '.accounts += [{provider:"claude",label:"alias-account",profile_dir:$alias}]' "$AI_QUOTAS_CONFIG" > "$HOME/alias-registry.json"
+for spelling in "$HOME/alias" "$HOME/personal/claude"; do
+  expected=work; [ "$spelling" != "$HOME/alias" ] || expected=alias-account
+  payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/alias-registry.json" CLAUDE_CONFIG_DIR="$spelling" "$HOOK" >/dev/null
+  jq -e --arg spelling "$spelling" --arg label "$expected" '.label==$label and .profile_dir==$spelling' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
+# Conservative Unicode spelling handling must not silently rewrite recorded identity.
+nfc="$HOME/"$'caf\xc3\xa9'; nfd="$HOME/"$'cafe\xcc\x81'
+jq --arg path "$nfc" '.accounts += [{provider:"claude",label:"unicode-account",profile_dir:$path}]' "$AI_QUOTAS_CONFIG" > "$HOME/unicode-registry.json"
+for spelling in "$nfc" "$nfd"; do
+  expected=unknown; [ "$spelling" != "$nfc" ] || expected=unicode-account
+  payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/unicode-registry.json" CLAUDE_CONFIG_DIR="$spelling" "$HOOK" >/dev/null
+  jq -e --arg spelling "$spelling" --arg label "$expected" '.label==$label and .profile_dir==$spelling' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
+done
+# Duplicate declared registrations are ambiguous.
 jq '.accounts += [.accounts[0]]' "$AI_QUOTAS_CONFIG" > "$HOME/duplicate.json"
 payload "$HOME" | AI_QUOTAS_CONFIG="$HOME/duplicate.json" CLAUDE_CONFIG_DIR="$HOME/personal/claude" "$HOOK" >/dev/null
 jq -e '.label=="unknown"' < <(tail -1 "$AI_ACCOUNT_LEDGER") >/dev/null
