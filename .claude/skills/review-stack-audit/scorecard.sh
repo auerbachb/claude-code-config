@@ -308,14 +308,18 @@ def ranked(tools):
 
 
 VALUE_HEADER = ["Rank", "Tool", "Spend", "Real defects", "Cost / real defect",
-                "Precision", "Sole-source PRs"]
-VALUE_ALIGN = "|---:|---|---:|---:|---:|---:|---:|"
+                "Precision", "Fix quality", "Sole-source PRs"]
+VALUE_ALIGN = "|---:|---|---:|---:|---:|---:|---:|---:|"
+# The fix-quality counts fold (issue #1843): one column per snapshot field.
+FIX_COUNT_COLUMNS = [("as-given", "fix_as_given"), ("adapted", "fix_adapted"),
+                     ("wrong", "fix_wrong"), ("none", "fix_none"), ("unknown", "fix_unknown")]
 
 
 def value_cells(rank, tool):
     return [rank, tool_name(tool), "%s (%s)" % (money(tool.get("spend_usd")), label(tool)),
             count(tool.get("real_defects")), money(tool.get("cost_per_real_defect_usd")),
-            pct(tool.get("precision")), count(tool.get("sole_provider_on"))]
+            pct(tool.get("precision")), pct(tool.get("fix_quality")),
+            count(tool.get("sole_provider_on"))]
 
 
 def render_value(doc):
@@ -344,6 +348,15 @@ def render_value(doc):
     out.append("Spend labels: `receipt` is CodeRabbit's own charge lines (a floor), "
                "`estimate` a count times a unit rate, `flat` a monthly fee prorated to the "
                "window, `none` no figure. The vendor dashboard, not this table, is the bill.")
+    out.append("Fix quality is the share of scored real-defect findings (not declined) "
+               "whose suggested fix was applied as given; `none` (no suggestion) and "
+               "`unknown` (no `fix=` recorded) are left out of it.")
+    out += ["", "<details><summary>Fix quality counts</summary>", "",
+            row(["Tool"] + [name for name, _ in FIX_COUNT_COLUMNS]),
+            "|---" + "|---:" * len(FIX_COUNT_COLUMNS) + "|"]
+    for t in ranked(tools):
+        out.append(row([tool_name(t)] + [count(t.get(field)) for _, field in FIX_COUNT_COLUMNS]))
+    out += ["", "</details>"]
     per_repo = doc.get("per_repo")
     if isinstance(per_repo, list) and per_repo:
         out += ["", "<details><summary>By repo</summary>", "",

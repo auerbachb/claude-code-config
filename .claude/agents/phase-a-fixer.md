@@ -135,10 +135,10 @@ Reply to EVERY review comment thread acknowledging the fix. Use the shared helpe
 ```bash
 run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
-  --verdict fixed --defect real
+  --verdict fixed --defect real --fix as-given
 ```
 
-**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
+**The verdict flags are mandatory on every reply to a bot finding** (issue #1842) — they stamp the `<!-- review-verdict: … -->` marker the review-cost ledger reads. Set `--verdict` to `fixed`, `deferred` (follow-up issue), or `declined`, and `--defect real` only when the finding named a behaviour the code would actually have gotten wrong — `--defect not` for style, duplication, or a reviewer misreading. `--fix` is required with `--defect real` (issue #1843): `as-given` (suggestion applied as proposed), `adapted` (right direction, code rewritten), `wrong` (proposed fix incorrect), `none` (no fix suggested). Leave `--agent` at its default. Mapping and rationale: `.claude/reference/review-stack-audit.md` §The marker.
 
 Exit codes: `0` reply posted — by either the inline endpoint or the PR-level fallback (the fallback also emits a note to stderr); `1` unused/reserved; `2` usage error (unknown `--reviewer`, or a body left empty after the @mention strip); `3` PR number could not be resolved from the comment and no `--pr` was supplied, OR both endpoints 404; `4` inline 404 then fallback failed with a non-404 error; `5` gh/network error, including a non-404 failure of the PR-number lookup. Treat `0` as success. See `run_script reply-thread.sh --help` for the full contract.
 
