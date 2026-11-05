@@ -109,7 +109,7 @@ case "$action" in
         select($provider=="" or .provider==$provider)] as $rows |
       {window:{start:($start|todateiso8601),end:($end|todateiso8601),days:$days},
        accounts:($rows | group_by([.provider,.label]) | map(.[0] as $a |
-         {provider:$a.provider,label:$a.label,nickname:([$registry.accounts[]? | select(.provider==$a.provider and .label==$a.label) | .nickname // empty][0] // null),
+         {provider:$a.provider,label:$a.label,nickname:([$registry.accounts[]? | objects | select(.provider==$a.provider and .label==$a.label) | .nickname // empty][0] // null),
           projects:(group_by(.repo // "(no repo)") | map({repo:(.[0].repo // "(no repo)"),sessions:session_count,last_ts:(map(.ts)|max)}))})),
        unknown_sessions:([$rows[] | select(.label=="unknown")] | group_by([.provider,.repo]) | map(session_count) | add // 0),
        annotations:([$rows[] | select(.provider=="claude" and (.label|contains("@"))) |

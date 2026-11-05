@@ -209,6 +209,13 @@ for kind in missing empty populated; do
   AI_QUOTAS_CONFIG="$HOME/absent-registry.json" AI_ACCOUNT_LEDGER="$HOME/minimal-ledger.jsonl" "$CLI" backfill-codex --codex-home "$minimal_profile"
 done
 jq -se 'length==3 and all(.label=="unknown" and .branch==null and .issue==null) and all(.session_id=="populated" or .repo==null) and any(.session_id=="populated" and .repo=="repo")' "$HOME/minimal-ledger.jsonl" >/dev/null
+# Mixed registration types must not break nickname lookup for in-window report rows.
+jq '.accounts |= (["bad",42,false,true,null,[],{}] + [.[-1] | .nickname="Mixed office"])' "$HOME/mixed-registry.json" > "$HOME/mixed-report-registry.json"
+jq -cn '{ts:(now|strftime("%Y-%m-%dT%H:%M:%SZ")),provider:"codex",label:"control-profile",repo:"example/report",session_id:"mixed-report"}' > "$HOME/mixed-report-ledger.jsonl"
+AI_QUOTAS_CONFIG="$HOME/mixed-report-registry.json" AI_ACCOUNT_LEDGER="$HOME/mixed-report-ledger.jsonl" "$CLI" report --json > "$HOME/mixed-report.json"
+jq -e '.window.days==14 and .unknown_sessions==0 and (.accounts|length)==1 and .accounts[0].nickname=="Mixed office" and .accounts[0].projects[0].repo=="example/report" and .accounts[0].projects[0].sessions==1' "$HOME/mixed-report.json" >/dev/null
+AI_QUOTAS_CONFIG="$HOME/mixed-report-registry.json" AI_ACCOUNT_LEDGER="$HOME/mixed-report-ledger.jsonl" "$CLI" report > "$HOME/mixed-report.txt"
+grep -Fq 'codex control-profile (Mixed office): example/report ×1' "$HOME/mixed-report.txt"
 # A partial find result must warn, return nonzero, and clean its owned inventory.
 mkdir -p "$HOME/failing-bin" "$HOME/scan-tmp"
 export ACCOUNT_TEST_FIND
