@@ -897,6 +897,137 @@ for _ts in "2026-08-26T16:25:00+05:00" "2026-08-26T16:25:00-08:00" "2026-08-26T1
 done
 
 # --------------------------------------------------------------------------
+# (t) Issue #1736 — review-state findings scoped by the threads they opened.
+#
+#     The (s) fixture, but with the run-1 findings carried the way CodeAnt
+#     actually posts them on auerbachb/sales-kit PR #114: an EMPTY-bodied
+#     COMMENTED review object that owns the two inline thread roots
+#     (pull_request_review_id), plus a second empty COMMENTED review whose only
+#     inline comment is a reply — the "Customized review instruction saved!"
+#     acknowledgement. Before #1736 either review blocked redemption by mere
+#     presence on the SHA, so the gate dead-ended with every thread resolved.
+#     Negative control: `EVAL_SUT=<origin/main>/review-substance.sh bash "$0"`
+#     fails the (t1)/(t4) redemption assertions and the pre_run_stuck field
+#     checks (absent there) — 11 failures, everything else passes; verified
+#     2026-11-05.
+# --------------------------------------------------------------------------
+review_obj() { # id state submitted_at [body]
+  jq -cn --arg login "$CA" --arg sha "$HEAD_SHA" --argjson id "$1" --arg st "$2" \
+         --arg at "$3" --arg body "${4:-}" \
+    '{id:$id, user:{login:$login,type:"Bot"}, state:$st, commit_id:$sha,
+      submitted_at:$at, body:$body}'
+}
+thread_root() { # id review_id created_at
+  inline_finding "$1" "$3" \
+    | jq -c --argjson rid "$2" '. + {pull_request_review_id:$rid, in_reply_to_id:null}'
+}
+thread_reply() { # id review_id reply_to created_at
+  inline_finding "$1" "$4" \
+    | jq -c --argjson rid "$2" --argjson to "$3" \
+        '. + {pull_request_review_id:$rid, in_reply_to_id:$to,
+              body:"Customized review instruction saved! Applied to docs/START-HERE.md."}'
+}
+append_json() { # array_json element_json
+  jq -c --argjson e "$2" '. + [$e]' <<<"$1"
+}
+T_APPROVAL=$(approval "$CA" "2026-08-26T16:16:13Z")
+T_REVIEWS="[$T_APPROVAL,$(review_obj 5001 COMMENTED "2026-08-26T16:17:00Z"),$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z")]"
+T_INLINE="[$(thread_root 901 5001 "2026-08-26T16:17:00Z"),$(thread_root 902 5001 "2026-08-26T16:17:01Z"),$(thread_reply 904 5002 901 "2026-08-26T16:18:30Z")]"
+
+# (t1) AC 1: findings review from an EARLIER run, every thread resolved, later
+#      clean run on the same SHA -> redeemed.
+EV=$(evidence_res "$T_REVIEWS" "$S_STATUS" "$T_INLINE" "[901,902,904]")
+check_eq "false" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(t1) an earlier run's COMMENTED review whose threads are all resolved is not a finding of this run"
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t1) so the later clean run redeems the pre-run approval (sales-kit PR #114 shape)"
+check_eq "true" "$(r_field "$EV" counts_as_coverage)" "(t1) and the approval counts as coverage"
+check_eq "[]" "$(echo "$EV" | jq -c '.pre_run_stuck')" "(t1) and nothing is reported stuck"
+
+# (t2) AC 2, review-state: the later run opens a NEW thread from its own review
+#      object -> blocks, even with that thread resolved and the review"s own
+#      submitted_at frozen before the run (the #876 in-place shape).
+EV=$(evidence_res "$(append_json "$T_REVIEWS" "$(review_obj 5003 COMMENTED "2026-08-26T16:17:00Z")")" \
+     "$S_STATUS" \
+     "$(append_json "$T_INLINE" "$(thread_root 905 5003 "2026-08-26T16:26:00Z")")" \
+     "[901,902,904,905]")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(t2) a review whose thread the governing run opened is a finding, resolved or not"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(t2) and blocks the redemption"
+check_contains "pre_run_approval" "$(r_disq "$EV")" "(t2) the stub stays refused"
+check_eq '["codeant-ai[bot]"]' "$(echo "$EV" | jq -c '.pre_run_stuck')" \
+  "(t2) a done run that did not redeem is reported in pre_run_stuck"
+
+# (t2b) AC 2, inline: the later run posts a bare inline finding -> blocks.
+EV=$(evidence_res "$T_REVIEWS" "$S_STATUS" \
+     "$(append_json "$T_INLINE" "$(inline_finding 906 "2026-08-26T16:26:00Z")")" \
+     "[901,902,904,906]")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t2b) a new inline finding in the governing run still blocks"
+
+# (t3) AC 3: an earlier-run review still has an UNRESOLVED thread -> blocks.
+EV=$(evidence_res "$T_REVIEWS" "$S_STATUS" "$T_INLINE" "[901,904]")
+check_eq "true" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(t3) a review with an unresolved thread still counts as an open finding"
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" "(t3) and blocks the redemption"
+check_eq '["codeant-ai[bot]"]' "$(echo "$EV" | jq -c '.pre_run_stuck')" "(t3) and is reported stuck"
+
+# (t4) AC 4: a COMMENTED review that opened no thread and says nothing is not a
+#      finding — with no inline comments at all, or owning only a reply.
+EV=$(evidence_res "[$T_APPROVAL,$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z")]" "$S_STATUS" "[]" "[]")
+check_eq "false" "$(r_field "$EV" run_has_findings_on_head)" \
+  "(t4) an empty thread-less COMMENTED review is not a finding"
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" "(t4) and does not block redemption"
+EV=$(evidence_res "[$T_APPROVAL,$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z")]" "$S_STATUS" \
+     "[$(thread_reply 904 5002 901 "2026-08-26T16:18:30Z")]" "[904]")
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t4) a review owning only a resolved reply opens no thread and does not block"
+EV=$(evidence_res "[$T_APPROVAL,$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z" "<!-- codeant-meta -->  ")]" \
+     "$S_STATUS" "[]" "[]")
+check_eq "true" "$(r_field "$EV" redeemed_by_clean_run)" "(t4) a body of only an HTML comment is blank"
+
+# (t5) Boundaries of the thread-less rule: a non-blank body is a finding (the
+#      (q3)/(q4b) shape), and a thread-less CHANGES_REQUESTED always is.
+EV=$(evidence_res "[$T_APPROVAL,$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z" "Unbounded retry loop in sync.sh")]" \
+     "$S_STATUS" "[]" "[]")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t5) a thread-less COMMENTED review with a body still blocks"
+EV=$(evidence_res "[$T_APPROVAL,$(review_obj 5002 CHANGES_REQUESTED "2026-08-26T16:18:30Z")]" "$S_STATUS" "[]" "[]")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t5) an empty thread-less CHANGES_REQUESTED still blocks"
+
+# (t6) NEGATIVE CONTROL: the (t1) fixture with no thread data must refuse, or
+#      (t1) would be redeeming on something other than the resolution data.
+EV=$(evidence "$T_REVIEWS" "$S_STATUS" "$T_INLINE")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t6) negative control: (t1) without resolved_comment_ids still refuses"
+
+# (t7) AC 7: every hollow-approval disqualifier still blocks a redeemable payload.
+T_INFLIGHT="[$(status_comment_rows "[$(run_row "$HEAD_SHA" false "$STARTED2"),$(run_row "$HEAD_SHA" true "$STARTED" "$FINISHED")]")]"
+EV=$(evidence_res "$T_REVIEWS" "$T_INFLIGHT" "$T_INLINE" "[901,902,904]")
+check_contains "pre_run_approval" "$(r_disq "$EV")" \
+  "(t7) pre-run approval with no completed later run still blocks"
+check_eq "[]" "$(echo "$EV" | jq -c '.pre_run_stuck')" \
+  "(t7) an in-flight run is not stuck — it may still redeem"
+T_CAPFAIL=$(jq -cn --arg login "$CA" '{user:{login:$login,type:"Bot"},
+  created_at:"2026-08-26T16:28:00Z", updated_at:"2026-08-26T16:28:00Z",
+  body:"CodeAnt AI could not run on this PR: your organization does not have a PR Review subscription."}')
+# The two below use the (t4) thread-less redeeming payload: HEAD-anchored inline
+# comments are external evidence that already (by design, pre-#1736) suppress
+# both disqualifiers, so (t1)"s payload would test that suppression instead.
+T4_REVIEWS="[$T_APPROVAL,$(review_obj 5002 COMMENTED "2026-08-26T16:18:30Z")]"
+# A capability-failure notice is suppressed by a COMPLETED status table naming
+# HEAD (external evidence, by design since #875), so it is exercised against the
+# in-flight table, which is not evidence.
+EV=$(evidence_res "$T4_REVIEWS" "$(append_json "$T_INFLIGHT" "$T_CAPFAIL")" "[]" "[]")
+check_contains "capability_failure" "$(r_disq "$EV")" \
+  "(t7) a capability-failure notice after the approval still blocks"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" "(t7) and the approval is not coverage"
+EV=$(evidence_res "$T4_REVIEWS" "$(append_json "$S_STATUS" "$WRONG_SHA_COMMENT")" "[]" "[]")
+check_contains "self_report_mismatch" "$(r_disq "$EV")" "(t7) a status comment naming another SHA still blocks"
+check_eq "false" "$(r_field "$EV" counts_as_coverage)" "(t7) and the approval is not coverage"
+
+# --------------------------------------------------------------------------
 # (h)/(i) merge-gate.sh integration: the verdict has to reach the gate, and the
 #     missing[] reason has to say WHY — naming the reviewer and the timing, not
 #     the generic "need 1 approval". And --allow-hollow-approval must not

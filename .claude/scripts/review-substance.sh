@@ -72,6 +72,10 @@
 #                                          # resolved (GraphQL databaseId)
 #   }
 #
+# `pr_comments` entries are read for `pull_request_review_id` and
+# `in_reply_to_id` too (issue #1736): together they tell which review OPENED
+# which thread. Both are on the raw REST payload and on pr-state.sh"s projection.
+#
 # `resolved_comment_ids` is OPTIONAL and defaults to []. Omitting it reproduces
 # the pre-#1632 behaviour exactly: an id absent from the set reads as "thread
 # unresolved or unknown", which still counts as a finding. Only callers holding
@@ -103,6 +107,9 @@
 #     "pre_run":           [ … ],                  # approved outside its own recorded run
 #     "redeemed_by_clean_run": [ … ],              # of those, the ones a completed
 #                                                  # clean run on HEAD redeemed
+#     "pre_run_stuck":     [ … ],                  # of those, the ones whose run
+#                                                  # on HEAD is done and did NOT
+#                                                  # redeem them (issue #1736)
 #     "corroborating":     ["cursor[bot]"]         # substantive non-approvers on HEAD
 #   }
 #
@@ -129,12 +136,19 @@
 #   run_has_findings_on_head  that reviewer left a non-APPROVED review or a
 #                             BLOCKING inline comment on HEAD.
 #
-#                             Review-state findings stay SHA-wide, read by
-#                             PRESENCE on the commit_id-scoped index and never by
-#                             ordering a review object against the run window:
-#                             CodeAnt freezes submitted_at on in-place edits
-#                             (#876), so a timestamp test on a REVIEW cannot fire
-#                             for the reviewer this term exists to judge.
+#                             Review-state findings are scoped by the THREADS
+#                             each review opened (issue #1736), never by the
+#                             review"s own submitted_at, which CodeAnt freezes on
+#                             in-place edits (#876). A COMMENTED/CHANGES_REQUESTED
+#                             review that opened threads (inline comments with
+#                             its pull_request_review_id and no in_reply_to_id)
+#                             counts only while one of those threads passes the
+#                             same in-window-or-unresolved test as the inline
+#                             term below. A thread-less COMMENTED review counts
+#                             only when its body is non-blank, so an empty
+#                             acknowledgement (CodeAnt"s saved-instruction reply)
+#                             is not a finding; a thread-less CHANGES_REQUESTED
+#                             always counts.
 #
 #                             The INLINE-comment term is scoped to the governing
 #                             run (issue #1632). An inline comment on HEAD counts
@@ -907,11 +921,34 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               # still counts — the conservative direction.
               cid: (((.id // "") | tostring)) } ] ) as $iidx
 
+    # ---- Thread ROOTS by owning review (issue #1736) --------------------------
+    # The inline comments that OPEN a thread (in_reply_to_id null), keyed by the
+    # review object that posted them. This is what lets a review-state finding
+    # be scoped the way issue #1632 scoped inline ones: a COMMENTED review is
+    # judged by the threads it opened, not by its mere presence on the SHA.
+    # Deliberately NOT filtered to HEAD-anchored comments: a review GitHub
+    # re-pointed onto HEAD keeps its own threads, and dropping them would turn a
+    # threaded review into a thread-less one — the more permissive reading.
+    # Replies are excluded because a reply opens no thread: a review whose only
+    # inline comment is a reply (CodeAnt"s "Customized review instruction
+    # saved!" acknowledgement, auerbachb/sales-kit PR #114) carries no finding
+    # of its own.
+    | ( [ $inline[]?
+          | select(.in_reply_to_id == null)
+          | select(.pull_request_review_id != null)
+          | { rid: ((.pull_request_review_id) | tostring),
+              created: (((.created_at // .updated_at) // "") | canon_ts),
+              cid: (((.id // "") | tostring)) } ] ) as $roots
+
     # ---- Latest review per login on HEAD -----------------------------------
     | ( [ $reviews[]?
           | select(((.commit_id // "") | ascii_downcase) == $sha)
           | { login: (.user.login // ""),
               state: (.state // ""),
+              # Issue #1736: the review id joins $roots, and body_blank marks a
+              # review whose body says nothing once markup is stripped.
+              id: ((.id // "") | tostring),
+              body_blank: (((.body // "") | gsub("<!--[\\s\\S]*?-->"; "") | gsub("[[:space:]]+"; "") | length) == 0),
               body_len: ((.body // "") | length),
               submitted_at: ((.submitted_at // "") | canon_ts) } ] ) as $ridx
 
@@ -1183,13 +1220,14 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # either index came from a run on this commit — but a SHA can hold more
         # than one run, and issue #1632 is the case where it does.
         #
-        # REVIEW-STATE findings stay SHA-wide, detected by PRESENCE alone and
-        # never by ordering a review object against the run window. A
-        # submitted_at comparison there would be worse than imprecise: CodeAnt
-        # PATCHes its review objects in place and never refreshes submitted_at
-        # (#876), so the timestamps of the very reviewer this term exists to
-        # judge are frozen and unorderable. A lingering non-APPROVED review
-        # therefore still blocks redemption, unconditionally.
+        # REVIEW-STATE findings are never ordered against the run window by
+        # their OWN timestamp. A submitted_at comparison there would be worse
+        # than imprecise: CodeAnt PATCHes its review objects in place and never
+        # refreshes submitted_at (#876), so the timestamps of the very reviewer
+        # this term exists to judge are frozen and unorderable. Since issue
+        # #1736 they are instead judged by the THREADS they opened (see
+        # $review_has_findings below); a thread-less review with a non-blank
+        # body, and any thread-less CHANGES_REQUESTED, still blocks by presence.
         #
         # INLINE-comment findings are scoped to the governing run (issue #1632).
         # An inline comment counts when EITHER its created_at falls inside
@@ -1233,29 +1271,61 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # is the exact stranding the dismissal exists to clear. A missing or
         # unrecognised state likewise does not block — inventing a blocker from
         # unusable data is the failure mode #836 warns about.
-        | ( (([ $ridx[]
-                | select(.login == $login
-                         and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")) ]
-              | length) > 0)
-            or (([ $inl[]
-                   | select(
-                       # No governing run record: the window test cannot apply,
-                       # so every HEAD inline comment counts (pre-#1632 rule).
-                       ($runmark == null)
-                       # Posted by the governing run itself. $runmark.started /
-                       # .finished are already canonicalised onto the `Z`
-                       # spelling by canon_marker_ts at parse time, so these are
-                       # like-for-like string compares. A run still in flight
-                       # carries an empty `finished`, which leaves the window
-                       # open-ended rather than empty.
-                       or ((($runmark.started // "") != "") and (.created != "")
-                           and (.created >= $runmark.started)
-                           and ((($runmark.finished // "") == "")
-                                or (.created <= $runmark.finished)))
-                       # Not known to be resolved — unresolved, or the caller
-                       # supplied no thread data for it.
-                       or (($resolved_ids[.cid] // false) | not)) ]
-                 | length) > 0) )                                          as $run_has_findings
+        # One predicate for "this inline comment is a LIVE finding of the run
+        # being judged", shared by the inline term and the review-state term
+        # (issue #1736) so the two scopings cannot drift apart.
+        | def live_finding:
+            # No governing run record: the window test cannot apply, so every
+            # comment counts (pre-#1632 rule).
+            ($runmark == null)
+            # Posted by the governing run itself. $runmark.started / .finished
+            # are already canonicalised onto the `Z` spelling by
+            # canon_marker_ts at parse time, so these are like-for-like string
+            # compares. A run still in flight carries an empty `finished`, which
+            # leaves the window open-ended rather than empty.
+            or ((($runmark.started // "") != "") and (.created != "")
+                and (.created >= $runmark.started)
+                and ((($runmark.finished // "") == "")
+                     or (.created <= $runmark.finished)))
+            # Not known to be resolved — unresolved, or the caller supplied no
+            # thread data for it.
+            or (($resolved_ids[.cid] // false) | not);
+
+        # REVIEW-STATE findings, scoped by the threads each review opened
+        # (issue #1736 — the gap issue #1632 design decision 1 left open):
+        #   - A review that opened threads is a finding only while one of those
+        #     threads is a live finding by the SAME rule as inline comments: in
+        #     the governing run window, or not known to be resolved. An earlier
+        #     run"s findings review whose threads were all resolved therefore
+        #     stops blocking a later clean run — the sales-kit PR #114 dead end.
+        #     Its body is not read separately: a threaded review carries its
+        #     findings in those threads, and they are what resolution closes.
+        #   - A thread-less COMMENTED review counts only when its body says
+        #     something. An empty one (a saved-instruction acknowledgement whose
+        #     only inline comment is a reply) is not a finding at all.
+        #   - A thread-less CHANGES_REQUESTED always counts: it is a blocking
+        #     verdict by definition, body or not. So does a review with no id,
+        #     whose threads cannot be linked at all.
+        # No submitted_at ordering anywhere: CodeAnt freezes it on in-place
+        # edits (#876), so the run window is tested only on the created_at of
+        # the distinct thread-root comment objects.
+          ( [ $ridx[]
+              | select(.login == $login
+                       and (.state == "COMMENTED" or .state == "CHANGES_REQUESTED"))
+              | . as $rv
+              | ([ $roots[] | select(.rid != "" and .rid == $rv.id) ]) as $threads
+              | select(
+                  if ($threads | length) > 0
+                  then ([ $threads[] | select(live_finding) ] | length) > 0
+                  # No review id: its threads cannot be linked, so it cannot
+                  # be proven thread-less either; count it (conservative).
+                  elif $rv.state == "CHANGES_REQUESTED" or $rv.id == "" then true
+                  else ($rv.body_blank | not)
+                  end) ]
+            | length > 0 )                                                 as $review_has_findings
+
+        | ( $review_has_findings
+            or (([ $inl[] | select(live_finding) ] | length) > 0) )        as $run_has_findings
 
         # Redemption of a pre-run approval (issue #1432) — the one narrow
         # exception to "$pre_run is not suppressed by external evidence".
@@ -1381,6 +1451,17 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         pre_run:           [ $map | to_entries[] | select(.value.pre_run_approval) | .key ],
         redeemed_by_clean_run:
                            [ $map | to_entries[] | select(.value.redeemed_by_clean_run) | .key ],
+        # Issue #1736: pre-run approvals whose reviewer run on HEAD has already
+        # COMPLETED without redeeming them. Waiting cannot change that verdict
+        # on this SHA — CodeAnt never re-approves a SHA it already approved —
+        # so escalate-review.sh reads this bucket to stop polling CodeRabbit
+        # forever. An in-flight run is excluded: it may still redeem.
+        pre_run_stuck:     [ $map | to_entries[]
+                             | select(.value.approved_on_head and .value.pre_run_approval
+                                      and (.value.run_done == true)
+                                      and (.value.redeemed_by_clean_run | not)
+                                      and (.value.counts_as_coverage | not))
+                             | .key ],
         corroborating:     $corroborating
       }
 ') || {

@@ -271,13 +271,13 @@ So the rule keys on the run marker instead:
 > A `pre_run_approval` is redeemed **iff** the same reviewer's run marker for
 > the **same SHA** reaches `done: true` **and** that reviewer left **zero
 > findings from that run** — no `COMMENTED`/`CHANGES_REQUESTED` review on the
-> SHA, and no HEAD-anchored inline comment that is either inside the run's
-> window or still unresolved — **and** no other disqualifier survives.
+> SHA that is still a live finding (see issue #1736 below), and no HEAD-anchored
+> inline comment that is either inside the run's window or still unresolved —
+> **and** no other disqualifier survives.
 
-**Review-state** findings (`$ridx`) are read by **presence on the
-`commit_id`-scoped index**, never by ordering anything against the run window —
-the same frozen `submitted_at` that motivates the rule would make an ordering
-test meaningless. That detection is deliberately *not* filtered through
+**Review-state** findings (`$ridx`) are never ordered against the run window by
+their **own** timestamp — the same frozen `submitted_at` that motivates the rule
+would make an ordering test meaningless. Review-state finding detection is deliberately *not* filtered through
 `fresh_review`: a `COMMENTED` review GitHub re-pointed onto HEAD cannot be proven
 to belong to this round, and the conservative reading of an unprovable finding is
 that it counts, since this term only ever **withholds** the redemption.
@@ -310,6 +310,55 @@ it was posted, rather than a verdict the bot rewrites in place — and a bot tha
 did freeze a comment timestamp lands on the resolution branch, not on a false
 clean. With `$runmark` null there is no window to test and every HEAD inline
 comment counts, exactly as before.
+
+#### Review-state findings are scoped by the threads they opened (issue #1736)
+
+Issue #1632 left review objects SHA-wide on the reasoning that the observed
+blockers were inline comments and reviews have no thread resolution. That left
+a second dead end. On auerbachb/sales-kit PR #114 at `69650c8` CodeAnt's
+findings arrived as an **empty-bodied** `COMMENTED` review owning two inline
+threads, both declined and resolved, plus a second empty `COMMENTED` review whose
+only inline comment was a **reply** ("Customized review instruction saved!").
+Either object blocked redemption by mere presence, a later `@codeant-ai review`
+came back clean, CodeAnt does not re-approve a SHA it already approved, and the
+gate stayed unmet with CI green and zero unresolved threads.
+
+A `COMMENTED`/`CHANGES_REQUESTED` review is now judged by the threads it
+**opened** — the inline comments carrying its `pull_request_review_id` with no
+`in_reply_to_id`:
+
+- **It opened threads:** it is a finding only while one of them is a live
+  finding by the **same** predicate as the inline term above — inside the
+  governing run's window, or not known to be resolved. An earlier run's review
+  whose threads were all resolved stops blocking; a review the governing run
+  posted keeps blocking however quickly its thread was closed (the window is
+  still a disjunct). The run window is tested on the thread roots' `created_at`,
+  never on the review's frozen `submitted_at`. The review body is not read
+  separately: a threaded review carries its findings in its threads.
+- **It opened none, `COMMENTED`:** a finding only when its body is non-blank once
+  HTML comments and whitespace are stripped. An empty acknowledgement — or a
+  review owning only a reply — is not a finding at all. A thread-less review with
+  a written body still blocks by presence (cases (q3)/(q4b)).
+- **It opened none, `CHANGES_REQUESTED`:** always a finding.
+
+The predicate is one jq `def` (`live_finding`) shared by both terms, so the
+inline and review-state scopings cannot drift apart. Thread roots are not
+filtered to HEAD-anchored comments: dropping a re-pointed review's threads would
+turn it into a thread-less review, the more permissive reading. Cases (t1)–(t7)
+in `tests/merge-gate-codeant-run-marker.test.sh` pin it; the origin/main
+evaluator fails the (t1)/(t4) redemption assertions.
+
+#### `pre_run_stuck` — when waiting cannot help (issue #1736)
+
+A top-level bucket listing approvers whose approval on HEAD is a
+`pre_run_approval`, whose own run on HEAD is **done**, and which that run did
+**not** redeem. An in-flight run is excluded — it may still redeem. Nothing
+gates on it in `merge-gate.sh` (it rides along in `review_evidence`);
+`escalate-review.sh` reads it to stop polling CodeRabbit on a SHA no CR-path
+reviewer can ever approve — see `merge-gate-reviewer-paths.md` §CodeAnt on the CR
+path. Because both scripts read the same field from the same evaluator, they
+cannot disagree about why the gate is unmet
+(`tests/escalate-review-cr-path-stuck.test.sh`).
 
 #### `resolved_comment_ids` — the optional input
 

@@ -761,7 +761,62 @@ CR_REVIEW_ON_HEAD="$(jq -r --arg sha "$HEAD_SHA" '
   | length > 0
 ' "$STATE_PATH")"
 
-if [[ "$CR_RATE_LIMITED" != "true" && ! ( "$AGE_SECONDS" -gt 720 && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
+# CR-PATH STUCK STATE (issue #1736). `CR_REVIEW_ON_HEAD` keeps the gate above in
+# polling_cr for as long as CodeRabbit has ANY review on HEAD. That is right
+# while CodeRabbit may still approve, and wrong forever when it cannot: in a
+# repo where CodeRabbit only ever posts COMMENTED, CodeAnt is the sole possible
+# CR-path approver, and once CodeAnt's only approval on HEAD is a pre-run stub
+# whose run has already COMPLETED without redeeming it (review-substance.sh
+# `.pre_run_stuck`), no amount of polling changes the verdict on this SHA —
+# CodeAnt never re-approves a SHA it already approved. Observed on
+# auerbachb/sales-kit PR #114 at 69650c8: CI green, 0 unresolved threads,
+# reviewDecision APPROVED, and polling_cr indefinitely.
+#
+# Every term is required, and every unreadable term reads as NOT stuck, so this
+# can only ever release the existing wait, never invent an escalation:
+#   1. the evaluator answered (SUBSTANCE_OK) and lists a stuck approver — the
+#      SAME review_evidence merge-gate.sh reports, so the two agree on why;
+#   2. CodeRabbit has posted no APPROVED anywhere on this PR (comment-only);
+#   3. CodeRabbit's latest review on HEAD is older than the 720 s CR window;
+#   4. the thread snapshot exists and holds zero unresolved threads;
+#   5. no non-reviewer check-run on HEAD is incomplete or blocking.
+# On a match the PR falls through to the ordinary BugBot -> Greptile chain below.
+CR_SILENCE_WINDOW_SECONDS=720
+CR_PATH_STUCK=false
+if [[ "$SUBSTANCE_OK" == "true" && "$CR_RATE_LIMITED" != "true" && "$CR_REVIEW_ON_HEAD" == "true" \
+      && "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+  STUCK_APPROVERS="$(jq -r '(.pre_run_stuck // []) | join(",")' <<<"$SUBSTANCE_JSON" 2>/dev/null || echo "")"
+  CR_LAST_REVIEW_TS=""
+  STUCK_SHAPE="$(jq -r --arg sha "$HEAD_SHA" '
+    def blocking: . == "failure" or . == "timed_out" or . == "action_required"
+                  or . == "startup_failure" or . == "stale";
+    ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and .state == "APPROVED")]
+       | length == 0) as $cr_comment_only
+    | ([.comments.reviews[]? | select(.user.login == "coderabbitai[bot]" and ((.commit_id // "") == $sha))
+        | (.submitted_at // "")] | sort | last // "") as $cr_last
+    | ((.threads | type) == "object" and (.threads.all | type) == "array"
+       and ([.threads.all[] | select(.isResolved != true)] | length) == 0) as $threads_clear
+    # An absent or malformed check-run list is unreadable, never clear.
+    | ((.check_runs.all | type) == "array" and
+       ([.check_runs.all[]
+        # Reviewer runs are not CI. BugBot is excluded by its publishing app,
+        # never by check name alone (issue #956 structural guard).
+        | select((.name // "") != "CodeRabbit" and (.app.slug // "") != "cursor")
+        | select((.status // "") != "completed" or ((.conclusion // "") | blocking))]
+       | length == 0)) as $ci_clear
+    | [ ($cr_comment_only and $threads_clear and $ci_clear), $cr_last ] | @tsv
+  ' "$STATE_PATH" 2>/dev/null || printf 'false\t\n')"
+  IFS=$'\t' read -r STUCK_SHAPE_OK CR_LAST_REVIEW_TS <<<"$STUCK_SHAPE" || true
+  if [[ -n "$STUCK_APPROVERS" && "${STUCK_SHAPE_OK:-false}" == "true" && -n "${CR_LAST_REVIEW_TS:-}" ]]; then
+    if [[ "$(iso_age_seconds "$CR_LAST_REVIEW_TS")" -gt "$CR_SILENCE_WINDOW_SECONDS" ]]; then
+      CR_PATH_STUCK=true
+      echo "escalate-review.sh: CR path stuck on ${HEAD_SHA:0:7} — CodeRabbit is comment-only, the only approval ($STUCK_APPROVERS) is a pre-run stub its own completed run did not redeem (review_evidence.pre_run_stuck), threads resolved, CI clear; escalating instead of polling_cr (issue #1736)" >&2
+    fi
+  fi
+fi
+
+if [[ "$CR_RATE_LIMITED" != "true" && "$CR_PATH_STUCK" != "true" \
+      && ! ( "$AGE_SECONDS" -gt "$CR_SILENCE_WINDOW_SECONDS" && "$CR_REVIEW_ON_HEAD" != "true" ) ]]; then
   emit "polling_cr"
 fi
 
