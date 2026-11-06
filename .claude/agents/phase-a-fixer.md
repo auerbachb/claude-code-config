@@ -96,7 +96,7 @@ gh api "repos/{{OWNER}}/{{REPO}}/pulls/{{PR_NUMBER}}/comments?per_page=100"
 gh api "repos/{{OWNER}}/{{REPO}}/issues/{{PR_NUMBER}}/comments?per_page=100"
 ```
 
-Filter by `coderabbitai[bot]`, `cursor[bot]`, or `greptile-apps[bot]`.
+Filter by `coderabbitai[bot]`, `cursor[bot]`, `codeant-ai[bot]`, `greptile-apps[bot]`, or the retired `graphite-app[bot]` (still posting until the App is uninstalled).
 
 ### Step 2: Verify and Fix
 
@@ -130,10 +130,10 @@ One commit = one review consumed. Never push multiple commits for separate findi
 
 ### Step 4: Reply to Review Threads
 
-Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, and `@codeant-ai` for CodeAnt — each mode strips only its own token, never another's):
+Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for the retired Graphite, which still posts until its App is uninstalled — each mode strips only its own token, never another's):
 
 ```bash
-run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant \
+run_script reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
   --body "Fixed in \`SHA\`: <what changed>" --pr {{PR_NUMBER}} \
   --verdict fixed --defect real --fix as-given
 ```

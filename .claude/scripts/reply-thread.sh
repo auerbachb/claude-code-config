@@ -10,23 +10,28 @@
 #   - greptile  : strips any `@greptileai` tokens from the body (paid re-review)
 #   - codeant   : strips any `@codeant-ai` tokens from the body (no auto-mention;
 #                 plain-text reply — triggering CodeAnt is rate-limited)
-#   (graphite mode retired 2026-11-03 with the reviewer, #1889 — now rejected)
+#   - graphite  : strips any `@graphite-app` tokens from the body (no auto-mention;
+#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite).
+#                 Graphite was retired 2026-11-03 (#1889), but the App still posts
+#                 until it is uninstalled, so its threads still need a reply path.
+#                 Remove this mode once the App is gone.
 #
-# Each reviewer's strip rule targets ONLY its own @token — the rules are
+# Each reviewer's strip rule targets ONLY its own @token. A `@codeant-ai` token
+# in a graphite-mode body is left intact, and vice versa — the rules are
 # independent, never interchangeable (issue #1374).
 #
 # The strip rules are case-insensitive and match the literal @token only — they
 # do NOT mangle surrounding text. Both strip and prepend are idempotent.
 #
 # Usage:
-#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant --body "<text>" [--pr N]
+#   reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body "<text>" [--pr N]
 #                   [--verdict fixed|deferred|declined --defect real|not [--agent NAME]
 #                    [--fix as-given|adapted|wrong|none]]
 #   reply-thread.sh --help
 #
 # Arguments:
 #   <comment_id>     Numeric databaseId of the review comment to reply to.
-#   --reviewer X     One of: cr, bugbot, greptile, codeant. Controls
+#   --reviewer X     One of: cr, bugbot, greptile, codeant, graphite. Controls
 #                    @mention handling.
 #   --body "<text>"  Reply body (after transformation rules are applied).
 #   --pr N           PR number. Feeds BOTH the inline attempt (the reply route
@@ -124,7 +129,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reviewer)
       if [[ -z "${2:-}" ]]; then
-        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile|codeant)" >&2
+        echo "ERROR: --reviewer requires a value (cr|bugbot|greptile|codeant|graphite)" >&2
         exit 2
       fi
       REVIEWER="$2"
@@ -197,7 +202,7 @@ done
 
 if [[ -z "$COMMENT_ID" ]]; then
   echo "ERROR: <comment_id> is required" >&2
-  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME] [--fix as-given|adapted|wrong|none]]" >&2
+  echo "Usage: $(basename "$0") <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite --body \"<text>\" [--pr N] [--verdict fixed|deferred|declined --defect real|not [--agent NAME] [--fix as-given|adapted|wrong|none]]" >&2
   exit 2
 fi
 
@@ -207,13 +212,13 @@ if [[ ! "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 case "$REVIEWER" in
-  cr|bugbot|greptile|codeant) ;;
+  cr|bugbot|greptile|codeant|graphite) ;;
   "")
-    echo "ERROR: --reviewer is required (cr|bugbot|greptile|codeant)" >&2
+    echo "ERROR: --reviewer is required (cr|bugbot|greptile|codeant|graphite)" >&2
     exit 2
     ;;
   *)
-    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile, codeant (got: $REVIEWER)" >&2
+    echo "ERROR: --reviewer must be one of: cr, bugbot, greptile, codeant, graphite (got: $REVIEWER)" >&2
     exit 2
     ;;
 esac
@@ -326,6 +331,15 @@ case "$REVIEWER" in
     # hyphen is a literal character in the pattern, not a range separator.
     strip_standalone_token '@[Cc][Oo][Dd][Ee][Aa][Nn][Tt]-[Aa][Ii]'
     ;;
+  graphite)
+    # Strip standalone @graphite-app tokens (`@graphite-app re-review` is the
+    # re-review trigger, so a stray mention would request a fresh review;
+    # plain-text reply mirrors bugbot/greptile/codeant semantics). This pattern
+    # is deliberately NOT shared with the codeant branch — each reviewer strips
+    # only its own token, so a @codeant-ai token in a graphite reply survives
+    # intact (issue #1374). The hyphen is a literal character, not a range.
+    strip_standalone_token '@[Gg][Rr][Aa][Pp][Hh][Ii][Tt][Ee]-[Aa][Pp][Pp]'
+    ;;
 esac
 
 # Collapse only runs of spaces/tabs left by token removal; preserve newlines
@@ -334,7 +348,7 @@ esac
 # [ \t] is NOT: BSD sed's -E treats `\t` as literal `\` + `t` inside a bracket
 # expression, which would eat real `t` characters at line ends.
 if [[ "$REVIEWER" == "bugbot" || "$REVIEWER" == "greptile" \
-   || "$REVIEWER" == "codeant" ]]; then
+   || "$REVIEWER" == "codeant" || "$REVIEWER" == "graphite" ]]; then
   BODY=$(printf '%s' "$BODY" | sed -E 's/[[:blank:]]{2,}/ /g; s/^[[:blank:]]+//; s/[[:blank:]]+$//')
 fi
 

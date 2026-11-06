@@ -6,8 +6,9 @@ Supersedes the role recommendations in [`ai-review-tool-audit-2026-06.md`](./ai-
 
 ## Decision
 
-Each of the five AI review tools holds exactly one role. **No tool is dropped**, so no rule or
-script may gate on, escalate to, or trigger a tool absent from this table.
+Each of the five AI review tools holds exactly one role. **No tool is dropped** — except Graphite,
+retired 2026-11-03 (§Graphite retirement, #1889) — so no rule or
+script may gate on, escalate to, or trigger a tool absent from this table, or one marked retired.
 
 | Tool | Bot login (REST) | **Role** | Gates the merge? | Cost rationale |
 |------|------------------|----------|------------------|----------------|
@@ -125,6 +126,8 @@ The payment is real and recent, and it may change the behaviour. That is a reaso
 not to promote on price. Price is not evidence of yield.
 
 ### Re-measure trigger (Graphite)
+
+> **Superseded 2026-11-03** by §Graphite retirement (#1889): Graphite is no longer polled or nudged. Historical below.
 
 Revisit Graphite's role at the next audit, or as soon as **≥30 PRs have merged under the paid plan**
 — whichever comes first. **Both conditions are now satisfied** (88 merged PRs, 7–21 Aug 2026), so

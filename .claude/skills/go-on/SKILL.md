@@ -827,10 +827,11 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
   2. Verify against actual code before fixing
   3. Fix ALL valid findings in a single commit
   4. Push once
-  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai` for BugBot/Greptile/CodeAnt):
+  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai`/`@graphite-app` for BugBot/Greptile/CodeAnt/the retired Graphite):
 
      ```bash
-     # $REVIEWER: cr | bugbot | greptile | codeant (determined from the finding's author)
+     # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author;
+     # graphite = the retired graphite-app[bot], kept until its App is uninstalled)
      # $VERDICT: fixed | deferred | declined; $DEFECT: real | not — mandatory (issue #1842)
      # $FIX: as-given | adapted | wrong | none — mandatory (issue #1843; scored only when $DEFECT is real)
      # $REPLY must match $VERDICT: "Fixed in `<sha>`: <what changed>" for fixed,

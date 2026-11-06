@@ -175,7 +175,10 @@ eval_watermarks() {
       .user.login == "coderabbitai[bot]"
       or .user.login == "cursor[bot]"
       or .user.login == "greptile-apps[bot]"
-      or .user.login == "codeant-ai[bot]";
+      or .user.login == "codeant-ai[bot]"
+      # graphite-app[bot]: retired 2026-11-03 (#1889), but the App can still post
+      # until it is uninstalled — a new Graphite finding must still fire /fixpr.
+      or .user.login == "graphite-app[bot]";
     def max_id($items):
       ([$items[]? | .id // empty] | max // 0);
     def new_finding_count($items; $endpoint; $wm):
