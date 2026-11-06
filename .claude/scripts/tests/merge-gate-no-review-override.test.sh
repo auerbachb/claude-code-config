@@ -387,6 +387,43 @@ check_eq "false" "$(j .no_review_override.applied)" "only another branch push ru
 check_eq "anchor_unavailable: no pull_request workflow run for HEAD on feature" "$(j .no_review_override.reason)" "ineligible reason names the missing pull_request run"
 unset FAKE_RUNS
 
+echo "=== issue #1932: hollow vs substantive HEAD approval on every reviewer path ==="
+# A hollow approval (empty body, no footprint) is no verdict, so the override
+# still applies; a substantive one is a verdict and disables it — on cr, bugbot
+# AND greptile (where the gate itself computes no review_evidence).
+run_gate_on() { # $1 = reviewer path, $2 = check-runs bundle, [$3 = gate script, default the SUT]
+  OUT=$(PATH="$BIN:$PATH" FAKE_CHECK_RUNS="$2" \
+        FAKE_REVIEWS="${FAKE_REVIEWS:-[]}" FAKE_PR_COMMENTS="${FAKE_PR_COMMENTS:-[]}" \
+        FAKE_ISSUE_COMMENTS="${FAKE_ISSUE_COMMENTS:-[]}" \
+        "${3:-$SUT}" 1 --reviewer "$1" 2>"$TMP/gate.err")
+  RC=$?
+}
+head_approval() { # $1 = body, [$2 = approving bot, default CodeRabbit]
+  jq -cn --arg sha "$HEAD_SHA" --arg t "$(ago 480)" --arg b "$1" --arg l "${2:-coderabbitai[bot]}" \
+    '[{user:{login:$l,type:"Bot"}, commit_id:$sha, state:"APPROVED", body:$b, submitted_at:$t}]'
+}
+SUBSTANTIVE_BODY="Actionable comments posted: 0. Reviewed 3 files; behaviour preserved."
+for bot in "coderabbitai[bot]" "codeant-ai[bot]"; do
+  for path in cr bugbot greptile; do
+    reset; FAKE_REVIEWS="$(head_approval "" "$bot")"
+    run_gate_on "$path" "$GREEN_11"
+    check_eq "$path" "$(j .reviewer)" "#1932 $bot $path: gate ran on the $path path"
+    check_eq "true"  "$(j .no_review_override.applied)" "#1932 $bot $path: hollow HEAD approval is no verdict -> override applied"
+    check_eq "true"  "$(j .met)" "#1932 $bot $path: hollow HEAD approval -> met via the override"
+    reset; FAKE_REVIEWS="$(head_approval "$SUBSTANTIVE_BODY" "$bot")"
+    run_gate_on "$path" "$GREEN_11"
+    check_eq "false" "$(j .no_review_override.applied)" "#1932 $bot $path: substantive HEAD approval disables the override"
+  done
+done
+# Fail closed: with the evaluator unusable the Greptile path discounts nothing,
+# so the hollow approval is still a verdict and the override stays off.
+reset; FAKE_REVIEWS="$(head_approval "")"
+mkdir -p "$TMP/nro-sut/lib"
+cp "$(dirname "$SUT")"/*.sh "$TMP/nro-sut/"; cp "$(dirname "$SUT")"/lib/*.sh "$TMP/nro-sut/lib/"
+printf '#!/usr/bin/env bash\necho "not json"\n' > "$TMP/nro-sut/review-substance.sh"; chmod +x "$TMP/nro-sut/review-substance.sh"
+run_gate_on greptile "$GREEN_11" "$TMP/nro-sut/merge-gate.sh"
+check_eq "false" "$(j .no_review_override.applied)" "#1932 greptile: broken evaluator -> hollow approval still a verdict, override off"
+
 echo "=== merge-site contracts: refresh the gate right before an override merge ==="
 SKILLS_DIR="$SCRIPT_DIR/../../skills"
 prose_has() { grep -qF "$2" "$1" && echo yes || echo no; }
