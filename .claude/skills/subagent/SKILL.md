@@ -342,6 +342,12 @@ if CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json); then
   # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
   CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
   [[ -n "$CLAIM_HOLDER" ]] || echo "Issue #{NUMBER} — claim held but no holder reported; claim renewal off."
+  # Record it now, not at launch: a queued issue is claimed here too, and Step 8
+  # item 8 renews every recorded claim — running or queued (no started_at yet).
+  [[ -n "$CLAIM_HOLDER" ]] && "$SESSION_STATE_SH" \
+    --set ".repos[\"$("$SESSION_STATE_SH" --repo-key)\"].pipelines[\"{NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')" \
+    --set ".repos[\"$("$SESSION_STATE_SH" --repo-key)\"].pipelines[\"{NUMBER}\"].claim_renewed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+    || echo "Issue #{NUMBER} — claim held but not recorded; renewal off until Step 7.1 records it."
 else
   echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."
   # -> skip this issue: no Phase A spawn, no Step 7.1 record.
@@ -1093,9 +1099,13 @@ if [[ -z "$LAUNCHED_AT" ]]; then
   # The claim holder from Step 6.0 rides in the same write (Step 8.1 renews with
   # it). Omitted when unknown — no claim helper, or no .holder in the JSON — and
   # a pipeline without one is simply never renewed.
+  # Step 6.0 normally recorded both already; never reset a recorded
+  # claim_renewed_at — that would hide a queued claim's real age.
   CLAIM_SET=()
   [[ -n "$CLAIM_HOLDER" ]] && CLAIM_SET=(
-    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')"
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')")
+  C_PREV=$("$SESSION_STATE_SH" --get ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at" 2>/dev/null) || C_PREV=""
+  [[ -n "$CLAIM_HOLDER" && ( -z "$C_PREV" || "$C_PREV" == "null" ) ]] && CLAIM_SET+=(
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
   "$SESSION_STATE_SH" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
@@ -1510,7 +1520,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    with no `started_at`" queued test. Clearing on a refill would delete the queue
    the board is reading.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
-8. **Renew due claims (Step 8.1, with `DUE_ONLY=1`).** For each active pipeline, renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
+8. **Renew due claims (Step 8.1, with `DUE_ONLY=1`).** For each pipeline with a recorded `claim_holder` — running **or queued** (Step 6.0 claims and records queued issues too) — renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
 
 ### 8.1: Keep each claim renewed (issue #1927)
 
