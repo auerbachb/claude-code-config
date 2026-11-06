@@ -129,6 +129,11 @@ REPO="$(normalize_repo "$REPO")"
 
 if [[ "$CMD" == backfill ]]; then
   [[ -n "$SHA" && -n "$STATUS" ]] || die 2 "backfill needs --sha and --status"
+  # A typo'd status would drop the row out of `list --pending` for good.
+  case "$STATUS" in
+    pending|reviewed-clean|issues-filed|skipped) ;;
+    *) die 2 "--status must be pending, reviewed-clean, issues-filed, or skipped (got '$STATUS')" ;;
+  esac
   DETAIL='null'
   if [[ -n "$DETAIL_SRC" ]]; then
     if [[ "$DETAIL_SRC" == "-" ]]; then DETAIL="$(cat)"; else DETAIL="$(cat "$DETAIL_SRC" 2>/dev/null)" || die 4 "cannot read $DETAIL_SRC"; fi

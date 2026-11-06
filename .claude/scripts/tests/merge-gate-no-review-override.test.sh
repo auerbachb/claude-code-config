@@ -131,7 +131,7 @@ check_eq "feedface00000000000000000000000000000001" "$(jq -r '.entries[0].merge_
 check_eq "already-recorded"   "$(record)"                             "TP1 re-record is idempotent"
 check_eq "1"                  "$(ledger_rows)"                        "TP1 still one row"
 check_eq "1" "$(PATH="$BIN:$PATH" "$LEDGER_SUT" list --repo SOLO/Repo --pending | jq length)" "TP1 list --repo --pending finds it"
-check_eq "updated" "$(PATH="$BIN:$PATH" "$LEDGER_SUT" backfill --pr 1 --repo solo/repo --sha "$HEAD_SHA" --status reviewed)" "TP1 backfill status update"
+check_eq "updated" "$(PATH="$BIN:$PATH" "$LEDGER_SUT" backfill --pr 1 --repo solo/repo --sha "$HEAD_SHA" --status reviewed-clean)" "TP1 backfill status update"
 check_eq "0" "$(PATH="$BIN:$PATH" "$LEDGER_SUT" list --pending | jq length)" "TP1 no longer pending after backfill"
 
 echo "=== TP2: same at 9 min -> not met ==="

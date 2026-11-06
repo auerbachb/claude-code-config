@@ -25,7 +25,7 @@
 #        an unresolvable path (deleted) is filed with a locate note, never dropped;
 #    10. a file changed after the merge: still_present when the flagged line
 #        survives, changed (filed with a confirm note) when it does not;
-#    11. the ledger refuses a --detail-json that is not an object;
+#    11. the ledger refuses a --detail-json that is not an object, and an unknown --status;
 #    12. a failed merge-commit lookup leaves the row pending, while GitHub
 #        answering "no merge commit" skips it with a reason;
 #    13. --repo naming another repo than a GitHub origin is a usage error;
@@ -285,6 +285,9 @@ BEFORE_11="$(status_of 101)"
 printf '[1]' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
 check_eq "11: non-object detail refused" "4" "$RC"
 check_eq "11: refused write left the row unchanged" "$BEFORE_11" "$(status_of 101)"
+"$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status reviewd-clean >/dev/null 2>&1; RC=$?
+check_eq "11: unknown --status refused as usage (exit 2)" "2" "$RC"
+check_eq "11: unknown --status left the row unchanged" "$BEFORE_11" "$(status_of 101)"
 printf '{} {}' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
 check_eq "11: two concatenated objects refused as usage (exit 4)" "4" "$RC"
 
