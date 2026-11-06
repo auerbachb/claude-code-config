@@ -680,10 +680,23 @@ do_renew() {
     # A newer marker that is not ours won the race. Remove our own new marker
     # (best effort) so it can never resurface as the winner later, and report
     # the winner. Nothing of the winner's is touched.
-    if [[ -n "$new_id" ]]; then
-      gh api -X DELETE "$REPO_PREFIX/issues/comments/$new_id" >/dev/null 2>&1 \
-        || echo "issue-claim.sh: warning — could not delete this run's superseded renewal marker $new_id on issue #$ISSUE_NUMBER" >&2
+    # A POST that errored may still have landed (new_id empty): its marker is
+    # found on the re-read as a viewer-authored marker for this holder with an
+    # id above the replaced one (comment ids only grow), and removed the same way.
+    local sid stale_ids="$new_id"
+    if [[ -z "$stale_ids" ]]; then
+      stale_ids="$(printf '%s' "$verify" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" \
+        --arg old "$old_id" --arg win "$W_ID" --arg m "$CLAIM_MARKER" '
+        .[] | select((.user.login // "") == $v and (.id | tostring) != $win
+                     and .id > ($old | tonumber? // infinite))
+        | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .holder) catch "") == $h)
+        | .id' 2>/dev/null || true)"
     fi
+    while IFS= read -r sid; do
+      [[ -z "$sid" ]] && continue
+      gh api -X DELETE "$REPO_PREFIX/issues/comments/$sid" >/dev/null 2>&1 \
+        || echo "issue-claim.sh: warning — could not delete this run's superseded renewal marker $sid on issue #$ISSUE_NUMBER" >&2
+    done <<<"$stale_ids"
     CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
     CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
     # A renewed winner carries its original pickup time as `since`.

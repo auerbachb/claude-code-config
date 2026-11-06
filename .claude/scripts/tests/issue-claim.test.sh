@@ -673,6 +673,30 @@ check_contains "superseded: old marker not deleted" "$OLD_IDS" "$(marker_ids)"
 run 873 --check --holder threadA
 check_eq "superseded: threadA is now blocked" "claimed" "$OUT"
 
+# Errored-but-landed POST while a foreign marker wins: the POST returns no id,
+# yet this run's marker must still be removed so it cannot resurface later.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+jq -n --arg at "$(date -u +%FT%TZ)" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadB", login: "alice"} | tojson) + " -->")}' \
+  > "$STATE/inject.json"
+FAKE_COMMENT_POST_MODE=land-error \
+FAKE_COMMENT_CREATED_AT="$(jq -r .created_at "$STATE/inject.json")" \
+FAKE_AFTER_POST_HOOK='
+  jq --slurpfile x "$S/inject.json" ". + \$x" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"
+  echo "$NEW_ID" > "$S/our_new_id"' \
+  run 873 --renew --holder threadA --json
+check_eq "landed+superseded: exit 5" 5 "$RC"
+check_contains "landed+superseded: reason" "superseded" "$(jq -r .reason <<<"$OUT")"
+OUR_NEW="$(cat "$STATE/our_new_id")"
+check_eq "landed+superseded: the landed marker was removed" "" \
+  "$(jq -r --argjson id "$OUR_NEW" '.[] | select(.id == $id) | .id' "$STATE/comments.json")"
+check_contains "landed+superseded: old marker not deleted" "$OLD_IDS" "$(marker_ids)"
+check_eq "landed+superseded: foreign marker kept" "999999" \
+  "$(jq -r '.[] | select(.id == 999999) | .id' "$STATE/comments.json")"
+
 reset_issue
 FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
 FAKE_AFTER_POST_HOOK='
