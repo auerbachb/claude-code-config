@@ -26,15 +26,15 @@ The channel allowlist is hard-coded — `coderabbit` and `codeant` CLIs. `--chan
 
 `lib/backfill_review.py normalize` parses the raw capture: CodeRabbit NDJSON `finding` records (`fileName`, `severity`, line from "at line N" in `codegenInstructions`, the untrusted-data preamble stripped) and CodeAnt `.issues[]` (`relevant_file`, `start_line`, `label`, `issue_content`). A finding is a bug when CodeRabbit says `major`/`critical`, or the CodeAnt label matches bug/security/critical/major. Everything else is recorded as `dropped: below bug severity`; a finding with no path or no text is `dropped: no file anchor or no text`.
 
-`origin/main` is fetched once per run and its SHA pinned. Each bug is checked mechanically:
+`origin/main` is fetched once per run and its SHA pinned. Each bug's path is first resolved on main — the same path, else its rename target from `git diff -M --name-status <merge> <main>` (recorded as `main_path`) — then checked mechanically:
 
 | Verdict | Test | Action |
 |---|---|---|
-| `removed` | the path no longer exists on main | drop (`dropped: file gone on main`) |
-| `still_present` | the file is unchanged since the merge, or the flagged line's text still appears on main | file |
+| `still_present` | the file is unchanged since the merge, or the flagged line's text still appears on main (at `main_path`) | file |
 | `changed` | the file changed and the flagged line is gone | file, with a "confirm it still applies" note |
+| `changed`, `main_path: null` | the path is gone and no rename was detected (deleted, or moved past rename detection) | file, with a "locate the code and confirm" note |
 
-The runner biases toward filing (`autofile-dedup.md` §cost asymmetry): it cannot judge semantics, so a changed region is filed with the note, never silently dropped.
+The runner biases toward filing (`autofile-dedup.md` §cost asymmetry): it cannot judge semantics, so a changed or vanished region is filed with the note, never silently dropped — a rename must never turn a real bug into `reviewed-clean`.
 
 ## Filing and dedup
 
@@ -72,4 +72,4 @@ The packaged installer is follow-up work (linked from the PR). Until it lands, t
 
 ## Tests
 
-`.claude/scripts/tests/backfill-review.test.sh` — offline: seeded ledger, fixture repo, stub CLIs and gh. Covers one deduped issue per planted bug, no re-review, marker recovery, outage → pending, lookup failure → pending, window handling, disabled hooks, the allowlist, no paid-reviewer call, and the `removed` verdict.
+`.claude/scripts/tests/backfill-review.test.sh` — offline: seeded ledger, fixture repo, stub CLIs and gh. Covers one deduped issue per planted bug, no re-review, marker recovery, outage → pending, lookup failure → pending, window handling, disabled hooks, the allowlist, no paid-reviewer call, and the rename and unresolvable-path verdicts (filed, never dropped).

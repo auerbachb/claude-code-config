@@ -21,7 +21,8 @@
 #     7. a repo post-checkout hook never runs in the review worktree;
 #     8. no paid reviewer is ever reachable: a non-allowlisted channel is a
 #        usage error, and no gh call comments, reviews, or mentions a bot;
-#     9. a finding whose file is gone on main is dropped, not filed;
+#     9. a finding whose file was renamed on main is verified at the new path;
+#        an unresolvable path (deleted) is filed with a locate note, never dropped;
 #    10. a file changed after the merge: still_present when the flagged line
 #        survives, changed (filed with a confirm note) when it does not;
 #    11. the ledger refuses a --detail-json that is not an object;
@@ -249,14 +250,26 @@ seed; run --ignore-window >/dev/null
 check_eq "10: flagged line gone -> changed" "changed" "$(verdict_101)"
 check_contains "10: changed is filed with a confirm note" "confirm the finding still applies" "$(jq -r '.[0].body' "$STUB/issues.json")"
 
-# ---- 9. finding's file deleted on main -> dropped ------------------------------------
-git -C "$R" rm -q buggy.sh; git -C "$R" commit -qm "remove buggy.sh"; git -C "$R" push -q origin main 2>/dev/null
-seed
-OUT="$(run --ignore-window)"
-check_eq "9: row reviewed clean" "reviewed-clean" "$(status_of 101)"
-check_eq "9: finding dropped as fixed" "dropped: file gone on main" \
-  "$(jq -r '.entries[] | select(.pr == 101) | .backfill.findings[] | select(.severity == "major") | .disposition' "$LEDGER")"
-check_eq "9: nothing filed" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+# ---- 9. finding's file renamed or unresolvable on main -> still filed ----------------
+major_101() { jq -r --arg k "$1" '.entries[] | select(.pr == 101) | .backfill.findings[] | select(.severity == "major") | .[$k] // "null"' "$LEDGER"; }
+# 9a: renamed with the flagged code intact -> verified at the new path.
+printf '#!/bin/sh\nrm -rf $UNSET/\n' > "$R/buggy.sh"; git -C "$R" commit -qam "restore buggy line"
+git -C "$R" mv buggy.sh renamed.sh; git -C "$R" commit -qm "rename buggy.sh"; git -C "$R" push -q origin main 2>/dev/null
+seed; run --ignore-window >/dev/null
+check_eq "9a: renamed file -> issues-filed, not reviewed-clean" "issues-filed" "$(status_of 101)"
+check_eq "9a: verified at the rename target" "renamed.sh" "$(major_101 main_path)"
+check_eq "9a: renamed + unchanged -> still_present" "still_present" "$(major_101 verdict)"
+check_eq "9a: renamed finding is filed" "1" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+check_contains "9a: issue names the new path" "on \`main\` it is \`renamed.sh\`" "$(jq -r '.[0].body' "$STUB/issues.json")"
+# 9b: deleted (no rename target) -> unresolvable, filed with a locate note, never dropped.
+git -C "$R" rm -q renamed.sh; git -C "$R" commit -qm "remove renamed.sh"; git -C "$R" push -q origin main 2>/dev/null
+seed; run --ignore-window >/dev/null
+check_eq "9b: unresolvable path -> issues-filed, not reviewed-clean" "issues-filed" "$(status_of 101)"
+check_eq "9b: unresolvable -> changed" "changed" "$(major_101 verdict)"
+check_eq "9b: no main path recorded" "null" "$(major_101 main_path)"
+check_eq "9b: unresolvable finding is filed" "1" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+check_contains "9b: issue asks to locate the code" "no rename was detected" "$(jq -r '.[0].body' "$STUB/issues.json")"
+check_not_contains "9b: nothing dropped as file gone" "file gone on main" "$(cat "$LEDGER")"
 
 # ---- 12. merge commit missing from the ledger ----------------------------------------
 seed_nomerge() { seed; jq '(.entries[] | select(.pr == 102)) |= (.merge_commit_sha = null)' "$LEDGER" > "$LEDGER.t" && mv "$LEDGER.t" "$LEDGER"; }
@@ -268,9 +281,10 @@ check_contains "12: skip reason recorded" "merge commit unavailable" \
   "$(jq -r '.entries[] | select(.pr == 102) | .backfill.skip_reason' "$LEDGER")"
 
 # ---- 11. ledger detail must be an object ------------------------------------------
+BEFORE_11="$(status_of 101)"
 printf '[1]' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
 check_eq "11: non-object detail refused" "4" "$RC"
-check_eq "11: refused write left the row unchanged" "reviewed-clean" "$(status_of 101)"
+check_eq "11: refused write left the row unchanged" "$BEFORE_11" "$(status_of 101)"
 printf '{} {}' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
 check_eq "11: two concatenated objects refused as usage (exit 4)" "4" "$RC"
 

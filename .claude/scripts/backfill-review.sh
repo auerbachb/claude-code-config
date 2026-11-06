@@ -294,20 +294,45 @@ review_entry() {
   return 1
 }
 
-# verify_finding <finding-json> <merge_sha> — prints still_present | changed | removed
+# resolve_main_path <merge_sha> <path> — prints where <path> lives on main:
+# itself, or its rename target (git diff -M, merge -> main). Returns 1 when
+# neither resolves: deleted, or renamed past rename detection — the caller
+# must not read that as "fixed".
+resolve_main_path() {
+  local merge="$1" path="$2" st a b
+  if git -C "$REPO_DIR" cat-file -e "$MAIN_SHA:$path" 2>/dev/null; then printf '%s' "$path"; return 0; fi
+  while IFS= read -r -d '' st; do
+    case "$st" in
+      R*|C*)
+        IFS= read -r -d '' a || break; IFS= read -r -d '' b || break
+        if [[ "$a" == "$path" ]] && git -C "$REPO_DIR" cat-file -e "$MAIN_SHA:$b" 2>/dev/null; then
+          printf '%s' "$b"; return 0
+        fi ;;
+      *) IFS= read -r -d '' a || break ;;
+    esac
+  done < <(git -C "$REPO_DIR" diff -M --name-status -z "$merge" "$MAIN_SHA" 2>/dev/null)
+  return 1
+}
+
+# verify_finding <finding-json> <merge_sha> — prints "<verdict><TAB><path on main>",
+# verdict still_present | changed. A path that cannot be resolved on main
+# (deleted, or renamed beyond detection) is "changed" with an empty main path:
+# filed with a locate-and-confirm note, never dropped (the filing bias).
 verify_finding() {
-  local f="$1" merge="$2" path line text_at_merge
+  local f="$1" merge="$2" path line mp text_at_merge old_blob new_blob
   path="$(jq -r .path <<<"$f")"; line="$(jq -r '.line // empty' <<<"$f")"
-  git -C "$REPO_DIR" cat-file -e "$MAIN_SHA:$path" 2>/dev/null || { echo removed; return; }
-  if git -C "$REPO_DIR" diff --quiet "$merge" "$MAIN_SHA" -- "$path" 2>/dev/null; then echo still_present; return; fi
+  mp="$(resolve_main_path "$merge" "$path")" || { printf 'changed\t\n'; return; }
+  old_blob="$(git -C "$REPO_DIR" rev-parse -q --verify "$merge:$path" 2>/dev/null)"
+  new_blob="$(git -C "$REPO_DIR" rev-parse -q --verify "$MAIN_SHA:$mp" 2>/dev/null)"
+  if [[ -n "$old_blob" && "$old_blob" == "$new_blob" ]]; then printf 'still_present\t%s\n' "$mp"; return; fi
   if [[ "$line" =~ ^[0-9]+$ ]]; then
     text_at_merge="$(git -C "$REPO_DIR" show "$merge:$path" 2>/dev/null | sed -n "${line}p")"
     if [[ -n "${text_at_merge//[[:space:]]/}" ]] \
-       && grep -qxF -- "$text_at_merge" <<<"$(git -C "$REPO_DIR" show "$MAIN_SHA:$path" 2>/dev/null)"; then
-      echo still_present; return
+       && grep -qxF -- "$text_at_merge" <<<"$(git -C "$REPO_DIR" show "$MAIN_SHA:$mp" 2>/dev/null)"; then
+      printf 'still_present\t%s\n' "$mp"; return
     fi
   fi
-  echo changed
+  printf 'changed\t%s\n' "$mp"
 }
 
 # marker_lookup <marker> — prints the matching issue URL, empty for none; returns 2 on error/ambiguity
@@ -330,9 +355,9 @@ neutralize() { # stdin -> stdout: no @-mentions, no fence breakouts
 # safe_inline <text> — one line for an inline code span: no backtick, CR/LF, or @.
 safe_inline() { printf '%s' "$1" | tr '\r\n`' "  '" | sed 's/@/(at)/g'; }
 
-# file_finding <finding-json> <row-json> <verdict> <merge-sha> — prints the issue URL; non-zero = leave pending
+# file_finding <finding-json> <row-json> <verdict> <merge-sha> <main-path> — prints the issue URL; non-zero = leave pending
 file_finding() {
-  local f="$1" row="$2" verdict="$3" merge="$4" fp marker url path line sev text title body dup dup_rc kw pr_url
+  local f="$1" row="$2" verdict="$3" merge="$4" main_path="$5" fp marker url path line sev text title body dup dup_rc kw pr_url
   fp="$(jq -r .fingerprint <<<"$f")"; path="$(jq -r .path <<<"$f")"; line="$(jq -r '.line // "?"' <<<"$f")"
   sev="$(jq -r .severity <<<"$f")"; text="$(jq -r .text <<<"$f")"
   pr_url="$(jq -r '.url // ""' <<<"$row")"
@@ -360,7 +385,12 @@ file_finding() {
     printf '## Test Plan\n\n- [ ] A test or manual check shows the flagged case behaves correctly.\n\n'
     printf '## Notes / Open questions\n\n'
     printf -- '- Verified against `main` at `%s`: %s.\n' "$MAIN_SHA" "$verdict"
-    [[ "$verdict" == changed ]] && printf -- '- The file changed after the merge — confirm the finding still applies before fixing.\n'
+    if [[ -z "$main_path" ]]; then
+      printf -- '- This path is not on `main` and no rename was detected — locate the code (renamed, moved, or deleted) and confirm the finding still applies before fixing.\n'
+    else
+      if [[ "$main_path" != "$path" ]]; then printf -- '- The file was renamed after the merge; on `main` it is `%s`.\n' "$(safe_inline "$main_path")"; fi
+      if [[ "$verdict" == changed ]]; then printf -- '- The file changed after the merge — confirm the finding still applies before fixing.\n'; fi
+    fi
     if [[ -n "$dup" ]]; then printf -- '- %s\n' "$dup"; fi
     printf -- '- Filed automatically; no reviewer was asked to re-review.\n\n%s\n\n' "$marker"
     printf '## Estimate\n\nEst: 15–30 min · plan on 30\n\n_Captured via /issue-maker._\n'
@@ -436,7 +466,7 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
   RESULTS='[]' ISSUES='[]' ok=1
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    disp="" verdict="" url=""
+    disp="" verdict="" url="" main_path=""
     if [[ "$(jq -r .bug <<<"$f")" != true ]]; then disp="dropped: below bug severity"
     elif [[ -z "$(jq -r '.path' <<<"$f")" ]]; then disp="dropped: no file anchor"
     else
@@ -445,16 +475,18 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
       if [[ -z "$(jq -r '.text | gsub("\\s"; "")' <<<"$f")" ]]; then
         f="$(jq -c '.text = "(the reviewer flagged this location as a bug but gave no description)"' <<<"$f")"
       fi
-      verdict="$(verify_finding "$f" "$merge")"
-      if [[ "$verdict" == removed ]]; then disp="dropped: file gone on main"
-      elif url="$(file_finding "$f" "$row" "$verdict" "$merge")" && [[ -n "$url" ]]; then
+      vline="$(verify_finding "$f" "$merge")"
+      verdict="${vline%%$'\t'*}"; main_path="${vline#*$'\t'}"
+      if [[ "$verdict" != still_present && "$verdict" != changed ]]; then ok=0; break
+      elif url="$(file_finding "$f" "$row" "$verdict" "$merge" "$main_path")" && [[ -n "$url" ]]; then
         disp="filed"; ISSUES="$(jq -c --arg u "$url" '. + [$u] | unique' <<<"$ISSUES")"
       else ok=0; break
       fi
     fi
-    RESULTS="$(jq -c --argjson f "$f" --arg d "$disp" --arg v "$verdict" --arg u "$url" \
+    RESULTS="$(jq -c --argjson f "$f" --arg d "$disp" --arg v "$verdict" --arg u "$url" --arg mp "$main_path" \
       '. + [{fingerprint: $f.fingerprint, tool: $f.tool, path: $f.path, line: $f.line, severity: $f.severity,
-             verdict: (if $v == "" then null else $v end), disposition: $d, issue: (if $u == "" then null else $u end)}]' <<<"$RESULTS")"
+             verdict: (if $v == "" then null else $v end), main_path: (if $mp == "" then null else $mp end),
+             disposition: $d, issue: (if $u == "" then null else $u end)}]' <<<"$RESULTS")"
   done < <(jq -c '.[]' <<<"$FINDINGS")
   if [[ $ok -eq 0 ]]; then
     log "$REPO PR #$pr filing or dedup lookup failed — left pending"; cleanup_worktree; continue
