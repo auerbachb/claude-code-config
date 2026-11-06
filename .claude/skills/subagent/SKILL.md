@@ -1307,10 +1307,15 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
      # Build OTHER_ISSUES: batch members excluding the current PR (comma-separated issue numbers)
      OTHER_ISSUES=$(printf '%s' "$BATCH_ISSUES" | sed 's/[][" ]//g' | tr ',' '\n' \
        | grep -v "^${ISSUE_NUM}$" | paste -sd ',' - 2>/dev/null || true)
+     # An array, not `${X:+--flag "$X"}`: zsh passes that as one word (issue #1857).
+     WINDOW_ARGS=()
+     if [[ -n "$SCOPED_DEADLINE" ]]; then
+       WINDOW_ARGS=(--window-deadline "$SCOPED_DEADLINE")
+       [[ -n "$OTHER_ISSUES" ]] && WINDOW_ARGS+=(--window-issues "$OTHER_ISSUES")
+     fi
      OVERRUN_RC=0
      ALERT=$("$OVERRUN_CHECK_SH" --pr "$PR_NUM" --bound-min "$BOUND_MIN" \
-       --started-at "$STARTED_AT" ${SCOPED_DEADLINE:+--window-deadline "$SCOPED_DEADLINE"} \
-       ${SCOPED_DEADLINE:+${OTHER_ISSUES:+--window-issues "$OTHER_ISSUES"}}) || OVERRUN_RC=$?
+       --started-at "$STARTED_AT" ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"}) || OVERRUN_RC=$?
      # RC=0: no breach — silent. RC=1: first breach — emit ALERT (bounded exception). RC=2: already alerted — silent.
      [[ "$OVERRUN_RC" -eq 1 ]] && echo "$ALERT"
    fi

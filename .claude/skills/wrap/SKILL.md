@@ -467,7 +467,9 @@ dedup_search() {   # sets DEDUP_JSON/DUP_NUM/DUP_STATE
   DEDUP_JSON='[]'
   DEDUP_DEGRADED=""
   if [ -n "$ISSUE_DEDUP" ] && [ -n "$kw" ]; then
-    DEDUP_JSON=$("$ISSUE_DEDUP" "$kw" ${DEDUP_EXCLUDE:+--exclude "$DEDUP_EXCLUDE"}) || rc=$?
+    local dedup_args=("$kw")   # an array: zsh keeps `${X:+--flag "$X"}` as one word
+    [ -n "$DEDUP_EXCLUDE" ] && dedup_args+=(--exclude "$DEDUP_EXCLUDE")
+    DEDUP_JSON=$("$ISSUE_DEDUP" "${dedup_args[@]}") || rc=$?
     if [ "$rc" -gt 1 ]; then
       DEDUP_DEGRADED="helper exit $rc"
       DEDUP_ANY_DEGRADED="$DEDUP_DEGRADED"
@@ -907,7 +909,9 @@ done
 #    re-emitted below, one line each.
 MERGED_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
 if [ -x "$RELEASE_SWEEP" ]; then
-  SWEEP_OUT=$("$RELEASE_SWEEP" ${MERGED_REPO:+--repo "$MERGED_REPO"} --json 2>/dev/null) || true
+  SWEEP_ARGS=()   # an array: zsh keeps `${X:+--repo "$X"}` as one word (issue #1857)
+  [ -n "$MERGED_REPO" ] && SWEEP_ARGS=(--repo "$MERGED_REPO")
+  SWEEP_OUT=$("$RELEASE_SWEEP" ${SWEEP_ARGS[@]+"${SWEEP_ARGS[@]}"} --json 2>/dev/null) || true
   if [ -n "${SWEEP_OUT:-}" ]; then
     # A build the sweep cut folds into the single success line rather than adding
     # one of its own.

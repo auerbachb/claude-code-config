@@ -44,7 +44,9 @@ fi
 # $GH_USER when Step 0 resolved it. The script re-validates --days and falls back
 # to 3 on a non-numeric/non-positive value, so a bad override degrades safely.
 DAYS="${FORGOTTEN_PR_DAYS:-3}"
-"$FORGOTTEN_PR_TRIAGE_SH" --json --days "$DAYS" ${GH_USER:+--author "$GH_USER"}
+TRIAGE_ARGS=()   # an array: zsh keeps `${X:+--author "$X"}` as one word (issue #1857)
+[[ -n "${GH_USER:-}" ]] && TRIAGE_ARGS=(--author "$GH_USER")
+"$FORGOTTEN_PR_TRIAGE_SH" --json --days "$DAYS" ${TRIAGE_ARGS[@]+"${TRIAGE_ARGS[@]}"}
 ```
 
 `forgotten-pr-triage.sh` (read-only — it never closes, merges, or deletes) enumerates your open PRs, keeps those whose **last activity** (`updatedAt`, the documented age basis) is strictly more than the threshold ago, and classifies each `close` or `merge` using exactly two close signals (first match wins; otherwise `merge`):
