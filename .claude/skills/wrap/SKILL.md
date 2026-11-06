@@ -233,6 +233,7 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 ```bash
 # CLAIM_PAIRS: "<issue> <holder>" lines from the caller; empty in a standalone /wrap.
 CLAIM_PAIRS="${CLAIM_PAIRS:-}"
+WRAP_STOP=0
 if [[ -z "$CLAIM_PAIRS" ]]; then
   echo "note: no claim holder handed to /wrap — claim not renewed before the wait"
 elif [[ -z "$ISSUE_CLAIM_SH" ]]; then
@@ -242,6 +243,7 @@ else
   while read -r C_ISSUE C_HOLDER; do
     [[ -n "$C_ISSUE" && -n "$C_HOLDER" ]] || continue
     for attempt in 1 2; do
+      [[ "$attempt" -eq 2 ]] && sleep 5   # let a transient gh failure clear
       "$ISSUE_CLAIM_SH" "$C_ISSUE" --renew --holder "$C_HOLDER" >/dev/null 2>"$CLAIM_ERR"; rc=$?
       [[ "$rc" -eq 0 || "$rc" -eq 5 || "$rc" -eq 2 ]] && break
     done
@@ -256,7 +258,7 @@ else
 fi
 ```
 
-`WRAP_STOP=1` (exit 5) is a **genuine block**: stop and report — do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). The Step 2.4 claim release is unchanged.
+Check `WRAP_STOP` right after the block: `1` (exit 5) is a **genuine block** — stop and report; do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). The Step 2.4 claim release is unchanged.
 
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 

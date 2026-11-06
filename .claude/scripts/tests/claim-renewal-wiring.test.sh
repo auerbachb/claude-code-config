@@ -26,8 +26,9 @@ PASS=0
 FAIL=0
 ok()   { PASS=$((PASS + 1)); echo "ok   — $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL — $1"; }
-has()  { # has <desc> <file> <fixed-string>
-  if [[ -r "$2" ]] && grep -qF -- "$3" "$2"; then ok "$1"; else bad "$1 (missing in ${2#"$REPO_ROOT"/}: $3)"; fi
+has()  { # has <desc> <file> <fixed-string>; an unreadable file was already failed once above
+  [[ -r "$2" ]] || return 0
+  if grep -qF -- "$3" "$2"; then ok "$1"; else bad "$1 (missing in ${2#"$REPO_ROOT"/}: $3)"; fi
 }
 first_line() { grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
 

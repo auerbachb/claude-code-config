@@ -336,11 +336,16 @@ Either signal skips the issue, and the skip line names **which** one fired:
 When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
-CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json) || {
-  echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."; }
-# The exact token this claim was taken with — every later --renew must pass it
-# (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived later.
-CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty')
+CLAIM_HOLDER=""
+if CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json); then
+  # The exact token this claim was taken with — every later --renew must pass
+  # it (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived.
+  CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty' 2>/dev/null)
+  [[ -n "$CLAIM_HOLDER" ]] || echo "Issue #{NUMBER} — claim held but no holder reported; claim renewal off."
+else
+  echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."
+  # -> skip this issue: no Phase A spawn, no Step 7.1 record.
+fi
 ```
 
 Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn. A held claim whose JSON carries no `.holder` still spawns, with one line saying renewal is off for that issue.
