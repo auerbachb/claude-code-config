@@ -87,11 +87,23 @@ The **working set stays 3–4**, unchanged and still CodeRabbit-throughput-bound
 
 So the cap belongs at 5 or 6, and the tie is broken by what a cap is *for*. A hard cap of 5 leaves a single slot above a 4-pipeline working set, so ordinary operation would sit against it constantly — and a backstop that fires during normal work is a nuisance rather than a backstop, which is how caps get raised for the wrong reason. 6 leaves two slots of transient headroom while staying within one step of parity.
 
-> **Default `ACTIVE_WORK_CAP=6`** — one step past the rebase-parity point, at 56% churn and 0.83 review rounds/hour/PR. **Configurable range [1, 10]**, the upper bound being the operator's stated tolerance from the 2026-08-18 session.
+> **Default `ACTIVE_WORK_CAP=6`** — one step past the rebase-parity point, at 56% churn and 0.83 review rounds/hour/PR. **Configurable range [1, 20]** — originally [1, 10], the operator's stated tolerance from the 2026-08-18 session, widened by the 2026-11-05 owner decision below.
 
 **6 is a ceiling, not a target.** It deliberately sits one step into the degraded band: at k = 6 a PR waits 72 minutes between review rounds and a majority of the review budget goes to rebases. That is the *worst* acceptable state, not the intended one. The intended state is the 3–4 working set, where a PR gets a round every 36–48 minutes and churn is still a minority of the budget.
 
 **Why 8 is not carried forward.** The originally proposed 8 had exactly one derivation: `8 reviews/hour ÷ 1 round per PR`. The 8 has been retracted. Re-running that same test on the measured 5/hr puts the starvation threshold at 6, not 8 — and at 8 a PR would wait 96 minutes per round with 64% of the budget going to rebases. Keeping 8 would mean keeping a number whose sole justification no longer exists.
+
+## Owner decision (2026-11-05) — this repo runs 12 now, 18 after Issue #1899
+
+**Decision.** The owner raised this repo's cap in two steps (Issue #1920): `ACTIVE_WORK_CAP=12` and `PIPELINE_CEILING=6` in `.claude/pm-config.md` now, then `ACTIVE_WORK_CAP=18` once Issue #1899 merges. The resolver's accepted range for both knobs widened from [1, 10] to [1, 20] to allow it. The built-in defaults (cap 6, ceiling 4) are unchanged, so other repos keep the CodeRabbit-derived numbers above.
+
+**Trigger.** On 2026-11-05 the cap read 7 of 6 with several threads active, so `/pm` could start nothing while 127 unowned issues sat in the backlog. The cap was throttling the whole repo for a constraint the owner has decided to stop waiting on.
+
+**Why review-waiting stops bounding the cap.** Every term in the derivation above prices concurrency in CodeRabbit reviews: each PR's hourly share (Term 1), each rebase force-push costing a review (Term 2), and the Fair Usage feedback loop (Term 3). Issue #1899 changes the merge rule: a PR with green CI and verified AC that has had no AI review for 10 minutes merges anyway and is logged for later review (overnight backfill in Issue #1900; paid-review gates in Issues #1897 and #1898). Once that lands, a PR no longer *waits* on review supply, so the 5/hr budget stops limiting throughput, and a rebase costs a CI run rather than a scarce review. The "coverage, not liveness" trade below is then made explicitly by the backfill instead of implicitly by merging unreviewed under load.
+
+**Why 12 first, not 18.** Until Issue #1899 merges, every extra concurrent PR still queues behind the 5/hr review supply. Worst-case rebase churn grows with k² (Term 2): 66 rebases to turn over 12 PRs, against 153 for 18. Twelve is the step the current merge rule can absorb; 18 is the owner's target once rebases are cheap. `PIPELINE_CEILING=6` lets one orchestrating thread use half the cap without one thread taking all of it.
+
+**Follow-up.** Raise `ACTIVE_WORK_CAP` to 18 in this repo's `## Active work` block after Issue #1899 merges — tracked by Issue #1923, which depends on Issue #1899. Until then, do not read this section as saying Issue #1899 has landed.
 
 ## What the cap protects — coverage, not liveness
 
@@ -109,7 +121,7 @@ effective limit = min(PIPELINE_CEILING, ACTIVE_WORK_CAP)
 
 **The cap never raises the per-thread ceiling.** A repo configured `ACTIVE_WORK_CAP=10` still runs 4 pipelines per thread (the ceiling's default); the 10 bounds the cross-thread total, nothing else.
 
-**A repo widens its own per-thread band with `PIPELINE_CEILING`** (#1729) — an integer in [1, 10] in the same `## Active work` section of its own `.claude/pm-config.md`, resolved by `active-work-cap.sh --ceiling` (env `CLAUDE_PIPELINE_CEILING` overrides; absent → 4 silently; out of range or non-integer → one stderr warning and 4). It is a config change in the repo that needs it, not a global rule edit, and it cannot outrun the cap either: running 10 wide means raising **both** knobs, so `ACTIVE_WORK_CAP` stays the repo-wide backstop. Consumers — `/subagent` Step 7, `/pm`'s slot math, `/wave` Step 6, `/pm-forgotten-pr`'s merge dispatch — read the resolved value; `/wave`'s `MAX_WAVE` still only lowers it.
+**A repo widens its own per-thread band with `PIPELINE_CEILING`** (#1729) — an integer in [1, 20] in the same `## Active work` section of its own `.claude/pm-config.md`, resolved by `active-work-cap.sh --ceiling` (env `CLAUDE_PIPELINE_CEILING` overrides; absent → 4 silently; out of range or non-integer → one stderr warning and 4). It is a config change in the repo that needs it, not a global rule edit, and it cannot outrun the cap either: running wider than the cap means raising **both** knobs, so `ACTIVE_WORK_CAP` stays the repo-wide backstop. Consumers — `/subagent` Step 7, `/pm`'s slot math, `/wave` Step 6, `/pm-forgotten-pr`'s merge dispatch — read the resolved value; `/wave`'s `MAX_WAVE` still only lowers it.
 
 **Why the default stays 4.** The CodeRabbit-rate derivation above still holds for any repo that relies on CodeRabbit: past ~5 concurrent PRs each one loses its hourly review round. A repo on a review plan without that throughput limit (e.g. CodeAnt's unlimited tier) opts in explicitly. Changing the default itself — for every repo — is still a reviewed change to this script and `subagent-orchestration.md`.
 
