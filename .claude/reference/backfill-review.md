@@ -14,13 +14,14 @@ The channel allowlist is hard-coded — `coderabbit` and `codeant` CLIs. `--chan
 
 ## Capacity and fail-closed behavior
 
-- Rows are taken oldest merge first (`merged_at`, then PR number).
+- Rows are taken fewest failed attempts first, then oldest merge (`merged_at`, then PR number).
 - Per row, channels are tried in order. A **verified** run (local-review.sh exit 0 or 1, `verified_run: true`) is used. Anything else — error record, 403/daily cap, rate limit, idle or max-duration timeout, CLI not installed — drops that channel for the rest of the run, because the CLIs' caps are daily/hourly and a retry would only burn the next slot.
 - With no channel left the run stops (`stop=capacity_exhausted`, exit 0); the row being reviewed and every later one stay `pending`. Exhaustion is never a skip.
 - `--max-reviews` (default 3, the CodeRabbit CLI's hourly allowance) bounds CLI attempts per run, failed ones included.
-- With the window enforced and no `--now`, a new review starts only when the window has at least `2 × --timeout` seconds left (local-review.sh's wall-clock cap).
+- With the window enforced, a new review starts only when the window has at least `2 × --timeout` seconds left (local-review.sh's wall-clock cap). The reserve is checked at the top of each row and again just before each CLI attempt, after the merge lookup, fetches, worktree setup, and any failed channel have spent part of the window. `--now` pins the run's starting instant; later checks advance it by elapsed run time.
 - Also left `pending`: an origin/main fetch failure (whole run), a failed merge-commit lookup or fetch, a first parent still missing after a fetch by SHA (a shallow checkout; only a successful answer naming no usable commit is `skipped`), a worktree setup failure, a capture the normalizer cannot parse, a verified run that reported more findings than parsed, a failed marker lookup, `issue-dedup.sh` exit 4, a failed `issue-file.sh` create, and a ledger write failure.
-- A single run lock — `flock(2)` on `~/.claude/backfill-review.flock`, held by the runner's open file descriptor until it exits however it dies, so there is no stale-PID takeover to race on — keeps two runs from reviewing (and filing for) the same rows; a held or unlockable lock is `stop=lock_held`, exit 0.
+- **Per-row attempt cap.** Some rows fail *after* their review ran, so the failure cost a review attempt: an unparseable capture, `parsed < reported`, or a failed verdict, marker, dedup, or create step. Such a row records `backfill.attempts` and `backfill.last_failure` and stays `pending`, so it sorts behind fresh rows on the next run. When it reaches `--max-row-attempts` (default 3), it is `skipped` with `skip_reason: gave up after N failed review attempts; last: …`. It is never marked reviewed and keeps `merged-unreviewed`. Capacity exhaustion, a closed window, and failures before the review (lookups, fetches, worktree setup) spend no review budget and are not counted.
+- A single run lock keeps two runs from reviewing (and filing for) the same rows. It is `flock(2)` on `~/.claude/backfill-review.flock`, held by a small holder child on a descriptor only that child has open (Python descriptors are not inherited). No helper child of the runner (`gh`, `git`, a hung CLI) can keep the lock after the runner dies. The holder polls `getppid()`, so a reused PID cannot fool it. It exits within 0.2 s of the runner's death, or immediately from the EXIT trap. There is no stale-PID takeover to race on. A held or unlockable lock is `stop=lock_held`, exit 0. The log line names the last holder recorded in the lock file and whether that process is still alive.
 
 ## What counts as a real bug, and verification against main
 
@@ -40,9 +41,11 @@ The runner biases toward filing (`autofile-dedup.md` §cost asymmetry): it canno
 
 Each filed finding gets a fingerprint (repo, PR, path, and the flagged line — the first line of the finding text only when no line is given; the tool and the reviewer's wording are left out because a re-review rewords and may run on the other CLI) and an exact marker `<!-- backfill-finding: owner/repo#PR:<fingerprint> -->` in the body.
 
+Two bug findings in one row can share an anchor (same path and line), and so share a fingerprint. They are filed as **one** issue whose Problem quotes every finding's text. Each finding records that issue. The fingerprint stays location-based (no text hash), so a reworded re-review still lands on the same marker.
+
 1. **Exact marker** — `gh issue list --state all --json number,url,body` and a local `contains` match (not the search API, whose index lags). One match → reuse that issue, no create; more than one, a failed lookup, or a listing that fills its limit (`BACKFILL_MARKER_LOOKUP_LIMIT`, default 5000 — absence is unproven) → the row stays pending. This is also the crash-recovery path: an issue that landed before a lost ledger write is found again, never filed twice.
 2. **Recall** — `issue-dedup.sh` on the file name plus the finding's first line. Candidates are listed in Notes as `Possibly duplicates #N — …`; fuzzy recall never suppresses (the runner cannot do the quote judgment).
-3. **Create** — `issue-file.sh --json` with the seven-section body and the `/issue-maker` footer, label `bug` (dropped by `issue-file.sh` if the repo lacks it), never `--assignee`. Background links the source PR and merge commit; Problem quotes the finding inside a `text` fence with `@` neutralized so a quoted mention can never summon a reviewer; Notes carry the main SHA, verdict, candidates, and marker.
+3. **Create** — `issue-file.sh --json` with the seven-section body and the `/issue-maker` footer, label `bug` (dropped by `issue-file.sh` if the repo lacks it), never `--assignee`. Background links the source PR and merge commit; Problem quotes the finding inside a `text` fence. `@` is neutralized there, so a quoted mention can never summon a reviewer. A quoted line that starts with `#` is indented one space, so a quoted `## Estimate` cannot count as a section heading in `issue-file.sh`'s order check (that check ignores fences); Notes carry the main SHA, verdict, candidates, and marker.
 
 ## Ledger outcome and label
 
@@ -61,8 +64,9 @@ Through `unreviewed-merge-ledger.sh backfill --status <s> --detail-json -`:
 | Channels, in try order | `--channels` | `BACKFILL_REVIEW_CHANNELS` | `coderabbit,codeant` |
 | CLI attempts per run | `--max-reviews` | — | `3` |
 | Idle bound per review | `--timeout` | — | `900` |
+| Failed post-review attempts before a row is skipped | `--max-row-attempts` | `BACKFILL_MAX_ROW_ATTEMPTS` | `3` |
 
-`--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and touches nothing. The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2 (credentialed and port-qualified GitHub URLs are parsed; an unparseable GitHub origin also exits 2, and the URL is printed with any credential redacted), so findings never land in the wrong repo.
+`--channels` drops a repeated name, so a failed channel is never retried in the same row. `--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and touches nothing. The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2 (credentialed and port-qualified GitHub URLs are parsed; an unparseable GitHub origin also exits 2, and the URL is printed with any credential redacted), so findings never land in the wrong repo.
 
 ## Scheduling
 
@@ -72,4 +76,12 @@ The packaged installer is follow-up work (linked from the PR). Until it lands, t
 
 ## Tests
 
-`.claude/scripts/tests/backfill-review.test.sh` — offline: seeded ledger, fixture repo, stub CLIs and gh. Covers one deduped issue per planted bug, no re-review, marker recovery, outage → pending, lookup failure → pending, window handling, disabled hooks, the allowlist, no paid-reviewer call, and the rename and unresolvable-path verdicts (filed, never dropped).
+`.claude/scripts/tests/backfill-review.test.sh` — offline: seeded ledger, fixture repo, stub CLIs and gh. Covers one deduped issue per planted bug, no re-review, marker recovery, outage → pending, lookup failure → pending, window handling, disabled hooks, the allowlist, no paid-reviewer call, and the rename and unresolvable-path verdicts (filed, never dropped), a runner killed while a helper sleeps leaving no lock, failing rows sinking behind a fresh one and being skipped at the cap, same-anchor findings in one issue, a repeated channel run once, a quoted heading, and the window re-check after slow setup.
+
+## Accepted residuals (issue #1946)
+
+Each residual fails closed: nothing is marked reviewed or filed wrongly.
+
+- **A long `gh` outage can use up a row's attempts.** A marker or dedup lookup failure counts as an attempt, because the review it follows has already spent budget. An outage that lasts `--max-row-attempts` runs can skip rows. A skipped row keeps `merged-unreviewed`. To retry it, reset it with `unreviewed-merge-ledger.sh backfill --status pending`.
+- **A same-anchor finding from a later run is not appended.** When an earlier run already filed an issue at that anchor, the exact marker reuses that issue. A different finding at the same location is recorded against it, but its text is not added, because the runner never comments on issues or PRs. That issue already sends a human to the location.
+- **The lock frees up to 0.2 s after a hard kill** (the holder's poll interval). A run that starts inside that gap stops with `lock_held` and retries on the next tick.
