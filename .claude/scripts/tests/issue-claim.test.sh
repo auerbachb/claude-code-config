@@ -71,7 +71,7 @@ reset_issue() {
   export FAKE_ISSUE_MODE="json"
   export FAKE_COMMENTS_MODE="json"
   echo 0 > "$STATE/comment_reads"
-  rm -f "$STATE/hook_done"
+  rm -f "$STATE/hook_done" "$STATE/issue_state"
   unset CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
   unset FAKE_COMMENT_POST_MODE FAKE_COMMENT_DELETE_MODE
   unset FAKE_COMMENTS_FAIL_AFTER FAKE_AFTER_POST_HOOK
@@ -163,7 +163,8 @@ case "${1:-}" in
             jq -n \
               --argjson labels "$(json_array_of_lines "$S/labels")" \
               --argjson assignees "$(json_array_of_lines "$S/assignees")" \
-              '{number: 873, state: "open",
+              --arg state "$(cat "$S/issue_state" 2>/dev/null || echo open)" \
+              '{number: 873, state: $state,
                 labels: ($labels | map({name: .})),
                 assignees: ($assignees | map({login: .}))}'
             ;;
@@ -530,12 +531,23 @@ check_eq "since survives a second renewal" "$OLD_AT" "$(jq -r .claimed_since <<<
 check_eq "still exactly one marker" 1 "$(claim_comment_count)"
 run 873 --check --holder threadA --json
 check_eq "--check reports claimed_since from the payload" "$OLD_AT" "$(jq -r .claimed_since <<<"$OUT")"
-# A custom threshold is honoured: 300m makes a 3h marker not yet due.
+# A custom threshold is honoured: 200m makes a 3h marker not yet due.
 age_newest_marker 3
 POSTS="$(posts_made)"
+CLAIM_RENEW_MINUTES=200 run 873 --renew --holder threadA --json
+check_eq "CLAIM_RENEW_MINUTES=200: not due" "false" "$(jq -r .renewed <<<"$OUT")"
+check_eq "CLAIM_RENEW_MINUTES=200: no post" "$POSTS" "$(posts_made)"
+# A threshold at or past the 4h stale window is rejected: 300m falls back to
+# the default 120m (with a warning), so the 3h marker renews instead of
+# idling until another holder could read it as stale.
 CLAIM_RENEW_MINUTES=300 run 873 --renew --holder threadA --json
-check_eq "CLAIM_RENEW_MINUTES=300: not due" "false" "$(jq -r .renewed <<<"$OUT")"
-check_eq "CLAIM_RENEW_MINUTES=300: no post" "$POSTS" "$(posts_made)"
+check_eq "CLAIM_RENEW_MINUTES=300: exit 0" 0 "$RC"
+check_eq "CLAIM_RENEW_MINUTES=300: falls back and renews" "true" "$(jq -r .renewed <<<"$OUT")"
+check_contains "CLAIM_RENEW_MINUTES=300: warns" "not below the 4h stale window" "$ERR"
+age_newest_marker 3
+CLAIM_RENEW_MINUTES=240 run 873 --renew --holder threadA --json
+check_eq "CLAIM_RENEW_MINUTES=240 (== window): falls back and renews" "true" "$(jq -r .renewed <<<"$OUT")"
+age_newest_marker 3
 # Leading zeros are decimal, not octal: `08`/`090` must not break arithmetic.
 CLAIM_RENEW_MINUTES=090 run 873 --renew --holder threadA --json
 check_eq "CLAIM_RENEW_MINUTES=090: exit 0" 0 "$RC"
@@ -706,6 +718,60 @@ FAKE_AFTER_POST_HOOK='
 check_eq "new marker vanished: unknown" "unknown" "$OUT"
 check_eq "new marker vanished: exit 4" 4 "$RC"
 check_eq "new marker vanished: old marker kept" 1 "$(claim_comment_count)"
+
+echo "== (21) concurrent release during a renewal never resurrects the claim =="
+# Between our POST and our verification read, a --release (e.g. /wrap after
+# merge) deletes the old marker and removes the label + assignee.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" "[ .[] | select(.id != \$old) ]" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"
+  : > "$S/labels"; : > "$S/assignees"' \
+  run 873 --renew --holder threadA --json
+check_eq "released: exit 5" 5 "$RC"
+check_eq "released: verdict unclaimed" "unclaimed" "$(jq -r .verdict <<<"$OUT")"
+check_contains "released: reason" "released" "$(jq -r .reason <<<"$OUT")"
+check_eq "released: our new marker withdrawn" 0 "$(claim_comment_count)"
+check_eq "released: label not re-added" "" "$(cat "$STATE/labels")"
+check_eq "released: assignee not re-added" "" "$(cat "$STATE/assignees")"
+run 873 --check --holder threadB
+check_eq "released: issue reads unclaimed afterwards" "unclaimed" "$OUT"
+
+# Same race, but the POST errored after landing (no id returned).
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+FAKE_COMMENT_POST_MODE=land-error \
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" "[ .[] | select(.id != \$old) ]" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"
+  : > "$S/labels"; : > "$S/assignees"' \
+  run 873 --renew --holder threadA
+check_eq "released+landed: exit 5" 5 "$RC"
+check_eq "released+landed: landed marker withdrawn" 0 "$(claim_comment_count)"
+check_eq "released+landed: label not re-added" "" "$(cat "$STATE/labels")"
+
+# The issue closes mid-renewal (merge), old marker still present.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+FAKE_AFTER_POST_HOOK='echo closed > "$S/issue_state"' \
+  run 873 --renew --holder threadA
+check_eq "closed mid-renewal: exit 5" 5 "$RC"
+check_contains "closed mid-renewal: reason" "released" "$ERR"
+check_eq "closed mid-renewal: only the old marker remains" "$OLD_IDS" "$(marker_ids)"
+
+# Already closed before the renewal: nothing is written at all.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+echo closed > "$STATE/issue_state"
+POSTS="$(posts_made)"
+run 873 --renew --holder threadA
+check_eq "closed issue: exit 5" 5 "$RC"
+check_contains "closed issue: not-held" "closed" "$ERR"
+check_eq "closed issue: nothing posted" "$POSTS" "$(posts_made)"
 
 reset_issue
 FAKE_COMMENT_CREATED_AT="$(iso_ago 5)" run 873 --claim --holder threadA

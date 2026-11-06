@@ -52,7 +52,7 @@ Releasing your own account's claim is always safe. #732 protects a *collaborator
 | `stale` | foreign holder, older than `CLAIM_STALE_HOURS` | 0 | **warn** and proceed; `--claim` takes it over |
 | `claimed` | foreign holder, fresh | 1 | skip, naming the claim |
 | `unknown` | any indeterminate `gh` result, or a renewal that could not be written or verified | 4 | skip — treat exactly as `claimed` |
-| *(any)* | `--renew` found no claim of this holder's, or a renewal was superseded | 5 | stop the work and report lost ownership |
+| *(any)* | `--renew` found no claim of this holder's, the issue is closed, or a renewal was superseded or released under it | 5 | stop the work and report lost ownership |
 
 Exit codes mirror `pr-authorship.sh` (`2` usage, `3` not found) so the two guards read the same way at a call site. Exit `5` is only ever returned by a renewal (`--renew`, or a due `--claim` renewal that lost a race); it keeps "blocked before any write" (`1`) distinct from "ownership lost" (`5`), the same split `session-state.sh` makes for a lost compare.
 
@@ -74,7 +74,7 @@ A claim is aged from its marker's GitHub `created_at`, so before #1914 a live th
 
 **Order — create, verify, then clean up.** The label and assignee are re-asserted idempotently; a new marker is POSTed (via `gh api`, so the response carries its comment id); the comments are re-read and the winner selected (newest `created_at`, ties broken by id); only once the winner is this run's marker — or another viewer-authored marker of this holder, newer than the one replaced — are the holder's **other viewer-authored** markers deleted. The label and the old marker stay until the new marker is verified, so there is never an unclaimed interval, and older helpers (which read the newest `created_at`) see the renewal with no change. Editing the marker in place was rejected: a PATCH does not move `created_at`, and GitHub's comment PATCH has no `If-Match` compare.
 
-**When.** Only once the marker is older than `CLAIM_RENEW_MINUTES` (default: half the stale window, 120 min at the default 4h). Inside the threshold a same-holder call writes nothing, so routine resumes and post-compaction re-claims never spam comments, while active work renews well before any other holder can classify the claim as stale.
+**When.** Only once the marker is older than `CLAIM_RENEW_MINUTES` (default: half the stale window, 120 min at the default 4h). A value at or past the stale window is rejected with a stderr warning and the default is used instead — otherwise another holder could read live work as stale before renewal is ever due. Inside the threshold a same-holder call writes nothing, so routine resumes and post-compaction re-claims never spam comments, while active work renews well before any other holder can classify the claim as stale.
 
 **Actions.**
 
@@ -97,6 +97,8 @@ A claim is aged from its marker's GitHub `created_at`, so before #1914 a live th
 | POST reported failure but the marker landed | reconciled on re-read as a normal renewal |
 | verification re-read failed | `unknown`/4 `renew-unverified`; the new marker stays, no old marker is deleted |
 | a newer foreign marker won | this run's new marker is deleted (best effort), winner reported with exit `5` `superseded` |
+| the replaced marker vanished or the issue closed mid-renewal (a concurrent `--release`) | this run's new marker is withdrawn, the label is not re-added, exit `5` `released` |
+| issue already closed | `5` `not-held`, nothing written |
 | new marker missing on re-read, no newer winner | `unknown`/4 `renew-unverified` |
 | cleanup delete failed | still a renewal; stderr warns a duplicate remains — inert (the newest wins) and removed by the next renewal or release |
 
