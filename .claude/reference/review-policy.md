@@ -235,7 +235,7 @@ The first matching row wins for each reviewer.
 | `ci-only` | all | Excluded, `tier_excluded`. |
 | `ci+codeant-one-round` | `cursor`, `coderabbit` | Excluded, `tier_excluded`. |
 | `ci+codeant-one-round` | `codeant` | Excluded `round_completed` once a [completed CodeAnt round](#what-each-gate-means) exists on any commit, or `lifetime_cap` once one invitation exists. Otherwise the CI gate applies, then allowed. Never re-invited. |
-| `full` | `codeant` | Excluded `lifetime_cap` after one invitation. Otherwise the CI gate applies, then allowed. |
+| `full` | `codeant` | Excluded `lifetime_cap` once the invitations reach the cap. The cap is `1`, unless the policy sets [`CODEANT_LIFETIME_CAP_FULL`](#codeant-lifetime-cap-on-full). The output reports it as `reviewers.codeant.cap`. Otherwise the CI gate applies, then allowed. |
 | `full` | `cursor` | Excluded `escalation_off` when the policy sets `REVIEW_ESCALATION=off`, or `lifetime_cap` after two invitations (REV-2). Otherwise the CI gate applies, then deferred `head_not_settled` until HEAD settles, then excluded `refused_head` if BugBot already refused this HEAD for a usage limit. **Last**, it is deferred `daily_cap` on a validated [daily cap](#account-level-daily-cap) `over`. Otherwise allowed. |
 | `full` | `coderabbit` | Only as the fallback when CodeAnt is unavailable: allowed `codeant_unavailable` after the CI gate. It is deferred `codeant_pending` while the CodeAnt invitation is inside its timeout, and excluded `not_fallback` otherwise. It has **no lifetime cap**: while CodeAnt is down the gate needs a CodeRabbit `APPROVED` on every HEAD, so a cap would strand the PR after its first fix push. Each caller's per-HEAD already-present check and `cr-review-hourly.sh` bound it, and its ledger count is reported, never capped. |
 
@@ -376,6 +376,23 @@ REVIEW_ESCALATION=off
 ````
 
 **No-review override window (issue #1899).** The same ini block may set `NO_REVIEW_OVERRIDE_MINUTES` — absent → `10`; an integer `1`–`1440` → that many minutes; `off` → disabled; anything else, or the key outside a live ini block (prose, a comment, another section — a near-miss `## Review Policy` heading's block is still read, as for `REVIEW_ESCALATION`), → disabled with one stderr warning (fails toward not merging unreviewed work). `review-tier.sh --json` reports it as `no_review_override_minutes` (number or `null`). What the window does: `.claude/reference/no-review-override.md`.
+
+<a id="codeant-lifetime-cap-on-full"></a>**CodeAnt lifetime cap on `full` (issue #1849).** The same ini block may set `CODEANT_LIFETIME_CAP_FULL`. It sets how many `@codeant-ai review` invitations [`review-triggers-allowed.sh`](#trigger-eligibility) allows on a `full` PR. This lets a repo whose contract allows more CodeAnt rounds on core PRs say so. Example: sales-kit REV-2 allows two, so it sets `CODEANT_LIFETIME_CAP_FULL=2`.
+
+| Value | Cap |
+|---|---|
+| absent | `1`, the behavior before this knob existed |
+| an integer `1`–`5` | that many invitations |
+| anything else (`0`, `6`, empty, non-integer), or the key outside a live ini block | `1`, with one stderr warning. An unclear spend knob fails closed to the current cap. |
+
+`review-tier.sh --json` reports the cap as `codeant_lifetime_cap_full`, the last key. `review-triggers-allowed.sh` validates it again, so a missing or malformed value keeps the cap at `1`. Like every policy key, it is read from the PR's **base** branch, so a PR cannot raise its own cap.
+
+The knob is for the free CodeAnt reviewer on `full` only:
+- `ci+codeant-one-round` stays at one round.
+- BugBot keeps its fixed cap of two invitations and its owner-approval gate.
+- CodeRabbit stays uncapped.
+
+Nothing reads a repo's `AGENTS.md` prose: the knob is the only input.
 
 | Value | Meaning |
 |---|---|

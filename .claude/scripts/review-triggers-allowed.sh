@@ -56,8 +56,12 @@
 #                round exists on any commit (lib/codeant-round.jq — the merge
 #                gate's own definition); excluded `lifetime_cap` once one
 #                invitation exists; then the CI gate; then allowed.
-#   full         codeant: excluded `lifetime_cap` after one invitation; then
-#                the CI gate; then allowed.
+#   full         codeant: excluded `lifetime_cap` once the invitations reach
+#                the cap — 1, or the policy's CODEANT_LIFETIME_CAP_FULL (1-5,
+#                read by review-tier.sh from the base branch; issue #1849;
+#                reported as reviewers.codeant.cap). A missing or invalid
+#                value keeps 1. Free reviewer only: cursor's cap is fixed.
+#                Then the CI gate; then allowed.
 #                cursor: excluded `escalation_off` when the policy sets
 #                REVIEW_ESCALATION=off; excluded `lifetime_cap` after two
 #                invitations; then the CI gate; deferred `head_not_settled`
@@ -265,7 +269,7 @@ if [[ "$TIER_RC" -eq 3 ]]; then
 fi
 
 MODE=""
-GATE="null"; TIER="null"; POLICY="null"; ESCALATION="on"
+GATE="null"; TIER="null"; POLICY="null"; ESCALATION="on"; CODEANT_CAP_FULL=1
 if [[ "$TIER_RC" -eq 0 ]] && jq -e 'type == "object"' <<<"$TIER_JSON" >/dev/null 2>&1; then
   P="$(jq -r '.policy // ""' <<<"$TIER_JSON")"
   G="$(jq -r '.gate // ""' <<<"$TIER_JSON")"
@@ -279,6 +283,14 @@ if [[ "$TIER_RC" -eq 0 ]] && jq -e 'type == "object"' <<<"$TIER_JSON" >/dev/null
     POLICY="$(jq -c '.policy' <<<"$TIER_JSON")"
     # Only a literal "off" turns escalation off, as bugbot-tier-excluded.sh reads it.
     [[ "$(jq -r '.escalation // "on" | tostring' <<<"$TIER_JSON")" == "off" ]] && ESCALATION="off"
+    # CodeAnt's lifetime cap on `full` (issue #1849). Re-validated here, so an
+    # older resolver (key absent) or a malformed value keeps the cap at 1.
+    CAP_RAW="$(jq -r 'if has("codeant_lifetime_cap_full") then (.codeant_lifetime_cap_full | if type == "number" then tostring else tojson end) else "" end' <<<"$TIER_JSON" 2>/dev/null)" || CAP_RAW="?"
+    if [[ "$CAP_RAW" =~ ^[1-5]$ ]]; then
+      CODEANT_CAP_FULL="$CAP_RAW"
+    elif [[ -n "$CAP_RAW" ]]; then
+      warn "review-tier.sh reported codeant_lifetime_cap_full='$CAP_RAW', not an integer 1-5 — keeping the CodeAnt lifetime cap at 1 (fail closed)"
+    fi
   fi
 fi
 
@@ -501,6 +513,7 @@ evaluate() {
     --argjson facts_ok "$( [[ "$FACTS_OK" -eq 1 ]] && echo true || echo false )" \
     --argjson head_moved "$HEAD_MOVED" --argjson pr_open "$PR_OPEN" \
     --argjson settle_s "$SETTLE_S" --argjson codeant_timeout_s "$CODEANT_TIMEOUT_S" \
+    --argjson codeant_cap_full "$CODEANT_CAP_FULL" \
     --argjson anchors "$ANCHOR_TIMES" --argjson settle_read_ok "$SETTLE_READ_OK" \
     --argjson l_codeant "$l_codeant" --argjson l_cursor "$l_cursor" --argjson l_coderabbit "$l_coderabbit" \
     --slurpfile comments "$TMPD/comments.json" --slurpfile reviews "$TMPD/reviews.json" \
@@ -527,6 +540,9 @@ evaluate() {
     | count("codeant"; $l_codeant) as $n_codeant
     | count("cursor"; $l_cursor) as $n_cursor
     | count("coderabbit"; $l_coderabbit) as $n_coderabbit
+    # CodeAnt is free: only `full` takes the repo-configured cap (issue #1849);
+    # ci+codeant-one-round is one round by definition.
+    | (if $gate == "full" then $codeant_cap_full else 1 end) as $codeant_cap
     | ((($comments | codeant_round_record_count) + ($reviews | codeant_round_review_count)
         + ($checks | codeant_round_check_count)) > 0) as $round
     # CodeAnt availability, for the CodeRabbit fallback on `full`.
@@ -564,7 +580,7 @@ evaluate() {
         elif ($facts_ok | not) then deny("deferred"; "facts_unreadable")
         elif $r == "codeant" then
           if $gate == "ci+codeant-one-round" and $round then deny("excluded"; "round_completed")
-          elif $n_codeant >= 1 then deny("excluded"; "lifetime_cap")
+          elif $n_codeant >= $codeant_cap then deny("excluded"; "lifetime_cap")
           elif $ci_gate != null then $ci_gate
           else {allowed: true, kind: "allowed", reason: "tier_allows"} end
         elif $r == "cursor" then
@@ -584,7 +600,7 @@ evaluate() {
        settled: (if $gate == "full" then {settled: $settled, age_s: $age, threshold_s: $settle_s} else null end),
        codeant: {round_completed: $round, invited: ($n_codeant > 0), available: $codeant_available},
        reviewers: {
-         codeant: (decide("codeant") + {invitations: $n_codeant, ledger: ledger_raw($l_codeant)}),
+         codeant: (decide("codeant") + {invitations: $n_codeant, cap: $codeant_cap, ledger: ledger_raw($l_codeant)}),
          cursor: (decide("cursor") + {invitations: $n_cursor, ledger: ledger_raw($l_cursor)}),
          coderabbit: (decide("coderabbit") + {invitations: $n_coderabbit, ledger: ledger_raw($l_coderabbit)})
        }}
