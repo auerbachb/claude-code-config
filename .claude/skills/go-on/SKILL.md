@@ -730,7 +730,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `description` containing "rate limit" — CodeRabbit reports this status as non-blocking `state: "success"`, so do not gate on `state`:
-- `[ACTION]` — CR is rate-limited. Do NOT hand-roll a fallback: run `escalate-review.sh "$PR_NUM"` and branch on its `STATUS=`. It now returns `no_reviewer` where it used to hand off to BugBot or Greptile (issue #1897): paid reviews need the owner's explicit approval in chat, so post NO `@cursor review` and NO `@greptileai`, keep `reviewer: cr`, report "paid review requires owner approval", and keep polling — CodeRabbit's free allowance may return, and the no-review override (issue #1899) turns it into `gate_met` once its window passes. If CodeRabbit offers to pay for a review now, decline it (`.claude/reference/cr-rate-limits.md`).
+- `[ACTION]` — CR is rate-limited. Do NOT hand-roll a fallback: run `escalate-review.sh "$PR_NUM"` and branch on its `STATUS=`. It now returns `no_reviewer` where it used to hand off to BugBot or Greptile (issue #1897): paid reviews need the owner's explicit approval in chat, so post NO `@cursor review` and NO `@greptileai`, keep `reviewer: cr`, report "paid review requires owner approval", and keep polling — CodeRabbit's free allowance may return, and the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes. If CodeRabbit offers to pay for a review now, decline it (`.claude/reference/cr-rate-limits.md`).
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
 - CR has finished reviewing. Check for findings (Step 7).
@@ -761,7 +761,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
   --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
 ```
 
-- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, a re-review is a new paid review — only with the owner's approval in chat; otherwise wait for the no-review override.
+- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, a re-review is a new paid review — only with the owner's approval in chat; otherwise wait for the no-review override. Any reviewer verdict on the new HEAD (a late CodeRabbit review included) disables that override (`.claude/reference/no-review-override.md`), so once one lands, stop waiting and report the blocker: the BugBot gate needs an owner-approved re-review.
 - BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
 - No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
 - No BugBot response AND ≥10 min since push → BugBot timed out. Do NOT trigger Greptile and do NOT retry `@cursor review` — both are paid and need the owner's approval in chat (issue #1897). Report the blocker and keep polling for the no-review override.
