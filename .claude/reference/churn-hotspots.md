@@ -119,9 +119,9 @@ The fallback is gated on *marker count*, not on an empty result. A run whose eve
 
 ## Exclusions
 
-Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md` — generated or append-only files that churn by design and are never refactor candidates.
+Default: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `go.sum`, `CHANGELOG.md`, `project.pbxproj`, `Package.resolved` — generated or append-only files that churn by design and are never refactor candidates. `project.pbxproj` (written by Xcode or XcodeGen) and `Package.resolved` (written by SwiftPM) joined in issue #1855: they are the Xcode and SwiftPM equivalents of `Cargo.lock` and `go.sum`, with the same basename in every repo of their ecosystem. Every entry is a literal basename, so it matches at any depth, root level included.
 
-The list is deliberately **universal**. Repo-specific by-design churn is not baked in here — a lint-enforced catalog belongs in the persisted **exemption file** below (which requires a stated lint), while `--exclude` stays what it always was: the per-invocation escape hatch, and the home for generated files.
+The list is deliberately **universal**: tool-written files universal to an ecosystem belong here. Repo-specific by-design churn is not baked in — a lint-enforced catalog belongs in the persisted **exemption file** below (which requires a stated lint), while `--exclude` stays what it always was: the per-invocation escape hatch, and the home for repo-specific generated files.
 
 ## Catalog exemptions (issue #1571)
 

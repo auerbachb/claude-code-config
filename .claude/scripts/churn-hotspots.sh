@@ -191,10 +191,15 @@
 #
 # DEFAULT EXCLUSIONS:
 #   package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock,
-#   go.sum, CHANGELOG.md — generated or append-only files that churn by design
-#   and are never refactor candidates. The list is deliberately universal;
-#   repo-specific by-design churn is handled by CATALOG EXEMPTIONS below, and
-#   --exclude remains for per-invocation and generated files.
+#   go.sum, CHANGELOG.md, project.pbxproj, Package.resolved — generated or
+#   append-only files that churn by design and are never refactor candidates.
+#   project.pbxproj (written by Xcode or XcodeGen) and Package.resolved (written
+#   by SwiftPM) are the Xcode/SwiftPM equivalents of Cargo.lock and go.sum: the
+#   same basename in every repo of their ecosystem (issue #1855). Entries are
+#   literal basenames, so they match at any depth, root level included. The list
+#   is deliberately universal: tool-written files universal to an ecosystem go
+#   here; repo-specific by-design churn is handled by CATALOG EXEMPTIONS below,
+#   and --exclude remains for per-invocation and repo-specific generated files.
 #
 # CATALOG EXEMPTIONS (issue #1571):
 #   Some files churn because a LINT requires it: a catalog or index whose CI
@@ -409,7 +414,7 @@ DEFAULT_EXEMPTIONS="$SCRIPT_DIR/../reference/churn-hotspot-exemptions.json"
 # newlines, so the value is built with a sentinel that is then removed.
 NL_CHAR=$(printf '\nx'); NL_CHAR="${NL_CHAR%x}"
 
-DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md"
+DEFAULT_EXCLUDES="package-lock.json,yarn.lock,pnpm-lock.yaml,Cargo.lock,poetry.lock,go.sum,CHANGELOG.md,project.pbxproj,Package.resolved"
 
 # --exclude is the one guarded flag whose emptiness is not just "". Its value is
 # comma-split by is_excluded(), which `continue`s past blank fields, so `,` and
