@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests for review-daily-cap.sh — the account-level daily soft cap on
 # paid reviewer triggers (issue #1812).
-# catalog: tests — Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh (comments read from both ends, BugBot read limits noted), and the 5-minute cache
+# catalog: tests — Tests `review-daily-cap.sh` offline — cap resolution (env, account config, default, unparseable values), the ET-day boundary, null rates, the fail-open `unknown`, the live adapter against a stubbed gh (comments read from both ends, BugBot read limits noted), the bounded concurrent repo fetch (worker peak, registry-order equivalence with the sequential read, one failing repo still `unknown`), and the 5-minute cache
 #
 # WHAT IS UNDER TEST
 #   Fixture mode runs the REAL script against review_ledger.py's normalized
@@ -299,11 +299,12 @@ RUN_SCRIPT="$STUB/scripts/review-daily-cap.sh"
 
 GH_DIR="$TMP/gh"
 mkdir -p "$GH_DIR" "$TMP/bin"
-export GH_DIR GH_CALLS="$TMP/gh-calls"
+export GH_DIR GH_CALLS="$TMP/gh-calls" GH_INSTRUMENT="$TMP/instrument.py"
 cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 # Serves `gh api graphql ... -f name=<repo> [-f endCursor=<c>]` from
-# $GH_DIR/<repo>[-<c>].json, and logs one line per call.
+# $GH_DIR/<repo>[-<c>].json, and logs one line per call. With
+# $GH_DIR/instrument.json present it also reports to instrument.py (below).
 name="" cursor="" prev=""
 for a in "$@"; do
   if [[ "$prev" == "-f" ]]; then
@@ -312,7 +313,12 @@ for a in "$@"; do
   prev="$a"
 done
 echo "$name ${cursor:-first}" >> "$GH_CALLS"
+if [[ -e "$GH_DIR/instrument.json" ]]; then
+  python3 "$GH_INSTRUMENT" begin "$name" "${cursor:-first}"
+  trap 'python3 "$GH_INSTRUMENT" end "$name" "${cursor:-first}"' EXIT
+fi
 [[ -e "$GH_DIR/fail" ]] && { echo "HTTP 502: bad gateway" >&2; exit 1; }
+[[ -e "$GH_DIR/fail-$name" ]] && { echo "HTTP 502: bad gateway" >&2; exit 1; }
 f="$GH_DIR/$name${cursor:+-$cursor}.json"
 [[ -f "$f" ]] || { echo "no stub for $f" >&2; exit 1; }
 cat "$f"
@@ -352,7 +358,10 @@ echo "== live: two registered repos, paged until a PR older than ET midnight =="
 run bugbot --add-usd 1.58
 check_eq "live: ok, exit 0" "ok|0" "$(field status)|$RC"
 check_eq "live: runs 501, 401, 301 (one) + 901 (two) = 4 x 1.58" "6.32" "$(field spent_usd)"
-check_eq "live: one page for two, two for one" "one first;one c1;two first;" "$(tr '\n' ';' < "$GH_CALLS")"
+# The repos are read concurrently, so only the call multiset is fixed across
+# repos; within one repo the pages still come in cursor order.
+check_eq "live: one page for two, two for one" "one c1;one first;two first;" "$(LC_ALL=C sort "$GH_CALLS" | tr '\n' ';')"
+check_eq "live: acme/one's pages in cursor order" "one first;one c1;" "$(grep '^one ' "$GH_CALLS" | tr '\n' ';')"
 check_eq "live: the tally was cached" "6.32" "$(jq -r '.spent_usd' "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json")"
 
 echo "== cache: a second call within 5 minutes reads no GitHub =="
@@ -378,8 +387,13 @@ run bugbot --add-usd 1.58
 check_eq "gh failure: unknown|null|0" "unknown|null|0" "$(field status)|$(field spent_usd)|$RC"
 check_contains "  stderr names the failure" "gh api graphql failed" "$ERR"
 check_eq "  nothing cached" "no" "$( [[ -e "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json" ]] && echo yes || echo no )"
+# Concurrent reads: the failing call may or may not have let the other repo
+# start, so the count is not fixed — only that a retry asks GitHub again.
+FIRST_CALLS="$(calls)"
 run bugbot --add-usd 1.58
-check_eq "  so the next call asks GitHub again" "2" "$(calls)"
+check_eq "  the retry is unknown too" "unknown|null|0" "$(field status)|$(field spent_usd)|$RC"
+check_eq "  so the next call asks GitHub again" "yes" "$( [[ "$(calls)" -gt "$FIRST_CALLS" && "$FIRST_CALLS" -ge 1 ]] && echo yes || echo "no ($FIRST_CALLS then $(calls))" )"
+check_eq "  still nothing cached" "no" "$( [[ -e "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json" ]] && echo yes || echo no )"
 rm -f "$GH_DIR/fail"
 
 echo "== live fail-open: GraphQL errors -> unknown =="
@@ -441,6 +455,149 @@ STUB_REPOS="acme/one" run bugbot
 check_eq "the runs that were read still count" "1.58|ok" "$(field spent_usd)|$(field status)"
 check_contains "  stderr names the suite overflow" "only 5 of 6 BugBot check suites on abcdef0" "$ERR"
 check_contains "  stderr names the run overflow" "only 20 of 25 BugBot check-runs in one suite on abcdef0" "$ERR"
+
+############################################################################
+# Concurrent fetch (issue #1866). The gh stub's opt-in instrumentation
+# ($GH_DIR/instrument.json) counts calls in flight under a short-held flock,
+# holds the first wave until N calls overlap (a serial read times the gate
+# out and shows a peak of 1, so a regression fails rather than hangs), and
+# can make one repo's call wait for another's to finish, forcing completion
+# out of registry order. No assertion reads the clock.
+cat > "$TMP/instrument.py" <<'PY'
+import fcntl, json, os, sys, time
+d = os.environ["GH_DIR"]
+phase, name, cursor = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(os.path.join(d, "instrument.json")))
+state = os.path.join(d, "instrument-state.json")
+
+def update(fn=None):
+    with open(os.path.join(d, "instrument.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            try:
+                s = json.load(open(state))
+            except (OSError, ValueError):
+                s = {"active": 0, "peak": 0, "done": [], "inverted": [], "gate_broken": False}
+            if fn:
+                fn(s)
+                json.dump(s, open(state + ".tmp", "w"))
+                os.replace(state + ".tmp", state)
+            return s
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+def begin(s):
+    s["active"] += 1
+    s["peak"] = max(s["peak"], s["active"])
+
+def end(s):
+    s["active"] -= 1
+    s["done"].append("%s %s" % (name, cursor))
+
+if phase == "end":
+    update(end)
+    sys.exit(0)
+update(begin)
+deadline = time.time() + cfg.get("timeout", 8)
+gate = cfg.get("gate", 0)
+while gate:
+    s = update()
+    if s["peak"] >= gate or s["gate_broken"]:
+        break
+    if time.time() > deadline:
+        update(lambda s: s.__setitem__("gate_broken", True))
+        break
+    time.sleep(0.02)
+after = cfg.get("wait", {}).get(name)
+if after and cursor == "first":
+    while time.time() < deadline:
+        if "%s first" % after in update()["done"]:
+            update(lambda s: s["inverted"].append("%s after %s" % (name, after)))
+            break
+        time.sleep(0.02)
+PY
+
+# 32 repos, r00..r31: one PR each with run 1000+i today. r00 has a second
+# page (run 2000, then a PR older than ET midnight). r07 repeats r05's run
+# 1005 (deduplicated across repos), r10 carries a run from before ET
+# midnight. 33 unique billable runs = 33 x 1.58 = 52.14.
+REG=""
+for i in $(seq 0 31); do
+  r="$(printf 'r%02d' "$i")"
+  REG="${REG}acme/$r
+"
+  node="$(pr_node 1 2026-10-08T14:00:00Z "$((1000 + i))" 2026-10-08T13:00:00Z)"
+  case "$r" in
+    r00) page true c1 "$node" > "$GH_DIR/$r.json"
+         page true c2 "$(pr_node 2 2026-10-08T05:00:00Z 2000 2026-10-08T04:30:00Z)" \
+                      "$(pr_node 3 2026-10-08T03:00:00Z 2001 2026-10-08T03:00:00Z)" > "$GH_DIR/$r-c1.json" ;;
+    r07) page false "" "$node" "$(pr_node 2 2026-10-08T13:00:00Z 1005 2026-10-08T12:00:00Z)" > "$GH_DIR/$r.json" ;;
+    r10) page false "" "$node" "$(pr_node 2 2026-10-08T13:00:00Z 3000 2026-10-08T02:00:00Z)" > "$GH_DIR/$r.json" ;;
+    *)   page false "" "$node" > "$GH_DIR/$r.json" ;;
+  esac
+done
+EXPECTED_CALLS="$( { for i in $(seq 0 31); do printf 'r%02d first\n' "$i"; done; echo "r00 c1"; } | LC_ALL=C sort | tr '\n' ';')"
+REG_JSON="$(printf '%s' "$REG" | jq -R . | jq -sc .)"
+inst() { jq -r "$1" "$GH_DIR/instrument-state.json"; }
+reset_instrument() {   # <instrument.json body>
+  rm -f "$GH_DIR/instrument-state.json" "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json"
+  : > "$GH_CALLS"
+  printf '%s' "$1" > "$GH_DIR/instrument.json"
+}
+
+echo "== concurrent: 32 repos read 6 at a time, tallied as the sequential read =="
+reset_instrument '{"gate": 6, "wait": {"r00": "r01"}}'
+STUB_REPOS="$REG" run bugbot
+CONCURRENT_OUT="$OUT"
+check_eq "concurrent: over the default cap 10, exit 1" "over|1" "$(field status)|$RC"
+check_eq "concurrent: 33 unique runs x 1.58" "52.14" "$(field spent_usd)"
+check_eq "concurrent: 6 reads in flight at the peak, never more" "6|false" "$(inst .peak)|$(inst .gate_broken)"
+check_eq "concurrent: every read finished" "0" "$(inst .active)"
+check_eq "concurrent: every repo and page read exactly once" "$EXPECTED_CALLS" "$(LC_ALL=C sort "$GH_CALLS" | tr '\n' ';')"
+check_eq "concurrent: r00's read finished after r01's (completion out of registry order)" "r00 after r01" "$(inst '.inverted | join(",")')"
+check_eq "concurrent: the cache holds the full spend and the registry order" "52.14|$REG_JSON" \
+  "$(jq -c '.spent_usd' "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json")|$(jq -c '.repos' "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json")"
+
+echo "== concurrent: the reversed completion order gives the identical answer =="
+reset_instrument '{"gate": 6, "wait": {"r01": "r00"}}'
+STUB_REPOS="$REG" run bugbot
+check_eq "reversed: r01 finished after r00" "r01 after r00" "$(inst '.inverted | join(",")')"
+check_eq "reversed: the same JSON line" "$CONCURRENT_OUT" "$OUT"
+
+echo "== concurrent: REVIEW_DAILY_CAP_FETCH_JOBS=1 is the sequential read, and agrees =="
+reset_instrument '{}'
+REVIEW_DAILY_CAP_FETCH_JOBS=1 STUB_REPOS="$REG" run bugbot
+check_eq "sequential: one read in flight at a time" "1|0" "$(inst .peak)|$(inst .active)"
+check_eq "sequential: the same JSON line as the concurrent read" "$CONCURRENT_OUT" "$OUT"
+check_eq "sequential: registry order, r00's pages first" "r00 first;r00 c1;r01 first;" "$(head -3 "$GH_CALLS" | tr '\n' ';')"
+reset_instrument '{"gate": 3}'
+REVIEW_DAILY_CAP_FETCH_JOBS=3 STUB_REPOS="$REG" run bugbot
+check_eq "override 3: three reads in flight at the peak, same answer" "3|false|52.14" "$(inst .peak)|$(inst .gate_broken)|$(field spent_usd)"
+reset_instrument '{}'
+REVIEW_DAILY_CAP_FETCH_JOBS=lots STUB_REPOS="$REG" run bugbot
+check_eq "a bad override warns and reads 6 at once, same answer" "52.14" "$(field spent_usd)"
+check_contains "  stderr names the bad value" "REVIEW_DAILY_CAP_FETCH_JOBS='lots'" "$ERR"
+check_eq "  at most 6 in flight" "yes" "$( [[ "$(inst .peak)" -le 6 ]] && echo yes || echo "no ($(inst .peak))" )"
+
+echo "== concurrent: one unreadable repo -> unknown, never the other 31 summed =="
+reset_instrument '{}'
+touch "$GH_DIR/fail-r15"
+STUB_REPOS="$REG" run bugbot --add-usd 1.58
+check_eq "r15 fails: unknown|null|0" "unknown|null|0" "$(field status)|$(field spent_usd)|$RC"
+check_contains "  stderr names the failing repo" "gh api graphql failed for acme/r15" "$ERR"
+check_eq "  every started read finished before the answer" "0" "$(inst .active)"
+check_eq "  nothing cached" "no" "$( [[ -e "$HOME/.claude/review-daily-cap/bugbot-2026-10-08.json" ]] && echo yes || echo no )"
+FIRST_CALLS="$(calls)"
+STUB_REPOS="$REG" run bugbot --add-usd 1.58
+check_eq "  the retry reads GitHub again, and is unknown again" "yes|unknown|null" \
+  "$( [[ "$(calls)" -gt "$FIRST_CALLS" ]] && echo yes || echo no)|$(field status)|$(field spent_usd)"
+rm -f "$GH_DIR/fail-r15"
+printf 'not json' > "$GH_DIR/r20.json"
+reset_instrument '{}'
+STUB_REPOS="$REG" run bugbot
+check_eq "r20 returns malformed JSON: unknown|null|0" "unknown|null|0" "$(field status)|$(field spent_usd)|$RC"
+check_contains "  stderr names the repo" "unparseable JSON for acme/r20" "$ERR"
+rm -f "$GH_DIR/instrument.json"
 
 echo "== missing ledger library -> unknown (and --rate still answers) =="
 mv "$STUB/scripts/lib/review_ledger.py" "$TMP/ledger.bak"
