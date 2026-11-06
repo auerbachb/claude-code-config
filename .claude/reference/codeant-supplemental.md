@@ -24,7 +24,7 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 
 **Binary:** `npm install -g codeant-cli` was run successfully 2026-07-30. `codeant --version` = 0.5.1 at `/opt/homebrew/bin/codeant`.
 
-**Auth:** a rung-5 wall. `codeant login` is a CLI-initiated browser OAuth flow (`app.codeant.ai`) that opens the system browser — no non-interactive path exists, and no MCP browser surface can drive it, so rung 4 does not apply. The CLI also accepts `codeant set-codeant-api-key <key>` (no browser), but no API key is stored in shell config, env vars, or `~/.codeant/config.json` (which does not yet exist).
+**Auth:** a rung-5 wall. `codeant login` is a CLI-initiated browser OAuth flow (`app.codeant.ai`) that opens the system browser — no non-interactive path exists, and no MCP browser surface can drive it, so rung 4 does not apply. The CLI also reads an API key from the `CODEANT_API_TOKEN` environment variable (checked before `~/.codeant/config.json`; CLI 0.5.1 source), but no key was stored in shell config, env vars, or `~/.codeant/config.json` (which did not yet exist). Never pass a key as a command-line argument: `codeant set-codeant-api-key <key>` takes it positionally, which leaks it into shell history and process listings.
 
 **Baseline then (historical, 2026-07-30):** `cr-only` — every local review ran CodeRabbit only until auth completed. Auth was later restored; never read this as today's coverage — classify coverage per push from each CLI's verified run (`cr-local-review.md`). The CodeAnt **GitHub App** is independent and unaffected; it continues to satisfy the CR-path merge gate on its own.
 
@@ -35,8 +35,10 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 codeant login
 # Opens app.codeant.ai in your browser; key saved to ~/.codeant/config.json.
 
-# Option B — API key (non-interactive, if you have a key from the CodeAnt dashboard):
-codeant set-codeant-api-key <your-api-key>
+# Option B — API key from the CodeAnt dashboard, read silently from the
+# terminal into the environment (never typed as an argument, so it stays out
+# of shell history and `ps`). Scope it to the shell that runs reviews:
+read -rs CODEANT_API_TOKEN && export CODEANT_API_TOKEN
 
 # Verify auth (safe — reads org membership, no write):
 codeant scans orgs
