@@ -12,7 +12,7 @@ Bot: `greptile-apps[bot]`. Trigger: `@greptileai` PR comment. Auto-trigger OFF. 
 
 ## Approved Triggers
 
-An approved trigger still runs `greptile-budget.sh --consume` first (exit 1 = exhausted → self-review). Re-trigger only for P0: with no P0, reply to every finding naming the current HEAD, resolve the threads, and go to the merge gate — that provenance permits zero-P0 round reuse (issue #1000). Log severity counts in handoff `notes`. Budget, timeout, and re-trigger mechanics: `.claude/reference/review-policy.md` §Paid review authorization; gate paths: `merge-gate-reviewer-paths.md` §Greptile path.
+An approved trigger posts only via `paid-review-grant.sh --trigger`, which runs `greptile-budget.sh --consume` (exhausted → self-review). Re-trigger only for P0: with no P0, reply to every finding naming the current HEAD, resolve the threads, and go to the merge gate — that provenance permits zero-P0 round reuse (issue #1000). Log severity counts in handoff `notes`. Budget, timeout, and re-trigger mechanics: `.claude/reference/review-policy.md` §Paid review authorization; gate paths: `merge-gate-reviewer-paths.md` §Greptile path.
 
 ## Sticky Assignment
 

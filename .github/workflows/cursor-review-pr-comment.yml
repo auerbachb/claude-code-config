@@ -11,7 +11,9 @@
 #
 # The workflow, its trigger, and its job name stay so that any required-status
 # check keyed on `post-cursor-review` still reports. The single step only prints
-# a notice. The per-review approval path is issue #1898; the inventory of gated
+# a notice. It cannot read the owner's session state, so it never spends an
+# owner grant: approved BugBot reviews post only through the agent-side
+# paid-review-grant.sh --trigger (issue #1898). The inventory of gated
 # trigger paths lives in .claude/reference/review-policy.md
 # §Paid review authorization.
 name: Cursor BugBot review trigger

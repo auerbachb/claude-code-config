@@ -44,9 +44,16 @@
 #   - a Greptile summary naming HEAD as its last reviewed commit
 #   - a `done` row of CodeAnt's run record that names HEAD
 #   - a COMPLETED reviewer-app check-run (exact app slug) with conclusion
-#     success / failure / action_required / neutral — unless that bot posted a
-#     capability-failure notice (usage limit, couldn't run, rate limit) after
-#     the HEAD anchor, which is a refusal, not a review.
+#     success / failure / action_required / neutral — unless the run is a
+#     refusal, not a review (issue #1939): its own output.title matches the
+#     capability-failure classifier (usage limit, couldn't run, rate limit,
+#     review limit reached), or that bot's capability-failure notice was last
+#     written at or after the run's started_at — or up to NOTICE_SKEW_SECONDS
+#     (60) before it when the notice names HEAD. A notice naming another commit
+#     never counts. Either way the bot is reported as capability_failure.
+#     A notice's time is the later of created_at and updated_at — CodeRabbit
+#     posts "Review limit reached" a second BEFORE its neutral run starts and
+#     rewrites that same comment in place on later pushes.
 #   NOT verdicts (they never extend the window): pending reviewer check-runs,
 #   "review in progress" / rate-limit / trigger-ack comments.
 #
@@ -151,26 +158,55 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
   | unique')
 
 # Capability-failure notices are read per bot so a refused run's neutral
-# check-run is not mistaken for a review. A notice discounts a check-run only
-# when posted at or after THAT run's started_at: a refusal from before the push
-# (older than the HEAD run) can never suppress a current-HEAD check verdict.
+# check-run is not mistaken for a review (issue #1939). A notice's time is the
+# later of created_at and updated_at: the body is the comment's CURRENT text,
+# last written at updated_at (CodeRabbit rewrites its summary comment in place).
+# A notice discounts a check-run only when written no more than
+# NOTICE_SKEW_SECONDS before THAT run's started_at — CodeRabbit posts "Review
+# limit reached" about a second before its neutral run starts — so a refusal
+# from before the push (older than the HEAD run by more than the skew) can never
+# suppress a current-HEAD check verdict. A notice that names its commit
+# (CodeRabbit embeds `"headCommitId":"<sha>"`) discounts only a run on that
+# commit, so another HEAD's refusal inside the skew cannot suppress this one;
+# the skew itself applies only to a notice that names HEAD — an unnamed notice
+# must be written strictly after the run's started_at second — `ts` drops
+# fractional seconds, so a notice from earlier in that same second would
+# otherwise compare equal and discount the run. A
+# run whose own output.title matches the same classifier is a refusal
+# regardless of comments; a missing title does not stop an in-window notice
+# from discounting it. A missing/malformed started_at leaves the run a verdict
+# unless its own title is a refusal — no notice can discount it, since the
+# commit date is never a stand-in run start. There is deliberately no upper
+# bound on the notice time: BugBot posts its refusal after its run completes.
+NOTICE_SKEW_SECONDS=60
 PAYLOAD_WITH_INV=$(printf '%s' "$PAYLOAD" | jq -c --argjson inv "$INVENTORY" '. + {inv: $inv}')
-DECISION=$(printf '%s' "$PAYLOAD_WITH_INV" | jq -c "$JQ_DEFS"'
-  (.commit_ts | ts) as $cts
+DECISION=$(printf '%s' "$PAYLOAD_WITH_INV" | jq -c --argjson skew "$NOTICE_SKEW_SECONDS" "$JQ_DEFS"'
+  (.commit_ts | ts) as $cts | .head_sha as $h
   | (reviewer_slugs) as $slugs
   | ([ (.issue_comments // [])[]?
        | select((.user.login // "") as $l | reviewer_bots | index($l))
        | select((.body // "") | failure_notice)
-       | {login: .user.login, t: ((.created_at | ts) // 0)} ]) as $notices
-  | ([ $notices[] | select(($cts == null) or (.t >= $cts)) | .login ] | unique) as $refused
+       | ([(.body // "") | scan("\"headCommitId\"[[:space:]]*:[[:space:]]*\"([0-9a-fA-F]{40})\"") | .[0] | ascii_downcase]) as $named
+       | {login: .user.login,
+          names_head: (($named | index($h | ascii_downcase)) != null),
+          for_head: (($named | length) == 0 or ($named | index($h | ascii_downcase)) != null),
+          t: ([(.created_at | ts), (.updated_at | ts)] | map(select(. != null)) | max // 0)} ]) as $notices
   | ([ (.check_runs_raw // [])[]?
        | select((.app.slug // "") as $s | $slugs | has($s)) ]) as $rchecks
   | ([ $rchecks[]
        | select((.status // "") == "completed")
+       | select((.output.title // "") | if type == "string" then failure_notice else false end)
+       | $slugs[.app.slug] ] | unique) as $titled_refusals
+  | ([ $notices[] | select(.for_head and (($cts == null) or (.t >= $cts))) | .login ] + $titled_refusals | unique) as $refused
+  | ([ $rchecks[]
+       | select((.status // "") == "completed")
        | select((.conclusion // "") | IN("success","failure","action_required","neutral"))
        | ($slugs[.app.slug]) as $bot
-       | ((.started_at | ts) // $cts // 0) as $run_t
-       | select([ $notices[] | select(.login == $bot and .t >= $run_t) ] | length == 0)
+       | (.started_at | ts) as $run_t
+       | select(((.output.title // "") | if type == "string" then failure_notice else false end) | not)
+       | select($run_t == null
+                or ([ $notices[] | select(.login == $bot
+                         and ((.for_head and .t > $run_t) or (.names_head and .t >= ($run_t - $skew)))) ] | length == 0))
        | {reviewer: $bot, kind: ("check_" + .conclusion)} ]) as $check_verdicts
   | ((.inv + $check_verdicts) | unique) as $verdicts
   | ([ $rchecks[] | select((.status // "") != "completed")

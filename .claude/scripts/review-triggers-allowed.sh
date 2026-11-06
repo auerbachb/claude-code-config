@@ -636,8 +636,10 @@ bugbot_guards() { # <decision json> -> decision json
 # this script reads can carry. So the LAST step of the cursor chain turns any
 # answer still `allowed` into excluded `approval_required`. Every earlier
 # reason (tier, lifetime cap, CI, settle, refused_head, daily_cap) keeps its
-# precedence and meaning, so the guards stay live for approved spend (issue
-# #1898 replaces this body). No flag or variable bypasses it.
+# precedence and meaning, so the guards stay live for approved spend. An
+# owner grant (issue #1898) is spent by the CALLERS at this reason, through
+# paid-review-grant.sh --trigger — this answer itself never turns allowed, so
+# every earlier reason still wins. No flag or variable bypasses it.
 paid_approval_gate() { # <decision json> -> decision json
   local d="$1"
   [[ "$(jq -r '.reviewers.cursor.allowed' <<<"$d")" == "true" ]] || { printf '%s' "$d"; return 0; }

@@ -142,6 +142,10 @@ if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIG
     if [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].allowed // false' <<<"$TA_JSON" 2>/dev/null)" = "true" ] \
        && "$TRIGGERS_ALLOWED" "$N" --claim "$PF_KEY" >/dev/null 2>&1; then
       TA_CLAIMED="$PF_KEY"
+    elif [ "$PF_KEY" = "cursor" ] \
+         && [ "$(jq -r '.reviewers.cursor.reason // ""' <<<"$TA_JSON" 2>/dev/null)" = "approval_required" ]; then
+      : # tier allows BugBot; only owner approval is missing (#1897) — fall through
+        # to the bugbot branch, which spends a grant or posts nothing (#1898)
     else
       echo "[PMM] review tier does not allow re-triggering $REVIEWER on #$N now ($(jq -r --arg k "$PF_KEY" '.reviewers[$k].reason // "tier_unresolved"' <<<"$TA_JSON" 2>/dev/null)) — skipping"
       REVIEWER="__tier_skipped__"
@@ -172,9 +176,18 @@ case "$REVIEWER" in
     fi
     ;;
   bugbot)
-    # BugBot is paid per review: a re-trigger needs the owner's explicit
-    # approval in chat (issue #1897), which a fleet tick never has.
-    echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
+    # BugBot is paid per review (issue #1897): a fleet tick never asks. It only
+    # spends a grant the owner already approved for this PR and HEAD (#1898).
+    PRG=""
+    for c in "$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh" \
+             "$HOME/.claude/scripts/paid-review-grant.sh" ".claude/scripts/paid-review-grant.sh"; do
+      [ -x "$c" ] && { PRG="$c"; break; }
+    done
+    if [ -n "$PRG" ] && [ "$("$PRG" --trigger "$N" --vendor cursor 2>/dev/null | sed -n 's/^STATUS=//p')" = "triggered" ]; then
+      echo "[PMM] re-triggered owning bot (bugbot) on #$N under the owner's grant (now used, #1898)"
+    else
+      echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
+    fi
     ta_release
     ;;
   greptile)

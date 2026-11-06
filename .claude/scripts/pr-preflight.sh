@@ -365,6 +365,21 @@ resolve_triggers_allowed() {
 }
 TRIGGERS_ALLOWED_SH="$(resolve_triggers_allowed || true)"
 
+# Owner-approved BugBot (issue #1898): the paid step's one exception.
+resolve_paid_grant() {
+  local dir candidate
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  for candidate in \
+    "$dir/paid-review-grant.sh" \
+    "$HOME/.claude/skills-worktree/.claude/scripts/paid-review-grant.sh" \
+    "$HOME/.claude/scripts/paid-review-grant.sh" \
+    ".claude/scripts/paid-review-grant.sh"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  return 1
+}
+PAID_GRANT_SH="$(resolve_paid_grant || true)"
+
 # --- 1. read PR draft state + author + HEAD sha ---
 PR_VIEW_ERR="$(mktemp)"
 
@@ -862,6 +877,30 @@ post_trigger() {
   fi
 }
 
+# BugBot's approval step (issues #1897, #1898): spend an owner grant for this
+# PR and HEAD — paid-review-grant.sh posts `@cursor review` and answers
+# `triggered` only after a successful post — or record the approval skip.
+# A dry run never spends a grant; a missing helper keeps the skip.
+cursor_grant_or_skip() {
+  local st=""
+  if (( ! DRY_RUN )) && [[ -n "$PAID_GRANT_SH" ]]; then
+    # Refusals exit non-zero; keep the STATUS line whatever the exit code.
+    st="$("$PAID_GRANT_SH" --trigger "$PR" --vendor cursor ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null | sed -n 's/^STATUS=//p')" || true
+  fi
+  if [[ "$st" == "triggered" ]]; then
+    set_status cursor "triggered"
+    ACTIONS=$((ACTIONS + 1))
+    surface "triggered cursor: @cursor review under the owner's grant (now used, #1898)"
+    record_trigger_for_head cursor
+  elif [[ "$st" == "trigger_failed" ]]; then
+    set_status cursor "trigger-failed"
+    surface "WARNING: failed to post @cursor review under the owner's grant (trigger_failed; the grant was released)"
+  else
+    set_status cursor "skipped-approval-required"
+    surface "skipping @cursor review — paid review requires owner approval${st:+ ($st)}"
+  fi
+}
+
 # Prints the gate and returns 0 only when the PR's review tier excludes BugBot.
 # Every other outcome — no helper, full/legacy, an unresolvable tier — returns 1
 # and the nudge posts as before (fail-open, issue #1728). The helper's own stderr
@@ -937,7 +976,9 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
         fi
         ;;
       excluded)
-        if [[ "$reason" == "approval_required" ]]; then
+        if [[ "$key" == "cursor" && "$reason" == "approval_required" ]]; then
+          cursor_grant_or_skip
+        elif [[ "$reason" == "approval_required" ]]; then
           set_status "$key" "skipped-approval-required"
           surface "skipping $trigger — paid review requires owner approval"
         else
@@ -979,9 +1020,9 @@ for key in "${REVIEWER_KEYS[@]}"; do
     surface "skipping @cursor review — review tier $tier_gate excludes BugBot"
   elif [[ "$key" == "cursor" ]]; then
     # Last step of the BugBot chain (issue #1897): paid, so never posted
-    # without the owner's explicit approval. Nothing pending → clean below.
-    set_status "$key" "skipped-approval-required"
-    surface "skipping @cursor review — paid review requires owner approval"
+    # without the owner's explicit approval — an owner grant (#1898) or the
+    # skip, which leaves nothing pending → clean below.
+    cursor_grant_or_skip
   else
     post_trigger "$key"
   fi
