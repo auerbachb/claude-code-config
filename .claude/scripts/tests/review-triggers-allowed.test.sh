@@ -520,6 +520,66 @@ check_eq "denied approval_required — never reaches the CAS" "1:approval_requir
 check_eq "  the other claimer's count stands, nothing over it" "2" "$(ledger cursor)"
 check_eq "  the first pass reached the guards; the re-evaluation stopped at the cap before them" "1" "$(grep -c '^refused' "$GUARD_CALLS" | tr -d ' ')"
 
+echo "== CodeAnt lifetime cap on full is policy-configurable (issue #1849) =="
+tier_cap() { # <gate> <raw json value for codeant_lifetime_cap_full>
+  tier_json present "$1" | jq -c --argjson c "$2" '. + {codeant_lifetime_cap_full: $c}'
+}
+reset "$(tier_json present full)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "default (key absent): one invitation is the cap" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+check_eq "  and no warning" "" "$ERR"
+reset "$(tier_cap full 1)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "explicit 1: same as the default" "excluded:lifetime_cap" "$(dec codeant)"
+
+reset "$(tier_cap full 2)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "cap 2, one invitation: a second round is allowed" "allowed:tier_allows:2" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+run --claim codeant
+check_eq "  the second claim lands (comment 1 + this claim)" "0:2" "$RC:$(ledger codeant)"
+run --claim codeant
+check_eq "  a third claim is denied at the cap" "1:lifetime_cap" "$RC:$(f .reviewers.codeant.reason)"
+check_eq "  ledger unchanged" "2" "$(ledger codeant)"
+set_comments "$(comment me "@codeant-ai review" 3600)" "$(comment me "@codeant-ai review" 1800)"
+rm -f "$HOME/.claude/session-state.json"
+run
+check_eq "  two visible invitations reach the cap too" "excluded:lifetime_cap" "$(dec codeant)"
+
+reset "$(tier_cap full 2)"
+run --claim codeant
+run --claim codeant
+check_eq "cap 2 via the ledger alone: two claims land" "0:2" "$RC:$(ledger codeant)"
+run --claim codeant
+check_eq "  the third does not" "1:2" "$RC:$(ledger codeant)"
+
+for bad in 0 6 9 '"abc"' '"2"' 2.5 null -1; do
+  reset "$(tier_cap full "$bad")"
+  set_comments "$(comment me "@codeant-ai review" 3600)"
+  run
+  check_eq "invalid cap $bad: falls back to 1" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+  check_eq "  with a warning" "yes" "$(grep -q 'keeping the CodeAnt lifetime cap at 1' <<<"$ERR" && echo yes || echo no)"
+done
+
+reset "$(tier_cap ci+codeant-one-round 3)"
+set_comments "$(comment me "@codeant-ai review" 3600)"
+run
+check_eq "ci+codeant-one-round ignores the knob: still one round" "excluded:lifetime_cap:1" "$(f '.reviewers.codeant | "\(.kind):\(.reason):\(.cap)"')"
+
+reset "$(tier_cap full 5)"
+set_comments "$(comment me "@cursor review" 3600)" "$(comment me "@cursor review" 1800)"
+run
+check_eq "paid cursor is unaffected: two invitations stay its cap" "excluded:lifetime_cap" "$(dec cursor)"
+set_comments
+run
+check_eq "  and with none it is still approval-gated (#1897)" "excluded:approval_required" "$(dec cursor)"
+run --claim cursor
+check_eq "  a cursor claim is still denied, no ledger" "1:null" "$RC:$(ledger cursor)"
+check_eq "coderabbit is unaffected: still only the fallback" "excluded:not_fallback" "$(dec coderabbit)"
+check_eq "coderabbit carries no cap" "null" "$(f '.reviewers.coderabbit.cap')"
+
 echo "== usage =="
 RC=0; bash "$SUT" >/dev/null 2>&1 || RC=$?
 check_eq "no PR: exit 2" "2" "$RC"

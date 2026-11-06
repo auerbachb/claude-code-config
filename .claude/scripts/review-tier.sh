@@ -103,6 +103,10 @@
 #   the no-review merge window in minutes (default 10), or null when the
 #   section's ```ini block sets NO_REVIEW_OVERRIDE_MINUTES=off or an
 #   invalid value (one stderr warning).
+#   codeant_lifetime_cap_full (issue #1849) is appended last: how many CodeAnt
+#   invitations a `full` PR may receive — CODEANT_LIFETIME_CAP_FULL from the
+#   same ```ini block, an integer 1-5; absent, invalid or misplaced → 1 (the
+#   last two with one stderr warning). review-triggers-allowed.sh applies it.
 #   policy "absent"  — no section, or a section with no table → gate legacy:
 #                      every consumer keeps today's behaviour.
 #   policy "invalid" — unknown gate, missing Tier/Gate column, no header
@@ -544,6 +548,34 @@ resolve_override_window() {
   fi
 }
 
+# CodeAnt lifetime cap on the `full` gate (issue #1849):
+# CODEANT_LIFETIME_CAP_FULL in the same live ```ini block, read with the same
+# KEY=value rule. Absent → 1 (the pre-#1849 cap). An integer 1–5 → that many
+# CodeAnt invitations per PR on `full`. Anything else → 1 with one stderr
+# warning: an unclear spend knob fails closed to the current cap. Free
+# reviewer only — the paid BugBot cap is never configurable here.
+CAP_KEY="CODEANT_LIFETIME_CAP_FULL"
+CAP_FULL="1"
+CAP_LIVE_FOUND=0
+resolve_codeant_cap() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $CAP_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$CAP_KEY")" \
+    || die_read "could not read $CAP_KEY from ## $SECTION"
+  [[ -n "$found" ]] || return 0
+  CAP_LIVE_FOUND=1
+  value="${found#=}"
+  if [[ "$value" =~ ^[1-5]$ ]]; then
+    CAP_FULL="$value"
+  else
+    warn "$CAP_KEY='$value' in ## $SECTION is not an integer 1-5 — keeping the CodeAnt lifetime cap at 1 (an unclear spend knob fails closed to the current cap)"
+    CAP_FULL="1"
+  fi
+}
+
 # A heading that is almost `## Review policy` (other case, extra spaces).
 # The gate treats it as invalid below; the switch in it is honoured.
 near_miss_heading() {
@@ -559,9 +591,16 @@ near_miss_heading() {
 if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   resolve_escalation
   resolve_override_window
+  resolve_codeant_cap
   if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
     ESC_NEAR="$(near_miss_heading)"
-    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; }
+    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; resolve_codeant_cap "$ESC_NEAR"; }
+  fi
+  # A cap key outside a live ini block is never honoured; say so once.
+  if [[ $CAP_LIVE_FOUND -eq 0 ]]; then
+    CAP_STRAY="$(extract_knob_value "$CAP_KEY" < "$POLICY_COPY")" || CAP_STRAY=""
+    [[ -z "$CAP_STRAY" ]] \
+      || warn "$CAP_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — ignored; the CodeAnt lifetime cap stays 1"
   fi
   # A window key anywhere but a live ini block is someone's intent we cannot
   # read: disable the override (never silently keep the 10-minute default).
@@ -585,14 +624,15 @@ emit() {
   if [[ $JSON -eq 1 ]]; then
     jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
       --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
-      --argjson nro "$NRO_MINUTES" \
+      --argjson nro "$NRO_MINUTES" --argjson cap_full "$CAP_FULL" \
       '{policy: $policy, gate: $gate,
         tier: (if $tier == "" then null else $tier end),
         source: $source,
         error: (if $error == "" then null else $error end),
         matches: $matches,
         escalation: $escalation,
-        no_review_override_minutes: $nro}'
+        no_review_override_minutes: $nro,
+        codeant_lifetime_cap_full: $cap_full}'
   else
     printf '%s\n' "$2"
   fi
