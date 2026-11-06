@@ -1033,7 +1033,7 @@ policy_pin_ref() {  # resolve POLICY_REF once per run -> 0 ok / 2 no commit at a
 }
 
 policy_read() {  # $1 repo-relative path
-  local path="$1" entry type blob enc rc
+  local path="$1" entry mode type blob enc rc
   POLICY_READ_STATUS="error"; POLICY_READ_BODY=""; POLICY_READ_ERR=""
   if [ "$SOURCE_USED" = "git" ]; then
     # --literal-pathspecs: a path is a path, never a glob. Only the
@@ -1046,9 +1046,18 @@ policy_read() {  # $1 repo-relative path
       { POLICY_READ_ERR="git ls-tree failed at $POLICY_REF"; return 0; }
     if [ -z "$entry" ]; then POLICY_READ_STATUS="absent"; return 0; fi
     entry="${entry%%	*}"            # "<mode> <type> <sha>" (cut at the TAB)
+    mode="${entry%% *}"
     type="${entry#* }"; type="${type%% *}"
     blob="${entry##* }"
     [ "$type" = "blob" ] || { POLICY_READ_ERR="'$path' is a $type, not a file, at $POLICY_REF"; return 0; }
+    # Regular-file modes only. A symlink (120000) is also typed "blob", but
+    # its body is the link TARGET text — `RULES.md -> LEDGER.md` would name the
+    # exempted path with no rule file behind it (the gh probe rejects
+    # "symlink" for the same reason).
+    case "$mode" in
+      100644|100755) ;;
+      *) POLICY_READ_ERR="'$path' is a mode-$mode entry (a symlink or other non-regular blob), not a file, at $POLICY_REF"; return 0 ;;
+    esac
     POLICY_READ_BODY=$(git cat-file blob "$blob" 2>/dev/null </dev/null) ||
       { POLICY_READ_ERR="git cat-file failed for '$path' at $POLICY_REF"; return 0; }
     POLICY_READ_STATUS="present"; return 0

@@ -1945,6 +1945,13 @@ policy_guard "29y2: a ledger citing itself as its rule" "$G7" "exempted file its
 # with 29ae3).
 G8=$(policy_repo r29g8 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs","reason":"x"}}}' "$RULES_TEXT")
 policy_guard "29y3: a directory cited as rule_source" "$G8" "not a file"
+# A committed symlink is typed "blob" but its body is the target text, which
+# here names the exempted path — assertion, not a rule file.
+G9=$(policy_repo r29g9 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/LINK.md","reason":"x"}}}' -)
+mkdir -p "$G9/docs"; ln -s docs/LEDGER.md "$G9/docs/LINK.md"
+git -C "$G9" add docs/LINK.md
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$G9" commit -q -m "add link"
+policy_guard "29y3b: a symlink cited as rule_source" "$G9" "not a file"
 
 # A backslash is legal in a filename. The (path, rule_source) pairs must reach
 # the reader unaltered — an @tsv stream doubles it, and a valid declaration
