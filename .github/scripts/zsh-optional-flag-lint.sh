@@ -25,9 +25,12 @@
 #   1. An UNQUOTED `${NAME:+WORD}` / `${NAME+WORD}` whose WORD — after peeling
 #      nested `${OTHER:+` prefixes and an opening quote — starts with `-` and
 #      contains unquoted whitespace. Nested form included:
-#      `${A:+${B:+--flag "$B"}}`.
-#   2. An UNQUOTED scalar `$NAME` / `${NAME}` that an earlier line of the same
-#      file assigned a multi-word flag string (`NAME="--repo $X"`). Array
+#      `${A:+${B:+--flag "$B"}}`. A WORD that continues onto the next line is
+#      judged on its first-line part (the unquoted newline counts as
+#      whitespace).
+#   2. An UNQUOTED scalar `$NAME` / `${NAME}` whose most recent earlier
+#      assignment in the same file was a multi-word flag string
+#      (`NAME="--repo $X"`); a later single-word reassignment clears it. Array
 #      expansions and subscripts are untouched.
 #
 # NOT flagged: a single-word expansion (`${ALL_REPOS:+--all-repos}`), any
@@ -149,13 +152,15 @@ function finding(kind, text) {
 
 # Starting at index i (just past "${NAME:+"), return the index of the closing
 # brace of this expansion, or 0 if it does not close on this line. Sets
-# W_SPACE when the word holds whitespace outside inner quotes.
-function word_end(s, i,   depth, q, c, n) {
-  depth = 1; q = 0; W_SPACE = 0; n = length(s)
+# W_SPACE when the word holds whitespace outside inner quotes. On a 0 return,
+# W_OPEN is 1 when the line ends unquoted and unescaped, so the newline is
+# itself unquoted whitespace inside the word.
+function word_end(s, i,   depth, q, c, n, esc) {
+  depth = 1; q = 0; W_SPACE = 0; W_OPEN = 0; esc = 0; n = length(s)
   for (; i <= n; i++) {
     c = substr(s, i, 1)
     if (q == 1) { if (c == "\047") q = 0; continue }
-    if (c == "\\") { i++; continue }
+    if (c == "\\") { if (i == n) esc = 1; i++; continue }
     if (q == 2) { if (c == "\"") q = 0; continue }
     if (c == "\047") { q = 1; continue }
     if (c == "\"") { q = 2; continue }
@@ -163,7 +168,17 @@ function word_end(s, i,   depth, q, c, n) {
     if (c == "}") { depth--; if (depth == 0) return i; continue }
     if (c ~ /[ \t]/) W_SPACE = 1
   }
+  W_OPEN = (q == 0 && !esc)
   return 0
+}
+
+# The flag word of an expansion: strip nested ${OTHER:+ prefixes and one
+# opening quote, so `${A:+${B:+"--flag ..."` reads as `--flag ...`.
+function peel(word,   p) {
+  p = word
+  while (match(p, /^\$\{[A-Za-z_][A-Za-z0-9_]*:?\+/)) p = substr(p, RLENGTH + 1)
+  sub(/^["\047]/, "", p)
+  return p
 }
 
 function scan_line(s,   n, i, c, rest, m, name, cl, word, peeled) {
@@ -192,11 +207,20 @@ function scan_line(s,   n, i, c, rest, m, name, cl, word, peeled) {
     # Shape 1: ${NAME:+WORD} / ${NAME+WORD}
     if (match(rest, /^\$\{[A-Za-z_][A-Za-z0-9_]*:?\+/)) {
       cl = word_end(s, i + RLENGTH)
-      if (cl == 0) continue
+      if (cl == 0) {
+        # The expansion continues onto the next line. Its first-line part is
+        # still judged: a flag word followed by whitespace or an unquoted
+        # newline is the same unsafe shape. Report once per line (an inner
+        # nested opener would otherwise repeat the finding).
+        peeled = peel(substr(s, i + RLENGTH))
+        if ((W_SPACE || W_OPEN) && peeled ~ /^-/ && open_fnr != FNR) {
+          open_fnr = FNR
+          finding("optional-flag", substr(s, i))
+        }
+        continue
+      }
       word = substr(s, i + RLENGTH, cl - i - RLENGTH)
-      peeled = word
-      while (match(peeled, /^\$\{[A-Za-z_][A-Za-z0-9_]*:?\+/)) peeled = substr(peeled, RLENGTH + 1)
-      sub(/^["\047]/, "", peeled)
+      peeled = peel(word)
       if (W_SPACE && peeled ~ /^-/) finding("optional-flag", substr(s, i, cl - i + 1))
       i = cl
       continue
@@ -216,7 +240,7 @@ function scan_line(s,   n, i, c, rest, m, name, cl, word, peeled) {
 
 BEGIN { fences = 0 }
 
-FNR == 1 { in_fence = 0; shellish = 0; st = 0; sp = 0; heredoc = ""; split("", flagvars) }
+FNR == 1 { in_fence = 0; shellish = 0; st = 0; sp = 0; heredoc = ""; open_fnr = 0; split("", flagvars) }
 
 {
   line = $0
@@ -240,11 +264,18 @@ FNR == 1 { in_fence = 0; shellish = 0; st = 0; sp = 0; heredoc = ""; split("", f
   if (!in_fence || !shellish) next
   if (heredoc != "") { if (trim(line) == heredoc) heredoc = ""; next }
   ok_line = (line ~ /zsh-optional-flag-ok/)
-  # Record NAME="-x value" style assignments of a multi-word flag string.
-  # A comment line is not an assignment.
-  if (st == 0 && line !~ /^[ \t]*#/ && match(line, /(^|[ \t;&|(])[A-Za-z_][A-Za-z0-9_]*=["\047]-[^"\047]*[ \t][^"\047]*["\047]/)) {
-    a = substr(line, RSTART, RLENGTH); sub(/^[ \t;&|(]/, "", a); sub(/=.*$/, "", a)
-    flagvars[a] = 1
+  # Track scalar assignments in order: NAME="-x value" (a multi-word flag
+  # string) marks NAME; any other assignment to NAME clears the mark, so a
+  # later safe reassignment is not reported. A comment line is not an
+  # assignment.
+  if (st == 0 && line !~ /^[ \t]*#/) {
+    probe = line
+    while (match(probe, /(^|[ \t;&|(])[A-Za-z_][A-Za-z0-9_]*=/)) {
+      a = substr(probe, RSTART, RLENGTH); sub(/^[ \t;&|(]/, "", a); sub(/=$/, "", a)
+      probe = substr(probe, RSTART + RLENGTH)
+      if (match(probe, /^["\047]-[^"\047]*[ \t][^"\047]*["\047]/)) flagvars[a] = 1
+      else delete flagvars[a]
+    }
   }
   scan_line(line)
   # A heredoc opener (outside quotes at end of line) skips its body.

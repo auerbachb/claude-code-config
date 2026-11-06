@@ -105,6 +105,36 @@ gh pr view "$N" $REPO_FLAG --json number
 ```
 MD
 
+expect "an expansion continuing onto the next line is rejected" 1 'extra.md:2: \$\{REPO:\+--repo' <<'MD'
+```bash
+helper ${REPO:+--repo
+  "$REPO"} --json
+```
+MD
+
+expect "a nested multi-line expansion is reported once" 1 '1 error\(s\)' <<'MD'
+```bash
+helper ${A:+${B:+--flag "$B"
+}}
+```
+MD
+
+expect "a flag string reassigned to a single word passes" 0 'zsh-optional-flag-lint: OK' <<'MD'
+```bash
+REPO_FLAG="--repo $OWNER_NAME"
+REPO_FLAG="--all-repos"
+helper $REPO_FLAG --json
+```
+MD
+
+expect "a re-marked flag string after a safe value is rejected" 1 'flag string kept in a scalar' <<'MD'
+```bash
+F="--json"
+F="--repo $X"
+helper $F
+```
+MD
+
 expect "an untagged fence is scanned" 1 'optional|ONE argument' <<'MD'
 ```
 helper ${A:+--a "$A"}
