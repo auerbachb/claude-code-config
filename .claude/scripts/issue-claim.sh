@@ -66,16 +66,27 @@
 #   - The new marker carries `since` (the original pickup time), so
 #     `claimed_since` survives renewals; staleness still uses `created_at`.
 #   - CLAIM_RENEW_MINUTES at or past the stale window is rejected (stderr
-#     warning) in favour of the default half-window.
+#     warning) in favour of the default half-window. Exception: with
+#     CLAIM_STALE_HOURS=0 there is no window to compare against, so the clamp
+#     does not apply (issue #1933 documents this as accepted).
 #   - A renewal that loses to a newer foreign marker deletes its own new marker
 #     and exits 5 (`superseded`). One that finds its replaced marker gone or the
 #     issue closed on re-read (a concurrent --release) withdraws its new marker,
 #     never re-adds the label, and exits 5 (`released`); a closed issue is never
-#     renewed. The label/assignee is re-asserted only after verification. A renewal of an already-stale own claim
+#     renewed, due or not. The label/assignee is re-asserted only after
+#     verification. A renewal of an already-stale own claim
 #     succeeds with reason `renewed-after-expiry` and a stderr warning.
+#   - After cleanup, one final re-read (issue #1933) catches a release that
+#     landed after verification: no marker of this holder left, or the issue
+#     closed -> withdraw, roll back what this run re-added, exit 5 `released`.
+#     A surviving marker whose label was removed under it gets the label back.
+#   - A not-due same-holder call on an open issue re-adds a missing label or
+#     assignee (best effort), so a marker never stays invisible to label-
+#     filtering readers (/wave) after a failed or raced re-assert.
 #   - Residual race: a takeover that read the claim as stale BEFORE the renewal
 #     can still post after verification. Renewing well inside the stale window
 #     (the default threshold) is what keeps that window closed in practice.
+#     The other residual windows: .claude/reference/issue-claim.md.
 #
 # FAIL-CLOSED
 #   Any indeterminate `gh` result (viewer lookup, issue fetch, comment fetch,
@@ -246,7 +257,10 @@ fi
 RENEW_MINUTES=$(( 10#$RENEW_MINUTES ))
 # A threshold at or past the stale window would let another holder read live
 # work as stale (and take it over) before renewal is ever due. Fall back to the
-# default half-window instead of honouring it.
+# default half-window instead of honouring it. STALE_HOURS=0 is exempt on
+# purpose: every claim is stale at once there, so no threshold can keep it
+# fresh, and rejecting it would turn --check/--release into usage errors too
+# (accepted residual, issue #1933).
 if [[ -n "${CLAIM_RENEW_MINUTES:-}" ]] && (( STALE_HOURS > 0 && RENEW_MINUTES * 60 >= STALE_HOURS * 3600 )); then
   echo "issue-claim.sh: warning — CLAIM_RENEW_MINUTES=$RENEW_MINUTES is not below the ${STALE_HOURS}h stale window; using the default $(( STALE_HOURS * 30 ))m instead" >&2
   RENEW_MINUTES=$(( STALE_HOURS * 30 ))
@@ -603,6 +617,98 @@ renew_due() {
   [[ -n "$AGE_SECONDS" ]] && (( AGE_SECONDS > RENEW_MINUTES * 60 ))
 }
 
+# Issue-snapshot predicates (take the issue JSON as $1).
+issue_is_closed()  { [[ "$(printf '%s' "$1" | jq -r '.state // ""' 2>/dev/null)" == "closed" ]]; }
+issue_has_label()  { [[ "$(printf '%s' "$1" | jq -r --arg l "$CLAIM_LABEL" '[.labels[]?.name] | index($l) != null' 2>/dev/null)" == "true" ]]; }
+issue_has_viewer() { [[ "$(printf '%s' "$1" | jq -r --arg v "$VIEWER" '[.assignees[]?.login] | index($v) != null' 2>/dev/null)" == "true" ]]; }
+
+# repair_claim_metadata (issue #1933): a not-due, authorized, same-holder call
+# on an open issue re-adds a missing label and/or viewer assignee. The marker is
+# the claim; the label is the index batch readers (/wave) filter on, so a fresh
+# marker without it reads as unclaimed to them. Reaches that state: a failed
+# label re-assert after a renewal POST (exit 4), or a release that removed the
+# label after a renewal's final re-read. Best effort — a failed repair warns and
+# leaves the verdict alone; the next call tries again.
+#
+# Why this cannot resurrect a release in flight: the issue is read before the
+# comments, and --release deletes markers before it removes the label. So
+# "label gone, marker present" here means the label went first — never the
+# middle of a release of this marker.
+repair_claim_metadata() {
+  local args=()
+  [[ "$HAS_LABEL" != "true" ]] && args+=(--add-label "$CLAIM_LABEL")
+  [[ " $ASSIGNEES " != *" $VIEWER "* ]] && args+=(--add-assignee "@me")
+  (( ${#args[@]} == 0 )) && return 0
+  # The caller's open check used the startup snapshot; an issue closed since
+  # then must not be re-labelled. Re-read right before the edit, and once
+  # more after it to roll back a close that landed in between (narrows the
+  # window; no compare-and-set exists on GitHub).
+  local fresh=""
+  if ! fresh="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>/dev/null)" || issue_is_closed "$fresh"; then
+    return 0
+  fi
+  [[ "$HAS_LABEL" != "true" ]] && ensure_label
+  if gh issue edit "$ISSUE_NUMBER" "${args[@]}" >/dev/null 2>"$ERR_FILE"; then
+    REPAIR_NOTE="; re-asserted the missing label/assignee"
+    if fresh="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>/dev/null)" && issue_is_closed "$fresh"; then
+      local undo=()
+      [[ "$HAS_LABEL" != "true" ]] && undo+=(--remove-label "$CLAIM_LABEL")
+      [[ " $ASSIGNEES " != *" $VIEWER "* ]] && undo+=(--remove-assignee "$VIEWER")
+      if gh issue edit "$ISSUE_NUMBER" "${undo[@]}" >/dev/null 2>&1; then
+        REPAIR_NOTE="; the issue closed during the label/assignee repair, which was rolled back"
+      else
+        REPAIR_NOTE="; the issue closed during the label/assignee repair and rolling it back failed — clear it with: issue-claim.sh $ISSUE_NUMBER --release"
+      fi
+    fi
+  else
+    echo "issue-claim.sh: warning — issue #$ISSUE_NUMBER carries this holder's marker but lacks the in-progress label or assignee, and re-adding them failed ($(tr '\n' ' ' < "$ERR_FILE")); label-filtering readers (/wave) may not see the claim until the next --renew or --claim repairs it" >&2
+  fi
+}
+REPAIR_NOTE=""
+
+# withdraw_markers <ids-newline> <context>: best-effort delete of this run's
+# own markers. Each id must come from this run (the POST or its nonce).
+withdraw_markers() {
+  local rid
+  while IFS= read -r rid; do
+    [[ -z "$rid" ]] && continue
+    gh api -X DELETE "$REPO_PREFIX/issues/comments/$rid" >/dev/null 2>&1 \
+      || echo "issue-claim.sh: warning — could not withdraw this run's renewal marker $rid on issue #$ISSUE_NUMBER $2; clear it with: issue-claim.sh $ISSUE_NUMBER --release" >&2
+  done <<<"$1"
+}
+
+# emit_renew_released <label-note>: exit 5 `released`, reporting the parsed
+# winner (W_*) as the current claimant when it is not this holder's.
+emit_renew_released() {
+  local v="unclaimed"
+  if [[ -n "$W_ID" ]] && ! { [[ "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" ]]; }; then
+    v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
+  else
+    CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""
+  fi
+  IS_STALE="false"
+  emit "$v" 5 "released — the claim on issue #$ISSUE_NUMBER was released (or the issue closed) while this renewal was in flight; this run's marker was withdrawn and $1 — ownership is lost, stop and report"
+}
+
+# emit_renew_superseded: exit 5 `superseded`, reporting the parsed foreign
+# winner (W_*). The caller has already withdrawn this run's own markers.
+emit_renew_superseded() {
+  CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
+  CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
+  # A renewed winner carries its original pickup time as `since`.
+  if [[ -n "$W_SINCE" && -n "$(iso_to_epoch "$W_SINCE")" ]]; then
+    CLAIMED_SINCE="$W_SINCE"
+  fi
+  local v="claimed" w_epoch
+  w_epoch="$(iso_to_epoch "$W_AT")"
+  if [[ -n "$w_epoch" ]] && (( $(date -u +%s) - w_epoch > STALE_HOURS * 3600 )); then
+    v="stale"; IS_STALE="true"
+  else
+    IS_STALE="false"
+  fi
+  emit "$v" 5 "superseded — a newer claim by ${W_LOGIN:-an unknown account} (holder ${W_HOLDER:-unknown}) won issue #$ISSUE_NUMBER while this renewal was in flight; ownership is lost — stop and report"
+}
+
 # The holder token alone is not proof of ownership: another account could pass
 # the same string. Renewal additionally needs the marker's payload login and
 # its comment author to be the viewer — the account whose own comments the
@@ -706,20 +812,8 @@ do_renew() {
     concurrent_own=1
   fi
   if (( issue_closed || (old_gone && ! concurrent_own) )); then
-    local rid
-    while IFS= read -r rid; do
-      [[ -z "$rid" ]] && continue
-      gh api -X DELETE "$REPO_PREFIX/issues/comments/$rid" >/dev/null 2>&1 \
-        || echo "issue-claim.sh: warning — could not withdraw this run's renewal marker $rid on issue #$ISSUE_NUMBER after a concurrent release; clear it with: issue-claim.sh $ISSUE_NUMBER --release" >&2
-    done < <({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)
-    local v="unclaimed"
-    if [[ -n "$W_ID" ]] && ! { [[ "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" ]]; }; then
-      v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
-    else
-      CLAIMANT=""; CLAIMANT_HOLDER=""; CLAIMED_AT=""; CLAIMED_SINCE=""
-    fi
-    IS_STALE="false"
-    emit "$v" 5 "released — the claim on issue #$ISSUE_NUMBER was released (or the issue closed) while this renewal was in flight; this run's marker was withdrawn and the label left as found — ownership is lost, stop and report"
+    withdraw_markers "$({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)" "after a concurrent release"
+    emit_renew_released "the label left as found"
   fi
 
   if [[ -n "$new_id" ]] && { [[ "$W_ID" == "$new_id" ]] || winner_is_ours "$old_id"; }; then
@@ -729,7 +823,7 @@ do_renew() {
     ensure_label
     if ! gh issue edit "$ISSUE_NUMBER" \
          --add-label "$CLAIM_LABEL" --add-assignee "@me" >/dev/null 2>"$ERR_FILE"; then
-      fail_closed "renew-failed — could not re-assert the label/assignee on issue #$ISSUE_NUMBER ($(tr '\n' ' ' < "$ERR_FILE")); the existing marker was left in place"
+      fail_closed "renew-failed — could not re-assert the label/assignee on issue #$ISSUE_NUMBER ($(tr '\n' ' ' < "$ERR_FILE")); the renewal marker was left in place and the next --renew or --claim re-adds the label"
     fi
     # Verified: a marker of ours, newer than the one replaced, wins. Clean up
     # every OTHER viewer-authored marker for this holder — never a different
@@ -745,6 +839,74 @@ do_renew() {
       | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .holder) catch "") == $h)
       | .id' 2>/dev/null || true)
     (( cleanup_failed )) && echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but could not delete an older marker of this holder; the duplicate is inert (the newest marker wins) and the next renewal or release removes it" >&2
+
+    # Final consistency re-read (issue #1933). The verification snapshot can be
+    # stale by now: a --release that ran after it deleted the markers and the
+    # label, and the re-assert above would have put a label back on a released
+    # claim. Re-read once and judge on the fresh state. The replaced marker is
+    # deliberately not consulted here — cleanup just deleted it. This narrows
+    # the window; it cannot close it (no compare-and-set on GitHub), and a
+    # failed re-read keeps the already-verified renewal.
+    local final="" final_issue="" final_ok=1 kept_id="$new_id"
+    if ! final="$(read_claim_comments)"; then
+      final_ok=0
+    elif ! final_issue="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>"$ERR_FILE")"; then
+      final_ok=0
+    fi
+    if (( ! final_ok )); then
+      echo "issue-claim.sh: warning — renewed issue #$ISSUE_NUMBER but the final consistency re-read failed; the renewal was already verified, so it stands" >&2
+    else
+      parse_winner "$final"
+      local f_closed=0 f_ours=0 kept_present=0
+      issue_is_closed "$final_issue" && f_closed=1
+      [[ -n "$W_ID" && "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" \
+         && "$W_LOGIN" == "$VIEWER" ]] && f_ours=1
+      [[ "$(printf '%s' "$final" | jq -r --arg k "$kept_id" \
+            'any(.[]; (.id | tostring) == $k)' 2>/dev/null)" == "true" ]] && kept_present=1
+      if (( ! f_closed && f_ours )); then
+        # Still held (this run's marker, or a sibling renewal of this holder).
+        # The label follows the marker: put back whatever a racing release
+        # removed after the re-assert above.
+        local fix=()
+        issue_has_label "$final_issue" || fix+=(--add-label "$CLAIM_LABEL")
+        issue_has_viewer "$final_issue" || fix+=(--add-assignee "@me")
+        if (( ${#fix[@]} > 0 )); then
+          if ! gh issue edit "$ISSUE_NUMBER" "${fix[@]}" >/dev/null 2>"$ERR_FILE"; then
+            fail_closed "renew-failed — the label/assignee on issue #$ISSUE_NUMBER was removed after this renewal re-asserted it, and re-adding it failed ($(tr '\n' ' ' < "$ERR_FILE")); the renewal marker was left in place and the next --renew or --claim re-adds the label"
+          fi
+        fi
+        new_id="$W_ID"
+      else
+        local mine_ids
+        mine_ids="$(own_run_markers "$final")"
+        withdraw_markers "$mine_ids" "after a concurrent release"
+        if (( ! f_closed && kept_present )); then
+          # This run's marker is still there but a newer foreign one wins.
+          emit_renew_superseded
+        fi
+        # Released under us (or closed). Roll back only what this run added —
+        # the label/assignee absent before the re-assert — and only when no
+        # marker at all is left, so a newer claim's label is never stripped.
+        local rest
+        rest="$(printf '%s' "$final" | jq -c --arg ids "$mine_ids" \
+          '($ids | split("\n")) as $w | [ .[] | select(((.id | tostring) as $i | $w | index($i)) | not) ]' 2>/dev/null || printf '')"
+        parse_winner "${rest:-[]}"
+        local note="the label left as found"
+        local undo=()
+        if [[ -n "$rest" && -z "$W_ID" ]]; then
+          issue_has_label "$issue_now" || { issue_has_label "$final_issue" && undo+=(--remove-label "$CLAIM_LABEL"); }
+          issue_has_viewer "$issue_now" || { issue_has_viewer "$final_issue" && undo+=(--remove-assignee "$VIEWER"); }
+        fi
+        if (( ${#undo[@]} > 0 )); then
+          if gh issue edit "$ISSUE_NUMBER" "${undo[@]}" >/dev/null 2>"$ERR_FILE"; then
+            note="the label/assignee this run re-added were rolled back"
+          else
+            note="the label/assignee this run re-added could NOT be rolled back — clear them with: issue-claim.sh $ISSUE_NUMBER --release"
+          fi
+        fi
+        emit_renew_released "$note"
+      fi
+    fi
 
     MARKER_ID="$new_id"; MARKER_AUTHOR="$VIEWER"
     CLAIMANT="$VIEWER"; CLAIMANT_HOLDER="$HOLDER"
@@ -762,27 +924,8 @@ do_renew() {
     # (best effort) so it can never resurface as the winner later, and report
     # the winner. Nothing of the winner's is touched.
     # new_id is this run's marker (from the POST or reconciled by nonce).
-    local sid stale_ids
-    stale_ids="$({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)"
-    while IFS= read -r sid; do
-      [[ -z "$sid" ]] && continue
-      gh api -X DELETE "$REPO_PREFIX/issues/comments/$sid" >/dev/null 2>&1 \
-        || echo "issue-claim.sh: warning — could not delete this run's superseded renewal marker $sid on issue #$ISSUE_NUMBER" >&2
-    done <<<"$stale_ids"
-    CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
-    CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
-    # A renewed winner carries its original pickup time as `since`.
-    if [[ -n "$W_SINCE" && -n "$(iso_to_epoch "$W_SINCE")" ]]; then
-      CLAIMED_SINCE="$W_SINCE"
-    fi
-    local v="claimed" w_epoch
-    w_epoch="$(iso_to_epoch "$W_AT")"
-    if [[ -n "$w_epoch" ]] && (( $(date -u +%s) - w_epoch > STALE_HOURS * 3600 )); then
-      v="stale"; IS_STALE="true"
-    else
-      IS_STALE="false"
-    fi
-    emit "$v" 5 "superseded — a newer claim by ${W_LOGIN:-an unknown account} (holder ${W_HOLDER:-unknown}) won issue #$ISSUE_NUMBER while this renewal was in flight; ownership is lost — stop and report"
+    withdraw_markers "$({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)" "after it was superseded"
+    emit_renew_superseded
   fi
 
   fail_closed "renew-unverified — the renewal marker${new_id:+ $new_id} on issue #$ISSUE_NUMBER was not found on re-read; no older marker was deleted"
@@ -798,8 +941,15 @@ if [[ "$ACTION" == "renew" ]]; then
   if ! renew_authorized; then
     emit claimed 5 "renew-not-authorized — the claim marker on issue #$ISSUE_NUMBER carries holder $HOLDER but was written by ${MARKER_AUTHOR:-an unknown account} for ${CLAIMANT:-an unknown account}, not $VIEWER — nothing written"
   fi
+  # A closed issue is terminal whether or not renewal is due (issue #1933): a
+  # heartbeat on a closed issue must hear "stop", not `mine`/0. Same output as
+  # do_renew's own closed check.
+  if issue_is_closed "$ISSUE_JSON"; then
+    emit "$VERDICT" 5 "not-held — issue #$ISSUE_NUMBER is closed; its claim is not renewed — nothing written"
+  fi
   if ! renew_due; then
-    emit mine 0 "issue #$ISSUE_NUMBER is claimed by this thread (holder $HOLDER); renewal not due (threshold ${RENEW_MINUTES}m) — no-op"
+    repair_claim_metadata
+    emit mine 0 "issue #$ISSUE_NUMBER is claimed by this thread (holder $HOLDER); renewal not due (threshold ${RENEW_MINUTES}m) — no-op$REPAIR_NOTE"
   fi
   do_renew
 fi
@@ -818,8 +968,12 @@ if [[ "$VERDICT" == "mine" ]]; then
       do_renew
     fi
     echo "issue-claim.sh: warning — renew-not-authorized: the claim marker on issue #$ISSUE_NUMBER carries holder $HOLDER but was written by ${MARKER_AUTHOR:-an unknown account} for ${CLAIMANT:-an unknown account}, not $VIEWER; it was not renewed" >&2
+  elif renew_authorized && ! issue_is_closed "$ISSUE_JSON"; then
+    # Not due: the same label/assignee repair --renew does (issue #1933). A
+    # closed issue keeps the old silent no-op — never re-label a closed issue.
+    repair_claim_metadata
   fi
-  emit mine 0 "issue #$ISSUE_NUMBER is already claimed by this thread (holder $HOLDER) — no-op"
+  emit mine 0 "issue #$ISSUE_NUMBER is already claimed by this thread (holder $HOLDER) — no-op$REPAIR_NOTE"
 fi
 
 if [[ "$VERDICT" == "claimed" ]]; then
