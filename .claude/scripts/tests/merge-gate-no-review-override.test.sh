@@ -15,6 +15,9 @@
 #   a recent check start is anchored to the check start; draft PR, unreadable
 #   timeline and no check-run start time are ineligible; NO_REVIEW_OVERRIDE_MINUTES
 #   off / invalid / custom; ci-only tier has nothing to waive.
+# Issue #1939: a CodeRabbit rate-limit refusal (neutral run titled "Review rate
+#   limited" and/or a "Review limit reached" comment) is not a verdict; a
+#   reviewed neutral run and a pre-push notice still leave a verdict on HEAD.
 #
 # Built on tests/lib/merge-gate-test-fixtures.sh without editing it: its fake gh
 # is kept as gh.base, and a wrapper answers the PR-metadata, timeline,
@@ -207,6 +210,84 @@ reset
 FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "$(ago 700)" '[{id:5, user:{login:"cursor[bot]"}, created_at:$t, body:"Bugbot couldn'"'"'t run: usage limit reached"}]')"
 run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 "Cursor Bugbot" neutral 600 cursor)")"
 check_eq "false" "$(j .no_review_override.applied)"     "pre-push refusal does not discount a current-HEAD check verdict"
+
+# Issue #1939: CodeRabbit's rate-limit refusal is a neutral check-run whose
+# output.title reads "Review rate limited", plus a "Review limit reached"
+# summary comment created about a second BEFORE the run's started_at and
+# rewritten in place (updated_at) on later pushes. None of that is a verdict.
+titled() { printf '%s' "$1" | jq -c --arg t "$2" '.output = {title: $t, summary: ""}'; }
+cr_notice() { # created_secs_ago updated_secs_ago [headCommitId, default HEAD]
+  jq -cn --arg c "$(ago "$1")" --arg u "$(ago "$2")" --arg sha "${3:-$HEAD_SHA}" \
+    '[{id:7, user:{login:"coderabbitai[bot]"}, created_at:$c, updated_at:$u,
+       body:("<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> [!WARNING]\n> ## Review limit reached\n> - [ ] <!-- {\"checkboxId\":\"x\",\"headCommitId\":\"" + $sha + "\"} --> **Run on-demand review**")}]'
+}
+cr_limited() { titled "$(run 2 CodeRabbit neutral 600 coderabbitai)" "Review rate limited"; }
+cr_reviewed() { titled "$(run 2 CodeRabbit neutral 600 coderabbitai)" "Review completed"; }
+
+echo "=== #1939 AC1: CodeRabbit rate-limited on HEAD, 11 min -> override applies ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 601 601)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(cr_limited)")"
+check_eq "true"  "$(j .met)"                            "AC1 met"
+check_eq "no-review-override" "$(j .path)"              "AC1 path is no-review-override"
+check_eq "true"  "$(j .no_review_override.applied)"     "AC1 rate-limited neutral run is not a verdict"
+check_eq "0"     "$(j '.no_review_override.verdicts_on_head | length')" "AC1 no verdicts on HEAD"
+check_eq "capability_failure" "$(j '.no_review_override.missing_reviewers[] | select(.reviewer == "coderabbitai[bot]") | .reason')" "AC1 CodeRabbit recorded as a capability failure"
+
+echo "=== #1939: notice 1s before the run, run carries no output title -> still a refusal ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 601 601)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai)")"
+check_eq "true"  "$(j .no_review_override.applied)"     "notice within the start skew discounts the run"
+
+echo "=== #1939: notice rewritten in place after the run started -> refusal (updated_at) ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 3000 400)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai)")"
+check_eq "true"  "$(j .no_review_override.applied)"     "an in-place rewrite dates the notice by updated_at"
+
+echo "=== #1939: run titled as rate-limited, no comment at all -> refusal ==="
+reset
+run_gate "$(bundle "$(run 1 build success 660)" "$(cr_limited)")"
+check_eq "true"  "$(j .no_review_override.applied)"     "the run's own rate-limited title discounts it"
+check_eq "capability_failure" "$(j '.no_review_override.missing_reviewers[] | select(.reviewer == "coderabbitai[bot]") | .reason')" "a title-only refusal is reported as a capability failure"
+
+echo "=== #1939 AC2: neutral check-run with real findings, no notice -> verdict ==="
+reset
+run_gate "$(bundle "$(run 1 build success 660)" "$(cr_reviewed)")"
+check_eq "false" "$(j .no_review_override.applied)"     "AC2 a reviewed neutral run still disables the override"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "AC2 reason: verdict_on_head"
+check_eq "check_neutral" "$(j '.no_review_override.verdicts_on_head[0].kind')" "AC2 the neutral check is the verdict"
+
+echo "=== #1939 AC3: rate-limit notice from before the HEAD push never suppresses a later real verdict ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 900 900)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(cr_reviewed)")"
+check_eq "false" "$(j .no_review_override.applied)"     "AC3 pre-push notice does not discount the current run"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "AC3 reason: verdict_on_head"
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 665 665)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(cr_reviewed)")"
+check_eq "false" "$(j .no_review_override.applied)"     "AC3 notice just outside the 60s skew does not discount the run"
+
+echo "=== #1939: a notice naming ANOTHER commit inside the skew never discounts this HEAD's run ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 601 601 1111111111111111111111111111111111111111)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai)")"
+check_eq "false" "$(j .no_review_override.applied)"     "another HEAD's refusal does not discount the current run"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "... reason: verdict_on_head"
+
+echo "=== #1939: an UNNAMED notice inside the pre-run skew never discounts the run ==="
+reset
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "$(ago 601)" '[{id:7, user:{login:"coderabbitai[bot]"}, created_at:$t, updated_at:$t, body:"## Review limit reached"}]')"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai)")"
+check_eq "false" "$(j .no_review_override.applied)"     "the skew needs a notice that names HEAD"
+
+echo "=== #1939: reviewer check-run with no started_at is never discounted by a notice ==="
+reset
+FAKE_ISSUE_COMMENTS="$(cr_notice 601 601)"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai | jq -c '.started_at = null')")"
+check_eq "false" "$(j .no_review_override.applied)"     "unreadable run start keeps the run a verdict"
 
 echo "=== hard stops at 11 min ==="
 reset
