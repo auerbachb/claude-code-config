@@ -498,6 +498,8 @@ After Step 1 and Step 2 both pass:
    - Phase 4: lessons/final report
 3. Treat every `/wrap` stop condition as `OUTCOME: blocked` and include the missing gate, failed AC, CI, unresolved finding, or command error details before the exit report.
 
+A no-review-override merge (issue #1899) is still `OUTCOME: merged`; relay `/wrap`'s suffixed line `merged PR #N (no AI review — logged)` unchanged.
+
 Do not duplicate the merge, main-sync, follow-up, or stale-cleanup rules here. `.claude/skills/wrap/SKILL.md` is the canonical source; Phase C only gates entry to that shared flow and reports the result.
 
 **On the clean-`BEHIND` path — and only that path — `/wrap` Step 2.4 is the

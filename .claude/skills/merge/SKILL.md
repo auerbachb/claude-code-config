@@ -139,6 +139,8 @@ If Step 2 reported `missing` entries about CI ("CI has N failing check-run(s): .
 gh pr merge --squash
 ```
 
+**No-review override (issue #1899).** When the gate JSON shows `.no_review_override.applied == true`, this replaces the plain `gh pr merge --squash` above: merge with the head pinned — `gh pr merge --squash --match-head-commit <gate head_sha>` — never through `admin-merge.sh`, then record it before branch cleanup: `unreviewed-merge-ledger.sh record --pr <N> --gate-json -` (gate JSON on stdin; it labels the PR `merged-unreviewed`). Report `merged PR #N (no AI review — logged)`, or `… — ledger write failed)` when the recorder exits non-zero. Mechanism: `.claude/reference/no-review-override.md`.
+
 Do NOT use `--delete-branch`. That flag attempts local branch deletion immediately, which fails when run from a worktree (the branch is still checked out). Handle branch cleanup in Step 5a below.
 
 ### Step 5a: Delete the branches

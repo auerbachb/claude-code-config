@@ -91,6 +91,7 @@ opt-in of issue #1544.
 | [merge-gate-codeant-run-marker.test.sh](../tests/merge-gate-codeant-run-marker.test.sh) | Tests that CodeAnt pre-analysis approval stubs do not score as review coverage in `merge-gate.sh` |
 | [merge-gate-greptile-comment.test.sh](../tests/merge-gate-greptile-comment.test.sh) | Tests Greptile comment handling in `merge-gate.sh` |
 | [merge-gate-json-escaping.test.sh](../tests/merge-gate-json-escaping.test.sh) | Tests that `merge-gate.sh` emits control-character-free JSON built with jq rather than by string concatenation |
+| [merge-gate-no-review-override.test.sh](../tests/merge-gate-no-review-override.test.sh) | Tests the no-review override in `merge-gate.sh` — window elapsed/running, hard stops, bot verdicts, pending reviewer checks, anchor failures, config, ledger rows |
 | [merge-gate-required-contexts.test.sh](../tests/merge-gate-required-contexts.test.sh) | Tests that `merge-gate.sh` blocks when every branch-protection required context is absent from HEAD |
 | [merge-gate-review-substance.test.sh](../tests/merge-gate-review-substance.test.sh) | Tests that `merge-gate.sh` refuses hollow bot approvals as review coverage |
 | [merge-gate-review-tier.test.sh](../tests/merge-gate-review-tier.test.sh) | Tests per-repo review tiers in `merge-gate.sh` — ci-only, ci+codeant-one-round, full/legacy parity, resolver failure |

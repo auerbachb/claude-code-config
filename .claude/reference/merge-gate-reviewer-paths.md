@@ -112,3 +112,7 @@ Greptile was triggered at any point — both CR and BugBot failed — sticky ass
 ## All three down
 
 Self-review for risk reduction only. A clean self-review does NOT satisfy the gate; report the blocker.
+
+## No-review override — all review paths (issue #1899)
+
+When no reviewer bot has a verdict on HEAD after the window (default 10 min), `merge-gate.sh` waives the reviewer-coverage reasons of whichever path owns the PR (`path: no-review-override`); every hard stop still blocks. Mechanism: `.claude/reference/no-review-override.md`.

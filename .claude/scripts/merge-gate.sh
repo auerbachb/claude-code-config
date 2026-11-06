@@ -399,6 +399,9 @@ emit_json() {
   local deferred_thread_count="${19:-0}"
   local deferred_issues="${20:-}"
   if [[ -z "$deferred_issues" ]]; then deferred_issues='[]'; fi
+  # no_review_override (issue #1899) — arg 21. `null` on the early error paths.
+  local no_review_override="${21:-}"
+  if [[ -z "$no_review_override" ]]; then no_review_override='null'; fi
   jq -cn \
     --argjson met "$met" \
     --arg reviewer "$reviewer" \
@@ -420,8 +423,9 @@ emit_json() {
     --argjson review_tier "$review_tier" \
     --argjson deferred_thread_count "$deferred_thread_count" \
     --argjson deferred_issues "$deferred_issues" \
+    --argjson no_review_override "$no_review_override" \
     'def scrub: walk(if type == "string" then gsub("[[:cntrl:]]"; " ") else . end);
-     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues}
+     {met: $met, reviewer: $reviewer, path: $path, missing: $missing, head_sha: $head_sha, ci_status: $ci_status, merge_state: $merge_state, mergeable: $mergeable, review_decision: $review_decision, code_owner_bots: $code_owner_bots, human_changes_requested: $human_changes_requested, stale_bot_changes_requested_count: $stale_bot_changes_requested_count, unresolved_thread_count: $unresolved_thread_count, primary_review_met: $primary_review_met, authorship: $authorship, review_evidence: $review_evidence, required_contexts: $required_contexts, review_tier: $review_tier, deferred_thread_count: $deferred_thread_count, deferred_issues: $deferred_issues, no_review_override: $no_review_override}
      | scrub'
 }
 
@@ -478,6 +482,7 @@ REVIEW_TIER_SH="$SCRIPT_DIR/review-tier.sh"
 REVIEW_TIER_GATE=""
 REVIEW_TIER_JSON="null"
 REVIEW_TIER_FAILURE=""
+NRO_WINDOW_SECONDS=""   # issue #1899 — empty = override disabled
 if [[ ! -x "$REVIEW_TIER_SH" ]]; then
   REVIEW_TIER_FAILURE="review-tier.sh not found or not executable at $REVIEW_TIER_SH"
 else
@@ -492,6 +497,10 @@ else
     REVIEW_TIER_JSON="null"
   else
     REVIEW_TIER_GATE=$(printf '%s' "$REVIEW_TIER_JSON" | jq -r '.gate')
+    # No-review override window (issue #1899), minutes → seconds; read from the
+    # same base-branch policy. Absent, null, or non-integer → disabled.
+    NRO_MINUTES=$(printf '%s' "$REVIEW_TIER_OUT" | jq -r '.no_review_override_minutes | if type == "number" then floor else "" end' 2>/dev/null || true)
+    [[ "$NRO_MINUTES" =~ ^[0-9]+$ ]] && NRO_WINDOW_SECONDS=$((NRO_MINUTES * 60))
   fi
 fi
 
@@ -1046,7 +1055,9 @@ if [[ "$MERGE_STATE" == "UNKNOWN" ]]; then
   MISSING+=("mergeStateStatus is UNKNOWN — GitHub still computing mergeability; wait and re-check")
 fi
 
-# CI gate (#270) — applies to all paths.
+# CI gate (#270) — applies to all paths. The index span is kept so the
+# no-review override (issue #1899) can re-read CI without pending reviewer runs.
+CI_MISSING_FROM=${#MISSING[@]}
 CI_INCOMPLETE=$(echo "$CI_STATUS" | jq -r '.in_progress')
 CI_FAILING=$(echo "$CI_STATUS" | jq -r '.failing')
 if [[ "$CI_INCOMPLETE" -gt 0 ]]; then
@@ -1057,6 +1068,7 @@ if [[ "$CI_FAILING" -gt 0 ]]; then
   BLOCKING_NAMES=$(echo "$CI_STATUS" | jq -r '.blocking | map("\(.name) (\(.conclusion))") | join(", ")')
   MISSING+=("CI has $CI_FAILING failing check-run(s): $BLOCKING_NAMES")
 fi
+CI_MISSING_TO=${#MISSING[@]}
 
 # Required-context gate (#1361) — applies to all paths; branch protection is a
 # property of the base branch, not of whichever bot happens to own the review.
@@ -1672,6 +1684,10 @@ REVIEWER_DISPATCH="$REVIEWER"
 if [[ -n "$REVIEW_TIER_FAILURE" ]]; then
   MISSING+=("review tier unresolved: $REVIEW_TIER_FAILURE — the full reviewer gate is applied instead (issue #1726)")
 fi
+# Everything appended from here to the override block below is reviewer
+# COVERAGE — the only reasons the no-review override (issue #1899) may waive.
+# Every hard stop was appended above this line.
+REVIEW_BLOCKER_START=${#MISSING[@]}
 case "$REVIEW_TIER_GATE" in
   ci-only)
     REVIEWER_DISPATCH="none"
@@ -2414,6 +2430,19 @@ case "$REVIEWER_DISPATCH" in
 esac
 
 # --------------------------------------------------------------------------
+# No-review override (issue #1899) — decided by no-review-override.sh. It may
+# waive only the reviewer-coverage reasons collected since REVIEW_BLOCKER_START,
+# and only when no reviewer bot has a verdict on HEAD and the window elapsed.
+# Any helper failure leaves missing[] untouched (fail closed: nothing waived).
+# --------------------------------------------------------------------------
+NRO_JSON='null'
+if [[ -r "$SCRIPT_DIR/lib/no-review-override-apply.sh" ]] && source "$SCRIPT_DIR/lib/no-review-override-apply.sh"; then
+  nro_apply
+else
+  echo "[merge-gate] lib/no-review-override-apply.sh unavailable — no-review override off, gate unchanged (issue #1899)" >&2
+fi
+
+# --------------------------------------------------------------------------
 # Emit result
 # --------------------------------------------------------------------------
 if [[ "${#MISSING[@]}" -eq 0 ]]; then
@@ -2456,7 +2485,9 @@ MISSING_JSON=$(missing_json "${MISSING[@]:-}")
 # over a guard the bugbot path never consults.
 [[ "$REVIEWER_DISPATCH" != "cr" ]] && REVIEW_EVIDENCE='{}'
 
-emit_json "$MET" "$REVIEWER" "$REVIEWER" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}"
+GATE_PATH="$REVIEWER"
+[[ "$MET" == true && "$(printf '%s' "$NRO_JSON" | jq -r '.applied' 2>/dev/null)" == true ]] && GATE_PATH="no-review-override"
+emit_json "$MET" "$REVIEWER" "$GATE_PATH" "$MISSING_JSON" "$HEAD_SHA" "$CI_STATUS" "$MERGE_STATE" "$MERGEABLE" "$REVIEW_DECISION" "$CODE_OWNER_BOTS" "$HUMAN_CHANGES_ON_HEAD_JSON" "$STALE_JSON" "${UNRESOLVED_TOTAL:-0}" "$PRIMARY_REVIEW_MET" "$AUTHORSHIP" "$REVIEW_EVIDENCE" "$REQUIRED_CONTEXTS_OUT" "$REVIEW_TIER_JSON" "${DEFERRED_TOTAL:-0}" "${DEFERRED_ISSUES_JSON:-[]}" "$NRO_JSON"
 
 if [[ "$MET" == true ]]; then
   exit 0
