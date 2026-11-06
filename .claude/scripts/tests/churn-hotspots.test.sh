@@ -58,6 +58,7 @@ has_text() {  # text, needle...
 # means those tests fail on `--state open` and pass on `--state all`.
 STUB_BIN="$TMP/bin"
 mkdir -p "$STUB_BIN"
+GH_POLICY_SHA="0123456789abcdef0123456789abcdef01234567"
 cat > "$STUB_BIN/gh" <<STUB
 #!/usr/bin/env bash
 set -uo pipefail
@@ -75,9 +76,33 @@ case "\$args" in
     esac
     ;;
   *"pr list"*)        cat "$TMP/pr_list.json" ;;
+  # Policy-exemption reads (issue #1858). Every call is logged so a test can
+  # assert the pinned ref; a fixture file under $TMP/contents/ is served
+  # verbatim, and anything absent is a 404 — the default, which keeps every
+  # older gh scenario on the "no declaration" path. The fail switches stand in
+  # for a non-404 failure (rate limit, auth, network), which must exit 3.
+  *"/contents/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_contents" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    cpath=\$(printf '%s' "\$args" | sed -n 's|.*/contents/\([^?]*\)?ref=.*|\1|p')
+    if [ -n "\$cpath" ] && [ -f "$TMP/contents/\$cpath" ]; then cat "$TMP/contents/\$cpath"
+    else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    ;;
+  *"/commits/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_meta" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    printf '{"sha":"%s"}\n' "$GH_POLICY_SHA"
+    ;;
   *"/files"*)
     pr=\$(printf '%s' "\$args" | sed -n 's|.*/pulls/\([0-9][0-9]*\)/files.*|\1|p')
     if [ -f "$TMP/files_\$pr.json" ]; then cat "$TMP/files_\$pr.json"; else printf '[]'; fi
+    ;;
+  # Repo metadata — after every more specific api-repos handler above (no
+  # backticks in this unquoted heredoc: they would run at stub-write time).
+  "api repos/"*)
+    printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
+    if [ -f "$TMP/gh_fail_meta" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    printf '{"default_branch":"main"}\n'
     ;;
   *) echo "gh stub: unhandled args: \$args" >&2; exit 1 ;;
 esac
@@ -1732,6 +1757,239 @@ run_in "$R28B" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" \
   --exclude '.claude/scripts/README.md' --json
 check_jq "28z: an excluded path is excluded, not re-surfaced as exempt" "$OUT" \
   '.exempt_count == 0 and (.hotspots | length) == 0 and .excluded_count == 3'
+
+# =============================================================================
+# Scenario 29 — a scanned repo's own by-design ledger is exempt by POLICY
+# (issue #1858)
+#
+# The motivating shape: three PR-marked commits each touch a hand-kept ledger
+# (docs/LEDGER.md) and a real source file (src/Real.ts), and the repo declares
+# the ledger in its OWN checked-in policy file, citing a rule file that names
+# it. The declaration and rule file land in an UNMARKED commit, so they add no
+# churn of their own. Equal churn again makes every claim a measurement: the
+# ledger and the control differ only in being declared.
+# =============================================================================
+POLICY_PATH=".claude/reference/churn-hotspot-policy-exemptions.json"
+GOOD_POLICY='{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/RULES.md","reason":"every parity-affecting PR must update the ledger"}}}'
+
+# policy_repo <dir> <declaration-json|-> <rules-text|-> — a fresh repo with the
+# motivating history; "-" leaves that file out. Defined here, in this file,
+# because the suite's decision record bars helper libraries.
+policy_repo() {
+  local repo
+  repo=$(new_repo_on "$1" main)
+  if [ "$2" != "-" ]; then
+    mkdir -p "$repo/.claude/reference"; printf '%s\n' "$2" > "$repo/$POLICY_PATH"
+    git -C "$repo" add "$POLICY_PATH"
+  fi
+  if [ "$3" != "-" ]; then
+    mkdir -p "$repo/docs"; printf '%s\n' "$3" > "$repo/docs/RULES.md"
+    git -C "$repo" add docs/RULES.md
+  fi
+  if [ "$2" != "-" ] || [ "$3" != "-" ]; then
+    GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" \
+      git -C "$repo" commit -q -m "add repo policy"
+  fi
+  commit_touch "$repo" "2026-02-01T00:00:00" "one (#2901)" docs/LEDGER.md src/Real.ts
+  commit_touch "$repo" "2026-02-02T00:00:00" "two (#2902)" docs/LEDGER.md src/Real.ts
+  commit_touch "$repo" "2026-02-03T00:00:00" "three (#2903)" docs/LEDGER.md src/Real.ts
+  printf '%s' "$repo"
+}
+RULES_TEXT='Every PR that changes parity must update docs/LEDGER.md.'
+
+R29=$(policy_repo r29 "$GOOD_POLICY" "$RULES_TEXT")
+R29_SHA=$(git -C "$R29" rev-parse main)
+
+run_in "$R29" --since "$WINDOW_START" --json
+check_eq "29a: exit 0 — the real source file still crosses the threshold" "0" "$RC"
+check_jq "29b: the declared ledger raises NO hotspot flag" "$OUT" \
+  '(.hotspots | length) == 1
+   and ([.hotspots[].file] | index("docs/LEDGER.md")) == null'
+check_jq "29c: it is in exemptions[] as a POLICY exemption with its real score" "$OUT" \
+  '[.exemptions[] | select(.file=="docs/LEDGER.md")] | length == 1
+   and (.[0] | .kind == "policy" and .rule_source == "docs/RULES.md"
+        and .pr_count == 3 and .score == 3 and .pr_numbers == [2901,2902,2903]
+        and (.reason | test("parity")) and (has("lint") | not))'
+check_jq "29d: EQUAL-CHURN CONTROL — src/Real.ts flags with identical churn" "$OUT" \
+  '.hotspots[] | select(.file=="src/Real.ts")
+   | .pr_count == 3 and .score == 3 and .pr_numbers == [2901,2902,2903]'
+check_jq "29e: the envelope names the declaration and the commit it was read at" "$OUT" \
+  ".policy_exemptions_file == \"$POLICY_PATH\" and .policy_exemptions_ref == \"$R29_SHA\"
+   and .exempt_count == 1 and .total_hotspot_count == 1"
+
+run_in "$R29/docs" --since "$WINDOW_START" --json
+check_jq "29e2: run from a subdirectory, the declaration still resolves repo-root-relative" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy" and .score == 3'
+
+run_in "$R29" --since "$WINDOW_START"
+check_eq "29f: one distinct '# exempt (policy)' TSV line" "1" \
+  "$(grep -c '^# exempt (policy)' <<<"$OUT")"
+check_eq "29g: that line names the rule source in its last column" "docs/RULES.md" \
+  "$(awk -F'\t' '$1 == "# exempt (policy)" && $2 == "docs/LEDGER.md" { print $6 }' <<<"$OUT")"
+check_eq "29h: the policy line carries the same six columns" "6" \
+  "$(awk -F'\t' '$1 == "# exempt (policy)" { print NF; exit }' <<<"$OUT")"
+check_eq "29i: no policy file is ever rendered as a catalog line" "0" \
+  "$(grep -c '^# exempt (catalog)' <<<"$OUT")"
+
+# NEGATIVE CONTROL — the same fixture with --no-exemptions flags the ledger, so
+# 29b measures the declaration rather than a fixture that never qualified.
+run_in "$R29" --since "$WINDOW_START" --no-exemptions --json
+check_jq "29j: NEGATIVE CONTROL — --no-exemptions disables the policy kind too" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and (.hotspots | length) == 2 and .exempt_count == 0
+   and .policy_exemptions_file == null and .policy_exemptions_ref == null'
+
+# --exemptions replaces the CATALOG only: an unrelated catalog file does not
+# switch the scanned repo's policy off.
+run_in "$R29" --since "$WINDOW_START" --exemptions "$EXEMPT_FIXTURE" --json
+check_jq "29k: --exemptions leaves the scanned repo's policy in force" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy"'
+
+# Collision — the same path in both lists is reported ONCE, as the catalog kind.
+COLLIDE_EXEMPT="$TMP/exemptions-29-collide.json"
+printf '%s\n' '{"schema":"churn-hotspot-exemptions/v1","exemptions":{"docs/LEDGER.md":{"lint":"ledger-lint.sh","reason":"one row per feature is enforced"}}}' > "$COLLIDE_EXEMPT"
+run_in "$R29" --since "$WINDOW_START" --exemptions "$COLLIDE_EXEMPT" --json
+check_jq "29l: a path in both lists reports once, as kind catalog" "$OUT" \
+  '[.exemptions[] | select(.file=="docs/LEDGER.md")] | length == 1
+   and .[0].kind == "catalog" and .[0].lint == "ledger-lint.sh"'
+
+# Exclusion still wins over the policy kind.
+run_in "$R29" --since "$WINDOW_START" --exclude docs/LEDGER.md --json
+check_jq "29m: a declared AND excluded path stays off the exempt line" "$OUT" \
+  '.exempt_count == 0 and ([.hotspots[].file] | index("docs/LEDGER.md")) == null
+   and .excluded_count == 3'
+
+# Read AT THE SCANNED REF, never from the working tree: an uncommitted edit
+# emptying the declaration changes nothing...
+printf '%s\n' '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{}}' > "$R29/$POLICY_PATH"
+run_in "$R29" --since "$WINDOW_START" --json
+check_jq "29n: an uncommitted edit to the declaration has no effect" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy"'
+git -C "$R29" checkout -q -- "$POLICY_PATH"
+# ...and a declaration that exists ONLY in the working tree applies nothing.
+R29U=$(policy_repo r29u - "$RULES_TEXT")
+mkdir -p "$R29U/.claude/reference"; printf '%s\n' "$GOOD_POLICY" > "$R29U/$POLICY_PATH"
+run_in "$R29U" --since "$WINDOW_START" --json
+check_jq "29o: an untracked declaration is not a declaration" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and .policy_exemptions_file == null and .exempt_count == 0'
+
+# A repo with no declaration behaves exactly as before.
+R29N=$(policy_repo r29n - "$RULES_TEXT")
+run_in "$R29N" --since "$WINDOW_START" --json
+check_jq "29p: no declaration — the ledger is an ordinary hotspot, nothing reported" "$OUT" \
+  '(.hotspots | length) == 2 and .exempt_count == 0
+   and .policy_exemptions_file == null and .policy_exemptions_ref == null'
+
+# Exempt-only window: clean exit 1, and the exempt line is still printed.
+R29B=$(new_repo_on r29b main)
+mkdir -p "$R29B/.claude/reference" "$R29B/docs"
+printf '%s\n' "$GOOD_POLICY" > "$R29B/$POLICY_PATH"; printf '%s\n' "$RULES_TEXT" > "$R29B/docs/RULES.md"
+git -C "$R29B" add -A
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$R29B" commit -q -m "add repo policy"
+commit_touch "$R29B" "2026-02-01T00:00:00" "one (#2911)" docs/LEDGER.md
+commit_touch "$R29B" "2026-02-02T00:00:00" "two (#2912)" docs/LEDGER.md
+commit_touch "$R29B" "2026-02-03T00:00:00" "three (#2913)" docs/LEDGER.md
+run_in "$R29B" --since "$WINDOW_START" --json
+check_eq "29q: a window whose only churner is policy-exempt exits 1" "1" "$RC"
+check_jq "29r: and still reports it" "$OUT" \
+  '(.hotspots | length) == 0 and .exempt_count == 1 and .exemptions[0].kind == "policy"'
+run_in "$R29B" --since "$WINDOW_START"
+check_eq "29s: the policy TSV line survives the clean exit path" "1" \
+  "$(grep -c '^# exempt (policy)' <<<"$OUT")"
+
+# ---- guards: every bad declaration exits 3 naming the path -----------------
+# stdout must stay EMPTY on each: "never a silent score without it".
+policy_guard() {  # $1 label, $2 repo, $3 needle expected on stderr
+  local err_out out rc
+  out=$( (cd "$2" && bash "$SCRIPT" --since "$WINDOW_START" --json) 2>"$TMP/guard-29.err" )
+  rc=$?
+  err_out=$(cat "$TMP/guard-29.err")
+  check_eq "$1 exits 3" "3" "$rc"
+  check_eq "$1 names '$3' on stderr" "yes" "$(has_text "$err_out" "$3")"
+  check_eq "$1 never scores without the declaration" "" "$out"
+}
+G1=$(policy_repo r29g1 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"reason":"trust me"}}}' "$RULES_TEXT")
+policy_guard "29t: an entry with no rule_source" "$G1" "docs/LEDGER.md"
+G2=$(policy_repo r29g2 "$GOOD_POLICY" -)
+mkdir -p "$G2/docs"; printf '%s\n' "$RULES_TEXT" > "$G2/docs/RULES.md"   # working tree only
+policy_guard "29u: a rule_source missing at the scanned ref (present only on disk)" "$G2" "docs/LEDGER.md"
+check_eq "29u: and the error says the rule file does not exist" "yes" \
+  "$(has_text "$(cat "$TMP/guard-29.err")" "docs/RULES.md" "does not exist")"
+G3=$(policy_repo r29g3 "$GOOD_POLICY" 'A rules file that names some other ledger entirely.')
+policy_guard "29v: a rule_source that does not mention the path" "$G3" "docs/LEDGER.md"
+G4=$(policy_repo r29g4 '{"schema":"churn-hotspot-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/RULES.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29w: a wrong schema" "$G4" "$POLICY_PATH"
+G5=$(policy_repo r29g5 '{"schema": "churn-hotspot-policy-exemptions/v1", "exemptions": {' "$RULES_TEXT")
+policy_guard "29x: a malformed declaration" "$G5" "$POLICY_PATH"
+G6=$(policy_repo r29g6 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"../docs/RULES.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y: a rule_source that escapes the repo" "$G6" "docs/LEDGER.md"
+# Self-citation: the ledger always "mentions" itself, so citing it is assertion.
+G7=$(policy_repo r29g7 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/LEDGER.md","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y2: a ledger citing itself as its rule" "$G7" "exempted file itself"
+
+# ---- independence: the scanned repo's declaration, not the detector's ------
+# A copied detector whose OWN checkout carries a declaration for the ledger
+# must not exempt it in a repo that declares nothing...
+DET1="$TMP/det1"
+mkdir -p "$DET1/.claude/scripts" "$DET1/.claude/reference"
+cp "$SCRIPT" "$DET1/.claude/scripts/churn-hotspots.sh"
+printf '%s\n' "$GOOD_POLICY" > "$DET1/$POLICY_PATH"
+OUT=$(cd "$R29N" && bash "$DET1/.claude/scripts/churn-hotspots.sh" --since "$WINDOW_START" --json 2>/dev/null)
+check_jq "29z: a declaration in the detector's checkout exempts nothing elsewhere" "$OUT" \
+  '(.hotspots[] | select(.file=="docs/LEDGER.md") | .score == 3)
+   and .exempt_count == 0 and .policy_exemptions_file == null'
+# ...and a detector with NO reference directory at all still honours the
+# scanned repo's declaration.
+DET2="$TMP/det2"
+mkdir -p "$DET2/.claude/scripts"
+cp "$SCRIPT" "$DET2/.claude/scripts/churn-hotspots.sh"
+OUT=$(cd "$R29" && bash "$DET2/.claude/scripts/churn-hotspots.sh" --since "$WINDOW_START" --json 2>/dev/null)
+check_jq "29aa: the scanned repo's declaration needs nothing in the detector's checkout" "$OUT" \
+  '.exemptions_file == null and .exempt_count == 1
+   and (.exemptions[0] | .file == "docs/LEDGER.md" and .kind == "policy")'
+
+# ---- the gh backend: read at the pinned default-branch head ----------------
+R29GH=$(new_repo r29gh)
+# Unmarked commit: the gh path's working-tree existence check needs the files.
+commit_touch "$R29GH" "2026-02-01T00:00:00" "add stub fixture files" docs/LEDGER.md src/Real.ts
+cat > "$TMP/pr_list.json" <<'EOF'
+[{"number":2921,"mergedAt":"2026-02-01T00:00:00Z"},
+ {"number":2922,"mergedAt":"2026-02-02T00:00:00Z"},
+ {"number":2923,"mergedAt":"2026-02-03T00:00:00Z"}]
+EOF
+for n in 2921 2922 2923; do gh_files "$n" modified docs/LEDGER.md modified src/Real.ts; done
+mkdir -p "$TMP/contents/.claude/reference" "$TMP/contents/docs"
+printf '%s\n' "$GOOD_POLICY" > "$TMP/contents/$POLICY_PATH"
+printf '%s\n' "$RULES_TEXT" > "$TMP/contents/docs/RULES.md"
+: > "$TMP/gh_calls.log"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ab: gh — the real source file still flags" "0" "$RC"
+check_jq "29ac: gh — the ledger is policy-exempt, read at the pinned head" "$OUT" \
+  "(.exemptions[] | select(.file==\"docs/LEDGER.md\") | .kind == \"policy\" and .rule_source == \"docs/RULES.md\")
+   and .policy_exemptions_ref == \"$GH_POLICY_SHA\"
+   and ([.hotspots[].file] == [\"src/Real.ts\"])"
+check_eq "29ad: gh — every contents read is pinned to that one commit" "0" \
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -vc "ref=$GH_POLICY_SHA")"
+check_eq "29ae: gh — and both the declaration and its rule file were read" "2" \
+  "$(grep -c '/contents/' "$TMP/gh_calls.log")"
+rm -f "$TMP/contents/docs/RULES.md"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29af: gh — a rule_source that 404s exits 3" "3" "$RC"
+printf '%s\n' "$RULES_TEXT" > "$TMP/contents/docs/RULES.md"
+: > "$TMP/gh_fail_contents"
+ERR_OUT=$( (cd "$R29GH" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --json) 2>&1 >/dev/null )
+check_eq "29ag: gh — a non-404 contents failure exits 3, never 'absent'" "3" "$?"
+check_eq "29ah: gh — and names the declaration path" "yes" "$(has_text "$ERR_OUT" "$POLICY_PATH")"
+rm -f "$TMP/gh_fail_contents"
+: > "$TMP/gh_fail_meta"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ai: gh — a failed repo/commit lookup exits 3" "3" "$RC"
+rm -f "$TMP/gh_fail_meta"
+rm -rf "$TMP/contents"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_jq "29aj: gh — a 404 declaration is a confirmed absence: behaves as before" "$OUT" \
+  '(.hotspots | length) == 2 and .policy_exemptions_file == null'
 
 # =============================================================================
 echo
