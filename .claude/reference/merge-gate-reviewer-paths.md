@@ -27,9 +27,22 @@ The gate used to aggregate whatever check-runs existed on HEAD and read the abse
 `merge-gate.sh` now reads branch protection's required contexts for the PR's base branch and asserts each **by name** against HEAD:
 
 - **Present** — a deduped check-run *or* a legacy commit status of that exact name. Absent is `unsatisfied`, never vacuously passing.
-- **Complete and non-blocking** — a run that has not finished is not a pass; blocking conclusions are the same set `ci-status.sh` uses (`failure`, `timed_out`, `action_required`, `startup_failure`, `stale`), so `skipped`/`neutral`/`cancelled` do not veto.
+- **Complete, and ended `success`, `neutral`, or `skipped`** — a run that has not finished is not a pass, and neither is any other conclusion (issue #1846). This is GitHub's own satisfaction rule, written as a **whitelist** so a conclusion nobody has listed fails closed. `cancelled` is therefore **unsatisfied** for a required context (state `cancelled`), as are `failure`, `timed_out`, `action_required`, `startup_failure`, `stale`, and a completed run with no conclusion (state `none`). `cancelled` stays non-blocking only for checks that are **not** required — see below.
 - **Consumes the deduped list (#675)**, so a superseded failure never marks a context failed. Two same-named runs in one suite are matched together — still-point publishes a `build` from TestFlight and a `build` from Web Build, both GitHub Actions, both in one suite — and the skipped leg does not veto its successful sibling.
 - Reported as `required_contexts` on every result: `source`, `base`, `contexts`, `unsatisfied[{context, state}]`, `error`.
+
+**Cancelled: required versus not (issue #1846).** On sales-kit PR 319 (2026-10-05) the required `install` job was cancelled when GitHub could not acquire a hosted runner, which skipped its five dependents; the old blacklist scored all of it as passing and the gate answered `met: true` while GitHub said `BLOCKED`. The two classifiers now differ on purpose:
+
+| Check | `cancelled` | Why |
+|---|---|---|
+| Branch-protection **required** context (`merge-gate.sh`) | **Unsatisfied** | GitHub does not accept it; a required check that never reached a verdict is not a pass. |
+| Any other check (`ci-status.sh`, the `ci_status` count) | Non-blocking | A superseded or concurrency-cancelled optional run is noise (issues #211, #1361; `cr-github-review.md` CI health check). |
+
+`ci-status.sh` has no notion of required contexts, so its `passing` count still includes a cancelled required check; **do not read `ci_status` as "every required check passed"** — the `required_contexts` block and `missing[]` are the verdict. `ci-status.sh` itself now also fails closed on a completed run whose conclusion is missing or unrecognized (it counts as blocking), so a value GitHub adds later cannot pass silently in either place.
+
+**`BLOCKED` stays a diagnostic.** `merge-gate.sh` reports `merge_state: BLOCKED` but adds no `missing[]` entry for it (only `BEHIND`, `DIRTY`, `UNKNOWN` and `CONFLICTING` do), because `BLOCKED` also covers required reviews and code-owner bots that the gate evaluates through their own paths. `/wrap` Step 2.4 (which Phase C runs) already stops on any state other than `CLEAN` or a verified clean `BEHIND`, so a consumer must never read `BLOCKED` beside `met: true` as permission to merge. A cancelled required check now appears in `missing[]` by name regardless.
+
+Nothing re-runs a cancelled required job automatically: `/fixpr` fires on blocking conclusions only, so the gate now reports the PR unmet and it waits for a human re-run.
 
 **Resolution order and degraded mode.** The protection endpoint (`branches/{base}/protection/required_status_checks`) needs admin access, so a collaborator token gets 403 there — but the branch object's own `.protection.required_status_checks` carries the same list and is readable by anyone with repo read, so it is the fallback (`source: branch_object`). `.protected` on that object is what separates "unprotected" from "unreadable", a distinction no HTTP status makes reliably. An unprotected base, or protection with no required checks, yields `source: none` and **exactly the pre-#1361 behaviour**. Only when *both* reads fail does the gate report `source: unavailable` — and that **blocks**, because a required check that never reported is indistinguishable from no requirement. Degraded means say so, not score clean. `--allow-unverified-required-checks` is the explicit per-PR user override covering **only** the unreadable-list case; a list that *was* read and contains an absent context stays blocking with or without it.
 

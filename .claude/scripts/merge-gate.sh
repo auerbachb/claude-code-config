@@ -188,8 +188,19 @@
 # `unsatisfied[].state` is `absent` (no check-run and no commit status of that
 # name on HEAD), `wrong_app` (runs of that name exist, but protection pins the
 # context to an `app_id` and none of them came from that app — GitHub would not
-# accept them either), the run's non-`completed` status, its blocking conclusion,
-# or a commit status's `pending`/`failure`/`error`.
+# accept them either), the run's non-`completed` status, its conclusion when that
+# is anything other than `success`/`neutral`/`skipped` (so `cancelled` is its own
+# state here, as are `failure`, `timed_out`, `action_required`, `startup_failure`,
+# `stale`, and `none` for a completed run that carries no conclusion), or a commit
+# status's `pending`/`failure`/`error`.
+#
+# A required context is satisfied by `success`, `neutral`, or `skipped` ONLY —
+# GitHub's own rule, a whitelist, so a conclusion this script has never seen fails
+# closed (issue #1846). That is stricter than the general `ci_status` count, which
+# keeps `cancelled` non-blocking for checks that are not required. `merge_state`
+# `BLOCKED` is still reported as a diagnostic and adds no `missing[]` entry of its
+# own; the required-context entry above is what makes a cancelled required check
+# visible to a consumer that reads only `met`/`missing`.
 #
 # Reading this output: pipe it with `printf '%s'`, a herestring, or a file —
 # NEVER `echo "$GATE_JSON" | jq`. zsh's `echo` expands backslash escapes by
@@ -1092,8 +1103,20 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   # one-name shape work: still-point publishes a `build` from the TestFlight
   # workflow and a `build` from Web Build, both GitHub Actions, both in the same
   # suite. They are matched together here, and the context is satisfied because
-  # neither is blocking — `skipped` is non-blocking by the same rule ci-status.sh
-  # uses, so the skipped leg does not veto its successful sibling.
+  # every leg satisfies it — `skipped` is one of the three conclusions GitHub
+  # itself accepts for a required check, so the skipped leg does not veto its
+  # successful sibling.
+  # Satisfaction is a WHITELIST (sales-kit PR 319, harness issue #1846): a
+  # completed run satisfies a required context only with `success`, `neutral`, or
+  # `skipped` — GitHub's own rule. Everything else is unsatisfied, with the
+  # conclusion as the state: `cancelled` (a required job that GitHub cancelled
+  # before it ran, e.g. a hosted runner never acquired, left five skipped
+  # dependents and a `met: true` gate under the old blacklist), the blocking
+  # set, a missing conclusion, and any value GitHub adds later. This is
+  # deliberately NOT the rule ci-status.sh applies to NON-required checks, where
+  # `cancelled` stays non-blocking (issues #211, #1361): a superseded or
+  # concurrency-cancelled optional run is not a reason to hold a merge, but a
+  # required check that never ran to a verdict is not a pass.
   # Publisher scoping (issue #1383 review): when protection pins a context to an
   # `app_id`, only that app's check-runs count. $named is every run carrying the
   # name; $r narrows to the ones GitHub would actually accept. Runs present under
@@ -1106,8 +1129,8 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
     --argjson apps "$REQUIRED_APPS_JSON" \
     --argjson runs "$CHECK_RUNS_JSON" \
     --argjson statuses "$COMMIT_STATUSES_JSON" '
-      def is_blocking: . == "failure" or . == "timed_out" or . == "action_required"
-                       or . == "startup_failure" or . == "stale";
+      def satisfies: . == "success" or . == "neutral" or . == "skipped";
+      def unsatisfying: (.conclusion // "") | satisfies | not;
       $req | map(
         . as $c
         | ($apps[$c] // null)                                          as $app
@@ -1124,9 +1147,10 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
               state: ([ $r[] | select((.status // "") != "completed")
                         | ((.status // "") | if . == "" then "incomplete" else . end) ] | first),
               satisfied: false}
-           elif any($r[]; ((.conclusion // "") | is_blocking)) then
+           elif any($r[]; unsatisfying) then
              {context: $c,
-              state: ([ $r[] | select(((.conclusion // "") | is_blocking)) | .conclusion ] | first),
+              state: ([ $r[] | select(unsatisfying)
+                        | ((.conclusion // "") | if . == "" then "none" else . end) ] | first),
               satisfied: false}
            elif ($r | length) == 0 and (($s.state // "") != "success") then
              {context: $c,
@@ -1140,7 +1164,7 @@ elif [[ "$REQUIRED_COUNT" -gt 0 ]]; then
   if [[ -z "$REQUIRED_UNSATISFIED_JSON" ]]; then REQUIRED_UNSATISFIED_JSON='[]'; fi
   if [[ "$(echo "$REQUIRED_UNSATISFIED_JSON" | jq 'length')" -gt 0 ]]; then
     REQUIRED_UNSATISFIED_LIST=$(echo "$REQUIRED_UNSATISFIED_JSON" | jq -r 'map("\(.context) (\(.state))") | join(", ")')
-    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported is not a pass (issue #1361)")
+    MISSING+=("branch protection requires status check(s) not satisfied on HEAD ${HEAD_SHA:0:7}: $REQUIRED_UNSATISFIED_LIST — a required context that never reported, never finished, or ended in anything but success/neutral/skipped (cancelled included) is not a pass (issues #1361, #1846)")
   fi
 fi
 
