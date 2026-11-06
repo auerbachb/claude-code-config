@@ -37,7 +37,7 @@ CODEANT_MARKER_H2='{"user": {"login": "codeant-ai[bot]"}, "created_at": "'"$(ts_
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H2]" "[]" "[$FAILURE_COMMENT_H2, $CODEANT_MARKER_H2]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (h3): same inversion, but inline comments on HEAD prove a real read -> gate_met =="
@@ -67,7 +67,7 @@ CODEANT_APPROVED_H4='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEA
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H4]" "[]" "[$FAILURE_COMMENT_H4, $CODEANT_NOSUB_H4]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (h5): substantive-but-RETRACTED CR + fresh hollow CodeAnt -> trigger_greptile (same reviewer must clear both gates) =="
@@ -86,7 +86,7 @@ CA_HOLLOW_H5='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_SHA"'
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CR_APPROVED_H5, $CR_RETRACT_H5, $CA_HOLLOW_H5]" "[]" "[$FAILURE_COMMENT_H5]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (h6): approval RETARGETED onto HEAD but predating the commit -> trigger_greptile (issue #836 freshness) =="
@@ -101,7 +101,7 @@ CODEANT_STALE_H6='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_S
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6]" "[]" "[$FAILURE_COMMENT_H6]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (h6b): fresh approval spelled +00:00 against a Z commit date -> gate_met (no false stale) =="
@@ -167,7 +167,7 @@ CODEANT_APPROVED_H6C='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HE
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H6C]" "[]" "[$FAILURE_COMMENT_H6C]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (h6d): fractional-second approval AFTER a whole-second commit date -> gate_met (fraction must not invert the order) =="
@@ -254,7 +254,7 @@ write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6G]" "[]" \
   "[$FAILURE_COMMENT_H6G, $CODEANT_NAMES_HEAD_H6G, $CODEANT_OLD_SHA_H6G]"
 OUT=$(run_script 2>"$TMP/h6g-stderr.txt"); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 # Both halves must be observed: redemption GRANTED (so this is genuinely the
 # redeemed path, not a stale approval that never got that far), and the #875
 # guard is what withheld. Without the first assertion this case would keep
@@ -286,7 +286,7 @@ write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_STALE_H6H]" "[]" \
   "[$FAILURE_COMMENT_H6H, $CODEANT_MARKER_H6H, $CODEANT_FINISH_H6H]"
 OUT=$(run_script 2>"$TMP/h6h-stderr.txt"); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 # Redemption must NOT have fired — the verdict has to come from the approval
 # still being stale, not from a later guard mopping up after a bad grant.
 if grep -q "issue #876, escalation parity #1387" "$TMP/h6h-stderr.txt"; then
@@ -310,7 +310,7 @@ CODEANT_APPROVED_H7='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEA
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_H7]" "[]" "[$FAILURE_COMMENT_H7]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (i): CodeAnt APPROVED on an OLDER SHA (not HEAD) -> still trigger_greptile (stale approval doesn't satisfy the gate) =="
@@ -321,7 +321,7 @@ CODEANT_APPROVED_STALE='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "sta
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_STALE]" "[]" "[$FAILURE_COMMENT_I]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (j): CodeAnt APPROVED on HEAD but retracted by a LATER CHANGES_REQUESTED on HEAD -> still trigger_greptile =="
@@ -333,7 +333,7 @@ CODEANT_RETRACT_J='{"user": {"login": "codeant-ai[bot]"}, "commit_id": "'"$HEAD_
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_APPROVED_J, $CODEANT_RETRACT_J]" "[]" "[$FAILURE_COMMENT_J]"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 
 ############################################################################
 echo "== Scenario (k): CR commit-status rate-limit via state:success + description only (issue #708) -> skips CR gate immediately, no 12-min wait =="
@@ -353,7 +353,7 @@ jq -n \
 export FIXTURE_STATE_JSON="$TMP/state.json"
 OUT=$(run_script); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=switch_bugbot" "STATUS=switch_bugbot" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=switch_bugbot" "STATUS=no_reviewer paid_route=switch_bugbot" "$OUT"
 
 echo
 echo "== Scenario L: check-run data still comes only from pr-state.sh's bundle (#675) =="
@@ -413,7 +413,7 @@ CODEANT_STATUS_M="$(jq -cn --arg ts "$(ts_seconds_ago 350)" --arg body "$STATUS_
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CODEANT_COMMENTED_M, $CODEANT_APPROVED_M]" "[$CODEANT_INLINE_M]" "[$FAILURE_COMMENT_M, $CODEANT_STATUS_M]"
 OUT=$(run_script 2>"$TMP/m-stderr.txt"); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile (not gate_met)" "STATUS=trigger_greptile" "$OUT"
+check_eq "Greptile point, no_reviewer (not gate_met)" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 # The verdict must come from the substance guard REJECTING a valid, fresh
 # approval — not from the approval failing validity or freshness upstream, which
 # would let this scenario keep passing with the guard deleted. Assert the guard

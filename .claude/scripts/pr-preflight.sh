@@ -136,7 +136,11 @@
 #     }
 #   reviewer status ∈ already-present | triggered | skipped-rate-cap |
 #                     trigger-failed | dry-run-would-trigger |
-#                     skipped-tier-excluded | skipped-tier-deferred
+#                     skipped-tier-excluded | skipped-tier-deferred |
+#                     skipped-approval-required
+#   `skipped-approval-required` (cursor only, issue #1897): BugBot is a paid
+#   review and is never posted without the owner's explicit approval — the
+#   last step of its chain in both modes. Nothing pending: counts as clean.
 #   `skipped-tier-excluded`: the PR's review tier rules this reviewer out —
 #   nothing was posted and nothing is pending, so it counts toward `clean`
 #   like already-present. With no `## Review policy` it is cursor-only
@@ -940,8 +944,13 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
         fi
         ;;
       excluded)
-        set_status "$key" "skipped-tier-excluded"
-        surface "skipping $trigger — review tier $TIER_GATE_TXT: $reason"
+        if [[ "$reason" == "approval_required" ]]; then
+          set_status "$key" "skipped-approval-required"
+          surface "skipping $trigger — paid review requires owner approval"
+        else
+          set_status "$key" "skipped-tier-excluded"
+          surface "skipping $trigger — review tier $TIER_GATE_TXT: $reason"
+        fi
         ;;
       *)
         set_status "$key" "skipped-tier-deferred"
@@ -975,6 +984,11 @@ for key in "${REVIEWER_KEYS[@]}"; do
     # nothing pending, so this status counts as clean below.
     set_status "$key" "skipped-tier-excluded"
     surface "skipping @cursor review — review tier $tier_gate excludes BugBot"
+  elif [[ "$key" == "cursor" ]]; then
+    # Last step of the BugBot chain (issue #1897): paid, so never posted
+    # without the owner's explicit approval. Nothing pending → clean below.
+    set_status "$key" "skipped-approval-required"
+    surface "skipping @cursor review — paid review requires owner approval"
   else
     post_trigger "$key"
   fi
@@ -994,7 +1008,7 @@ CLEAN=true
 [[ "$DRAFT_ACTION" != "not-draft" ]] && CLEAN=false
 for key in "${REVIEWER_KEYS[@]}"; do
   case "$(get_status "$key")" in
-    already-present|skipped-tier-excluded) ;;
+    already-present|skipped-tier-excluded|skipped-approval-required) ;;
     *) CLEAN=false ;;
   esac
 done

@@ -146,33 +146,33 @@ done
 
 ############################################################################
 for gate in full legacy; do
-  echo "== (b): gate $gate -> all three nudges post, exactly as today =="
+  echo "== (b): gate $gate -> CodeAnt and Graphite post; BugBot needs owner approval (#1897) =="
   setup "$(tier_json "$gate")"
   run_script; RC=$?
   check_eq "exit 0" "0" "$RC"
-  check_eq "@cursor review posted once" "1" "$(posted_cursor)"
-  check_eq "all three nudges posted, in order" \
-    "@codeant-ai review;@cursor review;@graphite-app re-review;" "$(posted_all)"
-  check_eq "--json reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+  check_eq "@cursor review NOT posted — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
+  check_eq "only the free nudges posted, in order" \
+    "@codeant-ai review;@graphite-app re-review;" "$(posted_all)"
+  check_eq "--json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 done
 
 ############################################################################
-echo "== (c): FAILS OPEN — the resolver fails -> @cursor review posts =="
+echo "== (c): FAILS OPEN — the resolver fails -> the cursor step reaches the owner-approval skip =="
 setup "" 4
 run_script; RC=$?
 check_eq "exit 0" "0" "$RC"
-check_eq "@cursor review posted once" "1" "$(posted_cursor)"
-check_eq "--json reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "@cursor review NOT posted — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
+check_eq "--json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
 
 ############################################################################
-echo "== (d): FAILS OPEN — the helper is missing -> @cursor review posts =="
+echo "== (d): FAILS OPEN — the helper is missing -> the cursor step reaches the owner-approval skip =="
 setup "$(tier_json ci-only)"
 mv "$STUB_DIR/bugbot-tier-excluded.sh" "$TMP/helper.bak"
 run_script; RC=$?
 mv "$TMP/helper.bak" "$STUB_DIR/bugbot-tier-excluded.sh"
 check_eq "exit 0" "0" "$RC"
-check_eq "@cursor review posted despite a ci-only resolver" "1" "$(posted_cursor)"
+check_eq "@cursor review NOT posted despite a ci-only resolver — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
 
 ############################################################################
 echo "== (e): a tier skip leaves the cursor step open, so a resume re-asks the tier =="
@@ -192,7 +192,7 @@ check_eq "retry exits 0" "0" "$RC"
 check_eq "still no @cursor review after the retry" "0" "$(posted_cursor)"
 check_eq "codeant posted exactly once across both runs" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
 
-echo "== (e2): the tier changes to full before the retry -> the resumed run posts @cursor review =="
+echo "== (e2): the tier changes to full before the retry -> the resumed run reaches the owner-approval skip =="
 setup "$(tier_json ci-only)"
 export FIXTURE_POST_FAIL="@graphite-app re-review"
 run_script; RC=$?
@@ -201,9 +201,9 @@ check_eq "no @cursor review posted on the ci-only run" "0" "$(posted_cursor)"
 export FIXTURE_POST_FAIL="" FIXTURE_TIER_OUT="$(tier_json full)"
 run_script; RC=$?
 check_eq "retry exits 0" "0" "$RC"
-check_eq "@cursor review posted once, now that the tier invites BugBot" "1" "$(posted_cursor)"
+check_eq "@cursor review NOT posted, now that the tier invites BugBot — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
 check_eq "codeant not re-posted on the retry" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
-check_eq "retry --json reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "retry --json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 
 ############################################################################
 echo "== (f): --dry-run reports the same answer the real run acts on =="
@@ -215,7 +215,7 @@ check_eq "dry-run --json reports the tier skip" \
   '{"reason":"review_tier","gate":"ci-only"}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 setup "$(tier_json full)"
 run_script --dry-run
-check_eq "dry-run --json on full reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "dry-run --json on full reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

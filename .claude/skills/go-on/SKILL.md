@@ -730,22 +730,7 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 ```
 
 **Rate limit detection:** If check-run shows `conclusion: "failure"` with title containing "rate limit" (case-insensitive), OR status shows `description` containing "rate limit" — CodeRabbit reports this status as non-blocking `state: "success"`, so do not gate on `state`:
-- `[ACTION]` — CR is rate-limited. Check BugBot (second-tier reviewer) before falling through to Greptile — BugBot auto-triggers on every push, so it may already have responded while CR was blocked:
-  ```bash
-  gh api "repos/{owner}/{repo}/pulls/$PR_NUM/reviews?per_page=100" \
-    --jq '[.[] | select(.user.login == "cursor[bot]" and .commit_id == "'"$SHA"'")]'
-  ```
-  - BugBot has posted on `$SHA` → PR is now on **BugBot** (sticky). Persist and go to the BugBot section:
-    ```bash
-    "$REVIEWER_OF_SH" "$PR_NUM" --sticky bugbot
-    ```
-  - BugBot has NOT posted AND <10 min since push → `[ACTION]` — Waiting up to 10 min for BugBot's auto-review. Poll every 60 s.
-  - BugBot has NOT posted AND ≥10 min since push → BugBot timed out. Fall through to Greptile:
-    ```bash
-    gh pr comment "$PR_NUM" --body "@greptileai"
-    "$REVIEWER_OF_SH" "$PR_NUM" --sticky greptile
-    ```
-    Go to the Greptile section below.
+- `[ACTION]` — CR is rate-limited. Do NOT hand-roll a fallback: run `escalate-review.sh "$PR_NUM"` and branch on its `STATUS=`. It now returns `no_reviewer` where it used to hand off to BugBot or Greptile (issue #1897): paid reviews need the owner's explicit approval in chat, so post NO `@cursor review` and NO `@greptileai`, keep `reviewer: cr`, report "paid review requires owner approval", and keep polling — CodeRabbit's free allowance may return, and the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes. If CodeRabbit offers to pay for a review now, decline it (`.claude/reference/cr-rate-limits.md`).
 
 **Review completion:** If check-run shows `status: "completed"` with `conclusion: "success"`:
 - CR has finished reviewing. Check for findings (Step 7).
@@ -754,11 +739,11 @@ gh api "repos/{owner}/{repo}/commits/$SHA/statuses" \
 - `[ACTION]` — CR review is still pending. Polling every 60 seconds (12-minute timeout). A clean CR check-run completion short-circuits the timeout wait — but the merge gate still requires an explicit `APPROVED` review on the current HEAD SHA (per `cr-merge-gate.md` Step 1); completion alone does not satisfy it.
 - Poll all 3 endpoints each cycle for new comments from `coderabbitai[bot]`.
 - Check for rate-limit signals on every poll cycle. Rate-limit signals override the timeout — escalate immediately regardless of elapsed minutes.
-- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Check BugBot (same query as rate-limit path above). If BugBot has posted a review, persist `--sticky bugbot` and go to the BugBot section. If BugBot has also timed out (≥10 min since push), fall through to Greptile.
+- After 12 minutes with no review content and no rate-limit signal: `[ACTION]` — CR timed out. Run `escalate-review.sh "$PR_NUM"` and follow its verdict; `no_reviewer` means the no-reviewer path above, never a paid trigger (issue #1897).
 
 ### If PR is on BugBot:
 
-BugBot (`cursor[bot]`) is the second-tier free reviewer. Auto-triggers on every push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
+BugBot (`cursor[bot]`) is a PAID reviewer: a PR is here only if it was sticky on BugBot before issue #1897 or the owner approved a BugBot review in chat. Nothing re-invites it on a push; merge gate requires **1 clean BugBot review** on the current HEAD SHA (BugBot's completion signals are reliable).
 
 Check for BugBot reviews on the current HEAD:
 ```bash
@@ -776,11 +761,11 @@ gh api "repos/{owner}/{repo}/commits/$SHA/check-runs" \
   --jq '.check_runs[] | select(.name == "Cursor Bugbot") | {status, conclusion}'
 ```
 
-- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, BugBot auto-reviews the new push; return to this section on the new SHA.
+- BugBot has posted findings on `$SHA` → `[DONE]` — BugBot review received. Process findings (Step 7). After fixes are pushed, a re-review is a new paid review — only with the owner's approval in chat; otherwise wait for the no-review override. Any reviewer verdict on the new HEAD (a late CodeRabbit review included) disables that override (`.claude/reference/no-review-override.md`), so once one lands, stop waiting and report the blocker: the BugBot gate needs an owner-approved re-review.
 - BugBot has posted a clean review (check-run `completed` with no finding comments) on `$SHA` → `[DONE]` — merge gate met (1 clean pass is sufficient for the BugBot path). Proceed to merge verification.
 - No BugBot response AND <10 min since push → `[ACTION]` — Polling for BugBot (10-min timeout from push). Poll every 60 s.
-- No BugBot response AND ≥10 min since push → BugBot timed out. Fall through to Greptile immediately (after the Greptile budget gate). Do NOT extend the wait by triggering a manual `@cursor review` retry — the 10-min window from push is the hard timeout.
-- Stay on BugBot — do not switch back to CR. Ignore late CR reviews. Only escalate to Greptile if BugBot also fails.
+- No BugBot response AND ≥10 min since push → BugBot timed out. Do NOT trigger Greptile and do NOT retry `@cursor review` — both are paid and need the owner's approval in chat (issue #1897). Report the blocker and keep polling for the no-review override.
+- Stay on BugBot — do not switch back to CR. Ignore late CR reviews.
 
 ### If PR is on Greptile:
 
@@ -901,7 +886,7 @@ Branch on the exit code:
   - CR path with **"CodeRabbit check-run not green on HEAD"** or **"latest CR review on HEAD requests changes"**: CR has findings; return to **Step 7** to process them.
   - BugBot path with **"no BugBot review on HEAD"**: BugBot hasn't reviewed the current HEAD yet; return to **Step 6** to poll for the review.
   - BugBot path with **"latest BugBot review on HEAD has findings"**: return to **Step 7** to process findings.
-  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, re-trigger `@greptileai` (subject to the 3-review cap per `.claude/rules/greptile.md`).
+  - Greptile path with **"unresolved Greptile thread(s)"**: return to **Step 7** to process; if P0 remains after fix, a re-trigger is a new paid review: ask the owner, and post `@greptileai` only on their approval in chat (subject to the 3-review cap per `.claude/rules/greptile.md`).
   - **"branch is BEHIND base"**: **probe before prescribing anything** (issue #1564). A *verified clean* `BEHIND` is an auto-merge, not a rebase — canonical in `.claude/rules/cr-merge-gate.md` Step 1d and `CLAUDE.md` "PR MERGE AUTHORIZATION" (issue #754), and encoded the same way in `.claude/agents/phase-c-merger.md` (issue #1563) and `fixpr/SKILL.md` Step 6. Rebasing a clean `BEHIND` moves HEAD, discarding the bot approval that had already satisfied the rest of the gate and restarting CI — the treadmill the carve-out exists to avoid.
 
     **Re-resolve the reviewer before probing — never reuse Step 5's variable.**

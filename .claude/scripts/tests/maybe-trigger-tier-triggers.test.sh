@@ -144,7 +144,7 @@ echo "== no ## Review policy: the legacy path, unchanged, with the helper presen
 reset "$(tier_json absent legacy)"
 run
 check_eq "exit 0" "0" "$RC"
-check_eq "all three post, in order" "@codeant-ai review;@cursor review;@graphite-app re-review;" "$(posted)"
+check_eq "the free reviewers post, in order; BugBot needs owner approval (#1897)" "@codeant-ai review;@graphite-app re-review;" "$(posted)"
 check_eq "legacy status" "triggered" "$(f .status)"
 check_eq "no tier fields on the legacy path" "null" "$(f .trigger_mode)"
 check_eq "no ledger written" "null" "$(ledger codeant)"
@@ -192,17 +192,17 @@ check_eq "the same tick again is NOT a duplicate: CodeAnt posts once CI is green
 check_eq "  cursor waits for the settle" "head_not_settled" "$(f .trigger_skips.cursor.reason)"
 checks success 7200
 run
-check_eq "settled: @cursor review posts, CodeAnt is not re-posted" "@codeant-ai review;@cursor review;" "$(posted)"
-check_eq "  status triggered" "triggered" "$(f .status)"
+check_eq "settled: still no @cursor review (owner approval required), CodeAnt is not re-posted" "@codeant-ai review;" "$(posted)"
+check_eq "  cursor excluded approval_required — the last step, after the settle" "approval_required" "$(f .trigger_skips.cursor.reason)"
 run
 check_eq "the round is complete: duplicate tick" "duplicate_poll_tick" "$(f .reason)"
 export FIXTURE_ROUNDS=5 FIXTURE_HEAD="$HEAD2"
 run
-check_eq "next round: the second BugBot invitation" "@codeant-ai review;@cursor review;@cursor review;" "$(posted)"
+check_eq "next round: no BugBot invitation either" "@codeant-ai review;" "$(posted)"
 export FIXTURE_ROUNDS=7 FIXTURE_HEAD="$HEAD"
 run
-check_eq "third round: BugBot is capped at two" "@codeant-ai review;@cursor review;@cursor review;" "$(posted)"
-check_eq "  lifetime_cap" "lifetime_cap" "$(f .trigger_skips.cursor.reason)"
+check_eq "third round: still no BugBot" "@codeant-ai review;" "$(posted)"
+check_eq "  approval_required (never invited, so the lifetime cap is never reached)" "approval_required" "$(f .trigger_skips.cursor.reason)"
 check_eq "  Graphite never" "tier_excluded" "$(f .trigger_skips.graphite.reason)"
 
 echo "== full: the daily cap and a refused HEAD still skip BugBot =="
@@ -219,9 +219,9 @@ reset "$(tier_json present full)"
 export FIXTURE_CAP_FLIP="$TMP/cap-flip" FIXTURE_CAP_OVER='{"platform":"bugbot","date":"2026-10-08","spent_usd":9.9,"add_usd":1.58,"cap_usd":10,"status":"over"}'
 rm -f "$FIXTURE_CAP_FLIP"
 run
-check_eq "the cap flips to over at claim time: only CodeAnt" "@codeant-ai review;:daily_cap" "$(posted):$(f .trigger_skips.cursor.reason)"
-check_eq "  bugbot_skipped follows the claim, with its tally" "daily_cap:9.9" "$(f '"\(.bugbot_skipped.reason):\(.bugbot_skipped.tally.spent_usd)"')"
-check_eq "  bugbot_daily_cap is the claim's tally" "over" "$(f .bugbot_daily_cap.status)"
+check_eq "an ok cap at evaluation: approval decides, so no claim is ever made" "@codeant-ai review;:approval_required" "$(posted):$(f .trigger_skips.cursor.reason)"
+check_eq "  bugbot_skipped is the approval skip" "approval_required:null" "$(f '"\(.bugbot_skipped.reason):\(.bugbot_skipped.tally.spent_usd)"')"
+check_eq "  bugbot_daily_cap is the evaluation tally" "ok" "$(f .bugbot_daily_cap.status)"
 reset "$(tier_json present full)"
 export FIXTURE_REFUSED=1
 run
@@ -232,14 +232,16 @@ check_eq "  handled for this HEAD: the tick completes" "duplicate_poll_tick" "$(
 
 echo "== a failed post releases its claim =="
 reset "$(tier_json present full)"
-export FIXTURE_POST_FAIL="@cursor review"
+# Retargeted to CodeAnt (issue #1897): BugBot is never claimed any more.
+export FIXTURE_POST_FAIL="@codeant-ai review"
 run
 check_eq "exit 5" "5" "$RC"
-check_eq "CodeAnt posted, BugBot did not" "@codeant-ai review;" "$(posted)"
-check_eq "the cursor claim was released" "0" "$(ledger cursor)"
+check_eq "nothing posted" "" "$(posted)"
+check_eq "the codeant claim was released" "0" "$(ledger codeant)"
+check_eq "no cursor claim was ever made" "null" "$(ledger cursor)"
 export FIXTURE_POST_FAIL=""
 run
-check_eq "the retry posts BugBot and does not re-post CodeAnt" "@codeant-ai review;@cursor review;" "$(posted)"
+check_eq "the retry posts CodeAnt, never BugBot" "@codeant-ai review;" "$(posted)"
 
 echo "== --dry-run evaluates, never claims =="
 reset "$(tier_json present full)"
@@ -249,7 +251,7 @@ check_eq "nothing posted" "" "$(posted)"
 check_eq "nothing claimed" "null" "$(ledger codeant)"
 check_eq "trigger mode reported" "tiered" "$(f .trigger_mode)"
 OUT_TXT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --dry-run 2>/dev/null)"
-check_eq "text dry run names what would post" "yes" "$( [[ "$OUT_TXT" == *"would post codeant, cursor"* ]] && echo yes || echo no )"
+check_eq "text dry run names what would post" "yes" "$( [[ "$OUT_TXT" == *"would post codeant;"*"cursor=approval_required"* ]] && echo yes || echo no )"
 
 echo "== an unresolvable tier on a policy repo posts nothing =="
 reset ""
@@ -271,7 +273,7 @@ check_eq "fail_closed mode" "fail_closed" "$(f .trigger_mode)"
 check_eq "deferred for every step" '["codeant","cursor","graphite"]' "$(f '.deferred | tostring')"
 rm -f "$WORK/.claude/pm-config.md"
 run
-check_eq "the same failure on a policy-free checkout: legacy, all three post" "@codeant-ai review;@cursor review;@graphite-app re-review;" "$(posted)"
+check_eq "the same failure on a policy-free checkout: legacy, the free reviewers post" "@codeant-ai review;@graphite-app re-review;" "$(posted)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

@@ -173,8 +173,10 @@ check_eq "no per-reviewer decisions" "null" "$(f .reviewers)"
 check_eq "no gh call at all" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
 check_eq "the resolver was asked about this PR and repo" "$PR --repo $REPO --json" "$(head -1 "$TIER_CALLS")"
 run --claim cursor
-check_eq "a legacy claim is a no-op that exits 0" "0:true" "$RC:$(f .claim.claimed)"
+check_eq "a legacy cursor claim is denied: BugBot needs owner approval (#1897)" "1:false:approval_required" "$RC:$(f .claim.claimed):$(f .claim.reason)"
 check_eq "  and writes no ledger" "null" "$(ledger cursor)"
+run --claim codeant
+check_eq "a legacy codeant claim (free reviewer) is still a no-op that exits 0" "0:true" "$RC:$(f .claim.claimed)"
 reset "$(tier_json absent legacy off)"
 run
 check_eq "an ini-only (absent) policy is still legacy" "legacy" "$(f .mode)"
@@ -260,7 +262,7 @@ echo "== full =="
 reset "$(tier_json present full)"
 run
 check_eq "codeant allowed" "allowed:tier_allows" "$(dec codeant)"
-check_eq "cursor allowed (green, settled, 0 invites)" "allowed:tier_allows" "$(dec cursor)"
+check_eq "cursor on green, settled, 0 invites: approval_required, not allowed (#1897)" "excluded:approval_required" "$(dec cursor)"
 check_eq "coderabbit is not needed while CodeAnt is fine" "excluded:not_fallback" "$(dec coderabbit)"
 check_eq "graphite never on a tier-aware repo" "excluded:tier_excluded" "$(dec graphite)"
 check_eq "settled" "true" "$(f .settled.settled)"
@@ -276,7 +278,7 @@ check_eq "an invalid policy is tiered full" "tiered:full" "$(f '"\(.mode):\(.gat
 reset "$(tier_json present full)"
 set_comments "$(comment me "@cursor review" 3600)"
 run
-check_eq "cursor: one prior invitation still allowed" "allowed:1" "$(f '.reviewers.cursor | "\(.kind):\(.invitations)"')"
+check_eq "cursor: one prior invitation is under the cap, so approval decides" "excluded:1:approval_required" "$(f '.reviewers.cursor | "\(.kind):\(.invitations):\(.reason)"')"
 set_comments "$(comment me "@cursor review" 3600)" "$(comment me "@cursor review" 1800)"
 : > "$GUARD_CALLS"
 run
@@ -292,7 +294,7 @@ check_eq "  codeant is not held by settling" "allowed:tier_allows" "$(dec codean
 check_eq "  neither BugBot guard was asked" "0" "$(grep -c . "$GUARD_CALLS" | tr -d ' ')"
 export COMPLEXITY_TRIGGER_SETTLE_SECONDS=30
 run
-check_eq "env override 30s: settled" "allowed:tier_allows" "$(dec cursor)"
+check_eq "env override 30s: settled, so approval decides" "excluded:approval_required" "$(dec cursor)"
 check_eq "  threshold reported" "30" "$(f .settled.threshold_s)"
 export COMPLEXITY_TRIGGER_SETTLE_SECONDS=soon
 run
@@ -326,7 +328,7 @@ run
 check_eq "commit unreadable: never settled either" "deferred:head_not_settled" "$(dec cursor)"
 export FAIL_COMMIT=""
 run
-check_eq "  control — both readable: the same old anchors settle" "allowed:tier_allows" "$(dec cursor)"
+check_eq "  control — both readable: the same old anchors settle (approval decides)" "excluded:approval_required" "$(dec cursor)"
 
 reset "$(tier_json present full)"
 set_checks "$(run_check build null github-actions 30 in_progress)"
@@ -353,15 +355,15 @@ check_eq "  with the tally" "9.5" "$(f .reviewers.cursor.daily_cap.spent_usd)"
 check_eq "  not in allowed" '["codeant"]' "$(f '.allowed | tostring')"
 export FIXTURE_CAP_RC=0
 run
-check_eq "over with a disagreeing exit: unknown, allowed" "allowed:unknown" "$(f '.reviewers.cursor | "\(.kind):\(.daily_cap.status)"')"
+check_eq "over with a disagreeing exit: unknown, then approval_required" "excluded:unknown:approval_required" "$(f '.reviewers.cursor | "\(.kind):\(.daily_cap.status):\(.reason)"')"
 export FIXTURE_CAP_OUT='{"platform":"bugbot","date":"2026-10-08","spent_usd":null,"add_usd":1.58,"cap_usd":10,"status":"unknown"}'
 run
-check_eq "unknown tally: allowed (fail open)" "allowed:tier_allows" "$(dec cursor)"
+check_eq "unknown tally: past the cap, approval decides" "excluded:approval_required" "$(dec cursor)"
 check_eq "  and says so" "yes" "$( [[ "$ERR" == *"daily cap is unknown"* ]] && echo yes || echo no )"
 mv "$S/review-daily-cap.sh" "$TMP/cap.bak"
 run
 mv "$TMP/cap.bak" "$S/review-daily-cap.sh"
-check_eq "cap helper missing: allowed, DEGRADED" "allowed:yes" "$(dec cursor | cut -d: -f1):$( [[ "$ERR" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
+check_eq "cap helper missing: DEGRADED, approval decides" "excluded:yes" "$(dec cursor | cut -d: -f1):$( [[ "$ERR" == *"DEGRADED: review-daily-cap.sh not found"* ]] && echo yes || echo no )"
 
 echo "== full: CodeRabbit only as the CodeAnt-unavailable fallback =="
 reset "$(tier_json present full)"
@@ -487,9 +489,9 @@ check_eq "  without spending BugBot's refusal lookup or cap tally" "0" "$(grep -
 reset "$(tier_json present full)"
 set_comments "$(comment me "@cursor review" 3600)"
 run --claim cursor
-check_eq "cursor: comment count 1 -> ledger 2" "0:2" "$RC:$(ledger cursor)"
+check_eq "cursor claim under the cap: denied approval_required, no ledger write" "1:approval_required:null" "$RC:$(f .reviewers.cursor.reason):$(ledger cursor)"
 run --claim cursor
-check_eq "  then the cap" "1:lifetime_cap" "$RC:$(f .reviewers.cursor.reason)"
+check_eq "  a second claim is denied the same way" "1:approval_required:null" "$RC:$(f .reviewers.cursor.reason):$(ledger cursor)"
 reset "$(tier_json present full)"
 export FIXTURE_CAP_OUT='{"platform":"bugbot","date":"2026-10-08","spent_usd":9.5,"add_usd":1.58,"cap_usd":10,"status":"over"}' FIXTURE_CAP_RC=1
 run --claim cursor
@@ -514,7 +516,7 @@ set_comments "$(comment me "@cursor review" 3600)"
 # re-evaluation must see the cap.
 export FIXTURE_BUMP_CURSOR_TO=2
 run --claim cursor
-check_eq "denied at the cap after re-evaluating" "1:lifetime_cap" "$RC:$(f .reviewers.cursor.reason)"
+check_eq "denied approval_required — never reaches the CAS" "1:approval_required" "$RC:$(f .reviewers.cursor.reason)"
 check_eq "  the other claimer's count stands, nothing over it" "2" "$(ledger cursor)"
 check_eq "  the first pass reached the guards; the re-evaluation stopped at the cap before them" "1" "$(grep -c '^refused' "$GUARD_CALLS" | tr -d ' ')"
 

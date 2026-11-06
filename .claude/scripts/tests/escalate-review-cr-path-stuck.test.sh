@@ -161,7 +161,7 @@ OLD_SHA="1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
 echo "== (S) stuck shape: the governing run's own finding, resolved =="
 build "$IN_RUN2" true true COMMENTED "$HEAD_SHA" "$CR_REVIEW_TS" success
 run_escalation; run_merge_gate
-check_eq "(S) escalate-review: escalates instead of polling_cr" "STATUS=switch_bugbot" "$ESC_OUT"
+check_eq "(S) escalate-review: escalates instead of polling_cr" "STATUS=no_reviewer paid_route=switch_bugbot" "$ESC_OUT"
 check_eq "(S) escalate-review: stderr names the stuck state" "1" "$(grep -c 'CR path stuck.*issue #1736' "$ESC_ERR")"
 check_eq "(S) merge-gate: primary_review_met is false" "false" "$(mg .primary_review_met)"
 check_eq "(S) parity: merge-gate reports the SAME stuck approver" '["codeant-ai[bot]"]' "$(mg .review_evidence.pre_run_stuck)"
@@ -206,7 +206,7 @@ check_eq "(N6) a foreign app's pending 'CodeRabbit' check is CI, not clear -> po
 
 EXTRA_RUNS="$(pending_cr_check coderabbitai 347564)"
 run_escalation
-check_eq "(S2) the real CodeRabbit app's pending check is not CI -> still escalates" "STATUS=switch_bugbot" "$ESC_OUT"
+check_eq "(S2) the real CodeRabbit app's pending check is not CI -> still escalates" "STATUS=no_reviewer paid_route=switch_bugbot" "$ESC_OUT"
 EXTRA_RUNS="[]"
 
 finish_escalate_review_tests "CR-path stuck-state (issue #1736)"

@@ -172,11 +172,10 @@ case "$REVIEWER" in
     fi
     ;;
   bugbot)
-    if gh pr comment "$N" --body "@cursor review" >/dev/null 2>&1; then
-      echo "[PMM] re-triggered owning bot (bugbot) on #$N"
-    else
-      ta_release
-    fi
+    # BugBot is paid per review: a re-trigger needs the owner's explicit
+    # approval in chat (issue #1897), which a fleet tick never has.
+    echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
+    ta_release
     ;;
   graphite)
     if gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1; then

@@ -1345,7 +1345,7 @@ if [[ -n "$REVIEW_DECISION" && "$REVIEW_DECISION" != "APPROVED" ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeRabbit in CODEOWNERS — if the prior CR approval was dismissed as stale, trigger @coderabbitai full review")
   fi
   if [[ "$GREPTILE_IS_CODE_OWNER" == true ]]; then
-    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, trigger @greptileai")
+    MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with Greptile in CODEOWNERS — if the prior Greptile approval was dismissed as stale, a Greptile re-review is paid: ask the owner to approve it in chat (#1897)")
   fi
   if [[ "$CODEANT_IS_CODE_OWNER" == true ]]; then
     MISSING+=("branch protection reviewDecision is $REVIEW_DECISION, not APPROVED, with CodeAnt in CODEOWNERS — if the prior CodeAnt approval was dismissed as stale, trigger @codeant-ai review")
@@ -2009,7 +2009,7 @@ case "$REVIEWER_DISPATCH" in
               # Checked ahead of freshness because an unattributable run's timestamp
               # is not worth dating. Distinct reason so the block is legible rather
               # than reading as "BugBot never ran".
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} was not published by the Cursor app (app slug \"${BB_CHECK_APP_SLUG:-<none>}\", expected \"cursor\") — cannot verify publisher; wait for a Cursor-published run or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_APP_MISMATCH=true
             elif [[ -z "$LAST_COMMIT_TS" ]]; then
               # Fail-closed: cannot verify freshness without HEAD committer date.
@@ -2026,7 +2026,7 @@ case "$REVIEWER_DISPATCH" in
               # check-run completed before the HEAD commit — stale (force-push retargeting
               # or a prior push's run). Report explicitly so callers know to wait for a
               # new run rather than interpret as absent.
-              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run or post @cursor review")
+              MISSING+=("BugBot check-run on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (stale) — wait for re-run, or ask the owner to approve a paid BugBot re-review in chat (#1897)")
               BB_CHECK_FRESHNESS_ERR=true
             else
               # Fresh success check-run, no failure comments — clean silent pass.
@@ -2064,7 +2064,7 @@ case "$REVIEWER_DISPATCH" in
             # to compare against; treat as unknown (fail-closed, issue #836).
             MISSING+=("cannot verify BugBot review freshness — submitted_at unavailable; retrying next cycle")
           elif [[ "$(norm_ts "$BB_SUBMITTED_AT")" < "$(norm_ts "$LAST_COMMIT_TS")" ]]; then
-            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; post @cursor review")
+            MISSING+=("BugBot review on HEAD ${HEAD_SHA:0:7} predates the HEAD commit (force-push retargeting) — re-review required; a BugBot re-review is paid: ask the owner to approve it in chat (#1897)")
           else
             BB_STATE=$(echo "$LATEST_BB" | jq -r '.state // ""')
             # Always check for inline findings — BugBot can post inline diff comments
@@ -2253,7 +2253,7 @@ case "$REVIEWER_DISPATCH" in
         G_ROUND_P0_COUNT=$(echo "$G_ROUND_BODIES" | grep -oF 'alt="P0"' | wc -l | tr -d ' ')
 
         if [[ "$G_ROUND_P0_COUNT" -gt 0 ]]; then
-          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("prior Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         else
           # A stale zero-P0 verdict is reusable only for a demonstrable fix-only
           # push. Every Greptile inline finding in the retained round must have a
@@ -2403,7 +2403,7 @@ case "$REVIEWER_DISPATCH" in
         # cannot drift: whatever Path A refuses to call clean is exactly what
         # gets reported here.
         if [[ "$G_FOOTER_CONTRADICTS" == true ]]; then
-          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (trigger @greptileai)")
+          MISSING+=("latest Greptile summary reviewed ${G_FOOTER_SHA:0:7}, not HEAD ${HEAD_SHA:0:7} — re-review required (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         fi
 
         # Are there unresolved Greptile-authored threads? If so, P0 vs P1/P2 changes
@@ -2420,7 +2420,7 @@ case "$REVIEWER_DISPATCH" in
         elif [[ "$UNRESOLVED_G" -eq 0 && "$P0_COUNT" -gt 0 ]]; then
           # Threads are resolved but P0 in latest review body / inline bodies.
           # A clean re-review would supersede this — require one.
-          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (trigger @greptileai)")
+          MISSING+=("latest Greptile review had P0 findings — need clean re-review after fix (a paid Greptile re-review — needs the owner's approval in chat, #1897)")
         fi
         # Unresolved G > 0 && P0 == 0: universal thread gate already covered.
         # Unresolved G == 0 && P0 == 0: only P1/P2 all resolved — gate met.

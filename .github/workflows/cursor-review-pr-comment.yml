@@ -1,267 +1,37 @@
-# Issue #892: fix BugBot trigger — bot-authored @cursor review comments are ignored
+# Cursor BugBot per-push nudge — DISABLED (issue #1897).
 #
-# BugBot (Cursor) auto-reviews a PR when it is opened, but does NOT re-review the
-# new HEAD after a push. This workflow posts `@cursor review` to close that gap.
+# This workflow used to post `@cursor review` (as the repository owner, via the
+# CURSOR_REVIEW_PAT secret) after every push, because BugBot does not re-review
+# a new HEAD on its own (issue #892). BugBot bills per review, and the owner's
+# policy is that no paid AI review starts without the owner's explicit approval
+# in chat (.claude/rules/safety.md). A workflow cannot carry that approval, so
+# the posting step — and the refusal and review-tier guard steps that existed
+# only to narrow it (issues #1356, #1728, #1749) — are gone. No input, secret,
+# or helper output can make this workflow post a comment.
 #
-# IT MUST BE POSTED AS A HUMAN. A trigger comment authored by `github-actions[bot]`
-# is ignored by BugBot — measured on PR #891 in this repo (three bot triggers, 30
-# minutes, zero BugBot responses; one human trigger: check-run started in 5 seconds)
-# and independently on auerbachb/meeting_insights_and_actions PR #172 (27 minutes,
-# no response to a bot-authored comment). The comment is posted with the
-# CURSOR_REVIEW_PAT secret so the author is the repository owner rather than
-# github-actions[bot].
-#
-# Why `pull_request` and not `pull_request_target`:
-# `pull_request_target` runs with base-branch context and exposes secrets even on
-# fork PRs — which would hand the PAT to fork-triggered events. `pull_request`
-# withholds secrets from fork PRs, so a fork's run simply takes the no-token path
-# below. This repo has no external contributors, so no coverage is lost.
-#
-# One nudge per HEAD (issue #1356):
-# BugBot is metered against a Cursor usage/spend limit. Once cursor[bot] has
-# refused on a given HEAD, no nudge can clear that limit, so every later nudge on
-# the same HEAD is pure PR noise — measured live on PR #1349, where a refusal at
-# 17:34:47 was followed by this workflow's nudge at 17:35:06 and a second refusal
-# at 17:35:18. The guard step below delegates that judgement to the shared
-# `bugbot-refused-head.sh`, the same helper `maybe-trigger-ai-review.sh` and
-# `/fixpr` Step 3b already call, so all three trigger paths answer identically.
-# The guard only ever NARROWS posting; it is fail-open in every direction —
-# missing helper, unreadable API, or a broken guard step all still post.
-#
-# Review tier (issue #1728):
-# A repo may declare review tiers in `.claude/pm-config.md`, and BugBot is
-# invited only on the `full` gate or with no policy (`legacy`). The tier-check
-# step runs the shared `bugbot-tier-excluded.sh` from the same base checkout and
-# skips the comment for `ci-only` and `ci+codeant-one-round`. It narrows posting
-# the same fail-open way: a missing helper or an unresolvable tier still posts.
-# Mechanism: .claude/reference/review-policy.md.
-#
-# Tier-aware repos (issue #1749):
-# With a `## Review policy`, the agent's shared trigger helper
-# (`review-triggers-allowed.sh`) owns every BugBot invitation — only on a
-# `full` PR, only once CI is green on a settled HEAD, at most twice per PR. A
-# nudge on every push would break all three, so the same `tier-check` step asks
-# that helper first (`--mode-only`, from the base checkout) and skips on any
-# tier-aware mode, `full` included, and on a policy repo whose tier cannot be
-# resolved. A repo with no policy (`legacy`), a base branch without the helper,
-# or an unusable answer falls through to the #1728 check above, unchanged.
-#
-# This is a convenience trigger, never a merge gate. A missing PAT or a failed
-# comment degrades to a warning annotation; the workflow always exits success.
+# The workflow, its trigger, and its job name stay so that any required-status
+# check keyed on `post-cursor-review` still reports. The single step only prints
+# a notice. The per-review approval path is issue #1898; the inventory of gated
+# trigger paths lives in .claude/reference/review-policy.md
+# §Paid review authorization.
 name: Cursor BugBot review trigger
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-permissions:
-  # Comment is posted via CURSOR_REVIEW_PAT, not GITHUB_TOKEN. Everything below
-  # is read-only and serves the two guards' GITHUB_TOKEN calls only:
-  #   contents      — commits/{sha} (the HEAD commit's committer date), and the
-  #                   base branch's .claude/pm-config.md (the review policy)
-  #   issues        — issues/{n}/comments (cursor[bot]'s refusal comments)
-  #   pull-requests — same endpoint, reached on a pull request; the PR's files
-  #                   and labels, which decide its review tier
-  #   checks        — commits/{sha}/check-runs (BugBot's footprint on this commit)
-  contents: read
-  issues: read
-  pull-requests: read
-  checks: read
+# Nothing is read or written through the token.
+permissions: {}
 
 jobs:
   post-cursor-review:
     runs-on: ubuntu-latest
-    # Guards — all three must pass:
-    #   1. Drafts are not ready for review.
-    #   2. Only the repository owner's PRs trigger a per-seat reviewer;
-    #      an outside contributor's PR must not spend the maintainer's seat.
-    #   3. Bot-authored PRs never trigger (prevent comment loops).
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login == github.repository_owner &&
       !endsWith(github.event.pull_request.user.login, '[bot]')
-    env:
-      # Reduce CURSOR_REVIEW_PAT to a boolean here so step `if:` conditions can
-      # test for secret presence without embedding the value. secrets.* is not
-      # available in step-level `if:`, but env.* is.
-      HAS_TRIGGER_TOKEN: ${{ secrets.CURSOR_REVIEW_PAT != '' }}
     steps:
-      - name: Warn — CURSOR_REVIEW_PAT not configured
-        if: env.HAS_TRIGGER_TOKEN != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            core.warning(
-              'Skipped the BugBot trigger: CURSOR_REVIEW_PAT is not available to this ' +
-              'workflow run — either it is not configured, or this is a fork-triggered ' +
-              'pull_request run, which never receives repository secrets. ' +
-              'BugBot was NOT asked to review this commit. ' +
-              'A comment posted by github-actions[bot] is ignored by BugBot, ' +
-              'so none was posted rather than leaving a misleading one. ' +
-              'Comment `@cursor review` manually, or add a fine-grained PAT for this ' +
-              'repository with Pull requests: Read and write as CURSOR_REVIEW_PAT.'
-            );
-
-      # Both guard steps are gated on the PAT: suppression only matters on the
-      # path that would otherwise post, and an unconfigured PAT already warns above.
-      - name: Checkout the suppression helper
-        if: env.HAS_TRIGGER_TOKEN == 'true'
-        # A checkout failure must not turn this convenience trigger into a red
-        # check — a `failure` conclusion blocks the merge gate (cr-merge-gate.md
-        # Step 1b). With continue-on-error the job stays green and the guard step
-        # below finds no helper, which posts. Same outcome as before this guard.
-        continue-on-error: true
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Base-branch commit, per the ac-gate.yml convention: the helper that
-          # judges the PR is trusted code the PR cannot edit. Not sparse — a
-          # sparse pattern that silently missed the helper would fail open
-          # forever with nothing to notice, and this repo is small.
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Check whether BugBot already refused this HEAD
-        id: suppress-check
-        if: env.HAS_TRIGGER_TOKEN == 'true'
-        # Same reasoning as the checkout step. If this step dies before writing
-        # its output, the comment step reads '' and posts.
-        continue-on-error: true
-        env:
-          GH_REPO: ${{ github.repository }}
-          # Read-only calls, so the default token rather than the PAT's rate budget.
-          GH_TOKEN: ${{ github.token }}
-          # Passed as env, not interpolated into the script body, so the values
-          # reach bash as data and never as script text.
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Notice — BugBot invitations need owner approval
+        id: approval-notice
         run: |
-          GUARD=.claude/scripts/bugbot-refused-head.sh
-          # Bootstrap: the helper is not on the base branch — the PR introducing
-          # it, or a repo given this workflow without .claude/scripts. Post.
-          if [[ ! -f "$GUARD" ]]; then
-            echo "suppressed=false" >> "$GITHUB_OUTPUT"
-            echo "Suppression guard unavailable on the base branch — posting the nudge."
-            exit 0
-          fi
-          # `if` rather than a bare call: a non-zero exit is this helper's verdict,
-          # not a step failure, and the runner's default shell carries `set -e`.
-          # 0 = refused this HEAD (suppress); 1 = post; 2 = usage/dependency error,
-          # which the helper also defines as post.
-          if bash "$GUARD" "$PR_NUMBER" "$HEAD_SHA"; then
-            echo "suppressed=true" >> "$GITHUB_OUTPUT"
-            echo "BugBot already refused $HEAD_SHA for a usage limit — skipping the nudge."
-          else
-            echo "suppressed=false" >> "$GITHUB_OUTPUT"
-            echo "No attributable BugBot refusal on $HEAD_SHA — posting the nudge."
-          fi
-
-      - name: Check whether the PR's review tier excludes BugBot
-        id: tier-check
-        if: env.HAS_TRIGGER_TOKEN == 'true'
-        # Same reasoning as the two steps above. If this step dies before
-        # writing its output, the comment step reads '' and posts.
-        continue-on-error: true
-        env:
-          GH_REPO: ${{ github.repository }}
-          # Read-only calls (the policy file on the base branch, the PR's files
-          # and labels), so the default token rather than the PAT's budget.
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          TIER=.claude/scripts/bugbot-tier-excluded.sh
-          TRIGGERS=.claude/scripts/review-triggers-allowed.sh
-          # Tier-aware repos (issue #1749): the trigger helper owns BugBot, so
-          # this per-push nudge stands down on any tiered mode. `if` keeps the
-          # helper's exit codes out of the runner's `set -e`. Mode `legacy`, a
-          # missing helper, or an unusable answer falls through, unchanged.
-          if [[ -f "$TRIGGERS" ]] \
-             && MODE_JSON=$(bash "$TRIGGERS" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF" --mode-only) \
-             && MODE=$(printf '%s' "$MODE_JSON" | jq -r '.mode // ""') \
-             && [[ "$MODE" == "tiered" || "$MODE" == "fail_closed" ]]; then
-            GATE=$(printf '%s' "$MODE_JSON" | jq -r '.gate // "unresolved"') || GATE=unresolved
-            echo "excluded=true" >> "$GITHUB_OUTPUT"
-            echo "gate=$GATE" >> "$GITHUB_OUTPUT"
-            echo "Review policy present (mode $MODE, gate $GATE) — the trigger helper owns BugBot invitations; skipping the per-push nudge."
-            exit 0
-          fi
-          # Bootstrap: the helper is not on the base branch — the PR introducing
-          # it, or a repo given this workflow without .claude/scripts. Post.
-          if [[ ! -f "$TIER" ]]; then
-            echo "excluded=false" >> "$GITHUB_OUTPUT"
-            echo "Review-tier check unavailable on the base branch — posting the nudge."
-            exit 0
-          fi
-          # 0 = the tier (ci-only / ci+codeant-one-round) excludes BugBot, gate
-          # on stdout; 1 = full or legacy; 2 = tier unresolved. Only 0 skips:
-          # a failed resolver posts, as the refusal guard above fails open.
-          if GATE=$(bash "$TIER" "$PR_NUMBER" --repo "$GH_REPO" --base "$BASE_REF"); then
-            echo "excluded=true" >> "$GITHUB_OUTPUT"
-            echo "gate=$GATE" >> "$GITHUB_OUTPUT"
-            echo "Review tier gate $GATE excludes BugBot — skipping the nudge."
-          else
-            echo "excluded=false" >> "$GITHUB_OUTPUT"
-            echo "Review tier gate '${GATE:-unresolved}' invites BugBot (or could not be resolved) — posting the nudge."
-          fi
-
-      - name: Notice — nudge skipped, the review tier excludes BugBot
-        # Selected by id in the offline suite, like suppressed-warn below.
-        id: tier-skip-notice
-        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.tier-check.outputs.excluded == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          TIER_GATE: ${{ steps.tier-check.outputs.gate }}
-        with:
-          script: |
-            core.notice(
-              `Skipped the BugBot trigger: this PR's review tier gate is ${process.env.TIER_GATE}. ` +
-              'In a repo with a review policy, the agent trigger helper decides BugBot: ' +
-              'only on the full gate, once CI is green on a settled HEAD, at most twice per PR. ' +
-              'Only a repo with no review policy gets this per-push nudge ' +
-              '(.claude/reference/review-policy.md).'
-            );
-
-      - name: Warn — nudge suppressed, BugBot already refused this HEAD
-        # Carries an id purely so the offline suite can select this step by
-        # identity rather than by matching text in its condition — a rename or
-        # a removal then errors there instead of silently selecting some other
-        # github-script step (CodeAnt, PR #1377).
-        id: suppressed-warn
-        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed == 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            core.warning(
-              'Skipped the BugBot trigger: cursor[bot] has already refused this ' +
-              'commit for a Cursor usage or spend limit. A nudge cannot clear a ' +
-              'usage limit, so a second one would only add a second refusal ' +
-              'comment (one nudge per HEAD — .claude/rules/bugbot.md). ' +
-              'BugBot was NOT asked to review this commit. ' +
-              'The next push is a new HEAD and starts clean; to retry on this ' +
-              'commit anyway, comment `@cursor review` manually.'
-            );
-
-      - name: Comment @cursor review
-        if: env.HAS_TRIGGER_TOKEN == 'true' && steps.suppress-check.outputs.suppressed != 'true' && steps.tier-check.outputs.excluded != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          # Authenticate as the PAT owner (repository owner) rather than
-          # github-actions[bot] — that distinction is why this workflow exists.
-          github-token: ${{ secrets.CURSOR_REVIEW_PAT }}
-          script: |
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: '@cursor review'
-              });
-            } catch (error) {
-              // Never fail the PR's checks over a missed trigger comment.
-              core.warning(
-                `Could not post the '@cursor review' trigger comment: ${error.message}. ` +
-                'Check that CURSOR_REVIEW_PAT has not expired and still grants ' +
-                'this repository Pull requests: Read and write. ' +
-                'BugBot was NOT asked to review this commit — comment it manually.'
-              );
-            }
+          echo "::notice::BugBot was not invited: it is a paid review and needs the owner's explicit approval in chat (issue #1897). This workflow never posts a trigger comment."

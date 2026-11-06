@@ -2,9 +2,12 @@
 # maybe-trigger-ai-review.sh — Round-gated complexity trigger for AI reviewers (issue #362).
 # catalog: review-escalation — Post supplemental AI reviewer triggers when complexity and CR-round gates pass
 #
-# When gates pass, posts three separate PR comments (never batched):
+# When gates pass, posts separate PR comments (never batched):
 #   1) @codeant-ai review
-#   2) @cursor review
+#   2) @cursor review — NEVER autonomously (issue #1897): BugBot is a paid
+#      review and needs the owner's explicit approval in chat, so this step
+#      ends in a `bugbot_skipped: {"reason":"approval_required"}` skip unless
+#      an earlier skip below (tier, refused HEAD, daily cap) already applied
 #   3) @graphite-app re-review
 #
 # Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
@@ -529,11 +532,18 @@ if [[ -z "$BUGBOT_TIER_GATE" ]]; then
   bugbot_daily_cap
 fi
 
+# Owner approval (issue #1897): BugBot is paid per review, and no paid review
+# starts without the owner's explicit approval in chat. When none of the
+# earlier skips (tier, refused HEAD, daily cap) applies, this is the skip — the
+# last step of the chain, so those reasons keep their precedence.
+APPROVAL_SKIP_JSON='{"reason":"approval_required","gate":null}'
+
 if (( DRY_RUN )); then
   # A dry run never reaches the refused-HEAD guard (Issue #1735), so the cap is
   # the only skip it can add to the tier's.
   DRY_SKIPPED_JSON="$BUGBOT_SKIPPED_JSON"
   [[ "$BUGBOT_CAP_STATUS" == "over" ]] && DRY_SKIPPED_JSON="$(cap_skip_json)"
+  [[ "$DRY_SKIPPED_JSON" == "null" ]] && DRY_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
   if (( JSON_OUT )); then
     jq -n \
       --arg status dry_run \
@@ -561,7 +571,7 @@ if (( DRY_RUN )); then
   elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
     echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
-    echo "[DRY-RUN] would post 3 separate comments (codeant, cursor, graphite) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — paid review requires owner approval) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
   exit 0
 fi
@@ -667,7 +677,12 @@ elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
   # daily tally, not a fact about this HEAD, so a resumed run asks it again.
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — account $(cap_text) (#1812)" >&2
   BUGBOT_SKIPPED_JSON="$(cap_skip_json)"
-elif ! post_one cursor "@cursor review"; then echo "maybe-trigger-ai-review.sh: failed posting @cursor review" >&2; exit 5; fi
+else
+  # Left open (cursor stays false), like the tier and cap skips: approval is
+  # not a fact about this HEAD. A completed run clears the record anyway.
+  echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot is a paid review and needs the owner's explicit approval (#1897)" >&2
+  BUGBOT_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
+fi
 if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -693,6 +708,8 @@ elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — review tier $BUGBOT_TIER_GATE)"
 elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "daily_cap" ]]; then
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — $(cap_text))"
+elif [[ "$(jq -r '.reason // ""' <<<"$BUGBOT_SKIPPED_JSON")" == "approval_required" ]]; then
+  echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE; @cursor review skipped — paid review requires owner approval)"
 else
   echo "triggered: posted AI reviewer comments (cr_rounds=$CR_ROUNDS score=$SCORE)"
 fi

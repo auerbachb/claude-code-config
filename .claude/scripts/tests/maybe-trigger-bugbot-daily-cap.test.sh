@@ -160,13 +160,13 @@ run_text --dry-run
 check_contains "text dry run names the cap and the tally" 'daily cap: $9.48 of $10.00 spent today' "$JSON_OUT"
 check_contains "  and still posts codeant + graphite" "would post 2 separate comments (codeant, graphite" "$JSON_OUT"
 
-echo "== (b) dry run, full tier, cap ok -> the BugBot nudge as today =="
+echo "== (b) dry run, full tier, cap ok -> the owner-approval skip (#1897) =="
 setup "$(cap_json ok 3.16)" 0
 run_script --dry-run
-check_eq "bugbot_skipped null" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "bugbot_skipped: the approval skip, not the cap (#1897)" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 check_eq "bugbot_daily_cap reports ok" "ok" "$(jq -r '.bugbot_daily_cap.status' <<<"$JSON_OUT")"
 run_text --dry-run
-check_contains "text dry run: all three" "would post 3 separate comments (codeant, cursor, graphite)" "$JSON_OUT"
+check_contains "text dry run: the two free reviewers, BugBot needs approval" "would post 2 separate comments (codeant, graphite; @cursor review skipped — paid review requires owner approval)" "$JSON_OUT"
 
 ############################################################################
 echo "== (c) real run, cap over -> no @cursor review; CodeAnt + Graphite post; step left open =="
@@ -185,54 +185,54 @@ export FIXTURE_POST_FAIL="@graphite-app re-review"
 run_script; RC=$?
 check_eq "run failed at the graphite step" "5" "$RC"
 check_eq "cursor step NOT recorded (the cap is a daily tally, not a HEAD fact)" "false" "$(read_step cursor)"
-echo "== (c2) the cap clears before the retry -> the resumed run posts @cursor review once =="
+echo "== (c2) the cap clears before the retry -> the resumed run reaches the owner-approval skip =="
 export FIXTURE_POST_FAIL="" FIXTURE_CAP_OUT="$(cap_json ok 3.16)" FIXTURE_CAP_RC=0
 run_script; RC=$?
 check_eq "retry exits 0" "0" "$RC"
-check_eq "@cursor review posted once" "1" "$(posted_cursor)"
+check_eq "@cursor review posted once → now the approval skip instead (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 check_eq "codeant not re-posted" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
 
-echo "== (d) real run, cap ok -> all three, as today =="
+echo "== (d) real run, cap ok -> the two free nudges; BugBot needs approval =="
 setup "$(cap_json ok 3.16)" 0
 run_script
-check_eq "all three nudges, in order" "@codeant-ai review;@cursor review;@graphite-app re-review;" "$(posted_all)"
-check_eq "bugbot_skipped null" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "the free nudges, in order (no @cursor review)" "@codeant-ai review;@graphite-app re-review;" "$(posted_all)"
+check_eq "bugbot_skipped: the approval skip, not the cap (#1897)" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 check_eq "bugbot_daily_cap ok" "ok" "$(jq -r '.bugbot_daily_cap.status' <<<"$JSON_OUT")"
 
 ############################################################################
-echo "== (e) FAILS OPEN: unknown -> posts, and the unknown is visible =="
+echo "== (e) FAILS OPEN: unknown -> not a cap skip (approval skips), and the unknown is visible =="
 setup "$(cap_json unknown)" 0
 run_script
-check_eq "@cursor review posted" "1" "$(posted_cursor)"
-check_eq "bugbot_skipped null" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "@cursor review posted → now the approval skip instead (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
+check_eq "bugbot_skipped: the approval skip, not the cap (#1897)" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 check_eq "bugbot_daily_cap.status unknown" "unknown" "$(jq -r '.bugbot_daily_cap.status' <<<"$JSON_OUT")"
 check_eq "bugbot_daily_cap.spent_usd null" "null" "$(jq -r '.bugbot_daily_cap.spent_usd' <<<"$JSON_OUT")"
 check_contains "stderr says the cap is unknown" "daily cap is unknown today" "$ERR_OUT"
 
-echo "== (f) FAILS OPEN: the helper is missing -> posts =="
+echo "== (f) FAILS OPEN: the helper is missing -> not a cap skip =="
 setup "$(cap_json over)" 1
 mv "$STUB_DIR/review-daily-cap.sh" "$TMP/cap.bak"
 run_script
 mv "$TMP/cap.bak" "$STUB_DIR/review-daily-cap.sh"
-check_eq "@cursor review posted despite an over answer nobody could ask" "1" "$(posted_cursor)"
+check_eq "@cursor review posted despite an over answer nobody could ask → now the approval skip instead (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 check_eq "bugbot_daily_cap null" "null" "$(jq -c '.bugbot_daily_cap' <<<"$JSON_OUT")"
 check_contains "stderr names the missing helper" "DEGRADED: review-daily-cap.sh not found" "$ERR_OUT"
 
-echo "== (g) FAILS OPEN: garbled answers -> posts =="
+echo "== (g) FAILS OPEN: garbled answers -> not a cap skip =="
 setup "not json" 1
 run_script
-check_eq "non-JSON output: posts" "1" "$(posted_cursor)"
+check_eq "non-JSON output: the cap does not skip, the approval skip does (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 setup "$(cap_json over)" 0
 run_script
-check_eq "status over but exit 0 (they disagree): posts" "1" "$(posted_cursor)"
-check_eq "  and reports no skip" "null" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "status over but exit 0 (they disagree): the cap does not skip, the approval skip does (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
+check_eq "  and reports the approval skip, not the cap" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 check_eq "  and reports the cap as unknown, never over beside a post" "unknown" "$(jq -r '.bugbot_daily_cap.status' <<<"$JSON_OUT")"
 setup "$(cap_json over)" 3
 run_script
-check_eq "exit 3 (not a cap answer): posts" "1" "$(posted_cursor)"
+check_eq "exit 3 (not a cap answer): the cap does not skip, the approval skip does (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 setup '{"status":"maybe"}' 1
 run_script
-check_eq "an unknown status word: posts" "1" "$(posted_cursor)"
+check_eq "an unknown status word: the cap does not skip, the approval skip does (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 
 ############################################################################
 echo "== (h) precedence: a tier skip wins over the cap, and the cap is never asked =="

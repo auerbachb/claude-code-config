@@ -31,12 +31,16 @@
 #        with cr-review-hourly.sh --record-explicit.
 #     3. graphite missing → `@graphite-app re-review`.
 #     4. codeant missing → `@codeant-ai review`.
-#     5. `@cursor review` once per push, skipped when bugbot-tier-excluded.sh
+#     5. BugBot (`@cursor review`): skipped when bugbot-tier-excluded.sh
 #        excludes BugBot, then when bugbot-refused-head.sh says BugBot already
 #        refused the pushed SHA, then — LAST — when review-daily-cap.sh answers
 #        a validated `over`, which also appends `BugBot skipped: daily cap ($X
 #        of $Y today)` once per HEAD under the PR body's `## Review notes`
-#        (pr-body-review-note.sh). An `unknown` cap or a missing helper posts.
+#        (pr-body-review-note.sh). Otherwise NOTHING is posted (issue #1897):
+#        BugBot is a paid review and needs the owner's explicit approval, so
+#        the step prints `BugBot not invited — paid review requires owner
+#        approval`. The tiered path below prints the same line for the
+#        helper's `approval_required`.
 #
 #   mode tiered / fail_closed — only what the review tier allows on the pushed
 #   SHA, same order: a reviewer that already auto-triggered is skipped; an
@@ -225,8 +229,8 @@ if [[ "$TRIGGER_MODE" == "legacy" ]]; then
   elif bugbot_cap_over; then
     note_cap_skip "$BUGBOT_CAP_JSON"
   else
-    gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@cursor review" \
-      || echo "[REVIEWERS] FAILED to post @cursor review" >&2
+    # Last step of the chain (issue #1897): the earlier skips keep precedence.
+    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
   fi
   echo "TRIGGER_MODE=legacy"
   exit 0
@@ -251,6 +255,11 @@ for key in coderabbit graphite codeant cursor; do
   if [[ "$kind" == "allowed" && "$key" == "coderabbit" && "$CR_TRIGGER_COUNT_LAST_HOUR" -ge 2 ]]; then
     echo "[REVIEWERS] coderabbit trigger budget exhausted (>=2 in the last hour); skipping manual trigger"
     continue
+  fi
+  # Local guard (issue #1897): BugBot is paid — never claimed or posted here,
+  # whatever the helper answered.
+  if [[ "$key" == "cursor" && "$kind" == "allowed" ]]; then
+    kind="excluded"; reason="approval_required"
   fi
   if [[ "$kind" == "allowed" ]]; then
     C_RC=0
@@ -278,7 +287,9 @@ for key in coderabbit graphite codeant cursor; do
     TALLY="$(jq -c '.reviewers.cursor.daily_cap // empty' <<<"$TRIGGER_JSON")"
     if [[ -n "$TALLY" ]]; then note_cap_skip "$TALLY"; continue; fi
   fi
-  if [[ "$kind" == "excluded" ]]; then
+  if [[ "$key" == "cursor" && "$reason" == "approval_required" ]]; then
+    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
+  elif [[ "$kind" == "excluded" ]]; then
     echo "[REVIEWERS] skipping $body — review tier $GATE_TXT: $reason"
   else
     echo "[REVIEWERS] deferring $body — review tier $GATE_TXT: $reason (pr-preflight.sh asks again)"
