@@ -945,6 +945,26 @@ check_eq "item 2 failed repair: still mine" "mine" "$OUT"
 check_eq "item 2 failed repair: exit 0" 0 "$RC"
 check_contains "item 2 failed repair: warns" "may not see the claim" "$ERR"
 check_eq "item 2 failed repair: no comment posted" "$POSTS" "$(posts_made)"
+# The issue closes after the startup snapshot but before the repair edit: the
+# fresh pre-edit read sees it closed, so nothing is re-labelled.
+: > "$STATE/labels"; : > "$STATE/assignees"; rm -f "$STATE/read_hook_done" "$STATE/edit_hook_done"
+arm_counters
+FAKE_AFTER_COMMENTS_READ_HOOK='echo closed > "$S/issue_state"' \
+  run 873 --renew --holder threadA
+check_eq "item 2 closed before repair: exit 0 (startup snapshot was open)" 0 "$RC"
+check_eq "item 2 closed before repair: no issue edit" 0 "$(cat "$STATE/edit_calls")"
+check_eq "item 2 closed before repair: label stays absent" "" "$(cat "$STATE/labels")"
+echo open > "$STATE/issue_state"
+# The issue closes right after the repair edit: the post-edit read rolls it back.
+: > "$STATE/labels"; : > "$STATE/assignees"; rm -f "$STATE/read_hook_done" "$STATE/edit_hook_done"
+arm_counters
+FAKE_AFTER_EDIT_HOOK='echo closed > "$S/issue_state"' \
+  run 873 --renew --holder threadA --json
+check_eq "item 2 closed during repair: exit 0" 0 "$RC"
+check_contains "item 2 closed during repair: rolled back" "rolled back" "$(jq -r .reason <<<"$OUT")"
+check_eq "item 2 closed during repair: label removed again" "" "$(cat "$STATE/labels")"
+check_eq "item 2 closed during repair: assignee removed again" "" "$(cat "$STATE/assignees")"
+echo open > "$STATE/issue_state"
 # An unauthorized same-holder --claim (bob's marker) is never repaired.
 reset_issue
 export FAKE_VIEWER="bob"

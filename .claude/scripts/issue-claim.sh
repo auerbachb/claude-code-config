@@ -639,9 +639,27 @@ repair_claim_metadata() {
   [[ "$HAS_LABEL" != "true" ]] && args+=(--add-label "$CLAIM_LABEL")
   [[ " $ASSIGNEES " != *" $VIEWER "* ]] && args+=(--add-assignee "@me")
   (( ${#args[@]} == 0 )) && return 0
+  # The caller's open check used the startup snapshot; an issue closed since
+  # then must not be re-labelled. Re-read right before the edit, and once
+  # more after it to roll back a close that landed in between (narrows the
+  # window; no compare-and-set exists on GitHub).
+  local fresh=""
+  if ! fresh="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>/dev/null)" || issue_is_closed "$fresh"; then
+    return 0
+  fi
   [[ "$HAS_LABEL" != "true" ]] && ensure_label
   if gh issue edit "$ISSUE_NUMBER" "${args[@]}" >/dev/null 2>"$ERR_FILE"; then
     REPAIR_NOTE="; re-asserted the missing label/assignee"
+    if fresh="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>/dev/null)" && issue_is_closed "$fresh"; then
+      local undo=()
+      [[ "$HAS_LABEL" != "true" ]] && undo+=(--remove-label "$CLAIM_LABEL")
+      [[ " $ASSIGNEES " != *" $VIEWER "* ]] && undo+=(--remove-assignee "$VIEWER")
+      if gh issue edit "$ISSUE_NUMBER" "${undo[@]}" >/dev/null 2>&1; then
+        REPAIR_NOTE="; the issue closed during the label/assignee repair, which was rolled back"
+      else
+        REPAIR_NOTE="; the issue closed during the label/assignee repair and rolling it back failed — clear it with: issue-claim.sh $ISSUE_NUMBER --release"
+      fi
+    fi
   else
     echo "issue-claim.sh: warning — issue #$ISSUE_NUMBER carries this holder's marker but lacks the in-progress label or assignee, and re-adding them failed ($(tr '\n' ' ' < "$ERR_FILE")); label-filtering readers (/wave) may not see the claim until the next --renew or --claim repairs it" >&2
   fi
