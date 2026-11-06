@@ -169,7 +169,9 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
 # (CodeRabbit embeds `"headCommitId":"<sha>"`) discounts only a run on that
 # commit, so another HEAD's refusal inside the skew cannot suppress this one;
 # the skew itself applies only to a notice that names HEAD — an unnamed notice
-# must be written at or after the run's started_at. A
+# must be written strictly after the run's started_at second — `ts` drops
+# fractional seconds, so a notice from earlier in that same second would
+# otherwise compare equal and discount the run. A
 # run whose own output.title matches the same classifier is a refusal
 # regardless of comments; a missing title does not stop an in-window notice
 # from discounting it. A missing/malformed started_at leaves the run a verdict
@@ -204,7 +206,7 @@ DECISION=$(printf '%s' "$PAYLOAD_WITH_INV" | jq -c --argjson skew "$NOTICE_SKEW_
        | select(((.output.title // "") | if type == "string" then failure_notice else false end) | not)
        | select($run_t == null
                 or ([ $notices[] | select(.login == $bot
-                         and ((.for_head and .t >= $run_t) or (.names_head and .t >= ($run_t - $skew)))) ] | length == 0))
+                         and ((.for_head and .t > $run_t) or (.names_head and .t >= ($run_t - $skew)))) ] | length == 0))
        | {reviewer: $bot, kind: ("check_" + .conclusion)} ]) as $check_verdicts
   | ((.inv + $check_verdicts) | unique) as $verdicts
   | ([ $rchecks[] | select((.status // "") != "completed")

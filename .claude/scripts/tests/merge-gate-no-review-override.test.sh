@@ -283,6 +283,14 @@ FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "$(ago 601)" '[{id:7, user:{login:"coderab
 run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai)")"
 check_eq "false" "$(j .no_review_override.applied)"     "the skew needs a notice that names HEAD"
 
+echo "=== #1939: an UNNAMED notice earlier in the run's started_at second never discounts the run ==="
+reset
+SAME_SEC="$(ago 600)"
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "${SAME_SEC%Z}.200Z" '[{id:7, user:{login:"coderabbitai[bot]"}, created_at:$t, updated_at:$t, body:"## Review limit reached"}]')"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 CodeRabbit neutral 600 coderabbitai | jq -c --arg st "${SAME_SEC%Z}.900Z" '.started_at = $st')")"
+check_eq "false" "$(j .no_review_override.applied)"     "a same-second unnamed notice (fractions truncated) stays a verdict"
+check_eq "verdict_on_head" "$(j .no_review_override.reason)" "... reason: verdict_on_head"
+
 echo "=== #1939: reviewer check-run with no started_at is never discounted by a notice ==="
 reset
 FAKE_ISSUE_COMMENTS="$(cr_notice 601 601)"

@@ -34,7 +34,7 @@ Any one disables the override, and the normal reviewer path decides (so an adver
 - a `done` row of CodeAnt's run record that names HEAD;
 - a completed reviewer-app check-run with conclusion `success`, `failure`, `action_required`, or `neutral` — unless the run is a refusal, which is not a review (Issue #1939). One classifier (usage limit, couldn't run, rate limit, review limit reached, no subscription) decides it two ways:
   - **Title:** the run's own `output.title` matches (CodeRabbit titles a rate-limited run "Review rate limited").
-  - **Notice:** that bot has a matching comment written at or after the run's `started_at`, or up to **60 seconds** before it when the notice names HEAD. CodeRabbit posts "Review limit reached" about a second *before* its neutral run starts.
+  - **Notice:** that bot has a matching comment written strictly after the run's `started_at` second (timestamps compare at whole seconds, so a same-second notice never counts), or up to **60 seconds** before it when the notice names HEAD. CodeRabbit posts "Review limit reached" about a second *before* its neutral run starts.
   - **Notice time** is the later of `created_at` and `updated_at`, since CodeRabbit rewrites the same summary comment in place on later pushes.
   - **Never discounted by a notice:** a run whose notice is older than the skew allows (one from before the push), one whose notice names another commit (`"headCommitId":"<sha>"`), or one whose `started_at` is unreadable — the commit date is never a stand-in run start.
   - A refused bot is reported in `missing_reviewers` as `capability_failure`. Full rule set and the no-upper-bound rationale: the `no-review-override.sh` header and its notice-block comment.
