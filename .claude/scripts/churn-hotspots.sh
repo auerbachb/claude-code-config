@@ -665,6 +665,7 @@ fi
 # Every exit path emits valid (possibly empty) output before returning.
 SOURCE_USED="$SOURCE_MODE"
 SCAN_REF=""
+SCAN_COMMIT=""
 SCAN_REF_SOURCE="n/a"
 SCANNED_PR_COUNT=0
 EXCLUDED_COUNT=0
@@ -948,7 +949,7 @@ is_excluded() {  # $1 path -> 0 when excluded
 file_present() {  # $1 path -> 0 when the file exists at the scan target
   local file="$1"
   if [ -n "$SCAN_REF" ]; then
-    git cat-file -e "${SCAN_REF}:${file}" 2>/dev/null
+    git cat-file -e "${SCAN_COMMIT:-$SCAN_REF}:${file}" 2>/dev/null
   else
     [ -e "$file" ]
   fi
@@ -970,7 +971,9 @@ GH_FILES=$(mktemp) || { err "could not create a temp file"; exit 3; }
 # gh's stderr for the policy reads: the only place "HTTP 404" (a confirmed
 # absence) can be told apart from every other failure, which must exit 3.
 POLICY_ERR_FILE=$(mktemp) || { err "could not create a temp file"; exit 3; }
-cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES" "$POLICY_ERR_FILE"; }
+# The NUL-delimited (path, rule_source) pairs of a policy declaration.
+POLICY_PAIRS=$(mktemp) || { err "could not create a temp file"; exit 3; }
+cleanup() { rm -f "$TOUCH_TSV" "$SEEN_PRS" "$CREATION_TSV" "$GH_FILES" "$POLICY_ERR_FILE" "$POLICY_PAIRS"; }
 trap cleanup EXIT
 
 # ---- policy exemptions: scanned-repo reader (issue #1858) --------------------
@@ -989,10 +992,12 @@ POLICY_READ_BODY=""
 POLICY_READ_ERR=""
 
 policy_pin_ref() {  # resolve POLICY_REF once per run -> 0 ok / 2 no commit at all / 1 error
-  local meta branch commit
+  local meta branch commit enc
   [ -n "$POLICY_REF" ] && return 0
   if [ "$SOURCE_USED" = "git" ]; then
-    POLICY_REF=$(git rev-parse --verify --quiet "${SCAN_REF}^{commit}" 2>/dev/null </dev/null) || POLICY_REF=""
+    # The commit the log was enumerated from, never a fresh resolve of the
+    # symbolic ref (which may have moved since).
+    POLICY_REF="$SCAN_COMMIT"
     if [ -z "$POLICY_REF" ]; then
       # The head-fallback on an unborn branch has no commit at all, so no
       # declaration can exist there: that IS a confirmed absence. Any other
@@ -1013,7 +1018,11 @@ policy_pin_ref() {  # resolve POLICY_REF once per run -> 0 ok / 2 no commit at a
     { POLICY_READ_ERR="gh api repos/$REPO failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
   branch=$(printf '%s' "$meta" | jq -r '.default_branch // empty' 2>/dev/null) || branch=""
   [ -n "$branch" ] || { POLICY_READ_ERR="repos/$REPO reported no default_branch"; return 1; }
-  commit=$(gh api "repos/$REPO/commits/$branch" 2>"$POLICY_ERR_FILE" </dev/null) ||
+  # A branch name may hold "/" (release/2.x): encode it whole, so the path
+  # segment cannot be misread as several.
+  enc=$(jq -rn --arg b "$branch" '$b | @uri' 2>/dev/null) && [ -n "$enc" ] ||
+    { POLICY_READ_ERR="could not encode default branch '$branch'"; return 1; }
+  commit=$(gh api "repos/$REPO/commits/$enc" 2>"$POLICY_ERR_FILE" </dev/null) ||
     { POLICY_READ_ERR="gh api repos/$REPO/commits/$branch failed: $(head -1 "$POLICY_ERR_FILE")"; return 1; }
   POLICY_REF=$(printf '%s' "$commit" | jq -r '.sha // empty' 2>/dev/null) || POLICY_REF=""
   case "$POLICY_REF" in
@@ -1046,14 +1055,31 @@ policy_read() {  # $1 repo-relative path
   fi
   enc=$(printf '%s' "$path" | jq -Rrs 'split("/") | map(@uri) | join("/")' 2>/dev/null) ||
     { POLICY_READ_ERR="could not encode '$path' for the contents API"; return 0; }
+  # Entry type first, mirroring the git backend's blob check: the raw media
+  # type answers a DIRECTORY with its listing, and a listing names its
+  # children, so it would pass the mention check with no rule file behind it.
+  # Only "file" is accepted; a dir, symlink, submodule, or an answer that is
+  # not a contents object at all is an error (exit 3), never "present".
+  type=$(gh api "repos/$REPO/contents/$enc?ref=$POLICY_REF" \
+           --jq 'if type == "object" then (.type // "unknown") else "dir" end' \
+           2>"$POLICY_ERR_FILE" </dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if grep -q 'HTTP 404' "$POLICY_ERR_FILE" 2>/dev/null; then
+      POLICY_READ_STATUS="absent"; return 0
+    fi
+    POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
+    return 0
+  fi
+  [ "$type" = "file" ] ||
+    { POLICY_READ_ERR="'$path' is a ${type:-entry of unknown type}, not a file, at $POLICY_REF"; return 0; }
   POLICY_READ_BODY=$(gh api -H 'Accept: application/vnd.github.raw' \
                        "repos/$REPO/contents/$enc?ref=$POLICY_REF" 2>"$POLICY_ERR_FILE" </dev/null)
   rc=$?
   if [ "$rc" -eq 0 ]; then POLICY_READ_STATUS="present"; return 0; fi
+  # The entry was just confirmed to be a file at this pinned commit, so any
+  # failure now — a 404 included — is an error, never a confirmed absence.
   POLICY_READ_BODY=""
-  if grep -q 'HTTP 404' "$POLICY_ERR_FILE" 2>/dev/null; then
-    POLICY_READ_STATUS="absent"; return 0
-  fi
   POLICY_READ_ERR="gh api repos/$REPO/contents/$path failed: $(head -1 "$POLICY_ERR_FILE")"
   return 0
 }
@@ -1062,7 +1088,7 @@ policy_read() {  # $1 repo-relative path
 # after the enumeration backend is FINAL (an auto fallback reads from gh, not
 # from the abandoned git ref) and before the empty-touch early exit.
 load_policy_exemptions() {
-  local pin_rc decl invalid list key rule offending="" where
+  local pin_rc decl invalid key rule offending="" where
   [ "$NO_EXEMPTIONS" -eq 0 ] || return 0
   policy_pin_ref; pin_rc=$?
   [ "$pin_rc" -eq 2 ] && return 0
@@ -1121,12 +1147,22 @@ load_policy_exemptions() {
   fi
 
   # Every cited rule file must exist at the SAME ref and mention the exempted
-  # path literally. Control characters were rejected above, so the TSV stream
-  # below cannot be desynchronised by a forged tab or newline.
-  list=$(printf '%s' "$decl" | jq -r '.exemptions | to_entries[] | [.key, .value.rule_source] | @tsv' 2>/dev/null) ||
+  # path literally. The pairs travel NUL-delimited through a temp file, never
+  # @tsv: @tsv escapes a backslash (legal in a filename) and `read -r` does not
+  # undo it, so the path and rule_source would be read back altered. A variable
+  # cannot hold the NULs and a process substitution would hide jq's exit
+  # status, hence the file. The pair count is checked against the entry count,
+  # so a short or desynchronised stream exits 3 instead of skipping an entry.
+  local want got=0
+  want=$(printf '%s' "$decl" | jq -r '.exemptions | length' 2>/dev/null) ||
     { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
-  while IFS='	' read -r key rule; do
-    [ -n "$key" ] || continue
+  printf '%s' "$decl" | jq -j 'def z: [0] | implode;
+      .exemptions | to_entries[] | .key, z, .value.rule_source, z' \
+    > "$POLICY_PAIRS" 2>/dev/null ||
+    { err "could not read policy entries from $POLICY_DECL_PATH ($where)"; exit 3; }
+  while IFS= read -r -d '' key && IFS= read -r -d '' rule; do
+    got=$((got + 1))
+    [ -n "$key" ] || { err "could not read policy entries from $POLICY_DECL_PATH ($where): empty path"; exit 3; }
     policy_read "$rule"
     case "$POLICY_READ_STATUS" in
       present)
@@ -1137,7 +1173,11 @@ load_policy_exemptions() {
       absent) offending="${offending:+$offending; }$key (rule_source $rule does not exist)" ;;
       *) err "cannot read rule_source $rule for $key ($where): $POLICY_READ_ERR"; exit 3 ;;
     esac
-  done <<< "$list"
+  done < "$POLICY_PAIRS"
+  if [ "$got" != "$want" ]; then
+    err "could not read policy entries from $POLICY_DECL_PATH ($where): read $got of $want"
+    exit 3
+  fi
   if [ -n "$offending" ]; then
     err "policy exemption rejected — each rule_source must exist at the scanned ref and mention the exempted path. Offending path(s) in $POLICY_DECL_PATH ($where): $offending"
     exit 3
@@ -1364,7 +1404,7 @@ enumerate_git() {
   # it means a future edit dropping `-z` fails the embedded-newline test loudly
   # instead of quietly mangling non-ASCII paths as well.
   done < <(git -c core.quotePath=false log -z --no-merges --since="$SINCE" --name-status -M \
-             --pretty=tformat:'@@C@@%cI@@S@@%s' "$SCAN_REF" 2>/dev/null)
+             --pretty=tformat:'@@C@@%cI@@S@@%s' "${SCAN_COMMIT:-$SCAN_REF}" 2>/dev/null)
   flush_commit
 }
 
@@ -1494,6 +1534,11 @@ enumerate_gh() {
 if [ "$SOURCE_MODE" = "git" ] || [ "$SOURCE_MODE" = "auto" ]; then
   if [ "$IN_CHECKOUT" -eq 1 ]; then
     resolve_scan_ref
+    # Pin the symbolic ref to ONE commit before anything reads it: the log,
+    # the existence filter, and the policy declaration then all see the same
+    # snapshot even if the ref moves mid-run. Empty only on an unborn
+    # head-fallback, where every reader already finds nothing.
+    SCAN_COMMIT=$(git rev-parse --verify --quiet "${SCAN_REF}^{commit}" 2>/dev/null </dev/null) || SCAN_COMMIT=""
     enumerate_git
     SOURCE_USED="git"
   fi
@@ -1529,6 +1574,7 @@ if [ "$SOURCE_MODE" = "gh" ] || { [ "$SOURCE_MODE" = "auto" ] && [ "$GIT_MARKED_
   # The gh path enumerates merged PRs over the API — no ref is involved, and
   # reporting a leftover one would misdescribe what was scanned.
   SCAN_REF=""
+  SCAN_COMMIT=""
   SCAN_REF_SOURCE="n/a"
   enumerate_gh
   GH_RC=$?

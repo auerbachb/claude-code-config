@@ -85,7 +85,20 @@ case "\$args" in
     printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
     if [ -f "$TMP/gh_fail_contents" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
     cpath=\$(printf '%s' "\$args" | sed -n 's|.*/contents/\([^?]*\)?ref=.*|\1|p')
-    if [ -n "\$cpath" ] && [ -f "$TMP/contents/\$cpath" ]; then cat "$TMP/contents/\$cpath"
+    # Like the real API: the raw media type serves a file's bytes, the default
+    # (JSON) one an entry object; a directory answers either with a listing
+    # (which the caller's --jq type probe reduces to "dir").
+    fpath="$TMP/contents/\$cpath"
+    if [ -n "\$cpath" ] && [ -d "\$fpath" ]; then
+      case "\$args" in
+        *"vnd.github.raw"*) ls "\$fpath" | jq -Rnc --arg d "\$cpath" '[inputs | {name: ., path: (\$d + "/" + .), type: "file"}]' ;;
+        *) printf '%s\n' dir ;;
+      esac
+    elif [ -n "\$cpath" ] && [ -f "\$fpath" ]; then
+      case "\$args" in
+        *"vnd.github.raw"*) cat "\$fpath" ;;
+        *) printf '%s\n' file ;;   # what --jq leaves of {"type":"file",...}
+      esac
     else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
     ;;
   *"/commits/"*)
@@ -102,7 +115,8 @@ case "\$args" in
   "api repos/"*)
     printf '%s\n' "\$args" >> "$TMP/gh_calls.log"
     if [ -f "$TMP/gh_fail_meta" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
-    printf '{"default_branch":"main"}\n'
+    if [ -f "$TMP/default_branch" ]; then jq -nc --arg b "\$(cat "$TMP/default_branch")" '{default_branch: \$b}'
+    else printf '{"default_branch":"main"}\n'; fi
     ;;
   *) echo "gh stub: unhandled args: \$args" >&2; exit 1 ;;
 esac
@@ -1927,6 +1941,22 @@ policy_guard "29y: a rule_source that escapes the repo" "$G6" "docs/LEDGER.md"
 # Self-citation: the ledger always "mentions" itself, so citing it is assertion.
 G7=$(policy_repo r29g7 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/LEDGER.md","reason":"x"}}}' "$RULES_TEXT")
 policy_guard "29y2: a ledger citing itself as its rule" "$G7" "exempted file itself"
+# A directory cited as rule_source is never a rule file (git backend parity
+# with 29ae3).
+G8=$(policy_repo r29g8 '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs","reason":"x"}}}' "$RULES_TEXT")
+policy_guard "29y3: a directory cited as rule_source" "$G8" "not a file"
+
+# A backslash is legal in a filename. The (path, rule_source) pairs must reach
+# the reader unaltered — an @tsv stream doubles it, and a valid declaration
+# would then be rejected for citing a file that "does not exist".
+R29BS=$(policy_repo r29bs '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs/back\\slash.md","reason":"x"}}}' -)
+mkdir -p "$R29BS/docs"; printf '%s\n' "$RULES_TEXT" > "$R29BS/docs/back\\slash.md"
+git -C "$R29BS" add -A docs
+GIT_AUTHOR_DATE="$SEED_DATE" GIT_COMMITTER_DATE="$SEED_DATE" git -C "$R29BS" commit -q -m "add rules"
+run_in "$R29BS" --since "$WINDOW_START" --json
+check_eq "29y4: a rule_source with a backslash is read unaltered (exit 0)" "0" "$RC"
+check_jq "29y5: and the ledger is policy-exempt under that rule_source" "$OUT" \
+  '.exemptions[] | select(.file=="docs/LEDGER.md") | .kind == "policy" and .rule_source == "docs/back\\slash.md"'
 
 # ---- independence: the scanned repo's declaration, not the detector's ------
 # A copied detector whose OWN checkout carries a declaration for the ledger
@@ -1972,7 +2002,27 @@ check_jq "29ac: gh — the ledger is policy-exempt, read at the pinned head" "$O
 check_eq "29ad: gh — every contents read is pinned to that one commit" "0" \
   "$(grep '/contents/' "$TMP/gh_calls.log" | grep -vc "ref=$GH_POLICY_SHA")"
 check_eq "29ae: gh — and both the declaration and its rule file were read" "2" \
-  "$(grep -c '/contents/' "$TMP/gh_calls.log")"
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -c 'vnd.github.raw')"
+check_eq "29ae2: gh — each read was preceded by its entry-type probe" "2" \
+  "$(grep '/contents/' "$TMP/gh_calls.log" | grep -vc 'vnd.github.raw')"
+# A DIRECTORY cited as rule_source: its raw listing names the exempted path, so
+# without the entry-type probe the mention check would pass with no rule file.
+printf '%s\n' '{"schema":"churn-hotspot-policy-exemptions/v1","exemptions":{"docs/LEDGER.md":{"rule_source":"docs","reason":"x"}}}' \
+  > "$TMP/contents/$POLICY_PATH"
+: > "$TMP/contents/docs/LEDGER.md"   # the listing of docs/ now names docs/LEDGER.md
+ERR_OUT=$( (cd "$R29GH" && bash "$SCRIPT" --since "$WINDOW_START" --source gh --json) 2>&1 >/dev/null )
+check_eq "29ae3: gh — a directory rule_source exits 3, never 'present'" "3" "$?"
+check_eq "29ae4: gh — and says it is not a file" "yes" "$(has_text "$ERR_OUT" "not a file")"
+rm -f "$TMP/contents/docs/LEDGER.md"
+printf '%s\n' "$GOOD_POLICY" > "$TMP/contents/$POLICY_PATH"
+# A default branch holding "/" is one path segment, encoded whole.
+printf '%s' 'release/2.x' > "$TMP/default_branch"
+: > "$TMP/gh_calls.log"
+run_in "$R29GH" --since "$WINDOW_START" --source gh --json
+check_eq "29ae5: gh — a slash-bearing default branch still pins (exit 0)" "0" "$RC"
+check_eq "29ae6: gh — and is requested as one encoded segment" "1" \
+  "$(grep -c 'commits/release%2F2\.x' "$TMP/gh_calls.log")"
+rm -f "$TMP/default_branch"
 rm -f "$TMP/contents/docs/RULES.md"
 run_in "$R29GH" --since "$WINDOW_START" --source gh --json
 check_eq "29af: gh — a rule_source that 404s exits 3" "3" "$RC"

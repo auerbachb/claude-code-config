@@ -182,7 +182,7 @@ The envelope reports `policy_exemptions_file` and `policy_exemptions_ref` (both 
 
 **Guards — each exits 3 naming the declaration or the offending path, and none silently scores without the declaration:**
 
-- The declaration exists but cannot be read, is not valid JSON, has the wrong `schema`, or a non-object `exemptions`. Only a **confirmed** absence counts as "no declaration": on git, no such entry in the ref's tree; on gh, an HTTP 404 on the contents request after the repo and commit lookups succeeded. Any other failure (rate limit, auth, network, a tree entry that is not a file) is an error.
+- The declaration exists but cannot be read, is not valid JSON, has the wrong `schema`, or a non-object `exemptions`. Only a **confirmed** absence counts as "no declaration": on git, no such entry in the ref's tree; on gh, an HTTP 404 on the contents request after the repo and commit lookups succeeded. Any other failure (rate limit, auth, network, a tree entry that is not a file) is an error. On gh the entry type is probed before the raw read, because the raw media type answers a directory with a listing that names its children — enough to pass the mention check with no rule file behind it.
 - An entry lacks a non-blank string `rule_source` or `reason`; its path or `rule_source` holds a control character; its `rule_source` is absolute or holds a `..`, `.` or empty segment; or its `rule_source` is the declaration itself or the exempted file itself — either would satisfy the mention check below trivially.
 - The cited `rule_source` does not exist at the same ref, or exists but **does not mention the exempted path** as a literal substring. The mention check catches typos and stale citations, and it is the intended pressure: a repo cannot declare a ledger until a checked-in sentence says PRs must update it. That is issue #1571's "no exemption by assertion alone", carried over.
 
@@ -255,13 +255,15 @@ So neither backend told the truth and the two disagreed about identical history,
 | `existing_lookup_failed` | boolean | True when the issue lookup was incomplete or errored |
 | `total_hotspot_count` | number | Full pre-truncation hotspot count |
 | `exemptions_file` | `string` or `null` | Resolved exemption file, or `null` when the feature is off or no file was found — issue #1571 |
-| `exempt_count` | number | Touched exempt files; always equals the length of `exemptions` |
-| `exemptions` | array | Scored catalog-exempt entries, never bounded by `--top` or the threshold |
+| `policy_exemptions_file` | `string` or `null` | The scanned repo's policy declaration, or `null` when there is none or the feature is off — issue #1858 |
+| `policy_exemptions_ref` | `string` or `null` | Commit the declaration and its rule files were read at, or `null` alongside `policy_exemptions_file` |
+| `exempt_count` | number | Touched exempt files of both kinds; always equals the length of `exemptions` |
+| `exemptions` | array | Scored catalog- and policy-exempt entries, never bounded by `--top` or the threshold |
 | `hotspots` | array | Scored hotspot entries (see fields below) |
 
 Each `hotspots[]` entry: `file`, `pr_count`, `pr_numbers`, `conflict_rounds`, `conflict_prs`, `score`, `first_merged_at`, `last_merged_at`, `created_in_window`, `creation_pr`, `existing_hotspot_issue`, `existing_hotspot_issue_state`.
 
-Each `exemptions[]` entry carries the same scored fields **minus** the two issue-lookup fields (exempt files are never filed), **plus** `lint` and `reason` copied from the exemption entry.
+Each `exemptions[]` entry carries the same scored fields **minus** the two issue-lookup fields (exempt files are never filed), **plus** `kind` and the entry's justification: `lint` and `reason` for `kind: "catalog"`, `rule_source` and `reason` for `kind: "policy"`.
 
 A path dropped by exclusion is counted only as `excluded_count`, never also as swept — the filters are applied in order (exclusion, existence, sweep, creation) and each touch is counted exactly once. Exemption is not one of those filters: it runs *after* scoring, so an exempt path is counted exactly once as an ordinary touch and then reclassified.
 
