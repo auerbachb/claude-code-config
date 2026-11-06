@@ -636,7 +636,7 @@ own_markers_after() {
 # marker of ours behind (over-blocking, which expires) rather than none.
 do_renew() {
   local old_id="$MARKER_ID" old_at="$CLAIMED_AT" since="$CLAIMED_SINCE"
-  local was_stale=0 new_id="" post_out="" post_err="" verify="" payload issue_now=""
+  local was_stale=0 new_id="" post_out="" post_err="" verify="" payload issue_now="" post_id=""
   is_stale && was_stale=1
 
   # A closed issue is terminal: its claim is being (or was) released, so a
@@ -651,6 +651,7 @@ do_renew() {
   if post_out="$(gh api -X POST "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments" \
        -f "body=$(claim_body "$payload")" 2>"$ERR_FILE")"; then
     new_id="$(printf '%s' "$post_out" | jq -r '.id // empty' 2>/dev/null || true)"
+    post_id="$new_id"
   else
     post_err="$(tr '\n' ' ' < "$ERR_FILE")"
   fi
@@ -680,9 +681,22 @@ do_renew() {
   if ! issue_now="$(gh api "$REPO_PREFIX/issues/$ISSUE_NUMBER" 2>"$ERR_FILE")"; then
     fail_closed "renew-unverified — posted the renewal marker${new_id:+ $new_id} on issue #$ISSUE_NUMBER but could not re-read the issue to confirm it is still open ($(tr '\n' ' ' < "$ERR_FILE")); no older marker was deleted"
   fi
-  if [[ "$(printf '%s' "$issue_now" | jq -r '.state // ""' 2>/dev/null)" == "closed" ]] \
-     || [[ "$(printf '%s' "$verify" | jq -r --arg old "$old_id" \
-           'any(.[]; (.id | tostring) == $old)' 2>/dev/null)" == "false" ]]; then
+  local issue_closed=0 old_gone=0 concurrent_own=0
+  [[ "$(printf '%s' "$issue_now" | jq -r '.state // ""' 2>/dev/null)" == "closed" ]] && issue_closed=1
+  [[ "$(printf '%s' "$verify" | jq -r --arg old "$old_id" \
+        'any(.[]; (.id | tostring) == $old)' 2>/dev/null)" == "false" ]] && old_gone=1
+  # A missing replaced marker is NOT a release when another renewal of this
+  # same holder (a heartbeat --renew racing a resume --claim) already won: the
+  # winner is a newer viewer-authored marker of ours that this run did not post,
+  # and the label that renewal re-asserted is still present. Withdrawing then
+  # would delete the sibling's live marker and leave the issue unclaimed.
+  if (( old_gone && ! issue_closed )) && winner_is_ours "$old_id" \
+     && [[ "$W_ID" != "$post_id" ]] \
+     && [[ "$(printf '%s' "$issue_now" | jq -r --arg l "$CLAIM_LABEL" \
+           '[.labels[]?.name] | index($l) != null' 2>/dev/null)" == "true" ]]; then
+    concurrent_own=1
+  fi
+  if (( issue_closed || (old_gone && ! concurrent_own) )); then
     local rid
     while IFS= read -r rid; do
       [[ -z "$rid" ]] && continue

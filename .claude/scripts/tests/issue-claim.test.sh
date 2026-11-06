@@ -753,6 +753,28 @@ check_eq "released+landed: exit 5" 5 "$RC"
 check_eq "released+landed: landed marker withdrawn" 0 "$(claim_comment_count)"
 check_eq "released+landed: label not re-added" "" "$(cat "$STATE/labels")"
 
+# Two same-holder renewals race (heartbeat --renew + resume --claim): sibling
+# renewal A verifies first, deletes the old marker AND this run's new marker,
+# and keeps its own. This run must not mistake that for a release and delete
+# A's live marker.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+jq -n --arg at "$(date -u +%FT%TZ)" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadA", login: "alice"} | tojson) + " -->")}' \
+  > "$STATE/inject.json"
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" --argjson new "$NEW_ID" --slurpfile x "$S/inject.json" \
+    "[ .[] | select(.id != \$old and .id != \$new) ] + \$x" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"' \
+  run 873 --renew --holder threadA --json
+check_eq "concurrent same-holder: exit 0" 0 "$RC"
+check_eq "concurrent same-holder: verdict mine" "mine" "$(jq -r .verdict <<<"$OUT")"
+check_eq "concurrent same-holder: sibling's marker kept" "999999" "$(marker_ids)"
+check_eq "concurrent same-holder: label kept" "in-progress" "$(cat "$STATE/labels")"
+run 873 --check --holder threadB
+check_eq "concurrent same-holder: other holders still blocked" "claimed" "$OUT"
+
 # The issue closes mid-renewal (merge), old marker still present.
 reset_issue
 FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
