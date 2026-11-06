@@ -839,23 +839,29 @@ if [ -n "$EXTRA_EXCLUDES" ]; then
 fi
 
 is_excluded() {  # $1 path -> 0 when excluded
-  local path="$1" pattern base
+  local path="$1" pattern base rc=1 restore_glob=0
   [ -n "$EXCLUDE_LIST" ] || return 1
   base="${path##*/}"
   local OLD_IFS="$IFS"
+  # The unquoted comma split below would also pathname-expand each entry against
+  # the invoking cwd, rewriting `*.md` into whatever Markdown sits there (issue
+  # #1856). Disable globbing for the split only, and restore the caller's state
+  # on the single exit path; `case` pattern matching is unaffected by noglob.
+  case "$-" in *f*) ;; *) set -f; restore_glob=1 ;; esac
   IFS=','
   for pattern in $EXCLUDE_LIST; do
     [ -n "$pattern" ] || continue
     # A bare filename pattern matches that file at any depth; a pattern with a
     # slash is matched against the full path.
     case "$pattern" in
-      */*) case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
-      *)   case "$base" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac
-           case "$path" in $pattern) IFS="$OLD_IFS"; return 0 ;; esac ;;
+      */*) case "$path" in $pattern) rc=0; break ;; esac ;;
+      *)   case "$base" in $pattern) rc=0; break ;; esac
+           case "$path" in $pattern) rc=0; break ;; esac ;;
     esac
   done
   IFS="$OLD_IFS"
-  return 1
+  [ "$restore_glob" -eq 0 ] || set +f
+  return "$rc"
 }
 
 file_present() {  # $1 path -> 0 when the file exists at the scan target
