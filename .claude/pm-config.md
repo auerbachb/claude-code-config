@@ -31,13 +31,14 @@ CODEANT_UNAVAILABLE_SECONDS=1800
 ## Active work
 
 ```ini
-ACTIVE_WORK_CAP=6
+ACTIVE_WORK_CAP=12
+PIPELINE_CEILING=6
 ```
 
-- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Must be a **positive integer in [1, 10]**. Absent is the normal case and falls back to the default **silently**; only a value that is present but unparseable or out of range warns on stderr before falling back. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh`.
-- **Default 6, upper bound 10.** Derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): rebase re-review reaches parity with productive review at 5 concurrent PRs, and past 5 a PR no longer gets even one review round per hour. 6 is one step into that degraded band — a ceiling, not a target; the target is the 3–4 working set. Full derivation: [`active-work-cap.md`](reference/active-work-cap.md).
+- **ACTIVE_WORK_CAP** — repo-wide cap on simultaneously active coding work: your open PRs + live offered chips + running inline pipelines not yet at PR. Must be a **positive integer in [1, 20]**. Absent is the normal case and falls back to the default **silently**; only a value that is present but unparseable or out of range warns on stderr before falling back. **`CLAUDE_ACTIVE_WORK_CAP` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh`.
+- **This repo runs 12; the built-in default stays 6.** The default is derived from CodeRabbit's measured **5 reviews/hour per developer** (not the retracted ~8): rebase re-review reaches parity with productive review at 5 concurrent PRs, and past 5 a PR no longer gets even one review round per hour. The owner raised this repo to 12 on 2026-11-05 (Issue #1920), with 18 to follow once Issue #1899 (merge without AI review after 10 minutes) lands and PRs stop waiting on review supply (Issue #1923). Full derivation and the dated decision: [`active-work-cap.md`](reference/active-work-cap.md).
 - **Subordinate, never superior, to the per-thread ceiling** — the governing limit is `min(PIPELINE_CEILING, ACTIVE_WORK_CAP)`. Raising this never widens a thread's own pipeline band.
-- **PIPELINE_CEILING** — the per-thread concurrent-pipeline ceiling that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch launch up to. Positive integer in **[1, 10]**, **default 4**; absent falls back silently, a present-but-unparseable or out-of-range value warns on stderr and falls back to 4. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh --ceiling`, which prints the raw ceiling; each consumer applies the `min()` with `ACTIVE_WORK_CAP` itself, so the ceiling never raises the cap — running 10 wide means raising both. Not set here: this repo keeps the default, and a repo that widens it adds a `PIPELINE_CEILING=N` line to its `## Active work` ini block.
+- **PIPELINE_CEILING** — the per-thread concurrent-pipeline ceiling that `/subagent`, `/pm`, `/wave`, and `/pm-forgotten-pr`'s merge dispatch launch up to. Positive integer in **[1, 20]**, **default 4**; absent falls back silently, a present-but-unparseable or out-of-range value warns on stderr and falls back to 4. **`CLAUDE_PIPELINE_CEILING` env overrides** when set. Read via `.claude/scripts/active-work-cap.sh --ceiling`, which prints the raw ceiling; each consumer applies the `min()` with `ACTIVE_WORK_CAP` itself, so the ceiling never raises the cap — running wider than the cap means raising both. This repo sets **6**, half the cap, so one orchestrating thread cannot take every slot; a repo that keeps the default omits the line.
 
 ## Budget
 
