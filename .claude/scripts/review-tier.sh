@@ -99,6 +99,10 @@
 #      "escalation":"on|off"}
 #   escalation is on every line, whatever the policy; with no readable
 #   switch it is "on". Plain output never carries it.
+#   no_review_override_minutes (issue #1899) is appended after escalation:
+#   the no-review merge window in minutes (default 10), or null when the
+#   section's ```ini block sets NO_REVIEW_OVERRIDE_MINUTES=off or an
+#   invalid value (one stderr warning).
 #   policy "absent"  — no section, or a section with no table → gate legacy:
 #                      every consumer keeps today's behaviour.
 #   policy "invalid" — unknown gate, missing Tier/Gate column, no header
@@ -511,6 +515,35 @@ resolve_escalation() {
   esac
 }
 
+# No-review override window (issue #1899): NO_REVIEW_OVERRIDE_MINUTES in the
+# same live ```ini block, read with the same KEY=value rule. Absent → 10. An
+# integer 1–1440 → that many minutes. `off` → null (disabled). Anything else
+# → null with one stderr warning: an unclear merge-authorizing knob fails
+# toward NOT merging unreviewed work.
+NRO_KEY="NO_REVIEW_OVERRIDE_MINUTES"
+NRO_MINUTES="10"
+NRO_LIVE_FOUND=0
+resolve_override_window() {
+  local range first last found value
+  range="$(section_range "${1-}")" || die_read "could not locate ## $SECTION for $NRO_KEY"
+  [[ -n "$range" ]] || return 0
+  read -r first last <<<"$range"
+  (( first <= last )) || return 0
+  found="$(sed -n "${first},${last}p" "$POLICY_INI" | extract_knob_value "$NRO_KEY")" \
+    || die_read "could not read $NRO_KEY from ## $SECTION"
+  [[ -n "$found" ]] || return 0
+  NRO_LIVE_FOUND=1
+  value="${found#=}"
+  if [[ "$(lower "$value")" == "off" ]]; then
+    NRO_MINUTES="null"
+  elif [[ "$value" =~ ^[0-9]{1,4}$ ]] && (( 10#$value >= 1 && 10#$value <= 1440 )); then
+    NRO_MINUTES="$((10#$value))"
+  else
+    warn "$NRO_KEY='$value' in ## $SECTION is not off or an integer 1-1440 — the no-review override is disabled (an unclear merge switch fails toward not merging unreviewed work)"
+    NRO_MINUTES="null"
+  fi
+}
+
 # A heading that is almost `## Review policy` (other case, extra spaces).
 # The gate treats it as invalid below; the switch in it is honoured.
 near_miss_heading() {
@@ -525,9 +558,19 @@ near_miss_heading() {
 # silent. One warning at most; the whole file is read, never a pipe.
 if [[ $HAVE_POLICY -eq 1 && -s "$POLICY_COPY" ]]; then
   resolve_escalation
+  resolve_override_window
   if [[ $ESC_SECTION_FOUND -eq 0 ]]; then
     ESC_NEAR="$(near_miss_heading)"
-    [[ -z "$ESC_NEAR" ]] || resolve_escalation "$ESC_NEAR"
+    [[ -z "$ESC_NEAR" ]] || { resolve_escalation "$ESC_NEAR"; resolve_override_window "$ESC_NEAR"; }
+  fi
+  # A window key anywhere but a live ini block is someone's intent we cannot
+  # read: disable the override (never silently keep the 10-minute default).
+  if [[ $NRO_LIVE_FOUND -eq 0 ]]; then
+    NRO_STRAY="$(extract_knob_value "$NRO_KEY" < "$POLICY_COPY")" || NRO_STRAY=""
+    if [[ -n "$NRO_STRAY" ]]; then
+      warn "$NRO_KEY is not inside a live \`\`\`ini block under ## $SECTION (it is in prose, a comment, another fence, or another section) — the no-review override is disabled"
+      NRO_MINUTES="null"
+    fi
   fi
   if [[ $ESC_LIVE_FOUND -eq 0 ]]; then
     ESC_STRAY="$(extract_knob_value "$ESC_KEY" < "$POLICY_COPY")" || ESC_STRAY=""
@@ -542,12 +585,14 @@ emit() {
   if [[ $JSON -eq 1 ]]; then
     jq -cn --arg policy "$1" --arg gate "$2" --arg tier "$3" --arg source "$SOURCE" \
       --arg error "$4" --argjson matches "$5" --arg escalation "$ESCALATION" \
+      --argjson nro "$NRO_MINUTES" \
       '{policy: $policy, gate: $gate,
         tier: (if $tier == "" then null else $tier end),
         source: $source,
         error: (if $error == "" then null else $error end),
         matches: $matches,
-        escalation: $escalation}'
+        escalation: $escalation,
+        no_review_override_minutes: $nro}'
   else
     printf '%s\n' "$2"
   fi

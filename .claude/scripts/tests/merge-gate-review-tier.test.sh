@@ -117,7 +117,7 @@ check_eq "yes"    "$(has_missing "$NEED_APPROVAL")"            "legacy: the revi
 check_eq "legacy" "$(echo "$OUT" | jq -r '.review_tier.gate')" "legacy: review_tier.gate"
 check_eq "absent" "$(echo "$OUT" | jq -r '.review_tier.policy')" "legacy: review_tier.policy"
 check_eq "null"   "$(echo "$OUT" | jq -r '.review_tier.tier')" "legacy: review_tier.tier is null"
-check_eq "review_tier" "$(echo "$OUT" | jq -r 'keys_unsorted | .[-3]')" "review_tier is appended after every pre-#1726 key"
+check_eq "review_tier" "$(echo "$OUT" | jq -r 'keys_unsorted | .[-4]')" "review_tier is appended after every pre-#1726 key (then #1727's two, then #1899's no_review_override)"
 check_eq "no"     "$(has_missing "review tier")"               "legacy: no tier reason added"
 
 # ------------------------------------------------------------- ci-only -----
@@ -332,8 +332,8 @@ check_eq "1"    "$(field '.unresolved_thread_count')" "deferred: unresolved_thre
 check_eq "2"    "$(field '.deferred_thread_count')"   "deferred: deferred_thread_count counts both deferred threads"
 check_eq "[12]" "$(field '.deferred_issues')"         "deferred: deferred_issues is unique"
 check_eq "12"   "$(lookups)"                          "deferred: each number is looked up once per run"
-check_eq '["deferred_thread_count","deferred_issues"]' "$(echo "$OUT" | jq -c 'keys_unsorted | .[-2:]')" \
-  "deferred fields are appended after review_tier"
+check_eq '["deferred_thread_count","deferred_issues","no_review_override"]' "$(echo "$OUT" | jq -c 'keys_unsorted | .[-3:]')" \
+  "deferred fields are appended after review_tier (issue #1899's no_review_override follows them)"
 
 echo
 echo "merge-gate-review-tier.test.sh: $PASS passed, $FAIL failed"

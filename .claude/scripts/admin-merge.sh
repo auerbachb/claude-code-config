@@ -526,6 +526,16 @@ if [[ -z "$GATE_JSON" ]] || ! echo "$GATE_JSON" | jq -e . >/dev/null 2>&1; then
   exit 4
 fi
 
+# No-review override (issue #1899): an unreviewed merge never also takes an
+# admin bypass. Refused in every shape with the ordinary not-merge-ready exit
+# (1), which callers route to rebase/recovery — the rebased HEAD then gets its
+# own window. Never exit 8: there is nothing for the repo admin to print.
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  echo "AUTO_PLAIN_REFUSED: reason=no-review-override" >&2
+  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. If the PR is CLEAN, merge it plainly via /wrap (gh pr merge --squash --match-head-commit, no admin); only if it is BEHIND, rebase via /fixpr — the new HEAD gets its own window." >&2
+  exit 1
+fi
+
 # Clean-BEHIND allowance (issue #631): a `mergeStateStatus: BEHIND` is normally a
 # hard blocker (rebase first). But when the base delta does NOT touch the PR's
 # files, rebasing is pure churn and an admin squash-merge is safe — `gh pr merge

@@ -303,7 +303,8 @@ MERGE_STATE=$(printf '%s' "$GATE_JSON" | jq -r '.merge_state // empty')
 
 `printf '%s'`, never `echo` — zsh's builtin corrupts the JSON payload (issue #574).
 
-- **`CLEAN`** → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **`CLEAN`** (override not applied) → `gh pr merge "$PR_NUM" --squash`, unchanged.
+- **No-review override** (issue #1899) — `GATE_JSON` has `.no_review_override.applied == true`: on `CLEAN`, or on `UNSTABLE` only when `.no_review_override.excluded_reviewer_checks` is non-empty (a pending, non-required reviewer check is then what makes it unstable; the gate already cleared build CI and required contexts — any other `UNSTABLE` stops as below) first **re-run `merge-gate.sh` into `GATE_JSON`** (the gate can flip between Step 2.1 and here) and proceed only if it is still `met` with the override applied **and** its refreshed `merge_state` still passes this same test (`CLEAN`, or `UNSTABLE` with a non-empty refreshed `excluded_reviewer_checks`) — otherwise re-enter Step 2.1 — then run `gh pr merge "$PR_NUM" --squash --match-head-commit "$(printf '%s' "$GATE_JSON" | jq -r .head_sha)"` with that refreshed `head_sha`. On `BEHIND` **never** take the clean-`BEHIND` admin path (`admin-merge.sh` refuses it anyway) — rebase via `/fixpr` and re-enter Step 2.1; the new HEAD gets its own window. A head-pin refusal re-enters Step 2.1 the same way. After a confirmed merge, run the **override recorder** below before the claim release.
 - **`BEHIND`** → the clean-`BEHIND` path below. A plain squash is **rejected** here by `required_status_checks.strict`.
 - **Anything else** → **not merge-ready** per `cr-merge-gate.md` Step 1d — stop with the state and the last `missing[]`. Never merge on an unenumerated state: `BLOCKED` and `UNSTABLE` add no `missing[]` entry, so a gate exit `0` does not by itself clear them.
 
@@ -335,6 +336,23 @@ Then run `"$CLEAN_BEHIND_SH" "$PR_NUM"` and branch on its exit code:
 **Both fall-throughs re-enter the Step 2.1 recovery loop — they never merge from here and never end `/wrap` (issue #1425).** The rebase moves HEAD, which invalidates the bot approval that satisfied the gate and restarts CI, so the post-rebase SHA is unreviewed by construction: merging it would bypass the gate, and stopping would abandon a PR that is one review round from mergeable. Re-entry runs against the **same** `i` counter and `WRAP_RECOVERY_MAX_ITERATIONS` cap, so rebase → re-review → `BEHIND`-again cannot spin unbounded; exhausting the cap stops with the last `missing` and the full `WRAP_RECOVERY_AUDIT`. Because re-entry passes back through Step 2.2, AC is re-verified against the rebased SHA before Step 2.4 runs again — which is what keeps the later `--ac-verified` attestation truthful on the retry.
 
 `--ac-verified` is justified because **Step 2.2 already ran unconditionally** — every Test Plan checkbox was verified against the source at this SHA on both paths. `clean-behind-check.sh` counts unchecked boxes as `reasons_not_safe`, so running it before Step 2.2 would report exit `1` for bookkeeping rather than for a real blocker.
+
+**Override recorder (issue #1899) — only when `.no_review_override.applied == true`.** Log the merge in the cross-repo ledger, which also labels the PR `merged-unreviewed`; the result picks the report suffix (`NRO_SUFFIX`):
+
+```bash
+NRO_SUFFIX=""
+if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
+  LEDGER_SH=$(resolve_script unreviewed-merge-ledger.sh || true)
+  if [[ -n "$LEDGER_SH" ]] && printf '%s' "$GATE_JSON" | "$LEDGER_SH" record --pr "$PR_NUM" --gate-json - >/dev/null; then
+    NRO_SUFFIX=" (no AI review — logged)"
+  else
+    NRO_SUFFIX=" (no AI review — ledger write failed)"
+    [[ -n "$LEDGER_SH" ]] || echo "ERROR: unreviewed-merge-ledger.sh not found (checked all three paths) — no-review merge ledger unavailable" >&2
+  fi
+fi
+```
+
+A ledger failure never un-merges anything; `NRO_SUFFIX` carries it into the report line (`merged PR #N (no AI review — ledger write failed)`) so the row can be added by hand (`unreviewed-merge-ledger.sh record`).
 
 **Release the issue claim** once the merge succeeds — on **either** path, the `CLEAN` squash and the clean-`BEHIND` `--auto-plain` alike — a merged PR is the terminal state that makes the issue startable again (issue #873). Step 3.1 resolves the linked issue for follow-ups, but that runs later, so resolve it here too:
 
@@ -972,7 +990,7 @@ Memory writes happen in both modes. Record `WRAP_LESSONS_COUNT`. Verbose mode pr
 
 #### Silent default
 
-On a clean run, print exactly one line — `merged PR #N` — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
+On a clean run, print exactly one line — `merged PR #N`, plus `$NRO_SUFFIX` when the no-review override merged it (`merged PR #N (no AI review — logged)`, issue #1899) — then nothing else: no follow-up list, no lessons ack, no sweep summary. All of it is already recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory) and re-renders in full under `--verbose` or on request.
 
 This bounds `/wrap`'s **own** output only. The thread's single end-of-task wrap-up (`.claude/reference/final-wrapup-format.md`) is a task-level always-emit exception under `CLAUDE.md` #3 — it is not `/wrap` output, and it does not violate this default. Its trigger is the **task** reaching terminal state, never a `/wrap` return: a fleet loop such as `/pr-monitor-and-manage`, which calls `/wrap` once per merge-ready PR and keeps managing the fleet, emits no wrap-up on those returns — only one when the fleet run itself ends.
 
@@ -992,7 +1010,7 @@ Print this block first:
 ```
 ## Wrapped up
 
-**Merged:** PR #{N} ({title}) — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
+**Merged:** PR #{N} ({title}){$NRO_SUFFIX — no-review override only} — {≤3 sentences on the gist of what changed}.{ Only when main-sync was noteworthy — an `aborted:` outcome or a quarantine actually ran: " Main: {one-line status}."}
 
 **Follow-ups:** {either "Opened [#{a}](url) — {one line}; [#{b}](url) — {one line}." listing every WRAP_FILED_ISSUES entry (≤3 sentences), or "No follow-ups opened."}{ When any filing was suppressed as a duplicate: " {M} finding(s) appended to existing issues."}
 

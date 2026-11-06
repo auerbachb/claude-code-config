@@ -277,3 +277,7 @@ The hook skips re-emitting a widen instruction when `.type == "update"` and `.in
 - **Optional, and fail-closed when broken.** Absent means no override. A file that does not match the shape (bad JSON, wrong types, an issue listed twice, an issue both ordered and parked) is unreadable: the helper exits 4 and never overwrites it, and `/pm` ranks without it but launches nothing autonomously until it reads again, because it may be hiding a park.
 - **Dates.** A park is in force while today in America/New_York is earlier than `until`; the issue returns on that date. Expired parks are ignored on read and pruned on the next write.
 - **Writes** take the `state-lock.sh` lock on the file (`pm-priority.json.lock/`), re-read under the lock, and commit through a same-directory temp file and `state_lock_commit`.
+
+## Unreviewed-merge ledger — cross-repo, outside session state (issue #1899)
+
+`~/.claude/unreviewed-merges.json` (`{schema_version: 1, entries: [...]}`) records every merge made through the no-review override, one entry per `(repo, pr, head_sha)`. It is deliberately not in `session-state.json`: it must survive sessions and span repos, and Issue #1900's backfill reads it. Only `unreviewed-merge-ledger.sh` writes it — `state-lock.sh` lock across the read-modify-write, temp + rename commit, exit codes as `session-state.sh`. Contract and fields: `.claude/reference/no-review-override.md` §The ledger.

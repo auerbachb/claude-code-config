@@ -15,7 +15,9 @@
 # OUTPUT
 #   stdout: one line, exactly one of:
 #     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
-#                             CodeAnt has a valid APPROVED review on current HEAD) —
+#                             CodeAnt has a valid APPROVED review on current HEAD), OR
+#                             merge-gate.sh is met via the no-review override at a
+#                             paid-escalation point (issue #1899; stderr names it) —
 #                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
 #                             while a CodeRabbit `Review limit reached` banner's own
@@ -170,6 +172,31 @@ emit() {
 # The helper also answers 0 on ANY gate when the repo turned escalation off
 # (REVIEW_ESCALATION=off, issue #1807), and names that reason on its own
 # stderr line — so this arm needs no lookup of its own.
+# No-review override precedence (issue #1899). Asked ONLY at the two points
+# that would spend on a paid reviewer (switch_bugbot, trigger_greptile): when
+# merge-gate.sh is already met through the no-review override, the PR merges
+# unreviewed and is logged for backfill — inviting a paid review now would
+# spend exactly what the owner's policy exists to save. gate_met, never a
+# paid verdict. FAILS OPEN to today's routing: a missing gate, any non-zero
+# exit, or unparseable output changes nothing.
+override_gate_met() {
+  local gate="$SCRIPT_DIR/merge-gate.sh" out="" rc=0 here=""
+  [[ -x "$gate" ]] || return 1
+  # merge-gate.sh judges the cwd's repo; never let it answer for another one.
+  here="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
+  [[ "$(printf '%s' "$here" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$OWNER/$REPO" | tr '[:upper:]' '[:lower:]')" ]] || return 1
+  out="$("$gate" "$PR_NUMBER" 2>/dev/null)" || rc=$?
+  [[ "$rc" -eq 0 ]] || return 1
+  printf '%s' "$out" | jq -e '.met == true and .no_review_override.applied == true' >/dev/null 2>&1
+}
+emit_unless_override() { # <paid verdict>
+  if override_gate_met; then
+    echo "escalate-review.sh: merge gate met via the no-review override on HEAD — gate_met, not $1; no paid reviewer is invited (issue #1899)" >&2
+    emit "gate_met"
+  fi
+  emit "$1"
+}
+
 emit_switch_bugbot() {
   local helper="$SCRIPT_DIR/bugbot-tier-excluded.sh" gate="" tier_rc=0
   if [[ -x "$helper" ]]; then
@@ -179,7 +206,7 @@ emit_switch_bugbot() {
       emit "tier_gate"
     fi
   fi
-  emit "switch_bugbot"
+  emit_unless_override "switch_bugbot"
 }
 
 # Has the repo turned escalation off (REVIEW_ESCALATION=off in `## Review
@@ -1247,4 +1274,4 @@ if [[ "$BUDGET_EXHAUSTED" == "true" ]]; then
   emit "budget_exhausted"
 fi
 
-emit "trigger_greptile"
+emit_unless_override "trigger_greptile"
