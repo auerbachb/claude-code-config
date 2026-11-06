@@ -1562,7 +1562,7 @@ If missing, reconstruct state from GitHub API.
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
    - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
-   - `no_reviewer` (and, defensively, the retired `switch_bugbot` / `trigger_greptile` / `budget_exhausted`): a PAID reviewer would be next (issue #1897). Post NO `@cursor review` and NO `@greptileai`, never retry a paid trigger, keep `reviewer: cr`, report the blocker "paid review requires owner approval" once, and keep polling — the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes; with it off, the blocker stands until the owner acts. Only the owner's explicit approval in chat authorizes a paid review; this prompt never does.
+   - `no_reviewer` (and, defensively, the retired `switch_bugbot` / `trigger_greptile` / `budget_exhausted`): a PAID reviewer would be next (issue #1897). Post NO `@cursor review` and NO `@greptileai`, never retry a paid trigger, keep `reviewer: cr`, report the blocker "paid review requires owner approval" once, and keep polling — the no-review override (issue #1899), unless `NO_REVIEW_OVERRIDE_MINUTES=off`, turns it into `gate_met` once its window passes; with it off, the blocker stands until the owner acts. Only the owner's explicit approval in chat authorizes a paid review; this prompt never does. Never ask the owner yourself: a review the owner approved in the parent session is a grant (issue #1898), spent only with `paid-review-grant.sh --trigger {PR_NUMBER} --vendor cursor|greptile` (`STATUS=triggered` is the only success). Otherwise add `PAID_REVIEW: skipped (<vendor>, <reason>)` to the exit report notes.
    - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.
    - `self_review`: perform/report self-review fallback; merge remains blocked.
 6. Check commit status for CR completion signal and rate-limit fast-path.
@@ -1617,6 +1617,7 @@ When a Phase B subagent returns:
    - `clean` -> launch replacement Phase B within 60s (no explicit CR approval on current HEAD yet, or latest approval is on a stale SHA).
    - `fixes_pushed` -> launch replacement Phase B within 60s.
    - `blocked_self_review` -> report blocker to user; do NOT auto-loop Phase B without a reviewer availability change.
+   - Any `PAID_REVIEW: skipped (...)` note -> relay it with the report. In an attended session this is where you may ask the owner for one paid review (`.claude/reference/paid-review-approval.md`); never from `/pm day` or `--window` ticks.
    - `exhaustion` -> launch replacement Phase B within 60s.
 3. **Verify review state via GitHub API** for `merge_ready`.
 4. **Update `session-state.json`.**

@@ -281,3 +281,7 @@ The hook skips re-emitting a widen instruction when `.type == "update"` and `.in
 ## Unreviewed-merge ledger — cross-repo, outside session state (issue #1899)
 
 `~/.claude/unreviewed-merges.json` (`{schema_version: 1, entries: [...]}`) records every merge made through the no-review override, one entry per `(repo, pr, head_sha)`. It is deliberately not in `session-state.json`: it must survive sessions and span repos, and Issue #1900's backfill reads it. Only `unreviewed-merge-ledger.sh` writes it — `state-lock.sh` lock across the read-modify-write, temp + rename commit, exit codes as `session-state.sh`. Contract and fields: `.claude/reference/no-review-override.md` §The ledger.
+
+## Paid review grants (issue #1898)
+
+`.prs["<N>"].paid_review_grants["<vendor>"]` has exactly one writer: `.claude/scripts/paid-review-grant.sh`. A grant is written only after the owner's live approval and spent with a `session-state.sh --cas` on the exact record read, so of two racing triggers exactly one posts. An unparseable or mistyped slot is `grant_unreadable`, which refuses. Field list: `session-state-schema.json` `_paid_review_grants_comment`. Ask contract: `paid-review-approval.md`.
