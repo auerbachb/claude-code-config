@@ -5,10 +5,13 @@ Not auto-loaded; read it when working on the quota tools.
 
 **Display and configuration only.** Nothing in this file — and nothing any tool built on
 it produces — may gate dispatch, pause work, downgrade a model, or feed
-`credit-budget.sh`. Quota and spend authority stays with Anthropic's in-app UI and
-upstream harness signals, per `.claude/rules/safety.md` §"Anthropic Quota & Spend
-Authority". This registry answers "which accounts exist and can I reach them", nothing
-more.
+`credit-budget.sh`, with one exception: `quota-reserve.sh` may pause *autonomous* work on
+an account whose provider-reported weekly used-percent reaches the owner's threshold
+(§"The one consumer that acts on these readings (#1863)" below; [`quota-reserve.md`](./quota-reserve.md)). That carve-out
+is authorized only by `.claude/rules/safety.md` §"Anthropic Quota & Spend Authority",
+which stays the authority on its scope. Otherwise quota and spend authority stays with
+Anthropic's in-app UI and upstream harness signals. This registry answers "which
+accounts exist and can I reach them", nothing more.
 
 **Distinct wallet.** This file governs the owner's **AI coding-assistant subscriptions** —
 Claude Max, ChatGPT Pro / Codex, Cursor Ultra — including what continuing past their caps
