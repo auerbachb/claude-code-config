@@ -470,22 +470,49 @@ printf '[]\n' > "$TMP/issue_list.json"
 # Scenario 10 — default exclusions
 # =============================================================================
 R10=$(new_repo r10)
-commit_touch "$R10" "2026-02-01T00:00:00" "deps (#501)" package-lock.json src/Real.ts
-commit_touch "$R10" "2026-02-02T00:00:00" "deps (#502)" package-lock.json src/Real.ts
-commit_touch "$R10" "2026-02-03T00:00:00" "deps (#503)" package-lock.json src/Real.ts
+# Generated Xcode/SwiftPM files, nested AND root-level, plus near-name controls
+# (issue #1855). 8 paths per commit stays below the 20-path sweep threshold.
+R10_GEN_NESTED_PBX="ios/App.xcodeproj/project.pbxproj"
+R10_GEN_NESTED_RES="ios/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+R10_PATHS=(package-lock.json src/Real.ts "$R10_GEN_NESTED_PBX" "$R10_GEN_NESTED_RES"
+  project.pbxproj Package.resolved ios/project.yml ios/myproject.pbxproj)
+commit_touch "$R10" "2026-02-01T00:00:00" "deps (#501)" "${R10_PATHS[@]}"
+commit_touch "$R10" "2026-02-02T00:00:00" "deps (#502)" "${R10_PATHS[@]}"
+commit_touch "$R10" "2026-02-03T00:00:00" "deps (#503)" "${R10_PATHS[@]}"
 
 printf '[]\n' > "$TMP/issue_list.json"
-run_in "$R10" --since "$WINDOW_START" --json
+run_in "$R10" --since "$WINDOW_START" --top 0 --json
+R10_DEFAULT_OUT="$OUT"
+check_jq "10q: nested project.pbxproj is excluded by default" "$OUT" \
+  ".hotspots | map(.file) | index(\"$R10_GEN_NESTED_PBX\") == null"
+check_jq "10r: nested Package.resolved is excluded by default" "$OUT" \
+  ".hotspots | map(.file) | index(\"$R10_GEN_NESTED_RES\") == null"
+check_jq "10s: root-level project.pbxproj and Package.resolved are excluded by default" "$OUT" \
+  '.hotspots | map(.file) | (index("project.pbxproj") == null and index("Package.resolved") == null)'
+check_jq "10t: near-name controls (ios/project.yml, ios/myproject.pbxproj) still register" "$OUT" \
+  '.hotspots | map(.file) | (index("ios/project.yml") != null and index("ios/myproject.pbxproj") != null)'
 check_jq "10a: lockfiles are excluded by default" "$OUT" '.hotspots | map(.file) | index("package-lock.json") == null'
 check_jq "10b: real source files in the same commits still register" "$OUT" \
   '.hotspots | map(.file) | index("src/Real.ts") != null'
 check_jq "10c: excluded paths are counted, not hidden" "$OUT" '.excluded_count > 0'
 
-run_in "$R10" --since "$WINDOW_START" --no-default-excludes --json
+# Comparison run: only package-lock.json excluded. The default run must count
+# strictly more exclusions, so the new entries feed excluded_count.
+run_in "$R10" --since "$WINDOW_START" --no-default-excludes --exclude package-lock.json --top 0 --json
+R10_CMP_COUNT=$(printf '%s' "$OUT" | jq -r '.excluded_count | numbers' 2>/dev/null)
+# Fail closed: a missing or non-numeric comparison count (jq's `x > null` is
+# true) must not let 10u pass, so it becomes an unreachable bound.
+[ -n "$R10_CMP_COUNT" ] || R10_CMP_COUNT=999999
+check_jq "10u: generated Xcode/SwiftPM paths are counted in excluded_count" "$R10_DEFAULT_OUT" \
+  ".excluded_count > $R10_CMP_COUNT"
+
+run_in "$R10" --since "$WINDOW_START" --no-default-excludes --top 0 --json
 check_jq "10d: --no-default-excludes brings the lockfile back" "$OUT" \
   '.hotspots | map(.file) | index("package-lock.json") != null'
+check_jq "10v: --no-default-excludes brings all four generated Xcode/SwiftPM paths back" "$OUT" \
+  ".hotspots | map(.file) | (index(\"$R10_GEN_NESTED_PBX\") != null and index(\"$R10_GEN_NESTED_RES\") != null and index(\"project.pbxproj\") != null and index(\"Package.resolved\") != null)"
 
-run_in "$R10" --since "$WINDOW_START" --exclude 'src/*' --json
+run_in "$R10" --since "$WINDOW_START" --exclude 'src/*' --top 0 --json
 check_jq "10e: --exclude drops a matching path" "$OUT" '.hotspots | map(.file) | index("src/Real.ts") == null'
 
 # =============================================================================
