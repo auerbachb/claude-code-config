@@ -59,18 +59,23 @@ def cmd_window(a):
         return 2
     cur = now.hour * 60 + now.minute
     if start == end:
-        print(24 * 60 - cur)
+        print(24 * 60)  # whole day: never closes, so never "about to close"
         return 0
     if start < end:
         inside = start <= cur < end
-        left = end - cur
     else:  # crosses midnight
         inside = cur >= start or cur < end
-        left = (end - cur) % (24 * 60)
-    if inside:
-        print(left)
-        return 0
-    return 1
+    if not inside:
+        return 1
+    # Minutes left as ELAPSED time, floored: build the closing instant on the
+    # local calendar, then subtract in UTC so a DST shift inside the window is
+    # counted as the real hour it is (aware datetimes sharing a tzinfo would
+    # otherwise subtract as wall-clock).
+    day = now.date() if cur < end else now.date() + dt.timedelta(days=1)
+    close = dt.datetime(day.year, day.month, day.day, end // 60, end % 60, tzinfo=tz)
+    secs = (close.astimezone(dt.timezone.utc) - now.astimezone(dt.timezone.utc)).total_seconds()
+    print(max(0, int(secs // 60)))
+    return 0
 
 
 def _fp(repo, pr, path, line, text):

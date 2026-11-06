@@ -143,13 +143,20 @@ GH_BIN="$(command -v gh)"
 REPO_DIR="$(cd "$REPO_DIR" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" \
   || die 2 "--repo-dir is not inside a git checkout"
 ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null)" || die 2 "no origin remote in $REPO_DIR"
+ORIGIN_SAFE="$(printf '%s' "$ORIGIN_URL" | sed -E 's#//[^/@]+@#//***@#')"   # never log a URL credential
 ORIGIN_SLUG=""
 if [[ "$ORIGIN_URL" =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/) ]]; then
   ORIGIN_SLUG="$(printf '%s' "$ORIGIN_URL" | sed -E -e 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##' -e 's#\.git$##' -e 's#/$##' | tr '[:upper:]' '[:lower:]')"
+elif [[ "$ORIGIN_URL" =~ ^(https?|ssh|git)://([^/@]+@)?github\.com(:[0-9]+)?/ ]]; then
+  # Credentialed or port-qualified GitHub URLs (https://user:token@github.com/o/r).
+  ORIGIN_SLUG="$(printf '%s' "$ORIGIN_URL" | sed -E -e 's#^[a-z]+://([^/@]+@)?github\.com(:[0-9]+)?/##' -e 's#\.git$##' -e 's#/$##' | tr '[:upper:]' '[:lower:]')"
+elif [[ "$ORIGIN_URL" == *github.com* ]]; then
+  # A GitHub origin this parser cannot read must not let any --repo through.
+  die 2 "cannot parse the GitHub origin of --repo-dir ($ORIGIN_SAFE)"
 fi
 [[ -n "$REPO" ]] || REPO="$ORIGIN_SLUG"
 REPO="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
-[[ "$REPO" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || die 2 "cannot derive owner/name (origin: $ORIGIN_URL); pass --repo"
+[[ "$REPO" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || die 2 "cannot derive owner/name (origin: $ORIGIN_SAFE); pass --repo"
 # The reviewed code comes from --repo-dir; issues and labels go to $REPO. A
 # GitHub origin that names a different repo would file into the wrong one.
 if [[ -n "$ORIGIN_SLUG" && "$ORIGIN_SLUG" != "$REPO" ]]; then
@@ -386,8 +393,22 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
       log "$REPO PR #$pr fetch of $merge failed — left pending"; continue
     fi
   fi
+  # A merge commit whose first parent is absent locally (a shallow checkout)
+  # is a fetch problem, not "no merge commit": fetch the parent by SHA, and
+  # leave the row pending if it is still missing. Only a root commit (no
+  # parent line at all) is a skip.
+  parent=""
+  if [[ -n "$merge" ]] && git -C "$REPO_DIR" cat-file -e "$merge^{commit}" 2>/dev/null; then
+    parent="$(git -C "$REPO_DIR" cat-file -p "$merge" 2>/dev/null | sed -n 's/^parent \([0-9a-f]*\)$/\1/p' | head -n 1)"
+    if [[ -n "$parent" ]] && ! git -C "$REPO_DIR" cat-file -e "$parent^{commit}" 2>/dev/null; then
+      git -C "$REPO_DIR" fetch --quiet origin "$parent" 2>>"$LOG" || true
+      if ! git -C "$REPO_DIR" cat-file -e "$parent^{commit}" 2>/dev/null; then
+        log "$REPO PR #$pr first parent $parent of $merge unavailable — left pending"; continue
+      fi
+    fi
+  fi
   if [[ -z "$merge" ]] || ! git -C "$REPO_DIR" cat-file -e "$merge^{commit}" 2>/dev/null \
-     || ! git -C "$REPO_DIR" cat-file -e "$merge^1^{commit}" 2>/dev/null; then
+     || [[ -z "$parent" ]]; then
     ledger_mark "$pr" "$sha" skipped "$(jq -cn --arg m "$merge" --arg now "$(date -u +%FT%TZ)" \
       '{skip_reason: ("merge commit unavailable: " + (if $m == "" then "none recorded" else $m end)), reviewed_at: $now, label_synced: false}')" \
       && { SKIPPED=$(( SKIPPED + 1 )); PENDING_LEFT=$(( PENDING_LEFT - 1 )); }

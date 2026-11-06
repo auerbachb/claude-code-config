@@ -19,7 +19,7 @@ The channel allowlist is hard-coded — `coderabbit` and `codeant` CLIs. `--chan
 - With no channel left the run stops (`stop=capacity_exhausted`, exit 0); the row being reviewed and every later one stay `pending`. Exhaustion is never a skip.
 - `--max-reviews` (default 3, the CodeRabbit CLI's hourly allowance) bounds CLI attempts per run, failed ones included.
 - With the window enforced and no `--now`, a new review starts only when the window has at least `--timeout` seconds left.
-- Also left `pending`: an origin/main fetch failure (whole run), a failed merge-commit lookup or fetch (only a successful answer naming no usable commit is `skipped`), a worktree setup failure, a capture the normalizer cannot parse, a verified run that reported findings none of which parsed, a failed marker lookup, `issue-dedup.sh` exit 4, a failed `issue-file.sh` create, and a ledger write failure.
+- Also left `pending`: an origin/main fetch failure (whole run), a failed merge-commit lookup or fetch, a first parent still missing after a fetch by SHA (a shallow checkout; only a successful answer naming no usable commit is `skipped`), a worktree setup failure, a capture the normalizer cannot parse, a verified run that reported findings none of which parsed, a failed marker lookup, `issue-dedup.sh` exit 4, a failed `issue-file.sh` create, and a ledger write failure.
 - A single run lock — `flock(2)` on `~/.claude/backfill-review.flock`, held by the runner's open file descriptor until it exits however it dies, so there is no stale-PID takeover to race on — keeps two runs from reviewing (and filing for) the same rows; a held or unlockable lock is `stop=lock_held`, exit 0.
 - The PR label swap runs only after the ledger row is written (`label_synced` then flips to true), so a failed ledger write never leaves a PR labelled reviewed while its row is pending. A verified run whose findings did not all parse leaves the row pending, and the quiet-window guard reserves `2 × --timeout` (local-review.sh's wall-clock cap) before starting a review.
 
@@ -63,7 +63,7 @@ Through `unreviewed-merge-ledger.sh backfill --status <s> --detail-json -`:
 | CLI attempts per run | `--max-reviews` | — | `3` |
 | Idle bound per review | `--timeout` | — | `900` |
 
-`--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and touches nothing. The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2, so findings never land in the wrong repo.
+`--ignore-window` runs now (a manual pass); `--dry-run` lists the rows it would review and touches nothing. The ledger is cross-repo: one run handles the repo checked out at `--repo-dir`. An explicit `--repo` that differs from a GitHub origin of `--repo-dir` exits 2 (credentialed and port-qualified GitHub URLs are parsed; an unparseable GitHub origin also exits 2, and the URL is printed with any credential redacted), so findings never land in the wrong repo.
 
 ## Scheduling
 

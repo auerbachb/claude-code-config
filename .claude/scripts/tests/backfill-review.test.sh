@@ -31,7 +31,9 @@
 #    14. a marker listing that fills its limit leaves the row pending;
 #    15. CodeAnt bug labels match whole words only;
 #    16. fewer parsed findings than reported leaves the row pending;
-#    17. a held run lock stops a second runner, and frees on holder exit.
+#    17. a held run lock stops a second runner, and frees on holder exit;
+#    18. a shallow checkout's missing first parent never records a skip;
+#    19. window minutes: whole day never closes, DST counts elapsed time.
 #
 # Requires: bash 3.2+, git, jq, python3. Offline: no network, no real gh/CLIs.
 set -uo pipefail
@@ -282,6 +284,33 @@ jq -n '[range(3) | {number: (. + 1), title: "x", body: "", url: "u", state: "OPE
 BACKFILL_MARKER_LOOKUP_LIMIT=3 run --ignore-window >/dev/null
 check_eq "14: truncated marker lookup leaves the bug row pending" "pending" "$(status_of 101)"
 check_eq "14: nothing filed on a truncated lookup" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+
+git -C "$R" remote set-url origin "https://someone:tok3n@github.com/acme/widgets.git"
+seed; OUT="$("$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/other --timeout 30 --ignore-window 2>&1)"; RC=$?
+check_eq "13: credentialed origin + another --repo is a usage error" "2" "$RC"
+check_not_contains "13: the URL credential is never printed" "tok3n" "$OUT"
+"$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --dry-run --ignore-window >/dev/null 2>&1; RC=$?
+check_eq "13: credentialed origin naming the same repo matches" "0" "$RC"
+git -C "$R" remote set-url origin "$TMP/origin.git"
+
+# ---- 18. shallow checkout: a merge whose first parent is missing is never skipped --
+git clone -q --depth 1 "file://$TMP/origin.git" "$TMP/shallow" 2>/dev/null
+SH_HEAD="$(git -C "$TMP/shallow" rev-parse HEAD)"
+jq -n --arg m "$SH_HEAD" '{schema_version: 1, entries: [
+  {repo: "acme/widgets", pr: 103, url: "u", head_sha: "h103", merge_commit_sha: $m,
+   merged_at: "2026-11-03T10:00:00Z", backfill_status: "pending"}]}' > "$LEDGER"
+"$RUN_BASH" "$SCRIPT" --repo-dir "$TMP/shallow" --repo acme/widgets --timeout 30 --ignore-window >/dev/null 2>&1
+check_not_contains "18: missing first parent is not recorded as skipped" "skipped" "$(status_of 103)"
+
+# ---- 19. window minutes: whole day never closes; DST counts elapsed time ------------
+WIN="$SCRIPTS_DIR/lib/backfill_review.py"
+check_eq "19: whole-day window reports a full day" "1440" \
+  "$(python3 "$WIN" window --window 00:00-00:00 --tz America/New_York --now 2026-11-06T04:59:00Z)"
+# 2026-11-01 01:30 EDT (05:30Z) to 03:00 EST is 2h30m elapsed (fall back), not 1h30m.
+check_eq "19: fall-back night counts the repeated hour" "150" \
+  "$(python3 "$WIN" window --window 01:00-03:00 --tz America/New_York --now 2026-11-01T05:30:00Z)"
+check_eq "19: partial minutes floor, never round up" "29" \
+  "$(python3 "$WIN" window --window 01:00-06:00 --tz America/New_York --now 2026-11-06T10:30:30Z)"
 
 # ---- 15. CodeAnt bug labels match whole words ("debug" is not a bug) --------------
 printf '{"issues":[{"label":"debug","relevant_file":"a.sh","start_line":1,"issue_content":"x"},{"label":"possible bug","relevant_file":"a.sh","start_line":2,"issue_content":"y"}]}' > "$TMP/ca.json"
