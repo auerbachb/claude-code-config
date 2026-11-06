@@ -3184,6 +3184,9 @@ printf '%s\n' "$1" >> "$NOTIFY_LOG"
 NOTIFY
 chmod +x "$BIN/notify-1886"
 export NOTIFY_LOG="$TMP/notify-1886.log"
+# Notification days use local wall time, independently of the reader's NOW.
+# Freeze that clock too so consecutive scheduled runs cannot straddle midnight.
+export AI_QUOTAS_NOTIFY_DAY=2001-02-03
 NOTIFY_BIN_UNDER_TEST="$BIN/notify-1886"
 run --json
 check_eq "$(test -f "$NOTIFY_LOG" && echo yes || echo no)" "no" "manual reports do not notify"
@@ -3191,7 +3194,7 @@ run --json --quiet
 check_eq "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" "1" "quiet scheduled JSON notifies before early exit"
 run --json --quiet
 check_eq "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" "1" "scheduled report deduplicates account local day"
-unset NOTIFY_BIN_UNDER_TEST NOTIFY_LOG
+unset NOTIFY_BIN_UNDER_TEST NOTIFY_LOG AI_QUOTAS_NOTIFY_DAY
 
 # --- summary -----------------------------------------------------------------
 
