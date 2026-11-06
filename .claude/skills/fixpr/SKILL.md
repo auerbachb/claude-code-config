@@ -193,7 +193,7 @@ Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 
 ### Step 0c: Pre-flight — draft→ready + reviewer trigger (issue #493)
 
-Run the shared pre-flight **before** the audit so the PR is out of draft and each conditionally-triggered reviewer (CodeAnt, CodeRabbit, Cursor) is either engaged on the current SHA or recorded as skipped — excluded by the PR's review tier (on `ci-only`, all three) or awaiting owner approval (BugBot) — before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
+Run the shared pre-flight **before** the audit so the PR is out of draft and each conditionally-triggered reviewer (CodeAnt, CodeRabbit, Cursor) gets a recorded per-reviewer status on the current SHA — engaged (already present or triggered), skipped (excluded by the PR's review tier — on `ci-only`, all three — tier-deferred, rate-capped, or awaiting owner approval for BugBot), or trigger-failed — before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
 
 ```bash
 PREFLIGHT_SH=""
