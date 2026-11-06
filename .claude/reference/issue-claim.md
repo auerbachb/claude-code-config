@@ -94,7 +94,8 @@ A claim is aged from its marker's GitHub `created_at`, so before #1914 a live th
 | verified renewal | `mine`/0, `renewed:true`, reason `renewed` |
 | own claim already past the stale window | renews and verifies as usual; reason `renewed-after-expiry` plus a stderr warning (another holder could have taken it in that gap) |
 | label/assignee write or POST failed, re-read shows no new marker | `unknown`/4 `renew-failed`; old marker and label kept |
-| POST reported failure but the marker landed | reconciled on re-read as a normal renewal |
+| POST reported failure but the marker landed | reconciled on re-read as a normal renewal — matched only by the per-run nonce (payload `run`), never by holder, so a sibling same-holder renewal's marker is never taken for this run's |
+| POST failed and no marker with this run's nonce is on the re-read | `unknown`/4 `renew-failed`; nothing deleted |
 | verification re-read failed | `unknown`/4 `renew-unverified`; the new marker stays, no old marker is deleted |
 | a newer foreign marker won | this run's new marker is deleted (best effort), winner reported with exit `5` `superseded` |
 | the replaced marker vanished or the issue closed mid-renewal (a concurrent `--release`) | this run's new marker is withdrawn, the label is not re-added, exit `5` `released` |

@@ -124,6 +124,10 @@ case "${1:-}" in
         if [[ "$METHOD" == "POST" ]]; then
           # Renewal write path (#1914): returns the new comment like GitHub does.
           if [[ "${FAKE_COMMENT_POST_MODE:-ok}" == "error" ]]; then
+            # The write did NOT land; a concurrent writer may still act.
+            if [[ -n "${FAKE_AFTER_POST_HOOK:-}" && ! -e "$S/hook_done" ]]; then
+              : > "$S/hook_done"; NEW_ID="" eval "$FAKE_AFTER_POST_HOOK"
+            fi
             echo "gh: HTTP 422: could not create comment" >&2; exit 1
           fi
           ID=$(( $(cat "$S/next_id") + 1 )); echo "$ID" > "$S/next_id"
@@ -518,6 +522,7 @@ check_eq "claimed_at is the new marker's GitHub created_at" "$(newest_marker_fie
 check_eq "previous_claimed_at is the replaced marker" "$OLD_AT" "$(jq -r .previous_claimed_at <<<"$OUT")"
 check_eq "claimed_since keeps the original pickup time" "$OLD_AT" "$(jq -r .claimed_since <<<"$OUT")"
 check_contains "payload carries since" "\"since\":\"$OLD_AT\"" "$(newest_marker_field .body)"
+check_contains "payload carries a per-run nonce" '"run":"' "$(newest_marker_field .body)"
 check_contains "visible text says renew, not 'no activity'" "if not renewed within 4h" "$(newest_marker_field .body)"
 check_eq "label still present" "in-progress" "$(cat "$STATE/labels")"
 check_eq "assignee still present" "alice" "$(cat "$STATE/assignees")"
@@ -791,6 +796,26 @@ check_eq "landed+mid-release: exit 5" 5 "$RC"
 check_contains "landed+mid-release: reason released" "released" "$(jq -r .reason <<<"$OUT")"
 check_eq "landed+mid-release: landed marker withdrawn" 0 "$(claim_comment_count)"
 check_eq "landed+mid-release: assignee not re-added" "" "$(cat "$STATE/assignees")"
+
+# POST failed WITHOUT landing while a sibling same-holder renewal won (it
+# replaced the old marker with its own): the sibling's marker must never be
+# mistaken for this run's — no reconcile by holder, nothing deleted, exit 4.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+jq -n --arg at "$(date -u +%FT%TZ)" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadA", login: "alice", run: "sibling-run"} | tojson) + " -->")}' \
+  > "$STATE/inject.json"
+FAKE_COMMENT_POST_MODE=error \
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" --slurpfile x "$S/inject.json" \
+    "[ .[] | select(.id != \$old) ] + \$x" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"' \
+  run 873 --renew --holder threadA
+check_eq "failed POST + sibling won: exit 4" 4 "$RC"
+check_contains "failed POST + sibling won: renew-failed" "renew-failed" "$ERR"
+check_eq "failed POST + sibling won: sibling's marker kept" "999999" "$(marker_ids)"
+check_eq "failed POST + sibling won: label kept" "in-progress" "$(cat "$STATE/labels")"
 
 # The issue closes mid-renewal (merge), old marker still present.
 reset_issue

@@ -618,14 +618,15 @@ winner_is_ours() {
      && "$W_AUTHOR" == "$VIEWER" && "$W_LOGIN" == "$VIEWER" ]]
 }
 
-# own_markers_after <claim-comments-json> <old-id> -> ids (one per line) of the
-# viewer-authored markers for this holder newer than <old-id> (comment ids only
-# grow) — i.e. what this renewal run posted, even when its POST errored but landed.
-own_markers_after() {
-  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg h "$HOLDER" \
-    --arg old "$2" --arg m "$CLAIM_MARKER" '
-    .[] | select((.user.login // "") == $v and .id > ($old | tonumber? // infinite))
-    | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .holder) catch "") == $h)
+# own_run_markers <claim-comments-json> -> ids (one per line) of the
+# viewer-authored markers carrying this run's nonce (payload `run`). The nonce
+# is the only proof a marker is this run's own: a sibling same-holder renewal's
+# marker is otherwise indistinguishable, so nothing is ever reconciled or
+# withdrawn by holder or by id order.
+own_run_markers() {
+  printf '%s' "$1" | jq -r --arg v "$VIEWER" --arg r "$RUN_NONCE" --arg m "$CLAIM_MARKER" '
+    .[] | select((.user.login // "") == $v)
+    | select((try (.body | capture("<!-- " + $m + ": *(?<p>.*?) *-->") | .p | fromjson | .run) catch "") == $r)
     | .id' 2>/dev/null || true
 }
 
@@ -645,7 +646,10 @@ do_renew() {
     emit "$VERDICT" 5 "not-held — issue #$ISSUE_NUMBER is closed; its claim is not renewed — nothing written"
   fi
 
-  payload="$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg s "$since" '{holder: $h, login: $l, since: $s}')"
+  # Per-run nonce: identifies this run's own marker on re-read (own_run_markers).
+  RUN_NONCE="$(date -u +%s)-$$-$RANDOM$RANDOM"
+  payload="$(jq -cn --arg h "$HOLDER" --arg l "$VIEWER" --arg s "$since" --arg r "$RUN_NONCE" \
+    '{holder: $h, login: $l, since: $s, run: $r}')"
   # `gh api` POST (not `gh issue comment`) so the response carries the new
   # comment's id — the identity verification compares.
   if post_out="$(gh api -X POST "$REPO_PREFIX/issues/$ISSUE_NUMBER/comments" \
@@ -667,13 +671,15 @@ do_renew() {
   parse_winner "$verify"
 
   if [[ -z "$new_id" ]]; then
-    if winner_is_ours "$old_id"; then
-      new_id="$W_ID"   # the "failed" POST landed — reconcile it as the renewal
-      post_id="$W_ID"  # ...and it is this run's own marker, never a sibling's
-    elif [[ -z "$W_ID" || "$W_ID" == "$old_id" ]]; then
-      fail_closed "renew-failed — could not post the renewal marker on issue #$ISSUE_NUMBER (${post_err:-no comment id returned}); the existing marker was left in place — retry"
+    # The POST reported failure but may have landed. Reconcile ONLY by this
+    # run's nonce — never by holder or id order, which cannot tell this run's
+    # marker from a sibling renewal's. Not found: nothing of ours landed.
+    new_id="$(own_run_markers "$verify" | tail -n 1)"
+    if [[ -z "$new_id" ]]; then
+      fail_closed "renew-failed — could not post the renewal marker on issue #$ISSUE_NUMBER (${post_err:-no comment id returned}) and no marker of this run is on the re-read; nothing was deleted — retry"
     fi
   fi
+  post_id="$new_id"
 
   # Concurrent release (e.g. /wrap after merge): it deletes the replaced marker
   # and then the label. If the replaced marker is gone or the issue closed, the
@@ -691,9 +697,8 @@ do_renew() {
   # winner is a newer viewer-authored marker of ours that this run did not post,
   # and the label that renewal re-asserted is still present. Withdrawing then
   # would delete the sibling's live marker and leave the issue unclaimed.
-  # post_id is the id this run created (from the POST, or reconciled from an
-  # errored-but-landed POST); with none known the run cannot prove a sibling
-  # exists and withdraws instead — never resurrecting a released claim.
+  # post_id is the id this run created (from the POST, or reconciled by this
+  # run's nonce from an errored-but-landed POST), so it never names a sibling's.
   if (( old_gone && ! issue_closed )) && winner_is_ours "$old_id" \
      && [[ -n "$post_id" && "$W_ID" != "$post_id" ]] \
      && [[ "$(printf '%s' "$issue_now" | jq -r --arg l "$CLAIM_LABEL" \
@@ -706,7 +711,7 @@ do_renew() {
       [[ -z "$rid" ]] && continue
       gh api -X DELETE "$REPO_PREFIX/issues/comments/$rid" >/dev/null 2>&1 \
         || echo "issue-claim.sh: warning — could not withdraw this run's renewal marker $rid on issue #$ISSUE_NUMBER after a concurrent release; clear it with: issue-claim.sh $ISSUE_NUMBER --release" >&2
-    done < <({ [[ -n "$new_id" ]] && printf '%s\n' "$new_id"; own_markers_after "$verify" "$old_id"; } | sort -u)
+    done < <({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)
     local v="unclaimed"
     if [[ -n "$W_ID" ]] && ! { [[ "$W_HOLDER" == "$HOLDER" && "$W_AUTHOR" == "$VIEWER" ]]; }; then
       v="claimed"; CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"; CLAIMED_SINCE="$W_AT"
@@ -756,13 +761,9 @@ do_renew() {
     # A newer marker that is not ours won the race. Remove our own new marker
     # (best effort) so it can never resurface as the winner later, and report
     # the winner. Nothing of the winner's is touched.
-    # A POST that errored may still have landed (new_id empty): its marker is
-    # found on the re-read as a viewer-authored marker for this holder with an
-    # id above the replaced one (comment ids only grow), and removed the same way.
-    local sid stale_ids="$new_id"
-    if [[ -z "$stale_ids" ]]; then
-      stale_ids="$(own_markers_after "$verify" "$old_id" | grep -vxF "$W_ID" || true)"
-    fi
+    # new_id is this run's marker (from the POST or reconciled by nonce).
+    local sid stale_ids
+    stale_ids="$({ printf '%s\n' "$new_id"; own_run_markers "$verify"; } | sort -u)"
     while IFS= read -r sid; do
       [[ -z "$sid" ]] && continue
       gh api -X DELETE "$REPO_PREFIX/issues/comments/$sid" >/dev/null 2>&1 \
