@@ -953,7 +953,7 @@ OUT="$TMP_DIR/multi.out.json"
 "$MEASURE" --fixture "$MULTI" --repos acme/one,acme/two --since 2026-08-01 --json > "$OUT" \
   || fail "measure: multi-repo fixture run failed"
 shape="$(jget "$OUT" "(d['repos'], sorted(d), len(d['per_repo']))")"
-[[ "$shape" == "(['acme/one', 'acme/two'], ['generated_at', 'notes', 'per_repo', 'repos', 'source', 'tools', 'unclassified', 'unclassified_hits', 'window'], 2)" ]] \
+[[ "$shape" == "(['acme/one', 'acme/two'], ['generated_at', 'notes', 'per_repo', 'repos', 'source', 'tools', 'unclassified', 'unclassified_hits', 'velocity', 'window'], 2)" ]] \
   && ok "measure: multi-repo JSON carries repos[], per_repo[] and a top-level tools[]" \
   || fail "measure: unexpected multi-repo shape: $shape"
 
@@ -1010,7 +1010,8 @@ multi = json.load(open(sys.argv[1]))["per_repo"][int(sys.argv[3])]
 single = json.load(open(sys.argv[2]))
 VALUE = ("findings", "valid", "real_defects", "declined", "unanswered",
          "precision", "cost_per_real_defect_usd", "median_response_min",
-         "fix_as_given", "fix_adapted", "fix_wrong", "fix_none", "fix_unknown", "fix_quality")
+         "fix_as_given", "fix_adapted", "fix_wrong", "fix_none", "fix_unknown", "fix_quality",
+         "rounds_per_pr", "prs_with_3plus_rounds")
 for t in multi["tools"]:
     if t.get("spend_source") not in ("receipt", "estimate", "flat", "none") or "spend_usd" not in t:
         sys.exit(1)
@@ -1019,7 +1020,10 @@ for t in multi["tools"]:
     del t["spend_usd"], t["spend_source"]
     for k in VALUE:
         del t[k]
-multi["notes"] = [n for n in multi["notes"] if "could not be timed" not in n]
+# The per-PR velocity block (#1844) is ledger-only, so it too is stripped.
+if not isinstance(multi.pop("velocity", None), dict) or "velocity" in single:
+    sys.exit(1)
+multi["notes"] = [n for n in multi["notes"] if "could not be timed" not in n and "naming no commit" not in n]
 for doc in (multi, single):
     doc.pop("generated_at", None)
 sys.exit(0 if multi == single else 1)
@@ -1100,11 +1104,11 @@ untimed="$(jget "$OUT" "[n.split(':')[0] for n in d['notes'] if 'could not be ti
 [[ "$untimed" == "['acme/one', 'acme/two']" ]] \
   && ok "measure: each repo's untimed-response note merges tagged with its repo" \
   || fail "measure: untimed-response notes wrong: $untimed"
-notes="$(jget "$OUT" "[n.split(':')[0] for n in d['notes'] if 'could not be timed' not in n]")"
+notes="$(jget "$OUT" "[n.split(':')[0] for n in d['notes'] if 'could not be timed' not in n and 'naming no commit' not in n]")"
 [[ "$notes" == "['acme/two', 'acme/two']" ]] \
   && ok "measure: notes merge into one array, each tagged with its repo" \
   || fail "measure: merged notes wrong: $notes"
-case "$(jget "$OUT" "[n for n in d['notes'] if 'could not be timed' not in n][0]")" in
+case "$(jget "$OUT" "[n for n in d['notes'] if 'could not be timed' not in n and 'naming no commit' not in n][0]")" in
   "acme/two: Sample hit the --limit"*) ok "measure: the truncation note survives the merge" ;;
   *) fail "measure: truncation note missing from merged notes" ;;
 esac
@@ -1666,8 +1670,8 @@ r="$(jget "$TMP_DIR/value-null.out.json" "[(t['spend_usd'], t['real_defects'], t
 # Legacy parity: the same fixture without --ledger carries no value field.
 "$MEASURE" --fixture "$VALUE_F" --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/value-legacy.out.json" \
   || fail "value: legacy run over the verdict fixture failed"
-r="$(jget "$TMP_DIR/value-legacy.out.json" "sorted({k for t in d['tools'] for k in t} & {'findings', 'valid', 'real_defects', 'declined', 'unanswered', 'precision', 'cost_per_real_defect_usd', 'median_response_min', 'fix_as_given', 'fix_adapted', 'fix_wrong', 'fix_none', 'fix_unknown', 'fix_quality'})")"
-[[ "$r" == "[]" ]] && ok "value: a run without --ledger carries no value field" \
+r="$(jget "$TMP_DIR/value-legacy.out.json" "sorted({k for t in d['tools'] for k in t} & {'findings', 'valid', 'real_defects', 'declined', 'unanswered', 'precision', 'cost_per_real_defect_usd', 'median_response_min', 'fix_as_given', 'fix_adapted', 'fix_wrong', 'fix_none', 'fix_unknown', 'fix_quality', 'rounds_per_pr', 'prs_with_3plus_rounds'} | ({'velocity'} & set(d)))")"
+[[ "$r" == "[]" ]] && ok "value: a run without --ledger carries no value or velocity field" \
   || fail "value: legacy run leaked value fields: $r"
 
 # Response time. PR 1: CodeRabbit reviews at open+10m on its own — a later
@@ -1720,7 +1724,8 @@ cat > "$VALUE_MULTI" <<'JSON'
 {"repos": [
  {"repo": "acme/one", "prs": [
    {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
-    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:10:00Z"}],
+    "head_sha": "a1", "commits": [{"sha": "a1", "committed_at": "2025-10-02T00:00:00Z"}],
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:10:00Z", "commit_id": "a1"}],
     "pr_comments": [], "issue_comments": [],
     "threads": [
      {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "x"},
@@ -1731,7 +1736,8 @@ cat > "$VALUE_MULTI" <<'JSON'
                    {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: fixed defect=real agent=claude-code fix=as-given -->"}]}]}]},
  {"repo": "acme/two", "prs": [
    {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
-    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:20:00Z"}],
+    "head_sha": "b1", "commits": [{"sha": "b1", "committed_at": "2025-10-02T00:00:00Z"}],
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:20:00Z", "commit_id": "b1"}],
     "pr_comments": [], "issue_comments": [],
     "threads": [
      {"comments": [{"user": "coderabbitai[bot]", "user_type": "Bot", "body": "x"},
@@ -1739,7 +1745,7 @@ cat > "$VALUE_MULTI" <<'JSON'
      {"comments": [{"user": "codeant-ai[bot]", "user_type": "Bot", "body": "z"},
                    {"user": "dev", "user_type": "User", "body": "<!-- review-verdict: deferred defect=real agent=codex fix=adapted -->"}]}]},
    {"number": 2, "merged_at": "2025-10-04T00:00:00Z", "created_at": "2025-10-03T00:00:00Z",
-    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T00:30:00Z"}],
+    "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T00:30:00Z", "commit_id": "b2"}],
     "pr_comments": [], "issue_comments": []}]}
 ]}
 JSON
@@ -1816,6 +1822,136 @@ r="$(ft greptile)"
   && ok "value: fix= comes from the deciding marker only; an unknown value is unknown; none stays out of the ratio" \
   || fail "value: greptile deciding-marker fix counts wrong: $r"
 
+# ---------------------------------------------------------------------------
+# measure.sh — velocity: rounds per PR and push-to-gate (issue #1844)
+# ---------------------------------------------------------------------------
+# PR 1: CodeAnt reviews three distinct commits (c1, c2, c3); BugBot posts two
+# inline comments whose original_commit_id is c3 but whose (moved) commit_id
+# differs — original wins, so BugBot is one round. HEAD c3 is committed at T;
+# CodeAnt's APPROVED on c3 lands at T+42m. Decoys that must NOT time it: a
+# CodeAnt APPROVED on c2 (not HEAD) at T+1m and a CodeRabbit APPROVED on c3
+# dated before T. PR 2: no signal on HEAD d2 — an APPROVED on d1, a failed, an
+# in-progress, and a foreign-app BugBot run on d2. PR 3: a clean BugBot run on
+# HEAD e1 completes at +10m. PR 4 has no head_sha, PR 5 a HEAD outside its
+# commit list: both are no_head_date, not no_gate_signal. Graphite's review
+# names no commit, so it has no rounds sample and a note says so.
+VELOCITY_F="$TMP_DIR/velocity.json"
+cat > "$VELOCITY_F" <<'JSON'
+{"repo": "acme/vel", "prs": [
+ {"number": 1, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-01T00:00:00Z",
+  "head_sha": "c3",
+  "commits": [{"sha": "c1", "committed_at": "2025-10-01T01:00:00Z"},
+              {"sha": "c2", "committed_at": "2025-10-01T02:00:00Z"},
+              {"sha": "c3", "committed_at": "2025-10-02T00:00:00Z"}],
+  "reviews": [{"user": "codeant-ai[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-01T01:10:00Z", "commit_id": "c1"},
+              {"user": "codeant-ai[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-01T02:10:00Z", "commit_id": "c2"},
+              {"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:01:00Z", "commit_id": "c2"},
+              {"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:42:00Z", "commit_id": "c3"},
+              {"user": "coderabbitai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-01T23:55:00Z", "commit_id": "c3"},
+              {"user": "graphite-app[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-02T00:05:00Z"}],
+  "pr_comments": [{"user": "cursor[bot]", "body": "a", "created_at": "2025-10-02T00:03:00Z", "original_commit_id": "c3", "commit_id": "c3"},
+                  {"user": "cursor[bot]", "body": "b", "created_at": "2025-10-02T00:04:00Z", "original_commit_id": "c3", "commit_id": "c9"}],
+  "issue_comments": []},
+ {"number": 2, "merged_at": "2025-10-04T00:00:00Z", "created_at": "2025-10-03T00:00:00Z",
+  "head_sha": "d2",
+  "commits": [{"sha": "d1", "committed_at": "2025-10-03T00:00:00Z"},
+              {"sha": "d2", "committed_at": "2025-10-03T01:00:00Z"}],
+  "reviews": [{"user": "coderabbitai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-03T01:30:00Z", "commit_id": "d1"}],
+  "pr_comments": [], "issue_comments": [],
+  "check_runs": [{"id": 21, "name": "Cursor Bugbot", "app": "cursor", "head_sha": "d2", "status": "completed", "conclusion": "failure", "started_at": "2025-10-03T01:01:00Z", "completed_at": "2025-10-03T01:05:00Z"},
+                 {"id": 22, "name": "Cursor Bugbot", "app": "cursor", "head_sha": "d2", "status": "in_progress", "conclusion": null, "started_at": "2025-10-03T01:06:00Z"},
+                 {"id": 23, "name": "Cursor Bugbot", "app": "impostor", "head_sha": "d2", "status": "completed", "conclusion": "success", "started_at": "2025-10-03T01:07:00Z", "completed_at": "2025-10-03T01:08:00Z"}]},
+ {"number": 3, "merged_at": "2025-10-05T00:00:00Z", "created_at": "2025-10-04T00:00:00Z",
+  "head_sha": "e1", "commits": [{"sha": "e1", "committed_at": "2025-10-04T00:00:00Z"}],
+  "reviews": [], "pr_comments": [], "issue_comments": [],
+  "check_runs": [{"id": 31, "name": "Cursor Bugbot", "app": "cursor", "head_sha": "e1", "status": "completed", "conclusion": "success", "started_at": "2025-10-04T00:02:00Z", "completed_at": "2025-10-04T00:10:00Z"}]},
+ {"number": 4, "merged_at": "2025-10-06T00:00:00Z", "created_at": "2025-10-05T00:00:00Z",
+  "commits": [{"sha": "f1", "committed_at": "2025-10-05T00:00:00Z"}],
+  "reviews": [{"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-05T00:10:00Z", "commit_id": "f1"}],
+  "pr_comments": [], "issue_comments": []},
+ {"number": 5, "merged_at": "2025-10-07T00:00:00Z", "created_at": "2025-10-06T00:00:00Z",
+  "head_sha": "zz", "commits": [{"sha": "g1", "committed_at": "2025-10-06T00:00:00Z"}],
+  "reviews": [], "pr_comments": [], "issue_comments": []}
+]}
+JSON
+OUT="$TMP_DIR/velocity.out.json"
+"$MEASURE" --fixture "$VELOCITY_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
+  || fail "velocity: single-repo fixture run failed"
+r="$(jget "$OUT" "[(t['key'], t['rounds_per_pr'], t['prs_with_3plus_rounds']) for t in d['tools'] if t['key'] in ('codeant', 'bugbot', 'graphite', 'coderabbit')]")"
+# CodeAnt: PR 1 three HEADs, PR 4 one -> median 2.0; one PR with 3+.
+[[ "$r" == "[('coderabbit', 1.0, 0), ('codeant', 2.0, 1), ('bugbot', 1.0, 0), ('graphite', None, 0)]" ]] \
+  && ok "velocity: rounds_per_pr is the median of distinct HEADs per PR (inline comments by original_commit_id); a tool with no commit ids is null" \
+  || fail "velocity: rounds wrong: $r"
+r="$(jget "$OUT" "[n for n in d['notes'] if 'naming no commit' in n]")"
+case "$r" in
+  "['1 (tool, PR) pair(s) had review objects"*) ok "velocity: a tool's review naming no commit is noted, not silently counted" ;;
+  *) fail "velocity: expected one no-commit note, got $r" ;;
+esac
+r="$(jget "$OUT" "[(p['number'], p['push_to_gate_min'], p['excluded']) for p in d['velocity']['prs']]")"
+[[ "$r" == "[(1, 42.0, None), (2, None, 'no_gate_signal'), (3, 10.0, None), (4, None, 'no_head_date'), (5, None, 'no_head_date')]" ]] \
+  && ok "velocity: HEAD approval at T+42 times 42; non-HEAD, pre-push, failed, in-progress, and foreign-app signals do not; a clean BugBot run times 10" \
+  || fail "velocity: per-PR push_to_gate_min wrong: $r"
+r="$(jget "$OUT" "{k: v for k, v in d['velocity'].items() if k != 'prs'}")"
+[[ "$r" == "{'no_gate_signal': 1, 'no_head_date': 2, 'prs_timed': 2, 'push_to_gate_min_median': 26.0, 'push_to_gate_min_p90': 42.0}" ]] \
+  && ok "velocity: median 26.0 and nearest-rank p90 42.0 over the timed PRs; untimed PRs only counted" \
+  || fail "velocity: summary wrong: $r"
+
+# Test Plan item 1 in isolation: CodeAnt on three commit_ids, BugBot on one.
+python3 - "$VELOCITY_F" "$TMP_DIR/velocity-tp1.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["prs"] = d["prs"][:1]
+json.dump(d, open(sys.argv[2], "w"))
+PY
+"$MEASURE" --fixture "$TMP_DIR/velocity-tp1.json" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json \
+  > "$TMP_DIR/velocity-tp1.out.json" || fail "velocity: one-PR fixture run failed"
+r="$(jget "$TMP_DIR/velocity-tp1.out.json" "[(t['key'], t['rounds_per_pr'], t['prs_with_3plus_rounds']) for t in d['tools'] if t['key'] in ('codeant', 'bugbot')]")"
+[[ "$r" == "[('codeant', 3.0, 1), ('bugbot', 1.0, 0)]" ]] \
+  && ok "velocity: CodeAnt on three commit_ids and BugBot on one give rounds_per_pr 3.0 and 1.0, CodeAnt prs_with_3plus_rounds=1" \
+  || fail "velocity: Test Plan rounds case wrong: $r"
+
+# Two repos: the total pools every PR's duration once. acme/a: 5 (CodeRabbit
+# at +5 beats CodeAnt at +10 — one PR, two reviewers, one sample), 20, 30;
+# acme/b: 100. Repo medians 20 and 100 (a median of medians: 60); pooled 25.0.
+VEL_MULTI="$TMP_DIR/velocity-multi.json"
+python3 - "$VEL_MULTI" <<'PY'
+import json, sys
+def pr(n, *signals):
+    sha = "s%d" % n
+    return {"number": n, "merged_at": "2025-10-03T00:00:00Z", "created_at": "2025-10-02T00:00:00Z",
+            "head_sha": sha, "commits": [{"sha": sha, "committed_at": "2025-10-02T00:00:00Z"}],
+            "reviews": [{"user": u, "state": "APPROVED", "body": "", "commit_id": sha,
+                         "submitted_at": "2025-10-02T%02d:%02d:00Z" % divmod(m, 60)} for u, m in signals],
+            "pr_comments": [], "issue_comments": []}
+json.dump({"repos": [
+    {"repo": "acme/a", "prs": [pr(1, ("coderabbitai[bot]", 5), ("codeant-ai[bot]", 10)),
+                               pr(2, ("codeant-ai[bot]", 20)), pr(3, ("codeant-ai[bot]", 30))]},
+    {"repo": "acme/b", "prs": [pr(1, ("codeant-ai[bot]", 100))]}]}, open(sys.argv[1], "w"))
+PY
+OUT="$TMP_DIR/velocity-multi.out.json"
+"$MEASURE" --fixture "$VEL_MULTI" --repos acme/a,acme/b --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
+  || fail "velocity: two-repo fixture run failed"
+r="$(jget "$OUT" "([r['velocity']['push_to_gate_min_median'] for r in d['per_repo']], d['velocity'])")"
+[[ "$r" == "([20.0, 100.0], {'no_gate_signal': 0, 'no_head_date': 0, 'prs_timed': 4, 'push_to_gate_min_median': 25.0, 'push_to_gate_min_p90': 100.0})" ]] \
+  && ok "velocity: the total pools each PR once (4 timed, median 25.0), never a median of repo medians (60)" \
+  || fail "velocity: pooled velocity wrong: $r"
+
+# The library directly: nearest-rank p90 and the empty case.
+r="$(python3 - "$REPO_ROOT/.claude/scripts/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import review_ledger as L
+F = L.Fraction
+empty = L.velocity_fields({"samples": [], "prs": [], "no_gate_signal": 3, "no_head_date": 0})
+print([L.p90(list(range(1, 11))), L.p90([7]), L.p90(list(range(1, 21))), L.p90([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+       empty["push_to_gate_min_median"], empty["push_to_gate_min_p90"], empty["prs_timed"], empty["no_gate_signal"],
+       L.velocity_fields({"samples": [F(1, 20)], "prs": [], "no_gate_signal": 0, "no_head_date": 0})["push_to_gate_min_median"]])
+PY
+)"
+[[ "$r" == "[9, 7, 18, 10, None, None, 0, 3, 0.1]" ]] \
+  && ok "velocity: p90 is the ceil(0.9n)-th smallest; no sample gives null figures and keeps the counts; 0.05 rounds half-up to 0.1" \
+  || fail "velocity: library p90/empty rules wrong: $r"
+
 # The library directly: rounding, null rules, and parser parity edge cases a
 # fixture reaches only awkwardly.
 value_lib_probe() {
@@ -1836,6 +1972,7 @@ def undated_response_is_not_skipped():
             "reviews": [{"user": "coderabbitai[bot]", "state": "COMMENTED", "body": ""}],
             "issue_comments": [{"user": "coderabbitai[bot]", "created_at": "2025-10-02T00:30:00Z", "body": "x"}]}]
     t, notes = L.measure_value(prs, "test/repo", {"coderabbitai[bot]": "coderabbit"}, ["coderabbit"])
+    notes = [n for n in notes if "naming no commit" not in n]
     return (t["coderabbit"]["samples"] == [] and len(notes) == 1
             and notes[0].startswith("1 tool response(s) could not be timed"))
 checks = [
@@ -1967,6 +2104,54 @@ else
   fail "value: the live legacy path reached ledger-only calls or fields"
 fi
 
+# Velocity through the live path (issue #1844): HEAD comes from GraphQL
+# headRefOid, its date from the commit list's COMMITTER date (the author date
+# is earlier and must not be read), paginated as two concatenated pages; rounds
+# come from REST review commit_id and inline original_commit_id; a clean BugBot
+# run on HEAD (+5m) beats CodeAnt's HEAD approval (+15m), while a failed run on
+# HEAD and a clean run on a non-HEAD commit do not count.
+GH_VEL="$TMP_DIR/gh-vel"
+mkdir -p "$GH_VEL"
+cat > "$GH_VEL/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_STUB_DIR/calls"
+case "$1 $2" in
+  "pr list")     echo '[{"number":7,"mergedAt":"2025-10-05T00:00:00Z"}]' ;;
+  "api graphql") echo '{"data":{"repository":{"pullRequest":{"createdAt":"2025-10-01T00:00:00Z","headRefOid":"hh2","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  api\ */pulls/7/reviews*)
+    echo '[{"user":{"login":"codeant-ai[bot]"},"state":"COMMENTED","body":"","submitted_at":"2025-10-02T00:30:00Z","commit_id":"hh1"},{"user":{"login":"codeant-ai[bot]"},"state":"APPROVED","body":"","submitted_at":"2025-10-03T00:15:00Z","commit_id":"hh2"}]' ;;
+  api\ */pulls/7/comments*)
+    echo '[{"user":{"login":"codeant-ai[bot]"},"body":"x","created_at":"2025-10-01T00:30:00Z","original_commit_id":"hh0","commit_id":"hh2"}]' ;;
+  api\ */pulls/7/commits*)
+    echo '[{"sha":"hh0","commit":{"author":{"date":"2025-10-01T00:00:00Z"},"committer":{"date":"2025-10-01T00:10:00Z"}}}]'
+    echo '[{"sha":"hh1","commit":{"author":{"date":"2025-10-02T00:00:00Z"},"committer":{"date":"2025-10-02T00:10:00Z"}}},{"sha":"hh2","commit":{"author":{"date":"2025-10-02T12:00:00Z"},"committer":{"date":"2025-10-03T00:00:00Z"}}}]' ;;
+  api\ */commits/hh1/check-runs*)
+    echo '{"total_count":1,"check_runs":[{"id":71,"name":"Cursor Bugbot","app":{"slug":"cursor"},"head_sha":"hh1","status":"completed","conclusion":"success","started_at":"2025-10-02T00:11:00Z","completed_at":"2025-10-02T00:12:00Z"}]}' ;;
+  api\ */commits/hh2/check-runs*)
+    echo '{"total_count":2,"check_runs":[{"id":72,"name":"Cursor Bugbot","app":{"slug":"cursor"},"head_sha":"hh2","status":"completed","conclusion":"failure","started_at":"2025-10-03T00:01:00Z","completed_at":"2025-10-03T00:02:00Z"},{"id":73,"name":"Cursor Bugbot","app":{"slug":"cursor"},"head_sha":"hh2","status":"completed","conclusion":"success","started_at":"2025-10-03T00:03:00Z","completed_at":"2025-10-03T00:05:00Z"}]}' ;;
+  "api "*)       echo '[]' ;;
+  *)             echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$GH_VEL/gh"
+: > "$GH_VEL/calls"
+GH_STUB_DIR="$GH_VEL" PATH="$GH_VEL:$PATH" "$MEASURE" --repo stub/vel --ledger --pricing "$PRICING_FULL" \
+  --since 2025-10-01 --until 2025-10-31 --json > "$TMP_DIR/vel-live.out.json" 2>"$TMP_DIR/vel-live.err" \
+  || fail "velocity: stubbed live ledger run failed: $(head -c 300 "$TMP_DIR/vel-live.err")"
+r="$(jget "$TMP_DIR/vel-live.out.json" "([(t['rounds_per_pr'], t['prs_with_3plus_rounds']) for t in d['tools'] if t['key']=='codeant'][0], d['velocity'])")"
+[[ "$r" == "((3.0, 1), {'no_gate_signal': 0, 'no_head_date': 0, 'prs': [{'excluded': None, 'number': 7, 'push_to_gate_min': 5.0}], 'prs_timed': 1, 'push_to_gate_min_median': 5.0, 'push_to_gate_min_p90': 5.0})" ]] \
+  && ok "velocity: live HEAD from headRefOid, dated by committer date across commit pages; live commit ids give CodeAnt 3 rounds" \
+  || fail "velocity: live velocity wrong: $r"
+: > "$GH_VEL/calls"
+GH_STUB_DIR="$GH_VEL" PATH="$GH_VEL:$PATH" "$MEASURE" --repo stub/vel --since 2025-10-01 --until 2025-10-31 --json \
+  > "$TMP_DIR/vel-live-legacy.out.json" 2>/dev/null || fail "velocity: stubbed live legacy run failed"
+if ! grep -q 'graphql\|/commits' "$GH_VEL/calls" \
+   && [[ "$(jget "$TMP_DIR/vel-live-legacy.out.json" "sorted({k for t in d['tools'] for k in t if k in ('rounds_per_pr', 'prs_with_3plus_rounds')} | ({'velocity'} & set(d)))")" == "[]" ]]; then
+  ok "velocity: a live run without --ledger makes no commit or GraphQL call and emits no velocity field"
+else
+  fail "velocity: the live legacy path reached velocity calls or fields"
+fi
+
 # Fail closed: with review_ledger.py present but its jq module missing, a
 # ledger run that has replies to classify exits 1 with nothing on stdout.
 ISO2="$TMP_DIR/iso2/.claude"
@@ -2041,6 +2226,41 @@ if grep -q '^| Tool | as-given | adapted | wrong | none | unknown |$' <<<"$fix_f
 else
   fail "scorecard: the Fix quality counts fold is missing or wrong: $(head -c 600 <<<"$fix_fold")"
 fi
+# The Velocity fold (issue #1844), extracted on its own rather than through
+# table_rows: CodeAnt reviewed one HEAD per PR; CodeRabbit posted no review
+# object, so its rounds are null (`—`) and its 3+ count a real 0. Push-to-gate:
+# acme/one 10, acme/two 20 (its second PR has no HEAD), total pooled 15 / 20.
+vel_fold="$(awk '/<summary>Velocity<\/summary>/ { on = 1; next } on && /<\/details>/ { exit } on' "$TMP_DIR/sc-all.md")"
+if grep -q '^| Tool | Rounds / PR | PRs with 3+ rounds |$' <<<"$vel_fold" \
+   && grep -q '^| CodeAnt | 1.0 | 0 |$' <<<"$vel_fold" \
+   && grep -q '^| CodeRabbit | — | 0 |$' <<<"$vel_fold" \
+   && grep -q '^| Scope | Push-to-gate median (min) | p90 (min) | Timed PRs | No gate signal | No HEAD date |$' <<<"$vel_fold" \
+   && grep -q '^| acme/one | 10.0 | 10.0 | 1 | 0 | 0 |$' <<<"$vel_fold" \
+   && grep -q '^| acme/two | 20.0 | 20.0 | 1 | 0 | 1 |$' <<<"$vel_fold" \
+   && grep -q '^| Total | 15.0 | 20.0 | 2 | 0 | 1 |$' <<<"$vel_fold"; then
+  ok "scorecard: the Velocity fold lists rounds per tool and push-to-gate per repo and Total; a null renders —"
+else
+  fail "scorecard: the Velocity fold is missing or wrong: $(head -c 900 <<<"$vel_fold")"
+fi
+awk '/<summary>By repo<\/summary>/ { b = NR } /<summary>Velocity<\/summary>/ { v = NR } END { exit !(b && v > b) }' "$TMP_DIR/sc-all.md" \
+  && ok "scorecard: the Velocity fold follows the ranked table and its By repo fold" \
+  || fail "scorecard: the Velocity fold is out of place"
+# A ledger snapshot measured before velocity existed renders the fold with `—`.
+python3 - "$SC_STATE/snapshot-2025-10.json" "$TMP_DIR/sc-novel.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d.pop("velocity")
+for doc in [d] + d["per_repo"]:
+    doc.pop("velocity", None)
+    for t in doc["tools"]:
+        t.pop("rounds_per_pr"); t.pop("prs_with_3plus_rounds")
+json.dump(d, open(sys.argv[2], "w"))
+PY
+"$SCORECARD" --snapshot "$TMP_DIR/sc-novel.json" --part value > "$TMP_DIR/sc-novel.md" 2>/dev/null \
+  || fail "scorecard: a pre-velocity ledger snapshot failed to render"
+grep -q '^| Total | — | — | — | — | — |$' "$TMP_DIR/sc-novel.md" && grep -q '^| CodeAnt | — | — |$' "$TMP_DIR/sc-novel.md" \
+  && ok "scorecard: a ledger snapshot without velocity fields renders the fold with —, never 0" \
+  || fail "scorecard: a pre-velocity snapshot's fold is wrong: $(awk '/Velocity/,0' "$TMP_DIR/sc-novel.md" | head -c 600)"
 table_rows "$TMP_DIR/sc-all.md" '## Vendor claims vs observed' > "$TMP_DIR/sc-claims.rows"
 n="$(wc -l < "$TMP_DIR/sc-claims.rows" | tr -d ' ')"
 bad="$(grep -vcE '<https://[^>]+> \| [0-9]{4}-[0-9]{2}-[0-9]{2} \|$' "$TMP_DIR/sc-claims.rows")"
@@ -2111,6 +2331,7 @@ fixture_write "$TMP_DIR/sc-legacy-in.json" "[$(pr_with_finders 1 'coderabbitai[b
   || fail "scorecard: legacy-snapshot render failed"
 if grep -q '^_Value per dollar unavailable: ' "$TMP_DIR/sc-legacy.md" \
    && [[ -z "$(table_rows "$TMP_DIR/sc-legacy.md" '## Value per dollar')" ]] \
+   && ! grep -q '<summary>Velocity</summary>' "$TMP_DIR/sc-legacy.md" \
    && grep -q 'every observed cell is' "$TMP_DIR/sc-legacy.md"; then
   ok "scorecard: a snapshot with no ledger fields prints why instead of a table, and flags its blank observed cells"
 else

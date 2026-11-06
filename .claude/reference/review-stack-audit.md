@@ -420,6 +420,48 @@ and fix quality come from the summed counts, the median pools every repo's respo
 the cost divides the total spend. Each repo's cost divides its own share of a
 flat fee after the split.
 
+### Velocity fields (issue #1844)
+
+`median_response_min` says how fast a reviewer *starts*. These say how many
+rounds it took and how long a PR waited between its last push and a satisfied
+gate — the "which reviewer slows merges" question.
+
+| Field | Where | Definition |
+|---|---|---|
+| `rounds_per_pr` | each tool | The median, over the PRs the tool posted a review object or inline comment on, of the distinct commits those were posted against — a review's `commit_id`, an inline comment's `original_commit_id` (else its `commit_id`). One round per HEAD it looked at. 1 decimal; `null` when the tool reviewed no PR |
+| `prs_with_3plus_rounds` | each tool | PRs where that count is 3 or more; `0`, never null, when there are none |
+| `push_to_gate_min` | `velocity.prs[]` (single-repo document) | Minutes from the committer date of the merged HEAD to the earliest gate signal on that HEAD (below); `null` when the PR is excluded, with `excluded` naming why |
+| `push_to_gate_min_median`, `push_to_gate_min_p90` | `velocity`, per repo and in the total | The median and the nearest-rank 90th percentile (the ⌈0.9·n⌉-th smallest) of the timed PRs, 1 decimal half-up; `null` when no PR was timed |
+| `prs_timed` | `velocity` | PRs with a duration |
+| `no_gate_signal` | `velocity` | PRs whose HEAD is dated but carries no gate signal — admin merges, relaxed tiers, a Greptile-only gate — excluded, never timed |
+| `no_head_date` | `velocity` | PRs whose HEAD is missing from the PR's commit list (the endpoint lists at most 250 commits) or has no committer date — excluded, never counted as no signal |
+
+A (tool, PR) whose review objects and inline comments name no commit at all is
+left out of `rounds_per_pr` and counted in a note.
+
+**The gate signal is a first cut.** It does not reuse `merge-gate.sh`'s whole
+reviewer-path logic (`merge-gate-reviewer-paths.md`): a signal is a CodeRabbit
+or CodeAnt `APPROVED` review whose `commit_id` is HEAD, or a `Cursor Bugbot`
+check-run from the Cursor app on HEAD with `status: completed` and `conclusion:
+success`, timed by `submitted_at` and `completed_at` (else `started_at`). A
+signal dated before the committer date is discarded. Not modelled: Greptile's
+summary footer and severity path, a later same-SHA `CHANGES_REQUESTED`
+retraction, hollow-approval checks, and relaxed tiers — a PR gated only by one
+of them lands in `no_gate_signal`.
+
+**Known distortion.** The committer date is a proxy for the push time — it is
+when the commit was made, and a rebase re-dates it — so `push_to_gate_min` is an
+upper bound after a rebase, never review latency alone. HEAD is GraphQL's
+`headRefOid`; its date comes from the commit list the BugBot spend already
+reads, so velocity adds no endpoint.
+
+**Pooling.** Per tool, rounds pool every repo's per-PR counts into one median.
+The total `velocity` pools every PR's exact duration once and sums the counts —
+never a median of repo medians. A PR's duration belongs to the PR and its fix
+loop, so it is never attributed to a tool; a per-tool "rounds it caused" figure
+is not measured, because attributing a round to one reviewer would be an
+estimate presented as a measurement.
+
 ### Limits
 
 - **The sample is the PRs, not the window.** Threads are read for every PR the
@@ -494,6 +536,12 @@ found nothing" is a finding in its own right, so they stay in the table. Tools
 whose spend is unknown come last. Precision breaks ties inside each group
 (higher first, unknown last), then the tool key, so the order is deterministic.
 Fix quality is shown, never ranked on.
+
+**Velocity fold.** A collapsed **Velocity** fold follows the ranked table and
+its folds: per tool `rounds_per_pr` and `prs_with_3plus_rounds`, in the ranked
+order; then per repo and for the total (one repo row on a single-repo snapshot)
+the push-to-gate median and p90 with `prs_timed`, `no_gate_signal`, and
+`no_head_date` (Velocity fields above). A missing figure renders `—`.
 
 **`—` is no figure, never zero.** Every null renders `—`, and only a real zero
 renders `0` or `$0.00`. A table that turned an unknown into `0` would rank a

@@ -44,7 +44,10 @@
 #     3. tools whose spend is unknown (null), last.
 #   Precision breaks ties inside each group (higher first, null last), then the
 #   tool key. A multi-repo snapshot adds a collapsed per-repo table ranked the
-#   same way. A null renders as `—`, never as `0`; a real zero renders `0`.
+#   same way. A collapsed `Velocity` fold follows (issue #1844): per tool
+#   `rounds_per_pr` and `prs_with_3plus_rounds`; per repo and in total the
+#   push-to-gate median and p90 with `no_gate_signal` and `no_head_date`.
+#   A null renders as `—`, never as `0`; a real zero renders `0`.
 #   A snapshot without the ledger fields (measured without --ledger, --repos,
 #   or --all-repos) prints one line saying so instead of a table of dashes.
 #
@@ -367,6 +370,49 @@ def render_value(doc):
             for i, t in enumerate(ranked(tool_list(entry)), 1):
                 out.append(row([entry.get("repo") or DASH] + value_cells(i, t)))
         out += ["", "</details>"]
+    out += render_velocity(doc, tools, per_repo)
+    return out
+
+
+def tenths(value):
+    """A figure to 1 decimal, half-up; `—` when there is none."""
+    d = number(value)
+    if d is None:
+        return DASH
+    return str(d.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def velocity_cells(scope, entry):
+    v = entry.get("velocity") if isinstance(entry, dict) else None
+    v = v if isinstance(v, dict) else {}
+    return [scope, tenths(v.get("push_to_gate_min_median")), tenths(v.get("push_to_gate_min_p90")),
+            count(v.get("prs_timed")), count(v.get("no_gate_signal")), count(v.get("no_head_date"))]
+
+
+def render_velocity(doc, tools, per_repo):
+    """The Velocity fold (issue #1844): rounds per tool, push-to-gate per scope.
+    Pure rendering of the snapshot's own figures; a missing one renders `—`."""
+    out = ["", "<details><summary>Velocity</summary>", "",
+           row(["Tool", "Rounds / PR", "PRs with 3+ rounds"]), "|---|---:|---:|"]
+    for t in ranked(tools):
+        out.append(row([tool_name(t), tenths(t.get("rounds_per_pr")),
+                        count(t.get("prs_with_3plus_rounds"))]))
+    out += ["", row(["Scope", "Push-to-gate median (min)", "p90 (min)", "Timed PRs",
+                     "No gate signal", "No HEAD date"]), "|---|---:|---:|---:|---:|---:|"]
+    if isinstance(per_repo, list) and per_repo:
+        for entry in per_repo:
+            if isinstance(entry, dict):
+                out.append(row(velocity_cells(entry.get("repo") or DASH, entry)))
+        out.append(row(velocity_cells("Total", doc)))
+    else:
+        out.append(row(velocity_cells(doc.get("repo") or DASH, doc)))
+    out += ["", "Rounds count the distinct HEADs a tool reviewed on a PR, never the rounds it "
+            "caused. Push-to-gate runs from the merged HEAD's committer date to the first "
+            "CodeRabbit or CodeAnt `APPROVED` on it or clean `Cursor Bugbot` run on it (a "
+            "first cut of the merge gate). The committer date is a proxy for the push (a "
+            "rebase re-dates it), so read the figure as an upper bound after a rebase, "
+            "never as review latency alone. PRs with no such signal (admin "
+            "merge, relaxed tier, Greptile-only) are counted, not timed.", "", "</details>"]
     return out
 
 
