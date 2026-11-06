@@ -6,7 +6,7 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 > **Ask first:** Merging — always ask the user.
 > **Never:** Spam `@codeant-ai`.
 
-**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. To nudge, let `maybe-trigger-ai-review.sh <PR>` post `@codeant-ai review`. On a repo with a review policy, post it only after `review-triggers-allowed.sh <PR> --claim codeant` exits 0 (`cr-github-review.md` §Per-cycle check).
+**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. To nudge, let `maybe-trigger-ai-review.sh <PR>` post `@codeant-ai review`. On a repo with a review policy the script claims the CodeAnt slot itself (`review-triggers-allowed.sh --claim codeant`) before it posts — never claim separately first: the one-invitation cap would then read the slot as spent and the script would skip the post (`cr-github-review.md` §Per-cycle check).
 
 **Graphite (retired 2026-11-03):** Graphite was a second supplemental reviewer until its Team plan was cancelled and refunded; agents no longer trigger it or wait for it. Until the App is uninstalled it can still post: treat any Graphite finding like another bot's — reply (`reply-thread.sh --reviewer graphite`) and resolve it. History: `ai-review-chain-roles-decision.md` §Graphite retirement and `codeant-supplemental-hotspot-decision.md`.
 
@@ -41,9 +41,12 @@ codeant login
 # terminal into the environment (never typed as an argument, so it stays out
 # of shell history and `ps`). Scope it to the shell that runs reviews:
 read -rs CODEANT_API_TOKEN && export CODEANT_API_TOKEN
-# The export reaches only processes started from this shell. For agent reviews,
-# start Claude Code from it too — or use Option A, whose saved login every
-# process reads.
+# The export reaches only processes started from this shell. A Claude Code
+# session that is already running keeps the environment it started with, so
+# exporting or unsetting the token elsewhere changes nothing for it: quit it and
+# start Claude Code again from this shell. Same for Option A — a session that
+# inherited a stale CODEANT_API_TOKEN must be restarted from a shell where the
+# token is unset before it reads the saved login.
 
 # Verify auth (safe — reads org membership, no write):
 codeant scans orgs

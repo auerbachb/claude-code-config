@@ -725,27 +725,26 @@ jq -r '
 
 The verify audit's `.check_runs` reflects the new HEAD.
 
+<!-- test-anchor: fixpr-step-5c-check-buckets -->
 ```bash
 jq -r '.check_runs.all[] | "[CI] \(.name): \(.status)\(if .conclusion then " — \(.conclusion)" else "" end)"' "$VERIFY"
 
 CHECK_BUCKETS=$(jq '
+  # Graphite: retired 2026-11-03. Its leftover check-run is never CI, matched by the
+  # publishing app slug only (#1953) so another app naming a check "Graphite …" stays CI.
+  def is_graphite: (.app.slug // "") as $s | $s == "graphite-app" or $s == "graphite";
+  # Every review bot is identified by its publishing app when the run carries one:
+  # a GitHub Actions job named "post-cursor-review" is CI, not a reviewer. The check
+  # name decides only when no app slug is present at all.
   def is_review_bot:
-    (.name // "" | ascii_downcase) as $name
-    | (.app.slug // "" | ascii_downcase) as $slug
-    | (.app.name // "" | ascii_downcase) as $app
-    # "graphite": retired 2026-11-03; kept so a leftover Graphite check-run is never counted as CI
-    | ($name | contains("coderabbit")
-       or contains("graphite")
-       or contains("codeant")
-       or contains("cursor"))
-      or ($slug | contains("coderabbit")
-         or contains("graphite")
-         or contains("codeant")
-         or contains("cursor"))
-      or ($app | contains("coderabbit")
-         or contains("graphite")
-         or contains("codeant")
-         or contains("cursor"));
+    (.app.slug // "" | ascii_downcase) as $slug
+    | if $slug != "" then
+        ($slug | contains("coderabbit") or contains("codeant") or contains("cursor"))
+        or is_graphite
+      else
+        (.name // "" | ascii_downcase)
+        | contains("coderabbit") or contains("codeant") or contains("cursor")
+      end;
   {
     ci: [.check_runs.all[] | select(is_review_bot | not)],
     review: [.check_runs.all[] | select(is_review_bot)]
@@ -757,7 +756,7 @@ REVIEW_BOT_CHECKS=$(jq '.review' <<<"$CHECK_BUCKETS")
 FAILING=$(jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | length' <<<"$CI_CHECKS")
 IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$CI_CHECKS")
 # A retired Graphite check-run is bucketed as review but never awaited (matches 5d).
-REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed") | select((.name // "" | ascii_downcase | contains("graphite")) | not)] | length' <<<"$REVIEW_BOT_CHECKS")
+REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed") | select((.app.slug // "") as $s | ($s == "graphite-app" or $s == "graphite") | not)] | length' <<<"$REVIEW_BOT_CHECKS")
 ```
 
 Decide from the non-review CI counts before review-bot pending counts:
@@ -786,7 +785,34 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 - **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule — a Greptile or other status whose text happens to contain "rate limit" is not CR rate-limiting and falls through to the rules below.
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop. Not for a retired Graphite check-run: Step 5c already excludes it from CI and nothing waits on it.
-- No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a reviewer Step 3b logged as `skipping … — review tier …` (kind `excluded`) or `BugBot not invited …` (no owner grant) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
+- No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a CodeRabbit or CodeAnt that Step 3b logged as `skipping … — review tier …` (kind `excluded`) was never invited, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
+- **BugBot silence** is decided by invitation, not by Step 3b's wording (#1953): BugBot is paid, so a `deferring @cursor review` (CI pending) or a daily-cap skip does not mean anyone will invite it. It is awaited — `REVIEW_PENDING` — only when a `@cursor review` trigger was posted after the push by any author (Step 3b's grant, `maybe-trigger-ai-review.sh`, a person), or an unused owner grant for this HEAD is still waiting to be spent. Otherwise it was never invited and its silence is not `REVIEW_PENDING`. An unreadable comment list fails closed (awaited):
+
+<!-- test-anchor: fixpr-step-5d-bugbot-invited -->
+```bash
+BUGBOT_AWAITED=1   # fail closed until the evidence says otherwise
+if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"); then
+  INVITED_RC=0
+  jq -s -e --arg since "$PUSHED_AT" '[.[][]? | select((.created_at // "") >= $since)
+      | select((.body // "") | test("^\\s*@cursor\\s+review\\b"))] | length > 0' \
+    <<<"$CURSOR_TRIGGER_COMMENTS" >/dev/null 2>&1 || INVITED_RC=$?
+  if (( INVITED_RC == 0 )); then
+    BUGBOT_AWAITED=1   # invited on this HEAD
+  elif (( INVITED_RC == 1 )); then
+    BUGBOT_AWAITED=0
+    if [[ -z "$PAID_GRANT_SH" ]]; then
+      echo "DEGRADED: paid-review-grant.sh not found (checked all three paths) — an approved, not-yet-spent BugBot grant cannot be seen"
+    else
+      # Exit 0 = an unused grant (awaited); exit 1 = no grant (not awaited). Any
+      # other exit — 3 grant_unreadable included — fails closed (awaited).
+      GRANT_CHECK_RC=0
+      "$PAID_GRANT_SH" --check "$PR_NUMBER" --vendor cursor --head "${PUSHED_SHA:-$HEAD_SHA}" --repo "$OWNER/$REPO" >/dev/null 2>&1 || GRANT_CHECK_RC=$?
+      (( GRANT_CHECK_RC == 1 )) || BUGBOT_AWAITED=1
+    fi
+  fi
+fi
+echo "BUGBOT_AWAITED=$BUGBOT_AWAITED"
+```
 
 ---
 

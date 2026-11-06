@@ -787,16 +787,19 @@ gh api --paginate "repos/{owner}/{repo}/issues/{N}/comments?per_page=100" \
 
 ## Step 7: Check for unresolved findings
 
-Fetch unresolved review threads (first 100 — sufficient for most PRs; if a PR has >100 threads, paginate using `pageInfo.endCursor`):
+Fetch review threads, 100 per page. While `pageInfo.hasNextPage` is `true`, repeat with `-F after=<endCursor>` and collect every page's `nodes` into one array:
 ```bash
-gh api graphql -f query='query {
+gh api graphql -F after=null -f query='query($after: String) {
   repository(owner: "{owner}", name: "{repo}") {
     pullRequest(number: {N}) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
           comments(first: 100) {
+            totalCount
+            pageInfo { endCursor }
             nodes {
               body
               author { login }
@@ -810,9 +813,22 @@ gh api graphql -f query='query {
 }'
 ```
 
-Count unresolved threads from reviewers:
-- Filter for threads where any comment is from one of the review bots — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps`, or the retired `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix)
-- Only count threads where `isResolved == false`
+Count unresolved threads from reviewers by piping the collected thread nodes (one JSON array) through this filter. It selects each unresolved thread once when a returned comment is from a review bot — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps`, or the retired `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix) — **or** when the thread has more comments than were returned:
+
+<!-- test-anchor: go-on-bot-thread-count -->
+```bash
+jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as $bots
+  | [ .[]
+      | select(.isResolved == false)
+      | ((.comments.nodes // []) | length) as $got
+      | ((.comments.totalCount // $got) > $got) as $truncated
+      | select($truncated
+               or any((.comments.nodes // [])[]; (.author.login // "") as $l | $bots | index($l) != null))
+      | {id, truncated: $truncated} ]
+  | {count: length, threads: .}'
+```
+
+**Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
 
 Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
