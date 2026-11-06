@@ -211,8 +211,7 @@ reset
 run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 tests null 600 gha in_progress)")"
 check_eq "false" "$(j .met)"                            "incomplete build CI: not met"
 reset
-FAKE_THREADS='[{"isResolved":false,"comments":{"nodes":[{"databaseId":1,"body":"x","author":{"login":"alice","__typename":"User"}}]}}]'
-export FAKE_THREADS
+export FAKE_THREADS='[{"isResolved":false,"comments":{"nodes":[{"databaseId":1,"body":"x","author":{"login":"alice","__typename":"User"}}]}}]'
 run_gate "$GREEN_11"
 check_eq "false" "$(j .met)"                            "unresolved thread: not met"
 check_eq "yes"   "$(has_missing "unresolved review thread")" "unresolved thread reason kept"

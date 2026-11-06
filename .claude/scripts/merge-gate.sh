@@ -2436,6 +2436,7 @@ esac
 # Any helper failure leaves missing[] untouched (fail closed: nothing waived).
 # --------------------------------------------------------------------------
 NRO_JSON='null'
+# shellcheck source=./lib/no-review-override-apply.sh
 if [[ -r "$SCRIPT_DIR/lib/no-review-override-apply.sh" ]] && source "$SCRIPT_DIR/lib/no-review-override-apply.sh"; then
   nro_apply
 else
