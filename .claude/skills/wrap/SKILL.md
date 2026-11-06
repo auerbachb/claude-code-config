@@ -228,11 +228,41 @@ After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker su
 
 **Merge-ready shortcut:** Run `merge-gate.sh` once before the loop, capturing its stdout into `GATE_JSON` exactly as the loop does. If exit `0` and no `WRAP_PHASE1_FINDINGS` and no half-applied recovery, skip straight to Step 2.2. Capturing is not optional — Step 2.4 reads `merge_state` out of `GATE_JSON`, so a shortcut that discarded the output would leave it unset there.
 
+**Claim renewal before every wait (issue #1927).** A `/fixpr` wait can outlast the claim's stale window, so before **each** Branch B/C/D dispatch below — the first and every later one, including the iterations Step 2.4's `BEHIND` re-entry adds — renew every linked issue whose holder this run was **handed**: the Phase C prompt (`/subagent`) or the `/start-issue` Form B handoff names the issue and its holder. Keep holders per issue; never apply one to every linked issue, never adopt a `claimant_holder` read off GitHub, never use `--claim` as a check.
+
+```bash
+# CLAIM_PAIRS: "<issue> <holder>" lines from the caller; empty in a standalone /wrap.
+CLAIM_PAIRS="${CLAIM_PAIRS:-}"
+if [[ -z "$CLAIM_PAIRS" ]]; then
+  echo "note: no claim holder handed to /wrap — claim not renewed before the wait"
+elif [[ -z "$ISSUE_CLAIM_SH" ]]; then
+  echo "DEGRADED: issue-claim.sh not found (checked all three paths) — claim not renewed"
+else
+  CLAIM_ERR=$(mktemp)
+  while read -r C_ISSUE C_HOLDER; do
+    [[ -n "$C_ISSUE" && -n "$C_HOLDER" ]] || continue
+    for attempt in 1 2; do
+      "$ISSUE_CLAIM_SH" "$C_ISSUE" --renew --holder "$C_HOLDER" >/dev/null 2>"$CLAIM_ERR"; rc=$?
+      [[ "$rc" -eq 0 || "$rc" -eq 5 || "$rc" -eq 2 ]] && break
+    done
+    case "$rc" in
+      0) ;;
+      5) echo "BLOCKED: lost ownership of issue #$C_ISSUE — another thread holds or released the claim; not merging"; WRAP_STOP=1 ;;
+      2) echo "DEGRADED: issue-claim.sh --renew unavailable for #$C_ISSUE: $(head -1 "$CLAIM_ERR")" ;;
+      *) echo "WARN: claim renewal for #$C_ISSUE failed (exit $rc) — continuing to the wait" ;;
+    esac
+  done <<< "$CLAIM_PAIRS"
+  rm -f "$CLAIM_ERR"
+fi
+```
+
+`WRAP_STOP=1` (exit 5) is a **genuine block**: stop and report — do not dispatch the wait, do not merge. Exit 4 (or any other) warns, retries once, and continues; exit 2 is degraded (an older helper, or a usage error its stderr names). The Step 2.4 claim release is unchanged.
+
 **Recovery loop** (`i` from `1` through `$WRAP_RECOVERY_MAX_ITERATIONS`):
 
 1. **Terminal checks** — read PR state via `gh pr view "$PR_NUM" --json state`. `MERGED` → exit for Phase 3. `CLOSED` → stop.
 2. **Refresh gate** — `GATE_JSON=$("$MERGE_GATE_SH" "$PR_NUM")`. Exit `3` → Phase 3. Exit `2`/`4` → surface stderr, stop. Exit `0` with no pending `WRAP_PHASE1_FINDINGS` → proceed to Step 2.2. Exit `0` with `WRAP_PHASE1_FINDINGS` pending → treat as Branch B dispatch (findings still unresolved despite clean gate — delegate to `/fixpr`).
-3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`):
+3. **Exit `1` — classify and dispatch** (first matching branch wins; full per-branch detail in `references/wrap-merge-gate-recovery.md`). Every B/C/D wait dispatch runs the claim renewal above first; its exit 5 stops here:
    - **`human_changes_requested` non-empty** → stop; name each login.
    - **A. Stale bot `CHANGES_REQUESTED`** → invoke `"$DISMISS" "$PR_NUM"`.
    - **`mergeable == CONFLICTING`** → stop; recommend `/merge-conflict`.

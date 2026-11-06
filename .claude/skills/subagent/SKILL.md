@@ -336,11 +336,14 @@ Either signal skips the issue, and the skip line names **which** one fired:
 When both checks pass, **take the claim before spawning Phase A** so it is held for the whole pipeline, not just this step — and **gate the spawn on it succeeding**. A passing `--check` is not a held claim: another thread can win the race between the two calls, and the write itself can fail. Spawning on an unheld claim reopens the exact window this guards:
 
 ```bash
-"$ISSUE_CLAIM" {NUMBER} --claim || {
+CLAIM_JSON=$("$ISSUE_CLAIM" {NUMBER} --claim --json) || {
   echo "Issue #{NUMBER} — could not take the claim; skipping (not spawning Phase A)."; }
+# The exact token this claim was taken with — every later --renew must pass it
+# (Step 8.1). Recorded with the pipeline in Step 7.1; never re-derived later.
+CLAIM_HOLDER=$(printf '%s' "$CLAIM_JSON" | jq -r '.holder // empty')
 ```
 
-Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn.
+Skip the issue on any non-zero exit (`1` = lost the race, `4` = write failed/undetermined), reporting it the same way as a `claimed` verdict. Do not spawn. A held claim whose JSON carries no `.holder` still spawns, with one line saying renewal is off for that issue.
 
 `/wrap` releases it at merge. If the user explicitly says to start a claimed issue anyway — naming that issue, in chat — pass `--allow-claimed` and say in the report that you are overriding a live claim; it is per-issue and per-session, never inferred and never a default. Contract: `.claude/reference/issue-claim.md`.
 
@@ -1082,9 +1085,17 @@ if [[ -z "$LAUNCHED_AT" ]]; then
   # record, monitoring_active, AND this spawn's agent entry. A second call for
   # the agent would leave the pipeline active with no active_agents record
   # whenever that second call failed.
+  # The claim holder from Step 6.0 rides in the same write (Step 8.1 renews with
+  # it). Omitted when unknown — no claim helper, or no .holder in the JSON — and
+  # a pipeline without one is simply never renewed.
+  CLAIM_SET=()
+  [[ -n "$CLAIM_HOLDER" ]] && CLAIM_SET=(
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_holder=$(jq -cn --arg h "$CLAIM_HOLDER" '$h')"
+    --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].claim_renewed_at=$LAUNCHED_AT")
   "$SESSION_STATE_SH" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].started_at=$LAUNCHED_AT" \
     --set ".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"].pr=null" \
+    ${CLAIM_SET[@]+"${CLAIM_SET[@]}"} \
     --set '.monitoring_active=true' \
     "${AGENT_SET[@]}"
 else
@@ -1244,6 +1255,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    re-arms the question, and a **phase transition never elicits a leave time** at all;
    `ELICIT_LEAVE_TIME` is a new-pipeline concern.
    - Parse the Structured Exit Report from its output.
+   - **Renew the issue's claim (Step 8.1) immediately before launching any successor** — A→B, each replacement B, and B→C after `merge_ready`. Exit 5 → launch nothing for that issue: mark it blocked and report lost ownership; other pipelines continue.
    - Execute the appropriate Completion Protocol (see below).
 3. **Check for pending transitions from prior cycles.** Read `session-state.json` for PRs where a phase completed but the next phase was not launched.
 4. **Refill free capacity.** Below the ceiling — slot freed *or* never filled — launch per Step 7's refill rule on this tick: read the refill pause first (Step 7), then chains and re-validation. **Step 0's horizon verdict gates this step**: on `approaching` or `unknown`, launch nothing and report the horizon reason as the idle reason. Report the picks; if a slot stays empty, name why (`/pm` Step 3.4's reasons).
@@ -1493,6 +1505,37 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    with no `started_at`" queued test. Clearing on a refill would delete the queue
    the board is reading.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
+8. **Renew due claims (Step 8.1).** For each active pipeline, renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
+
+### 8.1: Keep each claim renewed (issue #1927)
+
+A pipeline routinely outlasts the claim's stale window (`CLAIM_STALE_HOURS`, default 4h); unrenewed, another thread could read live work as `stale` and take it over. The parent renews — it holds the claim, and its token was captured at Step 6.0. Renew **only** with the pipeline's recorded `claim_holder`: never one derived from the environment or read off a GitHub marker (that may be another thread's), and never `--claim` as a check. Read it through the full repo-scoped path, never `--session-view`:
+
+```bash
+P=".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"]"
+C_HOLDER=$("$SESSION_STATE_SH" --get "$P.claim_holder")
+if [[ -z "$ISSUE_CLAIM" || -z "$C_HOLDER" || "$C_HOLDER" == "null" ]]; then
+  echo "note: issue #{ISSUE_NUMBER} has no recorded claim holder — claim not renewed"
+else
+  C_ERR=$(mktemp)
+  "$ISSUE_CLAIM" {ISSUE_NUMBER} --renew --holder "$C_HOLDER" >/dev/null 2>"$C_ERR"; rc=$?
+  case "$rc" in
+    0) "$SESSION_STATE_SH" --set "$P.claim_renewed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" ;;
+    5) echo "BLOCKED: lost ownership of issue #{ISSUE_NUMBER} — launching no successor" ;;
+    2) echo "DEGRADED: issue-claim.sh --renew unavailable for #{ISSUE_NUMBER}: $(head -1 "$C_ERR") — renewal off for this issue"
+       "$SESSION_STATE_SH" --set "$P.claim_holder=null" ;;
+    *) echo "WARN: claim renewal for #{ISSUE_NUMBER} failed (exit $rc) — retrying next tick" ;;
+  esac
+  rm -f "$C_ERR"
+fi
+```
+
+- **`0`** — continue; `claim_renewed_at` restarts the 30-minute clock.
+- **`5`** — ownership lost. Launch no successor for that issue, mark it blocked, report it; the other pipelines continue. A running phase agent is not killed — its PR is still yours — but nothing new starts on an issue another thread now holds.
+- **`4`/other** — warn and let a due transition proceed; `claim_renewed_at` is left alone, so the next tick retries.
+- **`2`** — degraded (an older helper, or a usage error its first stderr line names); the holder is cleared, so that issue is not renewed again. Item 8 skips holder-less pipelines silently; only a successor launch prints the note.
+
+Phase C's prompt carries the issue and holder so `/wrap` renews before its own waits (Step 9).
 
 ### Permitted activities in monitor mode:
 - Poll subagent status
@@ -1630,6 +1673,9 @@ Execute the canonical `/wrap` flow after verification — no pre-merge prompt.
 
 ## Handoff File
 Resolve the path with `handoff-state.sh --owner-repo {owner}/{repo} --path {PR_NUMBER}` and read that file first.
+
+## Claim
+Issue #{ISSUE_NUMBER} is claimed with holder `{CLAIM_HOLDER}`. Hand `/wrap` this pair (`CLAIM_PAIRS="{ISSUE_NUMBER} {CLAIM_HOLDER}"`) so it renews before each wait; its exit 5 means ownership was lost — stop with `OUTCOME: blocked`, do not merge. (Parent: when the pipeline has no recorded `claim_holder`, **omit this whole section** — never substitute a placeholder, which `--renew` would read as a foreign holder and stop on — and `/wrap` runs with an empty `CLAIM_PAIRS`, skipping renewal with a note.)
 
 ## Guardrails (MANDATORY)
 **Read `subagent-phase-guardrails.md` (Step 0 candidate order) and insert the RESOLVE and SAFETY blocks verbatim at this point** (Phase C / `phase-c-merger` carries only those two — no MINDSET or SKILLS).

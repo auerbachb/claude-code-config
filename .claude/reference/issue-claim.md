@@ -103,13 +103,21 @@ A claim is aged from its marker's GitHub `created_at`, so before #1914 a live th
 | new marker missing on re-read, no newer winner | `unknown`/4 `renew-unverified` |
 | cleanup delete failed | still a renewal; stderr warns a duplicate remains — inert (the newest wins) and removed by the next renewal or release |
 
-**Output.** JSON adds `renewed`, `previous_claimed_at` (the replaced marker's `created_at`), and `claimed_since` (the original pickup time). After a renewal `claimed_at` is the new marker's GitHub `created_at`, never the local clock. The renewed marker's payload carries `since` — the old marker's `since`, else its `created_at` — so the pickup time survives any number of renewals; staleness still reads `created_at` only. `estimate-log.sh` still reads the marker's `created_at` as its start time; preferring `since` there is follow-up work (#1927).
+**Output.** JSON adds `renewed`, `previous_claimed_at` (the replaced marker's `created_at`), and `claimed_since` (the original pickup time). After a renewal `claimed_at` is the new marker's GitHub `created_at`, never the local clock. The renewed marker's payload carries `since` — the old marker's `since`, else its `created_at` — so the pickup time survives any number of renewals; staleness still reads `created_at` only. `estimate-log.sh` takes its start time from a valid payload `since` (exact `YYYY-MM-DDTHH:MM:SSZ`, not after the marker), else the marker's `created_at`, so a renewal never shortens the measured duration (#1927).
 
 **Residual race.** A takeover that read the claim as stale *before* the renewal can still post after the renewal verified. Verification catches it only if it lands first. Renewing inside the stale window — the default threshold — is what keeps that window closed in practice; `renewed-after-expiry` names the case where it was already open.
 
 **Mixed versions.** An older helper rejects `--renew` with usage exit `2` (callers report a degraded state), and its `--claim` keeps the old same-holder no-op. Both read renewed markers correctly, since the extra `since` field is ignored and the newest `created_at` still wins.
 
-**Caller convention.** Long-running work renews with `--renew --holder <the holder it claimed with>` at phase transitions and at a low cadence (e.g. every 30 min, never every poll tick). Exit `5` → stop and report lost ownership; `4` → warn and retry at the next cadence; `2` → the helper predates renewal, report degraded. Wiring this into `/subagent`, `/start-issue`, `/wrap`, and the chip Form B prose is tracked in #1927.
+**Caller convention.** Long-running work renews with `--renew --holder <the holder it claimed with>` at phase transitions and at a low cadence (e.g. every 30 min, never every poll tick). Exit `5` → stop and report lost ownership; `4` → warn and retry at the next cadence; `2` → the helper predates renewal, report degraded (with its first stderr line — `2` is also a usage error). Other non-zero → as `4`. Renew only with a holder captured at claim time or handed over by a trusted caller — never one read off a GitHub marker (that may be another thread's), and never `--claim` as a check.
+
+Wired callers (#1927):
+
+| Caller | Holder source | Renews |
+|---|---|---|
+| `/subagent` | `.holder` from its Step 6.0 `--claim --json`, stored as `claim_holder` in the issue-keyed pipeline entry | before every successor launch (A→B, replacement B, B→C) and from the monitor loop when `claim_renewed_at` is ≥30 min old; Phase C's prompt carries the pair to `/wrap` |
+| `/start-issue` → coding thread | `CLAIM_HOLDER`, handed over in the Form B Constraints bullet | Form B reaffirm (renews when due), then before each review/CI wait; hands the pair to `/wrap` |
+| `/wrap` | only a pair its caller handed over | before each Step 2.1 `/fixpr` wait dispatch; none handed over → skip with a one-line note. Release unchanged |
 
 ## Override
 

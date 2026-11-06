@@ -39,6 +39,7 @@ opt-in of issue #1544.
 | [churn-hotspot-wrap-plan.test.sh](../tests/churn-hotspot-wrap-plan.test.sh) | Tests `/wrap` hotspot suppression, material-growth, evidence, re-file, unknown-state, and aggregate classification |
 | [churn-hotspots.test.sh](../tests/churn-hotspots.test.sh) | Tests for `churn-hotspots.sh` |
 | [ci-status.test.sh](../tests/ci-status.test.sh) | Tests for `ci-status.sh` |
+| [claim-renewal-wiring.test.sh](../tests/claim-renewal-wiring.test.sh) | Asserts /subagent, /start-issue and /wrap renew the claim at their documented points, stop on exit 5, and that Form B stays identical in both copies |
 | [claude-config-sync.test.sh](../tests/claude-config-sync.test.sh) | Tests `claude-config-sync.sh` against a real local origin + clone — stale-machine catch-up, the restart marker and its startup clear, the failure counter/threshold/recovery, the lock-contention skip, and the root-repo scope guard |
 | [clean-behind-check.test.sh](../tests/clean-behind-check.test.sh) | Tests for `clean-behind-check.sh` |
 | [compaction-resume-polling-state-gate.test.sh](../tests/compaction-resume-polling-state-gate.test.sh) | Tests `polling-state-gate.sh --verify-state` after synthetic post-compaction recovery |
@@ -62,6 +63,7 @@ opt-in of issue #1544.
 | [escalate-review-paid-denied.test.sh](../tests/escalate-review-paid-denied.test.sh) | No-paid-review verdict tests for `escalate-review.sh`: no_reviewer, never switch_bugbot/trigger_greptile |
 | [escalate-review-silent-exit.test.sh](../tests/escalate-review-silent-exit.test.sh) | Loud-exit contract tests for `escalate-review.sh` — every non-zero exit emits exactly one `escalate-review.sh: …` stderr diagnostic, the `EXIT` trap normalizes a raw 126/127 to exit 4 without fabricating a `STATUS=` verdict, and a negative control reproduces the pre-fix zero-output 126 on a copy with only the trap line removed |
 | [escalate-review-tier-gate.test.sh](../tests/escalate-review-tier-gate.test.sh) | Review-tier `tier_gate` verdict tests for `escalate-review.sh` |
+| [estimate-log.test.sh](../tests/estimate-log.test.sh) | Tests for `estimate-log.sh`: a renewed claim marker's payload `since` sets the start time; invalid values fall back to `created_at` |
 | [estimate-resolve.test.sh](../tests/estimate-resolve.test.sh) | Tests for `estimate-resolve.sh`, including the empty-`GH_ARGS` unbound-variable regression |
 | [fixpr-step3b-daily-cap.test.sh](../tests/fixpr-step3b-daily-cap.test.sh) | Runs `/fixpr` Step 3b's real `@cursor review` decision (fixpr-reviewer-triggers.sh, legacy path) against stubs — the daily-cap skip appends its `## Review notes` line once per HEAD, ok/unknown/missing post, and the tier and refused-HEAD skips still win |
 | [fixpr-step3b-pushed-sha.test.sh](../tests/fixpr-step3b-pushed-sha.test.sh) | Static guard that `/fixpr` Step 3b hands the post-push `PUSHED_SHA` to `fixpr-reviewer-triggers.sh`, which passes it to `bugbot-refused-head.sh` and the review-tier helper, never the pre-push `HEAD_SHA` |
