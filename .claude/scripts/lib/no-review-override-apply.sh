@@ -18,6 +18,22 @@
 # failing — leaves MISSING[] exactly as the normal gate built it.
 # Sets NRO_JSON (the gate's `no_review_override` output field).
 
+# nro_review_evidence — run review-substance.sh over the gate's fetched payloads
+# (same input shape merge-gate.sh builds) for paths where the gate skipped it.
+# Prints the evidence object; non-zero on any failure, so the caller keeps
+# hollow=[] (no approval discounted — the override cannot fire on it).
+nro_review_evidence() {
+  local evaluator="$SCRIPT_DIR/review-substance.sh" ev
+  [[ -x "$evaluator" ]] || return 1
+  ev=$(printf '%s\n%s\n%s\n%s\n' "${REVIEWS_JSON:-[]}" "${PR_COMMENTS_JSON:-[]}" "${ISSUE_COMMENTS_JSON:-[]}" "${RESOLVED_COMMENT_IDS:-[]}" \
+    | jq -cs --arg sha "$HEAD_SHA" --arg push "${LAST_COMMIT_TS:-}" \
+        '{head_sha: $sha, push_ts: $push, reviews: .[0], pr_comments: .[1], issue_comments: .[2],
+          resolved_comment_ids: .[3]}' 2>/dev/null \
+    | "$evaluator" 2>/dev/null) || return 1
+  printf '%s' "$ev" | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1 || return 1
+  printf '%s' "$ev"
+}
+
 nro_apply() {
   NRO_JSON='null'
   local helper="$SCRIPT_DIR/no-review-override.sh"
@@ -32,6 +48,13 @@ nro_apply() {
   blockers=$(jq -cn --args '$ARGS.positional | map(select(length > 0))' -- "${review_reasons[@]:-}")
   local evidence="${REVIEW_EVIDENCE:-}" hollow
   [[ -n "$evidence" ]] || evidence='{}'
+  # The gate computes review_evidence only on the cr and bugbot paths, so on the
+  # Greptile path (or a degraded bugbot one) it is `{}` and every hollow HEAD
+  # approval would read as a verdict (issue #1932). Evaluate it here instead.
+  # A failure keeps hollow=[] — every approval stays a verdict, override off.
+  if ! printf '%s' "$evidence" | jq -e 'type == "object" and (.reviewers | type == "object")' >/dev/null 2>&1; then
+    evidence=$(nro_review_evidence) || evidence='{}'
+  fi
   hollow=$(printf '%s' "$evidence" | jq -c '(.hollow // []) | if type == "array" then . else [] end' 2>/dev/null) || hollow='[]'
   [[ -n "$hollow" ]] || hollow='[]'
   # Raw (undeduped) runs: the anchor wants every run's started_at.
