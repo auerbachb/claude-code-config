@@ -140,8 +140,8 @@ echo "== no ## Review policy: the legacy loop, unchanged, with the helper presen
 reset "$(tier_json absent legacy)"
 run
 check_eq "exit 0" "0" "$RC"
-check_eq "all four triggered" "triggered,triggered,triggered,triggered" "$(statuses)"
-check_eq "posted in the legacy order" "@codeant-ai review;@coderabbitai full review;@cursor review;@graphite-app re-review;" "$(posted)"
+check_eq "the three free reviewers triggered; cursor the owner-approval skip (#1897)" "triggered,triggered,skipped-approval-required,triggered" "$(statuses)"
+check_eq "posted in the legacy order, no @cursor review" "@codeant-ai review;@coderabbitai full review;@graphite-app re-review;" "$(posted)"
 
 echo "== ci-only: nothing posted, and clean =="
 reset "$(tier_json present ci-only)"
@@ -175,26 +175,27 @@ check_eq "nothing posted" "" "$(posted)"
 check_eq "deferred is NOT clean" "false" "$(jq -r .clean <<<"$OUT")"
 checks success 7200
 run
-check_eq "green and settled: codeant and cursor triggered" "triggered,skipped-tier-excluded,triggered,skipped-tier-excluded" "$(statuses)"
-check_eq "posted" "@codeant-ai review;@cursor review;" "$(posted)"
+check_eq "green and settled: codeant triggered, cursor the approval skip" "triggered,skipped-tier-excluded,skipped-approval-required,skipped-tier-excluded" "$(statuses)"
+check_eq "posted" "@codeant-ai review;" "$(posted)"
 export FIXTURE_HEAD="$HEAD2"
 checks success 1800
 run
-check_eq "new settled HEAD: the second BugBot invitation" "@codeant-ai review;@cursor review;@cursor review;" "$(posted)"
+check_eq "new settled HEAD: still no BugBot invitation" "@codeant-ai review;" "$(posted)"
 check_eq "  codeant stays at one" "skipped-tier-excluded" "$(st codeant)"
 export FIXTURE_HEAD="$HEAD"
 checks success 900
 run
-check_eq "third settled HEAD: BugBot capped at two" "skipped-tier-excluded" "$(st cursor)"
-check_eq "  nothing new posted" "@codeant-ai review;@cursor review;@cursor review;" "$(posted)"
+check_eq "third settled HEAD: cursor still the approval skip (no lifetime cap reached)" "skipped-approval-required" "$(st cursor)"
+check_eq "  nothing new posted" "@codeant-ai review;" "$(posted)"
 
 echo "== full: a failed post releases its claim =="
 reset "$(tier_json present full)"
-export FIXTURE_POST_FAIL="@cursor review"
+# Retargeted to CodeAnt (issue #1897): BugBot is never claimed any more.
+export FIXTURE_POST_FAIL="@codeant-ai review"
 run
-check_eq "cursor trigger-failed" "trigger-failed" "$(st cursor)"
-check_eq "the claim was released" "0" "$(ledger cursor)"
-check_eq "codeant still posted and claimed" "1" "$(ledger codeant)"
+check_eq "codeant trigger-failed" "trigger-failed" "$(st codeant)"
+check_eq "the claim was released; no cursor claim was made" "0:null" "$(ledger codeant):$(ledger cursor)"
+check_eq "cursor the approval skip" "skipped-approval-required" "$(st cursor)"
 
 echo "== full: the CodeRabbit fallback stays behind the hourly cap =="
 reset "$(tier_json present full)"
@@ -210,7 +211,7 @@ check_eq "  @coderabbitai full review posted" "yes" "$(grep -qFx '@coderabbitai 
 echo "== --dry-run evaluates, never claims =="
 reset "$(tier_json present full)"
 run --dry-run
-check_eq "codeant and cursor would trigger" "dry-run-would-trigger:dry-run-would-trigger" "$(st codeant):$(st cursor)"
+check_eq "codeant would trigger, cursor is the approval skip" "dry-run-would-trigger:skipped-approval-required" "$(st codeant):$(st cursor)"
 check_eq "nothing posted" "" "$(posted)"
 check_eq "nothing claimed" "null" "$(ledger codeant)"
 

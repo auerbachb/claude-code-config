@@ -83,7 +83,7 @@ GATE_EXIT=$?
 - Exit `3` → PR not found (already merged/closed). Stop.
 - Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 
-If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger the matching bot re-review (`@coderabbitai full review` or `@greptileai`) and wait for a fresh current-HEAD approval.
+If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger only a listed bot that can satisfy the code-owner requirement: `coderabbitai[bot]` listed → `@coderabbitai full review`, then wait for a fresh current-HEAD approval. When `greptile-apps[bot]` is the bot the requirement needs, a Greptile re-review (`@greptileai`) is paid — post it only with the owner's explicit approval in chat (issue #1897); without that approval, stop and report the blocker.
 
 Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to `merge-gate.sh` to override — those three are `merge-gate.sh`'s complete set (it rejects anything else with exit `2`), and it is a different flag from `reply-thread.sh`'s five-mode `--reviewer cr|bugbot|greptile|codeant|graphite`.
 

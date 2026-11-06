@@ -249,14 +249,14 @@ write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMP
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action marked-ready" "marked-ready" "$(jq -r '.draft_action' <<<"$OUT")"
-check_eq "actions=5" "5" "$(jq -r '.actions' <<<"$OUT")"
+check_eq "actions=4 (ready + 3 free triggers; BugBot needs owner approval)" "4" "$(jq -r '.actions' <<<"$OUT")"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "coderabbit triggered" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "cursor skipped: paid review needs owner approval (#1897)" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "graphite triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
 check_eq "ready was called" "1" "$(actions | grep -c '^READY 493$')"
-check_eq "4 comments posted" "4" "$(actions | grep -c '^COMMENT 493 ::')"
+check_eq "3 comments posted (no @cursor review)" "3" "$(actions | grep -c '^COMMENT 493 ::')"
 check_eq "cr trigger literal" "1" "$(actions | grep -cF 'COMMENT 493 :: @coderabbitai full review')"
 check_eq "no greptile trigger" "0" "$(actions | grep -ciF 'greptile')"
 
@@ -288,7 +288,7 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action skipped-not-author" "skipped-not-author" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
-check_eq "4 reviewers triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "3 free reviewers triggered" "3" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 
 ############################################################################
@@ -299,10 +299,10 @@ OUT=$(CR_CHECK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "codeant triggered" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "cursor skipped: paid review needs owner approval (#1897)" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "graphite triggered" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "2 comments posted" "2" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 4b: CR per-PR cap (--peek-explicit fails) → skip CR only =="
@@ -312,7 +312,7 @@ OUT=$(CR_PEEK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "3 comments posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "2 comments posted" "2" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 4c: dry-run also respects CR per-PR cap (Fix B coverage) =="
@@ -367,7 +367,7 @@ write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMP
 OUT=$(run_json 493 --dry-run); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action would-mark-ready (dry-run)" "would-mark-ready" "$(jq -r '.draft_action' <<<"$OUT")"
-check_eq "reviewers dry-run-would-trigger" "dry-run-would-trigger" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "dry-run: cursor is the approval skip, never a would-trigger" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "no real ready" "0" "$(actions | grep -c '^READY')"
 check_eq "no real comments" "0" "$(actions | grep -c '^COMMENT')"
 
@@ -400,7 +400,7 @@ OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "draft_action skipped-auth-unknown" "skipped-auth-unknown" "$(jq -r '.draft_action' <<<"$OUT")"
 check_eq "no ready called" "0" "$(actions | grep -c '^READY')"
-check_eq "4 reviewers triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "3 free reviewers triggered" "3" "$(actions | grep -c '^COMMENT')"
 check_eq "clean=false" "false" "$(jq -r '.clean' <<<"$OUT")"
 export GH_USER="me"  # restore
 
@@ -423,10 +423,10 @@ check_eq "exit 0" 0 "$RC"
 check_eq "head_sha reported" "$HEAD_SHA" "$(jq -r '.head_sha' <<<"$OUT")"
 check_eq "stale codeant NOT already-present" "triggered" "$(jq -r '.reviewers.codeant.status' <<<"$OUT")"
 check_eq "stale coderabbit NOT already-present" "triggered" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
-check_eq "stale cursor NOT already-present" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "stale cursor NOT already-present — reaches the approval skip" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
 check_eq "stale graphite NOT already-present" "triggered" "$(jq -r '.reviewers.graphite.status' <<<"$OUT")"
 check_eq "clean=false (pre-#576 said true)" "false" "$(jq -r '.clean' <<<"$OUT")"
-check_eq "all 4 re-triggered" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "the 3 free reviewers re-triggered" "3" "$(actions | grep -c '^COMMENT')"
 check_eq "still no greptile" "0" "$(actions | grep -ciF 'greptile')"
 
 ############################################################################
@@ -555,7 +555,7 @@ OUT=$(CR_PEEK_RC=1 run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
 check_eq "coderabbit skipped-rate-cap (cap NOT bypassed)" "skipped-rate-cap" "$(jq -r '.reviewers.coderabbit.status' <<<"$OUT")"
 check_eq "no CR trigger posted" "0" "$(actions | grep -cF '@coderabbitai full review')"
-check_eq "other 3 posted" "3" "$(actions | grep -c '^COMMENT')"
+check_eq "the other 2 free reviewers posted" "2" "$(actions | grep -c '^COMMENT')"
 
 ############################################################################
 echo "== Scenario 18: HEAD commit date unavailable → degrade, no trigger storm =="
@@ -614,12 +614,12 @@ enable_state_dedupe
 view_ready; commit_ok; no_checks
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493)
-check_eq "first run triggers all 4" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "first run triggers the 3 free reviewers" "3" "$(actions | grep -c '^COMMENT')"
 check_eq "marker records HEAD sha" "$HEAD_SHA" "$(jq -r '.prs["493"].preflight_trigger_head_sha' "$STATE_JSON")"
 # Second run: GitHub has not yet surfaced our comments (fixtures still empty).
 OUT=$(run_json 493)
 check_eq "second run posts nothing (dedupe held)" "0" "$(actions | grep -c '^COMMENT')"
-check_eq "second run all already-present" "already-present already-present already-present already-present" \
+check_eq "second run: free reviewers already-present, cursor still the approval skip" "already-present already-present skipped-approval-required already-present" \
   "$(jq -r '[.reviewers[].status] | join(" ")' <<<"$OUT")"
 
 echo "== Scenario 19a: --dry-run writes NO dedupe state =="
@@ -649,7 +649,7 @@ echo "== Scenario 19b: dedupe marker is invalidated when HEAD moves =="
 NEW_SHA="newsha00000000000000000000000000000003"
 write_view "{\"isDraft\":false,\"author\":{\"login\":\"me\"},\"state\":\"OPEN\",\"headRefOid\":\"$NEW_SHA\"}"
 OUT=$(run_json 493)
-check_eq "new HEAD re-triggers all 4" "4" "$(actions | grep -c '^COMMENT')"
+check_eq "new HEAD re-triggers the 3 free reviewers" "3" "$(actions | grep -c '^COMMENT')"
 check_eq "marker now tracks the new sha" "$NEW_SHA" "$(jq -r '.prs["493"].preflight_trigger_head_sha' "$STATE_JSON")"
 
 echo "== Scenario 19c: HEAD moves again; only the ONE stale reviewer is triggered =="
@@ -838,14 +838,14 @@ check_eq "actions=0" "0" "$(jq -r '.actions' <<<"$OUT")"
 check_eq "no comments posted" "0" "$(actions | grep -c '^COMMENT')"
 
 for gate in full legacy; do
-  echo "== Scenario T3: gate $gate → cursor triggered, exactly as today =="
+  echo "== Scenario T3: gate $gate → cursor is the owner-approval skip (#1897) =="
   use_tier "$(tier_json "$gate")"
   view_ready; commit_ok; no_checks; no_timeline
   write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
   OUT=$(run_json 493); RC=$?
   check_eq "exit 0" 0 "$RC"
-  check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-  check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+  check_eq "cursor skipped: owner approval required" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+  check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
 done
 
 echo "== Scenario T4: FAILS OPEN — the resolver fails → cursor triggered =="
@@ -854,8 +854,8 @@ view_ready; commit_ok; no_checks; no_timeline
 write_reviews "$EMPTY"; write_pull_comments "$EMPTY"; write_issue_comments "$EMPTY"
 OUT=$(run_json 493); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "cursor triggered" "triggered" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
-check_eq "@cursor review posted" "1" "$(actions | grep -cF '@cursor review')"
+check_eq "cursor skipped: owner approval required" "skipped-approval-required" "$(jq -r '.reviewers.cursor.status' <<<"$OUT")"
+check_eq "no @cursor review posted" "0" "$(actions | grep -cF '@cursor review')"
 check_eq "the resolver was actually consulted" "1" "$(grep -c . "$TIER_CALLS" | tr -d ' ')"
 
 echo "== Scenario T5: --dry-run on gate ci-only reports the skip, not a would-trigger =="

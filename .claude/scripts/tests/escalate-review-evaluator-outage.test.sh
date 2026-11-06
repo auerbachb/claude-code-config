@@ -161,7 +161,7 @@ break_evaluator_missing
 outage_fixture "$PAST_CAP_AGE"
 OUT=$(run_script 2>"$TMP/c-stderr.txt"); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 # The resumed path is announced too, so a `DEGRADED:` grep sees the whole outage
 # rather than only the half where spending was suppressed.
 check_stderr_has "(c) resumption announced" "$TMP/c-stderr.txt" \
@@ -196,7 +196,7 @@ FAILURE_COMMENT_E="$(failure_comment "$(ts_seconds_ago 60)")"
 write_state "[$BUGBOT_CHECK_RUN_OK]" "[$CA_HOLLOW_E]" "[]" "[$FAILURE_COMMENT_E]"
 OUT=$(run_script 2>"$TMP/e-stderr.txt"); RC=$?
 check_eq "exit 0" 0 "$RC"
-check_eq "STATUS=trigger_greptile" "STATUS=trigger_greptile" "$OUT"
+check_eq "STATUS=no_reviewer paid_route=trigger_greptile" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 check_stderr_has "(e) the hollow-approval guard is what withheld" "$TMP/e-stderr.txt" \
   "no reviewer holds BOTH a valid APPROVED on HEAD and substantive review evidence"
 check_stderr_lacks "(e) an adjudicated verdict is not an outage" "$TMP/e-stderr.txt" "DEGRADED:"
@@ -301,7 +301,7 @@ echo "== Scenario (f3): one second PAST the cap -> escalation resumes =="
 outage_fixture "$JUST_PAST_CAP_AGE"
 OUT=$(run_script 2>"$TMP/f3-stderr.txt"); RC=$?
 check_eq "(f3) exit 0" 0 "$RC"
-check_eq "(f3) STATUS=trigger_greptile one second past the cap" "STATUS=trigger_greptile" "$OUT"
+check_eq "(f3) Greptile point (no_reviewer) one second past the cap" "STATUS=no_reviewer paid_route=trigger_greptile" "$OUT"
 check_stderr_has "(f3) resumption announced" "$TMP/f3-stderr.txt" \
   "outage window of 3600s exceeded"
 check_stderr_lacks "(f3) suppression did NOT fire past the cap" "$TMP/f3-stderr.txt" \
@@ -375,8 +375,11 @@ break_evaluator_missing   # keep $STUB_DIR consistent with the fixture below
 outage_fixture "$INSIDE_CAP_AGE"
 BASE_OUT=$( cd "$REPO_ROOT" && bash "$BASE_DIR/escalate-review.sh" "$PR_NUM" 2>"$TMP/base-stderr.txt" ); BASE_RC=$?
 check_eq "control: exit 0" 0 "$BASE_RC"
-check_eq "control: pre-change script emits trigger_greptile (the #1465 bug)" \
-  "STATUS=trigger_greptile" "$BASE_OUT"
+# Since issue #1897 that paid hand-off prints no_reviewer; stderr names it.
+check_eq "control: pre-change script reaches the Greptile point (the #1465 bug)" \
+  "STATUS=no_reviewer" "$BASE_OUT"
+check_stderr_has "control: …and it is the Greptile point" "$TMP/base-stderr.txt" \
+  "paid_route=trigger_greptile"
 # It got there through the SAME outage, not through some other failure the
 # reconstruction introduced.
 check_stderr_has "control: same outage drove it" "$TMP/base-stderr.txt" \

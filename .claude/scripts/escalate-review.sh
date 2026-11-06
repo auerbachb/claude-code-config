@@ -24,35 +24,39 @@
 #                             stated retry window is still open (issue #1199), and
 #                             while review-substance.sh is unusable and the PR is
 #                             inside the evaluator-outage cap (issue #1465)
-#     STATUS=switch_bugbot    BugBot has responded — OR BugBot was never invited
-#                             (no footprint on HEAD and no fresh `@cursor review`
-#                             trigger comment). Make BugBot the sticky reviewer;
-#                             when it has no footprint yet, post the manual
-#                             `@cursor review` trigger before polling
+#     STATUS=no_reviewer      a PAID reviewer (BugBot or Greptile) would be next, and
+#                             paid reviews need the owner's explicit approval in
+#                             chat (issue #1897). Nothing was posted and merge is
+#                             NOT authorized: post no `@cursor review` and no
+#                             `@greptileai`, never retry a paid trigger, keep the
+#                             reviewer `cr`, and keep polling — CodeRabbit's free
+#                             allowance may return, and merge-gate.sh's no-review
+#                             override (issue #1899) turns this into gate_met once
+#                             its window passes. stderr names the paid verdict this
+#                             replaced (`paid_route=switch_bugbot|trigger_greptile`)
+#                             — the seam the per-review approval path (issue
+#                             #1898) hooks. Emitted where switch_bugbot or
+#                             trigger_greptile used to be, BEFORE the Greptile
+#                             budget is read, so budget_exhausted is unreachable
 #     STATUS=tier_gate        the PR's review tier excludes BugBot (gate ci-only or
 #                             ci+codeant-one-round, issue #1728), so the tier, not
 #                             this chain, governs it. Emitted INSTEAD of
-#                             switch_bugbot, at the same two points: do NOT make
-#                             BugBot the reviewer and do NOT post `@cursor review`;
-#                             trigger nothing, keep the current reviewer, and keep
-#                             polling — merge-gate.sh applies the tier's gate. Not
-#                             a stop and not self-review. An unresolvable tier
-#                             emits switch_bugbot as before (fail-open).
+#                             no_reviewer at the BugBot point: trigger nothing,
+#                             keep the current reviewer, and keep polling —
+#                             merge-gate.sh applies the tier's gate. Not a stop and
+#                             not self-review. An unresolvable tier emits
+#                             no_reviewer (fail-open to the cheaper verdict).
 #                             ALSO emitted, with the same meaning, when the repo
 #                             turned escalation off (REVIEW_ESCALATION=off in
-#                             `## Review policy`, issue #1807): on ANY gate,
-#                             full and legacy included, in place of switch_bugbot
-#                             AND of trigger_greptile / budget_exhausted. The
+#                             `## Review policy`, issue #1807): on ANY gate, full
+#                             and legacy included, at both paid points. The
 #                             Greptile budget is then never read or consumed. A
 #                             full PR needs a CodeRabbit or CodeAnt APPROVED on
 #                             HEAD, with no fallback reviewer
-#     STATUS=trigger_greptile CR failed AND BugBot either failed outright or was
-#                             invited and then timed out; trigger Greptile. NOT
-#                             emitted for a BugBot that was never invited — that
-#                             case is switch_bugbot (or tier_gate) above — nor
-#                             when escalation is off (tier_gate instead)
-#     STATUS=budget_exhausted Greptile budget is exhausted; do not trigger Greptile.
-#                             Not emitted when escalation is off (tier_gate)
+#     STATUS=switch_bugbot, STATUS=trigger_greptile, STATUS=budget_exhausted
+#                             RETIRED as autonomous verdicts (issue #1897): this
+#                             script no longer emits them. Consumers keep a
+#                             defensive arm that routes them to no_reviewer
 #     STATUS=self_review      PR is already marked for self-review fallback
 #
 # EXIT STATUS
@@ -164,7 +168,7 @@ emit() {
 # switch, so every earlier verdict keeps its precedence, the Greptile branches
 # are untouched, and no other cycle pays for the lookup.
 #
-# FAILS OPEN to switch_bugbot — a missing helper, an unresolvable tier, or any
+# FAILS OPEN to the paid-point verdict (no_reviewer since #1897) — a missing helper, an unresolvable tier, or any
 # exit but 0 (full and legacy are exit 1). `|| tier_rc=$?` keeps a failing or
 # unlaunchable helper (126/127) away from `set -e` and the EXIT trap: an
 # unreadable policy has a defined answer here, the pre-#1728 one.
@@ -194,7 +198,19 @@ emit_unless_override() { # <paid verdict>
     echo "escalate-review.sh: merge gate met via the no-review override on HEAD — gate_met, not $1; no paid reviewer is invited (issue #1899)" >&2
     emit "gate_met"
   fi
-  emit "$1"
+  paid_review_denied "$1"
+}
+
+# The ONE place a paid hand-off is refused (issue #1897). The owner's policy:
+# no paid AI review without explicit approval in chat, and nothing this script
+# reads can carry that approval — so there is no flag, variable, or state
+# marker that lets a paid verdict through. The per-review approval path (issue
+# #1898) replaces this body; every caller already routes through here.
+# `paid_route=` names the verdict that would have been emitted, so a reader
+# (and the regression suites) can still tell the two hand-off points apart.
+paid_review_denied() { # <paid verdict it replaces>
+  echo "escalate-review.sh: paid_route=$1 — a paid review (BugBot or Greptile) needs the owner's explicit approval in chat; nothing was posted, merge is not authorized, do not retry a paid trigger — no_reviewer (issue #1897)" >&2
+  emit "no_reviewer"
 }
 
 emit_switch_bugbot() {
@@ -1263,15 +1279,7 @@ if escalation_off; then
   emit "tier_gate"
 fi
 
-BUDGET_CHECK_RC=0
-BUDGET_JSON="$("$GREPTILE_BUDGET" --check 2>/dev/null)" || BUDGET_CHECK_RC=$?
-if [[ $BUDGET_CHECK_RC -ge 2 ]]; then
-  die 4 "failed to check Greptile budget"
-fi
-
-BUDGET_EXHAUSTED="$(jq -r '.exhausted == true' <<<"$BUDGET_JSON")"
-if [[ "$BUDGET_EXHAUSTED" == "true" ]]; then
-  emit "budget_exhausted"
-fi
-
+# Greptile point (issue #1897). Greptile bills per review, so it is refused
+# BEFORE its budget is read: budget_exhausted is unreachable, and the budget
+# ledger is never consumed or even consulted on an autonomous cycle.
 emit_unless_override "trigger_greptile"

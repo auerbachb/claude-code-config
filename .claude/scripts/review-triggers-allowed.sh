@@ -37,7 +37,8 @@
 #   legacy       The repo has no `## Review policy` (review-tier.sh policy
 #                "absent"). Nothing else is read and `reviewers` is null:
 #                callers run their unchanged pre-#1749 code. A claim or a
-#                release in this mode is a no-op that exits 0.
+#                release in this mode is a no-op that exits 0 — except a
+#                cursor claim, denied `approval_required` (exit 1, issue #1897).
 #   tiered       A policy is present (or invalid, which resolves to `full`).
 #                The per-reviewer decisions below apply.
 #   fail_closed  The tier could not be resolved and the local checkout either
@@ -64,7 +65,11 @@
 #                `refused_head` when BugBot already refused this HEAD for a
 #                usage limit (bugbot-refused-head.sh, fail-open); deferred
 #                `daily_cap` when review-daily-cap.sh answers a validated
-#                `over` — asked LAST, `unknown` posts; then allowed.
+#                `over` — asked LAST, `unknown` posts; then excluded
+#                `approval_required` (issue #1897): BugBot is paid, and no
+#                paid review starts without the owner's approval in chat.
+#                Every gate therefore denies cursor; the guards above stay
+#                live for approved spend (issue #1898).
 #                coderabbit: only as the CodeAnt-unavailable fallback —
 #                allowed `codeant_unavailable` once CodeAnt was invited and
 #                no CodeAnt artifact appeared within the timeout (after the CI
@@ -317,6 +322,12 @@ base_json() {
 
 if [[ "$MODE" == "legacy" ]]; then
   OUT="$(base_json)"
+  if [[ "$CLAIM" == "cursor" ]]; then
+    # Paid BugBot needs owner approval in chat (issue #1897) — denied in every
+    # mode, legacy included, and no ledger entry is written.
+    printf '%s\n' "$(jq -c '.claim = {reviewer: "cursor", claimed: false, count: null, reason: "approval_required"}' <<<"$OUT")"
+    exit 1
+  fi
   if [[ -n "$CLAIM" ]]; then
     OUT="$(jq -c --arg r "$CLAIM" '.claim = {reviewer: $r, claimed: true, count: null}' <<<"$OUT")"
   fi
@@ -623,6 +634,20 @@ bugbot_guards() { # <decision json> -> decision json
   fi
 }
 
+# Owner approval (issue #1897): BugBot is a paid per-review tool, and no paid
+# review starts without the owner's explicit approval in chat — which nothing
+# this script reads can carry. So the LAST step of the cursor chain turns any
+# answer still `allowed` into excluded `approval_required`. Every earlier
+# reason (tier, lifetime cap, CI, settle, refused_head, daily_cap) keeps its
+# precedence and meaning, so the guards stay live for approved spend (issue
+# #1898 replaces this body). No flag or variable bypasses it.
+paid_approval_gate() { # <decision json> -> decision json
+  local d="$1"
+  [[ "$(jq -r '.reviewers.cursor.allowed' <<<"$d")" == "true" ]] || { printf '%s' "$d"; return 0; }
+  printf '%s' "$d" | jq -c '.reviewers.cursor += {allowed: false, kind: "excluded", reason: "approval_required"}
+    | .allowed -= ["cursor"]'
+}
+
 decide_all() {
   local d
   d="$(evaluate)" || return 1
@@ -630,7 +655,7 @@ decide_all() {
   # A claim for another reviewer never reads cursor's answer, so it spends
   # neither the refusal lookup nor the daily-cap tally.
   if [[ -n "$CLAIM" && "$CLAIM" != "cursor" ]]; then printf '%s' "$d"; return 0; fi
-  bugbot_guards "$d"
+  paid_approval_gate "$(bugbot_guards "$d")"
 }
 
 if [[ -z "$CLAIM" ]]; then
