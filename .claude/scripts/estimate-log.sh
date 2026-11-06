@@ -364,7 +364,12 @@ fetch_claim_ts() {
     | jq -rs --arg merge_ts "$merge_ts" \
          '[ .[] | .[]? | select(.body != null and (.body | contains("<!-- claude-claim:")))
                        | select($merge_ts == "" or .created_at <= $merge_ts) ]
-          | if length > 0 then (sort_by(.created_at) | last).created_at else "" end' \
+          | if length > 0 then (sort_by(.created_at) | last) as $c
+              # A renewed marker (#1914) carries the original pickup time as its
+              # payload `since`; prefer it so renewals do not shorten durations.
+              | ((try ($c.body | capture("<!-- claude-claim: *(?<p>.*?) *-->") | .p | fromjson | .since | select(type == "string" and test("^[0-9]{4}-"))) catch null)
+                 // $c.created_at)
+            else "" end' \
     2>/dev/null || echo "")
 
   if [[ -n "$claim_ts" && "$claim_ts" != "null" && "$claim_ts" != "" ]]; then
