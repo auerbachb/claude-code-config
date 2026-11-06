@@ -775,6 +775,23 @@ check_eq "concurrent same-holder: label kept" "in-progress" "$(cat "$STATE/label
 run 873 --check --holder threadB
 check_eq "concurrent same-holder: other holders still blocked" "claimed" "$OUT"
 
+# Errored-but-landed POST while a release is mid-flight (old marker already
+# deleted, label not yet removed): the landed marker is this run's own, not a
+# sibling renewal's, so it must be withdrawn and the label never re-asserted.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+: > "$STATE/assignees"
+FAKE_COMMENT_POST_MODE=land-error \
+FAKE_AFTER_POST_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" "[ .[] | select(.id != \$old) ]" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"' \
+  run 873 --renew --holder threadA --json
+check_eq "landed+mid-release: exit 5" 5 "$RC"
+check_contains "landed+mid-release: reason released" "released" "$(jq -r .reason <<<"$OUT")"
+check_eq "landed+mid-release: landed marker withdrawn" 0 "$(claim_comment_count)"
+check_eq "landed+mid-release: assignee not re-added" "" "$(cat "$STATE/assignees")"
+
 # The issue closes mid-renewal (merge), old marker still present.
 reset_issue
 FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA

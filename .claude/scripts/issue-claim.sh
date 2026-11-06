@@ -669,6 +669,7 @@ do_renew() {
   if [[ -z "$new_id" ]]; then
     if winner_is_ours "$old_id"; then
       new_id="$W_ID"   # the "failed" POST landed — reconcile it as the renewal
+      post_id="$W_ID"  # ...and it is this run's own marker, never a sibling's
     elif [[ -z "$W_ID" || "$W_ID" == "$old_id" ]]; then
       fail_closed "renew-failed — could not post the renewal marker on issue #$ISSUE_NUMBER (${post_err:-no comment id returned}); the existing marker was left in place — retry"
     fi
@@ -690,8 +691,11 @@ do_renew() {
   # winner is a newer viewer-authored marker of ours that this run did not post,
   # and the label that renewal re-asserted is still present. Withdrawing then
   # would delete the sibling's live marker and leave the issue unclaimed.
+  # post_id is the id this run created (from the POST, or reconciled from an
+  # errored-but-landed POST); with none known the run cannot prove a sibling
+  # exists and withdraws instead — never resurrecting a released claim.
   if (( old_gone && ! issue_closed )) && winner_is_ours "$old_id" \
-     && [[ "$W_ID" != "$post_id" ]] \
+     && [[ -n "$post_id" && "$W_ID" != "$post_id" ]] \
      && [[ "$(printf '%s' "$issue_now" | jq -r --arg l "$CLAIM_LABEL" \
            '[.labels[]?.name] | index($l) != null' 2>/dev/null)" == "true" ]]; then
     concurrent_own=1
