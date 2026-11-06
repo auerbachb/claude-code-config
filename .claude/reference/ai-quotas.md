@@ -57,7 +57,8 @@ this. Existing OAuth refresh behavior remains in place. Do not run `setup-token`
 to inspect its output or store a password to work around expiry.
 
 **Codex diagnosis remains unverified.** On November 6, 2026, a metadata-only audit of
-the actual default/`AI_QUOTAS_HISTORY` outcome paths found seven Codex outcomes, all
+the actual default/`AI_QUOTAS_HISTORY`, configured LaunchAgent history, and reserve
+reader outcome paths found 317 Codex outcomes across two account labels, all
 `ok`, `app-server`, and null error class. No refresh failure was present. The previous
 two bounded ordinary profile reads also succeeded; there is no basis to claim expiry,
 revocation or reuse caused the reported historical logouts. `credential_unavailable`,
