@@ -835,7 +835,7 @@ Body:
 3. Implement the changes.
 4. Run the local dual-CLI review per `cr-local-review.md`: resolve `local-review.sh` per RESOLVE, then run it `--tool coderabbit` AND `--tool codeant` (each emits `{"ok":…,"findings":N,"verified_run":…,"failure_mode":…,"log_path":…}`; raw output stays at `log_path`)
    - Union the findings; fix all valid findings.
-   - Run all available CLIs again. Repeat until each remaining CLI has one clean pass.
+   - Run all available CLIs again. Repeat until each remaining CLI has one clean pass. Exception: CodeAnt findings counted in `contentless_findings` get the flagged-scope review and **no rerun** — when only contentless findings remain, stop and treat CodeAnt as dropped (`.claude/reference/local-review-cli-failure-modes.md` §Contentless CodeAnt findings).
    - If a CLI trips a `local-review.sh` bound (`failure_mode: timeout` — idle or ceiling, per `cr-local-review.md`) or errors twice, drop it for the session, resolve or explicitly waive its pre-drop findings in the PR body, gate on the remaining one, and note the drop.
    - If both are down, do one self-review and note it in the PR body — it exits the local loop but never satisfies the GitHub merge gate.
    - **Before committing/pushing**, classify coverage: `both | cr-only | codeant-only | none` (per `cr-local-review.md` "Coverage classification"). Print `[COVERAGE] <level> — <reason>` in-thread. For any degraded state (`none`, `cr-only`, or `codeant-only`), this line is mandatory and must be visible before the push.
