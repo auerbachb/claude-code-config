@@ -578,6 +578,10 @@ REVIEW_DAILY_CAP_FETCH_JOBS=lots STUB_REPOS="$REG" run bugbot
 check_eq "a bad override warns and reads 6 at once, same answer" "52.14" "$(field spent_usd)"
 check_contains "  stderr names the bad value" "REVIEW_DAILY_CAP_FETCH_JOBS='lots'" "$ERR"
 check_eq "  at most 6 in flight" "yes" "$( [[ "$(inst .peak)" -le 6 ]] && echo yes || echo "no ($(inst .peak))" )"
+reset_instrument '{}'
+REVIEW_DAILY_CAP_FETCH_JOBS=$'\xc2\xb2' STUB_REPOS="$REG" run bugbot
+check_eq "a non-ASCII digit override (superscript two) warns, same answer" "52.14" "$(field spent_usd)"
+check_contains "  stderr names it as not a count" "is not a count from 1 to 16" "$ERR"
 
 echo "== concurrent: one unreadable repo -> unknown, never the other 31 summed =="
 reset_instrument '{}'

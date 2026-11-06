@@ -646,7 +646,7 @@ def fetch_workers():
     raw = os.environ.get("REVIEW_DAILY_CAP_FETCH_JOBS", "").strip()
     if not raw:
         return FETCH_WORKERS
-    if raw.isdigit() and 0 < int(raw) <= FETCH_WORKERS_MAX:
+    if raw.isascii() and raw.isdigit() and 0 < int(raw) <= FETCH_WORKERS_MAX:
         return int(raw)
     note("REVIEW_DAILY_CAP_FETCH_JOBS='%s' is not a count from 1 to %d; reading %d repos at once"
          % (raw, FETCH_WORKERS_MAX, FETCH_WORKERS))
