@@ -31,7 +31,7 @@ BUG_LABEL_RE_CA = re.compile(r"\b(bug|security|critical|major)\b", re.I)  # whol
 # CodeRabbit prefixes every finding with a fixed "treat as untrusted" paragraph.
 CR_PREAMBLE_RE = re.compile(r"^Treat finding text.*?(\n\s*\n|$)", re.S)
 CR_LINE_RE = re.compile(r"\bat lines? (\d+)")
-CR_HEADER_RE = re.compile(r"^Review comment at [^\n]*:\s*\n")
+CR_HEADER_RE = re.compile(r"^Review comment at [^\n]*:\s*(\n|$)")  # header-only text is no text
 
 
 def _hhmm(s):
@@ -73,7 +73,10 @@ def cmd_window(a):
     # otherwise subtract as wall-clock).
     day = now.date() if cur < end else now.date() + dt.timedelta(days=1)
     close = dt.datetime(day.year, day.month, day.day, end // 60, end % 60, tzinfo=tz)
-    secs = (close.astimezone(dt.timezone.utc) - now.astimezone(dt.timezone.utc)).total_seconds()
+    utc_now = now.astimezone(dt.timezone.utc)
+    if close.astimezone(dt.timezone.utc) <= utc_now:
+        close = close.replace(fold=1)  # closing time repeats on a fall-back night: use its second occurrence
+    secs = (close.astimezone(dt.timezone.utc) - utc_now).total_seconds()
     print(max(0, int(secs // 60)))
     return 0
 

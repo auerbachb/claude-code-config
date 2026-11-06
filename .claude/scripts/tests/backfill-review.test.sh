@@ -33,7 +33,9 @@
 #    16. fewer parsed findings than reported leaves the row pending;
 #    17. a held run lock stops a second runner, and frees on holder exit;
 #    18. a shallow checkout's missing first parent never records a skip;
-#    19. window minutes: whole day never closes, DST counts elapsed time.
+#    19. window minutes: whole day never closes, DST counts elapsed time;
+#    20. a failed label swap is retried without a re-review;
+#    21. a contentless bug finding with a location is filed, not dropped.
 #
 # Requires: bash 3.2+, git, jq, python3. Offline: no network, no real gh/CLIs.
 set -uo pipefail
@@ -92,6 +94,10 @@ cat > "$STUB/bin/coderabbit" <<'EOF'
 #!/bin/bash
 echo "coderabbit $*" >> "$STUB_DIR/cli-calls.log"
 base=""; while [ $# -gt 0 ]; do [ "$1" = --base ] && base="$2"; shift; done
+if [ "${STUB_CLI_MODE:-ok}" = contentless ]; then
+  echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\n"}'
+  echo '{"type":"complete","status":"review_completed","findings":1}'; exit 0
+fi
 if [ "${STUB_CLI_MODE:-ok}" = short ]; then
   echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nx"}'
   echo '{"type":"complete","status":"review_completed","findings":2}'; exit 0
@@ -309,8 +315,26 @@ check_eq "19: whole-day window reports a full day" "1440" \
 # 2026-11-01 01:30 EDT (05:30Z) to 03:00 EST is 2h30m elapsed (fall back), not 1h30m.
 check_eq "19: fall-back night counts the repeated hour" "150" \
   "$(python3 "$WIN" window --window 01:00-03:00 --tz America/New_York --now 2026-11-01T05:30:00Z)"
+# 06:15Z is the SECOND 01:15 on the fall-back night; the 01:30 close repeats too.
+check_eq "19: a repeated closing time uses its second occurrence" "15" \
+  "$(python3 "$WIN" window --window 00:00-01:30 --tz America/New_York --now 2026-11-01T06:15:00Z)"
 check_eq "19: partial minutes floor, never round up" "29" \
   "$(python3 "$WIN" window --window 01:00-06:00 --tz America/New_York --now 2026-11-06T10:30:30Z)"
+
+# ---- 20. a failed label swap is retried without a re-review ----------------------
+seed; STUB_PR_EDIT_RC=1 run --ignore-window >/dev/null
+check_eq "20: failed swap records label_synced=false" "false" \
+  "$(jq -r '.entries[] | select(.pr == 101) | .backfill.label_synced' "$LEDGER")"
+: > "$STUB/cli-calls.log"
+run --ignore-window >/dev/null
+check_eq "20: retry runs no review" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "20: retry sets label_synced=true" "true" \
+  "$(jq -r '.entries[] | select(.pr == 101) | .backfill.label_synced' "$LEDGER")"
+
+# ---- 21. a contentless bug finding with a location is filed, not dropped ----------
+seed; STUB_CLI_MODE=contentless run --ignore-window >/dev/null
+check_eq "21: contentless bug finding files an issue" "issues-filed" "$(status_of 101)"
+check_contains "21: placeholder text in the issue" "gave no description" "$(jq -r '.[0].body' "$STUB/issues.json")"
 
 # ---- 15. CodeAnt bug labels match whole words ("debug" is not a bug) --------------
 printf '{"issues":[{"label":"debug","relevant_file":"a.sh","start_line":1,"issue_content":"x"},{"label":"possible bug","relevant_file":"a.sh","start_line":2,"issue_content":"y"}]}' > "$TMP/ca.json"

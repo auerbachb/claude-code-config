@@ -115,7 +115,7 @@ while [[ $# -gt 0 ]]; do
     *) die 2 "unknown argument: $1" ;;
   esac
 done
-MAX_REVIEWS=$(( 10#$MAX_REVIEWS ))
+MAX_REVIEWS=$(( 10#$MAX_REVIEWS )) REVIEW_TIMEOUT=$(( 10#$REVIEW_TIMEOUT ))   # "08" is not octal here
 
 # Channels: the hard-coded allowlist, narrowed (never widened) by config.
 CHANNELS=()
@@ -438,8 +438,13 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
     [[ -n "$f" ]] || continue
     disp="" verdict="" url=""
     if [[ "$(jq -r .bug <<<"$f")" != true ]]; then disp="dropped: below bug severity"
-    elif [[ -z "$(jq -r '.path' <<<"$f")" || -z "$(jq -r '.text | gsub("\\s"; "")' <<<"$f")" ]]; then disp="dropped: no file anchor or no text"
+    elif [[ -z "$(jq -r '.path' <<<"$f")" ]]; then disp="dropped: no file anchor"
     else
+      # A bug with a location but no text (CodeAnt contentless finding) is
+      # still a possible real bug: file it with placeholder text, never drop it.
+      if [[ -z "$(jq -r '.text | gsub("\\s"; "")' <<<"$f")" ]]; then
+        f="$(jq -c '.text = "(the reviewer flagged this location as a bug but gave no description)"' <<<"$f")"
+      fi
       verdict="$(verify_finding "$f" "$merge")"
       if [[ "$verdict" == removed ]]; then disp="dropped: file gone on main"
       elif url="$(file_finding "$f" "$row" "$verdict" "$merge")" && [[ -n "$url" ]]; then
