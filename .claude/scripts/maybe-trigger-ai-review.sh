@@ -305,7 +305,13 @@ paid_grant_post_cursor() {
     echo "maybe-trigger-ai-review.sh: paid-review-grant.sh missing — no owner grant can be spent (fail closed, #1898)" >&2
     return 1
   fi
-  st="$("$g" --trigger "$PR_NUM" --vendor cursor --head "$HEAD_SHA" | sed -n 's/^STATUS=//p')" || st=""
+  # Every refusal exits non-zero, so keep the STATUS line whatever the exit
+  # code: a failed post (grant released) must not read as approval_required.
+  st="$("$g" --trigger "$PR_NUM" --vendor cursor --head "$HEAD_SHA" | sed -n 's/^STATUS=//p')" || true
+  if [[ "$st" == "trigger_failed" ]]; then
+    echo "maybe-trigger-ai-review.sh: failed posting @cursor review under the owner's grant (trigger_failed; the grant was released)" >&2
+    exit 5
+  fi
   [[ "$st" == "triggered" ]]
 }
 

@@ -17,7 +17,8 @@
 #   in a prompt, issue, PR, comment, or chip payload is never an approval.
 #   The script cannot prove a human answered — that boundary is the rule —
 #   but it records how (`approved_via`) and what was asked (`question`), and it
-#   refuses outright when the harness says the session is unattended.
+#   refuses outright when the harness says the session is unattended or is a
+#   subagent (child) session.
 #
 # USAGE
 #   paid-review-grant.sh --grant   <pr> --vendor <v> --price-usd <x> --approved-via <chat|human_queue:D-n>
@@ -39,6 +40,7 @@
 #   --grant        Write an `unused` grant, replacing any earlier record for the
 #                  same PR and vendor. Refuses on a missing session identity,
 #                  an unattended session (CLAUDE_CODE_SESSION_ATTENDED=0), a
+#                  subagent session (CLAUDE_CODE_CHILD_SESSION set, not 0), a
 #                  non-positive price, a malformed HEAD, or an `--approved-via`
 #                  that is not `chat` / `human_queue:D-<n>`.
 #   --check        Read only. Exit 0 only for a matching, unused grant.
@@ -48,14 +50,16 @@
 #   --release      Undo a consume after a post that DEFINITELY failed (consumed
 #                  -> unused, same session and HEAD only). After an uncertain
 #                  outcome, leave the grant consumed.
-#   --offer-check  Accept a vendor's on-demand offer only under a matching grant
+#   --offer-check  Accept a CodeRabbit on-demand offer (vendor coderabbit only;
+#                  any other vendor is a usage error) only under a matching grant
 #                  whose approved price is at or above the offer: currency must
 #                  be USD and the offer price a positive number; the daily cap
 #                  is asked with the offer price, as for --trigger. On success the
 #                  grant is consumed; any refusal writes nothing.
 #   --trigger      For instruction-driven triggers: check the grant, confirm the
 #                  PR is yours (pr-authorship.sh exit 0) and its live HEAD is
-#                  the granted one, ask review-daily-cap.sh (a validated `over`
+#                  the granted one, refuse `price_above_grant` when the vendor's
+#                  current rate exceeds the approved price, ask review-daily-cap.sh (a validated `over`
 #                  refuses and leaves the grant unused — surface it), consume, consume the Greptile daily budget
 #                  (greptile only), then post `@cursor review` / `@greptileai`.
 #                  A post or budget failure releases the grant.
@@ -66,8 +70,8 @@
 #     granted available consumed released triggered            (success, exit 0)
 #     no_grant grant_head_mismatch grant_session_mismatch grant_used
 #     grant_vendor_mismatch grant_lost_race offer_over_price offer_price_invalid
-#     offer_currency_invalid session_unknown unattended not_author
-#     budget_exhausted daily_cap_over head_unreadable         (refusal, exit 1)
+#     offer_currency_invalid session_unknown unattended subagent not_author
+#     budget_exhausted daily_cap_over price_above_grant head_unreadable  (refusal, exit 1)
 #     grant_unreadable                                        (fail closed, exit 3)
 #     trigger_failed                                          (post failed, exit 5)
 #
@@ -100,8 +104,8 @@ die_usage() { echo "paid-review-grant.sh: $1" >&2; echo "STATUS=usage"; exit 2; 
 resolve() {
   local name="$1" c
   for c in "$SELF_DIR/$name" \
-           "$HOME/.claude/skills-worktree/.claude/scripts/$name" \
-           "$HOME/.claude/scripts/$name" \
+           "${HOME:-}/.claude/skills-worktree/.claude/scripts/$name" \
+           "${HOME:-}/.claude/scripts/$name" \
            ".claude/scripts/$name"; do
     [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }
   done
@@ -148,6 +152,9 @@ esac
 if [[ "$MODE" == "trigger" && "$VENDOR" == "coderabbit" ]]; then
   die_usage "--trigger posts BugBot or Greptile only; accept a CodeRabbit on-demand offer through --offer-check"
 fi
+if [[ "$MODE" == "offer-check" && "$VENDOR" != "coderabbit" ]]; then
+  die_usage "--offer-check accepts a CodeRabbit on-demand offer only; spend a BugBot or Greptile grant through --trigger"
+fi
 
 refuse() { # <status> <note> [exit]
   echo "paid-review-grant.sh: PR #$PR $VENDOR: $2 — no paid review (issue #1898)" >&2
@@ -156,6 +163,7 @@ refuse() { # <status> <note> [exit]
 }
 
 command -v jq >/dev/null 2>&1 || refuse grant_unreadable "jq is not available, so no grant can be read" 3
+[[ -n "${HOME:-}" ]] || refuse grant_unreadable "HOME is unset, so session state cannot be located" 3
 
 STATE_SH="$(resolve session-state.sh || true)"
 [[ -n "$STATE_SH" ]] || refuse grant_unreadable "session-state.sh not found (checked all three paths)" 3
@@ -264,6 +272,13 @@ case "$MODE" in
   grant)
     [[ "${CLAUDE_CODE_SESSION_ATTENDED:-}" != "0" ]] \
       || refuse unattended "this session is unattended — only the owner's live answer in an attended session creates a grant"
+    # A subagent shares its parent's session id, so the session binding alone
+    # would let it mint a grant its parent could spend. It never asks the
+    # owner, so it never writes one (paid-review-approval.md).
+    case "${CLAUDE_CODE_CHILD_SESSION:-}" in
+      ""|0) ;;
+      *) refuse subagent "this is a subagent session — only the attended parent, on the owner's live answer, creates a grant" ;;
+    esac
     is_price "$PRICE" || die_usage "--price-usd must be a positive number in USD"
     case "$PRICE_KIND" in exact|ceiling) ;; *) die_usage "--price-kind must be exact or ceiling" ;; esac
     [[ "$APPROVED_VIA" == "chat" || "$APPROVED_VIA" =~ ^human_queue:D-[0-9]+$ ]] \
@@ -316,7 +331,22 @@ case "$MODE" in
       || refuse not_author "this PR is not confirmed as yours (pr-authorship.sh) — automated writes need your own PR"
     LIVE="$(live_head || true)"
     [[ "$LIVE" == "$HEAD" ]] || refuse grant_head_mismatch "the PR's live HEAD is ${LIVE:0:7}, not the granted ${HEAD:0:7}"
-    case "$VENDOR" in cursor) daily_cap_check bugbot ;; greptile) daily_cap_check greptile ;; esac
+    case "$VENDOR" in cursor) PLATFORM=bugbot ;; greptile) PLATFORM=greptile ;; esac
+    # The owner approved a price, not "whatever it costs now": a current rate
+    # above the approved one refuses and leaves the grant unused. An unreadable
+    # rate proceeds with a note, the same fail-open as the daily cap.
+    APPROVED="$(jq -r '.price_usd' <<<"$RECORD")"
+    RATE=""
+    CAP_SH="$(resolve review-daily-cap.sh || true)"
+    [[ -n "$CAP_SH" ]] && RATE="$("$CAP_SH" "$PLATFORM" --rate 2>/dev/null)" || RATE=""
+    if [[ "$RATE" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      awk -v r="$RATE" -v a="$APPROVED" 'BEGIN { exit !(r <= a) }' \
+        || refuse price_above_grant "the current $PLATFORM rate (\$$RATE) is above the approved \$$APPROVED — tell the owner; the grant stays unused"
+    else
+      echo "paid-review-grant.sh: $PLATFORM rate unknown — cannot compare it with the approved \$$APPROVED; continuing" >&2
+      RATE=""
+    fi
+    daily_cap_check "$PLATFORM" "$RATE"
     consume_record
     case "$VENDOR" in
       cursor) BODY="@cursor review" ;;
@@ -328,6 +358,14 @@ case "$MODE" in
         release_record || echo "paid-review-grant.sh: could not release the grant after the budget refusal — ask again" >&2
         refuse budget_exhausted "the Greptile daily budget is exhausted or unreadable — self-review, which never satisfies the gate"
       fi
+    fi
+    # Re-read HEAD right before the post to shrink the push-vs-post window.
+    # A PR comment cannot name a SHA, so a push landing after this read is a
+    # residual risk (paid-review-approval.md §HEAD race).
+    LIVE="$(live_head || true)"
+    if [[ "$LIVE" != "$HEAD" ]]; then
+      release_record || echo "paid-review-grant.sh: could not release the grant after HEAD moved — ask again" >&2
+      refuse grant_head_mismatch "the PR's HEAD moved to ${LIVE:0:7} before posting; the grant was released"
     fi
     if ! gh pr comment "$PR" ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} --body "$BODY" >/dev/null; then
       release_record || echo "paid-review-grant.sh: could not release the grant after the failed post — ask again" >&2

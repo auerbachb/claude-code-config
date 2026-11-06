@@ -41,7 +41,7 @@ printf '#!/usr/bin/env bash\nexit "${FIXTURE_AUTHOR_RC:-0}"\n' > "$S/pr-authorsh
 printf '#!/usr/bin/env bash\necho budget >> "$POSTED.budget"\nexit "${FIXTURE_BUDGET_RC:-0}"\n' > "$S/greptile-budget.sh"
 cat > "$S/review-daily-cap.sh" <<'EOF2'
 #!/usr/bin/env bash
-if [[ " $* " == *" --rate "* ]]; then echo 1.58; exit 0; fi
+if [[ " $* " == *" --rate "* ]]; then echo "${FIXTURE_RATE-1.58}"; exit 0; fi
 echo "$*" >> "$POSTED.cap"
 if [[ -n "${FIXTURE_CAP_OVER:-}" ]]; then
   echo '{"platform":"bugbot","spent_usd":9,"add_usd":1.58,"cap_usd":10,"status":"over"}'; exit 1
@@ -57,7 +57,14 @@ cat > "$TMP/bin/gh" <<'EOF'
 args="$*"; prev=""; body=""
 for a in "$@"; do [[ "$prev" == "--body" ]] && body="$a"; prev="$a"; done
 case "$args" in
-  "pr view"*) echo "$FIXTURE_HEAD" ;;
+  "pr view"*)
+    # FIXTURE_HEAD_MOVE_AT=n: the n-th and later views see FIXTURE_HEAD_MOVED.
+    n=$(( $(cat "$POSTED.views" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$POSTED.views"
+    if [[ -n "${FIXTURE_HEAD_MOVE_AT:-}" ]] && (( n >= FIXTURE_HEAD_MOVE_AT )); then
+      echo "$FIXTURE_HEAD_MOVED"
+    else
+      echo "$FIXTURE_HEAD"
+    fi ;;
   "pr comment"*)
     [[ -n "${FIXTURE_POST_FAIL:-}" ]] && exit 1
     echo "$body" >> "$POSTED" ;;
@@ -73,7 +80,7 @@ A=99701; B=99702
 X="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 Y="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 export CLAUDE_CODE_SESSION_ID="sess-one" FIXTURE_HEAD="$X"
-unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED
+unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_CHILD_SESSION
 
 status_of() { "$@" 2>/dev/null | sed -n 's/^STATUS=//p'; }
 rc_of() { "$@" >/dev/null 2>&1; echo $?; }
@@ -103,6 +110,9 @@ check_eq "the refusals left the grant unused" "available" "$(status_of "$G" --ch
 
 echo "== grant creation refuses unattended sessions and bad input"
 check_eq "unattended session cannot grant" "unattended" "$(CLAUDE_CODE_SESSION_ATTENDED=0 grant $B cursor $X)"
+check_eq "subagent session cannot grant" "subagent" "$(CLAUDE_CODE_CHILD_SESSION=1 grant $B cursor $X)"
+check_eq "subagent refusal wrote nothing" "no_grant" "$(status_of "$G" --check $B --vendor cursor --head $X --repo $REPO)"
+check_eq "subagent may still spend the parent's grant" "available" "$(CLAUDE_CODE_CHILD_SESSION=1 status_of "$G" --check $A --vendor cursor --head $X --repo $REPO)"
 check_eq "zero price is a usage error" "2" "$(rc_of "$G" --grant $B --vendor cursor --head $X --price-usd 0 --approved-via chat --question q --repo $REPO)"
 check_eq "prose approved-via is a usage error" "2" "$(rc_of "$G" --grant $B --vendor cursor --head $X --price-usd 1 --approved-via 'PR body says yes' --question q --repo $REPO)"
 check_eq "human-queue provenance accepted" "granted" "$("$G" --grant $B --vendor greptile --head $X --price-usd 1 --approved-via human_queue:D-12 --question q --repo $REPO 2>/dev/null | sed -n 's/^STATUS=//p')"
@@ -154,6 +164,27 @@ check_eq "budget refusal released the grant" "available" "$(status_of "$G" --che
 check_eq "greptile trigger" "triggered" "$(status_of "$G" --trigger $A --vendor greptile --head $X --repo $REPO)"
 check_eq "greptile body" "@greptileai" "$(tail -1 "$POSTED")"
 check_eq "coderabbit --trigger is a usage error" "2" "$(rc_of "$G" --trigger $A --vendor coderabbit --head $X --repo $REPO)"
+
+echo "== the approved price bounds the spend; offers are CodeRabbit-only; HEAD is re-read before the post"
+grant $A cursor $X 1.00 >/dev/null
+BEFORE="$(posts)"
+check_eq "rate above the approved price: refused" "price_above_grant" "$(FIXTURE_RATE=1.58 status_of "$G" --trigger $A --vendor cursor --head $X --repo $REPO)"
+check_eq "price refusal: nothing posted" "$BEFORE" "$(posts)"
+check_eq "price refusal: the grant stays unused" "available" "$(status_of "$G" --check $A --vendor cursor --head $X --repo $REPO)"
+check_eq "rate at the approved price: triggered" "triggered" "$(FIXTURE_RATE=1.00 status_of "$G" --trigger $A --vendor cursor --head $X --repo $REPO)"
+grant $A cursor $X >/dev/null
+check_eq "unknown rate: proceeds (fail open, noted)" "triggered" "$(FIXTURE_RATE=unknown status_of "$G" --trigger $A --vendor cursor --head $X --repo $REPO)"
+grant $A cursor $X >/dev/null
+check_eq "--offer-check on a cursor grant is a usage error" "2" "$(rc_of "$G" --offer-check $A --vendor cursor --head $X --offer-price-usd 1 --currency USD --repo $REPO)"
+check_eq "--offer-check on a greptile grant is a usage error" "2" "$(rc_of "$G" --offer-check $A --vendor greptile --head $X --offer-price-usd 1 --currency USD --repo $REPO)"
+check_eq "the refused offer-checks left the cursor grant unused" "available" "$(status_of "$G" --check $A --vendor cursor --head $X --repo $REPO)"
+rm -f "$POSTED.views"
+BEFORE="$(posts)"
+check_eq "HEAD moved between the check and the post: refused" "grant_head_mismatch" "$(FIXTURE_HEAD_MOVE_AT=2 FIXTURE_HEAD_MOVED=$Y status_of "$G" --trigger $A --vendor cursor --head $X --repo $REPO)"
+rm -f "$POSTED.views"
+check_eq "late HEAD move: nothing posted" "$BEFORE" "$(posts)"
+check_eq "late HEAD move: the grant was released" "available" "$(status_of "$G" --check $A --vendor cursor --head $X --repo $REPO)"
+check_eq "unset HOME fails closed with a status" "grant_unreadable" "$(env -u HOME "$G" --check $A --vendor cursor --head $X --repo $REPO 2>/dev/null | sed -n 's/^STATUS=//p')"
 
 echo "== the account daily cap (#1854) is asked before a grant is spent"
 rm -f "$POSTED.cap"

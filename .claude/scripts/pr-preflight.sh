@@ -891,13 +891,17 @@ post_trigger() {
 cursor_grant_or_skip() {
   local st=""
   if (( ! DRY_RUN )) && [[ -n "$PAID_GRANT_SH" ]]; then
-    st="$("$PAID_GRANT_SH" --trigger "$PR" --vendor cursor ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null | sed -n 's/^STATUS=//p')" || st=""
+    # Refusals exit non-zero; keep the STATUS line whatever the exit code.
+    st="$("$PAID_GRANT_SH" --trigger "$PR" --vendor cursor ${HEAD_SHA:+--head "$HEAD_SHA"} 2>/dev/null | sed -n 's/^STATUS=//p')" || true
   fi
   if [[ "$st" == "triggered" ]]; then
     set_status cursor "triggered"
     ACTIONS=$((ACTIONS + 1))
     surface "triggered cursor: @cursor review under the owner's grant (now used, #1898)"
     record_trigger_for_head cursor
+  elif [[ "$st" == "trigger_failed" ]]; then
+    set_status cursor "trigger-failed"
+    surface "WARNING: failed to post @cursor review under the owner's grant (trigger_failed; the grant was released)"
   else
     set_status cursor "skipped-approval-required"
     surface "skipping @cursor review — paid review requires owner approval${st:+ ($st)}"

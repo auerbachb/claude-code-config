@@ -124,10 +124,13 @@ cursor_grant_or_skip() {
   if [[ -z "$PAID_GRANT_SH" ]]; then
     echo "[REVIEWERS] paid-review-grant.sh not found (checked all three paths) — no owner grant can be spent"
   else
-    st="$("$PAID_GRANT_SH" --trigger "$PR_NUMBER" --vendor cursor --head "$PUSHED_SHA" --repo "$REPO_FULL" | sed -n 's/^STATUS=//p')" || st=""
+    # Refusals exit non-zero; keep the STATUS line whatever the exit code.
+    st="$("$PAID_GRANT_SH" --trigger "$PR_NUMBER" --vendor cursor --head "$PUSHED_SHA" --repo "$REPO_FULL" | sed -n 's/^STATUS=//p')" || true
   fi
   if [[ "$st" == "triggered" ]]; then
     echo "[REVIEWERS] posted @cursor review under the owner's grant for ${PUSHED_SHA:0:7} (now used, #1898)"
+  elif [[ "$st" == "trigger_failed" ]]; then
+    echo "[REVIEWERS] FAILED to post @cursor review under the owner's grant (trigger_failed; the grant was released)" >&2
   else
     echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
   fi

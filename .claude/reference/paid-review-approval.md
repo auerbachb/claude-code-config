@@ -12,7 +12,7 @@ The first trigger that spends it uses it up (a compare-and-set, so two racing tr
 
 Ask only in an **attended** session, when a paid review would actually help. Examples: a risky PR, free reviewers down for hours, or `escalate-review.sh` answering `STATUS=no_reviewer` while the owner wants the PR merged sooner than the free path or the [no-review override](no-review-override.md) allows. Ask once per PR and HEAD. Do not re-ask after a "no" on the same HEAD.
 
-**Never ask** from a subagent, a `/pm day` tick, a `/pm --window` (overnight) run, or any session the harness marks unattended (`CLAUDE_CODE_SESSION_ATTENDED=0`; `--grant` refuses there too). Those contexts follow `no_reviewer` and record the skip:
+**Never ask** from a subagent, a `/pm day` tick, a `/pm --window` (overnight) run, or any session the harness marks unattended (`CLAUDE_CODE_SESSION_ATTENDED=0`; `--grant` refuses there too, and in any subagent session — `CLAUDE_CODE_CHILD_SESSION` set). Those contexts follow `no_reviewer` and record the skip:
 
 - Scripts already record it: `bugbot_skipped: {"reason":"approval_required"}`, `skipped-approval-required`, `BugBot not invited — paid review requires owner approval`.
 - A subagent adds `PAID_REVIEW: skipped (<vendor>, <reason>)` to its exit report notes. The parent relays it with any blocker report.
@@ -44,7 +44,7 @@ Then trigger it:
 paid-review-grant.sh --trigger <pr> --vendor cursor|greptile [--head <sha>] [--repo owner/name]
 ```
 
-`--trigger` checks the grant and authorship (`pr-authorship.sh` exit 0). It confirms the PR's live HEAD is the granted one, then consumes the grant. For Greptile it also consumes `greptile-budget.sh` (exhausted releases the grant and refuses). Then it posts `@cursor review` / `@greptileai`. A failed post releases the grant. Only `STATUS=triggered` means a paid review was requested. When the owner approved it so that the paid reviewer owns the merge gate (free reviewers down), persist that with `reviewer-of.sh <PR> --sticky bugbot|greptile`, as the vendor's rule file describes. `--trigger` itself never changes the reviewer.
+`--trigger` checks the grant and authorship (`pr-authorship.sh` exit 0). It confirms the PR's live HEAD is the granted one and that the vendor's current rate (`review-daily-cap.sh <platform> --rate`) is not above the approved price (`price_above_grant` otherwise, grant unused; an unreadable rate proceeds with a note), then consumes the grant. For Greptile it also consumes `greptile-budget.sh` (exhausted releases the grant and refuses). Then it posts `@cursor review` / `@greptileai`. A failed post releases the grant. Only `STATUS=triggered` means a paid review was requested. When the owner approved it so that the paid reviewer owns the merge gate (free reviewers down), persist that with `reviewer-of.sh <PR> --sticky bugbot|greptile`, as the vendor's rule file describes. `--trigger` itself never changes the reviewer.
 
 The script trigger sites (`maybe-trigger-ai-review.sh`, `fixpr-reviewer-triggers.sh`, `pr-preflight.sh`) call `--trigger` themselves at the BugBot `approval_required` step. That step is the last one in BugBot's chain, so a grant never overrides the tier, lifetime-cap, CI, settle, refused-HEAD, or daily-cap skips. It is spent only once all of them have passed.
 
@@ -55,6 +55,10 @@ paid-review-grant.sh --offer-check <pr> --vendor coderabbit --offer-price-usd <X
 ```
 
 `STATUS=consumed` requires a matching grant whose approved price is at or above the offer. The currency must be USD and the price a number. Anything else (`offer_over_price`, `offer_price_invalid`, `offer_currency_invalid`, `no_grant`) means decline, as `cr-rate-limits.md` §Paid on-demand review offers describes. A purchase itself (credits, a cap raise) stays with the owner (`pricing-matrix.md`).
+
+## HEAD race
+
+A PR comment cannot name a SHA, so `--trigger` re-reads HEAD immediately before posting and releases the grant if it moved. A push that lands in the seconds between that read and the post is not detectable here: the paid review then runs on the new push. That residual window is accepted; the grant is still spent only once.
 
 ## Provenance limit
 

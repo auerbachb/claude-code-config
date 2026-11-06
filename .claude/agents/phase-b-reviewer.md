@@ -260,7 +260,7 @@ Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` acr
 ### Severity Classification (P0/P1/P2)
 
 Use Greptile's severity badges. After fixing:
-- **If any P0 remain after fix:** a re-trigger is a new paid review — report it to the parent (`PAID_REVIEW: skipped (greptile, p0_retrigger_needs_grant)`); only under a new owner grant for the current HEAD run `paid-review-grant.sh --trigger --vendor greptile`. Max 3 reviews per PR.
+- **If any P0 remain after fix:** a re-trigger is a new paid review — report it to the parent (`PAID_REVIEW: skipped (greptile, p0_retrigger_needs_grant)`); only under a new owner grant for the current HEAD run `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor greptile`. Max 3 reviews per PR.
 - **If only P1/P2 (no P0):** STOP — do NOT trigger `@greptileai`. Push once, reply to every finding naming the current HEAD, and resolve every thread. That provenance lets the gate reuse the latest completed trigger-delimited zero-P0 round (issue #1000); do not wait for new Greptile evidence.
 
 ### Greptile Reply Format (CRITICAL)

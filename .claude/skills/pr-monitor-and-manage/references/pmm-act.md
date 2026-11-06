@@ -142,6 +142,10 @@ if [ -n "$PF_KEY" ] && [ "$REVIEWER" != "__already_triggered__" ] && [ -n "$TRIG
     if [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].allowed // false' <<<"$TA_JSON" 2>/dev/null)" = "true" ] \
        && "$TRIGGERS_ALLOWED" "$N" --claim "$PF_KEY" >/dev/null 2>&1; then
       TA_CLAIMED="$PF_KEY"
+    elif [ "$PF_KEY" = "cursor" ] \
+         && [ "$(jq -r '.reviewers.cursor.reason // ""' <<<"$TA_JSON" 2>/dev/null)" = "approval_required" ]; then
+      : # tier allows BugBot; only owner approval is missing (#1897) — fall through
+        # to the bugbot branch, which spends a grant or posts nothing (#1898)
     else
       echo "[PMM] review tier does not allow re-triggering $REVIEWER on #$N now ($(jq -r --arg k "$PF_KEY" '.reviewers[$k].reason // "tier_unresolved"' <<<"$TA_JSON" 2>/dev/null)) — skipping"
       REVIEWER="__tier_skipped__"

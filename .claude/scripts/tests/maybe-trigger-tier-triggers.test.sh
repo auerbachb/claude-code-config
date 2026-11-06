@@ -260,6 +260,7 @@ cp "$REPO_ROOT/.claude/scripts/paid-review-grant.sh" "$S/"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$S/pr-authorship.sh"
 chmod +x "$S/paid-review-grant.sh" "$S/pr-authorship.sh"
 export CLAUDE_CODE_SESSION_ID="grant-test-session"
+unset CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ATTENDED
 grant_for() { # <head>
   ( cd "$WORK" && bash "$S/paid-review-grant.sh" --grant "$PR" --vendor cursor --head "$1" \
       --price-usd 1.58 --approved-via chat --question "Approve one BugBot review?" --repo acme/one >/dev/null 2>&1 )
@@ -302,6 +303,15 @@ grant_for "$HEAD"
 export FIXTURE_POST_FAIL="@cursor review"
 run
 check_eq "full: a failed BugBot post releases the grant" "unused" "$(grant_status)"
+check_eq "full: a failed BugBot post exits 5, like any failed post" "5" "$RC"
+check_eq "full: a failed BugBot post reports trigger_failed, not approval_required" "yes" "$( [[ "$ERR" == *"trigger_failed"* ]] && echo yes || echo no )"
+reset "$(tier_json absent legacy)"
+grant_for "$HEAD"
+export FIXTURE_POST_FAIL="@cursor review"
+run
+check_eq "legacy: a failed BugBot post exits 5" "5" "$RC"
+check_eq "legacy: a failed BugBot post reports trigger_failed" "yes" "$( [[ "$ERR" == *"trigger_failed"* ]] && echo yes || echo no )"
+check_eq "legacy: a failed BugBot post releases the grant" "unused" "$(grant_status)"
 export FIXTURE_POST_FAIL=""
 unset CLAUDE_CODE_SESSION_ID
 rm -f "$S/paid-review-grant.sh" "$S/pr-authorship.sh"
