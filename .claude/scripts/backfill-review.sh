@@ -34,7 +34,10 @@
 #   the run; when no channel is left the run stops. A failed origin/main
 #   fetch, an unparseable capture, a failed or truncated marker lookup, a dedup lookup
 #   error (issue-dedup.sh exit 4), or a failed issue create leaves the row
-#   pending. Only a completed review marks a row reviewed.
+#   pending. Only a completed review marks a row reviewed. A row that fails
+#   after its review ran counts an attempt; pending rows run fewest-attempts
+#   first, and a row that reaches --max-row-attempts is skipped (never marked
+#   reviewed), so one bad row cannot spend every run's review budget.
 #
 # OPTIONS
 #   --repo-dir DIR     git checkout of the repo to backfill (default: cwd)
@@ -44,13 +47,16 @@
 #                      or 01:00-06:00; may cross midnight)
 #   --tz ZONE          window time zone (default BACKFILL_REVIEW_TZ or
 #                      America/New_York)
-#   --now ISO8601      evaluate the window at this instant (tests)
+#   --now ISO8601      the run's starting instant for window checks (tests);
+#                      later checks advance it by the run's elapsed time
 #   --ignore-window    run now, whatever the time (a manual run)
 #   --channels LIST    comma list from {coderabbit,codeant}, in try order
 #                      (default BACKFILL_REVIEW_CHANNELS or coderabbit,codeant)
 #   --max-reviews N    stop after N CLI review attempts this run (default 3 —
 #                      the CodeRabbit CLI's hourly allowance)
 #   --timeout SEC      local-review.sh idle bound per review (default 900)
+#   --max-row-attempts N  failed post-review attempts before a row is skipped
+#                      (default BACKFILL_MAX_ROW_ATTEMPTS or 3)
 #   --dry-run          list what would be reviewed; review, file, label nothing
 #
 # ENVIRONMENT
@@ -97,6 +103,7 @@ IGNORE_WINDOW=0
 CHANNELS_RAW="${BACKFILL_REVIEW_CHANNELS:-coderabbit,codeant}"
 MAX_REVIEWS=3
 REVIEW_TIMEOUT=900
+MAX_ROW_ATTEMPTS="${BACKFILL_MAX_ROW_ATTEMPTS:-3}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -110,12 +117,17 @@ while [[ $# -gt 0 ]]; do
     --channels) CHANNELS_RAW="${2:-}"; [[ -n "$CHANNELS_RAW" ]] || die 2 "--channels needs a value"; shift 2 ;;
     --max-reviews) MAX_REVIEWS="${2:-}"; [[ "$MAX_REVIEWS" =~ ^[0-9]+$ ]] || die 2 "--max-reviews needs an integer"; shift 2 ;;
     --timeout) REVIEW_TIMEOUT="${2:-}"; [[ "$REVIEW_TIMEOUT" =~ ^[0-9]+$ ]] || die 2 "--timeout needs an integer"; shift 2 ;;
+    --max-row-attempts) MAX_ROW_ATTEMPTS="${2:-}"; [[ -n "$MAX_ROW_ATTEMPTS" ]] || die 2 "--max-row-attempts needs a value"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
 done
+if ! [[ "$MAX_ROW_ATTEMPTS" =~ ^[0-9]+$ ]] || (( 10#$MAX_ROW_ATTEMPTS < 1 )); then
+  die 2 "--max-row-attempts / BACKFILL_MAX_ROW_ATTEMPTS needs an integer >= 1"
+fi
 MAX_REVIEWS=$(( 10#$MAX_REVIEWS )) REVIEW_TIMEOUT=$(( 10#$REVIEW_TIMEOUT ))   # "08" is not octal here
+MAX_ROW_ATTEMPTS=$(( 10#$MAX_ROW_ATTEMPTS ))
 
 # Channels: the hard-coded allowlist, narrowed (never widened) by config.
 CHANNELS=()
@@ -123,7 +135,9 @@ IFS=',' read -r -a _req <<<"$CHANNELS_RAW"
 for c in "${_req[@]+"${_req[@]}"}"; do
   c="${c// /}"; c="${c%-cli}"
   case " $ALLOWED_CHANNELS " in
-    *" $c "*) CHANNELS+=("$c") ;;
+    *" $c "*)
+      # A repeated name would retry a channel already dropped as failed.
+      case " ${CHANNELS[*]+"${CHANNELS[*]}"} " in *" $c "*) ;; *) CHANNELS+=("$c") ;; esac ;;
     *) die 2 "channel '$c' is not a free local reviewer (allowed: $ALLOWED_CHANNELS)" ;;
   esac
 done
@@ -176,10 +190,21 @@ summary() { # stop-reason
 }
 
 # ---- quiet window ----------------------------------------------------------
-minutes_left() { # prints minutes left in the window; non-zero outside it
-  local args=(window --window "$WINDOW" --tz "$TZONE")
-  [[ -n "$NOW_ARG" ]] && args+=(--now "$NOW_ARG")
+# --now pins the run's starting instant; later checks advance it by $SECONDS
+# (elapsed run time), so a slow step is seen to eat into the window.
+window_left() { # [--seconds] — prints the time left; non-zero outside the window
+  local args=(window --window "$WINDOW" --tz "$TZONE" "$@")
+  [[ -n "$NOW_ARG" ]] && args+=(--now "$NOW_ARG" --elapsed "$SECONDS")
   python3 "$HELPER" "${args[@]}"
+}
+minutes_left() { window_left; }
+# window_has_room — 0 when the window still fits one more review: local-review.sh
+# caps a run at 2x its idle --timeout, so reserve that much.
+window_has_room() {
+  [[ "$IGNORE_WINDOW" -eq 1 ]] && return 0
+  local secs
+  secs="$(window_left --seconds)" || return 1
+  [[ "$secs" =~ ^[0-9]+$ ]] && (( secs >= 2 * REVIEW_TIMEOUT ))
 }
 if [[ "$IGNORE_WINDOW" -eq 0 ]]; then
   LEFT="$(minutes_left)"; rc=$?
@@ -189,28 +214,98 @@ if [[ "$IGNORE_WINDOW" -eq 0 ]]; then
 fi
 
 # ---- single-owner run lock ---------------------------------------------------
-# flock(2) on fd 9, taken by a python child: the lock belongs to the open file
-# description, which this shell keeps open, so it is held until this process
-# exits — however it dies — and there is no stale-PID takeover to race on.
+# flock(2) held by a small holder process on a descriptor only it has open
+# (Python fds are not inherited), so no helper child of this shell — gh, git,
+# a hung CLI — can keep the lock alive after the runner dies. The holder
+# watches getppid() rather than a PID (a reused PID cannot fool it) and exits
+# as soon as this shell is gone, however it dies; the EXIT trap stops it at
+# once on a normal exit. It writes its identity into the lock file for the
+# lock_held diagnostic. There is no stale-PID takeover to race on.
 RUN_LOCK="$HOME/.claude/backfill-review.flock"
-SCRATCH=""
+LOCK_HOLDER_PY='
+import fcntl, os, sys, time
+path, runner = sys.argv[1], int(sys.argv[2])
+if os.getppid() != runner:
+    print("not-a-child", flush=True); sys.exit(1)
+try:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    print("held", flush=True); sys.exit(1)
+os.ftruncate(fd, 0)
+os.write(fd, ("holder=%d runner=%d started=%s\n" % (os.getpid(), runner,
+         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))).encode())
+print("locked", flush=True)
+while os.getppid() == runner:
+    time.sleep(0.2)
+'
+SCRATCH="" LOCK_PID=""
 cleanup() {
   if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then cleanup_worktree; fi
+  if [[ -n "$LOCK_PID" ]]; then kill "$LOCK_PID" 2>/dev/null; wait "$LOCK_PID" 2>/dev/null; fi
 }
-exec 9>>"$RUN_LOCK" || die 3 "cannot open lock file $RUN_LOCK"
-if ! python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then
-  summary lock_held; exit 0   # held elsewhere, or unlockable: never run unlocked
-fi
 trap cleanup EXIT
+LOCK_STATUS_FILE="$(mktemp "${TMPDIR:-/tmp}/backfill-review-lock.XXXXXX")" || die 3 "cannot create a lock status file"
+python3 -c "$LOCK_HOLDER_PY" "$RUN_LOCK" "$$" </dev/null >"$LOCK_STATUS_FILE" 2>/dev/null &
+LOCK_PID=$!
+LOCK_STATE="" _tries=0
+while (( _tries < 100 )); do   # ~10s for the holder to answer
+  IFS= read -r LOCK_STATE <"$LOCK_STATUS_FILE" 2>/dev/null
+  [[ -n "$LOCK_STATE" ]] && break
+  if ! kill -0 "$LOCK_PID" 2>/dev/null; then IFS= read -r LOCK_STATE <"$LOCK_STATUS_FILE" 2>/dev/null; break; fi
+  sleep 0.1; _tries=$(( _tries + 1 ))
+done
+rm -f "$LOCK_STATUS_FILE"
+if [[ "$LOCK_STATE" != locked ]]; then
+  # Held elsewhere, unlockable, or no answer: never run unlocked.
+  _holder="$(head -n 1 "$RUN_LOCK" 2>/dev/null | tr -cd '[:alnum:] =:_.-')"
+  _hpid="$(printf '%s' "$_holder" | sed -n 's/.*holder=\([0-9][0-9]*\).*/\1/p')"
+  _alive="unknown"
+  if [[ -n "$_hpid" ]]; then
+    if kill -0 "$_hpid" 2>/dev/null; then _alive="alive"; else _alive="gone (another process holds the lock)"; fi
+  fi
+  log "$REPO lock not acquired (${LOCK_STATE:-no answer}); last holder: ${_holder:-unrecorded}; holder pid $_alive"
+  summary lock_held; exit 0
+fi
 
 # ---- pending rows ----------------------------------------------------------
 ALL_ROWS="$("$LEDGER_SH" list --repo "$REPO")" || die 4 "ledger list failed"
-PENDING="$(jq -c 'map(select(.backfill_status == "pending")) | sort_by(.merged_at // .recorded_at // "", .pr)' <<<"$ALL_ROWS")" \
+# Fewest failed attempts first, then oldest merge: a row that keeps failing
+# sinks behind fresh rows instead of spending every run's budget.
+ROW_ATTEMPTS_JQ='(.backfill | if type == "object" then .attempts else null end) | if type == "number" then floor else 0 end'
+PENDING="$(jq -c "map(select(.backfill_status == \"pending\")) | sort_by(($ROW_ATTEMPTS_JQ), .merged_at // .recorded_at // \"\", .pr)" <<<"$ALL_ROWS")" \
   || die 4 "ledger list is not a JSON array"
 PENDING_LEFT="$(jq 'length' <<<"$PENDING")"
 
 ledger_mark() { # pr sha status detail-json
   printf '%s' "$4" | "$LEDGER_SH" backfill --repo "$REPO" --pr "$1" --sha "$2" --status "$3" --detail-json - >/dev/null
+}
+
+# row_failed <row-json> <reason> — the row's review ran (it spent budget) but
+# the row could not be completed. Count the attempt: below the cap the row
+# stays pending with {attempts, last_failure}; at the cap it is skipped with
+# the reason, never marked reviewed, and keeps the merged-unreviewed label.
+row_failed() {
+  local row="$1" reason="$2" pr sha n now
+  pr="$(jq -r .pr <<<"$row")"; sha="$(jq -r .head_sha <<<"$row")"
+  n="$(jq -r "$ROW_ATTEMPTS_JQ" <<<"$row" 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  n=$(( n + 1 )); now="$(date -u +%FT%TZ)"
+  if (( n >= MAX_ROW_ATTEMPTS )); then
+    if ledger_mark "$pr" "$sha" skipped "$(jq -cn --argjson n "$n" --arg r "$reason" --arg now "$now" \
+         '{skip_reason: ("gave up after \($n) failed review attempts; last: " + $r),
+           attempts: $n, last_failure: $r, skipped_at: $now, label_synced: false}')"; then
+      SKIPPED=$(( SKIPPED + 1 )); PENDING_LEFT=$(( PENDING_LEFT - 1 ))
+      log "$REPO PR #$pr $reason — skipped after $n failed attempts"
+    else
+      log "$REPO PR #$pr $reason — left pending (attempt cap reached, ledger write failed)"
+    fi
+  else
+    ledger_mark "$pr" "$sha" pending "$(jq -cn --argjson n "$n" --arg r "$reason" --arg now "$now" \
+      '{attempts: $n, last_failure: $r, last_failure_at: $now}')" \
+      || log "$REPO PR #$pr attempt count not recorded (ledger write failed)"
+    log "$REPO PR #$pr $reason — left pending (attempt $n of $MAX_ROW_ATTEMPTS)"
+  fi
 }
 
 swap_label() { # pr — returns 0 when the label swap landed
@@ -264,7 +359,8 @@ drop_channel() { # channel
 
 # review_entry <merge_sha> <pr> — sets REVIEW_JSON (local-review contract),
 # REVIEW_TOOL, REVIEW_LOG. Returns 0 on a verified run, 1 when every channel
-# is gone (stop the run), 2 on a per-entry setup failure (skip this run).
+# is gone (stop the run), 2 on a per-entry setup failure (skip this run),
+# 3 when the quiet window no longer fits a review (stop the run).
 review_entry() {
   local merge="$1" pr="$2" ch rc bin_var bin out
   REVIEW_JSON="" REVIEW_TOOL="" REVIEW_LOG=""
@@ -277,6 +373,9 @@ review_entry() {
   git -C "$REPO_DIR" branch --quiet "$BASE_BRANCH" "$merge^1" 2>>"$LOG" || { BASE_BRANCH=""; return 2; }
   for ch in "${ALIVE[@]+"${ALIVE[@]}"}"; do
     if (( ATTEMPTS >= MAX_REVIEWS )); then return 1; fi
+    # Re-checked here, after the merge lookup, fetches, and worktree setup
+    # (and any failed channel before this one) have spent part of the window.
+    window_has_room || return 3
     ATTEMPTS=$(( ATTEMPTS + 1 ))
     bin_var="BACKFILL_$(printf '%s' "$ch" | tr '[:lower:]' '[:upper:]')_BIN"
     bin="${!bin_var:-}"
@@ -349,8 +448,10 @@ marker_lookup() {
   return 0
 }
 
-neutralize() { # stdin -> stdout: no @-mentions, no fence breakouts
-  sed -e 's/@/@\&#8203;/g' -e 's/```/` ` `/g'
+neutralize() { # stdin -> stdout: no @-mentions, no fence breakouts, no headings
+  # A quoted line starting `## Estimate` (any `#`) would count as a section
+  # heading in issue-file.sh's order check, which does not see fences.
+  sed -e 's/@/@\&#8203;/g' -e 's/```/` ` `/g' -e 's/^#/ #/'
 }
 # safe_inline <text> — one line for an inline code span: no backtick, CR/LF, or @.
 safe_inline() { printf '%s' "$1" | tr '\r\n`' "  '" | sed 's/@/(at)/g'; }
@@ -403,11 +504,7 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
   row="$(jq -c ".[$i]" <<<"$PENDING")"
   pr="$(jq -r .pr <<<"$row")"; sha="$(jq -r .head_sha <<<"$row")"; merge="$(jq -r '.merge_commit_sha // ""' <<<"$row")"
 
-  if [[ "$IGNORE_WINDOW" -eq 0 && -z "$NOW_ARG" ]]; then
-    LEFT="$(minutes_left)" || { summary window_closed; exit 0; }
-    # local-review.sh caps a run at 2x its idle --timeout: reserve that much.
-    (( LEFT * 60 < 2 * REVIEW_TIMEOUT )) && { summary window_closed; exit 0; }
-  fi
+  window_has_room || { summary window_closed; exit 0; }
   if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
   if (( ATTEMPTS >= MAX_REVIEWS )); then summary max_reviews; exit 0; fi
 
@@ -449,37 +546,53 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
   if [[ $rc -ne 0 ]]; then
     cleanup_worktree
     if [[ $rc -eq 2 ]]; then log "$REPO PR #$pr worktree setup failed — left pending"; continue; fi
+    if [[ $rc -eq 3 ]]; then summary window_closed; exit 0; fi
     if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; else summary max_reviews; fi
     exit 0
   fi
 
   FINDINGS="$(python3 "$HELPER" normalize --tool "$REVIEW_TOOL" --log "$REVIEW_LOG" --repo "$REPO" --pr "$pr")" || {
-    log "$REPO PR #$pr capture unparseable — left pending"; cleanup_worktree; continue; }
+    cleanup_worktree; row_failed "$row" "capture unparseable"; continue; }
   # A verified run whose findings did not all parse is not "clean": a lost
   # finding could be the one real bug.
   reported="$(printf '%s' "$REVIEW_JSON" | jq -r '.findings // 0')"
   parsed="$(jq length <<<"$FINDINGS")"
   if ! [[ "$reported" =~ ^[0-9]+$ && "$parsed" =~ ^[0-9]+$ ]] || (( parsed < reported )); then
-    log "$REPO PR #$pr $reported finding(s) reported but $parsed parsed — left pending"; cleanup_worktree; continue
+    cleanup_worktree; row_failed "$row" "$reported finding(s) reported but $parsed parsed"; continue
   fi
 
-  RESULTS='[]' ISSUES='[]' ok=1
+  # A bug with a location but no text (CodeAnt contentless finding) is still a
+  # possible real bug: give it placeholder text, never drop it. Then group the
+  # fileable bugs by fingerprint: findings at the same anchor share one marker,
+  # so they are filed as ONE issue quoting every finding's text — the second is
+  # never mistaken for "already filed" with its text lost.
+  FINDINGS="$(jq -c 'map(if .bug == true and (.path // "") != "" and ((.text // "") | gsub("\\s"; "")) == ""
+                          then .text = "(the reviewer flagged this location as a bug but gave no description)" else . end)' <<<"$FINDINGS")"
+  ANCHOR_TEXT="$(jq -c '[.[] | select(.bug == true and (.path // "") != "")] | group_by(.fingerprint)
+                        | map({key: .[0].fingerprint, value: (if length > 1
+                              then (map(.text) | join("\n\n----- another finding at the same location -----\n\n"))
+                              else null end)}) | from_entries' <<<"$FINDINGS")"
+  RESULTS='[]' ISSUES='[]' FILED_AT='{}' ok=1
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     disp="" verdict="" url="" main_path=""
     if [[ "$(jq -r .bug <<<"$f")" != true ]]; then disp="dropped: below bug severity"
     elif [[ -z "$(jq -r '.path' <<<"$f")" ]]; then disp="dropped: no file anchor"
     else
-      # A bug with a location but no text (CodeAnt contentless finding) is
-      # still a possible real bug: file it with placeholder text, never drop it.
-      if [[ -z "$(jq -r '.text | gsub("\\s"; "")' <<<"$f")" ]]; then
-        f="$(jq -c '.text = "(the reviewer flagged this location as a bug but gave no description)"' <<<"$f")"
-      fi
+      fp="$(jq -r .fingerprint <<<"$f")"
       vline="$(verify_finding "$f" "$merge")"
       verdict="${vline%%$'\t'*}"; main_path="${vline#*$'\t'}"
+      prior="$(jq -r --arg k "$fp" '.[$k] // ""' <<<"$FILED_AT")"
+      to_file="$f"
+      if [[ "$(jq -r --arg k "$fp" '.[$k] | type' <<<"$ANCHOR_TEXT")" == string ]]; then
+        to_file="$(jq -c --argjson a "$ANCHOR_TEXT" --arg k "$fp" '.text = $a[$k]' <<<"$f")"
+      fi
       if [[ "$verdict" != still_present && "$verdict" != changed ]]; then ok=0; break
-      elif url="$(file_finding "$f" "$row" "$verdict" "$merge" "$main_path")" && [[ -n "$url" ]]; then
+      elif [[ -n "$prior" ]]; then
+        url="$prior"; disp="filed (same anchor as an earlier finding; quoted in its issue)"
+      elif url="$(file_finding "$to_file" "$row" "$verdict" "$merge" "$main_path")" && [[ -n "$url" ]]; then
         disp="filed"; ISSUES="$(jq -c --arg u "$url" '. + [$u] | unique' <<<"$ISSUES")"
+        FILED_AT="$(jq -c --arg k "$fp" --arg u "$url" '.[$k] = $u' <<<"$FILED_AT")"
       else ok=0; break
       fi
     fi
@@ -489,7 +602,7 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
              disposition: $d, issue: (if $u == "" then null else $u end)}]' <<<"$RESULTS")"
   done < <(jq -c '.[]' <<<"$FINDINGS")
   if [[ $ok -eq 0 ]]; then
-    log "$REPO PR #$pr filing or dedup lookup failed — left pending"; cleanup_worktree; continue
+    cleanup_worktree; row_failed "$row" "filing or dedup lookup failed"; continue
   fi
 
   status=reviewed-clean

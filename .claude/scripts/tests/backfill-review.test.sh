@@ -36,7 +36,14 @@
 #    18. a shallow checkout's missing first parent never records a skip;
 #    19. window minutes: whole day never closes, DST counts elapsed time;
 #    20. a failed label swap is retried without a re-review;
-#    21. a contentless bug finding with a location is filed, not dropped.
+#    21. a contentless bug finding with a location is filed, not dropped;
+#    22. a runner killed while a helper child sleeps leaves no lock behind;
+#    23. permanently failing rows sink behind a fresh row and are skipped
+#        after N attempts (never reviewed, never filed);
+#    24. two bugs at one anchor file one issue quoting both;
+#    25. a repeated --channels name is not retried after it fails;
+#    26. a quoted `## Estimate` line cannot break the issue body;
+#    27. the window reserve is re-checked after slow setup.
 #
 # Requires: bash 3.2+, git, jq, python3. Offline: no network, no real gh/CLIs.
 set -uo pipefail
@@ -107,6 +114,18 @@ if [ "${STUB_CLI_MODE:-ok}" = fail ]; then
   echo '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded"}'; exit 0
 fi
 files=$(git diff --name-only "$base"...HEAD | tr '\n' ' ')
+case "${STUB_CLI_MODE:-ok}| $files " in
+  "short_buggy|"*" buggy.sh "*)   # a permanently unparseable review, but only for buggy.sh rows
+    echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nx"}'
+    echo '{"type":"complete","status":"review_completed","findings":2}'; exit 0 ;;
+  "twin|"*" buggy.sh "*)          # two different bugs at the same file and line
+    echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nFIRST: unquoted rm -rf on an unset variable."}'
+    echo '{"type":"finding","severity":"critical","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nSECOND: the trailing slash also hits the root."}'
+    echo '{"type":"complete","status":"review_completed","findings":2}'; exit 0 ;;
+  "heading|"*" buggy.sh "*)       # finding text holding a markdown heading line
+    echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nUnquoted rm -rf.\n## Estimate\nquoted heading line"}'
+    echo '{"type":"complete","status":"review_completed","findings":1}'; exit 0 ;;
+esac
 echo '{"type":"review_context","reviewType":"committed"}'
 case " $files " in
   *" buggy.sh "*)
@@ -130,8 +149,12 @@ case "$1 $2" in
   "label create") exit 0 ;;
   "label list") echo '[{"name":"bug"}]'; exit 0 ;;
   "pr edit") exit "${STUB_PR_EDIT_RC:-0}" ;;
-  "pr view") [ "${STUB_PR_VIEW_FAIL:-0}" = 1 ] && { echo "HTTP 502" >&2; exit 1; }; echo ""; exit 0 ;;
-  "issue list") [ "${STUB_LIST_FAIL:-0}" = 1 ] && { echo "HTTP 502" >&2; exit 1; }; cat "$ISS"; exit 0 ;;
+  "pr view") [ "${STUB_PR_VIEW_FAIL:-0}" = 1 ] && { echo "HTTP 502" >&2; exit 1; }
+    [ -n "${STUB_PR_VIEW_SLEEP:-}" ] && sleep "$STUB_PR_VIEW_SLEEP"
+    echo "${STUB_PR_VIEW_OID:-}"; exit 0 ;;
+  "issue list") [ "${STUB_LIST_FAIL:-0}" = 1 ] && { echo "HTTP 502" >&2; exit 1; }
+    if [ -n "${STUB_GH_SLEEP:-}" ]; then echo $$ > "$STUB_DIR/gh-sleep.pid"; exec sleep "$STUB_GH_SLEEP"; fi
+    cat "$ISS"; exit 0 ;;
   "issue create")
     body=""; title=""
     for a in "$@"; do case "$a" in --body-file=*) body="${a#--body-file=}" ;; --title=*) title="${a#--title=}" ;; esac; done
@@ -373,8 +396,77 @@ OUT="$(run --ignore-window)"
 kill "$LOCKER" 2>/dev/null; wait "$LOCKER" 2>/dev/null
 check_contains "17: a held lock is stop=lock_held" "stop=lock_held" "$OUT"
 check_eq "17: no review ran under a held lock" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_contains "17: lock_held logs a holder diagnostic" "lock not acquired (held); last holder:" \
+  "$(cat "$HOME/.claude/logs/backfill-review.log")"
 OUT="$(run --ignore-window)"
 check_not_contains "17: the lock frees when its holder exits" "stop=lock_held" "$OUT"
+
+# ---- 22. an orphaned helper child cannot keep the run lock -------------------------
+seed; rm -f "$STUB/gh-sleep.pid"
+STUB_GH_SLEEP=30 "$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/widgets --timeout 30 --ignore-window >/dev/null 2>&1 &
+RUNNER=$!
+for _ in $(seq 1 60); do [ -s "$STUB/gh-sleep.pid" ] && break; sleep 0.5; done
+[ -s "$STUB/gh-sleep.pid" ] || fail "22: fixture: the runner never reached the sleeping gh call"
+kill -9 "$RUNNER" 2>/dev/null; wait "$RUNNER" 2>/dev/null
+sleep 1   # the lock holder polls its parent every 0.2s
+OUT="$(run --ignore-window)"
+check_not_contains "22: a killed runner's sleeping gh child does not hold the lock" "stop=lock_held" "$OUT"
+kill "$(cat "$STUB/gh-sleep.pid" 2>/dev/null)" 2>/dev/null
+
+# ---- 23. a permanently failing row cannot starve fresh rows ------------------------
+# Three rows (older merges) whose review never parses, plus one fresh clean row.
+seed_starve() {
+  jq -n --arg m1 "$M101" --arg m2 "$M102" '{schema_version: 1, entries: (
+    [range(201; 204) as $p | {repo: "acme/widgets", pr: $p, url: "u", head_sha: "h\($p)",
+       merge_commit_sha: $m1, merged_at: "2026-10-0\($p - 200)T10:00:00Z", backfill_status: "pending"}]
+    + [{repo: "acme/widgets", pr: 102, url: "u", head_sha: "h102", merge_commit_sha: $m2,
+        merged_at: "2026-11-02T10:00:00Z", backfill_status: "pending"}])}' > "$LEDGER"
+  echo '[]' > "$STUB/issues.json"; : > "$STUB/gh-calls.log"; : > "$STUB/cli-calls.log"
+}
+seed_starve; FRESH_RUN=""
+for n in 1 2 3 4; do
+  STUB_CLI_MODE=short_buggy run --ignore-window >/dev/null
+  [ -z "$FRESH_RUN" ] && [ "$(status_of 102)" = reviewed-clean ] && FRESH_RUN=$n
+done
+check_eq "23: the fresh row is reviewed by run 2 (within N+1 runs)" "2" "${FRESH_RUN:-never}"
+check_eq "23: failing rows are skipped after N attempts, never reviewed" "skipped skipped skipped" \
+  "$(status_of 201) $(status_of 202) $(status_of 203)"
+check_contains "23: skip reason names the cap and the last failure" "gave up after 3 failed review attempts; last: 2 finding(s) reported but 1 parsed" \
+  "$(jq -r '.entries[] | select(.pr == 201) | .backfill.skip_reason' "$LEDGER")"
+check_eq "23: nothing filed for the failing rows" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+check_eq "23: failing rows keep merged-unreviewed" "0" "$(grep -cE 'pr edit 20[123]' "$STUB/gh-calls.log")"
+seed_starve; jq '(.entries[] | select(.pr == 201)) |= (.backfill = {attempts: 1, last_failure: "x"})' "$LEDGER" > "$LEDGER.t" && mv "$LEDGER.t" "$LEDGER"
+STUB_CLI_MODE=short_buggy run --ignore-window --max-reviews 1 >/dev/null
+check_eq "23: an attempt below the cap is recorded on the pending row" "pending 1" \
+  "$(jq -r '.entries[] | select(.pr == 202) | "\(.backfill_status) \(.backfill.attempts)"' "$LEDGER")"
+
+# ---- 24. two bugs at the same anchor: one issue quoting both, nothing lost ----------
+seed; STUB_CLI_MODE=twin run --ignore-window >/dev/null
+check_eq "24: one issue for the shared anchor" "1" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+BODY="$(jq -r '.[0].body' "$STUB/issues.json")"
+check_contains "24: the issue quotes the first finding" "FIRST: unquoted rm -rf" "$BODY"
+check_contains "24: the issue quotes the second finding" "SECOND: the trailing slash" "$BODY"
+check_eq "24: both findings point at that issue" "2" \
+  "$(jq -r '[.entries[] | select(.pr == 101) | .backfill.findings[] | select(.issue == "https://github.com/acme/widgets/issues/500")] | length' "$LEDGER")"
+
+# ---- 25. a repeated channel name is not retried after it fails ----------------------
+seed; STUB_CLI_MODE=fail run --ignore-window --channels coderabbit,coderabbit-cli >/dev/null
+check_eq "25: a duplicated channel runs once" "1" "$(grep -c '^coderabbit' "$STUB/cli-calls.log")"
+
+# ---- 26. a heading line inside the quoted finding cannot break the issue body -------
+seed; STUB_CLI_MODE=heading run --ignore-window >/dev/null
+check_eq "26: a finding quoting '## Estimate' still files" "issues-filed" "$(status_of 101)"
+check_contains "26: the quoted heading is kept, indented" " ## Estimate" "$(jq -r '.[0].body' "$STUB/issues.json")"
+
+# ---- 27. the window is re-checked after slow setup, before the review starts --------
+# Window closes 66s after --now; the reserve is 2x30s. The merge lookup takes 8s.
+seed_nomerge
+jq '(.entries[] | select(.pr == 101)) |= (.backfill_status = "skipped")' "$LEDGER" > "$LEDGER.t" && mv "$LEDGER.t" "$LEDGER"
+OUT="$(STUB_PR_VIEW_OID="$M102" STUB_PR_VIEW_SLEEP=8 run --window 01:00-06:00 --tz UTC --now 2026-11-06T05:58:54Z)"
+check_contains "27: setup ran (the merge lookup was reached)" "pr view 102" "$(cat "$STUB/gh-calls.log")"
+check_contains "27: the late window stops the run" "stop=window_closed" "$OUT"
+check_eq "27: no review started past the reserve" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+check_eq "27: the row stays pending" "pending" "$(status_of 102)"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

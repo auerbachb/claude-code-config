@@ -2,11 +2,13 @@
 """Helpers for backfill-review.sh (issue #1900). Python 3.9+, stdlib only.
 
 Subcommands
-  window  --window HH:MM-HH:MM --tz ZONE [--now ISO8601]
+  window  --window HH:MM-HH:MM --tz ZONE [--now ISO8601] [--elapsed SEC] [--seconds]
           Exit 0 and print the minutes left when "now" is inside the quiet
           window (cross-midnight windows such as 22:00-06:00 work); exit 1
           outside it; exit 2 on invalid input. A window whose start equals
-          its end is the whole day.
+          its end is the whole day. --elapsed advances --now by that many
+          seconds (the runner's elapsed time since it started); --seconds
+          prints seconds left instead of minutes.
   normalize --tool coderabbit|codeant --log PATH --repo R --pr N
           Read a local-review.sh raw capture and print one JSON array of
           findings: {tool, path, line, severity, text, fingerprint, bug}.
@@ -51,7 +53,7 @@ def cmd_window(a):
             now = dt.datetime.fromisoformat(a.now.replace("Z", "+00:00"))
             if now.tzinfo is None:
                 raise ValueError("--now needs an offset")
-            now = now.astimezone(tz)
+            now = (now + dt.timedelta(seconds=a.elapsed)).astimezone(tz)
         else:
             now = dt.datetime.now(tz)
     except Exception as e:  # any bad input is a usage error
@@ -59,7 +61,7 @@ def cmd_window(a):
         return 2
     cur = now.hour * 60 + now.minute
     if start == end:
-        print(24 * 60)  # whole day: never closes, so never "about to close"
+        print(24 * 3600 if a.seconds else 24 * 60)  # whole day: never closes, so never "about to close"
         return 0
     if start < end:
         inside = start <= cur < end
@@ -77,7 +79,7 @@ def cmd_window(a):
     if close.astimezone(dt.timezone.utc) <= utc_now:
         close = close.replace(fold=1)  # closing time repeats on a fall-back night: use its second occurrence
     secs = (close.astimezone(dt.timezone.utc) - utc_now).total_seconds()
-    print(max(0, int(secs // 60)))
+    print(max(0, int(secs if a.seconds else secs // 60)))
     return 0
 
 
@@ -155,6 +157,8 @@ def main(argv):
     w.add_argument("--window", required=True)
     w.add_argument("--tz", required=True)
     w.add_argument("--now", default="")
+    w.add_argument("--elapsed", type=int, default=0)
+    w.add_argument("--seconds", action="store_true")
     n = sub.add_parser("normalize")
     n.add_argument("--tool", choices=["coderabbit", "codeant"], required=True)
     n.add_argument("--log", required=True)
