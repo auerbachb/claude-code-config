@@ -799,9 +799,11 @@ if [[ "$SUBSTANCE_OK" == "true" && "$CR_RATE_LIMITED" != "true" && "$CR_REVIEW_O
     # An absent or malformed check-run list is unreadable, never clear.
     | ((.check_runs.all | type) == "array" and
        ([.check_runs.all[]
-        # Reviewer runs are not CI. BugBot is excluded by its publishing app,
-        # never by check name alone (issue #956 structural guard).
-        | select((.name // "") != "CodeRabbit" and (.app.slug // "") != "cursor")
+        # Reviewer runs are not CI. Both are excluded by their publishing app,
+        # never by check name alone (issue #956 structural guard): a pending or
+        # failing "CodeRabbit" run from any other app is CI like any other.
+        | select(((.name // "") == "CodeRabbit" and (.app.slug // "") == "coderabbitai") | not)
+        | select((.app.slug // "") != "cursor")
         | select((.status // "") != "completed" or ((.conclusion // "") | blocking))]
        | length == 0)) as $ci_clear
     | [ ($cr_comment_only and $threads_clear and $ci_clear), $cr_last ] | @tsv

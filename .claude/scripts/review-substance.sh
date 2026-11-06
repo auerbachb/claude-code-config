@@ -95,7 +95,7 @@
 #        "capability_failure": false, "capability_failure_text": "",
 #        "pre_run_approval": false, "run_has_findings_on_head": false,
 #        "redeemed_by_clean_run": false, "run_started_at": "…",
-#        "run_finished_at": "…", "run_done": true,
+#        "run_finished_at": "…", "run_done": true, "run_ts_unusable": false,
 #        "substantive": true, "counts_as_coverage": true,
 #        "disqualified_by": [], "seconds_after_push": 214
 #     } },
@@ -1410,6 +1410,11 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
               # record for HEAD, so a consumer can tell "no record" from "record
               # says the run is unfinished".
               run_done:                  (if $runmark == null then null else $runmark.done end),
+              # true when the governing run record SUPPLIED a timestamp that is
+              # not one. Such a record cannot place the approval inside or
+              # outside its run, so it bars redemption — and, for the same
+              # reason, it cannot prove the stub is past saving (pre_run_stuck).
+              run_ts_unusable:           ($runmark != null and $runmark.ts_unusable == true),
               substantive:               $substantive,
               # `$redeemed` is an alternative to `$substantive`, never to the
               # empty-$disq requirement: it can only satisfy the "something read
@@ -1455,10 +1460,14 @@ OUT=$(printf '%s' "$INPUT" | jq -c \
         # COMPLETED without redeeming them. Waiting cannot change that verdict
         # on this SHA — CodeAnt never re-approves a SHA it already approved —
         # so escalate-review.sh reads this bucket to stop polling CodeRabbit
-        # forever. An in-flight run is excluded: it may still redeem.
+        # forever. An in-flight run is excluded: it may still redeem. So is a
+        # run record with unreadable timestamps: it bars redemption, but an
+        # unverifiable run cannot prove the stub stuck either, and this bucket
+        # only ever releases a wait, so it fails toward not-stuck.
         pre_run_stuck:     [ $map | to_entries[]
                              | select(.value.approved_on_head and .value.pre_run_approval
                                       and (.value.run_done == true)
+                                      and (.value.run_ts_unusable != true)
                                       and (.value.redeemed_by_clean_run | not)
                                       and (.value.counts_as_coverage | not))
                              | .key ],

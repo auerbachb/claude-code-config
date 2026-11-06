@@ -1009,6 +1009,16 @@ check_contains "pre_run_approval" "$(r_disq "$EV")" \
   "(t7) pre-run approval with no completed later run still blocks"
 check_eq "[]" "$(echo "$EV" | jq -c '.pre_run_stuck')" \
   "(t7) an in-flight run is not stuck — it may still redeem"
+# (t7b) A done run whose record has an unreadable `started` bars redemption
+#       (s5), but it cannot prove the stub stuck either: pre_run_stuck only ever
+#       releases a wait, so an unverifiable run fails toward not-stuck. (t2) is
+#       the positive control — a readable done run that did not redeem IS stuck.
+EV=$(evidence_res "$T_REVIEWS" "$S_STATUS_BAD_START" "$T_INLINE" "[901,902,904]")
+check_eq "false" "$(r_field "$EV" redeemed_by_clean_run)" \
+  "(t7b) a done run with an unreadable timestamp redeems nothing"
+check_eq "true" "$(r_field "$EV" run_ts_unusable)" "(t7b) and is reported run_ts_unusable"
+check_eq "[]" "$(echo "$EV" | jq -c '.pre_run_stuck')" \
+  "(t7b) and is not reported stuck — an unverifiable run fails toward not-stuck"
 T_CAPFAIL=$(jq -cn --arg login "$CA" '{user:{login:$login,type:"Bot"},
   created_at:"2026-08-26T16:28:00Z", updated_at:"2026-08-26T16:28:00Z",
   body:"CodeAnt AI could not run on this PR: your organization does not have a PR Review subscription."}')

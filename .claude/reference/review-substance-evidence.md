@@ -352,7 +352,10 @@ evaluator fails the (t1)/(t4) redemption assertions.
 
 A top-level bucket listing approvers whose approval on HEAD is a
 `pre_run_approval`, whose own run on HEAD is **done**, and which that run did
-**not** redeem. An in-flight run is excluded — it may still redeem. Nothing
+**not** redeem. An in-flight run is excluded — it may still redeem — and so is
+a done run whose record supplied an unreadable timestamp (`run_ts_unusable`):
+that bars redemption, but an unverifiable run cannot prove the stub stuck
+either, and this bucket only ever releases a wait. Nothing
 gates on it in `merge-gate.sh` (it rides along in `review_evidence`);
 `escalate-review.sh` reads it to stop polling CodeRabbit on a SHA no CR-path
 reviewer can ever approve — see `merge-gate-reviewer-paths.md` §CodeAnt on the CR

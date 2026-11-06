@@ -22,6 +22,9 @@
 #   (N3) CodeAnt run still in flight      -> polling_cr (it may still redeem)
 #   (N4) CI check failing                 -> polling_cr
 #   (N5) CodeRabbit reviewed HEAD < 12 min ago -> polling_cr
+#   (N6) a FOREIGN app's pending "CodeRabbit" check -> polling_cr (it is CI)
+#   (S2) the real CodeRabbit app's pending check -> still escalates (positive
+#        control for N6: the exclusion is by app identity, not removed)
 #
 # Only `gh` and `pr-state.sh` are stubbed; escalate-review.sh, merge-gate.sh and
 # review-substance.sh are the real scripts.
@@ -81,7 +84,7 @@ status_table() { # run2_done(true|false)
 }
 
 # ---- one scenario's shared payloads ------------------------------------------
-REVIEWS="" INLINE="" CONVO="" THREADS="" CI_RUN=""
+REVIEWS="" INLINE="" CONVO="" THREADS="" CI_RUN="" EXTRA_RUNS="[]"
 build() { # finding_created_at  thread_resolved  run2_done  cr_state  cr_commit  cr_ts  ci_conclusion
   REVIEWS="[$(ca_approval),$(ca_findings_review),$(cr_review "$4" "$5" "$6")]"
   [[ "$4" == "APPROVED" ]] && REVIEWS="[$(ca_approval),$(ca_findings_review),$(cr_review COMMENTED "$HEAD_SHA" "$6"),$(cr_review APPROVED "$5" "$6")]"
@@ -95,10 +98,10 @@ run_escalation() {
   reset_state
   write_commits "$PUSH_TS"
   jq -n --arg owner "$OWNER" --arg repo "$REPO" --arg sha "$HEAD_SHA" \
-    --argjson ci "$CI_RUN" --argjson reviews "$REVIEWS" --argjson inline "$INLINE" \
+    --argjson ci "$CI_RUN" --argjson extra "$EXTRA_RUNS" --argjson reviews "$REVIEWS" --argjson inline "$INLINE" \
     --argjson conversation "$CONVO" --argjson threads "$THREADS" '
     { pr: {owner: $owner, repo: $repo, head_sha: $sha},
-      check_runs: {all: [$ci]}, commit_statuses: [],
+      check_runs: {all: ([$ci] + $extra)}, commit_statuses: [],
       threads: {all: $threads,
                 unresolved_count: ([$threads[] | select(.isResolved | not)] | length)},
       comments: {reviews: $reviews, inline: $inline, conversation: $conversation} }' \
@@ -191,5 +194,19 @@ check_eq "(N4) a failing CI check -> polling_cr" "STATUS=polling_cr" "$ESC_OUT"
 build "$IN_RUN2" true true COMMENTED "$HEAD_SHA" "$(ts_seconds_ago 300)" success
 run_escalation
 check_eq "(N5) CodeRabbit reviewed HEAD 5 min ago -> polling_cr" "STATUS=polling_cr" "$ESC_OUT"
+
+pending_cr_check() { # app_slug app_id
+  jq -cn --arg s "$1" --argjson id "$2" \
+    '[{id: 10, name:"CodeRabbit", status:"in_progress", conclusion:null, app:{slug:$s, id:$id}}]'
+}
+build "$IN_RUN2" true true COMMENTED "$HEAD_SHA" "$CR_REVIEW_TS" success
+EXTRA_RUNS="$(pending_cr_check impostor-app 999999)"
+run_escalation
+check_eq "(N6) a foreign app's pending 'CodeRabbit' check is CI, not clear -> polling_cr" "STATUS=polling_cr" "$ESC_OUT"
+
+EXTRA_RUNS="$(pending_cr_check coderabbitai 347564)"
+run_escalation
+check_eq "(S2) the real CodeRabbit app's pending check is not CI -> still escalates" "STATUS=switch_bugbot" "$ESC_OUT"
+EXTRA_RUNS="[]"
 
 finish_escalate_review_tests "CR-path stuck-state (issue #1736)"
