@@ -21,6 +21,7 @@ here).
 | `attention.md` | `report`: the weekly attention report, one page computed from the events table (`human-queue.sh report`), offered once after Friday's end-of-day sweep (#1771) |
 | `todo.md` | The operator's own to-do layer: `tag`, `untag`, `note`, `unnote`, `snooze`, `unsnooze`, `mine`, `my list`; the paper copy's line is `todo_line` in `desk.jq` (#1769) |
 | `checkin.md` | The morning check-in (`morning` event, `check-in`, `budget?`): hours, energy, and plans with the measured pace set today's reading budget; its parsing and cards are `checkin_parse`, `checkin_card`, `budget_card`, `budget_line`, and `reviews_view_budget` in `desk.jq` (#1770) |
+| `export.md` | `export …`: a batch (the sweep's set, the pending Decisions, the unreviewed Reviews, or named items) as a numbered PDF for paper review, through `human-queue.sh export`; its rendering is `bin/lib/export.jq`, which reuses `desk.jq` (#1759) |
 
 Later desk issues add a file here and a row to `SKILL.md`'s table rather than
 growing one file.
