@@ -13,6 +13,7 @@ Full contract — flags, exit codes, behavior — lives in each script's `--help
 | [ac-checkboxes.sh](../ac-checkboxes.sh) | Parse and update the PR body's Test plan checkboxes |
 | [ac-gate.sh](../ac-gate.sh) | CI gate: fail a PR with unchecked AC boxes; enforce the Post-merge verification exemption |
 | [admin-merge.sh](../admin-merge.sh) | Generate or execute the solo-owner branch-protection bypass |
+| [backfill-review.sh](../backfill-review.sh) | Review merges logged by the no-review override with the FREE local CLIs only, file deduped issues for real bugs, mark each ledger row reviewed |
 | [check-runs-dedup.sh](../check-runs-dedup.sh) | Collapse a check-run list to one verdict per check (newest check suite wins) |
 | [ci-status.sh](../ci-status.sh) | Summarize CI check-run health for a commit or PR |
 | [clean-behind-check.sh](../clean-behind-check.sh) | Decide whether a BEHIND PR is safe for /admin-merge (hunk-level overlap check) vs a rebase |
