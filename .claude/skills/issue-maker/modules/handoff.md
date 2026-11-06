@@ -135,8 +135,16 @@ handoff_release_unstarted() {
 }
 ```
 
+In the same tool call as the block below, first assign `CHIP_TOOL_AVAILABLE=true` when `mcp__ccd_session__spawn_task` is in your tool list, else `CHIP_TOOL_AVAILABLE=false`. An unset flag is treated as `false`, and both uncounted paths say so.
+
 ```bash
 REGISTRY=""; CAP_SH=""; CAP_ADMISSION=""; REG_TID=""; REG_TID_RC=0
+case "${CHIP_TOOL_AVAILABLE:-}" in
+  true) ;;
+  false) echo "DEGRADED: spawn_task unavailable (CHIP_TOOL_AVAILABLE=false) — inline handoff, continuing uncounted" >&2 ;;
+  *) echo "DEGRADED: CHIP_TOOL_AVAILABLE not set — treating as false; inline handoff, continuing uncounted" >&2
+     CHIP_TOOL_AVAILABLE=false ;;
+esac
 if [ "$CHIP_TOOL_AVAILABLE" = true ]; then
   for candidate in "$HOME/.claude/skills-worktree/.claude/scripts/active-work-cap.sh" "$HOME/.claude/scripts/active-work-cap.sh" ".claude/scripts/active-work-cap.sh"; do
     [ -x "$candidate" ] && { CAP_SH="$candidate"; break; }
