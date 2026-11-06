@@ -51,7 +51,9 @@ trap. `AI_QUOTAS_NOTIFY_DAY` and `AI_QUOTAS_NOTIFY_BIN` are synthetic-test seams
 **Token scope fallback.** [Official Claude authentication documentation](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)
 states that `setup-token` produces a one-year token for model requests and prints it
 instead of saving it. That scope cannot serve the usage reader; the issue explicitly
-narrows to notification + relogin in this case. No long-lived-token installer or reader
+narrows the delivery scope to notification + relogin in this case. The original Codex
+cause investigation is deferred to [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970),
+not an additional acceptance gate for that authorized fallback. No long-lived-token installer or reader
 override is shipped, and no token was minted or live credential inspected to verify
 this. Existing OAuth refresh behavior remains in place. Do not run `setup-token` merely
 to inspect its output or store a password to work around expiry.
@@ -65,8 +67,11 @@ revocation or reuse caused the reported historical logouts. `credential_unavaila
 HTTP 401, or a generic reader failure alone cannot distinguish these causes. Preserve
 sanitized fixed upstream failure codes when they become available and correlate their
 account/source/time before naming a cause. Do not copy response bodies, auth files,
-tokens or passwords into the ledger or a diagnosis. The original diagnosis acceptance
-criterion is still unchecked; useful action/notification work does not satisfy it.
+tokens or passwords into the ledger or a diagnosis. The original diagnosis is not
+claimed completed: [Issue #1970](https://github.com/auerbachb/claude-code-config/issues/1970)
+tracks the actual failure evidence and follow-up work under the original conditional
+scope. Unknown history does not prevent the notification/relogin fallback from shipping
+once its active acceptance criteria and the normal review/CI gates pass.
 
 ## Why per-account profiles at all
 

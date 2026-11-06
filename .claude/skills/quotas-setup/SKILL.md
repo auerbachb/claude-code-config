@@ -45,7 +45,9 @@ For a logged-out account, lead with the exact action supplied by `/quotas` and p
 its label/provider quoting. The human completes the provider's sign-in. Do not install
 `claude setup-token` for this usage reader: those long-lived tokens are model-request-only.
 Issue #1886 uses notification + one-line relogin as its explicit scope fallback, with
-no password storage or replay. See the reference for the remaining Codex evidence gap.
+no password storage or replay. See the reference and Issue #1970 for the deferred
+actual Codex-cause investigation; do not invent a cause or make it a prerequisite
+for the authorized notification/relogin fallback.
 
 ## Step 1 — Resolve the helper
 
