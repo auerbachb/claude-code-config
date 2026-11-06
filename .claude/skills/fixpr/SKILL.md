@@ -756,7 +756,8 @@ REVIEW_BOT_CHECKS=$(jq '.review' <<<"$CHECK_BUCKETS")
 
 FAILING=$(jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure" or .conclusion == "stale")] | length' <<<"$CI_CHECKS")
 IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$CI_CHECKS")
-REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed")] | length' <<<"$REVIEW_BOT_CHECKS")
+# A retired Graphite check-run is bucketed as review but never awaited (matches 5d).
+REVIEW_IN_PROGRESS=$(jq '[.[] | select(.status != "completed") | select((.name // "" | ascii_downcase | contains("graphite")) | not)] | length' <<<"$REVIEW_BOT_CHECKS")
 ```
 
 Decide from the non-review CI counts before review-bot pending counts:

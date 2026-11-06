@@ -34,6 +34,8 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 # Option A — browser OAuth (standard):
 codeant login
 # Opens app.codeant.ai in your browser; key saved to ~/.codeant/config.json.
+# A set CODEANT_API_TOKEN (even a stale one) overrides that saved login, so
+# `unset CODEANT_API_TOKEN` in any shell that should use Option A.
 
 # Option B — API key from the CodeAnt dashboard, read silently from the
 # terminal into the environment (never typed as an argument, so it stays out
