@@ -474,6 +474,89 @@ run_in "$R10" --since "$WINDOW_START" --exclude 'src/*' --json
 check_jq "10e: --exclude drops a matching path" "$OUT" '.hotspots | map(.file) | index("src/Real.ts") == null'
 
 # =============================================================================
+# Scenario 10b — --exclude globs match paths, never the cwd (issue #1856)
+# =============================================================================
+# The cwd MUST hold files the patterns match (root README.md, docs/guide.md)
+# AND descendants the cwd listing does not (docs/sub/deep.md, notes/todo.md):
+# the pre-fix matcher pathname-expanded each entry against the cwd, so `*.md`
+# became the literal `README.md` and `docs/*` became `docs/guide.md docs/sub`.
+R10G=$(new_repo r10g)
+seed_missing "$R10G" README.md docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-01T00:00:00" "edit (#511)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-02T00:00:00" "edit (#512)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+commit_touch "$R10G" "2026-02-03T00:00:00" "edit (#513)" docs/guide.md docs/sub/deep.md notes/todo.md src/Real.ts
+
+ALL4='["docs/guide.md","docs/sub/deep.md","notes/todo.md","src/Real.ts"]'
+check_exclude_globs() {  # $1 label suffix
+  run_in "$R10G" --since "$WINDOW_START" --exclude '*.md' --json
+  check_jq "10g: --exclude '*.md' reports only src/Real.ts ($1)" "$OUT" \
+    '(.hotspots | map(.file) | sort) == ["src/Real.ts"] and .excluded_count == 9'
+  run_in "$R10G" --since "$WINDOW_START" --exclude 'docs/*' --json
+  check_jq "10h: --exclude 'docs/*' excludes docs/ at any depth ($1)" "$OUT" \
+    '(.hotspots | map(.file) | sort) == ["notes/todo.md","src/Real.ts"] and .excluded_count == 6'
+}
+
+# NEGATIVE CONTROL — without --exclude all four touched files are hotspots, so
+# 10g/10h measure the exclusion rather than a fixture that never qualified.
+run_in "$R10G" --since "$WINDOW_START" --json
+check_jq "10f: NEGATIVE CONTROL — no --exclude reports all four touched files" "$OUT" \
+  "(.hotspots | map(.file) | sort) == $ALL4"
+
+check_exclude_globs "README.md and docs/ in the working tree"
+# Working-tree independence: move matching files out of the checkout without
+# touching history, refs or HEAD — the results must not change.
+mv "$R10G/README.md" "$TMP/r10g-README.md"
+check_exclude_globs "README.md moved out of the working tree"
+mv "$TMP/r10g-README.md" "$R10G/README.md"
+mv "$R10G/docs" "$TMP/r10g-docs"
+check_exclude_globs "docs/ moved out of the working tree"
+mv "$TMP/r10g-docs" "$R10G/docs"
+
+# Function-level checks on the production matcher, extracted verbatim. Each runs
+# in a subshell so the test shell's options are never touched.
+MATCHER_SRC=$(sed -n '/^is_excluded() {/,/^}/p' "$SCRIPT")
+MATCH_CWD="$TMP/r10g-cwd"
+mkdir -p "$MATCH_CWD/src" && : > "$MATCH_CWD/README.md" && : > "$MATCH_CWD/src/Real.ts"
+matcher_verdicts() {  # $1 EXCLUDE_LIST, rest: paths -> "path:0|1" per path, space-joined
+  ( cd "$MATCH_CWD" || exit 1
+    eval "$MATCHER_SRC"
+    EXCLUDE_LIST="$1"; shift
+    out=""
+    for p in "$@"; do
+      if is_excluded "$p"; then out="$out $p:0"; else out="$out $p:1"; fi
+    done
+    printf '%s' "${out# }" )
+}
+check_eq "10i: '*.md,src/*' excludes root and nested paths regardless of the cwd" \
+  "README.md:0 docs/guide.md:0 notes/deep/a.md:0 src/Real.ts:0 src/deep/New.ts:0 lib/x.ts:1" \
+  "$(matcher_verdicts '*.md,src/*' README.md docs/guide.md notes/deep/a.md src/Real.ts src/deep/New.ts lib/x.ts)"
+check_eq "10j: a slash-free literal still matches the basename at any depth" \
+  "Cargo.lock:0 nested/Cargo.lock:0" \
+  "$(matcher_verdicts 'Cargo.lock' Cargo.lock nested/Cargo.lock)"
+check_eq "10k: a slash-containing entry never matches by basename alone" \
+  "Real.ts:1 lib/src/Real.ts:1 src/Real.ts:0" \
+  "$(matcher_verdicts 'src/Real.ts' Real.ts lib/src/Real.ts src/Real.ts)"
+check_eq "10l: an empty EXCLUDE_LIST excludes nothing" "README.md:1" \
+  "$(matcher_verdicts '' README.md)"
+
+# Shell state: `$-` and IFS are identical before and after every call, with
+# globbing enabled and disabled, on a match and on a miss.
+matcher_state() {  # $1 "glob"|"noglob", $2 path -> "same" or a diff report
+  ( cd "$MATCH_CWD" || exit 1
+    eval "$MATCHER_SRC"
+    [ "$1" = noglob ] && set -f
+    EXCLUDE_LIST='*.md,src/*'
+    before_opts="$-" before_ifs="$IFS"
+    is_excluded "$2"
+    if [ "$-" = "$before_opts" ] && [ "$IFS" = "$before_ifs" ]; then echo same
+    else echo "opts '$before_opts'->'$-'"; fi )
+}
+check_eq "10m: shell state preserved — globbing on, match" "same" "$(matcher_state glob docs/a.md)"
+check_eq "10n: shell state preserved — globbing on, miss" "same" "$(matcher_state glob lib/x.ts)"
+check_eq "10o: shell state preserved — globbing off, match" "same" "$(matcher_state noglob docs/a.md)"
+check_eq "10p: shell state preserved — globbing off, miss" "same" "$(matcher_state noglob lib/x.ts)"
+
+# =============================================================================
 # Scenario 11 — gh enumeration path (the "gh data alone" contract)
 # =============================================================================
 cat > "$TMP/pr_list.json" <<'EOF'
