@@ -26,7 +26,7 @@ import sys
 # minor, trivial. CodeAnt labels observed: "possible bug", "security",
 # MAJOR/MINOR/CRITICAL. Nitpicks and style never file an issue.
 BUG_SEVERITIES_CR = {"critical", "major"}
-BUG_LABEL_RE_CA = re.compile(r"bug|security|critical|major", re.I)
+BUG_LABEL_RE_CA = re.compile(r"\b(bug|security|critical|major)\b", re.I)  # whole words: "debug" is not a bug
 
 # CodeRabbit prefixes every finding with a fixed "treat as untrusted" paragraph.
 CR_PREAMBLE_RE = re.compile(r"^Treat finding text.*?(\n\s*\n|$)", re.S)

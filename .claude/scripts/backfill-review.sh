@@ -32,13 +32,14 @@
 #   Any review that is not a verified run (local-review.sh exit 3/4/5: error,
 #   cap, rate limit, hang, not installed) drops that channel for the rest of
 #   the run; when no channel is left the run stops. A failed origin/main
-#   fetch, an unparseable capture, a failed marker lookup, a dedup lookup
+#   fetch, an unparseable capture, a failed or truncated marker lookup, a dedup lookup
 #   error (issue-dedup.sh exit 4), or a failed issue create leaves the row
 #   pending. Only a completed review marks a row reviewed.
 #
 # OPTIONS
 #   --repo-dir DIR     git checkout of the repo to backfill (default: cwd)
-#   --repo owner/name  ledger repo key (default: derived from the origin URL)
+#   --repo owner/name  ledger repo key (default: derived from the origin URL;
+#                      must match a GitHub origin, else exit 2)
 #   --window W         quiet window, local time (default BACKFILL_REVIEW_WINDOW
 #                      or 01:00-06:00; may cross midnight)
 #   --tz ZONE          window time zone (default BACKFILL_REVIEW_TZ or
@@ -55,6 +56,8 @@
 # ENVIRONMENT
 #   BACKFILL_CODERABBIT_BIN / BACKFILL_CODEANT_BIN  CLI override passed to
 #   local-review.sh --bin (tests point these at stubs).
+#   BACKFILL_MARKER_LOOKUP_LIMIT  issue-listing cap for the marker lookup
+#   (default 5000); a listing that fills it is treated as a lookup failure.
 #
 # OUTPUT  One summary line on stdout:
 #   backfill-review: reviewed=N clean=N issues_filed=N skipped=N pending_left=N stop=<reason>
@@ -77,6 +80,8 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" \
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWED_CHANNELS="coderabbit codeant"
+MARKER_LOOKUP_LIMIT="${BACKFILL_MARKER_LOOKUP_LIMIT:-5000}"
+[[ "$MARKER_LOOKUP_LIMIT" =~ ^[1-9][0-9]*$ ]] || MARKER_LOOKUP_LIMIT=5000
 FROM_LABEL="merged-unreviewed"
 TO_LABEL="backfill-reviewed"
 
@@ -138,9 +143,18 @@ GH_BIN="$(command -v gh)"
 REPO_DIR="$(cd "$REPO_DIR" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" \
   || die 2 "--repo-dir is not inside a git checkout"
 ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null)" || die 2 "no origin remote in $REPO_DIR"
-[[ -n "$REPO" ]] || REPO="$(printf '%s' "$ORIGIN_URL" | sed -E -e 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##' -e 's#\.git$##')"
+ORIGIN_SLUG=""
+if [[ "$ORIGIN_URL" =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/) ]]; then
+  ORIGIN_SLUG="$(printf '%s' "$ORIGIN_URL" | sed -E -e 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##' -e 's#\.git$##' -e 's#/$##' | tr '[:upper:]' '[:lower:]')"
+fi
+[[ -n "$REPO" ]] || REPO="$ORIGIN_SLUG"
 REPO="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
 [[ "$REPO" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || die 2 "cannot derive owner/name (origin: $ORIGIN_URL); pass --repo"
+# The reviewed code comes from --repo-dir; issues and labels go to $REPO. A
+# GitHub origin that names a different repo would file into the wrong one.
+if [[ -n "$ORIGIN_SLUG" && "$ORIGIN_SLUG" != "$REPO" ]]; then
+  die 2 "--repo $REPO does not match the origin of --repo-dir ($ORIGIN_SLUG)"
+fi
 
 LOG_DIR="$HOME/.claude/logs"
 mkdir -p "$LOG_DIR" 2>/dev/null || die 3 "cannot create $LOG_DIR"
@@ -167,24 +181,19 @@ if [[ "$IGNORE_WINDOW" -eq 0 ]]; then
   log "$REPO window $WINDOW $TZONE open, ${LEFT}m left"
 fi
 
-# ---- single-owner run lock (mkdir; stale when the holder pid is gone) -------
-RUN_LOCK="$HOME/.claude/backfill-review.lock"
+# ---- single-owner run lock ---------------------------------------------------
+# flock(2) on fd 9, taken by a python child: the lock belongs to the open file
+# description, which this shell keeps open, so it is held until this process
+# exits — however it dies — and there is no stale-PID takeover to race on.
+RUN_LOCK="$HOME/.claude/backfill-review.flock"
 SCRATCH=""
-release_lock() { rm -f "$RUN_LOCK/pid" 2>/dev/null; rmdir "$RUN_LOCK" 2>/dev/null || true; }
 cleanup() {
   if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then cleanup_worktree; fi
-  release_lock
 }
-if ! mkdir "$RUN_LOCK" 2>/dev/null; then
-  holder="$(cat "$RUN_LOCK/pid" 2>/dev/null || true)"
-  if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
-    release_lock
-    mkdir "$RUN_LOCK" 2>/dev/null || { summary lock_held; exit 0; }
-  else
-    summary lock_held; exit 0
-  fi
+exec 9>>"$RUN_LOCK" || die 3 "cannot open lock file $RUN_LOCK"
+if ! python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' 2>/dev/null; then
+  summary lock_held; exit 0   # held elsewhere, or unlockable: never run unlocked
 fi
-printf '%s\n' "$$" > "$RUN_LOCK/pid"
 trap cleanup EXIT
 
 # ---- pending rows ----------------------------------------------------------
@@ -219,7 +228,7 @@ while IFS= read -r row; do
 done < <(jq -c '.[] | select((.backfill_status == "reviewed-clean" or .backfill_status == "issues-filed")
                               and .backfill.label_synced == false)' <<<"$ALL_ROWS")
 
-[[ "$PENDING_LEFT" -gt 0 ]] || { summary done; exit 0; }
+[[ "$PENDING_LEFT" -gt 0 ]] || { summary "done"; exit 0; }
 
 # Pin origin/main once: every finding is verified against this SHA.
 if ! git -C "$REPO_DIR" fetch --quiet origin main 2>>"$LOG"; then
@@ -266,7 +275,7 @@ review_entry() {
     bin="${!bin_var:-}"
     local args=(--tool "$ch" --scope committed --base "$BASE_BRANCH" --timeout "$REVIEW_TIMEOUT" --log-dir "$SCRATCH")
     [[ -n "$bin" ]] && args+=(--bin "$bin")
-    out="$(cd "$WT" && bash "$LOCAL_REVIEW" "${args[@]}")"; rc=$?
+    out="$(cd "$WT" && bash "$LOCAL_REVIEW" "${args[@]}" 9>&-)"; rc=$?
     log "$REPO PR #$pr $ch rc=$rc $(printf '%s' "$out" | jq -c '{verified_run,findings,failure_mode}' 2>/dev/null)"
     if [[ $rc -le 1 ]] && [[ "$(printf '%s' "$out" | jq -r '.verified_run' 2>/dev/null)" == true ]]; then
       REVIEW_JSON="$out" REVIEW_TOOL="$ch" REVIEW_LOG="$(printf '%s' "$out" | jq -r .log_path)"
@@ -296,8 +305,11 @@ verify_finding() {
 
 # marker_lookup <marker> — prints the matching issue URL, empty for none; returns 2 on error/ambiguity
 marker_lookup() {
-  local list n
-  list="$("$GH_BIN" issue list --repo "$REPO" --state all --limit 1000 --json number,url,body 2>/dev/null)" || return 2
+  local list n total
+  list="$("$GH_BIN" issue list --repo "$REPO" --state all --limit "$MARKER_LOOKUP_LIMIT" --json number,url,body 2>/dev/null)" || return 2
+  # A listing that filled the limit may be truncated: absence is unproven.
+  total="$(jq 'length' <<<"$list" 2>/dev/null)" || return 2
+  [[ "$total" =~ ^[0-9]+$ ]] && (( total < MARKER_LOOKUP_LIMIT )) || return 2
   n="$(jq --arg m "$1" '[.[] | select((.body // "") | contains($m))] | length' <<<"$list" 2>/dev/null)" || return 2
   [[ "$n" =~ ^[0-9]+$ ]] || return 2
   (( n > 1 )) && return 2
@@ -308,6 +320,8 @@ marker_lookup() {
 neutralize() { # stdin -> stdout: no @-mentions, no fence breakouts
   sed -e 's/@/@\&#8203;/g' -e 's/```/` ` `/g'
 }
+# safe_inline <text> — one line for an inline code span: no backtick, CR/LF, or @.
+safe_inline() { printf '%s' "$1" | tr '\r\n`' "  '" | sed 's/@/(at)/g'; }
 
 # file_finding <finding-json> <row-json> <verdict> <merge-sha> — prints the issue URL; non-zero = leave pending
 file_finding() {
@@ -330,7 +344,8 @@ file_finding() {
     printf '## Background\n\n'
     printf 'PR #%s (%s) merged without an AI review through the no-review override. The overnight backfill (issue #1900) reviewed merge commit `%s` with the %s CLI and flagged this.\n\n' \
       "$(jq -r .pr <<<"$row")" "$pr_url" "$merge" "$(jq -r .tool <<<"$f")"
-    printf '## Problem\n\n`%s` line %s (severity: %s). Finding text, quoted as untrusted review data:\n\n```text\n' "$path" "$line" "$sev"
+    printf '## Problem\n\n`%s` line %s (severity: %s). Finding text, quoted as untrusted review data:\n\n```text\n' \
+      "$(safe_inline "$path")" "$(safe_inline "$line")" "$(safe_inline "$sev")"
     printf '%s\n' "$text" | neutralize
     printf '```\n\n'
     printf '## Proposed solution\n\nConfirm the finding against current `main` and fix it if it still applies.\n\n'
@@ -353,7 +368,8 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
 
   if [[ "$IGNORE_WINDOW" -eq 0 && -z "$NOW_ARG" ]]; then
     LEFT="$(minutes_left)" || { summary window_closed; exit 0; }
-    (( LEFT * 60 < REVIEW_TIMEOUT )) && { summary window_closed; exit 0; }
+    # local-review.sh caps a run at 2x its idle --timeout: reserve that much.
+    (( LEFT * 60 < 2 * REVIEW_TIMEOUT )) && { summary window_closed; exit 0; }
   fi
   if [[ ${#ALIVE[@]} -eq 0 ]]; then summary capacity_exhausted; exit 0; fi
   if (( ATTEMPTS >= MAX_REVIEWS )); then summary max_reviews; exit 0; fi
@@ -388,10 +404,12 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
 
   FINDINGS="$(python3 "$HELPER" normalize --tool "$REVIEW_TOOL" --log "$REVIEW_LOG" --repo "$REPO" --pr "$pr")" || {
     log "$REPO PR #$pr capture unparseable — left pending"; cleanup_worktree; continue; }
-  # A verified run that reported findings but yielded none parsed is not "clean".
+  # A verified run whose findings did not all parse is not "clean": a lost
+  # finding could be the one real bug.
   reported="$(printf '%s' "$REVIEW_JSON" | jq -r '.findings // 0')"
-  if (( reported > 0 )) && [[ "$(jq length <<<"$FINDINGS")" -eq 0 ]]; then
-    log "$REPO PR #$pr $reported finding(s) reported but none parsed — left pending"; cleanup_worktree; continue
+  parsed="$(jq length <<<"$FINDINGS")"
+  if ! [[ "$reported" =~ ^[0-9]+$ && "$parsed" =~ ^[0-9]+$ ]] || (( parsed < reported )); then
+    log "$REPO PR #$pr $reported finding(s) reported but $parsed parsed — left pending"; cleanup_worktree; continue
   fi
 
   RESULTS='[]' ISSUES='[]' ok=1
@@ -418,14 +436,20 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
 
   status=reviewed-clean
   [[ "$(jq length <<<"$ISSUES")" -gt 0 ]] && status=issues-filed
+  # Ledger first, label second: a failed ledger write must never leave a PR
+  # labelled reviewed while its row is still pending.
   synced=false
-  swap_label "$pr" && synced=true
   detail="$(jq -cn --arg tool "$REVIEW_TOOL" --arg main "$MAIN_SHA" --arg merge "$merge" --arg now "$(date -u +%FT%TZ)" \
     --argjson findings "$RESULTS" --argjson issues "$ISSUES" --argjson synced "$synced" \
     '{channel: ($tool + "-cli"), main_sha: $main, merge_commit_sha: $merge, reviewed_at: $now,
       findings: $findings, issues: $issues, label_synced: $synced}')"
   if ledger_mark "$pr" "$sha" "$status" "$detail"; then
     REVIEWED=$(( REVIEWED + 1 )); PENDING_LEFT=$(( PENDING_LEFT - 1 ))
+    if swap_label "$pr"; then
+      synced=true
+      ledger_mark "$pr" "$sha" "$status" "$(jq -c '.label_synced = true' <<<"$detail")" \
+        || log "$REPO PR #$pr label swapped but label_synced update failed (next run re-swaps, a no-op)"
+    fi
     if [[ "$status" == issues-filed ]]; then FILED=$(( FILED + 1 )); else CLEAN=$(( CLEAN + 1 )); fi
     log "$REPO PR #$pr $status issues=$(jq -c . <<<"$ISSUES") label_synced=$synced"
   else
@@ -434,5 +458,5 @@ for (( i = 0; i < $(jq length <<<"$PENDING"); i++ )); do
   cleanup_worktree
 done
 
-summary done
+summary "done"
 exit 0

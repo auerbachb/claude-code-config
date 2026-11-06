@@ -132,7 +132,9 @@ if [[ "$CMD" == backfill ]]; then
   DETAIL='null'
   if [[ -n "$DETAIL_SRC" ]]; then
     if [[ "$DETAIL_SRC" == "-" ]]; then DETAIL="$(cat)"; else DETAIL="$(cat "$DETAIL_SRC" 2>/dev/null)" || die 4 "cannot read $DETAIL_SRC"; fi
-    printf '%s' "$DETAIL" | jq -e 'type == "object"' >/dev/null 2>&1 || die 4 "--detail-json is not a JSON object"
+    # Exactly one value, and it an object: `{} {}` passes a per-value check.
+    printf '%s' "$DETAIL" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1 \
+      || die 4 "--detail-json is not a single JSON object"
     DETAIL="$(printf '%s' "$DETAIL" | jq -c .)"
   fi
   with_lock

@@ -26,7 +26,12 @@
 #        survives, changed (filed with a confirm note) when it does not;
 #    11. the ledger refuses a --detail-json that is not an object;
 #    12. a failed merge-commit lookup leaves the row pending, while GitHub
-#        answering "no merge commit" skips it with a reason.
+#        answering "no merge commit" skips it with a reason;
+#    13. --repo naming another repo than a GitHub origin is a usage error;
+#    14. a marker listing that fills its limit leaves the row pending;
+#    15. CodeAnt bug labels match whole words only;
+#    16. fewer parsed findings than reported leaves the row pending;
+#    17. a held run lock stops a second runner, and frees on holder exit.
 #
 # Requires: bash 3.2+, git, jq, python3. Offline: no network, no real gh/CLIs.
 set -uo pipefail
@@ -85,6 +90,10 @@ cat > "$STUB/bin/coderabbit" <<'EOF'
 #!/bin/bash
 echo "coderabbit $*" >> "$STUB_DIR/cli-calls.log"
 base=""; while [ $# -gt 0 ]; do [ "$1" = --base ] && base="$2"; shift; done
+if [ "${STUB_CLI_MODE:-ok}" = short ]; then
+  echo '{"type":"finding","severity":"major","fileName":"buggy.sh","codegenInstructions":"Review comment at @buggy.sh at line 2:\nx"}'
+  echo '{"type":"complete","status":"review_completed","findings":2}'; exit 0
+fi
 if [ "${STUB_CLI_MODE:-ok}" = fail ]; then
   echo '{"type":"error","errorType":"rate_limit","message":"Rate limit exceeded"}'; exit 0
 fi
@@ -254,6 +263,48 @@ check_contains "12: skip reason recorded" "merge commit unavailable" \
 printf '[1]' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
 check_eq "11: non-object detail refused" "4" "$RC"
 check_eq "11: refused write left the row unchanged" "reviewed-clean" "$(status_of 101)"
+printf '{} {}' | "$LEDGER_SH" backfill --repo acme/widgets --pr 101 --sha h101 --status skipped --detail-json - >/dev/null 2>&1; RC=$?
+check_eq "11: two concatenated objects refused as usage (exit 4)" "4" "$RC"
+
+# ---- 13. --repo must match a GitHub origin (never file into the wrong repo) -------
+git -C "$R" remote set-url origin https://github.com/acme/widgets.git
+seed; "$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo acme/other --timeout 30 --ignore-window >/dev/null 2>&1; RC=$?
+check_eq "13: --repo naming another repo than origin is a usage error" "2" "$RC"
+check_eq "13: nothing filed for the mismatched repo" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+"$RUN_BASH" "$SCRIPT" --repo-dir "$R" --repo ACME/Widgets --timeout 30 --dry-run --ignore-window >/dev/null 2>&1; RC=$?
+check_eq "13: a case-only difference still matches" "0" "$RC"
+git -C "$R" remote set-url origin "$TMP/origin.git"
+
+# ---- 14. a marker listing that fills its limit is unproven absence -> pending ------
+git -C "$R" revert --no-edit HEAD >/dev/null || fail "14: fixture revert failed"; git -C "$R" push -q origin main 2>/dev/null
+seed
+jq -n '[range(3) | {number: (. + 1), title: "x", body: "", url: "u", state: "OPEN"}]' > "$STUB/issues.json"
+BACKFILL_MARKER_LOOKUP_LIMIT=3 run --ignore-window >/dev/null
+check_eq "14: truncated marker lookup leaves the bug row pending" "pending" "$(status_of 101)"
+check_eq "14: nothing filed on a truncated lookup" "0" "$(grep -c '^issue create' "$STUB/gh-calls.log")"
+
+# ---- 15. CodeAnt bug labels match whole words ("debug" is not a bug) --------------
+printf '{"issues":[{"label":"debug","relevant_file":"a.sh","start_line":1,"issue_content":"x"},{"label":"possible bug","relevant_file":"a.sh","start_line":2,"issue_content":"y"}]}' > "$TMP/ca.json"
+check_eq "15: debug label is not a bug, possible bug is" "false,true" \
+  "$(python3 "$SCRIPTS_DIR/lib/backfill_review.py" normalize --tool codeant --log "$TMP/ca.json" --repo acme/widgets --pr 1 | jq -r 'map(.bug | tostring) | join(",")')"
+
+# ---- 16. a verified run with fewer parsed findings than reported -> pending --------
+seed; STUB_CLI_MODE=short run --ignore-window >/dev/null
+check_eq "16: partially parsed review leaves the row pending" "pending" "$(status_of 101)"
+check_eq "16: no label swapped on a partial parse" "0" "$(grep -c 'pr edit 101' "$STUB/gh-calls.log")"
+
+# ---- 17. a held run lock stops a second runner ------------------------------------
+seed
+python3 -c 'import fcntl,sys,time; f=open(sys.argv[1],"a"); fcntl.flock(f, fcntl.LOCK_EX); print("held", flush=True); time.sleep(60)' \
+  "$HOME/.claude/backfill-review.flock" > "$TMP/lock.out" &
+LOCKER=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q held "$TMP/lock.out" 2>/dev/null && break; sleep 0.5; done
+OUT="$(run --ignore-window)"
+kill "$LOCKER" 2>/dev/null; wait "$LOCKER" 2>/dev/null
+check_contains "17: a held lock is stop=lock_held" "stop=lock_held" "$OUT"
+check_eq "17: no review ran under a held lock" "0" "$(wc -l < "$STUB/cli-calls.log" | tr -d ' ')"
+OUT="$(run --ignore-window)"
+check_not_contains "17: the lock frees when its holder exits" "stop=lock_held" "$OUT"
 
 echo
 echo "passed: $PASS  failed: $FAIL"
