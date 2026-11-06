@@ -28,7 +28,7 @@ A reusable `CLAUDE.md` configuration that teaches [Claude Code](https://docs.ant
 After setup, Claude Code will automatically:
 
 - **Plan before coding** — Triggers `@coderabbitai plan` on new issues, builds its own plan in parallel, then merges both into one implementation spec before writing any code.
-- **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only with the owner's explicit approval (#1897), otherwise the no-review path applies.
+- **Review locally, then on GitHub** — Runs CodeRabbit CLI reviews before pushing (instant feedback, no PR noise). After PR creation, CodeRabbit is the primary reviewer and CodeAnt provides a supplemental AI review signal; BugBot (Cursor) and Greptile are paid and run only on an owner grant spent through `paid-review-grant.sh` (#1897, #1898); without one, agents keep polling for a free review or the no-review override.
 - **Verify and merge** — Checks every acceptance criteria checkbox against the code, confirms CI is green, then squash-merges. The running worktree and branch are left intact and reaped out-of-band by `/pm-clean`.
 - **Orchestrate multi-agent work** — Decomposes large tasks into phases (fix, review, merge) with health monitoring, handoff files, and heartbeat enforcement.
 - **Manage your project** — 36 slash commands for backlog prioritization, OKR-aware ranking, daily standups, PR-fleet monitoring, and cross-thread orchestration.
@@ -38,8 +38,8 @@ Review ownership is sticky once a fallback tier takes over:
 | Reviewer | Tier | Role |
 |----------|------|------|
 | CodeRabbit | Primary | Local CLI review before push, then explicit GitHub approval on the current HEAD SHA |
-| BugBot (Cursor) | Second tier | Free fallback when CodeRabbit is rate-limited or times out; clean BugBot pass can satisfy the merge gate |
-| Greptile | Last resort | Paid fallback when both CodeRabbit and BugBot fail; severity-gated review path |
+| BugBot (Cursor) | Second tier | Paid fallback, run only with the owner's approval, when CodeRabbit is rate-limited or times out; a clean current-HEAD BugBot pass can satisfy the merge gate |
+| Greptile | Last resort | Paid fallback, run only with the owner's approval, when both CodeRabbit and BugBot fail; severity-gated review path |
 | CodeAnt | Supplemental | Additional AI code review signal on PRs; findings are handled alongside other review feedback |
 | Self-review | Emergency only | Risk-reduction fallback when all reviewers are unavailable; does not satisfy the merge gate |
 

@@ -6,9 +6,9 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 > **Ask first:** Merging — always ask the user.
 > **Never:** Spam `@codeant-ai`.
 
-**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. Use `@codeant-ai review` to nudge.
+**CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. To nudge, let `maybe-trigger-ai-review.sh <PR>` post `@codeant-ai review`. On a repo with a review policy, post it only after `review-triggers-allowed.sh <PR> --claim codeant` exits 0 (`cr-github-review.md` §Per-cycle check).
 
-**Graphite (retired 2026-11-03):** Graphite was a second supplemental reviewer until its Team plan was cancelled and refunded; agents no longer poll, trigger, reply to, or wait for it. History: `ai-review-chain-roles-decision.md` §Graphite retirement and `codeant-supplemental-hotspot-decision.md`.
+**Graphite (retired 2026-11-03):** Graphite was a second supplemental reviewer until its Team plan was cancelled and refunded; agents no longer trigger it or wait for it. Until the App is uninstalled it can still post: treat any Graphite finding like another bot's — reply (`reply-thread.sh --reviewer graphite`) and resolve it. History: `ai-review-chain-roles-decision.md` §Graphite retirement and `codeant-supplemental-hotspot-decision.md`.
 
 ## CodeAnt Local CLI
 
@@ -39,6 +39,9 @@ codeant login
 # terminal into the environment (never typed as an argument, so it stays out
 # of shell history and `ps`). Scope it to the shell that runs reviews:
 read -rs CODEANT_API_TOKEN && export CODEANT_API_TOKEN
+# The export reaches only processes started from this shell. For agent reviews,
+# start Claude Code from it too — or use Option A, whose saved login every
+# process reads.
 
 # Verify auth (safe — reads org membership, no write):
 codeant scans orgs

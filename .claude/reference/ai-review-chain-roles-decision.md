@@ -485,7 +485,7 @@ The issue framed "raise the cap" and "move it down the chain" as equally legitim
 
 **Reason — yield:** across 620 PRs (2026-08-21 → 2026-11-01) Graphite reviewed **30**, against **484–620** for CodeAnt, CodeRabbit and BugBot. A supplemental reviewer that sees under 5% of PRs costs auto-loaded rule budget and sends agents waiting for a reviewer that rarely answers.
 
-**What changed:** agents no longer poll, trigger, reply to, or wait for `graphite-app[bot]`; CodeAnt is the only supplemental reviewer on the CR path (`codeant-supplemental.md`); `review-triggers-allowed.sh` never allows Graphite; setup no longer seeds the Graphite plugins or `gt` repo-init. Read-only parsers still recognise historical `graphite-app[bot]` comments so verdicts on old PRs do not change. `review-stack-baseline.json` keeps the row as `role: "off"`, `billed: "cancelled"`.
+**What changed:** agents no longer trigger or wait for `graphite-app[bot]`, but still reply to and resolve any finding it posts until the App is uninstalled; CodeAnt is the only supplemental reviewer on the CR path (`codeant-supplemental.md`); `review-triggers-allowed.sh` never allows Graphite; setup no longer seeds the Graphite plugins or `gt` repo-init. Read-only parsers still recognise historical `graphite-app[bot]` comments so verdicts on old PRs do not change. `review-stack-baseline.json` keeps the row as `role: "off"`, `billed: "cancelled"`.
 
 **Provenance:** the support ticket above and Issue #1889. The cancellation, refund and 620-PR yield are not in any checked-in dashboard reading.
 
