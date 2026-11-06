@@ -37,7 +37,9 @@
 #      separated by at least one line neither side changed are disjoint.
 #      Malformed, oversized, or missing patches (binary, truncated, API
 #      failure) fall back to file level, so any ambiguity is treated as
-#      overlapping, never the reverse. Both patches' old sides are assumed to
+#      overlapping, never the reverse. The PR files API serves the live head,
+#      so the head is re-read after that fetch; a moved or unreadable head keeps
+#      the file-level verdict. Both patches' old sides are assumed to
 #      be the same merge-base (true for compare head...base and the PR files
 #      API in normal cases); gate 3's mergeable == MERGEABLE is GitHub's own
 #      three-way merge test of the same pair and backstops this check.
@@ -206,8 +208,9 @@ _parse_old_side_ranges() {
         [[ "$blk_open" -eq 0 ]] && blk_open=1 blk_ins="$cursor"
         new_left=$((new_left - 1))
         ;;
-      '\'*)
-        # "\ No newline at end of file" — neutral, but only inside a hunk.
+      '\ No newline at end of file')
+        # The exact no-newline marker is neutral, but only inside a hunk. Any
+        # other backslash-prefixed line falls to the malformed catch-all below.
         [[ "$seen_hunk" -eq 1 ]] || return 1
         ;;
       *)
@@ -564,6 +567,20 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
   RC_PF=0
   PR_FILES_PATCH_JSON="$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/files" --paginate 2>/dev/null)" || RC_PF=$?
 
+  # The files API has no SHA pin and serves the PR's CURRENT head, while the
+  # compare patches use the captured $HEAD_SHA. A push or rebase between the
+  # two fetches would put the patches in different coordinate spaces, so
+  # re-read the head after fetching and fail closed (keep the file-level
+  # verdict) unless it is provably unchanged.
+  HEAD_MOVED=false
+  if [[ "$RC_PF" -eq 0 ]]; then
+    HEAD_AFTER="$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null)" || HEAD_AFTER=""
+    if [[ "$HEAD_AFTER" != "$HEAD_SHA" ]]; then
+      HEAD_MOVED=true
+      RC_PF=1
+    fi
+  fi
+
   if [[ "$RC_PF" -eq 0 ]] && jq -e . >/dev/null 2>&1 <<<"$PR_FILES_PATCH_JSON"; then
     HUNK_OVERLAPPING_FILES=()
     FALLBACK_FILES=()
@@ -651,8 +668,13 @@ if [[ "$OVERLAP_COUNT" -gt 0 ]]; then
     [[ "$OVERLAP_COUNT" -gt 0 ]] && NO_OVERLAP=false
 
   else
-    # PR files API call failed → hunk analysis unavailable; keep file-level result
-    HUNK_NOTE="hunk analysis unavailable (PR files API fetch failed) — file-level verdict kept"
+    # PR files API call failed, or the PR head moved / could not be re-read
+    # after the fetch → hunk analysis unavailable; keep file-level result.
+    if [[ "$HEAD_MOVED" == true ]]; then
+      HUNK_NOTE="hunk analysis unavailable (PR head changed or unverifiable after the patch fetch) — file-level verdict kept"
+    else
+      HUNK_NOTE="hunk analysis unavailable (PR files API fetch failed) — file-level verdict kept"
+    fi
     FALLBACK_FILES_JSON="$OVERLAP_JSON"
   fi
 fi

@@ -112,6 +112,14 @@ case "$ARGS" in
     jq -cn --arg sha "${FAKE_BASE_SHA:-ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e}" \
       '{"object":{"sha":$sha}}'
     exit 0 ;;
+  *"/pulls/"*"--jq .head.sha"*)
+    # Post-fetch head re-read; FAKE_HEAD_AFTER simulates a concurrent push,
+    # FAKE_HEAD_AFTER_FAIL=1 an unreadable head.
+    if [[ "${FAKE_HEAD_AFTER_FAIL:-0}" == "1" ]]; then
+      echo "ERROR: failed to read PR head" >&2; exit 1
+    fi
+    echo "${FAKE_HEAD_AFTER:-deadbeefcafedeadbeefcafedeadbeefcafedead}"
+    exit 0 ;;
   *"pulls/"*"files"*)
     # PR file patches endpoint (pulls/{N}/files --paginate)
     if [[ "${FAKE_PR_PATCHES_FAIL:-0}" == "1" ]]; then
@@ -610,6 +618,32 @@ expect_field '.file_overlap.fallback_files | length' '1' "#1859 text before firs
 hunk_case "$(printf '%s\n%s\n%s\n%s\n%s' '@@ -9,2 +9,2 @@' ' l9' '-l10' '+L10' '\ No newline at end of file')" \
   "$(printf '%s\n' '@@ -6,3 +6,3 @@' ' l6' '-l7' '+L7' ' l8')"
 expect_disjoint "#1859 no-newline marker is neutral"
+
+# 52. Any other backslash-prefixed line is malformed → fail closed. The ranges
+#     would be disjoint if the patch were trusted, so this discriminates.
+hunk_case "$(printf '%s\n' '@@ -9,2 +9,2 @@' ' l9' '-l10' '\ something else' '+L10')" \
+  "$(printf '%s\n' '@@ -6,3 +6,3 @@' ' l6' '-l7' '+L7' ' l8')"
+expect_rc 1 "#1859 non-marker backslash line → exit 1 (not safe)"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 non-marker backslash line: one fallback file"
+
+# 53. PR head moves between the compare and the PR-files fetch → fail closed:
+#     the patches would be in different coordinate spaces. Disjoint ranges, so
+#     trusting them would wrongly report safe — this discriminates.
+DISJ_B="$(printf '%s\n' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3')"
+DISJ_P="$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+FAKE_HEAD_AFTER=0000000000000000000000000000000000000000 hunk_case "$DISJ_B" "$DISJ_P"
+expect_rc 1 "PR head moved after patch fetch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "PR head moved: safe_to_offer false"
+grep_ok "PR head changed" "PR head moved: note names the reason"
+
+# 54. PR head unreadable after the fetch → fail closed the same way.
+FAKE_HEAD_AFTER_FAIL=1 hunk_case "$DISJ_B" "$DISJ_P"
+expect_rc 1 "PR head unreadable after patch fetch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "PR head unreadable: safe_to_offer false"
+
+# 55. Control: same patches with the head unchanged → disjoint (safe).
+hunk_case "$DISJ_B" "$DISJ_P"
+expect_disjoint "head unchanged control"
 
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"
