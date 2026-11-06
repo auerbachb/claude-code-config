@@ -8,7 +8,7 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 
 **CodeAnt (CR path):** If CodeAnt participated on current HEAD (comments or CodeAnt check-run), `merge-gate.sh` needs a clean signal per `cr-merge-gate.md`. Use `@codeant-ai review` to nudge.
 
-**Graphite (retired 2026-11-03):** Graphite was a second supplemental reviewer until its Team plan was cancelled and refunded; agents no longer poll, trigger, reply to, or wait for it. History: `ai-review-chain-roles-decision.md` §2026-11-03 retirement and `codeant-supplemental-hotspot-decision.md`.
+**Graphite (retired 2026-11-03):** Graphite was a second supplemental reviewer until its Team plan was cancelled and refunded; agents no longer poll, trigger, reply to, or wait for it. History: `ai-review-chain-roles-decision.md` §Graphite retirement and `codeant-supplemental-hotspot-decision.md`.
 
 ## CodeAnt Local CLI
 
