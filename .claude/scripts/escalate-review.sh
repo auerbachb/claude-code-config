@@ -205,7 +205,9 @@ emit_unless_override() { # <paid verdict>
 # no paid AI review without explicit approval in chat, and nothing this script
 # reads can carry that approval — so there is no flag, variable, or state
 # marker that lets a paid verdict through. The per-review approval path (issue
-# #1898) replaces this body; every caller already routes through here.
+# #1898) does not change this verdict: an owner grant is spent only by
+# paid-review-grant.sh --trigger, and an attended consumer of no_reviewer is
+# where the agent may ask for one (.claude/reference/paid-review-approval.md).
 # `paid_route=` names the verdict that would have been emitted, so a reader
 # (and the regression suites) can still tell the two hand-off points apart.
 paid_review_denied() { # <paid verdict it replaces>

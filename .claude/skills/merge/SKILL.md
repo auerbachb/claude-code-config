@@ -25,6 +25,7 @@ MERGE_GATE_SH=$(resolve_script merge-gate.sh || true)
 AC_CHECKBOXES_SH=$(resolve_script ac-checkboxes.sh || true)
 CI_STATUS_SH=$(resolve_script ci-status.sh || true)
 MAIN_SYNC_SH=$(resolve_script main-sync.sh || true)
+PAID_GRANT_SH=$(resolve_script paid-review-grant.sh || true)  # optional: owner-approved paid reviews (#1898)
 [[ -n "$PR_AUTHORSHIP_SH" ]] || { echo "ERROR: pr-authorship.sh not found (checked all three paths) — merge authorship gate unavailable" >&2; exit 1; }
 [[ -n "$MERGE_GATE_SH" ]] || { echo "ERROR: merge-gate.sh not found (checked all three paths) — merge gate unavailable" >&2; exit 1; }
 [[ -n "$AC_CHECKBOXES_SH" ]] || { echo "ERROR: ac-checkboxes.sh not found (checked all three paths) — acceptance verification unavailable" >&2; exit 1; }
@@ -83,7 +84,7 @@ GATE_EXIT=$?
 - Exit `3` → PR not found (already merged/closed). Stop.
 - Exit `2`/`4` → script or gh error; surface the stderr message to the user.
 
-If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger only a listed bot that can satisfy the code-owner requirement: `coderabbitai[bot]` listed → `@coderabbitai full review` unless the PR's review tier excludes CodeRabbit (`review-triggers-allowed.sh <PR>` in `tiered` mode not allowing `coderabbit`, as `ci-only`/`ci+codeant-one-round` do — then report the blocker), then wait for a fresh current-HEAD approval. When `greptile-apps[bot]` is the bot the requirement needs, a Greptile re-review (`@greptileai`) is paid — post it only with the owner's explicit approval in chat (issue #1897); without that approval, stop and report the blocker.
+If `missing` says branch protection `reviewDecision` is not `APPROVED` and `.code_owner_bots` lists `coderabbitai[bot]` or `greptile-apps[bot]`, do not ask the PR author to approve. Trigger only a listed bot that can satisfy the code-owner requirement: `coderabbitai[bot]` listed → `@coderabbitai full review` unless the PR's review tier excludes CodeRabbit (`review-triggers-allowed.sh <PR>` in `tiered` mode not allowing `coderabbit`, as `ci-only`/`ci+codeant-one-round` do — then report the blocker), then wait for a fresh current-HEAD approval. When `greptile-apps[bot]` is the bot the requirement needs, a Greptile re-review (`@greptileai`) is paid — post it only under an owner grant, through `"$PAID_GRANT_SH" --trigger <PR> --vendor greptile` (issues #1897, #1898; `.claude/reference/paid-review-approval.md`); without one — or with `PAID_GRANT_SH` empty (`ERROR: paid-review-grant.sh not found (checked all three paths)`) — stop and report the blocker.
 
 Reviewer assignment is resolved automatically from `~/.claude/session-state.json` and live history. Pass `--reviewer cr|bugbot|greptile` to `merge-gate.sh` to override — those three are `merge-gate.sh`'s complete set (it rejects anything else with exit `2`), and it is a different flag from `reply-thread.sh`'s five-mode `--reviewer cr|bugbot|greptile|codeant|graphite`.
 

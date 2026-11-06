@@ -166,7 +166,9 @@ case "$ESCALATION_STATUS" in
       # no-review override (issue #1899) turns this into gate_met once its
       # window passes. Merge stays blocked until then. The three retired paid
       # verdicts are routed here defensively; the router no longer emits them.
-      # Report the blocker once: "paid review requires owner approval".
+      # Report the blocker once: "paid review requires owner approval", and
+      # add `PAID_REVIEW: skipped (<vendor>, no_grant)` to the exit report
+      # notes. Grants: the "Owner approval required" note below (#1898).
     ;;
   tier_gate)
     : # The PR's review tier (ci-only / ci+codeant-one-round) excludes BugBot
@@ -197,7 +199,7 @@ The script caches `.prs["{{PR_NUMBER}}"].bugbot_installed` in `~/.claude/session
 
 Do not hand-roll fallback timing here. The mandatory Reviewer Escalation Gate above owns rate-limit fast-path handling, CR silence thresholds, BugBot installed-cache behavior, Greptile trigger eligibility, and self-review fallback. Polling cadence stays 60 s; a clean CR check-run completion short-circuits the wait, but Phase B must still verify the merge gate (explicit `APPROVED` review on current HEAD SHA per `cr-merge-gate.md` Step 1) before exiting — completion alone is not approval.
 
-> **Owner approval required (issue #1897).** Never post `@cursor review` or `@greptileai` without the owner's explicit approval in chat for that review. Decline any vendor offer to pay for a review now; wait for the free review or follow `no_reviewer`. Contract: `.claude/reference/review-policy.md` §Paid review authorization.
+> **Owner approval required (issue #1897).** Never post `@cursor review` or `@greptileai` by hand. A paid review the owner approved is recorded as a grant for one PR, HEAD, and vendor (issue #1898); spend it only with `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor cursor|greptile` — `STATUS=triggered` is the only success, and any refusal means follow `no_reviewer`. Never ask the owner and never write a grant from this agent. Decline any vendor offer to pay for a review now unless `paid-review-grant.sh --offer-check` answers `STATUS=consumed`. Contract: `.claude/reference/paid-review-approval.md`.
 
 ### CR Merge Gate
 
@@ -237,29 +239,19 @@ The `--verdict`/`--defect` flags (and `--fix` with `--defect real`) are mandator
 
 ### Re-Reviews
 
-After fixing BugBot findings and pushing, nothing re-invites BugBot: CI no longer nudges (`cursor-review-pr-comment.yml` only prints a notice), and a re-review is a new paid review — post `@cursor review` only with the owner's explicit approval in chat for it (issue #1897).
+After fixing BugBot findings and pushing, nothing re-invites BugBot: CI no longer nudges (`cursor-review-pr-comment.yml` only prints a notice), and a re-review is a new paid review — posted only through `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor cursor` under a new owner grant for the new HEAD (issues #1897, #1898).
 
 ## Greptile Review Path (when `reviewer` = `greptile`)
 
-Greptile is paid per review: every `@greptileai` post — first trigger or P0 re-trigger — needs the owner's explicit approval in chat for that review (issue #1897), and then the budget check below.
+Greptile is paid per review: every `@greptileai` post — first trigger or P0 re-trigger — needs the owner's explicit approval for that review (issue #1897), recorded as a grant and spent by `paid-review-grant.sh --trigger`, which also runs the budget check below (issue #1898).
 
-### Daily Budget Check (MANDATORY before EVERY `@greptileai` trigger)
+### Daily Budget Check (inside the trigger)
 
-Gate every `@greptileai` post on a successful `--consume`. The script handles same-day reset, cross-day reset, atomic write-back, and sibling preservation on `~/.claude/session-state.json`.
-
-```bash
-# Exit 0 = consumed (safe to post @greptileai); exit 1 = exhausted (do NOT post).
-if ! run_script greptile-budget.sh --consume >/dev/null; then
-  echo "Greptile budget exhausted — falling back to self-review for PR #{{PR_NUMBER}}" >&2
-  # Self-review path below. Do NOT post @greptileai.
-fi
-```
-
-See `run_script greptile-budget.sh --help` for `--check`, `--reset`, `--budget N` overrides, and the full JSON output contract. The script is the single source of truth for the budget rules in `.claude/rules/greptile.md` — do not reinvent the budget math inline.
+`paid-review-grant.sh --trigger --vendor greptile` is the only consumer of the Greptile daily budget: it spends the owner grant, then runs `greptile-budget.sh --consume`, and an exhausted budget releases the grant and posts nothing (`STATUS=budget_exhausted` → self-review, which never satisfies the gate). Never run `greptile-budget.sh --consume` separately — that would count one review twice. `run_script greptile-budget.sh --check` stays available for a read-only look; its `--help` is the contract for the budget rules in `.claude/rules/greptile.md`.
 
 ### Triggering
 
-Owner-approval only (issue #1897). With that approval and a successful budget check: `gh pr comment {{PR_NUMBER}} --body "@greptileai"`
+Owner-approval only (issue #1897). Under an owner grant: `run_script paid-review-grant.sh --trigger {{PR_NUMBER}} --vendor greptile` (grant → budget → post; a refusal posts nothing). Never `gh pr comment ... "@greptileai"` directly.
 
 ### Polling
 
@@ -268,7 +260,7 @@ Same shared `$STATE` bundle, filter by `.user.login == "greptile-apps[bot]"` acr
 ### Severity Classification (P0/P1/P2)
 
 Use Greptile's severity badges. After fixing:
-- **If any P0 remain after fix:** a re-trigger is a new paid review — ask the owner; only on approval run the re-trigger checklist (budget check → trigger `@greptileai`). Max 3 reviews per PR.
+- **If any P0 remain after fix:** a re-trigger is a new paid review — report it to the parent (`PAID_REVIEW: skipped (greptile, p0_retrigger_needs_grant)`); only under a new owner grant for the current HEAD run `paid-review-grant.sh --trigger --vendor greptile`. Max 3 reviews per PR.
 - **If only P1/P2 (no P0):** STOP — do NOT trigger `@greptileai`. Push once, reply to every finding naming the current HEAD, and resolve every thread. That provenance lets the gate reuse the latest completed trigger-delimited zero-P0 round (issue #1000); do not wait for new Greptile evidence.
 
 ### Greptile Reply Format (CRITICAL)

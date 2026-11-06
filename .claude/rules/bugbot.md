@@ -36,4 +36,4 @@ Verify all findings against actual code. Fix all valid findings in one commit, p
 
 ## Re-Reviews
 
-BugBot doesn't auto-review pushes, and nothing re-invites it: a re-review is a new paid review, posted only on the owner's approval in chat (issue #1898 adds that path).
+BugBot doesn't auto-review pushes, and nothing re-invites it: a re-review is a new paid review, posted only on the owner's approval in chat, via `paid-review-grant.sh --trigger`.

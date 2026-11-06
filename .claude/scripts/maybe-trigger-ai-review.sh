@@ -7,7 +7,9 @@
 #   2) @cursor review — NEVER autonomously (issue #1897): BugBot is a paid
 #      review and needs the owner's explicit approval in chat, so this step
 #      ends in a `bugbot_skipped: {"reason":"approval_required"}` skip unless
-#      an earlier skip below (tier, refused HEAD, daily cap) already applied
+#      an earlier skip below (tier, refused HEAD, daily cap) already applied.
+#      The one exception is an owner grant for this PR and HEAD (issue #1898):
+#      paid-review-grant.sh --trigger spends it once and posts
 #   3) @graphite-app re-review
 #
 # Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
@@ -291,6 +293,22 @@ fi
 # that path and says so; an unusable answer from a present helper posts
 # nothing this tick (fail closed), and the next tick asks again.
 TRIGGERS_SH="${SCRIPT_DIR}/review-triggers-allowed.sh"
+
+# The one exception (issue #1898): an owner grant for THIS PR, HEAD and vendor,
+# written only after the owner said yes in chat. paid-review-grant.sh spends it
+# (single use, compare-and-set) and posts `@cursor review` itself; anything but
+# `triggered` — no grant, a used one, another HEAD, unreadable state, a missing
+# helper — leaves the approval skip in place (fail closed).
+paid_grant_post_cursor() {
+  local g="${SCRIPT_DIR}/paid-review-grant.sh" st
+  if [[ ! -x "$g" ]]; then
+    echo "maybe-trigger-ai-review.sh: paid-review-grant.sh missing — no owner grant can be spent (fail closed, #1898)" >&2
+    return 1
+  fi
+  st="$("$g" --trigger "$PR_NUM" --vendor cursor --head "$HEAD_SHA" | sed -n 's/^STATUS=//p')" || st=""
+  [[ "$st" == "triggered" ]]
+}
+
 TRIGGER_MODE="legacy"
 TRIGGER_JSON=""
 if [[ -x "$TRIGGERS_SH" ]]; then
@@ -391,6 +409,16 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     [[ "$done_already" == "true" ]] && continue
     if ! step_allowed "$step"; then
       reason="$(jq -r --arg r "$step" '.reviewers[$r].reason' <<<"$TRIGGER_JSON")"
+      if [[ "$step" == "cursor" && "$reason" == "approval_required" ]] && paid_grant_post_cursor; then
+        # Posted under the owner's grant (issue #1898): every earlier guard
+        # already passed — approval_required is the last step of the chain.
+        "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true" >/dev/null 2>&1 \
+          || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the grant is used, so no re-post" >&2
+        TRIGGER_SKIPS_JSON="$(jq -c 'del(.cursor)' <<<"$TRIGGER_SKIPS_JSON")"
+        BUGBOT_SKIPPED_JSON="null"
+        T_POSTED=$((T_POSTED + 1))
+        continue
+      fi
       echo "maybe-trigger-ai-review.sh: skipping $body — review tier $TIER_GATE_TXT: $reason (#1749)" >&2
       # A refusal is a fact about THIS HEAD: handled, as the legacy path records
       # it. Every other skip stays open, so a resumed run asks again.
@@ -677,6 +705,12 @@ elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
   # daily tally, not a fact about this HEAD, so a resumed run asks it again.
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — account $(cap_text) (#1812)" >&2
   BUGBOT_SKIPPED_JSON="$(cap_skip_json)"
+elif [[ "$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"cursor\"] // empty" 2>/dev/null || true)" == "true" ]]; then
+  : # already posted for this round (a resumed run)
+elif paid_grant_post_cursor; then
+  # The owner approved this one review in chat (issue #1898); the grant is now used.
+  "$STATE_HELPER" --set ".prs[\"${PR_KEY}\"].ai_review_trigger_steps[\"cursor\"]=true" >/dev/null 2>&1 \
+    || echo "maybe-trigger-ai-review.sh: comment posted but state update failed — the grant is used, so no re-post" >&2
 else
   # Left open (cursor stays false), like the tier and cap skips: approval is
   # not a fact about this HEAD. A completed run clears the record anyway.

@@ -40,7 +40,9 @@
 #        BugBot is a paid review and needs the owner's explicit approval, so
 #        the step prints `BugBot not invited — paid review requires owner
 #        approval`. The tiered path below prints the same line for the
-#        helper's `approval_required`.
+#        helper's `approval_required`. At that same step an owner grant for
+#        this PR and pushed SHA (issue #1898) is spent instead:
+#        paid-review-grant.sh --trigger posts `@cursor review` once.
 #
 #   mode tiered / fail_closed — only what the review tier allows on the pushed
 #   SHA, same order: a reviewer that already auto-triggered is skipped; an
@@ -111,6 +113,25 @@ BUGBOT_TIER_SH="$(resolve bugbot-tier-excluded.sh || true)"
 REVIEW_DAILY_CAP_SH="$(resolve review-daily-cap.sh || true)"
 PR_BODY_NOTE_SH="$(resolve pr-body-review-note.sh || true)"
 TRIGGERS_SH="$(resolve review-triggers-allowed.sh || true)"
+PAID_GRANT_SH="$(resolve paid-review-grant.sh || true)"
+
+# BugBot's last step (issue #1898): spend an owner grant for this PR and pushed
+# SHA, or print the #1897 approval skip. paid-review-grant.sh posts the trigger
+# itself and answers `triggered` only after a successful post; every other
+# answer — and a missing helper — keeps the skip (fail closed).
+cursor_grant_or_skip() {
+  local st=""
+  if [[ -z "$PAID_GRANT_SH" ]]; then
+    echo "[REVIEWERS] paid-review-grant.sh not found (checked all three paths) — no owner grant can be spent"
+  else
+    st="$("$PAID_GRANT_SH" --trigger "$PR_NUMBER" --vendor cursor --head "$PUSHED_SHA" --repo "$REPO_FULL" | sed -n 's/^STATUS=//p')" || st=""
+  fi
+  if [[ "$st" == "triggered" ]]; then
+    echo "[REVIEWERS] posted @cursor review under the owner's grant for ${PUSHED_SHA:0:7} (now used, #1898)"
+  else
+    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Which reviewers already auto-triggered on the pushed SHA (shared by both paths).
@@ -230,7 +251,7 @@ if [[ "$TRIGGER_MODE" == "legacy" ]]; then
     note_cap_skip "$BUGBOT_CAP_JSON"
   else
     # Last step of the chain (issue #1897): the earlier skips keep precedence.
-    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
+    cursor_grant_or_skip
   fi
   echo "TRIGGER_MODE=legacy"
   exit 0
@@ -288,7 +309,7 @@ for key in coderabbit graphite codeant cursor; do
     if [[ -n "$TALLY" ]]; then note_cap_skip "$TALLY"; continue; fi
   fi
   if [[ "$key" == "cursor" && "$reason" == "approval_required" ]]; then
-    echo "[REVIEWERS] BugBot not invited — paid review requires owner approval (#1897)"
+    cursor_grant_or_skip
   elif [[ "$kind" == "excluded" ]]; then
     echo "[REVIEWERS] skipping $body — review tier $GATE_TXT: $reason"
   else

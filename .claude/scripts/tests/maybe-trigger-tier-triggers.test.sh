@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the tier-aware trigger path of maybe-trigger-ai-review.sh (issue #1749).
-# catalog: tests — Tests `maybe-trigger-ai-review.sh` under a review tier — ci-only posts nothing, ci+codeant-one-round posts one CodeAnt invitation for the life of the PR, full defers BugBot until CI is green and HEAD settled and stops at two, and a policy-free repo still posts all three
+# catalog: tests — Tests `maybe-trigger-ai-review.sh` under a review tier — ci-only posts nothing, ci+codeant-one-round posts one CodeAnt invitation for the life of the PR, full defers BugBot until CI is green and HEAD settled, a policy-free repo posts the free reviewers, and an owner grant (#1898) posts BugBot exactly once on its own PR and HEAD
 #
 # WHAT IS UNDER TEST
 #   With a `## Review policy`, every post goes through the shared
@@ -252,6 +252,59 @@ check_eq "nothing claimed" "null" "$(ledger codeant)"
 check_eq "trigger mode reported" "tiered" "$(f .trigger_mode)"
 OUT_TXT="$(cd "$WORK" && bash "$S/maybe-trigger-ai-review.sh" "$PR" --dry-run 2>/dev/null)"
 check_eq "text dry run names what would post" "yes" "$( [[ "$OUT_TXT" == *"would post codeant;"*"cursor=approval_required"* ]] && echo yes || echo no )"
+
+echo "== an owner grant (#1898): one @cursor review on that PR and HEAD, never more =="
+# The helper and an authorship stub join the stub dir only now, so every case
+# above ran with no grant helper at all (the fail-closed path).
+cp "$REPO_ROOT/.claude/scripts/paid-review-grant.sh" "$S/"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$S/pr-authorship.sh"
+chmod +x "$S/paid-review-grant.sh" "$S/pr-authorship.sh"
+export CLAUDE_CODE_SESSION_ID="grant-test-session"
+grant_for() { # <head>
+  ( cd "$WORK" && bash "$S/paid-review-grant.sh" --grant "$PR" --vendor cursor --head "$1" \
+      --price-usd 1.58 --approved-via chat --question "Approve one BugBot review?" --repo acme/one >/dev/null 2>&1 )
+}
+grant_status() {
+  ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get ".prs[\"$PR\"].paid_review_grants.cursor.status" 2>/dev/null ) || echo unreadable
+}
+reset "$(tier_json absent legacy)"
+grant_for "$HEAD"
+run
+check_eq "legacy: exit 0" "0" "$RC"
+check_eq "legacy: BugBot posted once, between the free reviewers" "@codeant-ai review;@cursor review;@graphite-app re-review;" "$(posted)"
+check_eq "legacy: no approval skip reported" "null" "$(f .bugbot_skipped)"
+check_eq "legacy: the grant is used" "consumed" "$(grant_status)"
+export FIXTURE_ROUNDS=5
+run
+check_eq "legacy: the next round on the same HEAD posts no second @cursor review" "@codeant-ai review;@cursor review;@graphite-app re-review;@codeant-ai review;@graphite-app re-review;" "$(posted)"
+check_eq "legacy: the approval skip is back" "approval_required" "$(f .bugbot_skipped.reason)"
+reset "$(tier_json absent legacy)"
+grant_for "$HEAD"
+export FIXTURE_HEAD="$HEAD2"
+run
+check_eq "legacy: a grant for the old HEAD never posts on a new push" "@codeant-ai review;@graphite-app re-review;" "$(posted)"
+check_eq "legacy: the stale grant stays unused" "unused" "$(grant_status)"
+reset "$(tier_json absent legacy)"
+grant_for "$HEAD"
+printf '{ not json' > "$HOME/.claude/session-state.json"
+run
+check_eq "legacy: unreadable state posts no @cursor review" "no" "$( [[ "$(posted)" == *"@cursor review"* ]] && echo yes || echo no )"
+check_eq "legacy: unreadable state leaves a visible note" "yes" "$( [[ "$ERR" == *"no paid review"* || "$ERR" == *"session state"* ]] && echo yes || echo no )"
+reset "$(tier_json present full)"
+grant_for "$HEAD"
+run
+check_eq "full, settled: CodeAnt and BugBot (under the grant)" "@codeant-ai review;@cursor review;" "$(posted)"
+check_eq "full: the cursor skip is gone" "null" "$(f .trigger_skips.cursor)"
+check_eq "full: status triggered" "triggered" "$(f .status)"
+check_eq "full: the grant is used" "consumed" "$(grant_status)"
+reset "$(tier_json present full)"
+grant_for "$HEAD"
+export FIXTURE_POST_FAIL="@cursor review"
+run
+check_eq "full: a failed BugBot post releases the grant" "unused" "$(grant_status)"
+export FIXTURE_POST_FAIL=""
+unset CLAUDE_CODE_SESSION_ID
+rm -f "$S/paid-review-grant.sh" "$S/pr-authorship.sh"
 
 echo "== an unresolvable tier on a policy repo posts nothing =="
 reset ""
