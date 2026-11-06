@@ -675,6 +675,7 @@ run() { # <args…> — never aborts the suite; sets OUT, DOC, ERR, RC
         AI_QUOTAS_FORECAST_BIN="${FORECAST_BIN_OVERRIDE-}" \
         AI_QUOTAS_SQLITE3_BIN="${SQLITE3_BIN_UNDER_TEST:-$SQLITE3_REAL}" \
         AI_QUOTAS_CURSOR_STATE_DB="${CURSOR_DB_UNDER_TEST:-$CURSOR_DB}" \
+        AI_QUOTAS_NOTIFY_BIN="${NOTIFY_BIN_UNDER_TEST:-/usr/bin/true}" \
         "$SCRIPT" "$@" 2>"$errf")"
   RC=$?
   ERR="$(cat "$errf")"
@@ -3166,6 +3167,31 @@ run --json
 run --json
 check_eq "$(printf '%s' "$DOC" | jq '.recommendations|length')" "1" "controlled-label fixture reaches recommendation threshold"
 check_eq "$(printf '%s' "$DOC" | jq '[.recommendations[0].message|explode[]|select(.<32 or .==127)]|length')" "0" "recommendation text excludes every terminal control character"
+
+# --- logged-out actions / scheduled notifications (#1886) ---------------------
+reset_state
+action_label="O'Brien account"
+write_config "$(account_json codex "$action_label" "$TMP/no-action-profile")"
+run --json
+expected_action="/quotas-setup relogin 'O'\\''Brien account' codex"
+check_eq "$(printf '%s' "$DOC" | jq -r '.rows[0].action')" "$expected_action" "logged-out JSON has exact safely quoted action"
+run
+check_eq "${OUT%%$'\n'*}" "$expected_action" "the account action leads text output"
+check_eq "$(printf '%s' "$OUT" | awk '/quotas-setup relogin/ {n++} END {print n+0}')" "1" "the action appears once in text"
+cat > "$BIN/notify-1886" <<'NOTIFY'
+#!/bin/bash
+printf '%s\n' "$1" >> "$NOTIFY_LOG"
+NOTIFY
+chmod +x "$BIN/notify-1886"
+export NOTIFY_LOG="$TMP/notify-1886.log"
+NOTIFY_BIN_UNDER_TEST="$BIN/notify-1886"
+run --json
+check_eq "$(test -f "$NOTIFY_LOG" && echo yes || echo no)" "no" "manual reports do not notify"
+run --json --quiet
+check_eq "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" "1" "quiet scheduled JSON notifies before early exit"
+run --json --quiet
+check_eq "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" "1" "scheduled report deduplicates account local day"
+unset NOTIFY_BIN_UNDER_TEST NOTIFY_LOG
 
 # --- summary -----------------------------------------------------------------
 

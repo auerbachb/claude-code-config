@@ -100,6 +100,9 @@ reading a credential by hand is exactly what this design forbids.
 the trailing prose. It belongs to the LaunchAgent `/quotas-setup schedule install`
 writes — do not pass it on a run you are doing for the user, or a hand-run reading will
 be recorded as the daily job and the staleness warning will stop meaning anything.
+Scheduled final logged-out results also attempt one local notification per provider,
+registered label, and local calendar day. Interactive reports do not notify; reserve
+refreshes explicitly run as manual. Notification failures leave the report usable.
 
 Weekly rows are the default because the weekly cap is what the switching decision turns
 on; the five-hour figures arrive in the same payload and are one flag away. Flag detail
@@ -111,7 +114,8 @@ Columns: account, window-or-pool, used %, **start**, **%/day**, **left**, **over
 reset (weekday and time, Eastern), a countdown, and a note. There is **no REMAIN column**
 and, since #1701, **no PROVIDER and no STATUS column** — REMAIN was `100 - USED` on every
 row, PROVIDER repeated what the account name already says, and the status word now
-**leads the note** on any row that is not `ok` (`needs-login; /quotas-setup relogin …`),
+**leads the note** on any row that is not `ok`. A logged-out account's exact relogin
+action prints once **before the table**, ahead of its status row,
 which is where the instruction about it already lived. The width they cost is what a
 five-account table needs to fit a normal terminal. `remaining_pct`, `provider`, and
 `status` are still on every `--json` row if you want them, as is the full `resets_at_et`
@@ -141,7 +145,7 @@ every `--json` row as `status` — that is the field to branch on:
 | Status | Meaning | What to tell the user |
 |--------|---------|-----------------------|
 | `ok` | Figures were read | the numbers |
-| `needs-login` | No usable credential for that profile | the exact `/quotas-setup relogin <label> <provider>` command in the note — except for **Cursor**, whose note says `open the Cursor IDE and sign in`, because that credential belongs to the IDE and no command can create it |
+| `needs-login` | No usable credential for that profile | Lead with its JSON `action` or the command printed before the table: `/quotas-setup relogin <label> <provider>`. Preserve quoting. Cursor's action is `open the Cursor IDE and sign in`. The human completes login; never type a password or finish OAuth for them. |
 | `rate-limited` | The provider answered 429 | when to retry; the note carries the window |
 | `unreachable` | Nothing answered: a network failure, a missing runtime, a store that could not be read, or a probe that hit its time bound | that the figure is unknown — **never** a guess or a 0 %; if the note names an install command, relay it |
 | `unreadable` | The response arrived but changed shape; the note names the keys seen | that the figure is unknown, and that the reader needs updating |
@@ -149,6 +153,13 @@ every `--json` row as `status` — that is the field to branch on:
 
 A `needs-login`, `rate-limited`, `unreachable`, or `unreadable` row is **not** a reason
 to pause, re-route, or decline work. It means one number is unavailable, nothing more.
+
+Every JSON row has nullable `action`: only final `needs-login` rows carry one.
+Relay that action first when describing the account. Labels containing terminal control
+characters have no printable action and do not notify. Do not build another command
+from endpoint diagnostics. Claude `setup-token` credentials are limited to model
+requests; this usage reader keeps normal per-profile OAuth instead of installing an
+incompatible token. See the logout diagnosis and notification policy in the reference.
 
 ## Step 3b — The Overage column and the cheapest-next line
 

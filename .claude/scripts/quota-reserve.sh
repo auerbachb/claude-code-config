@@ -185,7 +185,7 @@ do_refresh() {
   [[ -f "$reader" && -x "$reader" ]] || { warn "the quota reader is not an executable file: $reader"; return 3; }
   # The reader appends to a history file on every run; point it somewhere inert so
   # a refresh every few minutes does not bury the daily record `/quotas` projects from.
-  rows="$(AI_QUOTAS_HISTORY="$DIR/reader-history.jsonl" "$reader" --json 2>/dev/null)" \
+  rows="$(AI_QUOTAS_SOURCE=manual AI_QUOTAS_HISTORY="$DIR/reader-history.jsonl" "$reader" --json 2>/dev/null)" \
     || { warn "the quota reader failed; keeping the previous marker"; return 3; }
   printf '%s' "$rows" | jq -e '.rows | type == "array"' >/dev/null 2>&1 \
     || { warn "the quota reader returned no rows; keeping the previous marker"; return 3; }
