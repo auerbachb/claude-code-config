@@ -196,7 +196,15 @@ only then publish:
 
 ```bash
 TMP_SNAP="$STATE_DIR/.snapshot-$MONTH.json.tmp"
-if ! "$MEASURE" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"} ${DAYS:+--days "$DAYS"} ${LIMIT:+--limit "$LIMIT"} ${REPOS:+--repos "$REPOS"} ${ALL_REPOS:+--all-repos} --ledger --json > "$TMP_SNAP"; then
+# An array, not `${X:+--flag "$X"}`: zsh passes that as one word (issue #1857).
+MEASURE_ARGS=()
+[ -n "${SINCE:-}" ] && MEASURE_ARGS+=(--since "$SINCE")
+[ -n "${UNTIL:-}" ] && MEASURE_ARGS+=(--until "$UNTIL")
+[ -n "${DAYS:-}" ]  && MEASURE_ARGS+=(--days "$DAYS")
+[ -n "${LIMIT:-}" ] && MEASURE_ARGS+=(--limit "$LIMIT")
+[ -n "${REPOS:-}" ] && MEASURE_ARGS+=(--repos "$REPOS")
+[ -n "${ALL_REPOS:-}" ] && MEASURE_ARGS+=(--all-repos)
+if ! "$MEASURE" ${MEASURE_ARGS[@]+"${MEASURE_ARGS[@]}"} --ledger --json > "$TMP_SNAP"; then
   rm -f "$TMP_SNAP"
   echo "ERROR: measure.sh failed — aborting rather than auditing a partial window." >&2
   exit 1
