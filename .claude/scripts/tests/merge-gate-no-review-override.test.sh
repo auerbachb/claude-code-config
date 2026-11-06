@@ -35,7 +35,13 @@ case "$ARGS" in
   *" api repos/solo/repo/pulls/1 "*)
     [[ "${FAKE_PULL_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
     jq -cn --arg c "${FAKE_CREATED_AT:-2026-07-21T09:58:00Z}" --argjson d "${FAKE_DRAFT:-false}" \
-      '{number:1, created_at:$c, draft:$d}'
+      '{number:1, created_at:$c, draft:$d, head:{ref:"feature", repo:{full_name:"solo/repo"}}}'
+    exit 0 ;;
+  *" repos/solo/repo/actions/runs?head_sha="*)
+    if [[ -n "${FAKE_RUNS:-}" ]]; then printf '%s' "$FAKE_RUNS"; exit 0; fi
+    jq -cn --arg t "${FAKE_PUSH_AT:-2026-07-21T09:58:00Z}" \
+      '{total_count:1, workflow_runs:[{event:"pull_request", created_at:$t, head_branch:"feature",
+         head_sha:"deadbeefcafedeadbeefcafedeadbeefcafedead", head_repository:{full_name:"solo/repo"}}]}'
     exit 0 ;;
   *" repos/solo/repo/issues/1/timeline"*)
     [[ "${FAKE_TIMELINE_FAIL:-0}" == 1 ]] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
@@ -96,7 +102,7 @@ j() { printf '%s' "$OUT" | jq -r "$1" 2>/dev/null; }
 has_missing() { printf '%s' "$OUT" | jq -e --arg s "$1" '[.missing[]? | select(contains($s))] | length > 0' >/dev/null 2>&1 && echo yes || echo no; }
 reset() { unset FAKE_REVIEWS FAKE_PR_COMMENTS FAKE_ISSUE_COMMENTS FAKE_PM_CONFIG FAKE_THREADS \
   FAKE_DRAFT FAKE_TIMELINE FAKE_TIMELINE_FAIL FAKE_PULL_FAIL FAKE_PR_OVERRIDE FAKE_PR_FILES_JSON \
-  FAKE_MERGED_STATE FAKE_MERGED_HEAD FAKE_LABEL_FAIL; }
+  FAKE_MERGED_STATE FAKE_MERGED_HEAD FAKE_LABEL_FAIL FAKE_RUNS FAKE_PUSH_AT; }
 LEDGER_FILE="$HOME/.claude/unreviewed-merges.json"
 ledger_rows() { [[ -s "$LEDGER_FILE" ]] && jq '.entries | length' "$LEDGER_FILE" || echo 0; }
 record() { printf '%s' "$OUT" | PATH="$BIN:$PATH" "$LEDGER_SUT" record --pr 1 --repo solo/repo --gate-json - 2>"$TMP/ledger.err"; }
@@ -279,6 +285,18 @@ record >/dev/null; check_eq "4" "$?" "ledger refuses a head mismatch"
 unset FAKE_MERGED_HEAD; export FAKE_LABEL_FAIL=1
 check_eq "recorded" "$(record)" "label failure still records"
 check_eq "false" "$(jq -r '.entries[0].label_applied' "$LEDGER_FILE")" "label failure recorded as label_applied:false"
+
+echo "=== anchor never predates the PR adopting HEAD (pull_request run) ==="
+reset; export FAKE_PUSH_AT; FAKE_PUSH_AT="$(ago 300)"
+run_gate "$GREEN_11"
+check_eq "false" "$(j .no_review_override.applied)" "checks older than the push do not start the window"
+check_eq "pr_head_adoption" "$(j .no_review_override.anchor_source)" "anchored to the PR adopting HEAD"
+unset FAKE_PUSH_AT
+reset; export FAKE_RUNS='{"total_count":1,"workflow_runs":[{"event":"push","created_at":"2026-07-21T09:58:00Z","head_branch":"other","head_sha":"deadbeefcafedeadbeefcafedeadbeefcafedead","head_repository":{"full_name":"solo/repo"}}]}'
+run_gate "$GREEN_11"
+check_eq "false" "$(j .no_review_override.applied)" "only another branch push run: override ineligible"
+check_eq "anchor_unavailable: no pull_request workflow run for HEAD on feature" "$(j .no_review_override.reason)" "ineligible reason names the missing pull_request run"
+unset FAKE_RUNS
 
 echo "=== merge-site contracts: refresh the gate right before an override merge ==="
 SKILLS_DIR="$SCRIPT_DIR/../../skills"

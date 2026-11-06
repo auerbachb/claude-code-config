@@ -376,7 +376,7 @@ REVIEW_ESCALATION=off
 ```
 ````
 
-**No-review override window (issue #1899).** The same ini block may set `NO_REVIEW_OVERRIDE_MINUTES` — absent → `10`; an integer `1`–`1440` → that many minutes; `off` → disabled; anything else, or the key outside a live ini block (prose, a comment, another section), → disabled with one stderr warning (fails toward not merging unreviewed work). `review-tier.sh --json` reports it as `no_review_override_minutes` (number or `null`). What the window does: `.claude/reference/no-review-override.md`.
+**No-review override window (issue #1899).** The same ini block may set `NO_REVIEW_OVERRIDE_MINUTES` — absent → `10`; an integer `1`–`1440` → that many minutes; `off` → disabled; anything else, or the key outside a live ini block (prose, a comment, another section — a near-miss `## Review Policy` heading's block is still read, as for `REVIEW_ESCALATION`), → disabled with one stderr warning (fails toward not merging unreviewed work). `review-tier.sh --json` reports it as `no_review_override_minutes` (number or `null`). What the window does: `.claude/reference/no-review-override.md`.
 
 | Value | Meaning |
 |---|---|

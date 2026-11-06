@@ -1,6 +1,6 @@
 # PR MERGE AUTHORIZATION
 
-When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** — **no approval pause, no pre-merge message**. After a clean merge, emit one line — `merged PR #N` (item #3; no-review-override merges: `(no AI review — logged)`).
+When the merge gate passes (`cr-merge-gate.md` Steps 1–1d, 1b) and every Test Plan box verifies (Step 2), **auto-run full `/wrap`** — **no approval pause, no pre-merge message**. After a clean merge, emit one line — `merged PR #N` (item #3; no-review-override merges append `/wrap`'s suffix).
 
 **Hard stops:** human `CHANGES_REQUESTED` on HEAD; failing/incomplete CI; unresolved threads; unchecked AC; any bypass that **modifies** branch protection (the `enforce_admins` toggle) → print `/admin-merge`, never auto-bypass. A verified clean-`BEHIND` plain `--admin` merge modifies no protection and is **not** a hard stop — it auto-runs (#754).
 

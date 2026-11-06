@@ -54,9 +54,12 @@
 #   GitHub records no event for an ordinary push, and a committer date can be
 #   days older than the push. The anchor is the LATEST of: the HEAD committer
 #   date, the PR's created_at, the newest ready_for_review / reopened /
-#   head_ref_force_pushed timeline event, and the EARLIEST started_at of the
-#   raw HEAD check-runs (they start only after the push lands). A draft PR, an
-#   unreadable PR or timeline, a malformed timestamp, or no HEAD check-run
+#   head_ref_force_pushed timeline event, the earliest pull_request-event
+#   workflow run for HEAD on the PR's head ref (required — check-runs can
+#   predate the PR adopting a SHA), and the EARLIEST started_at of the raw
+#   HEAD check-runs. A draft PR, an unreadable PR, timeline or run list, no
+#   such pull_request run, a malformed
+#   timestamp, or no HEAD check-run
 #   timestamp makes the override INELIGIBLE (reason given) — the gate is then
 #   exactly what it was before this helper existed. "Now" is the real clock;
 #   there is deliberately no environment or flag override for it.
@@ -210,13 +213,34 @@ TIMELINE_RAW=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/timeline?per_pag
 TIMELINE_JSON=$(printf '%s' "$TIMELINE_RAW" | jq -cs 'if length > 0 and all(.[]; type == "array") then add else error("bad") end' 2>/dev/null) || TIMELINE_JSON=""
 [[ -n "$TIMELINE_JSON" ]] || ineligible "anchor_unavailable: PR timeline unreadable"
 
-ANCHOR=$(jq -cn "$JQ_DEFS"'
+# When this PR adopted HEAD. Check-runs on a SHA can predate the PR adopting
+# it (an ordinary push of a SHA already built on another branch records no
+# timeline event), so the EARLIEST pull_request-event workflow run for HEAD on
+# this PR's own head repo/ref is required — those runs are created only once
+# the PR points at HEAD. None (no pull_request workflow, unreadable runs) →
+# ineligible: the anchor is never earlier than the PR's own adoption of HEAD.
+HEAD_REPO=$(printf '%s' "$PULL_JSON" | jq -r '.head.repo.full_name // ""')
+HEAD_REF=$(printf '%s' "$PULL_JSON" | jq -r '.head.ref // ""')
+[[ -n "$HEAD_REPO" && -n "$HEAD_REF" ]] || ineligible "anchor_unavailable: PR head repo/ref unreadable"
+HEAD_SHA_P=$(printf '%s' "$PAYLOAD" | jq -r .head_sha)
+RUNS_RAW=$(gh api --paginate "repos/$OWNER/$REPO/actions/runs?head_sha=$HEAD_SHA_P&per_page=100" 2>/dev/null) || RUNS_RAW=""
+PUSH_AT=$(printf '%s' "$RUNS_RAW" | jq -rs --arg ref "$HEAD_REF" --arg hr "$HEAD_REPO" --arg h "$HEAD_SHA_P" '
+  if length > 0 and all(.[]; type == "object" and (.workflow_runs | type == "array")) then map(.workflow_runs[]) else error("bad") end
+  | [ .[] | select((.event // "") | IN("pull_request","pull_request_target"))
+          | select(.head_sha == $h and .head_branch == $ref
+                   and ((.head_repository.full_name // "") | ascii_downcase) == ($hr | ascii_downcase))
+          | .created_at ]
+  | min // ""' 2>/dev/null) || PUSH_AT=""
+[[ -n "$PUSH_AT" ]] || ineligible "anchor_unavailable: no pull_request workflow run for HEAD on $HEAD_REF"
+
+ANCHOR=$(jq -cn --arg push "$PUSH_AT" "$JQ_DEFS"'
   input as $p | input as $pull | input as $tl
   | ([ $p.check_runs_raw[]? | .started_at ] | map(select(. != null))) as $starts
   | ($starts | map(ts)) as $start_ts
   | ([ $tl[]? | select((.event // "") | IN("ready_for_review","reopened","head_ref_force_pushed"))
        | {src: .event, raw: .created_at} ]) as $events
-  | ([ {src: "commit_date", raw: $p.commit_ts}, {src: "pr_created_at", raw: $pull.created_at} ]
+  | ([ {src: "commit_date", raw: $p.commit_ts}, {src: "pr_created_at", raw: $pull.created_at},
+       {src: "pr_head_adoption", raw: $push} ]
      + $events) as $cands
   | if ($starts | length) == 0 then {error: "anchor_unavailable: no HEAD check-run start time"}
     elif ($start_ts | any(. == null)) then {error: "anchor_malformed: check-run started_at"}

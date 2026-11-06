@@ -45,9 +45,10 @@ GitHub records no event for an ordinary push, and a committer date can be days o
 - the HEAD committer date;
 - the PR's `created_at`;
 - the newest `ready_for_review`, `reopened`, or `head_ref_force_pushed` timeline event;
-- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs — they start only after the push lands.
+- the **earliest** `created_at` of a `pull_request`/`pull_request_target` workflow run for HEAD on the PR's own head repo and ref — **required**: those runs exist only once this PR points at HEAD, whereas check-runs on a SHA can predate the PR adopting it (an ordinary push of a SHA already built on another branch leaves no timeline event);
+- the **earliest** `started_at` of the raw (undeduped) HEAD check-runs.
 
-The latest lower bound never understates the push time, so the window can expire late, never early. Ineligible (override off for this evaluation, gate exactly as before): a draft PR, unreadable PR metadata or timeline, a malformed timestamp, no HEAD check-run start time. "Now" is the real clock — deliberately no flag or environment override, so ambient state cannot expire a merge-authorizing window. The anchor is reported as `head_anchor_ts` + `anchor_source`, never as an exact push time.
+The latest lower bound never understates the push time, so the window can expire late, never early. Ineligible (override off for this evaluation, gate exactly as before): a draft PR, unreadable PR metadata, timeline, or workflow-run list, no such `pull_request` run (so a repo without a `pull_request` workflow never takes the override), a malformed timestamp, no HEAD check-run start time. "Now" is the real clock — deliberately no flag or environment override, so ambient state cannot expire a merge-authorizing window. The anchor is reported as `head_anchor_ts` + `anchor_source`, never as an exact push time.
 
 ## Configuration
 
@@ -55,7 +56,7 @@ The latest lower bound never understates the push time, so the window can expire
 NO_REVIEW_OVERRIDE_MINUTES=10
 ```
 
-In the base branch's `.claude/pm-config.md` `## Review policy` section, inside a live ```` ```ini ```` block (same reading rule as `REVIEW_ESCALATION`). Absent → 10. An integer 1–1440 → that many minutes. `off` → disabled. Anything else, or the key outside a live ini block, → disabled, with one stderr warning: an unclear merge-authorizing switch fails toward **not** merging unreviewed work. A `ci-only` tier has nothing to waive.
+In the base branch's `.claude/pm-config.md` `## Review policy` section, inside a live ```` ```ini ```` block (same reading rule as `REVIEW_ESCALATION`). Absent → 10. An integer 1–1440 → that many minutes. `off` → disabled. A near-miss heading (`## Review Policy`) is read for this key like `REVIEW_ESCALATION` (the tier gate itself still resolves invalid → full). Anything else, or the key outside a live ini block, → disabled, with one stderr warning: an unclear merge-authorizing switch fails toward **not** merging unreviewed work. A `ci-only` tier has nothing to waive.
 
 ## Gate output
 
