@@ -526,6 +526,13 @@ POSTS="$(posts_made)"
 CLAIM_RENEW_MINUTES=300 run 873 --renew --holder threadA --json
 check_eq "CLAIM_RENEW_MINUTES=300: not due" "false" "$(jq -r .renewed <<<"$OUT")"
 check_eq "CLAIM_RENEW_MINUTES=300: no post" "$POSTS" "$(posts_made)"
+# Leading zeros are decimal, not octal: `08`/`090` must not break arithmetic.
+CLAIM_RENEW_MINUTES=090 run 873 --renew --holder threadA --json
+check_eq "CLAIM_RENEW_MINUTES=090: exit 0" 0 "$RC"
+check_eq "CLAIM_RENEW_MINUTES=090: 3h marker is due" "true" "$(jq -r .renewed <<<"$OUT")"
+CLAIM_STALE_HOURS=08 run 873 --check --holder threadA
+check_eq "CLAIM_STALE_HOURS=08: exit 0" 0 "$RC"
+check_eq "CLAIM_STALE_HOURS=08: verdict mine" "mine" "$OUT"
 
 echo "== (16) same holder, older than the stale window: renewed-after-expiry =="
 reset_issue

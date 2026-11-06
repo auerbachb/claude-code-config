@@ -228,12 +228,16 @@ STALE_HOURS="${CLAIM_STALE_HOURS:-4}"
 if ! [[ "$STALE_HOURS" =~ ^[0-9]+$ ]]; then
   die_usage "CLAIM_STALE_HOURS must be a non-negative integer, got: $STALE_HOURS"
 fi
+# Force base 10: a leading zero (`08`) passes the digit check but is invalid
+# octal in shell arithmetic.
+STALE_HOURS=$(( 10#$STALE_HOURS ))
 # Renewal threshold: half the stale window by default, so live work renews well
 # before any other holder can read its claim as stale.
 RENEW_MINUTES="${CLAIM_RENEW_MINUTES:-$(( STALE_HOURS * 30 ))}"
 if ! [[ "$RENEW_MINUTES" =~ ^[0-9]+$ ]]; then
   die_usage "CLAIM_RENEW_MINUTES must be a non-negative integer, got: $RENEW_MINUTES"
 fi
+RENEW_MINUTES=$(( 10#$RENEW_MINUTES ))
 
 # --- holder resolution ---------------------------------------------------------
 resolve_holder() {
@@ -682,6 +686,10 @@ do_renew() {
     fi
     CLAIMANT="$W_LOGIN"; CLAIMANT_HOLDER="$W_HOLDER"; CLAIMED_AT="$W_AT"
     CLAIMED_SINCE="$W_AT"; MARKER_ID="$W_ID"; MARKER_AUTHOR="$W_AUTHOR"
+    # A renewed winner carries its original pickup time as `since`.
+    if [[ -n "$W_SINCE" && -n "$(iso_to_epoch "$W_SINCE")" ]]; then
+      CLAIMED_SINCE="$W_SINCE"
+    fi
     local v="claimed" w_epoch
     w_epoch="$(iso_to_epoch "$W_AT")"
     if [[ -n "$w_epoch" ]] && (( $(date -u +%s) - w_epoch > STALE_HOURS * 3600 )); then
