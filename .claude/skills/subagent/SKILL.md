@@ -1510,7 +1510,7 @@ Once any subagent is spawned, enter **Dedicated Monitor Mode**. Your ONLY job is
    with no `started_at`" queued test. Clearing on a refill would delete the queue
    the board is reading.
 7. **Check for stale agents.** >15 min for Phase A, >10 min for Phase B, >5 min for Phase C without reporting — investigate.
-8. **Renew due claims (Step 8.1).** For each active pipeline, renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
+8. **Renew due claims (Step 8.1, with `DUE_ONLY=1`).** For each active pipeline, renew only when its `claim_renewed_at` is **≥30 minutes** old. **Never renew on every tick** — a 60-second cadence would cost a GitHub round trip per pipeline per minute for no gain, since the helper itself writes nothing until renewal is due.
 
 ### 8.1: Keep each claim renewed (issue #1927)
 
@@ -1519,8 +1519,17 @@ A pipeline routinely outlasts the claim's stale window (`CLAIM_STALE_HOURS`, def
 ```bash
 P=".repos[\"$REPO_KEY\"].pipelines[\"{ISSUE_NUMBER}\"]"
 C_HOLDER=$("$SESSION_STATE_SH" --get "$P.claim_holder")
-if [[ -z "$ISSUE_CLAIM" || -z "$C_HOLDER" || "$C_HOLDER" == "null" ]]; then
-  echo "note: issue #{ISSUE_NUMBER} has no recorded claim holder — claim not renewed"
+C_RENEWED=$("$SESSION_STATE_SH" --get "$P.claim_renewed_at")
+# DUE_ONLY=1 on a monitor tick (item 8): skip unless the last renewal is >=30 min
+# old. A successor launch (item 2) leaves it 0 and renews immediately.
+C_DUE=1
+if [[ "${DUE_ONLY:-0}" == "1" && "$C_RENEWED" != "null" && -n "$C_RENEWED" ]]; then
+  jq -en --arg t "$C_RENEWED" 'try ((now - ($t | fromdateiso8601)) >= 1800) catch true' >/dev/null 2>&1 || C_DUE=0
+fi
+if [[ "$C_DUE" == "0" ]]; then
+  :   # not due — write nothing, call nothing
+elif [[ -z "$ISSUE_CLAIM" || -z "$C_HOLDER" || "$C_HOLDER" == "null" ]]; then
+  [[ "${DUE_ONLY:-0}" == "1" ]] || echo "note: issue #{ISSUE_NUMBER} has no recorded claim holder — claim not renewed"
 else
   C_ERR=$(mktemp)
   "$ISSUE_CLAIM" {ISSUE_NUMBER} --renew --holder "$C_HOLDER" >/dev/null 2>"$C_ERR"; rc=$?

@@ -373,7 +373,8 @@ fetch_claim_ts() {
               | ((try ($c.body | capture("<!-- claude-claim: *(?<p>.*?) *-->") | .p | fromjson | .since
                        | select(type == "string"
                                 and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-                                and . <= $c.created_at)) catch null)
+                                and . <= $c.created_at
+                                and (fromdateiso8601 | type) == "number")) catch null)
                  // $c.created_at)
             else "" end' \
     2>/dev/null || echo "")
