@@ -2,7 +2,7 @@
 # Unit test for the canonical `pr-state-classify.jq` program invoked by
 # catalog: tests — Tests the canonical `pr-state-classify.jq` program invoked by `pr-state.sh --since`
 # `pr-state.sh --since`
-# (issues #535, #557, #575, #669, #743, #1207, #1748).
+# (issues #535, #557, #575, #669, #743, #1207, #1748, #1853).
 #
 # Verifies that comment bodies observed misclassified in the wild are now correctly
 # classified as acknowledgments, and that existing patterns are not regressed:
@@ -22,6 +22,10 @@
 #     against pr-state.sh's $botlist; Bug12 pins the CodeAnt non-finding shapes that
 #     admission exposed. Bug12a's late-placement guard fails if those branches are
 #     hoisted into tier 1 — re-run that control too if you touch the ordering.
+#   - #1853: CodeAnt's "PR Risk" summary (Low Risk plus "no actionable issues") fell
+#     through to default → finding. Bug13 pins the verbatim body (still-point PR #821);
+#     Bug13a's guards (no phrase, Medium/High Risk, no heading, finding vocabulary
+#     added) must stay findings, the last group failing if the branch is hoisted.
 #
 # Strategy: run the canonical jq file used by pr-state.sh with a one-comment
 # review fixture. This tests the actual production code rather than a copied
@@ -1126,6 +1130,90 @@ check_codeant_finding "CodeAnt promo footer + severity badge (late placement)" '
 🟠 Major: the retry loop never re-reads the lock.'
 
 # ---------------------------------------------------------------------------
+# Bug 13: CodeAnt "PR Risk" Low Risk summary with no actionable issues (issue #1853)
+#
+# Verbatim body of codeant-ai[bot] comment 6429014706 (auerbachb/still-point PR #821),
+# which fell through to default → finding and tripped poll-watermarks.sh --check.
+# ---------------------------------------------------------------------------
+CODEANT_LOW_RISK_BODY='## <a href="https://codeant.ai/" title="CodeAnt AI"><img src="https://new-codeant-butcket.s3.us-west-1.amazonaws.com/badges/codeant-block-purple-v2.svg" width="28" height="28" align="absmiddle" style="vertical-align:middle" alt="CodeAnt" /></a>&nbsp; CodeAnt PR Risk
+
+**🟢&nbsp; Low Risk**
+
+- The PR appears safe to merge; no actionable issues were identified in the review.
+
+**Assessed commit:** `70995d89a579`'
+check_codeant_ack "CodeAnt Low Risk summary, no actionable issues (verbatim)" \
+  "$CODEANT_LOW_RISK_BODY" "CodeAnt low-risk summary"
+check_codeant_ack "CodeAnt Low Risk summary, older heading template" \
+  '## CodeAnt PR Risk: Low Risk
+
+- The PR appears safe to merge; no actionable issues were identified in the review.' "CodeAnt low-risk summary"
+
+# Bug13a: guards — every one of these must stay a finding.
+# (a) Low Risk but listing points, no "no actionable issues" statement. Verbatim
+#     codeant-ai[bot] comment 6686522141 (this repo, issue #1943).
+check_codeant_finding "Low Risk summary listing points, no phrase (verbatim #1943)" \
+  '## <a href="https://codeant.ai/" title="CodeAnt AI"><img src="https://new-codeant-butcket.s3.us-west-1.amazonaws.com/badges/codeant-block-purple-v2.svg" width="28" height="28" align="absmiddle" style="vertical-align:middle" alt="CodeAnt" /></a>&nbsp; CodeAnt PR Risk
+
+**🟢&nbsp; Low Risk**
+
+- The PR appears safe to merge; the notice-timing condition prevents same-second unnamed notices from dismissing a review verdict.
+- A regression test covers the same-second case, and the 60-second exception is limited to notices naming HEAD.
+
+**Assessed commit:** `9e9f0aedb791`'
+check_codeant_finding "older Low Risk template with a caveat, no phrase" \
+  '## CodeAnt PR Risk: Low Risk
+
+- The PR appears safe to merge; a rare desk-replacement overlap can park an answer early.'
+# (b) Medium / High Risk summaries, badge and badge-less.
+check_codeant_finding "Medium Risk summary (badge)" \
+  '## CodeAnt PR Risk
+
+**🟡&nbsp; Medium Risk**
+
+- The PR needs attention before merging.'
+check_codeant_finding "Medium Risk summary (badge-less template)" \
+  '## CodeAnt PR Risk: Medium Risk
+
+- The PR needs attention before merging: no actionable issues were identified in the tests, but the lock path is unguarded.'
+check_codeant_finding "summary naming both Low and High Risk" \
+  '## CodeAnt PR Risk
+
+Low Risk for the docs; High Risk for the hook. No actionable issues in the docs.'
+# (c) The phrase without the CodeAnt PR Risk heading.
+check_codeant_finding "no-actionable-issues phrase without the heading" \
+  '**Low Risk**
+
+- The PR appears safe to merge; no actionable issues were identified in the review.'
+# (d) Late placement: the real body plus finding vocabulary. Fails if the rule is
+#     hoisted above the finding patterns.
+check_codeant_finding "real Low Risk body + severity keyword (late placement)" \
+  "$CODEANT_LOW_RISK_BODY
+
+- Critical: the lock file is never removed on error."
+check_codeant_finding "real Low Risk body + severity badge (late placement)" \
+  "$CODEANT_LOW_RISK_BODY
+
+🟠 the retry loop never re-reads the lock."
+check_codeant_finding "real Low Risk body + suggestion block (late placement)" \
+  "$CODEANT_LOW_RISK_BODY
+
+\`\`\`suggestion
+rm -f \"\$LOCK\"
+\`\`\`"
+
+# Both consumers: through pr-state.sh --since's normal mode the verbatim body is
+# counted as an acknowledgment, not a finding.
+NSB=$(since_bundle '[]' '[]' "$(jq -nc --arg b "$CODEANT_LOW_RISK_BODY" \
+  '[{id: 1, user: {login: "codeant-ai[bot]"}, created_at: "2026-10-26T16:00:00Z", body: $b}]')" "$BASELINE")
+got=$(jq -r '"\(.finding_count)|\(.acknowledgment_count)"' <<<"$NSB")
+if [[ "$got" == "0|1" ]]; then
+  pass "Bug13b: --since bundle counts the Low Risk summary as acknowledgment (finding_count 0)"
+else
+  fail "Bug13b: expected finding_count|acknowledgment_count 0|1, got $got"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -1133,4 +1221,4 @@ echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
 fi
-echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743, #1207, #1748)"
+echo "OK: pr-state.sh classify — all fixtures and regressions passed (issues #535, #557, #575, #669, #743, #1207, #1748, #1853)"

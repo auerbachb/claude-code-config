@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline unit tests for poll-watermarks.sh (issue #741).
+# Offline unit tests for poll-watermarks.sh (issues #741, #1207, #1853).
 # catalog: tests — Tests for `poll-watermarks.sh`
 #
 # Stubs pr-state.sh to return deterministic comment bundles and uses the real
@@ -238,6 +238,30 @@ seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_i
 OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
 check_eq "real CodeAnt finding (severity badge) still triggers" "NEW_FINDINGS=1" "$(sed -n '1p' <<<"$OUT")"
 check_eq "NEW_ISSUE_COMMENT_FINDINGS=1 for real finding" "NEW_ISSUE_COMMENT_FINDINGS=1" "$(sed -n '4p' <<<"$OUT")"
+
+echo "== Scenario 6c: CodeAnt Low Risk PR Risk summary is NOT a finding (issue #1853) =="
+# Verbatim codeant-ai[bot] comment 6429014706 (auerbachb/still-point PR #821). As the
+# only new bot comment it returned NEW_FINDINGS=1 before the classifier rule.
+CODEANT_LOW_RISK_BODY='## <a href="https://codeant.ai/" title="CodeAnt AI"><img src="https://new-codeant-butcket.s3.us-west-1.amazonaws.com/badges/codeant-block-purple-v2.svg" width="28" height="28" align="absmiddle" style="vertical-align:middle" alt="CodeAnt" /></a>&nbsp; CodeAnt PR Risk
+
+**🟢&nbsp; Low Risk**
+
+- The PR appears safe to merge; no actionable issues were identified in the review.
+
+**Assessed commit:** `70995d89a579`'
+write_fixture "$(jq -n --arg b "$CODEANT_LOW_RISK_BODY" '{
+  comments: {
+    reviews: [],
+    inline: [],
+    conversation: [{id: 602, user: {login: "codeant-ai[bot]"}, body: $b}]
+  }
+}')"
+seed_state '{"last_review_id":0,"last_inline_comment_id":0,"last_issue_comment_id":0}'
+OUT="$(cd "$REPO_ROOT" && "$POLL_WM" "$PR" --check)"
+check_eq "CodeAnt Low Risk summary is not a finding" "NEW_FINDINGS=0" "$(sed -n '1p' <<<"$OUT")"
+check_eq "NEW_ISSUE_COMMENT_FINDINGS=0 for CodeAnt Low Risk summary" "NEW_ISSUE_COMMENT_FINDINGS=0" "$(sed -n '4p' <<<"$OUT")"
+STORED_AFTER="$(cd "$REPO_ROOT" && "$SESSION" --get ".prs[\"$PR\"].poll_watermarks")"
+check_eq "watermark advanced past CodeAnt Low Risk summary" "602" "$(jq -r '.last_issue_comment_id' <<<"$STORED_AFTER")"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
