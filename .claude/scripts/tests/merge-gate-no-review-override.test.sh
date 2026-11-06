@@ -196,6 +196,12 @@ FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "$(ago 500)" '[{id:5, user:{login:"cursor[
 run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 "Cursor Bugbot" neutral 600 cursor)")"
 check_eq "true"  "$(j .no_review_override.applied)"     "refused run is not a verdict"
 
+echo "=== refusal older than the HEAD check-run never suppresses its verdict ==="
+reset
+FAKE_ISSUE_COMMENTS="$(jq -cn --arg t "$(ago 700)" '[{id:5, user:{login:"cursor[bot]"}, created_at:$t, body:"Bugbot couldn'"'"'t run: usage limit reached"}]')"
+run_gate "$(bundle "$(run 1 build success 660)" "$(run 2 "Cursor Bugbot" neutral 600 cursor)")"
+check_eq "false" "$(j .no_review_override.applied)"     "pre-push refusal does not discount a current-HEAD check verdict"
+
 echo "=== hard stops at 11 min ==="
 reset
 run_gate "$(bundle "$(run 1 build failure 660)")"
@@ -274,6 +280,14 @@ record >/dev/null; check_eq "4" "$?" "ledger refuses a head mismatch"
 unset FAKE_MERGED_HEAD; export FAKE_LABEL_FAIL=1
 check_eq "recorded" "$(record)" "label failure still records"
 check_eq "false" "$(jq -r '.entries[0].label_applied' "$LEDGER_FILE")" "label failure recorded as label_applied:false"
+
+echo "=== merge-site contracts: refresh the gate right before an override merge ==="
+SKILLS_DIR="$SCRIPT_DIR/../../skills"
+prose_has() { grep -qF "$2" "$1" && echo yes || echo no; }
+check_eq "yes" "$(prose_has "$SKILLS_DIR/merge/SKILL.md" 'first **re-run `merge-gate.sh` into the gate JSON**')" \
+  "/merge re-runs merge-gate.sh after AC verification before an override merge"
+check_eq "yes" "$(prose_has "$SKILLS_DIR/wrap/SKILL.md" 'its refreshed `merge_state` still passes this same test')" \
+  "/wrap re-checks the allowed merge state on the refreshed gate"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

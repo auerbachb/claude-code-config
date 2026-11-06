@@ -147,24 +147,27 @@ INVENTORY=$(printf '%s' "$PAYLOAD" | jq -c "$JQ_DEFS"'
       | {reviewer: "codeant-ai[bot]", kind: "codeant_run_record"} ]
   | unique')
 
-# Capability-failure notices are read per bot, after the commit time, so a
-# refused run's neutral check-run is not mistaken for a review.
+# Capability-failure notices are read per bot so a refused run's neutral
+# check-run is not mistaken for a review. A notice discounts a check-run only
+# when posted at or after THAT run's started_at: a refusal from before the push
+# (older than the HEAD run) can never suppress a current-HEAD check verdict.
 PAYLOAD_WITH_INV=$(printf '%s' "$PAYLOAD" | jq -c --argjson inv "$INVENTORY" '. + {inv: $inv}')
 DECISION=$(printf '%s' "$PAYLOAD_WITH_INV" | jq -c "$JQ_DEFS"'
   (.commit_ts | ts) as $cts
   | (reviewer_slugs) as $slugs
   | ([ (.issue_comments // [])[]?
        | select((.user.login // "") as $l | reviewer_bots | index($l))
-       | select(($cts == null) or (((.created_at | ts) // 0) >= $cts))
        | select((.body // "") | failure_notice)
-       | .user.login ] | unique) as $refused
+       | {login: .user.login, t: ((.created_at | ts) // 0)} ]) as $notices
+  | ([ $notices[] | select(($cts == null) or (.t >= $cts)) | .login ] | unique) as $refused
   | ([ (.check_runs_raw // [])[]?
        | select((.app.slug // "") as $s | $slugs | has($s)) ]) as $rchecks
   | ([ $rchecks[]
        | select((.status // "") == "completed")
        | select((.conclusion // "") | IN("success","failure","action_required","neutral"))
        | ($slugs[.app.slug]) as $bot
-       | select(($refused | index($bot)) | not)
+       | ((.started_at | ts) // $cts // 0) as $run_t
+       | select([ $notices[] | select(.login == $bot and .t >= $run_t) ] | length == 0)
        | {reviewer: $bot, kind: ("check_" + .conclusion)} ]) as $check_verdicts
   | ((.inv + $check_verdicts) | unique) as $verdicts
   | ([ $rchecks[] | select((.status // "") != "completed")

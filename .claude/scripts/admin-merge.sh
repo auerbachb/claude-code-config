@@ -532,7 +532,7 @@ fi
 # own window. Never exit 8: there is nothing for the repo admin to print.
 if printf '%s' "$GATE_JSON" | jq -e '.no_review_override.applied == true' >/dev/null 2>&1; then
   echo "AUTO_PLAIN_REFUSED: reason=no-review-override" >&2
-  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. Rebase via /fixpr; /wrap merges the new HEAD with --match-head-commit once its window elapses." >&2
+  echo "REFUSED: PR #$PR_NUMBER would merge through the no-review override — admin bypass is never combined with an unreviewed merge. If the PR is CLEAN, merge it plainly via /wrap (gh pr merge --squash --match-head-commit, no admin); only if it is BEHIND, rebase via /fixpr — the new HEAD gets its own window." >&2
   exit 1
 fi
 

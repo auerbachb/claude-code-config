@@ -15,7 +15,9 @@
 # OUTPUT
 #   stdout: one line, exactly one of:
 #     STATUS=gate_met         CR-path primary review already satisfied (CodeRabbit or
-#                             CodeAnt has a valid APPROVED review on current HEAD) —
+#                             CodeAnt has a valid APPROVED review on current HEAD), OR
+#                             merge-gate.sh is met via the no-review override at a
+#                             paid-escalation point (issue #1899; stderr names it) —
 #                             do not escalate; the merge gate will pick this up
 #     STATUS=polling_cr       keep polling CodeRabbit/BugBot grace window — including
 #                             while a CodeRabbit `Review limit reached` banner's own

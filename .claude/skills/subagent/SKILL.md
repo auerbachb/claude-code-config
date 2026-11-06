@@ -1560,7 +1560,7 @@ If missing, reconstruct state from GitHub API.
 3. Check ALL CI check-runs. Fix any failures before continuing.
 4. Poll for CR review every 60s on all 3 endpoints. Filter by coderabbitai[bot].
 5. Resolve `escalate-review.sh` per RESOLVE and run it on `{PR_NUMBER}` every CR-owned poll cycle and branch on its single `STATUS=` verdict:
-   - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD — do not escalate; continue to the merge gate check.
+   - `gate_met`: CodeRabbit or CodeAnt already has a valid APPROVED review on current HEAD, or the gate is met via the no-review override (issue #1899) — do not escalate; continue to the merge gate check.
    - `polling_cr`: continue polling CR.
    - `switch_bugbot`: persist `reviewer: bugbot` and follow the BugBot path.
    - `tier_gate`: the PR's review tier excludes BugBot — do NOT switch or post `@cursor review`; trigger nothing, keep polling, and let the merge gate apply the tier's gate.

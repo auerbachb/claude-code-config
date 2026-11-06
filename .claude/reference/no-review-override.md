@@ -83,7 +83,7 @@ In the base branch's `.claude/pm-config.md` `## Review policy` section, inside a
 
 Then `unreviewed-merge-ledger.sh record --pr N --gate-json -` with the authorizing gate JSON, and the report line becomes `merged PR #N (no AI review — logged)` (or `… — ledger write failed)`).
 
-**Paid escalation.** `escalate-review.sh` asks `merge-gate.sh` at the two points that would spend on a paid reviewer (`switch_bugbot`, `trigger_greptile`); when the gate is met through the override it emits `gate_met` instead. The polling loop's own per-cycle `polling-state-gate.sh` → `merge-gate.sh` exit 0 then ends polling. Fails open to the old routing (a gate error changes nothing).
+**Paid escalation.** `escalate-review.sh` asks `merge-gate.sh` at the two points that would spend on a paid reviewer (`switch_bugbot`, `trigger_greptile`); when the gate is met through the override it emits `gate_met` instead — so `gate_met` means "merge gate met on HEAD" (an approval or this override; stderr names which), and every consumer already branches on it the same way: stop escalating, let the merge gate end polling. The polling loop's own per-cycle `polling-state-gate.sh` → `merge-gate.sh` exit 0 then ends polling. Fails open to the old routing (a gate error changes nothing).
 
 ## The ledger
 
