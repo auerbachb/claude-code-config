@@ -497,6 +497,120 @@ expect_field '.authorship_overridden' 'false' "authorship_overridden false by de
 FAKE_GATE_OMIT_AUTHORSHIP=1 run 0
 expect_field '.authorship' 'unknown' "missing merge-gate authorship field degrades to unknown"
 
+# ============================================================================
+# Issue #1859: zero-context changed-line ranges. GitHub patches carry 3 lines of
+# context, and the pre-fix parser intersected the context-inclusive header
+# spans, so two edits up to ~6 lines apart read as overlapping even when git
+# merges them cleanly. Cases 40, 41 and 45 fail against the pre-fix script
+# (false overlap / insertion-only fallback); 44 and 46 fail there because the
+# insertion-only side fell back instead of producing a real range; 49 and 50
+# fail there because the old header-only parser trusted a malformed patch and
+# called it disjoint (fail-open). The rest are negative controls proving that
+# touching or overlapping edits still block.
+# ============================================================================
+
+# hunk_case <base-patch> <pr-patch> — run the SUT with one shared file whose
+# base-delta and PR patches are the given unified-diff bodies (real newlines).
+hunk_case() {
+  local bp pp
+  bp="$(jq -cn --arg p "$1" '{"shared.md": $p}')"
+  pp="$(jq -cn --arg p "$2" '{"shared.md": $p}')"
+  FAKE_PR_FILES='["shared.md","mine.sh"]' \
+    FAKE_BASE_DELTA_FILES='["shared.md"]' \
+    FAKE_BASE_DELTA_PATCHES="$bp" \
+    FAKE_PR_FILE_PATCHES="$pp" \
+    run 1
+}
+expect_disjoint() {  # expect_disjoint <desc>
+  expect_rc 0 "$1 → exit 0 (safe to offer)"
+  expect_field '.safe_to_offer' 'true' "$1: safe_to_offer true"
+  expect_field '.file_overlap.count' '0' "$1: overlap count 0"
+  expect_field '.file_overlap.granularity' 'hunk' "$1: granularity hunk"
+  expect_field '.file_overlap.fallback_files | length' '0' "$1: no fallback files"
+}
+expect_overlap() {  # expect_overlap <desc>
+  expect_rc 1 "$1 → exit 1 (not safe)"
+  expect_field '.safe_to_offer' 'false' "$1: safe_to_offer false"
+  expect_field '.file_overlap.count' '1' "$1: overlap count 1"
+  expect_field '.file_overlap.granularity' 'hunk' "$1: granularity hunk"
+  expect_field '.file_overlap.fallback_files | length' '0' "$1: a real overlap, not a fallback"
+}
+
+# 40. PR #925 shape (auerbachb/still-point, ios/PARITY_CHECKLIST.md): main
+#     changed lines 3, 14 and 33 and deleted line 42; the PR changed only line
+#     44. Line 43 is untouched by both sides. The -39,7 and -41,7 hunks overlap
+#     on context alone; the changed lines do not.
+PR925_BASE="$(printf '%s\n' \
+  '@@ -1,6 +1,6 @@' ' l1' ' l2' '-l3' '+L3' ' l4' ' l5' ' l6' \
+  '@@ -11,7 +11,7 @@' ' l11' ' l12' ' l13' '-l14' '+L14' ' l15' ' l16' ' l17' \
+  '@@ -30,7 +30,7 @@' ' l30' ' l31' ' l32' '-l33' '+L33' ' l34' ' l35' ' l36' \
+  '@@ -39,7 +39,6 @@ ## Parity' ' l39' ' l40' ' l41' '-l42' ' l43' ' l44' ' l45')"
+PR925_PR="$(printf '%s\n' \
+  '@@ -41,7 +41,7 @@ ## Parity' ' l41' ' l42' ' l43' '-l44' '+L44' ' l45' ' l46' ' l47')"
+hunk_case "$PR925_BASE" "$PR925_PR"
+expect_disjoint "#1859 PR #925 shape (context-padded hunks, disjoint changed lines)"
+
+# 41. Line-separated insertion: base inserts after line 42, PR changes line 44.
+hunk_case "$(printf '%s\n' '@@ -40,3 +40,4 @@' ' l40' ' l41' ' l42' '+new')" \
+  "$(printf '%s\n' '@@ -41,7 +41,7 @@' ' l41' ' l42' ' l43' '-l44' '+L44' ' l45' ' l46' ' l47')"
+expect_disjoint "#1859 insertion after 42 vs change on 44 (line 43 separates)"
+
+# 42. Negative control: adjacent edits (base line 42, PR line 43) still overlap.
+hunk_case "$(printf '%s\n' '@@ -39,7 +39,7 @@' ' l39' ' l40' ' l41' '-l42' '+L42' ' l43' ' l44' ' l45')" \
+  "$(printf '%s\n' '@@ -40,7 +40,7 @@' ' l40' ' l41' ' l42' '-l43' '+L43' ' l44' ' l45' ' l46')"
+expect_overlap "#1859 adjacent edits (42 vs 43)"
+
+# 43. Negative control: both sides change the same line.
+hunk_case "$(printf '%s\n' '@@ -41,3 +41,3 @@' ' l41' '-l42' '+A42' ' l43')" \
+  "$(printf '%s\n' '@@ -41,3 +41,3 @@' ' l41' '-l42' '+B42' ' l43')"
+expect_overlap "#1859 same-line edits"
+
+# 44. Insertion after line 5 (-5,0) vs a PR change on line 6 → touching.
+INS5="$(printf '%s\n' '@@ -5,0 +6,2 @@' '+n1' '+n2')"
+hunk_case "$INS5" "$(printf '%s\n' '@@ -6 +6 @@' '-l6' '+L6')"
+expect_overlap "#1859 insertion after 5 vs change on 6"
+
+# 45. The same insertion vs a PR change on line 7 → line 6 separates them.
+hunk_case "$INS5" "$(printf '%s\n' '@@ -7 +7 @@' '-l7' '+L7')"
+expect_disjoint "#1859 insertion after 5 vs change on 7"
+
+# 46. Insertion vs insertion at the same point → overlap.
+hunk_case "$INS5" "$(printf '%s\n' '@@ -5,0 +6 @@' '+other')"
+expect_overlap "#1859 same-point insertions"
+
+# 47. Omitted-count header (@@ -5 +5 @@) vs a PR change on line 5 → overlap.
+hunk_case "$(printf '%s\n' '@@ -5 +5 @@' '-l5' '+A5')" \
+  "$(printf '%s\n' '@@ -4,3 +4,3 @@' ' l4' '-l5' '+B5' ' l6')"
+expect_overlap "#1859 omitted-count header vs change on the same line"
+
+# 48. Multiple hunks; only the second one touches the PR edit → overlap.
+hunk_case "$(printf '%s\n' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3' '@@ -20,3 +20,3 @@' ' l20' '-l21' '+L21' ' l22')" \
+  "$(printf '%s\n' '@@ -19,3 +19,3 @@' ' l19' '-l20' '+L20' ' l21')"
+expect_overlap "#1859 second base hunk touches the PR edit"
+
+# 49. Malformed patch (header count disagrees with the body) → fail closed:
+#     fallback to file level, unsafe, with a malformed reason in the note. The
+#     ranges would be disjoint if the patch were trusted, so this discriminates.
+hunk_case "$(printf '%s\n' '@@ -1,5 +1,5 @@' ' l1' '-l2' '+L2' ' l3')" \
+  "$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+expect_rc 1 "#1859 malformed patch → exit 1 (not safe)"
+expect_field '.safe_to_offer' 'false' "#1859 malformed patch: safe_to_offer false"
+expect_field '.file_overlap.count' '1' "#1859 malformed patch: counted as overlapping"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 malformed patch: one fallback file"
+grep_ok "malformed" "#1859 malformed patch: note names the malformed reason"
+
+# 50. Malformed: text before the first hunk header → fail closed.
+hunk_case "$(printf '%s\n' 'garbage' '@@ -1,3 +1,3 @@' ' l1' '-l2' '+L2' ' l3')" \
+  "$(printf '%s\n' '@@ -40,3 +40,3 @@' ' l40' '-l41' '+L41' ' l42')"
+expect_rc 1 "#1859 text before first header → exit 1 (not safe)"
+expect_field '.file_overlap.fallback_files | length' '1' "#1859 text before first header: one fallback file"
+
+# 51. "\ No newline at end of file" is neutral, and a patch without a trailing
+#     newline parses the same as one with it.
+hunk_case "$(printf '%s\n%s\n%s\n%s\n%s' '@@ -9,2 +9,2 @@' ' l9' '-l10' '+L10' '\ No newline at end of file')" \
+  "$(printf '%s\n' '@@ -6,3 +6,3 @@' ' l6' '-l7' '+L7' ' l8')"
+expect_disjoint "#1859 no-newline marker is neutral"
+
 echo "----------------------------------------"
 echo "clean-behind-check.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
