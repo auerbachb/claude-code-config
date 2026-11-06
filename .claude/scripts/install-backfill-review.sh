@@ -12,12 +12,19 @@
 # Opt-in and manually invoked. NOT called from setup.sh: a machine gets the
 # scheduler when its owner asks for it.
 #
-# Usage: install-backfill-review.sh --repo-dir DIR [--interval SECONDS] [--help]
+# Usage: install-backfill-review.sh --repo-dir DIR [--interval SECONDS] [--force] [--help]
 #
 #   --repo-dir DIR       git checkout to backfill (required; resolved to its
-#                        absolute top level, must have an `origin` remote)
+#                        absolute top level, must have a GitHub `origin` remote)
 #   --interval SECONDS   Override the StartInterval (default 1800, minimum 60)
+#   --force              Replace an installed job that points at a different checkout
 #   --help               Print this usage and exit 0
+#
+# ONE JOB PER MACHINE
+#   The LaunchAgent label is fixed, so only one checkout is scheduled at a time.
+#   Re-running for the same checkout updates the job in place; running it for a
+#   different checkout is refused (exit 1) unless --force is passed, which
+#   replaces the earlier job.
 #
 # SCRIPT PATH RESOLUTION
 #   The plist points at the skills-worktree copy of backfill-review.sh when it
@@ -34,8 +41,10 @@
 # EXIT CODES
 #   0  installed and verified running
 #   1  not macOS, a required tool, the checkout, the runner or the template is
-#      missing or invalid, or the job did not appear in launchctl
-#   2  usage error
+#      missing or invalid, an installed job points at a different checkout
+#      (without --force), or the job did not appear in launchctl
+#   2  usage error, or the checkout's origin is not a GitHub owner/name the
+#      runner can parse
 #
 # Uninstall with uninstall-backfill-review.sh (keeps the ledger).
 #
@@ -54,22 +63,28 @@ RUNNER_HELPERS="unreviewed-merge-ledger.sh local-review.sh issue-file.sh issue-d
 
 usage() {
   cat <<'EOF'
-Usage: install-backfill-review.sh --repo-dir DIR [--interval SECONDS] [--help]
+Usage: install-backfill-review.sh --repo-dir DIR [--interval SECONDS] [--force] [--help]
 
   Registers the overnight backfill review (backfill-review.sh) as a launchd
   LaunchAgent: one run at load, then every StartInterval seconds. The runner
   exits 0 at once outside its quiet window, so most ticks do nothing.
 
+  One job per machine: the label is fixed, so only one checkout is scheduled.
+  Installing for a different checkout than the installed job is refused unless
+  --force is passed, which replaces the earlier job.
+
 OPTIONS
-  --repo-dir DIR       git checkout to backfill (required)
+  --repo-dir DIR       git checkout to backfill (required; GitHub origin)
   --interval SECONDS   StartInterval override (default 1800, minimum 60)
+  --force              Replace an installed job for a different checkout
   --help               Print this usage and exit 0
 
 EXIT CODES
   0  installed and verified running
   1  not macOS; a required tool, the checkout, the runner or the template is
-     missing or invalid; or the job did not appear in launchctl list
-  2  usage error
+     missing or invalid; an installed job points at a different checkout
+     (without --force); or the job did not appear in launchctl list
+  2  usage error, or the origin is not a parseable GitHub owner/name
 
 FILES
   ~/Library/LaunchAgents/com.user.claude-backfill-review.plist   installed job
@@ -85,9 +100,11 @@ ORIGINAL_ARGS="$*"
 
 INTERVAL=1800
 REPO_DIR_ARG=""
+FORCE=0
 while (( $# > 0 )); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --force) FORCE=1 ;;
     --interval)
       shift
       if [[ $# -eq 0 || ! "${1:-}" =~ ^[0-9]+$ ]]; then
@@ -211,9 +228,47 @@ if has_control_char "$REPO_DIR"; then
   echo "FAIL: the resolved checkout path contains a control character: $REPO_DIR" >&2
   exit 1
 fi
-if ! git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+if ! ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null)"; then
   echo "FAIL: no origin remote in $REPO_DIR — backfill-review.sh needs it to find the repo." >&2
   exit 1
+fi
+
+# The runner derives the ledger key (owner/name) from a GitHub origin and exits
+# 2 on every tick when it cannot. Same parser as backfill-review.sh, so a job
+# that could never run is refused here instead of installed.
+origin_slug() {
+  local url="$1"
+  if [[ "$url" =~ ^(git@github\.com:|ssh://git@github\.com/|https://github\.com/) ]]; then
+    printf '%s' "$url" | sed -E -e 's#^(git@github\.com:|ssh://git@github\.com/|https://github\.com/)##' -e 's#\.git$##' -e 's#/$##' | tr '[:upper:]' '[:lower:]'
+  elif [[ "$url" =~ ^(https?|ssh|git)://([^/@]+@)?github\.com(:[0-9]+)?/ ]]; then
+    printf '%s' "$url" | sed -E -e 's#^[a-z]+://([^/@]+@)?github\.com(:[0-9]+)?/##' -e 's#\.git$##' -e 's#/$##' | tr '[:upper:]' '[:lower:]'
+  fi
+}
+ORIGIN_SAFE="$(printf '%s' "$ORIGIN_URL" | sed -E 's#//[^/@]+@#//***@#')"   # never print a URL credential
+ORIGIN_SLUG="$(origin_slug "$ORIGIN_URL")"
+if [[ ! "$ORIGIN_SLUG" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]]; then
+  echo "FAIL: the origin of $REPO_DIR is not a GitHub owner/name backfill-review.sh can parse: $ORIGIN_SAFE" >&2
+  echo "      The job would exit 2 on every tick; nothing was installed." >&2
+  exit 2
+fi
+
+# One job per machine (the label is fixed). An installed job for a DIFFERENT
+# checkout is replaced only on --force; an unreadable one counts as different.
+installed_repo_dir() {
+  awk 'want { sub(/^[[:space:]]*<string>/, ""); sub(/<\/string>[[:space:]]*$/, "");
+              gsub(/&lt;/, "<"); gsub(/&gt;/, ">"); gsub(/&amp;/, "\\&"); print; exit }
+       /<string>--repo-dir<\/string>/ { want = 1 }' "$1" 2>/dev/null
+}
+if [[ -f "$INSTALLED_PLIST" && "$FORCE" != 1 ]]; then
+  PREV_REPO_DIR="$(installed_repo_dir "$INSTALLED_PLIST" || true)"
+  if [[ "$PREV_REPO_DIR" != "$REPO_DIR" ]]; then
+    echo "FAIL: $LABEL is already installed for a different checkout:" >&2
+    echo "        installed: ${PREV_REPO_DIR:-<unreadable>}" >&2
+    echo "        requested: $REPO_DIR" >&2
+    echo "      Only one checkout can be scheduled (the label is fixed). Re-run with" >&2
+    echo "      --force to replace the installed job. Nothing was changed." >&2
+    exit 1
+  fi
 fi
 
 # runner_complete <path> — the runner and every helper it requires are

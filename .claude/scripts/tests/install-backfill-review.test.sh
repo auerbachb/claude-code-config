@@ -268,7 +268,7 @@ test_3_arguments() {
 # ── Test 4: checkout validation fails before any write ──────────────────────
 
 test_4_checkout_validation() {
-  section "Test 4: a non-git or origin-less checkout exits 1 with no writes"
+  section "Test 4: a non-git or origin-less checkout exits 1, a non-GitHub origin exits 2, no writes"
 
   local root plist
   root="$(make_env Darwin)"
@@ -286,6 +286,19 @@ test_4_checkout_validation() {
   run_install "$root" --repo-dir "$root/no-origin"
   assert "a checkout without origin exits 1" "[ \"\$(cat '$root/rc')\" = 1 ]"
   assert "and names the missing origin" "grep -q 'no origin remote' '$root/out'"
+
+  git init -q "$root/gitlab-origin"
+  git -C "$root/gitlab-origin" remote add origin https://gitlab.com/example/fixture.git
+  run_install "$root" --repo-dir "$root/gitlab-origin"
+  assert "a non-GitHub origin exits 2" "[ \"\$(cat '$root/rc')\" = 2 ]"
+  assert "and says the origin is not a parseable GitHub owner/name" \
+    "grep -q 'not a GitHub owner/name' '$root/out'"
+
+  git init -q "$root/cred-origin"
+  git -C "$root/cred-origin" remote add origin 'https://user:s3cr3t@gitlab.com/example/fixture.git'
+  run_install "$root" --repo-dir "$root/cred-origin"
+  assert "a credentialed non-GitHub origin exits 2" "[ \"\$(cat '$root/rc')\" = 2 ]"
+  assert "and never prints the URL credential" "! grep -q 's3cr3t' '$root/out'"
 
   assert "no plist was written" "[ ! -f '$plist' ]"
   assert "no launchctl call was made" "[ ! -s '$root/launchctl.log' ]"
@@ -462,6 +475,45 @@ test_9_platform_guard() {
   rm -rf "$root"
 }
 
+# ── Test 10: one job per machine — a different checkout needs --force ────────
+
+test_10_one_job_per_machine() {
+  section "Test 10: a second checkout is refused without --force; the same one updates in place"
+
+  local root plist other other_top
+  root="$(make_env Darwin)"
+  plist="$root/home/Library/LaunchAgents/${LABEL}.plist"
+  # The & also proves the installed path is read back unescaped.
+  other="$root/other & repo"
+  git init -q "$other"
+  git -C "$other" remote add origin https://github.com/example/other.git
+  other_top="$(git -C "$other" rev-parse --show-toplevel)"
+
+  run_install "$root" --repo-dir "$other"
+  assert "first install exits 0" "[ \"\$(cat '$root/rc')\" = 0 ]"
+  cp "$plist" "$root/first.plist"
+
+  run_install "$root" --repo-dir "$other" --interval 900
+  assert "re-installing the same checkout exits 0 (updates in place)" "[ \"\$(cat '$root/rc')\" = 0 ]"
+
+  cp "$plist" "$root/before.plist"
+  : > "$root/launchctl.log"
+  run_install "$root" --repo-dir "$root/repo"
+  assert "a different checkout without --force exits 1" "[ \"\$(cat '$root/rc')\" = 1 ]"
+  assert "and names both checkouts and --force" \
+    "grep -q 'already installed for a different checkout' '$root/out' && grep -q -- '--force' '$root/out'"
+  assert "the installed plist is unchanged" "cmp -s '$root/before.plist' '$plist'"
+  assert "no launchctl call was made" "[ ! -s '$root/launchctl.log' ]"
+
+  run_install "$root" --repo-dir "$root/repo" --force
+  assert "--force replaces it and exits 0" "[ \"\$(cat '$root/rc')\" = 0 ]"
+  assert "the plist now names the new checkout" \
+    "[ \"\$(program_args '$plist' | sed -n 4p)\" = \"\$(git -C '$root/repo' rev-parse --show-toplevel)\" ]"
+  assert "and no longer names the earlier one" "! grep -Fq \"${other_top//&/&amp;}\" '$plist'"
+
+  rm -rf "$root"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -476,6 +528,7 @@ test_6_missing_required_tool
 test_7_launchctl_failures
 test_8_uninstall
 test_9_platform_guard
+test_10_one_job_per_machine
 
 echo ""
 echo -e "${BOLD}━━━ Summary ━━━${NC}"

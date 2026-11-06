@@ -90,13 +90,13 @@ Remove it with `bash .claude/scripts/uninstall-config-sync.sh`. Details: [`.clau
 
 ## Optional: overnight backfill review (macOS)
 
-PRs merged under the no-review override are logged to `~/.claude/unreviewed-merges.json`. To review them overnight with the free local CLIs, run this once per checkout:
+PRs merged under the no-review override are logged to `~/.claude/unreviewed-merges.json`. To review them overnight with the free local CLIs, run this once, naming the one checkout to review from (its `origin` must be on GitHub):
 
 ```bash
 bash .claude/scripts/install-backfill-review.sh --repo-dir /absolute/path/to/checkout
 ```
 
-It registers `backfill-review.sh --repo-dir <checkout>` as a launchd LaunchAgent that fires every 30 minutes (`--interval SECONDS` to change it); the runner does work only inside its quiet window. Logs: `~/.claude/logs/backfill-review.log`. Remove it with `bash .claude/scripts/uninstall-backfill-review.sh`, which keeps the ledger. Details: [`.claude/reference/backfill-review.md`](.claude/reference/backfill-review.md) §Scheduling.
+It registers `backfill-review.sh --repo-dir <checkout>` as a launchd LaunchAgent that fires every 30 minutes (`--interval SECONDS` to change it); the runner does work only inside its quiet window. The job's label is fixed, so one checkout is scheduled per machine: installing for a different checkout is refused unless you pass `--force`, which replaces the earlier job. Logs: `~/.claude/logs/backfill-review.log`. Remove it with `bash .claude/scripts/uninstall-backfill-review.sh`, which keeps the ledger. Details: [`.claude/reference/backfill-review.md`](.claude/reference/backfill-review.md) §Scheduling.
 
 ## Prerequisites
 
