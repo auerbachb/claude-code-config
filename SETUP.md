@@ -88,6 +88,16 @@ When a sync lands something a live session cannot pick up (a new agent, changed 
 
 Remove it with `bash .claude/scripts/uninstall-config-sync.sh`. Details: [`.claude/reference/skill-sync-hooks.md`](.claude/reference/skill-sync-hooks.md).
 
+## Optional: overnight backfill review (macOS)
+
+PRs merged under the no-review override are logged to `~/.claude/unreviewed-merges.json`. To review them overnight with the free local CLIs, run this once per checkout:
+
+```bash
+bash .claude/scripts/install-backfill-review.sh --repo-dir /absolute/path/to/checkout
+```
+
+It registers `backfill-review.sh --repo-dir <checkout>` as a launchd LaunchAgent that fires every 30 minutes (`--interval SECONDS` to change it); the runner does work only inside its quiet window. Logs: `~/.claude/logs/backfill-review.log`. Remove it with `bash .claude/scripts/uninstall-backfill-review.sh`, which keeps the ledger. Details: [`.claude/reference/backfill-review.md`](.claude/reference/backfill-review.md) §Scheduling.
+
 ## Prerequisites
 
 - **Git** — the repo must be cloned (not downloaded as a zip)
