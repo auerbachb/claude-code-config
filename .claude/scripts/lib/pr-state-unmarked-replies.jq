@@ -30,6 +30,7 @@
 # The bot list mirrors pr-state.sh's `$botlist`; pr-state-unmarked-replies.test.sh
 # asserts the two stay equal.
 
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical comments still classify.
 def review_bot_logins:
   ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"];
 

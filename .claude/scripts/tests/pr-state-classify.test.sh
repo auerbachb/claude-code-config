@@ -866,7 +866,7 @@ wait_new_findings() {
     '{pr: {head_sha: $sha},
       comments: {reviews: $reviews, inline: $inline, conversation: $conversation},
       check_runs: {all: []}, bot_statuses: {}, new_since_baseline: $nsb}' >"$bundle"
-  "$PR_STATE" --wait-state-eval "$HEAD_SHA" "$bundle" | jq -r '.new_findings'
+  "$PR_STATE" --wait-state-eval "$HEAD_SHA" "$bundle" | jq -r "${WAIT_FIELD:-.new_findings}"
 }
 
 # classify_as <login> <body> — classify one review authored by <login>, posted
@@ -950,6 +950,14 @@ if [[ "$got" =~ ^[0-9]+$ ]] && [[ "$got" -ge 1 ]]; then
   pass "Bug11b: --wait-state-eval on the Graphite classifier output reports new_findings $got (>= 1)"
 else
   fail "Bug11b: --wait-state-eval (Graphite) — expected new_findings >= 1, got '$got'"
+fi
+# Retired Graphite (#1889) still counts as a finding but is never a participant
+# to wait for: it must not appear in bots_pending.
+got=$(WAIT_FIELD='.bots_pending | map(tostring) | join(",")' wait_new_findings "$NSB" '[]' "$INLINE" '[]')
+if [[ "$got" != *graphite* ]]; then
+  pass "Bug11b: --wait-state-eval never lists retired Graphite in bots_pending"
+else
+  fail "Bug11b: --wait-state-eval (Graphite) — expected no graphite in bots_pending, got '$got'"
 fi
 
 # Bug11c: CodeAnt non-finding items posted AFTER the baseline are admitted and stay

@@ -1250,6 +1250,12 @@ check_eq "4" "$?" "(m) non-JSON stdin exits 4"
 printf '' | "$EVAL_SUT" >/dev/null 2>&1
 check_eq "4" "$?" "(m) empty stdin exits 4"
 
+echo "=== (gr) retired Graphite stays a default corroborator (#1889) ==="
+# The echo filter excludes $approvers + $others, so dropping graphite-app[bot]
+# from the default list would turn its comments into author text whose lines are
+# stripped from CR/CodeAnt bodies — changing their verdicts. The App still posts.
+check_eq "1" "$(grep -cE '^CORROBORATORS="[^"]*graphite-app\[bot\]' "$EVAL_SUT")" "(gr) default CORROBORATORS keeps graphite-app[bot]"
+
 echo
 echo "----------------------------------------"
 echo "PASS: $PASS   FAIL: $FAIL"

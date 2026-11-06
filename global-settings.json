@@ -1,16 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "claude-code-graphite": {
-      "source": {
-        "source": "github",
-        "repo": "georgeguimaraes/claude-code-graphite"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "graphite@claude-code-graphite": true,
-    "graphite-mcp@claude-code-graphite": true
-  },
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [

@@ -286,6 +286,7 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$(basename "$0")" "${*//$'\n'/ }" 2>
 
 MIN_CHARS="${MERGE_GATE_SUBSTANCE_MIN_CHARS:-40}"
 REVIEWERS="coderabbitai[bot],codeant-ai[bot]"
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical PRs judge the same.
 CORROBORATORS="cursor[bot],greptile-apps[bot],graphite-app[bot]"
 
 print_usage() {

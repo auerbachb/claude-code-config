@@ -9,13 +9,8 @@
 #      ends in a `bugbot_skipped: {"reason":"approval_required"}` skip unless
 #      an earlier skip below (tier, refused HEAD, daily cap) already applied.
 #      The one exception is an owner grant for this PR and HEAD (issue #1898):
-#      paid-review-grant.sh --trigger spends it once and posts
-#   3) @graphite-app re-review
-#
-# Graphite known outage (issue #610, confirmed 2026-07-21): the graphite trigger
-# above has produced zero engagement since 2026-05-08 — external GitHub App
-# issue, kept anyway (cheap, self-healing). See
-# .claude/reference/codeant-graphite-supplemental.md.
+#      paid-review-grant.sh --trigger spends it once and posts @cursor review.
+#   (Graphite was a third step until its retirement on 2026-11-03, #1889.)
 #
 # BugBot spend-refusal suppression (issue #1199): the `@cursor review` nudge is
 # SKIPPED when cursor[bot] has already refused THIS HEAD for a Cursor usage/spend
@@ -36,9 +31,8 @@
 # Tier-aware repos (issue #1749): once the round gates pass, the sibling
 # review-triggers-allowed.sh decides every post. A repo with no `## Review
 # policy` (mode `legacy`), or a missing helper, takes the unchanged path above.
-# Otherwise each of the three steps posts only when the helper allows it, and
-# only after `--claim` records it (a failed post `--release`s it): Graphite
-# never, CodeAnt once, BugBot on a settled green HEAD at most twice, with the
+# Otherwise each step posts only when the helper allows it, and
+# only after `--claim` records it (a failed post `--release`s it): CodeAnt once, BugBot on a settled green HEAD at most twice, with the
 # refused-HEAD guard and the daily cap applied inside the helper, the cap last.
 # A deferred step (CI pending, HEAD not settled, daily cap) leaves the step
 # record open so the next tick re-asks instead of stopping at
@@ -239,7 +233,6 @@ steps_incomplete() {
       and (
         ($st.codeant | not)
         or ($st.cursor | not)
-        or ($st.graphite | not)
       )
   ' <<<"$st" >/dev/null 2>&1
 }
@@ -325,9 +318,9 @@ if [[ -x "$TRIGGERS_SH" ]]; then
     echo "maybe-trigger-ai-review.sh: review-triggers-allowed.sh gave no usable answer (rc=$RC) — posting no reviewer trigger this tick (fail closed)" >&2
     TRIGGER_MODE="fail_closed"
     TRIGGER_JSON="$(jq -cn '{mode: "fail_closed", gate: null, allowed: [],
-      reviewers: ({codeant: 0, cursor: 0, graphite: 0}
+      reviewers: ({codeant: 0, cursor: 0}
         | with_entries(.value = {allowed: false, kind: "deferred", reason: "helper_unusable"})),
-      deferred: ["codeant", "cursor", "graphite"]}')"
+      deferred: ["codeant", "cursor"]}')"
   fi
 else
   echo "maybe-trigger-ai-review.sh: DEGRADED: review-triggers-allowed.sh not found beside this script — tier-aware triggers unavailable, continuing with the legacy path" >&2
@@ -335,11 +328,11 @@ fi
 
 if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   TIER_GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
-  # The three reviewers this script invites; CodeRabbit is never one of them.
+  # The reviewers this script invites; CodeRabbit is never one of them.
   TRIGGER_SKIPS_JSON="$(jq -c '[ .reviewers | to_entries[]
-      | select(.key == "codeant" or .key == "cursor" or .key == "graphite")
+      | select(.key == "codeant" or .key == "cursor")
       | select(.value.allowed | not) | {key, value: {kind: .value.kind, reason: .value.reason}} ] | from_entries' <<<"$TRIGGER_JSON")"
-  DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ]' <<<"$TRIGGER_JSON")"
+  DEFERRED_JSON="$(jq -c '[ .deferred[]? | select(. == "codeant" or . == "cursor") ]' <<<"$TRIGGER_JSON")"
   # bugbot_skipped keeps its pre-#1749 shape for the reasons it already had.
   # <helper json> [reason]: a denied claim passes its own reason, so the report
   # follows the claim's re-evaluation, not the earlier answer.
@@ -359,7 +352,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     fi
   }
   bugbot_report "$TRIGGER_JSON"
-  ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor" or . == "graphite") ] | join(", ")' <<<"$TRIGGER_JSON")"
+  ALLOWED_LIST="$(jq -r '[ .allowed[]? | select(. == "codeant" or . == "cursor") ] | join(", ")' <<<"$TRIGGER_JSON")"
   step_allowed() { [[ "$(jq -r --arg r "$1" '.reviewers[$r].allowed' <<<"$TRIGGER_JSON")" == "true" ]]; }
   skips_text() { jq -r 'to_entries | map("\(.key)=\(.value.reason)") | join(", ") | if . == "" then "none" else . end' <<<"$TRIGGER_SKIPS_JSON"; }
 
@@ -389,7 +382,7 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
     echo "maybe-trigger-ai-review.sh: session-state.sh missing or not executable: $STATE_HELPER (required to dedupe triggers)" >&2
     exit 4
   fi
-  T_STEPS="$(jq -cn --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '{head_sha: $h, cr_rounds: $r, codeant: false, cursor: false, graphite: false}')"
+  T_STEPS="$(jq -cn --arg h "$HEAD_SHA" --argjson r "$CR_ROUNDS" '{head_sha: $h, cr_rounds: $r, codeant: false, cursor: false}')"
   if [[ -f "$STATE_FILE" ]]; then
     EXISTING="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps // empty" 2>/dev/null || true)"
     if [[ -n "$EXISTING" && "$EXISTING" != "null" ]]; then
@@ -405,11 +398,10 @@ if [[ "$TRIGGER_MODE" != "legacy" ]]; then
   T_POSTED=0
   ANY_DEFERRED=0
   [[ "$DEFERRED_JSON" != "[]" ]] && ANY_DEFERRED=1
-  for step in codeant cursor graphite; do
+  for step in codeant cursor; do
     case "$step" in
       codeant) body="@codeant-ai review" ;;
       cursor) body="@cursor review" ;;
-      graphite) body="@graphite-app re-review" ;;
     esac
     done_already="$("$STATE_HELPER" --get ".prs[\"$PR_KEY\"].ai_review_trigger_steps[\"$step\"] // empty" 2>/dev/null || true)"
     [[ "$done_already" == "true" ]] && continue
@@ -497,8 +489,8 @@ fi
 
 # Review-tier suppression (issue #1728). BugBot is invited only on the `full`
 # gate and on `legacy` (no `## Review policy`); a ci-only or ci+codeant-one-round
-# PR never needs it, so its nudge is skipped while CodeAnt and Graphite still
-# post. The shared helper owns the excluded-gate list.
+# PR never needs it, so its nudge is skipped while CodeAnt still
+# posts. The shared helper owns the excluded-gate list.
 #
 # FAILS OPEN like the refusal guard below: a missing helper, an unresolvable
 # tier, or any exit but 0 posts the nudge — `legacy` behaviour is to post.
@@ -601,11 +593,11 @@ if (( DRY_RUN )); then
         bugbot_daily_cap: $bugbot_daily_cap
       }'
   elif [[ -n "$BUGBOT_TIER_GATE" ]]; then
-    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — review tier $BUGBOT_TIER_GATE excludes BugBot) cr_rounds=$CR_ROUNDS score=$SCORE"
   elif [[ "$BUGBOT_CAP_STATUS" == "over" ]]; then
-    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — $(cap_text)) cr_rounds=$CR_ROUNDS score=$SCORE"
   else
-    echo "[DRY-RUN] would post 2 separate comments (codeant, graphite; @cursor review skipped — paid review requires owner approval) cr_rounds=$CR_ROUNDS score=$SCORE"
+    echo "[DRY-RUN] would post 1 comment (codeant; @cursor review skipped — paid review requires owner approval) cr_rounds=$CR_ROUNDS score=$SCORE"
   fi
   exit 0
 fi
@@ -623,8 +615,7 @@ INIT_STEPS="$(jq -cn \
     head_sha: $h,
     cr_rounds: $r,
     codeant: false,
-    cursor: false,
-    graphite: false
+    cursor: false
   }')"
 
 if [[ -f "$STATE_FILE" ]]; then
@@ -723,7 +714,6 @@ else
   echo "maybe-trigger-ai-review.sh: skipping @cursor review — BugBot is a paid review and needs the owner's explicit approval (#1897)" >&2
   BUGBOT_SKIPPED_JSON="$APPROVAL_SKIP_JSON"
 fi
-if ! post_one graphite "@graphite-app re-review"; then echo "maybe-trigger-ai-review.sh: failed posting @graphite-app re-review" >&2; exit 5; fi
 
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! "$STATE_HELPER" \

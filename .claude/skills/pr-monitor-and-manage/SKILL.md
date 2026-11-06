@@ -304,7 +304,7 @@ UNRESOLVED=$(gh api graphql ... --jq '[...select(.isResolved==false)]|length' 2>
 
 ### Reviewer engagement scan (per PR — display only, issue #1582)
 
-In the same per-PR pass, call `pr-state.sh` **once** and derive which of the four AI reviewers has actually engaged **on the current HEAD SHA**: CodeRabbit (`coderabbitai[bot]`), CodeAnt (`codeant-ai[bot]`), BugBot (`cursor[bot]`), Graphite (`graphite-app[bot]`). A reviewer counts as engaged when it produced a review object on HEAD, a check-run matching its name, or a **finding-bearing** comment on HEAD — pure acknowledgments ("Actions performed", "Full review triggered", "actionable comments posted: 0", "no actionable comments were generated", rate-limit notices) never count.
+In the same per-PR pass, call `pr-state.sh` **once** and derive which of the three AI reviewers has actually engaged **on the current HEAD SHA**: CodeRabbit (`coderabbitai[bot]`), CodeAnt (`codeant-ai[bot]`), BugBot (`cursor[bot]`). A reviewer counts as engaged when it produced a review object on HEAD, a check-run matching its name, or a **finding-bearing** comment on HEAD — pure acknowledgments ("Actions performed", "Full review triggered", "actionable comments posted: 0", "no actionable comments were generated", rate-limit notices) never count.
 
 ```bash
 ENGAGEMENT_JSON='{}'   # plain init every tick — never a ${VAR:-{}} default (see Step 3 note)
@@ -387,7 +387,7 @@ Carry `WATCH_LAUNCH_OK`, `WATCH_FINISH_OK`, `WATCH_STAND_DOWN`, `WATCH_PARK_SEEN
 A heartbeat prints **every tick**, **before** Step 5. Compute two digests (Step 6 reuses and persists them):
 
 - `FLEET_TUPLE_SORTED` — `(number, head_sha, merge_state, review_decision, ci_failing_count, unresolved_threads)` per PR, sorted by PR number. Drives backoff and quiet-tick detection.
-- `ROW_TUPLE_SORTED` — everything the table *displays* per PR, **including that PR's four engagement cells**, so a reviewer appearing or dropping off HEAD is itself a display change. Catches display-only changes the state tuple misses.
+- `ROW_TUPLE_SORTED` — everything the table *displays* per PR, **including that PR's three engagement cells**, so a reviewer appearing or dropping off HEAD is itself a display change. Catches display-only changes the state tuple misses.
 
 ```bash
 DIGEST=$(printf '%s' "$FLEET_TUPLE_SORTED" | sha256sum | awk '{print $1}')
@@ -410,9 +410,9 @@ Table columns: Issue | PR | State | Reviews | CI | Unresolved Threads | Verdict 
 
 **The round-progress question is answered by `/board`, not by reshaping this table.** When the user asks "where is everything", "how far along", or a `TABLE FLOOR:` line arrives from an armed table-freshness watch, run the complete `.claude/skills/board/SKILL.md` workflow inline and print its canonical table — the same "run the full SKILL.md, no shortcuts" idiom `/pm` Steps 1C, 1D and 2D.4 use, and the same shape every other surface renders, unaltered. If `/board` does not resolve, print `DEGRADED: /board not available — rendering the "Running now" table inline per time-estimates.md §"Running now Table"` and render it from that spec directly; unlike `/pm`, PMM resolves no table-freshness binding of its own, so state that the render went unrecorded and expect an armed floor to re-fire. PMM records no launch timestamp of its own and **never re-derives a Start**: `/board` Step 2 reads it back from `.prs["<pr>"].pipeline_started_at`, then `.repos["<key>"].pipelines["<issue>"].started_at`, falling back to `gh pr view --json createdAt` only for pipelines that predate the record. A PMM thread that did not dispatch the round gets `/board`'s own partial-board honesty — no queued rows, an approximate delivered count, both stated — which is correct here rather than something to paper over: PMM discovers PRs by author, so it genuinely does not know a round's membership.
 
-**Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot | Graphite`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
+**Reviewer engagement block (issue #1582).** Directly under the status table — and only on the ticks that print it — render the Step 3 engagement scan as a second, narrow matrix (`PR | CodeRabbit | CodeAnt | BugBot`, ✅/❌/`?`), followed by one `Gaps:` line per PR that is missing a reviewer. This is the all-open-PRs view `/monitor` used to own; it lives here so reviewer gaps show up where you already look. A quiet tick prints neither the table nor this block.
 
-> **Display-only.** The block changes no verdict and gates no dispatch. Triggers are still posted **only** by Step 5.0's `pr-preflight.sh`, which enforces the CodeRabbit account hourly budget and the per-PR 2-explicit-triggers/hour cap; and Step 2's `READ_ONLY_FLEET` authorship guard (fail-closed) still blocks every dispatch on a PR you did not author, so nothing here can post a trigger on someone else's PR. A ❌ under Graphite may reflect a known outage rather than a fresh gap — `.claude/reference/codeant-graphite-supplemental.md`.
+> **Display-only.** The block changes no verdict and gates no dispatch. Triggers are still posted **only** by Step 5.0's `pr-preflight.sh`, which enforces the CodeRabbit account hourly budget and the per-PR 2-explicit-triggers/hour cap; and Step 2's `READ_ONLY_FLEET` authorship guard (fail-closed) still blocks every dispatch on a PR you did not author, so nothing here can post a trigger on someone else's PR.
 
 Exact block format and the gap-line wording: `references/pmm-classify.md` "Reviewer engagement block".
 

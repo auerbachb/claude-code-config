@@ -1,5 +1,7 @@
 # cr-github-review Rule Hotspot Decision
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Reference for Issue #953 (`.claude/rules/cr-github-review.md` churn hotspot). Not auto-loaded.
 
 Companion to `cr-merge-gate-rule-hotspot-decision.md` (Issue #940, PR #1013) and
@@ -68,7 +70,7 @@ rule files. They are not a structural problem specific to this file.
 by PR #1013, or the Greptile path expansion compressed by the same PR in `cr-merge-gate.md`,
 `cr-github-review.md` carries no section that restates detail already owned in full by a
 reference doc. Its existing six reference pointers (to `cr-rate-limits.md`,
-`cr-polling-commands.md`, `codeant-graphite-supplemental.md`, `graphql-thread-resolution.md`,
+`cr-polling-commands.md`, `codeant-supplemental.md`, `graphql-thread-resolution.md`,
 `session-state-schema.json`, and `bugbot.md` / `greptile.md` / `cr-merge-gate.md`) already
 follow the pointer-not-prose pattern. No new duplication was found.
 
@@ -92,7 +94,7 @@ boundaries in effect at decision time:
 | Poll watermark persistence | `.claude/scripts/poll-watermarks.sh` |
 | Rate-limit state and hourly cap | `.claude/scripts/cr-review-hourly.sh` + `cr-rate-limits.md` |
 | Full CI check-run commands | `.claude/reference/cr-polling-commands.md` |
-| CodeAnt + Graphite supplemental | `.claude/reference/codeant-graphite-supplemental.md` |
+| CodeAnt + Graphite supplemental | `.claude/reference/codeant-supplemental.md` |
 | GraphQL thread-resolution mutations | `.claude/reference/graphql-thread-resolution.md` |
 
 No boundary changes are required.

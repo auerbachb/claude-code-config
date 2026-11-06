@@ -5,8 +5,8 @@
 # PURPOSE
 #   A repo may declare review tiers in its `.claude/pm-config.md` (issue #1724),
 #   and merge-gate.sh enforces them. The trigger paths did not: /fixpr Step 3b,
-#   pr-preflight.sh and maybe-trigger-ai-review.sh still invited CodeRabbit,
-#   CodeAnt and Graphite on every push whatever the tier, and BugBot on every
+#   pr-preflight.sh and maybe-trigger-ai-review.sh still invited CodeRabbit
+#   and CodeAnt on every push whatever the tier, and BugBot on every
 #   intermediate HEAD of a `full` PR. The agent meant to save money spent it
 #   (issue #1749). This is the one place that turns the PR's tier into "which
 #   reviewers may be invited now", so every trigger path asks the same question
@@ -19,7 +19,8 @@
 #   review-triggers-allowed.sh <pr> --release <reviewer> [--repo <o/n>]
 #   review-triggers-allowed.sh --help | -h
 #
-#   <reviewer>    codeant | cursor | coderabbit | graphite
+#   <reviewer>    codeant | cursor | coderabbit
+#                 (graphite retired 2026-11-03, #1889: never a reviewer here)
 #   --repo        Repository (default: gh's current repo). Forwarded to
 #                 review-tier.sh, and the ledger is scoped to it.
 #   --base        The PR's base branch, forwarded to review-tier.sh.
@@ -48,7 +49,6 @@
 #                back to legacy, so an unreadable policy never spends.
 #
 # RULES (mode tiered), first match wins per reviewer
-#   any gate     graphite: excluded `tier_excluded` (never on a tier-aware repo)
 #   ci-only      every reviewer: excluded `tier_excluded`
 #   ci+codeant-one-round
 #                cursor, coderabbit: excluded `tier_excluded`
@@ -142,7 +142,7 @@
 #      "reviewers":{"codeant":{"allowed":bool,"kind":"..","reason":"..",
 #                              "invitations":N,"ledger":N|null},
 #                   "cursor":{..,"daily_cap":{..}?},
-#                   "coderabbit":{..}, "graphite":{..}}|null,
+#                   "coderabbit":{..}}|null,
 #      "allowed":[..], "deferred":[..]}
 #   --claim adds "claim":{"reviewer":"..","claimed":bool,"count":N|null}.
 #   Diagnostics go to stderr.
@@ -200,7 +200,7 @@ n_modes=0
 [[ -n "$RELEASE" ]] && n_modes=$((n_modes + 1))
 [[ "$n_modes" -le 1 ]] || die_usage "--mode-only, --claim and --release are mutually exclusive"
 for r in "$CLAIM" "$RELEASE"; do
-  case "$r" in ""|codeant|cursor|coderabbit|graphite) ;; *) die_usage "unknown reviewer: $r (codeant | cursor | coderabbit | graphite)" ;; esac
+  case "$r" in ""|codeant|cursor|coderabbit) ;; *) die_usage "unknown reviewer: $r (codeant | cursor | coderabbit)" ;; esac
 done
 command -v jq >/dev/null 2>&1 || { warn "'jq' not found on PATH"; exit 4; }
 
@@ -342,9 +342,9 @@ fi
 
 if [[ "$MODE" == "fail_closed" ]]; then
   OUT="$(base_json | jq -c '
-    .reviewers = ({codeant: 0, cursor: 0, coderabbit: 0, graphite: 0}
+    .reviewers = ({codeant: 0, cursor: 0, coderabbit: 0}
       | with_entries(.value = {allowed: false, kind: "deferred", reason: "tier_unresolved", invitations: null}))
-    | .deferred = ["codeant", "cursor", "coderabbit", "graphite"]')"
+    | .deferred = ["codeant", "cursor", "coderabbit"]')"
   if [[ -n "$CLAIM" ]]; then
     printf '%s\n' "$(jq -c --arg r "$CLAIM" '.claim = {reviewer: $r, claimed: false, count: null}' <<<"$OUT")"
     exit 1
@@ -511,9 +511,9 @@ evaluate() {
     | ($checks[0] // {check_runs: []}) as $checks
     | (now | floor) as $now
     | def epoch: if type == "string" and . != "" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (try fromdateiso8601 catch null)) else null end;
-      def bots: ["codeant-ai[bot]", "cursor[bot]", "coderabbitai[bot]", "graphite-app[bot]"];
+      def bots: ["codeant-ai[bot]", "cursor[bot]", "coderabbitai[bot]"];
       def trigger($r): {codeant: "@codeant-ai review", cursor: "@cursor review",
-                        coderabbit: "@coderabbitai full review", graphite: "@graphite-app re-review"}[$r];
+                        coderabbit: "@coderabbitai full review"}[$r];
       def invites($r): [ $comments[]?
         | select(((.user.login // "") as $l | bots | any(. == $l)) | not)
         | select(((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == trigger($r)) ];
@@ -527,7 +527,6 @@ evaluate() {
     | count("codeant"; $l_codeant) as $n_codeant
     | count("cursor"; $l_cursor) as $n_cursor
     | count("coderabbit"; $l_coderabbit) as $n_coderabbit
-    | ((invites("graphite") | length)) as $n_graphite
     | ((($comments | codeant_round_record_count) + ($reviews | codeant_round_review_count)
         + ($checks | codeant_round_check_count)) > 0) as $round
     # CodeAnt availability, for the CodeRabbit fallback on `full`.
@@ -557,8 +556,7 @@ evaluate() {
        else deny("deferred"; "ci_unknown") end) as $ci_gate
     | def decide($r):
         # Static exclusions: they hold whatever the facts say.
-        if $r == "graphite" then deny("excluded"; "tier_excluded")
-        elif $gate == "ci-only" then deny("excluded"; "tier_excluded")
+        if $gate == "ci-only" then deny("excluded"; "tier_excluded")
         elif $gate == "ci+codeant-one-round" and ($r == "cursor" or $r == "coderabbit") then deny("excluded"; "tier_excluded")
         elif $gate == "full" and $r == "cursor" and $esc == "off" then deny("excluded"; "escalation_off")
         elif ($pr_open | not) then deny("excluded"; "pr_not_open")
@@ -588,8 +586,7 @@ evaluate() {
        reviewers: {
          codeant: (decide("codeant") + {invitations: $n_codeant, ledger: ledger_raw($l_codeant)}),
          cursor: (decide("cursor") + {invitations: $n_cursor, ledger: ledger_raw($l_cursor)}),
-         coderabbit: (decide("coderabbit") + {invitations: $n_coderabbit, ledger: ledger_raw($l_coderabbit)}),
-         graphite: (decide("graphite") + {invitations: $n_graphite, ledger: null})
+         coderabbit: (decide("coderabbit") + {invitations: $n_coderabbit, ledger: ledger_raw($l_coderabbit)})
        }}
     | .allowed = [ .reviewers | to_entries[] | select(.value.allowed) | .key ]
     | .deferred = [ .reviewers | to_entries[] | select(.value.kind == "deferred") | .key ]'

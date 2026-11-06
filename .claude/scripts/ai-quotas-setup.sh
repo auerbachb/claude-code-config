@@ -2042,7 +2042,7 @@ launcher_name() { # <provider> <nickname|""> <label>
 # The octal mode of a file, portably. GNU `stat -f` means FILESYSTEM status
 # and exits 0 printing `?p` for the BSD directive, so the BSD-first
 # `stat -f … || stat -c …` chain never reached its fallback on Linux and the
-# merged file was silently forced to 600 there (Graphite). Each answer is
+# merged file was silently forced to 600 there (caught in review). Each answer is
 # checked for shape instead of trusting an exit code.
 file_mode() { # <path> -> octal mode on stdout, 600 when neither stat answers
   local m

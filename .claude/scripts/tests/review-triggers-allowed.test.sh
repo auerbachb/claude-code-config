@@ -190,9 +190,11 @@ reset "$(tier_json present ci-only)"
 set_checks "$(run_check build null github-actions 30 in_progress)"
 run
 check_eq "mode tiered" "tiered" "$(f .mode)"
-for r in codeant cursor coderabbit graphite; do
+for r in codeant cursor coderabbit; do
   check_eq "$r excluded" "excluded:tier_excluded" "$(dec "$r")"
 done
+# Graphite retired 2026-11-03 (#1889): no key, never allowed.
+check_eq "no graphite key" "false" "$(f '.reviewers | has("graphite")')"
 check_eq "nothing allowed" "[]" "$(f '.allowed | tostring')"
 check_eq "nothing deferred" "[]" "$(f '.deferred | tostring')"
 check_eq "a docs PR costs no PR read at all" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
@@ -204,7 +206,6 @@ run
 check_eq "no round, CI green: codeant allowed" "allowed:tier_allows" "$(dec codeant)"
 check_eq "cursor excluded" "excluded:tier_excluded" "$(dec cursor)"
 check_eq "coderabbit excluded" "excluded:tier_excluded" "$(dec coderabbit)"
-check_eq "graphite excluded" "excluded:tier_excluded" "$(dec graphite)"
 check_eq "allowed list" '["codeant"]' "$(f '.allowed | tostring')"
 
 reset "$(tier_json present ci+codeant-one-round)"
@@ -264,7 +265,7 @@ run
 check_eq "codeant allowed" "allowed:tier_allows" "$(dec codeant)"
 check_eq "cursor on green, settled, 0 invites: approval_required, not allowed (#1897)" "excluded:approval_required" "$(dec cursor)"
 check_eq "coderabbit is not needed while CodeAnt is fine" "excluded:not_fallback" "$(dec coderabbit)"
-check_eq "graphite never on a tier-aware repo" "excluded:tier_excluded" "$(dec graphite)"
+check_eq "graphite never allowed (retired, #1889)" "false" "$(f '.allowed | index("graphite") != null')"
 check_eq "settled" "true" "$(f .settled.settled)"
 check_eq "threshold default 600" "600" "$(f .settled.threshold_s)"
 check_eq "the refusal guard was asked about HEAD in this repo" "refused $PR $HEAD GH_REPO=$REPO" "$(grep '^refused' "$GUARD_CALLS")"
@@ -402,7 +403,6 @@ reset "$(tier_json present full)"
 run --head "$OLD"
 check_eq "codeant deferred" "deferred:head_moved" "$(dec codeant)"
 check_eq "cursor deferred" "deferred:head_moved" "$(dec cursor)"
-check_eq "graphite still excluded" "excluded:tier_excluded" "$(dec graphite)"
 run --head "${HEAD:0:7}"
 check_eq "an abbreviated matching HEAD is the same HEAD" "allowed:tier_allows" "$(dec codeant)"
 
@@ -436,7 +436,7 @@ check_eq "  and says why" "yes" "$( [[ "$ERR" == *"declares no ## Review policy"
 export FIXTURE_PROBE_OUT="$(tier_json present full)"
 run
 check_eq "resolver exit 4 + local policy section: fail_closed" "fail_closed" "$(f .mode)"
-for r in codeant cursor coderabbit graphite; do
+for r in codeant cursor coderabbit; do
   check_eq "$r deferred tier_unresolved" "deferred:tier_unresolved" "$(dec "$r")"
 done
 check_eq "  no PR facts read" "0" "$(grep -c . "$GH_CALLS" | tr -d ' ')"
@@ -525,6 +525,8 @@ RC=0; bash "$SUT" >/dev/null 2>&1 || RC=$?
 check_eq "no PR: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --claim bugbot >/dev/null 2>&1 || RC=$?
 check_eq "unknown reviewer: exit 2" "2" "$RC"
+RC=0; bash "$SUT" 12 --claim graphite >/dev/null 2>&1 || RC=$?
+check_eq "retired graphite reviewer rejected: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --claim cursor --release cursor >/dev/null 2>&1 || RC=$?
 check_eq "claim + release: exit 2" "2" "$RC"
 RC=0; bash "$SUT" 12 --head 'zz;rm' >/dev/null 2>&1 || RC=$?

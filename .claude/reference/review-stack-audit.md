@@ -1,5 +1,7 @@
 # Review stack audit — mechanism and contracts
 
+> **Graphite retired 2026-11-03** (#1889): it is no longer measured or priced; `review-stack-baseline.json` keeps it as an `off` / `cancelled` row, reported as an unmatched baseline tool. Re-run audits no longer attribute historical Graphite findings.
+
 Mechanism, rationale, and the decision-record contract behind
 `/review-stack-audit` (issue #1201). Not auto-loaded: the operative contract is
 `.claude/skills/review-stack-audit/SKILL.md`, and the two engines document their
@@ -318,7 +320,7 @@ Phase B agents (and their copies embedded in `/subagent`), `/fixpr` Step 4, and
 `/go-on`'s reply step:
 
 ```bash
-reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant|graphite \
+reply-thread.sh <comment_id> --reviewer cr|bugbot|greptile|codeant \
   --body "Fixed in \`SHA\`: <what changed>" --pr N \
   --verdict fixed|deferred|declined --defect real|not \
   [--fix as-given|adapted|wrong|none]   # required when --defect real
@@ -409,7 +411,7 @@ its first response, and at PR open otherwise — so a tool that reviews at open 
 its own is never timed from a later re-request. Triggers are non-bot PR
 conversation comments outside quoted lines: `@coderabbitai review` or `@coderabbitai
 full review` (CodeRabbit), `@cursor review` (BugBot), `@codeant-ai review`
-(CodeAnt), `@graphite-app re-review` (Graphite), any `@greptileai` mention
+(CodeAnt), any `@greptileai` mention
 (Greptile). Vercel has none. A PR the tool cannot be timed on is left out of the
 median and counted in a note: one where any of its responses has no timestamp
 (that response may have been the first, so a later dated one never stands in),

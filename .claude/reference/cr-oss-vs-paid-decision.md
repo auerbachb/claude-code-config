@@ -1,5 +1,7 @@
 # CodeRabbit — OSS Tier vs Paid Pro
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Issue: [#1212](https://github.com/auerbachb/claude-code-config/issues/1212)
 Evidence base: [`ai-review-tool-audit-2026-08.md`](./ai-review-tool-audit-2026-08.md) — 244 merged PRs, 2026-07-22 → 2026-08-21
 Companion records: [#1202](https://github.com/auerbachb/claude-code-config/issues/1202) prices every purchasable lever ([`pricing-matrix.md`](./pricing-matrix.md)); [#1204](https://github.com/auerbachb/claude-code-config/issues/1204) read the billed state ([`ai-review-billing-dashboard-2026-08.md`](./ai-review-billing-dashboard-2026-08.md)); [#1209](https://github.com/auerbachb/claude-code-config/issues/1209) proposed turning incremental review off — **declined by the owner 2026-08-21; it stays ON**; [#1213](https://github.com/auerbachb/claude-code-config/issues/1213) held the billing-cadence lever this verdict gates, and its live actions are now [#1228](https://github.com/auerbachb/claude-code-config/issues/1228).

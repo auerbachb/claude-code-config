@@ -1,5 +1,7 @@
 # Repo Audit — May 2026 (Org + Efficiency + Best-Practices)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issues:** [#413](https://github.com/auerbachb/claude-code-config/issues/413) (organization + docs), [#414](https://github.com/auerbachb/claude-code-config/issues/414) (efficiency), [#415](https://github.com/auerbachb/claude-code-config/issues/415) (Claude Code alignment)
 
 **Date:** 2026-05-01

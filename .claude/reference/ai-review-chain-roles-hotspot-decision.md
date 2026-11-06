@@ -1,6 +1,8 @@
 <!-- churn-hotspot: .claude/reference/ai-review-chain-roles-decision.md -->
 # Hotspot Decision — ai-review-chain-roles-decision.md
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Verdict:** KEEP (no operative change)
 **Decided:** 2026-08-22
 **Issue:** #1223

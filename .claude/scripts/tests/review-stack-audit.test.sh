@@ -807,9 +807,9 @@ if [[ -r "$BASELINE_REAL" ]]; then
     && ok "baseline: the shipped review-stack-baseline.json parses and analyses cleanly" \
     || fail "baseline: shipped baseline rejected by drift.sh (rc=$rc)"
   keys="$(jget "$BASELINE_REAL" "sorted(t['key'] for t in d['tools'])")"
-  # baseline may include additional off/self-hosted entries beyond the six bots measure.sh tracks;
-  # check that all six bot-trackable tools are present rather than doing an exact-match
-  missing="$(jget "$BASELINE_REAL" "[k for k in ['bugbot','codeant','coderabbit','graphite','greptile','vercel'] if k not in [t['key'] for t in d['tools']]]")"
+  # baseline may include additional off/self-hosted/cancelled entries (Graphite, retired
+  # 2026-11-03, #1889) beyond the five bots measure.sh tracks; check those five are present
+  missing="$(jget "$BASELINE_REAL" "[k for k in ['bugbot','codeant','coderabbit','greptile','vercel'] if k not in [t['key'] for t in d['tools']]]")"
   [[ "$missing" == "[]" ]] \
     && ok "baseline: covers every tool measure.sh reports on" \
     || fail "baseline: measure.sh tools missing from baseline: $missing (all keys: $keys)"
@@ -902,9 +902,9 @@ pricing_write() {
   python3 - "$1" "$overrides" <<'PY'
 import json, sys
 rates = {"coderabbit": 0.25, "bugbot": 2.0, "greptile": 0.5,
-         "codeant": 60, "graphite": 15, "vercel": 0}
+         "codeant": 60, "vercel": 0}
 units = {"coderabbit": "file", "bugbot": "review", "greptile": "credit",
-         "codeant": "month", "graphite": "month", "vercel": "month"}
+         "codeant": "month", "vercel": "month"}
 rates.update(json.loads(sys.argv[2]))
 doc = {"schema": "review-stack-rates/v1", "as_of": "2026-10-01", "caps": [],
        "tools": [{"key": k, "usd": v, "unit": units[k], "source": "test",
@@ -1075,7 +1075,7 @@ sum_check="$(awk -F'\t' '
   /^# total:/ { tot = 1; next }
   /^# repo:/  { tot = 0; next }
   NF >= 5 { if (tot) t[$1] = $3; else s[$1] += $3 }
-  END { bad = 0; n = 0; for (k in t) { n++; if (t[k] != s[k]) bad = 1 } print (n == 6 && !bad) ? "ok" : "bad" }
+  END { bad = 0; n = 0; for (k in t) { n++; if (t[k] != s[k]) bad = 1 } print (n == 5 && !bad) ? "ok" : "bad" }
 ' "$TMP_DIR/multi.summary")"
 [[ "$sum_check" == "ok" ]] && ok "measure: the total block's prs_touched per tool equals the sum of the repo blocks" \
   || fail "measure: --summary total does not equal the sum of the repo blocks"
@@ -1207,7 +1207,7 @@ OUT="$TMP_DIR/ledger.out.json"
 "$MEASURE" --fixture "$LEDGER_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "measure: ledger fixture run failed"
 spend="$(jget "$OUT" "[(t['key'], t['spend_usd'], t['spend_source']) for t in d['tools']]")"
-[[ "$spend" == "[('coderabbit', 3.25, 'receipt'), ('codeant', 62.0, 'flat'), ('bugbot', 6.0, 'estimate'), ('greptile', 0.5, 'estimate'), ('graphite', 15.5, 'flat'), ('vercel', 0.0, 'flat')]" ]] \
+[[ "$spend" == "[('coderabbit', 3.25, 'receipt'), ('codeant', 62.0, 'flat'), ('bugbot', 6.0, 'estimate'), ('greptile', 0.5, 'estimate'), ('vercel', 0.0, 'flat')]" ]] \
   && ok "ledger: \$3.25 receipt, 3 runs x \$2.00 estimate, 1 trigger x \$0.50 estimate, flat fees x 31/30" \
   || fail "ledger: spend figures wrong: $spend"
 win="$(jget "$OUT" "(d['window']['since'], d['window']['until'], d['window']['days'])")"
@@ -1448,7 +1448,7 @@ case "$LIB_PROBE" in
   *) ok "ledger: library sum/allocate/prorate/receipt rules hold ($LIB_PROBE)" ;;
 esac
 
-# The real pricing matrix: one well-formed block covering all six tools, every
+# The real pricing matrix: one well-formed block covering all five tools, every
 # figure (rates AND caps) carrying unit, source and retrieved; unknown values
 # null, never 0; Greptile's flex cap recorded.
 ledger_real_rates_probe() {
@@ -1461,11 +1461,12 @@ if rates is None:
     print("BAD unreadable: %s" % notes); sys.exit()
 figs = list(rates["tools"].values()) + list(rates["caps"])
 checks = [
-    ("six-tools", sorted(rates["tools"]) == sorted(L.TOOL_KEYS)),
+    ("five-tools", sorted(rates["tools"]) == sorted(L.TOOL_KEYS)),
     ("fields", all(f.get("unit") and f.get("source") and f.get("retrieved") for f in figs)),
     ("unknown-is-null", all(f["usd"] is None for f in figs if f.get("basis") == "unknown")),
-    ("graphite-null", rates["tools"]["graphite"]["usd"] is None),
-    ("only-graphite-noted", [n.split("'")[0] for n in notes] == ["rates: graphite"]),
+    # Graphite retired 2026-11-03 (#1889): no entry, and nothing left unpriced.
+    ("no-graphite", "graphite" not in rates["tools"]),
+    ("no-notes", notes == []),
     ("greptile-flex-100", any(c["key"] == "greptile_flex" and c["usd"] == 100 for c in rates["caps"])),
     ("bugbot-and-cr-caps", {"bugbot", "coderabbit"} <= {c["tool"] for c in rates["caps"]}),
 ]
@@ -1617,7 +1618,7 @@ cat > "$VALUE_F" <<'JSON'
    "not a thread",
    {"comments": "not a list"},
    {"comments": [null, {"user": "coderabbitai[bot]", "user_type": "Bot", "body": "a reply is never promoted to finding"}]},
-   {"comments": [{"user": "graphite-app[bot]", "user_type": "Bot", "body": null}, null,
+   {"comments": [{"user": "vercel[bot]", "user_type": "Bot", "body": null}, null,
                  {"user": "auerbachb", "user_type": "User", "body": null}]}
   ]}
 ]}
@@ -1642,10 +1643,10 @@ r="$(vt codeant)"
 [[ "$r" == "(10, 3, 1, 3, 4, 0.5)" ]] \
   && ok "value: marker beats wording, latest marker and latest wording win, quoted/code/unknown markers are ignored, the leading decline beats a cited number, follow-ups count only for this repo's issues" \
   || fail "value: codeant precedence cases wrong: $r"
-r="$(jget "$OUT" "[(t['findings'], t['unanswered'], t['precision'], t['median_response_min']) for t in d['tools'] if t['key'] in ('graphite', 'vercel')]")"
-[[ "$r" == "[(1, 1, None, None), (0, 0, None, None)]" ]] \
+r="$(jget "$OUT" "[(t['findings'], t['unanswered'], t['precision'], t['median_response_min']) for t in d['tools'] if t['key'] == 'vercel']")"
+[[ "$r" == "[(1, 1, None, None)]" ]] \
   && ok "value: a human's own thread and malformed entries are nobody's finding; null bodies and null replies read as unanswered" \
-  || fail "value: malformed-thread handling wrong (graphite, vercel): $r"
+  || fail "value: malformed-thread handling wrong (vercel): $r"
 # Test Plan item 4, through the snapshot: BugBot's 3 runs x \$2.00 over its one
 # real defect; CodeRabbit has spend but no real defect; CodeAnt's flat \$62.00
 # over its one real defect.
@@ -1704,7 +1705,7 @@ OUT="$TMP_DIR/median.out.json"
 "$MEASURE" --fixture "$MEDIAN_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "value: median fixture run failed"
 r="$(jget "$OUT" "[(t['key'], t['median_response_min']) for t in d['tools']]")"
-[[ "$r" == "[('coderabbit', 15.0), ('codeant', None), ('bugbot', 30.3), ('greptile', None), ('graphite', None), ('vercel', 5.0)]" ]] \
+[[ "$r" == "[('coderabbit', 15.0), ('codeant', None), ('bugbot', 30.3), ('greptile', None), ('vercel', 5.0)]" ]] \
   && ok "value: median_response_min starts at PR open or the earliest preceding human trigger, rounds half-up" \
   || fail "value: median_response_min wrong: $r"
 r="$(jget "$OUT" "[n for n in d['notes'] if 'could not be timed' in n]")"
@@ -1833,7 +1834,7 @@ r="$(ft greptile)"
 # dated before T. PR 2: no signal on HEAD d2 — an APPROVED on d1, a failed, an
 # in-progress, and a foreign-app BugBot run on d2. PR 3: a clean BugBot run on
 # HEAD e1 completes at +10m. PR 4 has no head_sha, PR 5 a HEAD outside its
-# commit list: both are no_head_date, not no_gate_signal. Graphite's review
+# commit list: both are no_head_date, not no_gate_signal. Greptile's review
 # names no commit, so it has no rounds sample and a note says so.
 VELOCITY_F="$TMP_DIR/velocity.json"
 cat > "$VELOCITY_F" <<'JSON'
@@ -1848,7 +1849,7 @@ cat > "$VELOCITY_F" <<'JSON'
               {"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:01:00Z", "commit_id": "c2"},
               {"user": "codeant-ai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-02T00:42:00Z", "commit_id": "c3"},
               {"user": "coderabbitai[bot]", "state": "APPROVED", "body": "", "submitted_at": "2025-10-01T23:55:00Z", "commit_id": "c3"},
-              {"user": "graphite-app[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-02T00:05:00Z"}],
+              {"user": "greptile-apps[bot]", "state": "COMMENTED", "body": "", "submitted_at": "2025-10-02T00:05:00Z"}],
   "pr_comments": [{"user": "cursor[bot]", "body": "a", "created_at": "2025-10-02T00:03:00Z", "original_commit_id": "c3", "commit_id": "c3"},
                   {"user": "cursor[bot]", "body": "b", "created_at": "2025-10-02T00:04:00Z", "original_commit_id": "c3", "commit_id": "c9"}],
   "issue_comments": []},
@@ -1877,9 +1878,9 @@ JSON
 OUT="$TMP_DIR/velocity.out.json"
 "$MEASURE" --fixture "$VELOCITY_F" --ledger --pricing "$PRICING_FULL" --since 2025-10-01 --until 2025-10-31 --json > "$OUT" \
   || fail "velocity: single-repo fixture run failed"
-r="$(jget "$OUT" "[(t['key'], t['rounds_per_pr'], t['prs_with_3plus_rounds']) for t in d['tools'] if t['key'] in ('codeant', 'bugbot', 'graphite', 'coderabbit')]")"
+r="$(jget "$OUT" "[(t['key'], t['rounds_per_pr'], t['prs_with_3plus_rounds']) for t in d['tools'] if t['key'] in ('codeant', 'bugbot', 'greptile', 'coderabbit')]")"
 # CodeAnt: PR 1 three HEADs, PR 4 one -> median 2.0; one PR with 3+.
-[[ "$r" == "[('coderabbit', 1.0, 0), ('codeant', 2.0, 1), ('bugbot', 1.0, 0), ('graphite', None, 0)]" ]] \
+[[ "$r" == "[('coderabbit', 1.0, 0), ('codeant', 2.0, 1), ('bugbot', 1.0, 0), ('greptile', None, 0)]" ]] \
   && ok "velocity: rounds_per_pr is the median of distinct HEADs per PR (inline comments by original_commit_id); a tool with no commit ids is null" \
   || fail "velocity: rounds wrong: $r"
 r="$(jget "$OUT" "[n for n in d['notes'] if 'naming no commit' in n]")"
@@ -2203,8 +2204,8 @@ else
   fail "scorecard: a table heading is missing from the two-repo render"
 fi
 n="$(table_rows "$TMP_DIR/sc-all.md" '## Value per dollar' | grep -c '^| [0-9]')"
-[[ "$n" == "6" ]] && ok "scorecard: the ranked table has one row per measured tool (6)" \
-  || fail "scorecard: expected 6 ranked rows, got $n"
+[[ "$n" == "5" ]] && ok "scorecard: the ranked table has one row per measured tool (5)" \
+  || fail "scorecard: expected 5 ranked rows, got $n"
 grep -q '^| 1 | CodeAnt | \$62.00 (flat) | 2 | \$31.00 | 100.0% | 50.0% | 0 |$' "$TMP_DIR/sc-all.md" \
   && ok "scorecard: CodeAnt ranks first with its labelled \$62.00 flat spend, 2 real defects, \$31.00 each, fix quality 50.0%" \
   || fail "scorecard: CodeAnt's ranked row is wrong: $(grep 'CodeAnt' "$TMP_DIR/sc-all.md" | head -1)"
@@ -2264,9 +2265,9 @@ grep -q '^| Total | — | — | — | — | — |$' "$TMP_DIR/sc-novel.md" && gr
 table_rows "$TMP_DIR/sc-all.md" '## Vendor claims vs observed' > "$TMP_DIR/sc-claims.rows"
 n="$(wc -l < "$TMP_DIR/sc-claims.rows" | tr -d ' ')"
 bad="$(grep -vcE '<https://[^>]+> \| [0-9]{4}-[0-9]{2}-[0-9]{2} \|$' "$TMP_DIR/sc-claims.rows")"
-[[ "$n" -ge 7 && "$bad" == "0" ]] && ok "scorecard: all $n claims rows carry an https source URL and a YYYY-MM-DD date" \
+[[ "$n" -ge 6 && "$bad" == "0" ]] && ok "scorecard: all $n claims rows carry an https source URL and a YYYY-MM-DD date" \
   || fail "scorecard: $bad of $n claims rows lack a URL or a date"
-for v in Graphite 'Vercel Agent'; do
+for v in 'Vercel Agent'; do
   grep -q "^| $v | no published claim |" "$TMP_DIR/sc-claims.rows" \
     && ok "scorecard: $v, with no claim recorded, renders a 'no published claim' row" \
     || fail "scorecard: $v was dropped from the claims table"
@@ -2287,7 +2288,7 @@ grep -q '^| CodeAnt | .* | 100.0% | \$31.00 | <https://' "$TMP_DIR/sc-claims.row
 "$SCORECARD" --snapshot "$TMP_DIR/sc-null.json" --claims "$CLAIMS_REAL" --state-dir "$SC_STATE" --part value > "$TMP_DIR/sc-null.md" \
   || fail "scorecard: null-rate render failed"
 last="$(table_rows "$TMP_DIR/sc-null.md" '## Value per dollar' | grep '^| [0-9]' | tail -1)"
-[[ "$last" == "| 6 | BugBot (Cursor) | — (none) | 0 | — | — | — | 0 |" ]] \
+[[ "$last" == "| 5 | BugBot (Cursor) | — (none) | 0 | — | — | — | 0 |" ]] \
   && ok "scorecard: a null spend renders '— (none)', its cost cell '—', and it ranks last" \
   || fail "scorecard: the null-spend tool is not last with dashes: $last"
 

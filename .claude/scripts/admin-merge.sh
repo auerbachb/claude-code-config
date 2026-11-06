@@ -673,6 +673,7 @@ if [[ "$FORCE_SOLO" != true ]]; then
     fi
   done
 
+  # graphite-app: retired 2026-11-03 (#1889); kept so a stale CODEOWNERS entry is never a human.
   HUMAN_OWNERS=$(printf '%s\n' "$CODEOWNERS_TEXT" \
     | sed 's/#.*$//' \
     | grep -oE '@[A-Za-z0-9/_-]+' \

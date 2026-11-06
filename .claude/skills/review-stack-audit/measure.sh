@@ -549,7 +549,6 @@ TOOLS = [
     {"key": "codeant",    "login": "codeant-ai[bot]",   "name": "CodeAnt"},
     {"key": "bugbot",     "login": "cursor[bot]",       "name": "BugBot (Cursor)"},
     {"key": "greptile",   "login": "greptile-apps[bot]", "name": "Greptile"},
-    {"key": "graphite",   "login": "graphite-app[bot]", "name": "Graphite"},
     {"key": "vercel",     "login": "vercel[bot]",       "name": "Vercel Agent"},
 ]
 LOGIN_TO_KEY = {t["login"]: t["key"] for t in TOOLS}

@@ -67,7 +67,7 @@ from fractions import Fraction
 SCHEMA = "review-stack-rates/v1"
 FENCE_TAG = "review-stack-rates"
 SPEND_SOURCES = ("receipt", "estimate", "flat", "none")
-TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "graphite", "vercel")
+TOOL_KEYS = ("coderabbit", "codeant", "bugbot", "greptile", "vercel")
 CODERABBIT_LOGIN = "coderabbitai[bot]"
 BUGBOT_CHECK_NAME = "Cursor Bugbot"
 # No price, cap, or credit count comes near a billion. Anything at or above it
@@ -91,7 +91,6 @@ TOOL_RULES = {
     "bugbot":     {"method": "per_run", "unit": "review"},
     "greptile":   {"method": "per_trigger", "unit": "credit"},
     "codeant":    {"method": "flat", "unit": "month"},
-    "graphite":   {"method": "flat", "unit": "month"},
     "vercel":     {"method": "flat", "unit": "month"},
 }
 
@@ -639,7 +638,6 @@ TRIGGERS = {
     "coderabbit": re.compile(r"(?<![\w@])@coderabbitai[ \t]+(?:full[ \t]+)?review\b", re.I),
     "bugbot":     re.compile(r"(?<![\w@])@cursor[ \t]+review\b", re.I),
     "codeant":    re.compile(r"(?<![\w@])@codeant-ai[ \t]+review\b", re.I),
-    "graphite":   re.compile(r"(?<![\w@])@graphite-app[ \t]+re-review\b", re.I),
     "greptile":   _GREPTILE_RE,
 }
 

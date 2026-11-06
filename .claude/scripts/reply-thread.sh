@@ -11,7 +11,10 @@
 #   - codeant   : strips any `@codeant-ai` tokens from the body (no auto-mention;
 #                 plain-text reply — triggering CodeAnt is rate-limited)
 #   - graphite  : strips any `@graphite-app` tokens from the body (no auto-mention;
-#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite)
+#                 plain-text reply — `@graphite-app re-review` re-triggers Graphite).
+#                 Graphite was retired 2026-11-03 (#1889), but the App still posts
+#                 until it is uninstalled, so its threads still need a reply path.
+#                 Remove this mode once the App is gone.
 #
 # Each reviewer's strip rule targets ONLY its own @token. A `@codeant-ai` token
 # in a graphite-mode body is left intact, and vice versa — the rules are
@@ -92,8 +95,8 @@
 #
 # See .claude/rules/cr-github-review.md "Processing CR Feedback" step 3 and
 # .claude/rules/greptile.md / .claude/rules/bugbot.md for the reply conventions
-# this script enforces. For CodeAnt and Graphite reply conventions, see
-# .claude/reference/codeant-graphite-supplemental.md.
+# this script enforces. For CodeAnt reply conventions, see
+# .claude/reference/codeant-supplemental.md.
 
 set -euo pipefail
 mkdir -p "${HOME}/.claude" 2>/dev/null || true
