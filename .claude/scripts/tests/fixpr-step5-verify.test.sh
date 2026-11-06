@@ -59,6 +59,10 @@ check_eq "graphite-app's failed check is not CI failing" "0 0 0" \
   "$(run_5c '[{"name":"Graphite / mergeability_check","status":"completed","conclusion":"failure","app":{"slug":"graphite-app"}}]')"
 check_eq "a live reviewer's pending check is still review-pending" "0 0 1" \
   "$(run_5c '[{"name":"Cursor Bugbot","status":"in_progress","conclusion":null,"app":{"slug":"cursor"}}]')"
+check_eq "a GitHub Actions job named after a reviewer is CI pending" "1 0 0" \
+  "$(run_5c '[{"name":"post-cursor-review","status":"in_progress","conclusion":null,"app":{"slug":"github-actions"}}]')"
+check_eq "no app slug: the name still identifies a reviewer check" "0 0 1" \
+  "$(run_5c '[{"name":"CodeRabbit","status":"in_progress","conclusion":null}]')"
 
 ############################################################################
 echo
@@ -100,6 +104,8 @@ check_eq "trigger mentioned mid-sentence is not a trigger" 0 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'do not post @cursor review here')]")"
 check_eq "no trigger but an unused owner grant for this HEAD: awaited" 1 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 0)"
+check_eq "no trigger and grant state unreadable (exit 3): fails closed, awaited" 1 \
+  "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 3)"
 check_eq "paginated pages are all read" 1 \
   "$(run_5d "[$(c 2026-11-06T14:00:00Z x)][$(c 2026-11-06T15:05:00Z '@cursor review')]")"
 check_eq "gh failure fails closed: awaited" 1 "$(run_5d '[]' 1)"

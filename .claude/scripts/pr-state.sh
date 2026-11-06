@@ -297,16 +297,23 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
     # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
     # with lib/pr-state-classify.jq, so historical comments still classify) and its
     # leftover check-run is not CI, but it is never a participant to wait for — it
-    # will not answer a new push. That check is recognised by publishing-app slug,
-    # not by name (#1953): a check another app names "Graphite …" stays CI.
+    # will not answer a new push. Review checks are recognised by publishing-app
+    # slug, not by name (#1953): a GitHub Actions job named "post-cursor-review"
+    # or "Graphite …" stays CI. The name is consulted only when the bundle carries
+    # no slug at all (an old or hand-built bundle), and never for Graphite.
     | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
     | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
        "greptile-apps[bot]":"greptile"} as $needles
     | def is_review_check:
-        (.name // "" | ascii_downcase) as $name
-        | ((.app.slug // "") as $s | $s == "graphite-app" or $s == "graphite")
-          or any("coderabbit","codeant","cursor","bugbot","greptile";
-                 . as $x | $name | contains($x));
+        (.app.slug // "" | ascii_downcase) as $slug
+        | if $slug != "" then
+            any("coderabbit","codeant","cursor","greptile","graphite";
+                . as $x | $slug | contains($x))
+          else
+            (.name // "" | ascii_downcase) as $name
+            | any("coderabbit","codeant","cursor","bugbot","greptile";
+                  . as $x | $name | contains($x))
+          end;
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]

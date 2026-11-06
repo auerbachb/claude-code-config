@@ -799,6 +799,7 @@ gh api graphql -F after=null -f query='query($after: String) {
           isResolved
           comments(first: 100) {
             totalCount
+            pageInfo { endCursor }
             nodes {
               body
               author { login }
@@ -827,7 +828,7 @@ jq -c '["coderabbitai","cursor","codeant-ai","greptile-apps","graphite-app"] as 
   | {count: length, threads: .}'
 ```
 
-**Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks every unresolved one regardless of author, so this count never decides a merge.
+**Comment bound (issue #1953).** The query reads the first 100 comments of each thread, so a bot comment after the 100th is not in the returned nodes. That can only over-count: a thread with more comments than were returned counts regardless of author, flagged `truncated: true` — read its remaining comments, starting from that thread's `comments.pageInfo.endCursor` (`node(id: "<thread id>") { ... on PullRequestReviewThread { comments(first: 100, after: <cursor>) { pageInfo { hasNextPage endCursor } nodes { body author { login } } } } }`, repeated until `hasNextPage` is `false`) before deciding whether it holds a finding. The Step 8 merge gate (`merge-gate.sh`) paginates every thread and blocks unresolved ones regardless of author (on `ci-only` / `ci+codeant-one-round` a non-severe finding deferred by a human reply's follow-up-issue link is exempt — `review-policy.md`), so this count never decides a merge.
 
 Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 

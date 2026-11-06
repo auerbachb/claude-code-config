@@ -213,6 +213,18 @@ check_eq "graphite-app's failed check is not CI failing" \
 check_eq "other app's failed 'graphite' check stays CI failing" \
   '{"ci_pending":[],"ci_failing":["graphite-lint"]}' \
   "$(wait_ci '[{"name":"graphite-lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "a GitHub Actions job named after a reviewer stays CI pending" \
+  '{"ci_pending":["post-cursor-review"],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"post-cursor-review","status":"in_progress","conclusion":null,"app":{"slug":"github-actions","id":15368}}]')"
+check_eq "another app's failed 'codeant lint' build check stays CI failing" \
+  '{"ci_pending":[],"ci_failing":["codeant lint"]}' \
+  "$(wait_ci '[{"name":"codeant lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions","id":15368}}]')"
+check_eq "the real CodeRabbit check (by slug) is not CI" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"CodeRabbit","status":"in_progress","conclusion":null,"app":{"slug":"coderabbitai","id":173846}}]')"
+check_eq "no app slug: the name still identifies a reviewer check" \
+  '{"ci_pending":[],"ci_failing":[]}' \
+  "$(wait_ci '[{"name":"Cursor Bugbot","status":"in_progress","conclusion":null}]')"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

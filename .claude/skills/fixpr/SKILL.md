@@ -733,20 +733,18 @@ CHECK_BUCKETS=$(jq '
   # Graphite: retired 2026-11-03. Its leftover check-run is never CI, matched by the
   # publishing app slug only (#1953) so another app naming a check "Graphite …" stays CI.
   def is_graphite: (.app.slug // "") as $s | $s == "graphite-app" or $s == "graphite";
+  # Every review bot is identified by its publishing app when the run carries one:
+  # a GitHub Actions job named "post-cursor-review" is CI, not a reviewer. The check
+  # name decides only when no app slug is present at all.
   def is_review_bot:
-    (.name // "" | ascii_downcase) as $name
-    | (.app.slug // "" | ascii_downcase) as $slug
-    | (.app.name // "" | ascii_downcase) as $app
-    | ($name | contains("coderabbit")
-       or contains("codeant")
-       or contains("cursor"))
-      or ($slug | contains("coderabbit")
-         or contains("codeant")
-         or contains("cursor"))
-      or ($app | contains("coderabbit")
-         or contains("codeant")
-         or contains("cursor"))
-      or is_graphite;
+    (.app.slug // "" | ascii_downcase) as $slug
+    | if $slug != "" then
+        ($slug | contains("coderabbit") or contains("codeant") or contains("cursor"))
+        or is_graphite
+      else
+        (.name // "" | ascii_downcase)
+        | contains("coderabbit") or contains("codeant") or contains("cursor")
+      end;
   {
     ci: [.check_runs.all[] | select(is_review_bot | not)],
     review: [.check_runs.all[] | select(is_review_bot)]
@@ -804,8 +802,12 @@ if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NU
     BUGBOT_AWAITED=0
     if [[ -z "$PAID_GRANT_SH" ]]; then
       echo "DEGRADED: paid-review-grant.sh not found (checked all three paths) — an approved, not-yet-spent BugBot grant cannot be seen"
-    elif "$PAID_GRANT_SH" --check "$PR_NUMBER" --vendor cursor --head "${PUSHED_SHA:-$HEAD_SHA}" --repo "$OWNER/$REPO" >/dev/null 2>&1; then
-      BUGBOT_AWAITED=1   # owner approved; a later trigger spends the grant
+    else
+      # Exit 0 = an unused grant (awaited); exit 1 = no grant (not awaited). Any
+      # other exit — 3 grant_unreadable included — fails closed (awaited).
+      GRANT_CHECK_RC=0
+      "$PAID_GRANT_SH" --check "$PR_NUMBER" --vendor cursor --head "${PUSHED_SHA:-$HEAD_SHA}" --repo "$OWNER/$REPO" >/dev/null 2>&1 || GRANT_CHECK_RC=$?
+      (( GRANT_CHECK_RC == 1 )) || BUGBOT_AWAITED=1
     fi
   fi
 fi
