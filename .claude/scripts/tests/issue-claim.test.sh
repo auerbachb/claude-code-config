@@ -265,6 +265,16 @@ check_eq "in-progress label written" "in-progress" "$(cat "$STATE/labels")"
 check_eq "assignee written" "alice" "$(cat "$STATE/assignees")"
 check_eq "one claim comment" 1 "$(claim_comment_count)"
 check_eq "label created in repo" "true" "$(grep -qxF in-progress "$STATE/repo_labels" && echo true)"
+# claimed_at/claimed_since come from the marker's GitHub created_at, not the
+# local clock, so they match what every later --check reports.
+reset_issue
+MARKER_AT="$(iso_ago 1)"
+FAKE_COMMENT_CREATED_AT="$MARKER_AT" run 873 --claim --holder threadA --json
+check_eq "initial claim: claimed_at is the marker's created_at" "$MARKER_AT" "$(jq -r .claimed_at <<<"$OUT")"
+check_eq "initial claim: claimed_since matches" "$MARKER_AT" "$(jq -r .claimed_since <<<"$OUT")"
+CLAIM_AT_OUT="$(jq -r .claimed_since <<<"$OUT")"
+run 873 --check --holder threadA --json
+check_eq "initial claim: --check reports the same pickup time" "$CLAIM_AT_OUT" "$(jq -r .claimed_since <<<"$OUT")"
 
 ############################################################################
 echo "== (2) a SECOND thread of the same account is blocked — with no PR anywhere =="
@@ -639,8 +649,10 @@ FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
 OLD_IDS="$(marker_ids)"
 # Between our POST and our verification read, threadB posts a newer marker
 # (same created_at second as ours; the higher id wins the tie).
-jq -n --arg at "$(date -u +%FT%TZ)" '{id: 999999, created_at: $at, user: {login: "alice"},
-  body: ("<!-- claude-claim: " + ({holder: "threadB", login: "alice"} | tojson) + " -->")}' \
+# The winner is itself a renewal: its payload `since` is threadB's pickup time.
+W_PICKUP="$(iso_ago 2)"
+jq -n --arg at "$(date -u +%FT%TZ)" --arg since "$W_PICKUP" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadB", login: "alice", since: $since} | tojson) + " -->")}' \
   > "$STATE/inject.json"
 FAKE_COMMENT_CREATED_AT="$(jq -r .created_at "$STATE/inject.json")" \
 FAKE_AFTER_POST_HOOK='
@@ -652,6 +664,7 @@ check_eq "superseded: exit 5" 5 "$RC"
 check_eq "superseded: verdict claimed" "claimed" "$(jq -r .verdict <<<"$OUT")"
 check_contains "superseded: reason" "superseded" "$(jq -r .reason <<<"$OUT")"
 check_eq "superseded: reports the winner" "threadB" "$(jq -r .claimant_holder <<<"$OUT")"
+check_eq "superseded: claimed_since is the winner's pickup, not its renewal" "$W_PICKUP" "$(jq -r .claimed_since <<<"$OUT")"
 OUR_NEW="$(cat "$STATE/our_new_id")"
 check_eq "superseded: our new marker was removed" "" \
   "$(jq -r --argjson id "$OUR_NEW" '.[] | select(.id == $id) | .id' "$STATE/comments.json")"

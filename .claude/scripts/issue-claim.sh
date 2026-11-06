@@ -794,6 +794,14 @@ fi
 CLAIMANT="$VIEWER"
 CLAIMANT_HOLDER="$HOLDER"
 CLAIMED_AT="$(date -u +%FT%TZ)"
+# Prefer the marker's GitHub created_at — the timestamp every later --check
+# reads — over the local clock. Best effort: a failed re-read keeps the clock.
+if POSTED_COMMENTS="$(read_claim_comments)"; then
+  parse_winner "$POSTED_COMMENTS"
+  if [[ "$W_AUTHOR" == "$VIEWER" && "$W_HOLDER" == "$HOLDER" && -n "$(iso_to_epoch "$W_AT")" ]]; then
+    CLAIMED_AT="$W_AT"
+  fi
+fi
 CLAIMED_SINCE="$CLAIMED_AT"
 IS_STALE="false"
 
