@@ -71,10 +71,13 @@ reset_issue() {
   export FAKE_ISSUE_MODE="json"
   export FAKE_COMMENTS_MODE="json"
   echo 0 > "$STATE/comment_reads"
-  rm -f "$STATE/hook_done" "$STATE/issue_state"
+  echo 0 > "$STATE/edit_calls"
+  rm -f "$STATE/hook_done" "$STATE/issue_state" "$STATE/edit_hook_done" "$STATE/read_hook_done"
   unset CLAIM_STALE_HOURS CLAIM_RENEW_MINUTES
   unset FAKE_COMMENT_POST_MODE FAKE_COMMENT_DELETE_MODE
   unset FAKE_COMMENTS_FAIL_AFTER FAKE_AFTER_POST_HOOK
+  unset FAKE_EDIT_FAIL_AT FAKE_AFTER_EDIT_HOOK FAKE_AFTER_EDIT_AT
+  unset FAKE_AFTER_COMMENTS_READ_HOOK FAKE_AFTER_COMMENTS_READ_AT
 }
 
 # ---- stub gh on PATH ----------------------------------------------------------
@@ -155,6 +158,12 @@ case "${1:-}" in
           error) echo "gh: HTTP 500: internal server error" >&2; exit 1 ;;
           *) cat "$S/comments.json" ;;
         esac
+        # Single-use hook after the Nth comment read returns (#1933): simulates
+        # a concurrent writer acting between that read and the caller's next step.
+        if [[ -n "${FAKE_AFTER_COMMENTS_READ_HOOK:-}" && ! -e "$S/read_hook_done" ]] \
+           && (( READS == ${FAKE_AFTER_COMMENTS_READ_AT:-1} )); then
+          : > "$S/read_hook_done"; eval "$FAKE_AFTER_COMMENTS_READ_HOOK"
+        fi
         ;;
       */timeline*)
         cat "$S/timeline.json"
@@ -183,6 +192,12 @@ case "${1:-}" in
     [[ "${1:-}" =~ ^[0-9]+$ ]] && shift
     case "$sub" in
       edit)
+        # Edit counter + Nth-edit failure switch + single-use after-Nth-edit
+        # hook (#1933). A failed edit writes nothing.
+        EDITS=$(( $(cat "$S/edit_calls" 2>/dev/null || echo 0) + 1 )); echo "$EDITS" > "$S/edit_calls"
+        if [[ -n "${FAKE_EDIT_FAIL_AT:-}" ]] && (( EDITS == FAKE_EDIT_FAIL_AT )); then
+          echo "gh: HTTP 502: could not edit issue" >&2; exit 1
+        fi
         while [[ $# -gt 0 ]]; do
           case "$1" in
             --repo) shift 2 ;;
@@ -196,6 +211,10 @@ case "${1:-}" in
             *) shift ;;
           esac
         done
+        if [[ -n "${FAKE_AFTER_EDIT_HOOK:-}" && ! -e "$S/edit_hook_done" ]] \
+           && (( EDITS == ${FAKE_AFTER_EDIT_AT:-1} )); then
+          : > "$S/edit_hook_done"; eval "$FAKE_AFTER_EDIT_HOOK"
+        fi
         echo "edited"
         ;;
       comment)
@@ -505,6 +524,10 @@ check_eq "--renew: renewed false" "false" "$(jq -r .renewed <<<"$OUT")"
 check_eq "--renew: claimed_at unchanged" "$OLD_AT" "$(jq -r .claimed_at <<<"$OUT")"
 check_eq "marker id unchanged" "$OLD_ID" "$(marker_ids)"
 check_eq "no comment posted" "$POSTS" "$(posts_made)"
+echo 0 > "$STATE/edit_calls"
+run 873 --renew --holder threadA
+run 873 --claim --holder threadA
+check_eq "not due, label + assignee present: no issue edit (#1933 repair is a no-op)" 0 "$(cat "$STATE/edit_calls")"
 
 echo "== (15) same holder, past the threshold but inside the stale window: renews =="
 reset_issue
@@ -846,6 +869,177 @@ check_eq "sequential: original holder's --renew exits 5" 5 "$RC"
 run 873 --claim --holder threadA
 check_eq "sequential: original holder's --claim is blocked" 1 "$RC"
 check_eq "sequential: threadB's claim intact" "threadB" "$(newest_marker_field '.body | capture("claude-claim: (?<p>.*) -->").p | fromjson | .holder')"
+
+echo "== (22) residual renew/release races (issue #1933) =="
+# Zero the per-run counters the stub's Nth-call switches key on.
+arm_counters() { echo 0 > "$STATE/comment_reads"; echo 0 > "$STATE/edit_calls"; }
+iso_ago_min() {
+  local epoch=$(( $(date -u +%s) - $1 * 60 ))
+  date -u -d "@$epoch" +%FT%TZ 2>/dev/null && return 0
+  date -u -r "$epoch" +%FT%TZ 2>/dev/null && return 0
+  return 1
+}
+
+# Item 1: a release lands AFTER the verification read (comment read #2) and
+# before the issue re-read — every marker deleted, label + assignee removed.
+# The verify snapshot still shows the old marker, so only the final re-read
+# can see it. Before #1933 this re-added the label and reported `mine`/0.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+arm_counters
+FAKE_AFTER_COMMENTS_READ_AT=2 \
+FAKE_AFTER_COMMENTS_READ_HOOK='echo "[]" > "$S/comments.json"; : > "$S/labels"; : > "$S/assignees"' \
+  run 873 --renew --holder threadA --json
+check_eq "item 1: exit 5" 5 "$RC"
+check_eq "item 1: verdict unclaimed" "unclaimed" "$(jq -r .verdict <<<"$OUT")"
+check_contains "item 1: reason released" "released" "$(jq -r .reason <<<"$OUT")"
+check_contains "item 1: says the re-added label was rolled back" "rolled back" "$(jq -r .reason <<<"$OUT")"
+check_eq "item 1: renewed false" "false" "$(jq -r .renewed <<<"$OUT")"
+check_eq "item 1: no marker left" 0 "$(claim_comment_count)"
+check_eq "item 1: label not resurrected" "" "$(cat "$STATE/labels")"
+check_eq "item 1: assignee not resurrected" "" "$(cat "$STATE/assignees")"
+run 873 --check --holder threadB
+check_eq "item 1: issue reads unclaimed afterwards" "unclaimed" "$OUT"
+
+# Item 1, closed variant: the issue closes after the label re-assert.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+arm_counters
+FAKE_AFTER_EDIT_HOOK='echo closed > "$S/issue_state"' \
+  run 873 --renew --holder threadA
+check_eq "item 1 closed after re-assert: exit 5" 5 "$RC"
+check_contains "item 1 closed after re-assert: released" "released" "$ERR"
+check_eq "item 1 closed after re-assert: this run's marker withdrawn" 0 "$(claim_comment_count)"
+
+# Item 2: the label re-assert fails after a renewal POST on an issue that had
+# lost its label. fail_closed keeps the new marker; the next not-due call must
+# put the label back so /wave (which filters on it) can see the claim.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+: > "$STATE/labels"; : > "$STATE/assignees"
+arm_counters
+FAKE_EDIT_FAIL_AT=1 run 873 --renew --holder threadA
+check_eq "item 2: re-assert failure is unknown" "unknown" "$OUT"
+check_eq "item 2: exit 4" 4 "$RC"
+check_contains "item 2: stderr names the repair path" "next --renew or --claim re-adds the label" "$ERR"
+check_eq "item 2: label still absent after the failure" "" "$(cat "$STATE/labels")"
+POSTS="$(posts_made)"
+run 873 --renew --holder threadA --json
+check_eq "item 2 retry: exit 0" 0 "$RC"
+check_eq "item 2 retry: verdict mine" "mine" "$(jq -r .verdict <<<"$OUT")"
+check_eq "item 2 retry: not a renewal" "false" "$(jq -r .renewed <<<"$OUT")"
+check_eq "item 2 retry: no new comment" "$POSTS" "$(posts_made)"
+check_eq "item 2 retry: label restored" "in-progress" "$(cat "$STATE/labels")"
+check_eq "item 2 retry: assignee restored" "alice" "$(cat "$STATE/assignees")"
+# Same repair through a not-due --claim.
+: > "$STATE/labels"
+run 873 --claim --holder threadA
+check_eq "item 2 via --claim: exit 0" 0 "$RC"
+check_eq "item 2 via --claim: label restored" "in-progress" "$(cat "$STATE/labels")"
+# A failing repair warns but keeps mine/0 and writes no comment.
+: > "$STATE/labels"
+arm_counters
+POSTS="$(posts_made)"
+FAKE_EDIT_FAIL_AT=1 run 873 --renew --holder threadA
+check_eq "item 2 failed repair: still mine" "mine" "$OUT"
+check_eq "item 2 failed repair: exit 0" 0 "$RC"
+check_contains "item 2 failed repair: warns" "may not see the claim" "$ERR"
+check_eq "item 2 failed repair: no comment posted" "$POSTS" "$(posts_made)"
+# An unauthorized same-holder --claim (bob's marker) is never repaired.
+reset_issue
+export FAKE_VIEWER="bob"
+run 873 --claim --holder shared
+export FAKE_VIEWER="alice"
+: > "$STATE/labels"
+arm_counters
+run 873 --claim --holder shared
+check_eq "item 2: unauthorized same-holder --claim makes no edit" 0 "$(cat "$STATE/edit_calls")"
+
+# Item 3: a release whose comment read predates the POST deletes the OLD
+# marker and removes the label AFTER this renewal re-asserted it (edit #1).
+# The renewed marker survives; the final check must put the label back.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+OLD_IDS="$(marker_ids)"
+arm_counters
+FAKE_AFTER_EDIT_HOOK='
+  jq --argjson old "'"$OLD_IDS"'" "[ .[] | select(.id != \$old) ]" "$S/comments.json" > "$S/h.tmp" \
+    && mv "$S/h.tmp" "$S/comments.json"
+  : > "$S/labels"; : > "$S/assignees"' \
+  run 873 --renew --holder threadA --json
+check_eq "item 3: exit 0" 0 "$RC"
+check_eq "item 3: renewed true" "true" "$(jq -r .renewed <<<"$OUT")"
+check_eq "item 3: one marker" 1 "$(claim_comment_count)"
+check_eq "item 3: label follows the surviving marker" "in-progress" "$(cat "$STATE/labels")"
+check_eq "item 3: assignee follows the surviving marker" "alice" "$(cat "$STATE/assignees")"
+# ...and when that second re-assert fails, the run fails closed.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+arm_counters
+FAKE_EDIT_FAIL_AT=2 \
+FAKE_AFTER_EDIT_HOOK=': > "$S/labels"' \
+  run 873 --renew --holder threadA
+check_eq "item 3 second re-assert fails: exit 4" 4 "$RC"
+check_contains "item 3 second re-assert fails: renew-failed" "renew-failed" "$ERR"
+
+# A foreign marker that lands after verification supersedes this run.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+FUTURE_EPOCH=$(( $(date -u +%s) + 5 ))
+FUTURE_AT="$(date -u -d "@$FUTURE_EPOCH" +%FT%TZ 2>/dev/null || date -u -r "$FUTURE_EPOCH" +%FT%TZ)"
+jq -n --arg at "$FUTURE_AT" '{id: 999999, created_at: $at, user: {login: "alice"},
+  body: ("<!-- claude-claim: " + ({holder: "threadB", login: "alice"} | tojson) + " -->")}' > "$STATE/inject.json"
+arm_counters
+FAKE_AFTER_EDIT_HOOK='jq --slurpfile x "$S/inject.json" ". + \$x" "$S/comments.json" > "$S/h.tmp" && mv "$S/h.tmp" "$S/comments.json"' \
+  run 873 --renew --holder threadA --json
+check_eq "late foreign marker: exit 5" 5 "$RC"
+check_contains "late foreign marker: superseded" "superseded" "$(jq -r .reason <<<"$OUT")"
+check_eq "late foreign marker: only the foreign marker remains" "999999" "$(marker_ids)"
+check_eq "late foreign marker: label left for the winner" "in-progress" "$(cat "$STATE/labels")"
+
+# Control: a failed final re-read keeps the verified renewal.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago 3)" run 873 --claim --holder threadA
+arm_counters
+FAKE_COMMENTS_FAIL_AFTER=2 run 873 --renew --holder threadA --json
+check_eq "final re-read failure: exit 0" 0 "$RC"
+check_eq "final re-read failure: renewed" "true" "$(jq -r .renewed <<<"$OUT")"
+check_contains "final re-read failure: warns" "final consistency re-read failed" "$ERR"
+
+# Item 4 (documented, not changed): CLAIM_STALE_HOURS=0 skips the renew clamp.
+reset_issue
+FAKE_COMMENT_CREATED_AT="$(iso_ago_min 30)" run 873 --claim --holder threadA
+POSTS="$(posts_made)"
+CLAIM_STALE_HOURS=0 CLAIM_RENEW_MINUTES=60 run 873 --renew --holder threadA
+check_eq "item 4: stale=0 + renew=60, 30m marker: not due, exit 0" 0 "$RC"
+check_eq "item 4: no clamp warning" "" "$ERR"
+check_eq "item 4: nothing posted" "$POSTS" "$(posts_made)"
+CLAIM_STALE_HOURS=0 CLAIM_RENEW_MINUTES=60 run 873 --check --holder threadB
+check_eq "item 4: a foreign holder reads it stale" "stale" "$OUT"
+check_eq "item 4: --check is not a usage error" 0 "$RC"
+
+# Item 5: a NOT-due --renew on a closed issue reports not-held/5, not mine/0.
+reset_issue
+run 873 --claim --holder threadA
+echo closed > "$STATE/issue_state"
+IDS="$(marker_ids)"; POSTS="$(posts_made)"
+arm_counters
+run 873 --renew --holder threadA
+check_eq "item 5: stdout mine" "mine" "$OUT"
+check_eq "item 5: exit 5" 5 "$RC"
+check_contains "item 5: stderr not-held" "not-held" "$ERR"
+check_contains "item 5: stderr names closed" "closed" "$ERR"
+run 873 --renew --holder threadA --json
+check_eq "item 5 json: verdict mine" "mine" "$(jq -r .verdict <<<"$OUT")"
+check_eq "item 5 json: reason starts not-held" "true" "$(jq -r '.reason | startswith("not-held")' <<<"$OUT")"
+check_eq "item 5 json: renewed false" "false" "$(jq -r .renewed <<<"$OUT")"
+check_eq "item 5: markers unchanged" "$IDS" "$(marker_ids)"
+check_eq "item 5: nothing posted" "$POSTS" "$(posts_made)"
+check_eq "item 5: no issue edit" 0 "$(cat "$STATE/edit_calls")"
+: > "$STATE/labels"
+run 873 --claim --holder threadA
+check_eq "item 5 control: not-due --claim on closed stays mine/0" 0 "$RC"
+check_eq "item 5 control: closed issue never re-labelled" "" "$(cat "$STATE/labels")"
 
 echo "== (11) usage errors =="
 reset_issue
