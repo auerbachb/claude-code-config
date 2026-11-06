@@ -7,6 +7,7 @@
 #   unreviewed-merge-ledger.sh record --pr N [--repo owner/name] --gate-json <file|->
 #   unreviewed-merge-ledger.sh list [--repo owner/name] [--pending]
 #   unreviewed-merge-ledger.sh backfill --pr N --sha <head_sha> --status <s> [--repo owner/name]
+#                                       [--detail-json <file|->]
 #   unreviewed-merge-ledger.sh --help
 #
 # FILE
@@ -34,9 +35,12 @@
 #   repo; --pending keeps backfill_status == "pending". A missing ledger is [].
 #
 # backfill
-#   Sets backfill_status (e.g. reviewed, findings-filed, pending) and
-#   backfill_updated_at on one entry — the hook Issue #1900's backfill uses.
-#   Exit 4 when no such entry exists.
+#   Sets backfill_status (backfill-review.sh writes pending, reviewed-clean,
+#   issues-filed, or skipped) and backfill_updated_at on one entry — the hook
+#   Issue #1900's backfill uses. --detail-json stores a JSON object as the
+#   entry's `backfill` field (replacing any earlier one): channel, main_sha,
+#   reviewed_at, findings[], issues[], skip_reason, label_synced. Exit 4 when
+#   no such entry exists or the detail is not a JSON object.
 #
 # EXIT CODES (session-state.sh convention)
 #   0 ok · 2 usage · 4 refused / invalid input / no such entry · 5 write failure
@@ -65,7 +69,7 @@ esac
 [[ -n "${HOME:-}" ]] || die 8 "HOME is unset"
 LEDGER="$HOME/.claude/unreviewed-merges.json"
 
-PR="" REPO="" GATE_SRC="" PENDING=0 SHA="" STATUS=""
+PR="" REPO="" GATE_SRC="" PENDING=0 SHA="" STATUS="" DETAIL_SRC=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) PR="${2:-}"; shift 2 || die 2 "--pr needs a value" ;;
@@ -73,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --gate-json) GATE_SRC="${2:-}"; shift 2 || die 2 "--gate-json needs a value" ;;
     --sha) SHA="${2:-}"; shift 2 || die 2 "--sha needs a value" ;;
     --status) STATUS="${2:-}"; shift 2 || die 2 "--status needs a value" ;;
+    --detail-json) DETAIL_SRC="${2:-}"; shift 2 || die 2 "--detail-json needs a value" ;;
     --pending) PENDING=1; shift ;;
     *) die 2 "unknown flag: $1" ;;
   esac
@@ -124,15 +129,30 @@ REPO="$(normalize_repo "$REPO")"
 
 if [[ "$CMD" == backfill ]]; then
   [[ -n "$SHA" && -n "$STATUS" ]] || die 2 "backfill needs --sha and --status"
+  # A typo'd status would drop the row out of `list --pending` for good.
+  case "$STATUS" in
+    pending|reviewed-clean|issues-filed|skipped) ;;
+    *) die 2 "--status must be pending, reviewed-clean, issues-filed, or skipped (got '$STATUS')" ;;
+  esac
+  DETAIL='null'
+  if [[ -n "$DETAIL_SRC" ]]; then
+    if [[ "$DETAIL_SRC" == "-" ]]; then DETAIL="$(cat)"; else DETAIL="$(cat "$DETAIL_SRC" 2>/dev/null)" || die 4 "cannot read $DETAIL_SRC"; fi
+    # Exactly one value, and it an object: `{} {}` passes a per-value check.
+    printf '%s' "$DETAIL" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1 \
+      || die 4 "--detail-json is not a single JSON object"
+    DETAIL="$(printf '%s' "$DETAIL" | jq -c .)"
+  fi
   with_lock
   DOC="$(read_ledger)" || exit $?
   [[ "$(jq -r --arg r "$REPO" --argjson p "$PR" --arg s "$SHA" \
       '[.entries[] | select(.repo == $r and .pr == $p and .head_sha == $s)] | length' <<<"$DOC")" -gt 0 ]] \
     || die 4 "no ledger entry for $REPO PR #$PR at $SHA"
   NEW="$(jq -c --arg r "$REPO" --argjson p "$PR" --arg s "$SHA" --arg st "$STATUS" \
-      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+      --argjson detail "$DETAIL" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     .entries |= map(if .repo == $r and .pr == $p and .head_sha == $s
-                    then .backfill_status = $st | .backfill_updated_at = $now else . end)' <<<"$DOC")"
+                    then .backfill_status = $st | .backfill_updated_at = $now
+                         | (if $detail == null then . else .backfill = $detail end)
+                    else . end)' <<<"$DOC")" || die 5 "could not build the updated ledger"
   write_ledger "$NEW" || exit $?
   echo "updated"
   exit 0

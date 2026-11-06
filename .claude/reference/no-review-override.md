@@ -97,7 +97,7 @@ Then `unreviewed-merge-ledger.sh record --pr N --gate-json -` with the authorizi
 
 `record` refuses (exit 4, nothing written) unless the gate JSON shows `met` and `no_review_override.applied`, and GitHub confirms the PR `MERGED` with `headRefOid` equal to the gate's `head_sha`. It then labels the PR `merged-unreviewed` (created if missing); a label failure writes the row with `label_applied: false` and a warning. Fields: `repo, pr, title, url, head_sha, merge_commit_sha, merged_at, recorded_at, window_seconds, head_anchor_ts, anchor_source, elapsed_seconds, missing_reviewers, waived_reasons, excluded_reviewer_checks, label_applied, backfill_status`.
 
-**For the backfill (Issue #1900):** `unreviewed-merge-ledger.sh list [--repo R] [--pending]` reads it; `backfill --pr N --sha S --status <s> [--repo R]` updates `backfill_status` (starts `pending`) and stamps `backfill_updated_at`. A bot `CHANGES_REQUESTED` that lands after an override merge is the backfill's to act on — this issue only records what it needs.
+**For the backfill (Issue #1900):** `unreviewed-merge-ledger.sh list [--repo R] [--pending]` reads it; `backfill --pr N --sha S --status <s> [--repo R]` updates `backfill_status` (starts `pending`) and stamps `backfill_updated_at`; `--detail-json` stores the outcome object. The runner is `backfill-review.sh` — `backfill-review.md`. A bot `CHANGES_REQUESTED` that lands after an override merge is not read by the runner — it reviews the merged diff afresh with the local CLIs.
 
 Exit codes follow `session-state.sh`: 0 ok, 2 usage, 4 refused / invalid / no such entry, 5 write failure, 6 lock timeout, 8 `HOME` unset.
 
