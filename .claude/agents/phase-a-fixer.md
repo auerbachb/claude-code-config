@@ -146,13 +146,13 @@ Exit codes: `0` reply posted — by either the inline endpoint or the PR-level f
 
 After replying, resolve **only** the threads you actually handled in Step 2, from any of the Step 1 bots. Do NOT resolve threads authored by human reviewers, or bot threads you did not handle — those may be active discussion unrelated to your fix work.
 
-Use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
+If you handled no threads (a clean or CI-only run), skip this step — `--thread-ids` rejects an empty list — and go to Step 6. Otherwise use the shared helper — **NEVER call `resolveReviewThread` inline**. Always use:
 
 ```bash
 run_script resolve-review-threads.sh {{PR_NUMBER}} --thread-ids <id1,id2>
 ```
 
-Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent. Do not proceed to Phase B with unresolved bot threads.
+Pass the IDs of the threads you handled. Without `--thread-ids` the script resolves every unresolved thread whose first-comment author is in its default `--authors` list (`coderabbitai,cursor,greptile-apps,graphite-app,codeant-ai`) — including bot threads you never saw when your findings were pre-fetched — so never run it bare. Exit 1 means at least one thread failed both mutations — still write the Step 6 handoff file (include `"notes": "thread resolution partial failure"` so Phase B knows), then report the failure to the parent; a thread you handled but could not resolve blocks the move to Phase B. A bot thread you never handled (posted after your findings were pre-fetched) is not yours to resolve and does not block: leave it open, list its ID in the handoff `notes`, and Phase B processes it.
 
 ### Step 6: Write Handoff File
 

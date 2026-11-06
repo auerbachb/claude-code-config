@@ -295,16 +295,18 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
     # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
-    # with lib/pr-state-classify.jq, so historical comments still classify) and as
-    # a review-check needle (a leftover check-run is not CI), but is never a
-    # participant to wait for — it will not answer a new push.
+    # with lib/pr-state-classify.jq, so historical comments still classify) and its
+    # leftover check-run is not CI, but it is never a participant to wait for — it
+    # will not answer a new push. That check is recognised by publishing-app slug,
+    # not by name (#1953): a check another app names "Graphite …" stays CI.
     | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
     | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
        "greptile-apps[bot]":"greptile"} as $needles
-    | def is_review_check($n):
-        ($n // "" | ascii_downcase) as $name
-        | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
-              . as $x | $name | contains($x));
+    | def is_review_check:
+        (.name // "" | ascii_downcase) as $name
+        | ((.app.slug // "") as $s | $s == "graphite-app" or $s == "graphite")
+          or any("coderabbit","codeant","cursor","bugbot","greptile";
+                 . as $x | $name | contains($x));
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
@@ -334,8 +336,8 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
            )})) as $bots
     | {head_moved: ($root.pr.head_sha != $sha),
        bots_pending: ($bots | map(select(.done | not) | .bot)),
-       ci_pending: [ $checks[] | select((is_review_check(.name) | not) and .status != "completed") | .name ],
-       ci_failing: [ $checks[] | select((is_review_check(.name) | not)
+       ci_pending: [ $checks[] | select((is_review_check | not) and .status != "completed") | .name ],
+       ci_failing: [ $checks[] | select((is_review_check | not)
                      and (.conclusion == "failure" or .conclusion == "timed_out"
                           or .conclusion == "action_required" or .conclusion == "startup_failure"
                           or .conclusion == "stale")) | .name ],

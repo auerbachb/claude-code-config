@@ -1,6 +1,6 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 
-> **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (CR; CodeAnt in parallel; paid BugBot/Greptile only on owner approval). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
+> **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (§Three-Tier below). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
 > **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging, and any paid review (`safety.md`).
