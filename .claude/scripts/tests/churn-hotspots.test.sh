@@ -32,6 +32,21 @@ check_jq() {  # desc, json, jq boolean expr
   if printf '%s' "$2" | jq -e "$3" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi
 }
 
+# Prints yes when $1 contains every following needle, in order; else no. Lives
+# in a function because bash 3.2 misparses a `case ... in pat)` written inline
+# inside `$( )` — the unbalanced `)` ends the substitution early (issue #1856
+# test plan: the whole file is green under bash 3.2).
+has_text() {  # text, needle...
+  local rest="$1" needle; shift
+  for needle in "$@"; do
+    case "$rest" in
+      *"$needle"*) rest="${rest#*"$needle"}" ;;
+      *) echo no; return 0 ;;
+    esac
+  done
+  echo yes
+}
+
 # ---- gh stub ----------------------------------------------------------------
 # Matches on a single stable token per case — never on --json field order, which
 # changes as callers add fields. Unhandled invocations exit 1 loudly.
@@ -667,12 +682,12 @@ check_jq "12d: total_hotspot_count keeps the full pre-bound figure" "$OUT" '.tot
 HELP_OUT=$(cd "$R1" && bash "$SCRIPT" --help 2>/dev/null)
 for flag in --since --repo --ref --exclude --exemptions; do
   check_eq "13e-help: --help documents $flag" "yes" \
-    "$(case "$HELP_OUT" in *"$flag"*) echo yes ;; *) echo no ;; esac)"
+    "$(has_text "$HELP_OUT" "$flag")"
 done
 check_eq "13e-help: --help reaches the EMPTY VALUES section" "yes" \
-  "$(case "$HELP_OUT" in *"EMPTY VALUES"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$HELP_OUT" "EMPTY VALUES")"
 check_eq "13e-help: --help is not truncated before EXIT CODES" "yes" \
-  "$(case "$HELP_OUT" in *"EXIT CODES:"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$HELP_OUT" "EXIT CODES:")"
 
 # --flag=value form is accepted alongside --flag value
 run_in "$R1" --since="$WINDOW_START" --threshold=3 --json
@@ -822,7 +837,7 @@ run_in "$R14" --since "$WINDOW_START" --ref= --json
 check_eq "17f: the --ref= spelling is rejected the same way" "2" "$RC"
 REF_EMPTY_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --ref '' --json) 2>&1 >/dev/null )
 check_eq "17g: and the rejection names --ref and says the value must be non-empty" "yes" \
-  "$(case "$REF_EMPTY_ERR" in *"--ref"*"non-empty"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$REF_EMPTY_ERR" "--ref" "non-empty")"
 
 # The same hole existed on every other flag read through a `[ -n "$VAR" ]` test:
 # --since silently re-computes the default window, --repo lets gh infer the repo
@@ -857,7 +872,7 @@ run_in "$R14" --since "$WINDOW_START" --exclude ', ,' --json
 check_eq "17j6: so does a value whose every comma-field is blank" "2" "$RC"
 EXCL_BLANK_ERR=$( (cd "$R14" && bash "$SCRIPT" --since "$WINDOW_START" --exclude ',' --json) 2>&1 >/dev/null )
 check_eq "17j7: and the rejection names --exclude and says non-blank pattern" "yes" \
-  "$(case "$EXCL_BLANK_ERR" in *"--exclude"*"non-blank"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$EXCL_BLANK_ERR" "--exclude" "non-blank")"
 
 # NEGATIVE CONTROL — the widened test rejects BLANKNESS, not punctuation or
 # whitespace. A value carrying one real pattern still runs, and runs exactly
@@ -1581,7 +1596,7 @@ ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$B
 BAD_RC=$?
 check_eq "28r: NEGATIVE CONTROL — a reasonless entry exits 3" "3" "$BAD_RC"
 check_eq "28s: NEGATIVE CONTROL — the error names the offending path" "yes" \
-  "$(case "$ERR_OUT" in *"src/Control.ts"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$ERR_OUT" "src/Control.ts")"
 # Rejection is what must happen — NOT a quiet fall-through that scores the file
 # as if the entry had been valid.
 check_eq "28t: NEGATIVE CONTROL — a rejected file is never silently exempted" "" \
@@ -1603,7 +1618,7 @@ ERR_OUT=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions "$N
 BAD_RC=$?
 check_eq "28aa: NEGATIVE CONTROL — an entry naming no enforcing lint exits 3" "3" "$BAD_RC"
 check_eq "28ab: NEGATIVE CONTROL — that error names the offending path too" "yes" \
-  "$(case "$ERR_OUT" in *"src/Control.ts"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$ERR_OUT" "src/Control.ts")"
 
 # A key-presence check would pass this one: both fields are PRESENT, and both
 # are blank. Requiring non-empty values is what stops an exemption from being
@@ -1653,7 +1668,7 @@ run_in "$R28" --since "$WINDOW_START" --exemptions= --json
 check_eq "28af: the --exemptions= spelling is rejected the same way" "2" "$RC"
 EMPTY_ERR=$( (cd "$R28" && bash "$SCRIPT" --since "$WINDOW_START" --exemptions '' --json) 2>&1 >/dev/null )
 check_eq "28ag: and the rejection says the value must be non-empty" "yes" \
-  "$(case "$EMPTY_ERR" in *"non-empty"*) echo yes ;; *) echo no ;; esac)"
+  "$(has_text "$EMPTY_ERR" "non-empty")"
 # NEGATIVE CONTROL — the guard rejects the EMPTY value, not the flag itself:
 # the same invocation with a real file still runs and still applies THAT file.
 # Without this, 28ae/28af would pass just as well if --exemptions were broken
