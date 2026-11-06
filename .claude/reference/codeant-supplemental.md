@@ -26,7 +26,7 @@ Full detail extracted from `.claude/rules/cr-github-review.md`. CodeAnt is the p
 
 **Auth:** a rung-5 wall. `codeant login` is a CLI-initiated browser OAuth flow (`app.codeant.ai`) that opens the system browser — no non-interactive path exists, and no MCP browser surface can drive it, so rung 4 does not apply. The CLI also accepts `codeant set-codeant-api-key <key>` (no browser), but no API key is stored in shell config, env vars, or `~/.codeant/config.json` (which does not yet exist).
 
-**Current baseline:** `cr-only` — every local review runs CodeRabbit only until auth completes. The CodeAnt **GitHub App** is independent and unaffected; it continues to satisfy the CR-path merge gate on its own.
+**Baseline then (historical, 2026-07-30):** `cr-only` — every local review ran CodeRabbit only until auth completed. Auth was later restored; never read this as today's coverage — classify coverage per push from each CLI's verified run (`cr-local-review.md`). The CodeAnt **GitHub App** is independent and unaffected; it continues to satisfy the CR-path merge gate on its own.
 
 **Rung-5 restore runbook (user must run interactively):**
 

@@ -134,6 +134,8 @@ posted() { tr '\n' ';' < "$POSTED_LOG"; }
 st() { jq -r ".reviewers.$1.status" <<<"$OUT" 2>/dev/null; }
 # Graphite retired 2026-11-03 (#1889): no fourth reviewer.
 statuses() { jq -r '[.reviewers.codeant.status, .reviewers.coderabbit.status, .reviewers.cursor.status] | join(",")' <<<"$OUT" 2>/dev/null; }
+# Exact reviewer key set — a fourth reviewer (Graphite was one until #1889) fails here.
+keyset() { jq -r '.reviewers | keys | join(",")' <<<"$OUT" 2>/dev/null; }
 ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json ".prs[\"$PR\"].review_trigger_ledger.$1.count" 2>/dev/null ) || echo null; }
 
 ############################################################################
@@ -143,11 +145,13 @@ run
 check_eq "exit 0" "0" "$RC"
 check_eq "the two free reviewers triggered; cursor the owner-approval skip (#1897)" "triggered,triggered,skipped-approval-required" "$(statuses)"
 check_eq "posted in the legacy order, no @cursor review" "@codeant-ai review;@coderabbitai full review;" "$(posted)"
+check_eq "legacy: exactly the three reviewer keys" "codeant,coderabbit,cursor" "$(keyset)"
 
 echo "== ci-only: nothing posted, and clean =="
 reset "$(tier_json present ci-only)"
 run
 check_eq "every reviewer skipped-tier-excluded" "skipped-tier-excluded,skipped-tier-excluded,skipped-tier-excluded" "$(statuses)"
+check_eq "tiered: exactly the three reviewer keys" "codeant,coderabbit,cursor" "$(keyset)"
 check_eq "nothing posted" "" "$(posted)"
 check_eq "clean" "true" "$(jq -r .clean <<<"$OUT")"
 check_eq "no actions" "0" "$(jq -r .actions <<<"$OUT")"

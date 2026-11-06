@@ -194,6 +194,19 @@ check_eq "resume exits 0" "0" "$RC"
 check_eq "@cursor review not posted → the approval skip (#1897)" "0:approval_required" "$(posted_cursor):$(jq -r ".bugbot_skipped.reason" <<<"$JSON_OUT")"
 check_eq "codeant not re-posted" "0" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
 
+echo "== (c3) a pre-#1889 record with graphite:false but codeant+cursor done is complete =="
+# Isolates the retired key: if steps_incomplete still read .graphite, this
+# record would look open and the tick would re-post instead of deduping.
+setup "$(cap_json ok 3.16)" 0
+( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" --set \
+    ".prs[\"$PR_NUM\"].ai_review_trigger_steps={\"head_sha\":\"$HEAD_SHA\",\"cr_rounds\":3,\"codeant\":true,\"cursor\":true,\"graphite\":false}" >/dev/null
+  "$STUB_DIR/session-state.sh" --set ".prs[\"$PR_NUM\"].ai_review_trigger_last_cr_round=3" >/dev/null
+  "$STUB_DIR/session-state.sh" --set ".prs[\"$PR_NUM\"].ai_review_trigger_head_sha=\"$HEAD_SHA\"" >/dev/null )
+run_script; RC=$?
+check_eq "exit 0" "0" "$RC"
+check_eq "deduped as a duplicate poll tick" "duplicate_poll_tick" "$(jq -r '.reason // .skip_reason // .status' <<<"$JSON_OUT")"
+check_eq "nothing posted" "" "$(posted_all)"
+
 echo "== (d) real run, cap ok -> the free nudge; BugBot needs approval =="
 setup "$(cap_json ok 3.16)" 0
 run_script
