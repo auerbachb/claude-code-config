@@ -195,28 +195,28 @@ echo "== (a): refusal POSTDATES the HEAD commit -> @cursor review suppressed =="
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 run_script
 check_eq "no @cursor review posted — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the other two nudges still posted" "2" "$(posted_count)"
+check_eq "the other free nudge still posted" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (b): refusal PREDATES the HEAD commit -> nudge posts (new push, clean slate) =="
 setup 60 "[$(refusal "$(ts_seconds_ago 600)")]"
 run_script
 check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (c): cursor[bot] active but never refused -> nudge posts =="
 setup 600 "[$(ordinary_cursor_comment "$(ts_seconds_ago 60)")]"
 run_script
 check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (d): no comments at all -> nudge posts =="
 setup 600 "[]"
 run_script
 check_eq "@cursor review not suppressed as a refusal once — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (e): FAILS OPEN — gh api unreadable -> nudge posts anyway =="
@@ -227,7 +227,7 @@ setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 export FIXTURE_API_FAIL=1
 run_script
 check_eq "@cursor review not suppressed as a refusal despite the unreadable API — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (g): refusal with NO BugBot check-run on HEAD -> not attributable, nudge posts =="
@@ -253,19 +253,19 @@ run_script
 check_eq "@cursor review not suppressed as a refusal (foreign publisher is not BugBot) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
 
 ############################################################################
-echo "== (f): suppression records the cursor step, so a resume cannot re-post it =="
-# A completed run clears the whole steps record (`ai_review_trigger_steps=null`),
-# so the resume hazard only exists when a LATER step fails. Failing the graphite
-# post keeps the record alive and makes the recorded cursor value observable.
+echo "== (f): a resumed partial record never re-posts the suppressed nudge =="
+# A completed run clears the whole steps record (`ai_review_trigger_steps=null`).
+# Before Graphite's retirement (2026-11-03, #1889) a failing graphite post was
+# the later step that kept a partial record alive; no step follows cursor now,
+# so the resume is driven from a seeded pre-#1889 record (graphite key included).
 setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
-export FIXTURE_POST_FAIL="@graphite-app re-review"
+( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" --set \
+    ".prs[\"$PR_NUM\"].ai_review_trigger_steps={\"head_sha\":\"$HEAD_SHA\",\"cr_rounds\":3,\"codeant\":true,\"cursor\":false,\"graphite\":false}" >/dev/null )
+check_eq "precondition: the seeded record is partial" "false" "$(read_step cursor)"
 run_script; RC_F=$?
-check_eq "run failed at the graphite step" "5" "$RC_F"
-check_eq "cursor step recorded true (suppressed counts as done)" "true" "$(read_step cursor)"
-# Negative control: the surviving record is genuinely partial, so the `true`
-# above is the value this branch wrote and not everything defaulting true.
-check_eq "graphite step still false (record is partial, not all-true)" "false" "$(read_step graphite)"
+check_eq "resume exits 0" "0" "$RC_F"
 check_eq "no @cursor review posted — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
+check_eq "codeant not re-posted, nothing for the retired graphite step" "0" "$(posted_count)"
 
 ############################################################################
 # ISSUE #1517 — the normalised timestamps are VALIDATED before they are ordered.
@@ -288,7 +288,7 @@ echo "== (m): malformed refusal timestamp sorting ABOVE HEAD -> fail open, nudge
 setup 600 "[$(refusal "zzz-not-a-timestamp")]"
 run_script
 check_eq "@cursor review not suppressed as a refusal (unorderable refusal timestamp) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (n): norm_ts PASSTHROUGH — a non-UTC offset is valid output and still unorderable =="
@@ -302,7 +302,7 @@ echo "== (n): norm_ts PASSTHROUGH — a non-UTC offset is valid output and still
 setup 600 "[$(refusal "$(ts_with_offset -3000 '+05:00')")]"
 run_script
 check_eq "@cursor review not suppressed as a refusal (offset-bearing timestamp is not orderable) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (o): malformed HEAD timestamp -> fail open, nudge posts =="
@@ -314,7 +314,7 @@ setup 600 "[$(refusal "$(ts_seconds_ago 60)")]"
 export FIXTURE_HEAD_TS="0000-bad-head"
 run_script
 check_eq "@cursor review not suppressed as a refusal (unorderable HEAD timestamp) — reaches the owner-approval skip (#1897)" "approval:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the two free nudges posted, never @cursor review" "2" "$(posted_count)"
+check_eq "the free nudge posted, never @cursor review" "1" "$(posted_count)"
 
 ############################################################################
 echo "== (p): NEGATIVE CONTROL — fractional seconds are valid and STILL suppress =="
@@ -326,7 +326,7 @@ echo "== (p): NEGATIVE CONTROL — fractional seconds are valid and STILL suppre
 setup 600 "[$(refusal "$(ts_fractional 60)")]"
 run_script
 check_eq "no @cursor review posted (fractional seconds are comparison-safe) — the refusal guard fired" "refused:0" "$(cursor_skip):$(posted_cursor)"
-check_eq "the other two nudges still posted" "2" "$(posted_count)"
+check_eq "the other free nudge still posted" "1" "$(posted_count)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

@@ -190,9 +190,9 @@ Also tracking: PR #458 (bugbot_review_poll), PR #445 (cr_confirmation_pass)
 > ```
 > Not yours (exit 1) or undetermined (exit 4) → **stop** with one line: "PR #$PR_NUMBER_ARG is authored by someone else — the authorship guard blocks automated writes; name this PR explicitly to override." Continue only under an explicit per-PR user override (say you are operating under it). Do this **before** Step 0c, since the pre-flight posts reviewer triggers.
 
-### Step 0c: Pre-flight — draft→ready + four-reviewer trigger (issue #493)
+### Step 0c: Pre-flight — draft→ready + reviewer trigger (issue #493)
 
-Run the shared pre-flight **before** the audit so the PR is out of draft and all four conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor, Graphite) are engaged on the current SHA before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
+Run the shared pre-flight **before** the audit so the PR is out of draft and all three conditionally-triggered reviewers (CodeAnt, CodeRabbit, Cursor) are engaged on the current SHA before any finding-classification work begins. This is the same `pr-preflight.sh` invoked by `/babysit-pr` and `/pr-monitor-and-manage`, so the behavior is identical across all three skills — do **not** re-implement the draft flip or trigger logic inline.
 
 ```bash
 PREFLIGHT_SH=""
@@ -449,7 +449,7 @@ if [[ "${DID_PUSH:-0}" -eq 1 ]]; then
 fi
 ```
 
-The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, `graphite-app[bot]`). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
+The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` ≠ current PR HEAD** and the author is a **Bot** on the literal allowlist (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, plus the retired `graphite-app[bot]` so a leftover review still clears). Human reviews are never dismissed. Logged lines look like `[DISMISS-STALE] dismissed stale bot CHANGES_REQUESTED review_id=…`.
 
 ---
 
@@ -457,9 +457,7 @@ The script only dismisses **`CHANGES_REQUESTED`** reviews where **`commit_id` �
 
 Only run this step when Step 3 made a push. If Step 3 skipped the commit/push, skip this step too.
 
-> **Graphite known outage (issue #610):** the `@graphite-app re-review` trigger has produced zero engagement (no comments, no check-runs) on any PR since 2026-05-08 — a confirmed external GitHub App issue, not something this step can fix. Still posted on repos with no review policy (cheap, self-healing); see `.claude/reference/codeant-graphite-supplemental.md` for evidence and the re-enablement path.
-
-Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / Graphite / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
+Use the `$PUSHED_AT` captured immediately before `git push` in Step 3. Capturing it before the push avoids a race where a fast bot starts between push completion and the timestamp capture. After the push completes, wait exactly 2 minutes before checking reviewer status so CodeRabbit / CodeAnt auto-triggers have time to post activity (BugBot is covered separately — post `@cursor review` once per push, but not again on a HEAD it has already refused for spend; see `bugbot.md` and memory `feedback_bugbot_auto_trigger_unreliable.md`):
 
 ```bash
 PUSHED_SHA=$(git rev-parse HEAD)
@@ -486,12 +484,12 @@ fi
 
 What it posts depends on the repo's review policy (`.claude/reference/review-policy.md` "Trigger eligibility"):
 
-- **No `## Review policy` (`legacy`)** — the pre-#1749 Step 3b, unchanged: `@coderabbitai full review` for a missing CodeRabbit unless 2 were posted on the PR in the trailing hour (a successful post records the slot via `cr-review-hourly.sh --record-explicit`), then `@graphite-app re-review`, then `@codeant-ai review`, each only when missing on the pushed SHA, then BugBot — **never posted** (issue #1897: paid, owner approval only; the step prints `BugBot not invited — paid review requires owner approval`). The earlier BugBot skips still apply first and keep their wording: when `bugbot-tier-excluded.sh` excludes it, then when `bugbot-refused-head.sh` says BugBot already refused the pushed SHA, then — **last** — when the account daily cap (`review-daily-cap.sh`, #1812) answers a validated `over`; that skip appends `BugBot skipped: daily cap ($X of $Y today)` once per HEAD under the PR body's `## Review notes`.
-- **A tier-aware repo** — only what `review-triggers-allowed.sh` allows on the pushed SHA: Graphite never, CodeAnt once per PR, BugBot never (`approval_required`, #1897), CodeRabbit only as the CodeAnt-unavailable fallback. Each post is claimed first and released if it fails; the BugBot refusal and daily-cap guards run inside the helper, and a daily-cap skip still writes the PR-body note. CI is usually still running two minutes after a push, so this step often posts **nothing** on such a repo — expected: `pr-preflight.sh` (Step 0c, every `/babysit-pr` and `/pr-monitor-and-manage` tick) and `maybe-trigger-ai-review.sh` ask again once CI is green.
+- **No `## Review policy` (`legacy`)** — the pre-#1749 Step 3b, unchanged: `@coderabbitai full review` for a missing CodeRabbit unless 2 were posted on the PR in the trailing hour (a successful post records the slot via `cr-review-hourly.sh --record-explicit`), then `@codeant-ai review`, each only when missing on the pushed SHA, then BugBot — **never posted** (issue #1897: paid, owner approval only; the step prints `BugBot not invited — paid review requires owner approval`). The earlier BugBot skips still apply first and keep their wording: when `bugbot-tier-excluded.sh` excludes it, then when `bugbot-refused-head.sh` says BugBot already refused the pushed SHA, then — **last** — when the account daily cap (`review-daily-cap.sh`, #1812) answers a validated `over`; that skip appends `BugBot skipped: daily cap ($X of $Y today)` once per HEAD under the PR body's `## Review notes`.
+- **A tier-aware repo** — only what `review-triggers-allowed.sh` allows on the pushed SHA: CodeAnt once per PR, BugBot never (`approval_required`, #1897), CodeRabbit only as the CodeAnt-unavailable fallback. Each post is claimed first and released if it fails; the BugBot refusal and daily-cap guards run inside the helper, and a daily-cap skip still writes the PR-body note. CI is usually still running two minutes after a push, so this step often posts **nothing** on such a repo — expected: `pr-preflight.sh` (Step 0c, every `/babysit-pr` and `/pr-monitor-and-manage` tick) and `maybe-trigger-ai-review.sh` ask again once CI is green.
 
 Cost/rate-limit note: `@codeant-ai review` may consume CodeAnt’s review budget, so it is skipped when auto-trigger activity is already present on the new SHA. BugBot is per-seat but **spend-metered** — the stack's largest cost line, refusing 64% of PRs (#1199/#1204) — and no nudge clears a usage limit; it auto-runs on push, so a refusal can land before this step even executes, which is why the refusal check is asked about `$PUSHED_SHA`. Greptile is intentionally NOT part of this proactive trigger set; it remains last-resort only per `greptile.md`.
 
-**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires up to three single-mention comments — `@codeant-ai review`, `@cursor review`, `@graphite-app re-review` — for **complexity + CR round count**, not because of a push, and asks the same review-tier helper on a tier-aware repo. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
+**Composition with issue #362:** `cr-github-review.md` runs `maybe-trigger-ai-review.sh` on each poll tick when there is **no** `/fixpr` trigger (no new findings, CI green, not `BEHIND`/`CONFLICTING`). That path fires single-mention comments — `@codeant-ai review`, `@cursor review` — for **complexity + CR round count**, not because of a push, and asks the same review-tier helper on a tier-aware repo. This differs from Step 3b, which additionally posts `@coderabbitai full review` (subject to the 2/hour cap) when CodeRabbit has not yet auto-triggered on the new SHA. State for the #362 path is tracked in `session-state.json` so it does not batch with Step 3b on the same cause.
 
 ---
 
@@ -734,6 +732,7 @@ CHECK_BUCKETS=$(jq '
     (.name // "" | ascii_downcase) as $name
     | (.app.slug // "" | ascii_downcase) as $slug
     | (.app.name // "" | ascii_downcase) as $app
+    # "graphite": retired 2026-11-03; kept so a leftover Graphite check-run is never counted as CI
     | ($name | contains("coderabbit")
        or contains("graphite")
        or contains("codeant")
@@ -772,7 +771,7 @@ Do NOT poll here — Step 4d is the single owner of post-push polling. CI still 
 
 ### 5d. Review-bot commit statuses on the current HEAD
 
-CR and Greptile report review completion via commit *statuses*, while Graphite, CodeAnt, and Cursor may report via check-runs. `pending` means a bot is still analyzing the current HEAD — declaring CLEAN while pending is the exact failure mode this verify step was built to prevent.
+CR and Greptile report review completion via commit *statuses*, while CodeAnt and Cursor may report via check-runs. `pending` means a bot is still analyzing the current HEAD — declaring CLEAN while pending is the exact failure mode this verify step was built to prevent.
 
 ```bash
 jq -r '
@@ -785,7 +784,7 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 - **CodeRabbit specifically** (by status `context` / bot name) with `description` containing "rate limit" (case-insensitive) → CR rate-limited, fall back to Greptile per `cr-github-review.md`. CodeRabbit reports this as non-blocking `state: "success"` — check this **before** the `state: success` clean-pass rule below, not just on `failure`/`error`. Other bots are not subject to this rule — a Greptile or other status whose text happens to contain "rate limit" is not CR rate-limiting and falls through to the rules below.
 - `state: success` (and not the CodeRabbit rate-limit case above) → review completed on this SHA. Clean-pass signal.
 - `state: pending` or check-run `status != "completed"` → bot still running. **Do NOT declare CLEAN.** Emit `REVIEW_PENDING` and stop.
-- No activity from CodeRabbit, Graphite, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a reviewer Step 3b logged as `skipping … — review tier …` (kind `excluded`, e.g. every bot on `ci-only`) was never invited and is not coming, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
+- No activity from CodeRabbit, CodeAnt, or Cursor after a pushed fix commit → the Step 3b trigger check should already have posted the reviewer-specific comment (on a tier-aware repo, only once CI is green and the tier allows it). Emit `REVIEW_PENDING` and re-run `/fixpr` after the reviewer responds. Exception: a reviewer Step 3b logged as `skipping … — review tier …` (kind `excluded`, e.g. every bot on `ci-only`) was never invited and is not coming, so its silence is not `REVIEW_PENDING`; only a `deferring …` one is still awaited.
 
 ---
 

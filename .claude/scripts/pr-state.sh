@@ -294,9 +294,13 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
   fi
   jq -c --arg sha "$WAIT_STATE_SHA" '
     . as $root
+    # graphite-app[bot]: retired 2026-11-03 (#1889). It stays in $botlist (parity
+    # with lib/pr-state-classify.jq, so historical comments still classify) and as
+    # a review-check needle (a leftover check-run is not CI), but is never a
+    # participant to wait for — it will not answer a new push.
     | ["coderabbitai[bot]","cursor[bot]","codeant-ai[bot]","greptile-apps[bot]","graphite-app[bot]"] as $botlist
     | {"coderabbitai[bot]":"coderabbit","cursor[bot]":"bugbot","codeant-ai[bot]":"codeant",
-       "greptile-apps[bot]":"greptile","graphite-app[bot]":"graphite"} as $needles
+       "greptile-apps[bot]":"greptile"} as $needles
     | def is_review_check($n):
         ($n // "" | ascii_downcase) as $name
         | any("coderabbit","graphite","codeant","cursor","bugbot","greptile";
@@ -304,7 +308,8 @@ if [[ "$WAIT_STATE_EVAL" -eq 1 ]]; then
     ([$root.comments.reviews[]?.user.login,
       $root.comments.inline[]?.user.login,
       $root.comments.conversation[]?.user.login]
-     | map(select(. as $l | $botlist | index($l) != null)) | unique) as $participants
+     | map(select(. as $l | $botlist | index($l) != null))
+     | map(select(. != "graphite-app[bot]")) | unique) as $participants
     | ($root.check_runs.all // []) as $checks
     | ($root.bot_statuses // {}) as $bstat
     | ($participants | map(. as $bot

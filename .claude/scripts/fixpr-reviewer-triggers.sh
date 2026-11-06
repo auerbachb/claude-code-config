@@ -24,14 +24,14 @@
 #
 #   mode legacy (no `## Review policy`), or that helper missing — exactly the
 #   pre-#1749 Step 3b, in this order:
-#     1. reviewer-activity.sh decides which of coderabbit / graphite / codeant
+#     1. reviewer-activity.sh decides which of coderabbit / codeant
 #        already auto-triggered on the pushed SHA since --pushed-at.
 #     2. coderabbit missing → `@coderabbitai full review`, unless 2 were posted
 #        on the PR in the trailing hour; a successful post records the slot
 #        with cr-review-hourly.sh --record-explicit.
-#     3. graphite missing → `@graphite-app re-review`.
-#     4. codeant missing → `@codeant-ai review`.
-#     5. BugBot (`@cursor review`): skipped when bugbot-tier-excluded.sh
+#     3. codeant missing → `@codeant-ai review`.
+#        (Graphite was a step here until its retirement on 2026-11-03, #1889.)
+#     4. BugBot (`@cursor review`): skipped when bugbot-tier-excluded.sh
 #        excludes BugBot, then when bugbot-refused-head.sh says BugBot already
 #        refused the pushed SHA, then — LAST — when review-daily-cap.sh answers
 #        a validated `over`, which also appends `BugBot skipped: daily cap ($X
@@ -122,7 +122,7 @@ else
   echo "[REVIEWERS] reviewer-activity.sh not found — re-run after .claude/scripts/ is synced from main" >&2
 fi
 jq -e 'type == "object"' <<<"$REVIEWER_ACTIVITY" >/dev/null 2>&1 \
-  || REVIEWER_ACTIVITY='{"coderabbit":false,"graphite":false,"codeant":false}'
+  || REVIEWER_ACTIVITY='{"coderabbit":false,"codeant":false}'
 jq -r 'to_entries[] | "[REVIEWERS] \(.key): \(if .value then "auto-triggered" else "missing" end)"' <<<"$REVIEWER_ACTIVITY"
 active() { [[ "$(jq -r --arg k "$1" '.[$k] // false' <<<"$REVIEWER_ACTIVITY")" == "true" ]]; }
 
@@ -190,10 +190,6 @@ fi
 if [[ "$TRIGGER_MODE" == "legacy" ]]; then
   # ---- the pre-#1749 Step 3b, unchanged in order and conditions ----
   if ! active coderabbit; then post_cr || true; fi
-  if ! active graphite; then
-    gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@graphite-app re-review" \
-      || echo "[REVIEWERS] FAILED to post @graphite-app re-review" >&2
-  fi
   if ! active codeant; then
     gh pr comment "$PR_NUMBER" --repo "$REPO_FULL" --body "@codeant-ai review" \
       || echo "[REVIEWERS] FAILED to post @codeant-ai review" >&2
@@ -239,10 +235,9 @@ fi
 # ---- tier-aware: only what the review tier allows on the pushed SHA ----
 GATE_TXT="$(jq -r '.gate // "unresolved"' <<<"$TRIGGER_JSON")"
 echo "[REVIEWERS] review tier $GATE_TXT ($TRIGGER_MODE): posting only what it allows on ${PUSHED_SHA:0:7} (#1749)"
-for key in coderabbit graphite codeant cursor; do
+for key in coderabbit codeant cursor; do
   case "$key" in
     coderabbit) body="@coderabbitai full review" ;;
-    graphite) body="@graphite-app re-review" ;;
     codeant) body="@codeant-ai review" ;;
     cursor) body="@cursor review" ;;
   esac

@@ -1,5 +1,7 @@
 # Per-Repo Token Measurement Baseline — August 2026
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 **Issue:** [#781](https://github.com/auerbachb/claude-code-config/issues/781) (FU-6: `/context` + ccusage baseline, MCP prune list, `permissions.deny`)
 
 **Date:** 2026-08-10
@@ -99,7 +101,7 @@ npm install -g ccusage
 
 | Server key | Plugin | Referenced in harness | Classification |
 |-----------|--------|----------------------|----------------|
-| `graphite@claude-code-graphite` | graphite CLI plugin | Graphite CLI (`graphite-app[bot]`) as supplemental reviewer in `cr-github-review.md` and `codeant-graphite-supplemental.md` | **KEEP** — used in review chain |
+| `graphite@claude-code-graphite` | graphite CLI plugin | Graphite CLI (`graphite-app[bot]`) as supplemental reviewer in `cr-github-review.md` and `codeant-supplemental.md` | **KEEP** — used in review chain |
 | `graphite-mcp@claude-code-graphite` | graphite MCP plugin | No `mcp__graphite*` tool calls found in rules/skills | **PRUNE CANDIDATE** — MCP schema loaded but no tool calls; CLI path is sufficient |
 
 **User-configured MCP servers** (in `~/.claude.json`):

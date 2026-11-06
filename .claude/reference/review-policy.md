@@ -194,7 +194,7 @@ Since #1749, the trigger paths below ask [`review-triggers-allowed.sh`](#trigger
 
 | Path | On a `ci-only` or `ci+codeant-one-round` PR, without the #1749 helper |
 |---|---|
-| `maybe-trigger-ai-review.sh` | Posts the CodeAnt and Graphite nudges only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`, on real and `--dry-run` runs alike. On a real run only, the field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead: a dry run exits before that guard runs (Issue #1735). It is `null` when nothing was skipped. |
+| `maybe-trigger-ai-review.sh` | Posts the CodeAnt nudge only. It leaves the cursor step open, so a resumed run asks the tier again and posts only if the tier now invites BugBot. `--json` adds `bugbot_skipped: {"reason": "review_tier", "gate": …}`, on real and `--dry-run` runs alike. On a real run only, the field reads `{"reason": "refused_head", "gate": null}` when the refusal guard skipped the nudge instead: a dry run exits before that guard runs (Issue #1735). It is `null` when nothing was skipped. |
 | `pr-preflight.sh` | Gives the cursor reviewer status `skipped-tier-excluded`, which counts as clean. |
 | `/fixpr` Step 3b | Prints `[REVIEWERS] skipping @cursor review — review tier <gate> excludes BugBot`. |
 | `cursor-review-pr-comment.yml` | Never posts a comment and runs no helper (issue #1897): one notice step only. |
@@ -206,7 +206,7 @@ Since #1749, the trigger paths below ask [`review-triggers-allowed.sh`](#trigger
 
 ## Trigger eligibility
 
-The merge gate honours the tier, and since #1749 so does every path that **invites** a reviewer. Before it posts, each one asks one helper which reviewers it may invite on the PR's current HEAD. Without that, a docs-only PR still drew CodeRabbit, CodeAnt, and Graphite triggers from the agent itself, and a core PR drew BugBot on every intermediate HEAD.
+The merge gate honours the tier, and since #1749 so does every path that **invites** a reviewer. Before it posts, each one asks one helper which reviewers it may invite on the PR's current HEAD. Without that, a docs-only PR still drew CodeRabbit, CodeAnt, and (then) Graphite triggers from the agent itself, and a core PR drew BugBot on every intermediate HEAD.
 
 ```bash
 .claude/scripts/review-triggers-allowed.sh <pr> [--repo owner/name] [--base <ref>] [--head <sha>] [--mode-only]
@@ -214,7 +214,7 @@ The merge gate honours the tier, and since #1749 so does every path that **invit
 .claude/scripts/review-triggers-allowed.sh <pr> --release <reviewer> [--repo …]
 ```
 
-`<reviewer>` is `codeant`, `cursor`, `coderabbit`, or `graphite`. The full contract is in `--help`.
+`<reviewer>` is `codeant`, `cursor`, or `coderabbit` (Graphite was retired 2026-11-03, #1889, and is rejected). The full contract is in `--help`.
 
 ### Modes
 
@@ -232,7 +232,6 @@ The first matching row wins for each reviewer.
 
 | Gate | Reviewer | Decision |
 |---|---|---|
-| any | `graphite` | Excluded, `tier_excluded`. Never on a tier-aware repo. |
 | `ci-only` | all | Excluded, `tier_excluded`. |
 | `ci+codeant-one-round` | `cursor`, `coderabbit` | Excluded, `tier_excluded`. |
 | `ci+codeant-one-round` | `codeant` | Excluded `round_completed` once a [completed CodeAnt round](#what-each-gate-means) exists on any commit, or `lifetime_cap` once one invitation exists. Otherwise the CI gate applies, then allowed. Never re-invited. |
@@ -250,7 +249,7 @@ Before the per-gate rows, after the static exclusions, two conditions defer ever
 
 ### The CI gate and settled HEAD
 
-Nothing is invited while CI on HEAD is red or pending. The gate is **build CI only**: `ci-status.sh --exclude-reviewers` drops the reviewers' own check-runs, matched by exact app slug (`codeant-ai`, `cursor`, `coderabbitai`, `graphite-app`, `greptile-apps`, and their short forms). Otherwise a reviewer that was never invited would hold CI pending forever, and one that failed would hold it red. With no build check left, the verdict is pending, as for an empty check list. The reasons are `ci_pending`, `ci_red`, and `ci_unknown`.
+Nothing is invited while CI on HEAD is red or pending. The gate is **build CI only**: `ci-status.sh --exclude-reviewers` drops the reviewers' own check-runs, matched by exact app slug (`codeant-ai`, `cursor`, `coderabbitai`, `greptile-apps`, the retired `graphite-app`, and their short forms). Otherwise a reviewer that was never invited would hold CI pending forever, and one that failed would hold it red. With no build check left, the verdict is pending, as for an empty check list. The reasons are `ci_pending`, `ci_red`, and `ci_unknown`.
 
 A HEAD is **settled** when build CI is green and the HEAD has been observed for at least the settle threshold, 600 s by default. The observation time is the **latest** of three times:
 
@@ -292,7 +291,7 @@ Issue #1749 section 2.4 proposed a per-repo daily spend check. It is superseded 
 
 | Path | On a tier-aware repo |
 |---|---|
-| `maybe-trigger-ai-review.sh` | After its round and complexity gates, each of its three steps (CodeAnt, BugBot, Graphite) posts only when allowed, and claims first. A refused HEAD marks the cursor step done, as before. A deferred step leaves the step record open. `--json` adds `trigger_mode`, `trigger_skips` (reviewer → `{kind, reason}`), and `deferred`. Its status is `triggered` when something posted, and otherwise `skipped` with reason `tier_deferred` or `tier_excluded`. `bugbot_skipped` keeps its shape: `review_tier`, `refused_head`, `daily_cap` with the tally, or the new reason with the gate. |
+| `maybe-trigger-ai-review.sh` | After its round and complexity gates, each of its steps (CodeAnt, BugBot) posts only when allowed, and claims first. A refused HEAD marks the cursor step done, as before. A deferred step leaves the step record open. `--json` adds `trigger_mode`, `trigger_skips` (reviewer → `{kind, reason}`), and `deferred`. Its status is `triggered` when something posted, and otherwise `skipped` with reason `tier_deferred` or `tier_excluded`. `bugbot_skipped` keeps its shape: `review_tier`, `refused_head`, `daily_cap` with the tally, or the new reason with the gate. |
 | `pr-preflight.sh` | After its HEAD-scoped already-present check, a reviewer is claimed and triggered when allowed (CodeRabbit is still behind `cr-review-hourly.sh`). Otherwise it is `skipped-tier-excluded` or `skipped-tier-deferred`. |
 | `/fixpr` Step 3b | `fixpr-reviewer-triggers.sh` skips reviewers already active on the pushed SHA and posts only the allowed ones, with claims. A `daily_cap` skip still writes the `## Review notes` line. Right after a push CI is usually still pending, so it often posts nothing; `pr-preflight.sh` and `maybe-trigger-ai-review.sh` ask again once CI is green. |
 | `cursor-review-pr-comment.yml` | Never posts a comment and runs no helper (issue #1897): one notice step only. |
@@ -351,7 +350,7 @@ It prints one line, `{"platform","date","spent_usd","add_usd","cap_usd","status"
 
 | Path | Behaviour |
 |---|---|
-| `maybe-trigger-ai-review.sh` | Asks the cap last: the tier skip, then the refused-HEAD skip, then the cap. On `over` it skips `@cursor review` and still posts CodeAnt and Graphite. It leaves the cursor step open, as the tier skip does, so a resumed run asks again. `--json` and `--dry-run --json` report `bugbot_skipped: {"reason":"daily_cap","gate":null,"tally":{…}}`, plus the tally as `bugbot_daily_cap` whenever the cap was consulted, `unknown` included. |
+| `maybe-trigger-ai-review.sh` | Asks the cap last: the tier skip, then the refused-HEAD skip, then the cap. On `over` it skips `@cursor review` and still posts CodeAnt. It leaves the cursor step open, as the tier skip does, so a resumed run asks again. `--json` and `--dry-run --json` report `bugbot_skipped: {"reason":"daily_cap","gate":null,"tally":{…}}`, plus the tally as `bugbot_daily_cap` whenever the cap was consulted, `unknown` included. |
 | `/fixpr` Step 3b | Asks the cap after the same two skips. On `over` it appends `BugBot skipped: daily cap ($spent of $cap today)` under a `## Review notes` heading in the PR body, which it creates if absent. It does this once per HEAD, through `pr-body-review-note.sh`. |
 | `cursor-review-pr-comment.yml` | No longer posts anything (issue #1897), so the former no-policy bypass is closed. |
 | `review-triggers-allowed.sh` (#1749) | On a tier-aware repo, asks the cap last in its `full`-tier BugBot rule, after the refusal guard. On `over` BugBot is deferred with reason `daily_cap` and the tally, which every caller reports and `/fixpr` Step 3b notes in the PR body. No per-repo tally exists: #1749's section 2.4 is satisfied by this cap. See [Trigger eligibility](#trigger-eligibility). |
@@ -408,7 +407,7 @@ The table and the switch are independent:
 | Every BugBot trigger path | Inherits that answer unchanged: `maybe-trigger-ai-review.sh`, `pr-preflight.sh`, and `/fixpr` Step 3b (`cursor-review-pr-comment.yml` never posts — issue #1897). Their messages still name the gate, because the helper's stdout is still the gate. |
 | `escalate-review.sh` | Emits `STATUS=tier_gate` where it would otherwise emit `no_reviewer`, at both paid points. It never reads or consumes the Greptile budget. Earlier verdicts keep their precedence, including `polling_cr` inside a CodeRabbit retry window. |
 
-CodeRabbit, CodeAnt, and Graphite triggers follow the tier through [Trigger eligibility](#trigger-eligibility) (#1749), which also reads this switch for BugBot.
+CodeRabbit and CodeAnt triggers follow the tier through [Trigger eligibility](#trigger-eligibility) (#1749), which also reads this switch for BugBot.
 
 ### What a `full` PR then needs
 
@@ -422,7 +421,7 @@ Only a literal `"escalation":"off"` skips. Any other value in the JSON, or a mis
 
 ## Paid review authorization
 
-Owner policy (issue #1897): **no paid AI review without the owner's explicit approval in chat.** The rule is `.claude/rules/safety.md` §Paid AI Reviews; this section is its mechanism. It covers what this harness starts. BugBot and Greptile bill per review; CodeRabbit's included allowance, the CodeAnt App, Graphite, and the local CLIs are free and unaffected. Increment 2 (issue #1898) adds a way to approve one paid review; until then nothing here can be switched back on, by design — no flag, environment variable, or state marker bypasses a denial.
+Owner policy (issue #1897): **no paid AI review without the owner's explicit approval in chat.** The rule is `.claude/rules/safety.md` §Paid AI Reviews; this section is its mechanism. It covers what this harness starts. BugBot and Greptile bill per review; CodeRabbit's included allowance, the CodeAnt App, and the local CLIs are free and unaffected. Increment 2 (issue #1898) adds a way to approve one paid review; until then nothing here can be switched back on, by design — no flag, environment variable, or state marker bypasses a denial.
 
 ### Verdict contract
 
@@ -435,8 +434,8 @@ A consumer of `no_reviewer` posts nothing, changes no reviewer state (the PR sta
 | Path | Behaviour now |
 |---|---|
 | `escalate-review.sh` | `no_reviewer` in place of `switch_bugbot` / `trigger_greptile`; see above. |
-| `review-triggers-allowed.sh` | The last step of the cursor chain turns any `allowed` answer into excluded `approval_required`, after every earlier reason (tier, lifetime cap, CI, settle, `refused_head`, `daily_cap`). `--claim cursor` is denied (exit 1, no ledger write) in every mode, legacy included. CodeAnt, CodeRabbit, and Graphite claims are unchanged. |
-| `maybe-trigger-ai-review.sh` | Legacy path: after the tier, refused-HEAD, and cap skips, the cursor step ends in a skip — `bugbot_skipped: {"reason":"approval_required","gate":null}`, stderr names it, the step is left open. Tiered path: the helper's `approval_required` is reported the same way. CodeAnt and Graphite still post. |
+| `review-triggers-allowed.sh` | The last step of the cursor chain turns any `allowed` answer into excluded `approval_required`, after every earlier reason (tier, lifetime cap, CI, settle, `refused_head`, `daily_cap`). `--claim cursor` is denied (exit 1, no ledger write) in every mode, legacy included. CodeAnt and CodeRabbit claims are unchanged. |
+| `maybe-trigger-ai-review.sh` | Legacy path: after the tier, refused-HEAD, and cap skips, the cursor step ends in a skip — `bugbot_skipped: {"reason":"approval_required","gate":null}`, stderr names it, the step is left open. Tiered path: the helper's `approval_required` is reported the same way. CodeAnt still posts. |
 | `/fixpr` Step 3b (`fixpr-reviewer-triggers.sh`) | Prints `BugBot not invited — paid review requires owner approval` in place of the post, in both modes. Free reviewers, the CodeRabbit 2-per-hour check, and the daily-cap PR-body note are unchanged. |
 | `pr-preflight.sh` | Cursor status `skipped-approval-required` in both modes; it counts as clean (nothing pending). |
 | `cursor-review-pr-comment.yml` | No posting step remains: the workflow keeps its trigger and job name and runs one notice step. No secret is referenced. |

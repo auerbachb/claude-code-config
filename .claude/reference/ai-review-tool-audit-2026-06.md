@@ -1,5 +1,7 @@
 # AI Review Tool Audit — 2026-06 (30-day value follow-up)
 
+> **Graphite AI review retired 2026-11-03** ([#1889](https://github.com/auerbachb/claude-code-config/issues/1889)): Team plan cancelled, $450 pro-rated refund. Graphite content below is historical.
+
 Issue: [#376](https://github.com/auerbachb/claude-code-config/issues/376)
 Baseline (source of truth): [`ai-review-tool-audit-2026-04.md`](./ai-review-tool-audit-2026-04.md) (#368 / #377)
 

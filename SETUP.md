@@ -54,16 +54,15 @@ Default locations (may vary with your setup):
 > Steps below are the logical workflow — see `setup.sh` for exact step numbering in script output.
 
 1. Creates the `~/.claude/skills/` directory
-2. Merges non-hook settings from `global-settings.json` into `~/.claude/settings.json` (existing keys like `permissions`, `model`, `env` are preserved — only missing keys are seeded), including optional Graphite plugin marketplace and `enabledPlugins` when absent. **New sub-keys** (like `permissions.deny`) are seeded on first encounter — they do NOT propagate automatically on subsequent runs, only on a fresh re-run of `bash ./setup.sh` when the sub-key is absent. `statusLine` is skipped here alongside `hooks`: both carry path placeholders that only the skills-worktree registration in step 5 can resolve
-3. Optionally runs `gt repo init` for this checkout when Graphite CLI is installed (creates `.git/.graphite_repo_config`; setup fails if `gt repo init` fails when `gt` is installed)
-4. Verifies all hook scripts exist and are executable
-5. Runs `setup-skills-worktree.sh` which:
+2. Merges non-hook settings from `global-settings.json` into `~/.claude/settings.json` (existing keys like `permissions`, `model`, `env` are preserved — only missing keys are seeded). **New sub-keys** (like `permissions.deny`) are seeded on first encounter — they do NOT propagate automatically on subsequent runs, only on a fresh re-run of `bash ./setup.sh` when the sub-key is absent. `statusLine` is skipped here alongside `hooks`: both carry path placeholders that only the skills-worktree registration in step 4 can resolve
+3. Verifies all hook scripts exist and are executable
+4. Runs `setup-skills-worktree.sh` which:
    - Creates a dedicated skills worktree and skill symlinks
    - Registers all hooks into `~/.claude/settings.json` with paths pointing to the skills worktree (migrates stale root-repo or placeholder paths automatically)
    - Resolves the `statusLine` command the same way (your own status line, if you have one, is left untouched)
-6. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
-7. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
-8. Symlinks each `~/.claude/agents/<name>.md` → skills worktree, so the phase agents (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`, `researcher`) are spawnable from any repo. **A brand-new `~/.claude/agents/` directory needs a session restart before the types register** — until then, spawn `general-purpose` with the verbatim SAFETY/MINDSET/SKILLS blocks instead (`.claude/rules/subagent-orchestration.md`)
+5. Symlinks `~/.claude/CLAUDE.md` → skills worktree (`~/.claude/skills-worktree/CLAUDE.md`)
+6. Symlinks `~/.claude/rules` → skills worktree (`~/.claude/skills-worktree/.claude/rules`)
+7. Symlinks each `~/.claude/agents/<name>.md` → skills worktree, so the phase agents (`phase-a-fixer`, `phase-b-reviewer`, `phase-c-merger`, `pm-worker`, `researcher`) are spawnable from any repo. **A brand-new `~/.claude/agents/` directory needs a session restart before the types register** — until then, spawn `general-purpose` with the verbatim SAFETY/MINDSET/SKILLS blocks instead (`.claude/rules/subagent-orchestration.md`)
 8. Verifies all hook paths in `settings.json` resolve to existing, executable scripts
 
 ## Optional: keep this machine current on its own (macOS)
@@ -98,7 +97,6 @@ Optional tools (for the full review workflow):
 - [CodeRabbit](https://coderabbit.ai) — AI code review on PRs
 - [CodeRabbit CLI](https://docs.coderabbit.ai/cli) — local pre-push reviews (`coderabbit review --agent`). Install via `brew install coderabbit` (macOS) or `curl -fsSL https://cli.coderabbit.ai/install.sh | sh` (cross-platform); auth via `coderabbit auth login` (browser OAuth) or the `$CODERABBIT_API_KEY` env var for non-interactive use
 - [CodeAnt CLI](https://docs.codeant.ai/cli/setup.md) — local pre-push reviews, npm/Node.js required. Install via `npm install -g codeant-cli`; auth via `codeant login` (browser OAuth, key stored in `~/.codeant/config.json`)
-- [Graphite CLI](https://graphite.dev/docs/command-line) — stacked PRs; pair with the Graphite Claude Code plugins enabled via `setup.sh` (see [README.md](README.md#getting-started))
 - [Greptile](https://greptile.com) — fallback reviewer when CodeRabbit is rate-limited
 
 See [README.md](README.md) for full documentation.

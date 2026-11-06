@@ -1,6 +1,6 @@
 ## GitHub CodeRabbit Review Loop (Fallback)
 
-> **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (CR; CodeAnt/Graphite in parallel; paid BugBot/Greptile only on owner approval). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
+> **NEVER declare a PR done immediately after pushing.** Every push triggers new review activity (CR; CodeAnt in parallel; paid BugBot/Greptile only on owner approval). Poll until `cr-merge-gate.md` is met; "0 unresolved threads" is not an exit condition.
 >
 > **Always:** Poll all 3 endpoints + check-runs every cycle (`per_page=100`; filter per-bot logins like `coderabbitai[bot]` after fetching). Batch fixes into one commit. Reply to every thread. Resolve via `resolve-review-threads.sh`. Enter the polling loop immediately after push — do NOT ask. Invoke `/fixpr` when any trigger condition fires.
 > **Ask first:** Merging, and any paid review (`safety.md`).
@@ -22,7 +22,7 @@ Before the first poll tick:
 Run before the first poll tick and before any new review trigger on push, resume, or post-compaction re-entry.
 
 1. Fetch all 3 comment endpoints (**Polling** below).
-2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, or `graphite-app[bot]` (no fix reply, code unchanged, not outdated/resolved).
+2. Identify unresolved findings from `coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, or `codeant-ai[bot]` (no fix reply, code unchanged, not outdated/resolved).
 3. **If ANY unresolved: invoke `/fixpr` now** — no polling or new reviews until complete.
 
 ### Per-cycle check (every 60 seconds)
@@ -38,7 +38,7 @@ If **ANY** condition below holds, invoke `/fixpr` and do NOT request a new revie
 
 > **Unresolved threads are NOT a trigger.** After a fix push, keep polling for reviewer catch-up unless conditions 1-4 occur.
 
-If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows — never Graphite).
+If this cycle requires no `/fixpr` and the audit was clean for current SHA, run `maybe-trigger-ai-review.sh <PR>` (tier-aware repos: only what `review-triggers-allowed.sh` allows).
 
 **Exit polling ONLY when the merge gate (`cr-merge-gate.md`) is met.** After any `/fixpr` push, reset all three watermarks (`poll-watermarks.sh <PR> --reset`) and keep polling for the reviewer's response to the new SHA.
 
@@ -76,7 +76,7 @@ Verdicts: `gate_met`, `polling_cr`, `no_reviewer`, `tier_gate`, `self_review` (`
 
 ### Timeout & Fallback — Free Review, Then No Reviewer
 
-**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt + Graphite — `.claude/reference/codeant-graphite-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Roles + cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
+**Chain:** CR (free allowance) → `no_reviewer` (issue #1897). BugBot and Greptile are paid — owner approval in chat only, never automatic fallbacks. **Decline** CodeRabbit's paid on-demand review offer; wait out its free retry window or the no-review override, whichever comes first (`.claude/reference/cr-rate-limits.md`). **Supplemental (CR path):** CodeAnt — `.claude/reference/codeant-supplemental.md`. **Sticky:** a PR already on BugBot or Greptile never moves back up. Roles + cost rationale: `.claude/reference/ai-review-chain-roles-decision.md`.
 
 ### Processing CR Feedback
 

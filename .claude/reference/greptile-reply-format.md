@@ -12,7 +12,7 @@
 Post every reply to a bot finding through `reply-thread.sh` with the mandatory `--verdict`/`--defect` flags (and `--fix` with `--defect real`). A raw `gh api …/replies` or `gh pr comment` call posts **no** `review-verdict` marker, so the review-cost ledger cannot record the verdict or a `defect=real` — use the helper, which also falls back to a PR-level comment on 404 and strips the reviewer's own `@mention`:
 
 ```bash
-reply-thread.sh <comment_id> --reviewer bugbot|greptile|cr|codeant|graphite \
+reply-thread.sh <comment_id> --reviewer bugbot|greptile|cr|codeant \
   --body "Fixed in \`SHA\`: <what changed>" --pr N \
   --verdict fixed|deferred|declined --defect real|not \
   --fix as-given|adapted|wrong|none   # required with --defect real

@@ -6,8 +6,8 @@
 # WHAT IS UNDER TEST
 #   A repo may declare review tiers (.claude/reference/review-policy.md). BugBot
 #   is invited only on the `full` gate or with no policy (`legacy`), so on a
-#   ci-only or ci+codeant-one-round PR this script posts the CodeAnt and
-#   Graphite nudges but NOT `@cursor review`, and says so in --json.
+#   ci-only or ci+codeant-one-round PR this script posts the CodeAnt nudge but
+#   NOT `@cursor review`, and says so in --json.
 #
 #   The skip FAILS OPEN: a missing helper or an unresolvable tier posts, the
 #   same direction as the refusal guard (maybe-trigger-bugbot-suppression.test.sh).
@@ -132,12 +132,12 @@ read_step() {
 
 ############################################################################
 for gate in ci-only ci+codeant-one-round; do
-  echo "== (a): gate $gate -> no @cursor review; CodeAnt and Graphite still post =="
+  echo "== (a): gate $gate -> no @cursor review; CodeAnt still posts =="
   setup "$(tier_json "$gate")"
   run_script; RC=$?
   check_eq "exit 0" "0" "$RC"
   check_eq "no @cursor review posted" "0" "$(posted_cursor)"
-  check_eq "CodeAnt and Graphite posted, in order" "@codeant-ai review;@graphite-app re-review;" "$(posted_all)"
+  check_eq "CodeAnt posted, nothing else" "@codeant-ai review;" "$(posted_all)"
   check_eq "--json reports the tier skip" \
     "{\"reason\":\"review_tier\",\"gate\":\"$gate\"}" "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
   check_eq "--json status stays triggered" "triggered" "$(jq -r '.status' <<<"$JSON_OUT")"
@@ -146,13 +146,13 @@ done
 
 ############################################################################
 for gate in full legacy; do
-  echo "== (b): gate $gate -> CodeAnt and Graphite post; BugBot needs owner approval (#1897) =="
+  echo "== (b): gate $gate -> CodeAnt posts; BugBot needs owner approval (#1897) =="
   setup "$(tier_json "$gate")"
   run_script; RC=$?
   check_eq "exit 0" "0" "$RC"
   check_eq "@cursor review NOT posted — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
-  check_eq "only the free nudges posted, in order" \
-    "@codeant-ai review;@graphite-app re-review;" "$(posted_all)"
+  check_eq "only the free nudge posted" \
+    "@codeant-ai review;" "$(posted_all)"
   check_eq "--json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 done
 
@@ -176,34 +176,31 @@ check_eq "@cursor review NOT posted despite a ci-only resolver — paid, owner a
 
 ############################################################################
 echo "== (e): a tier skip leaves the cursor step open, so a resume re-asks the tier =="
-# A completed run clears the steps record; failing the Graphite post keeps it
-# alive, which is the only state a retry reads (same shape as the refusal suite).
+# No post follows the cursor step any more (Graphite retired 2026-11-03, #1889),
+# so a partial record is seeded instead of produced by a failing later post. Its
+# shape is the pre-#1889 one, `graphite: false` included: an old record must
+# resume cleanly and post nothing for the retired step.
+seed_partial() {
+  ( cd "$REPO_ROOT" && "$STUB_DIR/session-state.sh" --set \
+      ".prs[\"$PR_NUM\"].ai_review_trigger_steps={\"head_sha\":\"$HEAD_SHA\",\"cr_rounds\":3,\"codeant\":true,\"cursor\":false,\"graphite\":false}" >/dev/null )
+}
 setup "$(tier_json ci-only)"
-export FIXTURE_POST_FAIL="@graphite-app re-review"
+seed_partial
+check_eq "precondition: cursor step open in the seeded record" "false" "$(read_step cursor)"
 run_script; RC=$?
-check_eq "run failed at the graphite step" "5" "$RC"
-check_eq "cursor step NOT recorded (a tier can change without a push)" "false" "$(read_step cursor)"
-check_eq "graphite step still false (record is partial, not all-true)" "false" "$(read_step graphite)"
+check_eq "resume exits 0" "0" "$RC"
 check_eq "no @cursor review posted" "0" "$(posted_cursor)"
-# The retry while the tier still excludes BugBot: Graphite posts, cursor does not.
-export FIXTURE_POST_FAIL=""
-run_script; RC=$?
-check_eq "retry exits 0" "0" "$RC"
-check_eq "still no @cursor review after the retry" "0" "$(posted_cursor)"
-check_eq "codeant posted exactly once across both runs" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
+check_eq "codeant not re-posted on the resume" "0" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
+check_eq "nothing posted for the retired graphite step" "0" "$(grep -c graphite "$POSTED" | tr -d ' ')"
 
-echo "== (e2): the tier changes to full before the retry -> the resumed run reaches the owner-approval skip =="
-setup "$(tier_json ci-only)"
-export FIXTURE_POST_FAIL="@graphite-app re-review"
+echo "== (e2): the tier changes to full before the resume -> the resumed run reaches the owner-approval skip =="
+setup "$(tier_json full)"
+seed_partial
 run_script; RC=$?
-check_eq "run failed at the graphite step" "5" "$RC"
-check_eq "no @cursor review posted on the ci-only run" "0" "$(posted_cursor)"
-export FIXTURE_POST_FAIL="" FIXTURE_TIER_OUT="$(tier_json full)"
-run_script; RC=$?
-check_eq "retry exits 0" "0" "$RC"
+check_eq "resume exits 0" "0" "$RC"
 check_eq "@cursor review NOT posted, now that the tier invites BugBot — paid, owner approval required (#1897)" "0" "$(posted_cursor)"
-check_eq "codeant not re-posted on the retry" "1" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
-check_eq "retry --json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
+check_eq "codeant not re-posted on the resume" "0" "$(grep -cFx "@codeant-ai review" "$POSTED" | tr -d ' ')"
+check_eq "resume --json reports the approval skip" '{"reason":"approval_required","gate":null}' "$(jq -c '.bugbot_skipped' <<<"$JSON_OUT")"
 
 ############################################################################
 echo "== (f): --dry-run reports the same answer the real run acts on =="

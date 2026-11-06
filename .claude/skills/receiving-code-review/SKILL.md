@@ -25,7 +25,7 @@ Code review requires technical evaluation, not emotional performance. This skill
 
 ```
 WHEN a bot reviewer (coderabbitai[bot], cursor[bot], greptile-apps[bot],
-     codeant-ai[bot], graphite-app[bot]) posts a finding:
+     codeant-ai[bot]) posts a finding:
 
 1. READ:        Complete the finding without reacting
 2. UNDERSTAND:  Restate the requirement in your own words (or flag if unclear)
@@ -47,7 +47,7 @@ How you reply depends on the reviewer:
 
 - **`coderabbitai[bot]`:** Replies teach CodeRabbit's model. Use `@coderabbitai` in a PR-level comment for general context; inline replies for thread-specific responses.
 - **`cursor[bot]` (BugBot) / `greptile-apps[bot]`:** Plain text only. Do NOT include `@cursor` or `@greptileai` in reply comments — each mention triggers a new paid review. For the exact reply-format table see `.claude/reference/greptile-reply-format.md`.
-- **`codeant-ai[bot]` / `graphite-app[bot]`:** Plain text inline replies.
+- **`codeant-ai[bot]`:** Plain text inline replies.
 
 ## Forbidden Responses
 

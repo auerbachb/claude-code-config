@@ -135,6 +135,7 @@ def classify:
 # A shorter list here silently zeroes finding_count for the missing bot, and
 # with it --wait-state-eval's new_findings, so /fixpr's wait loop reports clean
 # while that bot's finding sits open on HEAD.
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so historical comments still classify.
 def review_bots:
   ["coderabbitai[bot]", "cursor[bot]", "codeant-ai[bot]", "greptile-apps[bot]", "graphite-app[bot]"];
 

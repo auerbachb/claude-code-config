@@ -811,10 +811,10 @@ gh api graphql -f query='query {
 ```
 
 Count unresolved threads from reviewers:
-- Filter for threads where any comment is from one of the five review bots — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps` or `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix)
+- Filter for threads where any comment is from one of the review bots — `coderabbitai`, `cursor`, `codeant-ai`, `greptile-apps`, or the retired `graphite-app` (GraphQL's `author.login` drops the REST `[bot]` suffix)
 - Only count threads where `isResolved == false`
 
-Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the five review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
+Also check for issue-level review comments that may not have threads. Use the shared `pr-state.sh` helper — it fetches all three endpoints in one call, filters to the review bots (`coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]`, plus the retired `graphite-app[bot]`), and pre-classifies each comment with `classification.class` (`finding` vs `acknowledgment`). The classifier only runs when `--since <iso>` is passed — pass the PR's `createdAt` to include every bot comment on the PR. The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
 ```bash
 PR_CREATED=$(gh pr view "$PR_NUM" --json createdAt --jq '.createdAt')
@@ -827,10 +827,10 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
   2. Verify against actual code before fixing
   3. Fix ALL valid findings in a single commit
   4. Push once
-  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai`/`@graphite-app` for BugBot/Greptile/CodeAnt/Graphite):
+  5. Reply to every finding confirming the fix — each thread, and each issue-level comment that has no thread. Use the shared helper with the finding's comment ID — it tries the inline `/replies` endpoint first, falls back to a PR-level comment on 404 (the path an issue-level comment's ID always takes), and applies reviewer-specific `@mention` rules (prepends `@coderabbitai` for CR; strips `@cursor`/`@greptileai`/`@codeant-ai` for BugBot/Greptile/CodeAnt):
 
      ```bash
-     # $REVIEWER: cr | bugbot | greptile | codeant | graphite (determined from the finding's author)
+     # $REVIEWER: cr | bugbot | greptile | codeant (determined from the finding's author)
      # $VERDICT: fixed | deferred | declined; $DEFECT: real | not — mandatory (issue #1842)
      # $FIX: as-given | adapted | wrong | none — mandatory (issue #1843; scored only when $DEFECT is real)
      # $REPLY must match $VERDICT: "Fixed in `<sha>`: <what changed>" for fixed,
@@ -844,7 +844,7 @@ jq '.new_since_baseline.conversation | map(select(.classification.class == "find
 
      Exit code `0` means the reply posted (by either the inline endpoint or the PR-level fallback); the fallback path also emits a note to stderr. Non-zero means a genuine failure to post. See `reply-thread.sh --help` for the full contract, including PR-number-unresolvable-without-`--pr` or both-endpoints-404 (exit 3) and inline-404-then-fallback-non-404 (exit 4).
 
-  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the five review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`graphite-app`/`codeant-ai` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
+  6. Resolve all bot threads with the shared helper (paginated; by default it selects threads whose **first** comment is from one of the review-bot authors — `coderabbitai`/`cursor`/`greptile-apps`/`codeant-ai`, plus the retired `graphite-app` — and falls back to `minimizeComment` on failure). The count above also includes a human-opened thread that a bot replied in; the default filter skips it, so pass its thread ID with `--thread-ids`, which bypasses the author filter:
 
      ```bash
      "$RESOLVE_REVIEW_THREADS_SH" "$PR_NUM"

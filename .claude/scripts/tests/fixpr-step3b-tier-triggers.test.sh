@@ -56,7 +56,7 @@ cat > "$S/reviewer-activity.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'activity %s GH_REPO=%s\n' "$*" "${GH_REPO:-}" >> "$CALLS"
 if [[ -n "${FIXTURE_ACTIVE:-}" ]]; then echo "$FIXTURE_ACTIVE"
-else echo '{"coderabbit":false,"graphite":false,"codeant":false}'; fi
+else echo '{"coderabbit":false,"codeant":false}'; fi
 EOF
 printf '#!/usr/bin/env bash\nexit 1\n' > "$S/bugbot-refused-head.sh"
 cat > "$S/review-daily-cap.sh" <<'EOF'
@@ -141,19 +141,19 @@ ledger() { ( cd "$WORK" && bash "$S/session-state.sh" --repo acme/one --get-json
 echo "== no ## Review policy: the legacy order and conditions, unchanged =="
 reset "$(tier_json absent legacy)"
 step3b
-check_eq "the three free reviewers, in the legacy order; BugBot needs owner approval (#1897)" "@coderabbitai full review;@graphite-app re-review;@codeant-ai review;" "$(posted)"
+check_eq "the two free reviewers, in the legacy order; BugBot needs owner approval (#1897)" "@coderabbitai full review;@codeant-ai review;" "$(posted)"
 check_eq "  the approval skip is named" "yes" "$(says 'BugBot not invited — paid review requires owner approval')"
 check_eq "the CodeRabbit slot was recorded" "cr-hourly --record-explicit $PR" "$(grep '^cr-hourly' "$CALLS")"
 check_eq "reviewer activity asked about the pushed SHA in this repo" "yes" "$(grep -q "^activity $PR $SHA .* GH_REPO=acme/one$" "$CALLS" && echo yes || echo no)"
 check_eq "mode line" "yes" "$(says 'TRIGGER_MODE=legacy')"
 reset "$(tier_json absent legacy)"
-export FIXTURE_ACTIVE='{"coderabbit":true,"graphite":false,"codeant":true}'
+export FIXTURE_ACTIVE='{"coderabbit":true,"codeant":false}'
 step3b
-check_eq "active reviewers are not re-triggered" "@graphite-app re-review;" "$(posted)"
+check_eq "active reviewers are not re-triggered" "@codeant-ai review;" "$(posted)"
 reset "$(tier_json absent legacy)"
 jq -cn --arg at "$(ago 600)" '[range(2) | {user: {login: "me"}, body: "@coderabbitai full review", created_at: $at}]' > "$FX/comments.json"
 step3b
-check_eq "two CodeRabbit triggers in the last hour: CodeRabbit skipped, the free rest post" "@graphite-app re-review;@codeant-ai review;" "$(posted)"
+check_eq "two CodeRabbit triggers in the last hour: CodeRabbit skipped, the free rest post" "@codeant-ai review;" "$(posted)"
 check_eq "  and says why" "yes" "$(says 'coderabbit trigger budget exhausted')"
 
 echo "== ci-only: a push draws NO reviewer comment =="
@@ -183,12 +183,13 @@ checks success 7200
 step3b
 check_eq "green and settled: CodeAnt only — BugBot needs owner approval" "@codeant-ai review;" "$(posted)"
 check_eq "  the approval skip is named" "yes" "$(says 'BugBot not invited — paid review requires owner approval')"
-check_eq "  never Graphite" "yes" "$(says 'skipping @graphite-app re-review — review tier full: tier_excluded')"
+# Graphite retired 2026-11-03 (#1889): never posted, not even named.
+check_eq "  never Graphite" "no" "$( [[ "$OUT$(posted)" == *raphite* ]] && echo yes || echo no )"
 check_eq "  CodeRabbit is not the fallback" "yes" "$(says 'skipping @coderabbitai full review — review tier full: not_fallback')"
 
 echo "== full: an active reviewer is never re-triggered =="
 reset "$(tier_json present full)"
-export FIXTURE_ACTIVE='{"coderabbit":false,"graphite":false,"codeant":true}'
+export FIXTURE_ACTIVE='{"coderabbit":false,"codeant":true}'
 step3b
 check_eq "CodeAnt active on the pushed SHA: nothing (BugBot needs owner approval)" "" "$(posted)"
 check_eq "  no CodeAnt claim" "null" "$(ledger codeant)"

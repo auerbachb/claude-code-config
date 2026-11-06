@@ -548,7 +548,7 @@ run still answered the month's question.
 **No drift: one line, and nothing else** (issue #1201 AC4):
 
 ```
-[<ET timestamp>] review-stack-audit <MONTH>: no change — 6 tools, <N> PRs, 0 drift. Snapshot: <path>
+[<ET timestamp>] review-stack-audit <MONTH>: no change — 5 tools, <N> PRs, 0 drift. Snapshot: <path>
 ```
 
 **Drift found:** the count by severity, one line per finding (code, tool,

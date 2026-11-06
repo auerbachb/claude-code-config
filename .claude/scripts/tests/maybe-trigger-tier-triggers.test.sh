@@ -144,7 +144,7 @@ echo "== no ## Review policy: the legacy path, unchanged, with the helper presen
 reset "$(tier_json absent legacy)"
 run
 check_eq "exit 0" "0" "$RC"
-check_eq "the free reviewers post, in order; BugBot needs owner approval (#1897)" "@codeant-ai review;@graphite-app re-review;" "$(posted)"
+check_eq "the free reviewer posts; BugBot needs owner approval (#1897)" "@codeant-ai review;" "$(posted)"
 check_eq "legacy status" "triggered" "$(f .status)"
 check_eq "no tier fields on the legacy path" "null" "$(f .trigger_mode)"
 check_eq "no ledger written" "null" "$(ledger codeant)"
@@ -156,7 +156,9 @@ check_eq "exit 0" "0" "$RC"
 check_eq "no comment" "" "$(posted)"
 check_eq "status skipped/tier_excluded" "skipped:tier_excluded" "$(f '"\(.status):\(.reason)"')"
 check_eq "trigger_mode tiered" "tiered" "$(f .trigger_mode)"
-check_eq "every skip is the tier" "tier_excluded,tier_excluded,tier_excluded" "$(f '[.trigger_skips.codeant.reason, .trigger_skips.cursor.reason, .trigger_skips.graphite.reason] | join(",")')"
+check_eq "every skip is the tier" "tier_excluded,tier_excluded" "$(f '[.trigger_skips.codeant.reason, .trigger_skips.cursor.reason] | join(",")')"
+# Graphite retired 2026-11-03 (#1889): never a step, never a skip.
+check_eq "  no graphite skip key" "false" "$(f '.trigger_skips | has("graphite")')"
 check_eq "bugbot_skipped keeps its shape" "review_tier:ci-only" "$(f '"\(.bugbot_skipped.reason):\(.bugbot_skipped.gate)"')"
 run
 check_eq "the next tick is a duplicate" "duplicate_poll_tick" "$(f .reason)"
@@ -171,7 +173,7 @@ export FIXTURE_ROUNDS=5 FIXTURE_HEAD="$HEAD2"
 run
 check_eq "a later round on a new HEAD posts nothing" "@codeant-ai review;" "$(posted)"
 check_eq "  codeant hit its lifetime cap" "lifetime_cap" "$(f .trigger_skips.codeant.reason)"
-check_eq "  no BugBot, no Graphite" "tier_excluded:tier_excluded" "$(f '"\(.trigger_skips.cursor.reason):\(.trigger_skips.graphite.reason)"')"
+check_eq "  no BugBot" "tier_excluded" "$(f .trigger_skips.cursor.reason)"
 reset "$(tier_json present ci+codeant-one-round)"
 export FIXTURE_INVISIBLE=1
 run
@@ -203,7 +205,7 @@ export FIXTURE_ROUNDS=7 FIXTURE_HEAD="$HEAD"
 run
 check_eq "third round: still no BugBot" "@codeant-ai review;" "$(posted)"
 check_eq "  approval_required (never invited, so the lifetime cap is never reached)" "approval_required" "$(f .trigger_skips.cursor.reason)"
-check_eq "  Graphite never" "tier_excluded" "$(f .trigger_skips.graphite.reason)"
+check_eq "  Graphite never (retired, #1889)" "0" "$(grep -c graphite "$POSTED" | tr -d ' ')"
 
 echo "== full: the daily cap and a refused HEAD still skip BugBot =="
 reset "$(tier_json present full)"
@@ -270,10 +272,10 @@ chmod +x "$S/review-tier.sh"
 run
 check_eq "nothing posted" "" "$(posted)"
 check_eq "fail_closed mode" "fail_closed" "$(f .trigger_mode)"
-check_eq "deferred for every step" '["codeant","cursor","graphite"]' "$(f '.deferred | tostring')"
+check_eq "deferred for every step" '["codeant","cursor"]' "$(f '.deferred | tostring')"
 rm -f "$WORK/.claude/pm-config.md"
 run
-check_eq "the same failure on a policy-free checkout: legacy, the free reviewers post" "@codeant-ai review;@graphite-app re-review;" "$(posted)"
+check_eq "the same failure on a policy-free checkout: legacy, the free reviewer posts" "@codeant-ai review;" "$(posted)"
 
 echo
 echo "== summary: $PASS passed, $FAIL failed =="

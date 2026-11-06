@@ -2454,6 +2454,7 @@ fi
 
 # Stale bot CHANGES_REQUESTED (wrong SHA) — dismiss via dismiss-stale-bot-changes.sh
 # or /wrap recovery; emitted as JSON for orchestration (#452 / issue #426).
+# graphite-app[bot]: retired 2026-11-03 (#1889); kept so a leftover stale review still counts.
 STALE_BOT_CHANGES_COUNT=$(echo "$REVIEWS_JSON" | jq -r --arg sha "$HEAD_SHA" '
   def allow: ["coderabbitai[bot]","cursor[bot]","greptile-apps[bot]","codeant-ai[bot]","graphite-app[bot]"];
   [.[]?

@@ -175,8 +175,7 @@ eval_watermarks() {
       .user.login == "coderabbitai[bot]"
       or .user.login == "cursor[bot]"
       or .user.login == "greptile-apps[bot]"
-      or .user.login == "codeant-ai[bot]"
-      or .user.login == "graphite-app[bot]";
+      or .user.login == "codeant-ai[bot]";
     def max_id($items):
       ([$items[]? | .id // empty] | max // 0);
     def new_finding_count($items; $endpoint; $wm):

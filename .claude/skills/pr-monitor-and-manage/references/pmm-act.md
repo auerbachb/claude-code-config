@@ -77,7 +77,8 @@ if [ -n "$DISMISS" ] && [ -n "$BASH4" ]; then
 else
   # Inline REST fallback (POSIX-safe, no mapfile) — same allowlist + semantics
   # as the script: dismiss only Bot-authored CHANGES_REQUESTED whose commit_id
-  # != current HEAD. NEVER touches human reviews.
+  # != current HEAD. NEVER touches human reviews. graphite-app[bot]: retired
+  # 2026-11-03; kept so a leftover stale review still dismisses.
   HEAD_SHA=$(gh pr view "$N" --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/$OWNER/$REPO/pulls/$N/reviews?per_page=100" | jq -s 'add // []' \
    | jq -r --arg sha "$HEAD_SHA" '
@@ -117,7 +118,6 @@ PF_KEY=""
 case "$REVIEWER" in
   cr) PF_KEY="coderabbit" ;;   # gate-side name → pre-flight reviewer key
   bugbot) PF_KEY="cursor" ;;
-  graphite) PF_KEY="graphite" ;;
 esac
 if [ -n "$PF_KEY" ] && [ -n "${PF_SUMMARY_BY_PR[$N]:-}" ] \
    && [ "$(jq -r --arg k "$PF_KEY" '.reviewers[$k].status // ""' <<<"${PF_SUMMARY_BY_PR[$N]}" 2>/dev/null)" = "triggered" ]; then
@@ -176,13 +176,6 @@ case "$REVIEWER" in
     # approval in chat (issue #1897), which a fleet tick never has.
     echo "[PMM] bugbot owning reviewer on #$N — re-review is paid and needs owner approval; not posted (#1897)"
     ta_release
-    ;;
-  graphite)
-    if gh pr comment "$N" --body "@graphite-app re-review" >/dev/null 2>&1; then
-      echo "[PMM] re-triggered owning bot (graphite) on #$N"
-    else
-      ta_release
-    fi
     ;;
   greptile)
     echo "[PMM] greptile owning reviewer on #$N — no auto-trigger per greptile.md"

@@ -74,15 +74,14 @@ HEAD scoping is the point: a reviewer that only ran on an older commit must read
 engagement_matrix() {  # $1 = pr-state.sh bundle JSON ("" or unparseable → all "?")
   local bundle="$1"
   if [[ -z "$bundle" ]]; then
-    printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?","graphite":"?"}'
+    printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?"}'
     return 0
   fi
   jq -c '
     def reviewers: [
       {key:"coderabbit", login:"coderabbitai[bot]", needles:["coderabbit"]},
       {key:"codeant",    login:"codeant-ai[bot]",   needles:["codeant"]},
-      {key:"bugbot",     login:"cursor[bot]",       needles:["cursor","bugbot"]},
-      {key:"graphite",   login:"graphite-app[bot]", needles:["graphite"]}
+      {key:"bugbot",     login:"cursor[bot]",       needles:["cursor","bugbot"]}
     ];
     # Pure-acknowledgment comments that must NOT count as engagement.
     def is_ack($body):
@@ -121,10 +120,9 @@ engagement_matrix() {  # $1 = pr-state.sh bundle JSON ("" or unparseable → all
       )
     | { coderabbit: (map(select(.key=="coderabbit"))[0].engaged),
         codeant:    (map(select(.key=="codeant"))[0].engaged),
-        bugbot:     (map(select(.key=="bugbot"))[0].engaged),
-        graphite:   (map(select(.key=="graphite"))[0].engaged) }
+        bugbot:     (map(select(.key=="bugbot"))[0].engaged) }
   ' <<<"$bundle" 2>/dev/null \
-    || printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?","graphite":"?"}'
+    || printf '%s' '{"coderabbit":"?","codeant":"?","bugbot":"?"}'
 }
 ```
 
@@ -182,7 +180,7 @@ gh api "repos/$OWNER/$REPO/pulls/$N/comments?per_page=100"
 gh api "repos/$OWNER/$REPO/issues/$N/comments?per_page=100"
 ```
 
-Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`, `graphite-app[bot]`). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
+Filter to actionable bot findings (`coderabbitai[bot]`, `cursor[bot]`, `greptile-apps[bot]`, `codeant-ai[bot]`). Also record the **reviewer classification** (`cr`, `bugbot`, or `greptile`) from `reviewer-of.sh` or gate JSON for the subagent prompt.
 
 ### Refinement pass: `fixpr` verdicts for concurrency + idempotency (still Step 3)
 
@@ -313,27 +311,25 @@ Print the **full table** (below the lead line) when ANY of:
 
 A PR merged this tick is reported via the per-tick `merged #N` line (Step 5d) and then naturally disappears from the fleet on the next `gh pr list` discovery — no table row lingers.
 
-Each PR's four engagement cells are part of `ROW_TUPLE_SORTED`, so a reviewer arriving on or dropping off HEAD is a display change like any other — it feeds (b)'s digest half and never on its own forces a print.
+Each PR's three engagement cells are part of `ROW_TUPLE_SORTED`, so a reviewer arriving on or dropping off HEAD is a display change like any other — it feeds (b)'s digest half and never on its own forces a print.
 
 ### Reviewer engagement block
 
 Printed on every tick that prints the table, directly beneath it (and beneath the merge-sequence annotation when there is one). One row per PR in the same order as the table; ✅ = engaged on the current HEAD SHA, ❌ = missing, `?` = the bundle was unavailable for that PR.
 
-| PR | CodeRabbit | CodeAnt | BugBot | Graphite |
-|----|------------|---------|--------|----------|
-| #476 | ✅ | ❌ | ✅ | ❌ |
-| #479 | ❌ | ❌ | ✅ | ❌ |
+| PR | CodeRabbit | CodeAnt | BugBot |
+|----|------------|---------|--------|
+| #476 | ✅ | ❌ | ✅ |
+| #479 | ❌ | ❌ | ✅ |
 
 Under it, one line per PR that is missing at least one reviewer, naming the missing ones — omit the line entirely for a fully covered PR, and omit the whole block when the fleet is empty:
 
 ```text
-Gaps: PR #476 — missing: CodeAnt, Graphite
-Gaps: PR #479 — missing: CodeRabbit, CodeAnt, Graphite
+Gaps: PR #476 — missing: CodeAnt
+Gaps: PR #479 — missing: CodeRabbit, CodeAnt
 ```
 
 When every PR is fully covered, replace the gap lines with a single `Reviewer engagement: all PRs covered on HEAD.`
-
-**Graphite caveat.** A ❌ in the Graphite column may reflect the known app-level outage rather than a fresh per-PR gap — diagnostic method and current status in `.claude/reference/codeant-graphite-supplemental.md`. Say so once when Graphite is the only missing reviewer across the fleet; do not repeat it per row.
 
 **Authority boundary.** The block is display-only. It proposes nothing and posts nothing: reviewer triggers are issued solely by Step 5.0's `pr-preflight.sh` (CR account hourly budget + per-PR 2-explicit-triggers/hour cap, fail-closed), and Step 2's `READ_ONLY_FLEET` guard already suppresses every dispatch when the fleet is not the authenticated user's. A gap on a PR you did not author is therefore reported and never acted on.
 
