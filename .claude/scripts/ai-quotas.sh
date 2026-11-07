@@ -2002,11 +2002,42 @@ codex_http_fallback() { # <label> <profile_dir> <email> <why>
     return 0
   fi
 
-  # The HTTP payload nests the same snapshot one or two levels down
-  # depending on the caller; take the first object that carries a window.
-  # The reset-credit summary is a sibling of the window data here too, under
-  # `rate_limit_reset_credits` (#1862), so keep it when the windows are nested.
-  jq '. as $top | (.rate_limits // .rateLimits // .usage.rateLimits // .) as $s
+  # The captured wham wire body is snake_case and expresses duration in
+  # seconds. Normalize only this boundary; app-server keeps its own contract.
+  # A reset is an absolute Unix second when supplied, otherwise a validated
+  # relative interval on the reader's existing clock. Never invent USD from
+  # the unlabelled credits.balance or guess an unsupported duration's unit.
+  jq --argjson now "$NOW" '
+      def num:
+        if type == "number" then (if isfinite then . else null end)
+        elif type == "string" and test("^[0-9]+(\\.[0-9]+)?$")
+        then (tonumber | if isfinite then . else null end)
+        else null end;
+      def whole:
+        num | if . == null then null
+              elif . >= 0 and . == floor then . else null end;
+      def wire_window:
+        if type != "object" then null else
+          . as $w | ($w.used_percent | num) as $pct
+          | ($w.limit_window_seconds | whole) as $seconds
+          | ($w.reset_at | whole) as $absolute
+          | ($w.reset_after_seconds | whole) as $relative
+          | if $pct == null or $pct < 0
+               or ($w.limit_window_seconds != null and
+                   ($seconds == null or $seconds == 0 or $seconds % 60 != 0))
+            then null else
+              {usedPercent:$pct,
+               windowDurationMins:(if $seconds != null then $seconds / 60 else null end),
+               resetsAt:(if $absolute != null then $absolute
+                         elif $relative != null then $now + $relative else null end)}
+            end
+        end;
+      . as $top
+      | (if (.rate_limit | type) == "object" then
+           {planType:(if (.plan_type | type) == "string" then .plan_type else null end),
+            primary:(.rate_limit.primary_window | wire_window),
+            secondary:(.rate_limit.secondary_window | wire_window)}
+         else (.rate_limits // .rateLimits // .usage.rateLimits // .) end) as $s
       | if ($s | type) == "object" and ($top.rate_limit_reset_credits | type) == "object"
         then $s + {rate_limit_reset_credits: $top.rate_limit_reset_credits}
         else $s end' "$body" > "$snap" 2>/dev/null || : > "$snap"
