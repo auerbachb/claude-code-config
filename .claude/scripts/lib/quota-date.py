@@ -1,4 +1,5 @@
 """Bounded date operations for quota tools. No version/banner classification."""
+from datetime import datetime
 import os
 import re
 import signal
@@ -93,9 +94,16 @@ def format_epoch(dialect, epoch, fmt, zone):
 
 
 def parse_iso(dialect, iso):
-    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})', iso):
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})', iso):
         return None
     iso = re.sub(r'\.[0-9]+', '', iso)
+    iso = re.sub(r'([+-][0-9]{2})([0-9]{2})$', r'\1:\2', iso)
+    # BSD strptime/mktime can normalize February 31 into March. Validate the
+    # actual calendar, clock and UTC offset before invoking either dialect.
+    try:
+        expected_epoch = int(datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp())
+    except (ValueError, OverflowError, OSError):
+        return None
     if dialect == 'gnu':
         args = ['-u', '-d', iso, '+%s']
     elif iso.endswith('Z'):
@@ -104,7 +112,7 @@ def parse_iso(dialect, iso):
         iso = re.sub(r'([+-][0-9]{2}):([0-9]{2})$', r'\1\2', iso)
         args = ['-u', '-j', '-f', '%Y-%m-%dT%H:%M:%S%z', iso, '+%s']
     rc, value = run(args)
-    if rc or not re.fullmatch(r'-?[0-9]+', value):
+    if rc or not re.fullmatch(r'-?[0-9]+', value) or int(value) != expected_epoch:
         return None
     return value
 

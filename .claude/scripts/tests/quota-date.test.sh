@@ -56,7 +56,10 @@ try:
             y,m,d=map(int,value[:10].split('-'))
             dt=datetime(y,m,1,12,tzinfo=zone)+timedelta(days=d-1)
         else:
-            dt=datetime.strptime(value,shape)
+            try:dt=datetime.strptime(value,shape)
+            except ValueError:
+                # Model BSD's normalizing calendar behavior, not strict Python.
+                dt=datetime.strptime(value[:8]+'01'+value[10:],shape)+timedelta(days=int(value[8:10])-1)
             if dt.tzinfo is None:dt=dt.replace(tzinfo=zone)
             dt=dt.astimezone(zone)
     elif a[0]=='-r':
@@ -100,9 +103,12 @@ except (ValueError,IndexError,OSError):sys.exit(1)
             verify(traces[r_index]['files']==[], 'BSD -r capability probe runs in empty cwd')
         else:
             verify(not any('-r' in t['args'] for t in traces),kind+' never reads epoch-named files')
-        for iso in ('2026-09-08T20:00:00Z','2026-09-09T01:30:00.999+05:30','2026-09-08T16:00:00-04:00'):
+        for iso in ('2026-09-08T20:00:00Z','2026-09-09T01:30:00.999+05:30','2026-09-09T01:30:00.999+0530','2026-09-08T16:00:00-04:00'):
             result=run(kind,'iso',dialect,iso)
             verify(result.returncode==0 and result.stdout.strip()=='1788897600',kind+' ISO offset/fractions '+iso)
+        for invalid in ('2026-02-31T12:00:00Z','2026-02-29T12:00:00Z','2026-09-08T25:00:00Z','2026-09-08T20:60:00Z','2026-09-08T20:00:00+24:00'):
+            result=run(kind,'iso',dialect,invalid)
+            verify(result.returncode==3 and result.stdout=='',kind+' rejects impossible ISO '+invalid)
         for fmt,wanted in [('+%a','Tue'),('+%Y-%m','2026-09'),('+%Y-%m-%d','2026-09-08'),
                            ('+%a %b %-d %-I:%M %p %Z','Tue Sep 8 4:00 PM EDT'),
                            ('+%a %-I:%M %p','Tue 4:00 PM'),('+%b %-d %-I:%M %p ET','Sep 8 4:00 PM ET')]:
@@ -124,6 +130,8 @@ except (ValueError,IndexError,OSError):sys.exit(1)
             result=run(kind,operation,dialect,*args,failure='iso' if operation=='iso' else 'weekday')
             verify(result.returncode!=0 and result.stdout=='',kind+' rejects partial failed '+operation)
 
+    normalizer=subprocess.run([str(bin_dir/'date'),'-u','-j','-f','%Y-%m-%dT%H:%M:%SZ','2026-02-31T12:00:00Z','+%s'],cwd=tmp,env=dict(env,QUOTA_DATE_FIXTURE_KIND='bsd'),text=True,capture_output=True)
+    verify(normalizer.returncode==0 and normalizer.stdout.strip()=='1772539200','negative control: BSD fixture really normalizes February 31 into March 3')
     for kind in ('unsupported','empty','partial','hang'):
         trace.write_text('');started=time.monotonic()
         result=run(kind,'detect')
