@@ -87,12 +87,12 @@ RC=0
 WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
 ```
 
-The `|| RC=$?` guard is required: `--check` exits **1** when stale items exist (the normal "found something" case), which would otherwise abort this step under `set -e`.
+The `|| RC=$?` guard is required: `--check` exits **1** for stale/finished items or incomplete scans (the normal "found something or could not verify" case), which would otherwise abort this step under `set -e`.
 
 Branch on `RC` (the script's documented exit contract — `stale-cleanup.sh --help`):
 
 - **`RC == 0`** — no stale items. Record "no stale worktrees or branches" for the Step 3 summary. **Still parse `WORKSPACE_JSON` for `orphaned_checkouts[]` and `checkout_scan`** — that class is exit-code neutral by design (issue #1417), so this is the exit code it reports under when it is the *only* finding. Treating `RC == 0` as "nothing to show" is precisely how the backstop would go unseen.
-- **`RC == 1`** — stale items exist. Parse `WORKSPACE_JSON` and present them in Step 3.
+- **`RC == 1`** — items exist or verification is incomplete. Present age-only stale items in Step 3 only when `stale_worktrees`, `stale_local_branches`, `stale_remote_branches` or `orphaned_registrations` is non-empty. Finished candidates and unknowns stay separate; RC alone does not establish an age-only candidate.
 - **`RC == 3`** — usage error (bad flag or `STALE_DAYS`). Surface the script's `--help` output and skip the workspace section — this indicates a bug in this skill's invocation, not a real-state problem. The issue scan (Step 1) still stands.
 - **`RC == 4`** — environment error (no `gh`/`jq`, cannot resolve repo). Surface stderr and skip the workspace section. The issue scan still stands.
 - **Any other exit** — treat like an environment error: surface stderr and skip the workspace section (the issue scan still stands). `--check` documents only 0/1/3/4, so this is a defensive catch-all.
@@ -132,11 +132,24 @@ Record the apply result and evidence. Exit 0 means eligible removals completed;
 not run. A skipped live worktree stays pending without pressure to remove it.
 Never add `--force`, recurse-delete a failed path, or run `git clean`. If removal
 reports Directory not empty, retain/list the path as the script reports.
-Local ref deletion compares the expected old SHA; remote refs are untouched.
+Local branch deletion uses Git's own checkout guard with a pinned verified upstream tip,
+so a new checkout or a commit beyond that tip retains the branch. Remote refs are untouched.
 
-Refresh the dry-run after any removal (including a partial apply) before asking about age-only items,
-so already removed worktrees cannot remain in the confirmation list. Unknowns
-stay listed separately and are never folded into automatic finished cleanup.
+After any removal (including a partial apply), rerun Step 2.1 and overwrite
+both variables before asking about age-only items. Refresh after attempted
+removals too, because a timed-out command may have partially changed state:
+
+<!-- test-anchor: finished-workspace-refresh -->
+```bash
+if jq -e 'any(.finished_apply[]?; .removal_attempted == true)' <<<"$FINISHED_APPLY_JSON" >/dev/null; then
+  RC=0
+  WORKSPACE_JSON="$(STALE_DAYS="$WORKTREE_DAYS" "$STALE_CLEANUP_SH" --check --json)" || RC=$?
+fi
+```
+
+Removed worktrees cannot remain in the confirmation list. Unknowns stay listed
+separately and are never folded into automatic finished cleanup. The age-only
+confirmation in Step 4.2 requires a non-empty age/orphan array, not just RC 1.
 
 ## Step 3: Present combined recommendations
 
@@ -259,7 +272,7 @@ gh issue close 42 --comment "Closing: [rationale from the recommendation]. Ident
 
 ### Step 4.2: Workspace deletions
 
-Only if the workspace scan surfaced stale items (`RC == 1`) and the user explicitly confirms. Present via **`AskUserQuestion`** when available (options: `"Apply cleanup (Recommended)"`, `"Skip"`; prose fallback `"Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)"` in headless runs). `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually. See `ask-menu.md` for the full vehicle convention.
+Only if the refreshed `WORKSPACE_JSON` has a non-empty `stale_worktrees`, `stale_local_branches`, `stale_remote_branches` or `orphaned_registrations` array and the user explicitly confirms. `RC == 1` alone is insufficient; unknown finished results never authorize or prompt age-only cleanup. Present via **`AskUserQuestion`** when available (options: `"Apply cleanup (Recommended)"`, `"Skip"`; prose fallback `"Apply the stale workspace cleanup above? (worktrees removed, local + remote branches deleted)"` in headless runs). `--apply` removes **every** listed stale item — the script has no per-item selection — so if the user wants to keep any, they decline and handle it manually. See `ask-menu.md` for the full vehicle convention.
 
 On explicit confirmation:
 

@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 
 
 class Unknown(Exception):
@@ -22,13 +23,13 @@ class Skip(Exception):
 def bound(name, default):
     try:
         value = float(os.environ.get(name, default))
-        return value if math.isfinite(value) and 0 < value <= 300 else default
+        return min(value, 300) if math.isfinite(value) and value > 0 else default
     except ValueError:
         return default
 
 
 GIT_TIMEOUT = bound("STALE_CLEANUP_TIMEOUT_SECS", 10)
-GH_TIMEOUT = bound("STALE_CLEANUP_GH_TIMEOUT_SECS", 30)
+GH_TIMEOUT = bound("STALE_CLEANUP_GH_TIMEOUT_SECS", 60)
 LSOF_TIMEOUT = bound("STALE_CLEANUP_LSOF_TIMEOUT_SECS", 10)
 REMOVE_TIMEOUT = bound("STALE_CLEANUP_REMOVE_TIMEOUT_SECS", 120)
 MAX_OUTPUT = 2 * 1024 * 1024
@@ -349,6 +350,9 @@ sys.exit(11 if errors else 0)
                     raise Unknown("finished_evidence_changed_before_remove")
                 if self.git("rev-parse", "HEAD", worktree=candidate["path"]).strip() != candidate["head_sha"]:
                     raise Unknown("head_changed_before_remove")
+                # The cwd census can be slow; repeat protected-file/dirty checks
+                # after it, immediately before handing the path to Git.
+                self.check_files(candidate["path"])
                 item["removal_attempted"] = True
                 code, _, errors = run(["git", "-C", self.root, "worktree", "remove", candidate["path"]], self.root, REMOVE_TIMEOUT)
                 if code:
@@ -369,15 +373,24 @@ sys.exit(11 if errors else 0)
                 elif any(r.get("branch") == candidate["branch"] for r in self.worktrees()):
                     item.update(outcome="failed", reason="worktree_removed_branch_checked_out")
                 else:
-                    # Expected-old-value deletion cannot discard a new commit
-                    # written after the last safety read. Keep remote refs and
-                    # any branch metadata; only this verified local ref goes.
-                    code, _, errors = run(["git", "-C", self.root, "update-ref", "--no-deref", "-d",
-                                           "refs/heads/" + candidate["branch"], candidate["head_sha"]], self.root)
-                    item.update(outcome="removed" if code == 0 else "failed",
-                                reason="finished" if code == 0 else "worktree_removed_branch_retained")
-                    if code:
-                        item["detail"] = errors[:4000]
+                    # Let Git's own non-forced branch deletion protect a branch
+                    # checked out after our census. A unique, pinned upstream
+                    # anchors the merge test at exactly the verified old tip:
+                    # a concurrent new commit cannot be "merged" into this tip.
+                    anchor = "refs/claude/finished-cleanup/" + uuid.uuid4().hex
+                    self.git("update-ref", anchor, candidate["head_sha"], "0" * len(candidate["head_sha"]))
+                    try:
+                        code, _, errors = run(["git", "-C", self.root,
+                            "-c", "branch." + candidate["branch"] + ".remote=.",
+                            "-c", "branch." + candidate["branch"] + ".merge=" + anchor,
+                            "branch", "-d", "--", candidate["branch"]], self.root)
+                        item.update(outcome="removed" if code == 0 else "failed",
+                                    reason="finished" if code == 0 else "worktree_removed_branch_retained")
+                        if code:
+                            item["detail"] = errors[:4000]
+                    finally:
+                        self.git("update-ref", "--no-deref", "-d", anchor, candidate["head_sha"])
+
             except Skip as exc:
                 item.update(outcome="failed" if item.get("removal_attempted") else "skipped", reason=str(exc))
             except Unknown as exc:

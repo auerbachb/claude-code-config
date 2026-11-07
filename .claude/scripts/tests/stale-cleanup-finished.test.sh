@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 python3 - "$ROOT" <<'PY'
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +15,9 @@ import tempfile
 source = Path(sys.argv[1])
 real_git = shutil.which('git')
 checks = 0
+module_spec = importlib.util.spec_from_file_location('finished_cleanup_fixture', source/'.claude/scripts/lib/stale-cleanup-finished.py')
+module = importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(module)
 
 
 def verify(value, message):
@@ -21,6 +25,11 @@ def verify(value, message):
     assert value, message
     checks += 1
 
+
+for raw,expected in [('600',300),('nonsense',60),('-1',60)]:
+    os.environ['FINISHED_FIXTURE_BOUND']=raw
+    verify(module.bound('FINISHED_FIXTURE_BOUND',60)==expected,'finite timeout clamps/defaults '+raw)
+os.environ.pop('FINISHED_FIXTURE_BOUND',None)
 
 with tempfile.TemporaryDirectory(prefix='finished-cleanup-test-') as directory:
     tmp = Path(directory)
@@ -39,6 +48,25 @@ with tempfile.TemporaryDirectory(prefix='finished-cleanup-test-') as directory:
         run = subprocess.run([real_git, '-C', str(cwd), *args], env=dict(env, **(extra or {})),
                              text=True, capture_output=True, check=check)
         return run.stdout.strip()
+
+    skill = (source/'.claude/skills/pm-clean/SKILL.md').read_text()
+    refresh = skill.split('<!-- test-anchor: finished-workspace-refresh -->',1)[1].split('```bash\n',1)[1].split('\n```',1)[0]
+    refresher = tmp/'refresh.sh'
+    refresher.write_text("""#!/usr/bin/env bash
+printf '%s\\n' '{"stale_worktrees":[],"fresh":true}'
+exit 1
+""")
+    refresher.chmod(0o755)
+    for applied,expected in [({'finished_apply':[{'removal_attempted':True,'worktree_removed':True}]},True),
+                             ({'finished_apply':[{'removal_attempted':True,'outcome':'failed'}]},True),
+                             ({'finished_apply':[]},False)]:
+        result = subprocess.run(['bash','-c',refresh+"""
+printf '%s\\n%s' "$RC" "$WORKSPACE_JSON"
+"""],
+            env=dict(env,FINISHED_APPLY_JSON=json.dumps(applied),RC='0',WORKSPACE_JSON='{"old":true}',
+                     WORKTREE_DAYS='30',STALE_CLEANUP_SH=str(refresher)),text=True,capture_output=True)
+        lines=result.stdout.splitlines()
+        verify(result.returncode==0 and bool(json.loads(lines[1]).get('fresh'))==expected and lines[0]==('1' if expected else '0'), 'actual refresh block replaces JSON/RC only after removal attempts')
 
     git('init', '-q', '-b', 'main')
     git('config', 'user.name', 'Fixture')
@@ -81,12 +109,15 @@ from pathlib import Path
 a=sys.argv[1:]
 with open(os.environ['FINISHED_TEST_LOG'],'a') as f:f.write(json.dumps(a)+'\\n')
 if 'ls-remote' in a and 'origin' in a: a[a.index('origin')]=os.environ['FINISHED_TEST_REMOTE']
-if 'update-ref' in a and '-d' in a and os.environ.get('FINISHED_TEST_REF_RACE'):
- base=a[a.index('-C')+1]; old=a[-1]; ref=a[-2]; real=os.environ['FINISHED_TEST_REAL_GIT']
+if 'branch' in a and '-d' in a and os.environ.get('FINISHED_TEST_REF_RACE'):
+ base=a[a.index('-C')+1]; ref='refs/heads/'+a[-1]; real=os.environ['FINISHED_TEST_REAL_GIT']; old=subprocess.check_output([real,'-C',base,'rev-parse',ref],text=True).strip()
  tree=subprocess.check_output([real,'-C',base,'rev-parse',old+'^{tree}'],text=True).strip()
  new=subprocess.check_output([real,'-C',base,'commit-tree',tree,'-p',old,'-m','concurrent local work'],text=True).strip()
  subprocess.run([real,'-C',base,'update-ref',ref,new,old],check=True)
  Path(os.environ['FINISHED_TEST_REF_RACE']).write_text(new)
+if 'branch' in a and '-d' in a and os.environ.get('FINISHED_TEST_CHECKOUT_RACE'):
+ base=a[a.index('-C')+1];real=os.environ['FINISHED_TEST_REAL_GIT']
+ subprocess.run([real,'-C',base,'worktree','add','-q',os.environ['FINISHED_TEST_CHECKOUT_RACE'],a[-1]],check=True)
 if 'worktree' in a and 'remove' in a and os.environ.get('FINISHED_TEST_REMOVE_HANG'):time.sleep(3)
 if 'worktree' in a and 'remove' in a and os.environ.get('FINISHED_TEST_REMOVE_RACE'):
  Path(a[-1],'.DS_Store').write_text('fixture race')
@@ -109,6 +140,8 @@ if os.environ.get('FINISHED_TEST_LIVE_ON_APPLY') and n>=2:cwd=os.environ['FINISH
 if os.environ.get('FINISHED_TEST_COMMIT_ON_APPLY') and n>=2:
  target=Path(os.environ['FINISHED_TEST_COMMIT_ON_APPLY']);(target/'README').write_text('committed during verification')
  subprocess.run([os.environ['FINISHED_TEST_REAL_GIT'],'-C',str(target),'commit','-qam','concurrent work'],check=True)
+if os.environ.get('FINISHED_TEST_ENV_AFTER_CENSUS') and n>=2:
+ Path(os.environ['FINISHED_TEST_ENV_AFTER_CENSUS'],'.env').write_text('fixture only')
 print('p100\\nn'+cwd)
 ''', encoding='utf-8')
     for script in bin_dir.iterdir():
@@ -177,6 +210,11 @@ print('p100\\nn'+cwd)
     verify(old.exists() and git('branch','--list','old-unmerged')!='', 'finished mode never reaches age-only apply')
     verify(all(path.exists() for path in [dirty,untracked,unpushed,opened,locked,live,protected,foreign,managed]), 'every unsafe/unknown worktree retained')
 
+    # Initial safety assertions above have already exercised every negative
+    # control. Lock them now to avoid repeating expensive unrelated probes.
+    for negative in [dirty,untracked,unpushed,opened,live,protected,foreign,old]:
+        git('worktree','lock',str(negative))
+
     # Leave a single clean candidate for revalidation and unavailable-probe cases.
     candidate = worktree('race')
     for option in ['FINISHED_TEST_LSOF_FAIL','FINISHED_TEST_LSOF_EMPTY','FINISHED_TEST_DESKTOP']:
@@ -191,7 +229,6 @@ print('p100\\nn'+cwd)
     verify(code==4 and data['finished_scan']=='incomplete', 'legacy open-PR failure also exposes unknown finished report')
     db.pop('fail');write_db()
     # Exclude other eligible non-live tree while isolating the single candidate.
-    git('worktree','lock',str(live))
     db['reopen']='race';write_db()
     code, data = sweep('--apply-finished')
     verify(candidate.exists() and any(r['branch']=='race' and r['reason']=='open_pr' for r in data.get('finished_apply',[])), 'new open PR before removal prevents apply')
@@ -208,6 +245,10 @@ print('p100\\nn'+cwd)
     git('worktree','lock',str(candidate))
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_ENV_ON_LOOKUP':str(env_race)})
     verify(env_race.exists() and (env_race/'.env').exists() and any(r['branch']=='env-race' and r['reason']=='protected_env_files' for r in data.get('finished_apply',[])), 'protected file created during remote lookup is rechecked before removal')
+    late_env = worktree('late-env')
+    Path(env['FINISHED_TEST_CENSUS']).unlink(missing_ok=True)
+    code, data = sweep('--apply-finished',extra={'FINISHED_TEST_ENV_AFTER_CENSUS':str(late_env)})
+    verify(late_env.exists() and (late_env/'.env').exists() and any(r['branch']=='late-env' and r['reason']=='protected_env_files' for r in data.get('finished_apply',[])), 'ignored protected file created during final census is retained')
     git('worktree','unlock',str(candidate))
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_REMOVE_HANG':'1','STALE_CLEANUP_REMOVE_TIMEOUT_SECS':'0.5'})
     verify(candidate.exists() and any(r['branch']=='race' and r['outcome']=='failed' and r.get('removal_attempted') for r in data.get('finished_apply',[])), 'timed-out removal is a failed attempt rather than a clean skip')
@@ -217,8 +258,13 @@ print('p100\\nn'+cwd)
     verify('.DS_Store' in failed[0].get('remaining_entries',''), 'remaining path is listed for directory-not-empty')
     code, data = sweep('--apply-finished',extra={'FINISHED_TEST_REF_RACE':str(tmp/'new-ref')})
     new_ref = (tmp/'new-ref').read_text().strip()
-    verify(not candidate.exists() and git('rev-parse','refs/heads/race')==new_ref, 'expected-old-SHA deletion retains a concurrent new commit')
+    verify(not candidate.exists() and git('rev-parse','refs/heads/race')==new_ref, 'pinned upstream merge test retains a concurrent new commit')
     verify(any(r['branch']=='race' and r['outcome']=='failed' and r.get('worktree_removed') for r in data.get('finished_apply',[])), 'partial removal with retained branch is reported')
+    checkout_candidate = worktree('checkout-race')
+    replacement = tmp/'new-live-checkout'
+    code, data = sweep('--apply-finished',extra={'FINISHED_TEST_CHECKOUT_RACE':str(replacement)})
+    verify(not checkout_candidate.exists() and replacement.exists() and git('branch','--list','checkout-race')!='', 'Git branch deletion refuses a new concurrent checkout')
+    verify(git('for-each-ref','--format=%(refname)','refs/claude/finished-cleanup')=='', 'temporary pinned upstream refs are removed')
     log = Path(env['FINISHED_TEST_LOG']).read_text()
     verify('"clean"' not in log and '"--force"' not in log, 'no git clean or forced worktree remove')
     bad = subprocess.run(['bash',script,'--apply-finished','--apply'],cwd=root,env=env,capture_output=True)

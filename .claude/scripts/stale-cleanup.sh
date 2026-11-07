@@ -275,7 +275,8 @@
 #                                               # orphaned working trees
 #   stale-cleanup.sh --help | -h
 #
-#   --check    Report stale items without deleting. Exit 0 if none, 1 if any.
+#   --check    Report stale/finished items without deleting. Exit 1 for eligible
+#              items or an incomplete status-affecting scan; 0 when clean.
 #   --apply    Delete stale items that pass safety checks. Exit 0 when every
 #              category was swept with no failures, 1 when the sweep was
 #              incomplete (a bound expired, so a category was skipped — what
@@ -327,8 +328,8 @@
 #              `--root --json`) is a usage error (exit 3).
 #
 #   stale-cleanup.sh --apply-finished [--root <path>] [--json]
-#     Removes only the finished class non-interactively; local branch ref
-#     deletion uses an expected-old-SHA compare. Never deletes remote branches.
+#     Removes only the finished class non-interactively; local branch
+#     deletion uses Git's checkout guard and a pinned verified upstream tip. Never deletes remote branches.
 #     Incompatible with --check, --apply and --include-locked.
 #   STALE_CLEANUP_LSOF_TIMEOUT_SECS bounds cwd/process census (default 10s).
 #   STALE_CLEANUP_REMOVE_TIMEOUT_SECS bounds finished removal (default 120s);
@@ -357,8 +358,12 @@
 #   each failure as "failed: <thing> — <reason>".
 #
 # EXIT STATUS
-#   0  No stale items, or --apply swept every category with no failures.
-#   1  Incomplete sweep — the same meaning in both modes. --check found one or
+#   0  --check found no eligible items or incomplete status-affecting scans;
+#      --apply-finished completed with no unknowns/failures; or legacy
+#      --apply swept every category with no failures.
+#   1  --check also reports eligible finished worktrees or incomplete finished
+#      scans; --apply-finished reports unknowns or removal failures.
+#      In either legacy mode: incomplete sweep. --check found one or
 #      more stale items, including orphaned worktree registrations; or, in
 #      either mode, a worktree enumeration, ref enumeration, or registration
 #      scan that did not finish inside its bound. An --apply that skipped a
