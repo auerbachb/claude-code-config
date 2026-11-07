@@ -24,6 +24,12 @@ bash -c 'source "$1"; persist_fixpr_wait_evidence' _ "$TMP_TEST/wait.sh" > "$TMP
 test ! -s "$TMP_TEST/stdout"
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e --arg bundle "$TICK" '.fixpr_wait.head_sha=="abcdef123456" and .fixpr_wait.bundle_path==$bundle and .fixpr_wait.verdict.ci_failing[0].conclusion=="failure" and .fixpr_wait.verdict.new_findings==1 and (.fixpr_wait.observed_at|length>0)' >/dev/null
 jq -e '.diagnostic=="full raw capture retained"' "$TICK" >/dev/null
+# Exercise the documented isolated-child boundary: no inherited helper or scope.
+# The child receives explicit inputs and the real helper definition in its file.
+printf '%s\n' "$WAIT_BLOCK" > "$TMP_TEST/isolated-wait.sh"
+printf '%s\n' 'HANDOFF_STATE_SH=$1; OWNER_REPO=$2; persist_fixpr_wait_evidence' >> "$TMP_TEST/isolated-wait.sh"
+env -u HANDOFF_STATE_SH -u OWNER_REPO bash "$TMP_TEST/isolated-wait.sh" "$HANDOFF_STATE_SH" "$OWNER_REPO"
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --get "$PR_NUMBER" | jq -e '.fixpr_wait.verdict.ci_failing[0].conclusion=="failure"' >/dev/null
 # A later clean snapshot replaces the failure status; the raw evidence is not deleted.
 export WAIT_STATE='{"bots_pending":[],"ci_pending":[],"ci_failing":[],"new_findings":0,"head_moved":false}'
 bash -c 'source "$1"; persist_fixpr_wait_evidence' _ "$TMP_TEST/wait.sh"
