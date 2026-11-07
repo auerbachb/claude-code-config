@@ -64,7 +64,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `review-stack-audit.md` — `/review-stack-audit` design record: why it is a sibling to `/harness-audit` rather than a section of it, why its judgment is one pass, why billed state is a declared proxy, the `gates_merge` vs `approves_via` split, the seeded-baseline departure from the #1199 dependency, and the two-layer dedup (#1201)
 - `graphql-thread-resolution.md` — full GraphQL queries/mutations for resolving PR review threads
 - `exit-report-format.md` — full structured exit report block specification
-- `final-wrapup-format.md` — canonical TL;DR-first end-of-task wrap-up shape for the human-facing final chat message: six ordered slots, the emit-once-at-terminal-state rule, the trivial-task scale-down, the blocked-ending variant, the components-by-role jargon policy, the scope boundary against `/recap` / `/standup` / `/wrap` / `EXIT_REPORT`, and the Issue #1362 worked example (Issue #1396)
+- `final-wrapup-format.md` — minimal terminal outcome or actionable blocker; explicit summaries and machine reports retain their formats (Issue #1396, Issue #1873)
 - `greptile-setup.md` — Greptile dashboard setup notes
 - `greptile-reply-format.md` — reply conventions for Greptile threads
 
@@ -233,6 +233,7 @@ Files here are NOT auto-loaded by Claude Code. Agents read them on demand when w
 - `session-state-convergence-audit.md` — post-merge convergence audit of `session-state.json` and all scripts that touch it as one system; verdict: coherent (#651)
 - `token-efficiency-audit-2026-07.md` — token-efficiency playbook: adopt/skip/adapt verdicts, ranked cuts, shipped v1 (one-line heartbeats, delta PMM table, silence-detector dedupe) + FU-1…FU-7 (#773)
 - `compact-result-contract.md` — the `ok`/`failed_tests`/`relevant_error`/`log_path` output shape, its adopters, why failures are never compacted away, and what is deliberately left unwrapped (FU-7; #782)
+- `decision-only-output.md` — canonical decision-only human output, recoverable evidence, and monitor caller audit (Issue #1873)
 - `inline-default-any-thread-2026-08.md` — why absence of PM context stopped routing work to a separate thread: the execution-capability test and its single named exception, bootstrapping vs becoming `/pm`, the capture-session batch hand-off and its census trade-off, `/start-issue`'s two inline shapes, and why this sidesteps rather than fixes the `spawn_task` model/effort gap (#1229)
 - `verbosity-decisions-1253.md` — the two open-question decisions from Issue #1253: heartbeat removal in favor of bgwork-ceiling liveness, and the `merged PR #N` exception that survives under silence-by-default (#1253)
 - `chip-emission-audit-2026-08.md` — emission-path audit of every route that can put a task chip on screen: the six canonical emitters and their gates, `/wrap` Phase 3 and `pm-worker` as textual non-emitters, and the ungated ad-hoc `spawn_task` path confirmed as the root cause of the 2026-08-26 five-chip incident; plus the layer-mismatch diagnosis (gate in a non-auto-loaded reference file), the no-registry-change and no-CLAUDE.md-line decisions, and the budget accounting (#1367)

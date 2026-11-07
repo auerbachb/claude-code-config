@@ -4,6 +4,8 @@ description: End-of-session command — verify no unresolved findings, squash me
 argument-hint: "[URL | #N | N] [--verbose]"
 ---
 
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
+
 Wrap up the current PR and session. This is the "we're done here" command that handles final verification through merge, root-main sync, follow-up detection, a full-session sweep for loose ends, and lessons.
 
 `/wrap` accepts an **optional** PR reference as its argument — a full URL, `#N`, `owner/repo#N`, or a bare number `N`. When invoked with no argument it resolves the target PR through the inference cascade in Step 1.1 (current branch → thread context → session-state). An explicit argument bypasses all inference.
@@ -62,12 +64,12 @@ Autonomy does not mean filing blind: every candidate goes through the body-aware
 | **Silent** | *(default)* | One line on a clean run: `merged PR #N` — no follow-up list, no lessons ack, no sweep summary. Only decision-requiring items print, one terse line each (Step 4.3 **Silent default**). |
 | **Verbose** | `--verbose` *(or an explicit request)* | The full report: the `## Wrapped up` merged + follow-ups block, per-cycle recovery heartbeats, the Session Lessons block, and the multi-section "Wrap-Up Complete" report (Issues filed, Filings suppressed as duplicates, Session sweep, Verdict, Lessons). Full template: `references/wrap-report-templates.md`. |
 
-**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Four things always print regardless of mode:
+**Verbosity is additive and human-facing only.** Every phase executes **identically** in both modes; only narration differs. Suppression is never deletion — the merge, the filings, the sweep, and the lessons are all recorded (GitHub, `WRAP_FILED_ISSUES`, `session-state.json` `wrap_sweep`, memory), so an explicit request re-renders the verbose report in full from that state. Required notices below follow `decision-only-output.md`; routine coverage and heartbeat details remain in records:
 
 - **State-changing blockers and stop conditions** — a merge that can't proceed, `CONFLICTING`, human `CHANGES_REQUESTED`, no PR found, the recovery cap — surface as a short one-line reason even on the silent default (Step 4.3 **Blocker path**).
 - **The `[INFERRED]` merge-safety checkpoint** (Step 1.1). Prints only on the inference path, never on the normal branch path.
-- **The CLAUDE.md 5-minute heartbeat** during long `/fixpr` waits. Silence never extends past the heartbeat — that is what keeps a suppressed run distinguishable from a stalled one (issue #803).
-- **`[COVERAGE]` when local review was degraded** (`cr-only`, `codeant-only`, or `none`). Full coverage (`both`) is suppressible.
+- **Genuine stalls or exhausted recovery** surface immediately. Routine `/fixpr` wait ticks remain silent; the bgwork ceiling and recorded tick state provide liveness.
+- **Local review coverage** (`both`, `cr-only`, `codeant-only`, `none`) is recorded in the PR and recovery state; notify only if it requires owner action.
 
 When `/wrap` is invoked by a phase-C subagent, the machine **`EXIT_REPORT`** block (per `phase-protocols.md`) is emitted **identically regardless of verbosity**.
 
@@ -157,7 +159,7 @@ If already merged or closed, skip to Phase 3.
 
 ### Step 1.2: Scan for unresolved review findings
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read the cached JSON bundle. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. All review-state queries in this skill read from the `$BUNDLE` returned by `pr-state.sh` — do not add inline `gh api` calls to these three endpoints.
 
 Use the shared `pr-state.sh` helper to fetch and pre-classify review activity from all three endpoints in one call. It filters to the five review bots — `coderabbitai[bot]`, `cursor[bot]` (BugBot), `codeant-ai[bot]`, `greptile-apps[bot]` and `graphite-app[bot]` — and tags each comment with `classification.class` (`finding` vs `acknowledgment`). The helper writes the JSON bundle to a tempfile and prints its **path** on stdout — capture the path, then read with `jq < "$BUNDLE"`:
 
@@ -223,7 +225,7 @@ if [ "$WRAP_VERBOSE" = "1" ]; then
 fi
 ```
 
-**The silent default keeps three non-negotiable signals:** (a) the CLAUDE.md 5-minute heartbeat during `/fixpr` waits, (b) dispatch/blocker transitions always print, and (c) a clean merge emits `merged PR #N`.
+**The silent default preserves required signals:** owner-action blockers, safety events and exhausted recovery surface immediately; a clean merge emits `merged PR #N`. Dispatch transitions and ordinary waits remain recorded and silent.
 
 After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Always built; rendered to the user only under `--verbose`.
 

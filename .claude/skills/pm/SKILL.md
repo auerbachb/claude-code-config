@@ -14,6 +14,8 @@ triggers:
 argument-hint: "[day | --run] (optional — continuous mode: this thread becomes the repo's standing worker, looping rank → dispatch → merge → refill with between-turn liveness; see Step 2D) | [resume] (optional — 'resume' reads in-flight state from session files to continue a previous PM session) | [--no-clean | fast] (optional — skip the always-on inline /pm-clean cleanup for a ranking-only run) | [--window \"until HH:MM\"|\"N hours\"|\"overnight\"] (optional — fit the batch inside a planning window; see Step 0b) | [business goal] (optional — ranks the backlog by impact on that goal, e.g. 'increase scraping throughput')"
 ---
 
+> **Human output:** Follow `.claude/reference/decision-only-output.md` over older heartbeat, timestamp, mandatory-table, startup/teardown, or report examples below. Routine checks, dispatches and automatic recovery stay silent; immediately surface owner-action blockers, safety events or exhausted recovery. Explicit status/verbose requests retain tables and reports. Preserve every machine footer, full diagnostic log, gate result and resumable state; use bounded JSON projections before targeted evidence recovery.
+
 Active PM orchestrator. Manages which issues are being worked on across coding threads, tracks progress, and suggests next work.
 
 **Two entry modes, plus one posture that wraps either:**
@@ -1242,55 +1244,9 @@ The fresh generation is what makes step 3 safe: a tick already queued by the old
 
 **Never pause or exit on a locally-estimated quota or spend figure.** `safety.md` §Anthropic Quota & Spend Authority makes Anthropic's in-app UI the sole authority, and a day loop that throttled itself on a local estimate would be exactly the invisible second stop condition that rule forbids. Usage-limit wind-down is #824's, and it lands through the handoff seam below rather than as a heuristic here.
 
-**D5 — Heartbeat.** Always the last thing a non-terminating tick does, one line, per `CLAUDE.md` #3 and `monitor-mode.md`:
+**D5 — Persist status; notify only when needed.** Record the tick, next cadence, slots, queue, digests and recovery outcomes in existing state. Follow `decision-only-output.md`: routine ticks, launches and successful recovery stay silent. Surface owner-only blockers, safety events and exhausted recovery immediately. On an explicit status/board request run `/board` per 3.3a. Do not arm or service a table-freshness watch solely to produce routine output, and never record a render that did not occur.
 
-```
-[Sat Aug 22 05:04 PM ET] day tick 7: 3 pipelines (#40 B, #55 A, #61 C), 2 queued · next: 5m — monitoring 3 PR(s) (#87, #88, #90) · slots 3/4: nothing eligible
-```
-
-**A stale board is never answered with a one-liner (issue #1527).** The per-pipeline inline readout this heartbeat used to carry is superseded by the canonical "Running now" table (3.3a): its Remaining column holds the same verdict, for the whole round rather than one pipeline at a time. The table does **not** fire every tick — that would fight silence-by-default — it fires on the freshness trigger `time-estimates.md` §"Table freshness" rule 2 already defines. Before emitting this heartbeat, ask the clock:
-
-```bash
-# ACTIVE_COUNT = pipelines running OR queued RIGHT NOW, not the dispatch round —
-# pipelines finish. D3 already counted both halves for the digest this tick: the
-# non-terminal rows behind PIPELINES_SORTED, plus QUEUE_LEN. Substitute that sum;
-# the integer guard below catches an unsubstituted placeholder rather than passing
-# an empty --active, which is a usage error that costs the verdict AND the record.
-ACTIVE_COUNT=<running pipelines (D3's PIPELINES_SORTED rows) + QUEUE_LEN>
-# Re-derive REPO_KEY and TF_SESSION here every tick — a compaction (the thing the
-# durable clock exists to survive) wipes the thread's memory of them, and an empty
-# --repo/--session is a loud usage error rather than a silent default.
-REPO_KEY=$("$SESSION_STATE_SH" --repo-key 2>/dev/null) || REPO_KEY=""
-# `--repo-key` NEVER returns empty — it prints `_unknown` and exits 0 — so
-# normalise the sentinel once or the `-n` guard below is dead code.
-[[ "$REPO_KEY" == "_unknown" ]] && REPO_KEY=""
-TF_SESSION="${CLAUDE_SESSION_ID:-default}"
-TABLE_VERDICT=""
-TABLE_RC=0
-if [[ -n "$TABLE_FRESHNESS_SH" && -n "$REPO_KEY" && "${ACTIVE_COUNT:-}" =~ ^[0-9]+$ ]]; then
-  # `stale` EXITS 1, and it is the one verdict that changes what this heartbeat
-  # prints — so capture the status instead of letting the assignment carry it to
-  # errexit, which would kill the tick on precisely the path the floor exists for.
-  # stderr stays attached on purpose: exit 2 prints its diagnostic there and
-  # nothing on stdout, so `2>/dev/null` would leave a misconfigured call
-  # rendering a table every tick with no way to find out why.
-  TABLE_VERDICT=$("$TABLE_FRESHNESS_SH" --check --active "$ACTIVE_COUNT" \
-    --repo "$REPO_KEY" --session "$TF_SESSION") || TABLE_RC=$?
-  # 0 (fresh/idle/unrecorded) and 1 (stale) both print the authoritative verdict
-  # word; 2 (usage) and 5 (state write) print none, and take the documented
-  # degraded path below rather than passing as an ordinary empty verdict.
-  if (( TABLE_RC != 0 && TABLE_RC != 1 )); then
-    TABLE_VERDICT=""
-    echo "DEGRADED: table-freshness --check failed (exit $TABLE_RC) — rendering the table"
-  fi
-fi
-```
-
-`stale` (exit 1) → **this heartbeat carries the full table**: the line above, then the board rendered per 3.3a, whose `/board` Step 5 records the render and re-arms the hour. `fresh` / `idle` / `unrecorded` → the one-liner alone. An unresolved `table-freshness.sh`, a non-integer `ACTIVE_COUNT`, or a `--check` that exited outside its verdict-bearing `0`/`1` (usage, or a state write it could not perform) renders the table: failing toward *more* renders is correct, since the floor exists to guarantee a board at least hourly and its absence must never buy permission to emit fewer. Never record a render that did not happen — a one-liner tick calls nothing.
-
-No plan restating and no per-phase narration. **The canonical "Running now" table is the one sanctioned table here**, on the trigger above; `/pm` renders no other. The launches D2 reports and the blockers D1 surfaces are the only other routine output; everything else is suppressed (`CLAUDE.md` #3).
-
-**Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) the heartbeat above was sent, (3) `last_tick_at`, digests, streaks and cadence are written.
+**Before the tick ends, run `scheduling-reliability.md`'s pre-exit checklist:** (1) the recorded Monitor task is active and this tick fired, (2) required owner-action notices were delivered, (3) `last_tick_at`, digests, streaks and cadence are written.
 
 ### 2D.4: Teardown (D-END)
 
