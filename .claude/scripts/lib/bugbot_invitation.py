@@ -183,6 +183,16 @@ def classify(args, evidence):
             raise Unknown(boundary_error)
         else:
             awaited, reason, certainty = False, 'not_invited_no_unused_grant', 'known'
+    if not awaited:
+        # History/grant reads can take several seconds. A head-only reread
+        # cannot detect an invitation added or edited during those reads.
+        # Bound one final reconciliation; changed evidence stays pending for
+        # a fresh tick rather than publishing a known negative from old data.
+        evidence['read_stage'] = 'final_comments'
+        final_comments = pages('repos/' + args.repo + '/issues/' + str(args.pr) + '/comments')
+        evidence['final_comment_count'] = len(final_comments)
+        if final_comments != comments:
+            raise Unknown('comments_changed_during_read')
     evidence["read_stage"] = "final_pr_head"
     if head(args) != pr:
         raise Unknown('head_context_changed')

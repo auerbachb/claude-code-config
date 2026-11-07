@@ -89,6 +89,11 @@ if '/pulls/' in path:
   if count>1:sha='b'*40
  print(json.dumps({'head':{'sha':sha,'ref':'feature','repo':{'full_name':'o/r'}},'created_at':'2026-11-01T00:00:00Z'}))
 elif path.endswith('/comments'):
+ if os.environ.get('GH_LATE_COMMENT'):
+  marker=Path(os.environ['GH_LATE_COMMENT']);count=int(marker.read_text())+1 if marker.exists() else 1;marker.write_text(str(count))
+  if count>1:
+   if os.environ.get('GH_LATE_COMMENT_FAIL'):sys.exit(1)
+   print(json.dumps([{'created_at':'2026-11-06T15:02:00Z','body':'@cursor review'}]));sys.exit(0)
  raw=Path(os.environ['GH_STUB_FILE']).read_text(); parts=[];decoder=json.JSONDecoder()
  try:
   while raw.strip():
@@ -134,6 +139,14 @@ check_eq "trigger posted before the push only: not awaited" 0 \
   "$(run_5d "[$(c 2026-11-06T14:00:00Z '@cursor review')]")"
 check_eq "trigger mentioned mid-sentence is not a trigger" 0 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'do not post @cursor review here')]")"
+export GH_LATE_COMMENT="$TMP/late-comment-count"
+check_eq "invitation posted during grant read cannot publish known not-invited" 1 "$(run_5d '[]')"
+rm -f "$GH_LATE_COMMENT"
+check_eq "new invitation during boundary read invalidates the old negative" 1 "$(run_5d "[$(c 2026-11-06T14:00:00Z '@cursor review')]")"
+rm -f "$GH_LATE_COMMENT"
+export GH_LATE_COMMENT_FAIL=1
+check_eq "failed final comment reconciliation remains unknown/awaited" 1 "$(run_5d '[]')"
+unset GH_LATE_COMMENT GH_LATE_COMMENT_FAIL
 check_eq "no trigger but an unused owner grant for this HEAD: awaited" 1 \
   "$(run_5d "[$(c 2026-11-06T15:02:00Z 'LGTM')]" 0 0)"
 check_eq "no trigger and grant state unreadable (exit 3): fails closed, awaited" 1 \
