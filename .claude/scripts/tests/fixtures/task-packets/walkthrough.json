@@ -1,0 +1,221 @@
+{
+  "kind": "sanitized_design_fixtures",
+  "index_bytes": 8192,
+  "max_touchpoints": 16,
+  "max_commands": 8,
+  "max_evidence": 8,
+  "max_age_seconds": 900,
+  "base": {
+    "repo": "fixture/config",
+    "issue": 101,
+    "worktree": "/fixture/worktrees/issue-101",
+    "branch": "issue-101-parser",
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "phase": "A",
+    "spec": {
+      "url": "fixture://issue/101",
+      "revision": "issue101-v1",
+      "body": "Implement parser.\n- [ ] Preserve precedence.\n- [ ] Preserve unknowns.",
+      "criteria": [
+        "Preserve precedence.",
+        "Preserve unknowns."
+      ]
+    },
+    "claim": {
+      "holder": "fixture-holder-101",
+      "author": "fixture-owner",
+      "marker_id": 501,
+      "created_at": "2026-11-07T12:00:00Z",
+      "status": "mine"
+    },
+    "sources": {
+      "issue": "issue101-v1",
+      "handoff": "handoff101-v1",
+      "session": "selected-subtree-v1",
+      "module": "module-A-v1"
+    },
+    "modules": {
+      "A": "fixture://phase-a",
+      "B": "fixture://phase-b",
+      "C": "fixture://phase-c",
+      "unrelated": "fixture://unrelated"
+    },
+    "touchpoints": [
+      "src/shared.py"
+    ],
+    "commands": [
+      "python3 -m unittest parser_tests"
+    ],
+    "evidence": [
+      {
+        "id": "check-1",
+        "pointer": "fixture://evidence/check-1",
+        "repo": "fixture/config",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": "check-v1"
+      }
+    ],
+    "recovery": {
+      "pointer": "fixture://handoff/101",
+      "discoveries": [
+        "Whitespace is not the failure cause."
+      ],
+      "approaches": [
+        "normalized whitespace"
+      ],
+      "remaining_blocker": "mixed cap/credit precedence",
+      "next_action": "inspect weekly precedence test"
+    },
+    "gate_pointers": {
+      "review": "fixture://live-review",
+      "ci": "fixture://live-ci",
+      "ac": "fixture://issue/101#criteria"
+    }
+  },
+  "pairs": [
+    {
+      "name": "two-overlapping",
+      "left": [
+        "src/shared.py"
+      ],
+      "right": [
+        "src/shared.py"
+      ],
+      "expected_overlap": true
+    },
+    {
+      "name": "two-disjoint",
+      "left": [
+        "src/parser.py"
+      ],
+      "right": [
+        "docs/guide.md"
+      ],
+      "expected_overlap": false
+    },
+    {
+      "name": "coarse-rule-corpus",
+      "left": [
+        ".claude/rules/a.md"
+      ],
+      "right": [
+        ".claude/rules/b.md"
+      ],
+      "expected_overlap": true
+    },
+    {
+      "name": "directory-is-not-a-surface",
+      "left": [
+        "src/one.py"
+      ],
+      "right": [
+        "src/two.py"
+      ],
+      "expected_overlap": false
+    },
+    {
+      "name": "undeclared-is-unknown",
+      "left": null,
+      "right": [
+        "src/one.py"
+      ],
+      "expected_overlap": null
+    }
+  ],
+  "freshness_cases": [
+    {
+      "name": "unchanged-sources",
+      "change": {},
+      "expected": "current"
+    },
+    {
+      "name": "changed-issue-AC",
+      "change": {
+        "sources": {
+          "issue": "issue101-v2"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "changed-handoff",
+      "change": {
+        "sources": {
+          "handoff": "handoff101-v2"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "changed-selected-session",
+      "change": {
+        "sources": {
+          "session": "selected-subtree-v2"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "changed-active-module",
+      "change": {
+        "sources": {
+          "module": "module-A-v2"
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "new-head",
+      "change": {
+        "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "new-phase",
+      "change": {
+        "phase": "B"
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "new-owner",
+      "change": {
+        "claim": {
+          "holder": "another-holder",
+          "marker_id": 502
+        }
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "unreadable-claim",
+      "change": {
+        "claim": {
+          "status": "unknown"
+        }
+      },
+      "expected": "unknown"
+    },
+    {
+      "name": "wrong-repository",
+      "change": {
+        "repo": "fixture/other"
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "changed-worktree",
+      "change": {
+        "worktree": "/fixture/worktrees/other"
+      },
+      "expected": "stale"
+    },
+    {
+      "name": "old-hint",
+      "change": {},
+      "age_seconds": 901,
+      "expected": "stale"
+    }
+  ]
+}
