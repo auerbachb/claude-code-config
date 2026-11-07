@@ -236,18 +236,32 @@ CR_BUDGET_OK=1
 
 If `$CR_BUDGET_OK == 0`, still spawn subagents but include `SKIP_CR_TRIGGER=1` in each prompt. Do **not** block spawn entirely when the cap is exhausted.
 
+**Cost-first preflight.** For each allocated task, resolve `model-route.sh`
+through the shared-script candidate order and run `task-model-routing.md`'s
+`task-model-route-dispatch` block using refreshed eligibility and its existing
+scoped session/handoff routing record. Persist request/decision before dispatch;
+only `start`, `retry`, or `escalate` selects `ROUTED_MODEL`. Block on other
+results or failed writes. Preserve attempt evidence on successors and all
+existing permission, cap, budget and review controls.
+
 **Bulk spawn (one Agent call per PR, all in parallel up to the cap).** For each PR allocated a slot, read `VERDICTS_JSON[$N].tag` — when it is `merge-conflict`, set `TASK_TYPE=merge-conflict`. Otherwise use `TASK_TYPE=fixpr`. Invoke the Agent tool with:
 
 ```text
 subagent_type: "phase-a-fixer"
 name: "pmm-fix-$N"
 mode: "bypassPermissions"
-model: "opus"
+model: ROUTED_MODEL  # actual alias from the persisted current-task decision
 isolation: "worktree"
 run_in_background: true
 ```
 
 **Subagent prompt MUST include:**
+
+- Stable routing task identity and current record/request file pointers; require
+  the fixer to refresh/persist local-check, changed-tree and batch evidence after
+  editing and execute the `model-route-submission` guard before every push.
+  Pre-spawn eligibility is not post-edit submission permission.
+
 
 - PR number, branch name (`headRefName`), repo (`$OWNER/$REPO`), linked issue number (if any)
 - Current HEAD SHA from the tick's gate JSON

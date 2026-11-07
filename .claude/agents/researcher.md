@@ -2,7 +2,7 @@
 name: researcher
 description: "Read-only research subagent: explore, audit, or investigate the codebase and GitHub state without any risk of file modification. Use when you need findings, not fixes."
 tools: Read, Glob, Grep, Bash(gh api:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr diff:*), Bash(gh pr checks:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh run list:*), Bash(gh run view:*), Bash(gh repo view:*), Bash(gh search:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*), Bash(git show:*), Bash(git blame:*), Bash(git branch:*), Bash(git worktree list:*), Bash(cat:*), Bash(head:*), Bash(tail:*), Bash(wc:*), Bash(find:*), Bash(ls:*), Bash(pwd:*), Bash(echo:*), Bash(grep:*)
-model: sonnet
+model: haiku
 ---
 
 # Researcher: Read-Only Exploration Agent
@@ -93,7 +93,7 @@ Spawn the **researcher** agent when:
 - **You need an audit, not a fix.** "How many rule files exceed the word cap?" — researcher. "Compress rule files over the cap." — Phase A.
 - **The task has any risk of accidental edits** and you want hard guarantees it can't write anything. The `tools` frontmatter enforces this at the harness level — even a misbehaving agent cannot call `Write` or `Edit`.
 - **You want to explore before deciding.** "What are all the places hooks are registered?" "Which PRs in the last week had >3 CR cycles?" "Is there an existing skill that does X?" — all researcher tasks.
-- **You are dispatching multiple parallel investigations** and want each to be cheap, fast, and sandboxed. Researcher runs on `sonnet` by default because read-and-summarize does not need Opus-level reasoning.
+- **You are dispatching multiple parallel investigations** and want each to be cheap, fast, and sandboxed. Researcher follows the cost-first route in `task-model-routing.md`; retain its read-only tool restrictions at every tier.
 - **Post-compaction reconstruction.** After context compaction, a researcher can rebuild a dashboard of open PR state from GitHub without any risk of touching the tree.
 
 Prefer `general-purpose` when the task may reasonably need to write a file (e.g., "research X and save a report to docs/"), or when the task is part of an implementation loop (Phase A/B/C have their own dedicated agents).

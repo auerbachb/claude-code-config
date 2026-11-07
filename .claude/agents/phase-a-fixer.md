@@ -1,7 +1,7 @@
 ---
 name: phase-a-fixer
 description: "Phase A subagent: fix review findings, push code, write handoff file, print exit report. Used after a PR receives CR/BugBot/Greptile review findings."
-model: opus
+model: haiku
 ---
 
 # Phase A: Fix + Push
@@ -67,6 +67,14 @@ in one line and block the step that needed it. Full contract:
 
 Read reference docs the same way, `$HOME/.claude/skills-worktree/.claude/reference/<name>` first. Rules under `.claude/rules/*.md` need no fallback — they auto-load at user scope in every project.
 
+## Cost-first runtime context
+
+The parent supplies the stable routing task identity and current record/request
+file pointers. Load `MODEL_ROUTE_RECORD` into the shell from the record file;
+use its `.request` for `MODEL_ROUTE_REQUEST`, preserving attempts. If missing,
+resolve the current scoped session/handoff record rather than guessing a model.
+Follow `task-model-routing.md`, including the post-edit submission preflight.
+
 ## Runtime Context
 
 The parent agent provides these values in your prompt:
@@ -111,10 +119,18 @@ Fix ALL valid findings before committing. Also fix any lint/CI failures.
 
 Commit all fixes in ONE commit. If the review was already clean and no code changes were needed, skip the commit but **still proceed through Steps 4-6** (reply to any existing threads, resolve them, and write the handoff file). Only Step 3 itself is conditional — the handoff file MUST be written regardless of OUTCOME, or Phase B will have no state to read from.
 
+Before this step, run appropriate local checks/local review, batch related fixes,
+and compare the proposed tree with the last pushed tree. Refresh
+`MODEL_ROUTE_REQUEST`'s submission flags only from those results and persist the
+request/result and evidence pointers through the existing scoped phase record.
+The pre-spawn route does not count as this post-edit check. The push guard below
+is mandatory; on refusal preserve a recovery handoff and report the blocker.
+
 **Stage files explicitly by name.** NEVER use `git add -A` or `git add .` — those can accidentally include untracked sensitive files (`.env`, credentials) or large binaries. You already know exactly which files you modified in Step 2 (from the findings you fixed), so pass those paths explicitly:
 
 ```bash
 # Replace the placeholder list below with the actual paths you modified in Step 2
+SUBMISSION_BLOCKED=false
 git add path/to/file1 path/to/file2 ...
 
 if git diff --cached --quiet; then
@@ -122,13 +138,39 @@ if git diff --cached --quiet; then
   # Do NOT exit here. Steps 4-6 still run.
 else
   git commit -m "fix: address review findings for PR #{{PR_NUMBER}}"
-  git push origin {{BRANCH_NAME}}
+  if (
+# model-route-submission
+: "${MODEL_ROUTE_REQUEST:?post-edit routing request required}"
+MODEL_ROUTE_SH=""
+for ROUTE_CANDIDATE in \
+  "$HOME/.claude/skills-worktree/.claude/scripts/model-route.sh" \
+  "$HOME/.claude/scripts/model-route.sh" \
+  ".claude/scripts/model-route.sh"; do
+  if [ -x "$ROUTE_CANDIDATE" ]; then MODEL_ROUTE_SH="$ROUTE_CANDIDATE"; break; fi
+done
+if [ -z "$MODEL_ROUTE_SH" ]; then
+  echo "ERROR: model-route.sh not found (checked all three paths) — submission unavailable" >&2
+  exit 5
+fi
+SUBMISSION_RESULT=$("$MODEL_ROUTE_SH" --input "$MODEL_ROUTE_REQUEST") || exit 5
+jq -e '.submission_allowed == true' <<<"$SUBMISSION_RESULT" >/dev/null || exit 5
+  ); then
+    git push origin {{BRANCH_NAME}}
+  else
+    SUBMISSION_BLOCKED=true
+    echo "Submission blocked — retain unpushed HEAD and continue to recovery handoff" >&2
+  fi
 fi
 ```
 
 One commit = one review consumed. Never push multiple commits for separate findings.
 
 ### Step 4: Reply to Review Threads
+
+If `SUBMISSION_BLOCKED=true`, skip Steps 4–5: no pushed fix exists to acknowledge
+or resolve. Continue to Step 6 with the unpushed HEAD, `outcome: "blocked"`,
+`phase_completed: ""`, and notes identifying the submission refusal and recovery
+evidence. Then print Step 7 with `OUTCOME: blocked` and `NEXT_PHASE: none`.
 
 Reply to EVERY review comment thread acknowledging the fix. Use the shared helper — it tries the inline reply endpoint first, falls back to a PR-level comment on 404, and applies reviewer-specific `@mention` rules automatically (prepends `@coderabbitai` for CR; strips `@cursor` for BugBot, `@greptileai` for Greptile, `@codeant-ai` for CodeAnt, and `@graphite-app` for the retired Graphite, which still posts until its App is uninstalled — each mode strips only its own token, never another's):
 
@@ -156,7 +198,7 @@ Pass the IDs of the threads you handled. Without `--thread-ids` the script resol
 
 ### Step 6: Write Handoff File
 
-Write the handoff file via `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --create {{PR_NUMBER}} <json>` so
+Write the handoff file via the locked `--init` and guarded literal `--set` operations below so
 the write lands at `~/.claude/handoffs/{{OWNER}}/{{REPO}}/pr-{{PR_NUMBER}}-handoff.json` and is
 serialized under the shared state-lock.sh advisory lock (issues #655, #682).
 Never write the file inline with `jq … > tmp && mv tmp` — that bypasses the lock.
@@ -203,7 +245,27 @@ HANDOFF_JSON="$(jq -n \
     push_timestamp: $now,
     notes: $notes
   }')"
-"$HANDOFF_STATE_SH" --owner-repo {{OWNER}}/{{REPO}} --create "{{PR_NUMBER}}" "$HANDOFF_JSON"
+if [[ "${SUBMISSION_BLOCKED:-false}" == true ]]; then
+  HANDOFF_JSON=$(jq --arg sha "$(git rev-parse HEAD)" ' .head_sha=$sha | .outcome="blocked" | .phase_completed="" | .notes="Submission refused; unpushed HEAD retained. Resume post-edit submission checks before replying or resolving."' <<<"$HANDOFF_JSON") || exit 5
+fi
+OWNER_REPO="{{OWNER}}/{{REPO}}"
+PR_NUMBER="{{PR_NUMBER}}"
+# routed-handoff-write
+: "${MODEL_ROUTE_RECORD:?current routing record required}" "${OWNER_REPO:?repo required}" "${PR_NUMBER:?PR required}"
+jq -e '.request.task == .decision.task and .request.phase == .decision.phase' <<<"$MODEL_ROUTE_RECORD" >/dev/null || exit 5
+jq -e 'type == "object" and (.phase_completed|type == "string") and (keys | all(test("^[A-Za-z_][A-Za-z0-9_]*$")))' <<<"$HANDOFF_JSON" >/dev/null || exit 5
+ROUTED_HANDOFF_ASSIGNMENT=$(jq -nr --argjson route "$MODEL_ROUTE_RECORD" \
+  '".model_routing[" + ($route.request.task|tojson) + "][" + ($route.request.phase|tojson) + "]=" + ($route|tojson)') || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{}' || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_HANDOFF_ASSIGNMENT" || exit 5
+ROUTED_METADATA_ROWS=$(jq -c 'to_entries[] | select(.key != "model_routing" and .key != "phase_completed")' <<<"$HANDOFF_JSON") || exit 5
+while IFS= read -r ROUTED_METADATA_ROW; do
+  [ -n "$ROUTED_METADATA_ROW" ] || continue
+  ROUTED_METADATA_ASSIGNMENT=$(jq -r '".[" + (.key|tojson) + "]=" + (.value|tojson)' <<<"$ROUTED_METADATA_ROW") || exit 5
+  "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" "$ROUTED_METADATA_ASSIGNMENT" || exit 5
+done <<<"$ROUTED_METADATA_ROWS"
+ROUTED_COMPLETION=$(jq -c '.phase_completed' <<<"$HANDOFF_JSON") || exit 5
+"$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing --set "$PR_NUMBER" ".phase_completed=$ROUTED_COMPLETION" || exit 5
 ```
 
 `--owner-repo` is not optional here. Without it `handoff-state.sh` derives a scope
@@ -213,7 +275,7 @@ Confirm before exiting that `handoff-state.sh --owner-repo {{OWNER}}/{{REPO}} --
 returns the JSON you just wrote — that is the assertion, and it is checked against
 the resolved scoped path directly.
 
-**This `--create` is the record's creation, so it does NOT take `--require-existing`.**
+**The initial `--init` creates only an absent record, so it does NOT take `--require-existing`.**
 Every write you make AFTER it — any `--set` or `--append` correcting or extending the
 record you just wrote — must pass `--require-existing` (issue #1603), because Phase C
 merges and the parent then deletes this record; without the flag a late write seeds a

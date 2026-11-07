@@ -22,6 +22,14 @@ overlap-chain successor. This gate overrides every "within
 60 seconds" instruction below; only an explicit `/end-resume` or
 `/pause-resume` reopens it.
 
+## Routing evidence before successors
+
+Before each successor, append completed-attempt evidence to its scoped routing
+record and execute `task-model-routing.md`'s dispatch block. Persist refreshed
+eligibility and the decision before launch; failed writes launch nothing.
+Progress keeps the cheap model; diagnosis/escalation stays task-local and never
+skips the launch, review or acceptance gates.
+
 ## Structured Exit Report (MANDATORY — all phases)
 
 Every subagent MUST print an `EXIT_REPORT` block as its **final output** — one colon-separated field per line, no extra whitespace. Fields + valid `OUTCOME` values: `.claude/reference/exit-report-format.md`; evidence requirements: `.claude/reference/verification-evidence-patterns.md`. On exhaustion, print `OUTCOME: exhaustion` before the token limit.
