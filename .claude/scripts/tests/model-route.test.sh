@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 python3 - "$ROOT" <<'PY'
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,8 @@ base = {
 def attempt(n, **changes):
     row = dict(id=f'a{n}', model='haiku', outcome='failed', bug='precedence',
                signature='wrong-precedence', approach=f'approach-{n}',
+               method_fingerprint=hashlib.sha256(f'normalized-method-{n}'.encode()).hexdigest(),
+               method_evidence=f'fixture/method-{n}.json',
                evidence=[f'fixture/check-{n}.json'], new_evidence=[],
                remaining_blocker='precedence still fails', cost_usd=None,
                elapsed_seconds=None, review_rounds=0, ci_reruns=0)
@@ -67,15 +70,22 @@ with tempfile.TemporaryDirectory() as tmp:
     data['attempts'] = [attempt(1), attempt(2)]
     check('loop requires diagnosis not immediate upgrade', data, 'diagnose', 'haiku', 3)
     data['diagnosis'] = dict(model='haiku', kind='stuck_bug', attempt_ids=['a1', 'a2'],
-                             evidence=['fixture/diagnosis.json'],
+                             evidence=['fixture/diagnosis.json'], approaches_verified=True,
                              why_more_retries_unlikely='Two distinct precedence approaches failed without new evidence.')
     check('diagnosed unresolved bug steps only this phase', data, 'escalate', 'sonnet')
     other = copy.deepcopy(base)
     other['task'] = 'unrelated-task'
     other['phase'] = 'B'
     check('unrelated work remains cheap', other, 'start', 'haiku')
-    data['attempts'][1]['approach'] = data['attempts'][0]['approach']
-    check('identical command repetition not meaningful diagnosis', data, 'diagnose', 'haiku', 3)
+    data['attempts'][1]['approach'] = 'Rewording the same approach'
+    data['attempts'][1]['method_fingerprint'] = data['attempts'][0]['method_fingerprint']
+    check('reworded method is not a meaningfully different approach', data, 'diagnose', 'haiku', 3)
+    data['attempts'] = [attempt(1), attempt(2)]
+    data['diagnosis']['approaches_verified'] = False
+    check('method hashes require diagnostic verification', data, 'diagnose', 'haiku', 3)
+    data['diagnosis']['approaches_verified'] = True
+    data['attempts'][1].pop('method_evidence')
+    check('missing actual method evidence remains diagnosis', data, 'diagnose', 'haiku', 3)
     data['attempts'] = [attempt(1, poor_patch=True, review_rounds=1),
                         attempt(2, poor_patch=True, ci_reruns=1, signature='different-defect')]
     data['diagnosis']['kind'] = 'poor_patch_churn'
@@ -150,6 +160,8 @@ with tempfile.TemporaryDirectory() as tmp:
     data['current_model'] = 'fable'
     data['attempts'] = [attempt(1, model='fable')]
     check('owner-only tier never loses its explicit pin', data, 'blocked', code=3)
+    data['attempts'][0]['cost_usd'] = 10 ** 1000
+    check('overflowing JSON integer returns structured invalid', data, 'invalid', code=2)
     # The caller examples must still feed all three phase call sites through routing.
     skill = (root / '.claude/skills/subagent/SKILL.md').read_text()
     assert skill.count('`model: ROUTED_MODEL`') == 3
@@ -188,8 +200,22 @@ JSON
 printf '\nprintf "%%s" "$ROUTED_MODEL"\n' >> "$ROUTE_TMP/dispatch.sh"
 selected=$(bash "$ROUTE_TMP/dispatch.sh")
 [[ "$selected" == haiku ]]
-saved=$("$SESSION_STATE_SH" --repo "$OWNER_REPO" --get '.tasks["issue-123"].model_routing.A.decision.model')
+saved=$("$SESSION_STATE_SH" --repo "$OWNER_REPO" --get-json '.repos["fixture/router"].tasks["issue-123"].model_routing.A.decision.model')
 [[ "$saved" == '"haiku"' || "$saved" == haiku ]]
+
+# Same task IDs in different repositories must never share routing history.
+jq '.owner_model="sonnet" | .models += [{"model":"sonnet","available":true,"capable":true,"budget_allowed":true,"reserve_allowed":true,"evidence":"fixture/runtime.json"}]' "$MODEL_ROUTE_REQUEST" > "$ROUTE_TMP/other-repo.json"
+selected=$(OWNER_REPO=Fixture/Other MODEL_ROUTE_REQUEST="$ROUTE_TMP/other-repo.json" bash "$ROUTE_TMP/dispatch.sh")
+[[ "$selected" == sonnet ]]
+"$SESSION_STATE_SH" --repo "$OWNER_REPO" --get-json '.repos["fixture/router"].tasks["issue-123"].model_routing.A.decision.model' | jq -e '. == "haiku"' >/dev/null
+"$SESSION_STATE_SH" --repo "$OWNER_REPO" --get-json '.repos["fixture/other"].tasks["issue-123"].model_routing.A.decision.model' | jq -e '. == "sonnet"' >/dev/null
+"$SESSION_STATE_SH" --repo "$OWNER_REPO" --get-json '.tasks' | jq -e '. == null' >/dev/null
+selected=$(OWNER_REPO=Fixture/Router bash "$ROUTE_TMP/dispatch.sh")
+[[ "$selected" == haiku ]]
+"$SESSION_STATE_SH" --repo "$OWNER_REPO" --get-json '.repos["Fixture/Router"]' | jq -e '. == null' >/dev/null
+rc=0
+SESSION_STATE_SH=/usr/bin/false bash "$ROUTE_TMP/dispatch.sh" > "$ROUTE_TMP/failed-session-write.out" 2>/dev/null || rc=$?
+[[ "$rc" == 4 && ! -s "$ROUTE_TMP/failed-session-write.out" ]]
 
 export PR_NUMBER=123
 "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --init "$PR_NUMBER" '{"model_routing":{"B":{"sentinel":true}}}' >/dev/null

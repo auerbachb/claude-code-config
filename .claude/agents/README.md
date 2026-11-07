@@ -42,12 +42,12 @@ Agent definitions use `{{PLACEHOLDER}}` markers for runtime context that the par
 
 | Agent | Phase | Purpose | Tool Restrictions | Browser MCP | Default Model |
 |-------|-------|---------|-------------------|-------------|---------------|
-| `phase-a-fixer` | A | Fix findings, resolve merge conflicts, push, write handoff | Full access | Yes | `opus` |
-| `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | Yes | `opus` |
-| `phase-c-merger` | C | Verify merge gate and AC, then run `/wrap` when authorized | Read-only + Bash (for `gh`/git) | No — stays restricted by decision | `sonnet` |
-| `pm-worker` | — | Issue management, repo bootstrap | Full access | Yes | `sonnet` |
-| `researcher` | — | Read-only exploration, audit, investigation — produces a findings report | Read, Glob, Grep, Bash (read-only `gh`/`git`/`cat`/`find`/etc.) | No — read-only by design | `sonnet` |
-| `silent-failure-hunter` | — | Hunt silent failures in Bash scripts and shell tooling: swallowed exit codes, fabricated sentinels, `|| true` guard no-ops, and missing error propagation | Read, Glob, Grep, Bash | No — read-only by design | `sonnet` |
+| `phase-a-fixer` | A | Fix findings, resolve merge conflicts, push, write handoff | Full access | Yes | `haiku` |
+| `phase-b-reviewer` | B | Poll reviews, fix findings, update handoff | Full access | Yes | `haiku` |
+| `phase-c-merger` | C | Verify merge gate and AC, then run `/wrap` when authorized | Read-only + Bash (for `gh`/git) | No — stays restricted by decision | `haiku` |
+| `pm-worker` | — | Issue management, repo bootstrap | Full access | Yes | `haiku` |
+| `researcher` | — | Read-only exploration, audit, investigation — produces a findings report | Read, Glob, Grep, Bash (read-only `gh`/`git`/`cat`/`find`/etc.) | No — read-only by design | `haiku` |
+| `silent-failure-hunter` | — | Hunt silent failures in Bash scripts and shell tooling: swallowed exit codes, fabricated sentinels, `|| true` guard no-ops, and missing error propagation | Read, Glob, Grep, Bash | No — read-only by design | `haiku` |
 
 **Browser MCP** (`mcp__Claude_Browser__*` / `mcp__claude-in-chrome__*`) is rung 4 of the capability ladder. An agent that declares no `tools:` frontmatter inherits the full tool set and can reach it; one that declares `tools:` gets only what it lists, and no browser tool is on any current list. Evidence, the `phase-c-merger` decision, and the surface-selection rules: `.claude/reference/browser-capability-rung.md`.
 

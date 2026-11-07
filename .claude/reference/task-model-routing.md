@@ -59,7 +59,7 @@ the request, never fall back to a premium literal.
 ## State and dispatch integration
 
 Before first dispatch, store the request and result in the existing repo-scoped
-session record (`.tasks["issue-N"].model_routing["A"]` for issue work; another
+session record (`.repos["owner/repo"].tasks["issue-N"].model_routing["A"]` for issue work; another
 explicit task key for read-only PM work). Once a PR exists, use its selected handoff's
 `.model_routing["A"|"B"|"C"]`. Use `session-state.sh`/`handoff-state.sh` with
 explicit repository scope and their locks. Copy the current phase's routing
@@ -97,10 +97,12 @@ if [ -n "${PR_NUMBER:-}" ]; then
   "$HANDOFF_STATE_SH" --owner-repo "$OWNER_REPO" --require-existing \
     --set "$PR_NUMBER" "$MODEL_ROUTE_FILTER" || exit 4
 else
+  [[ "$OWNER_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 2
+  MODEL_ROUTE_REPO=$(printf '%s' "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')
   MODEL_ROUTE_TASK=$(jq -er '.request.task | strings | select(length > 0)' <<<"$MODEL_ROUTE_RECORD") || exit 2
-  MODEL_ROUTE_FILTER=$(jq -nr --arg task "$MODEL_ROUTE_TASK" --arg phase "$MODEL_ROUTE_PHASE" \
+  MODEL_ROUTE_FILTER=$(jq -nr --arg repo "$MODEL_ROUTE_REPO" --arg task "$MODEL_ROUTE_TASK" --arg phase "$MODEL_ROUTE_PHASE" \
     --argjson record "$MODEL_ROUTE_RECORD" \
-    '".tasks[" + ($task|tojson) + "].model_routing[" + ($phase|tojson) + "]=" + ($record|tojson)') || exit 2
+    '".repos[" + ($repo|tojson) + "].tasks[" + ($task|tojson) + "].model_routing[" + ($phase|tojson) + "]=" + ($record|tojson)') || exit 2
   "$SESSION_STATE_SH" --repo "$OWNER_REPO" --set "$MODEL_ROUTE_FILTER" || exit 4
 fi
 [ "$MODEL_ROUTE_RC" -eq 0 ] || exit "$MODEL_ROUTE_RC"
@@ -125,6 +127,8 @@ Append each finished attempt to the phase record before routing again:
   "id": "attempt-1", "model": "haiku", "outcome": "failed",
   "bug": "parser-precedence", "signature": "weekly-classified-as-credit",
   "approach": "check-weekly-before-credit",
+  "method_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+  "method_evidence": "path/to/normalized-operation-or-patch.json",
   "evidence": ["path/to/local-check.json"], "new_evidence": [],
   "remaining_blocker": "mixed-message precedence still fails",
   "poor_patch": false, "review_rounds": 0, "ci_reruns": 0,
@@ -147,7 +151,12 @@ escalation evidence; paid review still requires its separate authorization.
 A diagnosis cites `model`, `kind` (`stuck_bug` or `poor_patch_churn`), unique
 `attempt_ids`, `evidence` pointers and `why_more_retries_unlikely`. Stuck-bug
 escalation requires meaningful failed attempts on the same bug with different
-approaches; repeated identical commands are not such attempts. Churn escalation
+approaches. Identify each method by a SHA-256 fingerprint of its actual normalized
+operation/patch artifact and a `method_evidence` pointer, not its prose label.
+Rewording `approach` never makes a distinct method. The diagnosing caller must
+inspect the artifacts and record `approaches_verified:true`; different hashes
+alone do not prove semantic novelty. Missing fingerprints/evidence keep the task
+in diagnosis. Repeated identical commands are not meaningful attempts. Churn escalation
 requires at least two evidenced poor patches with review/CI activity. A diagnosis
 is task-local; old failures from another model do not immediately upgrade its
 replacement. If supported, select the next eligible tier. An owner pin requires

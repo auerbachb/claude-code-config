@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -15,8 +16,12 @@ def text(value):
 
 
 def number(value):
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and value >= 0)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 def pointers(value):
@@ -151,7 +156,11 @@ def decide(request):
     require(len(cited) == len(cited_ids), "diagnosis may cite only current-tier attempts")
     kind = diagnosis.get("kind")
     supported = (kind == "stuck_bug" and repeated and len(cited) >= 2
-                 and len({a["approach"] for a in cited}) >= 2
+                 and diagnosis.get("approaches_verified") is True
+                 and all(text(a.get("method_evidence"))
+                         and isinstance(a.get("method_fingerprint"), str)
+                         and re.fullmatch(r"[0-9a-f]{64}", a["method_fingerprint"]) for a in cited)
+                 and len({a.get("method_fingerprint") for a in cited}) >= 2
                  and all(a["outcome"] == "failed" and a["bug"] == latest["bug"] for a in cited))
     supported = supported or (kind == "poor_patch_churn" and churn and len(cited) >= 2
                               and all(a in poor for a in cited))
