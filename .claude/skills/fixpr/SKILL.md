@@ -60,7 +60,7 @@ CodeRabbit caps **~8 GitHub PR reviews per hour** per account; **each push** con
 
 ## How this skill is structured
 
-> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. Inline `gh api` calls for these three endpoints are only permitted inside the `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` scripts (Step 3b delegates), which need a custom post-push timestamp filter that `pr-state.sh` does not expose. Every other polling or review-state lookup MUST go through `pr-state.sh`.
+> **pr-state.sh first (NON-NEGOTIABLE):** Before calling `gh api .../pulls/{N}/reviews`, `pulls/{N}/comments`, or `issues/{N}/comments` directly, call `pr-state.sh --pr N` first and read bounded `jq` projections of the cached JSON bundle; select specific finding IDs/bodies only for diagnosis or replies. Inline `gh api` calls for these three endpoints are permitted only inside `reviewer-activity.sh` and `fixpr-reviewer-triggers.sh` (Step 3b delegates), which need a custom post-push timestamp filter, and Step 5d's projected all-author invitation check: `pr-state.sh` keeps reviewer-bot comments, so it cannot detect a human's paid-review invitation. Every other polling or review-state lookup MUST go through `pr-state.sh`.
 
 All mechanical GitHub API work — pagination, GraphQL queries, comment classification — lives in the shared `pr-state.sh` script. This file tells the AI layer how to invoke the script and what to do with its output (the JSON bundle).
 
@@ -809,7 +809,8 @@ For each bot present in `.bot_statuses` or the current-head check-runs:
 <!-- test-anchor: fixpr-step-5d-bugbot-invited -->
 ```bash
 BUGBOT_AWAITED=1   # fail closed until the evidence says otherwise
-if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100"); then
+if CURSOR_TRIGGER_COMMENTS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+    --jq '[.[] | {created_at, body}]'); then
   INVITED_RC=0
   jq -s -e --arg since "$PUSHED_AT" '[.[][]? | select((.created_at // "") >= $since)
       | select((.body // "") | test("^\\s*@cursor\\s+review\\b"))] | length > 0' \

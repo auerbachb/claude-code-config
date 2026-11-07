@@ -228,15 +228,16 @@ fi
 
 **The silent default preserves required signals:** owner-action blockers, safety events and exhausted recovery surface immediately; a clean merge emits `merged PR #N`. Dispatch transitions and ordinary waits remain recorded and silent.
 
-After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Then run the write below before continuing or exiting, including cap/blocker exits. It saves the complete current-run audit and last gate JSON under `.prs["<PR>"].wrap_sweep.recovery_audit`; Step 3.13's sibling-field writes preserve it. Later status/verbose requests read that record rather than relying on a child shell's variables. A failed write stops recovery with an evidence-storage error, never a clean result.
+After each action, append to **`WRAP_RECOVERY_AUDIT`**: cycle number, blocker summary, action taken, result. Then run the write below before continuing or exiting, including cap/blocker exits. It saves the complete current-run audit and last gate JSON under `.prs["<PR>"].wrap_sweep.recovery_audit`; Step 3.13's sibling-field writes preserve it. The explicit `CURRENT_REPO` from Step 1.1's repo-scoping guard overrides an inherited `CLAUDE_SESSION_REPO`; never fall back to that ambient variable for this write. Later status/verbose requests read the target repo's record rather than relying on a child shell's variables. A failed write stops recovery with an evidence-storage error, never a clean result.
 
 <!-- test-anchor: wrap-persist-recovery-audit -->
 ```bash
 [[ -n "$WRAP_AUDIT_STATE_SH" ]] || { echo "ERROR: recovery audit storage unavailable" >&2; exit 1; }
+[[ -n "${CURRENT_REPO:-}" ]] || { echo "ERROR: verified PR repository unavailable; audit not saved" >&2; exit 1; }
 WRAP_AUDIT_JSON=$(jq -cn --arg cycles "$WRAP_RECOVERY_AUDIT" --argjson gate "$GATE_JSON" \
   --arg at "$(date -u +%FT%TZ)" \
   '{cycles:$cycles, last_gate:$gate, observed_at:$at}') || exit 1
-"$WRAP_AUDIT_STATE_SH" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON" || {
+"$WRAP_AUDIT_STATE_SH" --repo "$CURRENT_REPO" --set ".prs[\"$PR_NUM\"].wrap_sweep.recovery_audit=$WRAP_AUDIT_JSON" || {
   echo "ERROR: recovery audit not saved; stopping recovery" >&2
   exit 1
 }
